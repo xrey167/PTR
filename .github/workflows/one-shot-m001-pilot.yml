@@ -29,4 +29,6 @@ jobs:
           git add experiments/model/M001-semantic-slots/results/pilot_metrics.json
           git add experiments/model/M001-semantic-slots/results/pilot_run.json
           git commit -m "Record M001 PTR-A0 mechanism pilot"
+          git pull --rebase origin main
           git push origin HEAD:main
+# rerun with rebase-safe evidence commit
