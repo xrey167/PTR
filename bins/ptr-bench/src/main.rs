@@ -18,14 +18,12 @@ fn main() {
     match command {
         "semdb" => bench_semdb(parse_usize(&args, 2, 10_000)),
         "mailbox" => bench_mailbox(parse_usize(&args, 2, 10_000)),
-        "ledger-recovery" => bench_ledger_recovery(
-            parse_usize(&args, 2, 10_000),
-            parse_u64(&args, 3, 17),
-        ),
-        "ledger-process-crash" => bench_ledger_process_crash(
-            parse_usize(&args, 2, 100),
-            parse_u64(&args, 3, 17),
-        ),
+        "ledger-recovery" => {
+            bench_ledger_recovery(parse_usize(&args, 2, 10_000), parse_u64(&args, 3, 17))
+        }
+        "ledger-process-crash" => {
+            bench_ledger_process_crash(parse_usize(&args, 2, 100), parse_u64(&args, 3, 17))
+        }
         "ledger-crash-child" => {
             let path = args.get(2).expect("ledger-crash-child requires path");
             let subject = args.get(3).expect("ledger-crash-child requires subject");

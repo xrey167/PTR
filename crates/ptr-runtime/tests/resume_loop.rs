@@ -107,14 +107,7 @@ fn registry() -> PodRegistry {
 fn verified_observation_advances_revision_and_resumes_model() {
     let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
     let run = runtime
-        .run_resumable_with_pods(
-            "r1".into(),
-            "start",
-            &TwoStep,
-            &registry(),
-            &Pass,
-            2,
-        )
+        .run_resumable_with_pods("r1".into(), "start", &TwoStep, &registry(), &Pass, 2)
         .unwrap();
 
     assert_eq!(runtime.revision().0, 2);
@@ -134,14 +127,7 @@ fn verified_observation_advances_revision_and_resumes_model() {
 fn resume_budget_stops_unbounded_tool_loop() {
     let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
     assert_eq!(
-        runtime.run_resumable_with_pods(
-            "r1".into(),
-            "start",
-            &LoopForever,
-            &registry(),
-            &Pass,
-            1,
-        ),
+        runtime.run_resumable_with_pods("r1".into(), "start", &LoopForever, &registry(), &Pass, 1,),
         Err(RuntimeError::ModelResumeLimit { max_rounds: 1 })
     );
 }

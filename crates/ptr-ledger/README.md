@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-18  
-**Code footprint:** 1 Rust source files · 311 nonblank source lines · 2 integration-test files · 3 `#[test]` markers
+**Code footprint:** 1 Rust source files · 319 nonblank source lines · 3 integration-test files · 4 `#[test]` markers
 
 ### Implemented now
 
@@ -19,6 +19,7 @@
 - Ledger trait and in-memory reference implementation
 - CompactionBarrier scaffold
 - Durable reference FileLedger with length-prefixed event encoding, fsync and crash-tail truncation
+- Feature-gated fail-rs injection points around record write/payload/fsync/memory-commit boundaries
 
 ### Missing for the target architecture
 
@@ -26,13 +27,12 @@
 - raft-rs consensus adapter and state machine integration
 - fsync/durability modes and revocation barriers
 - Snapshot serialization/recovery/replay
-- fail-rs crash/partition test points
 
 ### Next milestones
 
 - Define storage/consensus interfaces around existing Ledger contract
 - Benchmark reference FileLedger against raft-engine durable backend before cluster consensus
-- Run L001 then L002 chaos/recovery experiments
+- Expand L001 failpoint matrix to process-abort and durable-backend cases, then run L002 cluster recovery
 
 ### Linked experiments
 
@@ -54,6 +54,7 @@
 
 - FileLedger all-event reopen and partial-tail crash recovery tests
 - FileLedger open path explicitly preserves existing contents and truncates only incomplete crash tails
+- fail-rs panic-after-length-prefix recovery test
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->

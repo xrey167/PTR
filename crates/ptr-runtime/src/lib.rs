@@ -46,9 +46,13 @@ pub enum RuntimeError {
     PodVerificationFailed {
         pod: String,
     },
-    ModelResumeLimit { max_rounds: usize },
+    ModelResumeLimit {
+        max_rounds: usize,
+    },
     ModelNoProgress,
-    MultiplePodRequests { count: usize },
+    MultiplePodRequests {
+        count: usize,
+    },
     PermissionDenied,
 }
 
