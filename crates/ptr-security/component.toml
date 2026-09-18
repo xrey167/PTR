@@ -5,7 +5,7 @@ last_reviewed = "2026-09-18"
 
 implemented = [
   "PermissionSet with capability membership",
-  "Separate mutation/external/irreversible effect gates",
+  "Separate mutation/external/irreversible effect gates that remain enforced even when capability membership is optional",
   "Fail-closed allows() decision for missing capability",
   "Typed ActionAuthorization request plus AuthorizationDecision allow/deny result",
   "Revision and generation freshness checks, including revoked and unknown generations",
