@@ -20,6 +20,8 @@ iterator_rule = "prefer IntoIterator for generic batch inputs and impl Iterator 
 closure_rule = "use the weakest Fn/FnMut/FnOnce bound that matches capture semantics; closures stay small and must not hide authority-changing side effects"
 match_rule = "prefer exhaustive match for closed semantic states; use alternatives/destructuring/ranges before wildcard fallbacks where meaning is known"
 match_guard_rule = "use guards only to refine a matched semantic case with a cheap deterministic local predicate; keep a fallback arm and avoid hidden effects in guards"
+macro_rule = "prefer functions/traits/generics first; use hygienic macro_rules for compile-time repetition or small typed DSLs; exported macros use $crate and narrow fragment specifiers"
+proc_macro_rule = "procedural macros require a dedicated crate, explicit architectural justification and compile-pass/compile-fail coverage before becoming public API"
 
 [[crate]]
 id = "ptr-types"
