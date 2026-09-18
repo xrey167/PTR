@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-18  
-**Code footprint:** 1 Rust source files · 319 nonblank source lines · 3 integration-test files · 4 `#[test]` markers
+**Code footprint:** 1 Rust source files · 407 nonblank source lines · 4 integration-test files · 5 `#[test]` markers
 
 ### Implemented now
 
@@ -20,10 +20,10 @@
 - CompactionBarrier scaffold
 - Durable reference FileLedger with length-prefixed event encoding, fsync and crash-tail truncation
 - Feature-gated fail-rs injection points around record write/payload/fsync/memory-commit boundaries
+- Feature-gated raft-engine 0.4.2 durable adapter stores ordered PTR ledger events with synchronous writes and reopen validation
 
 ### Missing for the target architecture
 
-- Production raft-engine durable backend
 - raft-rs consensus adapter and state machine integration
 - fsync/durability modes and revocation barriers
 - Snapshot serialization/recovery/replay
@@ -31,7 +31,7 @@
 ### Next milestones
 
 - Define storage/consensus interfaces around existing Ledger contract
-- Benchmark reference FileLedger against raft-engine durable backend before cluster consensus
+- Benchmark FileLedger against the new raft-engine adapter and exercise raft-engine failpoints before cluster consensus
 - Expand L001 failpoint matrix to process-abort and durable-backend cases, then run L002 cluster recovery
 
 ### Linked experiments
@@ -55,6 +55,7 @@
 - FileLedger all-event reopen and partial-tail crash recovery tests
 - FileLedger open path explicitly preserves existing contents and truncates only incomplete crash tails
 - fail-rs panic-after-length-prefix recovery test
+- raft-engine durable append/reopen ordering integration test
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->

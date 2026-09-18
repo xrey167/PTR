@@ -414,7 +414,11 @@ mod raft_engine_backend {
         pub fn append_durable(&mut self, event: LedgerEvent) -> io::Result<CommitIndex> {
             let index = CommitIndex(self.events.len() as u64 + 1);
             let mut batch = LogBatch::default();
-            batch.put(GROUP_ID, event_key(index).into_bytes(), encode_event(&event));
+            batch.put(
+                GROUP_ID,
+                event_key(index).into_bytes(),
+                encode_event(&event),
+            );
             self.engine.write(&mut batch, true).map_err(engine_error)?;
             self.events.push(CommittedEvent { index, event });
             Ok(index)
