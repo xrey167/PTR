@@ -1,0 +1,5 @@
+version = 1
+kind = "template"
+name = "rust-crate"
+path = "templates/rust-crate"
+tests_dir = "tests"
