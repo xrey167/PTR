@@ -1,0 +1,6 @@
+version = 1
+kind = "static-docs-site"
+name = "docs-site"
+path = "docs-site"
+tests_dir = "tests"
+publish = "manual-github-pages-setup"

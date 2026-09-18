@@ -1,0 +1,28 @@
+name: sdk
+on:
+  push:
+    paths:
+      - "sdk/**"
+      - ".github/workflows/sdk.yml"
+  pull_request:
+    paths:
+      - "sdk/**"
+      - ".github/workflows/sdk.yml"
+
+jobs:
+  typescript:
+    strategy:
+      matrix:
+        node: [22, 24]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: sdk/typescript/package-lock.json
+      - run: npm ci
+        working-directory: sdk/typescript
+      - run: npm test
+        working-directory: sdk/typescript

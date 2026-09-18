@@ -69,3 +69,4 @@ jobs:
       - run: python scripts/run_component_eval.py validate
       - run: python -m unittest discover -s scripts/tests
       - run: python -m unittest discover -s research/baselines/rag_reference/tests
+      - run: python -m unittest discover -s docs-site/tests

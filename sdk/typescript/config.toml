@@ -1,0 +1,10 @@
+version = 1
+kind = "typescript-sdk"
+name = "ptr-typescript"
+path = "sdk/typescript"
+tests_dir = "tests"
+
+[api]
+version = "v1"
+transport = "fetch"
+status = "contract-only"
