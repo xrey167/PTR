@@ -467,8 +467,8 @@ pub use raft_engine_backend::RaftEngineLedger;
 mod raft_rs_backend {
     use super::*;
     use raft::prelude::{ConfState, Config as RaftConfig, Entry, EntryType, RawNode};
-    use raft::StateRole;
     use raft::storage::MemStorage;
+    use raft::StateRole;
 
     #[derive(Clone, Debug, Eq, PartialEq)]
     pub struct RaftCommitReceipt {
