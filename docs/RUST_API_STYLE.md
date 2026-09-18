@@ -165,6 +165,53 @@ pub enum LookupResult<T> {
 }
 ```
 
+### Match guards
+
+Use a match guard when the **pattern identifies the semantic case** and one additional predicate refines that case:
+
+```rust
+match backend {
+    None => Err(ValidationError::MissingField {
+        field: "preferred_backend",
+        message: "preferred backend must be selected before execution",
+    }),
+    Some(name) if name.trim().is_empty() => Err(ValidationError::InvalidValue {
+        field: "preferred_backend",
+        value: name.to_owned(),
+        message: "preferred backend must not be empty",
+    }),
+    Some(name) if name.len() > MAX_BACKEND_NAME_LEN => {
+        Err(ValidationError::InvalidValue {
+            field: "preferred_backend",
+            value: name.to_owned(),
+            message: "preferred backend name exceeds the supported length",
+        })
+    }
+    Some(name) => Ok(name),
+}
+```
+
+Good guard cases include:
+
+- enum/option/result variant plus a threshold/range;
+- a bound value plus a lifecycle/version relation;
+- a pattern plus a capability/policy predicate;
+- tuple/destructuring patterns plus one local relational condition.
+
+Prefer normal patterns, ranges and alternatives before guards when they express the condition directly:
+
+```rust
+match effect {
+    Effect::Pure | Effect::Read => ...
+    Effect::Mutation => ...
+    Effect::External | Effect::Irreversible => ...
+}
+```
+
+Do not use guards to hide large computations, I/O, mutation or authority-changing effects. Compute complex policy facts before the match and match on typed values. Guard expressions should normally be deterministic, local and cheap.
+
+Order guarded arms from most specific to least specific. Always retain an unguarded fallback arm when a guarded pattern does not cover every value of that variant.
+
 ## 7. `Option<T>`, `Result<T, E>` and generics
 
 Use `Option<T>` only when absence is a valid state.
