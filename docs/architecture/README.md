@@ -30,6 +30,7 @@
 - [17-type-system.md](17-type-system.md)
 - [18-performance.md](18-performance.md)
 - [19-research-method.md](19-research-method.md)
+- [Open architecture catalog](../../research/catalogs/README.md) — unresolved type families, backend slots and component contracts
 
 ## Component-level documentation
 
