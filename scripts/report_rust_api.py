@@ -15,6 +15,7 @@ DECL_RE = re.compile(
     r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)"
 )
 PUB_USE_RE = re.compile(r"^\s*(?P<vis>pub(?:\([^)]*\))?)\s+use\s+(?P<target>.+?);\s*$")
+IMPL_START_RE = re.compile(r"^\s*impl(?:<[^>]*>)?\s+")
 
 
 @dataclass(frozen=True)
@@ -48,16 +49,25 @@ def module_name(src: Path, file: Path) -> str:
 
 def collect_signature(lines: list[str], start: int) -> str:
     parts: list[str] = []
-    depth = 0
-    for index in range(start, min(len(lines), start + 20)):
+    paren_depth = 0
+    angle_depth = 0
+    for index in range(start, min(len(lines), start + 30)):
         text = lines[index].strip()
         if not text:
             continue
         parts.append(text)
-        depth += text.count("(") + text.count("<") - text.count(")") - text.count(">")
-        if ("{" in text or text.endswith(";")) and depth <= 0:
+        paren_depth += text.count("(") - text.count(")")
+        angle_depth += text.count("<") - text.count(">")
+        if ("{" in text or text.endswith(";")) and paren_depth <= 0 and angle_depth <= 0:
             break
     return " ".join(parts)
+
+
+def impl_name(signature: str) -> str:
+    head = signature.split("{", 1)[0].strip()
+    head = re.sub(r"^impl(?:<[^>]*>)?\s+", "", head)
+    head = head.split(" where ", 1)[0].strip()
+    return head
 
 
 def scan_file(crate: str, src: Path, file: Path) -> list[ApiItem]:
@@ -80,6 +90,22 @@ def scan_file(crate: str, src: Path, file: Path) -> list[ApiItem]:
                     kind="use",
                     name=target,
                     signature=line.strip(),
+                )
+            )
+            continue
+
+        if IMPL_START_RE.match(line):
+            signature = collect_signature(lines, number - 1)
+            items.append(
+                ApiItem(
+                    crate=crate,
+                    module=module,
+                    file=rel,
+                    line=number,
+                    visibility="implementation",
+                    kind="impl",
+                    name=impl_name(signature),
+                    signature=signature,
                 )
             )
             continue
@@ -125,7 +151,7 @@ def all_crates(selected: list[str]) -> list[Path]:
     return [path for path in available if path.name in wanted]
 
 
-def markdown(items: list[ApiItem]) -> str:
+def markdown(items: list[ApiItem], show_signatures: bool = False) -> str:
     out = ["# PTR Rust API Inventory", ""]
     current_crate = None
     current_module = None
@@ -136,22 +162,32 @@ def markdown(items: list[ApiItem]) -> str:
             out.extend([f"## {current_crate}", ""])
         if item.module != current_module:
             current_module = item.module
-            out.extend([f"### `{current_module}`", ""])
+            out.extend([f"### {current_module}", ""])
         out.append(
-            f"- `{item.visibility}` **{item.kind}** `{item.name}` "
-            f"— `{item.file}:{item.line}`"
+            f"- {item.visibility} {item.kind} {item.name} "
+            f"— {item.file}:{item.line}"
         )
+        if show_signatures:
+            out.append(f"  - signature: {item.signature}")
     out.append("")
     return "\n".join(out)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Group current Rust declarations by crate/module and visibility."
+        description=(
+            "Group Rust declarations by crate/module/visibility, including trait implementors. "
+            "Use --signatures to expose generics, bounds and lifetime relations."
+        )
     )
     parser.add_argument("crate", nargs="*", help="optional ptr-* crate names")
     parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     parser.add_argument("--public-only", action="store_true")
+    parser.add_argument(
+        "--signatures",
+        action="store_true",
+        help="include full declarations so generics, bounds and lifetimes are visible",
+    )
     args = parser.parse_args()
 
     items: list[ApiItem] = []
@@ -160,12 +196,16 @@ def main() -> int:
     items.sort(key=lambda item: (item.crate, item.module, item.file, item.line))
 
     if args.public_only:
-        items = [item for item in items if item.visibility.startswith("pub")]
+        items = [
+            item
+            for item in items
+            if item.visibility.startswith("pub") or item.kind == "impl"
+        ]
 
     if args.format == "json":
         print(json.dumps([asdict(item) for item in items], indent=2))
     else:
-        print(markdown(items), end="")
+        print(markdown(items, show_signatures=args.signatures), end="")
     return 0
 
 
