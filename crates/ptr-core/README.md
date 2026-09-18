@@ -21,20 +21,20 @@
 - ReasoningOperator taxonomy and weighted router decision
 - Branch frontier pruning and probability normalization helpers
 - ActionIr with explicit target/generation/revision plus CoreVerification output contracts
+- External model/burn-a0 research package implements trainable raw↔typed cross-attention, epistemic/validity/provenance metadata, typed attention bias, latent refinement and router gradients
 
 ### Missing for the target architecture
 
-- Actual Burn/CubeCL tensor model and trainable parameters
-- Raw-token↔semantic-slot cross-attention
-- Typed/epistemic/validity attention biases and masks
-- Learned latent recurrent state transition
-- Learned operator/action/verifier heads
+- Production-integrated Burn/CubeCL PTR model beyond the isolated A0 research package
+- Lifecycle-generation masks and richer typed attention constraints beyond the current learned metadata bias
+- Task-trained recurrent latent reasoning beyond the current shared refinement layer
+- Task-trained operator router plus ActionIR/verifier neural heads
 - PTR-Diff denoising implementation and training objective
 - Checkpoint/load/save and numerical parity reference
 
 ### Next milestones
 
-- Implement PTR-A0 in Burn with semantic slots and one typed-attention block
+- Integrate Burn A0 with dataset-backed training and matched no-slot baseline for M001
 - Build matched plain-transformer baseline at equal parameter/compute budget
 - Run M001–M005 ablations before scaling model size
 
@@ -64,7 +64,8 @@
 
 ### Current automated checks
 
-- workspace fmt/check/test/clippy; no neural numerical tests yet
+- Burn A0 NdArray forward/autodiff/synthetic optimizer tests run in separate model workflow
+- workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->
 
