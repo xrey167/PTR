@@ -1,4 +1,5 @@
 import importlib.util
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,6 +9,7 @@ spec = importlib.util.spec_from_file_location(
     "report_rust_api", ROOT / "scripts/report_rust_api.py"
 )
 mod = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = mod
 spec.loader.exec_module(mod)
 
 
