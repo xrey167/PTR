@@ -17,6 +17,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.13'
+      - run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - run: cargo +stable fmt --all
       - run: cargo +stable generate-lockfile
       - run: cargo +stable test -p ptr-ledger --features raft-rs-backend --test raft_rs --locked
@@ -30,3 +31,4 @@ jobs:
           git commit -m "Synchronize verified raft-rs integration"
           git pull --rebase origin main
           git push origin HEAD:main
+# rerun with protoc installed
