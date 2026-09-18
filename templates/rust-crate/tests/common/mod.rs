@@ -4,7 +4,10 @@ use ptr_rust_crate_template::{ExecuteRequest, ReferenceBackend, Service};
 
 pub fn reference_service() -> Service<String, String> {
     let mut service = Service::default();
-    service.register(Arc::new(ReferenceBackend));
+    assert!(
+        service.register(Arc::new(ReferenceBackend)).is_none(),
+        "reference backend must not replace an existing fixture backend"
+    );
     service
 }
 
