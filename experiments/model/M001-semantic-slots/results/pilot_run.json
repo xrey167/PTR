@@ -1,0 +1,8 @@
+{
+  "experiment_id": "M001-pilot",
+  "status": "completed-pilot-only",
+  "git_sha": "b8f74007632da210a32e91c9ae7b476b682c9c89",
+  "recorded_at": "2026-09-18T15:18:38.265465+00:00",
+  "scope": "synthetic mechanism sanity check; not M001 OOD evidence",
+  "reporting_restriction": "Do not use this pilot as evidence for M001 superiority or OOD generalization."
+}
