@@ -1,6 +1,86 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct CliOverrides {
+    pub config_path: Option<String>,
+    pub runtime_mode: Option<String>,
+    pub mailbox_capacity: Option<usize>,
+    pub max_parallel_candidates: Option<usize>,
+    pub require_current_revision: Option<bool>,
+    pub require_live_generation: Option<bool>,
+}
+
+impl CliOverrides {
+    pub fn parse<I, S>(args: I) -> Result<Self, String>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let mut out = Self::default();
+        let mut args = args.into_iter().map(Into::into).peekable();
+        while let Some(arg) = args.next() {
+            let (key, inline) = match arg.split_once('=') {
+                Some((key, value)) => (key.to_owned(), Some(value.to_owned())),
+                None => (arg, None),
+            };
+            let mut value = || {
+                inline
+                    .clone()
+                    .or_else(|| args.next())
+                    .ok_or_else(|| format!("{key} requires a value"))
+            };
+            match key.as_str() {
+                "--config" => out.config_path = Some(value()?),
+                "--mode" => out.runtime_mode = Some(value()?),
+                "--mailbox-capacity" => {
+                    let v = value()?;
+                    out.mailbox_capacity = Some(parse_usize("--mailbox-capacity", &v)?);
+                }
+                "--max-parallel-candidates" => {
+                    let v = value()?;
+                    out.max_parallel_candidates =
+                        Some(parse_usize("--max-parallel-candidates", &v)?);
+                }
+                "--require-current-revision" => {
+                    let v = value()?;
+                    out.require_current_revision =
+                        Some(parse_bool("--require-current-revision", &v)?);
+                }
+                "--require-live-generation" => {
+                    let v = value()?;
+                    out.require_live_generation =
+                        Some(parse_bool("--require-live-generation", &v)?);
+                }
+                "--help" | "-h" => {
+                    return Err("help requested".into());
+                }
+                other => return Err(format!("unknown PTR argument: {other}")),
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn apply_to(&self, config: &mut PtrConfig) -> Result<(), String> {
+        if let Some(mode) = &self.runtime_mode {
+            config.runtime.mode = mode.clone();
+        }
+        if let Some(capacity) = self.mailbox_capacity {
+            config.runtime.mailbox_capacity = capacity;
+        }
+        if let Some(max_parallel) = self.max_parallel_candidates {
+            config.runtime.max_parallel_candidates = max_parallel;
+        }
+        if let Some(value) = self.require_current_revision {
+            config.action_boundary.require_current_revision = value;
+        }
+        if let Some(value) = self.require_live_generation {
+            config.action_boundary.require_live_generation = value;
+        }
+        config.validate()
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 #[serde(default)]
 pub struct PtrConfig {
