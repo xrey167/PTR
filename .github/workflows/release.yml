@@ -7,6 +7,9 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
+  artifact-metadata: write
 
 jobs:
   linux:
@@ -15,17 +18,32 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo +stable build --release --locked
-      - name: Package binaries
+
+      - name: Package binaries and dependency metadata
         run: |
           mkdir -p dist
           cp target/release/ptrd target/release/ptrctl target/release/ptr-worker target/release/ptr-bench dist/
           tar -C dist -czf ptr-linux-x86_64.tar.gz ptrd ptrctl ptr-worker ptr-bench
           sha256sum ptr-linux-x86_64.tar.gz > ptr-linux-x86_64.tar.gz.sha256
           cargo +stable metadata --locked --format-version 1 > cargo-metadata.json
+          python scripts/generate_sbom.py cargo-metadata.json --out ptr-cyclonedx.json
+          sha256sum ptr-cyclonedx.json > ptr-cyclonedx.json.sha256
+
+      - name: Attest build provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: ptr-linux-x86_64.tar.gz
+
+      - name: Attest CycloneDX SBOM
+        uses: actions/attest@v4
+        with:
+          subject-path: ptr-linux-x86_64.tar.gz
+          sbom-path: ptr-cyclonedx.json
+
       - name: Publish GitHub release assets
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "${GITHUB_REF_NAME}" --generate-notes || true
-          gh release upload "${GITHUB_REF_NAME}" ptr-linux-x86_64.tar.gz ptr-linux-x86_64.tar.gz.sha256 cargo-metadata.json --clobber
+          gh release upload "${GITHUB_REF_NAME}"             ptr-linux-x86_64.tar.gz             ptr-linux-x86_64.tar.gz.sha256             ptr-cyclonedx.json             ptr-cyclonedx.json.sha256             cargo-metadata.json             --clobber
