@@ -37,6 +37,7 @@ jobs:
       - run: rustup toolchain install 1.85.0 --profile minimal
       - run: cargo +1.85.0 check --workspace --all-targets --locked
       - run: cargo +1.85.0 test --workspace --locked
+      - run: cargo +1.85.0 check -p ptr-observe --features tracing-adapter --locked
 
   python-training:
     strategy:
