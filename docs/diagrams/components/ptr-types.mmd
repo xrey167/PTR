@@ -1,0 +1,5 @@
+flowchart LR
+    A["External data"] --> B["ptr-types\nDomain Type Kernel"]
+    B --> C["All domain crates"]
+    B -. "contracts" .-> T["ptr-types"]
+    B -. "telemetry" .-> O["ptr-observe"]

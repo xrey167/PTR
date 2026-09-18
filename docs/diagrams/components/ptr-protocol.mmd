@@ -1,0 +1,5 @@
+flowchart LR
+    A["Wire bytes"] --> B["ptr-protocol\nSemantic Protocol & Codec Boundary"]
+    B --> C["Validated PodWire domain frame"]
+    B -. "contracts" .-> T["ptr-types"]
+    B -. "telemetry" .-> O["ptr-observe"]

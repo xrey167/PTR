@@ -1,0 +1,5 @@
+flowchart LR
+    A["Candidate + evidence"] --> B["ptr-verifier\nVerifier Fabric"]
+    B --> C["Pass / Fail / Disputed / Unknown"]
+    B -. "contracts" .-> T["ptr-types"]
+    B -. "telemetry" .-> O["ptr-observe"]

@@ -1,0 +1,9 @@
+flowchart LR
+  R["Uncertain reasoning"] --> A["ActionIR"]
+  A --> T["Type + effect validation"]
+  T --> C["Capability check"]
+  C --> P["Permission / policy"]
+  P --> G["Generation + revision validation"]
+  G --> V["Verifier"]
+  V -->|allow| E["Execute effect"]
+  V -->|deny/disputed| X["Stop / escalate / ask"]

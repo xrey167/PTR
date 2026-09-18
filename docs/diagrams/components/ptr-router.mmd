@@ -1,0 +1,5 @@
+flowchart LR
+    A["Typed task state"] --> B["ptr-router\nReasoning, Model, Search & Pod Router"]
+    B --> C["Execution recipe"]
+    B -. "contracts" .-> T["ptr-types"]
+    B -. "telemetry" .-> O["ptr-observe"]

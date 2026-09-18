@@ -1,17 +1,15 @@
-# Training Workspace
+# PTR Training Workspace
 
-Python remains a research/training plane, managed with `uv` when available. The production runtime does not depend on this package.
+Training is separate from the production Rust runtime.
 
-Suggested progression:
+## Stages
 
-0. continued pretraining only if domain/protocol vocabulary requires it;
-1. raw→typed semantic SFT;
-2. PodWire / typed ActionIR SFT;
-3. epistemic calibration and uncertainty tasks;
-4. operator-routing supervision;
-5. verifier/critique/repair training;
-6. preference optimization / RL in executable environments;
-7. distillation into smaller models and specialist heads;
-8. quantization/QAT only after PTR-specific eval gates pass.
+1. semantic typing / raw↔typed verification;
+2. PodWire + ActionIR;
+3. epistemic calibration;
+4. operator routing;
+5. verifier + repair;
+6. environment RL;
+7. distillation / QAT / deployment optimization.
 
-`configs/` contains stage definitions. `runs/` and `checkpoints/` are ignored by git.
+Python tooling is managed independently (uv is the preferred environment candidate). NeMo RL, Unsloth, Data Designer, DSPy and GEPA are candidates behind experiment configs rather than runtime dependencies.

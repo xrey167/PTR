@@ -1,0 +1,5 @@
+flowchart LR
+    A["Bytes / text / events"] --> B["ptr-ingress\nTyped Ingress"]
+    B --> C["Raw + Typed proposal"]
+    B -. "contracts" .-> T["ptr-types"]
+    B -. "telemetry" .-> O["ptr-observe"]

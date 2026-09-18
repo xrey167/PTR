@@ -1,0 +1,5 @@
+flowchart LR
+    A["Raw tokens + Semantic slots"] --> B["ptr-core\nPTR Neural Core"]
+    B --> C["ModelEvent / ActionIR / answer"]
+    B -. "contracts" .-> T["ptr-types"]
+    B -. "telemetry" .-> O["ptr-observe"]

@@ -1,13 +1,22 @@
 flowchart TB
-U[User / Data] --> I[Typed Ingress]
-I --> S[Incremental SemDB]
-S --> C[PTR Core]
-C --> R[Rust Runtime]
-R --> P[Pods]
-R --> V[Verifier Fabric]
-P --> S
-V --> S
-S --> Q[Consensus + Ledger]
-Q --> M[Materialized State]
-M --> K[Semantic Capsules + Derived Indexes]
-K --> P
+  U["Users / APIs / Files / Sensors / Events"] --> IN["Typed Ingress"]
+  IN --> SDB["Incremental Semantic DB"]
+  SDB --> SNAP["Immutable Semantic Snapshot"]
+  SNAP --> CORE["PTR Core\nRaw + Typed + Epistemic + Latent Reasoning"]
+  CORE --> ROUTER["Reasoning / Model / Search / Pod Router"]
+  ROUTER --> EXEC["Typed Rust Execution Runtime"]
+  EXEC --> PODS["Cognitive Pods"]
+  EXEC --> VER["Verifier Fabric"]
+  PODS --> OBS["Observations"]
+  VER --> OBS
+  OBS --> SDB
+  EXEC --> SEC["Hard Action Boundary / Security"]
+  SEC --> ACT["External Effects"]
+  SDB --> LED["Consensus + Causal Ledger"]
+  LED --> STATE["Materialized State"]
+  STATE --> MEM["Semantic / Episodic / Procedural / Epistemic Memory"]
+  MEM --> SEARCH["Derived Search Projections"]
+  SEARCH --> ROUTER
+  EXEC --> TEL["Tracing / Flow Signatures / Events"]
+  TEL --> TRAIN["Training / RL / GEPA / Distillation"]
+  TRAIN --> CORE

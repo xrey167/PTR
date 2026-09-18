@@ -1,11 +1,19 @@
-# Architecture Component Evaluation
+# Component Evaluations
 
-Every infrastructure decision is provisional until evaluated. Each component folder contains candidate implementations, criteria and evidence paths. New alternatives can be added at any time without changing PTR domain contracts.
+This area compares implementation technologies for a fixed PTR architectural contract.
 
-Rules:
+A component evaluation is not a model novelty experiment. It asks questions such as “which local vector engine best satisfies ptr-search?” or “which runtime substrate satisfies ptr-exec?”.
 
-1. Correctness and failure semantics are gates, not merely weighted preferences.
-2. Benchmark at least one serious alternative before marking a decision `locked`.
-3. Record hardware, dataset, version/commit and configuration.
-4. Separate prototype convenience from production suitability.
-5. Re-open decisions when workload assumptions materially change.
+Every candidate should record:
+- version/commit;
+- correctness;
+- failure semantics;
+- p50/p95/p99;
+- throughput and memory;
+- startup/recovery;
+- portability/operations;
+- licensing;
+- integration complexity;
+- benchmark scripts and raw evidence.
+
+See `registry.toml` for open slots.

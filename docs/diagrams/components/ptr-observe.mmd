@@ -1,0 +1,5 @@
+flowchart LR
+    A["Runtime execution"] --> B["ptr-observe\nObservability & Flow Signatures"]
+    B --> C["Trace / FlowSignature / Relay"]
+    B -. "contracts" .-> T["ptr-types"]
+    B -. "telemetry" .-> O["ptr-observe"]

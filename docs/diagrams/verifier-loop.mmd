@@ -1,0 +1,11 @@
+flowchart LR
+  G["Generate population"] --> D["Dedup / diversify"]
+  D --> V["Verifier fabric"]
+  V -->|fail/disputed| C["Critique"]
+  C --> P["Patch"]
+  C --> W["Rewrite"]
+  P --> V
+  W --> V
+  V -->|pass| S["Select"]
+  S --> T["Trajectory archive"]
+  T --> RL["SFT / preference / RL / GEPA data"]

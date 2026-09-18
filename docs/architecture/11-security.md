@@ -1,3 +1,30 @@
-# Security Model
+# Security Architecture
 
-Security has semantic, runtime and infrastructure layers. Untrusted context never promotes directly to `Known<T>`. Effects require capability and permission checks. Secrets and raw private evidence must be redacted from generic introspection. Artifact identity is content-addressed where possible; storage location is separate from semantic identity.
+```mermaid
+flowchart LR
+  R["Uncertain reasoning"] --> A["ActionIR"]
+  A --> T["Type + effect validation"]
+  T --> C["Capability check"]
+  C --> P["Permission / policy"]
+  P --> G["Generation + revision validation"]
+  G --> V["Verifier"]
+  V -->|allow| E["Execute effect"]
+  V -->|deny/disputed| X["Stop / escalate / ask"]
+```
+
+Security is split into:
+- semantic trust/provenance;
+- runtime capability/effect authorization;
+- infrastructure identity/storage/secrets.
+
+## Effect classes
+
+`Pure < Read < Mutation < External < Irreversible` is a useful ordering for policy strictness, though concrete policy is domain-specific.
+
+## Context trust
+
+External text, tools, retrieved documents and agent-generated state are evidence with source/trust metadata, not authority.
+
+## Redaction
+
+Secret/private types are non-rendering by default across tracing, valuable-based introspection and debug exports.

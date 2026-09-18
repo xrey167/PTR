@@ -1,0 +1,10 @@
+flowchart LR
+  G["Ground inputs"] --> D["Dependency graph"]
+  D --> Q["Derived semantic queries"]
+  Q --> C["Incremental cache"]
+  C --> S["Immutable snapshot rN"]
+  DELTA["Delta"] --> INV["Precise invalidation"]
+  INV --> D
+  S --> RUN["Reasoning run"]
+  NEW["New revision"] --> CANCEL["Cancel stale run"]
+  CANCEL --> RUN

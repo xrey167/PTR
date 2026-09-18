@@ -1,0 +1,5 @@
+flowchart LR
+    A["Committed events"] --> B["ptr-state\nMaterialized Runtime State"]
+    B --> C["Queryable current views"]
+    B -. "contracts" .-> T["ptr-types"]
+    B -. "telemetry" .-> O["ptr-observe"]

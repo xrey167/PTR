@@ -1,5 +1,15 @@
-# Model Research Workspace
+# PTR Model Research
 
-Production-facing model interfaces live in `crates/ptr-core` and `crates/ptr-model-api`. This directory stores research configs, architecture modification specs, checkpoints and cross-framework reference implementations.
+This directory contains model-level configs, modification specifications, kernels, checkpoints/artifacts and reference implementations.
 
-Every modification must document: hypothesis, implementation point, loss/target, ablations, metrics, expected failure modes and falsification criteria.
+## Architecture families
+
+- **PTR-A0:** smallest architecture probe.
+- **PTR-AR:** autoregressive backbone plus typed workspace/reasoning.
+- **PTR-Diff:** parallel/diffusion-style structured-state refinement research.
+
+## Modification registry
+
+`model/modifications/MOD-001 ... MOD-012` defines hypotheses, implementation points, signals, ablations and falsification criteria.
+
+The production/runtime contract is `crates/ptr-model-api`; the neural implementation is `crates/ptr-core`.

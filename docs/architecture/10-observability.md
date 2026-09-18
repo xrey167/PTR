@@ -1,3 +1,26 @@
-# Observability and Introspection
+# Observability & Introspection
 
-`tracing` is the primary structured telemetry candidate. PTR standardizes field names for request, project, revision, generation, candidate, Pod, capability, effect and commit index. `valuable` is reserved for object-safe structured runtime inspection with explicit redaction. Async backtraces are debug/hang tooling rather than always-on semantics. NeMo Relay and OpenTelemetry are export targets.
+```mermaid
+flowchart LR
+  RUN["Runtime"] --> TR["tracing spans/events"]
+  RUN --> FS["FlowSignature"]
+  TR --> RED["Redaction"]
+  FS --> RED
+  RED --> OT["OpenTelemetry"]
+  RED --> NR["NeMo Relay"]
+  RED --> IG["Iggy telemetry stream"]
+  RUN -. selective .-> AB["async-backtrace"]
+  RUN -. inspect .-> VAL["Valuable / ptr-inspect"]
+```
+
+`tracing` is the default structured telemetry substrate. PTR standardizes request/project/revision/generation/candidate/Pod/capability/effect/commit fields.
+
+## Three views
+
+- **FlowSignature:** semantic plan/operators.
+- **Tracing tree:** actual runtime execution.
+- **Async backtrace:** selective hang/debug stack.
+
+Comparing plan and execution detects missing or unexpected operator paths without persisting private natural-language chain-of-thought.
+
+`valuable`/ptr-inspect provides structured state inspection with mandatory secret/private redaction.

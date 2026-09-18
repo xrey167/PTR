@@ -1,0 +1,10 @@
+flowchart LR
+  RUN["Runtime"] --> TR["tracing spans/events"]
+  RUN --> FS["FlowSignature"]
+  TR --> RED["Redaction"]
+  FS --> RED
+  RED --> OT["OpenTelemetry"]
+  RED --> NR["NeMo Relay"]
+  RED --> IG["Iggy telemetry stream"]
+  RUN -. selective .-> AB["async-backtrace"]
+  RUN -. inspect .-> VAL["Valuable / ptr-inspect"]

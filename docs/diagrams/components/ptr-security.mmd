@@ -1,0 +1,5 @@
+flowchart LR
+    A["ActionIR + policy"] --> B["ptr-security\nCapability, Trust & Effect Security"]
+    B --> C["Allow / deny / require verification"]
+    B -. "contracts" .-> T["ptr-types"]
+    B -. "telemetry" .-> O["ptr-observe"]

@@ -1,0 +1,5 @@
+flowchart LR
+    A["Candidate population"] --> B["ptr-feedback\nGenerative-Verifier Feedback Loop"]
+    B --> C["Selected result + trajectories"]
+    B -. "contracts" .-> T["ptr-types"]
+    B -. "telemetry" .-> O["ptr-observe"]

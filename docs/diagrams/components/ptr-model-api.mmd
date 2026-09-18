@@ -1,0 +1,5 @@
+flowchart LR
+    A["PTR runtime request"] --> B["ptr-model-api\nModel Backend & Event API"]
+    B --> C["Backend-neutral ModelEvent stream"]
+    B -. "contracts" .-> T["ptr-types"]
+    B -. "telemetry" .-> O["ptr-observe"]

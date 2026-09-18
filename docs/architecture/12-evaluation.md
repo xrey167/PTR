@@ -1,5 +1,26 @@
-# Component Evaluation
+# Component & Architecture Evaluation
 
-Every swappable architecture component has a candidate registry in `evaluations/components/<component>/candidates.toml`. Decisions are evidence-driven. Each evaluation records correctness, latency, throughput, memory, operational complexity, portability, failure semantics, licensing and integration cost where relevant.
+Every replaceable technology has a candidate registry under `evaluations/components/`.
 
-A default does not mean permanently selected. New candidates can be added without changing PTR domain contracts.
+## Evaluation axes
+
+- semantic correctness;
+- failure semantics and recoverability;
+- p50/p95/p99 latency;
+- throughput;
+- memory/VRAM;
+- startup/recovery;
+- portability;
+- operational complexity;
+- licensing;
+- integration cost;
+- observability;
+- research flexibility.
+
+## Architecture experiments
+
+Technology benchmarks are separate from architectural hypothesis tests. Example: “Zvec vs Usearch” is a component evaluation; “typed semantic slots improve OOD Pod generalization” is a model experiment.
+
+## Decision process
+
+Candidate → reproducible evidence → ADR/default decision. Default remains replaceable behind PTR contracts.

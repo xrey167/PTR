@@ -1,0 +1,23 @@
+flowchart TB
+  ST["Committed/materialized semantic state"] --> MEM["Typed Memory"]
+  MEM --> SEM["Semantic"]
+  MEM --> EPI["Episodic"]
+  MEM --> PROC["Procedural"]
+  MEM --> EPIST["Epistemic"]
+  SEM --> PLAN["Retrieval planner"]
+  PROC --> PLAN
+  EPIST --> PLAN
+  PLAN --> T["Tantivy"]
+  PLAN --> Z["Zvec"]
+  PLAN --> C["cuVS"]
+  PLAN --> L["LanceDB"]
+  PLAN --> H["Havenask"]
+  PLAN --> G["GritQL"]
+  T --> F["Fusion"]
+  Z --> F
+  C --> F
+  L --> F
+  H --> F
+  G --> F
+  F --> R["Exact source resolve + generation validation"]
+  R --> V["Verifier"]

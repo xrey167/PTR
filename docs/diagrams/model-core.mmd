@@ -1,0 +1,18 @@
+flowchart TB
+  RAW["Raw token states H"] <--> X["Typed cross-attention"]
+  SLOT["Semantic slots S\nGoal / Constraint / Known / Hypothesis / Distribution / Unknown"] <--> X
+  X --> LAT["Latent recurrent reasoner"]
+  LAT --> R["Operator router"]
+  R --> SEM["Semantic"]
+  R --> PROB["Probabilistic"]
+  R --> BR["Branch/Search"]
+  R --> SYM["Symbolic"]
+  R --> POD["External Pod"]
+  SEM --> W["Updated workspace"]
+  PROB --> W
+  BR --> W
+  SYM --> W
+  POD --> W
+  W --> AH["Action head"]
+  W --> VH["Verifier head"]
+  W --> LH["Language head"]

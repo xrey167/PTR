@@ -1,0 +1,5 @@
+flowchart LR
+    A["Client"] --> B["ptr-server\nDaemon & Public Control Plane"]
+    B --> C["PTR ingress/runtime"]
+    B -. "contracts" .-> T["ptr-types"]
+    B -. "telemetry" .-> O["ptr-observe"]

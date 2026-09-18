@@ -1,0 +1,10 @@
+flowchart TB
+  P["Validated proposal"] --> C["raft-rs consensus (cluster mode)"]
+  C --> L["raft-engine / causal log"]
+  L --> M["Materialized state / Turso candidate"]
+  M --> S["Validated semantic state"]
+  S --> CAP["Semantic Capsules"]
+  CAP --> IDX["Tantivy / Zvec / cuVS / Lance / Havenask / Graph"]
+  IDX --> CACHE["Caches"]
+  classDef auth stroke-width:3px;
+  class C,L,M,S,CAP auth;

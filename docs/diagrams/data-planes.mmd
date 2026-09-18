@@ -1,0 +1,8 @@
+flowchart LR
+  DOM["Rust Domain Types"] -->|public/debug| JSON["Serde JSON"]
+  DOM -->|network control| PROTO["Prost / Protobuf"]
+  DOM -->|trusted local hot path| RKYV["rkyv"]
+  DOM -->|GPU tensors| DL["DLPack / CUDA"]
+  PROTO --> IROH["Iroh / QUIC"]
+  RKYV --> IPC["Local IPC"]
+  DL --> GPU["GPU Pods / Model"]

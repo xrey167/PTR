@@ -1,0 +1,12 @@
+flowchart TB
+  REAL["Real tasks"] --> DATA["Dataset registry"]
+  SYN["Synthetic / Data Designer"] --> DATA
+  DSPY["DSPy teachers"] --> DATA
+  DATA --> SFT["SFT / CPT"]
+  SFT --> RL["RL / verifier learning"]
+  RL --> DIST["Distillation"]
+  DIST --> OPT["QAT / ModelOpt / compression"]
+  OPT --> SERVE["PTR native / SGLang / vLLM"]
+  TRACE["Runtime trajectories"] --> GEPA["GEPA outer loop"]
+  GEPA --> DATA
+  TRACE --> RL

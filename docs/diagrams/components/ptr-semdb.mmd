@@ -1,0 +1,5 @@
+flowchart LR
+    A["Ground State"] --> B["ptr-semdb\nIncremental Semantic Database"]
+    B --> C["Immutable snapshot + dirty closure"]
+    B -. "contracts" .-> T["ptr-types"]
+    B -. "telemetry" .-> O["ptr-observe"]

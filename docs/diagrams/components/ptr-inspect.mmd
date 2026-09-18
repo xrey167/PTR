@@ -1,0 +1,5 @@
+flowchart LR
+    A["Typed Rust value"] --> B["ptr-inspect\nStructured Runtime Introspection"]
+    B --> C["Redacted tree / diff"]
+    B -. "contracts" .-> T["ptr-types"]
+    B -. "telemetry" .-> O["ptr-observe"]

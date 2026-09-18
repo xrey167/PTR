@@ -1,0 +1,5 @@
+flowchart LR
+    A["Scheduler"] --> B["ptr-exec\nTyped Execution Runtime"]
+    B --> C["Supervised typed isolates"]
+    B -. "contracts" .-> T["ptr-types"]
+    B -. "telemetry" .-> O["ptr-observe"]

@@ -1,0 +1,5 @@
+flowchart LR
+    A["Typed query"] --> B["ptr-search\nRetrieval Planner & Evidence Search"]
+    B --> C["Evidence candidates"]
+    B -. "contracts" .-> T["ptr-types"]
+    B -. "telemetry" .-> O["ptr-observe"]

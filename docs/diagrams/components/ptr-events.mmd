@@ -1,0 +1,5 @@
+flowchart LR
+    A["Committed/runtime events"] --> B["ptr-events\nEvent Distribution Plane"]
+    B --> C["Consumers"]
+    B -. "contracts" .-> T["ptr-types"]
+    B -. "telemetry" .-> O["ptr-observe"]

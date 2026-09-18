@@ -1,5 +1,32 @@
 # Rust Execution Runtime
 
-PTR execution uses isolated state machines with bounded typed mailboxes, explicit backpressure, supervision, cancellation, timeout and replay semantics. Tokio is expected to remain the default low-level async I/O substrate, but runtime semantics are PTR-owned and benchmarkable against alternatives.
+PTR owns execution semantics even if Tokio supplies low-level async I/O.
 
-No core subsystem should depend on unbounded hidden queues. Refused work returns ownership to the caller.
+## Model
+
+- isolated state machines;
+- bounded typed mailboxes;
+- explicit send failure/backpressure;
+- supervision trees;
+- cancellation and deadlines;
+- replay hooks;
+- no default global `Arc<Mutex<Everything>>`.
+
+```mermaid
+flowchart TB
+  S["Scheduler"] --> R["Reasoner isolate"]
+  S --> P["Pod isolate"]
+  S --> V["Verifier isolate"]
+  S --> M["Memory isolate"]
+  R -->|"bounded message"| P
+  P -->|"typed observation"| V
+  V -->|"verified delta"| M
+```
+
+## Effect execution
+
+Isolates emit explicit effects. The effect path is checked by `ptr-security` before an external mutation.
+
+## Runtime alternatives
+
+Tokio is the default substrate. Tina-style isolate semantics and Compio-style I/O remain benchmarkable alternatives, but mixing async runtimes is avoided without measured benefit.

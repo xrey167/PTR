@@ -1,0 +1,5 @@
+flowchart LR
+    A["Validated proposal"] --> B["ptr-ledger\nCausal Ledger & Consensus Boundary"]
+    B --> C["Committed causal history"]
+    B -. "contracts" .-> T["ptr-types"]
+    B -. "telemetry" .-> O["ptr-observe"]

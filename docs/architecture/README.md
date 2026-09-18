@@ -1,17 +1,40 @@
-# Architecture Index
+# PTR Architecture Documentation
 
-1. [System](00-system.md)
-2. [PTR Core](01-ptr-core.md)
-3. [Incremental SemDB](02-semdb.md)
-4. [Rust Runtime](03-runtime.md)
-5. [Pods](04-pods.md)
-6. [Memory & Search](05-memory-search.md)
-7. [Consensus & Ledger](06-consensus-ledger.md)
-8. [Network & Protocol](07-network-protocol.md)
-9. [Verifier & Feedback](08-verifier-feedback.md)
-10. [Training](09-training.md)
-11. [Observability](10-observability.md)
-12. [Security](11-security.md)
-13. [Component Evaluation](12-evaluation.md)
+## Start here
 
-Mermaid sources live in `../diagrams/`.
+1. [System architecture](00-system.md)
+2. [Technical architecture](../TECHNICAL_ARCHITECTURE.md)
+3. [Component contracts](../COMPONENT_CONTRACTS.md)
+4. [Global invariants](../INVARIANTS.md)
+5. [Technology stack](../TECH_STACK.md)
+
+## Detailed architecture
+
+- [00-system.md](00-system.md)
+- [01-ptr-core.md](01-ptr-core.md)
+- [02-semdb.md](02-semdb.md)
+- [03-runtime.md](03-runtime.md)
+- [04-pods.md](04-pods.md)
+- [05-memory-search.md](05-memory-search.md)
+- [06-consensus-ledger.md](06-consensus-ledger.md)
+- [07-network-protocol.md](07-network-protocol.md)
+- [08-verifier-feedback.md](08-verifier-feedback.md)
+- [09-training.md](09-training.md)
+- [10-observability.md](10-observability.md)
+- [11-security.md](11-security.md)
+- [12-evaluation.md](12-evaluation.md)
+- [13-data-model.md](13-data-model.md)
+- [14-request-lifecycle.md](14-request-lifecycle.md)
+- [15-deployment-topologies.md](15-deployment-topologies.md)
+- [16-failure-consistency.md](16-failure-consistency.md)
+- [17-type-system.md](17-type-system.md)
+- [18-performance.md](18-performance.md)
+- [19-research-method.md](19-research-method.md)
+
+## Component-level documentation
+
+See [component index](../components/README.md). Every Rust crate has a local README and a dedicated Mermaid source diagram.
+
+## Diagrams
+
+See [diagram index](../diagrams/README.md).
