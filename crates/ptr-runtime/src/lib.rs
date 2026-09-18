@@ -52,7 +52,7 @@ pub enum RuntimeError {
     PermissionDenied,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ResumableRun {
     pub model_events: Vec<ModelEvent>,
     pub observations: Vec<TypedPayload>,
