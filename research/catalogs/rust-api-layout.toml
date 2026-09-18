@@ -9,6 +9,11 @@ public_module_rule = "prefer private mod plus explicit pub use; pub mod only whe
 parameter_rule = "descriptive names; use typed request/options structs for many or ambiguous parameters; Rust has no labelled call arguments"
 collections_rule = "HashMap/HashSet for unordered lookup; BTreeMap/BTreeSet for deterministic ordering; typed values instead of String-to-String domain maps"
 generic_rule = "T/E for locally obvious single generics; semantic names such as TInput/TOutput/TBackend when multiple roles exist"
+trait_rule = "PTR-owned semantic traits; focused contracts; explicit object-safety/concurrency expectations; provider implementors stay adapters"
+bounds_rule = "place bounds on the narrowest item that needs them; prefer where clauses for relational/non-trivial bounds; avoid speculative Clone/Send/Sync/static"
+lifetime_rule = "use lifetimes only for real borrow relations; semantic names for non-trivial relations; prefer owned handles across async/process/network/persistence boundaries"
+validation_rule = "is/has/can for booleans; check/validate/ensure return typed Result; verify returns domain verification types; failures include named context"
+error_rule = "fallible public operations use Result<T,E>; mismatch errors carry expected/actual where meaningful; named field/message/code context; no recoverable production unwrap"
 
 [[crate]]
 id = "ptr-types"
