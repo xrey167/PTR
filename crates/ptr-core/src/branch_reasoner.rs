@@ -9,8 +9,12 @@ pub struct BranchState {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct BranchFrontier { pub branches: Vec<BranchState> }
+pub struct BranchFrontier {
+    pub branches: Vec<BranchState>,
+}
 
 impl BranchFrontier {
-    pub fn prune_below(&mut self, threshold: f32) { self.branches.retain(|b| b.probability.get() >= threshold); }
+    pub fn prune_below(&mut self, threshold: f32) {
+        self.branches.retain(|b| b.probability.get() >= threshold);
+    }
 }

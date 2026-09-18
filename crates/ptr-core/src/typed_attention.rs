@@ -9,6 +9,12 @@ pub struct TypedAttentionConfig {
 
 impl Default for TypedAttentionConfig {
     fn default() -> Self {
-        Self { model_width: 512, heads: 8, type_bias: true, epistemic_bias: true, validity_mask: true }
+        Self {
+            model_width: 512,
+            heads: 8,
+            type_bias: true,
+            epistemic_bias: true,
+            validity_mask: true,
+        }
     }
 }

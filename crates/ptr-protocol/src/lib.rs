@@ -3,7 +3,10 @@
 use ptr_types::{CapabilityId, Generation, Revision, TypeId};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct WireVersion { pub major: u16, pub minor: u16 }
+pub struct WireVersion {
+    pub major: u16,
+    pub minor: u16,
+}
 
 pub const PODWIRE_V1: WireVersion = WireVersion { major: 1, minor: 0 };
 
@@ -26,10 +29,23 @@ pub struct CallFrame {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Frame {
     Call(CallFrame),
-    Return { call_id: String, payload: TypedPayload },
-    Error { call_id: String, code: String, message: String },
-    Event { topic: String, payload: TypedPayload },
-    Revoke { subject: String, generation: Generation },
+    Return {
+        call_id: String,
+        payload: TypedPayload,
+    },
+    Error {
+        call_id: String,
+        code: String,
+        message: String,
+    },
+    Event {
+        topic: String,
+        payload: TypedPayload,
+    },
+    Revoke {
+        subject: String,
+        generation: Generation,
+    },
 }
 
 impl Frame {

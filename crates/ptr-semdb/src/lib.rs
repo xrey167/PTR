@@ -17,7 +17,10 @@ pub struct DependencyGraph {
 
 impl DependencyGraph {
     pub fn depends_on(&mut self, derived: impl Into<String>, input: impl Into<String>) {
-        self.forward.entry(input.into()).or_default().insert(derived.into());
+        self.forward
+            .entry(input.into())
+            .or_default()
+            .insert(derived.into());
     }
 
     pub fn affected_by<I, S>(&self, changed: I) -> BTreeSet<String>
@@ -28,7 +31,9 @@ impl DependencyGraph {
         let mut out = BTreeSet::new();
         let mut stack: Vec<String> = changed.into_iter().map(Into::into).collect();
         while let Some(key) = stack.pop() {
-            if !out.insert(key.clone()) { continue; }
+            if !out.insert(key.clone()) {
+                continue;
+            }
             if let Some(children) = self.forward.get(&key) {
                 stack.extend(children.iter().cloned());
             }
@@ -44,8 +49,12 @@ pub struct SemanticSnapshot {
 }
 
 impl SemanticSnapshot {
-    pub fn get(&self, key: &str) -> Option<&str> { self.ground.get(key).map(String::as_str) }
-    pub fn keys(&self) -> impl Iterator<Item = &str> { self.ground.keys().map(String::as_str) }
+    pub fn get(&self, key: &str) -> Option<&str> {
+        self.ground.get(key).map(String::as_str)
+    }
+    pub fn keys(&self) -> impl Iterator<Item = &str> {
+        self.ground.keys().map(String::as_str)
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -56,13 +65,19 @@ pub struct SemanticHost {
 }
 
 impl SemanticHost {
-    pub fn revision(&self) -> Revision { self.revision }
-    pub fn dependencies_mut(&mut self) -> &mut DependencyGraph { &mut self.dependencies }
+    pub fn revision(&self) -> Revision {
+        self.revision
+    }
+    pub fn dependencies_mut(&mut self) -> &mut DependencyGraph {
+        &mut self.dependencies
+    }
 
     pub fn apply_delta(&mut self, delta: SemanticDelta) -> (Revision, BTreeSet<String>) {
         let mut changed = BTreeSet::new();
         for key in delta.removals {
-            if self.ground.remove(&key).is_some() { changed.insert(key); }
+            if self.ground.remove(&key).is_some() {
+                changed.insert(key);
+            }
         }
         for (key, value) in delta.upserts {
             if self.ground.get(&key) != Some(&value) {
@@ -70,16 +85,23 @@ impl SemanticHost {
                 changed.insert(key);
             }
         }
-        if !changed.is_empty() { self.revision = self.revision.next(); }
+        if !changed.is_empty() {
+            self.revision = self.revision.next();
+        }
         let affected = self.dependencies.affected_by(changed.iter().cloned());
         (self.revision, affected)
     }
 
     pub fn snapshot(&self) -> SemanticSnapshot {
-        SemanticSnapshot { revision: self.revision, ground: Arc::new(self.ground.clone()) }
+        SemanticSnapshot {
+            revision: self.revision,
+            ground: Arc::new(self.ground.clone()),
+        }
     }
 
-    pub fn is_stale(&self, snapshot: &SemanticSnapshot) -> bool { snapshot.revision != self.revision }
+    pub fn is_stale(&self, snapshot: &SemanticSnapshot) -> bool {
+        snapshot.revision != self.revision
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

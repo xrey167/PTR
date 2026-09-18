@@ -1,7 +1,10 @@
 use crate::{ptr_ar::PtrArConfig, ptr_diff::PtrDiffConfig, typed_attention::TypedAttentionConfig};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CoreFamily { Autoregressive, Diffusion }
+pub enum CoreFamily {
+    Autoregressive,
+    Diffusion,
+}
 
 #[derive(Clone, Debug)]
 pub struct PtrCoreConfig {
@@ -14,6 +17,12 @@ pub struct PtrCoreConfig {
 
 impl Default for PtrCoreConfig {
     fn default() -> Self {
-        Self { family: CoreFamily::Autoregressive, semantic_slots: 32, typed_attention: Default::default(), ar: Default::default(), diffusion: Default::default() }
+        Self {
+            family: CoreFamily::Autoregressive,
+            semantic_slots: 32,
+            typed_attention: Default::default(),
+            ar: Default::default(),
+            diffusion: Default::default(),
+        }
     }
 }

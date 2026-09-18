@@ -1,7 +1,17 @@
 use ptr_types::{Generation, Probability, ProvenanceRef, Validity};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SlotKind { Goal, Constraint, Known, Observed, Hypothesis, Distribution, Unknown, Resource, Capability }
+pub enum SlotKind {
+    Goal,
+    Constraint,
+    Known,
+    Observed,
+    Hypothesis,
+    Distribution,
+    Unknown,
+    Resource,
+    Capability,
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SemanticSlot {

@@ -1,10 +1,19 @@
 use ptr_types::{Probability, VerificationLevel};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum VerificationStatus { Pass, Fail, Disputed, Unknown }
+pub enum VerificationStatus {
+    Pass,
+    Fail,
+    Disputed,
+    Unknown,
+}
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Finding { pub code: String, pub message: String, pub hard: bool }
+pub struct Finding {
+    pub code: String,
+    pub message: String,
+    pub hard: bool,
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct VerificationReport {
@@ -14,4 +23,6 @@ pub struct VerificationReport {
     pub findings: Vec<Finding>,
 }
 
-pub trait Verifier<T> { fn verify(&self, candidate: &T) -> VerificationReport; }
+pub trait Verifier<T> {
+    fn verify(&self, candidate: &T) -> VerificationReport;
+}

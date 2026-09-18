@@ -6,14 +6,18 @@ use std::fmt;
 pub struct Revision(pub u64);
 
 impl Revision {
-    pub fn next(self) -> Self { Self(self.0 + 1) }
+    pub fn next(self) -> Self {
+        Self(self.0 + 1)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Generation(pub u64);
 
 impl Generation {
-    pub fn next(self) -> Self { Self(self.0 + 1) }
+    pub fn next(self) -> Self {
+        Self(self.0 + 1)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -24,10 +28,14 @@ macro_rules! string_id {
         #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
         pub struct $name(pub String);
         impl From<&str> for $name {
-            fn from(value: &str) -> Self { Self(value.to_owned()) }
+            fn from(value: &str) -> Self {
+                Self(value.to_owned())
+            }
         }
         impl fmt::Display for $name {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { self.0.fmt(f) }
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                self.0.fmt(f)
+            }
         }
     };
 }
@@ -50,11 +58,15 @@ impl Probability {
     pub fn new(value: f32) -> Option<Self> {
         (value.is_finite() && (0.0..=1.0).contains(&value)).then_some(Self(value))
     }
-    pub fn get(self) -> f32 { self.0 }
+    pub fn get(self) -> f32 {
+        self.0
+    }
 }
 
 impl Default for Probability {
-    fn default() -> Self { Self(0.5) }
+    fn default() -> Self {
+        Self(0.5)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

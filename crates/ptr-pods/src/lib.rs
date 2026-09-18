@@ -21,10 +21,29 @@ pub trait Pod {
 
 pub struct Ready;
 pub struct Revoked;
-pub struct PodLease<S> { pub pod_id: PodId, _state: PhantomData<S> }
-impl PodLease<Ready> {
-    pub fn new(pod_id: PodId) -> Self { Self { pod_id, _state: PhantomData } }
-    pub fn revoke(self) -> PodLease<Revoked> { PodLease { pod_id: self.pod_id, _state: PhantomData } }
-    pub fn can_invoke(&self) -> bool { true }
+pub struct PodLease<S> {
+    pub pod_id: PodId,
+    _state: PhantomData<S>,
 }
-impl PodLease<Revoked> { pub fn can_invoke(&self) -> bool { false } }
+impl PodLease<Ready> {
+    pub fn new(pod_id: PodId) -> Self {
+        Self {
+            pod_id,
+            _state: PhantomData,
+        }
+    }
+    pub fn revoke(self) -> PodLease<Revoked> {
+        PodLease {
+            pod_id: self.pod_id,
+            _state: PhantomData,
+        }
+    }
+    pub fn can_invoke(&self) -> bool {
+        true
+    }
+}
+impl PodLease<Revoked> {
+    pub fn can_invoke(&self) -> bool {
+        false
+    }
+}

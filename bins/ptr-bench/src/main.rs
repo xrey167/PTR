@@ -1,1 +1,3 @@
-fn main() { println!("Benchmark definitions live under benchmarks/ and evaluations/."); }
+fn main() {
+    println!("Benchmark definitions live under benchmarks/ and evaluations/.");
+}

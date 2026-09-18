@@ -8,6 +8,8 @@ pub struct EpistemicWorkspace {
 
 impl EpistemicWorkspace {
     pub fn live_slots(&self) -> impl Iterator<Item = &SemanticSlot> {
-        self.slots.iter().filter(|s| matches!(s.validity, ptr_types::Validity::Live))
+        self.slots
+            .iter()
+            .filter(|s| matches!(s.validity, ptr_types::Validity::Live))
     }
 }

@@ -1,1 +1,3 @@
-fn main() { println!("ptr-worker scaffold: no external Pod adapter selected"); }
+fn main() {
+    println!("ptr-worker scaffold: no external Pod adapter selected");
+}

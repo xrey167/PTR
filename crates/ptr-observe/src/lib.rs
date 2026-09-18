@@ -14,4 +14,8 @@ pub mod fields {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FlowSignature { pub request: RequestId, pub operators: Vec<String>, pub state_transitions: Vec<String> }
+pub struct FlowSignature {
+    pub request: RequestId,
+    pub operators: Vec<String>,
+    pub state_transitions: Vec<String>,
+}

@@ -10,10 +10,22 @@ pub enum RawInput {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ArtifactKind { Text, Image, Audio, Video, Pdf, Archive, Database, Unknown }
+pub enum ArtifactKind {
+    Text,
+    Image,
+    Audio,
+    Video,
+    Pdf,
+    Archive,
+    Database,
+    Unknown,
+}
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct LabelScore { pub label: String, pub probability: Probability }
+pub struct LabelScore {
+    pub label: String,
+    pub probability: Probability,
+}
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SemanticProposal {
@@ -24,7 +36,12 @@ pub struct SemanticProposal {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CrossCheckStatus { Agree, SampleVerified, Disputed, NeedsFullCheck }
+pub enum CrossCheckStatus {
+    Agree,
+    SampleVerified,
+    Disputed,
+    NeedsFullCheck,
+}
 
 pub fn cross_check(raw_present: bool, hard_issue_count: usize) -> CrossCheckStatus {
     match (raw_present, hard_issue_count) {

@@ -1,11 +1,23 @@
 use crate::epistemic_workspace::EpistemicWorkspace;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ReasoningBudget { None, Low, Medium, High, Max(u32) }
+pub enum ReasoningBudget {
+    None,
+    Low,
+    Medium,
+    High,
+    Max(u32),
+}
 
 impl ReasoningBudget {
     pub fn steps(self) -> u32 {
-        match self { Self::None => 0, Self::Low => 1, Self::Medium => 4, Self::High => 8, Self::Max(v) => v }
+        match self {
+            Self::None => 0,
+            Self::Low => 1,
+            Self::Medium => 4,
+            Self::High => 8,
+            Self::Max(v) => v,
+        }
     }
 }
 

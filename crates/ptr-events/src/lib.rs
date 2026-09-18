@@ -12,4 +12,7 @@ pub enum RuntimeEvent {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct EventEnvelope { pub sequence: u64, pub event: RuntimeEvent }
+pub struct EventEnvelope {
+    pub sequence: u64,
+    pub event: RuntimeEvent,
+}

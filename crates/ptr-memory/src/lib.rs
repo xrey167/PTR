@@ -1,7 +1,12 @@
 use ptr_types::{CapsuleId, Generation, ProjectId, ProvenanceRef, Revision, Validity};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MemoryClass { Semantic, Episodic, Procedural, Epistemic }
+pub enum MemoryClass {
+    Semantic,
+    Episodic,
+    Procedural,
+    Epistemic,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SemanticCapsule {
