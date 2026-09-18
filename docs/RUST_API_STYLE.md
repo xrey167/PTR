@@ -205,18 +205,85 @@ Do not use a `HashMap<String, String>` as a substitute for a domain model. Colle
 
 For reproducible tests, manifests, snapshots and hashes, deterministic collections are usually preferred unless ordering is explicitly normalized before serialization/hashing.
 
-## 9. Traits / ports and adapters
+## 9. Traits, bounds, implementors and adapters
 
 PTR owns contracts. Backends implement them.
 
 ```rust
-pub trait ObjectStore {
+pub trait ObjectStore: Send + Sync {
+    type Reader<'a>: std::io::Read + 'a
+    where
+        Self: 'a;
+
     fn put(&mut self, request: PutObject) -> Result<ObjectRef, StorageError>;
+
     fn get(&self, id: &ArtifactId) -> Result<Option<Object>, StorageError>;
 }
 ```
 
-Provider-specific implementations belong in `adapters::<provider>` or feature-gated sibling modules. Backend-native types remain private to the adapter whenever possible.
+### Trait rules
+
+- traits describe a semantic contract, not a provider API;
+- use associated types when an implementation owns a related type family;
+- use generic parameters when the caller chooses the type;
+- use supertraits such as `Send + Sync` only when the contract genuinely requires them;
+- object safety is deliberate when `dyn Trait` is part of the architecture;
+- sealed traits are acceptable when external implementation would violate invariants;
+- marker traits are used sparingly and must carry a clear semantic meaning;
+- prefer several focused traits over one large trait with unrelated methods.
+
+### Bounds
+
+Bounds belong as close as possible to the operation that needs them.
+
+Prefer:
+
+```rust
+pub fn execute<TInput, TOutput, TBackend>(
+    backend: &TBackend,
+    input: TInput,
+) -> Result<TOutput, ServiceError>
+where
+    TBackend: Backend<TInput, TOutput>,
+    TInput: Send,
+    TOutput: Send,
+{
+    backend.execute(input)
+}
+```
+
+over placing `Clone + Send + Sync + 'static + Debug` on every generic type "just in case".
+
+Use `where` clauses when bounds are non-trivial or relational. Avoid `'static` unless ownership/thread/task requirements actually need it.
+
+### Implementors
+
+Implementors are part of the replaceability model and should be easy to discover:
+
+```rust
+pub struct InMemoryStore {
+    // ...
+}
+
+impl ObjectStore for InMemoryStore {
+    // ...
+}
+```
+
+Reference implementations belong in PTR-owned modules; provider implementations belong in `adapters::<provider>` or feature-gated sibling modules.
+
+A trait should document:
+
+1. semantic contract;
+2. required invariants;
+3. expected failure behavior;
+4. concurrency/object-safety expectations;
+5. known reference implementor;
+6. backend implementors/adapters.
+
+The API inventory tool should expose both the trait declaration and `impl Trait for Type` relationships.
+
+Provider-specific implementations keep backend-native types private whenever possible.
 
 Prefer capability descriptors over backend-name branching:
 
@@ -231,13 +298,47 @@ pub struct BackendCapabilities {
 
 A backend name is metadata; it is not semantic routing authority.
 
-## 10. Constructors and mutation
+## 10. Lifetimes and relations
+
+Lifetimes express real borrowing relationships; they are not added for style.
+
+Prefer explicit relational names when more than one lifetime exists:
+
+```rust
+pub struct SnapshotView<'snapshot> {
+    pub revision: Revision,
+    pub bytes: &'snapshot [u8],
+}
+
+pub struct QueryContext<'snapshot, 'query>
+where
+    'snapshot: 'query,
+{
+    pub snapshot: &'query SnapshotView<'snapshot>,
+    pub query: &'query str,
+}
+```
+
+Rules:
+
+- use elision for simple one-input-reference cases;
+- name lifetimes semantically (`'snapshot`, `'request`, `'store`) when relationships matter;
+- use `'a` only for small/local APIs where the relation is obvious;
+- encode outlives relations with `'long: 'short` only when required;
+- prefer owned values/IDs/handles across async task, process, network or persistence boundaries;
+- avoid self-referential structures unless there is a measured need and a clearly proven invariant;
+- avoid returning references tied to locks/guards when an owned snapshot/handle is safer;
+- `'static` means no borrowed lifetime dependency, not "lives forever".
+
+For async APIs, do not force borrowed data across suspension points unless the lifetime relationship is intentional and testable.
+
+## 11. Constructors and mutation
 
 Use constructors when an invariant must be checked. Direct public fields are acceptable for transparent value records with no invalid state.
 
 Prefer immutable access and explicit mutation methods. Mutation that affects lifecycle, authority, revisions or generations must use a named operation rather than direct field replacement.
 
-## 11. Error design, expected values and failure propagation
+## 12. Error design, expected values and failure propagation
 
 Stable crate APIs expose typed error enums. A mismatch carries **typed expected and actual values** whenever those values are meaningful:
 
@@ -282,7 +383,7 @@ Tests, examples, benchmarks and build scripts may use `unwrap`/`expect` when fai
 
 `panic!` is reserved for impossible internal states, explicit failpoints and process-level startup policies where returning an error is not possible or useful.
 
-## 12. Structured tracing
+## 13. Structured tracing
 
 PTR uses structured tracing, not ad-hoc logging, for runtime behavior. The architecture-facing contract lives in `ptr-observe`; concrete `tracing`, OpenTelemetry and exporter layers remain replaceable.
 
@@ -319,7 +420,7 @@ Rules:
 
 Use `println!` only for intentional CLI/stdout protocols, benchmark machine output, Cargo build-script directives, or user-facing terminal output.
 
-## 13. Function grouping
+## 14. Function grouping
 
 Inside modules, keep a predictable order when practical:
 
@@ -337,13 +438,68 @@ Within an `impl`, prefer constructor/accessors first, then primary operations, t
 
 Large groups of unrelated free functions are a signal to create a module/type/trait.
 
-## 14. Tests
+## 15. Check, validate and test functions
+
+Use function names to distinguish semantics:
+
+- `is_*`, `has_*`, `can_*` — infallible boolean predicate with no diagnostic detail required;
+- `check_*` — verify one condition/invariant and return `Result<(), E>`;
+- `validate_*` — validate a complete value/config/request and return `Result<(), E>` or a typed validation report;
+- `verify_*` — evidence/semantic verification, normally returning a domain verification type rather than a boolean;
+- `try_*` — attempt an operation where failure is expected and represented by `Result`/`Option`;
+- `ensure_*` — internal precondition helper returning `Result<(), E>`, used sparingly;
+- `test_*` is reserved for test helper naming; Rust test functions themselves should name the behavior, e.g. `stale_generation_returns_expected_and_actual`.
+
+Example:
+
+```rust
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ValidationError {
+    MissingField {
+        field: &'static str,
+        message: &'static str,
+    },
+    OutOfRange {
+        field: &'static str,
+        expected: &'static str,
+        actual: usize,
+        message: &'static str,
+    },
+}
+
+pub fn check_backend_name(name: &str) -> Result<(), ValidationError> {
+    if name.trim().is_empty() {
+        return Err(ValidationError::MissingField {
+            field: "backend",
+            message: "backend name must not be empty",
+        });
+    }
+    Ok(())
+}
+
+pub fn validate_request(request: &ExecuteRequest) -> Result<(), ValidationError> {
+    check_backend_name(&request.backend)?;
+    Ok(())
+}
+```
+
+Validation failures use named fields and messages. Do not return `false` when the caller needs to know why validation failed.
+
+Checks should be:
+
+- deterministic;
+- side-effect free unless their name/documentation says otherwise;
+- individually testable;
+- composed with `?`;
+- traced once at the ownership boundary when failure matters operationally.
+
+## 16. Tests
 
 Unit tests live next to private implementation when they need private access. Cross-module and public-contract tests live in `tests/`.
 
 Tests should exercise enum variants and match branches, `None`/ `Some`, success/error `Result` paths, collection invariants and generic implementations where they carry architecture semantics.
 
-## 15. Stability rule
+## 17. Stability rule
 
 PTR is still in architecture discovery. Public Rust visibility does not automatically mean "frozen forever". Before v0 contract freeze:
 
