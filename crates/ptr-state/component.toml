@@ -1,24 +1,24 @@
 version = 1
 id = "ptr-state"
-maturity = "scaffold"
+maturity = "prototype"
 last_reviewed = "2026-09-18"
 
 implemented = [
   "MaterializedState reference map with last_applied commit index",
   "Application of Revoked and HardConstraintCommitted ledger events",
   "Monotonic materialization with duplicate/out-of-order/gap detection",
+  "All current LedgerEvent variants have deterministic key/value projection semantics",
+  "Feature-gated Turso 0.8.0-pre.11 backend persists atomic projection updates and last_applied state",
 ]
 
 missing = [
-  "Complete event materialization coverage",
-  "Turso/libSQL backend and typed schema",
   "Rebuild equivalence tests and CDC projection hooks",
 ]
 
 next = [
-  "Make materialization exhaustive across all ledger event types",
+  "Add schema migration/versioning and richer typed query views beyond key/value projection",
   "Extend replay tests to full snapshot/rebuild equivalence",
-  "Evaluate Turso against alternative local/materialized stores",
+  "Benchmark Turso against SQLite/redb candidates under replay and update/delete workloads",
 ]
 
 experiments = [
@@ -38,5 +38,6 @@ decisions = [
 
 checks = [
   "replay ordering/idempotency integration test",
+  "Turso reopen/monotonicity integration test behind turso-backend feature",
   "workspace fmt/check/test/clippy",
 ]

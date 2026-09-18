@@ -5,6 +5,17 @@ edition.workspace = true
 rust-version.workspace = true
 publish = false
 
+[features]
+default = []
+turso-backend = ["dep:turso", "dep:tokio"]
+
 [dependencies]
 ptr-types = { workspace = true }
 ptr-ledger = { workspace = true }
+turso = { version = "=0.8.0-pre.11", default-features = false, optional = true }
+tokio = { workspace = true, optional = true }
+
+[[test]]
+name = "turso"
+path = "tests/turso.rs"
+required-features = ["turso-backend"]

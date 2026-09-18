@@ -17,8 +17,8 @@ research_flexibility = 0.03
 [[candidate]]
 id = "turso"
 source = "external"
-status = "to-evaluate"
-evidence = []
+status = "evaluating"
+evidence = ["../../../crates/ptr-state/tests/turso.rs"]
 
 [[candidate]]
 id = "sqlite"

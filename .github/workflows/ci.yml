@@ -94,3 +94,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - run: cargo +stable test -p ptr-ledger --features raft-rs-backend --test raft_rs --locked
+
+  state-turso:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo +stable test -p ptr-state --features turso-backend --test turso --locked
