@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use crate::types::BackendRegistry;
 use crate::{
-    Backend, BackendState, ExecuteRequest, ExecuteResult, NoopTraceSink, ServiceError, TraceError,
-    TraceEvent, TraceLevel, TraceSink,
+    check_backend_name, validate_request, Backend, BackendState, ExecuteRequest, ExecuteResult,
+    NoopTraceSink, ServiceError, TraceError, TraceEvent, TraceLevel, TraceSink,
 };
 
 pub struct Service<TInput, TOutput> {
@@ -49,12 +49,8 @@ impl<TInput, TOutput> Service<TInput, TOutput> {
         &self,
         request: ExecuteRequest<TInput>,
     ) -> Result<ExecuteResult<TOutput>, ServiceError> {
-        let backend_name = request
-            .preferred_backend
-            .as_deref()
-            .ok_or_else(|| ServiceError::BackendUnavailable {
-                backend: "no backend selected".to_owned(),
-            })?;
+        validate_request(request.as_ref())?;
+        let backend_name = check_backend_name(request.preferred_backend.as_deref())?;
 
         let backend = self.backends.get(backend_name).ok_or_else(|| {
             ServiceError::BackendUnavailable {
