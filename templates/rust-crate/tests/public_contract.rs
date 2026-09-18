@@ -56,3 +56,24 @@ fn closure_filter_supports_fn_mut_state_capture() {
     assert_eq!(visited, 1);
     assert_eq!(names, vec!["reference"]);
 }
+
+
+#[test]
+fn internal_macro_generated_newtype_is_publicly_usable() {
+    let name = ptr_rust_crate_template::BackendName::from("reference");
+    assert_eq!(name.as_str(), "reference");
+}
+
+#[test]
+fn exported_trace_event_macro_builds_public_trace_type() {
+    let event = ptr_rust_crate_template::trace_event!(
+        ptr_rust_crate_template::TraceLevel::Info,
+        "macro.test",
+        "backend" => "reference",
+        "outcome" => "ok",
+    );
+
+    assert_eq!(event.name, "macro.test");
+    assert_eq!(event.fields.get("backend").map(String::as_str), Some("reference"));
+    assert_eq!(event.fields.get("outcome").map(String::as_str), Some("ok"));
+}
