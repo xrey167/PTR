@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "M006-ptr-diff"
+path = "experiments/model/M006-ptr-diff"
+tests_dir = "tests"

@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "rl"
+path = "training/rl"
+tests_dir = "tests"

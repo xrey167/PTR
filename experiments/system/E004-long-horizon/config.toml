@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "E004-long-horizon"
+path = "experiments/system/E004-long-horizon"
+tests_dir = "tests"

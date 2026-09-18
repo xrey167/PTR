@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "local-vector-search"
+path = "evaluations/components/local-vector-search"
+tests_dir = "tests"

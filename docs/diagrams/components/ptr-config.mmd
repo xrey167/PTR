@@ -1,0 +1,4 @@
+flowchart LR
+  A["config/default.toml"] --> B["ptr-config"]
+  B --> C["Validated PtrConfig"]
+  C --> D["ptr-runtime / ptrd"]

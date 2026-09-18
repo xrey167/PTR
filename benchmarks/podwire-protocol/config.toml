@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "podwire-protocol"
+path = "benchmarks/podwire-protocol"
+tests_dir = "tests"

@@ -1,0 +1,4 @@
+version = 1
+kind = "rust-crate"
+component = "ptr-storage"
+tests_dir = "tests"

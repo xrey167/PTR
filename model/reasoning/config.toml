@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "reasoning"
+path = "model/reasoning"
+tests_dir = "tests"

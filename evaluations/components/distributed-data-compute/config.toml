@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "distributed-data-compute"
+path = "evaluations/components/distributed-data-compute"
+tests_dir = "tests"

@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "configs"
+path = "training/configs"
+tests_dir = "tests"

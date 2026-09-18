@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "M001-semantic-slots"
+path = "experiments/model/M001-semantic-slots"
+tests_dir = "tests"

@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "model"
+path = "integrations/model"
+tests_dir = "tests"

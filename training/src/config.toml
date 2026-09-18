@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "src"
+path = "training/src"
+tests_dir = "tests"

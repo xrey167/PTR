@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "Q001-fusion"
+path = "experiments/retrieval/Q001-fusion"
+tests_dir = "tests"

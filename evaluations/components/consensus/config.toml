@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "consensus"
+path = "evaluations/components/consensus"
+tests_dir = "tests"

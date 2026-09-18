@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "research"
+path = "research"
+tests_dir = "tests"

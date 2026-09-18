@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "distributed-search"
+path = "evaluations/components/distributed-search"
+tests_dir = "tests"

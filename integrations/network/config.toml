@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "network"
+path = "integrations/network"
+tests_dir = "tests"

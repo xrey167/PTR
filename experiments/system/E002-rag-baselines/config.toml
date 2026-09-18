@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "E002-rag-baselines"
+path = "experiments/system/E002-rag-baselines"
+tests_dir = "tests"

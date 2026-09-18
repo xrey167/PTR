@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "M003-latent-recurrence"
+path = "experiments/model/M003-latent-recurrence"
+tests_dir = "tests"

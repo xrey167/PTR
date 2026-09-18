@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "M002-typed-attention"
+path = "experiments/model/M002-typed-attention"
+tests_dir = "tests"

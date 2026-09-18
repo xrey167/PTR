@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "local-serialization"
+path = "evaluations/components/local-serialization"
+tests_dir = "tests"

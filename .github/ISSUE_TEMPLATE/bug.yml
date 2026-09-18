@@ -1,0 +1,19 @@
+name: Bug
+description: Report a reproducible PTR defect
+title: "[bug] "
+body:
+  - type: textarea
+    id: summary
+    attributes: { label: Summary }
+    validations: { required: true }
+  - type: textarea
+    id: reproduce
+    attributes: { label: Reproduction }
+    validations: { required: true }
+  - type: input
+    id: commit
+    attributes: { label: Commit SHA }
+    validations: { required: true }
+  - type: textarea
+    id: invariant
+    attributes: { label: Affected invariant / component }

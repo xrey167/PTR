@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "environment"
+path = "integrations/environment"
+tests_dir = "tests"

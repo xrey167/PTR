@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "observability"
+path = "evaluations/components/observability"
+tests_dir = "tests"

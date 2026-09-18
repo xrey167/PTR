@@ -1,0 +1,6 @@
+version = 1
+kind = "rust-crate"
+component = "ptr-protocol"
+tests_dir = "tests"
+proto_root = "../../proto"
+network_codec = "prost"

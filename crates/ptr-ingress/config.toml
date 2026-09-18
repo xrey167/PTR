@@ -1,0 +1,4 @@
+version = 1
+kind = "rust-crate"
+component = "ptr-ingress"
+tests_dir = "tests"

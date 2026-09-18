@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "M004-operator-router"
+path = "experiments/model/M004-operator-router"
+tests_dir = "tests"

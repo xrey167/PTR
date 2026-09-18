@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "M005-epistemic-calibration"
+path = "experiments/model/M005-epistemic-calibration"
+tests_dir = "tests"

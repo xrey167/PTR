@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "schemas"
+path = "datasets/schemas"
+tests_dir = "tests"

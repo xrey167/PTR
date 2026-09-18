@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "search"
+path = "integrations/search"
+tests_dir = "tests"

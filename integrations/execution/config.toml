@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "execution"
+path = "integrations/execution"
+tests_dir = "tests"

@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "samples"
+path = "datasets/samples"
+tests_dir = "tests"

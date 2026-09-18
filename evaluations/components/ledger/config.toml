@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "ledger"
+path = "evaluations/components/ledger"
+tests_dir = "tests"

@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "F001-generate-verify-repair"
+path = "experiments/feedback/F001-generate-verify-repair"
+tests_dir = "tests"

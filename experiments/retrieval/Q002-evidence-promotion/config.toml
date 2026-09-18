@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "Q002-evidence-promotion"
+path = "experiments/retrieval/Q002-evidence-promotion"
+tests_dir = "tests"

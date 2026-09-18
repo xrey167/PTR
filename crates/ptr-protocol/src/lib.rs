@@ -1,3 +1,5 @@
+pub mod generated;
+
 //! Semantic PodWire domain frames. Network encodings (prost/rkyv/JSON) are adapters around these types.
 
 use ptr_types::{CapabilityId, Generation, Revision, TypeId};

@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "ood-pods"
+path = "benchmarks/ood-pods"
+tests_dir = "tests"

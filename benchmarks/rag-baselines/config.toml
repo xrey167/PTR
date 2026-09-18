@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "rag-baselines"
+path = "benchmarks/rag-baselines"
+tests_dir = "tests"

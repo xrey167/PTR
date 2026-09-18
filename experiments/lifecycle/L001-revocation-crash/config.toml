@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "L001-revocation-crash"
+path = "experiments/lifecycle/L001-revocation-crash"
+tests_dir = "tests"

@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "storage"
+path = "integrations/storage"
+tests_dir = "tests"

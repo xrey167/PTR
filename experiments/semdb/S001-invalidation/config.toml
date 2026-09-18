@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "S001-invalidation"
+path = "experiments/semdb/S001-invalidation"
+tests_dir = "tests"

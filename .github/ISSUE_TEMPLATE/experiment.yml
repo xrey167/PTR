@@ -1,0 +1,16 @@
+name: Experiment proposal
+description: Propose a falsifiable PTR experiment
+title: "[experiment] "
+body:
+  - type: textarea
+    id: hypothesis
+    attributes: { label: Hypothesis }
+    validations: { required: true }
+  - type: textarea
+    id: baseline
+    attributes: { label: Matched baseline }
+    validations: { required: true }
+  - type: textarea
+    id: falsification
+    attributes: { label: Falsification criterion }
+    validations: { required: true }

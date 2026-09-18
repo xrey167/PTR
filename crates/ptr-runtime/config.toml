@@ -1,0 +1,5 @@
+version = 1
+kind = "rust-crate"
+component = "ptr-runtime"
+tests_dir = "tests"
+default_config = "../../config/default.toml"

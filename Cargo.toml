@@ -7,9 +7,12 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"
 authors = ["PTR contributors"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/xrey167/PTR"
 
 [workspace.dependencies]
 ptr-types = { path = "crates/ptr-types" }
+ptr-config = { path = "crates/ptr-config" }
 ptr-protocol = { path = "crates/ptr-protocol" }
 ptr-ingress = { path = "crates/ptr-ingress" }
 ptr-semdb = { path = "crates/ptr-semdb" }
@@ -31,3 +34,10 @@ ptr-observe = { path = "crates/ptr-observe" }
 ptr-inspect = { path = "crates/ptr-inspect" }
 ptr-security = { path = "crates/ptr-security" }
 ptr-server = { path = "crates/ptr-server" }
+ptr-runtime = { path = "crates/ptr-runtime" }
+
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+prost = "0.13"
+prost-build = "0.13"
+protoc-bin-vendored = "3"

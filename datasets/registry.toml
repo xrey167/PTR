@@ -6,6 +6,7 @@ path = "bundles/typed_agent_behavior_v0_2.zip"
 sha256 = "4f1570227b3e04cb258c4759c51c5be208e92e846125f85b8adfe57fd590f026"
 bytes = 360595
 provenance = "PTR conversation-generated research dataset"
+card = "cards/typed_agent_behavior_v0_2.md"
 status = "imported"
 
 [[dataset]]
@@ -14,6 +15,7 @@ path = "bundles/podwire_native_protocol_v0_1.zip"
 sha256 = "e0bd60d73b0f48a6fb946c719ba8a52bb29f1d1d2ba473f65df0c1a42a5ff13f"
 bytes = 870710
 provenance = "PTR conversation-generated research dataset"
+card = "cards/podwire_native_protocol_v0_1.md"
 status = "imported"
 
 [[dataset]]

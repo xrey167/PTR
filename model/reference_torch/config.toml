@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "reference_torch"
+path = "model/reference_torch"
+tests_dir = "tests"

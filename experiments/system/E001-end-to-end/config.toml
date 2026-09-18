@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "E001-end-to-end"
+path = "experiments/system/E001-end-to-end"
+tests_dir = "tests"

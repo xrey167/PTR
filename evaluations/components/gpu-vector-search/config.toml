@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "gpu-vector-search"
+path = "evaluations/components/gpu-vector-search"
+tests_dir = "tests"

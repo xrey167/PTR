@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "code-quality-verifier"
+path = "evaluations/components/code-quality-verifier"
+tests_dir = "tests"

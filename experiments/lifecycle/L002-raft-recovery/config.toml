@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "L002-raft-recovery"
+path = "experiments/lifecycle/L002-raft-recovery"
+tests_dir = "tests"

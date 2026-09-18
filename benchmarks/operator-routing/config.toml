@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "operator-routing"
+path = "benchmarks/operator-routing"
+tests_dir = "tests"

@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "ptrd"
+path = "bins/ptrd"
+tests_dir = "tests"

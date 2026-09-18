@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "inference-serving"
+path = "evaluations/components/inference-serving"
+tests_dir = "tests"

@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "kernels"
+path = "model/kernels"
+tests_dir = "tests"

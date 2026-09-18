@@ -1,0 +1,16 @@
+[package]
+name = "ptr-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+ptr-types = { workspace = true }
+ptr-config = { workspace = true }
+ptr-semdb = { workspace = true }
+ptr-core = { workspace = true }
+ptr-ledger = { workspace = true }
+ptr-state = { workspace = true }
+ptr-events = { workspace = true }
+ptr-security = { workspace = true }

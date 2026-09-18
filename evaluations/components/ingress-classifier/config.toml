@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "ingress-classifier"
+path = "evaluations/components/ingress-classifier"
+tests_dir = "tests"

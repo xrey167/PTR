@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "S002-snapshot-cancellation"
+path = "experiments/semdb/S002-snapshot-cancellation"
+tests_dir = "tests"

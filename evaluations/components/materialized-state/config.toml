@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "materialized-state"
+path = "evaluations/components/materialized-state"
+tests_dir = "tests"

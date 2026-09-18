@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "R002-unseen-pod-generalization"
+path = "experiments/runtime/R002-unseen-pod-generalization"
+tests_dir = "tests"

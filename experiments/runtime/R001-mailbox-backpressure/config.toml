@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "R001-mailbox-backpressure"
+path = "experiments/runtime/R001-mailbox-backpressure"
+tests_dir = "tests"

@@ -1,0 +1,8 @@
+flowchart TB
+  A["Request"] --> B["ptr-runtime"]
+  B --> C["ptr-semdb"]
+  B --> D["ptr-model-api / ptr-router"]
+  B --> E["ptr-exec / ptr-pods"]
+  B --> F["ptr-verifier / ptr-security"]
+  B --> G["ptr-ledger / ptr-state"]
+  G --> B

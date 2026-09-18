@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "configs"
+path = "model/configs"
+tests_dir = "tests"

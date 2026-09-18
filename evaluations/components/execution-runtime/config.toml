@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "execution-runtime"
+path = "evaluations/components/execution-runtime"
+tests_dir = "tests"
