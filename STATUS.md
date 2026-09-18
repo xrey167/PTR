@@ -10,6 +10,8 @@ PTR is a **compiling architecture/research prototype**, not yet a complete model
 - typed model → semantic Pod registry → Pod → verifier → SemDB observation loop for Pure/Read cognitive Pods
 - revision, live-generation/revocation and capability/effect checks at the ActionIR boundary
 - durable single-node reference `FileLedger` with fsync, reopen/replay and incomplete crash-tail truncation
+- `ptr-runtime` durable standalone mode can open/replay `FileLedger` and reconstruct lifecycle/materialized state across restart
+- feature-gated raft-engine durable log, raft-rs single-node consensus, Turso materialized-state and direct Iroh transport adapters with dedicated CI jobs
 - monotonic materialization with duplicate/out-of-order/gap rejection
 - explicit retrieval evidence-promotion stages that reject stale generations and direct promotion to Known
 - Prost-generated protobuf schemas with validated PodCall → domain conversion
