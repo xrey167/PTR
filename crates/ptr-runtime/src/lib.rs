@@ -108,7 +108,7 @@ impl PtrRuntime {
         config: PtrConfig,
         path: impl AsRef<Path>,
     ) -> Result<Self, RuntimeError> {
-        let ledger = FileLedger::open(path).map_err(|error| RuntimeError::Ledger(error.to_string()))?;
+        let ledger =\n            FileLedger::open(path).map_err(|error| RuntimeError::Ledger(error.to_string()))?;
         let persisted = ledger.events().to_vec();
         let mut runtime = Self::with_ledger(config, RuntimeLedger::File(ledger))?;
         for committed in &persisted {
