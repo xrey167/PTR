@@ -10,12 +10,12 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-18  
-**Code footprint:** 1 Rust source files · 115 nonblank source lines · 1 integration-test files · 5 `#[test]` markers
+**Code footprint:** 1 Rust source files · 113 nonblank source lines · 1 integration-test files · 6 `#[test]` markers
 
 ### Implemented now
 
 - PermissionSet with capability membership
-- Separate mutation/external/irreversible effect gates
+- Separate mutation/external/irreversible effect gates that remain enforced even when capability membership is optional
 - Fail-closed allows() decision for missing capability
 - Typed ActionAuthorization request plus AuthorizationDecision allow/deny result
 - Revision and generation freshness checks, including revoked and unknown generations
