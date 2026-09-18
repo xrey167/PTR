@@ -19,7 +19,7 @@ PTR is a **compiling architecture/research prototype**, not yet a complete model
 - 160 configured workspace areas with matching tests directories
 - Cargo and uv lockfiles; Rust 1.85 MSRV plus current-stable Ubuntu/Windows CI
 - dataset cards, experiment/evaluation validators, setup scripts, devcontainer/Docker and release scaffolding
-- supply-chain checks with cargo-audit/cargo-deny and Dependabot configuration
+- executable experiment and component-evaluation runners with declared no-shell commands and immutable success/failure process evidence\n- supply-chain checks with cargo-audit/cargo-deny and Dependabot configuration
 - `ptrctl doctor` repository/configuration diagnostics
 - CI-tested dependency-free TypeScript SDK contract and static documentation landing page
 - release packaging with SHA-256 checksums, CycloneDX SBOM generation and GitHub/Sigstore provenance/SBOM attestations
@@ -48,7 +48,7 @@ PTR is a **compiling architecture/research prototype**, not yet a complete model
 - `training/uv.lock` pins the current Python training utility environment
 - `rust-toolchain.toml` declares Rust 1.85.0 as MSRV/default
 - CI separately tests MSRV and current stable on Linux and current stable on Windows
-- experiment preparation records git SHA, hardware profile and lockfile hashes
+- experiment preparation/execution records git SHA, hardware profile, lockfile hashes, exact argv, duration, exit status and process output
 - small JSON/TOML/Markdown result artifacts are versioned; large datasets/checkpoints remain out of Git
 
 See [docs/components/STATUS.md](docs/components/STATUS.md) for per-component maturity and [experiments/lifecycle/L001-revocation-crash/results/](experiments/lifecycle/L001-revocation-crash/results/) for the first lifecycle evidence.
