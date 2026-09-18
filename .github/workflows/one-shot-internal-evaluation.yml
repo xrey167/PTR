@@ -1,0 +1,27 @@
+name: one-shot-internal-evaluation
+on:
+  push:
+    paths:
+      - '.github/workflows/one-shot-internal-evaluation.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  evaluate:
+    if: github.ref == 'refs/heads/main' && github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo +stable run --release --locked -p ptr-bench -- semdb 100000 > /tmp/semdb.jsonl
+      - run: cargo +stable run --release --locked -p ptr-bench -- mailbox 200000 > /tmp/mailbox.jsonl
+      - run: python scripts/record_internal_smoke.py --semdb /tmp/semdb.jsonl --mailbox /tmp/mailbox.jsonl
+      - name: Commit evidence
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add evaluations/components/semantic-db/evidence/internal-smoke-linux-x86_64.json
+          git add evaluations/components/execution-runtime/evidence/internal-smoke-linux-x86_64.json
+          git commit -m "Record internal component smoke benchmark evidence"
+          git push origin HEAD:main
