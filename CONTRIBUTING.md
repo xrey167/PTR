@@ -4,7 +4,7 @@ Every change should identify its layer: domain semantics, backend adapter, model
 
 ## Component documentation is docs-as-code
 
-Every first-class Rust crate owns `crates/<crate>/component.toml`. That file is the source of truth for:
+Every first-class Rust crate owns `crates/<crate>/component.toml`. That file is the human-maintained source of truth for:
 
 - current implementation;
 - missing target-architecture work;
@@ -13,6 +13,12 @@ Every first-class Rust crate owns `crates/<crate>/component.toml`. That file is 
 - technology evaluations;
 - decision records;
 - current automated checks.
+
+The generator also derives code footprint metrics directly from `src/` (Rust-file count, nonblank LOC and `#[test]` markers).
+
+### Freshness rule
+
+If a change touches `crates/<crate>/src/**` or `crates/<crate>/Cargo.toml`, the same change must update `crates/<crate>/component.toml`. CI checks this against the previous commit. This forces the implementation-status record to be reviewed whenever implementation changes.
 
 After changing implementation status or links, run:
 
@@ -25,6 +31,7 @@ This refreshes the generated block in each crate README and `docs/components/STA
 Before submitting:
 
 ```bash
+python3 scripts/check_component_metadata.py --base HEAD^
 python3 scripts/update_component_docs.py --check
 python3 scripts/check_repo.py
 cargo fmt --all -- --check
