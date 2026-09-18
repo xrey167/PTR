@@ -9,11 +9,12 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-18  
-**Code footprint:** 1 Rust source files · 433 nonblank source lines · 5 integration-test files · 12 `#[test]` markers
+**Code footprint:** 1 Rust source files · 470 nonblank source lines · 5 integration-test files · 13 `#[test]` markers
 
 ### Implemented now
 
 - Central runtime object wiring configuration, SemDB, ledger, materialized state, events and permissions
+- Durable standalone runtime constructor opens/replays FileLedger and reconstructs lifecycle/materialized state across restart
 - Text ingestion into revisioned semantic state
 - Current-revision, live-generation/revocation and capability/effect checks for ActionIR
 - Committed-event materialization and runtime event emission
@@ -26,12 +27,12 @@
 
 - Router-driven operator selection around the implemented bounded Pod-resume loop
 - Async isolate scheduler integration
-- Durable ledger/state backends
+- Configured raft-engine/raft-rs/Turso backend composition for production runtime modes
 - Streaming client response lifecycle and cancellation
 
 ### Next milestones
 
-- Replace reference conformance backend with first evaluated external/model-native adapter
+- Connect evaluated raft-engine/Turso adapters through typed backend config while preserving FileLedger reference mode
 - Add opaque backend checkpoint handles and async streaming around the implemented observation resume contract
 - Wire ptrd request handling beyond bootstrap ingestion
 
@@ -57,6 +58,7 @@
 - reference model-loop integration test
 - bounded verified Pod-observation resume-loop tests
 - revocation replay/restart integration test
+- durable FileLedger runtime reopen preserves revocation and materialized commit position
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->
