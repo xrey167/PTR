@@ -19,6 +19,8 @@ PTR is a **compiling architecture/research prototype**, not yet a complete model
 - dataset cards, experiment/evaluation validators, setup scripts, devcontainer/Docker and release scaffolding
 - supply-chain checks with cargo-audit/cargo-deny and Dependabot configuration
 - `ptrctl doctor` repository/configuration diagnostics
+- CI-tested dependency-free TypeScript SDK contract and static documentation landing page
+- release packaging with SHA-256 checksums, CycloneDX SBOM generation and GitHub/Sigstore provenance/SBOM attestations
 
 ## Executed evidence so far
 
@@ -34,7 +36,8 @@ PTR is a **compiling architecture/research prototype**, not yet a complete model
 - 19 architecture experiments remain planned; L001 is the only experiment with an executed scoped slice
 - external component candidates mostly lack comparative benchmark evidence
 - strong RAG/GraphRAG/editable-memory and matched plain-model comparative runs are not yet executed
-- release SBOM/signing and GitHub main-branch ruleset still require completion; repository-admin settings are documented in `docs/GITHUB_SETTINGS.md`
+- GitHub main-branch ruleset/repository-admin settings still require manual completion; recommendations are documented in `docs/GITHUB_SETTINGS.md`
+- the TypeScript SDK API remains contract-only until `ptr-server` freezes and implements the matching `/v1` endpoints
 
 ## Reproducibility
 
