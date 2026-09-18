@@ -49,7 +49,7 @@ A PTR system keeps **raw language and typed semantics in parallel**, reasons ove
 
 - [Technical architecture](docs/TECHNICAL_ARCHITECTURE.md)
 - [Architecture index](docs/architecture/README.md)
-- [Component index](docs/components/README.md)
+- [Component index](docs/components/README.md)\n- [Live component status](docs/components/STATUS.md)
 - [Technology stack](docs/TECH_STACK.md)
 - [Component contracts](docs/COMPONENT_CONTRACTS.md)
 - [Global invariants](docs/INVARIANTS.md)
