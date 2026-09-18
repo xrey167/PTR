@@ -19,15 +19,6 @@ impl<TInput, TOutput> Default for Service<TInput, TOutput> {
         }
     }
 
-    fn emit_trace(&self, event: TraceEvent) {
-        if let Err(error) = self.trace_sink.emit(&event) {
-            match error {
-                TraceError::SinkUnavailable { .. } | TraceError::Export { .. } => {
-                    // Explicit best-effort policy: telemetry cannot change semantic outcome.
-                }
-            }
-        }
-    }
 }
 
 impl<TInput, TOutput> Service<TInput, TOutput> {
@@ -40,7 +31,18 @@ impl<TInput, TOutput> Service<TInput, TOutput> {
         &mut self,
         backend: Arc<dyn Backend<TInput, TOutput>>,
     ) -> Option<Arc<dyn Backend<TInput, TOutput>>> {
-        self.backends.insert(backend.name(), backend)
+        let backend_name = backend.name().to_owned();
+        self.backends.insert(backend_name, backend)
+    }
+
+    fn emit_trace(&self, event: TraceEvent) {
+        if let Err(error) = self.trace_sink.emit(&event) {
+            match error {
+                TraceError::SinkUnavailable { .. } | TraceError::Export { .. } => {
+                    // Explicit best-effort policy: telemetry cannot change semantic outcome.
+                }
+            }
+        }
     }
 
     pub fn execute(
