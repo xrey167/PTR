@@ -1,0 +1,19 @@
+{
+  "type": "object",
+  "required": [
+    "revision",
+    "delta"
+  ],
+  "properties": {
+    "revision": {
+      "type": "integer"
+    },
+    "delta": {
+      "type": "object"
+    },
+    "provenance": {
+      "type": "array"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

@@ -1,0 +1,101 @@
+version = 1
+
+[[experiment]]
+id = "M001"
+path = "model/M001-semantic-slots"
+status = "planned"
+
+[[experiment]]
+id = "M002"
+path = "model/M002-typed-attention"
+status = "planned"
+
+[[experiment]]
+id = "M003"
+path = "model/M003-latent-recurrence"
+status = "planned"
+
+[[experiment]]
+id = "M004"
+path = "model/M004-operator-router"
+status = "planned"
+
+[[experiment]]
+id = "M005"
+path = "model/M005-epistemic-calibration"
+status = "planned"
+
+[[experiment]]
+id = "M006"
+path = "model/M006-ptr-diff"
+status = "planned"
+
+[[experiment]]
+id = "M007"
+path = "model/M007-model-event-stream"
+status = "planned"
+
+[[experiment]]
+id = "S001"
+path = "semdb/S001-invalidation"
+status = "planned"
+
+[[experiment]]
+id = "S002"
+path = "semdb/S002-snapshot-cancellation"
+status = "planned"
+
+[[experiment]]
+id = "R001"
+path = "runtime/R001-mailbox-backpressure"
+status = "planned"
+
+[[experiment]]
+id = "R002"
+path = "runtime/R002-unseen-pod-generalization"
+status = "planned"
+
+[[experiment]]
+id = "L001"
+path = "lifecycle/L001-revocation-crash"
+status = "planned"
+
+[[experiment]]
+id = "L002"
+path = "lifecycle/L002-raft-recovery"
+status = "planned"
+
+[[experiment]]
+id = "Q001"
+path = "retrieval/Q001-fusion"
+status = "planned"
+
+[[experiment]]
+id = "Q002"
+path = "retrieval/Q002-evidence-promotion"
+status = "planned"
+
+[[experiment]]
+id = "F001"
+path = "feedback/F001-generate-verify-repair"
+status = "planned"
+
+[[experiment]]
+id = "E001"
+path = "system/E001-end-to-end"
+status = "planned"
+
+[[experiment]]
+id = "E002"
+path = "system/E002-rag-baselines"
+status = "planned"
+
+[[experiment]]
+id = "E003"
+path = "system/E003-token-efficiency"
+status = "planned"
+
+[[experiment]]
+id = "E004"
+path = "system/E004-long-horizon"
+status = "planned"

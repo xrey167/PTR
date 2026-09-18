@@ -1,0 +1,6 @@
+id = "L001"
+status = "planned"
+hypothesis = "Can revoked generations ever resurrect across injected crashes?"
+metrics = "false accept count; recovery consistency"
+seeds = [17, 29, 43, 71, 101]
+results_dir = "results"

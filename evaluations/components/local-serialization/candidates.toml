@@ -1,0 +1,33 @@
+component = "local-serialization"
+status = "open"
+decision = "unlocked"
+
+[criteria]
+correctness = 0.3
+failure_semantics = 0.15
+latency = 0.12
+throughput = 0.1
+memory = 0.08
+portability = 0.07
+operability = 0.06
+integration_cost = 0.05
+license_fit = 0.04
+research_flexibility = 0.03
+
+[[candidate]]
+id = "rkyv"
+source = "external"
+status = "to-evaluate"
+evidence = []
+
+[[candidate]]
+id = "bincode"
+source = "external"
+status = "to-evaluate"
+evidence = []
+
+[[candidate]]
+id = "postcard"
+source = "external"
+status = "to-evaluate"
+evidence = []

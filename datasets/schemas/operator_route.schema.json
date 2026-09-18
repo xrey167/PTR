@@ -1,0 +1,19 @@
+{
+  "type": "object",
+  "required": [
+    "task",
+    "routes"
+  ],
+  "properties": {
+    "task": {
+      "type": "string"
+    },
+    "routes": {
+      "type": "array"
+    },
+    "cost_budget": {
+      "type": "number"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

@@ -1,0 +1,1 @@
+{"task":"Forecast a tabular market outcome with calibrated uncertainty","routes":[{"operator":"statistical","target":0.62},{"operator":"probabilistic","target":0.28},{"operator":"semantic","target":0.10}],"cost_budget":1.0}

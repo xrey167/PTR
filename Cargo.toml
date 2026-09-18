@@ -1,0 +1,33 @@
+[workspace]
+resolver = "2"
+members = ["crates/*", "bins/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+authors = ["PTR contributors"]
+
+[workspace.dependencies]
+ptr-types = { path = "crates/ptr-types" }
+ptr-protocol = { path = "crates/ptr-protocol" }
+ptr-ingress = { path = "crates/ptr-ingress" }
+ptr-semdb = { path = "crates/ptr-semdb" }
+ptr-core = { path = "crates/ptr-core" }
+ptr-model-api = { path = "crates/ptr-model-api" }
+ptr-exec = { path = "crates/ptr-exec" }
+ptr-pods = { path = "crates/ptr-pods" }
+ptr-router = { path = "crates/ptr-router" }
+ptr-verifier = { path = "crates/ptr-verifier" }
+ptr-feedback = { path = "crates/ptr-feedback" }
+ptr-ledger = { path = "crates/ptr-ledger" }
+ptr-state = { path = "crates/ptr-state" }
+ptr-memory = { path = "crates/ptr-memory" }
+ptr-search = { path = "crates/ptr-search" }
+ptr-storage = { path = "crates/ptr-storage" }
+ptr-net = { path = "crates/ptr-net" }
+ptr-events = { path = "crates/ptr-events" }
+ptr-observe = { path = "crates/ptr-observe" }
+ptr-inspect = { path = "crates/ptr-inspect" }
+ptr-security = { path = "crates/ptr-security" }
+ptr-server = { path = "crates/ptr-server" }

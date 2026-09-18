@@ -1,0 +1,6 @@
+id = "S001"
+status = "planned"
+hypothesis = "Does dependency-aware invalidation avoid unnecessary recomputation while preserving exact semantics?"
+metrics = "affected-set precision/recall; recompute time"
+seeds = [17, 29, 43, 71, 101]
+results_dir = "results"

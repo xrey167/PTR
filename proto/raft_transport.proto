@@ -1,0 +1,3 @@
+syntax = "proto3";
+package ptr.raft.v1;
+message RaftEnvelope { uint64 from = 1; uint64 to = 2; bytes raft_message = 3; }

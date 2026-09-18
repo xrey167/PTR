@@ -1,0 +1,6 @@
+id = "M007"
+status = "planned"
+hypothesis = "Does interleaved structured model/runtime execution reduce latency and invalid tool calls?"
+metrics = "task time; tool errors; resumability"
+seeds = [17, 29, 43, 71, 101]
+results_dir = "results"

@@ -1,0 +1,3 @@
+suite = "ood-pods"
+version = 1
+metrics = ["contract_generalization", "name_invariance", "invalid_call_rate"]

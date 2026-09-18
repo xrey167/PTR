@@ -1,0 +1,6 @@
+id = "M004"
+status = "planned"
+hypothesis = "Does learned reasoning-method routing outperform LLM-only reasoning?"
+metrics = "regret; quality-cost utility; route accuracy"
+seeds = [17, 29, 43, 71, 101]
+results_dir = "results"

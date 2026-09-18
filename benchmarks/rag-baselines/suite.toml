@@ -1,0 +1,3 @@
+suite = "rag-baselines"
+version = 1
+metrics = ["answer_quality", "latency_ms", "update_correctness", "delete_correctness"]

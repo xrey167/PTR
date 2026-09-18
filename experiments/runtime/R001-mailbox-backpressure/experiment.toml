@@ -1,0 +1,6 @@
+id = "R001"
+status = "planned"
+hypothesis = "Do bounded typed mailboxes give predictable overload behavior?"
+metrics = "tail latency; drops/refusals; memory"
+seeds = [17, 29, 43, 71, 101]
+results_dir = "results"

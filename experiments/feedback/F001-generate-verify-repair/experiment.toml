@@ -1,0 +1,6 @@
+id = "F001"
+status = "planned"
+hypothesis = "Does candidate repair outperform rewrite-only and single-shot?"
+metrics = "success; verifier calls; compute"
+seeds = [17, 29, 43, 71, 101]
+results_dir = "results"

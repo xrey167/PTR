@@ -1,0 +1,14 @@
+[project]
+name = "ptr-training"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "Training and evaluation utilities for PTR"
+dependencies = []
+
+[project.scripts]
+ptr-dataset-validate = "ptr_training.validate_dataset:main"
+ptr-dataset-manifest = "ptr_training.make_manifest:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"

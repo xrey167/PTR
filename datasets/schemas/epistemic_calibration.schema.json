@@ -1,0 +1,18 @@
+{
+  "type": "object",
+  "required": [
+    "question",
+    "distribution",
+    "outcome"
+  ],
+  "properties": {
+    "question": {
+      "type": "string"
+    },
+    "distribution": {
+      "type": "object"
+    },
+    "outcome": {}
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

@@ -1,0 +1,6 @@
+id = "M006"
+status = "planned"
+hypothesis = "Can parallel block refinement match/exceed AR structured reasoning at lower sequential depth?"
+metrics = "quality; denoise steps; latency; convergence"
+seeds = [17, 29, 43, 71, 101]
+results_dir = "results"

@@ -1,0 +1,6 @@
+id = "E002"
+status = "planned"
+hypothesis = "PTR memory/search versus strong RAG and GraphRAG baselines."
+metrics = "quality; latency; update/delete correctness"
+seeds = [17, 29, 43, 71, 101]
+results_dir = "results"

@@ -1,0 +1,35 @@
+{
+  "name": "PTR",
+  "version": "0.1.0-scaffold",
+  "runtime_language": "Rust",
+  "planes": [
+    "ingress",
+    "semdb",
+    "core-model",
+    "execution",
+    "knowledge",
+    "causal-authority",
+    "distributed",
+    "feedback"
+  ],
+  "authority_order": [
+    "committed-ledger",
+    "validated-semantic-state",
+    "semantic-capsule",
+    "materialized-view",
+    "derived-index",
+    "cache",
+    "model-hidden-state"
+  ],
+  "model_families": [
+    "PTR-AR",
+    "PTR-Diff"
+  ],
+  "core_invariants": [
+    "raw-and-typed-coexist",
+    "revision-not-generation",
+    "search-not-authority",
+    "hard-action-boundary",
+    "backend-independent-contracts"
+  ]
+}

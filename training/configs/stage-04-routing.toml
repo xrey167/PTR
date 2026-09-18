@@ -1,0 +1,2 @@
+task = "reasoning_operator_routing"
+objective = "quality_minus_compute_cost"

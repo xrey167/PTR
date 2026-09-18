@@ -1,0 +1,2 @@
+task = "epistemic_calibration"
+objective = "proper_scoring_and_unknown_recognition"

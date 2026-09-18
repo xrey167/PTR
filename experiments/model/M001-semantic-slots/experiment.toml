@@ -1,0 +1,6 @@
+id = "M001"
+status = "planned"
+hypothesis = "Do typed semantic slots improve OOD semantic fidelity under matched compute?"
+metrics = "semantic-slot accuracy; hard-constraint fidelity; token efficiency"
+seeds = [17, 29, 43, 71, 101]
+results_dir = "results"

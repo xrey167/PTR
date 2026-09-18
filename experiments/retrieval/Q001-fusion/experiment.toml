@@ -1,0 +1,6 @@
+id = "Q001"
+status = "planned"
+hypothesis = "Which retrieval mixture best supports evidence discovery?"
+metrics = "recall; MRR; tokens; latency"
+seeds = [17, 29, 43, 71, 101]
+results_dir = "results"

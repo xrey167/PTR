@@ -1,1 +1,0 @@
-PTR repository bootstrap payload. This temporary directory will be removed automatically after the full architecture source tree is imported.

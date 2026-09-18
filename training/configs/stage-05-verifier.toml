@@ -1,0 +1,2 @@
+task = "candidate_verify_critique_repair"
+objective = "hard_violation_recall_and_repair_success"

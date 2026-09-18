@@ -1,0 +1,33 @@
+component = "introspection"
+status = "open"
+decision = "unlocked"
+
+[criteria]
+correctness = 0.3
+failure_semantics = 0.15
+latency = 0.12
+throughput = 0.1
+memory = 0.08
+portability = 0.07
+operability = 0.06
+integration_cost = 0.05
+license_fit = 0.04
+research_flexibility = 0.03
+
+[[candidate]]
+id = "valuable"
+source = "external"
+status = "to-evaluate"
+evidence = []
+
+[[candidate]]
+id = "serde-json-tree"
+source = "external"
+status = "to-evaluate"
+evidence = []
+
+[[candidate]]
+id = "custom-inspect"
+source = "internal"
+status = "to-evaluate"
+evidence = []

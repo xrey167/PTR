@@ -1,0 +1,4 @@
+syntax = "proto3";
+package ptr.model.v1;
+message ModelRequest { string request_id = 1; uint64 revision = 2; string raw_text = 3; }
+message ModelEvent { string kind = 1; bytes payload = 2; }

@@ -1,0 +1,4 @@
+family = "autoregressive"
+semantic_slots = 64
+latent_steps_max = 12
+structured_action_decode = true

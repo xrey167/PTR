@@ -1,0 +1,10 @@
+[package]
+name = "ptr-worker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+ptr-types = { workspace = true }
+ptr-pods = { workspace = true }

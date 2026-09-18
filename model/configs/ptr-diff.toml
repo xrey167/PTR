@@ -1,0 +1,5 @@
+family = "diffusion"
+canvas_slots = 64
+denoise_steps = 8
+parallel_slot_refinement = true
+structured_action_decode = true

@@ -1,0 +1,1 @@
+{"capability_contract":{"input":"FeatureVector","output":"Distribution<Direction>"},"unseen_pod_name":"stats_17.forward","expected_action":{"capability":"Predict<FeatureVector,Distribution<Direction>>"}}

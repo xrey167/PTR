@@ -1,0 +1,3 @@
+suite = "semantic-typing"
+version = 1
+metrics = ["typed_exact_match", "hard_claim_recall", "negation_accuracy", "ambiguity_calibration"]

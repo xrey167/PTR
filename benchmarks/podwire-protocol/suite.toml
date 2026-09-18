@@ -1,0 +1,3 @@
+suite = "podwire-protocol"
+version = 1
+metrics = ["frame_exact_match", "schema_validity", "unseen_name_generalization"]

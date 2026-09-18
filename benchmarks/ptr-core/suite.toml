@@ -1,0 +1,3 @@
+suite = "ptr-core"
+version = 1
+metrics = ["task_success", "hard_violations", "tokens", "latency_ms"]

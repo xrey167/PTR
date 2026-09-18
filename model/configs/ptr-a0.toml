@@ -1,0 +1,11 @@
+family = "autoregressive"
+model_width = 512
+layers = 12
+attention_heads = 8
+semantic_slots = 32
+latent_steps_max = 8
+typed_attention = true
+epistemic_types = true
+operator_router = true
+action_head = true
+verifier_head = true

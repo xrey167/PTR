@@ -1,0 +1,126 @@
+version = 1
+
+[[component]]
+id = "allocator"
+path = "components/allocator/candidates.toml"
+status = "open"
+
+[[component]]
+id = "code-quality-verifier"
+path = "components/code-quality-verifier/candidates.toml"
+status = "open"
+
+[[component]]
+id = "consensus"
+path = "components/consensus/candidates.toml"
+status = "open"
+
+[[component]]
+id = "distributed-data-compute"
+path = "components/distributed-data-compute/candidates.toml"
+status = "open"
+
+[[component]]
+id = "distributed-search"
+path = "components/distributed-search/candidates.toml"
+status = "open"
+
+[[component]]
+id = "environment-runtime"
+path = "components/environment-runtime/candidates.toml"
+status = "open"
+
+[[component]]
+id = "event-streaming"
+path = "components/event-streaming/candidates.toml"
+status = "open"
+
+[[component]]
+id = "execution-runtime"
+path = "components/execution-runtime/candidates.toml"
+status = "open"
+
+[[component]]
+id = "gpu-vector-search"
+path = "components/gpu-vector-search/candidates.toml"
+status = "open"
+
+[[component]]
+id = "inference-serving"
+path = "components/inference-serving/candidates.toml"
+status = "open"
+
+[[component]]
+id = "ingress-classifier"
+path = "components/ingress-classifier/candidates.toml"
+status = "open"
+
+[[component]]
+id = "introspection"
+path = "components/introspection/candidates.toml"
+status = "open"
+
+[[component]]
+id = "ledger"
+path = "components/ledger/candidates.toml"
+status = "open"
+
+[[component]]
+id = "lexical-search"
+path = "components/lexical-search/candidates.toml"
+status = "open"
+
+[[component]]
+id = "local-serialization"
+path = "components/local-serialization/candidates.toml"
+status = "open"
+
+[[component]]
+id = "local-vector-search"
+path = "components/local-vector-search/candidates.toml"
+status = "open"
+
+[[component]]
+id = "materialized-state"
+path = "components/materialized-state/candidates.toml"
+status = "open"
+
+[[component]]
+id = "model-framework"
+path = "components/model-framework/candidates.toml"
+status = "open"
+
+[[component]]
+id = "network"
+path = "components/network/candidates.toml"
+status = "open"
+
+[[component]]
+id = "network-codec"
+path = "components/network-codec/candidates.toml"
+status = "open"
+
+[[component]]
+id = "object-storage"
+path = "components/object-storage/candidates.toml"
+status = "open"
+
+[[component]]
+id = "observability"
+path = "components/observability/candidates.toml"
+status = "open"
+
+[[component]]
+id = "security-context"
+path = "components/security-context/candidates.toml"
+status = "open"
+
+[[component]]
+id = "semantic-db"
+path = "components/semantic-db/candidates.toml"
+status = "open"
+
+[[component]]
+id = "structural-code-search"
+path = "components/structural-code-search/candidates.toml"
+status = "open"

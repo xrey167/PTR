@@ -1,0 +1,6 @@
+id = "Q002"
+status = "planned"
+hypothesis = "Does exact-source verification prevent search-hit hallucination?"
+metrics = "false Known promotion; task success"
+seeds = [17, 29, 43, 71, 101]
+results_dir = "results"

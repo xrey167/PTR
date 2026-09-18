@@ -1,0 +1,15 @@
+[[ablation]]
+id = "no-semantic-slots"
+disable = ["semantic_slots"]
+[[ablation]]
+id = "no-typed-attention"
+disable = ["typed_attention"]
+[[ablation]]
+id = "no-latent-recurrence"
+disable = ["latent_recurrence"]
+[[ablation]]
+id = "no-router"
+disable = ["operator_router"]
+[[ablation]]
+id = "no-verifier-head"
+disable = ["verifier_head"]

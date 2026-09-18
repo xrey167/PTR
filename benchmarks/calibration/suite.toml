@@ -1,0 +1,3 @@
+suite = "calibration"
+version = 1
+metrics = ["brier", "ece", "unknown_recall", "false_certainty"]

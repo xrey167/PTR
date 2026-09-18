@@ -1,0 +1,3 @@
+task = "podwire_action_ir"
+objective = "exact_structured_output"
+required_splits = ["train", "iid", "ood_composition"]

@@ -1,0 +1,19 @@
+{
+  "type": "object",
+  "required": [
+    "input",
+    "output"
+  ],
+  "properties": {
+    "input": {
+      "type": "string"
+    },
+    "output": {
+      "type": "string"
+    },
+    "session": {
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

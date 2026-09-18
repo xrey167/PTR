@@ -1,0 +1,6 @@
+id = "E004"
+status = "planned"
+hypothesis = "Test state fidelity over long multi-turn projects and revisions."
+metrics = "semantic preservation; stale-state errors; context tokens"
+seeds = [17, 29, 43, 71, 101]
+results_dir = "results"

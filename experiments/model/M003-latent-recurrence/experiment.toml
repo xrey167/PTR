@@ -1,0 +1,6 @@
+id = "M003"
+status = "planned"
+hypothesis = "Can latent recurrent steps reduce explicit reasoning tokens without quality loss?"
+metrics = "task success; tokens; wall time; latent steps"
+seeds = [17, 29, 43, 71, 101]
+results_dir = "results"

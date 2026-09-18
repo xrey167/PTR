@@ -1,0 +1,3 @@
+task = "raw_to_typed"
+objective = "semantic_alignment"
+required_splits = ["train", "iid", "ood"]

@@ -1,0 +1,22 @@
+sequenceDiagram
+participant U as User
+participant I as Ingress
+participant S as SemDB
+participant C as PTR Core
+participant R as Runtime
+participant P as Pod
+participant V as Verifier
+participant L as Ledger
+U->>I: raw input
+I->>S: verified semantic delta
+S->>C: immutable snapshot rN
+C->>R: PodRequested / ModelEvent
+R->>P: typed request
+P-->>R: observation
+R->>V: verify observation
+V->>S: committed evidence delta
+S->>C: snapshot rN+1
+C->>R: ActionReady
+R->>V: hard action boundary
+V-->>R: pass/fail
+R->>L: durable semantic/action event

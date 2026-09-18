@@ -1,0 +1,3 @@
+syntax = "proto3";
+package ptr.events.v1;
+message RuntimeEvent { uint64 sequence = 1; string kind = 2; bytes payload = 3; }

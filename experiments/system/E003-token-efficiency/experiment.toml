@@ -1,0 +1,6 @@
+id = "E003"
+status = "planned"
+hypothesis = "Measure quality per generated token and per FLOP proxy."
+metrics = "quality/token; quality/second"
+seeds = [17, 29, 43, 71, 101]
+results_dir = "results"

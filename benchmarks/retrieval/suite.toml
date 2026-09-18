@@ -1,0 +1,3 @@
+suite = "retrieval"
+version = 1
+metrics = ["recall_at_10", "mrr", "evidence_precision", "tokens_to_answer"]

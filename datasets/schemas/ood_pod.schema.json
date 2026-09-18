@@ -1,0 +1,20 @@
+{
+  "type": "object",
+  "required": [
+    "capability_contract",
+    "unseen_pod_name",
+    "expected_action"
+  ],
+  "properties": {
+    "capability_contract": {
+      "type": "object"
+    },
+    "unseen_pod_name": {
+      "type": "string"
+    },
+    "expected_action": {
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

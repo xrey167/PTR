@@ -1,0 +1,2 @@
+task = "environment_rl"
+objective = "task_success_minus_cost_with_hard_invariants"

@@ -1,0 +1,6 @@
+id = "M002"
+status = "planned"
+hypothesis = "Do type/epistemic/validity biases improve constraint retention?"
+metrics = "hard violations; calibration; latency"
+seeds = [17, 29, 43, 71, 101]
+results_dir = "results"

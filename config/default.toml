@@ -1,0 +1,21 @@
+[runtime]
+mode = "standalone"
+mailbox_capacity = 128
+max_parallel_candidates = 4
+
+[semantic]
+cancel_stale_revisions = true
+retain_raw_evidence = true
+
+[action_boundary]
+require_capability = true
+require_live_generation = true
+require_current_revision = true
+
+[observability]
+structured_tracing = true
+async_backtrace = false
+
+[research]
+allow_unlocked_components = true
+require_experiment_manifest = true

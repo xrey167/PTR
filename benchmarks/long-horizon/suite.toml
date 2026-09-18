@@ -1,0 +1,3 @@
+suite = "long-horizon"
+version = 1
+metrics = ["semantic_preservation", "revision_staleness", "active_context_tokens"]

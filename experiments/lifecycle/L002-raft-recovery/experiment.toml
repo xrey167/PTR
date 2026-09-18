@@ -1,0 +1,6 @@
+id = "L002"
+status = "planned"
+hypothesis = "Does clustered state converge after partitions/restarts?"
+metrics = "invariant violations; recovery time"
+seeds = [17, 29, 43, 71, 101]
+results_dir = "results"

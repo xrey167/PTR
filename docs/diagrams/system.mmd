@@ -1,0 +1,13 @@
+flowchart TB
+U[User / Data] --> I[Typed Ingress]
+I --> S[Incremental SemDB]
+S --> C[PTR Core]
+C --> R[Rust Runtime]
+R --> P[Pods]
+R --> V[Verifier Fabric]
+P --> S
+V --> S
+S --> Q[Consensus + Ledger]
+Q --> M[Materialized State]
+M --> K[Semantic Capsules + Derived Indexes]
+K --> P
