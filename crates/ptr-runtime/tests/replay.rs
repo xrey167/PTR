@@ -51,7 +51,6 @@ fn revoked_generation_does_not_resurrect_after_replay() {
     );
 }
 
-
 #[test]
 fn durable_runtime_reopen_preserves_revocation_boundary() {
     let nonce = SystemTime::now()
