@@ -75,10 +75,12 @@ fn unknown_and_revoked_generations_are_rejected() {
     );
 
     runtime.set_live_generation("artifact:a", Generation(7));
-    runtime.commit(LedgerEvent::Revoked {
-        subject: "artifact:a".into(),
-        generation: Generation(7),
-    });
+    runtime
+        .commit(LedgerEvent::Revoked {
+            subject: "artifact:a".into(),
+            generation: Generation(7),
+        })
+        .unwrap();
 
     assert_eq!(
         runtime.authorize_action(&action),
@@ -100,10 +102,12 @@ fn unknown_and_revoked_generations_are_rejected() {
 #[test]
 fn committed_event_materializes() {
     let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
-    runtime.commit(LedgerEvent::HardConstraintCommitted {
-        key: "no-network".into(),
-        generation: Generation(3),
-    });
+    runtime
+        .commit(LedgerEvent::HardConstraintCommitted {
+            key: "no-network".into(),
+            generation: Generation(3),
+        })
+        .unwrap();
     assert_eq!(
         runtime
             .materialized_state()
