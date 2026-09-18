@@ -55,6 +55,32 @@ impl TraceEvent {
         self.fields.insert(key.into(), value);
         self
     }
+
+    pub fn iter_fields(&self) -> impl Iterator<Item = (&str, &TraceValue)> + '_ {
+        self.fields
+            .iter()
+            .map(|(key, value)| (key.as_str(), value))
+    }
+
+    pub fn fields_matching<'event, F>(
+        &'event self,
+        mut predicate: F,
+    ) -> impl Iterator<Item = (&'event str, &'event TraceValue)> + 'event
+    where
+        F: FnMut(&str, &TraceValue) -> bool + 'event,
+    {
+        self.iter_fields().filter_map(move |(key, value)| {
+            predicate(key, value).then_some((key, value))
+        })
+    }
+
+    pub fn try_for_each_field<E, F>(&self, mut visitor: F) -> Result<(), E>
+    where
+        F: FnMut(&str, &TraceValue) -> Result<(), E>,
+    {
+        self.iter_fields()
+            .try_for_each(|(key, value)| visitor(key, value))
+    }
 }
 
 pub trait TraceSink: Send + Sync {
@@ -107,6 +133,38 @@ mod tests {
                 event.fields.get(fields::OUTCOME),
                 Some(&TraceValue::String("second".into()))
             );
+        }
+
+
+        #[test]
+        fn iterator_adapters_filter_named_fields_with_closure() {
+            let event = TraceEvent::new(TraceLevel::Debug, "iter")
+                .with_field(fields::OUTCOME, TraceValue::String("ok".into()))
+                .with_field(fields::ERROR_CODE, TraceValue::String("none".into()));
+
+            let fields = event
+                .fields_matching(|key, _| key.starts_with("error."))
+                .collect::<Vec<_>>();
+
+            assert_eq!(fields.len(), 1);
+            assert_eq!(fields[0].0, fields::ERROR_CODE);
+        }
+
+        #[test]
+        fn try_for_each_field_short_circuits_on_named_failure() {
+            let event = TraceEvent::new(TraceLevel::Debug, "try")
+                .with_field("a", TraceValue::U64(1))
+                .with_field("b", TraceValue::U64(2));
+
+            let result = event.try_for_each_field(|key, _| {
+                if key == "b" {
+                    Err("stop")
+                } else {
+                    Ok(())
+                }
+            });
+
+            assert_eq!(result, Err("stop"));
         }
     }
 
