@@ -34,3 +34,32 @@ pub fn validate_request<T>(request: ExecuteRequestRef<'_, T>) -> Result<(), Vali
     check_backend_name(request.preferred_backend)?;
     Ok(())
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_backend_name_returns_named_invalid_value() {
+        assert_eq!(
+            check_backend_name(Some("   ")),
+            Err(ValidationError::InvalidValue {
+                field: "preferred_backend",
+                value: "   ".into(),
+                message: "preferred backend must not be empty",
+            })
+        );
+    }
+
+    #[test]
+    fn empty_request_key_returns_named_missing_field() {
+        assert_eq!(
+            check_request_key(""),
+            Err(ValidationError::MissingField {
+                field: "key",
+                message: "request key must not be empty",
+            })
+        );
+    }
+}
