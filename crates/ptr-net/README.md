@@ -8,29 +8,28 @@
 
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
-**Maturity:** `prototype`  
+**Maturity:** `scaffold`  
 **Last reviewed:** 2026-09-18  
-**Code footprint:** 1 Rust source files · 136 nonblank source lines · 2 integration-test files · 1 `#[test]` markers
+**Code footprint:** 1 Rust source files · 14 nonblank source lines · 1 integration-test files · 1 `#[test]` markers
 
 ### Implemented now
 
 - ALPN constants for raft, PodWire, model, blob and events protocols
 - NodeIdentity scaffold
 - Provider-independent Transport trait
-- Feature-gated Iroh 0.35 direct QUIC adapter with PTR ALPNs and authenticated peer identity
-- Iroh response path keeps the connection alive through peer-observed graceful completion
-- Iroh 0.35 feature uses upstream-release-compatible transitive pins to preserve PTR Rust 1.85 MSRV
+- Current Iroh adapter is isolated under integrations/network/iroh-current so its Rust/security lifecycle does not constrain ptr-net core
 
 ### Missing for the target architecture
 
+- Core async transport/session contract beyond the current synchronous placeholder trait
 - Peer discovery/session lifecycle
 - Retry/idempotency and backpressure behavior
 - Raft/PodWire/blob stream adapters
 
 ### Next milestones
 
-- Extend Iroh adapter from local request/response to reusable connection/session management and Raft/PodWire channels
-- Add retry/idempotency/backpressure semantics around authenticated Iroh sessions
+- Evaluate the isolated current-Iroh adapter with authenticated local roundtrip and security audit
+- Promote an async PTR-owned transport/session interface after Iroh/alternative comparison
 - Exercise partition/reconnect behavior in L002
 
 ### Linked experiments
@@ -49,8 +48,8 @@
 
 ### Current automated checks
 
-- Iroh local direct request/response roundtrip verifies authenticated peer identity and ALPN routing
-- workspace fmt/check/test/clippy
+- core workspace fmt/check/test/clippy
+- isolated Iroh-current adapter has its own toolchain/lock/security CI
 
 <!-- PTR:STATUS:END -->
 
