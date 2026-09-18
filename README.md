@@ -101,6 +101,11 @@ A PTR system keeps **raw language and typed semantics in parallel**, reasons ove
 - `research/` — novelty, prior art, baselines, falsification and ADRs
 - `docs/` — architecture and diagrams
 - `proto/` — wire schemas; domain types remain separate
+- `sdk/` — client contracts; TypeScript SDK is CI-tested on Node 22/24
+- `docs-site/` — dependency-free static documentation landing page
+- `hardware/` — benchmark hardware profiles
+- `fuzz/` — protocol fuzz targets kept outside the production workspace
+- `release/` — release/SBOM/provenance configuration
 
 ## Current implementation phase
 
@@ -114,3 +119,11 @@ The Rust workspace is a compiling contract/scaffold baseline. Documentation inte
 4. Implement PTR-Core A0: semantic slots, typed attention, latent recurrence and routing.
 5. Run ablations before scaling.
 6. Add cluster consensus after standalone correctness is proven.
+
+## Reproducibility and evidence
+
+- Rust is pinned by `rust-toolchain.toml` and `Cargo.lock`; CI tests Rust 1.85 MSRV plus current stable on Linux and Windows.
+- Python training utilities are locked through `training/uv.lock`.
+- Component and experiment registries are validated in CI.
+- L001 currently has a scoped five-seed reference crash-tail run under `experiments/lifecycle/L001-revocation-crash/results/`; it remains `running`, not completed.
+- Release builds generate CycloneDX SBOMs and GitHub/Sigstore attestations.
