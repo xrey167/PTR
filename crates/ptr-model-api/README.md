@@ -10,13 +10,14 @@
 
 **Maturity:** `scaffold`  
 **Last reviewed:** 2026-09-18  
-**Code footprint:** 4 Rust source files · 48 nonblank source lines · 0 `#[test]` markers
+**Code footprint:** 4 Rust source files · 64 nonblank source lines · 0 `#[test]` markers
 
 ### Implemented now
 
 - Backend-neutral ModelRequest with request/revision/raw text
 - ModelEvent enum for slot, hypothesis, confidence, operator, Pod, candidate, action, token and completion events
 - InferenceBackend trait and ModelError
+- Deterministic ReferenceEchoBackend for runtime conformance tests
 
 ### Missing for the target architecture
 
@@ -30,7 +31,7 @@
 
 - Convert infer() from Vec-returning sync call to cancellable async stream
 - Add backend capability descriptor
-- Implement first external baseline adapter and conformance tests
+- Implement first external model adapter after inference-serving evaluation
 
 ### Linked experiments
 
@@ -49,6 +50,7 @@
 
 ### Current automated checks
 
+- reference backend request/event conformance test
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->

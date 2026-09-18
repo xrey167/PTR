@@ -421,6 +421,7 @@ dependencies = [
  "ptr-core",
  "ptr-events",
  "ptr-ledger",
+ "ptr-model-api",
  "ptr-security",
  "ptr-semdb",
  "ptr-state",

@@ -9,7 +9,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-18  
-**Code footprint:** 1 Rust source files · 165 nonblank source lines · 0 `#[test]` markers
+**Code footprint:** 1 Rust source files · 242 nonblank source lines · 0 `#[test]` markers
 
 ### Implemented now
 
@@ -17,17 +17,17 @@
 - Repository default TOML parsing
 - Basic configuration validation
 - Typed environment override layer for runtime/action/semantic/observability/research settings
+- Typed CLI override parser with config-path selection and file→environment→CLI precedence
 
 ### Missing for the target architecture
 
-- CLI override layer
 - Per-backend typed configuration sections
 - Secret/reference types instead of plaintext secret values
 - Config schema generation and migration/version policy
 
 ### Next milestones
 
-- Add CLI override precedence after file/environment layers
+- Extend typed config to backend-specific adapter sections without leaking secrets
 - Generate config schema and example profiles
 - Wire ptr-config into ptr-runtime and ptrd
 
@@ -48,6 +48,7 @@
 
 - repository default config parse/validate test
 - typed environment override tests
+- CLI precedence and unknown-argument tests
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->

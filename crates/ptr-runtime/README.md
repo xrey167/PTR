@@ -9,7 +9,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-18  
-**Code footprint:** 1 Rust source files · 168 nonblank source lines · 0 `#[test]` markers
+**Code footprint:** 1 Rust source files · 223 nonblank source lines · 0 `#[test]` markers
 
 ### Implemented now
 
@@ -17,6 +17,8 @@
 - Text ingestion into revisioned semantic state
 - Current-revision, live-generation/revocation and capability/effect checks for ActionIR
 - Committed-event materialization and runtime event emission
+- Committed-event replay rebuilds lifecycle state and preserves revocation
+- Reference InferenceBackend request loop runs against a revisioned ModelRequest and emits completion event
 
 ### Missing for the target architecture
 
@@ -27,7 +29,7 @@
 
 ### Next milestones
 
-- Wire baseline InferenceBackend into request lifecycle
+- Replace reference conformance backend with first evaluated external/model-native adapter
 - Add verifier-gated observation loop
 - Wire ptrd request handling beyond bootstrap ingestion
 
@@ -50,6 +52,8 @@
 ### Current automated checks
 
 - runtime ingestion/revision/generation/capability/materialization integration tests
+- reference model-loop integration test
+- revocation replay/restart integration test
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->

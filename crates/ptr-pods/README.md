@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-18  
-**Code footprint:** 1 Rust source files · 46 nonblank source lines · 0 `#[test]` markers
+**Code footprint:** 1 Rust source files · 87 nonblank source lines · 0 `#[test]` markers
 
 ### Implemented now
 
@@ -18,6 +18,7 @@
 - Typed Pod associated Input/Output/Error contract
 - Ready and Revoked lease typestates
 - Revocation consumes Ready lease and produces Revoked lease
+- invoke_with_lease requires PodLease<Ready>; compile-fail doctest rejects revoked lease
 
 ### Missing for the target architecture
 
@@ -49,6 +50,7 @@
 
 ### Current automated checks
 
+- ready/wrong-Pod lease integration tests and revoked compile-fail doctest
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->

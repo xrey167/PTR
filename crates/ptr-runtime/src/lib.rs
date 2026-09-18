@@ -139,7 +139,10 @@ impl PtrRuntime {
                 raw_text,
             })
             .map_err(|error| RuntimeError::Model(error.0))?;
-        if events.iter().any(|event| matches!(event, ModelEvent::Finished)) {
+        if events
+            .iter()
+            .any(|event| matches!(event, ModelEvent::Finished))
+        {
             self.emit(RuntimeEvent::RequestFinished(request_id));
         }
         Ok(events)
