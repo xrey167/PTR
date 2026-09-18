@@ -48,7 +48,8 @@ evidence = []
 [[candidate]]
 id = "rustic+cargo-mode"
 source = "external-composition"
-status = "overlap-experiment"
+status = "to-evaluate"
+purpose = "overlap-experiment"
 repositories = [
   "https://github.com/emacs-rustic/rustic",
   "https://github.com/ayrat555/cargo-mode",
