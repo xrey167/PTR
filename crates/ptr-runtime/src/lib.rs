@@ -447,10 +447,9 @@ impl PtrRuntime {
     pub fn authorize_action(&self, action: &ActionIr) -> Result<(), RuntimeError> {
         match self.authorization_decision(action) {
             AuthorizationDecision::Allow(_) => Ok(()),
-            AuthorizationDecision::Deny(AuthorizationDenial::StaleRevision {
-                action,
-                current,
-            }) => Err(RuntimeError::StaleRevision { action, current }),
+            AuthorizationDecision::Deny(AuthorizationDenial::StaleRevision { action, current }) => {
+                Err(RuntimeError::StaleRevision { action, current })
+            }
             AuthorizationDecision::Deny(AuthorizationDenial::UnknownGeneration { target }) => {
                 Err(RuntimeError::UnknownGeneration { target })
             }
