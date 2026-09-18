@@ -14,6 +14,7 @@ jobs:
       - run: cargo +stable fmt --all -- --check
       - run: cargo +stable clippy --workspace --all-targets -- -D warnings
       - run: cargo +stable doc --workspace --no-deps --locked
+      - run: cargo +stable test -p ptr-observe --features tracing-adapter --locked
         env:
           RUSTDOCFLAGS: "-D warnings"
 
