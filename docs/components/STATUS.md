@@ -5,7 +5,7 @@
 
 **Component count:** 24  
 **Maturity distribution:** `foundation`: 1, `prototype`: 11, `research-scaffold`: 1, `scaffold`: 11  
-**Rust footprint:** 45 source files · 3324 nonblank source lines · 49 integration-test files · 71 `#[test]` markers
+**Rust footprint:** 45 source files · 3372 nonblank source lines · 49 integration-test files · 73 `#[test]` markers
 
 | Component | Maturity | Rust files | LOC | Test files | Tests | Implemented items | Missing items | Experiments | Evaluations |
 |---|---:|---:|---:|---:|---:|---:|---:|---|---|
@@ -20,7 +20,7 @@
 | [ptr-memory](../../crates/ptr-memory/README.md) | `scaffold` | 1 | 31 | 1 | 1 | 3 | 5 | Q002:planned, E002:planned, E004:planned | — |
 | [ptr-model-api](../../crates/ptr-model-api/README.md) | `scaffold` | 4 | 83 | 2 | 2 | 5 | 5 | M007:planned, E001:planned, E003:planned | inference-serving:open |
 | [ptr-net](../../crates/ptr-net/README.md) | `prototype` | 1 | 136 | 2 | 1 | 6 | 3 | L002:planned, E001:planned | network:open |
-| [ptr-observe](../../crates/ptr-observe/README.md) | `scaffold` | 6 | 285 | 4 | 8 | 7 | 5 | F001:planned, E003:planned | observability:open |
+| [ptr-observe](../../crates/ptr-observe/README.md) | `scaffold` | 6 | 333 | 4 | 10 | 8 | 5 | F001:planned, E003:planned | observability:open |
 | [ptr-pods](../../crates/ptr-pods/README.md) | `prototype` | 1 | 125 | 3 | 4 | 6 | 4 | R002:planned, E001:planned | environment-runtime:open |
 | [ptr-protocol](../../crates/ptr-protocol/README.md) | `scaffold` | 2 | 104 | 2 | 2 | 5 | 3 | R002:planned, E001:planned | network-codec:open, local-serialization:open |
 | [ptr-router](../../crates/ptr-router/README.md) | `scaffold` | 1 | 30 | 1 | 1 | 2 | 5 | M004:planned, R002:planned, E003:planned | inference-serving:open, distributed-data-compute:open |
