@@ -1,0 +1,32 @@
+name: one-shot-m001-pilot
+on:
+  push:
+    paths:
+      - '.github/workflows/one-shot-m001-pilot.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  pilot:
+    if: github.ref == 'refs/heads/main' && github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run five-seed PTR-A0 mechanism pilot
+        run: |
+          mkdir -p /tmp/m001
+          for seed in 17 29 43 71 101; do
+            cargo +stable run --release --manifest-path model/burn-a0/Cargo.toml --example m001_pilot --locked -- "$seed" 160 > "/tmp/m001/seed-$seed.json"
+          done
+      - name: Aggregate pilot
+        run: python experiments/model/M001-semantic-slots/pilot_aggregate.py /tmp/m001/*.json
+      - name: Commit pilot evidence
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add experiments/model/M001-semantic-slots/results/pilot_metrics.json
+          git add experiments/model/M001-semantic-slots/results/pilot_run.json
+          git commit -m "Record M001 PTR-A0 mechanism pilot"
+          git push origin HEAD:main
