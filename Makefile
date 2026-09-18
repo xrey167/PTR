@@ -1,4 +1,4 @@
-.PHONY: check test fmt repo-check docs docs-check manifest tree
+.PHONY: check test fmt repo-check docs docs-check meta-check manifest tree
 
 check:
 	cargo check --workspace --all-targets
@@ -17,6 +17,9 @@ docs:
 
 docs-check:
 	python3 scripts/update_component_docs.py --check
+
+meta-check:
+	python3 scripts/check_component_metadata.py --base HEAD^
 
 manifest:
 	python3 scripts/hash_manifest.py
