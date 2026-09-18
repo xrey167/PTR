@@ -59,7 +59,7 @@
 - bounded verified Pod-observation resume-loop tests
 - revocation replay/restart integration test
 - durable FileLedger runtime reopen preserves revocation and materialized commit position
-- workspace fmt/check/test/clippy
+- workspace rustfmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->
 
