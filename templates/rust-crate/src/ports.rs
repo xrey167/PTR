@@ -8,16 +8,13 @@ pub trait Backend<TInput, TOutput>: Send + Sync {
     fn execute(&self, input: TInput) -> Result<TOutput, ServiceError>;
 }
 
-pub fn execute_retry_once<TInput, TOutput, TBackend>(
+pub fn execute_cloned<TInput, TOutput, TBackend>(
     backend: &TBackend,
-    input: TInput,
+    input: &TInput,
 ) -> Result<TOutput, ServiceError>
 where
     TBackend: Backend<TInput, TOutput> + ?Sized,
     TInput: Clone,
 {
-    match backend.execute(input.clone()) {
-        Ok(output) => Ok(output),
-        Err(_) => backend.execute(input),
-    }
+    backend.execute(input.clone())
 }
