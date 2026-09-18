@@ -1,0 +1,25 @@
+name: burn-a0
+on:
+  push:
+    paths:
+      - "model/burn-a0/**"
+      - ".github/workflows/burn-a0.yml"
+  pull_request:
+    paths:
+      - "model/burn-a0/**"
+      - ".github/workflows/burn-a0.yml"
+
+jobs:
+  stable:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo +stable test --manifest-path model/burn-a0/Cargo.toml
+
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install 1.85.0 --profile minimal
+      - run: cargo +1.85.0 test --manifest-path model/burn-a0/Cargo.toml

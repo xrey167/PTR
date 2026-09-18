@@ -31,3 +31,8 @@ id = "candle"
 source = "external"
 status = "to-evaluate"
 evidence = []
+[[candidate]]
+id = "burn-0.18-ndarray-a0"
+source = "external+internal-prototype"
+status = "evaluating"
+evidence = ["../../model/burn-a0/README.md"]

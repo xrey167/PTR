@@ -1,0 +1,18 @@
+version = 1
+kind = "model-research-package"
+name = "burn-a0"
+path = "model/burn-a0"
+tests_dir = "tests"
+
+[framework]
+name = "burn"
+version = "0.18.0"
+backend_for_ci = "ndarray"
+msrv = "1.85"
+
+[architecture]
+family = "PTR-A0"
+raw_typed_cross_attention = true
+typed_slot_embeddings = true
+operator_router = true
+latent_recurrence = false
