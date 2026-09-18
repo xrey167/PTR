@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use crate::types::BackendRegistry;
 use crate::{
-    Backend, BackendState, ExecuteRequest, ExecuteResult, NoopTraceSink, ServiceError, TraceEvent,
-    TraceLevel, TraceSink,
+    Backend, BackendState, ExecuteRequest, ExecuteResult, NoopTraceSink, ServiceError, TraceError,
+    TraceEvent, TraceLevel, TraceSink,
 };
 
 pub struct Service<TInput, TOutput> {
@@ -16,6 +16,16 @@ impl<TInput, TOutput> Default for Service<TInput, TOutput> {
         Self {
             backends: BackendRegistry::default(),
             trace_sink: Arc::new(NoopTraceSink),
+        }
+    }
+
+    fn emit_trace(&self, event: TraceEvent) {
+        if let Err(error) = self.trace_sink.emit(&event) {
+            match error {
+                TraceError::SinkUnavailable { .. } | TraceError::Export { .. } => {
+                    // Explicit best-effort policy: telemetry cannot change semantic outcome.
+                }
+            }
         }
     }
 }
@@ -50,16 +60,16 @@ impl<TInput, TOutput> Service<TInput, TOutput> {
             }
         })?;
 
-        self.trace_sink.emit(
-            &TraceEvent::new(TraceLevel::Debug, "backend.execute")
+        self.emit_trace(
+            TraceEvent::new(TraceLevel::Debug, "backend.execute")
                 .with_field("backend", backend_name),
         );
 
         match backend.state() {
             BackendState::Ready | BackendState::Degraded => {
                 let value = backend.execute(request.input)?;
-                self.trace_sink.emit(
-                    &TraceEvent::new(TraceLevel::Info, "backend.execute.completed")
+                self.emit_trace(
+                    TraceEvent::new(TraceLevel::Info, "backend.execute.completed")
                         .with_field("backend", backend_name),
                 );
                 Ok(ExecuteResult {
@@ -72,8 +82,8 @@ impl<TInput, TOutput> Service<TInput, TOutput> {
                     expected: BackendState::Ready,
                     actual,
                 };
-                self.trace_sink.emit(
-                    &TraceEvent::new(TraceLevel::Error, "backend.execute.rejected")
+                self.emit_trace(
+                    TraceEvent::new(TraceLevel::Error, "backend.execute.rejected")
                         .with_field("backend", backend_name)
                         .with_field("error.code", error.code()),
                 );
