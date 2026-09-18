@@ -20,6 +20,7 @@ Key properties:
 - a structured `TraceSink` boundary so `tracing`, OpenTelemetry or another backend can be swapped without changing domain code;
 - unit tests beside implementation modules, integration tests under `tests/`, and shared fixtures in `tests/common/mod.rs`;
 - `check_*`/`validate_*` helpers returning typed `Result` values with named failure fields/messages;
-- lazy `impl Iterator` views, `IntoIterator` batch inputs, standard iterator adapters and closure bounds (`Fn`/`FnMut`/`FnOnce`) where sequence semantics fit.
+- lazy `impl Iterator` views, `IntoIterator` batch inputs, standard iterator adapters and closure bounds (`Fn`/`FnMut`/`FnOnce`) where sequence semantics fit;
+- exhaustive `match` for closed semantic states and match guards for cheap deterministic refinements such as empty/range/threshold conditions.
 
 See `docs/RUST_API_STYLE.md`.
