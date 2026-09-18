@@ -26,6 +26,18 @@ class ArchitectureCatalogTests(unittest.TestCase):
         }
         self.assertEqual(entries, crates)
 
+    def test_all_workspace_crates_have_rust_api_layout(self):
+        crates = {
+            path.name
+            for path in (ROOT / "crates").glob("ptr-*")
+            if (path / "Cargo.toml").exists()
+        }
+        entries = {
+            item["id"]
+            for item in mod.load("rust-api-layout.toml").get("crate", [])
+        }
+        self.assertEqual(entries, crates)
+
     def test_backend_slots_keep_candidates_replaceable(self):
         slots = mod.load("backend-slots.toml").get("slot", [])
         self.assertGreaterEqual(len(slots), 20)
