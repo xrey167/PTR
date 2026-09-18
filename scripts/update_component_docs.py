@@ -22,7 +22,17 @@ def registries():
 def bullet(items):
     return "\n".join(f"- {x}" for x in items) if items else "- None recorded."
 
-def render_section(meta: dict, exps: dict, evals: dict) -> str:
+def code_metrics(crate_dir: Path) -> dict[str, int]:
+    files = sorted((crate_dir / "src").rglob("*.rs")) if (crate_dir / "src").exists() else []
+    loc = 0
+    tests = 0
+    for path in files:
+        text = path.read_text(encoding="utf-8")
+        loc += sum(1 for line in text.splitlines() if line.strip())
+        tests += text.count("#[test]")
+    return {"files": len(files), "loc": loc, "tests": tests}
+
+def render_section(meta: dict, exps: dict, evals: dict, metrics: dict[str, int]) -> str:
     exp_lines = []
     for exp_id in meta.get("experiments", []):
         e = exps[exp_id]
@@ -41,10 +51,11 @@ def render_section(meta: dict, exps: dict, evals: dict) -> str:
     return f"""{BEGIN}
 ## Current implementation status
 
-> **Generated section.** Source of truth: [`component.toml`](component.toml). Run `python3 scripts/update_component_docs.py --write` after editing metadata. Do not hand-edit inside this block.
+> **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `{meta["maturity"]}`  
-**Last reviewed:** {meta["last_reviewed"]}
+**Last reviewed:** {meta["last_reviewed"]}  
+**Code footprint:** {metrics["files"]} Rust source files · {metrics["loc"]} nonblank source lines · {metrics["tests"]} `#[test]` markers
 
 ### Implemented now
 
@@ -93,8 +104,13 @@ def update_readme(path: Path, section: str) -> str:
 def dashboard(metas: list[dict], exps: dict, evals: dict) -> str:
     rows = []
     maturity_counts: dict[str, int] = {}
+    total_loc = total_files = total_tests = 0
     for m in metas:
         maturity_counts[m["maturity"]] = maturity_counts.get(m["maturity"], 0) + 1
+        metrics = code_metrics(ROOT / "crates" / m["id"])
+        total_files += metrics["files"]
+        total_loc += metrics["loc"]
+        total_tests += metrics["tests"]
         exp_status = ", ".join(
             f'{eid}:{exps[eid]["status"]}' for eid in m.get("experiments", [])
         ) or "—"
@@ -103,20 +119,22 @@ def dashboard(metas: list[dict], exps: dict, evals: dict) -> str:
         ) or "—"
         rows.append(
             f'| [{m["id"]}](../../crates/{m["id"]}/README.md) | '
-            f'`{m["maturity"]}` | {len(m.get("implemented", []))} | '
-            f'{len(m.get("missing", []))} | {exp_status} | {eval_status} |'
+            f'`{m["maturity"]}` | {metrics["files"]} | {metrics["loc"]} | {metrics["tests"]} | '
+            f'{len(m.get("implemented", []))} | {len(m.get("missing", []))} | '
+            f'{exp_status} | {eval_status} |'
         )
     counts = ", ".join(f"`{k}`: {v}" for k, v in sorted(maturity_counts.items()))
     return f"""# PTR Component Implementation Status
 
-> Generated from every `crates/*/component.toml`. Do not hand-edit.  
+> Generated from every `crates/*/component.toml` plus code-derived metrics. Do not hand-edit.  
 > Refresh with `python3 scripts/update_component_docs.py --write`.
 
 **Component count:** {len(metas)}  
-**Maturity distribution:** {counts}
+**Maturity distribution:** {counts}  
+**Rust footprint:** {total_files} source files · {total_loc} nonblank source lines · {total_tests} `#[test]` markers
 
-| Component | Maturity | Implemented items | Missing items | Experiments | Evaluations |
-|---|---:|---:|---:|---|---|
+| Component | Maturity | Rust files | LOC | Tests | Implemented items | Missing items | Experiments | Evaluations |
+|---|---:|---:|---:|---:|---:|---:|---|---|
 {chr(10).join(rows)}
 
 ## Meaning of maturity labels
@@ -127,6 +145,10 @@ def dashboard(metas: list[dict], exps: dict, evals: dict) -> str:
 - `research-scaffold` — architecture hypothesis is represented, but the trainable system is not implemented/proven.
 
 The labels describe implementation maturity, not scientific novelty or production readiness.
+
+## Freshness policy
+
+Changes under `crates/<component>/src/` or that crate's `Cargo.toml` must update the matching `component.toml` in the same change. CI enforces this metadata coupling, then verifies that generated README/status output is synchronized.
 """
 
 def main() -> int:
@@ -162,8 +184,12 @@ def main() -> int:
 
     stale = []
     for meta in metas:
-        readme = ROOT / "crates" / meta["id"] / "README.md"
-        expected = update_readme(readme, render_section(meta, exps, evals))
+        crate_dir = ROOT / "crates" / meta["id"]
+        readme = crate_dir / "README.md"
+        expected = update_readme(
+            readme,
+            render_section(meta, exps, evals, code_metrics(crate_dir)),
+        )
         current = readme.read_text(encoding="utf-8")
         if current != expected:
             if args.write:
