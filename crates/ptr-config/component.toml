@@ -3,7 +3,7 @@ id = "ptr-config"
 maturity = "prototype"
 last_reviewed = "2026-09-18"
 implemented = [
-  "Typed deserialization for runtime, semantic, action-boundary, observability and research sections",
+  "Typed deserialization/defaults for runtime, semantic, action-boundary, observability and research sections",
   "Repository default TOML parsing",
   "Basic configuration validation",
 ]
