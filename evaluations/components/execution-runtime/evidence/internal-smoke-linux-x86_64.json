@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "evidence_kind": "internal-smoke-microbenchmark",
+  "component": "execution-runtime",
+  "candidate": "ptr-isolates",
+  "git_sha": "8b370cdd1f5e29b109bdb04697f5dcb3a95bfe97",
+  "recorded_at": "2026-09-18T12:55:21.114084+00:00",
+  "platform": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+  "machine": "x86_64",
+  "python": "3.12.3",
+  "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+  "metric": {
+    "benchmark": "mailbox",
+    "iterations": 200000,
+    "elapsed_ns": 2828429,
+    "ns_per_roundtrip": 14
+  },
+  "decision_scope": "smoke evidence only; insufficient for candidate preference"
+}
