@@ -35,3 +35,4 @@ jobs:
           git push origin HEAD:feature/tantivy-search-adapter
 # rerun after Tantivy 0.25 value-access fix
 # rerun after importing Tantivy Value trait
+# rerun after pinning Tantivy release-era bon dependency
