@@ -57,6 +57,7 @@ A PTR system keeps **raw language and typed semantics in parallel**, reasons ove
 - [Diagram index](docs/diagrams/README.md)
 - [Definition of Done](docs/DEFINITION_OF_DONE.md)
 - [Roadmap](docs/ROADMAP.md)
+- [Development environment](docs/DEVELOPMENT_ENVIRONMENT.md)
 
 ## Component map
 
@@ -106,6 +107,7 @@ A PTR system keeps **raw language and typed semantics in parallel**, reasons ove
 - `hardware/` — benchmark hardware profiles
 - `fuzz/` — protocol fuzz targets kept outside the production workspace
 - `release/` — release/SBOM/provenance configuration
+- `tooling/` — optional editor/developer tooling; never runtime authority
 
 ## Current implementation phase
 
