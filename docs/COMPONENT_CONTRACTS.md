@@ -41,3 +41,14 @@ The following must not cross boundaries as authoritative state:
 - provider tool name used as semantic capability identity;
 - unverified source excerpt used as Known<T>.
 
+
+
+## Open contract catalog
+
+The table above names the stable cross-component concepts already visible in the architecture. The broader design surface is tracked in the machine-readable [open architecture catalog](../research/catalogs/README.md):
+
+- `type-families.toml` records type families that exist, remain provisional, or are still open.
+- `backend-slots.toml` records replaceable backend categories and unresolved selection questions.
+- `component-contracts.toml` records required ports and open boundary decisions per crate.
+
+These catalogs are intentionally not an implementation commitment. They exist so future type/backend additions are evaluated against an explicit slot instead of being introduced ad hoc.
