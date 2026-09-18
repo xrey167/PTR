@@ -684,6 +684,7 @@ name = "ptr-server"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "ptr-config",
  "ptr-model-api",
  "ptr-runtime",
  "ptr-types",

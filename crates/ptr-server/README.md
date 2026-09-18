@@ -48,6 +48,7 @@
 ### Current automated checks
 
 - Axum health/request/bad-request HTTP integration tests matching TypeScript SDK contract
+- public ApiRequest smoke test
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->
