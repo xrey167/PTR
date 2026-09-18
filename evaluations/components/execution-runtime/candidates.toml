@@ -17,8 +17,8 @@ research_flexibility = 0.03
 [[candidate]]
 id = "ptr-isolates"
 source = "internal"
-status = "to-evaluate"
-evidence = []
+status = "evaluating"
+evidence = ["evidence/internal-smoke-linux-x86_64.json"]
 
 [[candidate]]
 id = "tina-rs"
