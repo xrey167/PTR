@@ -1,0 +1,42 @@
+name: agent-runtime-lock-sync
+on:
+  push:
+    paths:
+      - '.github/workflows/agent-runtime-lock-sync.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    if: github.ref == 'refs/heads/agent/runtime-durable-ledger-20260918'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: agent/runtime-durable-ledger-20260918
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - name: Merge current main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git merge --no-edit origin/main
+      - run: cargo +stable fmt --all
+      - run: cargo +stable generate-lockfile
+      - run: python scripts/update_component_docs.py --write
+      - name: Commit synchronized artifacts
+        run: |
+          if git diff --quiet; then
+            git push origin HEAD:agent/runtime-durable-ledger-20260918
+            exit 0
+          fi
+          git add Cargo.lock crates/*/README.md docs/components/STATUS.md
+          git commit -m "Synchronize runtime branch lockfile and component docs"
+          git push origin HEAD:agent/runtime-durable-ledger-20260918
