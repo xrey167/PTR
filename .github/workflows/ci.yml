@@ -65,6 +65,7 @@ jobs:
       - run: python scripts/check_component_metadata.py --base HEAD^
       - run: python scripts/update_component_docs.py --check
       - run: python scripts/check_repo.py
+      - run: python scripts/check_architecture_catalog.py
       - run: python scripts/run_experiment.py validate
       - run: python scripts/run_component_eval.py validate
       - run: python scripts/check_research_gates.py
