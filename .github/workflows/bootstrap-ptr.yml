@@ -25,6 +25,7 @@ jobs:
         run: |
           find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
           cp -a /tmp/ptr-import/ptr/. .
+          rm -f .github/workflows/ci.yml
           git status --short
       - name: Commit imported architecture
         run: |
