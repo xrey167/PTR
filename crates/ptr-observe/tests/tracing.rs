@@ -1,17 +1,11 @@
-use ptr_observe::{fields, NoopTraceSink, TraceEvent, TraceLevel, TraceSink, TraceValue};
-use ptr_types::{Generation, RequestId, Revision};
+mod common;
+
+use ptr_observe::{fields, NoopTraceSink, TraceSink, TraceValue};
+use ptr_types::Generation;
 
 #[test]
 fn trace_event_carries_typed_expected_and_actual_values() {
-    let event = TraceEvent::request(
-        TraceLevel::Warn,
-        "generation_mismatch",
-        RequestId::from("r1"),
-        Revision(9),
-    )
-    .with_field(fields::ERROR_CODE, TraceValue::String("stale_generation".into()))
-    .with_field(fields::EXPECTED, TraceValue::Generation(Generation(8)))
-    .with_field(fields::ACTUAL, TraceValue::Generation(Generation(7)));
+    let event = common::generation_mismatch_event();
 
     assert_eq!(
         event.fields.get(fields::EXPECTED),
@@ -21,5 +15,7 @@ fn trace_event_carries_typed_expected_and_actual_values() {
         event.fields.get(fields::ACTUAL),
         Some(&TraceValue::Generation(Generation(7)))
     );
-    NoopTraceSink.emit(&event).expect("noop sink is infallible");
+    NoopTraceSink
+        .emit(&event)
+        .expect("noop trace sink must accept a valid PTR trace event");
 }
