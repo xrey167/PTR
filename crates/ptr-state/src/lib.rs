@@ -53,18 +53,16 @@ fn materialized_entries(event: &LedgerEvent) -> Vec<(String, String)> {
             ),
             (format!("capsule:{capsule}:project"), project.to_string()),
         ],
-        LedgerEvent::CapsuleSuperseded { capsule, new, .. } => vec![(
-            format!("capsule:{capsule}:generation"),
-            new.0.to_string(),
-        )],
+        LedgerEvent::CapsuleSuperseded { capsule, new, .. } => {
+            vec![(format!("capsule:{capsule}:generation"), new.0.to_string())]
+        }
         LedgerEvent::Revoked {
             subject,
             generation,
         } => vec![(format!("revoked:{subject}"), generation.0.to_string())],
-        LedgerEvent::HardConstraintCommitted { key, generation } => vec![(
-            format!("constraint:{key}"),
-            generation.0.to_string(),
-        )],
+        LedgerEvent::HardConstraintCommitted { key, generation } => {
+            vec![(format!("constraint:{key}"), generation.0.to_string())]
+        }
         LedgerEvent::VerifierAttested { subject, passed } => vec![(
             format!("verifier:{subject}"),
             if *passed { "pass" } else { "fail" }.to_owned(),
@@ -73,10 +71,9 @@ fn materialized_entries(event: &LedgerEvent) -> Vec<(String, String)> {
             format!("procedure:{id}:generation"),
             generation.0.to_string(),
         )],
-        LedgerEvent::ProcedureRevoked { id, generation } => vec![(
-            format!("revoked:procedure:{id}"),
-            generation.0.to_string(),
-        )],
+        LedgerEvent::ProcedureRevoked { id, generation } => {
+            vec![(format!("revoked:procedure:{id}"), generation.0.to_string())]
+        }
         LedgerEvent::SnapshotCommitted { revision, covers } => vec![
             ("snapshot:last_revision".into(), revision.to_string()),
             ("snapshot:covers_commit".into(), covers.0.to_string()),
@@ -124,7 +121,8 @@ impl TursoMaterializedState {
         let last_applied = match rows.next().await.map_err(|error| error.to_string())? {
             Some(row) => {
                 let value: i64 = row.get(0).map_err(|error| error.to_string())?;
-                u64::try_from(value).map_err(|_| "negative last_applied in Turso state".to_owned())?
+                u64::try_from(value)
+                    .map_err(|_| "negative last_applied in Turso state".to_owned())?
             }
             None => 0,
         };

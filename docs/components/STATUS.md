@@ -4,8 +4,8 @@
 > Refresh with `python3 scripts/update_component_docs.py --write`.
 
 **Component count:** 24  
-**Maturity distribution:** `foundation`: 1, `prototype`: 9, `research-scaffold`: 1, `scaffold`: 13  
-**Rust footprint:** 40 source files · 2665 nonblank source lines · 44 integration-test files · 57 `#[test]` markers
+**Maturity distribution:** `foundation`: 1, `prototype`: 10, `research-scaffold`: 1, `scaffold`: 12  
+**Rust footprint:** 40 source files · 2801 nonblank source lines · 45 integration-test files · 57 `#[test]` markers
 
 | Component | Maturity | Rust files | LOC | Test files | Tests | Implemented items | Missing items | Experiments | Evaluations |
 |---|---:|---:|---:|---:|---:|---:|---:|---|---|
@@ -29,7 +29,7 @@
 | [ptr-security](../../crates/ptr-security/README.md) | `prototype` | 1 | 22 | 1 | 1 | 3 | 5 | L001:running, E001:planned | security-context:open |
 | [ptr-semdb](../../crates/ptr-semdb/README.md) | `prototype` | 1 | 119 | 1 | 2 | 6 | 5 | S001:planned, S002:planned, E004:planned | semantic-db:open |
 | [ptr-server](../../crates/ptr-server/README.md) | `prototype` | 1 | 105 | 2 | 1 | 3 | 4 | E001:planned, E003:planned | — |
-| [ptr-state](../../crates/ptr-state/README.md) | `scaffold` | 1 | 47 | 2 | 2 | 3 | 3 | L001:running, L002:planned, E004:planned | materialized-state:open |
+| [ptr-state](../../crates/ptr-state/README.md) | `prototype` | 1 | 183 | 3 | 2 | 5 | 1 | L001:running, L002:planned, E004:planned | materialized-state:open |
 | [ptr-storage](../../crates/ptr-storage/README.md) | `scaffold` | 1 | 23 | 1 | 1 | 3 | 5 | E004:planned | object-storage:open |
 | [ptr-types](../../crates/ptr-types/README.md) | `foundation` | 1 | 124 | 1 | 3 | 5 | 4 | M005:planned, L001:running | — |
 | [ptr-verifier](../../crates/ptr-verifier/README.md) | `scaffold` | 1 | 98 | 2 | 2 | 4 | 4 | F001:planned, Q002:planned, E001:planned | code-quality-verifier:open |

@@ -27,12 +27,18 @@ async fn turso_state_is_monotonic_and_survives_reopen() {
                 generation: Generation(3),
             },
         };
-        assert_eq!(state.try_apply(&first).await.unwrap(), ApplyOutcome::Applied);
+        assert_eq!(
+            state.try_apply(&first).await.unwrap(),
+            ApplyOutcome::Applied
+        );
         assert_eq!(
             state.get("constraint:no-network").await.unwrap(),
             Some("3".into())
         );
-        assert_eq!(state.try_apply(&first).await.unwrap(), ApplyOutcome::Duplicate);
+        assert_eq!(
+            state.try_apply(&first).await.unwrap(),
+            ApplyOutcome::Duplicate
+        );
 
         let gap = CommittedEvent {
             index: CommitIndex(3),
