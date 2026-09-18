@@ -1,0 +1,17 @@
+pub const REQUEST_ID: &str = "ptr.request_id";
+pub const PROJECT_ID: &str = "ptr.project_id";
+pub const REVISION: &str = "ptr.revision";
+pub const GENERATION: &str = "ptr.generation";
+pub const CANDIDATE_ID: &str = "ptr.candidate_id";
+pub const POD_ID: &str = "ptr.pod_id";
+pub const BACKEND_ID: &str = "ptr.backend_id";
+pub const CAPABILITY: &str = "ptr.capability";
+pub const REASONING_TYPE: &str = "ptr.reasoning_type";
+pub const EFFECT: &str = "ptr.effect";
+pub const COMMIT_INDEX: &str = "ptr.commit_index";
+pub const OPERATION: &str = "ptr.operation";
+pub const OUTCOME: &str = "ptr.outcome";
+pub const ERROR_CODE: &str = "error.code";
+pub const EXPECTED: &str = "expected.value";
+pub const ACTUAL: &str = "actual.value";
+pub const LATENCY_NS: &str = "ptr.latency_ns";
