@@ -1,32 +1,45 @@
 use crate::{ExecuteRequestRef, ValidationError};
 
+const MAX_BACKEND_NAME_LEN: usize = 64;
+const MAX_REQUEST_KEY_LEN: usize = 128;
+
 pub fn check_backend_name<'request>(
     backend: Option<&'request str>,
 ) -> Result<&'request str, ValidationError> {
-    let backend = backend.ok_or(ValidationError::MissingField {
-        field: "preferred_backend",
-        message: "preferred backend must be selected before execution",
-    })?;
-
-    if backend.trim().is_empty() {
-        return Err(ValidationError::InvalidValue {
+    match backend {
+        None => Err(ValidationError::MissingField {
             field: "preferred_backend",
-            value: backend.to_owned(),
+            message: "preferred backend must be selected before execution",
+        }),
+        Some(name) if name.trim().is_empty() => Err(ValidationError::InvalidValue {
+            field: "preferred_backend",
+            value: name.to_owned(),
             message: "preferred backend must not be empty",
-        });
+        }),
+        Some(name) if name.len() > MAX_BACKEND_NAME_LEN => {
+            Err(ValidationError::InvalidValue {
+                field: "preferred_backend",
+                value: name.to_owned(),
+                message: "preferred backend name exceeds the supported length",
+            })
+        }
+        Some(name) => Ok(name),
     }
-
-    Ok(backend)
 }
 
 pub fn check_request_key(key: &str) -> Result<(), ValidationError> {
-    if key.trim().is_empty() {
-        return Err(ValidationError::MissingField {
+    match key {
+        value if value.trim().is_empty() => Err(ValidationError::MissingField {
             field: "key",
             message: "request key must not be empty",
-        });
+        }),
+        value if value.len() > MAX_REQUEST_KEY_LEN => Err(ValidationError::InvalidValue {
+            field: "key",
+            value: value.to_owned(),
+            message: "request key exceeds the supported length",
+        }),
+        _ => Ok(()),
     }
-    Ok(())
 }
 
 pub fn validate_request<T>(request: ExecuteRequestRef<'_, T>) -> Result<(), ValidationError> {
@@ -35,13 +48,23 @@ pub fn validate_request<T>(request: ExecuteRequestRef<'_, T>) -> Result<(), Vali
     Ok(())
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn empty_backend_name_returns_named_invalid_value() {
+    fn missing_backend_name_matches_missing_field_arm() {
+        assert_eq!(
+            check_backend_name(None),
+            Err(ValidationError::MissingField {
+                field: "preferred_backend",
+                message: "preferred backend must be selected before execution",
+            })
+        );
+    }
+
+    #[test]
+    fn empty_backend_name_matches_guarded_invalid_value_arm() {
         assert_eq!(
             check_backend_name(Some("   ")),
             Err(ValidationError::InvalidValue {
@@ -53,12 +76,38 @@ mod tests {
     }
 
     #[test]
-    fn empty_request_key_returns_named_missing_field() {
+    fn oversized_backend_name_matches_length_guard() {
+        let value = "x".repeat(MAX_BACKEND_NAME_LEN + 1);
+        assert_eq!(
+            check_backend_name(Some(&value)),
+            Err(ValidationError::InvalidValue {
+                field: "preferred_backend",
+                value,
+                message: "preferred backend name exceeds the supported length",
+            })
+        );
+    }
+
+    #[test]
+    fn empty_request_key_matches_guarded_missing_field_arm() {
         assert_eq!(
             check_request_key(""),
             Err(ValidationError::MissingField {
                 field: "key",
                 message: "request key must not be empty",
+            })
+        );
+    }
+
+    #[test]
+    fn oversized_request_key_matches_length_guard() {
+        let value = "k".repeat(MAX_REQUEST_KEY_LEN + 1);
+        assert_eq!(
+            check_request_key(&value),
+            Err(ValidationError::InvalidValue {
+                field: "key",
+                value,
+                message: "request key exceeds the supported length",
             })
         );
     }
