@@ -1,0 +1,13 @@
+{
+  "experiment_id": "L001",
+  "status": "running",
+  "scope": "reference FileLedger real child-process abort after durable revocation plus incomplete next record",
+  "git_sha": "6446ab7d197bd10dc981449d4b9dd8e6cb67dc39",
+  "recorded_at": "2026-09-18T15:09:15.147017+00:00",
+  "hard_pass": true,
+  "limitations": [
+    "reference FileLedger only",
+    "child process abort occurs after revocation fsync and while writing a subsequent incomplete record",
+    "does not yet cover kill during revocation write, raft-engine, leader change, or network partition"
+  ]
+}

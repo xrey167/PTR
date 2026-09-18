@@ -1,0 +1,62 @@
+{
+  "scope": "reference FileLedger real child-process abort after durable revocation plus incomplete next record",
+  "seeds": [
+    {
+      "benchmark": "ledger-process-crash",
+      "iterations": 50,
+      "seed": 101,
+      "elapsed_ns": 5497766023,
+      "false_accepts": 0,
+      "recovery_errors": 0,
+      "tail_trim_errors": 0,
+      "child_exit_errors": 0
+    },
+    {
+      "benchmark": "ledger-process-crash",
+      "iterations": 50,
+      "seed": 17,
+      "elapsed_ns": 5482502111,
+      "false_accepts": 0,
+      "recovery_errors": 0,
+      "tail_trim_errors": 0,
+      "child_exit_errors": 0
+    },
+    {
+      "benchmark": "ledger-process-crash",
+      "iterations": 50,
+      "seed": 29,
+      "elapsed_ns": 7386435356,
+      "false_accepts": 0,
+      "recovery_errors": 0,
+      "tail_trim_errors": 0,
+      "child_exit_errors": 0
+    },
+    {
+      "benchmark": "ledger-process-crash",
+      "iterations": 50,
+      "seed": 43,
+      "elapsed_ns": 4710700817,
+      "false_accepts": 0,
+      "recovery_errors": 0,
+      "tail_trim_errors": 0,
+      "child_exit_errors": 0
+    },
+    {
+      "benchmark": "ledger-process-crash",
+      "iterations": 50,
+      "seed": 71,
+      "elapsed_ns": 5888728582,
+      "false_accepts": 0,
+      "recovery_errors": 0,
+      "tail_trim_errors": 0,
+      "child_exit_errors": 0
+    }
+  ],
+  "totals": {
+    "cases": 250,
+    "false_accepts": 0,
+    "recovery_errors": 0,
+    "tail_trim_errors": 0,
+    "child_exit_errors": 0
+  }
+}
