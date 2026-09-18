@@ -6,8 +6,8 @@ metrics = "false accept count; recovery consistency"
 baseline = "no-fault reference + naive recovery"
 falsification = "Any stale-generation acceptance is a hard failure."
 hardware_profile = "hardware/default.toml"
-entrypoint = "cargo run --release --locked -p ptr-bench -- ledger-recovery <iterations> <seed>"
+entrypoint = "cargo run --release --locked -p ptr-bench -- ledger-recovery <iterations> <seed>"\nprocess_entrypoint = "cargo run --release --locked -p ptr-bench -- ledger-process-crash <iterations> <seed>"
 seeds = [17, 29, 43, 71, 101]
 results_dir = "results"
 required_artifacts = ["run.json", "metrics.json"]
-scope = "reference FileLedger partial-tail crash injection; broader failpoint/process-kill matrix remains open"
+scope = "reference FileLedger partial-tail, fail-rs panic, and real child-process abort probes; production-backend/cluster failure matrix remains open"
