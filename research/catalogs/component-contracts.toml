@@ -1,0 +1,169 @@
+version = 1
+
+[[component]]
+id = "ptr-types"
+ports = []
+type_families = ["identity-lifecycle", "epistemic-probabilistic", "provenance-evidence"]
+backend_slots = []
+open_decisions = ["module split/freeze boundary", "serialization derives", "resource/principal/session identity set"]
+
+[[component]]
+id = "ptr-config"
+ports = ["ConfigSource", "SecretResolver"]
+type_families = ["identity-lifecycle"]
+backend_slots = ["configuration-sources", "secret-store"]
+open_decisions = ["typed backend section layout", "schema/migration policy", "secret reference semantics"]
+
+[[component]]
+id = "ptr-protocol"
+ports = ["WireCodec", "FrameValidator"]
+type_families = ["network-protocol", "pod-contract", "model-interface"]
+backend_slots = ["network-codec", "local-serialization"]
+open_decisions = ["semantic-vs-wire version policy", "unknown field/enum policy", "canonical fixtures"]
+
+[[component]]
+id = "ptr-ingress"
+ports = ["ArtifactClassifier", "Decoder", "SemanticClassifier"]
+type_families = ["artifact-raw-input", "provenance-evidence", "semantic-state"]
+backend_slots = ["ingress-classifier"]
+open_decisions = ["raw artifact envelope", "typed proposal schema", "disagreement/risk policy"]
+
+[[component]]
+id = "ptr-semdb"
+ports = ["SemanticStore", "DerivedQueryEngine", "SnapshotProvider"]
+type_families = ["semantic-state", "identity-lifecycle", "provenance-evidence"]
+backend_slots = ["semantic-db-engine"]
+open_decisions = ["typed key/value/query API", "dependency capture", "persistent cache boundary", "stale cancellation"]
+
+[[component]]
+id = "ptr-core"
+ports = ["CoreModel", "TypedWorkspace", "OperatorHead", "ActionHead", "VerifierHead"]
+type_families = ["epistemic-probabilistic", "routing-execution", "model-interface", "capability-authority"]
+backend_slots = ["model-framework"]
+open_decisions = ["semantic slot taxonomy", "typed attention metadata", "latent recurrence state", "action/verifier head contracts"]
+
+[[component]]
+id = "ptr-model-api"
+ports = ["InferenceBackend", "ResumableInferenceBackend", "StreamingInferenceBackend"]
+type_families = ["model-interface", "routing-execution"]
+backend_slots = ["inference-serving"]
+open_decisions = ["capability descriptor", "async stream contract", "checkpoint handle", "cancellation/timeout"]
+
+[[component]]
+id = "ptr-runtime"
+ports = ["RuntimeLedger", "RuntimeState", "RuntimeModel", "RuntimeRouter", "RuntimeEventSink"]
+type_families = ["model-interface", "routing-execution", "capability-authority", "ledger-consensus", "events-observability"]
+backend_slots = ["cache"]
+open_decisions = ["typed backend composition", "async orchestration", "streaming/cancellation", "cache classes"]
+
+[[component]]
+id = "ptr-exec"
+ports = ["Mailbox", "Scheduler", "Supervisor", "EffectDispatcher"]
+type_families = ["routing-execution", "events-observability"]
+backend_slots = ["execution-runtime", "allocator"]
+open_decisions = ["async mailbox trait", "scheduler policy", "cancellation tree", "replay trace"]
+
+[[component]]
+id = "ptr-pods"
+ports = ["Pod", "DynPod", "PodRegistry", "PodTransport", "PodSandbox"]
+type_families = ["pod-contract", "capability-authority", "provenance-evidence"]
+backend_slots = ["pod-environment", "sandbox-environment"]
+open_decisions = ["PodContext", "remote lease/session", "process isolation", "GPU/DLPack ownership"]
+
+[[component]]
+id = "ptr-router"
+ports = ["Router", "CapabilityGraph", "FallbackPlanner"]
+type_families = ["routing-execution", "model-interface", "search-retrieval", "pod-contract"]
+backend_slots = ["routing-policy"]
+open_decisions = ["ExecutionRecipe", "operator taxonomy", "budget model", "fallback/degradation semantics"]
+
+[[component]]
+id = "ptr-verifier"
+ports = ["Verifier", "VerifierRegistry", "VerificationAggregator"]
+type_families = ["verification", "provenance-evidence", "capability-authority"]
+backend_slots = ["verification-backends"]
+open_decisions = ["finding taxonomy", "aggregation precedence", "verifier capability metadata", "sandbox requirements"]
+
+[[component]]
+id = "ptr-feedback"
+ports = ["CandidatePopulation", "CritiqueEngine", "RepairEngine", "TrajectorySink"]
+type_families = ["verification", "training-evaluation", "events-observability"]
+backend_slots = ["outer-loop-optimization"]
+open_decisions = ["trajectory schema", "multi-verifier/Pareto selection", "repair provenance"]
+
+[[component]]
+id = "ptr-security"
+ports = ["Authorizer", "PolicyProvider", "SecretResolver", "SandboxPolicy"]
+type_families = ["capability-authority", "identity-lifecycle", "provenance-evidence"]
+backend_slots = ["security-context", "sandbox-environment", "secret-store"]
+open_decisions = ["Principal/Session/ResourceScope", "verification requirements", "audit persistence", "escalation"]
+
+[[component]]
+id = "ptr-ledger"
+ports = ["Ledger", "DurableLog", "Consensus", "SnapshotStore"]
+type_families = ["ledger-consensus", "identity-lifecycle"]
+backend_slots = ["durable-log", "consensus"]
+open_decisions = ["storage-vs-consensus split", "durability modes", "revocation barrier", "snapshot/install contract"]
+
+[[component]]
+id = "ptr-state"
+ports = ["Materializer", "ProjectionReader", "MigrationRunner"]
+type_families = ["state-projection", "ledger-consensus"]
+backend_slots = ["materialized-state"]
+open_decisions = ["typed projection schema", "migration/versioning", "read consistency", "CDC"]
+
+[[component]]
+id = "ptr-memory"
+ports = ["MemoryRepository", "MemoryResolver", "MemoryLifecycle"]
+type_families = ["memory-knowledge", "provenance-evidence", "identity-lifecycle"]
+backend_slots = []
+open_decisions = ["memory object taxonomy", "typed payloads", "link semantics", "state/search boundary"]
+
+[[component]]
+id = "ptr-search"
+ports = ["SearchBackend", "SearchPlanner", "SourceResolver", "FusionEngine"]
+type_families = ["search-retrieval", "provenance-evidence", "memory-knowledge"]
+backend_slots = ["lexical-search", "local-vector-search", "gpu-vector-search", "multimodal-search-store", "distributed-search", "structural-code-search"]
+open_decisions = ["query/fusion contracts", "score semantics", "embedding ownership", "generation validation"]
+
+[[component]]
+id = "ptr-storage"
+ports = ["ObjectStore", "ContentHasher", "IntegrityVerifier"]
+type_families = ["storage-object", "provenance-evidence"]
+backend_slots = ["object-storage"]
+open_decisions = ["content hash algorithm", "streaming API", "access policy", "verify-on-read"]
+
+[[component]]
+id = "ptr-net"
+ports = ["Transport", "PeerDirectory", "SessionManager"]
+type_families = ["network-protocol", "identity-lifecycle"]
+backend_slots = ["network-transport"]
+open_decisions = ["NodeId/key binding", "session reuse", "discovery", "retry/backpressure"]
+
+[[component]]
+id = "ptr-events"
+ports = ["EventBus", "EventProducer", "EventConsumer"]
+type_families = ["events-observability", "ledger-consensus"]
+backend_slots = ["event-streaming"]
+open_decisions = ["event classes", "offset/replay", "retention/backpressure", "authority-vs-telemetry"]
+
+[[component]]
+id = "ptr-observe"
+ports = ["TraceSink", "TrajectoryExporter", "DiagnosticProvider"]
+type_families = ["events-observability", "training-evaluation"]
+backend_slots = ["observability"]
+open_decisions = ["FlowSignature", "redaction", "trajectory normalization", "async diagnostics"]
+
+[[component]]
+id = "ptr-inspect"
+ports = ["Inspectable", "InspectionRenderer"]
+type_families = ["events-observability"]
+backend_slots = ["introspection"]
+open_decisions = ["inspection diff", "redaction annotations", "CLI rendering"]
+
+[[component]]
+id = "ptr-server"
+ports = ["PublicApi", "SessionAuthenticator", "StreamingResponse"]
+type_families = ["identity-lifecycle", "model-interface", "capability-authority"]
+backend_slots = ["auth-identity"]
+open_decisions = ["Principal/Session mapping", "streaming protocol", "tenant/policy scope", "rate/backpressure"]
