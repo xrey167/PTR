@@ -212,6 +212,19 @@ Do not use guards to hide large computations, I/O, mutation or authority-changin
 
 Order guarded arms from most specific to least specific. Always retain an unguarded fallback arm when a guarded pattern does not cover every value of that variant.
 
+Use `if let` or `let ... else` when there is only one interesting pattern and no multi-branch classification is needed:
+
+```rust
+let Some(backend) = request.preferred_backend.as_deref() else {
+    return Err(ValidationError::MissingField {
+        field: "preferred_backend",
+        message: "preferred backend must be selected before execution",
+    });
+};
+```
+
+Use `match` when the alternatives themselves are part of the domain semantics or when exhaustiveness should protect future enum changes.
+
 ## 7. `Option<T>`, `Result<T, E>` and generics
 
 Use `Option<T>` only when absence is a valid state.
