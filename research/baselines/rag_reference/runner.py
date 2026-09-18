@@ -34,5 +34,6 @@ class BM25:
                 freq=tf.get(term,0)
                 denom=freq+self.k1*(1-self.b+self.b*(len(toks)/avg if avg else 0))
                 if denom: score += idf*(freq*(self.k1+1))/denom
-            out.append((doc_id,score))
+            if score > 0.0:
+                out.append((doc_id,score))
         return sorted(out,key=lambda x:(-x[1],x[0]))[:limit]
