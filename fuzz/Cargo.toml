@@ -1,0 +1,20 @@
+[package]
+name = "ptr-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+prost = "0.13"
+ptr-protocol = { path = "../crates/ptr-protocol" }
+
+[[bin]]
+name = "podwire"
+path = "fuzz_targets/podwire.rs"
+test = false
+doc = false
+bench = false

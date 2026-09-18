@@ -23,6 +23,10 @@ pub enum RuntimeError {
         action: Generation,
         current: Option<Generation>,
     },
+    ReplayIndexMismatch {
+        expected: CommitIndex,
+        actual: CommitIndex,
+    },
     PermissionDenied,
 }
 
@@ -54,6 +58,27 @@ impl PtrRuntime {
         })
     }
 
+    pub fn replay(config: PtrConfig, events: &[CommittedEvent]) -> Result<Self, RuntimeError> {
+        let mut runtime = Self::new(config)?;
+        for expected in events {
+            let actual = runtime.ledger.append(expected.event.clone());
+            if actual != expected.index {
+                return Err(RuntimeError::ReplayIndexMismatch {
+                    expected: expected.index,
+                    actual,
+                });
+            }
+            let committed = runtime
+                .ledger
+                .events()
+                .last()
+                .expect("replay append created committed event")
+                .clone();
+            runtime.apply_committed(&committed);
+        }
+        Ok(runtime)
+    }
+
     pub fn revision(&self) -> Revision {
         self.semdb.revision()
     }
@@ -68,6 +93,10 @@ impl PtrRuntime {
 
     pub fn events(&self) -> &[EventEnvelope] {
         &self.events
+    }
+
+    pub fn committed_events(&self) -> &[CommittedEvent] {
+        self.ledger.events()
     }
 
     pub fn materialized_state(&self) -> &MaterializedState {
@@ -133,13 +162,17 @@ impl PtrRuntime {
 
     pub fn commit(&mut self, event: LedgerEvent) -> CommitIndex {
         let index = self.ledger.append(event);
-        let committed: CommittedEvent = self
+        let committed = self
             .ledger
             .events()
             .last()
             .expect("append created committed event")
             .clone();
+        self.apply_committed(&committed);
+        index
+    }
 
+    fn apply_committed(&mut self, committed: &CommittedEvent) {
         match &committed.event {
             LedgerEvent::CapsuleCommitted {
                 capsule,
@@ -171,9 +204,8 @@ impl PtrRuntime {
             LedgerEvent::VerifierAttested { .. } | LedgerEvent::SnapshotCommitted { .. } => {}
         }
 
-        self.state.apply(&committed);
-        self.emit(RuntimeEvent::CommitApplied(index));
-        index
+        self.state.apply(committed);
+        self.emit(RuntimeEvent::CommitApplied(committed.index));
     }
 
     fn emit(&mut self, event: RuntimeEvent) {

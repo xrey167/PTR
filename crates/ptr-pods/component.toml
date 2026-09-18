@@ -8,6 +8,7 @@ implemented = [
   "Typed Pod associated Input/Output/Error contract",
   "Ready and Revoked lease typestates",
   "Revocation consumes Ready lease and produces Revoked lease",
+  "invoke_with_lease requires PodLease<Ready>; compile-fail doctest rejects revoked lease",
 ]
 
 missing = [
@@ -39,5 +40,6 @@ decisions = [
 ]
 
 checks = [
+  "ready/wrong-Pod lease integration tests and revoked compile-fail doctest",
   "workspace fmt/check/test/clippy",
 ]
