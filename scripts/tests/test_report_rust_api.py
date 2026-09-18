@@ -30,6 +30,9 @@ class RustApiReportTests(unittest.TestCase):
                 "pub use internal::Thing;\n"
                 "#[derive(Debug)]\n"
                 "pub struct Request<T> { pub value: T }\n"
+                "macro_rules! internal_macro { () => { 1 }; }\n"
+                "#[macro_export]\n"
+                "macro_rules! exported_macro { () => { 2 }; }\n"
                 "pub trait Handler<T> { fn handle(&self, value: T); }\n"
                 "impl<T> Handler<T> for Request<T> { fn handle(&self, _value: T) {} }\n"
                 "pub(crate) enum State { Ready, Closed }\n"
@@ -44,6 +47,8 @@ class RustApiReportTests(unittest.TestCase):
             self.assertIn(("pub", "mod", "public_mod"), found)
             self.assertIn(("pub", "use", "internal::Thing"), found)
             self.assertIn(("pub", "struct", "Request"), found)
+            self.assertIn(("private", "macro", "internal_macro"), found)
+            self.assertIn(("pub", "macro", "exported_macro"), found)
             self.assertIn(("pub", "trait", "Handler"), found)
             self.assertIn(("implementation", "impl", "Handler<T> for Request<T>"), found)
             self.assertIn(("pub(crate)", "enum", "State"), found)
