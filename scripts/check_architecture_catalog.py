@@ -94,6 +94,25 @@ def check() -> list[str]:
     if missing_contracts:
         errors.append(f"missing component contracts: {missing_contracts}")
 
+    rust_api = load("rust-api-layout.toml")
+    api_entries = rust_api.get("crate", [])
+    api_ids: set[str] = set()
+    for entry in api_entries:
+        crate_id = entry.get("id")
+        if crate_id not in crates:
+            errors.append(f"rust api layout references unknown crate {crate_id}")
+            continue
+        if crate_id in api_ids:
+            errors.append(f"duplicate rust api layout: {crate_id}")
+        api_ids.add(crate_id)
+        for key in ["current_shape", "modules", "public_groups", "function_groups", "notes"]:
+            if key not in entry:
+                errors.append(f"{crate_id}: rust api layout missing {key}")
+
+    missing_api = sorted(crates - api_ids)
+    if missing_api:
+        errors.append(f"missing rust api layouts: {missing_api}")
+
     return errors
 
 
@@ -106,7 +125,8 @@ def main() -> int:
         "OK: architecture catalog "
         f"{len(load('type-families.toml').get('family', []))} type families, "
         f"{len(load('backend-slots.toml').get('slot', []))} backend slots, "
-        f"{len(load('component-contracts.toml').get('component', []))} component contracts"
+        f"{len(load('component-contracts.toml').get('component', []))} component contracts, "
+        f"{len(load('rust-api-layout.toml').get('crate', []))} Rust API layouts"
     )
     return 0
 
