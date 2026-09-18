@@ -1,11 +1,27 @@
-# Recommended GitHub Repository Settings
+# GitHub Repository Setup
 
-The repository should protect `main` with a ruleset requiring the CI workflow, blocking force-push/deletion and requiring pull requests for non-maintainer contributions. Keep an owner/admin bypass for emergency research maintenance if desired.
+The source tree is configured for CI, security scanning, SDK tests, release attestations and CODEOWNERS. Repository-administration settings require an authenticated repository administrator and cannot be changed through the current ChatGPT GitHub connection.
 
-Recommended repository metadata:
-- description: Probabilistically Typed Reasoning — typed cognitive runtime and model architecture research
-- topics: rust, llm, agents, reasoning, ai-systems, machine-learning, distributed-systems
-- delete head branches after merge: enabled
-- vulnerability reporting/security advisories: enabled
+## Apply metadata and security settings
 
-These settings are documented here because the current GitHub connector does not expose repository-administration mutations.
+From a local clone with GitHub CLI authenticated as an administrator:
+
+    ./scripts/setup_github_repo.sh
+
+PowerShell:
+
+    ./scripts/setup_github_repo.ps1
+
+This configures the description, homepage, topics, automatic branch cleanup, auto-merge, vulnerability alerts and automated security fixes.
+
+## Protect main
+
+Protection is intentionally opt-in so setup cannot accidentally lock out the owner before all required checks exist.
+
+    PTR_APPLY_BRANCH_PROTECTION=1 ./scripts/setup_github_repo.sh
+
+The template at `.github/branch-protection-main.json` requires quality, stable Linux/Windows, Rust 1.85 MSRV, repository-invariants and lifecycle-failpoint checks. It blocks force pushes/deletion, requires linear history and requires PR conversation resolution. Administrator enforcement remains disabled so the owner retains an emergency bypass.
+
+## Current limitation
+
+The repository metadata currently exposed by GitHub still has no description/topics and branch administration is not writable through the connected app. The setup scripts are the reproducible handoff for those settings.

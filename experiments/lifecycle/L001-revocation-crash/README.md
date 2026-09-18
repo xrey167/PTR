@@ -31,3 +31,16 @@ L001 remains `running`, not completed: real process-kill/fail-rs schedules, prod
 - `ledger.after_sync_before_memory`
 
 CI exercises the partial-record panic path separately. This strengthens L001's fault-injection harness, but L001 remains open until process-abort and production-backend crash schedules are archived as experiment evidence.
+## Real child-process abort evidence
+
+[process_crash_run.json](results/process_crash_run.json) and [process_crash_metrics.json](results/process_crash_metrics.json) record a second scoped slice:
+
+- 5 seeds × 50 child-process aborts = 250 cases
+- 0 stale-generation false accepts
+- 0 recovery-consistency failures
+- 0 incomplete-tail truncation failures
+- 0 child processes that unexpectedly exited successfully
+
+Each child durably committed a generation and its revocation, began writing a subsequent incomplete record, flushed the partial tail to the OS and then called `abort()`. The parent process reopened the ledger, verified recovery/truncation, replayed lifecycle state and checked that generation 1 remained unusable.
+
+This is stronger than the original in-process partial-tail probe, but it still does not model a power loss during the revocation fsync itself, raft-engine/raft-rs leadership changes, or network partitions. L001 therefore remains `running`.
