@@ -3,9 +3,7 @@ use ptr_model_api::{InferenceBackend, ModelError, ModelEvent, ModelRequest};
 use ptr_pods::{DynPod, PodManifest, PodRegistry};
 use ptr_protocol::TypedPayload;
 use ptr_runtime::{PtrRuntime, RuntimeError};
-use ptr_types::{
-    CapabilityId, Effect, PodId, Probability, TypeId, VerificationLevel,
-};
+use ptr_types::{CapabilityId, Effect, PodId, Probability, TypeId, VerificationLevel};
 use ptr_verifier::{VerificationReport, VerificationStatus, Verifier};
 use std::sync::Arc;
 

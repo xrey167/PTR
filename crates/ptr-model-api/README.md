@@ -10,12 +10,12 @@
 
 **Maturity:** `scaffold`  
 **Last reviewed:** 2026-09-18  
-**Code footprint:** 4 Rust source files · 64 nonblank source lines · 0 `#[test]` markers
+**Code footprint:** 4 Rust source files · 66 nonblank source lines · 0 `#[test]` markers
 
 ### Implemented now
 
 - Backend-neutral ModelRequest with request/revision/raw text
-- ModelEvent enum for slot, hypothesis, confidence, operator, Pod, candidate, action, token and completion events
+- ModelEvent enum for slot, hypothesis, confidence, operator, typed Pod request, candidate, action, token and completion events
 - InferenceBackend trait and ModelError
 - Deterministic ReferenceEchoBackend for runtime conformance tests
 
@@ -51,6 +51,7 @@
 ### Current automated checks
 
 - reference backend request/event conformance test
+- typed PodRequested event contract covered by runtime loop tests
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->

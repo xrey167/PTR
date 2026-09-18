@@ -5,11 +5,11 @@ use ptr_ledger::{CommittedEvent, InMemoryLedger, Ledger, LedgerEvent};
 use ptr_model_api::{InferenceBackend, ModelEvent, ModelRequest};
 use ptr_pods::PodRegistry;
 use ptr_protocol::TypedPayload;
-use ptr_verifier::{VerificationStatus, Verifier};
 use ptr_security::PermissionSet;
 use ptr_semdb::{SemanticDelta, SemanticHost, SemanticSnapshot};
 use ptr_state::MaterializedState;
 use ptr_types::{CommitIndex, Generation, RequestId, Revision};
+use ptr_verifier::{VerificationStatus, Verifier};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,10 +32,17 @@ pub enum RuntimeError {
         actual: CommitIndex,
     },
     Model(String),
-    PodUnavailable { capability: String, input_type: String },
-    PodEffectRequiresActionBoundary { pod: String },
+    PodUnavailable {
+        capability: String,
+        input_type: String,
+    },
+    PodEffectRequiresActionBoundary {
+        pod: String,
+    },
     Pod(String),
-    PodVerificationFailed { pod: String },
+    PodVerificationFailed {
+        pod: String,
+    },
     PermissionDenied,
 }
 
@@ -220,10 +227,7 @@ impl PtrRuntime {
 
             let mut delta = SemanticDelta::default();
             delta.upserts.insert(
-                format!(
-                    "request:{request_id}:pod:{}:output_type",
-                    pod.manifest().id
-                ),
+                format!("request:{request_id}:pod:{}:output_type", pod.manifest().id),
                 output.type_id.to_string(),
             );
             self.semdb.apply_delta(delta);

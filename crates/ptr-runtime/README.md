@@ -9,7 +9,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-18  
-**Code footprint:** 1 Rust source files · 223 nonblank source lines · 0 `#[test]` markers
+**Code footprint:** 1 Rust source files · 304 nonblank source lines · 0 `#[test]` markers
 
 ### Implemented now
 
@@ -19,10 +19,11 @@
 - Committed-event materialization and runtime event emission
 - Committed-event replay rebuilds lifecycle state and preserves revocation
 - Reference InferenceBackend request loop runs against a revisioned ModelRequest and emits completion event
+- Typed model→PodRegistry→Pod→Verifier→SemDB observation loop for Pure/Read cognitive Pods
 
 ### Missing for the target architecture
 
-- Full model/router/Pod/verifier request loop
+- Router-driven multi-step resume loop after verified Pod observations
 - Async isolate scheduler integration
 - Durable ledger/state backends
 - Streaming client response lifecycle and cancellation
@@ -30,7 +31,7 @@
 ### Next milestones
 
 - Replace reference conformance backend with first evaluated external/model-native adapter
-- Add verifier-gated observation loop
+- Add model resume/checkpoint after verifier-gated observation
 - Wire ptrd request handling beyond bootstrap ingestion
 
 ### Linked experiments

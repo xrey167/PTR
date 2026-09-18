@@ -50,8 +50,7 @@ impl PodRegistry {
             .values()
             .find(|pod| {
                 let manifest = pod.manifest();
-                manifest.capabilities.contains(capability)
-                    && manifest.accepts.contains(input_type)
+                manifest.capabilities.contains(capability) && manifest.accepts.contains(input_type)
             })
             .cloned()
     }

@@ -10,17 +10,17 @@
 
 **Maturity:** `scaffold`  
 **Last reviewed:** 2026-09-18  
-**Code footprint:** 1 Rust source files · 24 nonblank source lines · 0 `#[test]` markers
+**Code footprint:** 1 Rust source files · 98 nonblank source lines · 0 `#[test]` markers
 
 ### Implemented now
 
 - Pass/Fail/Disputed/Unknown statuses
 - Finding and VerificationReport with level/score/findings
 - Generic Verifier<T> contract
+- NamedVerifier + VerifierFabric aggregate reports with Fail > Disputed > Unknown > Pass precedence
 
 ### Missing for the target architecture
 
-- Verifier fabric/aggregation and precedence rules
 - Type/capability/revision/generation deterministic verifiers
 - Source/evidence promotion verifier
 - Compiler/test/GritQL/Sentrux adapters
@@ -28,7 +28,7 @@
 
 ### Next milestones
 
-- Implement deterministic hard-boundary verifier set
+- Implement concrete deterministic type/capability/revision/generation verifier set
 - Add report aggregation where deterministic contradiction dominates learned scores
 - Connect verifier output to F001 repair loop
 
@@ -49,6 +49,7 @@
 
 ### Current automated checks
 
+- verifier-fabric deterministic failure precedence test
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->

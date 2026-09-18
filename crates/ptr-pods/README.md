@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-18  
-**Code footprint:** 1 Rust source files · 87 nonblank source lines · 0 `#[test]` markers
+**Code footprint:** 1 Rust source files · 125 nonblank source lines · 0 `#[test]` markers
 
 ### Implemented now
 
@@ -19,10 +19,10 @@
 - Ready and Revoked lease typestates
 - Revocation consumes Ready lease and produces Revoked lease
 - invoke_with_lease requires PodLease<Ready>; compile-fail doctest rejects revoked lease
+- Object-safe DynPod and PodRegistry resolve semantic capability plus accepted input type
 
 ### Missing for the target architecture
 
-- Object-safe heterogeneous registry/DynPod adapter
 - Async invocation and PodContext
 - Process-isolated, remote-Iroh and GPU/DLPack adapters
 - Capability/effect validation against runtime policy
@@ -30,7 +30,7 @@
 
 ### Next milestones
 
-- Add TypedPod + object-safe DynPod split
+- Extend registry with lifecycle/backpressure and remote/process adapters
 - Implement registry and one native reference Pod
 - Run unseen-Pod semantic generalization experiment R002
 
@@ -51,6 +51,7 @@
 ### Current automated checks
 
 - ready/wrong-Pod lease integration tests and revoked compile-fail doctest
+- semantic capability/type registry resolution test
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->
