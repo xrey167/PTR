@@ -17,3 +17,16 @@ Every candidate should record:
 - benchmark scripts and raw evidence.
 
 See `registry.toml` for open slots.
+
+
+## Runner
+
+Candidates with status `evaluating` must declare a versioned `command` in their `candidates.toml`.
+
+```bash
+python scripts/run_component_eval.py validate
+python scripts/run_component_eval.py run ledger raft-engine
+python scripts/run_component_eval.py run network iroh
+```
+
+Execution uses argv directly rather than a shell. Each run writes a unique evidence record with the candidate manifest hash, repository commit, exact command, duration, exit status, stdout/stderr and launch errors. A failed command is persisted as failed evidence and never converted into a positive evaluation.
