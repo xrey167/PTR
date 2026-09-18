@@ -50,4 +50,4 @@ PTR is a **compiling architecture/research prototype**, not yet a complete model
 - experiment preparation records git SHA, hardware profile and lockfile hashes
 - small JSON/TOML/Markdown result artifacts are versioned; large datasets/checkpoints remain out of Git
 
-See [docs/components/STATUS.md](docs/components/STATUS.md) for per-component maturity and [experiments/lifecycle/L001-revocation-crash/results/](experiments/lifecycle/L001-revocation-crash/results/) for the first lifecycle evidence.
+See [docs/components/STATUS.md](docs/components/STATUS.md) for per-component maturity and [experiments/lifecycle/L001-revocation-crash/results/](experiments/lifecycle/L001-revocation-crash/results/) for the first lifecycle evidence.\n- executable experiment and component-evaluation runners with declared no-shell commands and immutable process evidence\n
