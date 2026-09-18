@@ -1,0 +1,13 @@
+version = 1
+kind = "isolated-network-adapter"
+name = "iroh-current"
+path = "integrations/network/iroh-current"
+tests_dir = "tests"
+
+[toolchain]
+rust = "1.91"
+reason = "Iroh 1.2.0 MSRV"
+
+[dependency]
+iroh = "1.2.0"
+features = ["tls-ring"]

@@ -1,44 +1,32 @@
 version = 1
 id = "ptr-net"
-maturity = "prototype"
+maturity = "scaffold"
 last_reviewed = "2026-09-18"
 
 implemented = [
   "ALPN constants for raft, PodWire, model, blob and events protocols",
   "NodeIdentity scaffold",
   "Provider-independent Transport trait",
-  "Feature-gated Iroh 0.35 direct QUIC adapter with PTR ALPNs and authenticated peer identity",
-  "Iroh response path keeps the connection alive through peer-observed graceful completion",
-  "Iroh 0.35 feature uses upstream-release-compatible transitive pins to preserve PTR Rust 1.85 MSRV",
+  "Current Iroh adapter is isolated under integrations/network/iroh-current so its Rust/security lifecycle does not constrain ptr-net core",
 ]
 
 missing = [
+  "Core async transport/session contract beyond the current synchronous placeholder trait",
   "Peer discovery/session lifecycle",
   "Retry/idempotency and backpressure behavior",
   "Raft/PodWire/blob stream adapters",
 ]
 
 next = [
-  "Extend Iroh adapter from local request/response to reusable connection/session management and Raft/PodWire channels",
-  "Add retry/idempotency/backpressure semantics around authenticated Iroh sessions",
+  "Evaluate the isolated current-Iroh adapter with authenticated local roundtrip and security audit",
+  "Promote an async PTR-owned transport/session interface after Iroh/alternative comparison",
   "Exercise partition/reconnect behavior in L002",
 ]
 
-experiments = [
-  "L002",
-  "E001",
-]
-
-evaluations = [
-  "network",
-]
-
-decisions = [
-  "ADR-0004-backend-independence.md",
-  "ADR-0009-consensus-ledger-state-separation.md",
-]
-
+experiments = ["L002", "E001"]
+evaluations = ["network"]
+decisions = ["ADR-0004-backend-independence.md", "ADR-0009-consensus-ledger-state-separation.md"]
 checks = [
-  "Iroh local direct request/response roundtrip verifies authenticated peer identity and ALPN routing",
-  "workspace fmt/check/test/clippy",
+  "core workspace fmt/check/test/clippy",
+  "isolated Iroh-current adapter has its own toolchain/lock/security CI",
 ]

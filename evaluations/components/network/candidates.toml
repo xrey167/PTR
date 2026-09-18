@@ -15,10 +15,10 @@ license_fit = 0.04
 research_flexibility = 0.03
 
 [[candidate]]
-id = "iroh"
+id = "iroh-0.35-msrv"
 source = "external"
-status = "evaluating"
-evidence = ["../../../crates/ptr-net/tests/iroh.rs"]
+status = "rejected"
+evidence = ["evidence/iroh-0.35-security-rejection.md"]
 
 [[candidate]]
 id = "quinn"
@@ -31,3 +31,8 @@ id = "grpc"
 source = "external"
 status = "to-evaluate"
 evidence = []
+[[candidate]]
+id = "iroh-current-1.2"
+source = "external+isolated-adapter"
+status = "evaluating"
+evidence = ["../../../integrations/network/iroh-current/README.md", "../../../integrations/network/iroh-current/tests/roundtrip.rs"]

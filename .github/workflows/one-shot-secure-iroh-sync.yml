@@ -1,0 +1,35 @@
+name: one-shot-secure-iroh-sync
+on:
+  push:
+    paths:
+      - '.github/workflows/one-shot-secure-iroh-sync.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    if: github.ref == 'refs/heads/fix/secure-iroh-current'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - run: cargo +stable fmt --all
+      - run: cargo +stable generate-lockfile
+      - run: rustup toolchain install 1.91.0 --profile minimal
+      - run: cargo +1.91.0 generate-lockfile --manifest-path integrations/network/iroh-current/Cargo.toml
+      - run: cargo +1.91.0 test --manifest-path integrations/network/iroh-current/Cargo.toml --locked
+      - run: python scripts/update_component_docs.py --write
+      - name: Commit synchronized artifacts
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "Verify and synchronize secure current-Iroh adapter"
+          git push origin HEAD:fix/secure-iroh-current

@@ -1,0 +1,15 @@
+[package]
+name = "ptr-iroh-current"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+iroh = { version = "=1.2.0", default-features = false, features = ["tls-ring"] }
+ptr-net = { path = "../../../crates/ptr-net" }
+ptr-types = { path = "../../../crates/ptr-types" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-util"] }
+
+[workspace]
