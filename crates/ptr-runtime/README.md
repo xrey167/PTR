@@ -9,19 +9,18 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-18  
-**Code footprint:** 1 Rust source files · 97 nonblank source lines · 0 `#[test]` markers
+**Code footprint:** 1 Rust source files · 168 nonblank source lines · 0 `#[test]` markers
 
 ### Implemented now
 
 - Central runtime object wiring configuration, SemDB, ledger, materialized state, events and permissions
 - Text ingestion into revisioned semantic state
-- Current-revision and capability/effect checks for ActionIR
+- Current-revision, live-generation/revocation and capability/effect checks for ActionIR
 - Committed-event materialization and runtime event emission
 
 ### Missing for the target architecture
 
 - Full model/router/Pod/verifier request loop
-- Generation-liveness validation at action boundary
 - Async isolate scheduler integration
 - Durable ledger/state backends
 - Streaming client response lifecycle and cancellation
@@ -30,7 +29,7 @@
 
 - Wire baseline InferenceBackend into request lifecycle
 - Add verifier-gated observation loop
-- Move ptrd composition to PtrRuntime
+- Wire ptrd request handling beyond bootstrap ingestion
 
 ### Linked experiments
 
@@ -50,7 +49,7 @@
 
 ### Current automated checks
 
-- runtime ingestion/capability/materialization integration tests
+- runtime ingestion/revision/generation/capability/materialization integration tests
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->

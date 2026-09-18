@@ -10,17 +10,16 @@
 
 **Maturity:** `scaffold`  
 **Last reviewed:** 2026-09-18  
-**Code footprint:** 1 Rust source files · 36 nonblank source lines · 0 `#[test]` markers
+**Code footprint:** 1 Rust source files · 44 nonblank source lines · 0 `#[test]` markers
 
 ### Implemented now
 
 - Candidate<T>, Critique and Population<T> domain structures
 - Population insertion
-- Score-based best_verified selection over candidates carrying reports
+- Pass-status-aware best_verified selection over candidates carrying reports
 
 ### Missing for the target architecture
 
-- Pass/disputed-aware selection policy
 - Candidate diversity/dedup clustering
 - Patch/rewrite operators
 - Tournament/Pareto selection
@@ -28,7 +27,7 @@
 
 ### Next milestones
 
-- Make selection verification-status aware
+- Add multi-verifier/Pareto selection beyond single passing score
 - Implement generate→verify→critique→repair state machine
 - Persist full trajectories for training and GEPA
 
@@ -47,6 +46,7 @@
 
 ### Current automated checks
 
+- failed high-score candidate cannot beat passing candidate test
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->

@@ -35,8 +35,14 @@ impl<T> Population<T> {
                     .is_some_and(|report| report.status == VerificationStatus::Pass)
             })
             .max_by(|a, b| {
-                let left = a.verification.as_ref().expect("filtered verified candidate");
-                let right = b.verification.as_ref().expect("filtered verified candidate");
+                let left = a
+                    .verification
+                    .as_ref()
+                    .expect("filtered verified candidate");
+                let right = b
+                    .verification
+                    .as_ref()
+                    .expect("filtered verified candidate");
                 left.score.get().total_cmp(&right.score.get())
             })
     }

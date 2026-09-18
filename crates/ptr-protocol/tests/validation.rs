@@ -26,7 +26,10 @@ fn malformed_podwire_call_is_rejected() {
 
     let mut call = valid();
     call.payload = None;
-    assert_eq!(CallFrame::try_from(call), Err(ProtocolError::MissingPayload));
+    assert_eq!(
+        CallFrame::try_from(call),
+        Err(ProtocolError::MissingPayload)
+    );
 
     let parsed = CallFrame::try_from(valid()).unwrap();
     assert_eq!(parsed.call_id, "c");

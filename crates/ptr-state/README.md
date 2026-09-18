@@ -10,24 +10,24 @@
 
 **Maturity:** `scaffold`  
 **Last reviewed:** 2026-09-18  
-**Code footprint:** 1 Rust source files · 26 nonblank source lines · 0 `#[test]` markers
+**Code footprint:** 1 Rust source files · 47 nonblank source lines · 0 `#[test]` markers
 
 ### Implemented now
 
 - MaterializedState reference map with last_applied commit index
 - Application of Revoked and HardConstraintCommitted ledger events
+- Monotonic materialization with duplicate/out-of-order/gap detection
 
 ### Missing for the target architecture
 
 - Complete event materialization coverage
-- Idempotent replay/duplicate-index protection
 - Turso/libSQL backend and typed schema
 - Rebuild equivalence tests and CDC projection hooks
 
 ### Next milestones
 
-- Make materialization exhaustive and idempotent
-- Add replay-from-ledger test suite
+- Make materialization exhaustive across all ledger event types
+- Extend replay tests to full snapshot/rebuild equivalence
 - Evaluate Turso against alternative local/materialized stores
 
 ### Linked experiments
@@ -47,6 +47,7 @@
 
 ### Current automated checks
 
+- replay ordering/idempotency integration test
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->

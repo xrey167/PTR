@@ -11,8 +11,13 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeError {
     InvalidConfig(String),
-    StaleRevision { action: Revision, current: Revision },
-    UnknownGeneration { target: String },
+    StaleRevision {
+        action: Revision,
+        current: Revision,
+    },
+    UnknownGeneration {
+        target: String,
+    },
     StaleGeneration {
         target: String,
         action: Generation,

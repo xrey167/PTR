@@ -10,12 +10,12 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-18  
-**Code footprint:** 1 Rust source files · 31 nonblank source lines · 0 `#[test]` markers
+**Code footprint:** 1 Rust source files · 94 nonblank source lines · 0 `#[test]` markers
 
 ### Implemented now
 
 - EvidenceStage promotion states
-- SearchHit with capsule generation/backend/stage
+- SearchHit with private evidence stage and explicit promotion API
 - SearchIndex contract
 - Reciprocal-rank fusion implementation
 
@@ -24,13 +24,13 @@
 - Typed query/search planner
 - Tantivy/Zvec/cuVS/LanceDB/Havenask/GritQL adapters
 - Score normalization and backend-specific metadata
-- Exact source resolution
-- Live-generation validation and verifier-gated evidence promotion
+- Backend-specific exact source resolver
+- Verifier-report typed integration instead of boolean verification result
 
 ### Next milestones
 
 - Implement lexical reference backend first
-- Add generation-aware source resolver and promotion API
+- Connect generation-aware promotion API to authoritative source resolver and verifier reports
 - Run Q001/Q002 and strong RAG baseline E002
 
 ### Linked experiments
@@ -56,6 +56,7 @@
 
 ### Current automated checks
 
+- evidence promotion integration test blocks direct Known and stale generation
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->

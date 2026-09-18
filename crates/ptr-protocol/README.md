@@ -10,7 +10,7 @@
 
 **Maturity:** `scaffold`  
 **Last reviewed:** 2026-09-18  
-**Code footprint:** 2 Rust source files · 67 nonblank source lines · 0 `#[test]` markers
+**Code footprint:** 2 Rust source files · 104 nonblank source lines · 0 `#[test]` markers
 
 ### Implemented now
 
@@ -18,16 +18,17 @@
 - Prost-generated network schemas compiled with vendored protoc
 - TypedPayload, CallFrame and CALL/RET/ERR/EVT/REVOKE domain frames
 - Frame kind classification independent of transport
+- Validated generated PodCall to domain CallFrame conversion with malformed-frame rejection
 
 ### Missing for the target architecture
 
-- Canonical validation, semantic version negotiation and compatibility matrix
+- Semantic version negotiation and compatibility matrix
 - rkyv/local codec adapter and JSON debug adapter
 - Idempotency keys, ACK/CANCEL/BYE/HELLO/DECL frames from the wider PodWire design
 
 ### Next milestones
 
-- Implement validated domain↔prost conversion with rejection tests
+- Expand validated domain↔prost conversion to all frame types and canonical fixtures
 - Add canonical wire fixtures and malformed-frame corpus
 - Define semantic contract version separately from wire schema version
 
@@ -48,6 +49,7 @@
 
 ### Current automated checks
 
+- prost roundtrip and malformed PodCall validation tests
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->

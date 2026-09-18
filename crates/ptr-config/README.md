@@ -9,24 +9,25 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-18  
-**Code footprint:** 1 Rust source files · 106 nonblank source lines · 0 `#[test]` markers
+**Code footprint:** 1 Rust source files · 165 nonblank source lines · 0 `#[test]` markers
 
 ### Implemented now
 
 - Typed deserialization/defaults for runtime, semantic, action-boundary, observability and research sections
 - Repository default TOML parsing
 - Basic configuration validation
+- Typed environment override layer for runtime/action/semantic/observability/research settings
 
 ### Missing for the target architecture
 
-- Environment-variable and CLI override layers
+- CLI override layer
 - Per-backend typed configuration sections
 - Secret/reference types instead of plaintext secret values
 - Config schema generation and migration/version policy
 
 ### Next milestones
 
-- Add environment and CLI override precedence
+- Add CLI override precedence after file/environment layers
 - Generate config schema and example profiles
 - Wire ptr-config into ptr-runtime and ptrd
 
@@ -46,6 +47,7 @@
 ### Current automated checks
 
 - repository default config parse/validate test
+- typed environment override tests
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->

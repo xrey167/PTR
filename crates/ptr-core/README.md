@@ -10,7 +10,7 @@
 
 **Maturity:** `research-scaffold`  
 **Last reviewed:** 2026-09-18  
-**Code footprint:** 13 Rust source files · 231 nonblank source lines · 0 `#[test]` markers
+**Code footprint:** 13 Rust source files · 232 nonblank source lines · 0 `#[test]` markers
 
 ### Implemented now
 
@@ -20,7 +20,7 @@
 - ReasoningBudget and latent-step accounting scaffold
 - ReasoningOperator taxonomy and weighted router decision
 - Branch frontier pruning and probability normalization helpers
-- ActionIr and CoreVerification output contracts
+- ActionIr with explicit target/generation/revision plus CoreVerification output contracts
 
 ### Missing for the target architecture
 
