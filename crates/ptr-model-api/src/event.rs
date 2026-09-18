@@ -1,4 +1,5 @@
-use ptr_types::{CandidateId, Probability};
+use ptr_types::{CandidateId, CapabilityId, Probability, TypeId};
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum ModelEvent {
     SemanticSlotUpdate {
@@ -17,7 +18,9 @@ pub enum ModelEvent {
         operator: String,
     },
     PodRequested {
-        capability: String,
+        capability: CapabilityId,
+        input_type: TypeId,
+        payload: Vec<u8>,
     },
     CandidateReady(CandidateId),
     ActionReady {

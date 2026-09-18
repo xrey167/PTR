@@ -5,7 +5,7 @@ last_reviewed = "2026-09-18"
 
 implemented = [
   "Backend-neutral ModelRequest with request/revision/raw text",
-  "ModelEvent enum for slot, hypothesis, confidence, operator, Pod, candidate, action, token and completion events",
+  "ModelEvent enum for slot, hypothesis, confidence, operator, typed Pod request, candidate, action, token and completion events",
   "InferenceBackend trait and ModelError",
   "Deterministic ReferenceEchoBackend for runtime conformance tests",
 ]
@@ -41,5 +41,6 @@ decisions = [
 
 checks = [
   "reference backend request/event conformance test",
+  "typed PodRequested event contract covered by runtime loop tests",
   "workspace fmt/check/test/clippy",
 ]

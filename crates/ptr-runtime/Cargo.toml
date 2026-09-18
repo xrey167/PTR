@@ -8,9 +8,13 @@ publish = false
 [dependencies]
 ptr-types = { workspace = true }
 ptr-config = { workspace = true }
+ptr-protocol = { workspace = true }
 ptr-semdb = { workspace = true }
 ptr-core = { workspace = true }
 ptr-model-api = { workspace = true }
+ptr-exec = { workspace = true }
+ptr-pods = { workspace = true }
+ptr-verifier = { workspace = true }
 ptr-ledger = { workspace = true }
 ptr-state = { workspace = true }
 ptr-events = { workspace = true }

@@ -3,6 +3,9 @@ use ptr_core::action_head::ActionIr;
 use ptr_events::{EventEnvelope, RuntimeEvent};
 use ptr_ledger::{CommittedEvent, InMemoryLedger, Ledger, LedgerEvent};
 use ptr_model_api::{InferenceBackend, ModelEvent, ModelRequest};
+use ptr_pods::PodRegistry;
+use ptr_protocol::TypedPayload;
+use ptr_verifier::{VerificationStatus, Verifier};
 use ptr_security::PermissionSet;
 use ptr_semdb::{SemanticDelta, SemanticHost, SemanticSnapshot};
 use ptr_state::MaterializedState;
@@ -29,6 +32,10 @@ pub enum RuntimeError {
         actual: CommitIndex,
     },
     Model(String),
+    PodUnavailable { capability: String, input_type: String },
+    PodEffectRequiresActionBoundary { pod: String },
+    Pod(String),
+    PodVerificationFailed { pod: String },
     PermissionDenied,
 }
 
@@ -146,6 +153,84 @@ impl PtrRuntime {
             self.emit(RuntimeEvent::RequestFinished(request_id));
         }
         Ok(events)
+    }
+
+    pub fn run_model_with_pods<B, V>(
+        &mut self,
+        request_id: RequestId,
+        raw_text: impl Into<String>,
+        backend: &B,
+        pods: &PodRegistry,
+        verifier: &V,
+    ) -> Result<Vec<TypedPayload>, RuntimeError>
+    where
+        B: InferenceBackend,
+        V: Verifier<TypedPayload>,
+    {
+        let model_events = self.run_model_once(request_id.clone(), raw_text, backend)?;
+        let mut outputs = Vec::new();
+
+        for event in model_events {
+            let ModelEvent::PodRequested {
+                capability,
+                input_type,
+                payload,
+            } = event
+            else {
+                continue;
+            };
+
+            let pod = pods.resolve(&capability, &input_type).ok_or_else(|| {
+                RuntimeError::PodUnavailable {
+                    capability: capability.to_string(),
+                    input_type: input_type.to_string(),
+                }
+            })?;
+
+            if pod
+                .manifest()
+                .effects
+                .iter()
+                .any(|effect| !matches!(effect, ptr_types::Effect::Pure | ptr_types::Effect::Read))
+            {
+                return Err(RuntimeError::PodEffectRequiresActionBoundary {
+                    pod: pod.manifest().id.to_string(),
+                });
+            }
+
+            self.emit(RuntimeEvent::PodInvoked(pod.manifest().id.to_string()));
+            let output = pod
+                .invoke(TypedPayload {
+                    type_id: input_type,
+                    bytes: payload,
+                })
+                .map_err(RuntimeError::Pod)?;
+
+            let report = verifier.verify(&output);
+            let passed = report.status == VerificationStatus::Pass;
+            self.emit(RuntimeEvent::VerifierResult {
+                verifier: "pod-output".into(),
+                passed,
+            });
+            if !passed {
+                return Err(RuntimeError::PodVerificationFailed {
+                    pod: pod.manifest().id.to_string(),
+                });
+            }
+
+            let mut delta = SemanticDelta::default();
+            delta.upserts.insert(
+                format!(
+                    "request:{request_id}:pod:{}:output_type",
+                    pod.manifest().id
+                ),
+                output.type_id.to_string(),
+            );
+            self.semdb.apply_delta(delta);
+            outputs.push(output);
+        }
+
+        Ok(outputs)
     }
 
     pub fn authorize_action(&self, action: &ActionIr) -> Result<(), RuntimeError> {

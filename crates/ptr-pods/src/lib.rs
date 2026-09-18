@@ -1,5 +1,8 @@
+use ptr_protocol::TypedPayload;
 use ptr_types::{CapabilityId, Effect, PodId, TypeId};
+use std::collections::BTreeMap;
 use std::marker::PhantomData;
+use std::sync::Arc;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PodManifest {
@@ -17,6 +20,49 @@ pub trait Pod {
     type Error;
     fn manifest(&self) -> &PodManifest;
     fn invoke(&self, input: Self::Input) -> Result<Self::Output, Self::Error>;
+}
+
+pub trait DynPod: Send + Sync {
+    fn manifest(&self) -> &PodManifest;
+    fn invoke(&self, input: TypedPayload) -> Result<TypedPayload, String>;
+}
+
+#[derive(Default)]
+pub struct PodRegistry {
+    pods: BTreeMap<PodId, Arc<dyn DynPod>>,
+}
+
+impl PodRegistry {
+    pub fn register(&mut self, pod: Arc<dyn DynPod>) -> Option<Arc<dyn DynPod>> {
+        self.pods.insert(pod.manifest().id.clone(), pod)
+    }
+
+    pub fn get(&self, id: &PodId) -> Option<Arc<dyn DynPod>> {
+        self.pods.get(id).cloned()
+    }
+
+    pub fn resolve(
+        &self,
+        capability: &CapabilityId,
+        input_type: &TypeId,
+    ) -> Option<Arc<dyn DynPod>> {
+        self.pods
+            .values()
+            .find(|pod| {
+                let manifest = pod.manifest();
+                manifest.capabilities.contains(capability)
+                    && manifest.accepts.contains(input_type)
+            })
+            .cloned()
+    }
+
+    pub fn len(&self) -> usize {
+        self.pods.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.pods.is_empty()
+    }
 }
 
 pub struct Ready;
