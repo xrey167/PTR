@@ -205,7 +205,117 @@ Do not use a `HashMap<String, String>` as a substitute for a domain model. Colle
 
 For reproducible tests, manifests, snapshots and hashes, deterministic collections are usually preferred unless ordering is explicitly normalized before serialization/hashing.
 
-## 9. Traits, bounds, implementors and adapters
+## 9. Iterators, iterator adapters and closures
+
+Prefer iterator-based APIs for lazy sequence traversal and transformation when ownership/order semantics fit the problem.
+
+### Input and output shape
+
+Use:
+
+- `Iterator` when an API consumes or transforms an already-lazy sequence;
+- `IntoIterator` when callers should be free to pass a `Vec<T>`, array, set or custom iterable;
+- `impl Iterator<Item = T>` for lazy returned views without exposing concrete adapter types;
+- `&[T]` when random access, repeated traversal or a stable contiguous slice is the actual contract;
+- `Vec<T>` when materialization/ownership is itself the result.
+
+Example:
+
+```rust
+pub fn execute_all<I>(
+    &self,
+    requests: I,
+) -> Result<Vec<ExecuteResult<TOutput>>, ServiceError>
+where
+    I: IntoIterator<Item = ExecuteRequest<TInput>>,
+{
+    requests
+        .into_iter()
+        .map(|request| self.execute(request))
+        .collect()
+}
+```
+
+Here `collect::<Result<Vec<_>, _>>()` short-circuits on the first error and preserves the typed failure.
+
+### Iterator adapters
+
+Prefer standard adapters when they make the data flow clearer:
+
+- `map` — transform every item;
+- `filter` — retain items by predicate;
+- `filter_map` — filter and transform in one pass;
+- `flat_map` / `flatten` — expand nested sequences;
+- `chain` — concatenate compatible sequences;
+- `zip` / `enumerate` — relational/indexed traversal;
+- `find`, `find_map`, `position`, `any`, `all` — short-circuit queries;
+- `fold` / `reduce` — aggregate;
+- `try_fold` / `try_for_each` — fallible short-circuit traversal;
+- `collect` — materialize only when the boundary needs ownership;
+- `take`, `skip`, `scan`, `peekable` — bounded/stateful traversal where semantics require it.
+
+Prefer an iterator chain over a mutable temporary collection when the chain is readable. Split a complex chain into named helpers/local variables when it becomes harder to understand or debug.
+
+Do not depend on `HashMap` iteration order. Sort or use `BTreeMap` when deterministic output matters.
+
+### Iterator extension traits
+
+Custom iterator traits are acceptable when a repeated domain operation has stable semantics:
+
+```rust
+pub trait VerifiedIteratorExt<T>:
+    Iterator<Item = Result<T, VerificationError>> + Sized
+{
+    fn collect_verified(self) -> Result<Vec<T>, VerificationError> {
+        self.collect()
+    }
+}
+
+impl<I, T> VerifiedIteratorExt<T> for I
+where
+    I: Iterator<Item = Result<T, VerificationError>>,
+{
+}
+```
+
+Do not create extension traits merely to rename a single standard iterator method. Trait methods should add domain meaning or enforce an invariant.
+
+### Closures
+
+Choose the weakest closure bound that satisfies the contract:
+
+- `Fn` — callable repeatedly without mutable capture;
+- `FnMut` — callable repeatedly and may mutate captured state; common for iterator adapters;
+- `FnOnce` — may consume captured state and can be called once.
+
+Example lazy predicate API:
+
+```rust
+pub fn matching<'service, F>(
+    &'service self,
+    mut predicate: F,
+) -> impl Iterator<Item = &'service str> + 'service
+where
+    F: FnMut(&str) -> bool + 'service,
+{
+    self.backend_names()
+        .filter(move |name| predicate(name))
+}
+```
+
+Use `move` when ownership of captured values must move into the closure, especially for returned closures/iterators, spawned tasks or async work.
+
+Prefer named functions over closures when logic is reused, independently testable, recursive, or too large to read inline.
+
+Closure bodies should not hide authority-changing side effects inside innocent-looking `map`/`filter` chains. For effects, use explicit operations and fallible traversal such as `try_for_each`.
+
+### Borrowing and lifetimes
+
+Returned iterators may borrow from `self`; use `impl Iterator + '_` or a named lifetime when the relation matters. Do not box an iterator solely to avoid writing the correct lifetime. Use `Box<dyn Iterator<...>>` when runtime-polymorphic iterator shapes are actually required.
+
+For async streams, use a dedicated streaming contract rather than pretending an `Iterator` can suspend.
+
+## 10. Traits, bounds, implementors and adapters
 
 PTR owns contracts. Backends implement them.
 
@@ -298,7 +408,7 @@ pub struct BackendCapabilities {
 
 A backend name is metadata; it is not semantic routing authority.
 
-## 10. Lifetimes and relations
+## 11. Lifetimes and relations
 
 Lifetimes express real borrowing relationships; they are not added for style.
 
@@ -332,13 +442,13 @@ Rules:
 
 For async APIs, do not force borrowed data across suspension points unless the lifetime relationship is intentional and testable.
 
-## 11. Constructors and mutation
+## 12. Constructors and mutation
 
 Use constructors when an invariant must be checked. Direct public fields are acceptable for transparent value records with no invalid state.
 
 Prefer immutable access and explicit mutation methods. Mutation that affects lifecycle, authority, revisions or generations must use a named operation rather than direct field replacement.
 
-## 12. Error design, expected values and failure propagation
+## 13. Error design, expected values and failure propagation
 
 Stable crate APIs expose typed error enums. A mismatch carries **typed expected and actual values** whenever those values are meaningful:
 
@@ -383,7 +493,7 @@ Tests, examples, benchmarks and build scripts may use `unwrap`/`expect` when fai
 
 `panic!` is reserved for impossible internal states, explicit failpoints and process-level startup policies where returning an error is not possible or useful.
 
-## 13. Structured tracing
+## 14. Structured tracing
 
 PTR uses structured tracing, not ad-hoc logging, for runtime behavior. The architecture-facing contract lives in `ptr-observe`; concrete `tracing`, OpenTelemetry and exporter layers remain replaceable.
 
@@ -420,7 +530,7 @@ Rules:
 
 Use `println!` only for intentional CLI/stdout protocols, benchmark machine output, Cargo build-script directives, or user-facing terminal output.
 
-## 14. Function grouping
+## 15. Function grouping
 
 Inside modules, keep a predictable order when practical:
 
@@ -438,7 +548,7 @@ Within an `impl`, prefer constructor/accessors first, then primary operations, t
 
 Large groups of unrelated free functions are a signal to create a module/type/trait.
 
-## 15. Check, validate and test functions
+## 16. Check, validate and test functions
 
 Use function names to distinguish semantics:
 
@@ -493,13 +603,13 @@ Checks should be:
 - composed with `?`;
 - traced once at the ownership boundary when failure matters operationally.
 
-## 16. Tests
+## 17. Tests
 
 Unit tests live next to private implementation when they need private access. Cross-module and public-contract tests live in `tests/`.
 
 Tests should exercise enum variants and match branches, `None`/ `Some`, success/error `Result` paths, collection invariants and generic implementations where they carry architecture semantics. The full unit/integration/common-module layout is defined in [TESTING.md](TESTING.md).
 
-## 17. Stability rule
+## 18. Stability rule
 
 PTR is still in architecture discovery. Public Rust visibility does not automatically mean "frozen forever". Before v0 contract freeze:
 
