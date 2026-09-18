@@ -50,7 +50,7 @@
 ### Current automated checks
 
 - Iroh local direct request/response roundtrip verifies authenticated peer identity and ALPN routing
-- workspace fmt/check/test/clippy
+- workspace rustfmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->
 
