@@ -50,4 +50,31 @@ impl<T> BackendRegistry<T> {
     pub(crate) fn get(&self, name: &str) -> Option<&T> {
         self.entries.get(name)
     }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&str, &T)> + '_ {
+        self.entries
+            .iter()
+            .map(|(name, backend)| (name.as_str(), backend))
+    }
+
+    pub(crate) fn names(&self) -> impl Iterator<Item = &str> + '_ {
+        self.iter().map(|(name, _)| name)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registry_iterator_exposes_all_entries_without_order_contract() {
+        let mut registry = BackendRegistry::default();
+        registry.insert("a", 1_u8);
+        registry.insert("b", 2_u8);
+
+        let mut names = registry.names().collect::<Vec<_>>();
+        names.sort_unstable();
+
+        assert_eq!(names, vec!["a", "b"]);
+    }
 }
