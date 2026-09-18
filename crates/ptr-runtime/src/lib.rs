@@ -1,7 +1,7 @@
 use ptr_config::PtrConfig;
 use ptr_core::action_head::ActionIr;
 use ptr_events::{EventEnvelope, RuntimeEvent};
-use ptr_ledger::{CommittedEvent, InMemoryLedger, Ledger, LedgerEvent};
+use ptr_ledger::{CommittedEvent, FileLedger, InMemoryLedger, Ledger, LedgerEvent};
 use ptr_model_api::{
     InferenceBackend, ModelEvent, ModelObservation, ModelRequest, ModelResumeRequest,
     ResumableInferenceBackend,
@@ -14,10 +14,12 @@ use ptr_state::MaterializedState;
 use ptr_types::{CommitIndex, Generation, RequestId, Revision};
 use ptr_verifier::{VerificationStatus, Verifier};
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeError {
     InvalidConfig(String),
+    Ledger(String),
     StaleRevision {
         action: Revision,
         current: Revision,
@@ -62,10 +64,33 @@ pub struct ResumableRun {
     pub observations: Vec<TypedPayload>,
 }
 
+enum RuntimeLedger {
+    Memory(InMemoryLedger),
+    File(FileLedger),
+}
+
+impl RuntimeLedger {
+    fn append(&mut self, event: LedgerEvent) -> Result<CommitIndex, RuntimeError> {
+        match self {
+            Self::Memory(ledger) => Ok(ledger.append(event)),
+            Self::File(ledger) => ledger
+                .append_durable(event)
+                .map_err(|error| RuntimeError::Ledger(error.to_string())),
+        }
+    }
+
+    fn events(&self) -> &[CommittedEvent] {
+        match self {
+            Self::Memory(ledger) => ledger.events(),
+            Self::File(ledger) => ledger.events(),
+        }
+    }
+}
+
 pub struct PtrRuntime {
     pub config: PtrConfig,
     semdb: SemanticHost,
-    ledger: InMemoryLedger,
+    ledger: RuntimeLedger,
     state: MaterializedState,
     permissions: PermissionSet,
     live_generations: BTreeMap<String, Generation>,
@@ -76,11 +101,26 @@ pub struct PtrRuntime {
 
 impl PtrRuntime {
     pub fn new(config: PtrConfig) -> Result<Self, RuntimeError> {
+        Self::with_ledger(config, RuntimeLedger::Memory(InMemoryLedger::default()))
+    }
+
+    pub fn open_durable(config: PtrConfig, path: impl AsRef<Path>) -> Result<Self, RuntimeError> {
+        let ledger =
+            FileLedger::open(path).map_err(|error| RuntimeError::Ledger(error.to_string()))?;
+        let persisted = ledger.events().to_vec();
+        let mut runtime = Self::with_ledger(config, RuntimeLedger::File(ledger))?;
+        for committed in &persisted {
+            runtime.apply_committed(committed);
+        }
+        Ok(runtime)
+    }
+
+    fn with_ledger(config: PtrConfig, ledger: RuntimeLedger) -> Result<Self, RuntimeError> {
         config.validate().map_err(RuntimeError::InvalidConfig)?;
         Ok(Self {
             config,
             semdb: SemanticHost::default(),
-            ledger: InMemoryLedger::default(),
+            ledger,
             state: MaterializedState::default(),
             permissions: PermissionSet::default(),
             live_generations: BTreeMap::new(),
@@ -93,7 +133,7 @@ impl PtrRuntime {
     pub fn replay(config: PtrConfig, events: &[CommittedEvent]) -> Result<Self, RuntimeError> {
         let mut runtime = Self::new(config)?;
         for expected in events {
-            let actual = runtime.ledger.append(expected.event.clone());
+            let actual = runtime.ledger.append(expected.event.clone())?;
             if actual != expected.index {
                 return Err(RuntimeError::ReplayIndexMismatch {
                     expected: expected.index,
@@ -421,8 +461,8 @@ impl PtrRuntime {
         Ok(())
     }
 
-    pub fn commit(&mut self, event: LedgerEvent) -> CommitIndex {
-        let index = self.ledger.append(event);
+    pub fn commit(&mut self, event: LedgerEvent) -> Result<CommitIndex, RuntimeError> {
+        let index = self.ledger.append(event)?;
         let committed = self
             .ledger
             .events()
@@ -430,7 +470,7 @@ impl PtrRuntime {
             .expect("append created committed event")
             .clone();
         self.apply_committed(&committed);
-        index
+        Ok(index)
     }
 
     fn apply_committed(&mut self, committed: &CommittedEvent) {
