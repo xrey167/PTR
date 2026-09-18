@@ -16,6 +16,9 @@ __pycache__/
 !/training/checkpoints/.gitkeep
 /experiments/**/results/*
 !/experiments/**/results/.gitkeep
+!/experiments/**/results/*.json
+!/experiments/**/results/*.md
+!/experiments/**/results/*.toml
 /datasets/raw/*
 !/datasets/raw/.gitkeep
 /datasets/processed/*

@@ -1,12 +1,13 @@
 version = 1
 id = "L001"
-status = "planned"
+status = "running"
 hypothesis = "Can revoked generations ever resurrect across injected crashes?"
 metrics = "false accept count; recovery consistency"
 baseline = "no-fault reference + naive recovery"
 falsification = "Any stale-generation acceptance is a hard failure."
 hardware_profile = "hardware/default.toml"
-entrypoint = ""
+entrypoint = "cargo run --release --locked -p ptr-bench -- ledger-recovery <iterations> <seed>"
 seeds = [17, 29, 43, 71, 101]
 results_dir = "results"
 required_artifacts = ["run.json", "metrics.json"]
+scope = "reference FileLedger partial-tail crash injection; broader failpoint/process-kill matrix remains open"

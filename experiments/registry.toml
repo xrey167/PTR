@@ -58,7 +58,7 @@ status = "planned"
 [[experiment]]
 id = "L001"
 path = "lifecycle/L001-revocation-crash"
-status = "planned"
+status = "running"
 
 [[experiment]]
 id = "L002"
