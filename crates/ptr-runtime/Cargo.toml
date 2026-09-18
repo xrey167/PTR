@@ -10,6 +10,7 @@ ptr-types = { workspace = true }
 ptr-config = { workspace = true }
 ptr-semdb = { workspace = true }
 ptr-core = { workspace = true }
+ptr-model-api = { workspace = true }
 ptr-ledger = { workspace = true }
 ptr-state = { workspace = true }
 ptr-events = { workspace = true }

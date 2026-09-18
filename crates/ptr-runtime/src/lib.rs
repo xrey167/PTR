@@ -2,6 +2,7 @@ use ptr_config::PtrConfig;
 use ptr_core::action_head::ActionIr;
 use ptr_events::{EventEnvelope, RuntimeEvent};
 use ptr_ledger::{CommittedEvent, InMemoryLedger, Ledger, LedgerEvent};
+use ptr_model_api::{InferenceBackend, ModelEvent, ModelRequest};
 use ptr_security::PermissionSet;
 use ptr_semdb::{SemanticDelta, SemanticHost, SemanticSnapshot};
 use ptr_state::MaterializedState;
@@ -27,6 +28,7 @@ pub enum RuntimeError {
         expected: CommitIndex,
         actual: CommitIndex,
     },
+    Model(String),
     PermissionDenied,
 }
 
@@ -120,6 +122,27 @@ impl PtrRuntime {
         let (revision, _) = self.semdb.apply_delta(delta);
         self.emit(RuntimeEvent::SnapshotOpened(revision));
         revision
+    }
+
+    pub fn run_model_once<B: InferenceBackend>(
+        &mut self,
+        request_id: RequestId,
+        raw_text: impl Into<String>,
+        backend: &B,
+    ) -> Result<Vec<ModelEvent>, RuntimeError> {
+        let raw_text = raw_text.into();
+        let revision = self.ingest_text(request_id.clone(), raw_text.clone());
+        let events = backend
+            .infer(&ModelRequest {
+                request_id: request_id.clone(),
+                revision,
+                raw_text,
+            })
+            .map_err(|error| RuntimeError::Model(error.0))?;
+        if events.iter().any(|event| matches!(event, ModelEvent::Finished)) {
+            self.emit(RuntimeEvent::RequestFinished(request_id));
+        }
+        Ok(events)
     }
 
     pub fn authorize_action(&self, action: &ActionIr) -> Result<(), RuntimeError> {

@@ -8,6 +8,7 @@ implemented = [
   "Current-revision, live-generation/revocation and capability/effect checks for ActionIR",
   "Committed-event materialization and runtime event emission",
   "Committed-event replay rebuilds lifecycle state and preserves revocation",
+  "Reference InferenceBackend request loop runs against a revisioned ModelRequest and emits completion event",
 ]
 missing = [
   "Full model/router/Pod/verifier request loop",
@@ -16,11 +17,11 @@ missing = [
   "Streaming client response lifecycle and cancellation",
 ]
 next = [
-  "Wire baseline InferenceBackend into request lifecycle",
+  "Replace reference conformance backend with first evaluated external/model-native adapter",
   "Add verifier-gated observation loop",
   "Wire ptrd request handling beyond bootstrap ingestion",
 ]
 experiments = ["E001", "E003", "E004"]
 evaluations = []
 decisions = ["ADR-0001-rust-runtime.md", "ADR-0012-hard-effect-boundary.md", "ADR-0013-runtime-orchestrator.md"]
-checks = ["runtime ingestion/revision/generation/capability/materialization integration tests", "revocation replay/restart integration test", "workspace fmt/check/test/clippy"]
+checks = ["runtime ingestion/revision/generation/capability/materialization integration tests", "reference model-loop integration test", "revocation replay/restart integration test", "workspace fmt/check/test/clippy"]
