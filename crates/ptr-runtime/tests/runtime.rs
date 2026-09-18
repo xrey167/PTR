@@ -131,4 +131,3 @@ fn runtime_exposes_typed_authorization_decision() {
         })
     );
 }
-
