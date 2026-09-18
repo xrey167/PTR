@@ -6,10 +6,11 @@
 <!-- PTR:STATUS:BEGIN -->
 ## Current implementation status
 
-> **Generated section.** Source of truth: [`component.toml`](component.toml). Run `python3 scripts/update_component_docs.py --write` after editing metadata. Do not hand-edit inside this block.
+> **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `scaffold`  
-**Last reviewed:** 2026-09-18
+**Last reviewed:** 2026-09-18  
+**Code footprint:** 1 Rust source files · 12 nonblank source lines · 0 `#[test]` markers
 
 ### Implemented now
 
