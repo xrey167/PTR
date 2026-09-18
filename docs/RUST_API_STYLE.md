@@ -497,7 +497,7 @@ Checks should be:
 
 Unit tests live next to private implementation when they need private access. Cross-module and public-contract tests live in `tests/`.
 
-Tests should exercise enum variants and match branches, `None`/ `Some`, success/error `Result` paths, collection invariants and generic implementations where they carry architecture semantics.
+Tests should exercise enum variants and match branches, `None`/ `Some`, success/error `Result` paths, collection invariants and generic implementations where they carry architecture semantics. The full unit/integration/common-module layout is defined in [TESTING.md](TESTING.md).
 
 ## 17. Stability rule
 
