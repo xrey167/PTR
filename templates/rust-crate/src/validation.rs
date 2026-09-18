@@ -96,7 +96,7 @@ mod tests {
             check_backend_name(Some(&value)),
             Err(ValidationError::InvalidValue {
                 field: "preferred_backend",
-                value,
+                value: value.clone(),
                 message: "preferred backend must not be empty",
             })
         );
