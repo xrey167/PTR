@@ -3,7 +3,7 @@
 > **Role:** Defines the stable semantic vocabulary shared across model, runtime, storage, verification, and network boundaries.  
 > **Maturity:** architecture + contract scaffold; production behavior must be proven by the linked experiments and component evaluations.
 
-{BEGIN}
+<!-- PTR:STATUS:BEGIN -->
 ## Current implementation status
 
 > **Generated section.** Source of truth: [`component.toml`](component.toml). Run `python3 scripts/update_component_docs.py --write` after editing metadata. Do not hand-edit inside this block.
@@ -34,8 +34,8 @@
 
 ### Linked experiments
 
-- - [M005](../../experiments/model/M005-epistemic-calibration/README.md) — `planned`
-- - [L001](../../experiments/lifecycle/L001-revocation-crash/README.md) — `planned`
+- [M005](../../experiments/model/M005-epistemic-calibration/README.md) — `planned`
+- [L001](../../experiments/lifecycle/L001-revocation-crash/README.md) — `planned`
 
 ### Technology evaluations
 
@@ -43,8 +43,8 @@
 
 ### Decision records
 
-- - [ADR-0001-rust-runtime.md](../../research/decisions/ADR-0001-rust-runtime.md)
-- - [ADR-0003-raw-and-typed.md](../../research/decisions/ADR-0003-raw-and-typed.md)
+- [ADR-0001-rust-runtime.md](../../research/decisions/ADR-0001-rust-runtime.md)
+- [ADR-0003-raw-and-typed.md](../../research/decisions/ADR-0003-raw-and-typed.md)
 
 ### Current automated checks
 
@@ -52,7 +52,7 @@
 - lifecycle_versions_are_distinct_concepts unit test
 - workspace fmt/check/test/clippy
 
-{END}
+<!-- PTR:STATUS:END -->
 
 ## Position in PTR
 

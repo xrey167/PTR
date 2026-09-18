@@ -3,7 +3,7 @@
 > **Role:** Provides typed, content-addressed artifact references while abstracting physical storage locations.  
 > **Maturity:** architecture + contract scaffold; production behavior must be proven by the linked experiments and component evaluations.
 
-{BEGIN}
+<!-- PTR:STATUS:BEGIN -->
 ## Current implementation status
 
 > **Generated section.** Source of truth: [`component.toml`](component.toml). Run `python3 scripts/update_component_docs.py --write` after editing metadata. Do not hand-edit inside this block.
@@ -33,21 +33,21 @@
 
 ### Linked experiments
 
-- - [E004](../../experiments/system/E004-long-horizon/README.md) — `planned`
+- [E004](../../experiments/system/E004-long-horizon/README.md) — `planned`
 
 ### Technology evaluations
 
-- - [object-storage](../../evaluations/components/object-storage/README.md) — `open`
+- [object-storage](../../evaluations/components/object-storage/README.md) — `open`
 
 ### Decision records
 
-- - [ADR-0004-backend-independence.md](../../research/decisions/ADR-0004-backend-independence.md)
+- [ADR-0004-backend-independence.md](../../research/decisions/ADR-0004-backend-independence.md)
 
 ### Current automated checks
 
 - workspace fmt/check/test/clippy
 
-{END}
+<!-- PTR:STATUS:END -->
 
 ## Position in PTR
 

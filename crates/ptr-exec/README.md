@@ -3,7 +3,7 @@
 > **Role:** Runs PTR subsystems as supervised state machines with bounded typed mailboxes, explicit backpressure, cancellation and replay semantics.  
 > **Maturity:** architecture + contract scaffold; production behavior must be proven by the linked experiments and component evaluations.
 
-{BEGIN}
+<!-- PTR:STATUS:BEGIN -->
 ## Current implementation status
 
 > **Generated section.** Source of truth: [`component.toml`](component.toml). Run `python3 scripts/update_component_docs.py --write` after editing metadata. Do not hand-edit inside this block.
@@ -34,24 +34,24 @@
 
 ### Linked experiments
 
-- - [R001](../../experiments/runtime/R001-mailbox-backpressure/README.md) — `planned`
-- - [E001](../../experiments/system/E001-end-to-end/README.md) — `planned`
-- - [E003](../../experiments/system/E003-token-efficiency/README.md) — `planned`
+- [R001](../../experiments/runtime/R001-mailbox-backpressure/README.md) — `planned`
+- [E001](../../experiments/system/E001-end-to-end/README.md) — `planned`
+- [E003](../../experiments/system/E003-token-efficiency/README.md) — `planned`
 
 ### Technology evaluations
 
-- - [execution-runtime](../../evaluations/components/execution-runtime/README.md) — `open`
+- [execution-runtime](../../evaluations/components/execution-runtime/README.md) — `open`
 
 ### Decision records
 
-- - [ADR-0001-rust-runtime.md](../../research/decisions/ADR-0001-rust-runtime.md)
-- - [ADR-0006-typed-isolate-runtime.md](../../research/decisions/ADR-0006-typed-isolate-runtime.md)
+- [ADR-0001-rust-runtime.md](../../research/decisions/ADR-0001-rust-runtime.md)
+- [ADR-0006-typed-isolate-runtime.md](../../research/decisions/ADR-0006-typed-isolate-runtime.md)
 
 ### Current automated checks
 
 - workspace fmt/check/test/clippy
 
-{END}
+<!-- PTR:STATUS:END -->
 
 ## Position in PTR
 

@@ -3,7 +3,7 @@
 > **Role:** Routes queries across lexical, semantic, GPU, multimodal, distributed and structural search backends while keeping retrieval non-authoritative.  
 > **Maturity:** architecture + contract scaffold; production behavior must be proven by the linked experiments and component evaluations.
 
-{BEGIN}
+<!-- PTR:STATUS:BEGIN -->
 ## Current implementation status
 
 > **Generated section.** Source of truth: [`component.toml`](component.toml). Run `python3 scripts/update_component_docs.py --write` after editing metadata. Do not hand-edit inside this block.
@@ -34,30 +34,30 @@
 
 ### Linked experiments
 
-- - [Q001](../../experiments/retrieval/Q001-fusion/README.md) — `planned`
-- - [Q002](../../experiments/retrieval/Q002-evidence-promotion/README.md) — `planned`
-- - [E002](../../experiments/system/E002-rag-baselines/README.md) — `planned`
-- - [E003](../../experiments/system/E003-token-efficiency/README.md) — `planned`
+- [Q001](../../experiments/retrieval/Q001-fusion/README.md) — `planned`
+- [Q002](../../experiments/retrieval/Q002-evidence-promotion/README.md) — `planned`
+- [E002](../../experiments/system/E002-rag-baselines/README.md) — `planned`
+- [E003](../../experiments/system/E003-token-efficiency/README.md) — `planned`
 
 ### Technology evaluations
 
-- - [lexical-search](../../evaluations/components/lexical-search/README.md) — `open`
-- - [local-vector-search](../../evaluations/components/local-vector-search/README.md) — `open`
-- - [gpu-vector-search](../../evaluations/components/gpu-vector-search/README.md) — `open`
-- - [distributed-search](../../evaluations/components/distributed-search/README.md) — `open`
-- - [structural-code-search](../../evaluations/components/structural-code-search/README.md) — `open`
+- [lexical-search](../../evaluations/components/lexical-search/README.md) — `open`
+- [local-vector-search](../../evaluations/components/local-vector-search/README.md) — `open`
+- [gpu-vector-search](../../evaluations/components/gpu-vector-search/README.md) — `open`
+- [distributed-search](../../evaluations/components/distributed-search/README.md) — `open`
+- [structural-code-search](../../evaluations/components/structural-code-search/README.md) — `open`
 
 ### Decision records
 
-- - [ADR-0002-authority-hierarchy.md](../../research/decisions/ADR-0002-authority-hierarchy.md)
-- - [ADR-0008-derived-search-not-authority.md](../../research/decisions/ADR-0008-derived-search-not-authority.md)
-- - [ADR-0004-backend-independence.md](../../research/decisions/ADR-0004-backend-independence.md)
+- [ADR-0002-authority-hierarchy.md](../../research/decisions/ADR-0002-authority-hierarchy.md)
+- [ADR-0008-derived-search-not-authority.md](../../research/decisions/ADR-0008-derived-search-not-authority.md)
+- [ADR-0004-backend-independence.md](../../research/decisions/ADR-0004-backend-independence.md)
 
 ### Current automated checks
 
 - workspace fmt/check/test/clippy
 
-{END}
+<!-- PTR:STATUS:END -->
 
 ## Position in PTR
 

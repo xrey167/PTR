@@ -3,7 +3,7 @@
 > **Role:** Connects PTR nodes and remote Pods with authenticated transport while leaving protocol semantics to ptr-protocol.  
 > **Maturity:** architecture + contract scaffold; production behavior must be proven by the linked experiments and component evaluations.
 
-{BEGIN}
+<!-- PTR:STATUS:BEGIN -->
 ## Current implementation status
 
 > **Generated section.** Source of truth: [`component.toml`](component.toml). Run `python3 scripts/update_component_docs.py --write` after editing metadata. Do not hand-edit inside this block.
@@ -33,23 +33,23 @@
 
 ### Linked experiments
 
-- - [L002](../../experiments/lifecycle/L002-raft-recovery/README.md) — `planned`
-- - [E001](../../experiments/system/E001-end-to-end/README.md) — `planned`
+- [L002](../../experiments/lifecycle/L002-raft-recovery/README.md) — `planned`
+- [E001](../../experiments/system/E001-end-to-end/README.md) — `planned`
 
 ### Technology evaluations
 
-- - [network](../../evaluations/components/network/README.md) — `open`
+- [network](../../evaluations/components/network/README.md) — `open`
 
 ### Decision records
 
-- - [ADR-0004-backend-independence.md](../../research/decisions/ADR-0004-backend-independence.md)
-- - [ADR-0009-consensus-ledger-state-separation.md](../../research/decisions/ADR-0009-consensus-ledger-state-separation.md)
+- [ADR-0004-backend-independence.md](../../research/decisions/ADR-0004-backend-independence.md)
+- [ADR-0009-consensus-ledger-state-separation.md](../../research/decisions/ADR-0009-consensus-ledger-state-separation.md)
 
 ### Current automated checks
 
 - workspace fmt/check/test/clippy
 
-{END}
+<!-- PTR:STATUS:END -->
 
 ## Position in PTR
 

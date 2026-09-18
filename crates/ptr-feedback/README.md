@@ -3,7 +3,7 @@
 > **Role:** Implements candidate populations, critique, patch/rewrite, selection and trajectory capture for test-time and training-time improvement.  
 > **Maturity:** architecture + contract scaffold; production behavior must be proven by the linked experiments and component evaluations.
 
-{BEGIN}
+<!-- PTR:STATUS:BEGIN -->
 ## Current implementation status
 
 > **Generated section.** Source of truth: [`component.toml`](component.toml). Run `python3 scripts/update_component_docs.py --write` after editing metadata. Do not hand-edit inside this block.
@@ -33,8 +33,8 @@
 
 ### Linked experiments
 
-- - [F001](../../experiments/feedback/F001-generate-verify-repair/README.md) — `planned`
-- - [E001](../../experiments/system/E001-end-to-end/README.md) — `planned`
+- [F001](../../experiments/feedback/F001-generate-verify-repair/README.md) — `planned`
+- [E001](../../experiments/system/E001-end-to-end/README.md) — `planned`
 
 ### Technology evaluations
 
@@ -42,13 +42,13 @@
 
 ### Decision records
 
-- - [ADR-0004-backend-independence.md](../../research/decisions/ADR-0004-backend-independence.md)
+- [ADR-0004-backend-independence.md](../../research/decisions/ADR-0004-backend-independence.md)
 
 ### Current automated checks
 
 - workspace fmt/check/test/clippy
 
-{END}
+<!-- PTR:STATUS:END -->
 
 ## Position in PTR
 

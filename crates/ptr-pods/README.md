@@ -3,7 +3,7 @@
 > **Role:** Defines specialist computational modules through semantic contracts rather than fragile tool names.  
 > **Maturity:** architecture + contract scaffold; production behavior must be proven by the linked experiments and component evaluations.
 
-{BEGIN}
+<!-- PTR:STATUS:BEGIN -->
 ## Current implementation status
 
 > **Generated section.** Source of truth: [`component.toml`](component.toml). Run `python3 scripts/update_component_docs.py --write` after editing metadata. Do not hand-edit inside this block.
@@ -34,23 +34,23 @@
 
 ### Linked experiments
 
-- - [R002](../../experiments/runtime/R002-unseen-pod-generalization/README.md) — `planned`
-- - [E001](../../experiments/system/E001-end-to-end/README.md) — `planned`
+- [R002](../../experiments/runtime/R002-unseen-pod-generalization/README.md) — `planned`
+- [E001](../../experiments/system/E001-end-to-end/README.md) — `planned`
 
 ### Technology evaluations
 
-- - [environment-runtime](../../evaluations/components/environment-runtime/README.md) — `open`
+- [environment-runtime](../../evaluations/components/environment-runtime/README.md) — `open`
 
 ### Decision records
 
-- - [ADR-0006-typed-isolate-runtime.md](../../research/decisions/ADR-0006-typed-isolate-runtime.md)
-- - [ADR-0011-semantic-pod-contracts.md](../../research/decisions/ADR-0011-semantic-pod-contracts.md)
+- [ADR-0006-typed-isolate-runtime.md](../../research/decisions/ADR-0006-typed-isolate-runtime.md)
+- [ADR-0011-semantic-pod-contracts.md](../../research/decisions/ADR-0011-semantic-pod-contracts.md)
 
 ### Current automated checks
 
 - workspace fmt/check/test/clippy
 
-{END}
+<!-- PTR:STATUS:END -->
 
 ## Position in PTR
 

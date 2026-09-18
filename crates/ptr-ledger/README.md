@@ -3,7 +3,7 @@
 > **Role:** Records the authoritative ordered lifecycle of semantic changes and, in cluster mode, applies distributed consensus before state materialization.  
 > **Maturity:** architecture + contract scaffold; production behavior must be proven by the linked experiments and component evaluations.
 
-{BEGIN}
+<!-- PTR:STATUS:BEGIN -->
 ## Current implementation status
 
 > **Generated section.** Source of truth: [`component.toml`](component.toml). Run `python3 scripts/update_component_docs.py --write` after editing metadata. Do not hand-edit inside this block.
@@ -34,25 +34,25 @@
 
 ### Linked experiments
 
-- - [L001](../../experiments/lifecycle/L001-revocation-crash/README.md) — `planned`
-- - [L002](../../experiments/lifecycle/L002-raft-recovery/README.md) — `planned`
-- - [E004](../../experiments/system/E004-long-horizon/README.md) — `planned`
+- [L001](../../experiments/lifecycle/L001-revocation-crash/README.md) — `planned`
+- [L002](../../experiments/lifecycle/L002-raft-recovery/README.md) — `planned`
+- [E004](../../experiments/system/E004-long-horizon/README.md) — `planned`
 
 ### Technology evaluations
 
-- - [consensus](../../evaluations/components/consensus/README.md) — `open`
-- - [ledger](../../evaluations/components/ledger/README.md) — `open`
+- [consensus](../../evaluations/components/consensus/README.md) — `open`
+- [ledger](../../evaluations/components/ledger/README.md) — `open`
 
 ### Decision records
 
-- - [ADR-0002-authority-hierarchy.md](../../research/decisions/ADR-0002-authority-hierarchy.md)
-- - [ADR-0009-consensus-ledger-state-separation.md](../../research/decisions/ADR-0009-consensus-ledger-state-separation.md)
+- [ADR-0002-authority-hierarchy.md](../../research/decisions/ADR-0002-authority-hierarchy.md)
+- [ADR-0009-consensus-ledger-state-separation.md](../../research/decisions/ADR-0009-consensus-ledger-state-separation.md)
 
 ### Current automated checks
 
 - workspace fmt/check/test/clippy
 
-{END}
+<!-- PTR:STATUS:END -->
 
 ## Position in PTR
 

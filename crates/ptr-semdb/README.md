@@ -3,7 +3,7 @@
 > **Role:** Maintains revisioned ground state and dependency-aware derived semantics using an incremental-compiler model.  
 > **Maturity:** architecture + contract scaffold; production behavior must be proven by the linked experiments and component evaluations.
 
-{BEGIN}
+<!-- PTR:STATUS:BEGIN -->
 ## Current implementation status
 
 > **Generated section.** Source of truth: [`component.toml`](component.toml). Run `python3 scripts/update_component_docs.py --write` after editing metadata. Do not hand-edit inside this block.
@@ -36,25 +36,25 @@
 
 ### Linked experiments
 
-- - [S001](../../experiments/semdb/S001-invalidation/README.md) — `planned`
-- - [S002](../../experiments/semdb/S002-snapshot-cancellation/README.md) — `planned`
-- - [E004](../../experiments/system/E004-long-horizon/README.md) — `planned`
+- [S001](../../experiments/semdb/S001-invalidation/README.md) — `planned`
+- [S002](../../experiments/semdb/S002-snapshot-cancellation/README.md) — `planned`
+- [E004](../../experiments/system/E004-long-horizon/README.md) — `planned`
 
 ### Technology evaluations
 
-- - [semantic-db](../../evaluations/components/semantic-db/README.md) — `open`
+- [semantic-db](../../evaluations/components/semantic-db/README.md) — `open`
 
 ### Decision records
 
-- - [ADR-0003-raw-and-typed.md](../../research/decisions/ADR-0003-raw-and-typed.md)
-- - [ADR-0005-incremental-semdb.md](../../research/decisions/ADR-0005-incremental-semdb.md)
+- [ADR-0003-raw-and-typed.md](../../research/decisions/ADR-0003-raw-and-typed.md)
+- [ADR-0005-incremental-semdb.md](../../research/decisions/ADR-0005-incremental-semdb.md)
 
 ### Current automated checks
 
 - local_change_invalidates_only_dependency_closure unit test
 - workspace fmt/check/test/clippy
 
-{END}
+<!-- PTR:STATUS:END -->
 
 ## Position in PTR
 

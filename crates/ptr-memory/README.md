@@ -3,7 +3,7 @@
 > **Role:** Stores validated semantic, episodic, procedural and epistemic memory as lifecycle-managed domain objects.  
 > **Maturity:** architecture + contract scaffold; production behavior must be proven by the linked experiments and component evaluations.
 
-{BEGIN}
+<!-- PTR:STATUS:BEGIN -->
 ## Current implementation status
 
 > **Generated section.** Source of truth: [`component.toml`](component.toml). Run `python3 scripts/update_component_docs.py --write` after editing metadata. Do not hand-edit inside this block.
@@ -33,9 +33,9 @@
 
 ### Linked experiments
 
-- - [Q002](../../experiments/retrieval/Q002-evidence-promotion/README.md) — `planned`
-- - [E002](../../experiments/system/E002-rag-baselines/README.md) — `planned`
-- - [E004](../../experiments/system/E004-long-horizon/README.md) — `planned`
+- [Q002](../../experiments/retrieval/Q002-evidence-promotion/README.md) — `planned`
+- [E002](../../experiments/system/E002-rag-baselines/README.md) — `planned`
+- [E004](../../experiments/system/E004-long-horizon/README.md) — `planned`
 
 ### Technology evaluations
 
@@ -43,14 +43,14 @@
 
 ### Decision records
 
-- - [ADR-0002-authority-hierarchy.md](../../research/decisions/ADR-0002-authority-hierarchy.md)
-- - [ADR-0008-derived-search-not-authority.md](../../research/decisions/ADR-0008-derived-search-not-authority.md)
+- [ADR-0002-authority-hierarchy.md](../../research/decisions/ADR-0002-authority-hierarchy.md)
+- [ADR-0008-derived-search-not-authority.md](../../research/decisions/ADR-0008-derived-search-not-authority.md)
 
 ### Current automated checks
 
 - workspace fmt/check/test/clippy
 
-{END}
+<!-- PTR:STATUS:END -->
 
 ## Position in PTR
 
