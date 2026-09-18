@@ -7,7 +7,7 @@ mod types;
 mod validation;
 
 pub use error::{ServiceError, ValidationError};
-pub use ports::Backend;
+pub use ports::{execute_cloned, Backend};
 pub use reference::ReferenceBackend;
 pub use service::Service;
 pub use trace::{NoopTraceSink, TraceError, TraceEvent, TraceLevel, TraceSink};
