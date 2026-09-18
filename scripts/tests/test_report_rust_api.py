@@ -19,7 +19,7 @@ class RustApiReportTests(unittest.TestCase):
         self.assertEqual(mod.visibility("pub "), "pub")
         self.assertEqual(mod.visibility("pub(crate) "), "pub(crate)")
 
-    def test_scans_functions_types_modules_and_pub_use(self):
+    def test_scans_functions_types_modules_pub_use_and_implementors(self):
         with tempfile.TemporaryDirectory() as tmp:
             crate = Path(tmp) / "ptr-demo"
             src = crate / "src"
@@ -30,8 +30,11 @@ class RustApiReportTests(unittest.TestCase):
                 "pub use internal::Thing;\n"
                 "#[derive(Debug)]\n"
                 "pub struct Request<T> { pub value: T }\n"
+                "pub trait Handler<T> { fn handle(&self, value: T); }\n"
+                "impl<T> Handler<T> for Request<T> { fn handle(&self, _value: T) {} }\n"
                 "pub(crate) enum State { Ready, Closed }\n"
-                "pub fn run<T>(request: Request<T>) -> Option<T> { Some(request.value) }\n"
+                "pub fn run<'request, T>(request: &'request Request<T>) -> Option<&'request T> "
+                "where T: Send { Some(&request.value) }\n"
                 "fn helper() {}\n",
                 encoding="utf-8",
             )
@@ -41,9 +44,19 @@ class RustApiReportTests(unittest.TestCase):
             self.assertIn(("pub", "mod", "public_mod"), found)
             self.assertIn(("pub", "use", "internal::Thing"), found)
             self.assertIn(("pub", "struct", "Request"), found)
+            self.assertIn(("pub", "trait", "Handler"), found)
+            self.assertIn(("implementation", "impl", "Handler<T> for Request<T>"), found)
             self.assertIn(("pub(crate)", "enum", "State"), found)
             self.assertIn(("pub", "fn", "run"), found)
             self.assertIn(("private", "fn", "helper"), found)
+
+            run = next(item for item in items if item.kind == "fn" and item.name == "run")
+            self.assertIn("'request", run.signature)
+            self.assertIn("where T: Send", run.signature)
+
+    def test_impl_name_strips_where_clause(self):
+        signature = "impl<T> Handler<T> for Thing<T> where T: Send {"
+        self.assertEqual(mod.impl_name(signature), "Handler<T> for Thing<T>")
 
     def test_module_name_uses_file_layout(self):
         with tempfile.TemporaryDirectory() as tmp:
