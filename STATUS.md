@@ -8,7 +8,7 @@ PTR is a **compiling architecture/research prototype**, not yet a complete model
 - foundational domain types, semantic revision/snapshot prototype and dependency invalidation
 - bounded-mailbox/isolate contracts and Pod lease typestate
 - typed model → semantic Pod registry → Pod → verifier → SemDB observation loop for Pure/Read cognitive Pods
-- revision, live-generation/revocation and capability/effect checks at the ActionIR boundary
+- typed ActionIR authorization decisions in `ptr-security`, with revision/generation freshness, capability/effect denials and audit-ready allow receipts
 - durable single-node reference `FileLedger` with fsync, reopen/replay and incomplete crash-tail truncation
 - `ptr-runtime` durable standalone mode can open/replay `FileLedger` and reconstruct lifecycle/materialized state across restart
 - feature-gated raft-engine durable log, raft-rs single-node consensus, Turso materialized-state and direct Iroh transport adapters with dedicated CI jobs
@@ -34,6 +34,7 @@ PTR is a **compiling architecture/research prototype**, not yet a complete model
 
 - PTR-Core now has a separate trainable Burn A0 research package with typed metadata, bidirectional cross-attention, recurrent latent refinement and a router; it is still a small architecture probe rather than a pretrained language model
 - bounded model resume after verified Pod observations is now wired and revision-advancing; opaque backend checkpoints, async streaming and router-driven operator selection remain open
+- hard ActionIR authorization now has typed security decisions/receipts, but principal/session/resource scopes, verifier requirements and durable authorization-audit persistence remain open
 - feature-gated raft-engine, single-node raft-rs, Turso and direct Iroh adapters now exist and are under evaluation; multi-node consensus/network sessions and real search-backend adapters remain incomplete
 - 19 architecture experiments remain planned; L001 is the only running experiment and now has two executed scoped crash/recovery evidence slices
 - external component candidates mostly lack comparative benchmark evidence
