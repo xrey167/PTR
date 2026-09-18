@@ -95,6 +95,25 @@ def check() -> list[str]:
         errors.append(f"missing component contracts: {missing_contracts}")
 
     rust_api = load("rust-api-layout.toml")
+    policy = rust_api.get("policy", {})
+    for key in [
+        "lib_rs",
+        "default_visibility",
+        "internal_visibility",
+        "public_visibility",
+        "public_module_rule",
+        "parameter_rule",
+        "collections_rule",
+        "generic_rule",
+        "trait_rule",
+        "bounds_rule",
+        "lifetime_rule",
+        "validation_rule",
+        "error_rule",
+    ]:
+        if not policy.get(key):
+            errors.append(f"rust api policy missing {key}")
+
     api_entries = rust_api.get("crate", [])
     api_ids: set[str] = set()
     for entry in api_entries:
