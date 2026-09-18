@@ -237,24 +237,89 @@ Use constructors when an invariant must be checked. Direct public fields are acc
 
 Prefer immutable access and explicit mutation methods. Mutation that affects lifecycle, authority, revisions or generations must use a named operation rather than direct field replacement.
 
-## 11. Error design
+## 11. Error design, expected values and failure propagation
 
-Stable crate APIs should expose typed error enums:
+Stable crate APIs expose typed error enums. A mismatch carries **typed expected and actual values** whenever those values are meaningful:
 
 ```rust
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LookupError {
-    BackendUnavailable,
+    BackendUnavailable {
+        backend: String,
+    },
     StaleGeneration {
         expected: Generation,
         actual: Generation,
     },
+    InvalidState {
+        expected: BackendState,
+        actual: BackendState,
+    },
 }
 ```
 
-Convert provider errors at the adapter boundary. Preserve a source/error detail internally when useful, but do not let external error types become the crate contract.
+This is preferred over `Err("generation mismatch".into())`: callers can exhaustively `match`, tests can assert exact values, and tracing can record structured fields.
 
-## 12. Function grouping
+Rust has no standard `Expected<T>` success type analogous to C++ `std::expected`; PTR uses `Result<T, E>`. Use `Option<T>` when absence is valid and not itself an error.
+
+### Propagation
+
+- use `?` to propagate errors while preserving typed semantics;
+- convert provider errors at the adapter boundary;
+- add PTR context at the boundary where it becomes meaningful;
+- do not silently convert an error to `None`, a default, or an empty collection;
+- retries must be explicit and only for errors classified as retryable;
+- cancellation/timeouts get explicit variants rather than generic backend strings;
+- stable public errors should expose a code/variant and typed fields; human-readable detail is supplementary.
+
+### `unwrap`, `expect` and panic
+
+Production/library paths should not use `unwrap()` for recoverable input, I/O, backend, parsing, lifecycle or concurrency failures.
+
+`expect("...")` is allowed only when the preceding logic establishes an invariant and the message states that invariant, for example after an append method that guarantees a committed event exists. Prefer removing the panic entirely if the invariant can cheaply be represented as a `Result`.
+
+Tests, examples, benchmarks and build scripts may use `unwrap`/`expect` when failure should abort the test/tool, but messages should remain diagnostic.
+
+`panic!` is reserved for impossible internal states, explicit failpoints and process-level startup policies where returning an error is not possible or useful.
+
+## 12. Structured tracing
+
+PTR uses structured tracing, not ad-hoc logging, for runtime behavior. The architecture-facing contract lives in `ptr-observe`; concrete `tracing`, OpenTelemetry and exporter layers remain replaceable.
+
+Recommended span hierarchy:
+
+```text
+request
+  model / route
+    operator / pod / search / verifier
+      effect / commit / projection
+```
+
+Trace fields should use stable PTR names and typed values converted only at the recording boundary. Useful fields include request ID, revision, generation, capability, Pod/backend ID, effect, commit index, operation, outcome, error code and latency.
+
+For expected/actual failures, record both values:
+
+```text
+error.code = "stale_generation"
+expected.generation = 8
+actual.generation = 7
+```
+
+Rules:
+
+- never emit secrets, raw private evidence, credentials or full prompts by default;
+- `error!` means a failed operation requiring attention;
+- `warn!` means degraded/retry/fallback/disputed state;
+- `info!` means lifecycle/business-significant transitions;
+- `debug!` means diagnostic execution detail;
+- `trace!` is very high-volume local detail;
+- errors should be recorded once at the ownership boundary rather than repeatedly at every `?`;
+- observability failure must not bypass or block hard safety checks;
+- trace data is telemetry, not causal authority.
+
+Use `println!` only for intentional CLI/stdout protocols, benchmark machine output, Cargo build-script directives, or user-facing terminal output.
+
+## 13. Function grouping
 
 Inside modules, keep a predictable order when practical:
 
@@ -272,13 +337,13 @@ Within an `impl`, prefer constructor/accessors first, then primary operations, t
 
 Large groups of unrelated free functions are a signal to create a module/type/trait.
 
-## 13. Tests
+## 14. Tests
 
 Unit tests live next to private implementation when they need private access. Cross-module and public-contract tests live in `tests/`.
 
 Tests should exercise enum variants and match branches, `None`/ `Some`, success/error `Result` paths, collection invariants and generic implementations where they carry architecture semantics.
 
-## 14. Stability rule
+## 15. Stability rule
 
 PTR is still in architecture discovery. Public Rust visibility does not automatically mean "frozen forever". Before v0 contract freeze:
 
