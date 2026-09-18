@@ -375,7 +375,101 @@ Returned iterators may borrow from `self`; use `impl Iterator + '_` or a named l
 
 For async streams, use a dedicated streaming contract rather than pretending an `Iterator` can suspend.
 
-## 10. Traits, bounds, implementors and adapters
+## 10. Declarative macros and macro rules
+
+Use `macro_rules!` when compile-time repetition or syntax abstraction is materially clearer than ordinary functions, traits, generics or iterators.
+
+Prefer normal Rust first. A macro is justified for:
+
+- repeated item generation such as strongly typed IDs/newtypes;
+- small typed builder/DSL syntax;
+- repeated match/impl boilerplate that cannot be expressed cleanly through traits;
+- compile-time structural variation where runtime branching would be wrong.
+
+### Hygiene
+
+Public macros must use `$crate` for crate-owned paths:
+
+```rust
+#[macro_export]
+macro_rules! trace_event {
+    ($level:expr, $name:expr $(, $key:expr => $value:expr )* $(,)?) => {{
+        let event = $crate::TraceEvent::new($level, $name);
+        $(
+            let event = event.with_field($key, $value);
+        )*
+        event
+    }};
+}
+```
+
+This keeps the expansion correct when the crate is renamed by a downstream dependency.
+
+Use the narrowest fragment specifier that matches the syntax:
+
+- `ident` for identifiers;
+- `expr` for expressions;
+- `ty` for types;
+- `path` for paths;
+- `pat` for patterns;
+- `item` for full Rust items;
+- `tt` only when more specific grammar is not practical.
+
+### Repetition
+
+Use repetition explicitly:
+
+```rust
+macro_rules! string_ids {
+    ($($name:ident),+ $(,)?) => {
+        $(
+            #[derive(Clone, Debug, Eq, Hash, PartialEq)]
+            pub struct $name(pub String);
+        )+
+    };
+}
+```
+
+Prefer one invocation generating several homogeneous items over many copied declarations.
+
+### Visibility
+
+- private `macro_rules!` — default for crate-internal boilerplate;
+- `#[macro_export]` — only when macro syntax is an intentional public API;
+- exported macros require public-contract tests from a downstream/integration-test perspective.
+
+Do not export a macro merely to share code between internal modules when a function/trait can do the job.
+
+### Macro behavior
+
+Macros must not:
+
+- hide network/file/effect execution behind innocent-looking syntax;
+- silently swallow `Result` values;
+- create untyped domain state from arbitrary tokens;
+- bypass validation, capability, revision or generation checks;
+- rely on caller imports when `$crate` paths can make the expansion hygienic.
+
+Keep macro expansions small and delegate real behavior to typed functions/traits.
+
+### Matching inside macros
+
+Use multiple macro arms for genuinely distinct syntactic forms:
+
+```rust
+macro_rules! field_value {
+    (bool $value:expr) => { TraceValue::Bool($value) };
+    (u64 $value:expr) => { TraceValue::U64($value) };
+}
+```
+
+Arm ordering matters. Put more specific syntax before general catch-all token-tree forms.
+
+### Procedural macros
+
+A derive/attribute/function-like proc macro requires a dedicated proc-macro crate and a substantially higher maintenance bar. Introduce one only when declarative macros/traits cannot provide the ergonomics safely. Proc macros must have compile-pass/compile-fail coverage (for example with `trybuild` or an equivalent approach) before becoming architectural API.
+
+## 11. Traits, bounds, implementors and adapters
 
 PTR owns contracts. Backends implement them.
 
@@ -468,7 +562,7 @@ pub struct BackendCapabilities {
 
 A backend name is metadata; it is not semantic routing authority.
 
-## 11. Lifetimes and relations
+## 12. Lifetimes and relations
 
 Lifetimes express real borrowing relationships; they are not added for style.
 
@@ -502,13 +596,13 @@ Rules:
 
 For async APIs, do not force borrowed data across suspension points unless the lifetime relationship is intentional and testable.
 
-## 12. Constructors and mutation
+## 13. Constructors and mutation
 
 Use constructors when an invariant must be checked. Direct public fields are acceptable for transparent value records with no invalid state.
 
 Prefer immutable access and explicit mutation methods. Mutation that affects lifecycle, authority, revisions or generations must use a named operation rather than direct field replacement.
 
-## 13. Error design, expected values and failure propagation
+## 14. Error design, expected values and failure propagation
 
 Stable crate APIs expose typed error enums. A mismatch carries **typed expected and actual values** whenever those values are meaningful:
 
@@ -553,7 +647,7 @@ Tests, examples, benchmarks and build scripts may use `unwrap`/`expect` when fai
 
 `panic!` is reserved for impossible internal states, explicit failpoints and process-level startup policies where returning an error is not possible or useful.
 
-## 14. Structured tracing
+## 15. Structured tracing
 
 PTR uses structured tracing, not ad-hoc logging, for runtime behavior. The architecture-facing contract lives in `ptr-observe`; concrete `tracing`, OpenTelemetry and exporter layers remain replaceable.
 
@@ -590,7 +684,7 @@ Rules:
 
 Use `println!` only for intentional CLI/stdout protocols, benchmark machine output, Cargo build-script directives, or user-facing terminal output.
 
-## 15. Function grouping
+## 16. Function grouping
 
 Inside modules, keep a predictable order when practical:
 
@@ -608,7 +702,7 @@ Within an `impl`, prefer constructor/accessors first, then primary operations, t
 
 Large groups of unrelated free functions are a signal to create a module/type/trait.
 
-## 16. Check, validate and test functions
+## 17. Check, validate and test functions
 
 Use function names to distinguish semantics:
 
@@ -663,13 +757,13 @@ Checks should be:
 - composed with `?`;
 - traced once at the ownership boundary when failure matters operationally.
 
-## 17. Tests
+## 18. Tests
 
 Unit tests live next to private implementation when they need private access. Cross-module and public-contract tests live in `tests/`.
 
 Tests should exercise enum variants and match branches, `None`/ `Some`, success/error `Result` paths, collection invariants and generic implementations where they carry architecture semantics. The full unit/integration/common-module layout is defined in [TESTING.md](TESTING.md).
 
-## 18. Stability rule
+## 19. Stability rule
 
 PTR is still in architecture discovery. Public Rust visibility does not automatically mean "frozen forever". Before v0 contract freeze:
 
