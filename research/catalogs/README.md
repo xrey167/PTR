@@ -15,6 +15,7 @@ The catalog is deliberately broader than the current implementation. A row marke
 - `type-families.toml` — domain/runtime type families, current coverage and open additions.
 - `backend-slots.toml` — replaceable infrastructure/model/backend slots and evaluation ownership.
 - `component-contracts.toml` — required ports and cross-component contract responsibilities.
+- `rust-api-layout.toml` — target module, public-surface and function grouping for every Rust crate.
 
 ## Status vocabulary
 
@@ -31,3 +32,5 @@ Validate with:
 ```bash
 python scripts/check_architecture_catalog.py
 ```
+
+Current source declarations can be inspected by crate/module/visibility with `python scripts/report_rust_api.py` or `python scripts/report_rust_api.py ptr-runtime --public-only`.
