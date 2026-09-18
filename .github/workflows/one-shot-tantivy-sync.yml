@@ -33,3 +33,4 @@ jobs:
           git add -A
           git commit -m "Verify and synchronize Tantivy lexical adapter"
           git push origin HEAD:feature/tantivy-search-adapter
+# rerun after Tantivy 0.25 value-access fix
