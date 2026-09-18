@@ -5,12 +5,11 @@ last_reviewed = "2026-09-18"
 implemented = [
   "Central runtime object wiring configuration, SemDB, ledger, materialized state, events and permissions",
   "Text ingestion into revisioned semantic state",
-  "Current-revision and capability/effect checks for ActionIR",
+  "Current-revision, live-generation/revocation and capability/effect checks for ActionIR",
   "Committed-event materialization and runtime event emission",
 ]
 missing = [
   "Full model/router/Pod/verifier request loop",
-  "Generation-liveness validation at action boundary",
   "Async isolate scheduler integration",
   "Durable ledger/state backends",
   "Streaming client response lifecycle and cancellation",
@@ -18,9 +17,9 @@ missing = [
 next = [
   "Wire baseline InferenceBackend into request lifecycle",
   "Add verifier-gated observation loop",
-  "Move ptrd composition to PtrRuntime",
+  "Wire ptrd request handling beyond bootstrap ingestion",
 ]
 experiments = ["E001", "E003", "E004"]
 evaluations = []
 decisions = ["ADR-0001-rust-runtime.md", "ADR-0012-hard-effect-boundary.md", "ADR-0013-runtime-orchestrator.md"]
-checks = ["runtime ingestion/capability/materialization integration tests", "workspace fmt/check/test/clippy"]
+checks = ["runtime ingestion/revision/generation/capability/materialization integration tests", "workspace fmt/check/test/clippy"]

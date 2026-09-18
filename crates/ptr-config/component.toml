@@ -6,19 +6,20 @@ implemented = [
   "Typed deserialization/defaults for runtime, semantic, action-boundary, observability and research sections",
   "Repository default TOML parsing",
   "Basic configuration validation",
+  "Typed environment override layer for runtime/action/semantic/observability/research settings",
 ]
 missing = [
-  "Environment-variable and CLI override layers",
+  "CLI override layer",
   "Per-backend typed configuration sections",
   "Secret/reference types instead of plaintext secret values",
   "Config schema generation and migration/version policy",
 ]
 next = [
-  "Add environment and CLI override precedence",
+  "Add CLI override precedence after file/environment layers",
   "Generate config schema and example profiles",
   "Wire ptr-config into ptr-runtime and ptrd",
 ]
 experiments = ["E001"]
 evaluations = []
 decisions = ["ADR-0004-backend-independence.md", "ADR-0014-config-layer.md"]
-checks = ["repository default config parse/validate test", "workspace fmt/check/test/clippy"]
+checks = ["repository default config parse/validate test", "typed environment override tests", "workspace fmt/check/test/clippy"]

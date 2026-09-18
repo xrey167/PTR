@@ -4,6 +4,19 @@ use ptr_ledger::LedgerEvent;
 use ptr_runtime::{PtrRuntime, RuntimeError};
 use ptr_types::{CapabilityId, Effect, Generation, RequestId, Revision, TypeId};
 
+fn mutation_action(revision: Revision, generation: Generation) -> ActionIr {
+    ActionIr {
+        operation: "write".into(),
+        target: "artifact:a".into(),
+        capability: CapabilityId::from("file.write"),
+        effect: Effect::Mutation,
+        input_type: TypeId::from("Bytes"),
+        generation,
+        revision,
+        payload: vec![],
+    }
+}
+
 #[test]
 fn ingest_creates_revision_and_runtime_events() {
     let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
@@ -16,15 +29,9 @@ fn ingest_creates_revision_and_runtime_events() {
 fn action_requires_capability() {
     let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
     let revision = runtime.ingest_text(RequestId::from("r1"), "hello");
-    let action = ActionIr {
-        operation: "write".into(),
-        capability: CapabilityId::from("file.write"),
-        effect: Effect::Mutation,
-        input_type: TypeId::from("Bytes"),
-        generation: Generation(1),
-        revision,
-        payload: vec![],
-    };
+    let action = mutation_action(revision, Generation(1));
+    runtime.set_live_generation(&action.target, action.generation);
+
     assert_eq!(
         runtime.authorize_action(&action),
         Err(RuntimeError::PermissionDenied)
@@ -35,6 +42,59 @@ fn action_requires_capability() {
         .insert(action.capability.clone());
     runtime.permissions_mut().allow_mutation = true;
     assert!(runtime.authorize_action(&action).is_ok());
+}
+
+#[test]
+fn stale_revision_is_rejected_before_permission_check() {
+    let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+    let old = runtime.ingest_text(RequestId::from("r1"), "first");
+    runtime.ingest_text(RequestId::from("r2"), "second");
+    let action = mutation_action(old, Generation(1));
+    runtime.set_live_generation(&action.target, action.generation);
+
+    assert_eq!(
+        runtime.authorize_action(&action),
+        Err(RuntimeError::StaleRevision {
+            action: old,
+            current: Revision(2),
+        })
+    );
+}
+
+#[test]
+fn unknown_and_revoked_generations_are_rejected() {
+    let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+    let revision = runtime.ingest_text(RequestId::from("r1"), "hello");
+    let action = mutation_action(revision, Generation(7));
+
+    assert_eq!(
+        runtime.authorize_action(&action),
+        Err(RuntimeError::UnknownGeneration {
+            target: "artifact:a".into(),
+        })
+    );
+
+    runtime.set_live_generation("artifact:a", Generation(7));
+    runtime.commit(LedgerEvent::Revoked {
+        subject: "artifact:a".into(),
+        generation: Generation(7),
+    });
+
+    assert_eq!(
+        runtime.authorize_action(&action),
+        Err(RuntimeError::StaleGeneration {
+            target: "artifact:a".into(),
+            action: Generation(7),
+            current: Some(Generation(7)),
+        })
+    );
+
+    runtime.set_live_generation("artifact:a", Generation(8));
+    let fresh = mutation_action(runtime.revision(), Generation(8));
+    assert_eq!(
+        runtime.authorize_action(&fresh),
+        Err(RuntimeError::PermissionDenied)
+    );
 }
 
 #[test]

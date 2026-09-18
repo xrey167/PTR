@@ -10,7 +10,7 @@ implemented = [
   "ReasoningBudget and latent-step accounting scaffold",
   "ReasoningOperator taxonomy and weighted router decision",
   "Branch frontier pruning and probability normalization helpers",
-  "ActionIr and CoreVerification output contracts",
+  "ActionIr with explicit target/generation/revision plus CoreVerification output contracts",
 ]
 
 missing = [

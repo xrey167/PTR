@@ -5,12 +5,19 @@ use ptr_ledger::{CommittedEvent, InMemoryLedger, Ledger, LedgerEvent};
 use ptr_security::PermissionSet;
 use ptr_semdb::{SemanticDelta, SemanticHost, SemanticSnapshot};
 use ptr_state::MaterializedState;
-use ptr_types::{CommitIndex, RequestId, Revision};
+use ptr_types::{CommitIndex, Generation, RequestId, Revision};
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeError {
     InvalidConfig(String),
     StaleRevision { action: Revision, current: Revision },
+    UnknownGeneration { target: String },
+    StaleGeneration {
+        target: String,
+        action: Generation,
+        current: Option<Generation>,
+    },
     PermissionDenied,
 }
 
@@ -20,6 +27,8 @@ pub struct PtrRuntime {
     ledger: InMemoryLedger,
     state: MaterializedState,
     permissions: PermissionSet,
+    live_generations: BTreeMap<String, Generation>,
+    revoked_generations: BTreeSet<(String, Generation)>,
     events: Vec<EventEnvelope>,
     next_event_sequence: u64,
 }
@@ -33,6 +42,8 @@ impl PtrRuntime {
             ledger: InMemoryLedger::default(),
             state: MaterializedState::default(),
             permissions: PermissionSet::default(),
+            live_generations: BTreeMap::new(),
+            revoked_generations: BTreeSet::new(),
             events: Vec::new(),
             next_event_sequence: 1,
         })
@@ -58,6 +69,14 @@ impl PtrRuntime {
         &self.state
     }
 
+    pub fn set_live_generation(&mut self, target: impl Into<String>, generation: Generation) {
+        self.live_generations.insert(target.into(), generation);
+    }
+
+    pub fn live_generation(&self, target: &str) -> Option<Generation> {
+        self.live_generations.get(target).copied()
+    }
+
     pub fn ingest_text(&mut self, request: RequestId, text: impl Into<String>) -> Revision {
         self.emit(RuntimeEvent::RequestStarted(request.clone()));
         let mut delta = SemanticDelta::default();
@@ -78,6 +97,27 @@ impl PtrRuntime {
                 current: self.semdb.revision(),
             });
         }
+
+        if self.config.action_boundary.require_live_generation {
+            let current = self.live_generations.get(&action.target).copied();
+            if self
+                .revoked_generations
+                .contains(&(action.target.clone(), action.generation))
+                || current.is_some_and(|generation| generation != action.generation)
+            {
+                return Err(RuntimeError::StaleGeneration {
+                    target: action.target.clone(),
+                    action: action.generation,
+                    current,
+                });
+            }
+            if current.is_none() {
+                return Err(RuntimeError::UnknownGeneration {
+                    target: action.target.clone(),
+                });
+            }
+        }
+
         if self.config.action_boundary.require_capability
             && !self.permissions.allows(&action.capability, action.effect)
         {
@@ -94,6 +134,38 @@ impl PtrRuntime {
             .last()
             .expect("append created committed event")
             .clone();
+
+        match &committed.event {
+            LedgerEvent::CapsuleCommitted {
+                capsule,
+                generation,
+                ..
+            } => {
+                self.set_live_generation(capsule.to_string(), *generation);
+            }
+            LedgerEvent::CapsuleSuperseded { capsule, new, .. } => {
+                self.set_live_generation(capsule.to_string(), *new);
+            }
+            LedgerEvent::Revoked {
+                subject,
+                generation,
+            } => {
+                self.revoked_generations
+                    .insert((subject.clone(), *generation));
+            }
+            LedgerEvent::HardConstraintCommitted { key, generation } => {
+                self.set_live_generation(format!("constraint:{key}"), *generation);
+            }
+            LedgerEvent::ProcedurePromoted { id, generation } => {
+                self.set_live_generation(format!("procedure:{id}"), *generation);
+            }
+            LedgerEvent::ProcedureRevoked { id, generation } => {
+                self.revoked_generations
+                    .insert((format!("procedure:{id}"), *generation));
+            }
+            LedgerEvent::VerifierAttested { .. } | LedgerEvent::SnapshotCommitted { .. } => {}
+        }
+
         self.state.apply(&committed);
         self.emit(RuntimeEvent::CommitApplied(index));
         index

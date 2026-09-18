@@ -13,6 +13,9 @@ jobs:
           components: rustfmt, clippy
       - run: cargo +stable fmt --all -- --check
       - run: cargo +stable clippy --workspace --all-targets -- -D warnings
+      - run: cargo +stable doc --workspace --no-deps --locked
+        env:
+          RUSTDOCFLAGS: "-D warnings"
 
   rust-stable:
     strategy:
@@ -64,3 +67,5 @@ jobs:
       - run: python scripts/check_repo.py
       - run: python scripts/run_experiment.py validate
       - run: python scripts/run_component_eval.py validate
+      - run: python -m unittest discover -s scripts/tests
+      - run: python -m unittest discover -s research/baselines/rag_reference/tests

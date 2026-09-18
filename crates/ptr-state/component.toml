@@ -6,18 +6,18 @@ last_reviewed = "2026-09-18"
 implemented = [
   "MaterializedState reference map with last_applied commit index",
   "Application of Revoked and HardConstraintCommitted ledger events",
+  "Monotonic materialization with duplicate/out-of-order/gap detection",
 ]
 
 missing = [
   "Complete event materialization coverage",
-  "Idempotent replay/duplicate-index protection",
   "Turso/libSQL backend and typed schema",
   "Rebuild equivalence tests and CDC projection hooks",
 ]
 
 next = [
-  "Make materialization exhaustive and idempotent",
-  "Add replay-from-ledger test suite",
+  "Make materialization exhaustive across all ledger event types",
+  "Extend replay tests to full snapshot/rebuild equivalence",
   "Evaluate Turso against alternative local/materialized stores",
 ]
 
@@ -37,5 +37,6 @@ decisions = [
 ]
 
 checks = [
+  "replay ordering/idempotency integration test",
   "workspace fmt/check/test/clippy",
 ]

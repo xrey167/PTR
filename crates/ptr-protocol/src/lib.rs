@@ -28,6 +28,47 @@ pub struct CallFrame {
     pub payload: TypedPayload,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProtocolError {
+    MissingSessionId,
+    MissingCallId,
+    MissingCapability,
+    MissingPayload,
+    MissingTypeId,
+}
+
+impl TryFrom<generated::podwire::PodCall> for CallFrame {
+    type Error = ProtocolError;
+
+    fn try_from(value: generated::podwire::PodCall) -> Result<Self, Self::Error> {
+        if value.session_id.trim().is_empty() {
+            return Err(ProtocolError::MissingSessionId);
+        }
+        if value.call_id.trim().is_empty() {
+            return Err(ProtocolError::MissingCallId);
+        }
+        if value.capability.trim().is_empty() {
+            return Err(ProtocolError::MissingCapability);
+        }
+        let payload = value.payload.ok_or(ProtocolError::MissingPayload)?;
+        if payload.type_id.trim().is_empty() {
+            return Err(ProtocolError::MissingTypeId);
+        }
+
+        Ok(Self {
+            session_id: value.session_id,
+            call_id: value.call_id,
+            capability: CapabilityId(value.capability),
+            generation: value.generation.map(Generation),
+            revision: Revision(value.revision),
+            payload: TypedPayload {
+                type_id: TypeId(payload.type_id),
+                bytes: payload.payload,
+            },
+        })
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Frame {
     Call(CallFrame),

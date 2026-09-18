@@ -3,6 +3,7 @@ use ptr_types::{CapabilityId, Effect, Generation, Revision, TypeId};
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ActionIr {
     pub operation: String,
+    pub target: String,
     pub capability: CapabilityId,
     pub effect: Effect,
     pub input_type: TypeId,
