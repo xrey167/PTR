@@ -139,11 +139,7 @@ impl FileLedger {
         }
         file.seek(SeekFrom::End(0))?;
 
-        Ok(Self {
-            path,
-            file,
-            events,
-        })
+        Ok(Self { path, file, events })
     }
 
     pub fn path(&self) -> &Path {

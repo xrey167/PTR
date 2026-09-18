@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-18  
-**Code footprint:** 1 Rust source files · 307 nonblank source lines · 0 `#[test]` markers
+**Code footprint:** 1 Rust source files · 311 nonblank source lines · 0 `#[test]` markers
 
 ### Implemented now
 
@@ -53,6 +53,7 @@
 ### Current automated checks
 
 - FileLedger all-event reopen and partial-tail crash recovery tests
+- FileLedger open path explicitly preserves existing contents and truncates only incomplete crash tails
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->
