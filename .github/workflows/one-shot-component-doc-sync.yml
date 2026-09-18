@@ -1,4 +1,4 @@
-name: one-shot-component-doc-sync
+name: one-shot-component-doc-sync\n# rerun after generator fix
 on:
   push:
     paths:
