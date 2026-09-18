@@ -1,6 +1,6 @@
 # PTR Component Documentation
 
-Every runtime/model crate has a local README and a dedicated Mermaid source diagram.
+Every runtime/model crate has a local README and a dedicated Mermaid source diagram.\n\n[**Implementation status dashboard →**](STATUS.md)
 
 | Component | Purpose | Diagram |
 |---|---|---|
@@ -37,4 +37,3 @@ A new first-class component is not complete until it has:
 4. failure and security semantics;
 5. benchmark/evaluation slots for replaceable technology;
 6. tests tied to those invariants.
-
