@@ -164,11 +164,11 @@ notes = ["authority and telemetry event classes remain explicit"]
 
 [[crate]]
 id = "ptr-observe"
-current_shape = "mostly-flat"
-modules = ["fields", "trace", "flow", "trajectory", "redaction", "export", "diagnostics"]
-public_groups = ["stable field constants", "trace/flow types", "exporter/diagnostic ports"]
-function_groups = ["record", "export", "redact", "diagnose"]
-notes = ["never require natural-language chain-of-thought"]
+current_shape = "modular"
+modules = ["fields", "flow", "error", "trace", "tracing_adapter", "trajectory", "redaction", "export", "diagnostics"]
+public_groups = ["stable field constants", "FlowSignature", "TraceEvent/TraceLevel/TraceValue", "TraceError", "TraceSink", "feature-gated TracingSink", "future exporter/diagnostic ports"]
+function_groups = ["construct trace events", "emit", "export", "redact", "diagnose"]
+notes = ["never require natural-language chain-of-thought", "tracing crate remains an adapter, not semantic authority", "expected/actual mismatch values remain typed"]
 
 [[crate]]
 id = "ptr-inspect"
