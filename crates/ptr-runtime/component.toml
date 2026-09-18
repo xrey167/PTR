@@ -27,4 +27,4 @@ next = [
 experiments = ["E001", "E003", "E004"]
 evaluations = []
 decisions = ["ADR-0001-rust-runtime.md", "ADR-0012-hard-effect-boundary.md", "ADR-0013-runtime-orchestrator.md"]
-checks = ["runtime ingestion/revision/generation/capability/materialization integration tests", "reference model-loop integration test", "bounded verified Pod-observation resume-loop tests", "revocation replay/restart integration test", "durable FileLedger runtime reopen preserves revocation and materialized commit position", "workspace fmt/check/test/clippy"]
+checks = ["runtime ingestion/revision/generation/capability/materialization integration tests", "reference model-loop integration test", "bounded verified Pod-observation resume-loop tests", "revocation replay/restart integration test", "durable FileLedger runtime reopen preserves revocation and materialized commit position", "workspace rustfmt/check/test/clippy"]
