@@ -82,4 +82,4 @@ Keep orchestration out of `ptrd` and out of individual domain crates. The runtim
 
 ## Current boundary
 
-The executable reference slice now wires configuration, semantic revisioning, a backend-neutral model call, semantic Pod resolution, Pure/Read Pod execution, verifier-gated observation promotion, action authorization, event emission and ledger materialization. The next runtime milestone is router-driven multi-step resume after verified observations plus production durable/async backends.
+The executable reference slice now wires configuration, semantic revisioning, a backend-neutral model call, semantic Pod resolution, Pure/Read Pod execution, verifier-gated observation promotion, action authorization, event emission, ledger materialization and durable FileLedger reopen/replay. The next runtime milestone is typed composition of the evaluated raft-engine/Turso adapters, router-driven operator selection and async/streaming execution.
