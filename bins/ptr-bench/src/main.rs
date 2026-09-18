@@ -42,7 +42,7 @@ fn bench_semdb(iterations: usize) {
     }
     let elapsed = start.elapsed();
     println!(
-        "{{"benchmark":"semdb","iterations":{},"elapsed_ns":{},"ns_per_op":{},"affected_total":{}}}",
+        r#"{{"benchmark":"semdb","iterations":{},"elapsed_ns":{},"ns_per_op":{},"affected_total":{}}}"#,
         iterations,
         elapsed.as_nanos(),
         elapsed.as_nanos() / iterations.max(1) as u128,
@@ -60,7 +60,7 @@ fn bench_mailbox(iterations: usize) {
     }
     let elapsed = start.elapsed();
     println!(
-        "{{"benchmark":"mailbox","iterations":{},"elapsed_ns":{},"ns_per_roundtrip":{}}}",
+        r#"{{"benchmark":"mailbox","iterations":{},"elapsed_ns":{},"ns_per_roundtrip":{}}}"#,
         iterations,
         elapsed.as_nanos(),
         elapsed.as_nanos() / iterations.max(1) as u128
