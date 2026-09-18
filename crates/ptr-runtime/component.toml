@@ -4,6 +4,7 @@ maturity = "prototype"
 last_reviewed = "2026-09-18"
 implemented = [
   "Central runtime object wiring configuration, SemDB, ledger, materialized state, events and permissions",
+  "Durable standalone runtime constructor opens/replays FileLedger and reconstructs lifecycle/materialized state across restart",
   "Text ingestion into revisioned semantic state",
   "Current-revision, live-generation/revocation and capability/effect checks for ActionIR",
   "Committed-event materialization and runtime event emission",
@@ -15,15 +16,15 @@ implemented = [
 missing = [
   "Router-driven operator selection around the implemented bounded Pod-resume loop",
   "Async isolate scheduler integration",
-  "Durable ledger/state backends",
+  "Configured raft-engine/raft-rs/Turso backend composition for production runtime modes",
   "Streaming client response lifecycle and cancellation",
 ]
 next = [
-  "Replace reference conformance backend with first evaluated external/model-native adapter",
+  "Connect evaluated raft-engine/Turso adapters through typed backend config while preserving FileLedger reference mode",
   "Add opaque backend checkpoint handles and async streaming around the implemented observation resume contract",
   "Wire ptrd request handling beyond bootstrap ingestion",
 ]
 experiments = ["E001", "E003", "E004"]
 evaluations = []
 decisions = ["ADR-0001-rust-runtime.md", "ADR-0012-hard-effect-boundary.md", "ADR-0013-runtime-orchestrator.md"]
-checks = ["runtime ingestion/revision/generation/capability/materialization integration tests", "reference model-loop integration test", "bounded verified Pod-observation resume-loop tests", "revocation replay/restart integration test", "workspace fmt/check/test/clippy"]
+checks = ["runtime ingestion/revision/generation/capability/materialization integration tests", "reference model-loop integration test", "bounded verified Pod-observation resume-loop tests", "revocation replay/restart integration test", "durable FileLedger runtime reopen preserves revocation and materialized commit position", "workspace fmt/check/test/clippy"]
