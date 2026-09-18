@@ -10,7 +10,7 @@
 
 **Maturity:** `scaffold`  
 **Last reviewed:** 2026-09-18  
-**Code footprint:** 6 Rust source files · 202 nonblank source lines · 3 integration-test files · 3 `#[test]` markers
+**Code footprint:** 6 Rust source files · 285 nonblank source lines · 4 integration-test files · 8 `#[test]` markers
 
 ### Implemented now
 
@@ -20,6 +20,7 @@
 - TraceSink port with infallible NoopTraceSink reference implementation
 - Typed TraceError variants with stable machine-readable error codes
 - Feature-gated tracing 0.1 adapter implementing the PTR TraceSink contract
+- Unit tests beside source modules plus thematic integration tests with shared tests/common fixtures
 
 ### Missing for the target architecture
 
@@ -54,6 +55,8 @@
 - typed trace event expected/actual value test
 - namespaced tracing field test
 - feature-gated tracing adapter emission test
+- unit tests for trace construction, sink behavior and stable error codes/messages
+- integration tests share deterministic fixture code through tests/common/mod.rs
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->
