@@ -27,3 +27,4 @@ jobs:
           git add crates/*/README.md docs/components/STATUS.md
           git commit -m "Sync component implementation status documentation"
           git push origin HEAD:main
+# rerun for code metrics
