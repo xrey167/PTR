@@ -2,7 +2,10 @@ use ptr_config::PtrConfig;
 use ptr_core::action_head::ActionIr;
 use ptr_events::{EventEnvelope, RuntimeEvent};
 use ptr_ledger::{CommittedEvent, InMemoryLedger, Ledger, LedgerEvent};
-use ptr_model_api::{InferenceBackend, ModelEvent, ModelRequest};
+use ptr_model_api::{
+    InferenceBackend, ModelEvent, ModelObservation, ModelRequest, ModelResumeRequest,
+    ResumableInferenceBackend,
+};
 use ptr_pods::PodRegistry;
 use ptr_protocol::TypedPayload;
 use ptr_security::PermissionSet;
@@ -43,7 +46,16 @@ pub enum RuntimeError {
     PodVerificationFailed {
         pod: String,
     },
+    ModelResumeLimit { max_rounds: usize },
+    ModelNoProgress,
+    MultiplePodRequests { count: usize },
     PermissionDenied,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ResumableRun {
+    pub model_events: Vec<ModelEvent>,
+    pub observations: Vec<TypedPayload>,
 }
 
 pub struct PtrRuntime {
@@ -235,6 +247,136 @@ impl PtrRuntime {
         }
 
         Ok(outputs)
+    }
+
+    pub fn run_resumable_with_pods<B, V>(
+        &mut self,
+        request_id: RequestId,
+        raw_text: impl Into<String>,
+        backend: &B,
+        pods: &PodRegistry,
+        verifier: &V,
+        max_rounds: usize,
+    ) -> Result<ResumableRun, RuntimeError>
+    where
+        B: ResumableInferenceBackend,
+        V: Verifier<TypedPayload>,
+    {
+        let raw_text = raw_text.into();
+        let revision = self.ingest_text(request_id.clone(), raw_text.clone());
+        let mut request = ModelRequest {
+            request_id: request_id.clone(),
+            revision,
+            raw_text,
+        };
+        let mut pending = backend
+            .infer(&request)
+            .map_err(|error| RuntimeError::Model(error.0))?;
+
+        let mut run = ResumableRun::default();
+
+        for round in 0..=max_rounds {
+            let finished = pending
+                .iter()
+                .any(|event| matches!(event, ModelEvent::Finished));
+            let pod_requests = pending
+                .iter()
+                .filter_map(|event| match event {
+                    ModelEvent::PodRequested {
+                        capability,
+                        input_type,
+                        payload,
+                    } => Some((capability.clone(), input_type.clone(), payload.clone())),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+
+            run.model_events.extend(pending);
+
+            if finished && pod_requests.is_empty() {
+                self.emit(RuntimeEvent::RequestFinished(request_id));
+                return Ok(run);
+            }
+
+            if pod_requests.len() > 1 {
+                return Err(RuntimeError::MultiplePodRequests {
+                    count: pod_requests.len(),
+                });
+            }
+
+            let Some((capability, input_type, payload)) = pod_requests.into_iter().next() else {
+                return Err(RuntimeError::ModelNoProgress);
+            };
+
+            if round == max_rounds {
+                return Err(RuntimeError::ModelResumeLimit { max_rounds });
+            }
+
+            let pod = pods.resolve(&capability, &input_type).ok_or_else(|| {
+                RuntimeError::PodUnavailable {
+                    capability: capability.to_string(),
+                    input_type: input_type.to_string(),
+                }
+            })?;
+
+            if pod
+                .manifest()
+                .effects
+                .iter()
+                .any(|effect| !matches!(effect, ptr_types::Effect::Pure | ptr_types::Effect::Read))
+            {
+                return Err(RuntimeError::PodEffectRequiresActionBoundary {
+                    pod: pod.manifest().id.to_string(),
+                });
+            }
+
+            self.emit(RuntimeEvent::PodInvoked(pod.manifest().id.to_string()));
+            let output = pod
+                .invoke(TypedPayload {
+                    type_id: input_type,
+                    bytes: payload,
+                })
+                .map_err(RuntimeError::Pod)?;
+
+            let report = verifier.verify(&output);
+            let passed = report.status == VerificationStatus::Pass;
+            self.emit(RuntimeEvent::VerifierResult {
+                verifier: "pod-output".into(),
+                passed,
+            });
+            if !passed {
+                return Err(RuntimeError::PodVerificationFailed {
+                    pod: pod.manifest().id.to_string(),
+                });
+            }
+
+            let mut delta = SemanticDelta::default();
+            delta.upserts.insert(
+                format!("request:{request_id}:pod:{}:output_type", pod.manifest().id),
+                output.type_id.to_string(),
+            );
+            let (revision, _) = self.semdb.apply_delta(delta);
+
+            let observation = ModelObservation {
+                revision,
+                source: pod.manifest().id.to_string(),
+                type_id: output.type_id.clone(),
+                payload: output.bytes.clone(),
+            };
+            run.observations.push(output);
+
+            request.revision = revision;
+            pending = backend
+                .resume(&ModelResumeRequest {
+                    request_id: request_id.clone(),
+                    revision,
+                    round: round as u32 + 1,
+                    observation,
+                })
+                .map_err(|error| RuntimeError::Model(error.0))?;
+        }
+
+        Err(RuntimeError::ModelResumeLimit { max_rounds })
     }
 
     pub fn authorize_action(&self, action: &ActionIr) -> Result<(), RuntimeError> {

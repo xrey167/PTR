@@ -8,18 +8,19 @@ implemented = [
   "ModelEvent enum for slot, hypothesis, confidence, operator, typed Pod request, candidate, action, token and completion events",
   "InferenceBackend trait and ModelError",
   "Deterministic ReferenceEchoBackend for runtime conformance tests",
+  "ModelObservation, ModelResumeRequest and ResumableInferenceBackend continuation contract",
 ]
 
 missing = [
   "Async streaming backend contract",
   "Backend capability negotiation",
   "SGLang, vLLM and Burn-native adapters",
-  "Resume/checkpoint/observation continuation protocol",
+  "Backend checkpoint/state handles beyond observation-based continuation",
   "Structured cancellation and timeout semantics",
 ]
 
 next = [
-  "Convert infer() from Vec-returning sync call to cancellable async stream",
+  "Convert infer/resume from Vec-returning sync calls to cancellable async streams",
   "Add backend capability descriptor",
   "Implement first external model adapter after inference-serving evaluation",
 ]
@@ -42,5 +43,6 @@ decisions = [
 checks = [
   "reference backend request/event conformance test",
   "typed PodRequested event contract covered by runtime loop tests",
+  "observation/resume contract covered by runtime multi-step tests",
   "workspace fmt/check/test/clippy",
 ]

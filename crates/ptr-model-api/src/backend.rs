@@ -1,4 +1,4 @@
-use crate::{ModelEvent, ModelRequest};
+use crate::{ModelEvent, ModelRequest, ModelResumeRequest};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ModelError(pub String);
@@ -6,6 +6,10 @@ pub struct ModelError(pub String);
 pub trait InferenceBackend: Send + Sync {
     fn name(&self) -> &'static str;
     fn infer(&self, request: &ModelRequest) -> Result<Vec<ModelEvent>, ModelError>;
+}
+
+pub trait ResumableInferenceBackend: InferenceBackend {
+    fn resume(&self, request: &ModelResumeRequest) -> Result<Vec<ModelEvent>, ModelError>;
 }
 
 /// Deterministic plumbing backend used only for runtime conformance tests.
