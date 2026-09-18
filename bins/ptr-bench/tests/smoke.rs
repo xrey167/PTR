@@ -9,6 +9,6 @@ fn benchmark_binary_emits_json_lines() {
         .expect("run ptr-bench");
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.contains(""benchmark":"semdb""));
-    assert!(stdout.contains(""benchmark":"mailbox""));
+    assert!(stdout.contains(r#""benchmark":"semdb""#));
+    assert!(stdout.contains(r#""benchmark":"mailbox""#));
 }
