@@ -7,12 +7,15 @@ publish = false
 
 [features]
 default = []
-tantivy-backend = ["dep:tantivy"]
+tantivy-backend = ["dep:tantivy", "dep:bon"]
 
 [dependencies]
 ptr-types = { workspace = true }
 ptr-memory = { workspace = true }
 tantivy = { version = "=0.25.0", optional = true, default-features = false }
+# Tantivy 0.25 declares Rust 1.85 but its loose bon 3.x constraint now resolves
+# to bon 3.10+, which requires Rust 1.88. Pin the release-era compatible version.
+bon = { version = "=3.3.1", optional = true }
 
 [[test]]
 name = "tantivy"
