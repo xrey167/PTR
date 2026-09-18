@@ -23,14 +23,31 @@ def bullet(items):
     return "\n".join(f"- {x}" for x in items) if items else "- None recorded."
 
 def code_metrics(crate_dir: Path) -> dict[str, int]:
-    files = sorted((crate_dir / "src").rglob("*.rs")) if (crate_dir / "src").exists() else []
-    loc = 0
-    tests = 0
-    for path in files:
+    source_files = (
+        sorted((crate_dir / "src").rglob("*.rs"))
+        if (crate_dir / "src").exists()
+        else []
+    )
+    test_files = (
+        sorted((crate_dir / "tests").rglob("*.rs"))
+        if (crate_dir / "tests").exists()
+        else []
+    )
+    source_loc = 0
+    test_markers = 0
+    for path in source_files:
         text = path.read_text(encoding="utf-8")
-        loc += sum(1 for line in text.splitlines() if line.strip())
-        tests += text.count("#[test]")
-    return {"files": len(files), "loc": loc, "tests": tests}
+        source_loc += sum(1 for line in text.splitlines() if line.strip())
+        test_markers += text.count("#[test]")
+    for path in test_files:
+        text = path.read_text(encoding="utf-8")
+        test_markers += text.count("#[test]")
+    return {
+        "files": len(source_files),
+        "loc": source_loc,
+        "test_files": len(test_files),
+        "tests": test_markers,
+    }
 
 def render_section(meta: dict, exps: dict, evals: dict, metrics: dict[str, int]) -> str:
     exp_lines = []
@@ -55,7 +72,7 @@ def render_section(meta: dict, exps: dict, evals: dict, metrics: dict[str, int])
 
 **Maturity:** `{meta["maturity"]}`  
 **Last reviewed:** {meta["last_reviewed"]}  
-**Code footprint:** {metrics["files"]} Rust source files · {metrics["loc"]} nonblank source lines · {metrics["tests"]} `#[test]` markers
+**Code footprint:** {metrics["files"]} Rust source files · {metrics["loc"]} nonblank source lines · {metrics["test_files"]} integration-test files · {metrics["tests"]} `#[test]` markers
 
 ### Implemented now
 
@@ -104,12 +121,13 @@ def update_readme(path: Path, section: str) -> str:
 def dashboard(metas: list[dict], exps: dict, evals: dict) -> str:
     rows = []
     maturity_counts: dict[str, int] = {}
-    total_loc = total_files = total_tests = 0
+    total_loc = total_files = total_test_files = total_tests = 0
     for m in metas:
         maturity_counts[m["maturity"]] = maturity_counts.get(m["maturity"], 0) + 1
         metrics = code_metrics(ROOT / "crates" / m["id"])
         total_files += metrics["files"]
         total_loc += metrics["loc"]
+        total_test_files += metrics["test_files"]
         total_tests += metrics["tests"]
         exp_status = ", ".join(
             f'{eid}:{exps[eid]["status"]}' for eid in m.get("experiments", [])
@@ -119,7 +137,7 @@ def dashboard(metas: list[dict], exps: dict, evals: dict) -> str:
         ) or "—"
         rows.append(
             f'| [{m["id"]}](../../crates/{m["id"]}/README.md) | '
-            f'`{m["maturity"]}` | {metrics["files"]} | {metrics["loc"]} | {metrics["tests"]} | '
+            f'`{m["maturity"]}` | {metrics["files"]} | {metrics["loc"]} | {metrics["test_files"]} | {metrics["tests"]} | '
             f'{len(m.get("implemented", []))} | {len(m.get("missing", []))} | '
             f'{exp_status} | {eval_status} |'
         )
@@ -131,10 +149,10 @@ def dashboard(metas: list[dict], exps: dict, evals: dict) -> str:
 
 **Component count:** {len(metas)}  
 **Maturity distribution:** {counts}  
-**Rust footprint:** {total_files} source files · {total_loc} nonblank source lines · {total_tests} `#[test]` markers
+**Rust footprint:** {total_files} source files · {total_loc} nonblank source lines · {total_test_files} integration-test files · {total_tests} `#[test]` markers
 
-| Component | Maturity | Rust files | LOC | Tests | Implemented items | Missing items | Experiments | Evaluations |
-|---|---:|---:|---:|---:|---:|---:|---|---|
+| Component | Maturity | Rust files | LOC | Test files | Tests | Implemented items | Missing items | Experiments | Evaluations |
+|---|---:|---:|---:|---:|---:|---:|---:|---|---|
 {chr(10).join(rows)}
 
 ## Meaning of maturity labels
