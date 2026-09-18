@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-18  
-**Code footprint:** 1 Rust source files · 72 nonblank source lines · 0 `#[test]` markers
+**Code footprint:** 1 Rust source files · 307 nonblank source lines · 0 `#[test]` markers
 
 ### Implemented now
 
@@ -18,10 +18,11 @@
 - CommittedEvent with CommitIndex
 - Ledger trait and in-memory reference implementation
 - CompactionBarrier scaffold
+- Durable reference FileLedger with length-prefixed event encoding, fsync and crash-tail truncation
 
 ### Missing for the target architecture
 
-- Durable raft-engine backend
+- Production raft-engine durable backend
 - raft-rs consensus adapter and state machine integration
 - fsync/durability modes and revocation barriers
 - Snapshot serialization/recovery/replay
@@ -30,7 +31,7 @@
 ### Next milestones
 
 - Define storage/consensus interfaces around existing Ledger contract
-- Implement durable single-node backend before cluster consensus
+- Benchmark reference FileLedger against raft-engine durable backend before cluster consensus
 - Run L001 then L002 chaos/recovery experiments
 
 ### Linked experiments
@@ -51,6 +52,7 @@
 
 ### Current automated checks
 
+- FileLedger all-event reopen and partial-tail crash recovery tests
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->
