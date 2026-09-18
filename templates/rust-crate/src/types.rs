@@ -1,5 +1,9 @@
 use std::collections::HashMap;
 
+use crate::macros::string_newtype;
+
+string_newtype!(BackendName);
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BackendState {
     Ready,
