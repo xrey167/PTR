@@ -14,7 +14,7 @@ This is the implementation order after the architecture-scaffold phase. Status v
 | P1 | Prost-generated typed wire contracts | prototype |
 | P1 | Typed file → environment → CLI configuration precedence | done for core settings |
 | P1 | HTTP server + TypeScript client contract | prototype |
-| P1 | Strong RAG / matched plain-model baselines | in progress |
+| P1 | Strong RAG / matched plain-model baselines | in progress — execution gates prevent unpinned claims |
 | P1 | Component evaluations with measured evidence | in progress |
 | P1 | Supply-chain audit/deny, SBOM, provenance attestations | done |
 | P1 | Dataset cards and contamination governance | prototype |

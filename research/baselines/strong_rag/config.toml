@@ -1,0 +1,41 @@
+version = 1
+name = "strong_rag"
+status = "blocked-unpinned-model-revisions"
+tests_dir = "tests"
+
+[corpus]
+chunking = "semantic-or-structure-aware"
+max_chunk_tokens = 512
+overlap_tokens = 64
+lifecycle_updates = true
+hard_delete = true
+
+[lexical]
+backend = "bm25"
+top_k = 100
+
+[dense]
+model = "BAAI/bge-m3"
+revision = ""
+normalize = true
+top_k = 100
+
+[fusion]
+method = "rrf"
+k = 60.0
+
+[reranker]
+model = "BAAI/bge-reranker-v2-m3"
+revision = ""
+top_k = 50
+
+[answer]
+generator = ""
+revision = ""
+max_context_tokens = 16384
+
+[reporting]
+require_latency = true
+require_update_delete_metrics = true
+require_corpus_hash = true
+require_model_revisions = true
