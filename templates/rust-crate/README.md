@@ -19,6 +19,7 @@ Key properties:
 - `Result<T, E>` for expected failure paths, `Option<T>` for legitimate absence, and no production `unwrap()` for recoverable failures;
 - a structured `TraceSink` boundary so `tracing`, OpenTelemetry or another backend can be swapped without changing domain code;
 - unit tests beside implementation modules, integration tests under `tests/`, and shared fixtures in `tests/common/mod.rs`;
-- `check_*`/`validate_*` helpers returning typed `Result` values with named failure fields/messages.
+- `check_*`/`validate_*` helpers returning typed `Result` values with named failure fields/messages;
+- lazy `impl Iterator` views, `IntoIterator` batch inputs, standard iterator adapters and closure bounds (`Fn`/`FnMut`/`FnOnce`) where sequence semantics fit.
 
 See `docs/RUST_API_STYLE.md`.
