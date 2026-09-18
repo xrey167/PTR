@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import re
-import sys
 import tomllib
 from pathlib import Path
 
@@ -28,18 +27,18 @@ def render_section(meta: dict, exps: dict, evals: dict) -> str:
     for exp_id in meta.get("experiments", []):
         e = exps[exp_id]
         exp_lines.append(
-            f'- [{exp_id}](../../experiments/{e["path"]}/README.md) — `{e["status"]}`'
+            f'[{exp_id}](../../experiments/{e["path"]}/README.md) — `{e["status"]}`'
         )
     eval_lines = []
     for eval_id in meta.get("evaluations", []):
         e = evals[eval_id]
         eval_lines.append(
-            f'- [{eval_id}](../../evaluations/components/{eval_id}/README.md) — `{e["status"]}`'
+            f'[{eval_id}](../../evaluations/components/{eval_id}/README.md) — `{e["status"]}`'
         )
     decision_lines = [
-        f"- [{d}](../../research/decisions/{d})" for d in meta.get("decisions", [])
+        f"[{d}](../../research/decisions/{d})" for d in meta.get("decisions", [])
     ]
-    return f"""{{BEGIN}}
+    return f"""{BEGIN}
 ## Current implementation status
 
 > **Generated section.** Source of truth: [`component.toml`](component.toml). Run `python3 scripts/update_component_docs.py --write` after editing metadata. Do not hand-edit inside this block.
@@ -75,14 +74,17 @@ def render_section(meta: dict, exps: dict, evals: dict) -> str:
 
 {bullet(meta.get("checks", []))}
 
-{{END}}
+{END}
 """
 
 def update_readme(path: Path, section: str) -> str:
     text = path.read_text(encoding="utf-8")
-    pattern = re.compile(re.escape(BEGIN) + r".*?" + re.escape(END), re.S)
-    if pattern.search(text):
-        return pattern.sub(section.strip(), text)
+    marker_pattern = re.compile(re.escape(BEGIN) + r".*?" + re.escape(END), re.S)
+    legacy_pattern = re.compile(r"\{BEGIN\}.*?\{END\}", re.S)
+    if marker_pattern.search(text):
+        return marker_pattern.sub(section.strip(), text)
+    if legacy_pattern.search(text):
+        return legacy_pattern.sub(section.strip(), text)
     marker = "## Position in PTR"
     if marker not in text:
         raise RuntimeError(f"{path.relative_to(ROOT)} has no insertion marker")
