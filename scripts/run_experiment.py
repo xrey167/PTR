@@ -79,6 +79,10 @@ def validate():
             errors.append(f"{exp_id}: invalid status")
         if item.get("status") != data.get("status"):
             errors.append(f"{exp_id}: registry/manifest status mismatch")
+        if data.get("status") in {"running", "completed", "failed"} and not str(
+            data.get("entrypoint", "")
+        ).strip():
+            errors.append(f"{exp_id}: active experiment needs executable entrypoint")
         if not (root / "config.toml").exists():
             errors.append(f"{exp_id}: missing config.toml")
         if not (root / "tests").exists():
@@ -163,6 +167,33 @@ def build_command(
     return command
 
 
+def execute_command(command: list[str]) -> dict:
+    started = time.perf_counter_ns()
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        result = {
+            "exit_code": completed.returncode,
+            "stdout": completed.stdout,
+            "stderr": completed.stderr,
+            "launch_error": None,
+        }
+    except OSError as error:
+        result = {
+            "exit_code": None,
+            "stdout": "",
+            "stderr": "",
+            "launch_error": f"{type(error).__name__}: {error}",
+        }
+    result["duration_ns"] = time.perf_counter_ns() - started
+    return result
+
+
 def run_experiment(
     exp_id: str,
     *,
@@ -193,26 +224,8 @@ def run_experiment(
         }
     )
 
-    started = time.perf_counter_ns()
-    try:
-        completed = subprocess.run(
-            command,
-            cwd=ROOT,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        exit_code = completed.returncode
-        stdout = completed.stdout
-        stderr = completed.stderr
-        launch_error = None
-    except OSError as error:
-        exit_code = None
-        stdout = ""
-        stderr = ""
-        launch_error = f"{type(error).__name__}: {error}"
-
-    finished = time.perf_counter_ns()
+    execution = execute_command(command)
+    exit_code = execution["exit_code"]
     record.update(
         {
             "status": (
@@ -221,11 +234,7 @@ def run_experiment(
                 else "failed" if exit_code is not None else "failed-to-launch"
             ),
             "finished_at": dt.datetime.now(dt.timezone.utc).isoformat(),
-            "duration_ns": finished - started,
-            "exit_code": exit_code,
-            "stdout": stdout,
-            "stderr": stderr,
-            "launch_error": launch_error,
+            **execution,
         }
     )
 
