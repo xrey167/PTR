@@ -155,10 +155,24 @@ impl FileLedger {
         let length = u32::try_from(payload.len())
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "ledger record too large"))?;
 
+        #[cfg(feature = "failpoints")]
+        fail::fail_point!("ledger.before_record_write");
+
         self.file.write_all(&length.to_le_bytes())?;
+
+        #[cfg(feature = "failpoints")]
+        fail::fail_point!("ledger.after_length_before_payload");
+
         self.file.write_all(&payload)?;
+
+        #[cfg(feature = "failpoints")]
+        fail::fail_point!("ledger.after_payload_before_sync");
+
         self.file.flush()?;
         self.file.sync_data()?;
+
+        #[cfg(feature = "failpoints")]
+        fail::fail_point!("ledger.after_sync_before_memory");
 
         let index = CommitIndex(self.events.len() as u64 + 1);
         self.events.push(CommittedEvent { index, event });

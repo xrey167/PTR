@@ -70,3 +70,10 @@ jobs:
       - run: python -m unittest discover -s scripts/tests
       - run: python -m unittest discover -s research/baselines/rag_reference/tests
       - run: python -m unittest discover -s docs-site/tests
+
+  lifecycle-failpoints:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo +stable test -p ptr-ledger --features failpoints --test failpoints --locked

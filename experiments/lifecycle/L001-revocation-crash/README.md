@@ -21,3 +21,13 @@ Observed in this **limited scope**:
 - 0 crash-tail truncation failures
 
 L001 remains `running`, not completed: real process-kill/fail-rs schedules, production durable storage, Raft leader/partition cases and broader crash points are still required.
+
+## fail-rs instrumentation
+
+`ptr-ledger` now exposes feature-gated failpoints at:
+- `ledger.before_record_write`
+- `ledger.after_length_before_payload`
+- `ledger.after_payload_before_sync`
+- `ledger.after_sync_before_memory`
+
+CI exercises the partial-record panic path separately. This strengthens L001's fault-injection harness, but L001 remains open until process-abort and production-backend crash schedules are archived as experiment evidence.
