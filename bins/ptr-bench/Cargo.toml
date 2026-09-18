@@ -7,3 +7,5 @@ publish = false
 
 [dependencies]
 ptr-types = { workspace = true }
+ptr-semdb = { workspace = true }
+ptr-exec = { workspace = true }

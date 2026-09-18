@@ -1,0 +1,27 @@
+version = 1
+
+[run]
+name = "ptr-training-dry-run"
+seed = 17
+hardware_profile = "hardware/default.toml"
+
+[data]
+dataset = "typed_agent_behavior_v0_2"
+split = "train"
+
+[model]
+family = "ptr-a0"
+config = "model/configs/ptr-a0.toml"
+
+[training]
+backend = "dry-run"
+precision = "bf16"
+batch_size = 1
+gradient_accumulation = 1
+learning_rate = 0.0001
+max_steps = 100
+checkpoint_every = 50
+
+[evaluation]
+every = 25
+suites = ["semantic-typing", "calibration"]

@@ -1,5 +1,11 @@
 version = 1
-kind = "workspace-area"
+kind = "binary"
 name = "ptr-bench"
-path = "bins/ptr-bench"
 tests_dir = "tests"
+
+[defaults]
+iterations = 10000
+output = "json-lines"
+
+[benchmarks]
+enabled = ["semdb", "mailbox"]

@@ -8,6 +8,7 @@ dependencies = []
 [project.scripts]
 ptr-dataset-validate = "ptr_training.validate_dataset:main"
 ptr-dataset-manifest = "ptr_training.make_manifest:main"
+ptr-train-run = "ptr_training.run:main"
 
 [build-system]
 requires = ["setuptools>=68"]

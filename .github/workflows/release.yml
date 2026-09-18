@@ -1,0 +1,31 @@
+name: release
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo +stable build --release --locked
+      - name: Package binaries
+        run: |
+          mkdir -p dist
+          cp target/release/ptrd target/release/ptrctl target/release/ptr-worker target/release/ptr-bench dist/
+          tar -C dist -czf ptr-linux-x86_64.tar.gz ptrd ptrctl ptr-worker ptr-bench
+          sha256sum ptr-linux-x86_64.tar.gz > ptr-linux-x86_64.tar.gz.sha256
+          cargo +stable metadata --locked --format-version 1 > cargo-metadata.json
+      - name: Publish GitHub release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" --generate-notes || true
+          gh release upload "${GITHUB_REF_NAME}" ptr-linux-x86_64.tar.gz ptr-linux-x86_64.tar.gz.sha256 cargo-metadata.json --clobber

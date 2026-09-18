@@ -1,0 +1,14 @@
+version = 1
+name = "plain_model"
+status = "contract-ready"
+tests_dir = "tests"
+
+[model]
+backend = "must-be-pinned-before-run"
+model = "must-be-pinned-before-run"
+
+[reasoning]
+typed_slots = false
+latent_recurrence = false
+operator_router = false
+external_memory = false

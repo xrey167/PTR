@@ -1,6 +1,6 @@
 version = 1
 name = "rag_reference"
-status = "lexical-reference-implemented"
+status = "hybrid-reference-implemented"
 tests_dir = "tests"
 
 [bm25]
@@ -8,5 +8,8 @@ k1 = 1.5
 b = 0.75
 
 [hybrid]
-dense_backend = "not-configured"
+fusion = "rrf"
 rrf_k = 60.0
+embedding_source = "caller-supplied"
+embedding_model = "must-be-pinned-before-reported-run"
+reranker = "not-configured"
