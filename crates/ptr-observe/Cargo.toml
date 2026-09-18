@@ -5,5 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 publish = false
 
+[features]
+default = []
+tracing-adapter = ["dep:tracing"]
+
 [dependencies]
 ptr-types = { workspace = true }
+tracing = { workspace = true, optional = true }
