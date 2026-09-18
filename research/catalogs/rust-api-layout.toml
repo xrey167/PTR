@@ -14,6 +14,8 @@ bounds_rule = "place bounds on the narrowest item that needs them; prefer where 
 lifetime_rule = "use lifetimes only for real borrow relations; semantic names for non-trivial relations; prefer owned handles across async/process/network/persistence boundaries"
 validation_rule = "is/has/can for booleans; check/validate/ensure return typed Result; verify returns domain verification types; failures include named context"
 error_rule = "fallible public operations use Result<T,E>; mismatch errors carry expected/actual where meaningful; named field/message/code context; no recoverable production unwrap"
+fallibility_rule = "functions that can fail return typed Result; do not encode failure as false/None/default unless absence is the actual semantic result"
+test_rule = "unit tests live beside source modules; integration tests exercise public APIs under tests/*.rs; tests/common contains reusable fixtures/helpers without test annotations"
 
 [[crate]]
 id = "ptr-types"
