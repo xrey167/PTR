@@ -462,3 +462,137 @@ mod raft_engine_backend {
 
 #[cfg(feature = "raft-engine-backend")]
 pub use raft_engine_backend::RaftEngineLedger;
+
+#[cfg(feature = "raft-rs-backend")]
+mod raft_rs_backend {
+    use super::*;
+    use raft::prelude::{ConfState, Config as RaftConfig, Entry, EntryType, RawNode, StateRole};
+    use raft::storage::MemStorage;
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub struct RaftCommitReceipt {
+        pub raft_index: u64,
+        pub commit_index: CommitIndex,
+    }
+
+    pub struct SingleNodeRaftConsensus {
+        node: RawNode<MemStorage>,
+        committed: Vec<CommittedEvent>,
+    }
+
+    impl SingleNodeRaftConsensus {
+        pub fn new(node_id: u64) -> Result<Self, String> {
+            let storage =
+                MemStorage::new_with_conf_state(ConfState::from((vec![node_id], vec![])));
+            let config = RaftConfig {
+                id: node_id,
+                election_tick: 10,
+                heartbeat_tick: 3,
+                max_size_per_msg: 1024 * 1024,
+                max_inflight_msgs: 256,
+                applied: 0,
+                ..Default::default()
+            };
+            config.validate().map_err(|error| error.to_string())?;
+
+            let logger = slog::Logger::root(slog::Discard, slog::o!());
+            let node = RawNode::new(&config, storage, &logger)
+                .map_err(|error| error.to_string())?;
+            let mut consensus = Self {
+                node,
+                committed: Vec::new(),
+            };
+            consensus.node.campaign().map_err(|error| error.to_string())?;
+            consensus.drain_ready()?;
+            if consensus.node.raft.state != StateRole::Leader {
+                return Err("single-node raft group failed to become leader".into());
+            }
+            Ok(consensus)
+        }
+
+        pub fn is_leader(&self) -> bool {
+            self.node.raft.state == StateRole::Leader
+        }
+
+        pub fn committed_events(&self) -> &[CommittedEvent] {
+            &self.committed
+        }
+
+        pub fn propose(&mut self, event: LedgerEvent) -> Result<RaftCommitReceipt, String> {
+            let before = self.committed.len();
+            self.node
+                .propose(Vec::new(), encode_event(&event))
+                .map_err(|error| error.to_string())?;
+            self.drain_ready()?;
+
+            let committed = self
+                .committed
+                .get(before)
+                .ok_or_else(|| "proposal was not committed in single-node raft group".to_owned())?;
+            Ok(RaftCommitReceipt {
+                raft_index: self.node.raft.raft_log.committed,
+                commit_index: committed.index,
+            })
+        }
+
+        fn drain_ready(&mut self) -> Result<(), String> {
+            while self.node.has_ready() {
+                let store = self.node.raft.raft_log.store.clone();
+                let mut ready = self.node.ready();
+
+                if !ready.messages().is_empty() {
+                    ready.take_messages();
+                }
+
+                if !ready.snapshot().is_empty() {
+                    store
+                        .wl()
+                        .apply_snapshot(ready.snapshot().clone())
+                        .map_err(|error| error.to_string())?;
+                }
+
+                let committed = ready.take_committed_entries();
+
+                if !ready.entries().is_empty() {
+                    store
+                        .wl()
+                        .append(ready.entries())
+                        .map_err(|error| error.to_string())?;
+                }
+
+                if let Some(hard_state) = ready.hs() {
+                    store.wl().set_hardstate(hard_state.clone());
+                }
+
+                if !ready.persisted_messages().is_empty() {
+                    ready.take_persisted_messages();
+                }
+
+                self.apply_committed(committed)?;
+
+                let mut light = self.node.advance(ready);
+                if let Some(commit) = light.commit_index() {
+                    store.wl().mut_hard_state().set_commit(commit);
+                }
+                self.apply_committed(light.take_committed_entries())?;
+                self.node.advance_apply();
+            }
+            Ok(())
+        }
+
+        fn apply_committed(&mut self, entries: Vec<Entry>) -> Result<(), String> {
+            for entry in entries {
+                if entry.data.is_empty() || entry.get_entry_type() != EntryType::EntryNormal {
+                    continue;
+                }
+                let event = decode_event(entry.data.as_ref()).map_err(|error| error.to_string())?;
+                let index = CommitIndex(self.committed.len() as u64 + 1);
+                self.committed.push(CommittedEvent { index, event });
+            }
+            Ok(())
+        }
+    }
+}
+
+#[cfg(feature = "raft-rs-backend")]
+pub use raft_rs_backend::{RaftCommitReceipt, SingleNodeRaftConsensus};

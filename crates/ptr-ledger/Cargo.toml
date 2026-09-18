@@ -9,11 +9,14 @@ publish = false
 default = []
 failpoints = ["dep:fail", "fail/failpoints"]
 raft-engine-backend = ["dep:raft-engine"]
+raft-rs-backend = ["dep:raft", "dep:slog"]
 
 [dependencies]
 ptr-types = { workspace = true }
 fail = { version = "0.5", optional = true }
 raft-engine = { version = "=0.4.2", default-features = false, optional = true }
+raft = { version = "=0.7.0", default-features = false, features = ["prost-codec"], optional = true }
+slog = { version = "2.7", optional = true }
 
 [[test]]
 name = "failpoints"
@@ -24,3 +27,8 @@ required-features = ["failpoints"]
 name = "raft_engine"
 path = "tests/raft_engine.rs"
 required-features = ["raft-engine-backend"]
+
+[[test]]
+name = "raft_rs"
+path = "tests/raft_rs.rs"
+required-features = ["raft-rs-backend"]

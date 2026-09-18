@@ -17,8 +17,8 @@ research_flexibility = 0.03
 [[candidate]]
 id = "raft-rs"
 source = "external"
-status = "to-evaluate"
-evidence = []
+status = "evaluating"
+evidence = ["../../../crates/ptr-ledger/tests/raft_rs.rs"]
 
 [[candidate]]
 id = "openraft"
