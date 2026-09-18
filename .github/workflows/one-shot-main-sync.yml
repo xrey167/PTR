@@ -28,3 +28,4 @@ jobs:
           git add -A
           git commit -m "Synchronize main workspace metadata"
           git push origin HEAD:main
+# rerun after failpoints, resumable runtime and process-crash harness
