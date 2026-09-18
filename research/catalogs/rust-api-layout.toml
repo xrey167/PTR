@@ -18,6 +18,8 @@ fallibility_rule = "functions that can fail return typed Result; do not encode f
 test_rule = "unit tests live beside source modules; integration tests exercise public APIs under tests/*.rs; tests/common contains reusable fixtures/helpers without test annotations"
 iterator_rule = "prefer IntoIterator for generic batch inputs and impl Iterator for lazy returned views; use standard adapters and short-circuit fallible traversal before materializing"
 closure_rule = "use the weakest Fn/FnMut/FnOnce bound that matches capture semantics; closures stay small and must not hide authority-changing side effects"
+match_rule = "prefer exhaustive match for closed semantic states; use alternatives/destructuring/ranges before wildcard fallbacks where meaning is known"
+match_guard_rule = "use guards only to refine a matched semantic case with a cheap deterministic local predicate; keep a fallback arm and avoid hidden effects in guards"
 
 [[crate]]
 id = "ptr-types"
