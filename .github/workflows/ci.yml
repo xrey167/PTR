@@ -108,3 +108,12 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo +stable test -p ptr-net --features iroh-backend --test iroh --locked
+
+  search-tantivy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo +stable test -p ptr-search --features tantivy-backend --test tantivy --locked
+      - run: rustup toolchain install 1.85.0 --profile minimal
+      - run: cargo +1.85.0 test -p ptr-search --features tantivy-backend --test tantivy --locked

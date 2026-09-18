@@ -5,6 +5,16 @@ edition.workspace = true
 rust-version.workspace = true
 publish = false
 
+[features]
+default = []
+tantivy-backend = ["dep:tantivy"]
+
 [dependencies]
 ptr-types = { workspace = true }
 ptr-memory = { workspace = true }
+tantivy = { version = "=0.25.0", optional = true, default-features = false }
+
+[[test]]
+name = "tantivy"
+path = "tests/tantivy.rs"
+required-features = ["tantivy-backend"]

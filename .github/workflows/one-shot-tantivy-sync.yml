@@ -1,0 +1,35 @@
+name: one-shot-tantivy-sync
+on:
+  push:
+    paths:
+      - '.github/workflows/one-shot-tantivy-sync.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    if: github.ref == 'refs/heads/feature/tantivy-search-adapter'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - run: cargo +stable fmt --all
+      - run: cargo +stable generate-lockfile
+      - run: cargo +stable test -p ptr-search --features tantivy-backend --test tantivy --locked
+      - run: rustup toolchain install 1.85.0 --profile minimal
+      - run: cargo +1.85.0 test -p ptr-search --features tantivy-backend --test tantivy --locked
+      - run: python scripts/update_component_docs.py --write
+      - name: Commit synchronized artifacts
+        run: |
+          if git diff --quiet; then exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Verify and synchronize Tantivy lexical adapter"
+          git push origin HEAD:feature/tantivy-search-adapter

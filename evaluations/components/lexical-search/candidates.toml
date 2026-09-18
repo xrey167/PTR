@@ -17,8 +17,8 @@ research_flexibility = 0.03
 [[candidate]]
 id = "tantivy"
 source = "external"
-status = "to-evaluate"
-evidence = []
+status = "evaluating"
+evidence = ["../../../crates/ptr-search/tests/tantivy.rs"]
 
 [[candidate]]
 id = "custom-inverted-index"
