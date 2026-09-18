@@ -3,6 +3,55 @@
 > **Role:** Combines deterministic, executable, statistical and learned checks into explicit verification reports.  
 > **Maturity:** architecture + contract scaffold; production behavior must be proven by the linked experiments and component evaluations.
 
+{BEGIN}
+## Current implementation status
+
+> **Generated section.** Source of truth: [`component.toml`](component.toml). Run `python3 scripts/update_component_docs.py --write` after editing metadata. Do not hand-edit inside this block.
+
+**Maturity:** `scaffold`  
+**Last reviewed:** 2026-09-18
+
+### Implemented now
+
+- Pass/Fail/Disputed/Unknown statuses
+- Finding and VerificationReport with level/score/findings
+- Generic Verifier<T> contract
+
+### Missing for the target architecture
+
+- Verifier fabric/aggregation and precedence rules
+- Type/capability/revision/generation deterministic verifiers
+- Source/evidence promotion verifier
+- Compiler/test/GritQL/Sentrux adapters
+- Calibration/statistical and learned semantic verifiers
+
+### Next milestones
+
+- Implement deterministic hard-boundary verifier set
+- Add report aggregation where deterministic contradiction dominates learned scores
+- Connect verifier output to F001 repair loop
+
+### Linked experiments
+
+- - [F001](../../experiments/feedback/F001-generate-verify-repair/README.md) — `planned`
+- - [Q002](../../experiments/retrieval/Q002-evidence-promotion/README.md) — `planned`
+- - [E001](../../experiments/system/E001-end-to-end/README.md) — `planned`
+
+### Technology evaluations
+
+- - [code-quality-verifier](../../evaluations/components/code-quality-verifier/README.md) — `open`
+
+### Decision records
+
+- - [ADR-0002-authority-hierarchy.md](../../research/decisions/ADR-0002-authority-hierarchy.md)
+- - [ADR-0012-hard-effect-boundary.md](../../research/decisions/ADR-0012-hard-effect-boundary.md)
+
+### Current automated checks
+
+- workspace fmt/check/test/clippy
+
+{END}
+
 ## Position in PTR
 
 ```mermaid

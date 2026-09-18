@@ -1,0 +1,41 @@
+# PTR Component Implementation Status
+
+> Generated from every `crates/*/component.toml`. Do not hand-edit.  
+> Refresh with `python3 scripts/update_component_docs.py --write`.
+
+**Component count:** 22  
+**Maturity distribution:** `foundation`: 1, `prototype`: 6, `research-scaffold`: 1, `scaffold`: 14
+
+| Component | Maturity | Implemented items | Missing items | Experiments | Evaluations |
+|---|---:|---:|---:|---|---|
+| [ptr-core](../../crates/ptr-core/README.md) | `research-scaffold` | 7 | 7 | M001:planned, M002:planned, M003:planned, M004:planned, M005:planned, M006:planned, M007:planned, E001:planned, E003:planned, E004:planned | model-framework:open, inference-serving:open |
+| [ptr-events](../../crates/ptr-events/README.md) | `scaffold` | 2 | 5 | E001:planned, F001:planned | event-streaming:open |
+| [ptr-exec](../../crates/ptr-exec/README.md) | `prototype` | 4 | 5 | R001:planned, E001:planned, E003:planned | execution-runtime:open |
+| [ptr-feedback](../../crates/ptr-feedback/README.md) | `scaffold` | 3 | 5 | F001:planned, E001:planned | — |
+| [ptr-ingress](../../crates/ptr-ingress/README.md) | `scaffold` | 4 | 4 | E001:planned, E004:planned | ingress-classifier:open |
+| [ptr-inspect](../../crates/ptr-inspect/README.md) | `scaffold` | 3 | 5 | E001:planned | introspection:open |
+| [ptr-ledger](../../crates/ptr-ledger/README.md) | `prototype` | 4 | 5 | L001:planned, L002:planned, E004:planned | consensus:open, ledger:open |
+| [ptr-memory](../../crates/ptr-memory/README.md) | `scaffold` | 3 | 5 | Q002:planned, E002:planned, E004:planned | — |
+| [ptr-model-api](../../crates/ptr-model-api/README.md) | `scaffold` | 3 | 5 | M007:planned, E001:planned, E003:planned | inference-serving:open |
+| [ptr-net](../../crates/ptr-net/README.md) | `scaffold` | 3 | 5 | L002:planned, E001:planned | network:open |
+| [ptr-observe](../../crates/ptr-observe/README.md) | `scaffold` | 2 | 5 | F001:planned, E003:planned | observability:open |
+| [ptr-pods](../../crates/ptr-pods/README.md) | `prototype` | 4 | 5 | R002:planned, E001:planned | environment-runtime:open |
+| [ptr-protocol](../../crates/ptr-protocol/README.md) | `scaffold` | 3 | 4 | R002:planned, E001:planned | network-codec:open, local-serialization:open |
+| [ptr-router](../../crates/ptr-router/README.md) | `scaffold` | 2 | 5 | M004:planned, R002:planned, E003:planned | inference-serving:open, distributed-data-compute:open |
+| [ptr-search](../../crates/ptr-search/README.md) | `prototype` | 4 | 5 | Q001:planned, Q002:planned, E002:planned, E003:planned | lexical-search:open, local-vector-search:open, gpu-vector-search:open, distributed-search:open, structural-code-search:open |
+| [ptr-security](../../crates/ptr-security/README.md) | `prototype` | 3 | 5 | L001:planned, E001:planned | security-context:open |
+| [ptr-semdb](../../crates/ptr-semdb/README.md) | `prototype` | 6 | 5 | S001:planned, S002:planned, E004:planned | semantic-db:open |
+| [ptr-server](../../crates/ptr-server/README.md) | `scaffold` | 1 | 5 | E001:planned, E003:planned | — |
+| [ptr-state](../../crates/ptr-state/README.md) | `scaffold` | 2 | 4 | L001:planned, L002:planned, E004:planned | materialized-state:open |
+| [ptr-storage](../../crates/ptr-storage/README.md) | `scaffold` | 3 | 5 | E004:planned | object-storage:open |
+| [ptr-types](../../crates/ptr-types/README.md) | `foundation` | 5 | 4 | M005:planned, L001:planned | — |
+| [ptr-verifier](../../crates/ptr-verifier/README.md) | `scaffold` | 3 | 5 | F001:planned, Q002:planned, E001:planned | code-quality-verifier:open |
+
+## Meaning of maturity labels
+
+- `foundation` — small stable domain core already used broadly.
+- `prototype` — executable behavior exists, but major target semantics are still missing.
+- `scaffold` — contracts/data structures exist; core production implementation is not present.
+- `research-scaffold` — architecture hypothesis is represented, but the trainable system is not implemented/proven.
+
+The labels describe implementation maturity, not scientific novelty or production readiness.

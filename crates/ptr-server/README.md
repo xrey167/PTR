@@ -3,6 +3,52 @@
 > **Role:** Exposes PTR to clients through stable APIs without leaking internal crate boundaries or provider-specific interfaces.  
 > **Maturity:** architecture + contract scaffold; production behavior must be proven by the linked experiments and component evaluations.
 
+{BEGIN}
+## Current implementation status
+
+> **Generated section.** Source of truth: [`component.toml`](component.toml). Run `python3 scripts/update_component_docs.py --write` after editing metadata. Do not hand-edit inside this block.
+
+**Maturity:** `scaffold`  
+**Last reviewed:** 2026-09-18
+
+### Implemented now
+
+- ApiRequest and ApiResponse domain structs with request ID/revision
+
+### Missing for the target architecture
+
+- Axum server and route graph
+- Streaming ModelEvent/WebSocket or SSE API
+- Authentication/session/policy integration
+- Health/readiness/admin endpoints
+- Client backpressure and cancellation propagation
+
+### Next milestones
+
+- Implement health endpoint and request streaming skeleton
+- Connect one end-to-end request through ingress→SemDB→baseline model
+- Add API conformance/integration tests
+
+### Linked experiments
+
+- - [E001](../../experiments/system/E001-end-to-end/README.md) — `planned`
+- - [E003](../../experiments/system/E003-token-efficiency/README.md) — `planned`
+
+### Technology evaluations
+
+- None recorded.
+
+### Decision records
+
+- - [ADR-0001-rust-runtime.md](../../research/decisions/ADR-0001-rust-runtime.md)
+- - [ADR-0004-backend-independence.md](../../research/decisions/ADR-0004-backend-independence.md)
+
+### Current automated checks
+
+- workspace fmt/check/test/clippy
+
+{END}
+
 ## Position in PTR
 
 ```mermaid

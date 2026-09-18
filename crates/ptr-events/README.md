@@ -3,6 +3,53 @@
 > **Role:** Projects committed and runtime events into scalable streams for analytics, materializers, telemetry and training collectors.  
 > **Maturity:** architecture + contract scaffold; production behavior must be proven by the linked experiments and component evaluations.
 
+{BEGIN}
+## Current implementation status
+
+> **Generated section.** Source of truth: [`component.toml`](component.toml). Run `python3 scripts/update_component_docs.py --write` after editing metadata. Do not hand-edit inside this block.
+
+**Maturity:** `scaffold`  
+**Last reviewed:** 2026-09-18
+
+### Implemented now
+
+- RuntimeEvent taxonomy for request/snapshot/candidate/Pod/verifier/commit lifecycle
+- EventEnvelope with sequence number
+
+### Missing for the target architecture
+
+- EventBus producer/consumer contract
+- Apache Iggy adapter
+- Persistent consumer offsets/replay
+- Separation metadata for authoritative projections vs telemetry events
+- Backpressure and retention policy
+
+### Next milestones
+
+- Define in-process reference EventBus
+- Implement Iggy adapter behind it
+- Connect trajectory/training consumer
+
+### Linked experiments
+
+- - [E001](../../experiments/system/E001-end-to-end/README.md) — `planned`
+- - [F001](../../experiments/feedback/F001-generate-verify-repair/README.md) — `planned`
+
+### Technology evaluations
+
+- - [event-streaming](../../evaluations/components/event-streaming/README.md) — `open`
+
+### Decision records
+
+- - [ADR-0004-backend-independence.md](../../research/decisions/ADR-0004-backend-independence.md)
+- - [ADR-0009-consensus-ledger-state-separation.md](../../research/decisions/ADR-0009-consensus-ledger-state-separation.md)
+
+### Current automated checks
+
+- workspace fmt/check/test/clippy
+
+{END}
+
 ## Position in PTR
 
 ```mermaid

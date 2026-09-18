@@ -3,6 +3,53 @@
 > **Role:** Projects committed ledger events into queryable current-state views without replacing the ledger as causal authority.  
 > **Maturity:** architecture + contract scaffold; production behavior must be proven by the linked experiments and component evaluations.
 
+{BEGIN}
+## Current implementation status
+
+> **Generated section.** Source of truth: [`component.toml`](component.toml). Run `python3 scripts/update_component_docs.py --write` after editing metadata. Do not hand-edit inside this block.
+
+**Maturity:** `scaffold`  
+**Last reviewed:** 2026-09-18
+
+### Implemented now
+
+- MaterializedState reference map with last_applied commit index
+- Application of Revoked and HardConstraintCommitted ledger events
+
+### Missing for the target architecture
+
+- Complete event materialization coverage
+- Idempotent replay/duplicate-index protection
+- Turso/libSQL backend and typed schema
+- Rebuild equivalence tests and CDC projection hooks
+
+### Next milestones
+
+- Make materialization exhaustive and idempotent
+- Add replay-from-ledger test suite
+- Evaluate Turso against alternative local/materialized stores
+
+### Linked experiments
+
+- - [L001](../../experiments/lifecycle/L001-revocation-crash/README.md) — `planned`
+- - [L002](../../experiments/lifecycle/L002-raft-recovery/README.md) — `planned`
+- - [E004](../../experiments/system/E004-long-horizon/README.md) — `planned`
+
+### Technology evaluations
+
+- - [materialized-state](../../evaluations/components/materialized-state/README.md) — `open`
+
+### Decision records
+
+- - [ADR-0002-authority-hierarchy.md](../../research/decisions/ADR-0002-authority-hierarchy.md)
+- - [ADR-0009-consensus-ledger-state-separation.md](../../research/decisions/ADR-0009-consensus-ledger-state-separation.md)
+
+### Current automated checks
+
+- workspace fmt/check/test/clippy
+
+{END}
+
 ## Position in PTR
 
 ```mermaid

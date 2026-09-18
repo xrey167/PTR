@@ -3,6 +3,53 @@
 > **Role:** Records structured runtime execution without requiring natural-language chain-of-thought logging.  
 > **Maturity:** architecture + contract scaffold; production behavior must be proven by the linked experiments and component evaluations.
 
+{BEGIN}
+## Current implementation status
+
+> **Generated section.** Source of truth: [`component.toml`](component.toml). Run `python3 scripts/update_component_docs.py --write` after editing metadata. Do not hand-edit inside this block.
+
+**Maturity:** `scaffold`  
+**Last reviewed:** 2026-09-18
+
+### Implemented now
+
+- Standard PTR tracing field names
+- FlowSignature with request/operators/state transitions
+
+### Missing for the target architecture
+
+- tracing Subscriber/layer integration
+- OpenTelemetry and NeMo Relay exporters
+- Plan-vs-execution correlation
+- Redaction middleware
+- Selective async-backtrace/active-tree diagnostics
+
+### Next milestones
+
+- Instrument request/execution/Pod/verifier boundaries
+- Add redaction-safe structured exporter
+- Feed FlowSignature + runtime trace into feedback trajectories
+
+### Linked experiments
+
+- - [F001](../../experiments/feedback/F001-generate-verify-repair/README.md) — `planned`
+- - [E003](../../experiments/system/E003-token-efficiency/README.md) — `planned`
+
+### Technology evaluations
+
+- - [observability](../../evaluations/components/observability/README.md) — `open`
+
+### Decision records
+
+- - [ADR-0001-rust-runtime.md](../../research/decisions/ADR-0001-rust-runtime.md)
+- - [ADR-0010-component-docs-as-code.md](../../research/decisions/ADR-0010-component-docs-as-code.md)
+
+### Current automated checks
+
+- workspace fmt/check/test/clippy
+
+{END}
+
 ## Position in PTR
 
 ```mermaid

@@ -3,6 +3,57 @@
 > **Role:** Defines the stable semantic vocabulary shared across model, runtime, storage, verification, and network boundaries.  
 > **Maturity:** architecture + contract scaffold; production behavior must be proven by the linked experiments and component evaluations.
 
+{BEGIN}
+## Current implementation status
+
+> **Generated section.** Source of truth: [`component.toml`](component.toml). Run `python3 scripts/update_component_docs.py --write` after editing metadata. Do not hand-edit inside this block.
+
+**Maturity:** `foundation`  
+**Last reviewed:** 2026-09-18
+
+### Implemented now
+
+- Strong Revision, Generation and CommitIndex newtypes
+- Strong string identifiers for projects, capsules, artifacts, capabilities, Pods, candidates, requests, nodes and evidence
+- Bounded Probability type, Effect, Validity and VerificationLevel enums
+- Epistemic<T>, TypedValue<T>, provenance refs and semantic issues
+- Unit checks for probability bounds and lifecycle-type separation
+
+### Missing for the target architecture
+
+- Richer capability/resource scopes and typed effect payloads
+- Interval/estimate/distribution structures beyond the current generic representation
+- Serialization/redaction derives coordinated with protocol and inspection layers
+- Property tests for lifecycle and epistemic invariants
+
+### Next milestones
+
+- Split foundational IDs/epistemics/effects into stable modules without changing public semantics
+- Add property tests and compile-fail typestate tests where appropriate
+- Freeze a v0 domain compatibility policy before network codecs depend on it
+
+### Linked experiments
+
+- - [M005](../../experiments/model/M005-epistemic-calibration/README.md) — `planned`
+- - [L001](../../experiments/lifecycle/L001-revocation-crash/README.md) — `planned`
+
+### Technology evaluations
+
+- None recorded.
+
+### Decision records
+
+- - [ADR-0001-rust-runtime.md](../../research/decisions/ADR-0001-rust-runtime.md)
+- - [ADR-0003-raw-and-typed.md](../../research/decisions/ADR-0003-raw-and-typed.md)
+
+### Current automated checks
+
+- probability_is_bounded unit test
+- lifecycle_versions_are_distinct_concepts unit test
+- workspace fmt/check/test/clippy
+
+{END}
+
 ## Position in PTR
 
 ```mermaid

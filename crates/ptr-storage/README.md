@@ -3,6 +3,52 @@
 > **Role:** Provides typed, content-addressed artifact references while abstracting physical storage locations.  
 > **Maturity:** architecture + contract scaffold; production behavior must be proven by the linked experiments and component evaluations.
 
+{BEGIN}
+## Current implementation status
+
+> **Generated section.** Source of truth: [`component.toml`](component.toml). Run `python3 scripts/update_component_docs.py --write` after editing metadata. Do not hand-edit inside this block.
+
+**Maturity:** `scaffold`  
+**Last reviewed:** 2026-09-18
+
+### Implemented now
+
+- ArtifactRef with stable ArtifactId plus location list
+- ObjectStore trait
+- In-memory object-store reference implementation
+
+### Missing for the target architecture
+
+- BLAKE3 content-addressed identity generation
+- OpenDAL adapter and production backends
+- Streaming large-object APIs
+- Policy-gated private/secret artifact access
+- Integrity checks and immutable raw-evidence retention
+
+### Next milestones
+
+- Implement content hashing and verify-on-read
+- Add OpenDAL adapter behind ObjectStore
+- Benchmark local filesystem/object-store backends
+
+### Linked experiments
+
+- - [E004](../../experiments/system/E004-long-horizon/README.md) — `planned`
+
+### Technology evaluations
+
+- - [object-storage](../../evaluations/components/object-storage/README.md) — `open`
+
+### Decision records
+
+- - [ADR-0004-backend-independence.md](../../research/decisions/ADR-0004-backend-independence.md)
+
+### Current automated checks
+
+- workspace fmt/check/test/clippy
+
+{END}
+
 ## Position in PTR
 
 ```mermaid

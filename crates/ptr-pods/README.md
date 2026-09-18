@@ -3,6 +3,55 @@
 > **Role:** Defines specialist computational modules through semantic contracts rather than fragile tool names.  
 > **Maturity:** architecture + contract scaffold; production behavior must be proven by the linked experiments and component evaluations.
 
+{BEGIN}
+## Current implementation status
+
+> **Generated section.** Source of truth: [`component.toml`](component.toml). Run `python3 scripts/update_component_docs.py --write` after editing metadata. Do not hand-edit inside this block.
+
+**Maturity:** `prototype`  
+**Last reviewed:** 2026-09-18
+
+### Implemented now
+
+- PodManifest with capability, accepted/produced types, effects and protocol version
+- Typed Pod associated Input/Output/Error contract
+- Ready and Revoked lease typestates
+- Revocation consumes Ready lease and produces Revoked lease
+
+### Missing for the target architecture
+
+- Object-safe heterogeneous registry/DynPod adapter
+- Async invocation and PodContext
+- Process-isolated, remote-Iroh and GPU/DLPack adapters
+- Capability/effect validation against runtime policy
+- Borrowed/busy/backpressured lease states and cancellation
+
+### Next milestones
+
+- Add TypedPod + object-safe DynPod split
+- Implement registry and one native reference Pod
+- Run unseen-Pod semantic generalization experiment R002
+
+### Linked experiments
+
+- - [R002](../../experiments/runtime/R002-unseen-pod-generalization/README.md) — `planned`
+- - [E001](../../experiments/system/E001-end-to-end/README.md) — `planned`
+
+### Technology evaluations
+
+- - [environment-runtime](../../evaluations/components/environment-runtime/README.md) — `open`
+
+### Decision records
+
+- - [ADR-0006-typed-isolate-runtime.md](../../research/decisions/ADR-0006-typed-isolate-runtime.md)
+- - [ADR-0011-semantic-pod-contracts.md](../../research/decisions/ADR-0011-semantic-pod-contracts.md)
+
+### Current automated checks
+
+- workspace fmt/check/test/clippy
+
+{END}
+
 ## Position in PTR
 
 ```mermaid

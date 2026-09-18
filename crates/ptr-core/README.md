@@ -3,6 +3,70 @@
 > **Role:** Research implementation of the model architecture: raw token states plus typed semantic slots, epistemic state, latent recurrence and operator routing.  
 > **Maturity:** architecture + contract scaffold; production behavior must be proven by the linked experiments and component evaluations.
 
+{BEGIN}
+## Current implementation status
+
+> **Generated section.** Source of truth: [`component.toml`](component.toml). Run `python3 scripts/update_component_docs.py --write` after editing metadata. Do not hand-edit inside this block.
+
+**Maturity:** `research-scaffold`  
+**Last reviewed:** 2026-09-18
+
+### Implemented now
+
+- PTR-Core family/config structures for AR and diffusion research paths
+- SemanticSlot kinds with generation, validity, confidence, value vector and provenance
+- EpistemicWorkspace and live-slot filter
+- ReasoningBudget and latent-step accounting scaffold
+- ReasoningOperator taxonomy and weighted router decision
+- Branch frontier pruning and probability normalization helpers
+- ActionIr and CoreVerification output contracts
+
+### Missing for the target architecture
+
+- Actual Burn/CubeCL tensor model and trainable parameters
+- Raw-token↔semantic-slot cross-attention
+- Typed/epistemic/validity attention biases and masks
+- Learned latent recurrent state transition
+- Learned operator/action/verifier heads
+- PTR-Diff denoising implementation and training objective
+- Checkpoint/load/save and numerical parity reference
+
+### Next milestones
+
+- Implement PTR-A0 in Burn with semantic slots and one typed-attention block
+- Build matched plain-transformer baseline at equal parameter/compute budget
+- Run M001–M005 ablations before scaling model size
+
+### Linked experiments
+
+- - [M001](../../experiments/model/M001-semantic-slots/README.md) — `planned`
+- - [M002](../../experiments/model/M002-typed-attention/README.md) — `planned`
+- - [M003](../../experiments/model/M003-latent-recurrence/README.md) — `planned`
+- - [M004](../../experiments/model/M004-operator-router/README.md) — `planned`
+- - [M005](../../experiments/model/M005-epistemic-calibration/README.md) — `planned`
+- - [M006](../../experiments/model/M006-ptr-diff/README.md) — `planned`
+- - [M007](../../experiments/model/M007-model-event-stream/README.md) — `planned`
+- - [E001](../../experiments/system/E001-end-to-end/README.md) — `planned`
+- - [E003](../../experiments/system/E003-token-efficiency/README.md) — `planned`
+- - [E004](../../experiments/system/E004-long-horizon/README.md) — `planned`
+
+### Technology evaluations
+
+- - [model-framework](../../evaluations/components/model-framework/README.md) — `open`
+- - [inference-serving](../../evaluations/components/inference-serving/README.md) — `open`
+
+### Decision records
+
+- - [ADR-0003-raw-and-typed.md](../../research/decisions/ADR-0003-raw-and-typed.md)
+- - [ADR-0007-model-event-stream.md](../../research/decisions/ADR-0007-model-event-stream.md)
+- - [ADR-0004-backend-independence.md](../../research/decisions/ADR-0004-backend-independence.md)
+
+### Current automated checks
+
+- workspace fmt/check/test/clippy; no neural numerical tests yet
+
+{END}
+
 ## Position in PTR
 
 ```mermaid

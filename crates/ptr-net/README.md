@@ -3,6 +3,54 @@
 > **Role:** Connects PTR nodes and remote Pods with authenticated transport while leaving protocol semantics to ptr-protocol.  
 > **Maturity:** architecture + contract scaffold; production behavior must be proven by the linked experiments and component evaluations.
 
+{BEGIN}
+## Current implementation status
+
+> **Generated section.** Source of truth: [`component.toml`](component.toml). Run `python3 scripts/update_component_docs.py --write` after editing metadata. Do not hand-edit inside this block.
+
+**Maturity:** `scaffold`  
+**Last reviewed:** 2026-09-18
+
+### Implemented now
+
+- ALPN constants for raft, PodWire, model, blob and events protocols
+- NodeIdentity scaffold
+- Provider-independent Transport trait
+
+### Missing for the target architecture
+
+- Iroh endpoint/connection implementation
+- Cryptographic binding between NodeId and transport key
+- Peer discovery/session lifecycle
+- Retry/idempotency and backpressure behavior
+- Raft/PodWire/blob stream adapters
+
+### Next milestones
+
+- Implement Iroh transport adapter for one request/response protocol
+- Add authenticated identity validation
+- Exercise partition/reconnect behavior in L002
+
+### Linked experiments
+
+- - [L002](../../experiments/lifecycle/L002-raft-recovery/README.md) — `planned`
+- - [E001](../../experiments/system/E001-end-to-end/README.md) — `planned`
+
+### Technology evaluations
+
+- - [network](../../evaluations/components/network/README.md) — `open`
+
+### Decision records
+
+- - [ADR-0004-backend-independence.md](../../research/decisions/ADR-0004-backend-independence.md)
+- - [ADR-0009-consensus-ledger-state-separation.md](../../research/decisions/ADR-0009-consensus-ledger-state-separation.md)
+
+### Current automated checks
+
+- workspace fmt/check/test/clippy
+
+{END}
+
 ## Position in PTR
 
 ```mermaid

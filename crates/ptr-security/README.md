@@ -3,6 +3,54 @@
 > **Role:** Enforces the hard shell around uncertain reasoning: capabilities, permissions, trust levels, effects, secrets and sandbox requirements.  
 > **Maturity:** architecture + contract scaffold; production behavior must be proven by the linked experiments and component evaluations.
 
+{BEGIN}
+## Current implementation status
+
+> **Generated section.** Source of truth: [`component.toml`](component.toml). Run `python3 scripts/update_component_docs.py --write` after editing metadata. Do not hand-edit inside this block.
+
+**Maturity:** `prototype`  
+**Last reviewed:** 2026-09-18
+
+### Implemented now
+
+- PermissionSet with capability membership
+- Separate mutation/external/irreversible effect gates
+- Fail-closed allows() decision for missing capability
+
+### Missing for the target architecture
+
+- Principal/session/resource scopes
+- Generation and revision freshness checks in action authorization
+- Context trust/evidence model
+- Sandbox execution contract
+- Structured denial/escalation reasons and audit receipt
+
+### Next milestones
+
+- Define ActionAuthorization input/output types
+- Add freshness + resource-scope validation
+- Connect hard action boundary to verifier and exec
+
+### Linked experiments
+
+- - [L001](../../experiments/lifecycle/L001-revocation-crash/README.md) — `planned`
+- - [E001](../../experiments/system/E001-end-to-end/README.md) — `planned`
+
+### Technology evaluations
+
+- - [security-context](../../evaluations/components/security-context/README.md) — `open`
+
+### Decision records
+
+- - [ADR-0002-authority-hierarchy.md](../../research/decisions/ADR-0002-authority-hierarchy.md)
+- - [ADR-0012-hard-effect-boundary.md](../../research/decisions/ADR-0012-hard-effect-boundary.md)
+
+### Current automated checks
+
+- workspace fmt/check/test/clippy
+
+{END}
+
 ## Position in PTR
 
 ```mermaid

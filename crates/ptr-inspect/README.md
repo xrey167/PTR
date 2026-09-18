@@ -3,6 +3,53 @@
 > **Role:** Allows generic inspection and rendering of typed Rust values without collapsing the runtime into untyped JSON.  
 > **Maturity:** architecture + contract scaffold; production behavior must be proven by the linked experiments and component evaluations.
 
+{BEGIN}
+## Current implementation status
+
+> **Generated section.** Source of truth: [`component.toml`](component.toml). Run `python3 scripts/update_component_docs.py --write` after editing metadata. Do not hand-edit inside this block.
+
+**Maturity:** `scaffold`  
+**Last reviewed:** 2026-09-18
+
+### Implemented now
+
+- Generic InspectNode tree
+- Inspectable trait
+- Secret<T> that always renders Redacted
+
+### Missing for the target architecture
+
+- Valuable bridge and generic visitor
+- Struct/list/map traversal for arbitrary PTR domain types
+- Structured diff
+- Private<T>/RawEvidence<T> redaction wrappers
+- ptrctl rendering and tracing bridge
+
+### Next milestones
+
+- Implement Valuable adapter behind feature flag
+- Add inspection-tree diff and redaction tests
+- Expose read-only ptrctl inspect command
+
+### Linked experiments
+
+- - [E001](../../experiments/system/E001-end-to-end/README.md) — `planned`
+
+### Technology evaluations
+
+- - [introspection](../../evaluations/components/introspection/README.md) — `open`
+
+### Decision records
+
+- - [ADR-0004-backend-independence.md](../../research/decisions/ADR-0004-backend-independence.md)
+- - [ADR-0010-component-docs-as-code.md](../../research/decisions/ADR-0010-component-docs-as-code.md)
+
+### Current automated checks
+
+- workspace fmt/check/test/clippy
+
+{END}
+
 ## Position in PTR
 
 ```mermaid

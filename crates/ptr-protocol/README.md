@@ -3,6 +3,54 @@
 > **Role:** Defines PodWire semantics and converts versioned wire messages into validated PTR domain values.  
 > **Maturity:** architecture + contract scaffold; production behavior must be proven by the linked experiments and component evaluations.
 
+{BEGIN}
+## Current implementation status
+
+> **Generated section.** Source of truth: [`component.toml`](component.toml). Run `python3 scripts/update_component_docs.py --write` after editing metadata. Do not hand-edit inside this block.
+
+**Maturity:** `scaffold`  
+**Last reviewed:** 2026-09-18
+
+### Implemented now
+
+- PodWire v1 semantic version constant
+- TypedPayload, CallFrame and CALL/RET/ERR/EVT/REVOKE domain frames
+- Frame kind classification independent of transport
+
+### Missing for the target architecture
+
+- Prost/Protobuf adapter and generated-code isolation
+- Canonical validation, semantic version negotiation and compatibility matrix
+- rkyv/local codec adapter and JSON debug adapter
+- Idempotency keys, ACK/CANCEL/BYE/HELLO/DECL frames from the wider PodWire design
+
+### Next milestones
+
+- Implement domain↔prost conversion with rejection tests
+- Add canonical wire fixtures and malformed-frame corpus
+- Define semantic contract version separately from wire schema version
+
+### Linked experiments
+
+- - [R002](../../experiments/runtime/R002-unseen-pod-generalization/README.md) — `planned`
+- - [E001](../../experiments/system/E001-end-to-end/README.md) — `planned`
+
+### Technology evaluations
+
+- - [network-codec](../../evaluations/components/network-codec/README.md) — `open`
+- - [local-serialization](../../evaluations/components/local-serialization/README.md) — `open`
+
+### Decision records
+
+- - [ADR-0004-backend-independence.md](../../research/decisions/ADR-0004-backend-independence.md)
+- - [ADR-0007-model-event-stream.md](../../research/decisions/ADR-0007-model-event-stream.md)
+
+### Current automated checks
+
+- workspace fmt/check/test/clippy
+
+{END}
+
 ## Position in PTR
 
 ```mermaid

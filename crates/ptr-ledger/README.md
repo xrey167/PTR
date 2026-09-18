@@ -3,6 +3,57 @@
 > **Role:** Records the authoritative ordered lifecycle of semantic changes and, in cluster mode, applies distributed consensus before state materialization.  
 > **Maturity:** architecture + contract scaffold; production behavior must be proven by the linked experiments and component evaluations.
 
+{BEGIN}
+## Current implementation status
+
+> **Generated section.** Source of truth: [`component.toml`](component.toml). Run `python3 scripts/update_component_docs.py --write` after editing metadata. Do not hand-edit inside this block.
+
+**Maturity:** `prototype`  
+**Last reviewed:** 2026-09-18
+
+### Implemented now
+
+- Lifecycle LedgerEvent enum
+- CommittedEvent with CommitIndex
+- Ledger trait and in-memory reference implementation
+- CompactionBarrier scaffold
+
+### Missing for the target architecture
+
+- Durable raft-engine backend
+- raft-rs consensus adapter and state machine integration
+- fsync/durability modes and revocation barriers
+- Snapshot serialization/recovery/replay
+- fail-rs crash/partition test points
+
+### Next milestones
+
+- Define storage/consensus interfaces around existing Ledger contract
+- Implement durable single-node backend before cluster consensus
+- Run L001 then L002 chaos/recovery experiments
+
+### Linked experiments
+
+- - [L001](../../experiments/lifecycle/L001-revocation-crash/README.md) — `planned`
+- - [L002](../../experiments/lifecycle/L002-raft-recovery/README.md) — `planned`
+- - [E004](../../experiments/system/E004-long-horizon/README.md) — `planned`
+
+### Technology evaluations
+
+- - [consensus](../../evaluations/components/consensus/README.md) — `open`
+- - [ledger](../../evaluations/components/ledger/README.md) — `open`
+
+### Decision records
+
+- - [ADR-0002-authority-hierarchy.md](../../research/decisions/ADR-0002-authority-hierarchy.md)
+- - [ADR-0009-consensus-ledger-state-separation.md](../../research/decisions/ADR-0009-consensus-ledger-state-separation.md)
+
+### Current automated checks
+
+- workspace fmt/check/test/clippy
+
+{END}
+
 ## Position in PTR
 
 ```mermaid

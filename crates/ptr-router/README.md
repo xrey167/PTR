@@ -3,6 +3,55 @@
 > **Role:** Chooses how a task should be solved: neural reasoning, search, statistics, simulation, symbolic methods, Pods or combinations.  
 > **Maturity:** architecture + contract scaffold; production behavior must be proven by the linked experiments and component evaluations.
 
+{BEGIN}
+## Current implementation status
+
+> **Generated section.** Source of truth: [`component.toml`](component.toml). Run `python3 scripts/update_component_docs.py --write` after editing metadata. Do not hand-edit inside this block.
+
+**Maturity:** `scaffold`  
+**Last reviewed:** 2026-09-18
+
+### Implemented now
+
+- RouteScore and RouteDecision with deterministic best-score selection
+- RoutingPolicy scaffold with max_parallel and uncertainty_trigger
+
+### Missing for the target architecture
+
+- Typed ExecutionRecipe
+- Separate reasoning/model/search/Pod routing policies
+- Cost, latency, uncertainty and capability-aware constraints
+- Learned router head integration and replayable routing telemetry
+- Fallback/degradation plan when a backend is unavailable
+
+### Next milestones
+
+- Define typed operator/backend capability graph
+- Implement deterministic baseline router
+- Train/evaluate model operator routing with M004
+
+### Linked experiments
+
+- - [M004](../../experiments/model/M004-operator-router/README.md) — `planned`
+- - [R002](../../experiments/runtime/R002-unseen-pod-generalization/README.md) — `planned`
+- - [E003](../../experiments/system/E003-token-efficiency/README.md) — `planned`
+
+### Technology evaluations
+
+- - [inference-serving](../../evaluations/components/inference-serving/README.md) — `open`
+- - [distributed-data-compute](../../evaluations/components/distributed-data-compute/README.md) — `open`
+
+### Decision records
+
+- - [ADR-0004-backend-independence.md](../../research/decisions/ADR-0004-backend-independence.md)
+- - [ADR-0011-semantic-pod-contracts.md](../../research/decisions/ADR-0011-semantic-pod-contracts.md)
+
+### Current automated checks
+
+- workspace fmt/check/test/clippy
+
+{END}
+
 ## Position in PTR
 
 ```mermaid
