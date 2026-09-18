@@ -18,6 +18,7 @@ research_flexibility = 0.03
 id = "turso"
 source = "external"
 status = "evaluating"
+command = "cargo test -p ptr-state --features turso-backend --test turso --locked"
 evidence = ["../../../crates/ptr-state/tests/turso.rs"]
 
 [[candidate]]
