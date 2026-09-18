@@ -5,11 +5,11 @@
 
 **Component count:** 24  
 **Maturity distribution:** `foundation`: 1, `prototype`: 8, `research-scaffold`: 1, `scaffold`: 14  
-**Rust footprint:** 40 source files · 1319 nonblank source lines · 3 `#[test]` markers
+**Rust footprint:** 40 source files · 1308 nonblank source lines · 3 `#[test]` markers
 
 | Component | Maturity | Rust files | LOC | Tests | Implemented items | Missing items | Experiments | Evaluations |
 |---|---:|---:|---:|---:|---:|---:|---|---|
-| [ptr-config](../../crates/ptr-config/README.md) | `prototype` | 1 | 117 | 0 | 3 | 4 | E001:planned | — |
+| [ptr-config](../../crates/ptr-config/README.md) | `prototype` | 1 | 106 | 0 | 3 | 4 | E001:planned | — |
 | [ptr-core](../../crates/ptr-core/README.md) | `research-scaffold` | 13 | 231 | 0 | 7 | 7 | M001:planned, M002:planned, M003:planned, M004:planned, M005:planned, M006:planned, M007:planned, E001:planned, E003:planned, E004:planned | model-framework:open, inference-serving:open |
 | [ptr-events](../../crates/ptr-events/README.md) | `scaffold` | 1 | 16 | 0 | 2 | 5 | E001:planned, F001:planned | event-streaming:open |
 | [ptr-exec](../../crates/ptr-exec/README.md) | `prototype` | 1 | 46 | 0 | 4 | 5 | R001:planned, E001:planned, E003:planned | execution-runtime:open |

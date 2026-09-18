@@ -9,11 +9,11 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-18  
-**Code footprint:** 1 Rust source files · 117 nonblank source lines · 0 `#[test]` markers
+**Code footprint:** 1 Rust source files · 106 nonblank source lines · 0 `#[test]` markers
 
 ### Implemented now
 
-- Typed deserialization for runtime, semantic, action-boundary, observability and research sections
+- Typed deserialization/defaults for runtime, semantic, action-boundary, observability and research sections
 - Repository default TOML parsing
 - Basic configuration validation
 
