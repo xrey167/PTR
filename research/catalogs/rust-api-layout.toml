@@ -16,6 +16,8 @@ validation_rule = "is/has/can for booleans; check/validate/ensure return typed R
 error_rule = "fallible public operations use Result<T,E>; mismatch errors carry expected/actual where meaningful; named field/message/code context; no recoverable production unwrap"
 fallibility_rule = "functions that can fail return typed Result; do not encode failure as false/None/default unless absence is the actual semantic result"
 test_rule = "unit tests live beside source modules; integration tests exercise public APIs under tests/*.rs; tests/common contains reusable fixtures/helpers without test annotations"
+iterator_rule = "prefer IntoIterator for generic batch inputs and impl Iterator for lazy returned views; use standard adapters and short-circuit fallible traversal before materializing"
+closure_rule = "use the weakest Fn/FnMut/FnOnce bound that matches capture semantics; closures stay small and must not hide authority-changing side effects"
 
 [[crate]]
 id = "ptr-types"
