@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-18  
-**Code footprint:** 1 Rust source files · 94 nonblank source lines · 2 integration-test files · 2 `#[test]` markers
+**Code footprint:** 1 Rust source files · 225 nonblank source lines · 3 integration-test files · 4 `#[test]` markers
 
 ### Implemented now
 
@@ -18,18 +18,19 @@
 - SearchHit with private evidence stage and explicit promotion API
 - SearchIndex contract
 - Reciprocal-rank fusion implementation
+- Feature-gated Tantivy 0.25 lexical backend with generation-preserving upsert/delete and deterministic manual reload
 
 ### Missing for the target architecture
 
 - Typed query/search planner
-- Tantivy/Zvec/cuVS/LanceDB/Havenask/GritQL adapters
+- Zvec/cuVS/LanceDB/Havenask/GritQL adapters
 - Score normalization and backend-specific metadata
 - Backend-specific exact source resolver
 - Verifier-report typed integration instead of boolean verification result
 
 ### Next milestones
 
-- Implement lexical reference backend first
+- Benchmark Tantivy against the custom BM25 reference and then implement the local-vector backend
 - Connect generation-aware promotion API to authoritative source resolver and verifier reports
 - Run Q001/Q002 and strong RAG baseline E002
 
@@ -57,6 +58,7 @@
 ### Current automated checks
 
 - evidence promotion integration test blocks direct Known and stale generation
+- Tantivy update/delete/generation integration tests behind tantivy-backend feature
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->

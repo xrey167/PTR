@@ -131,8 +131,7 @@ mod tantivy_backend {
         pub fn new_in_ram() -> Result<Self, SearchBackendError> {
             let mut schema_builder = Schema::builder();
             let capsule_field = schema_builder.add_text_field("capsule", STRING | STORED);
-            let generation_field =
-                schema_builder.add_u64_field("generation", INDEXED | STORED);
+            let generation_field = schema_builder.add_u64_field("generation", INDEXED | STORED);
             let body_field = schema_builder.add_text_field("body", TEXT);
             let schema = schema_builder.build();
 
@@ -211,9 +210,7 @@ mod tantivy_backend {
 
             let mut hits = Vec::with_capacity(docs.len());
             for (score, address) in docs {
-                let doc = searcher
-                    .doc::<TantivyDocument>(address)
-                    .map_err(error)?;
+                let doc = searcher.doc::<TantivyDocument>(address).map_err(error)?;
                 let Some(capsule) = doc
                     .get_first(self.capsule_field)
                     .and_then(|value| value.as_str())
