@@ -39,3 +39,20 @@ fn backend_name_iterator_supports_closure_based_filtering() {
 
     assert_eq!(names, vec!["reference"]);
 }
+
+
+#[test]
+fn closure_filter_supports_fn_mut_state_capture() {
+    let service = common::reference_service();
+    let mut visited = 0_usize;
+
+    let names = service
+        .matching_backend_names(|name| {
+            visited += 1;
+            name == "reference"
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(visited, 1);
+    assert_eq!(names, vec!["reference"]);
+}
