@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 #[serde(default)]
 pub struct PtrConfig {
     pub runtime: RuntimeConfig,
@@ -9,18 +9,6 @@ pub struct PtrConfig {
     pub action_boundary: ActionBoundaryConfig,
     pub observability: ObservabilityConfig,
     pub research: ResearchConfig,
-}
-
-impl Default for PtrConfig {
-    fn default() -> Self {
-        Self {
-            runtime: RuntimeConfig::default(),
-            semantic: SemanticConfig::default(),
-            action_boundary: ActionBoundaryConfig::default(),
-            observability: ObservabilityConfig::default(),
-            research: ResearchConfig::default(),
-        }
-    }
 }
 
 impl PtrConfig {
