@@ -11,7 +11,7 @@ implemented = [
   "Typed TraceError variants with stable machine-readable error codes",
   "Feature-gated tracing 0.1 adapter implementing the PTR TraceSink contract",
   "Unit tests beside source modules plus thematic integration tests with shared tests/common fixtures",
-  "Lazy trace-field iteration with impl Iterator, closure-based filtering and fallible try_for_each traversal",
+  "Lazy trace-field iteration with impl Iterator, closure-based match-guard filtering and fallible try_for_each traversal",
 ]
 
 missing = [
