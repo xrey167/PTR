@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use ptr_types::{CommitIndex, Generation, RequestId, Revision};
 
-use crate::{fields, TraceError};
+use crate::{fields, macros::impl_trace_value_from, TraceError};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TraceLevel {
@@ -22,6 +22,20 @@ pub enum TraceValue {
     Revision(Revision),
     Generation(Generation),
     CommitIndex(CommitIndex),
+}
+
+impl_trace_value_from!(TraceValue, String => String);
+impl_trace_value_from!(TraceValue, U64 => u64);
+impl_trace_value_from!(TraceValue, Bool => bool);
+impl_trace_value_from!(TraceValue, RequestId => RequestId);
+impl_trace_value_from!(TraceValue, Revision => Revision);
+impl_trace_value_from!(TraceValue, Generation => Generation);
+impl_trace_value_from!(TraceValue, CommitIndex => CommitIndex);
+
+impl From<&str> for TraceValue {
+    fn from(value: &str) -> Self {
+        Self::String(value.to_owned())
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -51,8 +65,12 @@ impl TraceEvent {
             .with_field(fields::REVISION, TraceValue::Revision(revision))
     }
 
-    pub fn with_field(mut self, key: impl Into<String>, value: TraceValue) -> Self {
-        self.fields.insert(key.into(), value);
+    pub fn with_field(
+        mut self,
+        key: impl Into<String>,
+        value: impl Into<TraceValue>,
+    ) -> Self {
+        self.fields.insert(key.into(), value.into());
         self
     }
 
