@@ -1,5 +1,6 @@
 mod error;
 mod flow;
+mod macros;
 mod trace;
 #[cfg(feature = "tracing-adapter")]
 mod tracing_adapter;
