@@ -10,7 +10,7 @@
 
 **Maturity:** `scaffold`  
 **Last reviewed:** 2026-09-18  
-**Code footprint:** 5 Rust source files · 126 nonblank source lines · 2 integration-test files · 2 `#[test]` markers
+**Code footprint:** 6 Rust source files · 202 nonblank source lines · 3 integration-test files · 3 `#[test]` markers
 
 ### Implemented now
 
@@ -19,10 +19,11 @@
 - Backend-neutral TraceEvent, TraceLevel and typed TraceValue structures
 - TraceSink port with infallible NoopTraceSink reference implementation
 - Typed TraceError variants with stable machine-readable error codes
+- Feature-gated tracing 0.1 adapter implementing the PTR TraceSink contract
 
 ### Missing for the target architecture
 
-- tracing crate adapter plus Subscriber/layer integration
+- Subscriber/layer setup and exporter integration beyond the tracing sink adapter
 - OpenTelemetry and NeMo Relay exporters
 - Plan-vs-execution correlation
 - Redaction middleware
@@ -30,7 +31,6 @@
 
 ### Next milestones
 
-- Implement tracing-crate adapter behind the PTR TraceSink contract
 - Instrument request/execution/Pod/verifier boundaries
 - Add redaction-safe structured exporter
 - Feed FlowSignature + runtime trace into feedback trajectories
@@ -53,6 +53,7 @@
 
 - typed trace event expected/actual value test
 - namespaced tracing field test
+- feature-gated tracing adapter emission test
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->
