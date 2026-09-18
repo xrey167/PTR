@@ -17,8 +17,8 @@ research_flexibility = 0.03
 [[candidate]]
 id = "raft-engine"
 source = "external"
-status = "to-evaluate"
-evidence = []
+status = "evaluating"
+evidence = ["../../../crates/ptr-ledger/tests/raft_engine.rs"]
 
 [[candidate]]
 id = "rocksdb"

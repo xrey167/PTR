@@ -8,12 +8,19 @@ publish = false
 [features]
 default = []
 failpoints = ["dep:fail", "fail/failpoints"]
+raft-engine-backend = ["dep:raft-engine"]
 
 [dependencies]
 ptr-types = { workspace = true }
 fail = { version = "0.5", optional = true }
+raft-engine = { version = "=0.4.2", default-features = false, optional = true }
 
 [[test]]
 name = "failpoints"
 path = "tests/failpoints.rs"
 required-features = ["failpoints"]
+
+[[test]]
+name = "raft_engine"
+path = "tests/raft_engine.rs"
+required-features = ["raft-engine-backend"]

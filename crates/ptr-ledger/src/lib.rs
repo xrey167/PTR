@@ -359,3 +359,102 @@ impl<'a> Cursor<'a> {
 fn truncated() -> io::Error {
     io::Error::new(io::ErrorKind::UnexpectedEof, "truncated ledger record")
 }
+
+#[cfg(feature = "raft-engine-backend")]
+mod raft_engine_backend {
+    use super::*;
+    use raft_engine::{Config, Engine, LogBatch};
+
+    const GROUP_ID: u64 = 1;
+    const KEY_PREFIX: &[u8] = b"ptr/event/";
+
+    pub struct RaftEngineLedger {
+        engine: Engine,
+        events: Vec<CommittedEvent>,
+    }
+
+    impl RaftEngineLedger {
+        pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
+            let config = Config {
+                dir: path.as_ref().to_string_lossy().into_owned(),
+                ..Default::default()
+            };
+            let engine = Engine::open(config).map_err(engine_error)?;
+
+            let mut encoded = Vec::<(Vec<u8>, Vec<u8>)>::new();
+            engine
+                .scan_raw_messages(GROUP_ID, None, None, false, |key, value| {
+                    if key.starts_with(KEY_PREFIX) {
+                        encoded.push((key.to_vec(), value.to_vec()));
+                    }
+                    true
+                })
+                .map_err(engine_error)?;
+            encoded.sort_by(|left, right| left.0.cmp(&right.0));
+
+            let mut events = Vec::with_capacity(encoded.len());
+            for (offset, (key, payload)) in encoded.into_iter().enumerate() {
+                let index = parse_event_key(&key)?;
+                let expected = offset as u64 + 1;
+                if index != expected {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("raft-engine ledger gap: expected {expected}, found {index}"),
+                    ));
+                }
+                events.push(CommittedEvent {
+                    index: CommitIndex(index),
+                    event: decode_event(&payload)?,
+                });
+            }
+
+            Ok(Self { engine, events })
+        }
+
+        pub fn append_durable(&mut self, event: LedgerEvent) -> io::Result<CommitIndex> {
+            let index = CommitIndex(self.events.len() as u64 + 1);
+            let mut batch = LogBatch::default();
+            batch.put(GROUP_ID, event_key(index).into_bytes(), encode_event(&event));
+            self.engine.write(&mut batch, true).map_err(engine_error)?;
+            self.events.push(CommittedEvent { index, event });
+            Ok(index)
+        }
+
+        pub fn events(&self) -> &[CommittedEvent] {
+            &self.events
+        }
+
+        pub fn sync(&self) -> io::Result<()> {
+            self.engine.sync().map_err(engine_error)
+        }
+
+        pub fn purge_expired_files(&self) -> io::Result<Vec<u64>> {
+            self.engine.purge_expired_files().map_err(engine_error)
+        }
+    }
+
+    fn event_key(index: CommitIndex) -> String {
+        format!("ptr/event/{:020}", index.0)
+    }
+
+    fn parse_event_key(key: &[u8]) -> io::Result<u64> {
+        if !key.starts_with(KEY_PREFIX) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "unexpected raft-engine ledger key prefix",
+            ));
+        }
+        let suffix = std::str::from_utf8(&key[KEY_PREFIX.len()..])
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "ledger key is not UTF-8"))?;
+        suffix
+            .parse::<u64>()
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid ledger event index"))
+    }
+
+    fn engine_error(error: raft_engine::Error) -> io::Error {
+        io::Error::other(error.to_string())
+    }
+}
+
+#[cfg(feature = "raft-engine-backend")]
+pub use raft_engine_backend::RaftEngineLedger;
