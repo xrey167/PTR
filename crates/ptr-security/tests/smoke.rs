@@ -95,3 +95,18 @@ fn allowed_action_returns_audit_ready_receipt() {
     assert_eq!(receipt.capability, CapabilityId::from("file.write"));
     assert_eq!(receipt.effect, Effect::Mutation);
 }
+
+#[test]
+fn disabling_capability_membership_does_not_disable_effect_authority() {
+    let permissions = PermissionSet::default();
+    let mut action = request();
+    action.require_capability = false;
+
+    assert_eq!(
+        permissions.authorize(action),
+        AuthorizationDecision::Deny(AuthorizationDenial::EffectNotPermitted {
+            effect: Effect::Mutation,
+        })
+    );
+}
+
