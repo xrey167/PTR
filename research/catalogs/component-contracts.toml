@@ -52,7 +52,7 @@ open_decisions = ["capability descriptor", "async stream contract", "checkpoint 
 [[component]]
 id = "ptr-runtime"
 ports = ["RuntimeLedger", "RuntimeState", "RuntimeModel", "RuntimeRouter", "RuntimeEventSink"]
-type_families = ["model-interface", "routing-execution", "capability-authority", "ledger-consensus", "events-observability"]
+type_families = ["model-interface", "routing-execution", "capability-authority", "ledger-consensus", "events-observability", "observability-tracing"]
 backend_slots = ["cache"]
 open_decisions = ["typed backend composition", "async orchestration", "streaming/cancellation", "cache classes"]
 
@@ -150,9 +150,9 @@ open_decisions = ["event classes", "offset/replay", "retention/backpressure", "a
 [[component]]
 id = "ptr-observe"
 ports = ["TraceSink", "TrajectoryExporter", "DiagnosticProvider"]
-type_families = ["events-observability", "training-evaluation"]
+type_families = ["observability-tracing", "training-evaluation"]
 backend_slots = ["observability"]
-open_decisions = ["FlowSignature", "redaction", "trajectory normalization", "async diagnostics"]
+open_decisions = ["redaction", "trace context/span links", "trajectory normalization", "async diagnostics", "exporter failure policy"]
 
 [[component]]
 id = "ptr-inspect"
