@@ -110,6 +110,8 @@ def check() -> list[str]:
         "lifetime_rule",
         "validation_rule",
         "error_rule",
+        "fallibility_rule",
+        "test_rule",
     ]:
         if not policy.get(key):
             errors.append(f"rust api policy missing {key}")
