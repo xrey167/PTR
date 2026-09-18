@@ -69,10 +69,10 @@ impl TraceEvent {
     where
         F: FnMut(&str, &TraceValue) -> bool + 'event,
     {
-        self.iter_fields().filter_map(move |(key, value)| {
-            match (key, value) {
-                pair if predicate(pair.0, pair.1) => Some(pair),
-                _ => None,
+        self.iter_fields().filter(move |item| {
+            match *item {
+                (key, value) if predicate(key, value) => true,
+                _ => false,
             }
         })
     }
