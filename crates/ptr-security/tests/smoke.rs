@@ -109,4 +109,3 @@ fn disabling_capability_membership_does_not_disable_effect_authority() {
         })
     );
 }
-
