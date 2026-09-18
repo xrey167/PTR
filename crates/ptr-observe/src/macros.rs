@@ -1,6 +1,6 @@
 macro_rules! impl_trace_value_from {
-    ($variant:ident => $type:ty) => {
-        impl From<$type> for $crate::TraceValue {
+    ($target:ty, $variant:ident => $type:ty) => {
+        impl From<$type> for $target {
             fn from(value: $type) -> Self {
                 Self::$variant(value)
             }
