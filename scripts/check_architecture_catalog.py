@@ -116,6 +116,8 @@ def check() -> list[str]:
         "closure_rule",
         "match_rule",
         "match_guard_rule",
+        "macro_rule",
+        "proc_macro_rule",
     ]:
         if not policy.get(key):
             errors.append(f"rust api policy missing {key}")
