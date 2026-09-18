@@ -28,3 +28,4 @@ jobs:
           git add experiments/lifecycle/L001-revocation-crash/results/metrics.json
           git commit -m "Record L001 reference crash-tail evidence"
           git push origin HEAD:main
+# rerun after lockfile refresh
