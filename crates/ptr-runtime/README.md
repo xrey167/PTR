@@ -9,14 +9,14 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-18  
-**Code footprint:** 1 Rust source files · 468 nonblank source lines · 5 integration-test files · 13 `#[test]` markers
+**Code footprint:** 1 Rust source files · 478 nonblank source lines · 5 integration-test files · 14 `#[test]` markers
 
 ### Implemented now
 
 - Central runtime object wiring configuration, SemDB, ledger, materialized state, events and permissions
 - Durable standalone runtime constructor opens/replays FileLedger and reconstructs lifecycle/materialized state across restart
 - Text ingestion into revisioned semantic state
-- Current-revision, live-generation/revocation and capability/effect checks for ActionIR
+- Current-revision, live-generation/revocation and capability/effect checks for ActionIR delegated through typed ptr-security authorization decisions
 - Committed-event materialization and runtime event emission
 - Committed-event replay rebuilds lifecycle state and preserves revocation
 - Reference InferenceBackend request loop runs against a revisioned ModelRequest and emits completion event
@@ -55,6 +55,7 @@
 ### Current automated checks
 
 - runtime ingestion/revision/generation/capability/materialization integration tests
+- typed authorization decision exposure and RuntimeError compatibility test
 - reference model-loop integration test
 - bounded verified Pod-observation resume-loop tests
 - revocation replay/restart integration test
