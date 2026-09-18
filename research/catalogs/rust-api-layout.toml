@@ -26,10 +26,10 @@ proc_macro_rule = "procedural macros require a dedicated crate, explicit archite
 [[crate]]
 id = "ptr-types"
 current_shape = "mostly-flat"
-modules = ["ids", "lifecycle", "epistemic", "effects", "provenance", "issues"]
+modules = ["macros", "ids", "lifecycle", "epistemic", "effects", "provenance", "issues"]
 public_groups = ["identifier newtypes", "Revision/Generation/CommitIndex", "Probability/Epistemic<T>/TypedValue<T>", "Effect/Validity/VerificationLevel", "ProvenanceRef/SemanticIssue"]
 function_groups = ["validated value constructors", "small value accessors"]
-notes = ["no backend dependencies", "derive value semantics deliberately"]
+notes = ["no backend dependencies", "derive value semantics deliberately", "keep internal newtype generation macro_rules isolated from public domain semantics"]
 
 [[crate]]
 id = "ptr-config"
