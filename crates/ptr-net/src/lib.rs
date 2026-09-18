@@ -1,4 +1,4 @@
-use ptr_types::{NodeId};
+use ptr_types::NodeId;
 
 pub const ALPN_RAFT: &[u8] = b"ptr-raft/1";
 pub const ALPN_PODWIRE: &[u8] = b"ptr-podwire/1";
@@ -102,11 +102,10 @@ mod iroh_backend {
         }
 
         pub async fn accept_once(&self, max_request: usize) -> Result<IrohIncoming, String> {
-            let incoming = self
-                .endpoint
-                .accept()
-                .await
-                .ok_or_else(|| "Iroh endpoint closed before accepting a connection".to_string())?;
+            let incoming =
+                self.endpoint.accept().await.ok_or_else(|| {
+                    "Iroh endpoint closed before accepting a connection".to_string()
+                })?;
             let connection = incoming.await.map_err(|error| error.to_string())?;
             let peer_id = connection
                 .remote_node_id()

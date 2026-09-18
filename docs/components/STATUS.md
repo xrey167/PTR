@@ -4,8 +4,8 @@
 > Refresh with `python3 scripts/update_component_docs.py --write`.
 
 **Component count:** 24  
-**Maturity distribution:** `foundation`: 1, `prototype`: 10, `research-scaffold`: 1, `scaffold`: 12  
-**Rust footprint:** 40 source files · 2801 nonblank source lines · 45 integration-test files · 57 `#[test]` markers
+**Maturity distribution:** `foundation`: 1, `prototype`: 11, `research-scaffold`: 1, `scaffold`: 11  
+**Rust footprint:** 40 source files · 2923 nonblank source lines · 46 integration-test files · 57 `#[test]` markers
 
 | Component | Maturity | Rust files | LOC | Test files | Tests | Implemented items | Missing items | Experiments | Evaluations |
 |---|---:|---:|---:|---:|---:|---:|---:|---|---|
@@ -19,7 +19,7 @@
 | [ptr-ledger](../../crates/ptr-ledger/README.md) | `prototype` | 1 | 524 | 5 | 6 | 8 | 3 | L001:running, L002:planned, E004:planned | consensus:open, ledger:open |
 | [ptr-memory](../../crates/ptr-memory/README.md) | `scaffold` | 1 | 31 | 1 | 1 | 3 | 5 | Q002:planned, E002:planned, E004:planned | — |
 | [ptr-model-api](../../crates/ptr-model-api/README.md) | `scaffold` | 4 | 83 | 2 | 2 | 5 | 5 | M007:planned, E001:planned, E003:planned | inference-serving:open |
-| [ptr-net](../../crates/ptr-net/README.md) | `scaffold` | 1 | 14 | 1 | 1 | 3 | 5 | L002:planned, E001:planned | network:open |
+| [ptr-net](../../crates/ptr-net/README.md) | `prototype` | 1 | 136 | 2 | 1 | 6 | 3 | L002:planned, E001:planned | network:open |
 | [ptr-observe](../../crates/ptr-observe/README.md) | `scaffold` | 1 | 19 | 1 | 1 | 2 | 5 | F001:planned, E003:planned | observability:open |
 | [ptr-pods](../../crates/ptr-pods/README.md) | `prototype` | 1 | 125 | 3 | 4 | 6 | 4 | R002:planned, E001:planned | environment-runtime:open |
 | [ptr-protocol](../../crates/ptr-protocol/README.md) | `scaffold` | 2 | 104 | 2 | 2 | 5 | 3 | R002:planned, E001:planned | network-codec:open, local-serialization:open |
