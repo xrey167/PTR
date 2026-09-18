@@ -482,8 +482,7 @@ mod raft_rs_backend {
 
     impl SingleNodeRaftConsensus {
         pub fn new(node_id: u64) -> Result<Self, String> {
-            let storage =
-                MemStorage::new_with_conf_state(ConfState::from((vec![node_id], vec![])));
+            let storage = MemStorage::new_with_conf_state(ConfState::from((vec![node_id], vec![])));
             let config = RaftConfig {
                 id: node_id,
                 election_tick: 10,
@@ -496,13 +495,16 @@ mod raft_rs_backend {
             config.validate().map_err(|error| error.to_string())?;
 
             let logger = slog::Logger::root(slog::Discard, slog::o!());
-            let node = RawNode::new(&config, storage, &logger)
-                .map_err(|error| error.to_string())?;
+            let node =
+                RawNode::new(&config, storage, &logger).map_err(|error| error.to_string())?;
             let mut consensus = Self {
                 node,
                 committed: Vec::new(),
             };
-            consensus.node.campaign().map_err(|error| error.to_string())?;
+            consensus
+                .node
+                .campaign()
+                .map_err(|error| error.to_string())?;
             consensus.drain_ready()?;
             if consensus.node.raft.state != StateRole::Leader {
                 return Err("single-node raft group failed to become leader".into());

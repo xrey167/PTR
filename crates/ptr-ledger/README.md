@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-18  
-**Code footprint:** 1 Rust source files · 407 nonblank source lines · 4 integration-test files · 5 `#[test]` markers
+**Code footprint:** 1 Rust source files · 523 nonblank source lines · 5 integration-test files · 6 `#[test]` markers
 
 ### Implemented now
 
@@ -21,17 +21,18 @@
 - Durable reference FileLedger with length-prefixed event encoding, fsync and crash-tail truncation
 - Feature-gated fail-rs injection points around record write/payload/fsync/memory-commit boundaries
 - Feature-gated raft-engine 0.4.2 durable adapter stores ordered PTR ledger events with synchronous writes and reopen validation
+- Feature-gated raft-rs 0.7 single-node consensus harness proposes and commits PTR LedgerEvents through RawNode
 
 ### Missing for the target architecture
 
-- raft-rs consensus adapter and state machine integration
+- Multi-node raft-rs consensus adapter with transport, persistent Raft storage and membership changes
 - fsync/durability modes and revocation barriers
 - Snapshot serialization/recovery/replay
 
 ### Next milestones
 
 - Define storage/consensus interfaces around existing Ledger contract
-- Benchmark FileLedger against the new raft-engine adapter and exercise raft-engine failpoints before cluster consensus
+- Benchmark FileLedger against raft-engine, then connect raft-rs RawNode to raft-engine persistence and network transport
 - Expand L001 failpoint matrix to process-abort and durable-backend cases, then run L002 cluster recovery
 
 ### Linked experiments
@@ -56,6 +57,7 @@
 - FileLedger open path explicitly preserves existing contents and truncates only incomplete crash tails
 - fail-rs panic-after-length-prefix recovery test
 - raft-engine durable append/reopen ordering integration test
+- raft-rs single-node proposal/commit ordering integration test
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->
