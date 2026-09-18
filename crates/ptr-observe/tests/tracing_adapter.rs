@@ -1,11 +1,13 @@
 #![cfg(feature = "tracing-adapter")]
 
-use ptr_observe::{TraceEvent, TraceLevel, TraceSink, TracingSink};
+mod common;
+
+use ptr_observe::{TraceSink, TracingSink};
 
 #[test]
 fn tracing_adapter_accepts_ptr_events_without_a_subscriber() {
-    let event = TraceEvent::new(TraceLevel::Info, "ptr.test");
+    let event = common::generation_mismatch_event();
     TracingSink
         .emit(&event)
-        .expect("tracing event emission is infallible");
+        .expect("tracing adapter must emit a valid PTR trace event");
 }
