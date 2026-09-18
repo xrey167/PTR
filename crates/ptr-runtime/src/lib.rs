@@ -104,10 +104,7 @@ impl PtrRuntime {
         Self::with_ledger(config, RuntimeLedger::Memory(InMemoryLedger::default()))
     }
 
-    pub fn open_durable(
-        config: PtrConfig,
-        path: impl AsRef<Path>,
-    ) -> Result<Self, RuntimeError> {
+    pub fn open_durable(config: PtrConfig, path: impl AsRef<Path>) -> Result<Self, RuntimeError> {
         let ledger =
             FileLedger::open(path).map_err(|error| RuntimeError::Ledger(error.to_string()))?;
         let persisted = ledger.events().to_vec();
