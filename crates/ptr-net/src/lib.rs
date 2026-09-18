@@ -1,4 +1,4 @@
-use ptr_types::NodeId;
+use ptr_types::{NodeId};
 
 pub const ALPN_RAFT: &[u8] = b"ptr-raft/1";
 pub const ALPN_PODWIRE: &[u8] = b"ptr-podwire/1";
@@ -15,3 +15,144 @@ pub struct NodeIdentity {
 pub trait Transport {
     fn send(&self, peer: &NodeIdentity, alpn: &[u8], payload: &[u8]) -> Result<(), String>;
 }
+
+#[cfg(feature = "iroh-backend")]
+mod iroh_backend {
+    use super::NodeIdentity;
+    use iroh::{
+        endpoint::{Connection, SendStream},
+        Endpoint, NodeAddr, RelayMode,
+    };
+    use ptr_types::NodeId;
+    use std::net::{Ipv4Addr, SocketAddrV4};
+
+    pub struct IrohTransport {
+        endpoint: Endpoint,
+    }
+
+    pub struct IrohIncoming {
+        pub peer: NodeIdentity,
+        pub payload: Vec<u8>,
+        connection: Connection,
+        send: SendStream,
+    }
+
+    impl IrohTransport {
+        pub async fn bind(alpns: &[&[u8]]) -> Result<Self, String> {
+            let endpoint = Endpoint::builder()
+                .relay_mode(RelayMode::Disabled)
+                .bind_addr_v4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+                .alpns(alpns.iter().map(|alpn| alpn.to_vec()).collect())
+                .bind()
+                .await
+                .map_err(|error| error.to_string())?;
+
+            Ok(Self { endpoint })
+        }
+
+        pub fn identity(&self) -> NodeIdentity {
+            let public_key = self.endpoint.node_id().to_string();
+            NodeIdentity {
+                id: NodeId(public_key.clone()),
+                public_key,
+            }
+        }
+
+        pub fn direct_addr(&self) -> NodeAddr {
+            NodeAddr::new(self.endpoint.node_id())
+                .with_direct_addresses([self.endpoint.bound_sockets().0])
+        }
+
+        pub async fn request(
+            &self,
+            peer: NodeAddr,
+            alpn: &[u8],
+            payload: &[u8],
+            max_response: usize,
+        ) -> Result<Vec<u8>, String> {
+            let expected_peer = peer.node_id;
+            let connection = self
+                .endpoint
+                .connect(peer, alpn)
+                .await
+                .map_err(|error| error.to_string())?;
+
+            let authenticated_peer = connection
+                .remote_node_id()
+                .map_err(|error| error.to_string())?;
+            if authenticated_peer != expected_peer {
+                return Err("authenticated Iroh peer does not match requested endpoint id".into());
+            }
+
+            let (mut send, mut recv) = connection
+                .open_bi()
+                .await
+                .map_err(|error| error.to_string())?;
+            send.write_all(payload)
+                .await
+                .map_err(|error| error.to_string())?;
+            send.finish().map_err(|error| error.to_string())?;
+
+            let response = recv
+                .read_to_end(max_response)
+                .await
+                .map_err(|error| error.to_string())?;
+            connection.close(0u32.into(), b"ptr request complete");
+            Ok(response)
+        }
+
+        pub async fn accept_once(&self, max_request: usize) -> Result<IrohIncoming, String> {
+            let incoming = self
+                .endpoint
+                .accept()
+                .await
+                .ok_or_else(|| "Iroh endpoint closed before accepting a connection".to_string())?;
+            let connection = incoming.await.map_err(|error| error.to_string())?;
+            let peer_id = connection
+                .remote_node_id()
+                .map_err(|error| error.to_string())?;
+            let public_key = peer_id.to_string();
+
+            let (send, mut recv) = connection
+                .accept_bi()
+                .await
+                .map_err(|error| error.to_string())?;
+            let payload = recv
+                .read_to_end(max_request)
+                .await
+                .map_err(|error| error.to_string())?;
+
+            Ok(IrohIncoming {
+                peer: NodeIdentity {
+                    id: NodeId(public_key.clone()),
+                    public_key,
+                },
+                payload,
+                connection,
+                send,
+            })
+        }
+
+        pub async fn close(&self) {
+            self.endpoint.close().await;
+        }
+    }
+
+    impl IrohIncoming {
+        pub async fn respond(mut self, payload: &[u8]) -> Result<(), String> {
+            self.send
+                .write_all(payload)
+                .await
+                .map_err(|error| error.to_string())?;
+            self.send.finish().map_err(|error| error.to_string())?;
+            self.connection.close(0u32.into(), b"ptr response complete");
+            Ok(())
+        }
+    }
+
+    pub use IrohIncoming as Incoming;
+    pub use IrohTransport as Transport;
+}
+
+#[cfg(feature = "iroh-backend")]
+pub use iroh_backend::{Incoming as IrohIncoming, Transport as IrohTransport};

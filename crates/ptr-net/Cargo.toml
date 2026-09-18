@@ -5,6 +5,19 @@ edition.workspace = true
 rust-version.workspace = true
 publish = false
 
+[features]
+default = []
+iroh-backend = ["dep:iroh"]
+
 [dependencies]
 ptr-types = { workspace = true }
 ptr-protocol = { workspace = true }
+iroh = { version = "=0.35.0", optional = true, default-features = false }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[[test]]
+name = "iroh"
+path = "tests/iroh.rs"
+required-features = ["iroh-backend"]

@@ -1,25 +1,24 @@
 version = 1
 id = "ptr-net"
-maturity = "scaffold"
+maturity = "prototype"
 last_reviewed = "2026-09-18"
 
 implemented = [
   "ALPN constants for raft, PodWire, model, blob and events protocols",
   "NodeIdentity scaffold",
   "Provider-independent Transport trait",
+  "Feature-gated Iroh 0.35 direct QUIC adapter with PTR ALPNs and authenticated peer identity",
 ]
 
 missing = [
-  "Iroh endpoint/connection implementation",
-  "Cryptographic binding between NodeId and transport key",
   "Peer discovery/session lifecycle",
   "Retry/idempotency and backpressure behavior",
   "Raft/PodWire/blob stream adapters",
 ]
 
 next = [
-  "Implement Iroh transport adapter for one request/response protocol",
-  "Add authenticated identity validation",
+  "Extend Iroh adapter from local request/response to reusable connection/session management and Raft/PodWire channels",
+  "Add retry/idempotency/backpressure semantics around authenticated Iroh sessions",
   "Exercise partition/reconnect behavior in L002",
 ]
 
@@ -38,5 +37,6 @@ decisions = [
 ]
 
 checks = [
+  "Iroh local direct request/response roundtrip verifies authenticated peer identity and ALPN routing",
   "workspace fmt/check/test/clippy",
 ]

@@ -32,7 +32,7 @@ PTR is a **compiling architecture/research prototype**, not yet a complete model
 
 - PTR-Core now has a separate trainable Burn A0 research package with typed metadata, bidirectional cross-attention, recurrent latent refinement and a router; it is still a small architecture probe rather than a pretrained language model
 - bounded model resume after verified Pod observations is now wired and revision-advancing; opaque backend checkpoints, async streaming and router-driven operator selection remain open
-- production raft-engine/raft-rs, Turso, Iroh and real search-backend adapters remain unevaluated/unimplemented
+- feature-gated raft-engine, single-node raft-rs, Turso and direct Iroh adapters now exist and are under evaluation; multi-node consensus/network sessions and real search-backend adapters remain incomplete
 - 19 architecture experiments remain planned; L001 is the only running experiment and now has two executed scoped crash/recovery evidence slices
 - external component candidates mostly lack comparative benchmark evidence
 - strong RAG/GraphRAG/editable-memory and matched plain-model comparative runs are not yet executed

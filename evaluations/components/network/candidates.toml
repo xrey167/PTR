@@ -17,8 +17,8 @@ research_flexibility = 0.03
 [[candidate]]
 id = "iroh"
 source = "external"
-status = "to-evaluate"
-evidence = []
+status = "evaluating"
+evidence = ["../../../crates/ptr-net/tests/iroh.rs"]
 
 [[candidate]]
 id = "quinn"

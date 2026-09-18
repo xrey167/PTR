@@ -23,7 +23,7 @@ This is the implementation order after the architecture-scaffold phase. Status v
 | P1 | Latent recurrent refinement + operator router | prototype |
 | P1 | Multi-step model resume after verified Pod observation | prototype — bounded verified observation resume implemented |
 | P1 | L001 harder process/failpoint crash schedules | in progress — fail-rs + 250 real child-process abort cases executed |
-| P2 | raft-engine/raft-rs, Turso, Iroh production adapters | planned |
+| P2 | raft-engine/raft-rs, Turso, Iroh production adapters | prototypes — raft-rs, raft-engine, Turso and direct Iroh adapters integrated; multi-node/session hardening remains |
 | P2 | Full model training + matched M001–M005 ablations | planned |
 | P2 | GitHub branch ruleset/admin metadata | setup scripts/templates ready; admin application remains manual |
 | P2 | Stable release/multi-platform packaging | planned |
