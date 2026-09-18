@@ -82,8 +82,22 @@ mod tests {
             check_backend_name(Some(&value)),
             Err(ValidationError::InvalidValue {
                 field: "preferred_backend",
-                value,
+                value: value.clone(),
                 message: "preferred backend name exceeds the supported length",
+            })
+        );
+    }
+
+
+    #[test]
+    fn empty_guard_precedes_length_guard_for_whitespace_only_backend() {
+        let value = " ".repeat(MAX_BACKEND_NAME_LEN + 1);
+        assert_eq!(
+            check_backend_name(Some(&value)),
+            Err(ValidationError::InvalidValue {
+                field: "preferred_backend",
+                value,
+                message: "preferred backend must not be empty",
             })
         );
     }
