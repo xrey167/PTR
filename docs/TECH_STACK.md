@@ -1,6 +1,6 @@
 # PTR Technology Stack
 
-The table distinguishes **PTR semantics** from **current candidate technologies**. A candidate is not permanently selected until evaluation closes.
+The table distinguishes **PTR semantics** from **current candidate technologies**. A candidate is not permanently selected until evaluation closes. The broader set of intentionally open type/backend slots is tracked in the [open architecture catalog](../research/catalogs/README.md); this table is not a frozen bill of materials.
 
 | Concern | PTR-owned contract | Current candidate(s) | Alternative slot |
 |---|---|---|---|
