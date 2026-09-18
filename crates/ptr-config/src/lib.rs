@@ -4,6 +4,7 @@ use std::path::Path;
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CliOverrides {
     pub config_path: Option<String>,
+    pub bind: Option<String>,
     pub runtime_mode: Option<String>,
     pub mailbox_capacity: Option<usize>,
     pub max_parallel_candidates: Option<usize>,
@@ -32,6 +33,7 @@ impl CliOverrides {
             };
             match key.as_str() {
                 "--config" => out.config_path = Some(value()?),
+                "--bind" => out.bind = Some(value()?),
                 "--mode" => out.runtime_mode = Some(value()?),
                 "--mailbox-capacity" => {
                     let v = value()?;
@@ -62,6 +64,9 @@ impl CliOverrides {
     }
 
     pub fn apply_to(&self, config: &mut PtrConfig) -> Result<(), String> {
+        if let Some(bind) = &self.bind {
+            config.server.bind = bind.clone();
+        }
         if let Some(mode) = &self.runtime_mode {
             config.runtime.mode = mode.clone();
         }
@@ -84,6 +89,7 @@ impl CliOverrides {
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 #[serde(default)]
 pub struct PtrConfig {
+    pub server: ServerConfig,
     pub runtime: RuntimeConfig,
     pub semantic: SemanticConfig,
     pub action_boundary: ActionBoundaryConfig,
@@ -111,6 +117,7 @@ impl PtrConfig {
             let key = key.as_ref();
             let value = value.as_ref();
             match key {
+                "PTR_BIND" => self.server.bind = value.to_owned(),
                 "PTR_RUNTIME_MODE" => self.runtime.mode = value.to_owned(),
                 "PTR_MAILBOX_CAPACITY" => {
                     self.runtime.mailbox_capacity = parse_usize(key, value)?;
@@ -152,6 +159,9 @@ impl PtrConfig {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        if self.server.bind.trim().is_empty() {
+            return Err("server.bind must not be empty".into());
+        }
         if self.runtime.mailbox_capacity == 0 {
             return Err("runtime.mailbox_capacity must be greater than zero".into());
         }
@@ -175,6 +185,19 @@ fn parse_bool(key: &str, value: &str) -> Result<bool, String> {
     value
         .parse::<bool>()
         .map_err(|_| format!("{key} must be true or false"))
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(default)]
+pub struct ServerConfig {
+    pub bind: String,
+}
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            bind: "127.0.0.1:8080".into(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

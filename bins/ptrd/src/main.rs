@@ -1,13 +1,13 @@
 use ptr_config::{CliOverrides, PtrConfig};
 use ptr_runtime::PtrRuntime;
-use ptr_types::RequestId;
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let cli = match CliOverrides::parse(std::env::args().skip(1)) {
         Ok(value) => value,
         Err(err) if err == "help requested" => {
             println!(
-                "usage: ptrd [--config PATH] [--mode standalone|cluster] \
+                "usage: ptrd [--config PATH] [--bind HOST:PORT] [--mode standalone|cluster] \
                  [--mailbox-capacity N] [--max-parallel-candidates N] \
                  [--require-current-revision true|false] \
                  [--require-live-generation true|false]"
@@ -40,7 +40,15 @@ fn main() {
         std::process::exit(2);
     }
 
-    let mut runtime = PtrRuntime::new(config).expect("valid PTR runtime configuration");
-    let revision = runtime.ingest_text(RequestId::from("bootstrap"), "ptrd ready");
-    println!("ptrd ready at semantic revision {}", revision.0);
+    let bind = config.server.bind.clone();
+    let runtime = PtrRuntime::new(config).expect("valid PTR runtime configuration");
+    let listener = tokio::net::TcpListener::bind(&bind)
+        .await
+        .unwrap_or_else(|err| panic!("failed to bind {bind}: {err}"));
+
+    println!("ptrd listening on http://{bind}");
+    if let Err(err) = ptr_server::serve(listener, runtime).await {
+        eprintln!("ptrd server error: {err}");
+        std::process::exit(1);
+    }
 }

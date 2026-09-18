@@ -8,6 +8,7 @@ implemented = [
   "Basic configuration validation",
   "Typed environment override layer for runtime/action/semantic/observability/research settings",
   "Typed CLI override parser with config-path selection and file→environment→CLI precedence",
+  "Typed server bind configuration with PTR_BIND and --bind overrides",
 ]
 missing = [
   "Per-backend typed configuration sections",
@@ -22,4 +23,4 @@ next = [
 experiments = ["E001"]
 evaluations = []
 decisions = ["ADR-0004-backend-independence.md", "ADR-0014-config-layer.md"]
-checks = ["repository default config parse/validate test", "typed environment override tests", "CLI precedence and unknown-argument tests", "workspace fmt/check/test/clippy"]
+checks = ["repository default config parse/validate test", "typed environment override tests", "CLI precedence and unknown-argument tests", "server bind environment/CLI override test", "workspace fmt/check/test/clippy"]
