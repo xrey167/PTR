@@ -18,6 +18,7 @@ research_flexibility = 0.03
 id = "iroh"
 source = "external"
 status = "evaluating"
+command = "cargo test -p ptr-net --features iroh-backend --test iroh --locked"
 evidence = ["../../../crates/ptr-net/tests/iroh.rs"]
 
 [[candidate]]
