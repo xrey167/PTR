@@ -108,3 +108,21 @@ impl fmt::Display for ServiceError {
 }
 
 impl std::error::Error for ServiceError {}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn invalid_state_display_includes_expected_and_actual_values() {
+        let error = ServiceError::InvalidState {
+            expected: BackendState::Ready,
+            actual: BackendState::Unavailable,
+        };
+
+        let message = error.to_string();
+        assert!(message.contains("Ready"));
+        assert!(message.contains("Unavailable"));
+    }
+}
