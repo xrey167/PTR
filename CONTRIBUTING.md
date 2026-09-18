@@ -2,7 +2,7 @@
 
 Every change should identify its layer: domain semantics, backend adapter, model modification, experiment, dataset, benchmark, or documentation metadata. Backend-specific types must not leak into PTR domain crates. New architectural claims require an experiment manifest and an update to the novelty/prior-art matrix. Negative results are first-class artifacts.
 
-Rust code must follow [docs/RUST_API_STYLE.md](docs/RUST_API_STYLE.md). In particular: keep `lib.rs` as a thin facade where practical; group code by responsibility modules; default to private visibility, use `pub(crate)` for crate-internal contracts and `pub` only for intentional cross-crate API; use explicit `use`/`pub use`; prefer descriptive function parameters or typed request/options structs over ambiguous positional scalars/booleans; use `derive`, enums, exhaustive `match`, `Option<T>`, `Result<T, E>`, generics and collections according to their semantics rather than mechanically.
+Rust code must follow [docs/RUST_API_STYLE.md](docs/RUST_API_STYLE.md) and [docs/TESTING.md](docs/TESTING.md). In particular: keep `lib.rs` as a thin facade where practical; group code by responsibility modules; default to private visibility, use `pub(crate)` for crate-internal contracts and `pub` only for intentional cross-crate API; use explicit `use`/`pub use`; prefer descriptive function parameters or typed request/options structs over ambiguous positional scalars/booleans; use `derive`, enums, exhaustive `match`, `Option<T>`, `Result<T, E>`, generics and collections according to their semantics rather than mechanically.
 
 ## Component documentation is docs-as-code
 
@@ -37,6 +37,7 @@ python3 scripts/check_component_metadata.py --base HEAD^
 python3 scripts/update_component_docs.py --check
 python3 scripts/check_repo.py
 python3 scripts/check_architecture_catalog.py
+python3 scripts/check_rust_conventions.py
 python3 scripts/report_rust_api.py --public-only > /tmp/ptr-public-api.md
 python3 scripts/run_experiment.py validate
 python3 scripts/run_component_eval.py validate
