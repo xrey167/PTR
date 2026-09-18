@@ -10,7 +10,7 @@
 
 **Maturity:** `scaffold`  
 **Last reviewed:** 2026-09-18  
-**Code footprint:** 6 Rust source files · 336 nonblank source lines · 4 integration-test files · 10 `#[test]` markers
+**Code footprint:** 7 Rust source files · 373 nonblank source lines · 5 integration-test files · 12 `#[test]` markers
 
 ### Implemented now
 
@@ -22,6 +22,7 @@
 - Feature-gated tracing 0.1 adapter implementing the PTR TraceSink contract
 - Unit tests beside source modules plus thematic integration tests with shared tests/common fixtures
 - Lazy trace-field iteration with impl Iterator, closure-based match-guard filtering and fallible try_for_each traversal
+- Internal macro_rules-generated TraceValue conversions plus public hygienic trace_event! builder macro
 
 ### Missing for the target architecture
 
@@ -58,6 +59,7 @@
 - feature-gated tracing adapter emission test
 - unit tests for trace construction, iterator adapters/closures, fallible traversal, sink behavior and stable error codes/messages
 - integration tests share deterministic fixture code through tests/common/mod.rs
+- integration tests exercise exported macro expansion and generated TraceValue conversions
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->
