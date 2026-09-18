@@ -9,7 +9,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-18  
-**Code footprint:** 1 Rust source files · 242 nonblank source lines · 3 integration-test files · 5 `#[test]` markers
+**Code footprint:** 1 Rust source files · 264 nonblank source lines · 4 integration-test files · 6 `#[test]` markers
 
 ### Implemented now
 
@@ -18,6 +18,7 @@
 - Basic configuration validation
 - Typed environment override layer for runtime/action/semantic/observability/research settings
 - Typed CLI override parser with config-path selection and file→environment→CLI precedence
+- Typed server bind configuration with PTR_BIND and --bind overrides
 
 ### Missing for the target architecture
 
@@ -49,6 +50,7 @@
 - repository default config parse/validate test
 - typed environment override tests
 - CLI precedence and unknown-argument tests
+- server bind environment/CLI override test
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->

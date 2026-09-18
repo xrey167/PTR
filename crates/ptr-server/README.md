@@ -8,27 +8,28 @@
 
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
-**Maturity:** `scaffold`  
+**Maturity:** `prototype`  
 **Last reviewed:** 2026-09-18  
-**Code footprint:** 1 Rust source files · 12 nonblank source lines · 1 integration-test files · 1 `#[test]` markers
+**Code footprint:** 1 Rust source files · 105 nonblank source lines · 2 integration-test files · 1 `#[test]` markers
 
 ### Implemented now
 
-- ApiRequest and ApiResponse domain structs with request ID/revision
+- Versioned JSON ApiRequest/ApiResponse and HealthResponse contracts
+- Axum router with GET /health and POST /v1/requests
+- Reference runtime/backend request path returns revisioned response
 
 ### Missing for the target architecture
 
-- Axum server and route graph
 - Streaming ModelEvent/WebSocket or SSE API
 - Authentication/session/policy integration
-- Health/readiness/admin endpoints
+- Readiness/admin endpoints beyond basic health
 - Client backpressure and cancellation propagation
 
 ### Next milestones
 
-- Implement health endpoint and request streaming skeleton
-- Connect one end-to-end request through ingress→SemDB→baseline model
-- Add API conformance/integration tests
+- Add streaming ModelEvent SSE/WebSocket endpoint and cancellation propagation
+- Replace ReferenceEchoBackend route with configured evaluated backend
+- Add authentication/session/policy and concurrent client/backpressure tests
 
 ### Linked experiments
 
@@ -46,6 +47,7 @@
 
 ### Current automated checks
 
+- Axum health/request/bad-request HTTP integration tests matching TypeScript SDK contract
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->

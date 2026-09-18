@@ -12,7 +12,12 @@ use tower::ServiceExt;
 async fn health_contract_matches_sdk() {
     let app = router(PtrRuntime::new(PtrConfig::default()).unwrap());
     let response = app
-        .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
