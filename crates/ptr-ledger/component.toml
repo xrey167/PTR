@@ -8,10 +8,11 @@ implemented = [
   "CommittedEvent with CommitIndex",
   "Ledger trait and in-memory reference implementation",
   "CompactionBarrier scaffold",
+  "Durable reference FileLedger with length-prefixed event encoding, fsync and crash-tail truncation",
 ]
 
 missing = [
-  "Durable raft-engine backend",
+  "Production raft-engine durable backend",
   "raft-rs consensus adapter and state machine integration",
   "fsync/durability modes and revocation barriers",
   "Snapshot serialization/recovery/replay",
@@ -20,7 +21,7 @@ missing = [
 
 next = [
   "Define storage/consensus interfaces around existing Ledger contract",
-  "Implement durable single-node backend before cluster consensus",
+  "Benchmark reference FileLedger against raft-engine durable backend before cluster consensus",
   "Run L001 then L002 chaos/recovery experiments",
 ]
 
@@ -41,5 +42,6 @@ decisions = [
 ]
 
 checks = [
+  "FileLedger all-event reopen and partial-tail crash recovery tests",
   "workspace fmt/check/test/clippy",
 ]

@@ -1,3 +1,3 @@
-# Tests for experiments/lifecycle/L001-revocation-crash
+# L001 test assets
 
-This directory holds tests, fixtures, validation cases, or executable checks owned by `experiments/lifecycle/L001-revocation-crash`. Add real tests here as the area becomes executable; do not use this directory as evidence of implementation by itself.
+The current executable foundation includes FileLedger crash-tail recovery and PtrRuntime replay tests. These are prerequisite invariant tests, not yet the full L001 experiment. L001 remains planned until repeated failpoint/crash schedules are executed and archived under `results/`.
