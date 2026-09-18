@@ -1,0 +1,19 @@
+cff-version: 1.2.0
+message: "If you use PTR in research, please cite the repository and the specific commit or release used."
+title: "PTR: Probabilistically Typed Reasoning"
+type: software
+authors:
+  - family-names: "Rey"
+    given-names: "Darius"
+repository-code: "https://github.com/xrey167/PTR"
+url: "https://github.com/xrey167/PTR"
+version: "0.1.0-alpha"
+date-released: "2026-09-18"
+license: "MIT OR Apache-2.0"
+keywords:
+  - reasoning
+  - large-language-models
+  - agents
+  - rust
+  - typed-systems
+  - editable-memory

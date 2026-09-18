@@ -35,4 +35,4 @@ evidence = []
 id = "burn-0.18-ndarray-a0"
 source = "external+internal-prototype"
 status = "evaluating"
-evidence = ["../../model/burn-a0/README.md"]
+evidence = ["../../../model/burn-a0/README.md", "../../../model/burn-a0/tests/forward.rs", "../../../model/burn-a0/tests/train_router.rs"]

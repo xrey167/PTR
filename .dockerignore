@@ -1,0 +1,13 @@
+.git
+.github
+target
+**/target
+.venv
+__pycache__
+model/checkpoints
+training/checkpoints
+training/runs
+datasets/raw
+datasets/processed
+datasets/generated
+experiments/**/results

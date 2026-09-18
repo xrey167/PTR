@@ -1,0 +1,5 @@
+[alias]
+xtest = "test --workspace --locked"
+xcheck = "check --workspace --all-targets --locked"
+xclippy = "clippy --workspace --all-targets -- -D warnings"
+xdoc = "doc --workspace --no-deps --locked"

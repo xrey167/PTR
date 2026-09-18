@@ -30,14 +30,14 @@ PTR is a **compiling architecture/research prototype**, not yet a complete model
 
 ## Current research/implementation gap
 
-- PTR-Core is still a structural research scaffold; there is no trainable Burn/CubeCL implementation yet
+- PTR-Core now has a separate trainable Burn A0 research package with typed metadata, bidirectional cross-attention, recurrent latent refinement and a router; it is still a small architecture probe rather than a pretrained language model
 - model resume/checkpoint after verified Pod observations and router-driven multi-step execution are not yet wired
 - production raft-engine/raft-rs, Turso, Iroh and real search-backend adapters remain unevaluated/unimplemented
 - 19 architecture experiments remain planned; L001 is the only experiment with an executed scoped slice
 - external component candidates mostly lack comparative benchmark evidence
 - strong RAG/GraphRAG/editable-memory and matched plain-model comparative runs are not yet executed
 - GitHub main-branch ruleset/repository-admin settings still require manual completion; recommendations are documented in `docs/GITHUB_SETTINGS.md`
-- the TypeScript SDK API remains contract-only until `ptr-server` freezes and implements the matching `/v1` endpoints
+- the TypeScript SDK and Axum server now share `/health` and `/v1/requests`; streaming, auth/session policy and a real configured model backend remain open
 
 ## Reproducibility
 

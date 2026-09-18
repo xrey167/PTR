@@ -1,0 +1,5 @@
+PTR — Probabilistically Typed Reasoning
+
+Copyright 2026 PTR contributors.
+
+This product includes software developed by the PTR contributors and depends on third-party open-source software governed by their respective licenses. Third-party dependency licensing is checked by the repository's cargo-deny workflow; release SBOMs enumerate packaged dependencies.
