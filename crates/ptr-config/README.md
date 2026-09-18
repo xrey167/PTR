@@ -2,6 +2,54 @@
 
 > **Role:** Parse and validate PTR runtime configuration without leaking provider-specific configuration into domain crates.
 
+<!-- PTR:STATUS:BEGIN -->
+## Current implementation status
+
+> **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
+
+**Maturity:** `prototype`  
+**Last reviewed:** 2026-09-18  
+**Code footprint:** 1 Rust source files · 117 nonblank source lines · 0 `#[test]` markers
+
+### Implemented now
+
+- Typed deserialization for runtime, semantic, action-boundary, observability and research sections
+- Repository default TOML parsing
+- Basic configuration validation
+
+### Missing for the target architecture
+
+- Environment-variable and CLI override layers
+- Per-backend typed configuration sections
+- Secret/reference types instead of plaintext secret values
+- Config schema generation and migration/version policy
+
+### Next milestones
+
+- Add environment and CLI override precedence
+- Generate config schema and example profiles
+- Wire ptr-config into ptr-runtime and ptrd
+
+### Linked experiments
+
+- [E001](../../experiments/system/E001-end-to-end/README.md) — `planned`
+
+### Technology evaluations
+
+- None recorded.
+
+### Decision records
+
+- [ADR-0004-backend-independence.md](../../research/decisions/ADR-0004-backend-independence.md)
+- [ADR-0014-config-layer.md](../../research/decisions/ADR-0014-config-layer.md)
+
+### Current automated checks
+
+- repository default config parse/validate test
+- workspace fmt/check/test/clippy
+
+<!-- PTR:STATUS:END -->
+
 ## Position in PTR
 
 ```mermaid

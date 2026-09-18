@@ -25,8 +25,14 @@ fn action_requires_capability() {
         revision,
         payload: vec![],
     };
-    assert_eq!(runtime.authorize_action(&action), Err(RuntimeError::PermissionDenied));
-    runtime.permissions_mut().capabilities.insert(action.capability.clone());
+    assert_eq!(
+        runtime.authorize_action(&action),
+        Err(RuntimeError::PermissionDenied)
+    );
+    runtime
+        .permissions_mut()
+        .capabilities
+        .insert(action.capability.clone());
     runtime.permissions_mut().allow_mutation = true;
     assert!(runtime.authorize_action(&action).is_ok());
 }
@@ -39,7 +45,10 @@ fn committed_event_materializes() {
         generation: Generation(3),
     });
     assert_eq!(
-        runtime.materialized_state().values.get("constraint:no-network"),
+        runtime
+            .materialized_state()
+            .values
+            .get("constraint:no-network"),
         Some(&"3".to_string())
     );
 }

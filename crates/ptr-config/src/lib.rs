@@ -56,7 +56,11 @@ pub struct RuntimeConfig {
 }
 impl Default for RuntimeConfig {
     fn default() -> Self {
-        Self { mode: "standalone".into(), mailbox_capacity: 128, max_parallel_candidates: 4 }
+        Self {
+            mode: "standalone".into(),
+            mailbox_capacity: 128,
+            max_parallel_candidates: 4,
+        }
     }
 }
 
@@ -68,7 +72,10 @@ pub struct SemanticConfig {
 }
 impl Default for SemanticConfig {
     fn default() -> Self {
-        Self { cancel_stale_revisions: true, retain_raw_evidence: true }
+        Self {
+            cancel_stale_revisions: true,
+            retain_raw_evidence: true,
+        }
     }
 }
 
@@ -81,7 +88,11 @@ pub struct ActionBoundaryConfig {
 }
 impl Default for ActionBoundaryConfig {
     fn default() -> Self {
-        Self { require_capability: true, require_live_generation: true, require_current_revision: true }
+        Self {
+            require_capability: true,
+            require_live_generation: true,
+            require_current_revision: true,
+        }
     }
 }
 
@@ -93,7 +104,10 @@ pub struct ObservabilityConfig {
 }
 impl Default for ObservabilityConfig {
     fn default() -> Self {
-        Self { structured_tracing: true, async_backtrace: false }
+        Self {
+            structured_tracing: true,
+            async_backtrace: false,
+        }
     }
 }
 
@@ -105,6 +119,9 @@ pub struct ResearchConfig {
 }
 impl Default for ResearchConfig {
     fn default() -> Self {
-        Self { allow_unlocked_components: true, require_experiment_manifest: true }
+        Self {
+            allow_unlocked_components: true,
+            require_experiment_manifest: true,
+        }
     }
 }
