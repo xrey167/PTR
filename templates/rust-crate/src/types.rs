@@ -14,6 +14,23 @@ pub struct ExecuteRequest<T> {
     pub preferred_backend: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct ExecuteRequestRef<'request, T> {
+    pub key: &'request str,
+    pub input: &'request T,
+    pub preferred_backend: Option<&'request str>,
+}
+
+impl<T> ExecuteRequest<T> {
+    pub fn as_ref(&self) -> ExecuteRequestRef<'_, T> {
+        ExecuteRequestRef {
+            key: &self.key,
+            input: &self.input,
+            preferred_backend: self.preferred_backend.as_deref(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExecuteResult<T> {
     pub value: T,
