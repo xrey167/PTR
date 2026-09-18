@@ -10,7 +10,7 @@
 
 **Maturity:** `foundation`  
 **Last reviewed:** 2026-09-18  
-**Code footprint:** 1 Rust source files · 124 nonblank source lines · 2 `#[test]` markers
+**Code footprint:** 1 Rust source files · 124 nonblank source lines · 1 integration-test files · 3 `#[test]` markers
 
 ### Implemented now
 
@@ -36,7 +36,7 @@
 ### Linked experiments
 
 - [M005](../../experiments/model/M005-epistemic-calibration/README.md) — `planned`
-- [L001](../../experiments/lifecycle/L001-revocation-crash/README.md) — `planned`
+- [L001](../../experiments/lifecycle/L001-revocation-crash/README.md) — `running`
 
 ### Technology evaluations
 

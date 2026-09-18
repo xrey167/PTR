@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-18  
-**Code footprint:** 1 Rust source files · 22 nonblank source lines · 0 `#[test]` markers
+**Code footprint:** 1 Rust source files · 22 nonblank source lines · 1 integration-test files · 1 `#[test]` markers
 
 ### Implemented now
 
@@ -34,7 +34,7 @@
 
 ### Linked experiments
 
-- [L001](../../experiments/lifecycle/L001-revocation-crash/README.md) — `planned`
+- [L001](../../experiments/lifecycle/L001-revocation-crash/README.md) — `running`
 - [E001](../../experiments/system/E001-end-to-end/README.md) — `planned`
 
 ### Technology evaluations

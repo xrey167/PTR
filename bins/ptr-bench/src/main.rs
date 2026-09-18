@@ -4,9 +4,7 @@ use ptr_exec::Mailbox;
 use ptr_ledger::{FileLedger, LedgerEvent};
 use ptr_runtime::PtrRuntime;
 use ptr_semdb::{SemanticDelta, SemanticHost};
-use ptr_types::{
-    CapabilityId, CapsuleId, Effect, Generation, ProjectId, TypeId,
-};
+use ptr_types::{CapabilityId, CapsuleId, Effect, Generation, ProjectId, TypeId};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::time::Instant;
@@ -31,9 +29,7 @@ fn main() {
             bench_mailbox(iterations);
         }
         _ => {
-            eprintln!(
-                "usage: ptr-bench [all|semdb|mailbox|ledger-recovery] [iterations] [seed]"
-            );
+            eprintln!("usage: ptr-bench [all|semdb|mailbox|ledger-recovery] [iterations] [seed]");
             std::process::exit(2);
         }
     }
