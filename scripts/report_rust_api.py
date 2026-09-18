@@ -16,6 +16,7 @@ DECL_RE = re.compile(
 )
 PUB_USE_RE = re.compile(r"^\s*(?P<vis>pub(?:\([^)]*\))?)\s+use\s+(?P<target>.+?);\s*$")
 IMPL_START_RE = re.compile(r"^\s*impl(?:<[^>]*>)?\s+")
+MACRO_RULES_RE = re.compile(r"^\s*macro_rules!\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)")
 
 
 @dataclass(frozen=True)
@@ -77,6 +78,25 @@ def scan_file(crate: str, src: Path, file: Path) -> list[ApiItem]:
     items: list[ApiItem] = []
 
     for number, line in enumerate(lines, 1):
+        macro_match = MACRO_RULES_RE.match(line)
+        if macro_match:
+            previous = lines[number - 2].strip() if number >= 2 else ""
+            exported = previous == "#[macro_export]"
+            signature = collect_signature(lines, number - 1)
+            items.append(
+                ApiItem(
+                    crate=crate,
+                    module=module,
+                    file=rel,
+                    line=number,
+                    visibility="pub" if exported else "private",
+                    kind="macro",
+                    name=macro_match.group("name"),
+                    signature=signature,
+                )
+            )
+            continue
+
         use_match = PUB_USE_RE.match(line)
         if use_match:
             target = use_match.group("target").strip()
@@ -176,8 +196,9 @@ def markdown(items: list[ApiItem], show_signatures: bool = False) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Group Rust declarations by crate/module/visibility, including trait implementors. "
-            "Use --signatures to expose generics, bounds and lifetime relations."
+            "Group Rust declarations by crate/module/visibility, including trait implementors "
+            "and macro_rules declarations. Use --signatures to expose generics, bounds, "
+            "lifetimes and macro signatures."
         )
     )
     parser.add_argument("crate", nargs="*", help="optional ptr-* crate names")
