@@ -15,6 +15,7 @@ impl FileLedger {
         let path = path.as_ref().to_path_buf();
         let mut file = OpenOptions::new()
             .create(true)
+            .truncate(false)
             .read(true)
             .write(true)
             .open(&path)?;
@@ -39,7 +40,6 @@ impl FileLedger {
             offset += 4;
 
             if bytes.len() - offset < length {
-                offset -= 4;
                 break;
             }
 
@@ -178,163 +178,3 @@ fn decode_event(payload: &[u8]) -> io::Result<LedgerEvent> {
         5 => LedgerEvent::ProcedurePromoted {
             id: cursor.string()?,
             generation: Generation(cursor.u64()?),
-        },
-        6 => LedgerEvent::ProcedureRevoked {
-            id: cursor.string()?,
-            generation: Generation(cursor.u64()?),
-        },
-        7 => LedgerEvent::SnapshotCommitted {
-            revision: cursor.u64()?,
-            covers: CommitIndex(cursor.u64()?),
-        },
-        other => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("unknown ledger event tag {other}"),
-            ))
-        }
-    };
-
-    if !cursor.finished() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "ledger event contains trailing bytes",
-        ));
-    }
-    Ok(event)
-}
-
-fn put_u64(out: &mut Vec<u8>, value: u64) {
-    out.extend_from_slice(&value.to_le_bytes());
-}
-
-fn put_string(out: &mut Vec<u8>, value: &str) {
-    let bytes = value.as_bytes();
-    let length = u32::try_from(bytes.len()).expect("string length fits u32");
-    out.extend_from_slice(&length.to_le_bytes());
-    out.extend_from_slice(bytes);
-}
-
-struct Cursor<'a> {
-    bytes: &'a [u8],
-    offset: usize,
-}
-
-impl<'a> Cursor<'a> {
-    fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, offset: 0 }
-    }
-
-    fn finished(&self) -> bool {
-        self.offset == self.bytes.len()
-    }
-
-    fn u8(&mut self) -> io::Result<u8> {
-        let value = *self.bytes.get(self.offset).ok_or_else(truncated)?;
-        self.offset += 1;
-        Ok(value)
-    }
-
-    fn u32(&mut self) -> io::Result<u32> {
-        let end = self.offset.saturating_add(4);
-        let bytes = self.bytes.get(self.offset..end).ok_or_else(truncated)?;
-        self.offset = end;
-        Ok(u32::from_le_bytes(bytes.try_into().expect("four bytes")))
-    }
-
-    fn u64(&mut self) -> io::Result<u64> {
-        let end = self.offset.saturating_add(8);
-        let bytes = self.bytes.get(self.offset..end).ok_or_else(truncated)?;
-        self.offset = end;
-        Ok(u64::from_le_bytes(bytes.try_into().expect("eight bytes")))
-    }
-
-    fn string(&mut self) -> io::Result<String> {
-        let length = self.u32()? as usize;
-        let end = self.offset.saturating_add(length);
-        let bytes = self.bytes.get(self.offset..end).ok_or_else(truncated)?;
-        self.offset = end;
-        String::from_utf8(bytes.to_vec())
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid UTF-8 string"))
-    }
-}
-
-fn truncated() -> io::Error {
-    io::Error::new(io::ErrorKind::UnexpectedEof, "truncated ledger record")
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum LedgerEvent {
-    CapsuleCommitted {
-        project: ProjectId,
-        capsule: CapsuleId,
-        generation: Generation,
-    },
-    CapsuleSuperseded {
-        capsule: CapsuleId,
-        old: Generation,
-        new: Generation,
-    },
-    Revoked {
-        subject: String,
-        generation: Generation,
-    },
-    HardConstraintCommitted {
-        key: String,
-        generation: Generation,
-    },
-    VerifierAttested {
-        subject: String,
-        passed: bool,
-    },
-    ProcedurePromoted {
-        id: String,
-        generation: Generation,
-    },
-    ProcedureRevoked {
-        id: String,
-        generation: Generation,
-    },
-    SnapshotCommitted {
-        revision: u64,
-        covers: CommitIndex,
-    },
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CommittedEvent {
-    pub index: CommitIndex,
-    pub event: LedgerEvent,
-}
-
-pub trait Ledger {
-    fn append(&mut self, event: LedgerEvent) -> CommitIndex;
-    fn events(&self) -> &[CommittedEvent];
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct InMemoryLedger {
-    events: Vec<CommittedEvent>,
-}
-impl Ledger for InMemoryLedger {
-    fn append(&mut self, event: LedgerEvent) -> CommitIndex {
-        let index = CommitIndex(self.events.len() as u64 + 1);
-        self.events.push(CommittedEvent { index, event });
-        index
-    }
-    fn events(&self) -> &[CommittedEvent] {
-        &self.events
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CompactionBarrier {
-    pub snapshot_covers: CommitIndex,
-    pub all_consumers_caught_up: bool,
-    pub unresolved_revocations: usize,
-}
-impl CompactionBarrier {
-    pub fn safe(&self) -> bool {
-        self.all_consumers_caught_up && self.unresolved_revocations == 0
-    }
-}
