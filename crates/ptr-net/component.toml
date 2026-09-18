@@ -8,6 +8,7 @@ implemented = [
   "NodeIdentity scaffold",
   "Provider-independent Transport trait",
   "Feature-gated Iroh 0.35 direct QUIC adapter with PTR ALPNs and authenticated peer identity",
+  "Iroh response path keeps the connection alive through peer-observed graceful completion",
 ]
 
 missing = [
