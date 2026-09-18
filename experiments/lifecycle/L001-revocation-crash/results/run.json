@@ -1,0 +1,12 @@
+{
+  "experiment_id": "L001",
+  "status": "running",
+  "scope": "reference FileLedger partial-tail crash injection",
+  "git_sha": "13c5bb5f6aa4d8905f9a777a778faf72c0dce330",
+  "recorded_at": "2026-09-18T13:13:01.741105+00:00",
+  "hard_pass": true,
+  "limitations": [
+    "partial trailing-record crash model only",
+    "not yet process-kill/fail-rs/raft-engine/partition coverage"
+  ]
+}

@@ -1,0 +1,56 @@
+{
+  "scope": "reference FileLedger partial-tail crash injection",
+  "seeds": [
+    {
+      "benchmark": "ledger-recovery",
+      "iterations": 100,
+      "seed": 101,
+      "elapsed_ns": 111865823,
+      "false_accepts": 0,
+      "recovery_errors": 0,
+      "tail_trim_errors": 0
+    },
+    {
+      "benchmark": "ledger-recovery",
+      "iterations": 100,
+      "seed": 17,
+      "elapsed_ns": 137538678,
+      "false_accepts": 0,
+      "recovery_errors": 0,
+      "tail_trim_errors": 0
+    },
+    {
+      "benchmark": "ledger-recovery",
+      "iterations": 100,
+      "seed": 29,
+      "elapsed_ns": 120719012,
+      "false_accepts": 0,
+      "recovery_errors": 0,
+      "tail_trim_errors": 0
+    },
+    {
+      "benchmark": "ledger-recovery",
+      "iterations": 100,
+      "seed": 43,
+      "elapsed_ns": 113151150,
+      "false_accepts": 0,
+      "recovery_errors": 0,
+      "tail_trim_errors": 0
+    },
+    {
+      "benchmark": "ledger-recovery",
+      "iterations": 100,
+      "seed": 71,
+      "elapsed_ns": 109159257,
+      "false_accepts": 0,
+      "recovery_errors": 0,
+      "tail_trim_errors": 0
+    }
+  ],
+  "totals": {
+    "cases": 500,
+    "false_accepts": 0,
+    "recovery_errors": 0,
+    "tail_trim_errors": 0
+  }
+}
