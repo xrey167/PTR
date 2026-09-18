@@ -10,6 +10,12 @@ pub enum TraceLevel {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TraceError {
+    SinkUnavailable { sink: String },
+    Export { sink: String, message: String },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TraceEvent {
     pub level: TraceLevel,
     pub name: String,
@@ -32,12 +38,14 @@ impl TraceEvent {
 }
 
 pub trait TraceSink: Send + Sync {
-    fn emit(&self, event: &TraceEvent);
+    fn emit(&self, event: &TraceEvent) -> Result<(), TraceError>;
 }
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NoopTraceSink;
 
 impl TraceSink for NoopTraceSink {
-    fn emit(&self, _event: &TraceEvent) {}
+    fn emit(&self, _event: &TraceEvent) -> Result<(), TraceError> {
+        Ok(())
+    }
 }
