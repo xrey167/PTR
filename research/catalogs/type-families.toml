@@ -131,10 +131,19 @@ invariants = ["materialized state never outranks ledger", "rebuild is equivalent
 id = "events-observability"
 owner = "ptr-events"
 status = "scaffold"
-purpose = "Typed runtime/committed event distribution and observability correlation."
+purpose = "Typed runtime/committed event distribution with explicit authority-vs-telemetry classification."
 implemented = ["RuntimeEvent", "EventEnvelope"]
-open = ["EventBus", "EventTopic", "ConsumerId", "ConsumerOffset", "EventClass", "TraceContext", "FlowSignature", "RetentionPolicy"]
+open = ["EventBus", "EventTopic", "ConsumerId", "ConsumerOffset", "EventClass", "RetentionPolicy"]
 invariants = ["telemetry and authority events are distinguishable", "consumer replay is explicit"]
+
+[[family]]
+id = "observability-tracing"
+owner = "ptr-observe"
+status = "prototype"
+purpose = "Backend-neutral structured tracing and flow correlation independent of exporter implementation."
+implemented = ["TraceEvent", "TraceLevel", "TraceValue", "TraceError", "TraceSink", "NoopTraceSink", "FlowSignature", "TracingSink adapter"]
+open = ["TraceContext", "SpanLink", "TrajectoryRecord", "RedactionTag", "ExporterDescriptor", "DiagnosticSnapshot"]
+invariants = ["trace data is telemetry, not causal authority", "sensitive values are redacted before export", "observability failure cannot weaken hard safety checks"]
 
 [[family]]
 id = "network-protocol"
