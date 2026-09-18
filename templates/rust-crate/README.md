@@ -1,0 +1,19 @@
+# PTR Rust Crate Template
+
+Reference source layout for new PTR crates and large-crate refactors.
+
+This template is intentionally not a workspace member. Copy only modules the component needs; do not create empty layers for symmetry.
+
+Key properties:
+
+- thin `lib.rs` facade;
+- private modules plus deliberate `pub use`;
+- `pub(crate)` for internal cross-module helpers;
+- typed request/options values instead of ambiguous long argument lists;
+- `derive` based on actual value semantics;
+- closed state represented with enums and exhaustive `match`;
+- generic `T` only where behavior is genuinely type-independent;
+- `Option<T>` for legitimate absence and `Result<T, E>` for failure;
+- `HashMap` only where unordered keyed lookup is the intended semantics.
+
+See `docs/RUST_API_STYLE.md`.
