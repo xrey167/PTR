@@ -466,7 +466,8 @@ pub use raft_engine_backend::RaftEngineLedger;
 #[cfg(feature = "raft-rs-backend")]
 mod raft_rs_backend {
     use super::*;
-    use raft::prelude::{ConfState, Config as RaftConfig, Entry, EntryType, RawNode, StateRole};
+    use raft::prelude::{ConfState, Config as RaftConfig, Entry, EntryType, RawNode};
+    use raft::StateRole;
     use raft::storage::MemStorage;
 
     #[derive(Clone, Debug, Eq, PartialEq)]
