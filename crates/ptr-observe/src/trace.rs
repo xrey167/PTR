@@ -69,3 +69,54 @@ impl TraceSink for NoopTraceSink {
         Ok(())
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    mod construction {
+        use super::*;
+
+        #[test]
+        fn request_event_contains_typed_request_and_revision_fields() {
+            let event = TraceEvent::request(
+                TraceLevel::Info,
+                "request.started",
+                RequestId::from("r-unit"),
+                Revision(11),
+            );
+
+            assert_eq!(
+                event.fields.get(fields::REQUEST_ID),
+                Some(&TraceValue::RequestId(RequestId::from("r-unit")))
+            );
+            assert_eq!(
+                event.fields.get(fields::REVISION),
+                Some(&TraceValue::Revision(Revision(11)))
+            );
+        }
+
+        #[test]
+        fn with_field_replaces_existing_named_field() {
+            let event = TraceEvent::new(TraceLevel::Debug, "replace")
+                .with_field(fields::OUTCOME, TraceValue::String("first".into()))
+                .with_field(fields::OUTCOME, TraceValue::String("second".into()));
+
+            assert_eq!(
+                event.fields.get(fields::OUTCOME),
+                Some(&TraceValue::String("second".into()))
+            );
+        }
+    }
+
+    mod sink {
+        use super::*;
+
+        #[test]
+        fn noop_sink_returns_ok_for_valid_event() {
+            let event = TraceEvent::new(TraceLevel::Trace, "noop");
+            assert_eq!(NoopTraceSink.emit(&event), Ok(()));
+        }
+    }
+}
