@@ -39,3 +39,4 @@ jobs:
           git add -A
           git commit -m "Sync formatting, generated docs and lockfiles"
           git push origin HEAD:main
+# rerun after workspace-glob fix
