@@ -1,0 +1,45 @@
+version = 1
+id = "ptr-ledger"
+maturity = "prototype"
+last_reviewed = "2026-09-18"
+
+implemented = [
+  "Lifecycle LedgerEvent enum",
+  "CommittedEvent with CommitIndex",
+  "Ledger trait and in-memory reference implementation",
+  "CompactionBarrier scaffold",
+]
+
+missing = [
+  "Durable raft-engine backend",
+  "raft-rs consensus adapter and state machine integration",
+  "fsync/durability modes and revocation barriers",
+  "Snapshot serialization/recovery/replay",
+  "fail-rs crash/partition test points",
+]
+
+next = [
+  "Define storage/consensus interfaces around existing Ledger contract",
+  "Implement durable single-node backend before cluster consensus",
+  "Run L001 then L002 chaos/recovery experiments",
+]
+
+experiments = [
+  "L001",
+  "L002",
+  "E004",
+]
+
+evaluations = [
+  "consensus",
+  "ledger",
+]
+
+decisions = [
+  "ADR-0002-authority-hierarchy.md",
+  "ADR-0009-consensus-ledger-state-separation.md",
+]
+
+checks = [
+  "workspace fmt/check/test/clippy",
+]

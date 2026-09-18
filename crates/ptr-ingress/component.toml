@@ -1,0 +1,42 @@
+version = 1
+id = "ptr-ingress"
+maturity = "scaffold"
+last_reviewed = "2026-09-18"
+
+implemented = [
+  "RawInput variants for text, bytes and artifact references",
+  "ArtifactKind taxonomy",
+  "SemanticProposal label scores and semantic issues",
+  "Basic raw↔typed cross-check status function",
+]
+
+missing = [
+  "infer MIME adapter and encoding_rs normalization",
+  "GLiClass-rs classifier adapter and deterministic parser stack",
+  "Span-level provenance back to raw bytes/text",
+  "Risk/disagreement-driven verification policy",
+]
+
+next = [
+  "Implement byte→artifact→normalized-text pipeline",
+  "Add pluggable semantic classifier contract",
+  "Create corruption/ambiguity benchmark cases for raw↔typed disagreement",
+]
+
+experiments = [
+  "E001",
+  "E004",
+]
+
+evaluations = [
+  "ingress-classifier",
+]
+
+decisions = [
+  "ADR-0003-raw-and-typed.md",
+  "ADR-0004-backend-independence.md",
+]
+
+checks = [
+  "workspace fmt/check/test/clippy",
+]

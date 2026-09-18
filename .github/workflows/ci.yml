@@ -22,4 +22,5 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
+      - run: python scripts/update_component_docs.py --check
       - run: python scripts/check_repo.py

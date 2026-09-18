@@ -1,0 +1,43 @@
+version = 1
+id = "ptr-model-api"
+maturity = "scaffold"
+last_reviewed = "2026-09-18"
+
+implemented = [
+  "Backend-neutral ModelRequest with request/revision/raw text",
+  "ModelEvent enum for slot, hypothesis, confidence, operator, Pod, candidate, action, token and completion events",
+  "InferenceBackend trait and ModelError",
+]
+
+missing = [
+  "Async streaming backend contract",
+  "Backend capability negotiation",
+  "SGLang, vLLM and Burn-native adapters",
+  "Resume/checkpoint/observation continuation protocol",
+  "Structured cancellation and timeout semantics",
+]
+
+next = [
+  "Convert infer() from Vec-returning sync call to cancellable async stream",
+  "Add backend capability descriptor",
+  "Implement first external baseline adapter and conformance tests",
+]
+
+experiments = [
+  "M007",
+  "E001",
+  "E003",
+]
+
+evaluations = [
+  "inference-serving",
+]
+
+decisions = [
+  "ADR-0004-backend-independence.md",
+  "ADR-0007-model-event-stream.md",
+]
+
+checks = [
+  "workspace fmt/check/test/clippy",
+]

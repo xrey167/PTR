@@ -1,0 +1,43 @@
+version = 1
+id = "ptr-router"
+maturity = "scaffold"
+last_reviewed = "2026-09-18"
+
+implemented = [
+  "RouteScore and RouteDecision with deterministic best-score selection",
+  "RoutingPolicy scaffold with max_parallel and uncertainty_trigger",
+]
+
+missing = [
+  "Typed ExecutionRecipe",
+  "Separate reasoning/model/search/Pod routing policies",
+  "Cost, latency, uncertainty and capability-aware constraints",
+  "Learned router head integration and replayable routing telemetry",
+  "Fallback/degradation plan when a backend is unavailable",
+]
+
+next = [
+  "Define typed operator/backend capability graph",
+  "Implement deterministic baseline router",
+  "Train/evaluate model operator routing with M004",
+]
+
+experiments = [
+  "M004",
+  "R002",
+  "E003",
+]
+
+evaluations = [
+  "inference-serving",
+  "distributed-data-compute",
+]
+
+decisions = [
+  "ADR-0004-backend-independence.md",
+  "ADR-0011-semantic-pod-contracts.md",
+]
+
+checks = [
+  "workspace fmt/check/test/clippy",
+]

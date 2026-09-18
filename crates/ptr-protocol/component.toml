@@ -1,0 +1,42 @@
+version = 1
+id = "ptr-protocol"
+maturity = "scaffold"
+last_reviewed = "2026-09-18"
+
+implemented = [
+  "PodWire v1 semantic version constant",
+  "TypedPayload, CallFrame and CALL/RET/ERR/EVT/REVOKE domain frames",
+  "Frame kind classification independent of transport",
+]
+
+missing = [
+  "Prost/Protobuf adapter and generated-code isolation",
+  "Canonical validation, semantic version negotiation and compatibility matrix",
+  "rkyv/local codec adapter and JSON debug adapter",
+  "Idempotency keys, ACK/CANCEL/BYE/HELLO/DECL frames from the wider PodWire design",
+]
+
+next = [
+  "Implement domain↔prost conversion with rejection tests",
+  "Add canonical wire fixtures and malformed-frame corpus",
+  "Define semantic contract version separately from wire schema version",
+]
+
+experiments = [
+  "R002",
+  "E001",
+]
+
+evaluations = [
+  "network-codec",
+  "local-serialization",
+]
+
+decisions = [
+  "ADR-0004-backend-independence.md",
+  "ADR-0007-model-event-stream.md",
+]
+
+checks = [
+  "workspace fmt/check/test/clippy",
+]

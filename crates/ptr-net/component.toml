@@ -1,0 +1,42 @@
+version = 1
+id = "ptr-net"
+maturity = "scaffold"
+last_reviewed = "2026-09-18"
+
+implemented = [
+  "ALPN constants for raft, PodWire, model, blob and events protocols",
+  "NodeIdentity scaffold",
+  "Provider-independent Transport trait",
+]
+
+missing = [
+  "Iroh endpoint/connection implementation",
+  "Cryptographic binding between NodeId and transport key",
+  "Peer discovery/session lifecycle",
+  "Retry/idempotency and backpressure behavior",
+  "Raft/PodWire/blob stream adapters",
+]
+
+next = [
+  "Implement Iroh transport adapter for one request/response protocol",
+  "Add authenticated identity validation",
+  "Exercise partition/reconnect behavior in L002",
+]
+
+experiments = [
+  "L002",
+  "E001",
+]
+
+evaluations = [
+  "network",
+]
+
+decisions = [
+  "ADR-0004-backend-independence.md",
+  "ADR-0009-consensus-ledger-state-separation.md",
+]
+
+checks = [
+  "workspace fmt/check/test/clippy",
+]

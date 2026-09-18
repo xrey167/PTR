@@ -1,0 +1,42 @@
+version = 1
+id = "ptr-security"
+maturity = "prototype"
+last_reviewed = "2026-09-18"
+
+implemented = [
+  "PermissionSet with capability membership",
+  "Separate mutation/external/irreversible effect gates",
+  "Fail-closed allows() decision for missing capability",
+]
+
+missing = [
+  "Principal/session/resource scopes",
+  "Generation and revision freshness checks in action authorization",
+  "Context trust/evidence model",
+  "Sandbox execution contract",
+  "Structured denial/escalation reasons and audit receipt",
+]
+
+next = [
+  "Define ActionAuthorization input/output types",
+  "Add freshness + resource-scope validation",
+  "Connect hard action boundary to verifier and exec",
+]
+
+experiments = [
+  "L001",
+  "E001",
+]
+
+evaluations = [
+  "security-context",
+]
+
+decisions = [
+  "ADR-0002-authority-hierarchy.md",
+  "ADR-0012-hard-effect-boundary.md",
+]
+
+checks = [
+  "workspace fmt/check/test/clippy",
+]

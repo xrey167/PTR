@@ -1,0 +1,47 @@
+version = 1
+id = "ptr-semdb"
+maturity = "prototype"
+last_reviewed = "2026-09-18"
+
+implemented = [
+  "SemanticDelta upsert/removal model",
+  "Dependency graph and transitive affected-closure calculation",
+  "Revisioned SemanticHost and immutable Arc-backed SemanticSnapshot",
+  "Stale snapshot detection",
+  "ProjectSkeleton scaffold",
+  "Unit test proving local dependency invalidation",
+]
+
+missing = [
+  "Typed ground/derived query keys instead of String→String state",
+  "Memoized derived-query engine with dependency capture",
+  "Cancellation tokens for stale in-flight computation",
+  "Concurrent snapshot/read architecture and persistent/rebuildable caches",
+  "Semantic skeleton derivation from typed state",
+]
+
+next = [
+  "Replace string map with typed key/value/query interfaces",
+  "Implement dependency-recording query execution and cache invalidation",
+  "Run S001/S002 before selecting a third-party incremental engine",
+]
+
+experiments = [
+  "S001",
+  "S002",
+  "E004",
+]
+
+evaluations = [
+  "semantic-db",
+]
+
+decisions = [
+  "ADR-0003-raw-and-typed.md",
+  "ADR-0005-incremental-semdb.md",
+]
+
+checks = [
+  "local_change_invalidates_only_dependency_closure unit test",
+  "workspace fmt/check/test/clippy",
+]

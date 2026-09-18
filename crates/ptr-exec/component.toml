@@ -1,0 +1,44 @@
+version = 1
+id = "ptr-exec"
+maturity = "prototype"
+last_reviewed = "2026-09-18"
+
+implemented = [
+  "Bounded sync-channel Mailbox",
+  "Explicit Full(T) and Closed(T) send errors preserving ownership",
+  "Isolate<M> state-machine trait",
+  "Explicit Effect<M> and ReplayTrace scaffolds",
+]
+
+missing = [
+  "Async scheduler and isolate task host",
+  "Supervision trees, restart policy and resource ownership",
+  "Deadline/timeout/cancellation propagation",
+  "Deterministic replay engine rather than string trace only",
+  "Typed lifecycle for running/stopped/faulted isolates",
+]
+
+next = [
+  "Implement async bounded mailbox abstraction while retaining ownership semantics",
+  "Add supervisor and cancellation tree",
+  "Benchmark Tokio implementation against alternative execution substrates",
+]
+
+experiments = [
+  "R001",
+  "E001",
+  "E003",
+]
+
+evaluations = [
+  "execution-runtime",
+]
+
+decisions = [
+  "ADR-0001-rust-runtime.md",
+  "ADR-0006-typed-isolate-runtime.md",
+]
+
+checks = [
+  "workspace fmt/check/test/clippy",
+]

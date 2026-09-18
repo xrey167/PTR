@@ -1,0 +1,58 @@
+version = 1
+id = "ptr-core"
+maturity = "research-scaffold"
+last_reviewed = "2026-09-18"
+
+implemented = [
+  "PTR-Core family/config structures for AR and diffusion research paths",
+  "SemanticSlot kinds with generation, validity, confidence, value vector and provenance",
+  "EpistemicWorkspace and live-slot filter",
+  "ReasoningBudget and latent-step accounting scaffold",
+  "ReasoningOperator taxonomy and weighted router decision",
+  "Branch frontier pruning and probability normalization helpers",
+  "ActionIr and CoreVerification output contracts",
+]
+
+missing = [
+  "Actual Burn/CubeCL tensor model and trainable parameters",
+  "Raw-token↔semantic-slot cross-attention",
+  "Typed/epistemic/validity attention biases and masks",
+  "Learned latent recurrent state transition",
+  "Learned operator/action/verifier heads",
+  "PTR-Diff denoising implementation and training objective",
+  "Checkpoint/load/save and numerical parity reference",
+]
+
+next = [
+  "Implement PTR-A0 in Burn with semantic slots and one typed-attention block",
+  "Build matched plain-transformer baseline at equal parameter/compute budget",
+  "Run M001–M005 ablations before scaling model size",
+]
+
+experiments = [
+  "M001",
+  "M002",
+  "M003",
+  "M004",
+  "M005",
+  "M006",
+  "M007",
+  "E001",
+  "E003",
+  "E004",
+]
+
+evaluations = [
+  "model-framework",
+  "inference-serving",
+]
+
+decisions = [
+  "ADR-0003-raw-and-typed.md",
+  "ADR-0007-model-event-stream.md",
+  "ADR-0004-backend-independence.md",
+]
+
+checks = [
+  "workspace fmt/check/test/clippy; no neural numerical tests yet",
+]

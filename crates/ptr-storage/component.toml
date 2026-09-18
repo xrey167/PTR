@@ -1,0 +1,40 @@
+version = 1
+id = "ptr-storage"
+maturity = "scaffold"
+last_reviewed = "2026-09-18"
+
+implemented = [
+  "ArtifactRef with stable ArtifactId plus location list",
+  "ObjectStore trait",
+  "In-memory object-store reference implementation",
+]
+
+missing = [
+  "BLAKE3 content-addressed identity generation",
+  "OpenDAL adapter and production backends",
+  "Streaming large-object APIs",
+  "Policy-gated private/secret artifact access",
+  "Integrity checks and immutable raw-evidence retention",
+]
+
+next = [
+  "Implement content hashing and verify-on-read",
+  "Add OpenDAL adapter behind ObjectStore",
+  "Benchmark local filesystem/object-store backends",
+]
+
+experiments = [
+  "E004",
+]
+
+evaluations = [
+  "object-storage",
+]
+
+decisions = [
+  "ADR-0004-backend-independence.md",
+]
+
+checks = [
+  "workspace fmt/check/test/clippy",
+]

@@ -1,0 +1,43 @@
+version = 1
+id = "ptr-verifier"
+maturity = "scaffold"
+last_reviewed = "2026-09-18"
+
+implemented = [
+  "Pass/Fail/Disputed/Unknown statuses",
+  "Finding and VerificationReport with level/score/findings",
+  "Generic Verifier<T> contract",
+]
+
+missing = [
+  "Verifier fabric/aggregation and precedence rules",
+  "Type/capability/revision/generation deterministic verifiers",
+  "Source/evidence promotion verifier",
+  "Compiler/test/GritQL/Sentrux adapters",
+  "Calibration/statistical and learned semantic verifiers",
+]
+
+next = [
+  "Implement deterministic hard-boundary verifier set",
+  "Add report aggregation where deterministic contradiction dominates learned scores",
+  "Connect verifier output to F001 repair loop",
+]
+
+experiments = [
+  "F001",
+  "Q002",
+  "E001",
+]
+
+evaluations = [
+  "code-quality-verifier",
+]
+
+decisions = [
+  "ADR-0002-authority-hierarchy.md",
+  "ADR-0012-hard-effect-boundary.md",
+]
+
+checks = [
+  "workspace fmt/check/test/clippy",
+]

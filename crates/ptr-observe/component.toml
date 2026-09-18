@@ -1,0 +1,41 @@
+version = 1
+id = "ptr-observe"
+maturity = "scaffold"
+last_reviewed = "2026-09-18"
+
+implemented = [
+  "Standard PTR tracing field names",
+  "FlowSignature with request/operators/state transitions",
+]
+
+missing = [
+  "tracing Subscriber/layer integration",
+  "OpenTelemetry and NeMo Relay exporters",
+  "Plan-vs-execution correlation",
+  "Redaction middleware",
+  "Selective async-backtrace/active-tree diagnostics",
+]
+
+next = [
+  "Instrument request/execution/Pod/verifier boundaries",
+  "Add redaction-safe structured exporter",
+  "Feed FlowSignature + runtime trace into feedback trajectories",
+]
+
+experiments = [
+  "F001",
+  "E003",
+]
+
+evaluations = [
+  "observability",
+]
+
+decisions = [
+  "ADR-0001-rust-runtime.md",
+  "ADR-0010-component-docs-as-code.md",
+]
+
+checks = [
+  "workspace fmt/check/test/clippy",
+]

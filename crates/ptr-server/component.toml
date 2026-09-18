@@ -1,0 +1,40 @@
+version = 1
+id = "ptr-server"
+maturity = "scaffold"
+last_reviewed = "2026-09-18"
+
+implemented = [
+  "ApiRequest and ApiResponse domain structs with request ID/revision",
+]
+
+missing = [
+  "Axum server and route graph",
+  "Streaming ModelEvent/WebSocket or SSE API",
+  "Authentication/session/policy integration",
+  "Health/readiness/admin endpoints",
+  "Client backpressure and cancellation propagation",
+]
+
+next = [
+  "Implement health endpoint and request streaming skeleton",
+  "Connect one end-to-end request through ingress→SemDB→baseline model",
+  "Add API conformance/integration tests",
+]
+
+experiments = [
+  "E001",
+  "E003",
+]
+
+evaluations = [
+
+]
+
+decisions = [
+  "ADR-0001-rust-runtime.md",
+  "ADR-0004-backend-independence.md",
+]
+
+checks = [
+  "workspace fmt/check/test/clippy",
+]

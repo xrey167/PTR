@@ -1,0 +1,41 @@
+version = 1
+id = "ptr-events"
+maturity = "scaffold"
+last_reviewed = "2026-09-18"
+
+implemented = [
+  "RuntimeEvent taxonomy for request/snapshot/candidate/Pod/verifier/commit lifecycle",
+  "EventEnvelope with sequence number",
+]
+
+missing = [
+  "EventBus producer/consumer contract",
+  "Apache Iggy adapter",
+  "Persistent consumer offsets/replay",
+  "Separation metadata for authoritative projections vs telemetry events",
+  "Backpressure and retention policy",
+]
+
+next = [
+  "Define in-process reference EventBus",
+  "Implement Iggy adapter behind it",
+  "Connect trajectory/training consumer",
+]
+
+experiments = [
+  "E001",
+  "F001",
+]
+
+evaluations = [
+  "event-streaming",
+]
+
+decisions = [
+  "ADR-0004-backend-independence.md",
+  "ADR-0009-consensus-ledger-state-separation.md",
+]
+
+checks = [
+  "workspace fmt/check/test/clippy",
+]

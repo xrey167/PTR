@@ -1,0 +1,41 @@
+version = 1
+id = "ptr-state"
+maturity = "scaffold"
+last_reviewed = "2026-09-18"
+
+implemented = [
+  "MaterializedState reference map with last_applied commit index",
+  "Application of Revoked and HardConstraintCommitted ledger events",
+]
+
+missing = [
+  "Complete event materialization coverage",
+  "Idempotent replay/duplicate-index protection",
+  "Turso/libSQL backend and typed schema",
+  "Rebuild equivalence tests and CDC projection hooks",
+]
+
+next = [
+  "Make materialization exhaustive and idempotent",
+  "Add replay-from-ledger test suite",
+  "Evaluate Turso against alternative local/materialized stores",
+]
+
+experiments = [
+  "L001",
+  "L002",
+  "E004",
+]
+
+evaluations = [
+  "materialized-state",
+]
+
+decisions = [
+  "ADR-0002-authority-hierarchy.md",
+  "ADR-0009-consensus-ledger-state-separation.md",
+]
+
+checks = [
+  "workspace fmt/check/test/clippy",
+]

@@ -1,0 +1,41 @@
+version = 1
+id = "ptr-feedback"
+maturity = "scaffold"
+last_reviewed = "2026-09-18"
+
+implemented = [
+  "Candidate<T>, Critique and Population<T> domain structures",
+  "Population insertion",
+  "Score-based best_verified selection over candidates carrying reports",
+]
+
+missing = [
+  "Pass/disputed-aware selection policy",
+  "Candidate diversity/dedup clustering",
+  "Patch/rewrite operators",
+  "Tournament/Pareto selection",
+  "Trajectory archive with critique/repair provenance",
+]
+
+next = [
+  "Make selection verification-status aware",
+  "Implement generate→verify→critique→repair state machine",
+  "Persist full trajectories for training and GEPA",
+]
+
+experiments = [
+  "F001",
+  "E001",
+]
+
+evaluations = [
+
+]
+
+decisions = [
+  "ADR-0004-backend-independence.md",
+]
+
+checks = [
+  "workspace fmt/check/test/clippy",
+]

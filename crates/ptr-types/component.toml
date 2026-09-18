@@ -1,0 +1,45 @@
+version = 1
+id = "ptr-types"
+maturity = "foundation"
+last_reviewed = "2026-09-18"
+
+implemented = [
+  "Strong Revision, Generation and CommitIndex newtypes",
+  "Strong string identifiers for projects, capsules, artifacts, capabilities, Pods, candidates, requests, nodes and evidence",
+  "Bounded Probability type, Effect, Validity and VerificationLevel enums",
+  "Epistemic<T>, TypedValue<T>, provenance refs and semantic issues",
+  "Unit checks for probability bounds and lifecycle-type separation",
+]
+
+missing = [
+  "Richer capability/resource scopes and typed effect payloads",
+  "Interval/estimate/distribution structures beyond the current generic representation",
+  "Serialization/redaction derives coordinated with protocol and inspection layers",
+  "Property tests for lifecycle and epistemic invariants",
+]
+
+next = [
+  "Split foundational IDs/epistemics/effects into stable modules without changing public semantics",
+  "Add property tests and compile-fail typestate tests where appropriate",
+  "Freeze a v0 domain compatibility policy before network codecs depend on it",
+]
+
+experiments = [
+  "M005",
+  "L001",
+]
+
+evaluations = [
+
+]
+
+decisions = [
+  "ADR-0001-rust-runtime.md",
+  "ADR-0003-raw-and-typed.md",
+]
+
+checks = [
+  "probability_is_bounded unit test",
+  "lifecycle_versions_are_distinct_concepts unit test",
+  "workspace fmt/check/test/clippy",
+]

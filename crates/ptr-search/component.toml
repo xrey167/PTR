@@ -1,0 +1,50 @@
+version = 1
+id = "ptr-search"
+maturity = "prototype"
+last_reviewed = "2026-09-18"
+
+implemented = [
+  "EvidenceStage promotion states",
+  "SearchHit with capsule generation/backend/stage",
+  "SearchIndex contract",
+  "Reciprocal-rank fusion implementation",
+]
+
+missing = [
+  "Typed query/search planner",
+  "Tantivy/Zvec/cuVS/LanceDB/Havenask/GritQL adapters",
+  "Score normalization and backend-specific metadata",
+  "Exact source resolution",
+  "Live-generation validation and verifier-gated evidence promotion",
+]
+
+next = [
+  "Implement lexical reference backend first",
+  "Add generation-aware source resolver and promotion API",
+  "Run Q001/Q002 and strong RAG baseline E002",
+]
+
+experiments = [
+  "Q001",
+  "Q002",
+  "E002",
+  "E003",
+]
+
+evaluations = [
+  "lexical-search",
+  "local-vector-search",
+  "gpu-vector-search",
+  "distributed-search",
+  "structural-code-search",
+]
+
+decisions = [
+  "ADR-0002-authority-hierarchy.md",
+  "ADR-0008-derived-search-not-authority.md",
+  "ADR-0004-backend-independence.md",
+]
+
+checks = [
+  "workspace fmt/check/test/clippy",
+]

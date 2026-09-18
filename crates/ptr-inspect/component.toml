@@ -1,0 +1,41 @@
+version = 1
+id = "ptr-inspect"
+maturity = "scaffold"
+last_reviewed = "2026-09-18"
+
+implemented = [
+  "Generic InspectNode tree",
+  "Inspectable trait",
+  "Secret<T> that always renders Redacted",
+]
+
+missing = [
+  "Valuable bridge and generic visitor",
+  "Struct/list/map traversal for arbitrary PTR domain types",
+  "Structured diff",
+  "Private<T>/RawEvidence<T> redaction wrappers",
+  "ptrctl rendering and tracing bridge",
+]
+
+next = [
+  "Implement Valuable adapter behind feature flag",
+  "Add inspection-tree diff and redaction tests",
+  "Expose read-only ptrctl inspect command",
+]
+
+experiments = [
+  "E001",
+]
+
+evaluations = [
+  "introspection",
+]
+
+decisions = [
+  "ADR-0004-backend-independence.md",
+  "ADR-0010-component-docs-as-code.md",
+]
+
+checks = [
+  "workspace fmt/check/test/clippy",
+]
