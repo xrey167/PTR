@@ -94,18 +94,16 @@ impl PermissionSet {
             }
         }
 
-        if request.require_capability {
-            if !self.capabilities.contains(&request.capability) {
-                return AuthorizationDecision::Deny(AuthorizationDenial::MissingCapability {
-                    capability: request.capability,
-                });
-            }
+        if request.require_capability && !self.capabilities.contains(&request.capability) {
+            return AuthorizationDecision::Deny(AuthorizationDenial::MissingCapability {
+                capability: request.capability,
+            });
+        }
 
-            if !self.allows_effect(request.effect) {
-                return AuthorizationDecision::Deny(AuthorizationDenial::EffectNotPermitted {
-                    effect: request.effect,
-                });
-            }
+        if !self.allows_effect(request.effect) {
+            return AuthorizationDecision::Deny(AuthorizationDenial::EffectNotPermitted {
+                effect: request.effect,
+            });
         }
 
         AuthorizationDecision::Allow(AuthorizationReceipt {
