@@ -420,12 +420,16 @@ dependencies = [
  "ptr-config",
  "ptr-core",
  "ptr-events",
+ "ptr-exec",
  "ptr-ledger",
  "ptr-model-api",
+ "ptr-pods",
+ "ptr-protocol",
  "ptr-security",
  "ptr-semdb",
  "ptr-state",
  "ptr-types",
+ "ptr-verifier",
 ]
 
 [[package]]
