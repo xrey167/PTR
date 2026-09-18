@@ -1,0 +1,14 @@
+name: root-security-triage
+on:
+  push:
+    paths:
+      - '.github/workflows/root-security-triage.yml'
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo +stable install cargo-audit --locked
+      - run: cargo +stable audit
