@@ -111,7 +111,7 @@ mod tantivy_backend {
     use tantivy::{
         collector::TopDocs,
         query::QueryParser,
-        schema::{Field, Schema, TantivyDocument, INDEXED, STORED, STRING, TEXT},
+        schema::{Field, Schema, TantivyDocument, Value, INDEXED, STORED, STRING, TEXT},
         Index, IndexReader, IndexWriter, ReloadPolicy, Term,
     };
 
@@ -216,13 +216,13 @@ mod tantivy_backend {
                     .map_err(error)?;
                 let Some(capsule) = doc
                     .get_first(self.capsule_field)
-                    .and_then(|value| value.as_value().as_str())
+                    .and_then(|value| value.as_str())
                 else {
                     continue;
                 };
                 let Some(generation) = doc
                     .get_first(self.generation_field)
-                    .and_then(|value| value.as_value().as_u64())
+                    .and_then(|value| value.as_u64())
                 else {
                     continue;
                 };
