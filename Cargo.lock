@@ -3684,6 +3684,7 @@ name = "ptr-observe"
 version = "0.1.0"
 dependencies = [
  "ptr-types",
+ "tracing",
 ]
 
 [[package]]
