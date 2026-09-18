@@ -10,3 +10,32 @@ fn reference_implementor_executes_through_public_trait_contract() {
     assert_eq!(result.value, "hello");
     assert_eq!(result.backend, "reference");
 }
+
+
+#[test]
+fn execute_all_accepts_into_iterator_and_collects_results() {
+    let service = common::reference_service();
+    let requests = ["a", "b", "c"]
+        .into_iter()
+        .map(common::valid_request);
+
+    let results = service
+        .execute_all(requests)
+        .expect("all valid iterator requests must execute");
+
+    assert_eq!(
+        results.into_iter().map(|result| result.value).collect::<Vec<_>>(),
+        vec!["a", "b", "c"]
+    );
+}
+
+#[test]
+fn backend_name_iterator_supports_closure_based_filtering() {
+    let service = common::reference_service();
+
+    let names = service
+        .matching_backend_names(|name| name.starts_with("ref"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(names, vec!["reference"]);
+}
