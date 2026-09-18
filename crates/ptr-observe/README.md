@@ -10,16 +10,19 @@
 
 **Maturity:** `scaffold`  
 **Last reviewed:** 2026-09-18  
-**Code footprint:** 1 Rust source files · 19 nonblank source lines · 1 integration-test files · 1 `#[test]` markers
+**Code footprint:** 5 Rust source files · 126 nonblank source lines · 2 integration-test files · 2 `#[test]` markers
 
 ### Implemented now
 
-- Standard PTR tracing field names
+- Standard PTR tracing field names including operation/outcome/error/expected/actual/latency fields
 - FlowSignature with request/operators/state transitions
+- Backend-neutral TraceEvent, TraceLevel and typed TraceValue structures
+- TraceSink port with infallible NoopTraceSink reference implementation
+- Typed TraceError variants with stable machine-readable error codes
 
 ### Missing for the target architecture
 
-- tracing Subscriber/layer integration
+- tracing crate adapter plus Subscriber/layer integration
 - OpenTelemetry and NeMo Relay exporters
 - Plan-vs-execution correlation
 - Redaction middleware
@@ -27,6 +30,7 @@
 
 ### Next milestones
 
+- Implement tracing-crate adapter behind the PTR TraceSink contract
 - Instrument request/execution/Pod/verifier boundaries
 - Add redaction-safe structured exporter
 - Feed FlowSignature + runtime trace into feedback trajectories
@@ -47,6 +51,8 @@
 
 ### Current automated checks
 
+- typed trace event expected/actual value test
+- namespaced tracing field test
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->
