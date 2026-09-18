@@ -1,6 +1,12 @@
+version = 1
 id = "M003"
 status = "planned"
 hypothesis = "Can latent recurrent steps reduce explicit reasoning tokens without quality loss?"
 metrics = "task success; tokens; wall time; latent steps"
+baseline = "same backbone without latent recurrence"
+falsification = "Reject if token savings require meaningful task-quality loss."
+hardware_profile = "hardware/default.toml"
+entrypoint = ""
 seeds = [17, 29, 43, 71, 101]
 results_dir = "results"
+required_artifacts = ["run.json", "metrics.json"]

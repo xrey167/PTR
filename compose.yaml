@@ -1,0 +1,9 @@
+services:
+  ptr-dev:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.dev
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+    command: sleep infinity

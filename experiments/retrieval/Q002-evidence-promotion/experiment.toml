@@ -1,6 +1,12 @@
+version = 1
 id = "Q002"
 status = "planned"
 hypothesis = "Does exact-source verification prevent search-hit hallucination?"
 metrics = "false Known promotion; task success"
+baseline = "direct retrieval-to-answer"
+falsification = "Any direct false Known promotion is a hard failure."
+hardware_profile = "hardware/default.toml"
+entrypoint = ""
 seeds = [17, 29, 43, 71, 101]
 results_dir = "results"
+required_artifacts = ["run.json", "metrics.json"]

@@ -1,6 +1,12 @@
+version = 1
 id = "M004"
 status = "planned"
 hypothesis = "Does learned reasoning-method routing outperform LLM-only reasoning?"
 metrics = "regret; quality-cost utility; route accuracy"
+baseline = "LLM-only + deterministic router"
+falsification = "Reject if learned routing does not improve quality-cost utility."
+hardware_profile = "hardware/default.toml"
+entrypoint = ""
 seeds = [17, 29, 43, 71, 101]
 results_dir = "results"
+required_artifacts = ["run.json", "metrics.json"]

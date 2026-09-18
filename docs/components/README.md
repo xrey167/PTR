@@ -1,9 +1,13 @@
 # PTR Component Documentation
 
-Every runtime/model crate has a local README and a dedicated Mermaid source diagram.\n\n[**Implementation status dashboard →**](STATUS.md)
+Every runtime/model crate has a local README and a dedicated Mermaid source diagram.
+
+[**Implementation status dashboard →**](STATUS.md)
 
 | Component | Purpose | Diagram |
 |---|---|---|
+| [ptr-config](../../crates/ptr-config/README.md) | Typed runtime configuration parsing and validation. | [diagram](../diagrams/components/ptr-config.mmd) |
+| [ptr-runtime](../../crates/ptr-runtime/README.md) | End-to-end runtime orchestration across semantic, model, effect and authority layers. | [diagram](../diagrams/components/ptr-runtime.mmd) |
 | [ptr-types](../../crates/ptr-types/README.md) | Defines the stable semantic vocabulary shared across model, runtime, storage, verification, and network boundaries. | [diagram](../diagrams/components/ptr-types.mmd) |
 | [ptr-protocol](../../crates/ptr-protocol/README.md) | Defines PodWire semantics and converts versioned wire messages into validated PTR domain values. | [diagram](../diagrams/components/ptr-protocol.mmd) |
 | [ptr-ingress](../../crates/ptr-ingress/README.md) | Preserves raw evidence while building a provisional typed interpretation that can be cross-verified before reasoning. | [diagram](../diagrams/components/ptr-ingress.mmd) |

@@ -1,0 +1,12 @@
+version = 1
+name = "rag_reference"
+status = "lexical-reference-implemented"
+tests_dir = "tests"
+
+[bm25]
+k1 = 1.5
+b = 0.75
+
+[hybrid]
+dense_backend = "not-configured"
+rrf_k = 60.0

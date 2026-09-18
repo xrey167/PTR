@@ -49,7 +49,8 @@ A PTR system keeps **raw language and typed semantics in parallel**, reasons ove
 
 - [Technical architecture](docs/TECHNICAL_ARCHITECTURE.md)
 - [Architecture index](docs/architecture/README.md)
-- [Component index](docs/components/README.md)\n- [Live component status](docs/components/STATUS.md)
+- [Component index](docs/components/README.md)
+- [Live component status](docs/components/STATUS.md)
 - [Technology stack](docs/TECH_STACK.md)
 - [Component contracts](docs/COMPONENT_CONTRACTS.md)
 - [Global invariants](docs/INVARIANTS.md)
@@ -61,6 +62,8 @@ A PTR system keeps **raw language and typed semantics in parallel**, reasons ove
 
 | Crate | Responsibility |
 |---|---|
+| [ptr-config](crates/ptr-config/README.md) | Parses and validates typed PTR configuration. |
+| [ptr-runtime](crates/ptr-runtime/README.md) | Orchestrates the end-to-end PTR request, authority and effect lifecycle. |
 | [ptr-types](crates/ptr-types/README.md) | Defines the stable semantic vocabulary shared across model, runtime, storage, verification, and network boundaries. |
 | [ptr-protocol](crates/ptr-protocol/README.md) | Defines PodWire semantics and converts versioned wire messages into validated PTR domain values. |
 | [ptr-ingress](crates/ptr-ingress/README.md) | Preserves raw evidence while building a provisional typed interpretation that can be cross-verified before reasoning. |

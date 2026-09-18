@@ -4,6 +4,8 @@ The table distinguishes **PTR semantics** from **current candidate technologies*
 
 | Concern | PTR-owned contract | Current candidate(s) | Alternative slot |
 |---|---|---|---|
+| Configuration | `ptr-config` | serde + TOML | config-rs/other layered sources |
+| Runtime orchestration | `ptr-runtime` | PTR-owned composition | no external semantic owner |
 | Domain types | `ptr-types` | Rust enums/newtypes | internal design |
 | Incremental semantics | `ptr-semdb` | custom engine inspired by rust-analyzer | Salsa/other |
 | Model framework | `ptr-core` | Burn/CubeCL; PyTorch reference | JAX/PyTorch/native |
@@ -34,4 +36,3 @@ The table distinguishes **PTR semantics** from **current candidate technologies*
 ## Selection rule
 
 A component becomes a default only after evidence covers correctness, failure semantics, latency, throughput, memory, operational complexity, portability, licensing and research flexibility where relevant.
-

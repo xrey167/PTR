@@ -1,6 +1,12 @@
+version = 1
 id = "E002"
 status = "planned"
 hypothesis = "PTR memory/search versus strong RAG and GraphRAG baselines."
 metrics = "quality; latency; update/delete correctness"
+baseline = "BM25+dense hybrid RAG + GraphRAG/editable-memory baselines"
+falsification = "Reject superiority claim unless PTR wins matched update/delete and quality tests."
+hardware_profile = "hardware/default.toml"
+entrypoint = ""
 seeds = [17, 29, 43, 71, 101]
 results_dir = "results"
+required_artifacts = ["run.json", "metrics.json"]

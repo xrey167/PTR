@@ -58,6 +58,21 @@ for crate in crate_dirs:
         if '<!-- PTR:STATUS:BEGIN -->' not in txt or '<!-- PTR:STATUS:END -->' not in txt:
             errors.append(f'{name}: README generated status block missing')
 
+# Every declared workspace-area config must have a sibling tests directory.
+for cfg in ROOT.rglob('config.toml'):
+    if '.git' in cfg.parts:
+        continue
+    tests=cfg.parent/'tests'
+    if not tests.exists():
+        errors.append(f'{cfg.parent.relative_to(ROOT)}: config.toml requires tests/')
+
+# Every Rust workspace crate must carry local config + integration-test directory.
+for crate in sorted((ROOT/'crates').glob('ptr-*')):
+    if not (crate/'Cargo.toml').exists():
+        continue
+    if not (crate/'config.toml').exists(): errors.append(f'{crate.name}: missing config.toml')
+    if not (crate/'tests').exists(): errors.append(f'{crate.name}: missing tests/')
+
 mods=list((ROOT/'model/modifications').glob('MOD-*.md'))
 if len(mods) < 10: errors.append('expected >=10 model modification specs')
 comps=list((ROOT/'evaluations/components').glob('*/candidates.toml'))

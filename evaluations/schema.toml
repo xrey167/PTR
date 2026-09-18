@@ -1,0 +1,3 @@
+version = 1
+required_candidate = ["id", "source", "status", "evidence"]
+allowed_status = ["to-evaluate", "evaluating", "preferred", "rejected", "superseded"]

@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = ".devcontainer"
+path = ".devcontainer"
+tests_dir = "tests"

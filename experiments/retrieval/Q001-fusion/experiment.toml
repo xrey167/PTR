@@ -1,6 +1,12 @@
+version = 1
 id = "Q001"
 status = "planned"
 hypothesis = "Which retrieval mixture best supports evidence discovery?"
 metrics = "recall; MRR; tokens; latency"
+baseline = "BM25 reference"
+falsification = "No mixture is preferred without reproducible recall/latency gain."
+hardware_profile = "hardware/default.toml"
+entrypoint = ""
 seeds = [17, 29, 43, 71, 101]
 results_dir = "results"
+required_artifacts = ["run.json", "metrics.json"]

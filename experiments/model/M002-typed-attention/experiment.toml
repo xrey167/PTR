@@ -1,6 +1,12 @@
+version = 1
 id = "M002"
 status = "planned"
 hypothesis = "Do type/epistemic/validity biases improve constraint retention?"
 metrics = "hard violations; calibration; latency"
+baseline = "same model without typed biases"
+falsification = "Reject if typed attention has no robust fidelity/calibration gain."
+hardware_profile = "hardware/default.toml"
+entrypoint = ""
 seeds = [17, 29, 43, 71, 101]
 results_dir = "results"
+required_artifacts = ["run.json", "metrics.json"]

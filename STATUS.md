@@ -1,33 +1,35 @@
 # Repository Status
 
-This repository is a **full architecture and research scaffold**, not a claim that the complete PTR system is already implemented.
+PTR is a **compiling architecture/research prototype**, not yet a complete model/runtime product and not yet evidence of superiority over strong baselines.
 
-## Implemented in the scaffold
+## Implemented and validated
 
-- Cargo workspace and domain crate boundaries
-- foundational Rust domain types
-- revisioned semantic host / dependency invalidation prototype
-- bounded mailbox / isolate semantics prototype
-- Pod contracts and lease typestate prototype
-- model architecture structs for semantic slots, typed attention config, latent reasoning, operator routing, branching, probabilistic reasoning, action/verifier heads, PTR-AR and PTR-Diff
-- causal ledger/state/search/storage/network/security contracts
-- protocol `.proto` contracts
-- 25 component-evaluation workspaces
-- 20 planned architecture/system experiments
-- 12 explicit model/reasoning modification specifications
-- dataset schemas, registry and imported typed-behavior / PodWire bundles
-- training workspace and stage configs
-- novelty, falsification, ADR and baseline structure
-- CI and repository invariant checks
+- 24 Rust workspace crates, including typed configuration and a central `ptr-runtime` orchestrator
+- foundational domain types, semantic revision/snapshot prototype and dependency invalidation
+- bounded-mailbox/isolate contracts and Pod lease typestate
+- model architecture structures for semantic slots, epistemic workspace, latent reasoning, routing, branching, ActionIR and PTR-AR/PTR-Diff configs
+- causal ledger/materialized-state/search/storage/network/security contracts
+- Prost-generated protobuf schemas using vendored `protoc`
+- per-component `component.toml`, `config.toml`, README status blocks and tests directories
+- Cargo and uv lockfiles
+- dataset cards for imported training bundles
+- GitHub CI, component-doc freshness checks and repository invariant checks
 
-## Intentionally not hard-wired yet
+## Current research/implementation gap
 
-External libraries such as raft-rs, raft-engine, Turso, Iroh, Tantivy, Zvec, cuVS, LanceDB, Havenask, Burn, SGLang, vLLM, tracing, valuable, Iggy, ROCK and others remain behind PTR-owned contracts until their component evaluation is run.
+- PTR-Core is not yet a trainable Burn/CubeCL model
+- the full model→router→Pod/search→verifier→resume loop is not yet wired
+- durable raft-engine/raft-rs/Turso/Iroh/search backends remain unevaluated adapters
+- all 20 architecture experiments remain planned until executed
+- all component technology decisions remain open until evidence is recorded
+- strong RAG/GraphRAG and editable-memory baselines still require full benchmark implementations
 
-## Validation performed here
+## Reproducibility
 
-- repository invariant script passed
-- all TOML and JSON/JSONL files were parsed successfully by the local validation script
-- git repository initialized and bundled
+- `Cargo.lock` pins Rust dependencies
+- `training/uv.lock` pins the current Python training utility environment
+- `rust-toolchain.toml` declares Rust 1.85.0 as MSRV/default
+- CI separately tests MSRV and current stable
+- experiment preparation records git SHA, hardware profile and lockfile hashes
 
-The execution environment used to generate this artifact does **not** contain `rustc`/`cargo`, so Rust compilation and tests could not be executed locally. GitHub CI is configured to run formatting, `cargo check`, tests and clippy on a Rust-enabled runner.
+See [docs/components/STATUS.md](docs/components/STATUS.md) for per-component maturity.

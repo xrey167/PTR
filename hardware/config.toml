@@ -1,0 +1,4 @@
+version = 1
+kind = "hardware-profiles"
+name = "hardware"
+tests_dir = "tests"

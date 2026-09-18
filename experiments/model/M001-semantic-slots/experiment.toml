@@ -1,6 +1,12 @@
+version = 1
 id = "M001"
 status = "planned"
 hypothesis = "Do typed semantic slots improve OOD semantic fidelity under matched compute?"
 metrics = "semantic-slot accuracy; hard-constraint fidelity; token efficiency"
+baseline = "matched plain backbone"
+falsification = "Reject if slots do not improve target fidelity at matched compute."
+hardware_profile = "hardware/default.toml"
+entrypoint = ""
 seeds = [17, 29, 43, 71, 101]
 results_dir = "results"
+required_artifacts = ["run.json", "metrics.json"]

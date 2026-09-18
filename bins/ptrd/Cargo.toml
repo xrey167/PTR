@@ -6,5 +6,6 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+ptr-config = { workspace = true }
+ptr-runtime = { workspace = true }
 ptr-types = { workspace = true }
-ptr-semdb = { workspace = true }

@@ -1,13 +1,13 @@
-.PHONY: check test fmt repo-check docs docs-check meta-check manifest tree
+.PHONY: check test fmt repo-check docs docs-check meta-check experiments-check evals-check msrv python-test manifest tree
 
 check:
-	cargo check --workspace --all-targets
+	cargo check --workspace --all-targets --locked
 
 fmt:
 	cargo fmt --all -- --check
 
 test:
-	cargo test --workspace
+	cargo test --workspace --locked
 
 repo-check:
 	python3 scripts/check_repo.py
@@ -20,6 +20,20 @@ docs-check:
 
 meta-check:
 	python3 scripts/check_component_metadata.py --base HEAD^
+
+experiments-check:
+	python3 scripts/run_experiment.py validate
+
+evals-check:
+	python3 scripts/run_component_eval.py validate
+
+msrv:
+	cargo +1.85.0 check --workspace --all-targets --locked
+	cargo +1.85.0 test --workspace --locked
+
+python-test:
+	python3 -m unittest discover -s training/tests
+	python3 -m unittest discover -s scripts/tests
 
 manifest:
 	python3 scripts/hash_manifest.py

@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "diagrams"
+path = "docs/diagrams"
+tests_dir = "tests"

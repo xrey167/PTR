@@ -1,6 +1,12 @@
+version = 1
 id = "M006"
 status = "planned"
 hypothesis = "Can parallel block refinement match/exceed AR structured reasoning at lower sequential depth?"
 metrics = "quality; denoise steps; latency; convergence"
+baseline = "PTR-AR matched compute"
+falsification = "Reject if PTR-Diff does not match quality or sequential-depth efficiency."
+hardware_profile = "hardware/default.toml"
+entrypoint = ""
 seeds = [17, 29, 43, 71, 101]
 results_dir = "results"
+required_artifacts = ["run.json", "metrics.json"]

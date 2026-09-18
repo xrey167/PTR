@@ -1,0 +1,7 @@
+id = "unspecified"
+os = "unspecified"
+cpu = "unspecified"
+ram_gib = 0
+gpu = "unspecified"
+gpu_memory_gib = 0
+notes = "Replace with an explicit measured hardware profile before publishing benchmark results."

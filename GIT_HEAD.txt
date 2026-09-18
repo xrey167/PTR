@@ -1,1 +1,0 @@
-Repository initialized as a single scaffold commit; current HEAD is available via git after clone/bundle.

@@ -1,0 +1,7 @@
+version = 1
+channel = "alpha"
+artifacts = ["ptrd", "ptrctl", "ptr-worker", "ptr-bench"]
+include = ["Cargo.lock", "training/uv.lock", "CHANGELOG.md", "LICENSE-MIT", "LICENSE-APACHE"]
+sbom = true
+checksums = ["sha256"]
+signing = "planned"

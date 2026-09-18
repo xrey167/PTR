@@ -1,6 +1,12 @@
+version = 1
 id = "E003"
 status = "planned"
 hypothesis = "Measure quality per generated token and per FLOP proxy."
 metrics = "quality/token; quality/second"
+baseline = "matched backbone/runtime"
+falsification = "Reject efficiency claim without equal-quality compute/token advantage."
+hardware_profile = "hardware/default.toml"
+entrypoint = ""
 seeds = [17, 29, 43, 71, 101]
 results_dir = "results"
+required_artifacts = ["run.json", "metrics.json"]

@@ -1,6 +1,12 @@
+version = 1
 id = "E001"
 status = "planned"
 hypothesis = "PTR full pipeline versus unmodified backbone."
 metrics = "task success; hard violations; latency; tokens"
+baseline = "unmodified backbone agent"
+falsification = "Reject if PTR adds cost without robust success/validity benefit."
+hardware_profile = "hardware/default.toml"
+entrypoint = ""
 seeds = [17, 29, 43, 71, 101]
 results_dir = "results"
+required_artifacts = ["run.json", "metrics.json"]

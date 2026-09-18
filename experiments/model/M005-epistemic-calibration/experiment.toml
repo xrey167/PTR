@@ -1,6 +1,12 @@
+version = 1
 id = "M005"
 status = "planned"
 hypothesis = "Do explicit epistemic states reduce false certainty?"
 metrics = "Brier; ECE; unknown recall"
+baseline = "untyped confidence baseline"
+falsification = "Reject if calibration/unknown recall does not improve."
+hardware_profile = "hardware/default.toml"
+entrypoint = ""
 seeds = [17, 29, 43, 71, 101]
 results_dir = "results"
+required_artifacts = ["run.json", "metrics.json"]

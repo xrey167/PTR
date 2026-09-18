@@ -1,6 +1,12 @@
+version = 1
 id = "F001"
 status = "planned"
 hypothesis = "Does candidate repair outperform rewrite-only and single-shot?"
 metrics = "success; verifier calls; compute"
+baseline = "single-shot + rewrite-only"
+falsification = "Reject if repair does not improve success/compute tradeoff."
+hardware_profile = "hardware/default.toml"
+entrypoint = ""
 seeds = [17, 29, 43, 71, 101]
 results_dir = "results"
+required_artifacts = ["run.json", "metrics.json"]

@@ -1,6 +1,12 @@
+version = 1
 id = "L002"
 status = "planned"
 hypothesis = "Does clustered state converge after partitions/restarts?"
 metrics = "invariant violations; recovery time"
+baseline = "single-node durable reference"
+falsification = "Reject if recovery violates authority/lifecycle invariants."
+hardware_profile = "hardware/default.toml"
+entrypoint = ""
 seeds = [17, 29, 43, 71, 101]
 results_dir = "results"
+required_artifacts = ["run.json", "metrics.json"]

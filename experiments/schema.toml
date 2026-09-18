@@ -1,0 +1,13 @@
+version = 1
+required = [
+  "id",
+  "status",
+  "hypothesis",
+  "metrics",
+  "seeds",
+  "results_dir",
+  "baseline",
+  "falsification",
+  "hardware_profile",
+]
+allowed_status = ["planned", "prepared", "running", "completed", "failed", "superseded"]

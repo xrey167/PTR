@@ -34,6 +34,8 @@ Before submitting:
 python3 scripts/check_component_metadata.py --base HEAD^
 python3 scripts/update_component_docs.py --check
 python3 scripts/check_repo.py
+python3 scripts/run_experiment.py validate
+python3 scripts/run_component_eval.py validate
 cargo fmt --all -- --check
 cargo check --workspace --all-targets
 cargo test --workspace

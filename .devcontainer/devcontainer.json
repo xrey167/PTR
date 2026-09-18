@@ -1,0 +1,13 @@
+{
+  "name": "PTR",
+  "build": {
+    "dockerfile": "../docker/Dockerfile.dev",
+    "context": ".."
+  },
+  "postCreateCommand": "cargo test --workspace && python3 -m pip install -e training",
+  "customizations": {
+    "vscode": {
+      "extensions": ["rust-lang.rust-analyzer", "tamasfe.even-better-toml"]
+    }
+  }
+}

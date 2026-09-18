@@ -1,0 +1,5 @@
+id = "rtx5090-reference"
+gpu = "NVIDIA RTX 5090"
+gpu_memory_gib = 32
+precision = ["fp32", "fp16", "bf16", "fp8", "int8"]
+notes = "Reference single-GPU profile; record actual CPU/RAM/driver/CUDA in each run manifest."

@@ -1,6 +1,12 @@
+version = 1
 id = "S002"
 status = "planned"
 hypothesis = "Can stale reasoning be cancelled safely on revision changes?"
 metrics = "stale action rate; wasted compute; cancellation latency"
+baseline = "no cancellation"
+falsification = "Any stale irreversible action is a hard failure."
+hardware_profile = "hardware/default.toml"
+entrypoint = ""
 seeds = [17, 29, 43, 71, 101]
 results_dir = "results"
+required_artifacts = ["run.json", "metrics.json"]

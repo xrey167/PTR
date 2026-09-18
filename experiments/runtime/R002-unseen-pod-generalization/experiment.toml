@@ -1,6 +1,12 @@
+version = 1
 id = "R002"
 status = "planned"
 hypothesis = "Can the model use unseen Pod names from known semantic contracts?"
 metrics = "task success; name invariance"
+baseline = "memorized-name tool calling"
+falsification = "Reject if performance collapses under nominal Pod renaming."
+hardware_profile = "hardware/default.toml"
+entrypoint = ""
 seeds = [17, 29, 43, 71, 101]
 results_dir = "results"
+required_artifacts = ["run.json", "metrics.json"]
