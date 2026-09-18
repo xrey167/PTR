@@ -1,0 +1,18 @@
+name: security-triage
+on:
+  push:
+    paths:
+      - '.github/workflows/security-triage.yml'
+
+jobs:
+  tree:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Reverse dependency trees
+        run: |
+          for crate in hickory-proto protobuf rustls-webpki lru fxhash instant paste; do
+            echo "===== $crate ====="
+            cargo +stable tree -i "$crate" --locked || true
+          done
