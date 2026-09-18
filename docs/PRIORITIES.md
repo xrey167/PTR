@@ -7,7 +7,7 @@ This is the implementation order after the architecture-scaffold phase. Status v
 | P0 | Repository licensing, lockfiles, MSRV/stable/Linux/Windows CI | done |
 | P0 | Component docs-as-code, local config.toml and tests/ ownership | done |
 | P0 | Central ptr-runtime orchestrator | prototype |
-| P0 | Hard revision/generation/capability effect boundary | prototype |
+| P0 | Hard revision/generation/capability effect boundary | prototype — typed ptr-security decisions now own freshness + capability/effect checks, effect authority cannot be bypassed by disabling capability membership, and allow receipts are emitted; principal/resource scopes and verifier requirements remain |
 | P0 | Durable single-node ledger + crash-tail/replay safety | done for reference FileLedger, including runtime reopen/replay; cluster durability remains separate |
 | P0 | Executable experiment/evaluation runners | prototype |
 | P0 | Reproducible Python training-run manifest | prototype |

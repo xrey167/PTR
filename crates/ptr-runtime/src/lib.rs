@@ -8,7 +8,9 @@ use ptr_model_api::{
 };
 use ptr_pods::PodRegistry;
 use ptr_protocol::TypedPayload;
-use ptr_security::PermissionSet;
+use ptr_security::{
+    ActionAuthorization, AuthorizationDecision, AuthorizationDenial, PermissionSet,
+};
 use ptr_semdb::{SemanticDelta, SemanticHost, SemanticSnapshot};
 use ptr_state::MaterializedState;
 use ptr_types::{CommitIndex, Generation, RequestId, Revision};
@@ -423,42 +425,48 @@ impl PtrRuntime {
         Err(RuntimeError::ModelResumeLimit { max_rounds })
     }
 
-    pub fn authorize_action(&self, action: &ActionIr) -> Result<(), RuntimeError> {
-        if self.config.action_boundary.require_current_revision
-            && action.revision != self.semdb.revision()
-        {
-            return Err(RuntimeError::StaleRevision {
-                action: action.revision,
-                current: self.semdb.revision(),
-            });
-        }
-
-        if self.config.action_boundary.require_live_generation {
-            let current = self.live_generations.get(&action.target).copied();
-            if self
+    pub fn authorization_decision(&self, action: &ActionIr) -> AuthorizationDecision {
+        let current_generation = self.live_generations.get(&action.target).copied();
+        self.permissions.authorize(ActionAuthorization {
+            target: action.target.clone(),
+            capability: action.capability.clone(),
+            effect: action.effect,
+            action_revision: action.revision,
+            current_revision: self.semdb.revision(),
+            action_generation: action.generation,
+            current_generation,
+            generation_revoked: self
                 .revoked_generations
-                .contains(&(action.target.clone(), action.generation))
-                || current.is_some_and(|generation| generation != action.generation)
-            {
-                return Err(RuntimeError::StaleGeneration {
-                    target: action.target.clone(),
-                    action: action.generation,
-                    current,
-                });
-            }
-            if current.is_none() {
-                return Err(RuntimeError::UnknownGeneration {
-                    target: action.target.clone(),
-                });
-            }
-        }
+                .contains(&(action.target.clone(), action.generation)),
+            require_capability: self.config.action_boundary.require_capability,
+            require_current_revision: self.config.action_boundary.require_current_revision,
+            require_live_generation: self.config.action_boundary.require_live_generation,
+        })
+    }
 
-        if self.config.action_boundary.require_capability
-            && !self.permissions.allows(&action.capability, action.effect)
-        {
-            return Err(RuntimeError::PermissionDenied);
+    pub fn authorize_action(&self, action: &ActionIr) -> Result<(), RuntimeError> {
+        match self.authorization_decision(action) {
+            AuthorizationDecision::Allow(_) => Ok(()),
+            AuthorizationDecision::Deny(AuthorizationDenial::StaleRevision { action, current }) => {
+                Err(RuntimeError::StaleRevision { action, current })
+            }
+            AuthorizationDecision::Deny(AuthorizationDenial::UnknownGeneration { target }) => {
+                Err(RuntimeError::UnknownGeneration { target })
+            }
+            AuthorizationDecision::Deny(AuthorizationDenial::StaleGeneration {
+                target,
+                action,
+                current,
+            }) => Err(RuntimeError::StaleGeneration {
+                target,
+                action,
+                current,
+            }),
+            AuthorizationDecision::Deny(
+                AuthorizationDenial::MissingCapability { .. }
+                | AuthorizationDenial::EffectNotPermitted { .. },
+            ) => Err(RuntimeError::PermissionDenied),
         }
-        Ok(())
     }
 
     pub fn commit(&mut self, event: LedgerEvent) -> Result<CommitIndex, RuntimeError> {

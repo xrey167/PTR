@@ -10,27 +10,29 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-18  
-**Code footprint:** 1 Rust source files · 22 nonblank source lines · 1 integration-test files · 1 `#[test]` markers
+**Code footprint:** 1 Rust source files · 113 nonblank source lines · 1 integration-test files · 6 `#[test]` markers
 
 ### Implemented now
 
 - PermissionSet with capability membership
-- Separate mutation/external/irreversible effect gates
+- Separate mutation/external/irreversible effect gates that remain enforced even when capability membership is optional
 - Fail-closed allows() decision for missing capability
+- Typed ActionAuthorization request plus AuthorizationDecision allow/deny result
+- Revision and generation freshness checks, including revoked and unknown generations
+- Structured missing-capability/effect denials plus audit-ready allow receipt
 
 ### Missing for the target architecture
 
 - Principal/session/resource scopes
-- Generation and revision freshness checks in action authorization
 - Context trust/evidence model
 - Sandbox execution contract
-- Structured denial/escalation reasons and audit receipt
+- Durable denial/receipt audit persistence and escalation requirements
 
 ### Next milestones
 
-- Define ActionAuthorization input/output types
-- Add freshness + resource-scope validation
-- Connect hard action boundary to verifier and exec
+- Add principal/session/resource-scope validation
+- Add verifier/evidence requirements for external and irreversible effects
+- Persist authorization receipts/denials through events and ledger
 
 ### Linked experiments
 
@@ -48,6 +50,7 @@
 
 ### Current automated checks
 
+- typed authorization denial precedence and allow-receipt integration tests
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->

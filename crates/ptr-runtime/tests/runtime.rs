@@ -2,6 +2,7 @@ use ptr_config::PtrConfig;
 use ptr_core::action_head::ActionIr;
 use ptr_ledger::LedgerEvent;
 use ptr_runtime::{PtrRuntime, RuntimeError};
+use ptr_security::{AuthorizationDecision, AuthorizationDenial};
 use ptr_types::{CapabilityId, Effect, Generation, RequestId, Revision, TypeId};
 
 fn mutation_action(revision: Revision, generation: Generation) -> ActionIr {
@@ -114,5 +115,19 @@ fn committed_event_materializes() {
             .values
             .get("constraint:no-network"),
         Some(&"3".to_string())
+    );
+}
+
+#[test]
+fn runtime_exposes_typed_authorization_decision() {
+    let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+    let revision = runtime.ingest_text(RequestId::from("r1"), "hello");
+    let action = mutation_action(revision, Generation(1));
+
+    assert_eq!(
+        runtime.authorization_decision(&action),
+        AuthorizationDecision::Deny(AuthorizationDenial::UnknownGeneration {
+            target: "artifact:a".into(),
+        })
     );
 }
