@@ -45,6 +45,34 @@ impl<TInput, TOutput> Service<TInput, TOutput> {
         }
     }
 
+    pub fn backend_names(&self) -> impl Iterator<Item = &str> + '_ {
+        self.backends.names()
+    }
+
+    pub fn matching_backend_names<'service, F>(
+        &'service self,
+        mut predicate: F,
+    ) -> impl Iterator<Item = &'service str> + 'service
+    where
+        F: FnMut(&str) -> bool + 'service,
+    {
+        self.backend_names()
+            .filter(move |name| predicate(*name))
+    }
+
+    pub fn execute_all<I>(
+        &self,
+        requests: I,
+    ) -> Result<Vec<ExecuteResult<TOutput>>, ServiceError>
+    where
+        I: IntoIterator<Item = ExecuteRequest<TInput>>,
+    {
+        requests
+            .into_iter()
+            .map(|request| self.execute(request))
+            .collect()
+    }
+
     pub fn execute(
         &self,
         request: ExecuteRequest<TInput>,
