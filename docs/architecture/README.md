@@ -8,6 +8,7 @@
 4. [Global invariants](../INVARIANTS.md)
 5. [Technology stack](../TECH_STACK.md)
 6. [Rust module and API style](../RUST_API_STYLE.md)
+7. [Testing layout](../TESTING.md)
 
 ## Detailed architecture
 
