@@ -18,6 +18,7 @@ research_flexibility = 0.03
 id = "raft-engine"
 source = "external"
 status = "evaluating"
+command = "cargo test -p ptr-ledger --features raft-engine-backend --test raft_engine --locked"
 evidence = ["../../../crates/ptr-ledger/tests/raft_engine.rs"]
 
 [[candidate]]
