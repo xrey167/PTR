@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "editor"
+path = "integrations/editor"
+tests_dir = "tests"
