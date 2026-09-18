@@ -25,3 +25,4 @@ jobs:
           git add evaluations/components/execution-runtime/evidence/internal-smoke-linux-x86_64.json
           git commit -m "Record internal component smoke benchmark evidence"
           git push origin HEAD:main
+# rerun after ptr-bench JSON fix
