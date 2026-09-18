@@ -111,4 +111,3 @@ fn durable_runtime_reopen_preserves_revocation_boundary() {
     drop(restarted);
     std::fs::remove_file(path).unwrap();
 }
-
