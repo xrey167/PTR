@@ -78,4 +78,4 @@ Keep orchestration out of `ptrd` and out of individual domain crates. The runtim
 
 ## Current boundary
 
-The first executable slice wires configuration, semantic revisioning, action authorization, event emission and ledger materialization. Model/Pod/verifier loops remain the next milestone.
+The executable reference slice now wires configuration, semantic revisioning, a backend-neutral model call, semantic Pod resolution, Pure/Read Pod execution, verifier-gated observation promotion, action authorization, event emission and ledger materialization. The next runtime milestone is router-driven multi-step resume after verified observations plus production durable/async backends.

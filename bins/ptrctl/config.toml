@@ -1,5 +1,6 @@
 version = 1
-kind = "workspace-area"
+kind = "binary"
 name = "ptrctl"
 path = "bins/ptrctl"
 tests_dir = "tests"
+default_command = "doctor"
