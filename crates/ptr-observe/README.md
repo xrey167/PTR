@@ -10,7 +10,7 @@
 
 **Maturity:** `scaffold`  
 **Last reviewed:** 2026-09-18  
-**Code footprint:** 6 Rust source files · 333 nonblank source lines · 4 integration-test files · 10 `#[test]` markers
+**Code footprint:** 6 Rust source files · 336 nonblank source lines · 4 integration-test files · 10 `#[test]` markers
 
 ### Implemented now
 
@@ -21,7 +21,7 @@
 - Typed TraceError variants with stable machine-readable error codes
 - Feature-gated tracing 0.1 adapter implementing the PTR TraceSink contract
 - Unit tests beside source modules plus thematic integration tests with shared tests/common fixtures
-- Lazy trace-field iteration with impl Iterator, closure-based filtering and fallible try_for_each traversal
+- Lazy trace-field iteration with impl Iterator, closure-based match-guard filtering and fallible try_for_each traversal
 
 ### Missing for the target architecture
 
