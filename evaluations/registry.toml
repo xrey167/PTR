@@ -110,6 +110,12 @@ id = "observability"
 path = "components/observability/candidates.toml"
 status = "open"
 
+
+[[component]]
+id = "rust-editor-emacs"
+path = "components/rust-editor-emacs/candidates.toml"
+status = "open"
+
 [[component]]
 id = "security-context"
 path = "components/security-context/candidates.toml"
