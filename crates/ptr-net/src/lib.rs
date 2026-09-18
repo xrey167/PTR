@@ -145,7 +145,7 @@ mod iroh_backend {
                 .await
                 .map_err(|error| error.to_string())?;
             self.send.finish().map_err(|error| error.to_string())?;
-            self.connection.close(0u32.into(), b"ptr response complete");
+            self.connection.closed().await;
             Ok(())
         }
     }
