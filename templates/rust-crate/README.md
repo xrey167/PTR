@@ -17,6 +17,8 @@ Key properties:
 - `HashMap` only where unordered keyed lookup is the intended semantics;
 - typed error enums with machine-readable variants/codes and `expected`/`actual` fields for mismatches;
 - `Result<T, E>` for expected failure paths, `Option<T>` for legitimate absence, and no production `unwrap()` for recoverable failures;
-- a structured `TraceSink` boundary so `tracing`, OpenTelemetry or another backend can be swapped without changing domain code.
+- a structured `TraceSink` boundary so `tracing`, OpenTelemetry or another backend can be swapped without changing domain code;
+- unit tests beside implementation modules, integration tests under `tests/`, and shared fixtures in `tests/common/mod.rs`;
+- `check_*`/`validate_*` helpers returning typed `Result` values with named failure fields/messages.
 
 See `docs/RUST_API_STYLE.md`.
