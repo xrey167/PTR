@@ -36,3 +36,17 @@ The table distinguishes **PTR semantics** from **current candidate technologies*
 ## Selection rule
 
 A component becomes a default only after evidence covers correctness, failure semantics, latency, throughput, memory, operational complexity, portability, licensing and research flexibility where relevant.
+
+
+## Developer tooling (non-runtime)
+
+Developer/editor tools are not part of PTR's runtime bill of materials. They may wrap repository commands but may not redefine build, test, formatting or architecture semantics.
+
+| Concern | PTR rule | Candidate(s) |
+|---|---|---|
+| Rust language intelligence | editor optional; CLI/CI remains authoritative | rust-analyzer |
+| Emacs Rust editing | optional profile | rust-lang/rust-mode |
+| Emacs integrated Rust environment | optional profile | emacs-rustic/rustic |
+| Emacs Cargo UI | optional profile | ayrat555/cargo-mode |
+
+See [development environment](DEVELOPMENT_ENVIRONMENT.md) and [rust-editor-emacs evaluation](../evaluations/components/rust-editor-emacs/README.md).
