@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/ptr-*", "bins/ptr-*"]
-exclude = ["fuzz", "model/burn-a0"]
+exclude = ["fuzz", "model/burn-a0", "vendor/raft", "vendor/raft-proto", "vendor/raft-engine"]
 
 [workspace.package]
 version = "0.1.0"
@@ -47,3 +47,9 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal
 serde_json = "1.0"
 tower = { version = "0.5", features = ["util"] }
 tracing = "0.1.44"
+
+# Compatibility patches: original archives and changes are recorded in vendor/.
+[patch.crates-io]
+raft = { path = "vendor/raft" }
+raft-proto = { path = "vendor/raft-proto" }
+raft-engine = { path = "vendor/raft-engine" }

@@ -2,12 +2,12 @@
 name = "ptr-burn-a0"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.95"
 publish = false
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-bytemuck = "=1.23.1"
-burn = { version = "=0.18.0", default-features = false, features = ["std", "ndarray", "autodiff"] }
+bytemuck = "1.23.1"
+burn = { version = "=0.22.0-pre.3", default-features = false, features = ["std", "ndarray", "autodiff"] }
 
 [workspace]
