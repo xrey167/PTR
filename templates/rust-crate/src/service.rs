@@ -18,7 +18,6 @@ impl<TInput, TOutput> Default for Service<TInput, TOutput> {
             trace_sink: Arc::new(NoopTraceSink),
         }
     }
-
 }
 
 impl<TInput, TOutput> Service<TInput, TOutput> {
@@ -36,12 +35,10 @@ impl<TInput, TOutput> Service<TInput, TOutput> {
     }
 
     fn emit_trace(&self, event: TraceEvent) {
-        if let Err(error) = self.trace_sink.emit(&event) {
-            match error {
-                TraceError::SinkUnavailable { .. } | TraceError::Export { .. } => {
-                    // Explicit best-effort policy: telemetry cannot change semantic outcome.
-                }
-            }
+        if let Err(TraceError::SinkUnavailable { .. } | TraceError::Export { .. }) =
+            self.trace_sink.emit(&event)
+        {
+            // Explicit best-effort policy: telemetry cannot change semantic outcome.
         }
     }
 
@@ -49,21 +46,20 @@ impl<TInput, TOutput> Service<TInput, TOutput> {
         self.backends.names()
     }
 
-    pub fn matching_backend_names<'service, F>(
+    /// Returned names borrow the service, not the predicate's captured state.
+    /// The predicate only needs to remain valid while the iterator is alive.
+    pub fn matching_backend_names<'service, 'iteration, F>(
         &'service self,
         mut predicate: F,
-    ) -> impl Iterator<Item = &'service str> + 'service
+    ) -> impl Iterator<Item = &'service str> + 'iteration
     where
-        F: FnMut(&str) -> bool + 'service,
+        'service: 'iteration,
+        F: FnMut(&str) -> bool + 'iteration,
     {
-        self.backend_names()
-            .filter(move |name| predicate(*name))
+        self.backend_names().filter(move |name| predicate(name))
     }
 
-    pub fn execute_all<I>(
-        &self,
-        requests: I,
-    ) -> Result<Vec<ExecuteResult<TOutput>>, ServiceError>
+    pub fn execute_all<I>(&self, requests: I) -> Result<Vec<ExecuteResult<TOutput>>, ServiceError>
     where
         I: IntoIterator<Item = ExecuteRequest<TInput>>,
     {
@@ -87,8 +83,7 @@ impl<TInput, TOutput> Service<TInput, TOutput> {
         })?;
 
         self.emit_trace(
-            TraceEvent::new(TraceLevel::Debug, "backend.execute")
-                .with_field("backend", backend_name),
+            TraceEvent::new(TraceLevel::Debug, "backend.execute").with_field("backend", backend_name),
         );
 
         match backend.state() {

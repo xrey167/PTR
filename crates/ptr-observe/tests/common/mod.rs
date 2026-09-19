@@ -12,12 +12,6 @@ pub fn generation_mismatch_event() -> TraceEvent {
         fields::ERROR_CODE,
         TraceValue::String("stale_generation".into()),
     )
-    .with_field(
-        fields::EXPECTED,
-        TraceValue::Generation(Generation(8)),
-    )
-    .with_field(
-        fields::ACTUAL,
-        TraceValue::Generation(Generation(7)),
-    )
+    .with_field(fields::EXPECTED, TraceValue::Generation(Generation(8)))
+    .with_field(fields::ACTUAL, TraceValue::Generation(Generation(7)))
 }

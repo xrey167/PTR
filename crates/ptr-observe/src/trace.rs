@@ -65,19 +65,13 @@ impl TraceEvent {
             .with_field(fields::REVISION, TraceValue::Revision(revision))
     }
 
-    pub fn with_field(
-        mut self,
-        key: impl Into<String>,
-        value: impl Into<TraceValue>,
-    ) -> Self {
+    pub fn with_field(mut self, key: impl Into<String>, value: impl Into<TraceValue>) -> Self {
         self.fields.insert(key.into(), value.into());
         self
     }
 
     pub fn iter_fields(&self) -> impl Iterator<Item = (&str, &TraceValue)> + '_ {
-        self.fields
-            .iter()
-            .map(|(key, value)| (key.as_str(), value))
+        self.fields.iter().map(|(key, value)| (key.as_str(), value))
     }
 
     pub fn fields_matching<'event, F>(
@@ -87,12 +81,8 @@ impl TraceEvent {
     where
         F: FnMut(&str, &TraceValue) -> bool + 'event,
     {
-        self.iter_fields().filter(move |item| {
-            match *item {
-                (key, value) if predicate(key, value) => true,
-                _ => false,
-            }
-        })
+        self.iter_fields()
+            .filter(move |item| matches!(*item, (key, value) if predicate(key, value)))
     }
 
     pub fn try_for_each_field<E, F>(&self, mut visitor: F) -> Result<(), E>
@@ -116,7 +106,6 @@ impl TraceSink for NoopTraceSink {
         Ok(())
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -156,7 +145,6 @@ mod tests {
             );
         }
 
-
         #[test]
         fn iterator_adapters_filter_named_fields_with_closure() {
             let event = TraceEvent::new(TraceLevel::Debug, "iter")
@@ -177,13 +165,8 @@ mod tests {
                 .with_field("a", TraceValue::U64(1))
                 .with_field("b", TraceValue::U64(2));
 
-            let result = event.try_for_each_field(|key, _| {
-                if key == "b" {
-                    Err("stop")
-                } else {
-                    Ok(())
-                }
-            });
+            let result =
+                event.try_for_each_field(|key, _| if key == "b" { Err("stop") } else { Ok(()) });
 
             assert_eq!(result, Err("stop"));
         }

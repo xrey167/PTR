@@ -71,10 +71,24 @@ def impl_name(signature: str) -> str:
     return head
 
 
+def source_path(crate: str, src: Path, file: Path) -> str:
+    """Use repo-relative paths, or crate-relative paths for external fixtures.
+
+    Resolving both roots makes relative and absolute callers consistent. Never
+    expose the machine-specific temporary directory in an API inventory.
+    """
+    source = file.resolve()
+    try:
+        relative = source.relative_to(ROOT.resolve())
+    except ValueError:
+        relative = Path(crate) / source.relative_to(src.resolve().parent)
+    return relative.as_posix()
+
+
 def scan_file(crate: str, src: Path, file: Path) -> list[ApiItem]:
     lines = file.read_text(encoding="utf-8").splitlines()
     module = module_name(src, file)
-    rel = str(file.relative_to(ROOT)).replace("\\", "/")
+    rel = source_path(crate, src, file)
     items: list[ApiItem] = []
 
     for number, line in enumerate(lines, 1):

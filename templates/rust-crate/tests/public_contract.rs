@@ -11,7 +11,6 @@ fn reference_implementor_executes_through_public_trait_contract() {
     assert_eq!(result.backend, "reference");
 }
 
-
 #[test]
 fn execute_all_accepts_into_iterator_and_collects_results() {
     let service = common::reference_service();
@@ -40,7 +39,6 @@ fn backend_name_iterator_supports_closure_based_filtering() {
     assert_eq!(names, vec!["reference"]);
 }
 
-
 #[test]
 fn closure_filter_supports_fn_mut_state_capture() {
     let service = common::reference_service();
@@ -56,7 +54,6 @@ fn closure_filter_supports_fn_mut_state_capture() {
     assert_eq!(visited, 1);
     assert_eq!(names, vec!["reference"]);
 }
-
 
 #[test]
 fn internal_macro_generated_newtype_is_publicly_usable() {
@@ -76,4 +73,22 @@ fn exported_trace_event_macro_builds_public_trace_type() {
     assert_eq!(event.name, "macro.test");
     assert_eq!(event.fields.get("backend").map(String::as_str), Some("reference"));
     assert_eq!(event.fields.get("outcome").map(String::as_str), Some("ok"));
+}
+
+#[test]
+fn collected_names_outlive_predicate_captures() {
+    let service = common::reference_service();
+    let names;
+    {
+        let prefix = String::from("ref");
+        let mut visited = 0;
+        names = service
+            .matching_backend_names(|name| {
+                visited += 1;
+                name.starts_with(&prefix)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(visited, 1);
+    }
+    assert_eq!(names, vec!["reference"]);
 }

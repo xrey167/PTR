@@ -68,7 +68,7 @@
 - ConfidenceEstimate constructor and target-identity unit tests
 - cognitive_contract integration tests including 162 independent-axis combinations
 - ConfidenceEstimate compile-pass and compile-fail doctests
-- workspace fmt/check/test/clippy
+- workspace fmt/check/test/clippy; merge-review formatting normalization
 
 <!-- PTR:STATUS:END -->
 

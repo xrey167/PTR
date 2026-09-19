@@ -1,7 +1,8 @@
 # Step 01 — Cognitive contract, first component
 
 Status: first `ptr-types` increment; not a completed model architecture.
-Base reviewed: PR #9 at `2620e6f6`; main at `617c6655` includes training-provenance PR #10.
+Original audit: PR #9 at `2620e6f6`; main at `617c6655` includes training-provenance PR #10.
+Integration follows the repaired PR #9; see [merge review](../MERGE_REVIEW_20260919.md).
 This increment changes neither the training runner nor the model implementation.
 
 ## Scope and ownership
