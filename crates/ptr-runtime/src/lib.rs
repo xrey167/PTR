@@ -1,3 +1,4 @@
+pub mod compacted;
 pub mod execution;
 pub mod persistence;
 pub mod semantic;
@@ -25,6 +26,7 @@ use std::path::Path;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeError {
     Snapshot(persistence::SnapshotError),
+    Compacted(compacted::CompactedError),
     Semantic(SemanticError),
     InvalidConfig(String),
     Ledger(String),

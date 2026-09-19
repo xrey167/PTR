@@ -265,15 +265,95 @@ destination — each without touching anything.
 - `LostSuffix` and unacknowledged-tail recovery still apply above a compacted
   floor.
 
+## Compacted materialized snapshots
+
+Owner: `ptr-runtime::compacted`, with `ptr-semdb::SemanticHost::{export_state, restore}`.
+
+`RecoverySnapshot` retains the complete journal by construction, which makes it
+exact but means it can never justify discarding a record. Compaction needs the
+opposite artifact: the state a prefix produced, so the prefix itself becomes
+redundant. That is what establishes `snapshot_covers`, and without it a host has
+no sound basis for raising a floor at all.
+
+```text
+offset size field
+0      8    magic "PTRCS001"
+8      8    revision               semantic revision at the floor
+16     8    floor_index
+24     32   floor_digest
+56     8    semantic_len
+64     8    lifecycle_len
+72     8    reserved, must be zero
+80     ...  semantic section        canonical SemanticDelta encoding
+       ...  lifecycle section      PTRLC001
+       32   digest                 SHA-256 over all preceding bytes
+```
+
+Two decisions carry the design.
+
+**The snapshot does not embed the records above its floor.** Those live in the
+log, which is already framed, chained and anchored. A second copy would create
+two descriptions of the same records that could disagree, and this layer keeps
+exactly one authority for any fact. `restore_compacted` therefore takes the
+retained records as a separate argument and replays them through the ordinary
+lifecycle and semantic validation path, so a restored runtime cannot reach a state
+a live run would have refused. They keep the indices they were committed at; a
+ledger that renumbered them from 1 would contradict the floor.
+
+**The semantic section reuses the journal's own encoding.** `export_state` emits
+the published state as one canonical `SemanticDelta` and `restore` rebuilds a host
+at an exact revision through the ordinary delta path. A snapshot therefore cannot
+disagree with a replay about what a semantic value is, because there is only one
+encoder. Dependency entries whose derived key is currently absent are preserved,
+so a later upsert still has to supply its inputs.
+
+The lifecycle section encodes materialized values, live generations, capsule
+projects and revocations, and decoding enforces strictly ascending keys per
+section. Each state has exactly one encoding, and a reordered or duplicated entry
+fails closed rather than resolving to whichever entry came last. Counts are
+checked against the bytes that remain before anything is allocated for them.
+
+`covers()` is taken from the snapshot, not chosen by the caller: reporting a
+position the snapshot does not hold would let a cutover discard records whose
+state nothing describes.
+
+Like every artifact here it restores committed state only — no permissions,
+sessions, permits, registrations, external-effect outcomes or neural/KV state.
+Those are not history and cannot be replayed.
+
+### Executed evidence
+
+`crates/ptr-runtime/tests/compacted_snapshot.rs`, 9 integration tests over a
+fixture covering semantic payload bytes, dependencies, capsule commit and
+supersession, hard constraints, procedures and a revocation:
+
+- **Compacted reconstruction equals a full replay**: state at a floor plus the
+  retained journal agrees with `replay` of the complete history on revision,
+  materialized values and position, every semantic value and dependency set over
+  the union of both key sets, and every live generation.
+- A revocation **below** the floor still denies after compaction. Without it
+  surviving, the live generation would read as 1 and the action would be allowed —
+  the resurrection global invariant 3 forbids.
+- Restoring with no retained journal reproduces the floor exactly.
+- Every single-bit mutation of the whole artifact is rejected.
+- Truncation, extension, wrong magic, a set reserved field, and section lengths
+  that do not add up are rejected **after resealing the digest**, so each is a real
+  constraint rather than something the digest happens to cover.
+- A noncanonical lifecycle section and a wrong lifecycle magic are rejected when
+  resealed, i.e. against an attacker who can recompute the digest.
+- Each trusted field is required: revision, floor index, floor digest, digest.
+- Records at or below the floor are refused, and a gap above it is caught by the
+  ordinary replay index check.
+- A restored runtime still enforces revision isolation against a stale base.
+- Successive snapshots report their own increasing coverage and distinct digests.
+
 ### Not yet covered
 
-`snapshot_covers` is an input the caller must justify. `ptr-runtime` cannot yet
-produce a snapshot that covers a floor and restores from a compacted log:
-`RecoverySnapshot` retains the complete journal by construction and is documented
-as not being a compacted materialized snapshot. Until that exists, a host can
-only compact up to a coverage bound it establishes by other means, and
-**exact compacted-state reconstruction at the runtime level remains open** —
-the last item of this gate.
+`restore_compacted` rebuilds an in-memory ledger above the floor. A runtime backed
+directly by an `AcknowledgedLedger`, and durable publication of compacted
+snapshots alongside the anchor, are not implemented: the host currently retains
+the snapshot and its `CompactedAnchor` itself. Neural, KV and checkpoint state
+admission is a separate gate in issue #15 and is untouched.
 
 ## Explicitly out of scope here
 

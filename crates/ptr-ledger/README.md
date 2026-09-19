@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-19  
-**Code footprint:** 6 Rust source files · 2441 nonblank source lines · 9 integration-test files · 50 `#[test]` markers
+**Code footprint:** 6 Rust source files · 2464 nonblank source lines · 9 integration-test files · 50 `#[test]` markers
 
 ### Implemented now
 
@@ -31,7 +31,7 @@
 - Poisoned writer after ambiguous append failure; reopen/replay required before subsequent writes
 - Lifecycle LedgerEvent enum
 - CommittedEvent with CommitIndex
-- Ledger trait and in-memory reference implementation
+- Ledger trait and in-memory reference implementation, with an optional compaction-floor offset so restored records keep their committed indices
 - CompactionBarrier scaffold
 - Durable reference FileLedger with checked versioned frames, file synchronization and anchor-required tail recovery
 - Feature-gated fail-rs injection points around record write/payload/fsync/memory-commit boundaries
