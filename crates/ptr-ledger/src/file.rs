@@ -228,7 +228,21 @@ impl FileLedger {
         bytes: &[u8],
         trusted: LogAnchor,
     ) -> io::Result<Self> {
-        let verified = integrity::decode_log(bytes)?;
+        Self::create_from_log_above(path, bytes, LogAnchor::empty(), trusted)
+    }
+
+    /// Create a destination for a log that continues above a compaction floor.
+    ///
+    /// `base` is trusted input from protected anchor storage. Both it and the
+    /// resulting tail are checked before the file is created, so a rejected
+    /// artifact never reaches disk.
+    pub fn create_from_log_above(
+        path: impl AsRef<Path>,
+        bytes: &[u8],
+        base: LogAnchor,
+        trusted: LogAnchor,
+    ) -> io::Result<Self> {
+        let verified = integrity::decode_log_from(bytes, base)?;
         verified.require_anchor(trusted)?;
         let path = path.as_ref();
         let file = OpenOptions::new()
@@ -240,7 +254,7 @@ impl FileLedger {
         file.write_all(bytes)?;
         file.sync_all()?;
         sync_parent(path)?;
-        Self::from_verified(path, file, verified, bytes.len())
+        Self::from_verified_above(path, file, verified, bytes.len(), base)
     }
 
     /// Explicit inspection of an old unchecked format. Runtime migration must

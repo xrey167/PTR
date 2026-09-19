@@ -22,12 +22,16 @@
 //! reconstruct it — presenting such a log as healthy is precisely the rollback
 //! that global invariant 3 forbids.
 use crate::anchor::{AnchorError, AnchorKey, AnchorStore, ChainOrigin, ProtectedAnchor};
-use crate::integrity::LogAnchor;
-use crate::{CommittedEvent, FileLedger, LedgerEvent};
+use crate::compaction::{
+    CompactionDecision, CompactionFault, CompactionOutcome, CompactionPlan, LogPaths,
+    RetentionPolicy,
+};
+use crate::integrity::{self, LogAnchor};
+use crate::{CommittedEvent, CompactionBarrier, FileLedger, LedgerEvent};
 use ptr_types::CommitIndex;
 use std::fmt;
 use std::io;
-use std::path::Path;
+use std::path::PathBuf;
 
 /// How a log relates to its protected anchor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -115,6 +119,8 @@ pub enum AcknowledgedError {
     /// An append left the log and anchor in an unknown relationship. Reopen and
     /// classify before writing again.
     Fenced,
+    /// A cutover refused before touching anything.
+    Compaction(CompactionFault),
 }
 
 impl AcknowledgedError {
@@ -130,6 +136,7 @@ impl AcknowledgedError {
             Self::Unrecoverable(_) => "PTR_ACK_UNRECOVERABLE",
             Self::TailRefused { .. } => "PTR_ACK_TAIL_REFUSED",
             Self::Fenced => "PTR_ACK_FENCED",
+            Self::Compaction(fault) => fault.code(),
         }
     }
 }
@@ -167,61 +174,58 @@ impl From<io::Error> for AcknowledgedError {
 pub struct AcknowledgedLedger {
     log: FileLedger,
     anchors: AnchorStore,
+    paths: LogPaths,
     fenced: bool,
 }
 
 impl AcknowledgedLedger {
     /// Create a new log and its first anchor. Neither file may already exist, so
     /// this can never adopt a history it did not create.
-    pub fn create(
-        log_path: impl AsRef<Path>,
-        anchor_path: impl AsRef<Path>,
-        key: AnchorKey,
-    ) -> Result<Self, AcknowledgedError> {
-        let anchor_path = anchor_path.as_ref();
-        if anchor_path.exists() {
+    pub fn create(paths: &LogPaths, key: AnchorKey) -> Result<Self, AcknowledgedError> {
+        if paths.anchor_path().exists() {
             return Err(AnchorError::Exists.into());
         }
-        let log = FileLedger::create_new(log_path)?;
-        let anchors = AnchorStore::initialize(anchor_path, key, ProtectedAnchor::initial())?;
+        let log = FileLedger::create_new(paths.log_path(CommitIndex(0)))?;
+        let anchors =
+            AnchorStore::initialize(paths.anchor_path(), key, ProtectedAnchor::initial())?;
         Ok(Self {
             log,
             anchors,
+            paths: paths.clone(),
             fenced: false,
         })
     }
 
-    /// Classify an existing pair without modifying either file.
+    /// Classify an existing set without modifying anything.
     ///
     /// `minimum_epoch` is the rollback witness described on
     /// [`AnchorStore::open_expecting`]; pass 0 only when anchor-file rollback is
     /// genuinely out of scope.
     pub fn inspect(
-        log_path: impl AsRef<Path>,
-        anchor_path: impl AsRef<Path>,
+        paths: &LogPaths,
         key: AnchorKey,
         minimum_epoch: u64,
     ) -> Result<(Split, ProtectedAnchor), AcknowledgedError> {
-        let anchors = AnchorStore::open_expecting(anchor_path, key, minimum_epoch)?;
+        let anchors = AnchorStore::open_expecting(paths.anchor_path(), key, minimum_epoch)?;
         let anchor = anchors.current();
-        let locked = FileLedger::lock_for_recovery(log_path, anchor.base)?;
+        let locked = FileLedger::lock_for_recovery(paths.log_path(anchor.base.index), anchor.base)?;
         Ok((locked.classify(anchor), anchor))
     }
 
-    /// Open an existing pair, repairing only an unacknowledged tail.
+    /// Open an existing set, repairing only an unacknowledged tail.
     ///
-    /// Returns the split that was found, so a caller can record that recovery
-    /// happened rather than infer it.
+    /// The anchor names the live log, so a cutover interrupted on either side of
+    /// its commit point resolves here without a guess. Returns the split that was
+    /// found, so a caller can record that recovery happened rather than infer it.
     pub fn open(
-        log_path: impl AsRef<Path>,
-        anchor_path: impl AsRef<Path>,
+        paths: &LogPaths,
         key: AnchorKey,
         minimum_epoch: u64,
         policy: TailPolicy,
     ) -> Result<(Self, Split), AcknowledgedError> {
-        let mut anchors = AnchorStore::open_expecting(anchor_path, key, minimum_epoch)?;
+        let mut anchors = AnchorStore::open_expecting(paths.anchor_path(), key, minimum_epoch)?;
         let anchor = anchors.current();
-        let locked = FileLedger::lock_for_recovery(log_path, anchor.base)?;
+        let locked = FileLedger::lock_for_recovery(paths.log_path(anchor.base.index), anchor.base)?;
         let split = locked.classify(anchor);
         match split {
             Split::Aligned => {}
@@ -247,6 +251,7 @@ impl AcknowledgedLedger {
             Self {
                 log,
                 anchors,
+                paths: paths.clone(),
                 fenced: false,
             },
             split,
@@ -292,5 +297,109 @@ impl AcknowledgedLedger {
 
     pub fn log(&self) -> &FileLedger {
         &self.log
+    }
+
+    pub fn paths(&self) -> &LogPaths {
+        &self.paths
+    }
+
+    /// Ask a retention policy whether any prefix may be discarded.
+    ///
+    /// The proposal is capped by [`CompactionBarrier::snapshot_covers`], because
+    /// discarding records that no snapshot covers destroys the only description of
+    /// the state they produced. An unsafe barrier blocks outright: a consumer that
+    /// has not caught up still needs the records, and an unresolved revocation
+    /// must not have its evidence removed while it is still in force.
+    pub fn plan_compaction(
+        &self,
+        policy: RetentionPolicy,
+        barrier: CompactionBarrier,
+    ) -> Result<CompactionDecision, AcknowledgedError> {
+        let anchor = self.anchors.current();
+        let floor = anchor.base.index.0;
+        let tail = anchor.log;
+        if tail.index.0.saturating_sub(floor) <= policy.keep_records {
+            return Ok(CompactionDecision::Retain);
+        }
+        if !barrier.safe() {
+            return Ok(CompactionDecision::Blocked(barrier));
+        }
+        let proposed = (tail.index.0 - policy.keep_records).min(barrier.snapshot_covers.0);
+        if proposed <= floor {
+            return Ok(CompactionDecision::Blocked(barrier));
+        }
+        let anchors = integrity::chain_anchors(self.log.events(), anchor.base)?;
+        let offset = (proposed - floor) as usize;
+        let base = *anchors
+            .get(offset - 1)
+            .ok_or(CompactionFault::FloorNotOnBoundary)?;
+        Ok(CompactionDecision::Compact(CompactionPlan {
+            base,
+            tail,
+            discarded_records: proposed - floor,
+            retained_records: tail.index.0 - proposed,
+        }))
+    }
+
+    /// Execute a cutover: build the compacted log, then advance the anchor.
+    ///
+    /// The anchor advance is the commit point, and it is the only step that
+    /// changes which file is live. Everything before it is validated and
+    /// create-new, so a failure leaves the previous log authoritative and the
+    /// half-built artifact an orphan. Nothing is overwritten and nothing is
+    /// deleted; see [`Self::reclaim_orphans`].
+    pub fn compact(
+        &mut self,
+        plan: CompactionPlan,
+    ) -> Result<CompactionOutcome, AcknowledgedError> {
+        if self.fenced {
+            return Err(AcknowledgedError::Fenced);
+        }
+        let anchor = self.anchors.current();
+        if plan.tail != anchor.log {
+            return Err(CompactionFault::StalePlan.into());
+        }
+        if plan.base.index.0 <= anchor.base.index.0 {
+            return Err(CompactionFault::FloorNotAdvancing.into());
+        }
+        if plan.base.index.0 > anchor.log.index.0 {
+            return Err(CompactionFault::FloorAboveTail.into());
+        }
+        let offset = (plan.base.index.0 - anchor.base.index.0) as usize;
+        let anchors = integrity::chain_anchors(self.log.events(), anchor.base)?;
+        if anchors.get(offset - 1) != Some(&plan.base) {
+            return Err(CompactionFault::FloorNotOnBoundary.into());
+        }
+        let retained = self.log.events()[offset..].to_vec();
+        let bytes = integrity::encode_log_from(&retained, plan.base)?;
+        let live_log = self.paths.log_path(plan.base.index);
+        let superseded_log = self.paths.log_path(anchor.base.index);
+        if live_log.exists() {
+            return Err(CompactionFault::DestinationExists.into());
+        }
+        let compacted = FileLedger::create_from_log_above(&live_log, &bytes, plan.base, plan.tail)?;
+        self.anchors.advance_compacted(plan.base, plan.tail)?;
+        // Past the commit point the anchor names the new file, so installing it
+        // here cannot disagree with what a reopen would resolve.
+        self.log = compacted;
+        Ok(CompactionOutcome {
+            plan,
+            live_log,
+            superseded_log,
+        })
+    }
+
+    /// Delete log files of this set that the anchor does not name.
+    ///
+    /// Only call this on a ledger opened with a witnessed epoch. Under a
+    /// rolled-back anchor the live file is the one that looks like an orphan, and
+    /// this would delete exactly the history that was being protected.
+    pub fn reclaim_orphans(&self) -> Result<Vec<PathBuf>, AcknowledgedError> {
+        let live = self.anchors.current().base.index;
+        let orphans = self.paths.orphans(live)?;
+        for path in &orphans {
+            std::fs::remove_file(path)?;
+        }
+        Ok(orphans)
     }
 }

@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-19  
-**Code footprint:** 5 Rust source files · 2138 nonblank source lines · 8 integration-test files · 39 `#[test]` markers
+**Code footprint:** 6 Rust source files · 2441 nonblank source lines · 9 integration-test files · 50 `#[test]` markers
 
 ### Implemented now
 
@@ -24,6 +24,9 @@
 - AcknowledgedLedger log-first append/acknowledge ordering with writer fencing when anchor publication fails
 - RecoverableLog classifies every log/anchor split under one held lock and repairs only the tail per explicit TailPolicy
 - integrity scan/encode/decode accept a trusted compaction floor so a log need not begin at index 1
+- LogPaths floor-in-filename addressing: the protected anchor alone names the live log, so a cutover is unambiguous on both sides of its commit point
+- RetentionPolicy/CompactionBarrier planning capped by snapshot coverage and blocked by lagging consumers or unresolved revocations
+- Create-new compaction cutover with the anchor advance as commit point, revalidated plans and explicit orphan reclamation
 - Cross-process single-writer advisory lock retained for FileLedger handle lifetime
 - Poisoned writer after ambiguous append failure; reopen/replay required before subsequent writes
 - Lifecycle LedgerEvent enum
@@ -40,13 +43,14 @@
 - Hardware power-loss evidence; anchor key custody, rotation and hardware-backed sealing
 - Multi-node raft-rs consensus adapter with transport, persistent Raft storage and membership changes
 - fsync/durability modes and revocation barriers
-- Compaction/retention policy, trusted cutover and compacted-state reconstruction; distributed snapshot/compaction protocols
+- Runtime compacted materialized snapshot establishing snapshot_covers, so exact compacted-state reconstruction is not yet demonstrable end to end
+- Distributed snapshot/compaction protocols and cross-node cutover
 
 ### Next milestones
 
 - Define storage/consensus interfaces around existing Ledger contract
 - Benchmark FileLedger against raft-engine, then connect raft-rs RawNode to raft-engine persistence and network transport
-- Implement compaction/retention over the protected-anchor floor, then trusted cutover
+- Add a ptr-runtime compacted materialized snapshot that covers a floor and restores from a compacted log
 - Expand L001 failpoint matrix to process-abort and durable-backend cases, then run L002 cluster recovery
 
 ### Linked experiments
@@ -74,6 +78,9 @@
 - Every single-bit mutation and every length variation of the 168-byte anchor record rejected
 - Every log/anchor split outcome: aligned, unacknowledged, lost suffix, rehashed divergence, foreign origin and base mismatch
 - Stale-witness anchor rollback, interrupted publication and fenced writer after failed acknowledgment
+- Retention bounds, barrier blocking and snapshot-coverage capping of the proposed floor
+- Cutover interrupted on both sides of its commit point, orphan reclamation and exact retained-suffix reconstruction
+- Stale, non-advancing, above-tail and wrong-digest plans refused without mutation; destination never overwritten
 - FileLedger all-event reopen and partial-tail crash recovery tests
 - FileLedger strict open never truncates; explicit recovery requires an independent matching prefix anchor
 - fail-rs panic-after-length-prefix recovery test

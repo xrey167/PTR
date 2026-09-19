@@ -179,15 +179,101 @@ unit tests in `ptr-ledger::anchor`:
 
 ## Compaction and retention
 
-Not implemented. The format already carries `base_index`/`base_digest` and
-`integrity::{scan_from, decode_log_from, encode_log_from}` accept a trusted
-floor, so a compacted log can be validated against an anchor rather than against
-its own first bytes. The remaining work is the retention policy driving
-`CompactionBarrier`, the cutover that publishes a compacted log without
-overwriting the live one, and exact compacted-state reconstruction evidence.
+Owner: `ptr-ledger::compaction`.
 
-Until then a compacted log is not producible by this crate, and `FileLedger::open`
-on a log that does not begin at index 1 fails closed rather than guessing a floor.
+### Why the floor is in the file name
+
+Compaction discards a prefix of committed history, so the design is decided by
+what a crash mid-cutover leaves behind. Renaming a newly built log over the live
+one cannot answer that: afterwards the file either starts at index 1 or above the
+floor, and with a single fixed path both states produce the same
+`PTR_LOG_CHAIN_OR_ORDER` error and neither can be distinguished from corruption.
+
+So `LogPaths` puts the floor in the name — `<stem>-<base:020>.log`, with the
+anchor at the fixed `<stem>.anchor` — and the protected anchor is the only thing
+that says which file is live. This is the same trust direction as everything else
+here: the floor is trusted input, never read from the artifact being validated.
+
+### The cutover
+
+```mermaid
+flowchart LR
+    P[plan_compaction] --> V[Validate floor against this log]
+    V --> B[Build and verify new file, create-new]
+    B --> C[advance_compacted: COMMIT POINT]
+    C --> L[New file is live]
+    B -. crash .-> O1[Old file live, new file orphan]
+    C -. crash .-> O2[New file live, old file orphan]
+    O1 --> R[reclaim_orphans]
+    O2 --> R
+```
+
+The anchor advance is the commit point and the only step that changes which file
+is live. Everything before it is validated and create-new, so a failure leaves the
+previous log authoritative and the half-built artifact an orphan. Both
+interruption sides are unambiguous, nothing is overwritten, and nothing is
+deleted implicitly.
+
+`reclaim_orphans` deletes only log files the anchor does not name, and carries an
+explicit precondition: **it must run only on a ledger opened with a witnessed
+epoch.** Under a rolled-back anchor the live file is the one that looks like an
+orphan, and reclamation would delete exactly the history the anchor exists to
+protect.
+
+### What bounds the floor
+
+`plan_compaction` returns `Retain`, `Blocked(barrier)` or `Compact(plan)`.
+`RetentionPolicy::keep_records` proposes a floor, and two things bound it:
+
+- `CompactionBarrier::snapshot_covers` caps it. Discarding records no snapshot
+  covers destroys the only description of the state they produced, so the cap is
+  a correctness requirement rather than a tuning knob.
+- An unsafe barrier blocks outright. A consumer that has not caught up still
+  needs the records, and an unresolved revocation must not have its evidence
+  removed while it is still in force (global invariant 3).
+
+A `CompactionPlan` is therefore not permission on its own; it is only reachable
+through a barrier that already allows it. A cutover revalidates the plan against
+the live state and refuses a stale tail, a non-advancing floor, a floor above the
+tail, a floor that is not a record boundary of this log, and an existing
+destination — each without touching anything.
+
+### Executed evidence
+
+`crates/ptr-ledger/tests/compaction.rs`, 11 integration tests:
+
+- Retention holds below and exactly at the keep count, and proposes the expected
+  floor above it.
+- An unsafe barrier blocks for both a lagging consumer and an unresolved
+  revocation.
+- The floor is capped by snapshot coverage, and coverage at or below the current
+  floor blocks.
+- A cutover reconstructs exactly the retained suffix at its original indices,
+  leaves the tail unmoved, keeps the superseded file, continues appending on the
+  same chain, and reopens to the identical history.
+- A compacted log is rejected by `decode_log` and `FileLedger::open` and verifies
+  only against its floor from anchor storage.
+- Interruption before the commit point: old log live, new file reported as an
+  orphan, reclaimed, retry succeeds.
+- Interruption after the commit point: new log live, old file reclaimable,
+  reopen exact.
+- Stale, non-advancing, above-tail and wrong-digest plans each refused with the
+  ledger unchanged, then the valid plan still succeeds.
+- An existing destination is never overwritten, byte-for-byte.
+- The origin survives discarding index 1: the log can no longer derive it, the
+  anchor carries it, and later appends preserve it.
+- `LostSuffix` and unacknowledged-tail recovery still apply above a compacted
+  floor.
+
+### Not yet covered
+
+`snapshot_covers` is an input the caller must justify. `ptr-runtime` cannot yet
+produce a snapshot that covers a floor and restores from a compacted log:
+`RecoverySnapshot` retains the complete journal by construction and is documented
+as not being a compacted materialized snapshot. Until that exists, a host can
+only compact up to a coverage bound it establishes by other means, and
+**exact compacted-state reconstruction at the runtime level remains open** —
+the last item of this gate.
 
 ## Explicitly out of scope here
 

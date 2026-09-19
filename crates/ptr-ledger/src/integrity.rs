@@ -131,6 +131,29 @@ pub fn encode_log_from(events: &[CommittedEvent], base: LogAnchor) -> io::Result
     Ok(bytes)
 }
 
+/// Anchor produced by each event of an ordered list continuing above `base`.
+///
+/// Compaction needs the anchor at a chosen floor, and a `FileLedger` keeps only
+/// its tail. Recomputing through the canonical encoder means the floor a cutover
+/// commits to is derived the same way the records were written, not by a second
+/// implementation that could disagree.
+pub fn chain_anchors(events: &[CommittedEvent], base: LogAnchor) -> io::Result<Vec<LogAnchor>> {
+    if events.len() > MAX_RECORDS {
+        return Err(invalid("PTR_LOG_RECORD_LIMIT"));
+    }
+    let mut anchors = Vec::with_capacity(events.len());
+    let mut anchor = base;
+    for committed in events {
+        let (_, next) = encode_record(&committed.event, anchor)?;
+        if committed.index != next.index {
+            return Err(invalid("PTR_LOG_INDEX_MISMATCH"));
+        }
+        anchors.push(next);
+        anchor = next;
+    }
+    Ok(anchors)
+}
+
 pub(crate) struct Prefix {
     pub verified: VerifiedLog,
     pub complete_bytes: usize,

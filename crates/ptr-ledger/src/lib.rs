@@ -1,8 +1,13 @@
 pub mod acknowledged;
 pub mod anchor;
+pub mod compaction;
 mod file;
 pub mod integrity;
 pub use acknowledged::{AcknowledgedError, AcknowledgedLedger, Split, TailPolicy, TailRecovery};
+pub use compaction::{
+    CompactionDecision, CompactionFault, CompactionOutcome, CompactionPlan, LogPaths,
+    RetentionPolicy,
+};
 pub use file::{FileLedger, LegacyLog, RecoverableLog};
 
 use ptr_types::{CapsuleId, CommitIndex, Generation, ProjectId, Revision};
@@ -83,7 +88,7 @@ impl Ledger for InMemoryLedger {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CompactionBarrier {
     pub snapshot_covers: CommitIndex,
     pub all_consumers_caught_up: bool,

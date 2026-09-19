@@ -5,6 +5,7 @@
 //! an unrecoverable state must refuse *and* leave every byte in place.
 use ptr_ledger::acknowledged::{AcknowledgedError, AcknowledgedLedger, Split, TailPolicy};
 use ptr_ledger::anchor::{AnchorError, AnchorKey, AnchorStore, ChainOrigin, ProtectedAnchor};
+use ptr_ledger::compaction::LogPaths;
 use ptr_ledger::integrity::{decode_log, encode_log, LogAnchor};
 use ptr_ledger::{CommittedEvent, FileLedger, LedgerEvent};
 use ptr_types::{CommitIndex, Generation};
@@ -23,11 +24,15 @@ impl Temp {
         std::fs::create_dir(&path).unwrap();
         Self(path)
     }
+    fn paths(&self) -> LogPaths {
+        LogPaths::new(&self.0, "journal")
+    }
+    /// The uncompacted log, whose floor is index 0.
     fn log(&self) -> PathBuf {
-        self.0.join("log")
+        self.paths().log_path(CommitIndex(0))
     }
     fn anchor(&self) -> PathBuf {
-        self.0.join("anchor")
+        self.paths().anchor_path()
     }
 }
 impl Drop for Temp {
@@ -66,6 +71,12 @@ fn subjects(events: &[CommittedEvent]) -> Vec<String> {
 fn snapshot(path: &Path) -> Vec<u8> {
     std::fs::read(path).unwrap()
 }
+/// Scratch name an interrupted anchor publication leaves behind.
+fn scratch_of(anchor: &Path) -> PathBuf {
+    let mut name = anchor.file_name().unwrap().to_os_string();
+    name.push(".publishing");
+    anchor.with_file_name(name)
+}
 
 /// Append durably without advancing the anchor: exactly the state a crash between
 /// the two synchronized writes leaves behind.
@@ -75,7 +86,7 @@ fn append_without_acknowledging(log: &Path, event: LedgerEvent) {
 }
 
 fn make_ledger(tmp: &Temp, records: u64) -> AcknowledgedLedger {
-    let mut ledger = AcknowledgedLedger::create(tmp.log(), tmp.anchor(), key()).unwrap();
+    let mut ledger = AcknowledgedLedger::create(&tmp.paths(), key()).unwrap();
     for n in 1..=records {
         assert_eq!(
             ledger.append_acknowledged(revocation(n)).unwrap(),
@@ -194,7 +205,7 @@ fn stale_witness_rollback_is_detected_only_by_the_retained_epoch() {
 
     // The rolled-back anchor now describes less history than the log holds, so
     // the acknowledgment layer reports a recoverable tail rather than health.
-    let (split, _) = AcknowledgedLedger::inspect(tmp.log(), tmp.anchor(), key(), 0).unwrap();
+    let (split, _) = AcknowledgedLedger::inspect(&tmp.paths(), key(), 0).unwrap();
     assert!(matches!(
         split,
         Split::Unacknowledged {
@@ -213,21 +224,16 @@ fn interrupted_publication_leaves_the_previous_anchor_authoritative() {
     drop(ledger);
 
     // A scratch file is what a crash between write and rename leaves behind.
-    let scratch = tmp.0.join("anchor.publishing");
+    let scratch = scratch_of(&tmp.anchor());
     std::fs::write(&scratch, b"interrupted publication garbage").unwrap();
     let reopened = AnchorStore::open(tmp.anchor(), key()).unwrap();
     assert_eq!(reopened.current(), before);
     drop(reopened);
 
     // The next publication replaces the scratch file instead of tripping over it.
-    let (mut ledger, split) = AcknowledgedLedger::open(
-        tmp.log(),
-        tmp.anchor(),
-        key(),
-        before.epoch,
-        TailPolicy::Acknowledge,
-    )
-    .unwrap();
+    let (mut ledger, split) =
+        AcknowledgedLedger::open(&tmp.paths(), key(), before.epoch, TailPolicy::Acknowledge)
+            .unwrap();
     assert_eq!(split, Split::Aligned);
     ledger.append_acknowledged(revocation(2)).unwrap();
     assert_eq!(ledger.anchor().log.index, CommitIndex(2));
@@ -252,14 +258,9 @@ fn acknowledged_appends_keep_the_pair_aligned_across_reopen() {
     assert_eq!(subjects(ledger.events()).len(), 3);
     drop(ledger);
 
-    let (reopened, split) = AcknowledgedLedger::open(
-        tmp.log(),
-        tmp.anchor(),
-        key(),
-        anchor.epoch,
-        TailPolicy::Acknowledge,
-    )
-    .unwrap();
+    let (reopened, split) =
+        AcknowledgedLedger::open(&tmp.paths(), key(), anchor.epoch, TailPolicy::Acknowledge)
+            .unwrap();
     assert_eq!(split, Split::Aligned);
     assert_eq!(reopened.anchor(), anchor);
     assert_eq!(
@@ -276,7 +277,7 @@ fn durable_unacknowledged_records_are_kept_by_default() {
     drop(ledger);
     append_without_acknowledging(&tmp.log(), revocation(3));
 
-    let (split, _) = AcknowledgedLedger::inspect(tmp.log(), tmp.anchor(), key(), 0).unwrap();
+    let (split, _) = AcknowledgedLedger::inspect(&tmp.paths(), key(), 0).unwrap();
     assert!(matches!(
         split,
         Split::Unacknowledged {
@@ -287,14 +288,9 @@ fn durable_unacknowledged_records_are_kept_by_default() {
     ));
     assert!(split.is_recoverable());
 
-    let (recovered, observed) = AcknowledgedLedger::open(
-        tmp.log(),
-        tmp.anchor(),
-        key(),
-        before.epoch,
-        TailPolicy::Acknowledge,
-    )
-    .unwrap();
+    let (recovered, observed) =
+        AcknowledgedLedger::open(&tmp.paths(), key(), before.epoch, TailPolicy::Acknowledge)
+            .unwrap();
     assert_eq!(observed, split);
     // A revocation that reached the log stays in force after recovery.
     assert_eq!(
@@ -316,27 +312,15 @@ fn discarding_durable_records_requires_an_explicit_policy() {
     let with_tail = snapshot(&tmp.log());
 
     // Refusing changes nothing at all.
-    let refused = AcknowledgedLedger::open(
-        tmp.log(),
-        tmp.anchor(),
-        key(),
-        before.epoch,
-        TailPolicy::Refuse,
-    );
+    let refused = AcknowledgedLedger::open(&tmp.paths(), key(), before.epoch, TailPolicy::Refuse);
     assert_eq!(
         refused.err().map(|error| error.code()),
         Some("PTR_ACK_TAIL_REFUSED")
     );
     assert_eq!(snapshot(&tmp.log()), with_tail);
 
-    let (trimmed, _) = AcknowledgedLedger::open(
-        tmp.log(),
-        tmp.anchor(),
-        key(),
-        before.epoch,
-        TailPolicy::Discard,
-    )
-    .unwrap();
+    let (trimmed, _) =
+        AcknowledgedLedger::open(&tmp.paths(), key(), before.epoch, TailPolicy::Discard).unwrap();
     assert_eq!(subjects(trimmed.events()), ["subject:1", "subject:2"]);
     assert_eq!(trimmed.anchor().log, before.log);
     // Discard does not advance the anchor, because nothing new was acknowledged.
@@ -366,7 +350,7 @@ fn an_incomplete_frame_is_never_a_record_under_any_policy() {
         torn.extend_from_slice(b"PTRFR002");
         std::fs::write(tmp.log(), &torn).unwrap();
 
-        let (split, _) = AcknowledgedLedger::inspect(tmp.log(), tmp.anchor(), key(), 0).unwrap();
+        let (split, _) = AcknowledgedLedger::inspect(&tmp.paths(), key(), 0).unwrap();
         assert_eq!(
             split,
             Split::Unacknowledged {
@@ -377,16 +361,13 @@ fn an_incomplete_frame_is_never_a_record_under_any_policy() {
         );
 
         if policy == TailPolicy::Refuse {
-            assert!(
-                AcknowledgedLedger::open(tmp.log(), tmp.anchor(), key(), before.epoch, policy)
-                    .is_err()
-            );
+            assert!(AcknowledgedLedger::open(&tmp.paths(), key(), before.epoch, policy).is_err());
             assert_eq!(snapshot(&tmp.log()), torn);
             continue;
         }
 
         let (repaired, _) =
-            AcknowledgedLedger::open(tmp.log(), tmp.anchor(), key(), before.epoch, policy).unwrap();
+            AcknowledgedLedger::open(&tmp.paths(), key(), before.epoch, policy).unwrap();
         assert_eq!(subjects(repaired.events()), ["subject:1", "subject:2"]);
         assert_eq!(repaired.anchor(), before);
         assert_eq!(snapshot(&tmp.log()), complete);
@@ -405,7 +386,7 @@ fn a_log_behind_its_anchor_is_refused_and_left_untouched() {
     let shortened = encode_log(&[committed(1), committed(2)]).unwrap();
     std::fs::write(tmp.log(), &shortened).unwrap();
 
-    let (split, _) = AcknowledgedLedger::inspect(tmp.log(), tmp.anchor(), key(), 0).unwrap();
+    let (split, _) = AcknowledgedLedger::inspect(&tmp.paths(), key(), 0).unwrap();
     assert_eq!(
         split,
         Split::LostSuffix {
@@ -420,7 +401,7 @@ fn a_log_behind_its_anchor_is_refused_and_left_untouched() {
         TailPolicy::Discard,
         TailPolicy::Refuse,
     ] {
-        let error = AcknowledgedLedger::open(tmp.log(), tmp.anchor(), key(), anchor.epoch, policy)
+        let error = AcknowledgedLedger::open(&tmp.paths(), key(), anchor.epoch, policy)
             .err()
             .unwrap();
         assert_eq!(error.code(), "PTR_ACK_LOST_SUFFIX");
@@ -454,17 +435,12 @@ fn a_rehashed_alternative_suffix_is_refused_although_its_chain_is_valid() {
     assert!(decode_log(&alternative).is_ok());
     std::fs::write(tmp.log(), &alternative).unwrap();
 
-    let (split, _) = AcknowledgedLedger::inspect(tmp.log(), tmp.anchor(), key(), 0).unwrap();
+    let (split, _) = AcknowledgedLedger::inspect(&tmp.paths(), key(), 0).unwrap();
     assert_eq!(split, Split::Diverged);
-    let error = AcknowledgedLedger::open(
-        tmp.log(),
-        tmp.anchor(),
-        key(),
-        anchor.epoch,
-        TailPolicy::Acknowledge,
-    )
-    .err()
-    .unwrap();
+    let error =
+        AcknowledgedLedger::open(&tmp.paths(), key(), anchor.epoch, TailPolicy::Acknowledge)
+            .err()
+            .unwrap();
     assert_eq!(error.code(), "PTR_ACK_DIVERGED");
     assert_eq!(snapshot(&tmp.log()), alternative);
 }
@@ -477,7 +453,7 @@ fn an_anchor_from_another_log_is_refused_by_origin() {
     let mine_anchor = mine.anchor();
     drop(mine);
 
-    let mut other = AcknowledgedLedger::create(theirs.log(), theirs.anchor(), key()).unwrap();
+    let mut other = AcknowledgedLedger::create(&theirs.paths(), key()).unwrap();
     other.append_acknowledged(revocation(100)).unwrap();
     other.append_acknowledged(revocation(200)).unwrap();
     let other_anchor = other.anchor();
@@ -485,19 +461,12 @@ fn an_anchor_from_another_log_is_refused_by_origin() {
     assert_ne!(mine_anchor.origin, other_anchor.origin);
 
     // Present our anchor beside their log.
-    std::fs::copy(ours.anchor(), theirs.0.join("swapped")).unwrap();
-    let (split, _) =
-        AcknowledgedLedger::inspect(theirs.log(), theirs.0.join("swapped"), key(), 0).unwrap();
+    std::fs::copy(ours.anchor(), theirs.anchor()).unwrap();
+    let (split, _) = AcknowledgedLedger::inspect(&theirs.paths(), key(), 0).unwrap();
     assert_eq!(split, Split::OriginMismatch);
-    let error = AcknowledgedLedger::open(
-        theirs.log(),
-        theirs.0.join("swapped"),
-        key(),
-        0,
-        TailPolicy::Acknowledge,
-    )
-    .err()
-    .unwrap();
+    let error = AcknowledgedLedger::open(&theirs.paths(), key(), 0, TailPolicy::Acknowledge)
+        .err()
+        .unwrap();
     assert_eq!(error.code(), "PTR_ACK_ORIGIN_MISMATCH");
 }
 
@@ -509,7 +478,7 @@ fn a_failed_acknowledgment_fences_the_writer_and_leaves_a_recoverable_tail() {
 
     // Occupying the scratch name with a directory makes publication fail without
     // touching the log, which is the ordering this protocol is built around.
-    std::fs::create_dir(tmp.0.join("anchor.publishing")).unwrap();
+    std::fs::create_dir(scratch_of(&tmp.anchor())).unwrap();
     let failure = ledger.append_acknowledged(revocation(2)).err().unwrap();
     assert_eq!(failure, AcknowledgedError::Anchor(AnchorError::Storage));
 
@@ -521,15 +490,10 @@ fn a_failed_acknowledgment_fences_the_writer_and_leaves_a_recoverable_tail() {
     assert_eq!(ledger.anchor(), before);
     drop(ledger);
 
-    std::fs::remove_dir(tmp.0.join("anchor.publishing")).unwrap();
-    let (recovered, split) = AcknowledgedLedger::open(
-        tmp.log(),
-        tmp.anchor(),
-        key(),
-        before.epoch,
-        TailPolicy::Acknowledge,
-    )
-    .unwrap();
+    std::fs::remove_dir(scratch_of(&tmp.anchor())).unwrap();
+    let (recovered, split) =
+        AcknowledgedLedger::open(&tmp.paths(), key(), before.epoch, TailPolicy::Acknowledge)
+            .unwrap();
     assert!(matches!(
         split,
         Split::Unacknowledged {
@@ -582,11 +546,11 @@ fn creating_a_pair_never_adopts_existing_files() {
     drop(ledger);
 
     // Both files present.
-    assert!(AcknowledgedLedger::create(tmp.log(), tmp.anchor(), key()).is_err());
+    assert!(AcknowledgedLedger::create(&tmp.paths(), key()).is_err());
     // Anchor present, log absent.
     std::fs::remove_file(tmp.log()).unwrap();
     assert_eq!(
-        AcknowledgedLedger::create(tmp.log(), tmp.anchor(), key())
+        AcknowledgedLedger::create(&tmp.paths(), key())
             .err()
             .map(|error| error.code()),
         Some("PTR_ANCHOR_EXISTS")
@@ -595,6 +559,6 @@ fn creating_a_pair_never_adopts_existing_files() {
     // Log present, anchor absent: the log is not adopted either.
     std::fs::remove_file(tmp.anchor()).unwrap();
     FileLedger::create_new(tmp.log()).unwrap();
-    assert!(AcknowledgedLedger::create(tmp.log(), tmp.anchor(), key()).is_err());
+    assert!(AcknowledgedLedger::create(&tmp.paths(), key()).is_err());
     assert!(!tmp.anchor().exists());
 }
