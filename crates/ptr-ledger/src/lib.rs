@@ -1,6 +1,9 @@
+pub mod acknowledged;
+pub mod anchor;
 mod file;
 pub mod integrity;
-pub use file::{FileLedger, LegacyLog};
+pub use acknowledged::{AcknowledgedError, AcknowledgedLedger, Split, TailPolicy, TailRecovery};
+pub use file::{FileLedger, LegacyLog, RecoverableLog};
 
 use ptr_types::{CapsuleId, CommitIndex, Generation, ProjectId, Revision};
 use std::io;

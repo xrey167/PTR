@@ -103,11 +103,20 @@ pub(crate) fn encode_record(
 
 /// Serialize a complete ordered log, with identical framing to FileLedger.
 pub fn encode_log(events: &[CommittedEvent]) -> io::Result<Vec<u8>> {
+    encode_log_from(events, LogAnchor::empty())
+}
+
+/// Serialize a log that continues above a compaction floor.
+///
+/// `base` must come from protected anchor storage. Deriving it from the bytes
+/// being encoded or decoded would let a substituted log choose its own starting
+/// point, which is the whole failure this parameter exists to prevent.
+pub fn encode_log_from(events: &[CommittedEvent], base: LogAnchor) -> io::Result<Vec<u8>> {
     if events.len() > MAX_RECORDS {
         return Err(invalid("PTR_LOG_RECORD_LIMIT"));
     }
     let mut bytes = LOG_MAGIC.to_vec();
-    let mut anchor = LogAnchor::empty();
+    let mut anchor = base;
     for committed in events {
         let (record, next) = encode_record(&committed.event, anchor)?;
         if committed.index != next.index {
@@ -126,11 +135,42 @@ pub(crate) struct Prefix {
     pub verified: VerifiedLog,
     pub complete_bytes: usize,
     pub incomplete: bool,
+    /// One entry per complete-record boundary, in order, starting with the base
+    /// itself: the byte offset just past the record and the anchor it produced.
+    /// Anchor-directed tail repair needs the byte position of a specific anchor,
+    /// which is not recoverable from the events alone.
+    pub milestones: Vec<(usize, LogAnchor)>,
+}
+
+impl Prefix {
+    /// Byte offset just past the record that produced `anchor`, when this log
+    /// actually contains that boundary.
+    pub fn offset_of(&self, anchor: LogAnchor) -> Option<usize> {
+        self.milestones
+            .iter()
+            .find(|(_, candidate)| *candidate == anchor)
+            .map(|(offset, _)| *offset)
+    }
+
+    /// Complete records that follow `anchor`, when this log contains it.
+    pub fn records_after(&self, anchor: LogAnchor) -> Option<usize> {
+        let position = self
+            .milestones
+            .iter()
+            .position(|(_, candidate)| *candidate == anchor)?;
+        Some(self.milestones.len() - 1 - position)
+    }
 }
 
 /// Internal scanner retains an incomplete *next* frame only for explicit
 /// anchor-checked recovery. An invalid complete header/payload is always an error.
 pub(crate) fn scan(bytes: &[u8]) -> io::Result<Prefix> {
+    scan_from(bytes, LogAnchor::empty())
+}
+
+/// Scan a log that continues above a compaction floor. `base` is trusted input
+/// from protected anchor storage, never read from `bytes`.
+pub(crate) fn scan_from(bytes: &[u8], base: LogAnchor) -> io::Result<Prefix> {
     if bytes.len() > MAX_LOG_BYTES {
         return Err(invalid("PTR_LOG_SIZE_LIMIT"));
     }
@@ -139,7 +179,8 @@ pub(crate) fn scan(bytes: &[u8]) -> io::Result<Prefix> {
     }
     let mut offset = LOG_MAGIC.len();
     let mut events = Vec::new();
-    let mut anchor = LogAnchor::empty();
+    let mut anchor = base;
+    let mut milestones = vec![(offset, anchor)];
     while offset < bytes.len() {
         if events.len() >= MAX_RECORDS {
             return Err(invalid("PTR_LOG_RECORD_LIMIT"));
@@ -203,18 +244,26 @@ pub(crate) fn scan(bytes: &[u8]) -> io::Result<Prefix> {
             digest: record_hash,
         };
         offset += total;
+        milestones.push((offset, anchor));
     }
     Ok(Prefix {
         verified: VerifiedLog { events, anchor },
         complete_bytes: offset,
         incomplete: offset != bytes.len(),
+        milestones,
     })
 }
 
 /// Strict decoding never repairs input. Truncation at a complete frame boundary
-/// additionally requires `require_anchor` to detect loss of a committed suffix.
+/// additionally requires [`VerifiedLog::require_anchor`] to detect loss of a
+/// committed suffix.
 pub fn decode_log(bytes: &[u8]) -> io::Result<VerifiedLog> {
-    let prefix = scan(bytes)?;
+    decode_log_from(bytes, LogAnchor::empty())
+}
+
+/// Strictly decode a log that continues above a compaction floor.
+pub fn decode_log_from(bytes: &[u8], base: LogAnchor) -> io::Result<VerifiedLog> {
+    let prefix = scan_from(bytes, base)?;
     if prefix.incomplete {
         return Err(invalid("PTR_LOG_INCOMPLETE_FRAME"));
     }

@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-19  
-**Code footprint:** 3 Rust source files · 1031 nonblank source lines · 7 integration-test files · 21 `#[test]` markers
+**Code footprint:** 5 Rust source files · 2138 nonblank source lines · 8 integration-test files · 39 `#[test]` markers
 
 ### Implemented now
 
@@ -19,6 +19,11 @@
 - Create-new checked-log restore and guarded explicit legacy inspection/migration
 - Explicit RAII unlock prevents duplicate-descriptor retention across concurrent process spawn
 - SemanticDeltaCommitted tag 8 preserves base/result revisions and opaque transaction bytes; legacy event tags are unchanged
+- PTRANC01 protected anchor storage: HMAC-SHA256 under a host-held key, fixed-length record, atomic rename publication, monotonic epoch/index/digest and carried chain origin
+- Retained-epoch witness rejects rollback of the anchor file itself; authenticity alone is documented as insufficient for freshness
+- AcknowledgedLedger log-first append/acknowledge ordering with writer fencing when anchor publication fails
+- RecoverableLog classifies every log/anchor split under one held lock and repairs only the tail per explicit TailPolicy
+- integrity scan/encode/decode accept a trusted compaction floor so a log need not begin at index 1
 - Cross-process single-writer advisory lock retained for FileLedger handle lifetime
 - Poisoned writer after ambiguous append failure; reopen/replay required before subsequent writes
 - Lifecycle LedgerEvent enum
@@ -32,15 +37,16 @@
 
 ### Missing for the target architecture
 
-- Independent anchor storage/authentication, full-file rollback witness and hardware power-loss evidence
+- Hardware power-loss evidence; anchor key custody, rotation and hardware-backed sealing
 - Multi-node raft-rs consensus adapter with transport, persistent Raft storage and membership changes
 - fsync/durability modes and revocation barriers
-- Compacted materialized snapshots and distributed snapshot/compaction protocols beyond replay-backed runtime snapshots
+- Compaction/retention policy, trusted cutover and compacted-state reconstruction; distributed snapshot/compaction protocols
 
 ### Next milestones
 
 - Define storage/consensus interfaces around existing Ledger contract
 - Benchmark FileLedger against raft-engine, then connect raft-rs RawNode to raft-engine persistence and network transport
+- Implement compaction/retention over the protected-anchor floor, then trusted cutover
 - Expand L001 failpoint matrix to process-abort and durable-backend cases, then run L002 cluster recovery
 
 ### Linked experiments
@@ -64,6 +70,10 @@
 - Every single-bit mutation of the reference log, independent hashlib golden vector, ordering and hostile-length rejection
 - Every partial-frame cut, wrong anchor, complete suffix loss and rehashed alternative-history rejection
 - Create-new destination safety, guarded legacy migration and duplicate-descriptor unlock regression
+- RFC 4231 HMAC-SHA256 known answers, constant-time comparison and redacted key Debug output
+- Every single-bit mutation and every length variation of the 168-byte anchor record rejected
+- Every log/anchor split outcome: aligned, unacknowledged, lost suffix, rehashed divergence, foreign origin and base mismatch
+- Stale-witness anchor rollback, interrupted publication and fenced writer after failed acknowledgment
 - FileLedger all-event reopen and partial-tail crash recovery tests
 - FileLedger strict open never truncates; explicit recovery requires an independent matching prefix anchor
 - fail-rs panic-after-length-prefix recovery test

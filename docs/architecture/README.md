@@ -37,6 +37,7 @@
 - [21-scoped-execution.md](21-scoped-execution.md)
 - [22-durable-semantic-state.md](22-durable-semantic-state.md)
 - [23-persistence-integrity.md](23-persistence-integrity.md)
+- [24-protected-anchors.md](24-protected-anchors.md)
 - [Open architecture catalog](../../research/catalogs/README.md) — unresolved type families, backend slots and component contracts
 
 ## Component-level documentation
