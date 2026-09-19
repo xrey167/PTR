@@ -133,12 +133,15 @@ fn snapshot_restores_exact_state_dependencies_tombstones_and_append_position() {
         PtrRuntime::open_durable_at(PtrConfig::default(), tmp.path("log"), next_anchor).unwrap();
     assert_eq!(reopened.revision(), Revision(3));
     assert_eq!(reopened.snapshot().get("request:new:raw"), Some("next"));
-    assert!(PtrRuntime::open_durable_at(
-        PtrConfig::default(),
-        tmp.path("log"),
-        snapshot.anchor().log
-    )
-    .is_err());
+    drop(reopened);
+    let error =
+        PtrRuntime::open_durable_at(PtrConfig::default(), tmp.path("log"), snapshot.anchor().log)
+            .err()
+            .expect("an outdated anchor must fail after the lock is released");
+    assert!(
+        matches!(error, ptr_runtime::RuntimeError::Ledger(ref message)
+        if message == "PTR_LOG_ANCHOR_MISMATCH")
+    );
 }
 
 #[test]
