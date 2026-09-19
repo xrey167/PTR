@@ -1,0 +1,54 @@
+name: semantic-source-stage
+on:
+  push:
+    branches: [agent/p0-semantic-durability-20260919]
+    paths: [.github/workflows/semantic-source-stage.yml]
+permissions:
+  contents: read
+jobs:
+  integrate:
+    if: github.repository == 'xrey167/PTR' && github.ref == 'refs/heads/agent/p0-semantic-durability-20260919'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Integrate bounded source changes and synchronize documentation
+        run: |
+          python scripts/_prepare_semantic_source.py
+          cargo +stable fmt --all
+          python scripts/update_component_docs.py --write
+          python scripts/update_component_docs.py --check
+          git add crates bins docs STATUS.md
+          python3 - <<'PY'
+          import subprocess
+          paths = subprocess.check_output(['git','diff','--cached','--name-only'],text=True).splitlines()
+          allowed = ('crates/ptr-runtime/', 'crates/ptr-semdb/', 'crates/ptr-ledger/', 'crates/ptr-state/', 'bins/ptr-bench/', 'docs/')
+          assert paths and all(p == 'STATUS.md' or p.startswith(allowed) for p in paths), paths
+          assert not any(p.endswith(('Cargo.toml','Cargo.lock')) for p in paths), paths
+          PY
+          mkdir -p /tmp/ptr-semantic-stage
+          git diff --cached --binary > /tmp/ptr-semantic-stage/source.patch
+          git ls-files -z | tar --null -T - -czf /tmp/ptr-semantic-stage/source.tar.gz
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ptr-semantic-integrated-source
+          path: /tmp/ptr-semantic-stage/
+          retention-days: 2
+      - name: Retain source on the unchanged review branch only
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          test "$GITHUB_REF" = refs/heads/agent/p0-semantic-durability-20260919
+          test "$(git ls-remote origin "$GITHUB_REF" | cut -f1)" = "$EXPECTED_SHA"
+          git config user.name 'PTR semantic review'
+          git config user.email '104269920+xrey167@users.noreply.github.com'
+          git commit -m 'feat: integrate journaled semantic values and replay; full verification pending'
+          git push origin HEAD:refs/heads/agent/p0-semantic-durability-20260919
