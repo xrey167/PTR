@@ -1,6 +1,6 @@
 use burn::{
     nn::loss::CrossEntropyLossConfig,
-    optim::{AdamConfig, GradientsParams, Optimizer},
+    optim::{AdamConfig, GradientsParams},
     prelude::*,
     tensor::Int,
 };
@@ -75,8 +75,8 @@ fn accuracy(model: &PtrA0, batch: &Batch) -> f32 {
         .equal(batch.labels.clone())
         .int()
         .sum()
-        .into_scalar();
-    correct.elem::<f32>() / 4.0
+        .into_scalar::<i64>();
+    correct as f32 / 4.0
 }
 
 fn train(typed: bool, seed: u64, steps: usize) -> (f32, f32, f32) {
@@ -89,7 +89,7 @@ fn train(typed: bool, seed: u64, steps: usize) -> (f32, f32, f32) {
     let mut optimizer = AdamConfig::new().init();
     let batch = batch(&device, typed);
 
-    let initial = loss(&model, &batch, &device).into_scalar().elem::<f32>();
+    let initial = loss(&model, &batch, &device).into_scalar::<f32>();
 
     for _ in 0..steps {
         let step_loss = loss(&model, &batch, &device);
@@ -97,7 +97,7 @@ fn train(typed: bool, seed: u64, steps: usize) -> (f32, f32, f32) {
         model = optimizer.step(0.02, model, gradients);
     }
 
-    let final_loss = loss(&model, &batch, &device).into_scalar().elem::<f32>();
+    let final_loss = loss(&model, &batch, &device).into_scalar::<f32>();
     let final_accuracy = accuracy(&model, &batch);
     (initial, final_loss, final_accuracy)
 }

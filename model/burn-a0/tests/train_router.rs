@@ -1,20 +1,20 @@
 use burn::{
     nn::loss::CrossEntropyLossConfig,
-    optim::{AdamConfig, GradientsParams, Optimizer},
+    optim::{AdamConfig, GradientsParams},
     prelude::*,
     tensor::Int,
 };
 use ptr_burn_a0::{PtrA0Config, PtrSlotMetadata};
 
-fn batch(
-    device: &Device,
-) -> (
-    Tensor<2, Int>,
-    Tensor<2, Int>,
-    Tensor<3>,
-    PtrSlotMetadata,
-    Tensor<1, Int>,
-) {
+struct TrainingBatch {
+    tokens: Tensor<2, Int>,
+    slot_types: Tensor<2, Int>,
+    slots: Tensor<3>,
+    metadata: PtrSlotMetadata,
+    labels: Tensor<1, Int>,
+}
+
+fn batch(device: &Device) -> TrainingBatch {
     let tokens = Tensor::<2, Int>::from_data([[1, 1], [1, 1], [1, 1], [1, 1]], device);
     let slot_types = Tensor::<2, Int>::from_data([[0, 4], [1, 4], [2, 4], [3, 4]], device);
     let slots = Tensor::<3>::zeros([4, 2, 12], device);
@@ -25,7 +25,13 @@ fn batch(
         confidence: Tensor::<2>::ones([4, 2], device),
     };
     let labels = Tensor::<1, Int>::from_data([0, 1, 2, 3], device);
-    (tokens, slot_types, slots, metadata, labels)
+    TrainingBatch {
+        tokens,
+        slot_types,
+        slots,
+        metadata,
+        labels,
+    }
 }
 
 #[test]
@@ -38,7 +44,13 @@ fn tiny_router_task_is_trainable() {
     let mut model = config.init(&device);
     let mut optimizer = AdamConfig::new().init();
 
-    let (tokens, slot_types, slots, metadata, labels) = batch(&device);
+    let TrainingBatch {
+        tokens,
+        slot_types,
+        slots,
+        metadata,
+        labels,
+    } = batch(&device);
     let initial_logits = model
         .forward(
             tokens.clone(),
@@ -55,7 +67,7 @@ fn tiny_router_task_is_trainable() {
     let initial = CrossEntropyLossConfig::new()
         .init(&device)
         .forward(initial_logits, labels.clone())
-        .into_scalar();
+        .into_scalar::<f32>();
 
     for _ in 0..120 {
         let output = model.forward(
@@ -82,7 +94,7 @@ fn tiny_router_task_is_trainable() {
     let final_loss = CrossEntropyLossConfig::new()
         .init(&device)
         .forward(final_logits, labels)
-        .into_scalar();
+        .into_scalar::<f32>();
 
     assert!(
         final_loss < initial,
