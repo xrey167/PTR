@@ -195,7 +195,32 @@ operator: String
 
 The same rule applies to capabilities, type IDs, lifecycle coordinates and future semantic-role metadata.
 
-## 7. Training implications
+## 7. Neural codebook
+
+The Rust enums are semantic contracts; their compiler discriminants are **not** a training/checkpoint format.
+
+PTR needs a versioned cognitive type codebook that maps shared semantic enums to stable tensor IDs:
+
+```text
+SemanticRole       -> semantic_role_id
+EpistemicState     -> epistemic_state_id
+UncertaintyKind    -> uncertainty_kind_id
+ReasoningOperator  -> reasoning_operator_id
+```
+
+Burn/PyTorch datasets, checkpoints and serving adapters must use the codebook version explicitly. Do not serialize `enum as u8` and assume the ordering remains stable.
+
+The current Burn A0 package already separates slot-type, epistemic, validity, provenance and confidence channels, which is directionally correct. Its current integer category counts remain research-local until the shared codebook is designed.
+
+The next model-alignment step is therefore:
+
+1. rename/focus opaque `slot_type` metadata as semantic-role metadata;
+2. add a separate uncertainty-kind channel;
+3. map model IDs through a versioned codebook;
+4. use the same mapping in datasets, training, checkpoints and inference;
+5. ablate fused versus separated embeddings.
+
+## 8. Training implications
 
 The type system is directly trainable/evaluable.
 
@@ -213,7 +238,7 @@ Potential supervised targets include:
 
 Ablations should compare fused versus separated type axes and measure whether each axis improves OOD semantic fidelity, calibration, routing quality, lifecycle correctness or sample efficiency.
 
-## 8. Typestate and Rust static types
+## 9. Typestate and Rust static types
 
 Rust typestate remains a second, complementary type layer.
 
@@ -225,13 +250,13 @@ Only `Ready` exposes invocation.
 
 Compile-time typestate is used where Rust can prevent an invalid transition entirely. Runtime semantic types are used where values originate from model/user/world state and therefore require validation.
 
-## 9. Probability
+## 10. Probability
 
 Probability is data, not permission.
 
 A high probability of a mutation being useful does not grant mutation capability. A calibrated hypothesis does not become committed state by crossing a numeric threshold.
 
-## 10. Ownership rule
+## 11. Ownership rule
 
 A type belongs in `ptr-types` when all of the following are true:
 
@@ -241,3 +266,16 @@ A type belongs in `ptr-types` when all of the following are true:
 4. moving it behind one component would create stringly-typed or duplicated cross-boundary semantics.
 
 A type stays in a component crate when it is primarily that component's aggregate, representation or execution detail.
+
+
+## 12. Current architecture gaps found in the audit
+
+The current prototype still has several places where the target type system is not fully propagated:
+
+- `Epistemic<T>` remains a useful prototype convenience wrapper, but its `Distribution` variant mixes uncertainty representation into epistemic state; new model metadata should use the separated axes.
+- Burn A0 uses local integer `slot_type`/epistemic IDs rather than a versioned shared cognitive codebook.
+- `SemanticCapsule` still stores goals/constraints/known/hypotheses/unknowns/relations as separate `Vec<String>` fields; memory should eventually store shared typed semantic objects instead.
+- `ActionIr` is a cross-component contract but is currently owned by `ptr-core`; its long-term shared ownership (`ptr-types` versus a dedicated action-contract crate) is still open.
+- Search scores and source/backend metadata still need stronger typed semantics before retrieval data can participate safely in the same cognitive type system.
+
+These are explicit architecture tasks, not reasons to collapse all component structs into `ptr-types`.
