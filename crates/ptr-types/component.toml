@@ -51,5 +51,5 @@ checks = [
   "lifecycle_versions_are_distinct_concepts unit test",
   "semantic_role_and_epistemic_state_are_independent_axes unit test",
   "reasoning_operator_is_a_typed_cross_component_contract unit test",
-  "workspace fmt/check/test/clippy",
+  "workspace fmt/check/test/clippy; merge-review formatting normalization",
 ]

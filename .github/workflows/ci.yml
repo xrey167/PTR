@@ -14,11 +14,12 @@ jobs:
       - run: cargo +stable fmt --all -- --check
       - run: cargo +stable clippy --workspace --all-targets -- -D warnings
       - run: cargo +stable doc --workspace --no-deps --locked
+        env:
+          RUSTDOCFLAGS: "-D warnings"
       - run: cargo +stable test --manifest-path templates/rust-crate/Cargo.toml
       - run: cargo +stable clippy --manifest-path templates/rust-crate/Cargo.toml --all-targets -- -D warnings
       - run: cargo +stable test -p ptr-observe --features tracing-adapter --locked
-        env:
-          RUSTDOCFLAGS: "-D warnings"
+      - run: cargo +stable clippy -p ptr-observe --features tracing-adapter --all-targets --locked -- -D warnings
 
   rust-stable:
     strategy:
@@ -40,6 +41,7 @@ jobs:
       - run: cargo +1.85.0 check --workspace --all-targets --locked
       - run: cargo +1.85.0 test --workspace --locked
       - run: cargo +1.85.0 check -p ptr-observe --features tracing-adapter --locked
+      - run: cargo +1.85.0 test --manifest-path templates/rust-crate/Cargo.toml
 
   python-training:
     strategy:

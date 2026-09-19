@@ -42,6 +42,7 @@ class RustApiReportTests(unittest.TestCase):
                 encoding="utf-8",
             )
             items = mod.scan_crate(crate)
+            self.assertEqual({item.file for item in items}, {"ptr-demo/src/lib.rs"})
             found = {(item.visibility, item.kind, item.name) for item in items}
             self.assertIn(("private", "mod", "internal"), found)
             self.assertIn(("pub", "mod", "public_mod"), found)
@@ -58,6 +59,34 @@ class RustApiReportTests(unittest.TestCase):
             run = next(item for item in items if item.kind == "fn" and item.name == "run")
             self.assertIn("'request", run.signature)
             self.assertIn("where T: Send", run.signature)
+
+    def test_repository_paths_stay_repository_relative(self):
+        src = ROOT / "crates" / "ptr-types" / "src"
+        self.assertEqual(
+            mod.source_path("ptr-types", src, src / "lib.rs"),
+            "crates/ptr-types/src/lib.rs",
+        )
+
+    def test_external_nested_paths_are_stable_across_temporary_roots(self):
+        reported = []
+        for _ in range(2):
+            with tempfile.TemporaryDirectory() as tmp:
+                src = Path(tmp) / "ptr-demo" / "src"
+                file = src / "adapters" / "transport.rs"
+                file.parent.mkdir(parents=True)
+                file.write_text("pub struct Transport;\n", encoding="utf-8")
+                items = mod.scan_crate(src.parent)
+                self.assertEqual(items[0].module, "adapters::transport")
+                reported.append(items[0].file)
+        self.assertEqual(reported, ["ptr-demo/src/adapters/transport.rs"] * 2)
+
+    def test_paths_normalize_parent_segments(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "ptr-demo" / "src"
+            self.assertEqual(
+                mod.source_path("ptr-demo", src, src / "nested" / ".." / "lib.rs"),
+                "ptr-demo/src/lib.rs",
+            )
 
     def test_impl_name_strips_where_clause(self):
         signature = "impl<T> Handler<T> for Thing<T> where T: Send {"

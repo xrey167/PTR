@@ -2,16 +2,9 @@ use std::fmt;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TraceError {
-    SinkUnavailable {
-        sink: String,
-    },
-    RejectedField {
-        field: String,
-    },
-    Export {
-        sink: String,
-        message: String,
-    },
+    SinkUnavailable { sink: String },
+    RejectedField { field: String },
+    Export { sink: String, message: String },
 }
 
 impl TraceError {
@@ -37,7 +30,6 @@ impl fmt::Display for TraceError {
 }
 
 impl std::error::Error for TraceError {}
-
 
 #[cfg(test)]
 mod tests {

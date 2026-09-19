@@ -197,7 +197,6 @@ mod tests {
         assert_ne!(Revision(7).0, Generation(8).0);
     }
 
-
     #[test]
     fn semantic_role_and_epistemic_state_are_independent_axes() {
         let role = SemanticRole::Claim;
