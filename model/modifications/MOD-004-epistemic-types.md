@@ -1,10 +1,10 @@
 # MOD-004-epistemic-types
 
 ## Hypothesis
-Represent unknown, assumed, hypothesis, distribution, observed, inferred and known states explicitly.
+Represent epistemic state explicitly (unknown, assumed, hypothesis, observed, inferred, verified) while keeping uncertainty representation (point/interval/distribution) as a separate model axis.
 
 ## Implementation target
-`crates/ptr-core/` plus an isolated experiment under `experiments/model/`.
+`ptr-types` defines the shared EpistemicState/UncertaintyKind semantics; `crates/ptr-core/` encodes those axes neurally, with an isolated experiment under `experiments/model/`.
 
 ## Required training signal
 Create explicit supervised or verifier-derived targets. Do not rely on hidden chain-of-thought text.
