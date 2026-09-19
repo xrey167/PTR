@@ -4,6 +4,8 @@ maturity = "prototype"
 last_reviewed = "2026-09-19"
 
 implemented = [
+  "SemanticDeltaCommitted tag 8 preserves base/result revisions and opaque transaction bytes; legacy event tags are unchanged",
+
   "Cross-process single-writer advisory lock retained for FileLedger handle lifetime",
   "Poisoned writer after ambiguous append failure; reopen/replay required before subsequent writes",
   "Lifecycle LedgerEvent enum",

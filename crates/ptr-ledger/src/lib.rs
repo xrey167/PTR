@@ -1,10 +1,17 @@
-use ptr_types::{CapsuleId, CommitIndex, Generation, ProjectId};
+use ptr_types::{CapsuleId, CommitIndex, Generation, ProjectId, Revision};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LedgerEvent {
+    /// Opaque versioned semantic transaction. ptr-runtime validates its schema
+    /// and both revisions before append and again during replay.
+    SemanticDeltaCommitted {
+        base_revision: Revision,
+        revision: Revision,
+        encoded_delta: Vec<u8>,
+    },
     CapsuleCommitted {
         project: ProjectId,
         capsule: CapsuleId,
@@ -202,6 +209,16 @@ impl FileLedger {
 fn encode_event(event: &LedgerEvent) -> Vec<u8> {
     let mut out = Vec::new();
     match event {
+        LedgerEvent::SemanticDeltaCommitted {
+            base_revision,
+            revision,
+            encoded_delta,
+        } => {
+            out.push(8);
+            put_u64(&mut out, base_revision.0);
+            put_u64(&mut out, revision.0);
+            put_bytes(&mut out, encoded_delta);
+        }
         LedgerEvent::CapsuleCommitted {
             project,
             capsule,
@@ -259,6 +276,11 @@ fn decode_event(payload: &[u8]) -> io::Result<LedgerEvent> {
     let mut cursor = Cursor::new(payload);
     let tag = cursor.u8()?;
     let event = match tag {
+        8 => LedgerEvent::SemanticDeltaCommitted {
+            base_revision: Revision(cursor.u64()?),
+            revision: Revision(cursor.u64()?),
+            encoded_delta: cursor.bytes()?.to_vec(),
+        },
         0 => LedgerEvent::CapsuleCommitted {
             project: ProjectId(cursor.string()?),
             capsule: CapsuleId(cursor.string()?),
@@ -325,7 +347,10 @@ fn put_u64(out: &mut Vec<u8>, value: u64) {
 }
 
 fn put_string(out: &mut Vec<u8>, value: &str) {
-    let bytes = value.as_bytes();
+    put_bytes(out, value.as_bytes());
+}
+
+fn put_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
     let length = u32::try_from(bytes.len()).expect("string length fits u32");
     out.extend_from_slice(&length.to_le_bytes());
     out.extend_from_slice(bytes);
@@ -365,12 +390,16 @@ impl<'a> Cursor<'a> {
         Ok(u64::from_le_bytes(bytes.try_into().expect("eight bytes")))
     }
 
-    fn string(&mut self) -> io::Result<String> {
+    fn bytes(&mut self) -> io::Result<&'a [u8]> {
         let length = self.u32()? as usize;
-        let end = self.offset.saturating_add(length);
+        let end = self.offset.checked_add(length).ok_or_else(truncated)?;
         let bytes = self.bytes.get(self.offset..end).ok_or_else(truncated)?;
         self.offset = end;
-        String::from_utf8(bytes.to_vec())
+        Ok(bytes)
+    }
+
+    fn string(&mut self) -> io::Result<String> {
+        String::from_utf8(self.bytes()?.to_vec())
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid UTF-8 string"))
     }
 }

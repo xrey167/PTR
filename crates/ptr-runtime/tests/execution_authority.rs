@@ -170,9 +170,15 @@ fn semantic_change_rejects_prepared_action_before_verifier_or_executor() {
     let permit = runtime
         .prepare_execution(&session, &ProjectId::from("p"), &action, TTL)
         .unwrap();
-    runtime.ingest_text(RequestId::from("request"), "changed ground state");
-    assert!(matches!(
+    runtime
+        .ingest_text(RequestId::from("request"), "changed ground state")
+        .unwrap();
+    assert_eq!(
         runtime.execute_prepared(&session, permit),
+        Err(ExecutionError::StalePermit)
+    );
+    assert!(matches!(
+        runtime.prepare_execution(&session, &ProjectId::from("p"), &action, TTL),
         Err(ExecutionError::AuthorizationDenied(
             AuthorizationDenial::StaleRevision { .. }
         ))
@@ -438,4 +444,21 @@ fn invalid_and_ambiguous_host_grants_are_rejected() {
         Err(ExecutionError::InvalidTtl)
     ));
     assert_eq!(probe.executions(), 0);
+}
+
+#[test]
+fn idempotent_semantic_ingestion_does_not_invalidate_valid_permits() {
+    let (mut runtime, action) = fixture();
+    let probe = Probe::default();
+    let session = session(&mut runtime, &action, &probe, "alice");
+    let permit = runtime
+        .prepare_execution(&session, &ProjectId::from("p"), &action, TTL)
+        .unwrap();
+    let before = runtime.committed_events().len();
+    runtime
+        .ingest_text(RequestId::from("request"), "ground state")
+        .unwrap();
+    assert_eq!(runtime.committed_events().len(), before);
+    runtime.execute_prepared(&session, permit).unwrap();
+    assert_eq!(probe.executions(), 1);
 }

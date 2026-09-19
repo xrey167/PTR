@@ -10,10 +10,11 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-19  
-**Code footprint:** 1 Rust source files · 543 nonblank source lines · 6 integration-test files · 10 `#[test]` markers
+**Code footprint:** 1 Rust source files · 570 nonblank source lines · 6 integration-test files · 10 `#[test]` markers
 
 ### Implemented now
 
+- SemanticDeltaCommitted tag 8 preserves base/result revisions and opaque transaction bytes; legacy event tags are unchanged
 - Cross-process single-writer advisory lock retained for FileLedger handle lifetime
 - Poisoned writer after ambiguous append failure; reopen/replay required before subsequent writes
 - Lifecycle LedgerEvent enum
@@ -164,3 +165,12 @@ A new candidate should be added with a reproducible benchmark and failure-semant
 - [Component contracts](../../docs/COMPONENT_CONTRACTS.md)
 - [Global invariants](../../docs/INVARIANTS.md)
 
+
+
+## P0.2 semantic journal integration
+
+[Durable semantic-state contract](../../docs/architecture/22-durable-semantic-state.md)
+records the new code/codec, ownership and replay boundaries. Publication follows
+successful journal append. Typed Pod bytes and source identity participate in
+semantic revisions. Logical removals do not erase log history; neural checkpoints
+and authenticated framing remain separate gates. Execution evidence is in the PR.

@@ -23,15 +23,19 @@ fn mutation_action(revision: Revision, generation: Generation) -> ActionIr {
 #[test]
 fn ingest_creates_revision_and_runtime_events() {
     let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
-    let revision = runtime.ingest_text(RequestId::from("r1"), "hello");
+    let revision = runtime.ingest_text(RequestId::from("r1"), "hello").unwrap();
     assert_eq!(revision, Revision(1));
-    assert_eq!(runtime.events().len(), 2);
+    assert_eq!(runtime.events().len(), 3);
+    assert!(matches!(
+        runtime.events()[0].event,
+        ptr_events::RuntimeEvent::CommitApplied(_)
+    ));
 }
 
 #[test]
 fn action_requires_capability() {
     let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
-    let revision = runtime.ingest_text(RequestId::from("r1"), "hello");
+    let revision = runtime.ingest_text(RequestId::from("r1"), "hello").unwrap();
     let action = mutation_action(revision, Generation(1));
     runtime
         .commit(LedgerEvent::CapsuleCommitted {
@@ -56,8 +60,10 @@ fn action_requires_capability() {
 #[test]
 fn stale_revision_is_rejected_before_permission_check() {
     let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
-    let old = runtime.ingest_text(RequestId::from("r1"), "first");
-    runtime.ingest_text(RequestId::from("r2"), "second");
+    let old = runtime.ingest_text(RequestId::from("r1"), "first").unwrap();
+    runtime
+        .ingest_text(RequestId::from("r2"), "second")
+        .unwrap();
     let action = mutation_action(old, Generation(1));
     runtime
         .commit(LedgerEvent::CapsuleCommitted {
@@ -79,7 +85,7 @@ fn stale_revision_is_rejected_before_permission_check() {
 #[test]
 fn unknown_and_revoked_generations_are_rejected() {
     let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
-    let revision = runtime.ingest_text(RequestId::from("r1"), "hello");
+    let revision = runtime.ingest_text(RequestId::from("r1"), "hello").unwrap();
     let action = mutation_action(revision, Generation(7));
 
     assert_eq!(
@@ -147,7 +153,7 @@ fn committed_event_materializes() {
 #[test]
 fn runtime_exposes_typed_authorization_decision() {
     let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
-    let revision = runtime.ingest_text(RequestId::from("r1"), "hello");
+    let revision = runtime.ingest_text(RequestId::from("r1"), "hello").unwrap();
     let action = mutation_action(revision, Generation(1));
 
     assert_eq!(

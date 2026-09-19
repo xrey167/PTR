@@ -88,3 +88,8 @@ vendored licenses are retained. Advisory ignores remain empty.
 A green build/security policy result does not close these architecture gates or
 satisfy the overall PTR research/product Definition of Done. Never relabel the
 above items as done merely because automated checks pass.
+
+
+## P0.2 follow-up: semantic data path
+
+The lifecycle-only-replay finding is superseded for newly journaled data by [durable semantic transactions](architecture/22-durable-semantic-state.md). Runtime replay restores typed contents, source identity, dependencies and revisions. It cannot recover legacy unjournaled contents, erase historical log bytes, or admit neural checkpoints. Other release gates remain open.

@@ -1,4 +1,5 @@
 pub mod execution;
+pub mod semantic;
 
 use ptr_config::PtrConfig;
 use ptr_core::action_head::ActionIr;
@@ -13,7 +14,7 @@ use ptr_protocol::TypedPayload;
 use ptr_security::{
     ActionAuthorization, AuthorizationDecision, AuthorizationDenial, PermissionSet,
 };
-use ptr_semdb::{SemanticDelta, SemanticHost, SemanticSnapshot};
+use ptr_semdb::{PreparedDelta, SemanticError, SemanticHost, SemanticSnapshot};
 use ptr_state::MaterializedState;
 use ptr_types::{CommitIndex, Generation, RequestId, Revision};
 use ptr_verifier::{VerificationStatus, Verifier};
@@ -22,6 +23,7 @@ use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeError {
+    Semantic(SemanticError),
     InvalidConfig(String),
     Ledger(String),
     StaleRevision {
@@ -135,7 +137,8 @@ impl PtrRuntime {
         let mut runtime = Self::with_ledger(config, RuntimeLedger::File(ledger))?;
         for committed in &persisted {
             runtime.validate_lifecycle_event(&committed.event)?;
-            runtime.apply_committed(committed);
+            let semantic = runtime.prepare_semantic_event(&committed.event)?;
+            runtime.apply_committed(committed, semantic)?;
         }
         Ok(runtime)
     }
@@ -161,6 +164,7 @@ impl PtrRuntime {
         let mut runtime = Self::new(config)?;
         for expected in events {
             runtime.validate_lifecycle_event(&expected.event)?;
+            let semantic = runtime.prepare_semantic_event(&expected.event)?;
             let actual = runtime.ledger.append(expected.event.clone())?;
             if actual != expected.index {
                 return Err(RuntimeError::ReplayIndexMismatch {
@@ -174,7 +178,7 @@ impl PtrRuntime {
                 .last()
                 .expect("replay append created committed event")
                 .clone();
-            runtime.apply_committed(&committed);
+            runtime.apply_committed(&committed, semantic)?;
         }
         Ok(runtime)
     }
@@ -212,17 +216,6 @@ impl PtrRuntime {
         self.live_generations.get(target).copied()
     }
 
-    pub fn ingest_text(&mut self, request: RequestId, text: impl Into<String>) -> Revision {
-        self.emit(RuntimeEvent::RequestStarted(request.clone()));
-        let mut delta = SemanticDelta::default();
-        delta
-            .upserts
-            .insert(format!("request:{request}:raw"), text.into());
-        let (revision, _) = self.semdb.apply_delta(delta);
-        self.emit(RuntimeEvent::SnapshotOpened(revision));
-        revision
-    }
-
     pub fn run_model_once<B: InferenceBackend>(
         &mut self,
         request_id: RequestId,
@@ -230,7 +223,7 @@ impl PtrRuntime {
         backend: &B,
     ) -> Result<Vec<ModelEvent>, RuntimeError> {
         let raw_text = raw_text.into();
-        let revision = self.ingest_text(request_id.clone(), raw_text.clone());
+        let revision = self.ingest_text(request_id.clone(), raw_text.clone())?;
         let events = backend
             .infer(&ModelRequest {
                 request_id: request_id.clone(),
@@ -310,12 +303,7 @@ impl PtrRuntime {
                 });
             }
 
-            let mut delta = SemanticDelta::default();
-            delta.upserts.insert(
-                format!("request:{request_id}:pod:{}:output_type", pod.manifest().id),
-                output.type_id.to_string(),
-            );
-            self.semdb.apply_delta(delta);
+            self.promote_pod_output(&request_id, &pod.manifest().id, &output)?;
             outputs.push(output);
         }
 
@@ -336,7 +324,7 @@ impl PtrRuntime {
         V: Verifier<TypedPayload>,
     {
         let raw_text = raw_text.into();
-        let revision = self.ingest_text(request_id.clone(), raw_text.clone());
+        let revision = self.ingest_text(request_id.clone(), raw_text.clone())?;
         let mut request = ModelRequest {
             request_id: request_id.clone(),
             revision,
@@ -423,12 +411,7 @@ impl PtrRuntime {
                 });
             }
 
-            let mut delta = SemanticDelta::default();
-            delta.upserts.insert(
-                format!("request:{request_id}:pod:{}:output_type", pod.manifest().id),
-                output.type_id.to_string(),
-            );
-            let (revision, _) = self.semdb.apply_delta(delta);
+            let revision = self.promote_pod_output(&request_id, &pod.manifest().id, &output)?;
 
             let observation = ModelObservation {
                 revision,
@@ -503,6 +486,18 @@ impl PtrRuntime {
             return Err(RuntimeError::ExecutionFenced);
         }
         self.validate_lifecycle_event(&event)?;
+        let semantic = self.prepare_semantic_event(&event)?;
+        self.append_prepared(event, semantic)
+    }
+
+    fn append_prepared(
+        &mut self,
+        event: LedgerEvent,
+        semantic: Option<PreparedDelta>,
+    ) -> Result<CommitIndex, RuntimeError> {
+        if self.execution.is_fenced() {
+            return Err(RuntimeError::ExecutionFenced);
+        }
         self.execution.begin_commit();
         let index = self.ledger.append(event)?;
         let committed = self
@@ -511,7 +506,7 @@ impl PtrRuntime {
             .last()
             .expect("append created committed event")
             .clone();
-        self.apply_committed(&committed);
+        self.apply_committed(&committed, semantic)?;
         self.execution.complete_commit();
         Ok(index)
     }
@@ -585,15 +580,27 @@ impl PtrRuntime {
             }
             // Revocation tombstones are monotone and may precede activation.
             // Verifier/snapshot records do not confer permissions or load state.
-            LedgerEvent::Revoked { .. }
+            LedgerEvent::SemanticDeltaCommitted { .. }
+            | LedgerEvent::Revoked { .. }
             | LedgerEvent::ProcedureRevoked { .. }
             | LedgerEvent::VerifierAttested { .. }
             | LedgerEvent::SnapshotCommitted { .. } => Ok(()),
         }
     }
 
-    fn apply_committed(&mut self, committed: &CommittedEvent) {
+    fn apply_committed(
+        &mut self,
+        committed: &CommittedEvent,
+        semantic: Option<PreparedDelta>,
+    ) -> Result<(), RuntimeError> {
         match &committed.event {
+            LedgerEvent::SemanticDeltaCommitted { .. } => {
+                self.semdb
+                    .apply_prepared(
+                        semantic.ok_or(RuntimeError::Semantic(SemanticError::InvalidEncoding))?,
+                    )
+                    .map_err(RuntimeError::Semantic)?;
+            }
             LedgerEvent::CapsuleCommitted {
                 project,
                 capsule,
@@ -628,6 +635,7 @@ impl PtrRuntime {
 
         self.state.apply(committed);
         self.emit(RuntimeEvent::CommitApplied(committed.index));
+        Ok(())
     }
 
     fn emit(&mut self, event: RuntimeEvent) {

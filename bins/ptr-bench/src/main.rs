@@ -58,10 +58,13 @@ fn parse_u64(args: &[String], index: usize, default: u64) -> u64 {
 
 fn bench_semdb(iterations: usize) {
     let mut host = SemanticHost::default();
+    let mut setup = SemanticDelta::default();
     for i in 0..128 {
-        host.dependencies_mut()
-            .depends_on(format!("derived:{i}"), format!("input:{i}"));
+        setup
+            .dependencies
+            .insert(format!("derived:{i}"), [format!("input:{i}")].into());
     }
+    host.apply_delta(setup).expect("valid benchmark graph");
 
     let start = Instant::now();
     let mut affected_total = 0usize;
@@ -69,8 +72,8 @@ fn bench_semdb(iterations: usize) {
         let mut delta = SemanticDelta::default();
         delta
             .upserts
-            .insert(format!("input:{}", i % 128), i.to_string());
-        let (_, affected) = host.apply_delta(delta);
+            .insert(format!("input:{}", i % 128), i.to_string().into());
+        let (_, affected) = host.apply_delta(delta).expect("valid benchmark update");
         affected_total += affected.len();
     }
     let elapsed = start.elapsed();

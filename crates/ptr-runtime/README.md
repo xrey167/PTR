@@ -9,10 +9,14 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-19  
-**Code footprint:** 2 Rust source files · 1145 nonblank source lines · 8 integration-test files · 42 `#[test]` markers
+**Code footprint:** 3 Rust source files · 1301 nonblank source lines · 9 integration-test files · 53 `#[test]` markers
 
 ### Implemented now
 
+- Ordered semantic journal publication before acknowledgment or model resume
+- Semantic payload/dependency/revision reconstruction with schema and transition validation during replay
+- Complete typed Pod bytes and source identity are revision-significant
+- Fallible ingestion, optimistic base revision and canonical no-op handling
 - Scoped synchronous execution gateway with opaque per-runtime sessions, exact grants, frozen ActionIR permits and registered verifier/executor binding
 - Consume-time freshness, expiry, ownership and mandatory permission checks; permissions/commit/effect epochs invalidate pending permits
 - Executor or ledger ambiguity fences subsequent execution and commits; process-local single-use authority is never replayed
@@ -29,7 +33,7 @@
 
 ### Missing for the target architecture
 
-- Durable SemDB payload/revision reconstruction and network-authenticated/scoped Pod integration
+- Network-authenticated/scoped Pod integration and neural checkpoint admission
 - Durable execution audit/idempotency, downstream fencing and real snapshot serialization
 - Router-driven operator selection around the implemented bounded Pod-resume loop
 - Async isolate scheduler integration
@@ -38,7 +42,7 @@
 
 ### Next milestones
 
-- Reconstruct actual semantic payloads and dependency revisions durably before adding persistent execution authority
+- Add authenticated framing/snapshots and checkpoint admission before persistent execution authority
 - Connect evaluated raft-engine/Turso adapters through typed backend config while preserving FileLedger reference mode
 - Add opaque backend checkpoint handles and async streaming around the implemented observation resume contract
 - Wire ptrd request handling beyond bootstrap ingestion
@@ -91,4 +95,12 @@ Keep orchestration out of `ptrd` and out of individual domain crates. The runtim
 
 ## Current boundary
 
-The executable reference slice now wires configuration, semantic revisioning, a backend-neutral model call, semantic Pod resolution, Pure/Read Pod execution, verifier-gated observation promotion, action authorization, event emission, ledger materialization and durable FileLedger reopen/replay. The new scoped synchronous execution gateway binds opaque sessions and immutable ActionIR permits to host-registered verifiers/executors. Administrative session registration assumes the embedding host has authenticated the principal; it is not an HTTP authentication endpoint. See [P0.1 execution authority](../../docs/architecture/21-scoped-execution.md) for guarantees, counterexamples and the remaining durable/network gates. The next component step is actual semantic-payload/revision reconstruction, not additional backend breadth.
+The executable reference slice now wires configuration, semantic revisioning, a backend-neutral model call, semantic Pod resolution, Pure/Read Pod execution, verifier-gated observation promotion, action authorization, event emission, ledger materialization and durable FileLedger reopen/replay. The new scoped synchronous execution gateway binds opaque sessions and immutable ActionIR permits to host-registered verifiers/executors. Administrative session registration assumes the embedding host has authenticated the principal; it is not an HTTP authentication endpoint. See [P0.1 execution authority](../../docs/architecture/21-scoped-execution.md) for guarantees, counterexamples and the remaining durable/network gates. P0.2 now reconstructs the actual journaled semantic payloads, dependencies and revisions. The next persistence gate is record integrity and verified snapshot/checkpoint admission, not additional backend breadth.
+
+## P0.2 semantic journal integration
+
+[Durable semantic-state contract](../../docs/architecture/22-durable-semantic-state.md)
+records the new code/codec, ownership and replay boundaries. Publication follows
+successful journal append. Typed Pod bytes and source identity participate in
+semantic revisions. Logical removals do not erase log history; neural checkpoints
+and authenticated framing remain separate gates. Execution evidence is in the PR.
