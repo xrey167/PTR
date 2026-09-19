@@ -126,8 +126,9 @@ on exhaustion. Permits are caller-owned and are not retained in a server queue.
 is now implemented in the reference journal path. Real semantic commits invalidate
 pending permits; validated no-ops do not. Execution authority remains process-local.
 
-Keep issue #15 open. Record integrity, verified snapshots and neural-checkpoint
-admission are still required before persistent execution receipts or remote
-dispatch may rely on reconstructed state. Scoped Pod/network admission, durable
+[P0.3 checked frames and replay-backed recovery snapshots](23-persistence-integrity.md)
+now verify persisted history against explicit trusted anchors. Issue #15 remains
+open for independently stored/authenticated anchors and neural-checkpoint admission
+before persistent execution receipts or remote dispatch rely on restored state. Scoped Pod/network admission, durable
 effect reconciliation, hard neural validity masks/codebook and real cluster
 composition remain separate subsequent gates.

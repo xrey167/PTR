@@ -1,4 +1,5 @@
 pub mod execution;
+pub mod persistence;
 pub mod semantic;
 
 use ptr_config::PtrConfig;
@@ -23,6 +24,7 @@ use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeError {
+    Snapshot(persistence::SnapshotError),
     Semantic(SemanticError),
     InvalidConfig(String),
     Ledger(String),
@@ -133,6 +135,10 @@ impl PtrRuntime {
     pub fn open_durable(config: PtrConfig, path: impl AsRef<Path>) -> Result<Self, RuntimeError> {
         let ledger =
             FileLedger::open(path).map_err(|error| RuntimeError::Ledger(error.to_string()))?;
+        Self::from_durable_ledger(config, ledger)
+    }
+
+    fn from_durable_ledger(config: PtrConfig, ledger: FileLedger) -> Result<Self, RuntimeError> {
         let persisted = ledger.events().to_vec();
         let mut runtime = Self::with_ledger(config, RuntimeLedger::File(ledger))?;
         for committed in &persisted {

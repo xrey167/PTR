@@ -10,10 +10,14 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-19  
-**Code footprint:** 1 Rust source files · 570 nonblank source lines · 6 integration-test files · 10 `#[test]` markers
+**Code footprint:** 3 Rust source files · 1031 nonblank source lines · 7 integration-test files · 21 `#[test]` markers
 
 ### Implemented now
 
+- PTRLOG02 bounded SHA-256 record chain with checked header, sequence, payload and trailer
+- Strict nonmutating open; independently anchored rollback checks and explicit partial-tail recovery
+- Create-new checked-log restore and guarded explicit legacy inspection/migration
+- Explicit RAII unlock prevents duplicate-descriptor retention across concurrent process spawn
 - SemanticDeltaCommitted tag 8 preserves base/result revisions and opaque transaction bytes; legacy event tags are unchanged
 - Cross-process single-writer advisory lock retained for FileLedger handle lifetime
 - Poisoned writer after ambiguous append failure; reopen/replay required before subsequent writes
@@ -21,17 +25,17 @@
 - CommittedEvent with CommitIndex
 - Ledger trait and in-memory reference implementation
 - CompactionBarrier scaffold
-- Durable reference FileLedger with length-prefixed event encoding, fsync and crash-tail truncation
+- Durable reference FileLedger with checked versioned frames, file synchronization and anchor-required tail recovery
 - Feature-gated fail-rs injection points around record write/payload/fsync/memory-commit boundaries
 - Feature-gated raft-engine 0.4.2 durable adapter stores ordered PTR ledger events with synchronous writes and reopen validation
 - Feature-gated raft-rs 0.7 single-node consensus harness proposes and commits PTR LedgerEvents through RawNode
 
 ### Missing for the target architecture
 
-- Authenticated/checksummed disk framing and hardware power-loss evidence (panic injection is not power loss)
+- Independent anchor storage/authentication, full-file rollback witness and hardware power-loss evidence
 - Multi-node raft-rs consensus adapter with transport, persistent Raft storage and membership changes
 - fsync/durability modes and revocation barriers
-- Snapshot serialization/recovery/replay
+- Compacted materialized snapshots and distributed snapshot/compaction protocols beyond replay-backed runtime snapshots
 
 ### Next milestones
 
@@ -57,8 +61,11 @@
 
 ### Current automated checks
 
+- Every single-bit mutation of the reference log, independent hashlib golden vector, ordering and hostile-length rejection
+- Every partial-frame cut, wrong anchor, complete suffix loss and rehashed alternative-history rejection
+- Create-new destination safety, guarded legacy migration and duplicate-descriptor unlock regression
 - FileLedger all-event reopen and partial-tail crash recovery tests
-- FileLedger open path explicitly preserves existing contents and truncates only incomplete crash tails
+- FileLedger strict open never truncates; explicit recovery requires an independent matching prefix anchor
 - fail-rs panic-after-length-prefix recovery test
 - raft-engine durable append/reopen ordering integration test
 - raft-rs single-node proposal/commit ordering integration test
@@ -174,3 +181,10 @@ records the new code/codec, ownership and replay boundaries. Publication follows
 successful journal append. Typed Pod bytes and source identity participate in
 semantic revisions. Logical removals do not erase log history; neural checkpoints
 and authenticated framing remain separate gates. Execution evidence is in the PR.
+
+## Persistence contract update
+
+See [P0.3 checked records and replay-backed recovery snapshots](../../docs/architecture/23-persistence-integrity.md)
+for strict reopen, explicit legacy migration, independent anchors, create-new
+restore and format/API compatibility. Old automatic crash-tail repair is replaced
+by explicit anchored recovery. No authority or neural checkpoint is restored.

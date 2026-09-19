@@ -147,14 +147,17 @@ fn bench_ledger_recovery(iterations: usize, seed: u64) {
                 .append(true)
                 .open(&path)
                 .expect("append crash tail");
-            file.write_all(&128_u32.to_le_bytes())
-                .expect("write incomplete record prefix");
-            file.write_all(&vec![0xA5; partial_len])
-                .expect("write incomplete crash tail");
+            let tail = checked_tail(&subject, "l001", partial_len);
+            file.write_all(&tail)
+                .expect("write incomplete checked frame");
             file.flush().expect("flush simulated crash tail");
         }
 
-        let reopened = FileLedger::open(&path).expect("recover reference ledger");
+        let reopened = FileLedger::recover_unacknowledged_tail(
+            &path,
+            expected_recovery_anchor(&subject, "l001"),
+        )
+        .expect("recover reference ledger against fixture anchor");
         if reopened.events().len() != 2 {
             recovery_errors += 1;
         }
@@ -217,7 +220,11 @@ fn bench_ledger_process_crash(iterations: usize, seed: u64) {
         let before_recovery = std::fs::metadata(&path)
             .expect("crash child created ledger")
             .len();
-        let reopened = FileLedger::open(&path).expect("recover process-crashed ledger");
+        let reopened = FileLedger::recover_unacknowledged_tail(
+            &path,
+            expected_recovery_anchor(&subject, "l001-process"),
+        )
+        .expect("recover process-crashed ledger against fixture anchor");
         let after_recovery = std::fs::metadata(&path)
             .expect("recovered process ledger metadata")
             .len();
@@ -271,10 +278,8 @@ fn crash_child(path: &Path, subject: &str, partial_len: usize) -> ! {
         .append(true)
         .open(path)
         .expect("append incomplete crash record");
-    file.write_all(&128_u32.to_le_bytes())
-        .expect("write incomplete record length");
-    file.write_all(&vec![0x5A; partial_len])
-        .expect("write incomplete record bytes");
+    file.write_all(&checked_tail(subject, "l001-process", partial_len))
+        .expect("write incomplete checked record");
     file.flush().expect("flush crash tail to OS before abort");
     std::process::abort();
 }
@@ -299,4 +304,47 @@ fn stale_action_accepted(subject: &str, events: &[ptr_ledger::CommittedEvent]) -
     };
 
     runtime.authorize_action(&action).is_ok()
+}
+
+// The harness knows the committed fixture independently of the damaged file.
+fn recovery_fixture(subject: &str, project: &str) -> Vec<ptr_ledger::CommittedEvent> {
+    vec![
+        ptr_ledger::CommittedEvent {
+            index: ptr_types::CommitIndex(1),
+            event: LedgerEvent::CapsuleCommitted {
+                project: ProjectId::from(project),
+                capsule: CapsuleId(subject.to_owned()),
+                generation: Generation(1),
+            },
+        },
+        ptr_ledger::CommittedEvent {
+            index: ptr_types::CommitIndex(2),
+            event: LedgerEvent::Revoked {
+                subject: subject.to_owned(),
+                generation: Generation(1),
+            },
+        },
+    ]
+}
+fn expected_recovery_anchor(subject: &str, project: &str) -> ptr_ledger::integrity::LogAnchor {
+    let bytes = ptr_ledger::integrity::encode_log(&recovery_fixture(subject, project))
+        .expect("fixture log");
+    ptr_ledger::integrity::decode_log(&bytes)
+        .expect("valid fixture")
+        .anchor()
+}
+fn checked_tail(subject: &str, project: &str, extra: usize) -> Vec<u8> {
+    let mut events = recovery_fixture(subject, project);
+    let prefix_len = ptr_ledger::integrity::encode_log(&events)
+        .expect("fixture prefix")
+        .len();
+    events.push(ptr_ledger::CommittedEvent {
+        index: ptr_types::CommitIndex(3),
+        event: LedgerEvent::VerifierAttested {
+            subject: "pending".repeat(16),
+            passed: false,
+        },
+    });
+    let bytes = ptr_ledger::integrity::encode_log(&events).expect("fixture frame");
+    bytes[prefix_len..prefix_len + ptr_ledger::integrity::FRAME_HEADER_BYTES + extra].to_vec()
 }

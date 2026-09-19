@@ -9,10 +9,13 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-19  
-**Code footprint:** 3 Rust source files · 1301 nonblank source lines · 9 integration-test files · 53 `#[test]` markers
+**Code footprint:** 4 Rust source files · 1554 nonblank source lines · 10 integration-test files · 62 `#[test]` markers
 
 ### Implemented now
 
+- Versioned replay-backed recovery snapshots bind complete journal, semantic revision, commit index and independently trusted SHA-256 anchor
+- Snapshot validation and semantic/lifecycle replay finish before creating a durable destination; existing destinations are never replaced
+- Strict anchored reopen and explicit legacy-to-v2 migration preserve history while restoring no process-local authority
 - Ordered semantic journal publication before acknowledgment or model resume
 - Semantic payload/dependency/revision reconstruction with schema and transition validation during replay
 - Complete typed Pod bytes and source identity are revision-significant
@@ -34,7 +37,7 @@
 ### Missing for the target architecture
 
 - Network-authenticated/scoped Pod integration and neural checkpoint admission
-- Durable execution audit/idempotency, downstream fencing and real snapshot serialization
+- Durable execution audit/idempotency, downstream fencing and compacted materialized snapshots
 - Router-driven operator selection around the implemented bounded Pod-resume loop
 - Async isolate scheduler integration
 - Configured raft-engine/raft-rs/Turso backend composition for production runtime modes
@@ -42,7 +45,7 @@
 
 ### Next milestones
 
-- Add authenticated framing/snapshots and checkpoint admission before persistent execution authority
+- Bind opaque model/checkpoint admission to the versioned cognitive and lifecycle contracts; independent trusted anchor storage remains a deployment obligation
 - Connect evaluated raft-engine/Turso adapters through typed backend config while preserving FileLedger reference mode
 - Add opaque backend checkpoint handles and async streaming around the implemented observation resume contract
 - Wire ptrd request handling beyond bootstrap ingestion
@@ -65,6 +68,7 @@
 
 ### Current automated checks
 
+- snapshot exact-state/byte-corruption/rollback/revision/legacy/overwrite/authority rejection tests
 - scoped execution positive/negative integration tests and non-forgeability/single-use compile-fail doctests
 - runtime ingestion/revision/generation/capability/materialization integration tests
 - typed authorization decision exposure and RuntimeError compatibility test
@@ -104,3 +108,10 @@ records the new code/codec, ownership and replay boundaries. Publication follows
 successful journal append. Typed Pod bytes and source identity participate in
 semantic revisions. Logical removals do not erase log history; neural checkpoints
 and authenticated framing remain separate gates. Execution evidence is in the PR.
+
+## Persistence contract update
+
+See [P0.3 checked records and replay-backed recovery snapshots](../../docs/architecture/23-persistence-integrity.md)
+for strict reopen, explicit legacy migration, independent anchors, create-new
+restore and format/API compatibility. Old automatic crash-tail repair is replaced
+by explicit anchored recovery. No authority or neural checkpoint is restored.
