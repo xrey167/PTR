@@ -1,7 +1,7 @@
 version = 1
 id = "ptr-model-api"
 maturity = "scaffold"
-last_reviewed = "2026-09-18"
+last_reviewed = "2026-09-19"
 
 implemented = [
   "Backend-neutral ModelRequest with request/revision/raw text",
