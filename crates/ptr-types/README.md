@@ -1,4 +1,4 @@
-# ptr-types — Domain Type Kernel
+# ptr-types — Cognitive & Semantic Type Kernel
 
 > **Role:** Defines PTR's shared cognitive and semantic vocabulary across the neural model, reasoning/router, semantic runtime, memory, verification and action boundaries.  
 > **Maturity:** architecture + contract scaffold; production behavior must be proven by the linked experiments and component evaluations.
@@ -9,7 +9,7 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `foundation`  
-**Last reviewed:** 2026-09-18  
+**Last reviewed:** 2026-09-19  
 **Code footprint:** 1 Rust source files · 188 nonblank source lines · 1 integration-test files · 5 `#[test]` markers
 
 ### Implemented now
@@ -69,10 +69,12 @@
 
 ```mermaid
 flowchart LR
-    A["External data"] --> B["ptr-types\nDomain Type Kernel"]
-    B --> C["All domain crates"]
-    B -. "contracts" .-> T["ptr-types"]
-    B -. "telemetry" .-> O["ptr-observe"]
+    T["ptr-types\nCognitive & Semantic Type Kernel"]
+    T --> C["ptr-core\nNeural representation"]
+    T --> R["ptr-router / model-api"]
+    T --> S["ptr-semdb / memory"]
+    T --> V["ptr-verifier / security"]
+    T --> TR["training / datasets"]
 ```
 
 Dedicated diagram source: [`docs/diagrams/components/ptr-types.mmd`](../../docs/diagrams/components/ptr-types.mmd)
@@ -82,7 +84,7 @@ Dedicated diagram source: [`docs/diagrams/components/ptr-types.mmd`](../../docs/
 
 ## Mission
 
-Defines the stable semantic vocabulary shared across model, runtime, storage, verification, and network boundaries.
+Defines the shared cognitive and semantic vocabulary that lets PTR's neural model, router, semantic runtime, memory, verification and training layers reason about the same typed concepts.
 
 PTR keeps this responsibility in its own crate so the semantics remain stable even when an external library or implementation is replaced.
 
@@ -123,9 +125,11 @@ External projects are **candidates**, not architectural authority. The PTR-owned
 
 ## Core invariants
 
-1. Revision and Generation are distinct types and never interchangeable.
-2. Invalid probabilities cannot enter the domain layer.
-3. Effect and capability semantics remain provider-independent.
+1. Semantic role, epistemic state, uncertainty representation, lifecycle validity and verification remain distinct axes.
+2. Revision and Generation are distinct types and never interchangeable.
+3. Invalid probabilities cannot enter the domain layer.
+4. Reasoning/operator/capability semantics remain provider-independent and must not degrade to arbitrary strings.
+5. Neural confidence or representation does not create runtime authority.
 
 These invariants should be executable wherever possible through unit, property, lifecycle or chaos tests.
 
