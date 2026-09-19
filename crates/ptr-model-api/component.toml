@@ -1,11 +1,11 @@
 version = 1
 id = "ptr-model-api"
 maturity = "scaffold"
-last_reviewed = "2026-09-18"
+last_reviewed = "2026-09-19"
 
 implemented = [
   "Backend-neutral ModelRequest with request/revision/raw text",
-  "ModelEvent enum for slot, hypothesis, confidence, operator, typed Pod request, candidate, action, token and completion events",
+  "ModelEvent enum for slot, hypothesis, confidence, typed ReasoningOperator request, typed Pod request, candidate, action, token and completion events",
   "InferenceBackend trait and ModelError",
   "Deterministic ReferenceEchoBackend for runtime conformance tests",
   "ModelObservation, ModelResumeRequest and ResumableInferenceBackend continuation contract",
@@ -43,6 +43,7 @@ decisions = [
 checks = [
   "reference backend request/event conformance test",
   "typed PodRequested event contract covered by runtime loop tests",
+  "typed ReasoningOperator model event contract test",
   "observation/resume contract covered by runtime multi-step tests",
   "workspace fmt/check/test/clippy",
 ]

@@ -1,22 +1,13 @@
-use ptr_types::{Generation, Probability, ProvenanceRef, Validity};
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SlotKind {
-    Goal,
-    Constraint,
-    Known,
-    Observed,
-    Hypothesis,
-    Distribution,
-    Unknown,
-    Resource,
-    Capability,
-}
+use ptr_types::{
+    EpistemicState, Generation, Probability, ProvenanceRef, SemanticRole, UncertaintyKind, Validity,
+};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SemanticSlot {
     pub id: u32,
-    pub kind: SlotKind,
+    pub role: SemanticRole,
+    pub epistemic: EpistemicState,
+    pub uncertainty: UncertaintyKind,
     pub generation: Generation,
     pub validity: Validity,
     pub confidence: Probability,

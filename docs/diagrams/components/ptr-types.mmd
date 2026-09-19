@@ -1,5 +1,7 @@
 flowchart LR
-    A["External data"] --> B["ptr-types\nDomain Type Kernel"]
-    B --> C["All domain crates"]
-    B -. "contracts" .-> T["ptr-types"]
-    B -. "telemetry" .-> O["ptr-observe"]
+    T["ptr-types\nCognitive & Semantic Type Kernel"]
+    T --> C["ptr-core\nNeural representation"]
+    T --> R["ptr-router / ptr-model-api"]
+    T --> S["ptr-semdb / ptr-memory"]
+    T --> V["ptr-verifier / ptr-security"]
+    T --> TR["training / datasets"]

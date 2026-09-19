@@ -1,7 +1,7 @@
 # MOD-003-typed-attention
 
 ## Hypothesis
-Bias/mask attention using type, epistemic status, validity and lifecycle metadata.
+Bias/mask attention using separated semantic-role, epistemic-state, uncertainty, validity/lifecycle and provenance metadata.
 
 ## Implementation target
 `crates/ptr-core/` plus an isolated experiment under `experiments/model/`.

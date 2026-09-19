@@ -1,0 +1,317 @@
+version = 1
+allowed_status = ["implemented", "prototype", "scaffold", "open", "deferred"]
+
+[[slot]]
+id = "configuration-sources"
+owner = "ptr-config"
+status = "prototype"
+contract = "Typed layered config with schema/versioning and secret references."
+evaluation = ""
+candidates = ["serde+TOML", "config-rs"]
+open_questions = ["backend-specific typed sections", "secret reference provider", "schema migration/version policy"]
+
+[[slot]]
+id = "semantic-db-engine"
+owner = "ptr-semdb"
+status = "prototype"
+contract = "Incremental typed query/dependency engine behind PTR semantic keys."
+evaluation = "semantic-db"
+candidates = ["ptr-incremental-semdb", "salsa", "custom-dependency-engine"]
+open_questions = ["typed query API", "persistent cache shape", "concurrent snapshot model"]
+
+[[slot]]
+id = "model-framework"
+owner = "ptr-core"
+status = "prototype"
+contract = "Training/inference tensor framework behind PTR-Core architecture semantics."
+evaluation = "model-framework"
+candidates = ["Burn/CubeCL", "PyTorch reference", "Candle", "JAX"]
+open_questions = ["authoritative training path", "numerical parity reference", "CUDA deployment path"]
+
+[[slot]]
+id = "inference-serving"
+owner = "ptr-model-api"
+status = "scaffold"
+contract = "Streaming backend-neutral ModelEvent interface plus declared backend capabilities."
+evaluation = "inference-serving"
+candidates = ["SGLang", "vLLM", "Burn native", "TensorRT/custom"]
+open_questions = ["async stream trait", "checkpoint handles", "capability negotiation", "cancellation/timeout semantics"]
+
+[[slot]]
+id = "execution-runtime"
+owner = "ptr-exec"
+status = "prototype"
+contract = "Bounded single-owner isolates, supervision, cancellation, replay and effect dispatch."
+evaluation = "execution-runtime"
+candidates = ["Tokio substrate + PTR isolates", "tina-rs", "Compio"]
+open_questions = ["async mailbox abstraction", "scheduler policy", "supervision tree", "cross-runtime compatibility"]
+
+[[slot]]
+id = "pod-environment"
+owner = "ptr-pods"
+status = "scaffold"
+contract = "Local/process/remote specialist execution behind semantic Pod contracts."
+evaluation = "environment-runtime"
+candidates = ["native in-process", "process-isolated", "Iroh remote", "ROCK environment", "GPU/DLPack"]
+open_questions = ["PodContext", "remote lease/session", "sandbox boundary", "GPU buffer ownership"]
+
+[[slot]]
+id = "routing-policy"
+owner = "ptr-router"
+status = "open"
+contract = "Deterministic/learned routing over operator and backend capability graph."
+evaluation = ""
+candidates = ["deterministic baseline", "learned router head", "hybrid policy"]
+open_questions = ["capability graph schema", "cost/latency budgets", "fallback semantics", "router training target"]
+
+[[slot]]
+id = "consensus"
+owner = "ptr-ledger"
+status = "prototype"
+contract = "Cluster agreement over PTR ledger proposals without owning PTR event semantics."
+evaluation = "consensus"
+candidates = ["raft-rs", "OpenRaft", "custom"]
+open_questions = ["persistent raft storage port", "membership changes", "term/epoch types", "snapshot/install semantics"]
+
+[[slot]]
+id = "durable-log"
+owner = "ptr-ledger"
+status = "prototype"
+contract = "Ordered durable event persistence with explicit fsync/durability/recovery semantics."
+evaluation = "ledger"
+candidates = ["FileLedger reference", "raft-engine", "RocksDB", "redb", "custom WAL"]
+open_questions = ["durability modes", "revocation barrier", "compaction contract", "snapshot format"]
+
+[[slot]]
+id = "materialized-state"
+owner = "ptr-state"
+status = "prototype"
+contract = "Queryable projection rebuilt from committed history."
+evaluation = "materialized-state"
+candidates = ["Turso/libSQL", "SQLite", "PostgreSQL", "redb"]
+open_questions = ["typed projection schema", "migration/versioning", "read consistency", "CDC hooks"]
+
+[[slot]]
+id = "network-transport"
+owner = "ptr-net"
+status = "prototype"
+contract = "Authenticated peer transport independent of PodWire/raft semantics."
+evaluation = "network"
+candidates = ["Iroh/QUIC", "Quinn", "gRPC"]
+open_questions = ["session reuse", "peer discovery", "backpressure", "retry/idempotency", "key-to-NodeId binding"]
+
+[[slot]]
+id = "network-codec"
+owner = "ptr-protocol"
+status = "prototype"
+contract = "Versioned control/wire frames with explicit validation into PTR domain types."
+evaluation = "network-codec"
+candidates = ["Prost/Protobuf", "Cap'n Proto", "FlatBuffers"]
+open_questions = ["semantic vs wire version", "unknown enum policy", "canonical fixtures", "malformed corpus"]
+
+[[slot]]
+id = "local-serialization"
+owner = "ptr-protocol"
+status = "open"
+contract = "Trusted local/archive structured serialization; never defines domain semantics."
+evaluation = "local-serialization"
+candidates = ["rkyv", "postcard", "bincode"]
+open_questions = ["zero-copy requirements", "upgrade policy", "validation boundary"]
+
+[[slot]]
+id = "lexical-search"
+owner = "ptr-search"
+status = "open"
+contract = "Lexical/full-text retrieval returning qualified EvidenceCandidate values."
+evaluation = "lexical-search"
+candidates = ["Tantivy", "SQLite FTS", "custom"]
+open_questions = ["score normalization", "field schema", "incremental indexing"]
+
+[[slot]]
+id = "local-vector-search"
+owner = "ptr-search"
+status = "open"
+contract = "Local semantic vector retrieval as a derived projection."
+evaluation = "local-vector-search"
+candidates = ["Zvec", "usearch", "LanceDB", "FAISS CPU"]
+open_questions = ["embedding ownership", "multi-vector representation", "delete/update semantics"]
+
+[[slot]]
+id = "gpu-vector-search"
+owner = "ptr-search"
+status = "open"
+contract = "GPU vector retrieval/clustering behind the same evidence-candidate contract."
+evaluation = "gpu-vector-search"
+candidates = ["cuVS", "FAISS GPU"]
+open_questions = ["GPU memory ownership", "DLPack interop", "fallback to CPU"]
+
+[[slot]]
+id = "multimodal-search-store"
+owner = "ptr-search"
+status = "open"
+contract = "Persistent multimodal corpus/vector projection."
+evaluation = ""
+candidates = ["LanceDB", "custom"]
+open_questions = ["whether this is distinct from local-vector + object storage", "schema ownership", "large artifact references"]
+
+[[slot]]
+id = "distributed-search"
+owner = "ptr-search"
+status = "deferred"
+contract = "Scale-out derived retrieval without becoming semantic authority."
+evaluation = "distributed-search"
+candidates = ["Havenask", "Quickwit", "OpenSearch"]
+open_questions = ["scale threshold for introduction", "index generation validation", "partition consistency"]
+
+[[slot]]
+id = "structural-code-search"
+owner = "ptr-search"
+status = "open"
+contract = "Code-aware structural query/transformation evidence."
+evaluation = "structural-code-search"
+candidates = ["GritQL", "tree-sitter/custom"]
+open_questions = ["query representation", "transformation permission boundary", "source-span provenance"]
+
+[[slot]]
+id = "object-storage"
+owner = "ptr-storage"
+status = "scaffold"
+contract = "Content-addressed immutable/raw artifact storage independent of physical backend."
+evaluation = "object-storage"
+candidates = ["local filesystem", "OpenDAL", "S3-compatible", "Azure/GCS via adapter"]
+open_questions = ["BLAKE3 vs SHA family identity", "streaming API", "private artifact policy", "verify-on-read"]
+
+[[slot]]
+id = "event-streaming"
+owner = "ptr-events"
+status = "open"
+contract = "Runtime/committed event fan-out with offsets, replay, retention and backpressure."
+evaluation = "event-streaming"
+candidates = ["in-process reference bus", "Apache Iggy", "NATS", "Kafka", "RocketMQ"]
+open_questions = ["authoritative-vs-telemetry classification", "consumer offset model", "retention policy"]
+
+[[slot]]
+id = "observability"
+owner = "ptr-observe"
+status = "scaffold"
+contract = "Structured trace/trajectory export with redaction and stable PTR fields."
+evaluation = "observability"
+candidates = ["tracing", "OpenTelemetry", "NeMo Relay", "async-backtrace"]
+open_questions = ["FlowSignature schema", "redaction policy", "trajectory normalization"]
+
+[[slot]]
+id = "introspection"
+owner = "ptr-inspect"
+status = "scaffold"
+contract = "Generic typed inspection without forcing runtime state into untyped JSON."
+evaluation = "introspection"
+candidates = ["Valuable", "custom reflection layer"]
+open_questions = ["diff model", "redaction annotations", "ptrctl rendering"]
+
+[[slot]]
+id = "ingress-classifier"
+owner = "ptr-ingress"
+status = "open"
+contract = "Byte/MIME/encoding/semantic classification producing provisional typed proposals."
+evaluation = "ingress-classifier"
+candidates = ["infer", "encoding-rs", "GLiClass-rs", "custom model head"]
+open_questions = ["confidence/disagreement type", "artifact pipeline", "risk-driven verification"]
+
+[[slot]]
+id = "verification-backends"
+owner = "ptr-verifier"
+status = "scaffold"
+contract = "Composable deterministic/executable/statistical/learned verifier implementations."
+evaluation = "code-quality-verifier"
+candidates = ["compiler/tests", "Sentrux", "learned verifier", "statistical/calibration verifier"]
+open_questions = ["aggregation precedence", "verifier capability metadata", "sandbox execution"]
+
+[[slot]]
+id = "security-context"
+owner = "ptr-security"
+status = "open"
+contract = "Context risk/trust signals as evidence, never sole authority."
+evaluation = "security-context"
+candidates = ["Brin", "custom policy signals"]
+open_questions = ["principal/session model", "resource scopes", "policy engine", "secret references"]
+
+[[slot]]
+id = "sandbox-environment"
+owner = "ptr-security"
+status = "open"
+contract = "Process/container/environment isolation for executable effects and verifier workloads."
+evaluation = "environment-runtime"
+candidates = ["ROCK", "native process isolation", "container/VM adapter"]
+open_questions = ["filesystem/network capabilities", "resource quotas", "snapshot/reset model"]
+
+[[slot]]
+id = "training-orchestration"
+owner = "training"
+status = "open"
+contract = "Reproducible SFT/RL/continued-pretraining orchestration consuming PTR run manifests."
+evaluation = ""
+candidates = ["NeMo RL", "Unsloth", "custom PyTorch/Burn pipeline"]
+open_questions = ["authoritative backend", "checkpoint format", "distributed launch", "resume determinism"]
+
+[[slot]]
+id = "outer-loop-optimization"
+owner = "training"
+status = "open"
+contract = "Search/optimization over prompts/configs/architecture with explicit evaluation evidence."
+evaluation = ""
+candidates = ["GEPA", "DSPy", "custom search/RL"]
+open_questions = ["optimization target", "leakage controls", "what parameters may mutate"]
+
+[[slot]]
+id = "synthetic-data-generation"
+owner = "training"
+status = "open"
+contract = "Versioned synthetic dataset generation with provenance and contamination controls."
+evaluation = ""
+candidates = ["Data Designer", "custom generators"]
+open_questions = ["teacher provenance", "dedup/contamination checks", "quality filters"]
+
+[[slot]]
+id = "distributed-data-compute"
+owner = "training"
+status = "deferred"
+contract = "Large-scale batch/stream processing for corpora/evaluation once local scale is insufficient."
+evaluation = "distributed-data-compute"
+candidates = ["Sail", "Ray/Spark adapter"]
+open_questions = ["scale trigger", "determinism", "artifact locality"]
+
+[[slot]]
+id = "allocator"
+owner = "ptr-exec"
+status = "deferred"
+contract = "Allocator policy only if measurement shows runtime/model benefit."
+evaluation = "allocator"
+candidates = ["system allocator", "mimalloc", "jemalloc", "custom arena"]
+open_questions = ["whether a dedicated allocator slot is needed at all"]
+
+[[slot]]
+id = "cache"
+owner = "ptr-runtime"
+status = "open"
+contract = "Disposable revision/generation-aware cache with explicit invalidation and no authority."
+evaluation = ""
+candidates = ["in-process LRU", "moka", "custom radix/prefix cache", "distributed cache later"]
+open_questions = ["cache key contract", "reverse invalidation index", "model-prefix vs semantic cache separation"]
+
+[[slot]]
+id = "secret-store"
+owner = "ptr-config"
+status = "open"
+contract = "Secret references and retrieval without placing plaintext secrets in general config/domain state."
+evaluation = ""
+candidates = ["environment reference", "OS keyring", "Vault/1Password adapter"]
+open_questions = ["SecretRef type", "rotation", "redaction integration", "cluster distribution"]
+
+[[slot]]
+id = "auth-identity"
+owner = "ptr-server"
+status = "open"
+contract = "External user/service identity translated into PTR Principal/Session domain identities."
+evaluation = ""
+candidates = ["OIDC", "local development identity", "service credentials"]
+open_questions = ["multi-tenant scope", "session lifetime", "service-to-service auth"]

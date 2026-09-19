@@ -1,0 +1,182 @@
+version = 1
+allowed_status = ["implemented", "prototype", "scaffold", "open", "deferred"]
+
+[[family]]
+id = "identity-lifecycle"
+owner = "ptr-types"
+status = "prototype"
+purpose = "Stable identities and lifecycle coordinates that cannot be confused by primitive types."
+implemented = ["Revision", "Generation", "CommitIndex", "ProjectId", "CapsuleId", "ArtifactId", "CapabilityId", "TypeId", "PodId", "CandidateId", "RequestId", "NodeId", "EvidenceId"]
+open = ["SessionId", "PrincipalId", "ResourceId", "SnapshotId", "EventId", "TraceId", "BackendId", "ModelId", "DatasetId", "RunId", "CheckpointId", "Epoch/Term type"]
+invariants = ["Revision and Generation remain distinct concepts", "provider identities never replace PTR semantic identities"]
+
+[[family]]
+id = "cognitive-semantic"
+owner = "ptr-types"
+status = "prototype"
+purpose = "Shared semantic roles and cognitive operator identities used by the neural core, model API, router and training."
+implemented = ["SemanticRole", "ReasoningOperator"]
+open = ["Goal<T>", "Constraint<T>", "Claim<T>", "Evidence<T>", "Relation<S,P,O>", "Resource<T>", "Procedure<T>", "ActionIntent<T>", "SemanticTypeDescriptor", "SlotId", "CognitiveTypeCodebook", "SemanticRoleCode", "ReasoningOperatorCode"]
+invariants = ["semantic role is independent of epistemic state", "operator identity is typed rather than provider/string based", "model representation does not create runtime authority"]
+
+[[family]]
+id = "epistemic-probabilistic"
+owner = "ptr-types"
+status = "prototype"
+purpose = "Represent uncertainty and evidence strength without using probability as authority."
+implemented = ["Probability", "Epistemic<T>", "EpistemicState", "UncertaintyKind", "Validity", "VerificationLevel"]
+open = ["Estimate<T>", "Interval<T>", "Distribution<T>", "CalibrationMetadata", "Disagreement", "UnknownReason", "ConfidenceSource", "EpistemicTransition", "EpistemicStateCode", "UncertaintyKindCode"]
+invariants = ["unknown is representable", "learned confidence never grants effect permission", "uncertainty representation is independent of semantic role"]
+
+[[family]]
+id = "provenance-evidence"
+owner = "ptr-types"
+status = "scaffold"
+purpose = "Trace semantic claims and observations back to immutable evidence and transformations."
+implemented = ["ProvenanceRef", "EvidenceId"]
+open = ["SourceRef", "SourceSpan", "TransformRef", "EvidenceChain", "ContentHash", "ObservationId", "AttestationRef"]
+invariants = ["stronger epistemic state retains provenance", "derived search hits must resolve to authoritative evidence"]
+
+[[family]]
+id = "capability-authority"
+owner = "ptr-security"
+status = "prototype"
+purpose = "Separate semantic capability, effect class, permission and authorization evidence."
+implemented = ["CapabilityId", "Effect", "ActionAuthorization", "AuthorizationDecision", "AuthorizationDenial", "AuthorizationReceipt"]
+open = ["Principal", "Session", "ResourceScope", "CapabilityGrant", "PolicyContext", "VerificationRequirement", "EscalationRequirement"]
+invariants = ["effect authority cannot be bypassed by capability configuration", "soft reasoning cannot override hard denial"]
+
+[[family]]
+id = "artifact-raw-input"
+owner = "ptr-ingress"
+status = "open"
+purpose = "Preserve source bytes and normalization metadata while typed interpretations evolve."
+implemented = []
+open = ["RawInput", "ArtifactEnvelope", "MimeType", "Encoding", "NormalizedText", "SourceRange", "TrustClass", "ParseIssue"]
+invariants = ["typed interpretation never erases raw source", "normalization is provenance-linked"]
+
+[[family]]
+id = "semantic-state"
+owner = "ptr-semdb"
+status = "scaffold"
+purpose = "Typed keys, values, snapshots and dependency-aware derived queries."
+implemented = ["SemanticDelta", "SemanticSnapshot"]
+open = ["SemanticKey<T>", "SemanticValue<T>", "GroundKey<T>", "DerivedKey<T>", "QueryKey<T>", "DependencyEdge", "DependencySet", "SnapshotHandle"]
+invariants = ["reasoning snapshots are immutable", "stale derived values cannot self-promote"]
+
+[[family]]
+id = "memory-knowledge"
+owner = "ptr-memory"
+status = "open"
+purpose = "Lifecycle-managed semantic, episodic, procedural and epistemic memory objects."
+implemented = []
+open = ["SemanticCapsule", "Episode", "Procedure", "ConstraintMemory", "PreferenceMemory", "MemoryLink", "MemoryValidity", "MemoryPatch"]
+invariants = ["memory objects are generation-addressed", "revoked generations cannot resurrect"]
+
+[[family]]
+id = "model-interface"
+owner = "ptr-model-api"
+status = "prototype"
+purpose = "Backend-neutral request, event, continuation and capability contracts."
+implemented = ["ModelRequest", "ModelEvent", "ModelObservation", "ModelResumeRequest", "ModelError"]
+open = ["BackendCapabilities", "BackendDescriptor", "ModelCheckpointHandle", "CancellationToken", "GenerationBudget", "StreamItem", "TokenUsage", "ModelIdentity"]
+invariants = ["reduced-capability backends declare limitations", "provider-native response types never leak into runtime"]
+
+[[family]]
+id = "routing-execution"
+owner = "ptr-router"
+status = "scaffold"
+purpose = "Describe how reasoning/search/model/Pod operators are selected and composed."
+implemented = ["RouteScore", "RouteDecision", "RoutingPolicy"]
+open = ["OperatorId", "BackendCapability", "CapabilityGraph", "ExecutionRecipe", "ExecutionStep", "Budget", "FallbackPolicy", "DegradationPlan", "RouteReason"]
+invariants = ["routing is replayable", "fallback never silently weakens safety requirements"]
+
+[[family]]
+id = "pod-contract"
+owner = "ptr-pods"
+status = "prototype"
+purpose = "Semantic capability-based specialist computation independent of tool names."
+implemented = ["PodManifest", "Pod", "DynPod", "PodRegistry", "PodLease"]
+open = ["PodRequest", "PodResponse", "PodContext", "PodSession", "LeaseToken", "RemotePodDescriptor", "BackpressureState"]
+invariants = ["semantic capability outranks provider/tool name", "effects cross the hard action boundary"]
+
+[[family]]
+id = "verification"
+owner = "ptr-verifier"
+status = "scaffold"
+purpose = "Typed deterministic, executable, statistical and learned verification results."
+implemented = ["VerificationReport", "VerificationStatus", "Verifier", "NamedVerifier"]
+open = ["VerificationFinding", "VerifierId", "VerifierClass", "VerificationEvidence", "VerificationAggregate", "Contradiction", "CalibrationReport"]
+invariants = ["deterministic contradiction dominates learned positive score", "disputed remains representable"]
+
+[[family]]
+id = "search-retrieval"
+owner = "ptr-search"
+status = "scaffold"
+purpose = "Backend-neutral retrieval plans and evidence candidates."
+implemented = ["EvidenceCandidate"]
+open = ["SearchQuery", "RetrievalPlan", "SearchBackendId", "SearchMethod", "ScoreSemantics", "IndexGeneration", "ResolvedEvidence", "FusionTrace"]
+invariants = ["scores are backend/method qualified", "search result is not authoritative until live-generation resolution"]
+
+[[family]]
+id = "ledger-consensus"
+owner = "ptr-ledger"
+status = "prototype"
+purpose = "Authoritative ordered lifecycle events, durability and consensus metadata."
+implemented = ["LedgerEvent", "CommittedEvent", "CompactionBarrier"]
+open = ["DurabilityMode", "ConsensusTerm", "ClusterEpoch", "Membership", "SnapshotManifest", "CommitReceipt", "RevocationBarrier", "ReplayCursor"]
+invariants = ["committed order is authoritative", "revocation survives restart and replay"]
+
+[[family]]
+id = "state-projection"
+owner = "ptr-state"
+status = "prototype"
+purpose = "Queryable materialized views derived from committed history."
+implemented = ["MaterializedState"]
+open = ["ProjectionKey<T>", "ProjectionValue<T>", "ProjectionVersion", "SchemaVersion", "MigrationPlan", "ProjectionLag"]
+invariants = ["materialized state never outranks ledger", "rebuild is equivalent to incremental application"]
+
+[[family]]
+id = "events-observability"
+owner = "ptr-events"
+status = "scaffold"
+purpose = "Typed runtime/committed event distribution with explicit authority-vs-telemetry classification."
+implemented = ["RuntimeEvent", "EventEnvelope"]
+open = ["EventBus", "EventTopic", "ConsumerId", "ConsumerOffset", "EventClass", "RetentionPolicy"]
+invariants = ["telemetry and authority events are distinguishable", "consumer replay is explicit"]
+
+[[family]]
+id = "observability-tracing"
+owner = "ptr-observe"
+status = "prototype"
+purpose = "Backend-neutral structured tracing and flow correlation independent of exporter implementation."
+implemented = ["TraceEvent", "TraceLevel", "TraceValue", "TraceError", "TraceSink", "NoopTraceSink", "FlowSignature", "TracingSink adapter"]
+open = ["TraceContext", "SpanLink", "TrajectoryRecord", "RedactionTag", "ExporterDescriptor", "DiagnosticSnapshot"]
+invariants = ["trace data is telemetry, not causal authority", "sensitive values are redacted before export", "observability failure cannot weaken hard safety checks"]
+
+[[family]]
+id = "network-protocol"
+owner = "ptr-protocol"
+status = "scaffold"
+purpose = "Semantic and wire versioning, idempotency and transport-neutral frames."
+implemented = ["TypedPayload", "PodCall wire conversion"]
+open = ["SemanticContractVersion", "WireSchemaVersion", "IdempotencyKey", "HelloFrame", "AckFrame", "CancelFrame", "ByeFrame", "DeclarationFrame", "UnknownFieldPolicy"]
+invariants = ["wire compatibility and semantic compatibility are separate", "effect retries require idempotency"]
+
+[[family]]
+id = "storage-object"
+owner = "ptr-storage"
+status = "scaffold"
+purpose = "Content-addressed artifact identity independent of physical storage."
+implemented = ["ArtifactRef", "ObjectStore"]
+open = ["ContentHash", "BlobRef", "ObjectMetadata", "IntegrityStatus", "StorageClass", "AccessPolicy", "StreamingReader", "StreamingWriter"]
+invariants = ["identity is location-independent", "reads can verify integrity"]
+
+[[family]]
+id = "training-evaluation"
+owner = "training"
+status = "scaffold"
+purpose = "Reproducible datasets, runs, checkpoints, metrics and evaluation evidence."
+implemented = ["training run manifest v2 preparation", "experiment/evaluation manifest schemas"]
+open = ["DatasetRef", "DatasetSplitRef", "CheckpointRef", "TrainingRunId", "MetricRecord", "EvaluationRun", "BaselineRef", "AblationRef", "HardwareFingerprint"]
+invariants = ["training inputs are hash-addressable", "failed/negative results remain evidence"]

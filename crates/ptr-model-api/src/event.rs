@@ -1,4 +1,4 @@
-use ptr_types::{CandidateId, CapabilityId, Probability, TypeId};
+use ptr_types::{CandidateId, CapabilityId, Probability, ReasoningOperator, TypeId};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ModelEvent {
@@ -15,7 +15,7 @@ pub enum ModelEvent {
         confidence: Probability,
     },
     OperatorRequested {
-        operator: String,
+        operator: ReasoningOperator,
     },
     PodRequested {
         capability: CapabilityId,

@@ -1,0 +1,216 @@
+version = 1
+
+[policy]
+lib_rs = "thin-facade"
+default_visibility = "private"
+internal_visibility = "pub(crate)"
+public_visibility = "pub"
+public_module_rule = "prefer private mod plus explicit pub use; pub mod only when module namespace is intentionally contractual"
+parameter_rule = "descriptive names; use typed request/options structs for many or ambiguous parameters; Rust has no labelled call arguments"
+collections_rule = "HashMap/HashSet for unordered lookup; BTreeMap/BTreeSet for deterministic ordering; typed values instead of String-to-String domain maps"
+generic_rule = "T/E for locally obvious single generics; semantic names such as TInput/TOutput/TBackend when multiple roles exist"
+trait_rule = "PTR-owned semantic traits; focused contracts; explicit object-safety/concurrency expectations; provider implementors stay adapters"
+bounds_rule = "place bounds on the narrowest item that needs them; prefer where clauses for relational/non-trivial bounds; avoid speculative Clone/Send/Sync/static"
+lifetime_rule = "use lifetimes only for real borrow relations; semantic names for non-trivial relations; prefer owned handles across async/process/network/persistence boundaries"
+validation_rule = "is/has/can for booleans; check/validate/ensure return typed Result; verify returns domain verification types; failures include named context"
+error_rule = "fallible public operations use Result<T,E>; mismatch errors carry expected/actual where meaningful; named field/message/code context; no recoverable production unwrap"
+fallibility_rule = "functions that can fail return typed Result; do not encode failure as false/None/default unless absence is the actual semantic result"
+test_rule = "unit tests live beside source modules; integration tests exercise public APIs under tests/*.rs; tests/common contains reusable fixtures/helpers without test annotations"
+iterator_rule = "prefer IntoIterator for generic batch inputs and impl Iterator for lazy returned views; use standard adapters and short-circuit fallible traversal before materializing"
+closure_rule = "use the weakest Fn/FnMut/FnOnce bound that matches capture semantics; closures stay small and must not hide authority-changing side effects"
+match_rule = "prefer exhaustive match for closed semantic states; use alternatives/destructuring/ranges before wildcard fallbacks where meaning is known"
+match_guard_rule = "use guards only to refine a matched semantic case with a cheap deterministic local predicate; keep a fallback arm and avoid hidden effects in guards"
+macro_rule = "prefer functions/traits/generics first; use hygienic macro_rules for compile-time repetition or small typed DSLs; exported macros use $crate and narrow fragment specifiers"
+proc_macro_rule = "procedural macros require a dedicated crate, explicit architectural justification and compile-pass/compile-fail coverage before becoming public API"
+
+[[crate]]
+id = "ptr-types"
+current_shape = "mostly-flat"
+modules = ["macros", "semantic", "epistemic", "uncertainty", "reasoning", "lifecycle", "effects", "provenance", "ids", "issues"]
+public_groups = ["SemanticRole and future Goal/Constraint/Claim/Evidence wrappers", "EpistemicState/Epistemic<T>", "UncertaintyKind/Probability and future Estimate/Interval/Distribution types", "ReasoningOperator", "Revision/Generation/CommitIndex/Validity", "Effect/VerificationLevel", "provenance/evidence types", "identifier newtypes"]
+function_groups = ["validated semantic/probability constructors", "epistemic/uncertainty transitions", "small value accessors"]
+notes = ["primary purpose is shared cognitive/model semantic vocabulary", "no backend/model-framework dependencies", "tensor/latent representations remain in ptr-core", "component aggregates remain with owning crates", "keep internal newtype generation macro_rules isolated from public domain semantics"]
+
+[[crate]]
+id = "ptr-config"
+current_shape = "mostly-flat"
+modules = ["schema", "source", "overrides", "validation", "secrets", "backend"]
+public_groups = ["PtrConfig", "typed config sections", "CliOverrides", "ConfigError/validation"]
+function_groups = ["load/merge", "validate", "environment/CLI parsing"]
+notes = ["backend config remains typed but adapter-specific", "SecretRef replaces plaintext secret values"]
+
+[[crate]]
+id = "ptr-protocol"
+current_shape = "mixed"
+modules = ["frame", "payload", "version", "codec", "validation", "generated"]
+public_groups = ["Frame", "TypedPayload", "contract/wire versions", "validated conversions"]
+function_groups = ["encode/decode", "domain-to-wire/wire-to-domain", "frame kind/validation"]
+notes = ["generated provider/wire types do not define domain semantics"]
+
+[[crate]]
+id = "ptr-ingress"
+current_shape = "mostly-flat"
+modules = ["raw", "artifact", "decode", "classify", "proposal", "cross_check"]
+public_groups = ["RawInput/artifact types", "typed proposal types", "cross-check outcome", "classifier/decoder ports"]
+function_groups = ["normalize/decode", "classify", "cross-check"]
+notes = ["preserve raw evidence"]
+
+[[crate]]
+id = "ptr-semdb"
+current_shape = "mostly-flat"
+modules = ["key", "value", "delta", "dependency", "query", "host", "snapshot", "cache"]
+public_groups = ["typed semantic keys/values", "SemanticDelta", "SemanticHost", "SemanticSnapshot", "query port"]
+function_groups = ["apply_delta", "snapshot", "query/evaluate", "dependency invalidation"]
+notes = ["replace String-to-String state with typed interfaces"]
+
+[[crate]]
+id = "ptr-core"
+current_shape = "modular"
+modules = ["model", "semantic_slots", "typed_attention", "latent_reasoner", "branch_reasoner", "operator_router", "action_head", "verifier_head", "ptr_ar", "ptr_diff"]
+public_groups = ["PtrCoreConfig", "model family/config", "semantic slot types", "reasoning/operator/action/verifier outputs"]
+function_groups = ["forward/reason", "normalize", "route operator", "produce action/verifier proposals"]
+notes = ["keep research subarchitectures isolated behind common outputs"]
+
+[[crate]]
+id = "ptr-model-api"
+current_shape = "modular"
+modules = ["request", "event", "capability", "checkpoint", "backend", "stream", "error"]
+public_groups = ["ModelRequest", "ModelEvent", "BackendCapabilities", "InferenceBackend", "ResumableInferenceBackend", "StreamingInferenceBackend", "ModelError"]
+function_groups = ["infer", "resume", "stream", "capabilities"]
+notes = ["replace wildcard re-exports with explicit pub use when contract stabilizes"]
+
+[[crate]]
+id = "ptr-exec"
+current_shape = "mostly-flat"
+modules = ["mailbox", "isolate", "effect", "scheduler", "supervisor", "cancel", "replay"]
+public_groups = ["Mailbox", "SendError<T>", "Isolate<M>", "Effect<M>", "scheduler/supervisor ports", "ReplayTrace"]
+function_groups = ["send/receive", "handle", "schedule", "cancel", "replay"]
+notes = ["bounded queues and ownership semantics remain explicit"]
+
+[[crate]]
+id = "ptr-pods"
+current_shape = "mostly-flat"
+modules = ["manifest", "contract", "registry", "lease", "context", "local", "remote", "sandbox"]
+public_groups = ["PodManifest", "Pod", "DynPod", "PodRegistry", "PodLease", "PodContext/request/response"]
+function_groups = ["register/resolve", "lease/revoke", "invoke"]
+notes = ["generic Pod inputs/outputs where type-safe", "provider names stay adapter metadata"]
+
+[[crate]]
+id = "ptr-router"
+current_shape = "flat"
+modules = ["types", "capability_graph", "policy", "recipe", "fallback", "router"]
+public_groups = ["RouteScore", "RouteDecision", "RoutingPolicy", "CapabilityGraph", "ExecutionRecipe", "Router"]
+function_groups = ["score", "select", "plan", "fallback"]
+notes = ["use enums for operator/backend states and exhaustive matches"]
+
+[[crate]]
+id = "ptr-verifier"
+current_shape = "mostly-flat"
+modules = ["report", "finding", "trait", "registry", "aggregate", "deterministic", "learned"]
+public_groups = ["VerificationReport", "VerificationStatus", "Verifier<T>", "NamedVerifier<T>", "finding/aggregation types"]
+function_groups = ["verify", "aggregate", "rank/precedence"]
+notes = ["typed findings replace generic strings where stable"]
+
+[[crate]]
+id = "ptr-feedback"
+current_shape = "mostly-flat"
+modules = ["candidate", "population", "critique", "repair", "selection", "trajectory"]
+public_groups = ["Candidate<T>", "candidate population", "critique/repair contracts", "trajectory types"]
+function_groups = ["generate/select", "critique", "repair", "record trajectory"]
+notes = ["generic candidate payloads remain appropriate"]
+
+[[crate]]
+id = "ptr-ledger"
+current_shape = "large-mixed"
+modules = ["event", "commit", "ledger", "durability", "snapshot", "codec", "adapters", "consensus"]
+public_groups = ["LedgerEvent", "CommittedEvent", "Ledger", "FileLedger reference", "durability/snapshot types", "consensus port"]
+function_groups = ["append/replay", "open/recover", "snapshot", "propose/commit"]
+notes = ["raft-engine/raft-rs remain adapter modules", "storage and consensus contracts are separate"]
+
+[[crate]]
+id = "ptr-state"
+current_shape = "mostly-flat"
+modules = ["projection", "materializer", "schema", "migration", "query", "adapters"]
+public_groups = ["MaterializedState", "ApplyOutcome", "projection/query ports", "schema/migration types"]
+function_groups = ["apply", "rebuild", "query", "migrate"]
+notes = ["backend-specific SQL remains adapters"]
+
+[[crate]]
+id = "ptr-memory"
+current_shape = "mostly-flat"
+modules = ["class", "capsule", "episode", "procedure", "link", "repository", "lifecycle"]
+public_groups = ["MemoryClass", "memory object types", "repository/lifecycle ports"]
+function_groups = ["store/resolve", "supersede/revoke", "link"]
+notes = ["generation and provenance mandatory where authoritative"]
+
+[[crate]]
+id = "ptr-search"
+current_shape = "mostly-flat"
+modules = ["query", "candidate", "score", "plan", "backend", "resolve", "fusion", "adapters"]
+public_groups = ["EvidenceCandidate", "search query/plan types", "SearchBackend", "SourceResolver", "fusion trace"]
+function_groups = ["search", "resolve", "fuse", "validate generation"]
+notes = ["HashMap may be used for backend lookup; deterministic fusion output is normalized/sorted"]
+
+[[crate]]
+id = "ptr-storage"
+current_shape = "flat"
+modules = ["object", "reference", "hash", "integrity", "store", "stream", "adapters"]
+public_groups = ["ArtifactRef/ObjectRef", "ObjectStore", "content/integrity types", "streaming interfaces"]
+function_groups = ["put/get", "hash", "verify", "stream"]
+notes = ["content identity is independent of backend location"]
+
+[[crate]]
+id = "ptr-net"
+current_shape = "mixed"
+modules = ["identity", "endpoint", "transport", "session", "peer", "error", "adapters"]
+public_groups = ["NodeIdentity", "endpoint/session types", "Transport", "network error"]
+function_groups = ["connect/accept", "send/receive", "authenticate", "session lifecycle"]
+notes = ["Iroh stays feature-gated adapter"]
+
+[[crate]]
+id = "ptr-events"
+current_shape = "flat"
+modules = ["event", "envelope", "topic", "bus", "consumer", "offset", "retention", "adapters"]
+public_groups = ["RuntimeEvent", "EventEnvelope", "EventBus", "consumer/offset types"]
+function_groups = ["publish", "subscribe", "ack/seek", "replay"]
+notes = ["authority and telemetry event classes remain explicit"]
+
+[[crate]]
+id = "ptr-observe"
+current_shape = "modular"
+modules = ["fields", "flow", "error", "macros", "trace", "tracing_adapter", "trajectory", "redaction", "export", "diagnostics"]
+public_groups = ["stable field constants", "FlowSignature", "TraceEvent/TraceLevel/TraceValue", "TraceError", "TraceSink", "trace_event! macro", "feature-gated TracingSink", "future exporter/diagnostic ports"]
+function_groups = ["construct trace events", "emit", "export", "redact", "diagnose"]
+notes = ["never require natural-language chain-of-thought", "tracing crate remains an adapter, not semantic authority", "expected/actual mismatch values remain typed"]
+
+[[crate]]
+id = "ptr-inspect"
+current_shape = "flat"
+modules = ["node", "inspect", "secret", "diff", "render"]
+public_groups = ["InspectNode", "Inspectable", "Secret<T>", "inspection diff/render types"]
+function_groups = ["inspect", "diff", "render"]
+notes = ["redaction-safe by construction"]
+
+[[crate]]
+id = "ptr-security"
+current_shape = "mostly-flat"
+modules = ["principal", "scope", "capability", "permission", "authorization", "policy", "receipt", "sandbox", "secret"]
+public_groups = ["PermissionSet", "ActionAuthorization", "AuthorizationDecision/Denial/Receipt", "principal/scope/policy types"]
+function_groups = ["authorize", "check effect/capability/scope", "escalate", "audit"]
+notes = ["closed decision states use enums and exhaustive matches"]
+
+[[crate]]
+id = "ptr-server"
+current_shape = "mostly-flat"
+modules = ["api", "request", "response", "error", "auth", "session", "stream", "routes"]
+public_groups = ["ApiRequest/ApiResponse", "server configuration", "public API/router factory", "session/auth contracts"]
+function_groups = ["serve", "route request", "authenticate", "stream response"]
+notes = ["HTTP types do not leak into domain crates"]
+
+[[crate]]
+id = "ptr-runtime"
+current_shape = "large-flat"
+modules = ["error", "request", "runtime", "composition", "lifecycle", "model_loop", "pod_loop", "authorization", "commit", "events", "ledger"]
+public_groups = ["PtrRuntime", "RuntimeError", "ResumableRun", "typed runtime request/result", "composition handles"]
+function_groups = ["construct/open/replay", "ingest", "run model", "run/resume Pods", "authorize", "commit", "query state"]
+notes = ["highest-priority lib.rs split candidate", "private helpers stay private", "backend composition uses PTR-owned ports"]

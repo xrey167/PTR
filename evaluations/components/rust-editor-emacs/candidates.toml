@@ -1,0 +1,58 @@
+component = "rust-editor-emacs"
+status = "open"
+decision = "unlocked"
+
+[criteria]
+repository_command_parity = 0.20
+rust_analyzer_integration = 0.15
+cargo_test_workflow = 0.15
+format_clippy_workflow = 0.10
+macro_workflow = 0.08
+emacs_compatibility = 0.08
+remote_tramp = 0.05
+maintenance_health = 0.07
+integration_cost = 0.05
+license_fit = 0.04
+configuration_overlap = 0.03
+
+[[candidate]]
+id = "rust-mode"
+source = "external"
+status = "to-evaluate"
+repository = "https://github.com/rust-lang/rust-mode"
+license = "MIT OR Apache-2.0"
+evidence = []
+
+[[candidate]]
+id = "rust-mode+cargo-mode"
+source = "external-composition"
+status = "to-evaluate"
+repositories = [
+  "https://github.com/rust-lang/rust-mode",
+  "https://github.com/ayrat555/cargo-mode",
+]
+license = "mixed-compatible: MIT OR Apache-2.0 + MIT"
+evidence = []
+
+[[candidate]]
+id = "rust-mode+rustic"
+source = "external-composition"
+status = "to-evaluate"
+repositories = [
+  "https://github.com/rust-lang/rust-mode",
+  "https://github.com/emacs-rustic/rustic",
+]
+license = "MIT OR Apache-2.0"
+evidence = []
+
+[[candidate]]
+id = "rustic+cargo-mode"
+source = "external-composition"
+status = "to-evaluate"
+purpose = "overlap-experiment"
+repositories = [
+  "https://github.com/emacs-rustic/rustic",
+  "https://github.com/ayrat555/cargo-mode",
+]
+license = "mixed-compatible: MIT OR Apache-2.0 + MIT"
+evidence = []

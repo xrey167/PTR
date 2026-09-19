@@ -1,7 +1,7 @@
 version = 1
 id = "ptr-memory"
 maturity = "scaffold"
-last_reviewed = "2026-09-18"
+last_reviewed = "2026-09-19"
 
 implemented = [
   "MemoryClass taxonomy",
@@ -13,12 +13,12 @@ missing = [
   "Persistent semantic/episodic/procedural/epistemic stores",
   "Lifecycle enforcement and revocation propagation",
   "Consolidation/promotion policies",
-  "Typed relation/entity structures instead of String fields",
+  "Shared typed semantic objects instead of separate String buckets for goals/constraints/known/hypotheses/unknowns/relations",
   "Multi-vector/late-interaction representations and human-readable mirror",
 ]
 
 next = [
-  "Replace string payloads with typed semantic objects",
+  "Replace string payload buckets with shared ptr-types semantic-role/epistemic wrappers while keeping SemanticCapsule aggregate ownership in ptr-memory",
   "Implement capsule lifecycle repository on ptr-state",
   "Evaluate editable-memory superiority against strong RAG in E002/E004",
 ]

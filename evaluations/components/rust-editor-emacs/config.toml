@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "rust-editor-emacs"
+path = "evaluations/components/rust-editor-emacs"
+tests_dir = "tests"

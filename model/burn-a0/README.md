@@ -16,11 +16,25 @@ This is the first **trainable tensor implementation** of a PTR model component. 
 - generic Burn backend support;
 - NdArray forward, autodiff and tiny supervised-router training tests.
 
+## Alignment with the PTR cognitive type kernel
+
+Burn A0 already keeps slot-type, epistemic, validity, provenance and confidence metadata in separate channels. That is directionally aligned with the target architecture.
+
+The remaining alignment work is explicit:
+
+- replace opaque research-local `slot_type` semantics with the shared `SemanticRole` taxonomy;
+- add a separate `UncertaintyKind` channel instead of folding distribution semantics into slot type or epistemic state;
+- map `SemanticRole`, `EpistemicState`, `UncertaintyKind` and `ReasoningOperator` through a versioned cognitive type codebook;
+- record the codebook version in datasets/checkpoints/runs;
+- do not use Rust enum discriminants directly as persistent tensor IDs.
+
+The current integer category counts are therefore research-local and must not be treated as a frozen wire/checkpoint schema.
+
 ## Not implemented yet
 
 - pretrained language backbone;
 - explicit lifecycle-generation masks inside neural attention;
-- branch/distribution latent state;
+- branch/distribution latent state and explicit uncertainty-kind embeddings;
 - ActionIR/verifier neural heads;
 - full language modeling / multi-objective PTR loss;
 - checkpoint import/export and Torch numerical parity;

@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "tooling"
+path = "tooling"
+tests_dir = "tests"

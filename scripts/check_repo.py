@@ -8,7 +8,9 @@ required=[
     'Cargo.toml','README.md','docs/DEFINITION_OF_DONE.md','experiments/registry.toml',
     'datasets/registry.toml','crates/ptr-types/src/lib.rs','crates/ptr-semdb/src/lib.rs',
     'crates/ptr-core/src/lib.rs','evaluations/README.md','docs/components/STATUS.md',
-    'scripts/update_component_docs.py'
+    'scripts/update_component_docs.py','docs/RUST_API_STYLE.md','research/catalogs/rust-api-layout.toml',
+    'scripts/check_architecture_catalog.py','scripts/check_rust_conventions.py','scripts/report_rust_api.py',
+    'docs/TESTING.md','templates/rust-crate/Cargo.toml'
 ]
 for rel in required:
     if not (ROOT/rel).exists(): errors.append(f'missing {rel}')

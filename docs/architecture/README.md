@@ -7,6 +7,9 @@
 3. [Component contracts](../COMPONENT_CONTRACTS.md)
 4. [Global invariants](../INVARIANTS.md)
 5. [Technology stack](../TECH_STACK.md)
+6. [Rust module and API style](../RUST_API_STYLE.md)
+7. [Testing layout](../TESTING.md)
+8. [Development environment](../DEVELOPMENT_ENVIRONMENT.md)
 
 ## Detailed architecture
 
@@ -30,6 +33,7 @@
 - [17-type-system.md](17-type-system.md)
 - [18-performance.md](18-performance.md)
 - [19-research-method.md](19-research-method.md)
+- [Open architecture catalog](../../research/catalogs/README.md) — unresolved type families, backend slots and component contracts
 
 ## Component-level documentation
 

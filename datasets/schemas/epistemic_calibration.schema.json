@@ -1,4 +1,5 @@
 {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "required": [
     "question",
@@ -7,12 +8,42 @@
   ],
   "properties": {
     "question": {
-      "type": "string"
+      "type": "string",
+      "minLength": 1
+    },
+    "epistemic_state": {
+      "type": "string",
+      "enum": [
+        "unknown",
+        "assumed",
+        "hypothesis",
+        "observed",
+        "inferred",
+        "verified"
+      ]
+    },
+    "uncertainty_kind": {
+      "type": "string",
+      "enum": [
+        "point",
+        "interval",
+        "distribution"
+      ]
     },
     "distribution": {
-      "type": "object"
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "number",
+        "minimum": 0.0,
+        "maximum": 1.0
+      }
     },
-    "outcome": {}
+    "outcome": {},
+    "type_codebook_version": {
+      "type": "string",
+      "description": "Optional until the cognitive type codebook is frozen."
+    }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema"
+  "additionalProperties": false
 }

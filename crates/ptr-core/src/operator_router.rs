@@ -1,19 +1,6 @@
 use ptr_types::Probability;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ReasoningOperator {
-    Semantic,
-    Deductive,
-    Probabilistic,
-    Statistical,
-    Temporal,
-    Causal,
-    Search,
-    Optimization,
-    Simulation,
-    Symbolic,
-    ExternalPod,
-}
+pub use ptr_types::ReasoningOperator;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct WeightedOperator {

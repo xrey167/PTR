@@ -1,12 +1,12 @@
 # PTR Technology Stack
 
-The table distinguishes **PTR semantics** from **current candidate technologies**. A candidate is not permanently selected until evaluation closes.
+The table distinguishes **PTR semantics** from **current candidate technologies**. A candidate is not permanently selected until evaluation closes. The broader set of intentionally open type/backend slots is tracked in the [open architecture catalog](../research/catalogs/README.md); this table is not a frozen bill of materials.
 
 | Concern | PTR-owned contract | Current candidate(s) | Alternative slot |
 |---|---|---|---|
 | Configuration | `ptr-config` | serde + TOML | config-rs/other layered sources |
 | Runtime orchestration | `ptr-runtime` | PTR-owned composition | no external semantic owner |
-| Domain types | `ptr-types` | Rust enums/newtypes | internal design |
+| Cognitive + semantic type kernel | `ptr-types` | orthogonal Rust enums/newtypes/generic semantic wrappers | internal design; no model-framework owner |
 | Incremental semantics | `ptr-semdb` | custom engine inspired by rust-analyzer | Salsa/other |
 | Model framework | `ptr-core` | Burn/CubeCL; PyTorch reference | JAX/PyTorch/native |
 | Inference | `ptr-model-api` | SGLang, vLLM, Burn native | TensorRT/custom |
@@ -36,3 +36,17 @@ The table distinguishes **PTR semantics** from **current candidate technologies*
 ## Selection rule
 
 A component becomes a default only after evidence covers correctness, failure semantics, latency, throughput, memory, operational complexity, portability, licensing and research flexibility where relevant.
+
+
+## Developer tooling (non-runtime)
+
+Developer/editor tools are not part of PTR's runtime bill of materials. They may wrap repository commands but may not redefine build, test, formatting or architecture semantics.
+
+| Concern | PTR rule | Candidate(s) |
+|---|---|---|
+| Rust language intelligence | editor optional; CLI/CI remains authoritative | rust-analyzer |
+| Emacs Rust editing | optional profile | rust-lang/rust-mode |
+| Emacs integrated Rust environment | optional profile | emacs-rustic/rustic |
+| Emacs Cargo UI | optional profile | ayrat555/cargo-mode |
+
+See [development environment](DEVELOPMENT_ENVIRONMENT.md) and [rust-editor-emacs evaluation](../evaluations/components/rust-editor-emacs/README.md).

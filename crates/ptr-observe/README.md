@@ -9,17 +9,24 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `scaffold`  
-**Last reviewed:** 2026-09-18  
-**Code footprint:** 1 Rust source files · 19 nonblank source lines · 1 integration-test files · 1 `#[test]` markers
+**Last reviewed:** 2026-09-19  
+**Code footprint:** 7 Rust source files · 351 nonblank source lines · 5 integration-test files · 12 `#[test]` markers
 
 ### Implemented now
 
-- Standard PTR tracing field names
+- Standard PTR tracing field names including operation/outcome/error/expected/actual/latency fields
 - FlowSignature with request/operators/state transitions
+- Backend-neutral TraceEvent, TraceLevel and typed TraceValue structures
+- TraceSink port with infallible NoopTraceSink reference implementation
+- Typed TraceError variants with stable machine-readable error codes
+- Feature-gated tracing 0.1 adapter implementing the PTR TraceSink contract
+- Unit tests beside source modules plus thematic integration tests with shared tests/common fixtures
+- Lazy trace-field iteration with impl Iterator, closure-based match-guard filtering and fallible try_for_each traversal
+- Internal macro_rules-generated TraceValue conversions plus public hygienic trace_event! builder macro
 
 ### Missing for the target architecture
 
-- tracing Subscriber/layer integration
+- Subscriber/layer setup and exporter integration beyond the tracing sink adapter
 - OpenTelemetry and NeMo Relay exporters
 - Plan-vs-execution correlation
 - Redaction middleware
@@ -47,7 +54,13 @@
 
 ### Current automated checks
 
-- workspace fmt/check/test/clippy
+- typed trace event expected/actual value test
+- namespaced tracing field test
+- feature-gated tracing adapter emission test
+- unit tests for trace construction, iterator adapters/closures, fallible traversal, sink behavior and stable error codes/messages
+- integration tests share deterministic fixture code through tests/common/mod.rs
+- integration tests exercise exported macro expansion and generated TraceValue conversions
+- workspace fmt/check/test/clippy; guarded matches filter checked during merge review
 
 <!-- PTR:STATUS:END -->
 

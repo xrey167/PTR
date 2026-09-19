@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "emacs"
+path = "tooling/emacs"
+tests_dir = "tests"
