@@ -205,10 +205,15 @@ fn rejected_transition_never_enters_durable_history() {
     {
         let mut runtime = PtrRuntime::open_durable(PtrConfig::default(), &path).unwrap();
         runtime.commit(activate(2)).unwrap();
-        let bytes = std::fs::read(&path).unwrap();
-        assert!(runtime.commit(activate(1)).is_err());
-        assert_eq!(std::fs::read(&path).unwrap(), bytes);
     }
+    // Inspect bytes outside the OS-lock lifetime on every platform.
+    let bytes = std::fs::read(&path).unwrap();
+    {
+        let mut runtime = PtrRuntime::open_durable(PtrConfig::default(), &path).unwrap();
+        assert!(runtime.commit(activate(1)).is_err());
+        assert_eq!(runtime.committed_events().len(), 1);
+    }
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
     let reopened = PtrRuntime::open_durable(PtrConfig::default(), &path).unwrap();
     assert_eq!(reopened.live_generation("capsule:a"), Some(Generation(2)));
     assert_eq!(reopened.committed_events().len(), 1);

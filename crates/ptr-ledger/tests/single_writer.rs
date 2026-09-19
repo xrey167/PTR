@@ -34,7 +34,11 @@ fn one_writer_owns_recovery_and_append_across_processes() {
             generation: Generation(1),
         })
         .unwrap();
+    // Windows locks also reject I/O through independent read handles. Capture
+    // the baseline before reopening the owner; compare only after releasing it.
+    drop(first);
     let bytes = std::fs::read(&path).unwrap();
+    let owner = FileLedger::open(&path).unwrap();
     let error = FileLedger::open(&path)
         .err()
         .expect("a second handle must fail");
@@ -45,8 +49,8 @@ fn one_writer_owns_recovery_and_append_across_processes() {
         .status()
         .unwrap();
     assert!(status.success());
+    drop(owner);
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
-    drop(first);
     let mut reopened = FileLedger::open(&path).unwrap();
     assert_eq!(reopened.events().len(), 1);
     assert_eq!(
