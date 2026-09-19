@@ -4,6 +4,14 @@
 
 Crates exchange **domain types**, not provider-native objects. Provider structs are confined to adapters.
 
+## Shared type-kernel rule
+
+`ptr-types` is the shared cognitive/semantic kernel, not merely an identifier crate. Cross-layer concepts such as semantic role, epistemic state, uncertainty shape and reasoning-operator identity belong there when model/core/router/training/runtime must interpret them identically.
+
+Component aggregates remain with their owning crate. For example, `SemanticSlot` remains in `ptr-core`, while the slot's `SemanticRole`, `EpistemicState` and `UncertaintyKind` come from `ptr-types`.
+
+The axes must not be collapsed into one enum: semantic role, epistemic state, uncertainty representation, lifecycle validity, verification and authority are distinct concepts.
+
 ## Core contracts
 
 | Contract | Producer | Consumer | Critical fields |
