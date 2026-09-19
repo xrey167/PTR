@@ -14,7 +14,7 @@ edition = "2021"
 name = "raft-proto"
 version = "0.7.0"
 authors = ["The TiKV Project Developers"]
-build = "build.rs"
+build = false
 description = "Protocol definitions for the rust language implementation of the Raft algorithm."
 homepage = "https://github.com/pingcap/raft-rs"
 documentation = "https://docs.rs/raft-proto"
@@ -31,35 +31,10 @@ categories = [
 license = "Apache-2.0"
 repository = "https://github.com/pingcap/raft-rs"
 
-[dependencies.bytes]
-version = "1"
-optional = true
-
-[dependencies.lazy_static]
-version = "1"
-optional = true
-
+# PTR: the supported adapter is prost-only; generated source is pinned and reviewed.
 [dependencies.prost]
-version = "0.11"
-optional = true
-
-[dependencies.protobuf]
-version = "2"
-optional = true
-
-[build-dependencies.protobuf-build]
-version = "0.15.1"
-default-features = false
+version = "0.11.9"
 
 [features]
-default = ["protobuf-codec"]
-prost-codec = [
-    "protobuf-build/prost-codec",
-    "prost",
-    "lazy_static",
-]
-protobuf-codec = [
-    "protobuf-build/protobuf-codec",
-    "bytes",
-    "protobuf/bytes",
-]
+default = ["prost-codec"]
+prost-codec = []

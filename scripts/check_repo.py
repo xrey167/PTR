@@ -4,6 +4,8 @@ from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[1]
 errors=[]
+def owned(paths):
+    return (p for p in paths if not {'.git', 'target', 'vendor', '.venv', 'node_modules'}.intersection(p.relative_to(ROOT).parts))
 required=[
     'Cargo.toml','README.md','docs/DEFINITION_OF_DONE.md','experiments/registry.toml',
     'datasets/registry.toml','crates/ptr-types/src/lib.rs','crates/ptr-semdb/src/lib.rs',
@@ -15,13 +17,13 @@ required=[
 for rel in required:
     if not (ROOT/rel).exists(): errors.append(f'missing {rel}')
 
-for p in ROOT.rglob('*.toml'):
+for p in owned(ROOT.rglob('*.toml')):
     try: tomllib.loads(p.read_text(encoding='utf-8'))
     except Exception as e: errors.append(f'TOML {p.relative_to(ROOT)}: {e}')
-for p in ROOT.rglob('*.json'):
+for p in owned(ROOT.rglob('*.json')):
     try: json.loads(p.read_text(encoding='utf-8'))
     except Exception as e: errors.append(f'JSON {p.relative_to(ROOT)}: {e}')
-for p in ROOT.rglob('*.jsonl'):
+for p in owned(ROOT.rglob('*.jsonl')):
     for n,line in enumerate(p.read_text(encoding='utf-8').splitlines(),1):
         if not line.strip(): continue
         try: json.loads(line)
@@ -61,7 +63,7 @@ for crate in crate_dirs:
             errors.append(f'{name}: README generated status block missing')
 
 # Every declared workspace-area config must have a sibling tests directory.
-for cfg in ROOT.rglob('config.toml'):
+for cfg in owned(ROOT.rglob('config.toml')):
     if '.git' in cfg.parts:
         continue
     tests=cfg.parent/'tests'

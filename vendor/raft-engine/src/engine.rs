@@ -8,7 +8,7 @@ use std::thread::{Builder as ThreadBuilder, JoinHandle};
 use std::time::{Duration, Instant};
 
 use log::{error, info};
-use protobuf::{parse_from_bytes, Message};
+use protobuf::Message;
 
 use crate::config::{Config, RecoveryMode};
 use crate::consistency::ConsistencyChecker;
@@ -238,7 +238,7 @@ where
         let _t = StopWatch::new(&*ENGINE_READ_MESSAGE_DURATION_HISTOGRAM);
         if let Some(memtable) = self.memtables.get(region_id) {
             if let Some(value) = memtable.read().get(key) {
-                return Ok(Some(parse_from_bytes(&value)?));
+                return Ok(Some(Message::parse_from_bytes(&value)?));
             }
         }
         Ok(None)
@@ -267,7 +267,7 @@ where
         C: FnMut(&[u8], S) -> bool,
     {
         self.scan_raw_messages(region_id, start_key, end_key, reverse, move |k, raw_v| {
-            if let Ok(v) = parse_from_bytes(raw_v) {
+            if let Ok(v) = Message::parse_from_bytes(raw_v) {
                 callback(k, v)
             } else {
                 true
@@ -593,7 +593,7 @@ where
                 )?,
             );
         }
-        let e = parse_from_bytes(
+        let e = Message::parse_from_bytes(
             &cache.block.borrow()
                 [idx.entry_offset as usize..(idx.entry_offset + idx.entry_len) as usize],
         )?;

@@ -66,6 +66,7 @@ fn all_event_variants_roundtrip_across_reopen() {
         .map(|event| event.event.clone())
         .collect::<Vec<_>>();
     assert_eq!(actual, expected);
+    drop(reopened);
     std::fs::remove_file(path).unwrap();
 }
 
@@ -94,5 +95,6 @@ fn partial_trailing_record_is_truncated_without_admission() {
     let reopened = FileLedger::open(&path).unwrap();
     assert_eq!(reopened.events().len(), 1);
     assert_eq!(std::fs::metadata(&path).unwrap().len(), durable_len);
+    drop(reopened);
     std::fs::remove_file(path).unwrap();
 }

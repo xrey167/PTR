@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/ptr-*", "bins/ptr-*"]
-exclude = ["fuzz", "model/burn-a0", "vendor/raft", "vendor/raft-proto", "vendor/raft-engine"]
+exclude = ["fuzz", "model/burn-a0", "vendor/*"]
 
 [workspace.package]
 version = "0.1.0"
@@ -53,3 +53,5 @@ tracing = "0.1.44"
 raft = { path = "vendor/raft" }
 raft-proto = { path = "vendor/raft-proto" }
 raft-engine = { path = "vendor/raft-engine" }
+
+netlink_packet_core_pastey_0_8_2 = { package = "netlink-packet-core", path = "vendor/netlink-packet-core-0.8.2" }

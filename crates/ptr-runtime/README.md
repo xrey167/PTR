@@ -8,11 +8,12 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-18  
-**Code footprint:** 1 Rust source files · 477 nonblank source lines · 5 integration-test files · 14 `#[test]` markers
+**Last reviewed:** 2026-09-19  
+**Code footprint:** 1 Rust source files · 577 nonblank source lines · 6 integration-test files · 21 `#[test]` markers
 
 ### Implemented now
 
+- Ledger-only lifecycle mutation; invalid/rewinding/tombstoned/cross-project transitions rejected before append and during replay
 - Central runtime object wiring configuration, SemDB, ledger, materialized state, events and permissions
 - Durable standalone runtime constructor opens/replays FileLedger and reconstructs lifecycle/materialized state across restart
 - Text ingestion into revisioned semantic state
@@ -25,6 +26,8 @@
 
 ### Missing for the target architecture
 
+- Durable SemDB payload/revision reconstruction and principal/resource-scoped effect execution
+- Atomic verifier-bound execution receipts and real snapshot serialization
 - Router-driven operator selection around the implemented bounded Pod-resume loop
 - Async isolate scheduler integration
 - Configured raft-engine/raft-rs/Turso backend composition for production runtime modes

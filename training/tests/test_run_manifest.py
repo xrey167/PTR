@@ -13,7 +13,7 @@ from ptr_training.run import (
 class TrainingRunManifestTests(unittest.TestCase):
     def test_default_run_manifest_verifies_registered_dataset_bytes(self):
         manifest = build_manifest(ROOT / "training" / "configs" / "run-default.toml")
-        self.assertEqual(manifest["schema_version"], 2)
+        self.assertEqual(manifest["schema_version"], 3)
         self.assertEqual(manifest["dataset"]["name"], "typed_agent_behavior_v0_2")
         self.assertEqual(manifest["config"]["training"]["backend"], "dry-run")
         self.assertEqual(
@@ -32,6 +32,9 @@ class TrainingRunManifestTests(unittest.TestCase):
         self.assertEqual(len(manifest["hardware_profile"]["sha256"]), 64)
         self.assertEqual(len(manifest["cargo_lock_sha256"]), 64)
         self.assertEqual(len(manifest["uv_lock_sha256"]), 64)
+        self.assertEqual(manifest["provenance"]["a0_manifest"]["path"], "model/burn-a0/Cargo.toml")
+        self.assertEqual(manifest["provenance"]["a0_cargo_lock"]["path"], "model/burn-a0/Cargo.lock")
+        self.assertEqual(len(manifest["provenance"]["a0_cargo_lock"]["sha256"]), 64)
         self.assertEqual(len(manifest["input_fingerprint_sha256"]), 64)
 
     def test_input_fingerprint_is_stable_for_identical_inputs(self):

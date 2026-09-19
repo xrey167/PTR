@@ -56,9 +56,6 @@ version = "2.1"
 [dependencies.getset]
 version = "0.1.1"
 
-[dependencies.protobuf]
-version = "2"
-optional = true
 
 [dependencies.raft-proto]
 version = "0.7.0"
@@ -114,7 +111,7 @@ version = "2.4.0"
 
 [features]
 default = [
-    "protobuf-codec",
+    "prost-codec",
     "default-logger",
 ]
 default-logger = [
@@ -124,11 +121,7 @@ default-logger = [
 ]
 failpoints = ["fail/failpoints"]
 prost-codec = ["raft-proto/prost-codec"]
-protobuf-codec = [
-    "raft-proto/protobuf-codec",
-    "dep:protobuf",
-    "bytes",
-]
+
 
 [badges.travis-ci]
 repository = "tikv/raft-rs"

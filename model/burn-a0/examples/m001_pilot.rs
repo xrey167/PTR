@@ -1,46 +1,34 @@
 use burn::{
-    backend::{Autodiff, NdArray},
-    nn::loss::CrossEntropyLoss,
+    nn::loss::CrossEntropyLossConfig,
     optim::{AdamConfig, GradientsParams, Optimizer},
     prelude::*,
     tensor::Int,
 };
 use ptr_burn_a0::{PtrA0, PtrA0Config, PtrSlotMetadata};
 
-type B = Autodiff<NdArray<f32>>;
-
 struct Batch {
-    tokens: Tensor<B, 2, Int>,
-    slot_types: Tensor<B, 2, Int>,
-    slots: Tensor<B, 3>,
-    metadata: PtrSlotMetadata<B>,
-    labels: Tensor<B, 1, Int>,
+    tokens: Tensor<2, Int>,
+    slot_types: Tensor<2, Int>,
+    slots: Tensor<3>,
+    metadata: PtrSlotMetadata,
+    labels: Tensor<1, Int>,
 }
 
-fn batch(device: &<B as Backend>::Device, typed: bool) -> Batch {
-    let tokens = Tensor::<B, 2, Int>::from_data(
-        [[1, 1], [1, 1], [1, 1], [1, 1]],
-        device,
-    );
+fn batch(device: &Device, typed: bool) -> Batch {
+    let tokens = Tensor::<2, Int>::from_data([[1, 1], [1, 1], [1, 1], [1, 1]], device);
     let slot_types = if typed {
-        Tensor::<B, 2, Int>::from_data(
-            [[0, 4], [1, 4], [2, 4], [3, 4]],
-            device,
-        )
+        Tensor::<2, Int>::from_data([[0, 4], [1, 4], [2, 4], [3, 4]], device)
     } else {
-        Tensor::<B, 2, Int>::from_data(
-            [[0, 4], [0, 4], [0, 4], [0, 4]],
-            device,
-        )
+        Tensor::<2, Int>::from_data([[0, 4], [0, 4], [0, 4], [0, 4]], device)
     };
-    let slots = Tensor::<B, 3>::zeros([4, 2, 12], device);
+    let slots = Tensor::<3>::zeros([4, 2, 12], device);
     let metadata = PtrSlotMetadata {
-        epistemic_ids: Tensor::<B, 2, Int>::zeros([4, 2], device),
-        validity_ids: Tensor::<B, 2, Int>::zeros([4, 2], device),
-        provenance_ids: Tensor::<B, 2, Int>::zeros([4, 2], device),
-        confidence: Tensor::<B, 2>::ones([4, 2], device),
+        epistemic_ids: Tensor::<2, Int>::zeros([4, 2], device),
+        validity_ids: Tensor::<2, Int>::zeros([4, 2], device),
+        provenance_ids: Tensor::<2, Int>::zeros([4, 2], device),
+        confidence: Tensor::<2>::ones([4, 2], device),
     };
-    let labels = Tensor::<B, 1, Int>::from_data([0, 1, 2, 3], device);
+    let labels = Tensor::<1, Int>::from_data([0, 1, 2, 3], device);
     Batch {
         tokens,
         slot_types,
@@ -50,7 +38,7 @@ fn batch(device: &<B as Backend>::Device, typed: bool) -> Batch {
     }
 }
 
-fn clone_metadata(metadata: &PtrSlotMetadata<B>) -> PtrSlotMetadata<B> {
+fn clone_metadata(metadata: &PtrSlotMetadata) -> PtrSlotMetadata {
     PtrSlotMetadata {
         epistemic_ids: metadata.epistemic_ids.clone(),
         validity_ids: metadata.validity_ids.clone(),
@@ -59,7 +47,7 @@ fn clone_metadata(metadata: &PtrSlotMetadata<B>) -> PtrSlotMetadata<B> {
     }
 }
 
-fn loss(model: &PtrA0<B>, batch: &Batch, device: &<B as Backend>::Device) -> Tensor<B, 1> {
+fn loss(model: &PtrA0, batch: &Batch, device: &Device) -> Tensor<1> {
     let logits = model
         .forward(
             batch.tokens.clone(),
@@ -68,10 +56,12 @@ fn loss(model: &PtrA0<B>, batch: &Batch, device: &<B as Backend>::Device) -> Ten
             clone_metadata(&batch.metadata),
         )
         .router_logits;
-    CrossEntropyLoss::new(None, device).forward(logits, batch.labels.clone())
+    CrossEntropyLossConfig::new()
+        .init(device)
+        .forward(logits, batch.labels.clone())
 }
 
-fn accuracy(model: &PtrA0<B>, batch: &Batch) -> f32 {
+fn accuracy(model: &PtrA0, batch: &Batch) -> f32 {
     let logits = model
         .forward(
             batch.tokens.clone(),
@@ -90,12 +80,12 @@ fn accuracy(model: &PtrA0<B>, batch: &Batch) -> f32 {
 }
 
 fn train(typed: bool, seed: u64, steps: usize) -> (f32, f32, f32) {
-    B::seed(seed);
-    let device = Default::default();
+    let device = Device::flex().autodiff();
+    device.seed(seed);
     let config = PtrA0Config::new(16, 8, 12, 4)
         .with_metadata_sizes(4, 4, 8)
         .with_latent_steps(1);
-    let mut model = config.init::<B>(&device);
+    let mut model = config.init(&device);
     let mut optimizer = AdamConfig::new().init();
     let batch = batch(&device, typed);
 

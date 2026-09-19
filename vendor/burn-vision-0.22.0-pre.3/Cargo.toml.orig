@@ -1,0 +1,76 @@
+[package]
+authors = [
+    "nathanielsimard <nathaniel.simard.42@gmail.com>",
+    "wingertge <wingertge@gmail.com>",
+]
+categories = ["science"]
+description = "Vision processing operations for burn tensors"
+documentation = "https://docs.rs/burn-vision"
+edition.workspace = true
+keywords = ["deep-learning", "machine-learning", "gpu"]
+license.workspace = true
+name = "burn-vision"
+readme.workspace = true
+repository = "https://github.com/tracel-ai/burn/tree/main/crates/burn-vision"
+version.workspace = true
+
+[lints]
+workspace = true
+
+
+[features]
+default = ["burn-core/default", "flex", "cubecl-backend", "fusion", "std"]
+std = ["aligned-vec/std", "burn-core/std", "burn-store?/std"]
+tracing = [
+    "burn-cubecl?/tracing",
+    "burn-fusion?/tracing",
+    "burn-ir/tracing",
+    "burn-core/tracing",
+    "cubecl/tracing",
+]
+
+cubecl-backend = ["cubecl", "burn-cubecl"]
+fusion = ["burn-fusion", "burn-core/fusion"]
+
+cuda = ["cubecl-backend", "burn-core/cuda"]
+rocm = ["cubecl-backend", "burn-core/rocm"]
+wgpu = ["cubecl-backend", "burn-core/wgpu"]
+vulkan = ["cubecl-backend", "burn-core/vulkan"]
+webgpu = ["cubecl-backend", "burn-core/webgpu"]
+metal = ["cubecl-backend", "burn-core/metal"]
+cpu = ["cubecl-backend", "burn-core/cpu"]
+flex = ["burn-core/flex"]
+tch = ["burn-core/tch"]
+
+# TODO: move somewhere else
+loss = ["std", "burn-store/pytorch", "burn-core/network", "dirs"]
+
+[dependencies]
+burn-cubecl = { workspace = true, optional = true, features = ["default"]}
+burn-fusion = { workspace = true, optional = true, features = ["default"]}
+burn-ir = { workspace = true, features = ["default"]}
+burn-core = { workspace = true, features = [
+    "extension",
+] }
+burn-std = { workspace = true }
+
+# TODO: requires burn-backend. The `extension` feature should expose this from `burn-core`.
+
+aligned-vec = { version = "0.6", default-features = false }
+bon = { workspace = true }
+
+# For loss functions requiring pretrained models (e.g., Gram Matrix Loss)
+burn-store = { workspace = true, optional = true }
+dirs = { workspace = true, optional = true }
+
+bytemuck = { workspace = true }
+cubecl = { workspace = true, optional = true }
+derive-new = { workspace = true }
+half = { workspace = true }
+image = { version = "0.25" }
+macerator = { workspace = true }
+ndarray = { workspace = true }
+num-traits = { workspace = true }
+paste = { workspace = true }
+serde = { workspace = true }
+

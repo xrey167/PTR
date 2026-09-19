@@ -1,0 +1,174 @@
+use cubecl_core::{
+    self as cubecl,
+    ir::{dialect::plane, prelude::*},
+    prelude::*,
+};
+
+use crate::{
+    cuda::packed_ops::packable,
+    shared::{lowering::LowerOp, shared_op_with_out, unroll::unrolling},
+    target::{CtxTarget, Target},
+};
+
+#[cube]
+pub trait PlaneOp<T: Scalar, N: Size> {
+    fn apply(lhs: Vector<T, N>, rhs: Vector<T, N>) -> Vector<T, N>;
+}
+
+struct OpAdd;
+struct OpMul;
+struct OpMin;
+struct OpMax;
+
+#[cube]
+impl<T: Scalar + CubeAdd, N: Size> PlaneOp<T, N> for OpAdd {
+    fn apply(lhs: Vector<T, N>, rhs: Vector<T, N>) -> Vector<T, N> {
+        lhs + rhs
+    }
+}
+#[cube]
+impl<T: Scalar + CubeMul, N: Size> PlaneOp<T, N> for OpMul {
+    fn apply(lhs: Vector<T, N>, rhs: Vector<T, N>) -> Vector<T, N> {
+        lhs * rhs
+    }
+}
+#[cube]
+impl<T: Scalar + CubePartialOrd, N: Size> PlaneOp<T, N> for OpMin {
+    fn apply(lhs: Vector<T, N>, rhs: Vector<T, N>) -> Vector<T, N> {
+        min(lhs, rhs)
+    }
+}
+#[cube]
+impl<T: Scalar + CubePartialOrd, N: Size> PlaneOp<T, N> for OpMax {
+    fn apply(lhs: Vector<T, N>, rhs: Vector<T, N>) -> Vector<T, N> {
+        max(lhs, rhs)
+    }
+}
+
+/// The number of units that take part in a plane operation. A cube smaller than the plane leaves
+/// the upper lanes inactive, and shuffling from an inactive lane returns an unspecified value, so
+/// the folds below stop at the cube dim instead.
+///
+/// This assumes a power of two cube dim that is either smaller than the plane or a multiple of it.
+/// A cube such as 48 units on a 32 wide plane still leaves its last plane half inactive, and the
+/// xor butterfly in [`plane_reduce`] is only correct for a power of two number of active lanes.
+#[cube]
+fn plane_dim_checked() -> u32 {
+    min(PLANE_DIM, CUBE_DIM)
+}
+
+#[cube]
+pub fn plane_reduce<T: Scalar, N: Size, Op: PlaneOp<T, N>>(val: Vector<T, N>) -> Vector<T, N> {
+    let plane_dim = plane_dim_checked();
+    let mut acc = val;
+    let mut offset = 1;
+    while offset < plane_dim {
+        acc = Op::apply(acc, plane_shuffle_xor(acc, offset));
+        offset *= 2;
+    }
+    acc
+}
+
+#[cube]
+pub fn plane_reduce_inclusive<T: Scalar, N: Size, Op: PlaneOp<T, N>>(
+    val: Vector<T, N>,
+) -> Vector<T, N> {
+    let plane_dim = plane_dim_checked();
+    let mut acc = val;
+    let mut offset = 1;
+    while offset < plane_dim {
+        let tmp = Op::apply(acc, plane_shuffle_up(acc, offset));
+        if UNIT_POS_PLANE >= offset {
+            acc = tmp;
+        }
+        offset *= 2;
+    }
+    acc
+}
+
+#[cube]
+pub fn plane_reduce_exclusive<T: Numeric, N: Size, Op: PlaneOp<T, N>>(
+    val: Vector<T, N>,
+    #[comptime] default: i64,
+) -> Vector<T, N> {
+    let inclusive = plane_reduce_inclusive::<T, N, Op>(val);
+    let shfl = plane_shuffle_up(inclusive, 1);
+    select(UNIT_POS_PLANE == 0, Vector::new(T::from_int(default)), shfl)
+}
+
+define_scalar!(T);
+define_size!(S);
+
+macro_rules! lower_unop {
+    ($ty: ty, $reduce: ident, $op: ty $(,$args: expr)*) => {
+        #[op_interface_impl]
+        impl LowerOp for $ty {
+            fn should_lower(&self, ctx: &Context) -> bool {
+                ctx.target() != Target::Metal
+            }
+            fn lower(&self, scope: &Scope) -> Vec<Value> {
+                let input = self.input(scope.ctx());
+                scope.register_value_type::<T, S>(input);
+                vec![$reduce::expand::<T, S, $op>(scope, input.into(), $($args),*).read_value(scope)]
+            }
+        }
+    };
+}
+
+lower_unop!(plane::ISumOp, plane_reduce, OpAdd);
+lower_unop!(plane::FSumOp, plane_reduce, OpAdd);
+lower_unop!(plane::IProdOp, plane_reduce, OpMul);
+lower_unop!(plane::FProdOp, plane_reduce, OpMul);
+lower_unop!(plane::SMinOp, plane_reduce, OpMin);
+lower_unop!(plane::UMinOp, plane_reduce, OpMin);
+lower_unop!(plane::FMinOp, plane_reduce, OpMin);
+lower_unop!(plane::SMaxOp, plane_reduce, OpMax);
+lower_unop!(plane::UMaxOp, plane_reduce, OpMax);
+lower_unop!(plane::FMaxOp, plane_reduce, OpMax);
+
+lower_unop!(plane::InclusiveISumOp, plane_reduce_inclusive, OpAdd);
+lower_unop!(plane::InclusiveFSumOp, plane_reduce_inclusive, OpAdd);
+lower_unop!(plane::InclusiveIProdOp, plane_reduce_inclusive, OpMul);
+lower_unop!(plane::InclusiveFProdOp, plane_reduce_inclusive, OpMul);
+
+lower_unop!(plane::ExclusiveISumOp, plane_reduce_exclusive, OpAdd, 0);
+lower_unop!(plane::ExclusiveFSumOp, plane_reduce_exclusive, OpAdd, 0);
+lower_unop!(plane::ExclusiveIProdOp, plane_reduce_exclusive, OpMul, 1);
+lower_unop!(plane::ExclusiveFProdOp, plane_reduce_exclusive, OpMul, 1);
+
+unrolling!(plane::BroadcastOp);
+packable!(plane::BroadcastOp);
+
+unrolling!(plane::ShuffleOp);
+packable!(plane::ShuffleOp);
+
+unrolling!(plane::ShuffleXorOp);
+packable!(plane::ShuffleXorOp);
+
+unrolling!(plane::ShuffleUpOp);
+packable!(plane::ShuffleUpOp);
+
+unrolling!(plane::ShuffleDownOp);
+packable!(plane::ShuffleDownOp);
+
+unrolling!(plane::AllOp);
+unrolling!(plane::AnyOp);
+
+#[cube_op(name = "cpp.activemask")]
+#[result_ty(argument)]
+struct ActiveMask {}
+shared_op_with_out!(ActiveMask, |_, _| "__activemask()".into());
+
+#[cube]
+fn activemask<T: Int>() -> T {
+    intrinsic!(|scope| {
+        let mask = ActiveMask::new(scope.ctx_mut(), T::__expand_as_type(scope));
+        scope.register_with_result(&mask).into()
+    })
+}
+
+// Lowest active lane, requires a generic because HIP uses u64 and CUDA uses u32 for `__activemask()`
+#[cube]
+pub fn elect<T: Int>() -> bool {
+    u32::cast_from(activemask::<T>().trailing_zeros()) == UNIT_POS_PLANE
+}

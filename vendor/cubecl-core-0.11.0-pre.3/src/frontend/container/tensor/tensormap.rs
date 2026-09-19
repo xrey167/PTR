@@ -1,0 +1,452 @@
+use alloc::vec;
+use core::marker::PhantomData;
+
+use crate as cubecl;
+use crate::{prelude::*, unexpanded};
+use cubecl_ir::{ElemType, VectorSize};
+use cubecl_runtime::server::TensorMapMeta;
+use cubecl_zspace::{Strides, metadata::Metadata, strides};
+use paste::paste;
+
+pub use cubecl_runtime::tma::*;
+
+pub trait TensorMapKind: CubeType + Clone + Copy + Send + Sync + 'static {
+    type Args: Clone;
+
+    fn as_format(args: Self::Args) -> TensorMapFormat;
+}
+
+/// Regular tiled tensor map
+#[derive(CubeType, CubeLaunch, Clone, Copy)]
+pub struct Tiled {}
+/// Im2col indexing. Loads a "column" (not the same column as im2col) of pixels into shared
+/// memory, with a certain offset (kernel position). The corners are the bounds to load pixels
+/// from *at offset 0*, so the top left corner of the kernel. The offset is added to the
+/// corner offsets, so a `(-1, -1)` corner will stop the bounding box at `(1, 1)` for kernel
+/// offset `(2, 2)`.
+#[derive(CubeType, CubeLaunch, Clone, Copy)]
+pub struct Im2col;
+/// 1D im2col, not properly supported yet
+#[derive(CubeType, CubeLaunch, Clone, Copy)]
+pub struct Im2colWide;
+
+impl TensorMapKind for Tiled {
+    type Args = TiledArgs;
+
+    fn as_format(args: Self::Args) -> TensorMapFormat {
+        TensorMapFormat::Tiled(args)
+    }
+}
+
+impl TensorMapKind for Im2col {
+    type Args = Im2colArgs;
+
+    fn as_format(args: Self::Args) -> TensorMapFormat {
+        TensorMapFormat::Im2col(args)
+    }
+}
+
+impl TensorMapKind for Im2colWide {
+    type Args = Im2colWideArgs;
+
+    fn as_format(args: Self::Args) -> TensorMapFormat {
+        TensorMapFormat::Im2colWide(args)
+    }
+}
+
+/// Grid constant tensor map, currently only maps to CUDA tensormap. May be interleaved or swizzled,
+/// but last dimension must be contiguous (since strides don't include the last dimension).
+///
+/// The tensormap is treated as an opaque type at runtime.
+///
+pub struct TensorMapArg<R: Runtime, K: TensorMapKind> {
+    pub tensor: TensorArg<R>,
+    pub metadata: TensorMapMeta,
+    pub _kind: PhantomData<K>,
+}
+
+impl<R: Runtime, K: TensorMapKind> TensorMapArg<R, K> {
+    pub fn new(args: K::Args, tensor: TensorArg<R>, storage_ty: impl Into<ElemType>) -> Self {
+        let storage_ty = storage_ty.into();
+        let TensorArg::Handle { handle, .. } = &tensor else {
+            panic!("Can't use alias for TensorMap")
+        };
+        let rank = handle.shape.len();
+        Self {
+            metadata: TensorMapMeta {
+                format: K::as_format(args),
+                metadata: Metadata::new(handle.shape.clone(), handle.strides.clone()),
+                elem_stride: strides![1; rank],
+                interleave: TensorMapInterleave::None,
+                swizzle: TensorMapSwizzle::None,
+                prefetch: TensorMapPrefetch::None,
+                oob_fill: OobFill::Zero,
+                elem_ty: storage_ty,
+            },
+            tensor,
+            _kind: PhantomData,
+        }
+    }
+
+    pub fn with_elem_stride(mut self, elem_stride: Strides) -> Self {
+        self.metadata.elem_stride = elem_stride;
+        self
+    }
+
+    pub fn with_interleave(mut self, interleave: TensorMapInterleave) -> Self {
+        self.metadata.interleave = interleave;
+        self
+    }
+
+    pub fn with_swizzle(mut self, swizzle: TensorMapSwizzle) -> Self {
+        self.metadata.swizzle = swizzle;
+        self
+    }
+
+    pub fn with_prefetch(mut self, prefetch: TensorMapPrefetch) -> Self {
+        self.metadata.prefetch = prefetch;
+        self
+    }
+
+    pub fn with_nan_fill(mut self) -> Self {
+        self.metadata.oob_fill = OobFill::NaN;
+        self
+    }
+}
+
+/// A CUDA `CUtensorMap` object. Represents a tensor encoded with a lot of metadata, and is an
+/// opaque packed object at runtime. Does not support retrieving any shapes or strides, nor does
+/// it give access to the pointer. So these need to be passed separately in an aliased `Tensor` if needed.
+///
+/// Also see [`cubecl_runtime::tma`].
+#[derive(Clone)]
+pub struct TensorMap<E: CubePrimitive, K: TensorMapKind> {
+    _ty: PhantomData<E>,
+    _kind: PhantomData<K>,
+}
+
+impl<E: CubePrimitive, K: TensorMapKind> Copy for TensorMap<E, K> {}
+
+impl<E: CubePrimitive, K: TensorMapKind> TensorMap<E, K> {}
+
+impl<E: CubePrimitive, K: TensorMapKind> IntoMut for NativeExpand<TensorMap<E, K>> {
+    fn into_mut(self, _scope: &Scope) -> Self {
+        self
+    }
+}
+
+impl<E: CubePrimitive, K: TensorMapKind> CubeType for TensorMap<E, K> {
+    type ExpandType = NativeExpand<TensorMap<E, K>>;
+}
+
+impl<E: CubePrimitive, K: TensorMapKind> AsMutExpand for NativeExpand<TensorMap<E, K>> {
+    fn __expand_ref_mut_method(&mut self, _: &Scope) -> &mut Self {
+        self
+    }
+}
+
+impl<E: CubePrimitive, K: TensorMapKind> Vectorized for TensorMap<E, K> {}
+impl<E: CubePrimitive, K: TensorMapKind> VectorizedExpand for NativeExpand<TensorMap<E, K>> {
+    fn __expand_vector_size_method(&self, _scope: &Scope) -> VectorSize {
+        1
+    }
+}
+
+impl<E: CubePrimitive, K: TensorMapKind> LaunchArg for TensorMap<E, K> {
+    type RuntimeArg<R: Runtime> = TensorMapArg<R, K>;
+    type CompilationArg = ();
+
+    fn register<R: Runtime>(
+        arg: Self::RuntimeArg<R>,
+        launcher: &mut KernelLauncher<R>,
+    ) -> Self::CompilationArg {
+        let elem_size = launcher.with_scope(|scope| E::__expand_size(scope));
+        launcher.register_tensor_map(arg, elem_size);
+    }
+
+    fn expand(
+        _arg: &Self::CompilationArg,
+        builder: &mut KernelBuilder,
+    ) -> NativeExpand<TensorMap<E, K>> {
+        let tensor = builder.tensor_map();
+        tensor.into()
+    }
+}
+
+/// Commit an async tensor operation. Not sure how this works, poor docs. But you need to call it
+/// after a write, but not after reads.
+pub fn tma_group_commit() {
+    unexpanded!()
+}
+
+pub mod tma_group_commit {
+
+    use cubecl_ir::dialect::tma::CommitGroupOp;
+
+    use super::*;
+
+    pub fn expand(scope: &Scope) {
+        scope.register(&CommitGroupOp::new(scope.ctx_mut()))
+    }
+}
+
+/// Wait until at most `max_pending` TMA copy operations are in flight.
+pub fn tma_group_wait(_max_pending: usize) {
+    unexpanded!()
+}
+
+pub mod tma_group_wait {
+    use cubecl_ir::dialect::tma::WaitGroupOp;
+
+    use super::*;
+
+    pub fn expand(scope: &Scope, max_pending: usize) {
+        scope.register(&WaitGroupOp::new(scope.ctx_mut(), max_pending));
+    }
+}
+
+/// Wait TMA copy operations have finished reading from shared memory, with at most `max_pending`
+/// operations being unfinished.
+///
+/// # Example
+///
+/// I believe you may use `max_pending` like this.
+///
+/// ```ignore
+/// copy_data(smem1);
+/// copy_data(smem2);
+/// copy_data(smem3);
+/// copy_data(smem4);
+/// tma_wait_read(2);
+/// // reuse smem1 & smem2 while 3 and 4 are still pending
+/// ```
+pub fn tma_group_wait_read(_max_pending: usize) {
+    unexpanded!()
+}
+
+pub mod tma_group_wait_read {
+
+    use cubecl_ir::dialect::tma::WaitGroupReadOp;
+
+    use super::*;
+
+    pub fn expand(scope: &Scope, max_pending: usize) {
+        scope.register(&WaitGroupReadOp::new(scope.ctx_mut(), max_pending))
+    }
+}
+
+macro_rules! tma_store {
+    ($dim: literal, $($arg: expr),*) => {
+        paste! {
+            /// Copy a tile from a shared memory `src` to a global memory `dst`, with the provided
+            /// offsets. Should be combined with ``memcpy_async_tensor_commit`` and
+            /// ``memcpy_async_tensor_wait_read``.
+            #[allow(unused)]
+            pub fn [<tma_store_ $dim d>]<T: CubePrimitive, T2: CubePrimitive<Scalar = T::Scalar>>(
+                src: &[T2],
+                dst: &mut TensorMap<T, Tiled>,
+                $($arg: i32),*
+            ) {
+                unexpanded!()
+            }
+
+            pub mod [<tma_store_ $dim d>] {
+                use cubecl_ir::dialect::tma::TmaStoreOp;
+
+                use super::*;
+
+                #[allow(clippy::too_many_arguments)]
+                pub fn expand<T: CubePrimitive, T2: CubePrimitive<Scalar = T::Scalar>>(
+                    scope: &Scope,
+                    src: &SliceExpand<T2>,
+                    dst: &mut NativeExpand<TensorMap<T, Tiled>>,
+                    $($arg: NativeExpand<i32>),*
+                ) {
+                    let source = unsafe { *src.__expand_as_ptr_method(scope) }.value(scope);
+                    let dst = dst.value(scope);
+                    let coordinates = vec![$($arg.read_value(scope)),*];
+                    scope.register(&TmaStoreOp::new(
+                        scope.ctx_mut(),
+                        source,
+                        dst,
+                        coordinates,
+                    ));
+                }
+            }
+        }
+    };
+}
+
+tma_store!(1, x);
+tma_store!(2, y, x);
+tma_store!(3, z, y, x);
+tma_store!(4, w, z, y, x);
+tma_store!(5, v, w, z, y, x);
+
+/// Module that contains the implementation details of the metadata functions.
+mod metadata {
+    use cubecl_ir::dialect::general::{ShapeOp, StrideOp};
+
+    use crate::frontend::container::buffer_len::expand_buffer_length_native;
+
+    use super::*;
+
+    type TensorMapExpand<T, K> = NativeExpand<TensorMap<T, K>>;
+
+    #[cube]
+    impl<T: Scalar, K: TensorMapKind> TensorMap<T, K> {
+        /// Obtain the coordinate corresponding to the given `index` of the tensor at dimension `dim`.
+        ///
+        /// A coordinate is a list of indices corresponding to the multi-dimensional position of an element in the tensor.
+        /// The `dim` element in a coordinate is the position along the `dim` dimension of the tensor.
+        pub fn coordinate(&self, index: usize, dim: usize) -> usize {
+            let stride = self.stride(dim);
+            let shape = self.shape(dim);
+            (index / stride) % shape
+        }
+    }
+
+    impl<T: Scalar, K: TensorMapKind> TensorMap<T, K> {
+        /// Obtain the stride of input at dimension dim
+        pub fn stride(&self, _dim: usize) -> usize {
+            unexpanded!()
+        }
+
+        /// Obtain the shape of input at dimension dim
+        pub fn shape(&self, _dim: usize) -> usize {
+            unexpanded!()
+        }
+
+        /// The number of vectorized elements in the tensor.
+        ///
+        /// # Warning
+        ///
+        /// The length will be affected by the vectorization factor. To obtain the number of elements,
+        /// you should multiply the length by the vectorization factor.
+        #[allow(clippy::len_without_is_empty)]
+        pub fn len(&self) -> usize {
+            unexpanded!()
+        }
+
+        /// The length of the buffer representing the tensor in terms of vectorized elements.
+        ///
+        /// # Warning
+        ///
+        /// The buffer length will be affected by the vectorization factor. To obtain the number of
+        /// elements, you should multiply the length by the vectorization factor.
+        #[allow(clippy::len_without_is_empty)]
+        pub fn buffer_len(&self) -> usize {
+            unexpanded!()
+        }
+
+        /// Returns the rank of the tensor.
+        pub fn rank(&self) -> usize {
+            unexpanded!()
+        }
+
+        /// Downcast the tensormap to the given type and panic if the type isn't the same.
+        ///
+        /// This function should only be used to satisfy the Rust type system, when two generic
+        /// types are supposed to be the same.
+        pub fn downcast<E: CubePrimitive>(&self) -> TensorMap<E, K> {
+            unexpanded!()
+        }
+
+        // Expand function of [stride](TensorMap::stride).
+        pub fn __expand_stride(
+            scope: &Scope,
+            expand: NativeExpand<TensorMap<T, K>>,
+            dim: NativeExpand<usize>,
+        ) -> NativeExpand<usize> {
+            expand.__expand_stride_method(scope, dim)
+        }
+
+        // Expand function of [shape](TensorMap::shape).
+        pub fn __expand_shape(
+            scope: &Scope,
+            expand: NativeExpand<TensorMap<T, K>>,
+            dim: NativeExpand<usize>,
+        ) -> NativeExpand<usize> {
+            expand.__expand_shape_method(scope, dim)
+        }
+
+        // Expand function of [len](TensorMap::len).
+        pub fn __expand_len(
+            scope: &Scope,
+            expand: NativeExpand<TensorMap<T, K>>,
+        ) -> NativeExpand<usize> {
+            expand.__expand_len_method(scope)
+        }
+
+        // Expand function of [buffer_len](TensorMap::buffer_len).
+        pub fn __expand_buffer_len(
+            scope: &Scope,
+            expand: NativeExpand<TensorMap<T, K>>,
+        ) -> NativeExpand<usize> {
+            expand.__expand_buffer_len_method(scope)
+        }
+
+        // Expand function of [rank](TensorMap::rank).
+        pub fn __expand_rank(
+            scope: &Scope,
+            expand: NativeExpand<TensorMap<T, K>>,
+        ) -> NativeExpand<usize> {
+            expand.__expand_rank_method(scope)
+        }
+    }
+
+    impl<T: CubePrimitive, K: TensorMapKind> NativeExpand<TensorMap<T, K>> {
+        // Expand method of [stride](Tensor::stride).
+        pub fn __expand_stride_method(
+            self,
+            scope: &Scope,
+            dim: NativeExpand<usize>,
+        ) -> NativeExpand<usize> {
+            let buffer_idx = ext_meta_idx(scope, self.value(scope));
+            let dim = dim.read_value(scope);
+            let op = StrideOp::new(scope.ctx_mut(), dim, buffer_idx);
+            scope.register_with_result(&op).into()
+        }
+
+        // Expand method of [shape](Tensor::shape).
+        pub fn __expand_shape_method(
+            self,
+            scope: &Scope,
+            dim: NativeExpand<usize>,
+        ) -> NativeExpand<usize> {
+            let buffer_idx = ext_meta_idx(scope, self.value(scope));
+            let dim = dim.read_value(scope);
+            let op = ShapeOp::new(scope.ctx_mut(), dim, buffer_idx);
+            scope.register_with_result(&op).into()
+        }
+
+        // Expand method of [len](Tensor::len).
+        pub fn __expand_len_method(self, _scope: &Scope) -> NativeExpand<usize> {
+            todo!()
+        }
+
+        // Expand method of [buffer_len](Tensor::buffer_len).
+        pub fn __expand_buffer_len_method(self, scope: &Scope) -> NativeExpand<usize> {
+            expand_buffer_length_native(scope, self.value(scope)).into()
+        }
+
+        // Expand method of [rank](Tensor::rank).
+        pub fn __expand_rank_method(self, _scope: &Scope) -> NativeExpand<usize> {
+            todo!()
+        }
+
+        /// Expand method of [`TensorMap::downcast`].
+        pub fn __expand_downcast_method<E: CubePrimitive>(
+            self,
+            scope: &Scope,
+        ) -> NativeExpand<TensorMap<E, K>> {
+            if T::__expand_as_type(scope) != E::__expand_as_type(scope)
+                && !is_tf32_cast::<E, T>(scope)
+            {
+                panic!("Downcast should only be used to satisfy the Rust type system.")
+            }
+
+            self.expand.into()
+        }
+    }
+}

@@ -19,7 +19,7 @@ pub use crate::protos::eraftpb;
 #[allow(renamed_and_removed_lints)]
 #[allow(bare_trait_objects)]
 mod protos {
-    include!(concat!(env!("OUT_DIR"), "/protos/mod.rs"));
+    include!("generated/mod.rs");
 
     use self::eraftpb::Snapshot;
 
@@ -54,3 +54,6 @@ pub mod util {
         }
     }
 }
+
+/// Prost-only codec contract; no legacy protobuf parser is linked.
+pub mod codec;

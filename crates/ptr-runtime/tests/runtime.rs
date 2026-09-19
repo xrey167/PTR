@@ -3,7 +3,9 @@ use ptr_core::action_head::ActionIr;
 use ptr_ledger::LedgerEvent;
 use ptr_runtime::{PtrRuntime, RuntimeError};
 use ptr_security::{AuthorizationDecision, AuthorizationDenial};
-use ptr_types::{CapabilityId, Effect, Generation, RequestId, Revision, TypeId};
+use ptr_types::{
+    CapabilityId, CapsuleId, Effect, Generation, ProjectId, RequestId, Revision, TypeId,
+};
 
 fn mutation_action(revision: Revision, generation: Generation) -> ActionIr {
     ActionIr {
@@ -31,7 +33,13 @@ fn action_requires_capability() {
     let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
     let revision = runtime.ingest_text(RequestId::from("r1"), "hello");
     let action = mutation_action(revision, Generation(1));
-    runtime.set_live_generation(&action.target, action.generation);
+    runtime
+        .commit(LedgerEvent::CapsuleCommitted {
+            project: ProjectId::from("p"),
+            capsule: CapsuleId::from(action.target.as_str()),
+            generation: action.generation,
+        })
+        .unwrap();
 
     assert_eq!(
         runtime.authorize_action(&action),
@@ -51,7 +59,13 @@ fn stale_revision_is_rejected_before_permission_check() {
     let old = runtime.ingest_text(RequestId::from("r1"), "first");
     runtime.ingest_text(RequestId::from("r2"), "second");
     let action = mutation_action(old, Generation(1));
-    runtime.set_live_generation(&action.target, action.generation);
+    runtime
+        .commit(LedgerEvent::CapsuleCommitted {
+            project: ProjectId::from("p"),
+            capsule: CapsuleId::from(action.target.as_str()),
+            generation: action.generation,
+        })
+        .unwrap();
 
     assert_eq!(
         runtime.authorize_action(&action),
@@ -75,7 +89,13 @@ fn unknown_and_revoked_generations_are_rejected() {
         })
     );
 
-    runtime.set_live_generation("artifact:a", Generation(7));
+    runtime
+        .commit(LedgerEvent::CapsuleCommitted {
+            project: ProjectId::from("p"),
+            capsule: CapsuleId::from("artifact:a"),
+            generation: Generation(7),
+        })
+        .unwrap();
     runtime
         .commit(LedgerEvent::Revoked {
             subject: "artifact:a".into(),
@@ -92,7 +112,13 @@ fn unknown_and_revoked_generations_are_rejected() {
         })
     );
 
-    runtime.set_live_generation("artifact:a", Generation(8));
+    runtime
+        .commit(LedgerEvent::CapsuleSuperseded {
+            capsule: CapsuleId::from("artifact:a"),
+            old: Generation(7),
+            new: Generation(8),
+        })
+        .unwrap();
     let fresh = mutation_action(runtime.revision(), Generation(8));
     assert_eq!(
         runtime.authorize_action(&fresh),

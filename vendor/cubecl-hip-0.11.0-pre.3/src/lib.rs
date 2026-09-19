@@ -1,0 +1,20 @@
+#[allow(unused_imports)]
+#[macro_use]
+extern crate derive_new;
+extern crate alloc;
+
+pub mod compute;
+pub mod device;
+pub mod runtime;
+pub use device::*;
+pub use runtime::HipRuntime;
+
+#[cfg(test)]
+mod tests {
+    use half::f16;
+    pub type TestRuntime = crate::HipRuntime;
+
+    cubecl_std::testgen!();
+    cubecl_core::testgen_all!(f32: [f16, f32], i32: [i16, i32], u32: [u16, u32]);
+    cubecl_core::testgen_launch_dynamic_count!();
+}

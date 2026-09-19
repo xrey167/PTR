@@ -9,17 +9,17 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-18  
-**Code footprint:** 1 Rust source files · 113 nonblank source lines · 1 integration-test files · 6 `#[test]` markers
+**Last reviewed:** 2026-09-19  
+**Code footprint:** 1 Rust source files · 126 nonblank source lines · 2 integration-test files · 8 `#[test]` markers
 
 ### Implemented now
 
 - PermissionSet with capability membership
-- Separate mutation/external/irreversible effect gates that remain enforced even when capability membership is optional
+- Mandatory revision, live-generation, capability and effect gates for mutation/external/irreversible actions, regardless of research configuration flags
 - Fail-closed allows() decision for missing capability
 - Typed ActionAuthorization request plus AuthorizationDecision allow/deny result
 - Revision and generation freshness checks, including revoked and unknown generations
-- Structured missing-capability/effect denials plus audit-ready allow receipt
+- Structured missing-capability/effect denials plus diagnostic allow receipt (not an execution token)
 
 ### Missing for the target architecture
 

@@ -1,0 +1,181 @@
+// Re-export for testgen macros.
+pub use test_log;
+
+pub mod all_reduce;
+pub mod assign;
+pub mod atomic;
+pub mod barrier;
+pub mod binary;
+pub mod branch;
+pub mod cluster;
+pub mod cmma;
+pub mod cmma2;
+pub mod comparison;
+pub mod const_match;
+pub mod debug;
+pub mod different_rank;
+pub mod enums;
+pub mod file;
+pub mod index;
+pub mod launch;
+pub mod metadata;
+pub mod minifloat;
+pub mod numeric;
+pub mod plane;
+pub mod properties;
+pub mod read_lazy;
+pub mod saturating;
+pub mod sequence;
+pub mod short_circuit;
+pub mod slice;
+pub mod stream;
+pub mod synchronization;
+pub mod tensor;
+pub mod tensormap;
+pub mod to_client;
+pub mod topology;
+pub mod traits;
+pub mod unary;
+pub mod unroll;
+pub mod vector;
+
+#[allow(missing_docs)]
+#[macro_export]
+macro_rules! testgen_all {
+    () => {
+        use $crate::Runtime;
+
+        type FloatType = f32;
+        type IntType = i32;
+        type UintType = u32;
+
+        $crate::testgen_float!();
+        $crate::testgen_int!();
+        $crate::testgen_uint!();
+        $crate::testgen_untyped!();
+    };
+    ($f_def:ident: [$($float:ident),*], $i_def:ident: [$($int:ident),*], $u_def:ident: [$($uint:ident),*]) => {
+        use $crate::Runtime;
+
+        ::paste::paste! {
+            $(mod [<$float _ty>] {
+                use super::*;
+
+                type FloatType = $float;
+                type IntType = $i_def;
+                type UintType = $u_def;
+
+                $crate::testgen_float!();
+            })*
+            $(mod [<$int _ty>] {
+                use super::*;
+
+                type FloatType = $f_def;
+                type IntType = $int;
+                type UintType = $u_def;
+
+                $crate::testgen_int!();
+            })*
+            $(mod [<$uint _ty>] {
+                use super::*;
+
+                type FloatType = $f_def;
+                type IntType = $i_def;
+                type UintType = $uint;
+
+                $crate::testgen_uint!();
+            })*
+        }
+        $crate::testgen_untyped!();
+    };
+}
+
+#[allow(missing_docs)]
+#[macro_export]
+macro_rules! testgen_float {
+    () => {
+        cubecl_core::testgen_assign!();
+        cubecl_core::testgen_barrier!();
+        cubecl_core::testgen_binary!();
+        cubecl_core::testgen_branch!();
+        cubecl_core::testgen_different_rank!();
+        cubecl_core::testgen_index!();
+        cubecl_core::testgen_launch!();
+        cubecl_core::testgen_vector!();
+        cubecl_core::testgen_plane!();
+        cubecl_core::testgen_sequence!();
+        cubecl_core::testgen_slice!();
+        cubecl_core::testgen_stream!();
+        cubecl_core::testgen_unary!();
+        cubecl_core::testgen_atomic_float!();
+        cubecl_core::testgen_tensormap!();
+        cubecl_core::testgen_minifloat!();
+        cubecl_core::testgen_unroll!();
+    };
+}
+
+#[allow(missing_docs)]
+#[macro_export]
+macro_rules! testgen_int {
+    () => {
+        cubecl_core::testgen_unary_int!();
+        cubecl_core::testgen_atomic_int!();
+        cubecl_core::testgen_saturating_int!();
+    };
+}
+
+#[allow(missing_docs)]
+#[macro_export]
+macro_rules! testgen_uint {
+    () => {
+        cubecl_core::testgen_const_match!();
+        cubecl_core::testgen_atomic_uint!();
+        cubecl_core::testgen_saturating_uint!();
+    };
+}
+
+#[allow(missing_docs)]
+#[macro_export]
+macro_rules! testgen_untyped {
+    () => {
+        cubecl_core::testgen_launch_untyped!();
+        cubecl_core::testgen_cmma!();
+        cubecl_core::testgen_cmma2!();
+        cubecl_core::testgen_numeric!();
+        cubecl_core::testgen_file!();
+        cubecl_core::testgen_read_lazy!();
+        cubecl_core::testgen_metadata!();
+        cubecl_core::testgen_topology!();
+        cubecl_core::testgen_properties!();
+
+        cubecl_core::testgen_sync_plane!();
+        cubecl_core::testgen_tensor_indexing!();
+        cubecl_core::testgen_debug!();
+        cubecl_core::testgen_binary_untyped!();
+        cubecl_core::testgen_cluster!();
+
+        cubecl_core::testgen_enums!();
+        cubecl_core::testgen_comparison!();
+
+        cubecl_core::testgen_to_client!();
+        cubecl_core::testgen_all_reduce!();
+
+        cubecl_core::testgen_short_circuit!();
+    };
+}
+
+#[allow(missing_docs)]
+#[macro_export]
+macro_rules! as_bytes {
+    ($ty:ident: $($elem:expr),*) => {
+        $ty::as_bytes(&[$($ty::new($elem),)*])
+    };
+}
+
+#[allow(missing_docs)]
+#[macro_export]
+macro_rules! as_type {
+    ($ty:ident: $($elem:expr),*) => {
+        &[$($ty::new($elem),)*]
+    };
+}

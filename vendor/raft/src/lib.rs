@@ -448,7 +448,7 @@ the following:
 For example to promote a learner 4 and demote an existing voter 3:
 ```no_run
 # use raft::{Config, storage::MemStorage, raw_node::RawNode, eraftpb::*};
-# use protobuf::Message as PbMessage;
+# use raft_proto::codec::Message as PbMessage;
 # use slog::{Drain, o};
 #
 # let mut config = Config { id: 1, ..Default::default() };
@@ -602,3 +602,6 @@ pub fn default_logger() -> slog::Logger {
 type DefaultHashBuilder = std::hash::BuildHasherDefault<rustc_hash::FxHasher>;
 type HashMap<K, V> = std::collections::HashMap<K, V, DefaultHashBuilder>;
 type HashSet<K> = std::collections::HashSet<K, DefaultHashBuilder>;
+
+/// Prost-only codec contract for the PTR compatibility patch.
+pub use raft_proto::codec;

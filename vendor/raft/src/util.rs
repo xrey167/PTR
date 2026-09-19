@@ -11,7 +11,7 @@ use slog::{OwnedKVList, Record, KV};
 
 use crate::eraftpb::{Entry, Message};
 use crate::HashSet;
-use protobuf::Message as PbMessage;
+use raft_proto::codec::Message as PbMessage;
 
 use slog::{b, record_static};
 

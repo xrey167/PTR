@@ -58,6 +58,23 @@ pub enum RuntimeError {
         count: usize,
     },
     PermissionDenied,
+    InvalidLifecycleTransition {
+        target: String,
+        current: Option<Generation>,
+        requested: Generation,
+    },
+    CapsuleProjectMismatch {
+        capsule: String,
+        current: String,
+        requested: String,
+    },
+    ReservedTargetNamespace {
+        target: String,
+    },
+    SnapshotBeyondHistory {
+        covers: CommitIndex,
+        last_applied: CommitIndex,
+    },
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -96,6 +113,7 @@ pub struct PtrRuntime {
     state: MaterializedState,
     permissions: PermissionSet,
     live_generations: BTreeMap<String, Generation>,
+    capsule_projects: BTreeMap<String, String>,
     revoked_generations: BTreeSet<(String, Generation)>,
     events: Vec<EventEnvelope>,
     next_event_sequence: u64,
@@ -112,6 +130,7 @@ impl PtrRuntime {
         let persisted = ledger.events().to_vec();
         let mut runtime = Self::with_ledger(config, RuntimeLedger::File(ledger))?;
         for committed in &persisted {
+            runtime.validate_lifecycle_event(&committed.event)?;
             runtime.apply_committed(committed);
         }
         Ok(runtime)
@@ -126,6 +145,7 @@ impl PtrRuntime {
             state: MaterializedState::default(),
             permissions: PermissionSet::default(),
             live_generations: BTreeMap::new(),
+            capsule_projects: BTreeMap::new(),
             revoked_generations: BTreeSet::new(),
             events: Vec::new(),
             next_event_sequence: 1,
@@ -135,6 +155,7 @@ impl PtrRuntime {
     pub fn replay(config: PtrConfig, events: &[CommittedEvent]) -> Result<Self, RuntimeError> {
         let mut runtime = Self::new(config)?;
         for expected in events {
+            runtime.validate_lifecycle_event(&expected.event)?;
             let actual = runtime.ledger.append(expected.event.clone())?;
             if actual != expected.index {
                 return Err(RuntimeError::ReplayIndexMismatch {
@@ -177,7 +198,7 @@ impl PtrRuntime {
         &self.state
     }
 
-    pub fn set_live_generation(&mut self, target: impl Into<String>, generation: Generation) {
+    fn set_live_generation(&mut self, target: impl Into<String>, generation: Generation) {
         self.live_generations.insert(target.into(), generation);
     }
 
@@ -470,6 +491,9 @@ impl PtrRuntime {
     }
 
     pub fn commit(&mut self, event: LedgerEvent) -> Result<CommitIndex, RuntimeError> {
+        // Validate before the first durable byte: rejected transitions must never
+        // poison committed history or become authoritative on a later restart.
+        self.validate_lifecycle_event(&event)?;
         let index = self.ledger.append(event)?;
         let committed = self
             .ledger
@@ -481,13 +505,91 @@ impl PtrRuntime {
         Ok(index)
     }
 
+    fn validate_activation(&self, target: &str, requested: Generation) -> Result<(), RuntimeError> {
+        let current = self.live_generation(target);
+        if current.is_some_and(|generation| requested < generation)
+            || self
+                .revoked_generations
+                .contains(&(target.to_owned(), requested))
+        {
+            return Err(RuntimeError::InvalidLifecycleTransition {
+                target: target.to_owned(),
+                current,
+                requested,
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_lifecycle_event(&self, event: &LedgerEvent) -> Result<(), RuntimeError> {
+        match event {
+            LedgerEvent::CapsuleCommitted {
+                project,
+                capsule,
+                generation,
+            } => {
+                let target = capsule.to_string();
+                // Until target keys are a cross-component tagged union, prevent
+                // capsule IDs from impersonating the two reserved namespaces.
+                if target.starts_with("constraint:") || target.starts_with("procedure:") {
+                    return Err(RuntimeError::ReservedTargetNamespace { target });
+                }
+                if let Some(current) = self.capsule_projects.get(&target) {
+                    if current != &project.to_string() {
+                        return Err(RuntimeError::CapsuleProjectMismatch {
+                            capsule: target,
+                            current: current.clone(),
+                            requested: project.to_string(),
+                        });
+                    }
+                }
+                self.validate_activation(&target, *generation)
+            }
+            LedgerEvent::CapsuleSuperseded { capsule, old, new } => {
+                let target = capsule.to_string();
+                let current = self.live_generation(&target);
+                if !self.capsule_projects.contains_key(&target)
+                    || current != Some(*old)
+                    || new <= old
+                {
+                    return Err(RuntimeError::InvalidLifecycleTransition {
+                        target,
+                        current,
+                        requested: *new,
+                    });
+                }
+                self.validate_activation(&target, *new)
+            }
+            LedgerEvent::HardConstraintCommitted { key, generation } => {
+                self.validate_activation(&format!("constraint:{key}"), *generation)
+            }
+            LedgerEvent::ProcedurePromoted { id, generation } => {
+                self.validate_activation(&format!("procedure:{id}"), *generation)
+            }
+            LedgerEvent::SnapshotCommitted { covers, .. } if covers.0 > self.state.last_applied => {
+                Err(RuntimeError::SnapshotBeyondHistory {
+                    covers: *covers,
+                    last_applied: CommitIndex(self.state.last_applied),
+                })
+            }
+            // Revocation tombstones are monotone and may precede activation.
+            // Verifier/snapshot records do not confer permissions or load state.
+            LedgerEvent::Revoked { .. }
+            | LedgerEvent::ProcedureRevoked { .. }
+            | LedgerEvent::VerifierAttested { .. }
+            | LedgerEvent::SnapshotCommitted { .. } => Ok(()),
+        }
+    }
+
     fn apply_committed(&mut self, committed: &CommittedEvent) {
         match &committed.event {
             LedgerEvent::CapsuleCommitted {
+                project,
                 capsule,
                 generation,
-                ..
             } => {
+                self.capsule_projects
+                    .insert(capsule.to_string(), project.to_string());
                 self.set_live_generation(capsule.to_string(), *generation);
             }
             LedgerEvent::CapsuleSuperseded { capsule, new, .. } => {

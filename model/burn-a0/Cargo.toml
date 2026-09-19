@@ -8,6 +8,25 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 bytemuck = "1.23.1"
-burn = { version = "=0.22.0-pre.3", default-features = false, features = ["std", "ndarray", "autodiff"] }
+burn = { version = "=0.22.0-pre.3", default-features = false, features = ["std", "flex", "autodiff"] }
 
 [workspace]
+[patch.crates-io]
+
+burn_dispatch_pastey_0_22_0_pre_3 = { package = "burn-dispatch", path = "../../vendor/burn-dispatch-0.22.0-pre.3" }
+burn_ndarray_pastey_0_22_0_pre_3 = { package = "burn-ndarray", path = "../../vendor/burn-ndarray-0.22.0-pre.3" }
+burn_vision_pastey_0_22_0_pre_3 = { package = "burn-vision", path = "../../vendor/burn-vision-0.22.0-pre.3" }
+cubecl_core_pastey_0_11_0_pre_3 = { package = "cubecl-core", path = "../../vendor/cubecl-core-0.11.0-pre.3" }
+cubecl_cpp_pastey_0_11_0_pre_3 = { package = "cubecl-cpp", path = "../../vendor/cubecl-cpp-0.11.0-pre.3" }
+cubecl_hip_pastey_0_11_0_pre_3 = { package = "cubecl-hip", path = "../../vendor/cubecl-hip-0.11.0-pre.3" }
+cubecl_std_pastey_0_11_0_pre_3 = { package = "cubecl-std", path = "../../vendor/cubecl-std-0.11.0-pre.3" }
+gemm_pastey_0_19_0 = { package = "gemm", path = "../../vendor/gemm-0.19.0" }
+gemm_c32_pastey_0_19_0 = { package = "gemm-c32", path = "../../vendor/gemm-c32-0.19.0" }
+gemm_c64_pastey_0_19_0 = { package = "gemm-c64", path = "../../vendor/gemm-c64-0.19.0" }
+gemm_common_pastey_0_19_0 = { package = "gemm-common", path = "../../vendor/gemm-common-0.19.0" }
+gemm_f16_pastey_0_19_0 = { package = "gemm-f16", path = "../../vendor/gemm-f16-0.19.0" }
+gemm_f32_pastey_0_19_0 = { package = "gemm-f32", path = "../../vendor/gemm-f32-0.19.0" }
+gemm_f64_pastey_0_19_0 = { package = "gemm-f64", path = "../../vendor/gemm-f64-0.19.0" }
+macerator_pastey_0_3_4 = { package = "macerator", path = "../../vendor/macerator-0.3.4" }
+pulp_pastey_0_22_3 = { package = "pulp", path = "../../vendor/pulp-0.22.3" }
+rav1e_pastey_0_8_1 = { package = "rav1e", path = "../../vendor/rav1e-0.8.1" }
