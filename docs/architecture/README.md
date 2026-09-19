@@ -33,6 +33,7 @@
 - [17-type-system.md](17-type-system.md)
 - [18-performance.md](18-performance.md)
 - [19-research-method.md](19-research-method.md)
+- [20-cognitive-contract-step-01.md](20-cognitive-contract-step-01.md)
 - [Open architecture catalog](../../research/catalogs/README.md) — unresolved type families, backend slots and component contracts
 
 ## Component-level documentation
