@@ -33,3 +33,9 @@ does not require a default backend value. A non-Default entry regression and the
 public Service tests cover this requirement, including Arc<dyn Backend<...>>.
 The template is tested on Rust stable and the project's Rust 1.85 MSRV. Lazy
 name filters rely on ordinary coercion rather than an unnecessary explicit dereference.
+
+The filtered iterator has a separate lifetime for its predicate captures. A
+collected `&str` borrows the service, not the closure. Public regression tests
+retain collected names after captured locals leave scope and inspect the FnMut
+counter before using those names. This prevents an unnecessarily long mutable
+borrow from becoming part of the public iterator contract.

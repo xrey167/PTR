@@ -31,6 +31,11 @@ it never pushes code or modifies main.
   compiling. Add a non-Default entry regression and remove an unnecessary
   explicit dereference in the template's lazy name filter; elide a redundant
   single-input lifetime in its validation helper.
+- Separate the reference service's iterator/predicate lifetime from the lifetime
+  of borrowed backend names. The original FnMut test exposed E0502 by reading its
+  counter before using the collected names. Keep that test and add a regression
+  where captured locals leave scope before the names are used. Simplify the
+  explicit best-effort telemetry pattern without changing its behavior.
 - Regenerate component README/status from component.toml after source changes.
 
 The existing Rust, documentation, repository, research and security checks are
