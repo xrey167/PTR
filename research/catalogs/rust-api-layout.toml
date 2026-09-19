@@ -26,10 +26,10 @@ proc_macro_rule = "procedural macros require a dedicated crate, explicit archite
 [[crate]]
 id = "ptr-types"
 current_shape = "mostly-flat"
-modules = ["macros", "ids", "lifecycle", "epistemic", "effects", "provenance", "issues"]
-public_groups = ["identifier newtypes", "Revision/Generation/CommitIndex", "Probability/Epistemic<T>/TypedValue<T>", "Effect/Validity/VerificationLevel", "ProvenanceRef/SemanticIssue"]
-function_groups = ["validated value constructors", "small value accessors"]
-notes = ["no backend dependencies", "derive value semantics deliberately", "keep internal newtype generation macro_rules isolated from public domain semantics"]
+modules = ["macros", "semantic", "epistemic", "uncertainty", "reasoning", "lifecycle", "effects", "provenance", "ids", "issues"]
+public_groups = ["SemanticRole and future Goal/Constraint/Claim/Evidence wrappers", "EpistemicState/Epistemic<T>", "UncertaintyKind/Probability and future Estimate/Interval/Distribution types", "ReasoningOperator", "Revision/Generation/CommitIndex/Validity", "Effect/VerificationLevel", "provenance/evidence types", "identifier newtypes"]
+function_groups = ["validated semantic/probability constructors", "epistemic/uncertainty transitions", "small value accessors"]
+notes = ["primary purpose is shared cognitive/model semantic vocabulary", "no backend/model-framework dependencies", "tensor/latent representations remain in ptr-core", "component aggregates remain with owning crates", "keep internal newtype generation macro_rules isolated from public domain semantics"]
 
 [[crate]]
 id = "ptr-config"
