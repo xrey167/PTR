@@ -69,6 +69,60 @@ impl Default for Probability {
     }
 }
 
+/// Semantic role of a typed value independent of whether it is known,
+/// hypothetical, observed, or uncertain.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum SemanticRole {
+    Goal,
+    Constraint,
+    Claim,
+    Evidence,
+    Resource,
+    Capability,
+    Relation,
+    Procedure,
+    Action,
+}
+
+/// Epistemic state is orthogonal to semantic role and lifecycle validity.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum EpistemicState {
+    Unknown,
+    Assumed,
+    Hypothesis,
+    Observed,
+    Inferred,
+    Verified,
+}
+
+/// Shape of uncertainty carried by a semantic value. A distribution is a
+/// representation of uncertainty, not a semantic role or authority level.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum UncertaintyKind {
+    Point,
+    Interval,
+    Distribution,
+}
+
+/// Cognitive/reasoning operator requested by the model or router.
+///
+/// This taxonomy is shared across ptr-core, ptr-model-api, routing and
+/// training so operator identity never degrades to a provider-specific string.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ReasoningOperator {
+    Semantic,
+    Deductive,
+    Probabilistic,
+    Statistical,
+    Temporal,
+    Causal,
+    Search,
+    Optimization,
+    Simulation,
+    Symbolic,
+    ExternalPod,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Effect {
     Pure,
@@ -141,5 +195,23 @@ mod tests {
     #[test]
     fn lifecycle_versions_are_distinct_concepts() {
         assert_ne!(Revision(7).0, Generation(8).0);
+    }
+
+
+    #[test]
+    fn semantic_role_and_epistemic_state_are_independent_axes() {
+        let role = SemanticRole::Claim;
+        let state = EpistemicState::Hypothesis;
+        let uncertainty = UncertaintyKind::Distribution;
+
+        assert_eq!(role, SemanticRole::Claim);
+        assert_eq!(state, EpistemicState::Hypothesis);
+        assert_eq!(uncertainty, UncertaintyKind::Distribution);
+    }
+
+    #[test]
+    fn reasoning_operator_is_a_typed_cross_component_contract() {
+        let operator = ReasoningOperator::Probabilistic;
+        assert_eq!(operator, ReasoningOperator::Probabilistic);
     }
 }
