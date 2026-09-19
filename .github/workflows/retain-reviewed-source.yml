@@ -1,0 +1,44 @@
+name: retain-reviewed-source
+on:
+  push:
+    branches: [agent/security-p0-remediation-20260919]
+    paths: [.github/workflows/retain-reviewed-source.yml]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  retain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: ptr-reviewed-candidate
+          run-id: 35418136395
+          github-token: ${{ github.token }}
+          path: /tmp/ptr-reviewed
+      - name: Persist reviewed source only on unchanged review branch
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          test "$GITHUB_REF" = refs/heads/agent/security-p0-remediation-20260919
+          test "$(git ls-remote origin "$GITHUB_REF" | cut -f1)" = "$EXPECTED_SHA"
+          git apply --index --exclude='.github/workflows/*' /tmp/ptr-reviewed/reviewed.patch
+          python3 - <<'PY'
+          import subprocess
+          paths = subprocess.check_output(['git', 'diff', '--cached', '--name-only'], text=True).splitlines()
+          prefixes = ('vendor/', 'crates/', 'model/burn-a0/', 'scripts/', 'docs/', 'training/')
+          exact = {'Cargo.toml', 'Cargo.lock', 'deny.toml', 'fuzz/Cargo.lock', 'templates/rust-crate/Cargo.lock'}
+          assert paths and all(p in exact or p.startswith(prefixes) for p in paths)
+          assert not any(p.startswith('.github/workflows/') for p in paths)
+          PY
+          git config user.name 'PTR security review'
+          git config user.email '104269920+xrey167@users.noreply.github.com'
+          git commit -m 'fix: retain reviewed P0 guards, dependency migrations and A0 attention correction'
+          git push origin HEAD:refs/heads/agent/security-p0-remediation-20260919
