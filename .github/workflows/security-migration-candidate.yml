@@ -22,13 +22,16 @@ jobs:
           mkdir -p /tmp/ptr-candidate
           python scripts/prepare_security_migration.py
           python3 - <<'PY'
-          import json, pathlib, subprocess
+          import json, pathlib, re, subprocess
+          path = pathlib.Path('crates/ptr-net/Cargo.toml')
+          path.write_text(re.sub(r'(?m)^iroh-backend\s*=\s*\[[^]]*\]', 'iroh-backend = ["dep:iroh"]', path.read_text()))
           out = pathlib.Path('/tmp/ptr-candidate')
           commands = {
             'resolve-workspace': ['cargo', '+stable', 'update', '-p', 'iroh', '--precise', '1.2.0'],
             'resolve-a0': ['cargo', '+stable', 'update', '--manifest-path', 'model/burn-a0/Cargo.toml', '-p', 'burn', '--precise', '0.22.0-pre.3'],
             'resolve-fuzz': ['cargo', '+stable', 'generate-lockfile', '--manifest-path', 'fuzz/Cargo.toml'],
             'resolve-template': ['cargo', '+stable', 'generate-lockfile', '--manifest-path', 'templates/rust-crate/Cargo.toml'],
+            'format': ['cargo', '+stable', 'fmt', '--all'],
           }
           status = {}
           for name, cmd in commands.items():
@@ -37,7 +40,6 @@ jobs:
           (out / 'resolution.json').write_text(json.dumps(status, indent=2))
           print(status)
           PY
-          cargo +stable fmt --all
           git add Cargo.toml Cargo.lock crates/ptr-net crates/ptr-ledger/Cargo.toml model/burn-a0/Cargo.toml model/burn-a0/Cargo.lock
           git add --force vendor fuzz/Cargo.lock templates/rust-crate/Cargo.lock
           git diff --cached --binary > /tmp/ptr-candidate/candidate.patch
@@ -64,10 +66,8 @@ jobs:
                       status[name] = 124
               print(name, status[name], flush=True)
           (out / 'tests.json').write_text(json.dumps(status, indent=2))
-          # Preserve generated Raft prost code for a possible parser-free build.
-          generated = list(pathlib.Path('target/debug/build').glob('raft-proto-*/out'))
           import shutil
-          for i, path in enumerate(generated):
+          for i, path in enumerate(pathlib.Path('target/debug/build').glob('raft-proto-*/out')):
               shutil.copytree(path, out / ('raft-proto-generated-' + str(i)))
           for name, manifest in [('workspace', 'Cargo.toml'), ('burn-a0', 'model/burn-a0/Cargo.toml')]:
               result = subprocess.run(['cargo', '+stable', 'metadata', '--manifest-path', manifest, '--all-features', '--format-version', '1', '--locked'], capture_output=True, text=True)
@@ -118,3 +118,41 @@ jobs:
           git config user.email '104269920+xrey167@users.noreply.github.com'
           git commit -m 'build: retain dependency migration candidate for review; not merge approval'
           git push origin HEAD:refs/heads/agent/security-p0-remediation-20260919
+  audit-candidate:
+    needs: prepare
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ptr-security-candidate
+          path: /tmp/ptr-candidate
+      - run: tar -xzf /tmp/ptr-candidate/candidate-source.tar.gz
+      - uses: dtolnay/rust-toolchain@stable
+      - run: |
+          mkdir -p /tmp/ptr-audit
+          cargo +stable install cargo-audit --locked > /tmp/ptr-audit/install-audit.log 2>&1
+          cargo +stable install cargo-deny --locked > /tmp/ptr-audit/install-deny.log 2>&1
+      - name: Inspect every workspace without suppressions
+        run: |
+          python3 - <<'PY'
+          import json, pathlib, subprocess
+          out = pathlib.Path('/tmp/ptr-audit')
+          status = {}
+          for name, manifest in [('workspace', 'Cargo.toml'), ('a0', 'model/burn-a0/Cargo.toml'), ('fuzz', 'fuzz/Cargo.toml'), ('template', 'templates/rust-crate/Cargo.toml')]:
+              for kind, cmd in [('audit', ['cargo', '+stable', 'audit', '--file', str(pathlib.Path(manifest).with_name('Cargo.lock')), '--json']), ('deny', ['cargo', '+stable', 'deny', '--format', 'json', '--manifest-path', manifest, 'check'])]:
+                  result = subprocess.run(cmd, capture_output=True, text=True)
+                  status[name + '-' + kind] = result.returncode
+                  (out / (name + '-' + kind + '.stdout')).write_text(result.stdout)
+                  (out / (name + '-' + kind + '.stderr')).write_text(result.stderr)
+          (out / 'status.json').write_text(json.dumps(status, indent=2))
+          print(status)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ptr-security-candidate-audit
+          path: /tmp/ptr-audit/
+          retention-days: 7
+      - run: python3 -c "import json; raise SystemExit(any(json.load(open('/tmp/ptr-audit/status.json')).values()))"
