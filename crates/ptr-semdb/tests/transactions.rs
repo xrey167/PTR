@@ -206,7 +206,7 @@ fn codec_rejects_duplicate_keys_noncanonical_order_and_hostile_counts() {
     fn entry(key: u8) -> Vec<u8> {
         vec![1, 0, 0, 0, key, 0, 1, 0, 0, 0, b'x']
     }
-    for keys in [[b'a', b'a'], [b'b', b'a']] {
+    for keys in [*b"aa", *b"ba"] {
         let bytes = [
             b"PTRSD001".to_vec(),
             2u32.to_le_bytes().to_vec(),
