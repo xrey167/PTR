@@ -10,15 +10,15 @@
 
 **Maturity:** `research-scaffold`  
 **Last reviewed:** 2026-09-18  
-**Code footprint:** 13 Rust source files · 232 nonblank source lines · 1 integration-test files · 1 `#[test]` markers
+**Code footprint:** 13 Rust source files · 211 nonblank source lines · 1 integration-test files · 1 `#[test]` markers
 
 ### Implemented now
 
 - PTR-Core family/config structures for AR and diffusion research paths
-- SemanticSlot kinds with generation, validity, confidence, value vector and provenance
+- SemanticSlot uses orthogonal shared SemanticRole, EpistemicState and UncertaintyKind axes plus generation, validity, confidence, latent vector and provenance
 - EpistemicWorkspace and live-slot filter
 - ReasoningBudget and latent-step accounting scaffold
-- ReasoningOperator taxonomy and weighted router decision
+- Shared ptr-types ReasoningOperator taxonomy with weighted neural router decision
 - Branch frontier pruning and probability normalization helpers
 - ActionIr with explicit target/generation/revision plus CoreVerification output contracts
 - External model/burn-a0 research package implements trainable raw↔typed cross-attention, epistemic/validity/provenance metadata, typed attention bias, latent refinement and router gradients
@@ -26,7 +26,7 @@
 ### Missing for the target architecture
 
 - Production-integrated Burn/CubeCL PTR model beyond the isolated A0 research package
-- Lifecycle-generation masks and richer typed attention constraints beyond the current learned metadata bias
+- Role/epistemic/uncertainty/lifecycle-specific embeddings, masks and typed attention constraints beyond the current learned metadata bias
 - Task-trained recurrent latent reasoning beyond the current shared refinement layer
 - Task-trained operator router plus ActionIR/verifier neural heads
 - PTR-Diff denoising implementation and training objective
@@ -92,8 +92,8 @@ PTR keeps this responsibility in its own crate so the semantics remain stable ev
 
 ## Responsibilities
 
-- semantic slots
-- typed attention
+- semantic slots that encode shared ptr-types cognitive axes
+- role/epistemic/uncertainty/lifecycle-aware typed attention
 - epistemic workspace
 - latent recurrent reasoning
 - operator router
