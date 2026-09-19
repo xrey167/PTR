@@ -68,6 +68,11 @@ fn subjects(events: &[CommittedEvent]) -> Vec<String> {
         })
         .collect()
 }
+/// Read a file's bytes.
+///
+/// Windows advisory locks are mandatory for I/O through independent handles, so a
+/// log must never be read while a ledger still holds it. Every call below either
+/// targets the anchor, which is not locked, or follows a `drop`.
 fn snapshot(path: &Path) -> Vec<u8> {
     std::fs::read(path).unwrap()
 }
@@ -325,6 +330,7 @@ fn discarding_durable_records_requires_an_explicit_policy() {
     assert_eq!(trimmed.anchor().log, before.log);
     // Discard does not advance the anchor, because nothing new was acknowledged.
     assert_eq!(trimmed.epoch(), before.epoch);
+    drop(trimmed);
     assert_eq!(
         snapshot(&tmp.log()),
         encode_log(&[committed(1), committed(2)]).unwrap()
@@ -333,7 +339,6 @@ fn discarding_durable_records_requires_an_explicit_policy() {
 
 #[test]
 fn an_incomplete_frame_is_never_a_record_under_any_policy() {
-    let tmp = Temp::new();
     for policy in [
         TailPolicy::Acknowledge,
         TailPolicy::Discard,
@@ -342,8 +347,8 @@ fn an_incomplete_frame_is_never_a_record_under_any_policy() {
         let tmp = Temp::new();
         let ledger = make_ledger(&tmp, 2);
         let before = ledger.anchor();
-        let complete = snapshot(&tmp.log());
         drop(ledger);
+        let complete = snapshot(&tmp.log());
 
         // A header-sized fragment of the next frame, as a torn write leaves it.
         let mut torn = complete.clone();
@@ -370,9 +375,9 @@ fn an_incomplete_frame_is_never_a_record_under_any_policy() {
             AcknowledgedLedger::open(&tmp.paths(), key(), before.epoch, policy).unwrap();
         assert_eq!(subjects(repaired.events()), ["subject:1", "subject:2"]);
         assert_eq!(repaired.anchor(), before);
+        drop(repaired);
         assert_eq!(snapshot(&tmp.log()), complete);
     }
-    drop(tmp);
 }
 
 #[test]

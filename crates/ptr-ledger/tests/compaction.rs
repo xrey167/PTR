@@ -291,11 +291,11 @@ fn an_interruption_after_the_commit_point_keeps_the_new_log_live() {
     assert_eq!(indices(reopened.events()), [3, 4]);
     assert_eq!(
         reopened.paths().orphans(plan.base.index).unwrap(),
-        [outcome.superseded_log.clone()]
+        std::slice::from_ref(&outcome.superseded_log)
     );
     assert_eq!(
         reopened.reclaim_orphans().unwrap(),
-        [outcome.superseded_log.clone()]
+        std::slice::from_ref(&outcome.superseded_log)
     );
     assert!(!outcome.superseded_log.exists());
     assert!(outcome.live_log.exists());
