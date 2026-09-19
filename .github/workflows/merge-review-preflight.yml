@@ -1,0 +1,37 @@
+name: merge-review-preflight
+on:
+  push:
+    branches: [agent/merge-review-preflight-20260919]
+permissions:
+  contents: read
+jobs:
+  snapshot-and-format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - name: Snapshot reviewed commits and formatter output without pushing
+        run: |
+          mkdir -p /tmp/ptr-review
+          git archive eb660eb2f08c3864029ccdb4224b3b7b9f9e1629 | gzip > /tmp/ptr-review/pr9-source.tar.gz
+          git archive 617c6655cdcf7a2ea9493940d7aa9e5cd73ef6ef | gzip > /tmp/ptr-review/main-source.tar.gz
+          git archive 81c2711ce769eb69bd9744af80f3e7e39a29b933 | gzip > /tmp/ptr-review/pr11-source.tar.gz
+          cargo +stable fmt --all
+          cargo +stable fmt --manifest-path templates/rust-crate/Cargo.toml
+          python scripts/update_component_docs.py --write
+          git diff --binary > /tmp/ptr-review/format-and-docs.patch
+          git diff --stat
+          sha256sum /tmp/ptr-review/* > /tmp/ptr-review/SHA256SUMS
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ptr-merge-review-inputs
+          path: /tmp/ptr-review/
+          retention-days: 3
