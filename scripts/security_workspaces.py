@@ -40,6 +40,18 @@ def workspaces(root: Path) -> list[Path]:
     return sorted(found)
 
 
+def scanner_command(kind: str, manifest: Path, root: Path) -> list[str]:
+    if kind == "audit":
+        return ["cargo", "+stable", "audit", "--file",
+                str(manifest.with_name("Cargo.lock")), "--json"]
+    if kind == "deny":
+        # cargo-deny 0.20: --config is a root option, before the subcommand.
+        return ["cargo", "+stable", "deny", "--format", "json",
+                "--manifest-path", str(manifest), "--config",
+                str(root / "deny.toml"), "check"]
+    raise ValueError(f"unsupported security scanner: {kind}")
+
+
 def scan(kind: str, output: Path, root: Path = ROOT) -> int:
     output.mkdir(parents=True, exist_ok=True)
     records = []
@@ -55,8 +67,7 @@ def scan(kind: str, output: Path, root: Path = ROOT) -> int:
         before = hashlib.sha256(lock.read_bytes()).hexdigest()
         commands = {
             "metadata": ["cargo", "+stable", "metadata", "--manifest-path", str(manifest), "--all-features", "--locked", "--format-version", "1"],
-            kind: (["cargo", "+stable", "audit", "--file", str(lock), "--json"] if kind == "audit" else
-                   ["cargo", "+stable", "deny", "--format", "json", "--manifest-path", str(manifest), "check", "--config", str(root / "deny.toml")]),
+            kind: scanner_command(kind, manifest, root),
         }
         statuses = {}
         for stage, command in commands.items():
