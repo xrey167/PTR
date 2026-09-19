@@ -70,7 +70,7 @@ fn accuracy(model: &PtrA0, batch: &Batch) -> f32 {
             clone_metadata(&batch.metadata),
         )
         .router_logits;
-    let predictions = logits.argmax(1).squeeze(1);
+    let predictions = logits.argmax(1).squeeze::<1>();
     let correct = predictions
         .equal(batch.labels.clone())
         .int()

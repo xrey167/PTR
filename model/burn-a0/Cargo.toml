@@ -8,7 +8,7 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 bytemuck = "1.23.1"
-burn = { version = "=0.22.0-pre.3", default-features = false, features = ["std", "flex", "autodiff"] }
+burn = { version = "=0.22.0-pre.3", default-features = false, features = ["std", "flex", "autodiff", "optim"] }
 
 [workspace]
 [patch.crates-io]
