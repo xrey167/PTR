@@ -3,9 +3,9 @@ version = 1
 [[component]]
 id = "ptr-types"
 ports = []
-type_families = ["identity-lifecycle", "epistemic-probabilistic", "provenance-evidence"]
+type_families = ["cognitive-semantic", "identity-lifecycle", "epistemic-probabilistic", "provenance-evidence"]
 backend_slots = []
-open_decisions = ["module split/freeze boundary", "serialization derives", "resource/principal/session identity set"]
+open_decisions = ["semantic wrapper shapes", "role/epistemic/uncertainty freeze boundary", "module split/freeze boundary", "serialization derives", "resource/principal/session identity set"]
 
 [[component]]
 id = "ptr-config"
@@ -38,14 +38,14 @@ open_decisions = ["typed key/value/query API", "dependency capture", "persistent
 [[component]]
 id = "ptr-core"
 ports = ["CoreModel", "TypedWorkspace", "OperatorHead", "ActionHead", "VerifierHead"]
-type_families = ["epistemic-probabilistic", "routing-execution", "model-interface", "capability-authority"]
+type_families = ["cognitive-semantic", "epistemic-probabilistic", "routing-execution", "model-interface", "capability-authority"]
 backend_slots = ["model-framework"]
-open_decisions = ["semantic slot taxonomy", "typed attention metadata", "latent recurrence state", "action/verifier head contracts"]
+open_decisions = ["neural encoding of shared type axes", "typed attention metadata", "latent recurrence state", "action/verifier head contracts"]
 
 [[component]]
 id = "ptr-model-api"
 ports = ["InferenceBackend", "ResumableInferenceBackend", "StreamingInferenceBackend"]
-type_families = ["model-interface", "routing-execution"]
+type_families = ["cognitive-semantic", "model-interface", "routing-execution"]
 backend_slots = ["inference-serving"]
 open_decisions = ["capability descriptor", "async stream contract", "checkpoint handle", "cancellation/timeout"]
 
@@ -73,7 +73,7 @@ open_decisions = ["PodContext", "remote lease/session", "process isolation", "GP
 [[component]]
 id = "ptr-router"
 ports = ["Router", "CapabilityGraph", "FallbackPlanner"]
-type_families = ["routing-execution", "model-interface", "search-retrieval", "pod-contract"]
+type_families = ["cognitive-semantic", "routing-execution", "model-interface", "search-retrieval", "pod-contract"]
 backend_slots = ["routing-policy"]
 open_decisions = ["ExecutionRecipe", "operator taxonomy", "budget model", "fallback/degradation semantics"]
 
