@@ -18,9 +18,9 @@ def main() -> int:
 
     try:
         changed = git("diff", "--name-only", f"{args.base}...HEAD").splitlines()
-    except subprocess.CalledProcessError:
-        print(f"WARNING: unable to diff against {args.base}; skipping component freshness check")
-        return 0
+    except (subprocess.CalledProcessError, OSError) as error:
+        print(f"ERROR: unable to diff against {args.base}; component freshness is unverified: {error}")
+        return 1
 
     changed_set = set(changed)
     implementation_changed: dict[str, list[str]] = {}

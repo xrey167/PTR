@@ -1,31 +1,39 @@
 name: security
 on:
   push:
-    paths:
-      - Cargo.lock
-      - deny.toml
-      - .github/workflows/security.yml
   pull_request:
-    paths:
-      - Cargo.lock
-      - deny.toml
   schedule:
-    - cron: "23 4 * * 1"
-  workflow_dispatch:
-
+    - cron: "17 5 * * 1"
+permissions:
+  contents: read
 jobs:
   audit:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo +stable install cargo-audit --locked
-      - run: cargo +stable audit
-
+      - run: cargo +stable install cargo-audit --version 0.22.2 --locked
+      - run: python scripts/security_workspaces.py audit --output /tmp/ptr-audit
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-audit-${{ github.sha }}
+          path: /tmp/ptr-audit/
+          retention-days: 14
   deny:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo +stable install cargo-deny --locked
-      - run: cargo +stable deny check
+      - run: cargo +stable install cargo-deny --version 0.20.2 --locked
+      - run: python scripts/security_workspaces.py deny --output /tmp/ptr-deny
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-deny-${{ github.sha }}
+          path: /tmp/ptr-deny/
+          retention-days: 14

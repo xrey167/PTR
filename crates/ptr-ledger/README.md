@@ -9,11 +9,13 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-18  
-**Code footprint:** 1 Rust source files · 524 nonblank source lines · 5 integration-test files · 6 `#[test]` markers
+**Last reviewed:** 2026-09-19  
+**Code footprint:** 1 Rust source files · 543 nonblank source lines · 6 integration-test files · 10 `#[test]` markers
 
 ### Implemented now
 
+- Cross-process single-writer advisory lock retained for FileLedger handle lifetime
+- Poisoned writer after ambiguous append failure; reopen/replay required before subsequent writes
 - Lifecycle LedgerEvent enum
 - CommittedEvent with CommitIndex
 - Ledger trait and in-memory reference implementation
@@ -25,6 +27,7 @@
 
 ### Missing for the target architecture
 
+- Authenticated/checksummed disk framing and hardware power-loss evidence (panic injection is not power loss)
 - Multi-node raft-rs consensus adapter with transport, persistent Raft storage and membership changes
 - fsync/durability modes and revocation barriers
 - Snapshot serialization/recovery/replay

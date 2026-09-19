@@ -1,15 +1,15 @@
 version = 1
 id = "ptr-net"
 maturity = "prototype"
-last_reviewed = "2026-09-18"
+last_reviewed = "2026-09-19"
 
 implemented = [
   "ALPN constants for raft, PodWire, model, blob and events protocols",
   "NodeIdentity scaffold",
   "Provider-independent Transport trait",
-  "Feature-gated Iroh 0.35 direct QUIC adapter with PTR ALPNs and authenticated peer identity",
+  "Feature-gated Iroh 1.2 direct QUIC adapter with PTR ALPNs and authenticated peer identity",
   "Iroh response path keeps the connection alive through peer-observed graceful completion",
-  "Iroh 0.35 feature uses upstream-release-compatible transitive pins to preserve PTR Rust 1.85 MSRV",
+  "Iroh 1.2 optional feature requires Rust 1.91; default runtime core retains a separate Rust 1.85 gate",
 ]
 
 missing = [

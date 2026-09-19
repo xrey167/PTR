@@ -90,6 +90,9 @@ pub struct FileLedger {
     path: PathBuf,
     file: File,
     events: Vec<CommittedEvent>,
+    // Set before I/O: an error or unwind leaves an indeterminate disk outcome.
+    // No subsequent append is safe until this handle is dropped and reopened.
+    poisoned: bool,
 }
 
 impl FileLedger {
@@ -102,6 +105,10 @@ impl FileLedger {
             .write(true)
             .open(&path)?;
 
+        // Hold an OS advisory lock for the entire handle lifetime, before even
+        // inspecting/truncating a crash tail. A second writer must not recover
+        // or append using a stale in-memory commit index.
+        fs4::FileExt::try_lock(&file).map_err(io::Error::from)?;
         file.seek(SeekFrom::Start(0))?;
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)?;
@@ -139,7 +146,12 @@ impl FileLedger {
         }
         file.seek(SeekFrom::End(0))?;
 
-        Ok(Self { path, file, events })
+        Ok(Self {
+            path,
+            file,
+            events,
+            poisoned: false,
+        })
     }
 
     pub fn path(&self) -> &Path {
@@ -151,10 +163,16 @@ impl FileLedger {
     }
 
     pub fn append_durable(&mut self, event: LedgerEvent) -> io::Result<CommitIndex> {
+        if self.poisoned {
+            return Err(io::Error::other(
+                "ledger append outcome is indeterminate; drop and reopen before writing",
+            ));
+        }
         let payload = encode_event(&event);
         let length = u32::try_from(payload.len())
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "ledger record too large"))?;
 
+        self.poisoned = true;
         #[cfg(feature = "failpoints")]
         fail::fail_point!("ledger.before_record_write");
 
@@ -176,6 +194,7 @@ impl FileLedger {
 
         let index = CommitIndex(self.events.len() as u64 + 1);
         self.events.push(CommittedEvent { index, event });
+        self.poisoned = false;
         Ok(index)
     }
 }

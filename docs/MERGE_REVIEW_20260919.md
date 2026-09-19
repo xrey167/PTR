@@ -74,3 +74,10 @@ Confidence tests check representation and API behavior, not learned accuracy,
 conflict resolution, source revocation closure or effect authorization. The
 existing full project Definition of Done is unchanged. Complete the current
 component review before starting the next architectural component.
+
+## Correction from the subsequent exact-main audit
+
+Unicode-3.0 was already allowed by deny.toml; the earlier license attribution above
+was inaccurate. See SECURITY_P0_REVIEW_20260919.md for the actual rejected families,
+version-scoped MPL decisions and expanded workspace scan. Earlier audit results are
+historical evidence, not the security status of later commits.

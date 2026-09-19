@@ -3,25 +3,31 @@ on:
   push:
     paths:
       - "model/burn-a0/**"
+      - "vendor/**"
       - ".github/workflows/burn-a0.yml"
   pull_request:
     paths:
       - "model/burn-a0/**"
+      - "vendor/**"
       - ".github/workflows/burn-a0.yml"
-
+permissions:
+  contents: read
 jobs:
   stable:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo +stable fmt --manifest-path model/burn-a0/Cargo.toml -- --check
       - run: cargo +stable test --manifest-path model/burn-a0/Cargo.toml --locked
       - run: cargo +stable check --manifest-path model/burn-a0/Cargo.toml --examples --locked
-
+      - run: cargo +stable clippy --manifest-path model/burn-a0/Cargo.toml --all-targets --locked -- -D warnings
   msrv:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - run: rustup toolchain install 1.85.0 --profile minimal
-      - run: cargo +1.85.0 test --manifest-path model/burn-a0/Cargo.toml --locked
-      - run: cargo +1.85.0 check --manifest-path model/burn-a0/Cargo.toml --examples --locked
+      - run: rustup toolchain install 1.95.0 --profile minimal
+      - run: cargo +1.95.0 test --manifest-path model/burn-a0/Cargo.toml --locked
+      - run: cargo +1.95.0 check --manifest-path model/burn-a0/Cargo.toml --examples --locked

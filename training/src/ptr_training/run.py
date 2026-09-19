@@ -135,11 +135,13 @@ def build_manifest(config_path: Path) -> dict:
         "model_config": model_config,
         "hardware_profile": hardware_profile,
         "cargo_lock": cargo_lock,
+        "a0_manifest": file_fingerprint(ROOT / "model/burn-a0/Cargo.toml"),
+        "a0_cargo_lock": file_fingerprint(ROOT / "model/burn-a0/Cargo.lock"),
         "uv_lock": uv_lock,
     }
 
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "status": "prepared",
         "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "git_sha": git["sha"],

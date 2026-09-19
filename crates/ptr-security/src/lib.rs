@@ -66,15 +66,26 @@ impl PermissionSet {
         self.capabilities.contains(capability) && self.allows_effect(effect)
     }
 
+    /// Evaluate permissions against a trusted runtime snapshot.
+    ///
+    /// Research switches may relax Pure/Read requests only. They never turn off
+    /// freshness, live generation or capability membership for side effects.
+    /// This receipt is diagnostic data, not an execution token or verifier proof.
     pub fn authorize(&self, request: ActionAuthorization) -> AuthorizationDecision {
-        if request.require_current_revision && request.action_revision != request.current_revision {
+        let hard_boundary = matches!(
+            request.effect,
+            Effect::Mutation | Effect::External | Effect::Irreversible
+        );
+        if (hard_boundary || request.require_current_revision)
+            && request.action_revision != request.current_revision
+        {
             return AuthorizationDecision::Deny(AuthorizationDenial::StaleRevision {
                 action: request.action_revision,
                 current: request.current_revision,
             });
         }
 
-        if request.require_live_generation {
+        if hard_boundary || request.require_live_generation {
             if request.generation_revoked
                 || request
                     .current_generation
@@ -94,7 +105,9 @@ impl PermissionSet {
             }
         }
 
-        if request.require_capability && !self.capabilities.contains(&request.capability) {
+        if (hard_boundary || request.require_capability)
+            && !self.capabilities.contains(&request.capability)
+        {
             return AuthorizationDecision::Deny(AuthorizationDenial::MissingCapability {
                 capability: request.capability,
             });

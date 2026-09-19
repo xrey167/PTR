@@ -1,0 +1,249 @@
+use core::ops::{Deref, DerefMut};
+
+use crate::{
+    self as cubecl,
+    frontend::container::slice,
+    prelude::{Vectorized, VectorizedExpand},
+    unexpanded,
+};
+use cubecl_ir::{VectorSize, dialect::general::FreeOp, interfaces::TypedExt, types::ArrayType};
+use cubecl_macros::{cube, intrinsic};
+
+use crate::{
+    frontend::{CubePrimitive, CubeType, IntoMut, NativeExpand},
+    ir::Scope,
+    prelude::*,
+};
+
+pub type SharedExpand<T> = NativeExpand<Shared<T>>;
+
+pub struct Shared<E: NativeCubeType + ?Sized> {
+    _val: *mut E,
+}
+
+// Treat it as a shared smart pointer
+impl<E: NativeCubeType + ?Sized> Clone for Shared<E> {
+    fn clone(&self) -> Self {
+        Self { _val: self._val }
+    }
+}
+
+impl<T: NativeCubeType + ?Sized> IntoMut for NativeExpand<Shared<T>> {
+    fn into_mut(self, _scope: &Scope) -> Self {
+        self
+    }
+}
+
+impl<T: NativeCubeType + ?Sized> CubeType for Shared<T> {
+    type ExpandType = NativeExpand<Shared<T>>;
+}
+
+impl<T: NativeCubeType + ?Sized> AsMutExpand for SharedExpand<T> {
+    fn __expand_ref_mut_method(&mut self, _: &Scope) -> &mut Self {
+        self
+    }
+}
+
+#[cube]
+impl<T: CubePrimitive> Shared<[T]> {
+    /// Create a new shared slice.
+    ///
+    /// # Safety
+    /// Shared memory is always uninitialized by default. Reading uninitialized shared values is
+    /// undefined behavior.
+    pub fn new_slice(#[comptime] len: usize) -> Self {
+        intrinsic!(|scope| {
+            let inner = T::__expand_as_type(scope);
+            let ty = ArrayType::get(scope.ctx(), inner, len);
+            let buffer = scope.create_shared(ty, None);
+            let slice = slice::from_raw_parts::<T>(
+                scope,
+                buffer,
+                0usize.into_expand(scope),
+                len.into_expand(scope),
+            );
+            slice.expand.into()
+        })
+    }
+
+    /// Create a new shared slice with a specified minimum alignment.
+    ///
+    /// # Safety
+    /// Shared memory is always uninitialized by default. Reading uninitialized shared values is
+    /// undefined behavior.
+    #[allow(unused_variables)]
+    pub fn new_aligned_slice(#[comptime] len: usize, #[comptime] alignment: usize) -> Self {
+        intrinsic!(|scope| {
+            let inner = T::__expand_as_type(scope);
+            let ty = ArrayType::get(scope.ctx(), inner, len);
+            let buffer = scope.create_shared(ty, Some(alignment));
+            let slice = slice::from_raw_parts::<T>(
+                scope,
+                buffer,
+                0usize.into_expand(scope),
+                len.into_expand(scope),
+            );
+            slice.expand.into()
+        })
+    }
+
+    #[allow(clippy::len_without_is_empty)]
+    pub fn len(&self) -> usize {
+        intrinsic!(|scope| len_static(scope, &self))
+    }
+}
+
+impl<T: NativeCubeType + ?Sized> Shared<T> {
+    pub fn map<U: NativeCubeType + ?Sized>(self, _map: impl FnOnce(&T) -> &U) -> Shared<U> {
+        unexpanded!()
+    }
+}
+
+impl<T: NativeCubeType + ?Sized> SharedExpand<T> {
+    pub fn __expand_map_method<U: NativeCubeType + ?Sized>(
+        self,
+        scope: &Scope,
+        map: impl for<'a> FnOnce(&Scope, &'a NativeExpand<T>) -> &'a NativeExpand<U>,
+    ) -> SharedExpand<U> {
+        let out = map(scope, self.__expand_ref_method(scope));
+        out.expand.into()
+    }
+}
+
+#[cube]
+impl<T: CubePrimitive> Shared<T> {
+    /// Create a new shared object.
+    ///
+    /// # Safety
+    /// Shared memory is always uninitialized by default. Reading uninitialized shared values is
+    /// undefined behavior.
+    pub fn new() -> Self {
+        intrinsic!(|scope| {
+            let val = scope.create_shared(T::__expand_as_type(scope), None);
+            NativeExpand::new(val.into())
+        })
+    }
+}
+
+#[cube]
+impl<T: NativeCubeType + ?Sized> Shared<T> {
+    pub fn inner_ref(&self) -> &T {
+        intrinsic!(|scope| { unsafe { self.as_type_ref_unchecked() } })
+    }
+
+    pub fn inner_mut(&mut self) -> &mut T {
+        intrinsic!(|scope| { unsafe { self.as_type_mut_unchecked() } })
+    }
+}
+
+impl<T: CubePrimitive> Default for Shared<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+impl<T: CubePrimitive> Shared<T> {
+    pub fn __expand_default(scope: &Scope) -> <Self as CubeType>::ExpandType {
+        Self::__expand_new(scope)
+    }
+}
+
+#[cube]
+impl<T: NativeCubeType + ?Sized> Shared<T> {
+    /// Frees the shared memory for reuse, if possible on the target runtime.
+    ///
+    /// # Safety
+    /// *Must* be used in uniform control flow
+    /// *Must not* have any dangling references to this shared memory
+    pub unsafe fn free(&self) {
+        intrinsic!(|scope| {
+            let val = scope.extract_field(self.value(scope), 0);
+            scope.register(&FreeOp::new(scope.ctx_mut(), val))
+        })
+    }
+}
+
+fn len_static<T: CubePrimitive>(
+    scope: &Scope,
+    shared: &NativeExpand<Shared<[T]>>,
+) -> NativeExpand<usize> {
+    let array_ty = inner_array_ty(scope, shared.value(scope));
+    array_ty.deref(scope.ctx()).length.into()
+}
+
+impl<T: CubePrimitive> List<T> for Shared<[T]> {}
+impl<T: CubePrimitive> ListExpand<T> for NativeExpand<Shared<[T]>> {
+    fn __expand_len_method(&self, scope: &Scope) -> NativeExpand<usize> {
+        Self::__expand_len_method(self, scope)
+    }
+}
+
+impl<T: CubePrimitive> Vectorized for Shared<[T]> {}
+impl<T: CubePrimitive> VectorizedExpand for NativeExpand<Shared<[T]>> {
+    fn __expand_vector_size_method(&self, scope: &Scope) -> VectorSize {
+        self.__extract_list(scope).vector_size(scope.ctx())
+    }
+}
+
+impl<T: NativeCubeType + ?Sized> Deref for Shared<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        unexpanded!()
+    }
+}
+impl<T: NativeCubeType + ?Sized> DerefMut for Shared<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unexpanded!()
+    }
+}
+
+impl<T: NativeCubeType + ?Sized> Deref for SharedExpand<T> {
+    type Target = NativeExpand<T>;
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { self.as_type_ref_unchecked() }
+    }
+}
+impl<T: NativeCubeType + ?Sized> DerefMut for SharedExpand<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { self.as_type_mut_unchecked() }
+    }
+}
+
+impl<'a, T: NativeCubeType + ?Sized> From<&'a SharedExpand<T>> for &'a NativeExpand<T> {
+    fn from(value: &'a SharedExpand<T>) -> Self {
+        value
+    }
+}
+
+impl<'a, T: NativeCubeType + ?Sized> From<&'a mut SharedExpand<T>> for &'a mut NativeExpand<T> {
+    fn from(value: &'a mut SharedExpand<T>) -> Self {
+        value
+    }
+}
+
+impl<T: NativeCubeType + ?Sized> AsDerefExpand for SharedExpand<T> {
+    type Target = NativeExpand<T>;
+
+    fn __expand_as_deref_method(&self, _: &Scope) -> &Self::Target {
+        unsafe { self.as_type_ref_unchecked::<T>() }
+    }
+}
+impl<T: NativeCubeType + ?Sized> AsDerefMutExpand for SharedExpand<T> {
+    fn __expand_as_deref_mut_method(&mut self, _: &Scope) -> &mut Self::Target {
+        unsafe { self.as_type_mut_unchecked::<T>() }
+    }
+}
+
+impl<T: CubePrimitive> Assign<NativeExpand<T>> for SharedExpand<T> {
+    fn __expand_assign_method(&mut self, scope: &Scope, value: NativeExpand<T>) {
+        let value = value.read_value(scope);
+        assign::expand_element(scope, value.into(), self.expand);
+    }
+}
+
+impl<T: CubePrimitive> RuntimeAssign<NativeExpand<T>> for SharedExpand<T> {
+    fn init_mut(&self, scope: &Scope) -> Self::Expand {
+        Shared::<T>::__expand_new(scope)
+    }
+}

@@ -98,7 +98,12 @@ fn allowed_action_returns_audit_ready_receipt() {
 
 #[test]
 fn disabling_capability_membership_does_not_disable_effect_authority() {
-    let permissions = PermissionSet::default();
+    // Give membership so this test continues to isolate the effect gate;
+    // hard_boundary.rs separately verifies that membership cannot be bypassed.
+    let mut permissions = PermissionSet::default();
+    permissions
+        .capabilities
+        .insert(CapabilityId::from("file.write"));
     let mut action = request();
     action.require_capability = false;
 

@@ -21,7 +21,7 @@ mod iroh_backend {
     use super::NodeIdentity;
     use iroh::{
         endpoint::{Connection, SendStream},
-        Endpoint, NodeAddr, RelayMode,
+        Endpoint, EndpointAddr, RelayMode,
     };
     use ptr_types::NodeId;
     use std::net::{Ipv4Addr, SocketAddrV4};
@@ -39,9 +39,11 @@ mod iroh_backend {
 
     impl IrohTransport {
         pub async fn bind(alpns: &[&[u8]]) -> Result<Self, String> {
-            let endpoint = Endpoint::builder()
+            let endpoint = Endpoint::builder(iroh::endpoint::presets::Minimal)
                 .relay_mode(RelayMode::Disabled)
-                .bind_addr_v4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+                .clear_ip_transports()
+                .bind_addr(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+                .map_err(|error| error.to_string())?
                 .alpns(alpns.iter().map(|alpn| alpn.to_vec()).collect())
                 .bind()
                 .await
@@ -51,35 +53,32 @@ mod iroh_backend {
         }
 
         pub fn identity(&self) -> NodeIdentity {
-            let public_key = self.endpoint.node_id().to_string();
+            let public_key = self.endpoint.id().to_string();
             NodeIdentity {
                 id: NodeId(public_key.clone()),
                 public_key,
             }
         }
 
-        pub fn direct_addr(&self) -> NodeAddr {
-            NodeAddr::new(self.endpoint.node_id())
-                .with_direct_addresses([self.endpoint.bound_sockets().0])
+        pub fn direct_addr(&self) -> EndpointAddr {
+            self.endpoint.addr()
         }
 
         pub async fn request(
             &self,
-            peer: NodeAddr,
+            peer: EndpointAddr,
             alpn: &[u8],
             payload: &[u8],
             max_response: usize,
         ) -> Result<Vec<u8>, String> {
-            let expected_peer = peer.node_id;
+            let expected_peer = peer.id;
             let connection = self
                 .endpoint
                 .connect(peer, alpn)
                 .await
                 .map_err(|error| error.to_string())?;
 
-            let authenticated_peer = connection
-                .remote_node_id()
-                .map_err(|error| error.to_string())?;
+            let authenticated_peer = connection.remote_id();
             if authenticated_peer != expected_peer {
                 return Err("authenticated Iroh peer does not match requested endpoint id".into());
             }
@@ -107,9 +106,7 @@ mod iroh_backend {
                     "Iroh endpoint closed before accepting a connection".to_string()
                 })?;
             let connection = incoming.await.map_err(|error| error.to_string())?;
-            let peer_id = connection
-                .remote_node_id()
-                .map_err(|error| error.to_string())?;
+            let peer_id = connection.remote_id();
             let public_key = peer_id.to_string();
 
             let (send, mut recv) = connection

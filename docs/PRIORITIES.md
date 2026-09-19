@@ -4,11 +4,11 @@ This is the implementation order after the architecture-scaffold phase. Status v
 
 | Priority | Work item | Status |
 |---|---|---|
-| P0 | Repository licensing, lockfiles, MSRV/stable/Linux/Windows CI | done |
+| P0 | Repository licensing, lockfiles, MSRV/stable/Linux/Windows CI | verification infrastructure implemented; exact-commit results in security/P0 review; release license obligations remain |
 | P0 | Component docs-as-code, local config.toml and tests/ ownership | done |
 | P0 | Central ptr-runtime orchestrator | prototype |
-| P0 | Hard revision/generation/capability effect boundary | prototype — typed ptr-security decisions now own freshness + capability/effect checks, effect authority cannot be bypassed by disabling capability membership, and allow receipts are emitted; principal/resource scopes and verifier requirements remain |
-| P0 | Durable single-node ledger + crash-tail/replay safety | done for reference FileLedger, including runtime reopen/replay; cluster durability remains separate |
+| P0 | Hard revision/generation/capability effect boundary | prototype — typed ptr-security decisions now own freshness + capability/effect checks, all freshness/capability/effect gates are mandatory for hard effects; diagnostic receipts are not execution tokens; principal/resource scopes and verifier requirements remain |
+| P0 | Durable single-node ledger + crash-tail/replay safety | prototype — single-writer/poisoned append/lifecycle replay protections; checksummed framing, real snapshots, SemDB payload replay and cluster durability remain open |
 | P0 | Executable experiment/evaluation runners | implemented — declared argv execution, immutable success/failure evidence and subprocess tests exist; benchmark coverage remains incomplete |
 | P0 | Reproducible Python training-run manifest | prototype |
 | P1 | Prost-generated typed wire contracts | prototype |
@@ -16,7 +16,7 @@ This is the implementation order after the architecture-scaffold phase. Status v
 | P1 | HTTP server + TypeScript client contract | prototype |
 | P1 | Strong RAG / matched plain-model baselines | in progress — execution gates prevent unpinned claims |
 | P1 | Component evaluations with measured evidence | in progress |
-| P1 | Supply-chain audit/deny, SBOM, provenance attestations | done |
+| P1 | Supply-chain audit/deny, SBOM, provenance attestations | every owned workspace covered; scan outcome and release packaging are separate gates |
 | P1 | Dataset cards and contamination governance | prototype |
 | P1 | Burn PTR-A0 typed neural path | prototype |
 | P1 | Epistemic/validity/provenance neural metadata + typed attention bias | prototype |
@@ -29,3 +29,5 @@ This is the implementation order after the architecture-scaffold phase. Status v
 | P2 | Stable release/multi-platform packaging | planned |
 
 The next scientific gate is not a larger model. It is a matched, reproducible M001/M002/M003/M004 experiment where the new neural mechanisms are compared against controlled ablations.
+
+See [the security/P0 review](SECURITY_P0_REVIEW_20260919.md) for concrete repairs, remaining architecture gates and the limits of green CI.

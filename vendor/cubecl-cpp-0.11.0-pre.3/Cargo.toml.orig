@@ -1,0 +1,66 @@
+[package]
+authors = ["nathanielsimard <nathaniel.simard.42@gmail.com>"]
+categories = ["science"]
+description = "CPP transpiler for CubeCL"
+edition.workspace = true
+keywords = ["cpp", "gpu", "cuda", "hip", "metal"]
+license.workspace = true
+name = "cubecl-cpp"
+readme.workspace = true
+repository = "https://github.com/tracel-ai/cubecl/tree/main/crates/cubecl-cpp"
+version.workspace = true
+
+
+[lints]
+workspace = true
+
+
+[features]
+cuda = []
+default = [
+    "cubecl-runtime/default",
+    "cubecl-common/default",
+    "cubecl-core/default",
+    "metal",
+]
+hip = []
+metal = []
+pliron-dump = ["std"]
+std = [
+    "cubecl-runtime/std",
+    "cubecl-common/std",
+    "cubecl-core/std",
+    "cubecl-opt/std",
+]
+
+tracing = [
+    "cubecl-runtime/tracing",
+    "cubecl-common/tracing",
+    "cubecl-core/tracing",
+    "cubecl-opt/tracing",
+]
+
+[dependencies]
+cubecl-common = { path = "../cubecl-common", version = "=0.11.0-pre.3", default-features = false }
+cubecl-core = { path = "../cubecl-core", version = "=0.11.0-pre.3", default-features = false }
+cubecl-environment = { path = "../cubecl-environment", version = "=0.11.0-pre.3", default-features = false }
+# For shared allocation
+cubecl-opt = { path = "../cubecl-opt", version = "=0.11.0-pre.3", default-features = false }
+cubecl-runtime = { path = "../cubecl-runtime", version = "=0.11.0-pre.3", default-features = false, features = [
+    "channel-mutex",
+] }
+
+bytemuck = { workspace = true }
+derive-new = { workspace = true }
+derive_more = { workspace = true }
+half = { workspace = true }
+itertools = { workspace = true }
+log = { workspace = true }
+num-traits = { workspace = true }
+paste = { workspace = true }
+pliron = { workspace = true }
+sanitize-filename = { workspace = true }
+thiserror = { workspace = true }
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+pliron = { workspace = true, features = ["std"] }

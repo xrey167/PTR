@@ -13,8 +13,8 @@ This is the first **trainable tensor implementation** of a PTR model component. 
 - residual projection back into raw and semantic workspaces;
 - shared recurrent latent refinement steps;
 - operator-router logits over the updated semantic slots;
-- generic Burn backend support;
-- NdArray forward, autodiff and tiny supervised-router training tests.
+- upstream Burn device-dispatch support;
+- Flex CPU forward, autodiff and tiny supervised-router training tests.
 
 ## Alignment with the PTR cognitive type kernel
 
@@ -40,6 +40,8 @@ The current integer category counts are therefore research-local and must not be
 - checkpoint import/export and Torch numerical parity;
 - CUDA/CubeCL benchmark evidence.
 
-This package uses Burn **0.18.0** because that release declares Rust 1.85 compatibility, matching PTR's current MSRV. The separate lockfile pins the dependency graph, including a Rust-1.85-compatible bytemuck version.
+This isolated prototype pins **Burn 0.22.0-pre.3**, uses **Rust 1.95**, and keeps its own lockfile. This explicit prerelease/device-API migration removes the old bincode recording dependency. It does not raise the default runtime core's Rust 1.85 gate or establish a production framework choice. Training uses `Device::flex().autodiff()`.
 
 The synthetic router training test proves only that gradients and optimizer updates flow through the typed metadata, cross-attention, recurrence and router path. It is **not** evidence for M001/M002/M003/M004 task superiority.
+
+The attention bias is query/key-dependent: a query-only constant would cancel in softmax. A cancellation control and a gradient test cover that regression. Validity IDs still do not implement a hard revocation mask. See the security/P0 review for remaining gates.

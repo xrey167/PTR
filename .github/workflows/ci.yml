@@ -2,7 +2,8 @@ name: ci
 on:
   push:
   pull_request:
-
+permissions:
+  contents: read
 jobs:
   quality:
     runs-on: ubuntu-latest
@@ -12,15 +13,14 @@ jobs:
         with:
           components: rustfmt, clippy
       - run: cargo +stable fmt --all -- --check
-      - run: cargo +stable clippy --workspace --all-targets -- -D warnings
+      - run: cargo +stable clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo +stable doc --workspace --no-deps --locked
         env:
           RUSTDOCFLAGS: "-D warnings"
-      - run: cargo +stable test --manifest-path templates/rust-crate/Cargo.toml
-      - run: cargo +stable clippy --manifest-path templates/rust-crate/Cargo.toml --all-targets -- -D warnings
+      - run: cargo +stable test --manifest-path templates/rust-crate/Cargo.toml --locked
+      - run: cargo +stable clippy --manifest-path templates/rust-crate/Cargo.toml --all-targets --locked -- -D warnings
       - run: cargo +stable test -p ptr-observe --features tracing-adapter --locked
       - run: cargo +stable clippy -p ptr-observe --features tracing-adapter --all-targets --locked -- -D warnings
-
   rust-stable:
     strategy:
       fail-fast: false
@@ -32,7 +32,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo +stable check --workspace --all-targets --locked
       - run: cargo +stable test --workspace --locked
-
   rust-msrv:
     runs-on: ubuntu-latest
     steps:
@@ -41,8 +40,7 @@ jobs:
       - run: cargo +1.85.0 check --workspace --all-targets --locked
       - run: cargo +1.85.0 test --workspace --locked
       - run: cargo +1.85.0 check -p ptr-observe --features tracing-adapter --locked
-      - run: cargo +1.85.0 test --manifest-path templates/rust-crate/Cargo.toml
-
+      - run: cargo +1.85.0 test --manifest-path templates/rust-crate/Cargo.toml --locked
   python-training:
     strategy:
       matrix:
@@ -58,17 +56,28 @@ jobs:
       - run: python training/src/ptr_training/validate_dataset.py datasets/samples/epistemic_calibration.jsonl
       - run: python training/src/ptr_training/validate_dataset.py datasets/samples/ood_pod.jsonl
       - run: python training/src/ptr_training/validate_dataset.py datasets/samples/operator_route.jsonl
-
   repository-invariants:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 2
+          fetch-depth: 0
       - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
-      - run: python scripts/check_component_metadata.py --base HEAD^
+      - name: Verify metadata across the complete change range
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BASE: ${{ github.event.before }}
+        shell: bash
+        run: |
+          base="$PR_BASE"
+          if [ -z "$base" ]; then base="$PUSH_BASE"; fi
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            base="$(git merge-base HEAD origin/main)"
+          fi
+          python scripts/check_component_metadata.py --base "$base"
+      - run: python scripts/check_vendor_integrity.py
       - run: python scripts/update_component_docs.py --check
       - run: python scripts/check_repo.py
       - run: python scripts/check_architecture_catalog.py
@@ -80,39 +89,35 @@ jobs:
       - run: python -m unittest discover -s research/baselines/rag_reference/tests
       - run: python -m unittest discover -s research/baselines/strong_rag/tests
       - run: python -m unittest discover -s docs-site/tests
-
   lifecycle-failpoints:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo +stable test -p ptr-ledger --features failpoints --test failpoints --locked
-
   ledger-raft-engine:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo +stable test -p ptr-ledger --features raft-engine-backend --test raft_engine --locked
-
   ledger-raft-rs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      - run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - run: cargo +stable test -p ptr-ledger --features raft-rs-backend --test raft_rs --locked
-
   state-turso:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo +stable test -p ptr-state --features turso-backend --test turso --locked
-
   network-iroh:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo +stable test -p ptr-net --features iroh-backend --test iroh --locked
+      - run: rustup toolchain install 1.91.0 --profile minimal
+      - run: cargo +1.91.0 test -p ptr-net --features iroh-backend --test iroh --locked

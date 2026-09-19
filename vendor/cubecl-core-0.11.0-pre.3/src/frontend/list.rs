@@ -1,0 +1,44 @@
+use super::CubeType;
+use crate as cubecl;
+use crate::{prelude::*, unexpanded};
+use cubecl_ir::{Scope, VectorSize};
+
+/// Type from which we can read/to which we can write values in cube functions.
+#[allow(clippy::len_without_is_empty)]
+#[cube(expand_base_traits = "SliceOperatorExpand<T>
+    + IndexExpand<NativeExpand<usize>, Output = NativeExpand<T>>
+    + IndexMutExpand<NativeExpand<usize>, Output = NativeExpand<T>>")]
+pub trait List<T: CubePrimitive>:
+    SliceOperator<T> + CubeIndex<usize, Output = T> + CubeIndexMut<usize, Output = T> + Vectorized
+{
+    fn len(&self) -> usize {
+        unexpanded!();
+    }
+}
+
+pub trait Vectorized: CubeType<ExpandType: VectorizedExpand> {
+    fn vector_size(&self) -> VectorSize {
+        unexpanded!()
+    }
+    fn __expand_vector_size(scope: &Scope, this: &Self::ExpandType) -> VectorSize {
+        this.__expand_vector_size_method(scope)
+    }
+}
+
+impl<T: Vectorized + ?Sized> Vectorized for &T {}
+impl<T: Vectorized + ?Sized> Vectorized for &mut T {}
+
+pub trait VectorizedExpand {
+    fn __expand_vector_size_method(&self, scope: &Scope) -> VectorSize;
+}
+
+impl<T: VectorizedExpand + ?Sized> VectorizedExpand for &T {
+    fn __expand_vector_size_method(&self, scope: &Scope) -> VectorSize {
+        (**self).__expand_vector_size_method(scope)
+    }
+}
+impl<T: VectorizedExpand + ?Sized> VectorizedExpand for &mut T {
+    fn __expand_vector_size_method(&self, scope: &Scope) -> VectorSize {
+        (**self).__expand_vector_size_method(scope)
+    }
+}
