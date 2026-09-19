@@ -1,5 +1,8 @@
 //! Foundational domain types shared by PTR. This crate intentionally has no external dependencies.
 
+mod confidence;
+pub use confidence::{ConfidenceEstimate, ConfidenceTarget, ConfidenceTargetMismatch};
+
 use std::fmt;
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -196,7 +199,6 @@ mod tests {
     fn lifecycle_versions_are_distinct_concepts() {
         assert_ne!(Revision(7).0, Generation(8).0);
     }
-
 
     #[test]
     fn semantic_role_and_epistemic_state_are_independent_axes() {

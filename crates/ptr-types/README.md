@@ -10,7 +10,7 @@
 
 **Maturity:** `foundation`  
 **Last reviewed:** 2026-09-19  
-**Code footprint:** 1 Rust source files · 188 nonblank source lines · 1 integration-test files · 5 `#[test]` markers
+**Code footprint:** 2 Rust source files · 333 nonblank source lines · 3 integration-test files · 16 `#[test]` markers
 
 ### Implemented now
 
@@ -22,6 +22,9 @@
 - Epistemic<T>, TypedValue<T>, provenance refs and semantic issues
 - Strong identifiers for projects, capsules, artifacts, capabilities, types, Pods, candidates, requests, nodes and evidence
 - Unit checks for probability bounds, lifecycle separation and independent cognitive axes
+- ConfidenceTarget and ConfidenceEstimate with target-checked access and diagnostic ConfidenceTargetMismatch errors
+- Compile-fail documentation rejects implicit confidence-to-verification/effect conversion and unqualified estimate ordering
+- Cognitive contract fixtures cover independent axes, constraints, uncertain claims, conflicting sources and revoked generations
 
 ### Missing for the target architecture
 
@@ -32,14 +35,15 @@
 - Richer capability/resource scopes and typed effect payloads
 - Serialization/redaction derives coordinated with protocol and inspection layers
 - Property tests for cognitive, lifecycle and epistemic invariants
+- Migration of existing model/slot/event confidence fields to explicit confidence targets
+- Versioned cognitive codebook shared by datasets, tensors and checkpoints
 
 ### Next milestones
 
-- Design and evaluate the shared semantic wrapper layer before freezing Goal/Constraint/Claim/Evidence generic shapes
-- Split semantic/epistemic/uncertainty/reasoning/lifecycle/provenance/ID concerns into stable modules without changing provider independence
-- Make typed attention and training datasets consume the separated cognitive axes
-- Add property tests and compile-fail typestate tests where appropriate
-- Freeze a v0 semantic compatibility policy only after model/API/SemDB ownership is validated
+- Complete the cognitive contract review and first-component test gate before widening scope
+- Define the minimum value structures and versioned cognitive codebook as the next component step
+- Migrate model/slot/event confidence fields explicitly without guessing legacy target semantics
+- Connect typed semantic observations before changing neural mechanisms or running task training
 
 ### Linked experiments
 
@@ -61,9 +65,25 @@
 - lifecycle_versions_are_distinct_concepts unit test
 - semantic_role_and_epistemic_state_are_independent_axes unit test
 - reasoning_operator_is_a_typed_cross_component_contract unit test
+- ConfidenceEstimate constructor and target-identity unit tests
+- cognitive_contract integration tests including 162 independent-axis combinations
+- ConfidenceEstimate compile-pass and compile-fail doctests
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->
+
+## Current component step
+
+[Step 01: cognitive contract](../../docs/architecture/20-cognitive-contract-step-01.md)
+defines the first bounded implementation increment and its reference cases.
+ConfidenceTarget names the question; ConfidenceEstimate holds its bounded
+probability; probability_for checks that a consumer asks the same question.
+A role-classification score cannot silently become a truth probability.
+
+The new API is additive. Existing SemanticSlot/ModelEvent confidence fields are
+not migrated yet, no cognitive codebook is frozen, and no model-training gain is
+claimed. The fixtures demonstrate representation/API contracts, not a working
+conflict resolver, lifecycle engine or authorization policy.
 
 ## Position in PTR
 
@@ -82,91 +102,39 @@ Dedicated diagram source: [`docs/diagrams/components/ptr-types.mmd`](../../docs/
 **Upstream:** none  
 **Downstream:** all PTR crates
 
-## Mission
+## Mission and ownership
 
-Defines the shared cognitive and semantic vocabulary that lets PTR's neural model, router, semantic runtime, memory, verification and training layers reason about the same typed concepts.
-
-PTR keeps this responsibility in its own crate so the semantics remain stable even when an external library or implementation is replaced.
-
-## Responsibilities
-
-- semantic roles shared by model, router, runtime and training
-- epistemic-state and uncertainty-representation axes
-- reasoning-operator identity
-- Revision/Generation/lifecycle primitives
-- epistemic wrappers, probabilities and verification/validity primitives
-- effects, capabilities and provenance identities
-- strong IDs used instead of raw strings where practical
-
-## Explicit non-responsibilities
-
-- I/O or persistence
-- search, networking, model inference
-- policy decisions that depend on runtime state
-
-## Data flow
-
-| Direction | Contract |
-|---|---|
-| Input | Domain declarations and validated primitive values |
-| Output | Strongly typed values consumed by every other PTR crate |
-| Failure | Explicit typed error / rejected state; no silent fallback that changes semantics |
-| Observability | Standard PTR tracing fields and a stable component span |
-
-## Technical approach
-
-- Pure Rust cognitive/domain types with no model-framework dependency
-- orthogonal semantic, epistemic, uncertainty, lifecycle and reasoning axes
-- minimal dependency surface
-- newtypes/enums/generic wrappers instead of unstructured maps or provider strings
-- tensor/latent representations remain in ptr-core
-
-External projects are **candidates**, not architectural authority. The PTR-owned traits and domain types must remain usable with a replacement backend.
+Define shared cognitive meanings without owning tensor layouts, I/O, inference,
+persistence, search or policy decisions. SemanticRole, EpistemicState,
+UncertaintyKind and ReasoningOperator describe different questions. Revision,
+Generation, provenance, effects and capabilities support those meanings.
+Component aggregates remain in their owning crates; provider objects never define
+PTR's shared contract. The crate has no external dependencies.
 
 ## Core invariants
 
-1. Semantic role, epistemic state, uncertainty representation, lifecycle validity and verification remain distinct axes.
-2. Revision and Generation are distinct types and never interchangeable.
-3. Invalid probabilities cannot enter the domain layer.
-4. Reasoning/operator/capability semantics remain provider-independent and must not degrade to arbitrary strings.
-5. Neural confidence or representation does not create runtime authority.
+1. Semantic role, value type, epistemic state, uncertainty, lifecycle, verification and authority stay distinct.
+2. Revision and Generation are not interchangeable.
+3. Invalid probabilities cannot be constructed through Probability::new.
+4. Confidence must identify its question; missing confidence is not a guessed default.
+5. Neural confidence does not authorize effects or establish committed truth.
 
-These invariants should be executable wherever possible through unit, property, lifecycle or chaos tests.
+## Tests and evidence
 
-## Failure model
+Unit tests live beside the implementation. Public contract tests are under
+`tests/cognitive_contract.rs`; reusable helpers are under `tests/common/mod.rs`.
+Compile-fail doctests reject implicit authority conversions and global estimate
+ordering. These are narrow API checks, not proof that every downstream consumer
+already enforces the architecture. Use exact-commit CI logs as execution evidence.
 
-The component must fail closed for semantic or effect-safety violations. Infrastructure failures should surface as typed errors that preserve request, revision, generation and provenance context. Retries must be idempotent whenever the operation may cross a process or network boundary.
-
-## Performance model
-
-Measure before optimizing. Benchmarks should record at least latency distribution, throughput, allocations/resident memory, queue depth or working-set size where relevant, and the cost of verification. Performance optimizations may not bypass generation, revision, capability or evidence checks.
-
-## Security and privacy
-
-- Treat external inputs and backend outputs as untrusted until validated.
-- Do not put raw secrets/private evidence into generic tracing or inspection.
-- Preserve provenance on every promotion from raw/possible evidence to stronger semantic state.
-- External effects pass through `ptr-security` even if this component already performed local validation.
-
-## Technology evaluation
-
-- No dedicated technology slot yet; architectural alternatives should be added to `evaluations/components/` before lock-in.
-
-A new candidate should be added with a reproducible benchmark and failure-semantics analysis rather than replacing the default ad hoc.
-
-## Tests required before production use
-
-- Contract/unit tests for all domain transitions.
-- Invalid, stale-generation and stale-revision cases.
-- Cancellation/retry behavior.
-- Property tests for invariants where practical.
-- Cross-backend equivalence if more than one backend exists.
-- Observability and redaction checks.
+Production requirements still include semantic transition/property tests, stale
+revision/generation admission checks in their owners, protocol compatibility,
+redaction and cross-backend equivalence where relevant. A new backend or wrapper
+requires its own evaluation rather than an ad hoc compatibility assumption.
 
 ## Related architecture
 
-- [System architecture](../../docs/architecture/00-system.md)
-- [Technical architecture](../../docs/TECHNICAL_ARCHITECTURE.md)
+- [Cognitive contract and sequential gates](../../docs/architecture/20-cognitive-contract-step-01.md)
+- [Type system](../../docs/architecture/17-type-system.md)
 - [Component contracts](../../docs/COMPONENT_CONTRACTS.md)
 - [Global invariants](../../docs/INVARIANTS.md)
-

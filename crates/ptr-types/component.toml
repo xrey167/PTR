@@ -12,6 +12,9 @@ implemented = [
   "Epistemic<T>, TypedValue<T>, provenance refs and semantic issues",
   "Strong identifiers for projects, capsules, artifacts, capabilities, types, Pods, candidates, requests, nodes and evidence",
   "Unit checks for probability bounds, lifecycle separation and independent cognitive axes",
+  "ConfidenceTarget and ConfidenceEstimate with target-checked access and diagnostic ConfidenceTargetMismatch errors",
+  "Compile-fail documentation rejects implicit confidence-to-verification/effect conversion and unqualified estimate ordering",
+  "Cognitive contract fixtures cover independent axes, constraints, uncertain claims, conflicting sources and revoked generations",
 ]
 
 missing = [
@@ -22,34 +25,28 @@ missing = [
   "Richer capability/resource scopes and typed effect payloads",
   "Serialization/redaction derives coordinated with protocol and inspection layers",
   "Property tests for cognitive, lifecycle and epistemic invariants",
+  "Migration of existing model/slot/event confidence fields to explicit confidence targets",
+  "Versioned cognitive codebook shared by datasets, tensors and checkpoints",
 ]
 
 next = [
-  "Design and evaluate the shared semantic wrapper layer before freezing Goal/Constraint/Claim/Evidence generic shapes",
-  "Split semantic/epistemic/uncertainty/reasoning/lifecycle/provenance/ID concerns into stable modules without changing provider independence",
-  "Make typed attention and training datasets consume the separated cognitive axes",
-  "Add property tests and compile-fail typestate tests where appropriate",
-  "Freeze a v0 semantic compatibility policy only after model/API/SemDB ownership is validated",
+  "Complete the cognitive contract review and first-component test gate before widening scope",
+  "Define the minimum value structures and versioned cognitive codebook as the next component step",
+  "Migrate model/slot/event confidence fields explicitly without guessing legacy target semantics",
+  "Connect typed semantic observations before changing neural mechanisms or running task training",
 ]
 
-experiments = [
-  "M005",
-  "L001",
-]
-
-evaluations = [
-
-]
-
-decisions = [
-  "ADR-0001-rust-runtime.md",
-  "ADR-0003-raw-and-typed.md",
-]
+experiments = ["M005", "L001"]
+evaluations = []
+decisions = ["ADR-0001-rust-runtime.md", "ADR-0003-raw-and-typed.md"]
 
 checks = [
   "probability_is_bounded unit test",
   "lifecycle_versions_are_distinct_concepts unit test",
   "semantic_role_and_epistemic_state_are_independent_axes unit test",
   "reasoning_operator_is_a_typed_cross_component_contract unit test",
+  "ConfidenceEstimate constructor and target-identity unit tests",
+  "cognitive_contract integration tests including 162 independent-axis combinations",
+  "ConfidenceEstimate compile-pass and compile-fail doctests",
   "workspace fmt/check/test/clippy",
 ]
