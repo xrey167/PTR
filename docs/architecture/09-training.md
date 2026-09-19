@@ -17,7 +17,7 @@ flowchart TB
 
 ## Stages
 
-1. semantic typing and raw↔typed corruption detection;
+1. semantic-role / epistemic-state / uncertainty typing and raw↔typed corruption detection;
 2. PodWire / ActionIR native protocol;
 3. epistemic calibration and Unknown behavior;
 4. reasoning-operator routing;
@@ -27,7 +27,7 @@ flowchart TB
 
 ## Data
 
-All datasets have provenance, schema, split and contamination metadata. OOD sets include unseen nominal types, unseen Pod names, long-horizon state, lifecycle mutation and subtle semantic corruption.
+All datasets have provenance, schema, split and contamination metadata. Datasets that contain cognitive type labels also record the cognitive type-codebook version so semantic-role, epistemic-state, uncertainty-kind and reasoning-operator IDs cannot silently drift across training/checkpoint versions. OOD sets include unseen nominal types, unseen Pod names, long-horizon state, lifecycle mutation and subtle semantic corruption.
 
 ## Loops
 
