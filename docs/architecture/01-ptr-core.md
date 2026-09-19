@@ -5,7 +5,7 @@ PTR Core is the experimental model architecture.
 ```mermaid
 flowchart TB
   RAW["Raw token states H"] <--> X["Typed cross-attention"]
-  SLOT["Semantic slots S\nGoal / Constraint / Known / Hypothesis / Distribution / Unknown"] <--> X
+  SLOT["Semantic slots S\nRole × Epistemic × Uncertainty × Lifecycle"] <--> X
   X --> LAT["Latent recurrent reasoner"]
   LAT --> R["Operator router"]
   R --> SEM["Semantic"]
@@ -25,13 +25,13 @@ flowchart TB
 
 ## State
 
-A classical token state `H[N,d]` is complemented by a compact semantic workspace `S[M,d]`. Slots carry semantic kind, epistemic type, confidence, validity and provenance.
+A classical token state `H[N,d]` is complemented by a compact semantic workspace `S[M,d]`. Slots carry orthogonal `SemanticRole`, `EpistemicState`, `UncertaintyKind`, confidence, generation/validity and provenance metadata. The latent vector remains model-owned; the semantic axes come from `ptr-types`.
 
 ## Main research modifications
 
 - dual raw + typed representation;
-- semantic slots;
-- type/epistemic/validity-aware attention;
+- semantic slots with separated semantic-role / epistemic / uncertainty axes;
+- role/epistemic/uncertainty/lifecycle-aware attention;
 - recurrent latent reasoning;
 - operator routing;
 - branch/search and probabilistic primitives;
