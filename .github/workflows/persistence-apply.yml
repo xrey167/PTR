@@ -1,0 +1,74 @@
+name: persistence-apply
+on:
+  push:
+    branches: [agent/p0-persistence-integrity-20260919]
+    paths: [.github/workflows/persistence-apply.yml]
+permissions:
+  contents: write
+jobs:
+  retain-reviewed-source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+      - name: Apply exact reviewed source and verify cleaned tree
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          test "$GITHUB_REF" = refs/heads/agent/p0-persistence-integrity-20260919
+          test "$(git ls-remote origin "$GITHUB_REF" | cut -f1)" = "$EXPECTED_SHA"
+          python3 - <<'PY'
+          import gzip, hashlib, json, os, pathlib, shutil, subprocess
+          root=pathlib.Path.cwd()
+          data=b''.join((root/f'.p0-review-{i}.part').read_bytes() for i in range(4))
+          assert len(data)==23311
+          assert hashlib.sha256(data).hexdigest()=='0f0b85e1114606c21a579e08717ac8fb4b17fec4dd6efc5528e82b4345dbe341'
+          decoded=gzip.decompress(data)
+          assert len(decoded)==82962
+          edits=json.loads(decoded)
+          assert len(edits)==28
+          allowed={'Cargo.lock','STATUS.md','bins/ptr-bench/README.md','bins/ptr-bench/src/main.rs',
+              'crates/ptr-ledger/Cargo.toml','crates/ptr-ledger/README.md','crates/ptr-ledger/component.toml',
+              'crates/ptr-ledger/src/file.rs','crates/ptr-ledger/src/integrity.rs','crates/ptr-ledger/src/lib.rs',
+              'crates/ptr-ledger/tests/failpoints.rs','crates/ptr-ledger/tests/file_ledger.rs','crates/ptr-ledger/tests/integrity.rs',
+              'crates/ptr-runtime/README.md','crates/ptr-runtime/component.toml','crates/ptr-runtime/src/lib.rs',
+              'crates/ptr-runtime/src/persistence.rs','crates/ptr-runtime/tests/durable_semantics.rs',
+              'crates/ptr-runtime/tests/execution_authority.rs','crates/ptr-runtime/tests/recovery_snapshot.rs',
+              'docs/PRIORITIES.md','docs/ROADMAP.md','docs/SECURITY_P0_REVIEW_20260919.md',
+              'docs/architecture/21-scoped-execution.md','docs/architecture/22-durable-semantic-state.md',
+              'docs/architecture/23-persistence-integrity.md','docs/architecture/README.md','docs/components/STATUS.md'}
+          assert {item['path'] for item in edits}==allowed
+          for item in edits:
+              path=root/item['path']
+              assert path.resolve().is_relative_to(root) and not path.is_symlink()
+              old=path.read_bytes() if path.exists() else None
+              assert (hashlib.sha256(old).hexdigest() if old is not None else None)==item['before'], item['path']
+              lines=old.decode().splitlines(keepends=True) if old is not None else []
+              for start,end,replacement in reversed(item['edits']):
+                  assert 0<=start<=end<=len(lines)
+                  lines[start:end]=[replacement]
+              new=''.join(lines).encode()
+              assert hashlib.sha256(new).hexdigest()==item['after'], item['path']
+              path.parent.mkdir(parents=True,exist_ok=True)
+              path.write_bytes(new)
+          subprocess.run(['git','add','--',*sorted(allowed)],check=True)
+          actual=set(subprocess.check_output(['git','diff','--cached','--name-only'],text=True).splitlines())
+          assert actual==allowed, actual^allowed
+          shutil.copyfile('.git/index','/tmp/p0-clean-index')
+          env={**os.environ,'GIT_INDEX_FILE':'/tmp/p0-clean-index'}
+          helpers=[f'.p0-review-{i}.part' for i in range(4)]+['.github/workflows/persistence-review-inputs.yml','.github/workflows/persistence-apply.yml']
+          subprocess.run(['git','update-index','--force-remove','--',*helpers],env=env,check=True)
+          tree=subprocess.check_output(['git','write-tree'],env=env,text=True).strip()
+          assert tree=='23c23de52b5407602fe0d345be0e7e7bef5794a1', tree
+          print('All before/after file hashes and exact cleaned Git tree match local tested source:',tree)
+          PY
+          python scripts/update_component_docs.py --check
+          python scripts/check_vendor_integrity.py
+          python -m unittest discover -s scripts/tests
+          test "$(git ls-remote origin "$GITHUB_REF" | cut -f1)" = "$EXPECTED_SHA"
+          git config user.name 'PTR persistence review'
+          git config user.email '104269920+xrey167@users.noreply.github.com'
+          git commit -m 'feat: retain locally tested log integrity and anchored recovery snapshot candidate'
+          git push origin HEAD:refs/heads/agent/p0-persistence-integrity-20260919
