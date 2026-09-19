@@ -120,12 +120,14 @@ Session/grant limits bound registry size (1024 live sessions; 64 grants per
 session). Expired sessions are removed before registration; counters fail closed
 on exhaustion. Permits are caller-owned and are not retained in a server queue.
 
-## Next component gate
+## Follow-up components
 
-Keep issue #15 open. The next implementation slice is durable semantic payload
-and dependency/revision reconstruction, before persistent execution receipts or
-remote dispatch are allowed to rely on reconstructed state. Hard neural validity
-masks/codebook and real cluster composition remain separate, subsequent gates.
+[P0.2 semantic payload/dependency/revision reconstruction](22-durable-semantic-state.md)
+is now implemented in the reference journal path. Real semantic commits invalidate
+pending permits; validated no-ops do not. Execution authority remains process-local.
 
-
-P0.2 follow-up: [semantic payload/dependency/revision reconstruction](22-durable-semantic-state.md) is now implemented. Real semantic commits invalidate pending permits; validated no-ops do not. Execution authority remains process-local.
+Keep issue #15 open. Record integrity, verified snapshots and neural-checkpoint
+admission are still required before persistent execution receipts or remote
+dispatch may rely on reconstructed state. Scoped Pod/network admission, durable
+effect reconciliation, hard neural validity masks/codebook and real cluster
+composition remain separate subsequent gates.

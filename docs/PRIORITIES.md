@@ -32,9 +32,11 @@ The next scientific gate is not a larger model. It is a matched, reproducible M0
 
 See [the security/P0 review](SECURITY_P0_REVIEW_20260919.md) for concrete repairs, remaining architecture gates and the limits of green CI.
 
-Current bounded component increment: [P0.1 scoped synchronous execution](architecture/21-scoped-execution.md).
-Do not mark the full P0 release gates in issue #15 complete from a successful
-local gateway or a green dependency scan.
+Current bounded component increment: [P0.2 durable semantic transactions](architecture/22-durable-semantic-state.md).
+This builds on [P0.1 scoped synchronous execution](architecture/21-scoped-execution.md)
+and closes the in-memory-only ingestion and type-only Pod-output data path.
 
-
-P0.2: [durable semantic transactions](architecture/22-durable-semantic-state.md) close the in-memory-only ingestion and type-only Pod-output data path. Record integrity and explicit checkpoint/snapshot admission remain separate requirements.
+The next persistence gate is record integrity and verified snapshot/checkpoint
+admission. Scoped network/Pod access and durable effect reconciliation remain
+separate execution gates. Do not mark issue #15 complete from a successful local
+mechanism or a green dependency scan.
