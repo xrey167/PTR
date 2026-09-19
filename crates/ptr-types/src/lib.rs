@@ -1,7 +1,11 @@
 //! Foundational domain types shared by PTR. This crate intentionally has no external dependencies.
 
+mod codebook;
 mod confidence;
+mod validity_mask;
+pub use codebook::{CodeFamily, Codebook, CodebookError, CodebookVersion, CognitiveType, TypeCode};
 pub use confidence::{ConfidenceEstimate, ConfidenceTarget, ConfidenceTargetMismatch};
+pub use validity_mask::{MaskError, ValidityMask};
 
 use std::fmt;
 
