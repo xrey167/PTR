@@ -1,6 +1,6 @@
 # ptr-types — Domain Type Kernel
 
-> **Role:** Defines the stable semantic vocabulary shared across model, runtime, storage, verification, and network boundaries.  
+> **Role:** Defines PTR's shared cognitive and semantic vocabulary across the neural model, reasoning/router, semantic runtime, memory, verification and action boundaries.  
 > **Maturity:** architecture + contract scaffold; production behavior must be proven by the linked experiments and component evaluations.
 
 <!-- PTR:STATUS:BEGIN -->
@@ -10,28 +10,36 @@
 
 **Maturity:** `foundation`  
 **Last reviewed:** 2026-09-18  
-**Code footprint:** 1 Rust source files · 124 nonblank source lines · 1 integration-test files · 3 `#[test]` markers
+**Code footprint:** 1 Rust source files · 188 nonblank source lines · 1 integration-test files · 5 `#[test]` markers
 
 ### Implemented now
 
-- Strong Revision, Generation and CommitIndex newtypes
-- Strong string identifiers for projects, capsules, artifacts, capabilities, Pods, candidates, requests, nodes and evidence
-- Bounded Probability type, Effect, Validity and VerificationLevel enums
+- Shared SemanticRole taxonomy for goals, constraints, claims, evidence, resources, capabilities, relations, procedures and actions
+- Shared EpistemicState and UncertaintyKind axes kept separate from semantic role
+- Shared ReasoningOperator taxonomy used across neural core, model API, routing and training
+- Strong Revision, Generation and CommitIndex lifecycle newtypes
+- Bounded Probability type plus Effect, Validity and VerificationLevel enums
 - Epistemic<T>, TypedValue<T>, provenance refs and semantic issues
-- Unit checks for probability bounds and lifecycle-type separation
+- Strong identifiers for projects, capsules, artifacts, capabilities, types, Pods, candidates, requests, nodes and evidence
+- Unit checks for probability bounds, lifecycle separation and independent cognitive axes
 
 ### Missing for the target architecture
 
+- Generic semantic wrappers such as Goal<T>, Constraint<T>, Claim<T>, Evidence<T>, Relation<S,P,O>, Resource<T>, Procedure<T> and ActionIntent<T>
+- Estimate/Interval/Distribution value structures and calibration metadata beyond the current axis enums
+- Explicit authority/source-authority types kept separate from epistemic and verification state
+- Richer provenance/source-span/transform structures
 - Richer capability/resource scopes and typed effect payloads
-- Interval/estimate/distribution structures beyond the current generic representation
 - Serialization/redaction derives coordinated with protocol and inspection layers
-- Property tests for lifecycle and epistemic invariants
+- Property tests for cognitive, lifecycle and epistemic invariants
 
 ### Next milestones
 
-- Split foundational IDs/epistemics/effects into stable modules without changing public semantics
+- Design and evaluate the shared semantic wrapper layer before freezing Goal/Constraint/Claim/Evidence generic shapes
+- Split semantic/epistemic/uncertainty/reasoning/lifecycle/provenance/ID concerns into stable modules without changing provider independence
+- Make typed attention and training datasets consume the separated cognitive axes
 - Add property tests and compile-fail typestate tests where appropriate
-- Freeze a v0 domain compatibility policy before network codecs depend on it
+- Freeze a v0 semantic compatibility policy only after model/API/SemDB ownership is validated
 
 ### Linked experiments
 
@@ -51,6 +59,8 @@
 
 - probability_is_bounded unit test
 - lifecycle_versions_are_distinct_concepts unit test
+- semantic_role_and_epistemic_state_are_independent_axes unit test
+- reasoning_operator_is_a_typed_cross_component_contract unit test
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->
@@ -78,9 +88,12 @@ PTR keeps this responsibility in its own crate so the semantics remain stable ev
 
 ## Responsibilities
 
-- Revision and Generation identifiers
-- epistemic wrappers and probabilities
-- effects, capabilities, validity and provenance identifiers
+- semantic roles shared by model, router, runtime and training
+- epistemic-state and uncertainty-representation axes
+- reasoning-operator identity
+- Revision/Generation/lifecycle primitives
+- epistemic wrappers, probabilities and verification/validity primitives
+- effects, capabilities and provenance identities
 - strong IDs used instead of raw strings where practical
 
 ## Explicit non-responsibilities
@@ -100,9 +113,11 @@ PTR keeps this responsibility in its own crate so the semantics remain stable ev
 
 ## Technical approach
 
-- Pure Rust domain types
+- Pure Rust cognitive/domain types with no model-framework dependency
+- orthogonal semantic, epistemic, uncertainty, lifecycle and reasoning axes
 - minimal dependency surface
-- newtypes and enums instead of unstructured maps
+- newtypes/enums/generic wrappers instead of unstructured maps or provider strings
+- tensor/latent representations remain in ptr-core
 
 External projects are **candidates**, not architectural authority. The PTR-owned traits and domain types must remain usable with a replacement backend.
 
