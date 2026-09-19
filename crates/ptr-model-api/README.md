@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `scaffold`  
-**Last reviewed:** 2026-09-18  
-**Code footprint:** 4 Rust source files · 83 nonblank source lines · 2 integration-test files · 2 `#[test]` markers
+**Last reviewed:** 2026-09-19  
+**Code footprint:** 4 Rust source files · 83 nonblank source lines · 2 integration-test files · 3 `#[test]` markers
 
 ### Implemented now
 
@@ -53,6 +53,7 @@
 
 - reference backend request/event conformance test
 - typed PodRequested event contract covered by runtime loop tests
+- typed ReasoningOperator model event contract test
 - observation/resume contract covered by runtime multi-step tests
 - workspace fmt/check/test/clippy
 
