@@ -27,6 +27,7 @@ use crate::compaction::{
     RetentionPolicy,
 };
 use crate::integrity::{self, LogAnchor};
+use crate::retention::ErasureAudit;
 use crate::{CommittedEvent, CompactionBarrier, FileLedger, LedgerEvent};
 use ptr_types::CommitIndex;
 use std::fmt;
@@ -387,6 +388,34 @@ impl AcknowledgedLedger {
             live_log,
             superseded_log,
         })
+    }
+
+    /// The live log's bytes, read through the handle that holds it.
+    ///
+    /// Delegates to [`FileLedger::retained_bytes`], which is the only portable way
+    /// to read a held log and the only way that sees a partially written trailing
+    /// frame.
+    pub fn retained_bytes(&mut self) -> Result<Vec<u8>, AcknowledgedError> {
+        Ok(self.log.retained_bytes()?)
+    }
+
+    /// Search everything this path set retains for `plaintext`, with the ledger
+    /// open.
+    ///
+    /// The live log is read through the handle that holds it, which is the only way
+    /// this works on Windows, and which also sees a partially written trailing
+    /// frame that the committed event list does not. Use
+    /// [`LogPaths::audit_erasure`] instead when no ledger is open.
+    ///
+    /// The result covers only this path set; artifacts retained elsewhere are folded
+    /// in with [`ErasureAudit::with_retained_elsewhere`], and the boundaries no
+    /// audit can cross are listed by [`ErasureAudit::out_of_reach`].
+    pub fn audit_erasure(&mut self, plaintext: &[u8]) -> Result<ErasureAudit, AcknowledgedError> {
+        let live_base = self.anchors.current().base.index;
+        let live = self.log.retained_bytes()?;
+        Ok(self
+            .paths
+            .audit_with_live(plaintext, live_base, Some(&live))?)
     }
 
     /// Delete log files of this set that the anchor does not name.

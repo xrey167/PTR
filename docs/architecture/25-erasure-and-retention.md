@@ -49,10 +49,30 @@ provide the call rather than providing one that misleads.
 
 ## The audit measures presence, not intent
 
-`LogPaths::audit_erasure(plaintext, live_base)` searches every log file of a path
-set — live and superseded — and reports which ones contain the bytes.
+There are two entry points, and the split is forced by a platform fact rather than
+convenience:
 
-Two design choices decide whether the result can be trusted:
+| Entry point | When | How the live log is read |
+|---|---|---|
+| `AcknowledgedLedger::audit_erasure(plaintext)` | a ledger is open | through the handle that holds it |
+| `LogPaths::audit_erasure(plaintext, live_base)` | no ledger is open | through an independent handle |
+
+Windows advisory locks are mandatory for I/O, so an independent handle cannot read
+a log a writer holds — auditing a *running* system through `LogPaths` fails there
+while succeeding on Unix, which is the worst kind of difference. Reading through
+the owner works on every platform and is strictly better besides: it sees an
+unacknowledged or partially written trailing frame, which the committed event list
+cannot, and that frame can hold bytes the audit is looking for.
+
+Reading through the writer's own handle moves its file position, so
+`FileLedger::retained_bytes` restores the append position before returning. A test
+appends immediately after an audit and re-verifies the log to prove a following
+record does not land on top of committed bytes.
+
+Superseded logs are always read directly: no one holds them, which is precisely
+why they are still retaining anything at all.
+
+Two further choices decide whether the result can be trusted:
 
 **It is a byte search, not a record scan.** Erasure asks whether the bytes are
 present at all. A record scan that failed to recognize an encoding would report
@@ -106,6 +126,9 @@ record 1 carries a distinctive plaintext that a later transaction supersedes:
 - Destroying the anchor key removes verifiability and nothing else.
 - The byte search errs toward "still retained" and an empty needle never matches.
 - Every boundary carries a stable code.
+- Reading the live log through the owning handle leaves the append position at the
+  end: the next record extends the log instead of overwriting it, and the extended
+  log still verifies against its floor.
 
 ## What this does not close
 

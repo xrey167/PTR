@@ -60,7 +60,7 @@ impl OutOfReach {
 }
 
 /// An artifact that still contains the audited plaintext.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Retainer {
     /// A log file of the audited path set, live or superseded.
     Log(PathBuf),
@@ -158,7 +158,14 @@ fn read_bounded(path: &Path) -> io::Result<Vec<u8>> {
 }
 
 impl LogPaths {
-    /// Search every log file of this set — live and superseded — for `plaintext`.
+    /// Search every log file of this set — live and superseded — for `plaintext`,
+    /// with **no ledger open**.
+    ///
+    /// The live log is read through an independent handle, which Windows refuses
+    /// while a writer holds it, because its advisory locks are mandatory for I/O.
+    /// Auditing a running system therefore goes through
+    /// [`AcknowledgedLedger::audit_erasure`](crate::AcknowledgedLedger::audit_erasure),
+    /// which reads the live log through the handle that owns it.
     ///
     /// `live_base` is the floor from protected anchor storage, so the audit
     /// describes the same live log a reader would open. Superseded files are
@@ -169,21 +176,44 @@ impl LogPaths {
         plaintext: &[u8],
         live_base: CommitIndex,
     ) -> io::Result<ErasureAudit> {
-        let mut candidates = self.orphans(live_base)?;
-        let live = self.log_path(live_base);
-        if live.exists() {
-            candidates.push(live);
-        }
-        candidates.sort();
+        self.audit_with_live(plaintext, live_base, None)
+    }
+
+    pub(crate) fn audit_with_live(
+        &self,
+        plaintext: &[u8],
+        live_base: CommitIndex,
+        live_bytes: Option<&[u8]>,
+    ) -> io::Result<ErasureAudit> {
         let mut retainers = Vec::new();
-        for path in &candidates {
-            if retains(&read_bounded(path)?, plaintext) {
-                retainers.push(Retainer::Log(path.clone()));
+        let mut scanned_logs = 0;
+        let live = self.log_path(live_base);
+        // Orphans are held by nobody, so an independent handle always reaches them.
+        for path in self.orphans(live_base)? {
+            scanned_logs += 1;
+            if retains(&read_bounded(&path)?, plaintext) {
+                retainers.push(Retainer::Log(path));
             }
         }
+        match live_bytes {
+            Some(bytes) => {
+                scanned_logs += 1;
+                if retains(bytes, plaintext) {
+                    retainers.push(Retainer::Log(live));
+                }
+            }
+            None if live.exists() => {
+                scanned_logs += 1;
+                if retains(&read_bounded(&live)?, plaintext) {
+                    retainers.push(Retainer::Log(live));
+                }
+            }
+            None => {}
+        }
+        retainers.sort();
         Ok(ErasureAudit {
             retainers,
-            scanned_logs: candidates.len(),
+            scanned_logs,
             live_base,
             needle: plaintext.to_vec(),
         })

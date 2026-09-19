@@ -139,7 +139,7 @@ fn erasure_needs_the_floor_past_the_record_and_the_orphan_reclaimed() {
 
     // The live log no longer holds it — but the superseded file still does, so
     // compaction alone is not erasure.
-    let audit = tmp.paths().audit_erasure(SECRET, base).unwrap();
+    let audit = ledger.audit_erasure(SECRET).unwrap();
     assert!(!audit.erased_where_reachable());
     assert_eq!(
         audit.retainers(),
@@ -153,20 +153,29 @@ fn erasure_needs_the_floor_past_the_record_and_the_orphan_reclaimed() {
         ledger.reclaim_orphans().unwrap(),
         std::slice::from_ref(&outcome.superseded_log)
     );
-    let audit = tmp.paths().audit_erasure(SECRET, base).unwrap();
+    let audit = ledger.audit_erasure(SECRET).unwrap();
     assert!(audit.erased_where_reachable());
     assert!(audit.retainers().is_empty());
     assert_eq!(audit.scanned_logs(), 1);
     assert_eq!(audit.live_base(), base);
 
-    // Unrelated committed data is untouched: this is targeted retention, not a
-    // wipe. And the surviving log still verifies against its floor.
-    let audit = tmp.paths().audit_erasure(KEPT, base).unwrap();
+    // Unrelated committed data is untouched: this is targeted retention, not a wipe.
+    let audit = ledger.audit_erasure(KEPT).unwrap();
     assert!(!audit.erased_where_reachable());
-    let bytes = std::fs::read(&outcome.live_log).unwrap();
-    let verified = decode_log_from(&bytes, ledger.anchor().base).unwrap();
+
+    // The surviving log still verifies against its floor.
+    let verified = decode_log_from(&ledger.retained_bytes().unwrap(), plan.base).unwrap();
     assert_eq!(verified.events().len(), 3);
     assert_eq!(verified.anchor(), ledger.anchor().log);
+
+    // Reading the live log through the owning handle must leave the append position
+    // at the end, or the next record would land on top of committed bytes.
+    ledger.append_acknowledged(noise(9)).unwrap();
+    assert_eq!(ledger.events().len(), 4);
+    let extended = decode_log_from(&ledger.retained_bytes().unwrap(), plan.base).unwrap();
+    assert_eq!(extended.events().len(), 4);
+    assert_eq!(extended.anchor(), ledger.anchor().log);
+    assert!(retains(&ledger.retained_bytes().unwrap(), KEPT));
 }
 
 #[test]
@@ -188,10 +197,9 @@ fn an_unreclaimed_orphan_keeps_retaining_after_a_later_cutover() {
         panic!("a second floor was expected");
     };
     let second = ledger.compact(second).unwrap();
-    let base = ledger.anchor().base.index;
 
     // Two orphans now exist and the oldest still carries the secret.
-    let audit = tmp.paths().audit_erasure(SECRET, base).unwrap();
+    let audit = ledger.audit_erasure(SECRET).unwrap();
     assert_eq!(audit.scanned_logs(), 3);
     assert_eq!(
         audit.retainers(),
@@ -203,9 +211,8 @@ fn an_unreclaimed_orphan_keeps_retaining_after_a_later_cutover() {
     assert_eq!(reclaimed.len(), 2);
     assert!(reclaimed.contains(&first.superseded_log));
     assert!(reclaimed.contains(&second.superseded_log));
-    assert!(tmp
-        .paths()
-        .audit_erasure(SECRET, base)
+    assert!(ledger
+        .audit_erasure(SECRET)
         .unwrap()
         .erased_where_reachable());
 }
@@ -228,10 +235,9 @@ fn a_snapshot_the_host_retains_defeats_erasure_and_must_be_declared() {
     };
     ledger.compact(plan).unwrap();
     ledger.reclaim_orphans().unwrap();
-    let base = ledger.anchor().base.index;
 
     // Reachable erasure is complete.
-    let audit = tmp.paths().audit_erasure(SECRET, base).unwrap();
+    let audit = ledger.audit_erasure(SECRET).unwrap();
     assert!(audit.erased_where_reachable());
 
     // Folding in the host's own artifact shows the truth: still retained. An audit
@@ -250,9 +256,8 @@ fn a_snapshot_the_host_retains_defeats_erasure_and_must_be_declared() {
         event: noise(9),
     }])
     .unwrap();
-    let audit = tmp
-        .paths()
-        .audit_erasure(SECRET, base)
+    let audit = ledger
+        .audit_erasure(SECRET)
         .unwrap()
         .with_retained_elsewhere("unrelated", &unrelated);
     assert!(audit.erased_where_reachable());

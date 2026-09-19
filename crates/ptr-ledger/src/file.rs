@@ -308,6 +308,23 @@ impl FileLedger {
         self.base
     }
 
+    /// This log's bytes, read through the handle that holds it.
+    ///
+    /// An independent handle cannot do this while a writer is open: Windows
+    /// advisory locks are mandatory for I/O, so `fs::read` on a held log fails.
+    /// Reading through the owner works on every platform and additionally sees
+    /// what the in-memory event list cannot — an unacknowledged or partially
+    /// written trailing frame — which matters when the caller is asking what bytes
+    /// are still present rather than what records are committed.
+    ///
+    /// The append position is restored before returning, so a following
+    /// [`Self::append_durable`] still writes at the end.
+    pub fn retained_bytes(&mut self) -> io::Result<Vec<u8>> {
+        let bytes = read_bounded(&mut self.file)?;
+        self.file.seek(SeekFrom::End(0))?;
+        Ok(bytes)
+    }
+
     /// The origin this log can prove on its own, which is the digest of commit
     /// index 1.
     ///

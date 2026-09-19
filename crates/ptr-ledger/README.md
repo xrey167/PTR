@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-19  
-**Code footprint:** 7 Rust source files · 2642 nonblank source lines · 10 integration-test files · 57 `#[test]` markers
+**Code footprint:** 7 Rust source files · 2714 nonblank source lines · 10 integration-test files · 57 `#[test]` markers
 
 ### Implemented now
 
@@ -28,6 +28,7 @@
 - RetentionPolicy/CompactionBarrier planning capped by snapshot coverage and blocked by lagging consumers or unresolved revocations
 - Create-new compaction cutover with the anchor advance as commit point, revalidated plans and explicit orphan reclamation
 - Erasure audit over live and superseded logs: byte-level presence search biased toward still-retained, with host-retained artifacts folded in explicitly
+- Two audit entry points: the live log is read through its owning handle when a ledger is open, since mandatory Windows locks make an independent handle unusable there
 - Named permanent erasure boundaries (host-retained artifacts, storage residue, model-derived state) reported by every audit rather than as situational caveats
 - Cross-process single-writer advisory lock retained for FileLedger handle lifetime
 - Poisoned writer after ambiguous append failure; reopen/replay required before subsequent writes
@@ -87,6 +88,7 @@
 - Stale, non-advancing, above-tail and wrong-digest plans refused without mutation; destination never overwritten
 - Logical deletion asserted to leave history intact; erasure requires both the raised floor and orphan reclamation
 - Host-retained snapshot defeats erasure once folded in; destroying the anchor key removes verifiability only
+- Reading the live log through the writer restores the append position, proven by appending and re-verifying afterwards
 - FileLedger all-event reopen and partial-tail crash recovery tests
 - FileLedger strict open never truncates; explicit recovery requires an independent matching prefix anchor
 - fail-rs panic-after-length-prefix recovery test
