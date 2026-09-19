@@ -38,6 +38,10 @@ jobs:
           p=Path('Cargo.toml'); s=p.read_text()
           assert 'exclude = ["fuzz", "model/burn-a0"]' in s
           p.write_text(s.replace('exclude = ["fuzz", "model/burn-a0"]', 'exclude = ["fuzz", "model/burn-a0", "vendor"]'))
+          # The first resolver run showed n0-dns-resolver requires ^2.1.3.
+          p=Path('scripts/migrate_security_dependencies.py'); s=p.read_text()
+          assert s.count('version = "=2.1.1"') == 1
+          p.write_text(s.replace('version = "=2.1.1"', 'version = "=2.1.3"'))
           PY
           python3 scripts/migrate_security_dependencies.py 2>&1 | tee /tmp/ptr-migration/migration.log
       - name: Commit generated files on the remediation branch only
@@ -45,7 +49,7 @@ jobs:
           test "$(git ls-remote origin refs/heads/agent/security-remediation-20260919 | cut -f1)" = "$GITHUB_SHA"
           git config user.name 'PTR dependency migration'
           git config user.email '104269920+xrey167@users.noreply.github.com'
-          git add Cargo.toml Cargo.lock model/burn-a0/Cargo.toml model/burn-a0/Cargo.lock crates/ptr-net crates/ptr-ledger/component.toml crates/ptr-ledger/README.md docs/components/STATUS.md
+          git add scripts/migrate_security_dependencies.py Cargo.toml Cargo.lock model/burn-a0/Cargo.toml model/burn-a0/Cargo.lock crates/ptr-net crates/ptr-ledger/component.toml crates/ptr-ledger/README.md docs/components/STATUS.md
           git add -f fuzz/Cargo.lock templates/rust-crate/Cargo.lock vendor
           git diff --cached --stat
           git commit -m 'fix: migrate vulnerable and retired dependencies with exact upstream provenance'
