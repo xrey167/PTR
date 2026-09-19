@@ -65,7 +65,7 @@ A PTR system keeps **raw language and typed semantics in parallel**, reasons ove
 |---|---|
 | [ptr-config](crates/ptr-config/README.md) | Parses and validates typed PTR configuration. |
 | [ptr-runtime](crates/ptr-runtime/README.md) | Orchestrates the end-to-end PTR request, authority and effect lifecycle. |
-| [ptr-types](crates/ptr-types/README.md) | Defines the stable semantic vocabulary shared across model, runtime, storage, verification, and network boundaries. |
+| [ptr-types](crates/ptr-types/README.md) | Defines PTR's shared cognitive and semantic type kernel: semantic roles, epistemic/uncertainty axes, reasoning operators, lifecycle/provenance primitives and cross-layer identities used by the model, router, training and runtime. |
 | [ptr-protocol](crates/ptr-protocol/README.md) | Defines PodWire semantics and converts versioned wire messages into validated PTR domain values. |
 | [ptr-ingress](crates/ptr-ingress/README.md) | Preserves raw evidence while building a provisional typed interpretation that can be cross-verified before reasoning. |
 | [ptr-semdb](crates/ptr-semdb/README.md) | Maintains revisioned ground state and dependency-aware derived semantics using an incremental-compiler model. |
