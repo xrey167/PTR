@@ -1,0 +1,70 @@
+name: finalize-security-source
+on:
+  push:
+    branches: [agent/security-p0-remediation-20260919]
+    paths: [.github/workflows/finalize-security-source.yml]
+permissions:
+  contents: read
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Apply explicit A0 API corrections and vendor inventory
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('model/burn-a0/Cargo.toml')
+          s=p.read_text(); assert '"flex", "autodiff"' in s
+          p.write_text(s.replace('"flex", "autodiff"','"flex", "autodiff", "optim"'))
+          p=Path('model/burn-a0/examples/m001_pilot.rs')
+          s=p.read_text(); assert '.squeeze(1)' in s
+          p.write_text(s.replace('.squeeze(1)', '.squeeze::<1>()'))
+          PY
+          cargo +stable metadata --manifest-path model/burn-a0/Cargo.toml --all-features --format-version 1 > /tmp/a0-metadata.json
+          cargo +stable fmt --manifest-path model/burn-a0/Cargo.toml
+          python scripts/check_vendor_integrity.py --write
+          python scripts/check_vendor_integrity.py
+          python -m unittest discover -s scripts/tests
+          git add model/burn-a0/Cargo.toml model/burn-a0/Cargo.lock model/burn-a0/examples/m001_pilot.rs vendor/CURRENT.json
+          git diff --cached --binary > /tmp/final-source.patch
+      - uses: actions/upload-artifact@v4
+        with:
+          name: final-source-patch
+          path: /tmp/final-source.patch
+          retention-days: 7
+  retain:
+    needs: prepare
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: final-source-patch
+          path: /tmp/final-source
+      - name: Commit reviewed source on unchanged candidate branch only
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          test "$GITHUB_REF" = refs/heads/agent/security-p0-remediation-20260919
+          test "$(git ls-remote origin "$GITHUB_REF" | cut -f1)" = "$EXPECTED_SHA"
+          git apply --index /tmp/final-source/final-source.patch
+          python3 - <<'PY'
+          import subprocess
+          paths=set(subprocess.check_output(['git','diff','--cached','--name-only'],text=True).splitlines())
+          assert paths and paths <= {'model/burn-a0/Cargo.toml','model/burn-a0/Cargo.lock','model/burn-a0/examples/m001_pilot.rs','vendor/CURRENT.json'}
+          PY
+          git config user.name 'PTR security review'
+          git config user.email '104269920+xrey167@users.noreply.github.com'
+          git commit -m 'fix: enable A0 optimizer, migrate squeeze API and pin vendor inventory'
+          git push origin HEAD:refs/heads/agent/security-p0-remediation-20260919
