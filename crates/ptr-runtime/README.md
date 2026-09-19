@@ -9,10 +9,13 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-19  
-**Code footprint:** 1 Rust source files · 577 nonblank source lines · 6 integration-test files · 21 `#[test]` markers
+**Code footprint:** 2 Rust source files · 1145 nonblank source lines · 8 integration-test files · 42 `#[test]` markers
 
 ### Implemented now
 
+- Scoped synchronous execution gateway with opaque per-runtime sessions, exact grants, frozen ActionIR permits and registered verifier/executor binding
+- Consume-time freshness, expiry, ownership and mandatory permission checks; permissions/commit/effect epochs invalidate pending permits
+- Executor or ledger ambiguity fences subsequent execution and commits; process-local single-use authority is never replayed
 - Ledger-only lifecycle mutation; invalid/rewinding/tombstoned/cross-project transitions rejected before append and during replay
 - Central runtime object wiring configuration, SemDB, ledger, materialized state, events and permissions
 - Durable standalone runtime constructor opens/replays FileLedger and reconstructs lifecycle/materialized state across restart
@@ -26,8 +29,8 @@
 
 ### Missing for the target architecture
 
-- Durable SemDB payload/revision reconstruction and principal/resource-scoped effect execution
-- Atomic verifier-bound execution receipts and real snapshot serialization
+- Durable SemDB payload/revision reconstruction and network-authenticated/scoped Pod integration
+- Durable execution audit/idempotency, downstream fencing and real snapshot serialization
 - Router-driven operator selection around the implemented bounded Pod-resume loop
 - Async isolate scheduler integration
 - Configured raft-engine/raft-rs/Turso backend composition for production runtime modes
@@ -35,6 +38,7 @@
 
 ### Next milestones
 
+- Reconstruct actual semantic payloads and dependency revisions durably before adding persistent execution authority
 - Connect evaluated raft-engine/Turso adapters through typed backend config while preserving FileLedger reference mode
 - Add opaque backend checkpoint handles and async streaming around the implemented observation resume contract
 - Wire ptrd request handling beyond bootstrap ingestion
@@ -57,6 +61,7 @@
 
 ### Current automated checks
 
+- scoped execution positive/negative integration tests and non-forgeability/single-use compile-fail doctests
 - runtime ingestion/revision/generation/capability/materialization integration tests
 - typed authorization decision exposure and RuntimeError compatibility test
 - reference model-loop integration test
@@ -86,4 +91,4 @@ Keep orchestration out of `ptrd` and out of individual domain crates. The runtim
 
 ## Current boundary
 
-The executable reference slice now wires configuration, semantic revisioning, a backend-neutral model call, semantic Pod resolution, Pure/Read Pod execution, verifier-gated observation promotion, action authorization, event emission, ledger materialization and durable FileLedger reopen/replay. The next runtime milestone is typed composition of the evaluated raft-engine/Turso adapters, router-driven operator selection and async/streaming execution.
+The executable reference slice now wires configuration, semantic revisioning, a backend-neutral model call, semantic Pod resolution, Pure/Read Pod execution, verifier-gated observation promotion, action authorization, event emission, ledger materialization and durable FileLedger reopen/replay. The new scoped synchronous execution gateway binds opaque sessions and immutable ActionIR permits to host-registered verifiers/executors. Administrative session registration assumes the embedding host has authenticated the principal; it is not an HTTP authentication endpoint. See [P0.1 execution authority](../../docs/architecture/21-scoped-execution.md) for guarantees, counterexamples and the remaining durable/network gates. The next component step is actual semantic-payload/revision reconstruction, not additional backend breadth.

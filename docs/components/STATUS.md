@@ -5,7 +5,7 @@
 
 **Component count:** 24  
 **Maturity distribution:** `foundation`: 1, `prototype`: 11, `research-scaffold`: 1, `scaffold`: 11  
-**Rust footprint:** 47 source files · 3707 nonblank source lines · 55 integration-test files · 102 `#[test]` markers
+**Rust footprint:** 48 source files · 4275 nonblank source lines · 57 integration-test files · 123 `#[test]` markers
 
 | Component | Maturity | Rust files | LOC | Test files | Tests | Implemented items | Missing items | Experiments | Evaluations |
 |---|---:|---:|---:|---:|---:|---:|---:|---|---|
@@ -24,7 +24,7 @@
 | [ptr-pods](../../crates/ptr-pods/README.md) | `prototype` | 1 | 125 | 3 | 4 | 6 | 4 | R002:planned, E001:planned | environment-runtime:open |
 | [ptr-protocol](../../crates/ptr-protocol/README.md) | `scaffold` | 2 | 104 | 2 | 2 | 5 | 3 | R002:planned, E001:planned | network-codec:open, local-serialization:open |
 | [ptr-router](../../crates/ptr-router/README.md) | `scaffold` | 1 | 30 | 1 | 1 | 2 | 5 | M004:planned, R002:planned, E003:planned | inference-serving:open, distributed-data-compute:open |
-| [ptr-runtime](../../crates/ptr-runtime/README.md) | `prototype` | 1 | 577 | 6 | 21 | 10 | 6 | E001:planned, E003:planned, E004:planned | — |
+| [ptr-runtime](../../crates/ptr-runtime/README.md) | `prototype` | 2 | 1145 | 8 | 42 | 13 | 6 | E001:planned, E003:planned, E004:planned | — |
 | [ptr-search](../../crates/ptr-search/README.md) | `prototype` | 1 | 94 | 2 | 2 | 4 | 5 | Q001:planned, Q002:planned, E002:planned, E003:planned | lexical-search:open, local-vector-search:open, gpu-vector-search:open, distributed-search:open, structural-code-search:open |
 | [ptr-security](../../crates/ptr-security/README.md) | `prototype` | 1 | 126 | 2 | 8 | 6 | 4 | L001:running, E001:planned | security-context:open |
 | [ptr-semdb](../../crates/ptr-semdb/README.md) | `prototype` | 1 | 119 | 1 | 2 | 6 | 5 | S001:planned, S002:planned, E004:planned | semantic-db:open |

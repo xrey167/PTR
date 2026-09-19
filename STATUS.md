@@ -19,7 +19,8 @@ PTR is a **compiling architecture/research prototype**, not yet a complete model
 - 160 configured workspace areas with matching tests directories
 - Cargo and uv lockfiles; Rust 1.85 MSRV plus current-stable Ubuntu/Windows CI
 - dataset cards, experiment/evaluation validators, setup scripts, devcontainer/Docker and release scaffolding
-- executable experiment and component-evaluation runners with declared no-shell commands and immutable success/failure process evidence\n- supply-chain checks with cargo-audit/cargo-deny and Dependabot configuration
+- executable experiment and component-evaluation runners with declared no-shell commands and immutable success/failure process evidence
+- supply-chain checks with cargo-audit/cargo-deny and Dependabot configuration
 - `ptrctl doctor` repository/configuration diagnostics
 - CI-tested dependency-free TypeScript SDK contract and static documentation landing page
 - release packaging with SHA-256 checksums, CycloneDX SBOM generation and GitHub/Sigstore provenance/SBOM attestations
@@ -34,7 +35,7 @@ PTR is a **compiling architecture/research prototype**, not yet a complete model
 
 - PTR-Core now has a separate trainable Burn A0 research package with typed metadata, bidirectional cross-attention, recurrent latent refinement and a router; it is still a small architecture probe rather than a pretrained language model
 - bounded model resume after verified Pod observations is now wired and revision-advancing; opaque backend checkpoints, async streaming and router-driven operator selection remain open
-- hard ActionIR authorization now has typed security decisions/receipts, but principal/session/resource scopes, verifier requirements and durable authorization-audit persistence remain open
+- hard ActionIR authorization has diagnostic typed decisions plus a scoped synchronous execution gateway with opaque host-issued sessions, exact capsule/project grants and registered verifiers/executors; network authentication, scoped Pod access and durable audit/idempotency remain open
 - feature-gated raft-engine, single-node raft-rs, Turso and direct Iroh adapters now exist and are under evaluation; multi-node consensus/network sessions and real search-backend adapters remain incomplete
 - 19 architecture experiments remain planned; L001 is the only running experiment and now has two executed scoped crash/recovery evidence slices
 - external component candidates mostly lack comparative benchmark evidence
