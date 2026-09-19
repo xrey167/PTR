@@ -3,12 +3,14 @@ pub mod anchor;
 pub mod compaction;
 mod file;
 pub mod integrity;
+pub mod retention;
 pub use acknowledged::{AcknowledgedError, AcknowledgedLedger, Split, TailPolicy, TailRecovery};
 pub use compaction::{
     CompactionDecision, CompactionFault, CompactionOutcome, CompactionPlan, LogPaths,
     RetentionPolicy,
 };
 pub use file::{FileLedger, LegacyLog, RecoverableLog};
+pub use retention::{retains, ErasureAudit, OutOfReach, Retainer};
 
 use ptr_types::{CapsuleId, CommitIndex, Generation, ProjectId, Revision};
 use std::io;

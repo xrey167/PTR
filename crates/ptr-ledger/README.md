@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-19  
-**Code footprint:** 6 Rust source files · 2464 nonblank source lines · 9 integration-test files · 50 `#[test]` markers
+**Code footprint:** 7 Rust source files · 2642 nonblank source lines · 10 integration-test files · 57 `#[test]` markers
 
 ### Implemented now
 
@@ -27,6 +27,8 @@
 - LogPaths floor-in-filename addressing: the protected anchor alone names the live log, so a cutover is unambiguous on both sides of its commit point
 - RetentionPolicy/CompactionBarrier planning capped by snapshot coverage and blocked by lagging consumers or unresolved revocations
 - Create-new compaction cutover with the anchor advance as commit point, revalidated plans and explicit orphan reclamation
+- Erasure audit over live and superseded logs: byte-level presence search biased toward still-retained, with host-retained artifacts folded in explicitly
+- Named permanent erasure boundaries (host-retained artifacts, storage residue, model-derived state) reported by every audit rather than as situational caveats
 - Cross-process single-writer advisory lock retained for FileLedger handle lifetime
 - Poisoned writer after ambiguous append failure; reopen/replay required before subsequent writes
 - Lifecycle LedgerEvent enum
@@ -45,6 +47,8 @@
 - fsync/durability modes and revocation barriers
 - Runtime compacted materialized snapshot establishing snapshot_covers, so exact compacted-state reconstruction is not yet demonstrable end to end
 - Distributed snapshot/compaction protocols and cross-node cutover
+- Retention schedule/policy engine and durable snapshot lifecycle tracking; PTR does not enumerate or reclaim host-retained snapshots
+- Storage-residue and model-derived-state erasure, so no all-state-deleted declaration is available
 
 ### Next milestones
 
@@ -81,6 +85,8 @@
 - Retention bounds, barrier blocking and snapshot-coverage capping of the proposed floor
 - Cutover interrupted on both sides of its commit point, orphan reclamation and exact retained-suffix reconstruction
 - Stale, non-advancing, above-tail and wrong-digest plans refused without mutation; destination never overwritten
+- Logical deletion asserted to leave history intact; erasure requires both the raised floor and orphan reclamation
+- Host-retained snapshot defeats erasure once folded in; destroying the anchor key removes verifiability only
 - FileLedger all-event reopen and partial-tail crash recovery tests
 - FileLedger strict open never truncates; explicit recovery requires an independent matching prefix anchor
 - fail-rs panic-after-length-prefix recovery test
