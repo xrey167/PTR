@@ -7,7 +7,7 @@ This is the implementation order after the architecture-scaffold phase. Status v
 | P0 | Repository licensing, lockfiles, MSRV/stable/Linux/Windows CI | verification infrastructure implemented; exact-commit results in security/P0 review; release license obligations remain |
 | P0 | Component docs-as-code, local config.toml and tests/ ownership | done |
 | P0 | Central ptr-runtime orchestrator | prototype |
-| P0 | Hard revision/generation/capability effect boundary | prototype — typed ptr-security decisions now own freshness + capability/effect checks, all freshness/capability/effect gates are mandatory for hard effects; diagnostic receipts are not execution tokens; principal/resource scopes and verifier requirements remain |
+| P0 | Hard revision/generation/capability effect boundary | prototype — typed ptr-security decisions now own freshness + capability/effect checks, all freshness/capability/effect gates are mandatory for hard effects; diagnostic receipts are not execution tokens; P0.1 adds opaque host-authenticated sessions, exact capsule/project grants, registered verifiers/executors and a single-use synchronous gateway; network authentication, durable idempotency and scoped Pod access remain |
 | P0 | Durable single-node ledger + crash-tail/replay safety | prototype — single-writer/poisoned append/lifecycle replay protections; checksummed framing, real snapshots, SemDB payload replay and cluster durability remain open |
 | P0 | Executable experiment/evaluation runners | implemented — declared argv execution, immutable success/failure evidence and subprocess tests exist; benchmark coverage remains incomplete |
 | P0 | Reproducible Python training-run manifest | prototype |
@@ -31,3 +31,7 @@ This is the implementation order after the architecture-scaffold phase. Status v
 The next scientific gate is not a larger model. It is a matched, reproducible M001/M002/M003/M004 experiment where the new neural mechanisms are compared against controlled ablations.
 
 See [the security/P0 review](SECURITY_P0_REVIEW_20260919.md) for concrete repairs, remaining architecture gates and the limits of green CI.
+
+Current bounded component increment: [P0.1 scoped synchronous execution](architecture/21-scoped-execution.md).
+Do not mark the full P0 release gates in issue #15 complete from a successful
+local gateway or a green dependency scan.

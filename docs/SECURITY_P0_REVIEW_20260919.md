@@ -69,8 +69,12 @@ vendored licenses are retained. Advisory ignores remain empty.
 
 ## Still open P0 architecture gates
 
-1. Principal/session/resource scopes and verifier requirements must be bound to
-   effect execution. A diagnostic allow receipt is NOT an opaque execution token.
+1. P0.1 now binds reference-process execution to opaque sessions, exact
+   capsule/project grants and registered verifiers/executors; see
+   [the implementation contract](architecture/21-scoped-execution.md). The
+   embedding host still authenticates the principal. Network/session admission,
+   scoped Pure/Read Pods, durable audit/idempotency and remote fences remain open.
+   A diagnostic allow receipt is still NOT an execution token.
 2. SemDB payloads/revisions and inference checkpoints are not durably reconstructed
    by the lifecycle-only FileLedger. Restart tests do not prove full knowledge or
    neural-state consistency. Semantic payload admission remains incomplete.

@@ -28,3 +28,11 @@ External text, tools, retrieved documents and agent-generated state are evidence
 ## Redaction
 
 Secret/private types are non-rendering by default across tracing, valuable-based introspection and debug exports.
+
+## Implemented reference-process execution boundary
+
+[P0.1 scoped execution](21-scoped-execution.md) now adds the actual registered
+executor call behind issuer/session/scope, revision/generation/capability, expiry
+and required-verifier checks. AuthorizationReceipt remains diagnostic. This
+process-local gateway does not by itself implement network authentication,
+durable exactly-once effects or scoped access for existing Pure/Read Pod paths.

@@ -1,3 +1,5 @@
+pub mod execution;
+
 use ptr_config::PtrConfig;
 use ptr_core::action_head::ActionIr;
 use ptr_events::{EventEnvelope, RuntimeEvent};
@@ -58,6 +60,7 @@ pub enum RuntimeError {
         count: usize,
     },
     PermissionDenied,
+    ExecutionFenced,
     InvalidLifecycleTransition {
         target: String,
         current: Option<Generation>,
@@ -107,6 +110,7 @@ impl RuntimeLedger {
 }
 
 pub struct PtrRuntime {
+    execution: execution::ExecutionState,
     pub config: PtrConfig,
     semdb: SemanticHost,
     ledger: RuntimeLedger,
@@ -139,6 +143,7 @@ impl PtrRuntime {
     fn with_ledger(config: PtrConfig, ledger: RuntimeLedger) -> Result<Self, RuntimeError> {
         config.validate().map_err(RuntimeError::InvalidConfig)?;
         Ok(Self {
+            execution: execution::ExecutionState::default(),
             config,
             semdb: SemanticHost::default(),
             ledger,
@@ -183,6 +188,7 @@ impl PtrRuntime {
     }
 
     pub fn permissions_mut(&mut self) -> &mut PermissionSet {
+        self.execution.invalidate_pending();
         &mut self.permissions
     }
 
@@ -493,7 +499,11 @@ impl PtrRuntime {
     pub fn commit(&mut self, event: LedgerEvent) -> Result<CommitIndex, RuntimeError> {
         // Validate before the first durable byte: rejected transitions must never
         // poison committed history or become authoritative on a later restart.
+        if self.execution.is_fenced() {
+            return Err(RuntimeError::ExecutionFenced);
+        }
         self.validate_lifecycle_event(&event)?;
+        self.execution.begin_commit();
         let index = self.ledger.append(event)?;
         let committed = self
             .ledger
@@ -502,6 +512,7 @@ impl PtrRuntime {
             .expect("append created committed event")
             .clone();
         self.apply_committed(&committed);
+        self.execution.complete_commit();
         Ok(index)
     }
 

@@ -3,6 +3,9 @@ id = "ptr-runtime"
 maturity = "prototype"
 last_reviewed = "2026-09-19"
 implemented = [
+  "Scoped synchronous execution gateway with opaque per-runtime sessions, exact grants, frozen ActionIR permits and registered verifier/executor binding",
+  "Consume-time freshness, expiry, ownership and mandatory permission checks; permissions/commit/effect epochs invalidate pending permits",
+  "Executor or ledger ambiguity fences subsequent execution and commits; process-local single-use authority is never replayed",
   "Ledger-only lifecycle mutation; invalid/rewinding/tombstoned/cross-project transitions rejected before append and during replay",
   "Central runtime object wiring configuration, SemDB, ledger, materialized state, events and permissions",
   "Durable standalone runtime constructor opens/replays FileLedger and reconstructs lifecycle/materialized state across restart",
@@ -15,14 +18,15 @@ implemented = [
   "Bounded multi-step model resume loop after verified Pod observations advances semantic revision before continuation",
 ]
 missing = [
-  "Durable SemDB payload/revision reconstruction and principal/resource-scoped effect execution",
-  "Atomic verifier-bound execution receipts and real snapshot serialization",
+  "Durable SemDB payload/revision reconstruction and network-authenticated/scoped Pod integration",
+  "Durable execution audit/idempotency, downstream fencing and real snapshot serialization",
   "Router-driven operator selection around the implemented bounded Pod-resume loop",
   "Async isolate scheduler integration",
   "Configured raft-engine/raft-rs/Turso backend composition for production runtime modes",
   "Streaming client response lifecycle and cancellation",
 ]
 next = [
+  "Reconstruct actual semantic payloads and dependency revisions durably before adding persistent execution authority",
   "Connect evaluated raft-engine/Turso adapters through typed backend config while preserving FileLedger reference mode",
   "Add opaque backend checkpoint handles and async streaming around the implemented observation resume contract",
   "Wire ptrd request handling beyond bootstrap ingestion",
@@ -30,4 +34,4 @@ next = [
 experiments = ["E001", "E003", "E004"]
 evaluations = []
 decisions = ["ADR-0001-rust-runtime.md", "ADR-0012-hard-effect-boundary.md", "ADR-0013-runtime-orchestrator.md"]
-checks = ["runtime ingestion/revision/generation/capability/materialization integration tests", "typed authorization decision exposure and RuntimeError compatibility test", "reference model-loop integration test", "bounded verified Pod-observation resume-loop tests", "revocation replay/restart integration test", "durable FileLedger runtime reopen preserves revocation and materialized commit position", "workspace fmt/check/test/clippy"]
+checks = ["scoped execution positive/negative integration tests and non-forgeability/single-use compile-fail doctests", "runtime ingestion/revision/generation/capability/materialization integration tests", "typed authorization decision exposure and RuntimeError compatibility test", "reference model-loop integration test", "bounded verified Pod-observation resume-loop tests", "revocation replay/restart integration test", "durable FileLedger runtime reopen preserves revocation and materialized commit position", "workspace fmt/check/test/clippy"]
