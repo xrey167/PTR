@@ -43,6 +43,7 @@ decisions = [
 checks = [
   "reference backend request/event conformance test",
   "typed PodRequested event contract covered by runtime loop tests",
+  "typed ReasoningOperator model event contract test",
   "observation/resume contract covered by runtime multi-step tests",
   "workspace fmt/check/test/clippy",
 ]
