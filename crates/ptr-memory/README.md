@@ -9,7 +9,7 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `scaffold`  
-**Last reviewed:** 2026-09-18  
+**Last reviewed:** 2026-09-19  
 **Code footprint:** 1 Rust source files · 31 nonblank source lines · 1 integration-test files · 1 `#[test]` markers
 
 ### Implemented now
@@ -23,12 +23,12 @@
 - Persistent semantic/episodic/procedural/epistemic stores
 - Lifecycle enforcement and revocation propagation
 - Consolidation/promotion policies
-- Typed relation/entity structures instead of String fields
+- Shared typed semantic objects instead of separate String buckets for goals/constraints/known/hypotheses/unknowns/relations
 - Multi-vector/late-interaction representations and human-readable mirror
 
 ### Next milestones
 
-- Replace string payloads with typed semantic objects
+- Replace string payload buckets with shared ptr-types semantic-role/epistemic wrappers while keeping SemanticCapsule aggregate ownership in ptr-memory
 - Implement capsule lifecycle repository on ptr-state
 - Evaluate editable-memory superiority against strong RAG in E002/E004
 
