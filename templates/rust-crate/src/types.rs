@@ -41,9 +41,18 @@ pub struct ExecuteResult<T> {
     pub backend: String,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub(crate) struct BackendRegistry<T> {
     entries: HashMap<String, T>,
+}
+
+// An empty registry does not construct a T and must not require T: Default.
+impl<T> Default for BackendRegistry<T> {
+    fn default() -> Self {
+        Self {
+            entries: HashMap::new(),
+        }
+    }
 }
 
 impl<T> BackendRegistry<T> {
@@ -69,6 +78,13 @@ impl<T> BackendRegistry<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_registry_does_not_require_default_entries() {
+        struct NoDefault;
+        let registry = BackendRegistry::<NoDefault>::default();
+        assert_eq!(registry.names().count(), 0);
+    }
 
     #[test]
     fn registry_iterator_exposes_all_entries_without_order_contract() {

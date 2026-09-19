@@ -25,3 +25,11 @@ Key properties:
 - private `macro_rules!` for internal compile-time boilerplate and hygienic `$crate`-based `#[macro_export]` only for intentional public macro APIs.
 
 See `docs/RUST_API_STYLE.md`.
+
+## Merge-review regression
+
+The empty BackendRegistry implements Default manually: creating an empty map
+does not require a default backend value. A non-Default entry regression and the
+public Service tests cover this requirement, including Arc<dyn Backend<...>>.
+The template is tested on Rust stable and the project's Rust 1.85 MSRV. Lazy
+name filters rely on ordinary coercion rather than an unnecessary explicit dereference.

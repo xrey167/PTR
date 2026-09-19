@@ -24,6 +24,13 @@ it never pushes code or modifies main.
   had attached the existing environment block to the tracing-adapter test.
 - Explicitly lint the optional tracing adapter and test the reference crate on
   the stated Rust 1.85 MSRV, in addition to the existing stable checks.
+- Replace the boolean match in the trace filter with guarded matches! without
+  suppressing the Clippy warning; preserve lazy FnMut predicate semantics.
+- Implement the empty template BackendRegistry Default without requiring
+  T: Default. The previous derive prevented Arc<dyn Backend> registries from
+  compiling. Add a non-Default entry regression and remove an unnecessary
+  explicit dereference in the template's lazy name filter; elide a redundant
+  single-input lifetime in its validation helper.
 - Regenerate component README/status from component.toml after source changes.
 
 The existing Rust, documentation, repository, research and security checks are
@@ -42,7 +49,8 @@ PR #11 changes no dependency manifest or lockfile.
 The security audit of PR #9 in run `35411950976` reported eight vulnerability
 findings affecting hickory-proto 0.25.2, protobuf 2.28.0, rustls-webpki 0.102.8 and
 time 0.3.41, plus maintenance/unsoundness warnings. These exact package records
-are already present in main. The deny job also fails; its policy is unchanged.
+are already present in main. The deny job also fails for advisories and disallowed licenses, including
+Unicode-3.0 expressions. Its policy is unchanged.
 Neither PR fixes those findings. Their existence must not be represented as an
 all-green repository or a production/security release approval.
 
@@ -52,6 +60,8 @@ these two PRs; no advisory ignore entry, license waiver, required-check bypass,
 backend enablement or branch-protection change is part of this work. A security
 remediation of the affected backend dependency trees needs its own compatibility
 and feature tests, rather than an unreviewed lockfile upgrade in this type step.
+
+Remediation is tracked in [issue #12](https://github.com/xrey167/PTR/issues/12).
 
 ## Component evidence boundary
 

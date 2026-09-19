@@ -3,9 +3,7 @@ use crate::{ExecuteRequestRef, ValidationError};
 const MAX_BACKEND_NAME_LEN: usize = 64;
 const MAX_REQUEST_KEY_LEN: usize = 128;
 
-pub fn check_backend_name<'request>(
-    backend: Option<&'request str>,
-) -> Result<&'request str, ValidationError> {
+pub fn check_backend_name(backend: Option<&str>) -> Result<&str, ValidationError> {
     match backend {
         None => Err(ValidationError::MissingField {
             field: "preferred_backend",

@@ -57,7 +57,7 @@ impl<TInput, TOutput> Service<TInput, TOutput> {
         F: FnMut(&str) -> bool + 'service,
     {
         self.backend_names()
-            .filter(move |name| predicate(*name))
+            .filter(move |name| predicate(name))
     }
 
     pub fn execute_all<I>(

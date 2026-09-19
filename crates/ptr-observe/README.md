@@ -10,7 +10,7 @@
 
 **Maturity:** `scaffold`  
 **Last reviewed:** 2026-09-19  
-**Code footprint:** 7 Rust source files · 353 nonblank source lines · 5 integration-test files · 12 `#[test]` markers
+**Code footprint:** 7 Rust source files · 351 nonblank source lines · 5 integration-test files · 12 `#[test]` markers
 
 ### Implemented now
 
@@ -60,7 +60,7 @@
 - unit tests for trace construction, iterator adapters/closures, fallible traversal, sink behavior and stable error codes/messages
 - integration tests share deterministic fixture code through tests/common/mod.rs
 - integration tests exercise exported macro expansion and generated TraceValue conversions
-- workspace fmt/check/test/clippy; merge-review formatting normalization
+- workspace fmt/check/test/clippy; guarded matches filter checked during merge review
 
 <!-- PTR:STATUS:END -->
 

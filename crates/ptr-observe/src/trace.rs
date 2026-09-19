@@ -81,10 +81,8 @@ impl TraceEvent {
     where
         F: FnMut(&str, &TraceValue) -> bool + 'event,
     {
-        self.iter_fields().filter(move |item| match *item {
-            (key, value) if predicate(key, value) => true,
-            _ => false,
-        })
+        self.iter_fields()
+            .filter(move |item| matches!(*item, (key, value) if predicate(key, value)))
     }
 
     pub fn try_for_each_field<E, F>(&self, mut visitor: F) -> Result<(), E>
