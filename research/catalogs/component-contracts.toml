@@ -5,7 +5,7 @@ id = "ptr-types"
 ports = []
 type_families = ["cognitive-semantic", "identity-lifecycle", "epistemic-probabilistic", "provenance-evidence"]
 backend_slots = []
-open_decisions = ["semantic wrapper shapes", "role/epistemic/uncertainty freeze boundary", "module split/freeze boundary", "serialization derives", "resource/principal/session identity set"]
+open_decisions = ["semantic wrapper shapes", "cognitive type codebook/versioning", "role/epistemic/uncertainty freeze boundary", "ActionIR shared ownership vs dedicated contract crate", "module split/freeze boundary", "serialization derives", "resource/principal/session identity set"]
 
 [[component]]
 id = "ptr-config"
@@ -117,7 +117,7 @@ id = "ptr-memory"
 ports = ["MemoryRepository", "MemoryResolver", "MemoryLifecycle"]
 type_families = ["memory-knowledge", "provenance-evidence", "identity-lifecycle"]
 backend_slots = []
-open_decisions = ["memory object taxonomy", "typed payloads", "link semantics", "state/search boundary"]
+open_decisions = ["memory object taxonomy", "migration from epistemic String buckets to shared typed semantic values", "typed payloads", "link semantics", "state/search boundary"]
 
 [[component]]
 id = "ptr-search"
