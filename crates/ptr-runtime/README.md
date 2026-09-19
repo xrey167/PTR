@@ -9,10 +9,13 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-19  
-**Code footprint:** 4 Rust source files · 1554 nonblank source lines · 10 integration-test files · 62 `#[test]` markers
+**Code footprint:** 5 Rust source files · 1980 nonblank source lines · 11 integration-test files · 71 `#[test]` markers
 
 ### Implemented now
 
+- PTRCS001 compacted materialized snapshot: committed state at a floor with canonical ascending-key sections, checked framing and an externally retained trusted anchor
+- restore_compacted installs floor state then replays the retained journal through the ordinary lifecycle/semantic validation path, keeping committed indices
+- CompactedSnapshot::covers reports only the position it holds, so a compaction barrier cannot claim coverage the snapshot lacks
 - Versioned replay-backed recovery snapshots bind complete journal, semantic revision, commit index and independently trusted SHA-256 anchor
 - Snapshot validation and semantic/lifecycle replay finish before creating a durable destination; existing destinations are never replaced
 - Strict anchored reopen and explicit legacy-to-v2 migration preserve history while restoring no process-local authority
@@ -36,6 +39,8 @@
 
 ### Missing for the target architecture
 
+- Durable compacted-snapshot publication and a runtime backed by an AcknowledgedLedger; compacted restore rebuilds an in-memory ledger above the floor
+- Neural/KV and checkpoint state admission; compacted snapshots restore committed semantic and lifecycle state only
 - Network-authenticated/scoped Pod integration and neural checkpoint admission
 - Durable execution audit/idempotency, downstream fencing and compacted materialized snapshots
 - Router-driven operator selection around the implemented bounded Pod-resume loop
@@ -68,6 +73,9 @@
 
 ### Current automated checks
 
+- compacted reconstruction equals a full replay across semantic payloads, dependencies, supersession, constraints, procedures and revocations
+- a revocation below the floor still denies after compaction; every single-bit mutation of a compacted snapshot rejected
+- resealed noncanonical sections, reserved fields, length and trusted-identity mismatches, and records not above the floor all rejected
 - snapshot exact-state/byte-corruption/rollback/revision/legacy/overwrite/authority rejection tests
 - scoped execution positive/negative integration tests and non-forgeability/single-use compile-fail doctests
 - runtime ingestion/revision/generation/capability/materialization integration tests

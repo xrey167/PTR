@@ -11,9 +11,7 @@ fn lock_probe_child() {
     let Some(path) = std::env::var_os(PROBE) else {
         return;
     };
-    let error = FileLedger::open(path)
-        .err()
-        .expect("another process owns the ledger");
+    let error = FileLedger::open(path).expect_err("another process owns the ledger");
     assert_eq!(error.kind(), ErrorKind::WouldBlock);
 }
 
@@ -39,9 +37,7 @@ fn one_writer_owns_recovery_and_append_across_processes() {
     drop(first);
     let bytes = std::fs::read(&path).unwrap();
     let owner = FileLedger::open(&path).unwrap();
-    let error = FileLedger::open(&path)
-        .err()
-        .expect("a second handle must fail");
+    let error = FileLedger::open(&path).expect_err("a second handle must fail");
     assert_eq!(error.kind(), ErrorKind::WouldBlock);
     let status = Command::new(std::env::current_exe().unwrap())
         .args(["--exact", "lock_probe_child", "--nocapture"])

@@ -1,6 +1,16 @@
+pub mod acknowledged;
+pub mod anchor;
+pub mod compaction;
 mod file;
 pub mod integrity;
-pub use file::{FileLedger, LegacyLog};
+pub mod retention;
+pub use acknowledged::{AcknowledgedError, AcknowledgedLedger, Split, TailPolicy, TailRecovery};
+pub use compaction::{
+    CompactionDecision, CompactionFault, CompactionOutcome, CompactionPlan, LogPaths,
+    RetentionPolicy,
+};
+pub use file::{FileLedger, LegacyLog, RecoverableLog};
+pub use retention::{retains, ErasureAudit, OutOfReach, Retainer};
 
 use ptr_types::{CapsuleId, CommitIndex, Generation, ProjectId, Revision};
 use std::io;
@@ -65,12 +75,37 @@ pub trait Ledger {
 
 #[derive(Clone, Debug, Default)]
 pub struct InMemoryLedger {
+    base: CommitIndex,
     events: Vec<CommittedEvent>,
+}
+
+impl InMemoryLedger {
+    /// A ledger that continues above a compaction floor.
+    ///
+    /// Restoring from a compacted snapshot must not renumber the retained records
+    /// from 1: their indices are part of the committed history the snapshot's
+    /// floor refers to, and renumbering them would make the two disagree.
+    pub fn resuming_above(base: CommitIndex) -> Self {
+        Self {
+            base,
+            events: Vec::new(),
+        }
+    }
+
+    /// The compaction floor this ledger continues above.
+    pub fn base(&self) -> CommitIndex {
+        self.base
+    }
 }
 
 impl Ledger for InMemoryLedger {
     fn append(&mut self, event: LedgerEvent) -> CommitIndex {
-        let index = CommitIndex(self.events.len() as u64 + 1);
+        let index = CommitIndex(
+            self.base
+                .0
+                .saturating_add(self.events.len() as u64)
+                .saturating_add(1),
+        );
         self.events.push(CommittedEvent { index, event });
         index
     }
@@ -80,7 +115,7 @@ impl Ledger for InMemoryLedger {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CompactionBarrier {
     pub snapshot_covers: CommitIndex,
     pub all_consumers_caught_up: bool,
