@@ -9,11 +9,12 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-18  
+**Last reviewed:** 2026-09-19  
 **Code footprint:** 1 Rust source files · 524 nonblank source lines · 5 integration-test files · 6 `#[test]` markers
 
 ### Implemented now
 
+- Reviewed pinned Raft prost-codec source and raft-engine protobuf 3 migration; upstream source and local patch provenance retained in vendor/manifest.json
 - Lifecycle LedgerEvent enum
 - CommittedEvent with CommitIndex
 - Ledger trait and in-memory reference implementation

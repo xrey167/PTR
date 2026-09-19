@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/ptr-*", "bins/ptr-*"]
-exclude = ["fuzz", "model/burn-a0"]
+exclude = ["fuzz", "model/burn-a0", "vendor"]
 
 [workspace.package]
 version = "0.1.0"
@@ -47,3 +47,19 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal
 serde_json = "1.0"
 tower = { version = "0.5", features = ["util"] }
 tracing = "0.1.44"
+
+# PTR SECURITY PATCHES
+[patch.crates-io]
+bigdecimal-0-4-10 = { package = "bigdecimal", path = "vendor/bigdecimal-0.4.10" }
+itertools-0-10-5 = { package = "itertools", path = "vendor/itertools-0.10.5" }
+itertools-0-12-1 = { package = "itertools", path = "vendor/itertools-0.12.1" }
+itertools-0-14-0 = { package = "itertools", path = "vendor/itertools-0.14.0" }
+netlink-packet-core-0-8-2 = { package = "netlink-packet-core", path = "vendor/netlink-packet-core-0.8.2" }
+num_enum-0-7-6 = { package = "num_enum", path = "vendor/num_enum-0.7.6" }
+portable-atomic-1-15-0 = { package = "portable-atomic", path = "vendor/portable-atomic-1.15.0" }
+raft-0-7-0 = { package = "raft", path = "vendor/raft-0.7.0" }
+raft-engine-0-4-2 = { package = "raft-engine", path = "vendor/raft-engine-0.4.2" }
+raft-proto-0-7-0 = { package = "raft-proto", path = "vendor/raft-proto-0.7.0" }
+rand-0-8-8 = { package = "rand", path = "vendor/rand-0.8.8" }
+rand-0-9-5 = { package = "rand", path = "vendor/rand-0.9.5" }
+wasm-bindgen-0-2-128 = { package = "wasm-bindgen", path = "vendor/wasm-bindgen-0.2.128" }

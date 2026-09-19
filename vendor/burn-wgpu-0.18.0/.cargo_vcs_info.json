@@ -1,0 +1,6 @@
+{
+  "git": {
+    "sha1": "f5d889d29c33f51fdfe8786daa758d278082a565"
+  },
+  "path_in_vcs": "crates/burn-wgpu"
+}

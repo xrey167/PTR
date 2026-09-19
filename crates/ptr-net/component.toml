@@ -1,9 +1,10 @@
 version = 1
 id = "ptr-net"
 maturity = "prototype"
-last_reviewed = "2026-09-18"
+last_reviewed = "2026-09-19"
 
 implemented = [
+  "Iroh 1.2 transport API with current DNS/TLS dependency graph; optional feature MSRV 1.91, default core MSRV 1.85",
   "ALPN constants for raft, PodWire, model, blob and events protocols",
   "NodeIdentity scaffold",
   "Provider-independent Transport trait",

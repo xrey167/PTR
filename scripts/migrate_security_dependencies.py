@@ -132,7 +132,7 @@ def prepare_raft() -> None:
                 cargo = dest / "Cargo.toml"
                 replace(cargo, '[workspace]\nmembers = ["proto", "harness", "datadriven"]\n', '')
                 replace(cargo, 'path = "proto", version = "0.7.0"', 'path = "../raft-proto-0.7.0", version = "0.7.0"')
-                replace(cargo, 'fxhash = "0.2.1"', 'fxhash = { package = "rustc-hash", version = "=2.1.1" }')
+                replace(cargo, 'fxhash = "0.2.1"', 'fxhash = { package = "rustc-hash", version = "=2.1.3" }')
                 replace(cargo, 'datadriven = { path = "datadriven", version = "0.1.0" }', 'datadriven = "0.1.0"')
             RECORDS.append({"name": name, "version": "0.7.0", "source": url,
                             "upstream_revision": RAFT_REV, "archive_sha256": hashlib.sha256(data).hexdigest(),

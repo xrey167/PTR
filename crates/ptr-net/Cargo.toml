@@ -7,26 +7,13 @@ publish = false
 
 [features]
 default = []
-iroh-backend = [
-  "dep:iroh",
-  "dep:url",
-  "dep:idna",
-  "dep:idna_adapter",
-  "dep:time",
-]
+iroh-backend = ["dep:iroh"]
 
 [dependencies]
 ptr-types = { workspace = true }
 ptr-protocol = { workspace = true }
-iroh = { version = "=0.35.0", optional = true, default-features = false }
-
-# Iroh 0.35 declares Rust 1.81 support, but unconstrained 2026 transitive
-# updates have raised MSRV. Pin the release-compatible graph used by the
-# upstream 0.35.0 lockfile so PTR's Rust 1.85 feature CI remains meaningful.
-url = { version = "=2.5.4", optional = true }
-idna = { version = "=1.0.3", optional = true }
-idna_adapter = { version = "=1.2.0", optional = true }
-time = { version = "=0.3.41", optional = true }
+# Optional transport requires Rust 1.91; the default core retains Rust 1.85.
+iroh = { version = "=1.2.0", optional = true, default-features = false, features = ["tls-ring"] }
 
 [dev-dependencies]
 tokio = { workspace = true }

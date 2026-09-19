@@ -9,11 +9,12 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-18  
-**Code footprint:** 1 Rust source files · 136 nonblank source lines · 2 integration-test files · 1 `#[test]` markers
+**Last reviewed:** 2026-09-19  
+**Code footprint:** 1 Rust source files · 138 nonblank source lines · 2 integration-test files · 1 `#[test]` markers
 
 ### Implemented now
 
+- Iroh 1.2 transport API with current DNS/TLS dependency graph; optional feature MSRV 1.91, default core MSRV 1.85
 - ALPN constants for raft, PodWire, model, blob and events protocols
 - NodeIdentity scaffold
 - Provider-independent Transport trait

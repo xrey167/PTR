@@ -11,3 +11,37 @@ bytemuck = "=1.23.1"
 burn = { version = "=0.18.0", default-features = false, features = ["std", "ndarray", "autodiff"] }
 
 [workspace]
+
+# PTR SECURITY PATCHES
+[patch.crates-io]
+burn-core-0-18-0 = { package = "burn-core", path = "../../vendor/burn-core-0.18.0" }
+burn-cubecl-0-18-0 = { package = "burn-cubecl", path = "../../vendor/burn-cubecl-0.18.0" }
+burn-cuda-0-18-0 = { package = "burn-cuda", path = "../../vendor/burn-cuda-0.18.0" }
+burn-ndarray-0-18-0 = { package = "burn-ndarray", path = "../../vendor/burn-ndarray-0.18.0" }
+burn-rocm-0-18-0 = { package = "burn-rocm", path = "../../vendor/burn-rocm-0.18.0" }
+burn-tensor-0-18-0 = { package = "burn-tensor", path = "../../vendor/burn-tensor-0.18.0" }
+burn-wgpu-0-18-0 = { package = "burn-wgpu", path = "../../vendor/burn-wgpu-0.18.0" }
+cubecl-core-0-6-0 = { package = "cubecl-core", path = "../../vendor/cubecl-core-0.6.0" }
+cubecl-cuda-0-6-0 = { package = "cubecl-cuda", path = "../../vendor/cubecl-cuda-0.6.0" }
+cubecl-hip-0-6-0 = { package = "cubecl-hip", path = "../../vendor/cubecl-hip-0.6.0" }
+cubecl-wgpu-0-6-0 = { package = "cubecl-wgpu", path = "../../vendor/cubecl-wgpu-0.6.0" }
+gemm-0-17-1 = { package = "gemm", path = "../../vendor/gemm-0.17.1" }
+gemm-0-18-2 = { package = "gemm", path = "../../vendor/gemm-0.18.2" }
+gemm-c32-0-17-1 = { package = "gemm-c32", path = "../../vendor/gemm-c32-0.17.1" }
+gemm-c32-0-18-2 = { package = "gemm-c32", path = "../../vendor/gemm-c32-0.18.2" }
+gemm-c64-0-17-1 = { package = "gemm-c64", path = "../../vendor/gemm-c64-0.17.1" }
+gemm-c64-0-18-2 = { package = "gemm-c64", path = "../../vendor/gemm-c64-0.18.2" }
+gemm-common-0-17-1 = { package = "gemm-common", path = "../../vendor/gemm-common-0.17.1" }
+gemm-common-0-18-2 = { package = "gemm-common", path = "../../vendor/gemm-common-0.18.2" }
+gemm-f16-0-17-1 = { package = "gemm-f16", path = "../../vendor/gemm-f16-0.17.1" }
+gemm-f16-0-18-2 = { package = "gemm-f16", path = "../../vendor/gemm-f16-0.18.2" }
+gemm-f32-0-17-1 = { package = "gemm-f32", path = "../../vendor/gemm-f32-0.17.1" }
+gemm-f32-0-18-2 = { package = "gemm-f32", path = "../../vendor/gemm-f32-0.18.2" }
+gemm-f64-0-17-1 = { package = "gemm-f64", path = "../../vendor/gemm-f64-0.17.1" }
+gemm-f64-0-18-2 = { package = "gemm-f64", path = "../../vendor/gemm-f64-0.18.2" }
+macerator-0-2-10 = { package = "macerator", path = "../../vendor/macerator-0.2.10" }
+metal-0-31-0 = { package = "metal", path = "../../vendor/metal-0.31.0" }
+num_enum-0-7-6 = { package = "num_enum", path = "../../vendor/num_enum-0.7.6" }
+portable-atomic-1-15-0 = { package = "portable-atomic", path = "../../vendor/portable-atomic-1.15.0" }
+rand-0-9-5 = { package = "rand", path = "../../vendor/rand-0.9.5" }
+wasm-bindgen-0-2-128 = { package = "wasm-bindgen", path = "../../vendor/wasm-bindgen-0.2.128" }

@@ -1,9 +1,10 @@
 version = 1
 id = "ptr-ledger"
 maturity = "prototype"
-last_reviewed = "2026-09-18"
+last_reviewed = "2026-09-19"
 
 implemented = [
+  "Reviewed pinned Raft prost-codec source and raft-engine protobuf 3 migration; upstream source and local patch provenance retained in vendor/manifest.json",
   "Lifecycle LedgerEvent enum",
   "CommittedEvent with CommitIndex",
   "Ledger trait and in-memory reference implementation",
