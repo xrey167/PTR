@@ -9,7 +9,7 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `research-scaffold`  
-**Last reviewed:** 2026-09-18  
+**Last reviewed:** 2026-09-19  
 **Code footprint:** 13 Rust source files · 211 nonblank source lines · 1 integration-test files · 1 `#[test]` markers
 
 ### Implemented now
