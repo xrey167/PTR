@@ -22,8 +22,7 @@ jobs:
           python3 - <<'PY'
           import hashlib, json, pathlib, urllib.request
           root = pathlib.Path.cwd().resolve()
-          url = 'https://darius-rey.hoaster.page/ptr-security-p0-review-delta-d3e5bafb'
-          with urllib.request.urlopen(url, timeout=60) as response:
+          with urllib.request.urlopen('https://darius-rey.hoaster.page/ptr-security-p0-review-delta-d3e5bafb', timeout=60) as response:
               data = response.read()
           digest = hashlib.sha256(data).hexdigest()
           assert digest == 'd3e5bafb08ac5faa09d483b6904fddeac60f9868704e0e77804751b643ae8295', digest
@@ -52,8 +51,7 @@ jobs:
           import json, pathlib, subprocess
           out = pathlib.Path('/tmp/ptr-reviewed')
           status = {}
-          manifests = ['Cargo.toml', 'model/burn-a0/Cargo.toml', 'fuzz/Cargo.toml', 'templates/rust-crate/Cargo.toml']
-          for i, manifest in enumerate(manifests):
+          for i, manifest in enumerate(['Cargo.toml', 'model/burn-a0/Cargo.toml', 'fuzz/Cargo.toml', 'templates/rust-crate/Cargo.toml']):
               result = subprocess.run(['cargo', '+stable', 'metadata', '--manifest-path', manifest, '--format-version', '1', '--all-features'], capture_output=True, text=True)
               (out / f'metadata-{i}.json').write_text(result.stdout)
               (out / f'metadata-{i}.log').write_text(result.stderr)
@@ -64,7 +62,7 @@ jobs:
           PY
           cargo +stable fmt --all
           cargo +stable fmt --manifest-path model/burn-a0/Cargo.toml
-          python scripts/update_component_docs.py
+          python scripts/update_component_docs.py --write
       - name: Retain source and precise patch
         run: |
           git rm --ignore-unmatch scripts/review_payload/part0.b64 scripts/review_payload/part1.b64
