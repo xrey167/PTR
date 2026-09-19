@@ -122,7 +122,9 @@ fn contradictory_sources_keep_their_own_evidence_and_estimates() {
     let sources = [source("source:a", 0.9), source("source:b", 0.1)];
     assert_ne!(sources[0].provenance, sources[1].provenance);
     assert_ne!(sources[0].value, sources[1].value);
-    assert!(sources.iter().all(|item| item.validity == Validity::Disputed));
+    assert!(sources
+        .iter()
+        .all(|item| item.validity == Validity::Disputed));
     // This is a representation test, not an implemented conflict resolver.
 }
 
@@ -148,7 +150,10 @@ fn revoked_generation_is_not_relabelled_by_full_confidence() {
 fn role_confidence_cannot_be_read_as_proposition_confidence() {
     let role = ConfidenceTarget::SemanticRole(SemanticRole::Claim);
     let estimate = estimate(role.clone(), 1.0);
-    assert_eq!(estimate.probability_for(&role).expect("same target").get(), 1.0);
+    assert_eq!(
+        estimate.probability_for(&role).expect("same target").get(),
+        1.0
+    );
     let error = estimate
         .probability_for(&ConfidenceTarget::Proposition)
         .expect_err("a full role score is not a truth probability");
