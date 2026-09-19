@@ -1,5 +1,5 @@
 use ptr_ledger::{FileLedger, LedgerEvent};
-use ptr_types::{CapsuleId, CommitIndex, Generation, ProjectId};
+use ptr_types::{CapsuleId, CommitIndex, Generation, ProjectId, Revision};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -16,6 +16,11 @@ fn path(name: &str) -> std::path::PathBuf {
 fn all_event_variants_roundtrip_across_reopen() {
     let path = path("roundtrip");
     let expected = vec![
+        LedgerEvent::SemanticDeltaCommitted {
+            base_revision: Revision(2),
+            revision: Revision(3),
+            encoded_delta: vec![0, 1, 255],
+        },
         LedgerEvent::CapsuleCommitted {
             project: ProjectId::from("p"),
             capsule: CapsuleId::from("c"),

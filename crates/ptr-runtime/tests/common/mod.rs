@@ -120,7 +120,9 @@ pub fn scope(action: &ActionIr) -> ActionScope {
 
 pub fn fixture() -> (PtrRuntime, ActionIr) {
     let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
-    let revision = runtime.ingest_text(RequestId::from("request"), "ground state");
+    let revision = runtime
+        .ingest_text(RequestId::from("request"), "ground state")
+        .unwrap();
     runtime
         .commit(LedgerEvent::CapsuleCommitted {
             project: ProjectId::from("p"),

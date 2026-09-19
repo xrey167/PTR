@@ -1,9 +1,11 @@
 version = 1
 id = "ptr-state"
 maturity = "prototype"
-last_reviewed = "2026-09-18"
+last_reviewed = "2026-09-19"
 
 implemented = [
+  "Semantic transaction position and revision materialization without duplicated payload ownership",
+
   "MaterializedState reference map with last_applied commit index",
   "Application of Revoked and HardConstraintCommitted ledger events",
   "Monotonic materialization with duplicate/out-of-order/gap detection",

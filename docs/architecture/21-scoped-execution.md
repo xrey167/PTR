@@ -126,3 +126,6 @@ Keep issue #15 open. The next implementation slice is durable semantic payload
 and dependency/revision reconstruction, before persistent execution receipts or
 remote dispatch are allowed to rely on reconstructed state. Hard neural validity
 masks/codebook and real cluster composition remain separate, subsequent gates.
+
+
+P0.2 follow-up: [semantic payload/dependency/revision reconstruction](22-durable-semantic-state.md) is now implemented. Real semantic commits invalidate pending permits; validated no-ops do not. Execution authority remains process-local.

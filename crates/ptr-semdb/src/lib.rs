@@ -24,13 +24,19 @@ pub enum SemanticValue {
 }
 
 impl From<String> for SemanticValue {
-    fn from(value: String) -> Self { Self::Text(value) }
+    fn from(value: String) -> Self {
+        Self::Text(value)
+    }
 }
 impl From<&str> for SemanticValue {
-    fn from(value: &str) -> Self { Self::Text(value.to_owned()) }
+    fn from(value: &str) -> Self {
+        Self::Text(value.to_owned())
+    }
 }
 impl From<SemanticPayload> for SemanticValue {
-    fn from(value: SemanticPayload) -> Self { Self::Payload(value) }
+    fn from(value: SemanticPayload) -> Self {
+        Self::Payload(value)
+    }
 }
 
 /// One atomic update. Dependency entries replace the complete input set for a
@@ -50,10 +56,16 @@ pub enum SemanticError {
     InvalidKey,
     ConflictingOperation,
     CyclicDependency,
-    MissingDependency { derived: String, input: String },
+    MissingDependency {
+        derived: String,
+        input: String,
+    },
     RevisionExhausted,
     StalePreparation,
-    RevisionMismatch { expected: Revision, actual: Revision },
+    RevisionMismatch {
+        expected: Revision,
+        actual: Revision,
+    },
     NoChangeRecord,
 }
 impl fmt::Display for SemanticError {
@@ -69,13 +81,21 @@ pub struct DependencyGraph {
 }
 impl DependencyGraph {
     pub fn depends_on(&mut self, derived: impl Into<String>, input: impl Into<String>) {
-        self.inputs.entry(derived.into()).or_default().insert(input.into());
+        self.inputs
+            .entry(derived.into())
+            .or_default()
+            .insert(input.into());
     }
     pub fn affected_by<I, S>(&self, changed: I) -> BTreeSet<String>
-    where I: IntoIterator<Item = S>, S: Into<String> {
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
         let mut reverse: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
         for (derived, inputs) in &self.inputs {
-            for input in inputs { reverse.entry(input).or_default().push(derived); }
+            for input in inputs {
+                reverse.entry(input).or_default().push(derived);
+            }
         }
         let mut out = BTreeSet::new();
         let mut stack: Vec<String> = changed.into_iter().map(Into::into).collect();
@@ -93,10 +113,17 @@ impl DependencyGraph {
         let mut reverse: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
         for (derived, inputs) in &self.inputs {
             degree.insert(derived, inputs.len());
-            for input in inputs { reverse.entry(input).or_default().push(derived); }
+            for input in inputs {
+                reverse.entry(input).or_default().push(derived);
+            }
         }
-        for input in reverse.keys() { degree.entry(input).or_default(); }
-        let mut ready: Vec<&str> = degree.iter().filter_map(|(key, n)| (*n == 0).then_some(*key)).collect();
+        for input in reverse.keys() {
+            degree.entry(input).or_default();
+        }
+        let mut ready: Vec<&str> = degree
+            .iter()
+            .filter_map(|(key, n)| (*n == 0).then_some(*key))
+            .collect();
         let mut visited = 0;
         while let Some(key) = ready.pop() {
             visited += 1;
@@ -104,7 +131,9 @@ impl DependencyGraph {
                 for child in children {
                     let n = degree.get_mut(child).expect("graph node exists");
                     *n -= 1;
-                    if *n == 0 { ready.push(child); }
+                    if *n == 0 {
+                        ready.push(child);
+                    }
                 }
             }
         }
@@ -128,15 +157,31 @@ pub struct SemanticSnapshot {
 }
 impl SemanticSnapshot {
     pub fn get(&self, key: &str) -> Option<&str> {
-        match self.value(key)? { SemanticValue::Text(text) => Some(text), _ => None }
+        match self.value(key)? {
+            SemanticValue::Text(text) => Some(text),
+            _ => None,
+        }
     }
-    pub fn value(&self, key: &str) -> Option<&SemanticValue> { self.state.ground.get(key) }
+    pub fn value(&self, key: &str) -> Option<&SemanticValue> {
+        self.state.ground.get(key)
+    }
     pub fn payload(&self, key: &str) -> Option<&SemanticPayload> {
-        match self.value(key)? { SemanticValue::Payload(value) => Some(value), _ => None }
+        match self.value(key)? {
+            SemanticValue::Payload(value) => Some(value),
+            _ => None,
+        }
     }
-    pub fn keys(&self) -> impl Iterator<Item = &str> { self.state.ground.keys().map(String::as_str) }
+    pub fn keys(&self) -> impl Iterator<Item = &str> {
+        self.state.ground.keys().map(String::as_str)
+    }
     pub fn inputs(&self, key: &str) -> impl Iterator<Item = &str> {
-        self.state.dependencies.inputs.get(key).into_iter().flatten().map(String::as_str)
+        self.state
+            .dependencies
+            .inputs
+            .get(key)
+            .into_iter()
+            .flatten()
+            .map(String::as_str)
     }
 }
 
@@ -149,8 +194,12 @@ pub struct PreparedDelta {
     affected: BTreeSet<String>,
 }
 impl PreparedDelta {
-    pub fn revision(&self) -> Revision { self.next.revision }
-    pub fn affected(&self) -> &BTreeSet<String> { &self.affected }
+    pub fn revision(&self) -> Revision {
+        self.next.revision
+    }
+    pub fn affected(&self) -> &BTreeSet<String> {
+        &self.affected
+    }
 }
 
 #[derive(Debug, Default)]
@@ -159,7 +208,9 @@ pub struct SemanticHost {
     owner: Arc<()>,
 }
 impl SemanticHost {
-    pub fn revision(&self) -> Revision { self.state.revision }
+    pub fn revision(&self) -> Revision {
+        self.state.revision
+    }
 
     /// Validate and stage without publishing. The reference implementation clones
     /// state; persistent data structures are an independent performance task.
@@ -169,8 +220,12 @@ impl SemanticHost {
         let mut next = self.state.clone();
         let mut changed = BTreeSet::new();
         for key in &delta.removals {
-            if next.ground.remove(key).is_some() { changed.insert(key.clone()); }
-            if next.dependencies.inputs.remove(key).is_some() { changed.insert(key.clone()); }
+            if next.ground.remove(key).is_some() {
+                changed.insert(key.clone());
+            }
+            if next.dependencies.inputs.remove(key).is_some() {
+                changed.insert(key.clone());
+            }
         }
         for (key, value) in &delta.upserts {
             if next.ground.get(key) != Some(value) {
@@ -181,50 +236,81 @@ impl SemanticHost {
         for (key, inputs) in &delta.dependencies {
             let old = next.dependencies.inputs.get(key);
             if old != Some(inputs) && !(old.is_none() && inputs.is_empty()) {
-                if inputs.is_empty() { next.dependencies.inputs.remove(key); }
-                else { next.dependencies.inputs.insert(key.clone(), inputs.clone()); }
+                if inputs.is_empty() {
+                    next.dependencies.inputs.remove(key);
+                } else {
+                    next.dependencies.inputs.insert(key.clone(), inputs.clone());
+                }
                 changed.insert(key.clone());
             }
         }
-        if !next.dependencies.acyclic() { return Err(SemanticError::CyclicDependency); }
+        if !next.dependencies.acyclic() {
+            return Err(SemanticError::CyclicDependency);
+        }
         let mut affected = self.state.dependencies.affected_by(changed.iter().cloned());
         affected.extend(next.dependencies.affected_by(changed));
         // A cached derivation is not kept merely because its source was removed.
         // Keep dependency metadata so a later upsert still has to supply inputs.
         for key in &affected {
-            if !delta.upserts.contains_key(key) { next.ground.remove(key); }
+            if !delta.upserts.contains_key(key) {
+                next.ground.remove(key);
+            }
         }
         for key in delta.upserts.keys() {
             if let Some(inputs) = next.dependencies.inputs.get(key) {
                 for input in inputs {
                     if !next.ground.contains_key(input) {
-                        return Err(SemanticError::MissingDependency { derived: key.clone(), input: input.clone() });
+                        return Err(SemanticError::MissingDependency {
+                            derived: key.clone(),
+                            input: input.clone(),
+                        });
                     }
                 }
             }
         }
         if next != self.state {
-            next.revision = Revision(self.revision().0.checked_add(1).ok_or(SemanticError::RevisionExhausted)?);
+            next.revision = Revision(
+                self.revision()
+                    .0
+                    .checked_add(1)
+                    .ok_or(SemanticError::RevisionExhausted)?,
+            );
         }
-        Ok(PreparedDelta { owner: self.owner.clone(), base: self.revision(), next, affected })
+        Ok(PreparedDelta {
+            owner: self.owner.clone(),
+            base: self.revision(),
+            next,
+            affected,
+        })
     }
 
-    pub fn apply_prepared(&mut self, prepared: PreparedDelta) -> Result<(Revision, BTreeSet<String>), SemanticError> {
+    pub fn apply_prepared(
+        &mut self,
+        prepared: PreparedDelta,
+    ) -> Result<(Revision, BTreeSet<String>), SemanticError> {
         if !Arc::ptr_eq(&self.owner, &prepared.owner) || self.revision() != prepared.base {
             return Err(SemanticError::StalePreparation);
         }
         self.state = prepared.next;
         Ok((self.revision(), prepared.affected))
     }
-    pub fn apply_delta(&mut self, delta: SemanticDelta) -> Result<(Revision, BTreeSet<String>), SemanticError> {
+    pub fn apply_delta(
+        &mut self,
+        delta: SemanticDelta,
+    ) -> Result<(Revision, BTreeSet<String>), SemanticError> {
         let prepared = self.prepare_delta(delta)?;
         self.apply_prepared(prepared)
     }
     pub fn snapshot(&self) -> SemanticSnapshot {
-        SemanticSnapshot { revision: self.revision(), state: Arc::new(self.state.clone()), owner: self.owner.clone() }
+        SemanticSnapshot {
+            revision: self.revision(),
+            state: Arc::new(self.state.clone()),
+            owner: self.owner.clone(),
+        }
     }
     pub fn is_stale(&self, snapshot: &SemanticSnapshot) -> bool {
-        !Arc::ptr_eq(&self.owner, &snapshot.owner) || snapshot.revision != self.revision()
+        !Arc::ptr_eq(&self.owner, &snapshot.owner)
+            || snapshot.revision != self.revision()
             || snapshot.state.revision != snapshot.revision
     }
 }
@@ -247,7 +333,10 @@ mod tests {
         host.state.revision = Revision(u64::MAX);
         let mut delta = SemanticDelta::default();
         delta.upserts.insert("source".into(), "new".into());
-        assert!(matches!(host.apply_delta(delta), Err(SemanticError::RevisionExhausted)));
+        assert!(matches!(
+            host.apply_delta(delta),
+            Err(SemanticError::RevisionExhausted)
+        ));
         assert!(host.snapshot().keys().next().is_none());
         assert_eq!(host.revision(), Revision(u64::MAX));
     }

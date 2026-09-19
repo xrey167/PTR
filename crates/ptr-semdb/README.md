@@ -9,21 +9,25 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-18  
-**Code footprint:** 1 Rust source files · 119 nonblank source lines · 1 integration-test files · 2 `#[test]` markers
+**Last reviewed:** 2026-09-19  
+**Code footprint:** 2 Rust source files · 497 nonblank source lines · 2 integration-test files · 12 `#[test]` markers
 
 ### Implemented now
 
+- Text and typed binary/source values share a revisioned semantic state
+- Bounded canonical PTRSD001 delta codec and staged atomic publication
+- Transactional dependency replacement and transitive removal of stale derived values
+- Host-bound snapshots and prepared changes reject foreign or stale admission
 - SemanticDelta upsert/removal model
 - Dependency graph and transitive affected-closure calculation
 - Revisioned SemanticHost and immutable Arc-backed SemanticSnapshot
 - Stale snapshot detection
 - ProjectSkeleton scaffold
-- Unit test proving local dependency invalidation
+- Integration regression preserving local dependency closure semantics
 
 ### Missing for the target architecture
 
-- Typed ground/derived query keys instead of String→String state
+- Typed query keys beyond the String-key/SemanticValue map
 - Memoized derived-query engine with dependency capture
 - Cancellation tokens for stale in-flight computation
 - Concurrent snapshot/read architecture and persistent/rebuildable caches
@@ -31,7 +35,7 @@
 
 ### Next milestones
 
-- Replace string map with typed key/value/query interfaces
+- Add typed query keys and automatic dependency capture over SemanticValue
 - Implement dependency-recording query execution and cache invalidation
 - Run S001/S002 before selecting a third-party incremental engine
 
@@ -52,7 +56,7 @@
 
 ### Current automated checks
 
-- local_change_invalidates_only_dependency_closure unit test
+- local_change_invalidates_only_dependency_closure integration test
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->
@@ -155,3 +159,12 @@ A new candidate should be added with a reproducible benchmark and failure-semant
 - [Component contracts](../../docs/COMPONENT_CONTRACTS.md)
 - [Global invariants](../../docs/INVARIANTS.md)
 
+
+
+## P0.2 semantic journal integration
+
+[Durable semantic-state contract](../../docs/architecture/22-durable-semantic-state.md)
+records the new code/codec, ownership and replay boundaries. Publication follows
+successful journal append. Typed Pod bytes and source identity participate in
+semantic revisions. Logical removals do not erase log history; neural checkpoints
+and authenticated framing remain separate gates. Execution evidence is in the PR.

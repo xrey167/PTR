@@ -42,6 +42,11 @@ impl MaterializedState {
 
 fn materialized_entries(event: &LedgerEvent) -> Vec<(String, String)> {
     match event {
+        // Lifecycle materialization records the position, not a second copy of
+        // semantic payloads. Their authoritative replay belongs to ptr-semdb.
+        LedgerEvent::SemanticDeltaCommitted { revision, .. } => {
+            vec![("semdb:revision".into(), revision.0.to_string())]
+        }
         LedgerEvent::CapsuleCommitted {
             project,
             capsule,

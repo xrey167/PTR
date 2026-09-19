@@ -3,6 +3,11 @@ id = "ptr-runtime"
 maturity = "prototype"
 last_reviewed = "2026-09-19"
 implemented = [
+  "Ordered semantic journal publication before acknowledgment or model resume",
+  "Semantic payload/dependency/revision reconstruction with schema and transition validation during replay",
+  "Complete typed Pod bytes and source identity are revision-significant",
+  "Fallible ingestion, optimistic base revision and canonical no-op handling",
+
   "Scoped synchronous execution gateway with opaque per-runtime sessions, exact grants, frozen ActionIR permits and registered verifier/executor binding",
   "Consume-time freshness, expiry, ownership and mandatory permission checks; permissions/commit/effect epochs invalidate pending permits",
   "Executor or ledger ambiguity fences subsequent execution and commits; process-local single-use authority is never replayed",
@@ -18,7 +23,7 @@ implemented = [
   "Bounded multi-step model resume loop after verified Pod observations advances semantic revision before continuation",
 ]
 missing = [
-  "Durable SemDB payload/revision reconstruction and network-authenticated/scoped Pod integration",
+  "Network-authenticated/scoped Pod integration and neural checkpoint admission",
   "Durable execution audit/idempotency, downstream fencing and real snapshot serialization",
   "Router-driven operator selection around the implemented bounded Pod-resume loop",
   "Async isolate scheduler integration",
@@ -26,7 +31,7 @@ missing = [
   "Streaming client response lifecycle and cancellation",
 ]
 next = [
-  "Reconstruct actual semantic payloads and dependency revisions durably before adding persistent execution authority",
+  "Add authenticated framing/snapshots and checkpoint admission before persistent execution authority",
   "Connect evaluated raft-engine/Turso adapters through typed backend config while preserving FileLedger reference mode",
   "Add opaque backend checkpoint handles and async streaming around the implemented observation resume contract",
   "Wire ptrd request handling beyond bootstrap ingestion",

@@ -53,3 +53,5 @@ PTR is a **compiling architecture/research prototype**, not yet a complete model
 - small JSON/TOML/Markdown result artifacts are versioned; large datasets/checkpoints remain out of Git
 
 See [docs/components/STATUS.md](docs/components/STATUS.md) for per-component maturity and [experiments/lifecycle/L001-revocation-crash/results/](experiments/lifecycle/L001-revocation-crash/results/) for the first lifecycle evidence.
+
+P0.2 adds canonical journaled semantic transactions, typed binary Pod results, transactional dependencies and validated revision reconstruction. Invalidated current derivations are evicted; prior log records and immutable snapshots remain. See `docs/architecture/22-durable-semantic-state.md`. Neural checkpoints, secure erasure, authenticated framing and cluster composition remain open.

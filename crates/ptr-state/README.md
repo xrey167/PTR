@@ -9,11 +9,12 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-18  
-**Code footprint:** 1 Rust source files · 183 nonblank source lines · 3 integration-test files · 2 `#[test]` markers
+**Last reviewed:** 2026-09-19  
+**Code footprint:** 1 Rust source files · 188 nonblank source lines · 3 integration-test files · 2 `#[test]` markers
 
 ### Implemented now
 
+- Semantic transaction position and revision materialization without duplicated payload ownership
 - MaterializedState reference map with last_applied commit index
 - Application of Revoked and HardConstraintCommitted ledger events
 - Monotonic materialization with duplicate/out-of-order/gap detection
@@ -149,3 +150,12 @@ A new candidate should be added with a reproducible benchmark and failure-semant
 - [Component contracts](../../docs/COMPONENT_CONTRACTS.md)
 - [Global invariants](../../docs/INVARIANTS.md)
 
+
+
+## P0.2 semantic journal integration
+
+[Durable semantic-state contract](../../docs/architecture/22-durable-semantic-state.md)
+records the new code/codec, ownership and replay boundaries. Publication follows
+successful journal append. Typed Pod bytes and source identity participate in
+semantic revisions. Logical removals do not erase log history; neural checkpoints
+and authenticated framing remain separate gates. Execution evidence is in the PR.
