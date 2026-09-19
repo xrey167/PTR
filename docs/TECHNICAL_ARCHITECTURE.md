@@ -40,7 +40,7 @@ Preserves raw evidence, performs byte/MIME/encoding normalization, proposes type
 `ptr-semdb` is an incremental semantic compiler. It stores ground inputs and computes dependency-aware derived values. Every reasoning run receives an immutable snapshot with a `Revision`.
 
 ### Cognitive plane
-`ptr-core` maintains raw token states and a typed latent workspace. Semantic slots include goal, constraints, facts, hypotheses, distributions, unknowns, capabilities and resources. Latent recurrent steps may update this state without serializing a natural-language chain of thought.
+`ptr-core` maintains raw token states and a typed latent workspace. Semantic slots combine orthogonal shared axes from `ptr-types`: semantic role (for example goal/constraint/claim/resource), epistemic state (unknown/hypothesis/observed/inferred/verified), uncertainty representation, lifecycle validity and provenance. Latent recurrent steps may update the model-owned vector state without serializing a natural-language chain of thought.
 
 ### Routing plane
 `ptr-router` decides whether to spend compute on language reasoning, branch/search, probabilistic/statistical operators, symbolic computation, simulation, retrieval or external Pods.
