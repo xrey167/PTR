@@ -1,0 +1,26 @@
+name: p0-source-review
+on:
+  push:
+    branches: [agent/p0-semantic-durability-20260919]
+    paths: [.github/workflows/p0-source-review.yml]
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: b6f91994535268f1a51a8ae8b9827ac9e822ec89
+          persist-credentials: false
+      - name: Export reviewed source without credentials or generated files
+        run: |
+          mkdir -p /tmp/ptr-source
+          git rev-parse HEAD > /tmp/ptr-source/source-sha.txt
+          git archive --format=tar.gz HEAD > /tmp/ptr-source/source.tar.gz
+          sha256sum /tmp/ptr-source/source.tar.gz > /tmp/ptr-source/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ptr-semantic-baseline
+          path: /tmp/ptr-source/
+          retention-days: 2
