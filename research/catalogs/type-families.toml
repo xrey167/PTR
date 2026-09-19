@@ -16,7 +16,7 @@ owner = "ptr-types"
 status = "prototype"
 purpose = "Shared semantic roles and cognitive operator identities used by the neural core, model API, router and training."
 implemented = ["SemanticRole", "ReasoningOperator"]
-open = ["Goal<T>", "Constraint<T>", "Claim<T>", "Evidence<T>", "Relation<S,P,O>", "Resource<T>", "Procedure<T>", "ActionIntent<T>", "SemanticTypeDescriptor", "SlotId"]
+open = ["Goal<T>", "Constraint<T>", "Claim<T>", "Evidence<T>", "Relation<S,P,O>", "Resource<T>", "Procedure<T>", "ActionIntent<T>", "SemanticTypeDescriptor", "SlotId", "CognitiveTypeCodebook", "SemanticRoleCode", "ReasoningOperatorCode"]
 invariants = ["semantic role is independent of epistemic state", "operator identity is typed rather than provider/string based", "model representation does not create runtime authority"]
 
 [[family]]
@@ -25,7 +25,7 @@ owner = "ptr-types"
 status = "prototype"
 purpose = "Represent uncertainty and evidence strength without using probability as authority."
 implemented = ["Probability", "Epistemic<T>", "EpistemicState", "UncertaintyKind", "Validity", "VerificationLevel"]
-open = ["Estimate<T>", "Interval<T>", "Distribution<T>", "CalibrationMetadata", "Disagreement", "UnknownReason", "ConfidenceSource", "EpistemicTransition"]
+open = ["Estimate<T>", "Interval<T>", "Distribution<T>", "CalibrationMetadata", "Disagreement", "UnknownReason", "ConfidenceSource", "EpistemicTransition", "EpistemicStateCode", "UncertaintyKindCode"]
 invariants = ["unknown is representable", "learned confidence never grants effect permission", "uncertainty representation is independent of semantic role"]
 
 [[family]]
