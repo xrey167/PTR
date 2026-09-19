@@ -1,0 +1,66 @@
+name: security-migration-worker
+on:
+  push:
+    branches: [agent/security-remediation-20260919]
+    paths:
+      - scripts/migrate_security_dependencies.py
+      - .github/workflows/security-migration-worker.yml
+permissions:
+  contents: write
+concurrency:
+  group: security-migration-worker
+  cancel-in-progress: false
+jobs:
+  migrate:
+    if: github.repository == 'xrey167/PTR' && github.ref == 'refs/heads/agent/security-remediation-20260919'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS: fallback
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: agent/security-remediation-20260919
+          fetch-depth: 1
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Refuse stale or previously migrated input
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git branch --show-current)" = agent/security-remediation-20260919
+          test ! -e vendor
+      - name: Execute source migration
+        run: |
+          mkdir -p /tmp/ptr-migration
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('Cargo.toml'); s=p.read_text()
+          assert 'exclude = ["fuzz", "model/burn-a0"]' in s
+          p.write_text(s.replace('exclude = ["fuzz", "model/burn-a0"]', 'exclude = ["fuzz", "model/burn-a0", "vendor"]'))
+          PY
+          python3 scripts/migrate_security_dependencies.py 2>&1 | tee /tmp/ptr-migration/migration.log
+      - name: Commit generated files on the remediation branch only
+        run: |
+          test "$(git ls-remote origin refs/heads/agent/security-remediation-20260919 | cut -f1)" = "$GITHUB_SHA"
+          git config user.name 'PTR dependency migration'
+          git config user.email '104269920+xrey167@users.noreply.github.com'
+          git add Cargo.toml Cargo.lock model/burn-a0/Cargo.toml model/burn-a0/Cargo.lock crates/ptr-net crates/ptr-ledger/component.toml crates/ptr-ledger/README.md docs/components/STATUS.md
+          git add -f fuzz/Cargo.lock templates/rust-crate/Cargo.lock vendor
+          git diff --cached --stat
+          git commit -m 'fix: migrate vulnerable and retired dependencies with exact upstream provenance'
+          git push origin HEAD:refs/heads/agent/security-remediation-20260919
+      - name: Retain failure or success evidence
+        if: always()
+        run: |
+          mkdir -p /tmp/ptr-migration
+          git status --short > /tmp/ptr-migration/status.txt
+          git diff > /tmp/ptr-migration/working.patch
+          git rev-parse HEAD > /tmp/ptr-migration/head.txt
+          tar --exclude=.git --exclude=target --exclude='*/target' -czf /tmp/ptr-migration/source.tar.gz .
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ptr-security-migration
+          path: /tmp/ptr-migration/
+          retention-days: 7
