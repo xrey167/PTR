@@ -35,4 +35,5 @@ evidence = []
 id = "burn-0.18-ndarray-a0"
 source = "external+internal-prototype"
 status = "evaluating"
+command = "cargo test --manifest-path model/burn-a0/Cargo.toml --locked"
 evidence = ["../../../model/burn-a0/README.md", "../../../model/burn-a0/tests/forward.rs", "../../../model/burn-a0/tests/train_router.rs"]
