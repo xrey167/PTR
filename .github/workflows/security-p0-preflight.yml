@@ -1,0 +1,76 @@
+name: security-p0-preflight
+on:
+  push:
+    branches: [agent/security-p0-preflight-20260919]
+permissions:
+  contents: read
+jobs:
+  evidence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: efe8386d71f03997ce5ea2cc93bba66ff43342ba
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Snapshot and tool installation
+        run: |
+          mkdir -p /tmp/ptr-preflight
+          git rev-parse HEAD > /tmp/ptr-preflight/source-sha.txt
+          git archive --format=tar.gz HEAD > /tmp/ptr-preflight/source.tar.gz
+          cargo +stable install cargo-audit --locked > /tmp/ptr-preflight/install-audit.log 2>&1
+          cargo +stable install cargo-deny --locked > /tmp/ptr-preflight/install-deny.log 2>&1
+          { rustc +stable -Vv; cargo +stable -V; cargo audit --version; cargo deny --version; } > /tmp/ptr-preflight/tool-versions.txt
+      - name: Collect audits, license diagnostics and package metadata
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, pathlib, subprocess, urllib.request
+          out = pathlib.Path('/tmp/ptr-preflight')
+          def run(name, argv):
+              result = subprocess.run(argv, capture_output=True, text=True)
+              (out / (name + '.stdout')).write_text(result.stdout)
+              (out / (name + '.stderr')).write_text(result.stderr)
+              return result.returncode
+          status = {}
+          for name, manifest in [('workspace', 'Cargo.toml'), ('burn-a0', 'model/burn-a0/Cargo.toml'), ('fuzz', 'fuzz/Cargo.toml'), ('template', 'templates/rust-crate/Cargo.toml')]:
+              if not pathlib.Path(manifest).exists():
+                  continue
+              lock = str(pathlib.Path(manifest).with_name('Cargo.lock'))
+              if pathlib.Path(lock).exists():
+                  status[name + '-audit'] = run(name + '-audit', ['cargo', '+stable', 'audit', '--file', lock, '--json'])
+              status[name + '-metadata'] = run(name + '-metadata', ['cargo', '+stable', 'metadata', '--manifest-path', manifest, '--format-version', '1', '--all-features'])
+              status[name + '-deny'] = run(name + '-deny', ['cargo', '+stable', 'deny', '--format', 'json', '--manifest-path', manifest, 'check'])
+          crates = ['iroh', 'raft', 'raft-engine', 'raft-proto', 'protobuf', 'hickory-proto', 'hickory-resolver', 'hickory-net', 'time', 'rustls', 'rustls-webpki', 'burn', 'burn-ndarray', 'turso', 'idna', 'idna_adapter', 'lru', 'prometheus']
+          inventory = {}
+          for crate in crates:
+              try:
+                  req = urllib.request.Request('https://crates.io/api/v1/crates/' + crate, headers={'User-Agent': 'PTR-security-review/0.1'})
+                  with urllib.request.urlopen(req, timeout=30) as response:
+                      data = json.load(response)
+                  inventory[crate] = [{k: v.get(k) for k in ['num', 'rust_version', 'license', 'yanked', 'created_at']} for v in data['versions'][:12]]
+              except Exception as exc:
+                  inventory[crate] = {'error': str(exc)}
+          (out / 'registry-inventory.json').write_text(json.dumps(inventory, indent=2))
+          (out / 'status.json').write_text(json.dumps(status, indent=2))
+          print(json.dumps(status, indent=2))
+          PY
+          git -C "$HOME/.cargo/advisory-db" rev-parse HEAD > /tmp/ptr-preflight/advisory-db-sha.txt
+          git diff -- Cargo.lock model/burn-a0/Cargo.lock fuzz/Cargo.lock > /tmp/ptr-preflight/metadata-resolution.patch
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ptr-security-p0-preflight
+          path: /tmp/ptr-preflight/
+          retention-days: 7
+      - name: Preserve failing audit status
+        run: |
+          python3 - <<'PY'
+          import json, pathlib
+          status = json.loads(pathlib.Path('/tmp/ptr-preflight/status.json').read_text())
+          failures = {k: v for k, v in status.items() if v}
+          print('Diagnostic evidence only; no source changes or production approval.')
+          print(json.dumps(failures, indent=2))
+          raise SystemExit(bool(failures))
+          PY
