@@ -1,7 +1,7 @@
 version = 1
 id = "ptr-types"
 maturity = "foundation"
-last_reviewed = "2026-09-18"
+last_reviewed = "2026-09-19"
 
 implemented = [
   "Shared SemanticRole taxonomy for goals, constraints, claims, evidence, resources, capabilities, relations, procedures and actions",
