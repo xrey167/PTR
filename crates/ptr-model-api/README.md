@@ -15,7 +15,7 @@
 ### Implemented now
 
 - Backend-neutral ModelRequest with request/revision/raw text
-- ModelEvent enum for slot, hypothesis, confidence, operator, typed Pod request, candidate, action, token and completion events
+- ModelEvent enum for slot, hypothesis, confidence, typed ReasoningOperator request, typed Pod request, candidate, action, token and completion events
 - InferenceBackend trait and ModelError
 - Deterministic ReferenceEchoBackend for runtime conformance tests
 - ModelObservation, ModelResumeRequest and ResumableInferenceBackend continuation contract
