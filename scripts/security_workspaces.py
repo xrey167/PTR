@@ -1,6 +1,7 @@
 """Audit every owned Cargo workspace; never mutate a lockfile to make it pass."""
 from __future__ import annotations
 import argparse
+import fnmatch
 import hashlib
 import json
 import subprocess
@@ -14,12 +15,22 @@ EXPECTED = {"Cargo.toml", "model/burn-a0/Cargo.toml", "fuzz/Cargo.toml", "templa
 
 def workspaces(root: Path) -> list[Path]:
     found = []
+    root_manifest = root / "Cargo.toml"
+    root_data = (tomllib.loads(root_manifest.read_text(encoding="utf-8"))
+                 if root_manifest.is_file() else {})
+    excluded = root_data.get("workspace", {}).get("exclude", [])
     for manifest in root.rglob("Cargo.toml"):
         relative = manifest.relative_to(root)
         if EXTERNAL_OR_GENERATED.intersection(relative.parts):
             continue
         data = tomllib.loads(manifest.read_text(encoding="utf-8"))
-        if "workspace" in data:
+        # Cargo permits excluded standalone packages without a [workspace]
+        # table (the real fuzz package uses this form). Their lockfiles must
+        # not disappear from security coverage merely because of that syntax.
+        standalone = any(fnmatch.fnmatchcase(relative.parent.as_posix(), pattern.rstrip("/"))
+                         for pattern in excluded)
+        if ("workspace" in data or relative.as_posix() in EXPECTED
+                or standalone or manifest.with_name("Cargo.lock").is_file()):
             found.append(relative)
     paths = {path.as_posix() for path in found}
     missing = EXPECTED - paths
@@ -81,6 +92,12 @@ def main() -> int:
             return 0
         return scan(args.kind, args.output)
     except (OSError, ValueError, subprocess.SubprocessError) as error:
+        # Preserve diagnostic evidence even if discovery/metadata fails before
+        # a scanner can run. This is explicitly incomplete, never a clean scan.
+        args.output.mkdir(parents=True, exist_ok=True)
+        (args.output / "failure.json").write_text(
+            json.dumps({"complete": False, "kind": args.kind,
+                        "error": str(error)}, indent=2) + "\n", encoding="utf-8")
         print(f"ERROR: security verification incomplete: {error}")
         return 1
 
