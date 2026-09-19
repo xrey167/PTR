@@ -44,6 +44,16 @@ fn key() -> AnchorKey {
     AnchorKey::from_bytes([0x6e; 32])
 }
 
+/// Read a log's bytes with **no ledger open**.
+///
+/// While a ledger holds a log, its bytes are only reachable through that handle:
+/// Windows advisory locks are mandatory for I/O. Every read here is therefore
+/// either this helper after an explicit `drop`, or `AcknowledgedLedger`'s own
+/// accessor. A bare `std::fs::read` of a log path in this file is a bug.
+fn offline_log_bytes(path: &std::path::Path) -> Vec<u8> {
+    std::fs::read(path).unwrap()
+}
+
 /// A semantic transaction carrying `value` as opaque committed bytes, which is how
 /// a real payload reaches the journal.
 fn carrying(base: u64, value: &[u8]) -> LedgerEvent {
@@ -146,7 +156,7 @@ fn erasure_needs_the_floor_past_the_record_and_the_orphan_reclaimed() {
         [Retainer::Log(outcome.superseded_log.clone())]
     );
     assert_eq!(audit.scanned_logs(), 2);
-    assert!(!retains(&std::fs::read(&outcome.live_log).unwrap(), SECRET));
+    assert!(!retains(&ledger.retained_bytes().unwrap(), SECRET));
 
     // Reclaiming the orphan completes it for everything reachable.
     assert_eq!(
@@ -279,7 +289,7 @@ fn destroying_the_anchor_key_is_not_erasure() {
     // erasure would be a category error.
     let audit = tmp.paths().audit_erasure(SECRET, base.index).unwrap();
     assert!(!audit.erased_where_reachable());
-    let bytes = std::fs::read(tmp.paths().log_path(base.index)).unwrap();
+    let bytes = offline_log_bytes(&tmp.paths().log_path(base.index));
     let verified = decode_log_from(&bytes, base).unwrap();
     assert_eq!(verified.events().len(), 4);
 }
