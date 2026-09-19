@@ -1,7 +1,7 @@
 version = 1
 id = "ptr-memory"
 maturity = "scaffold"
-last_reviewed = "2026-09-18"
+last_reviewed = "2026-09-19"
 
 implemented = [
   "MemoryClass taxonomy",
