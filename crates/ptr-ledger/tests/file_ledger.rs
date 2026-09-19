@@ -76,9 +76,9 @@ fn all_event_variants_roundtrip_across_reopen() {
 }
 
 #[test]
-fn partial_trailing_record_is_truncated_without_admission() {
+fn partial_trailing_record_requires_explicit_anchored_recovery() {
     let path = path("partial-tail");
-    {
+    let (trusted, history) = {
         let mut ledger = FileLedger::open(&path).unwrap();
         ledger
             .append_durable(LedgerEvent::Revoked {
@@ -86,20 +86,29 @@ fn partial_trailing_record_is_truncated_without_admission() {
                 generation: Generation(7),
             })
             .unwrap();
-    }
-
-    let durable_len = std::fs::metadata(&path).unwrap().len();
+        (ledger.anchor().unwrap(), ledger.events().to_vec())
+    };
+    let durable = std::fs::read(&path).unwrap();
+    let mut next = history;
+    next.push(ptr_ledger::CommittedEvent {
+        index: CommitIndex(2),
+        event: LedgerEvent::VerifierAttested {
+            subject: "pending".into(),
+            passed: false,
+        },
+    });
+    let all = ptr_ledger::integrity::encode_log(&next).unwrap();
     {
         let mut file = OpenOptions::new().append(true).open(&path).unwrap();
-        file.write_all(&100_u32.to_le_bytes()).unwrap();
-        file.write_all(b"partial").unwrap();
+        file.write_all(&all[durable.len()..all.len() - 1]).unwrap();
         file.flush().unwrap();
     }
-    assert!(std::fs::metadata(&path).unwrap().len() > durable_len);
-
-    let reopened = FileLedger::open(&path).unwrap();
+    let damaged = std::fs::read(&path).unwrap();
+    assert!(FileLedger::open(&path).is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), damaged);
+    let reopened = FileLedger::recover_unacknowledged_tail(&path, trusted).unwrap();
     assert_eq!(reopened.events().len(), 1);
-    assert_eq!(std::fs::metadata(&path).unwrap().len(), durable_len);
     drop(reopened);
+    assert_eq!(std::fs::read(&path).unwrap(), durable);
     std::fs::remove_file(path).unwrap();
 }

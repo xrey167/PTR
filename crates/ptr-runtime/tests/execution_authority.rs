@@ -462,3 +462,60 @@ fn idempotent_semantic_ingestion_does_not_invalidate_valid_permits() {
     runtime.execute_prepared(&session, permit).unwrap();
     assert_eq!(probe.executions(), 1);
 }
+
+#[test]
+fn recovery_snapshot_never_restores_execution_sessions_permissions_or_permits() {
+    let (mut runtime, action) = fixture();
+    let probe = Probe::default();
+    let old = session(&mut runtime, &action, &probe, "alice");
+    let permit = runtime
+        .prepare_execution(&old, &ProjectId::from("p"), &action, TTL)
+        .unwrap();
+    let snapshot = runtime.export_recovery_snapshot().unwrap();
+    let mut restored = PtrRuntime::restore_recovery_snapshot(
+        PtrConfig::default(),
+        snapshot.bytes(),
+        snapshot.anchor(),
+    )
+    .unwrap();
+    assert_eq!(
+        restored.execute_prepared(&old, permit),
+        Err(ExecutionError::ForeignRuntime)
+    );
+    let new = session(&mut restored, &action, &probe, "alice");
+    assert!(restored
+        .prepare_execution(&new, &ProjectId::from("p"), &action, TTL)
+        .is_err());
+    assert_eq!(probe.verifications(), 0);
+    assert_eq!(probe.executions(), 0);
+}
+
+#[test]
+fn ambiguous_execution_cannot_export_a_snapshot_or_trusted_journal_anchor() {
+    let (mut runtime, action) = fixture();
+    let probe = Probe::default();
+    let session = runtime
+        .register_execution_session(
+            "alice",
+            vec![grant(
+                scope(&action),
+                &probe,
+                RequiredVerification::Deterministic,
+                ExecutorMode::Error,
+            )],
+            TTL,
+        )
+        .unwrap();
+    let permit = runtime
+        .prepare_execution(&session, &ProjectId::from("p"), &action, TTL)
+        .unwrap();
+    assert!(runtime.execute_prepared(&session, permit).is_err());
+    assert!(matches!(
+        runtime.export_recovery_snapshot(),
+        Err(RuntimeError::ExecutionFenced)
+    ));
+    assert!(matches!(
+        runtime.journal_anchor(),
+        Err(RuntimeError::ExecutionFenced)
+    ));
+}

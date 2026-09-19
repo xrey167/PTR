@@ -129,9 +129,11 @@ The reference host clones state during staging/snapshot creation; latency and
 memory efficiency need measurement, not assumptions about the 5% project target.
 Logical deletion evicts current values; old plaintext bytes remain in append-only
 history and old snapshots. This is NOT secure erasure or neural unlearning.
-Authenticated/checksummed framing, rollback detection, complete snapshot/compaction
-protocols and independent replication are still required. A valid-looking changed
-record is not detected cryptographically by this codec.
+[P0.3](23-persistence-integrity.md) adds checked file framing, externally anchored
+rollback detection and complete replay-backed recovery snapshots around this codec.
+Strict reopen no longer auto-truncates incomplete tails; recovery is an explicit
+anchor-checked operation. Authenticated anchor storage, compacted snapshots and
+independent replication remain separate deployment/production requirements.
 
 Neural weights, KV caches and opaque backend checkpoints are neither persisted nor
 admitted here. Execution sessions/permits remain process-local and are not replayed.

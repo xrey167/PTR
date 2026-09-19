@@ -3406,6 +3406,7 @@ dependencies = [
  "ptr-types",
  "raft",
  "raft-engine",
+ "sha2",
  "slog",
 ]
 

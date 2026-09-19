@@ -272,7 +272,16 @@ fn all_incomplete_semantic_tail_prefixes_recover_only_prior_complete_transaction
         // Synthetic unacknowledged partial tail, not a hardware power-loss proof.
         let path = tmp.0.join(format!("tail-{end}"));
         std::fs::write(&path, [&prefix[..], &tail[..end]].concat()).unwrap();
-        let r = PtrRuntime::open_durable(PtrConfig::default(), &path).unwrap();
+        let anchor = ptr_ledger::integrity::decode_log(&prefix).unwrap().anchor();
+        if end > 0 {
+            assert!(PtrRuntime::open_durable(PtrConfig::default(), &path).is_err());
+            assert_eq!(
+                std::fs::read(&path).unwrap(),
+                [&prefix[..], &tail[..end]].concat()
+            );
+        }
+        drop(FileLedger::recover_unacknowledged_tail(&path, anchor).unwrap());
+        let r = PtrRuntime::open_durable_at(PtrConfig::default(), &path, anchor).unwrap();
         assert_eq!(r.revision(), Revision(1), "cut {end}");
         assert_eq!(r.snapshot().get("source"), Some("original"));
         assert_eq!(r.snapshot().get("plan"), Some("derived plan"));

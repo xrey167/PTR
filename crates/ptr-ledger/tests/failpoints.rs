@@ -33,9 +33,15 @@ fn panic_after_length_prefix_recovers_without_phantom_event() {
     drop(ledger);
     scenario.teardown();
 
-    let recovered = FileLedger::open(&path).unwrap();
+    assert!(FileLedger::open(&path).is_err());
+    let recovered =
+        FileLedger::recover_unacknowledged_tail(&path, ptr_ledger::integrity::LogAnchor::empty())
+            .unwrap();
     assert!(recovered.events().is_empty());
-    assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().len(),
+        ptr_ledger::integrity::LOG_MAGIC.len() as u64
+    );
 
     drop(recovered);
     std::fs::remove_file(path).unwrap();
@@ -72,7 +78,16 @@ fn failed_append_poison_survives_unwind_until_reopen() {
         assert!(ledger.events().is_empty());
         drop(ledger);
         scenario.teardown();
-        let mut recovered = FileLedger::open(&path).unwrap();
+        let mut recovered = if point == "ledger.after_length_before_payload" {
+            assert!(FileLedger::open(&path).is_err());
+            FileLedger::recover_unacknowledged_tail(
+                &path,
+                ptr_ledger::integrity::LogAnchor::empty(),
+            )
+            .unwrap()
+        } else {
+            FileLedger::open(&path).unwrap()
+        };
         // These are unwind tests, not power-loss tests: a fully written record
         // is visible to reopen even when the original call never acknowledged it.
         assert_eq!(recovered.events().len(), durable_count);

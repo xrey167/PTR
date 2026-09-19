@@ -75,12 +75,12 @@ vendored licenses are retained. Advisory ignores remain empty.
    embedding host still authenticates the principal. Network/session admission,
    scoped Pure/Read Pods, durable audit/idempotency and remote fences remain open.
    A diagnostic allow receipt is still NOT an execution token.
-2. SemDB payloads/revisions and inference checkpoints are not durably reconstructed
-   by the lifecycle-only FileLedger. Restart tests do not prove full knowledge or
-   neural-state consistency. Semantic payload admission remains incomplete.
-3. File framing still lacks authenticated/checksummed records; snapshots are not
-   fully serialized/restored. Multi-node consensus, transport and storage composition
-   remains a prototype, distinct from the single-node harness.
+2. P0.2 reconstructs newly journaled semantic payloads, dependencies and revisions.
+   Neural/KV checkpoints are not included; their independent admission remains open.
+3. P0.3 verifies bounded chained file records and complete replay-backed recovery
+   snapshots. An external trusted anchor is mandatory for rollback/rewrite checks
+   and partial-tail repair. It is not an authenticated anchor store, compacted
+   snapshot, remote fence or multi-node composition.
 4. Neural validity IDs are learned embeddings, not hard lifecycle masks. A shared,
    versioned cognitive codebook, actual payload path and independently verified
    stale-state closure remain prerequisites before scientific superiority claims.
@@ -93,3 +93,13 @@ above items as done merely because automated checks pass.
 ## P0.2 follow-up: semantic data path
 
 The lifecycle-only-replay finding is superseded for newly journaled data by [durable semantic transactions](architecture/22-durable-semantic-state.md). Runtime replay restores typed contents, source identity, dependencies and revisions. It cannot recover legacy unjournaled contents, erase historical log bytes, or admit neural checkpoints. Other release gates remain open.
+
+## P0.3 follow-up: persistence correctness and cleanup
+
+See [record integrity and recovery snapshots](architecture/23-persistence-integrity.md).
+New reference logs reject unchecked legacy input and all incomplete frames on
+ordinary open, without rewriting them. Explicit legacy migration validates replay
+before creating a new destination; source files remain untouched. Snapshot restore
+validates exact bytes/history/revisions before publishing and resets authority.
+A process-spawn/duplicate-descriptor lock-retention race found during repeated
+parallel tests is addressed by an explicit RAII unlock, not test serialization.

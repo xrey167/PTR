@@ -9,7 +9,7 @@ PTR is a **compiling architecture/research prototype**, not yet a complete model
 - bounded-mailbox/isolate contracts and Pod lease typestate
 - typed model → semantic Pod registry → Pod → verifier → SemDB observation loop for Pure/Read cognitive Pods
 - typed ActionIR authorization decisions in `ptr-security`, with revision/generation freshness, independent effect authority, capability/effect denials and audit-ready allow receipts
-- durable single-node reference `FileLedger` with fsync, reopen/replay and incomplete crash-tail truncation
+- durable single-node reference `FileLedger` with PTRLOG02 integrity framing, strict reopen and independently anchored explicit crash-tail recovery
 - `ptr-runtime` durable standalone mode can open/replay `FileLedger` and reconstruct lifecycle/materialized state across restart
 - feature-gated raft-engine durable log, raft-rs single-node consensus, Turso materialized-state and direct Iroh transport adapters with dedicated CI jobs
 - monotonic materialization with duplicate/out-of-order/gap rejection
@@ -55,3 +55,13 @@ PTR is a **compiling architecture/research prototype**, not yet a complete model
 See [docs/components/STATUS.md](docs/components/STATUS.md) for per-component maturity and [experiments/lifecycle/L001-revocation-crash/results/](experiments/lifecycle/L001-revocation-crash/results/) for the first lifecycle evidence.
 
 P0.2 adds canonical journaled semantic transactions, typed binary Pod results, transactional dependencies and validated revision reconstruction. Invalidated current derivations are evicted; prior log records and immutable snapshots remain. See `docs/architecture/22-durable-semantic-state.md`. Neural checkpoints, secure erasure, authenticated framing and cluster composition remain open.
+
+## P0.3 persistence reference boundary
+
+[Checked records and recovery snapshots](docs/architecture/23-persistence-integrity.md)
+now cover bounded hash-chain verification, explicit legacy migration and complete
+replay-backed snapshot restore. Existing files are never overwritten by restore.
+Rollback protection requires an independently trusted anchor; default unanchored
+open cannot detect a wholesale valid rewrite. This is not log compaction, remote
+authentication, secure erasure or neural-state restoration. Earlier L001 numbers
+are historical v1-format evidence, not measurements of this new v2 implementation.

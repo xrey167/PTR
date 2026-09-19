@@ -34,6 +34,9 @@
 - [18-performance.md](18-performance.md)
 - [19-research-method.md](19-research-method.md)
 - [20-cognitive-contract-step-01.md](20-cognitive-contract-step-01.md)
+- [21-scoped-execution.md](21-scoped-execution.md)
+- [22-durable-semantic-state.md](22-durable-semantic-state.md)
+- [23-persistence-integrity.md](23-persistence-integrity.md)
 - [Open architecture catalog](../../research/catalogs/README.md) — unresolved type families, backend slots and component contracts
 
 ## Component-level documentation

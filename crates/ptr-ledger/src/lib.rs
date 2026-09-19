@@ -1,7 +1,11 @@
+mod file;
+pub mod integrity;
+pub use file::{FileLedger, LegacyLog};
+
 use ptr_types::{CapsuleId, CommitIndex, Generation, ProjectId, Revision};
-use std::fs::{File, OpenOptions};
-use std::io::{self, Read, Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
+use std::io;
+#[cfg(feature = "raft-engine-backend")]
+use std::path::Path;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LedgerEvent {
@@ -86,123 +90,6 @@ pub struct CompactionBarrier {
 impl CompactionBarrier {
     pub fn safe(&self) -> bool {
         self.all_consumers_caught_up && self.unresolved_revocations == 0
-    }
-}
-
-/// Minimal durable single-node reference log.
-///
-/// This is intentionally not the cluster/production ledger. Its purpose is to
-/// establish crash/restart semantics before raft-engine/raft-rs are selected.
-pub struct FileLedger {
-    path: PathBuf,
-    file: File,
-    events: Vec<CommittedEvent>,
-    // Set before I/O: an error or unwind leaves an indeterminate disk outcome.
-    // No subsequent append is safe until this handle is dropped and reopened.
-    poisoned: bool,
-}
-
-impl FileLedger {
-    pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
-        let path = path.as_ref().to_path_buf();
-        let mut file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(&path)?;
-
-        // Hold an OS advisory lock for the entire handle lifetime, before even
-        // inspecting/truncating a crash tail. A second writer must not recover
-        // or append using a stale in-memory commit index.
-        fs4::FileExt::try_lock(&file).map_err(io::Error::from)?;
-        file.seek(SeekFrom::Start(0))?;
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes)?;
-
-        let mut offset = 0usize;
-        let mut last_good = 0usize;
-        let mut events = Vec::new();
-
-        while offset < bytes.len() {
-            if bytes.len() - offset < 4 {
-                break;
-            }
-            let length = u32::from_le_bytes(
-                bytes[offset..offset + 4]
-                    .try_into()
-                    .expect("four-byte record prefix"),
-            ) as usize;
-            offset += 4;
-
-            if bytes.len() - offset < length {
-                break;
-            }
-
-            let payload = &bytes[offset..offset + length];
-            let event = decode_event(payload)?;
-            let index = CommitIndex(events.len() as u64 + 1);
-            events.push(CommittedEvent { index, event });
-            offset += length;
-            last_good = offset;
-        }
-
-        if last_good != bytes.len() {
-            file.set_len(last_good as u64)?;
-            file.sync_data()?;
-        }
-        file.seek(SeekFrom::End(0))?;
-
-        Ok(Self {
-            path,
-            file,
-            events,
-            poisoned: false,
-        })
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
-    pub fn events(&self) -> &[CommittedEvent] {
-        &self.events
-    }
-
-    pub fn append_durable(&mut self, event: LedgerEvent) -> io::Result<CommitIndex> {
-        if self.poisoned {
-            return Err(io::Error::other(
-                "ledger append outcome is indeterminate; drop and reopen before writing",
-            ));
-        }
-        let payload = encode_event(&event);
-        let length = u32::try_from(payload.len())
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "ledger record too large"))?;
-
-        self.poisoned = true;
-        #[cfg(feature = "failpoints")]
-        fail::fail_point!("ledger.before_record_write");
-
-        self.file.write_all(&length.to_le_bytes())?;
-
-        #[cfg(feature = "failpoints")]
-        fail::fail_point!("ledger.after_length_before_payload");
-
-        self.file.write_all(&payload)?;
-
-        #[cfg(feature = "failpoints")]
-        fail::fail_point!("ledger.after_payload_before_sync");
-
-        self.file.flush()?;
-        self.file.sync_data()?;
-
-        #[cfg(feature = "failpoints")]
-        fail::fail_point!("ledger.after_sync_before_memory");
-
-        let index = CommitIndex(self.events.len() as u64 + 1);
-        self.events.push(CommittedEvent { index, event });
-        self.poisoned = false;
-        Ok(index)
     }
 }
 

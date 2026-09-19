@@ -3,10 +3,10 @@
 ## Active sequence — one cognitive component at a time
 
 The next work follows [Step 01: cognitive contract](architecture/20-cognitive-contract-step-01.md),
-not a repository-wide type/backend refactor. The first increment adds explicit
-confidence targets and representation/API tests to ptr-types. Codebook, semantic
-payload integration, A0 corrections and real training remain separate subsequent
-gates. After each code change, update its component metadata, generated README
+not a repository-wide type/backend refactor. Confidence targets, the narrow A0 bias correction, scoped local execution and
+semantic replay/integrity recovery now have bounded implementation contracts.
+The next cognitive increment remains minimum semantic values and a versioned
+codebook, followed by actual tensor/data integration and controlled training. After each code change, update its component metadata, generated README
 and status, architecture contract and test evidence before widening scope.
 
 1. Cognitive contract and reference cases (first ptr-types increment).
