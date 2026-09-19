@@ -6,7 +6,7 @@ The table distinguishes **PTR semantics** from **current candidate technologies*
 |---|---|---|---|
 | Configuration | `ptr-config` | serde + TOML | config-rs/other layered sources |
 | Runtime orchestration | `ptr-runtime` | PTR-owned composition | no external semantic owner |
-| Domain types | `ptr-types` | Rust enums/newtypes | internal design |
+| Cognitive + semantic type kernel | `ptr-types` | orthogonal Rust enums/newtypes/generic semantic wrappers | internal design; no model-framework owner |
 | Incremental semantics | `ptr-semdb` | custom engine inspired by rust-analyzer | Salsa/other |
 | Model framework | `ptr-core` | Burn/CubeCL; PyTorch reference | JAX/PyTorch/native |
 | Inference | `ptr-model-api` | SGLang, vLLM, Burn native | TensorRT/custom |
