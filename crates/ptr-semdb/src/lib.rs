@@ -301,6 +301,38 @@ impl SemanticHost {
         let prepared = self.prepare_delta(delta)?;
         self.apply_prepared(prepared)
     }
+    /// Export the complete published state as one canonical delta.
+    ///
+    /// With the revision this is everything [`Self::restore`] needs, expressed in
+    /// the encoding the journal already uses. Reusing that encoding is the point:
+    /// a snapshot cannot disagree with a replay about what a semantic value is.
+    /// Dependency entries whose derived key is currently absent are preserved, so
+    /// a later upsert still has to supply its inputs.
+    pub fn export_state(&self) -> SemanticDelta {
+        SemanticDelta {
+            upserts: self.state.ground.clone(),
+            removals: BTreeSet::new(),
+            dependencies: self.state.dependencies.inputs.clone(),
+        }
+    }
+
+    /// Rebuild a host at an exact revision from an exported state.
+    ///
+    /// `revision` is trusted input; the caller must have authenticated the state
+    /// it arrived with, because nothing here can tell a genuine revision from a
+    /// chosen one. Validation is the ordinary delta path, so a restored state can
+    /// never be one [`Self::prepare_delta`] would have refused. An exported state
+    /// has nothing to remove, so removals are rejected rather than ignored.
+    pub fn restore(revision: Revision, state: SemanticDelta) -> Result<Self, SemanticError> {
+        if !state.removals.is_empty() {
+            return Err(SemanticError::ConflictingOperation);
+        }
+        let mut host = Self::default();
+        host.apply_delta(state)?;
+        host.state.revision = revision;
+        Ok(host)
+    }
+
     pub fn snapshot(&self) -> SemanticSnapshot {
         SemanticSnapshot {
             revision: self.revision(),

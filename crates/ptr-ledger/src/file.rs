@@ -1,4 +1,6 @@
 //! Strict file lifecycle and explicit, externally anchored tail recovery.
+use crate::acknowledged::{AcknowledgedError, Split, TailPolicy, TailRecovery};
+use crate::anchor::{ChainOrigin, ProtectedAnchor};
 use crate::integrity::{
     self, LogAnchor, VerifiedLog, FRAME_HEADER_BYTES, LOG_MAGIC, MAX_LOG_BYTES,
 };
@@ -17,8 +19,26 @@ pub struct FileLedger {
     file: LockedFile,
     events: Vec<CommittedEvent>,
     anchor: LogAnchor,
+    /// Compaction floor this handle was opened against. Records at or below it
+    /// are not in this file, so its own bytes cannot establish where it starts.
+    base: LogAnchor,
     length: usize,
     poisoned: bool,
+}
+
+impl std::fmt::Debug for FileLedger {
+    /// The locked handle is deliberately omitted; a file descriptor is not a
+    /// useful diagnostic and printing it invites treating it as an identity.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FileLedger")
+            .field("path", &self.path)
+            .field("records", &self.events.len())
+            .field("anchor_index", &self.anchor.index)
+            .field("base_index", &self.base.index)
+            .field("length", &self.length)
+            .field("poisoned", &self.poisoned)
+            .finish()
+    }
 }
 
 /// An explicitly opened legacy source held exclusively throughout migration.
@@ -28,6 +48,7 @@ pub struct LegacyLog {
     events: Vec<CommittedEvent>,
 }
 impl LegacyLog {
+    /// Legacy events held under the migration source's exclusive lock.
     pub fn events(&self) -> &[CommittedEvent] {
         &self.events
     }
@@ -38,6 +59,7 @@ impl LegacyLog {
 // expose or clone this guard; close alone waits for all duplicate descriptors.
 struct LockedFile(File);
 impl LockedFile {
+    /// Acquire exclusive logical ownership of an open file.
     fn new(file: File) -> io::Result<Self> {
         fs4::FileExt::try_lock(&file).map_err(io::Error::from)?;
         Ok(Self(file))
@@ -45,23 +67,28 @@ impl LockedFile {
 }
 impl Deref for LockedFile {
     type Target = File;
+    /// Borrow the owned file handle.
     fn deref(&self) -> &File {
         &self.0
     }
 }
 impl DerefMut for LockedFile {
+    /// Mutably borrow the owned file handle.
     fn deref_mut(&mut self) -> &mut File {
         &mut self.0
     }
 }
 impl Drop for LockedFile {
+    /// Explicitly release the advisory lock before closing the handle.
     fn drop(&mut self) {
         let _ = fs4::FileExt::unlock(&self.0);
     }
 }
+/// Open an existing log and acquire its exclusive writer lock.
 fn lock_existing(path: &Path) -> io::Result<LockedFile> {
     LockedFile::new(OpenOptions::new().read(true).write(true).open(path)?)
 }
+/// Read a held log only when it remains within the framing size bound.
 fn read_bounded(file: &mut File) -> io::Result<Vec<u8>> {
     if file.metadata()?.len() > MAX_LOG_BYTES as u64 {
         return Err(integrity::invalid("PTR_LOG_SIZE_LIMIT"));
@@ -94,6 +121,7 @@ pub(crate) fn sync_parent(path: &Path) -> io::Result<()> {
 }
 
 impl FileLedger {
+    /// Open a strict checked log, creating a new empty one when absent.
     pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
         let path = path.as_ref();
         match OpenOptions::new()
@@ -122,6 +150,52 @@ impl FileLedger {
             }
             Err(error) => Err(error),
         }
+    }
+
+    /// Create a log that must not already exist.
+    ///
+    /// Unlike [`Self::open`] this never adopts an existing file, so a caller that
+    /// is establishing a new anchored history cannot accidentally inherit a
+    /// history it has no anchor for.
+    pub fn create_new(path: impl AsRef<Path>) -> io::Result<Self> {
+        let path = path.as_ref();
+        let file = OpenOptions::new()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(path)?;
+        let mut file = LockedFile::new(file)?;
+        file.write_all(LOG_MAGIC)?;
+        file.sync_all()?;
+        sync_parent(path)?;
+        Self::from_verified(
+            path,
+            file,
+            integrity::decode_log(LOG_MAGIC)?,
+            LOG_MAGIC.len(),
+        )
+    }
+
+    /// Acquire the single-writer lock and validate every complete frame above
+    /// `base`, without writing anything.
+    ///
+    /// The returned handle keeps the lock, so the classification it produces
+    /// cannot go stale before the repair that acts on it.
+    pub fn lock_for_recovery(
+        path: impl AsRef<Path>,
+        base: LogAnchor,
+    ) -> io::Result<RecoverableLog> {
+        let path = path.as_ref();
+        let mut file = lock_existing(path)?;
+        let bytes = read_bounded(&mut file)?;
+        let prefix = integrity::scan_from(&bytes, base)?;
+        Ok(RecoverableLog {
+            path: path.to_owned(),
+            file,
+            base,
+            prefix,
+            length: bytes.len(),
+        })
     }
 
     /// Require exact history identity, not merely a valid hash chain. Missing
@@ -162,7 +236,21 @@ impl FileLedger {
         bytes: &[u8],
         trusted: LogAnchor,
     ) -> io::Result<Self> {
-        let verified = integrity::decode_log(bytes)?;
+        Self::create_from_log_above(path, bytes, LogAnchor::empty(), trusted)
+    }
+
+    /// Create a destination for a log that continues above a compaction floor.
+    ///
+    /// `base` is trusted input from protected anchor storage. Both it and the
+    /// resulting tail are checked before the file is created, so a rejected
+    /// artifact never reaches disk.
+    pub fn create_from_log_above(
+        path: impl AsRef<Path>,
+        bytes: &[u8],
+        base: LogAnchor,
+        trusted: LogAnchor,
+    ) -> io::Result<Self> {
+        let verified = integrity::decode_log_from(bytes, base)?;
         verified.require_anchor(trusted)?;
         let path = path.as_ref();
         let file = OpenOptions::new()
@@ -174,7 +262,7 @@ impl FileLedger {
         file.write_all(bytes)?;
         file.sync_all()?;
         sync_parent(path)?;
-        Self::from_verified(path, file, verified, bytes.len())
+        Self::from_verified_above(path, file, verified, bytes.len(), base)
     }
 
     /// Explicit inspection of an old unchecked format. Runtime migration must
@@ -183,6 +271,7 @@ impl FileLedger {
         Ok(Self::open_legacy_for_migration(path)?.events)
     }
 
+    /// Exclusively open an unchecked legacy source for explicit migration.
     pub fn open_legacy_for_migration(path: impl AsRef<Path>) -> io::Result<LegacyLog> {
         let mut file = lock_existing(path.as_ref())?;
         let events = integrity::decode_legacy_log(&read_bounded(&mut file)?)?;
@@ -192,11 +281,23 @@ impl FileLedger {
         })
     }
 
+    /// Adopt a verified log that begins at the format's empty anchor.
     fn from_verified(
+        path: &Path,
+        file: LockedFile,
+        verified: VerifiedLog,
+        length: usize,
+    ) -> io::Result<Self> {
+        Self::from_verified_above(path, file, verified, length, LogAnchor::empty())
+    }
+
+    /// Adopt a verified log that continues above a trusted compaction floor.
+    fn from_verified_above(
         path: &Path,
         mut file: LockedFile,
         verified: VerifiedLog,
         length: usize,
+        base: LogAnchor,
     ) -> io::Result<Self> {
         file.seek(SeekFrom::End(0))?;
         Ok(Self {
@@ -204,22 +305,64 @@ impl FileLedger {
             file,
             events: verified.events,
             anchor: verified.anchor,
+            base,
             length,
             poisoned: false,
         })
     }
+    /// Filesystem path owned by this ledger handle.
     pub fn path(&self) -> &Path {
         &self.path
     }
+
+    /// Compaction floor this handle was opened against.
+    pub fn base(&self) -> LogAnchor {
+        self.base
+    }
+
+    /// This log's bytes, read through the handle that holds it.
+    ///
+    /// An independent handle cannot do this while a writer is open: Windows
+    /// advisory locks are mandatory for I/O, so `fs::read` on a held log fails.
+    /// Reading through the owner works on every platform and additionally sees
+    /// what the in-memory event list cannot — an unacknowledged or partially
+    /// written trailing frame — which matters when the caller is asking what bytes
+    /// are still present rather than what records are committed.
+    ///
+    /// The append position is restored before returning, so a following
+    /// [`Self::append_durable`] still writes at the end.
+    pub fn retained_bytes(&mut self) -> io::Result<Vec<u8>> {
+        let bytes = read_bounded(&mut self.file)?;
+        self.file.seek(SeekFrom::End(0))?;
+        Ok(bytes)
+    }
+
+    /// The origin this log can prove on its own, which is the digest of commit
+    /// index 1.
+    ///
+    /// `None` once compaction has discarded that record: the origin then exists
+    /// only in protected anchor storage, and re-deriving it from whatever record
+    /// now happens to be first would let a substituted log name itself.
+    pub fn derived_origin(&self) -> Option<ChainOrigin> {
+        if self.base != LogAnchor::empty() {
+            return None;
+        }
+        let first = self.events.first()?;
+        let (_, after) = integrity::encode_record(&first.event, LogAnchor::empty()).ok()?;
+        Some(ChainOrigin::from_first_record(after.digest))
+    }
+    /// Complete committed records currently retained in this file.
     pub fn events(&self) -> &[CommittedEvent] {
         &self.events
     }
+    /// Tail commitment unless an ambiguous write poisoned the handle.
     pub fn anchor(&self) -> io::Result<LogAnchor> {
         if self.poisoned {
             return Err(io::Error::other("PTR_LOG_INDETERMINATE"));
         }
         Ok(self.anchor)
     }
+    /// Append, synchronize, and publish one checked record.
     pub fn append_durable(&mut self, event: LedgerEvent) -> io::Result<CommitIndex> {
         if self.poisoned {
             return Err(io::Error::other("PTR_LOG_INDETERMINATE"));
@@ -259,6 +402,144 @@ impl FileLedger {
         self.poisoned = false;
         Ok(anchor.index)
     }
+}
+
+/// A log held under its single-writer lock while its relationship to protected
+/// anchor storage is decided.
+///
+/// Nothing is written until [`Self::repair`] is called, and [`Self::classify`] is
+/// a pure function of the bytes already read plus the anchor handed to it. That
+/// split keeps the trust direction visible: the verdict is derived from trusted
+/// input applied to untrusted bytes, never the other way around.
+pub struct RecoverableLog {
+    path: PathBuf,
+    file: LockedFile,
+    base: LogAnchor,
+    prefix: integrity::Prefix,
+    length: usize,
+}
+
+impl RecoverableLog {
+    /// Anchor of the last complete record present.
+    pub fn tail(&self) -> LogAnchor {
+        self.prefix.verified.anchor
+    }
+
+    /// Whether a partial frame follows the last complete record.
+    pub fn has_incomplete_frame(&self) -> bool {
+        self.prefix.incomplete
+    }
+
+    /// Origin derivable from these bytes; `None` for a compacted log.
+    pub fn derived_origin(&self) -> Option<ChainOrigin> {
+        if self.base != LogAnchor::empty() {
+            return None;
+        }
+        self.prefix
+            .milestones
+            .get(1)
+            .map(|(_, after)| ChainOrigin::from_first_record(after.digest))
+    }
+
+    /// Decide how this log stands relative to `anchor`. Pure: no file is touched.
+    pub fn classify(&self, anchor: ProtectedAnchor) -> Split {
+        if anchor.base != self.base {
+            return Split::BaseMismatch;
+        }
+        if let (Some(derived), true) = (self.derived_origin(), anchor.origin.is_set()) {
+            if derived != anchor.origin {
+                return Split::OriginMismatch;
+            }
+        }
+        match self.prefix.records_after(anchor.log) {
+            Some(0) if !self.prefix.incomplete => Split::Aligned,
+            Some(complete_records) => Split::Unacknowledged {
+                complete_records,
+                incomplete_frame: self.prefix.incomplete,
+                tail: self.tail(),
+            },
+            None if anchor.log.index.0 > self.tail().index.0 => Split::LostSuffix {
+                acknowledged: anchor.log.index,
+                present: self.tail().index,
+            },
+            None => Split::Diverged,
+        }
+    }
+
+    /// Repair only the tail and return an open ledger.
+    ///
+    /// A partial trailing frame is always truncated. Complete records above the
+    /// anchor are kept or removed per `policy`. Any unrecoverable split leaves
+    /// every byte in place and fails.
+    pub fn repair(
+        self,
+        anchor: ProtectedAnchor,
+        policy: TailPolicy,
+    ) -> io::Result<(FileLedger, TailRecovery)> {
+        let (complete_records, incomplete_frame) = match self.classify(anchor) {
+            Split::Aligned => (0usize, false),
+            Split::Unacknowledged {
+                complete_records,
+                incomplete_frame,
+                ..
+            } => (complete_records, incomplete_frame),
+            fault => return Err(unrecoverable(fault)),
+        };
+        if policy == TailPolicy::Refuse && (complete_records > 0 || incomplete_frame) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                AcknowledgedError::TailRefused {
+                    complete_records,
+                    incomplete_frame,
+                }
+                .code(),
+            ));
+        }
+        let discard = policy == TailPolicy::Discard && complete_records > 0;
+        let target = if discard { anchor.log } else { self.tail() };
+        let Self {
+            path,
+            file,
+            base,
+            prefix,
+            length,
+        } = self;
+        let keep_bytes = if discard {
+            prefix
+                .offset_of(anchor.log)
+                .ok_or_else(|| unrecoverable(Split::Diverged))?
+        } else {
+            prefix.complete_bytes
+        };
+        if keep_bytes != length {
+            file.set_len(keep_bytes as u64)?;
+            file.sync_all()?;
+        }
+        let keep_events = target.index.0.saturating_sub(base.index.0) as usize;
+        let mut events = prefix.verified.events;
+        events.truncate(keep_events);
+        let verified = VerifiedLog {
+            events,
+            anchor: target,
+        };
+        let ledger = FileLedger::from_verified_above(&path, file, verified, keep_bytes, base)?;
+        let recovery = TailRecovery {
+            acknowledged_records: if discard { 0 } else { complete_records },
+            discarded_records: if discard { complete_records } else { 0 },
+            incomplete_frame_removed: incomplete_frame,
+            tail: target,
+            origin: ledger.derived_origin(),
+        };
+        Ok((ledger, recovery))
+    }
+}
+
+/// Convert a nonrepairable split into the stable log error boundary.
+fn unrecoverable(fault: Split) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        AcknowledgedError::Unrecoverable(fault).code(),
+    )
 }
 
 #[cfg(test)]

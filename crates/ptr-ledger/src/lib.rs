@@ -1,6 +1,16 @@
+pub mod acknowledged;
+pub mod anchor;
+pub mod compaction;
 mod file;
 pub mod integrity;
-pub use file::{FileLedger, LegacyLog};
+pub mod retention;
+pub use acknowledged::{AcknowledgedError, AcknowledgedLedger, Split, TailPolicy, TailRecovery};
+pub use compaction::{
+    CompactionDecision, CompactionFault, CompactionOutcome, CompactionPlan, LogPaths,
+    RetentionPolicy,
+};
+pub use file::{FileLedger, LegacyLog, RecoverableLog};
+pub use retention::{retains, ErasureAudit, OutOfReach, Retainer};
 
 use ptr_types::{CapsuleId, CommitIndex, Generation, ProjectId, Revision};
 use std::io;
@@ -59,20 +69,59 @@ pub struct CommittedEvent {
 }
 
 pub trait Ledger {
-    fn append(&mut self, event: LedgerEvent) -> CommitIndex;
+    /// Append one event and return the index it was committed at.
+    ///
+    /// Fallible because a commit index can run out. Returning the index
+    /// unconditionally would force an implementation to invent one at the
+    /// ceiling, and the only values available there repeat an index already
+    /// handed out — which is worse than refusing, since two records would then
+    /// claim the same position in a history that is supposed to order them.
+    fn append(&mut self, event: LedgerEvent) -> io::Result<CommitIndex>;
     fn events(&self) -> &[CommittedEvent];
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct InMemoryLedger {
+    base: CommitIndex,
     events: Vec<CommittedEvent>,
 }
 
+impl InMemoryLedger {
+    /// A ledger that continues above a compaction floor.
+    ///
+    /// Restoring from a compacted snapshot must not renumber the retained records
+    /// from 1: their indices are part of the committed history the snapshot's
+    /// floor refers to, and renumbering them would make the two disagree.
+    pub fn resuming_above(base: CommitIndex) -> Self {
+        Self {
+            base,
+            events: Vec::new(),
+        }
+    }
+
+    /// The compaction floor this ledger continues above.
+    pub fn base(&self) -> CommitIndex {
+        self.base
+    }
+}
+
 impl Ledger for InMemoryLedger {
-    fn append(&mut self, event: LedgerEvent) -> CommitIndex {
-        let index = CommitIndex(self.events.len() as u64 + 1);
+    fn append(&mut self, event: LedgerEvent) -> io::Result<CommitIndex> {
+        // Checked rather than saturating: saturation hands the ceiling out
+        // twice, so the second record silently claims a position the first one
+        // already holds. The index is computed before anything is stored, so a
+        // refused append leaves the ledger exactly as it was.
+        let index = self
+            .base
+            .0
+            .checked_add(self.events.len() as u64)
+            .and_then(|count| count.checked_add(1))
+            .map(CommitIndex)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "PTR_LEDGER_INDEX_EXHAUSTED")
+            })?;
         self.events.push(CommittedEvent { index, event });
-        index
+        Ok(index)
     }
 
     fn events(&self) -> &[CommittedEvent] {
@@ -80,7 +129,7 @@ impl Ledger for InMemoryLedger {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CompactionBarrier {
     pub snapshot_covers: CommitIndex,
     pub all_consumers_caught_up: bool,

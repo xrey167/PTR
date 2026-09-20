@@ -10,10 +10,11 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-19  
-**Code footprint:** 2 Rust source files · 497 nonblank source lines · 2 integration-test files · 12 `#[test]` markers
+**Code footprint:** 2 Rust source files · 527 nonblank source lines · 2 integration-test files · 15 `#[test]` markers
 
 ### Implemented now
 
+- Symmetric export_state/restore: published state round-trips through the same canonical delta encoding the journal uses, at an exact caller-supplied revision
 - Text and typed binary/source values share a revisioned semantic state
 - Bounded canonical PTRSD001 delta codec and staged atomic publication
 - Transactional dependency replacement and transitive removal of stale derived values
@@ -56,6 +57,8 @@
 
 ### Current automated checks
 
+- exported state restores values, dangling dependency declarations and the exact revision through the canonical codec; restore refuses removals, missing dependencies and cycles; a restore at the revision ceiling stays exhausted
+- Compacted-snapshot round trip through export_state/restore reproduces ground values, payload bytes, dependency sets and revision exactly
 - local_change_invalidates_only_dependency_closure integration test
 - workspace fmt/check/test/clippy
 

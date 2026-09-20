@@ -8,11 +8,19 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-19  
-**Code footprint:** 4 Rust source files · 1554 nonblank source lines · 10 integration-test files · 62 `#[test]` markers
+**Last reviewed:** 2026-09-20  
+**Code footprint:** 6 Rust source files · 2993 nonblank source lines · 12 integration-test files · 95 `#[test]` markers
 
 ### Implemented now
 
+- Rustdoc covers the compacted-snapshot and neural-state APIs plus their canonical framing helpers and admission diagnostics
+- PTRNEU01 neural/KV/checkpoint admission: opaque state bound to an anchored journal position, per-input semantic value digests, lifecycle generations, provenance and codebook version plus assignment fingerprint
+- Admission is decided at every use rather than at insertion; a payload is reachable only through an admission decision, and a cache exposes no accessor that bypasses one
+- Revocation, supersession, edited or removed inputs, foreign history with identical counters, unverifiable positions, changed codebook assignment and a fenced runtime each deny with their own stable code; failure to verify is a denial rather than an error
+- bind_state derives every field from committed state and validates its own output through the same admission rules a later use applies
+- PTRCS001 compacted materialized snapshot: committed state at a floor with canonical ascending-key sections, checked framing and an externally retained trusted anchor
+- restore_compacted installs floor state then replays the retained journal through the ordinary lifecycle/semantic validation path, keeping committed indices
+- CompactedSnapshot::covers reports only the position it holds, so a compaction barrier cannot claim coverage the snapshot lacks
 - Versioned replay-backed recovery snapshots bind complete journal, semantic revision, commit index and independently trusted SHA-256 anchor
 - Snapshot validation and semantic/lifecycle replay finish before creating a durable destination; existing destinations are never replaced
 - Strict anchored reopen and explicit legacy-to-v2 migration preserve history while restoring no process-local authority
@@ -24,7 +32,7 @@
 - Consume-time freshness, expiry, ownership and mandatory permission checks; permissions/commit/effect epochs invalidate pending permits
 - Executor or ledger ambiguity fences subsequent execution and commits; process-local single-use authority is never replayed
 - Ledger-only lifecycle mutation; invalid/rewinding/tombstoned/cross-project transitions rejected before append and during replay
-- Central runtime object wiring configuration, SemDB, ledger, materialized state, events and permissions
+- Central runtime object wiring configuration, SemDB, ledger, materialized state, events and permissions; an in-memory append that runs out of commit indices surfaces as a ledger error rather than a repeated index
 - Durable standalone runtime constructor opens/replays FileLedger and reconstructs lifecycle/materialized state across restart
 - Text ingestion into revisioned semantic state
 - Current-revision, live-generation/revocation and capability/effect checks for ActionIR delegated through typed ptr-security authorization decisions
@@ -36,7 +44,9 @@
 
 ### Missing for the target architecture
 
-- Network-authenticated/scoped Pod integration and neural checkpoint admission
+- Durable compacted-snapshot publication and a runtime backed by an AcknowledgedLedger; compacted restore rebuilds an in-memory ledger above the floor and therefore retains no chain base, so it admits no neural state at all
+- Durable neural-anchor catalog, streamed or memory-mapped payloads, and a training stack that records codebook/binding identity; admission checks the producer's declared input set only, so an undeclared dependency stays invisible
+- Network-authenticated/scoped Pod integration
 - Durable execution audit/idempotency, downstream fencing and compacted materialized snapshots
 - Router-driven operator selection around the implemented bounded Pod-resume loop
 - Async isolate scheduler integration
@@ -45,7 +55,7 @@
 
 ### Next milestones
 
-- Bind opaque model/checkpoint admission to the versioned cognitive and lifecycle contracts; independent trusted anchor storage remains a deployment obligation
+- Record CodebookVersion, StateBinding and an assignment fingerprint in the training stack's datasets, checkpoints and run manifests; retaining a NeuralAnchor outside the artifact remains a deployment obligation
 - Connect evaluated raft-engine/Turso adapters through typed backend config while preserving FileLedger reference mode
 - Add opaque backend checkpoint handles and async streaming around the implemented observation resume contract
 - Wire ptrd request handling beyond bootstrap ingestion
@@ -68,6 +78,14 @@
 
 ### Current automated checks
 
+- an empty runtime round-trips at the empty floor; a runtime restored at the index ceiling refuses a commit with PTR_LEDGER_INDEX_EXHAUSTED, stores nothing and fences the retry; revocation outranks every other binding mismatch simultaneously
+- an admitted state reproduces the identical inference event sequence after a restart, with binding and opaque payload byte-for-byte equal
+- revocation, supersession, edited/removed inputs, foreign history with identical counters, unverifiable position, compacted restore, contradicting revision, unknown/changed codebook, unknown target and a fenced runtime each denied
+- every single-bit mutation of a sealed state rejected; wrong outer/binding magic, reserved field, length mismatch, byte removal/insertion and undersize rejected after resealing the digest
+- an unrelated commit leaves a state admissible, so dependency-precise binding is asserted in both directions
+- compacted reconstruction equals a full replay across semantic payloads, dependencies, supersession, constraints, procedures and revocations
+- a revocation below the floor still denies after compaction; every single-bit mutation of a compacted snapshot rejected
+- resealed noncanonical sections, reserved fields, length and trusted-identity mismatches, and records not above the floor all rejected
 - snapshot exact-state/byte-corruption/rollback/revision/legacy/overwrite/authority rejection tests
 - scoped execution positive/negative integration tests and non-forgeability/single-use compile-fail doctests
 - runtime ingestion/revision/generation/capability/materialization integration tests

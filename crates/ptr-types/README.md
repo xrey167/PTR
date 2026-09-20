@@ -9,11 +9,16 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `foundation`  
-**Last reviewed:** 2026-09-19  
-**Code footprint:** 2 Rust source files · 333 nonblank source lines · 3 integration-test files · 16 `#[test]` markers
+**Last reviewed:** 2026-09-20  
+**Code footprint:** 4 Rust source files · 1184 nonblank source lines · 4 integration-test files · 32 `#[test]` markers
 
 ### Implemented now
 
+- Rustdoc covers the codebook and validity-mask APIs, stable diagnostic codes and canonical assignment encoder helpers
+- Versioned cognitive codebook: explicit per-version tables assign dense 0..cardinality codes to SemanticRole, EpistemicState, UncertaintyKind, ReasoningOperator and Validity, never Rust discriminants
+- TypeCode is only obtainable against a named CodebookVersion; unknown versions, unassigned codes and unassigned members are three distinct refusals with no defaulting path
+- canonical_bytes commits the whole assignment in code order for binding checkpoints, datasets and runs; hashing stays with the caller so this crate keeps no dependencies
+- ValidityMask computed from committed lifecycle state: only Live admits, masks narrow and never widen, and attention_bias uses negative infinity so an excluded slot contributes exactly zero after a softmax
 - Shared SemanticRole taxonomy for goals, constraints, claims, evidence, resources, capabilities, relations, procedures and actions
 - Shared EpistemicState and UncertaintyKind axes kept separate from semantic role
 - Shared ReasoningOperator taxonomy used across neural core, model API, routing and training
@@ -28,6 +33,8 @@
 
 ### Missing for the target architecture
 
+- Burn A0 still embeds a learned validity id and a research-local slot_type; applying ValidityMask and SemanticRole codes inside its tensors is a separate change outside this workspace
+- Datasets, checkpoints and run manifests do not yet record CodebookVersion or a canonical_bytes fingerprint
 - Generic semantic wrappers such as Goal<T>, Constraint<T>, Claim<T>, Evidence<T>, Relation<S,P,O>, Resource<T>, Procedure<T> and ActionIntent<T>
 - Estimate/Interval/Distribution value structures and calibration metadata beyond the current axis enums
 - Explicit authority/source-authority types kept separate from epistemic and verification state
@@ -41,7 +48,7 @@
 ### Next milestones
 
 - Complete the cognitive contract review and first-component test gate before widening scope
-- Define the minimum value structures and versioned cognitive codebook as the next component step
+- Define the minimum value structures as the next component step
 - Migrate model/slot/event confidence fields explicitly without guessing legacy target semantics
 - Connect typed semantic observations before changing neural mechanisms or running task training
 
@@ -61,6 +68,10 @@
 
 ### Current automated checks
 
+- Every exact numeric code for all 33 members of all five families, so a reordered kernel enum breaks the build rather than a checkpoint
+- Exhaustive per-family coverage; dense unique codes; unknown version, unassigned code and unassigned member each refused
+- canonical_bytes decoded by an independent decoder against the exact expected assignment with every byte accounted for
+- Only Live admits with every Validity decided exhaustively; masks narrow and never widen; a revoked slot keeps its codes and still cannot participate
 - probability_is_bounded unit test
 - lifecycle_versions_are_distinct_concepts unit test
 - semantic_role_and_epistemic_state_are_independent_axes unit test

@@ -1,4 +1,6 @@
+pub mod compacted;
 pub mod execution;
+pub mod neural;
 pub mod persistence;
 pub mod semantic;
 
@@ -25,6 +27,8 @@ use std::path::Path;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeError {
     Snapshot(persistence::SnapshotError),
+    Compacted(compacted::CompactedError),
+    Neural(neural::NeuralError),
     Semantic(SemanticError),
     InvalidConfig(String),
     Ledger(String),
@@ -98,7 +102,9 @@ enum RuntimeLedger {
 impl RuntimeLedger {
     fn append(&mut self, event: LedgerEvent) -> Result<CommitIndex, RuntimeError> {
         match self {
-            Self::Memory(ledger) => Ok(ledger.append(event)),
+            Self::Memory(ledger) => ledger
+                .append(event)
+                .map_err(|error| RuntimeError::Ledger(error.to_string())),
             Self::File(ledger) => ledger
                 .append_durable(event)
                 .map_err(|error| RuntimeError::Ledger(error.to_string())),
