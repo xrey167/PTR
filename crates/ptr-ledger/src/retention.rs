@@ -43,7 +43,6 @@ pub enum OutOfReach {
 }
 
 impl OutOfReach {
-    /// Returns the stable machine-readable diagnostic code.
     pub fn code(self) -> &'static str {
         match self {
             Self::HostRetainedArtifacts => "PTR_ERASURE_HOST_RETAINED_ARTIFACTS",
@@ -179,7 +178,7 @@ impl LogPaths {
     ) -> io::Result<ErasureAudit> {
         self.audit_with_live(plaintext, live_base, None)
     }
-    /// Audits erasure against the live log and the supplied retained artifacts.
+
     pub(crate) fn audit_with_live(
         &self,
         plaintext: &[u8],

@@ -28,7 +28,6 @@ pub enum MaskError {
 }
 
 impl MaskError {
-    /// Returns the stable machine-readable diagnostic code.
     pub fn code(self) -> &'static str {
         match self {
             Self::LengthMismatch { .. } => "PTR_MASK_LENGTH_MISMATCH",
@@ -93,11 +92,11 @@ impl ValidityMask {
             Validity::Superseded | Validity::Revoked | Validity::Disputed => false,
         }
     }
-    /// Returns the number of slots governed by the mask.
+
     pub fn len(&self) -> usize {
         self.admitted.len()
     }
-    /// Returns whether the mask governs no slots.
+
     pub fn is_empty(&self) -> bool {
         self.admitted.is_empty()
     }
@@ -109,7 +108,7 @@ impl ValidityMask {
     pub fn admits(&self, slot: usize) -> bool {
         self.admitted.get(slot).copied().unwrap_or(false)
     }
-    /// Returns the number of admitted slots.
+
     pub fn admitted_count(&self) -> usize {
         self.admitted.iter().filter(|admitted| **admitted).count()
     }
@@ -178,7 +177,6 @@ impl ValidityMask {
 mod tests {
     use super::*;
 
-    /// Verifies that only live admits and every state is decided.
     #[test]
     fn only_live_admits_and_every_state_is_decided() {
         // Exhaustive: a new Validity variant fails to compile until its admission
@@ -201,7 +199,6 @@ mod tests {
         }
     }
 
-    /// Verifies that a revoked slot is unrepresentable not merely unlikely.
     #[test]
     fn a_revoked_slot_is_unrepresentable_not_merely_unlikely() {
         let mask = ValidityMask::from_validities(&[
@@ -223,7 +220,6 @@ mod tests {
         assert_eq!(bias[1].exp(), 0.0);
     }
 
-    /// Verifies that masks narrow and never widen.
     #[test]
     fn masks_narrow_and_never_widen() {
         let live = ValidityMask::admitting_all(3);
@@ -247,7 +243,6 @@ mod tests {
         assert_eq!(mask.admitted_count(), 1);
     }
 
-    /// Verifies that a mismatched or out of range operation is refused.
     #[test]
     fn a_mismatched_or_out_of_range_operation_is_refused() {
         let mut mask = ValidityMask::admitting_all(2);
@@ -268,7 +263,6 @@ mod tests {
         assert!(ValidityMask::admitting_all(0).is_empty());
     }
 
-    /// Verifies that mask errors carry stable codes.
     #[test]
     fn mask_errors_carry_stable_codes() {
         assert_eq!(

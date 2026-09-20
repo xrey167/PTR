@@ -10,7 +10,7 @@
 
 **Maturity:** `foundation`  
 **Last reviewed:** 2026-09-20  
-**Code footprint:** 4 Rust source files · 1190 nonblank source lines · 4 integration-test files · 32 `#[test]` markers
+**Code footprint:** 4 Rust source files · 1170 nonblank source lines · 4 integration-test files · 32 `#[test]` markers
 
 ### Implemented now
 

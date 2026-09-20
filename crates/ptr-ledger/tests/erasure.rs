@@ -90,7 +90,6 @@ fn ledger_with_superseded_secret(tmp: &Temp) -> AcknowledgedLedger {
     ledger
 }
 
-/// Verifies that logical deletion does not erase history.
 #[test]
 fn logical_deletion_does_not_erase_history() {
     let tmp = Temp::new();
@@ -132,7 +131,6 @@ fn logical_deletion_does_not_erase_history() {
     );
 }
 
-/// Verifies that erasure needs the floor past the record and the orphan reclaimed.
 #[test]
 fn erasure_needs_the_floor_past_the_record_and_the_orphan_reclaimed() {
     let tmp = Temp::new();
@@ -190,7 +188,6 @@ fn erasure_needs_the_floor_past_the_record_and_the_orphan_reclaimed() {
     assert!(retains(&ledger.retained_bytes().unwrap(), KEPT));
 }
 
-/// Verifies that an unreclaimed orphan keeps retaining after a later cutover.
 #[test]
 fn an_unreclaimed_orphan_keeps_retaining_after_a_later_cutover() {
     let tmp = Temp::new();
@@ -230,7 +227,6 @@ fn an_unreclaimed_orphan_keeps_retaining_after_a_later_cutover() {
         .erased_where_reachable());
 }
 
-/// Verifies that a snapshot the host retains defeats erasure and must be declared.
 #[test]
 fn a_snapshot_the_host_retains_defeats_erasure_and_must_be_declared() {
     let tmp = Temp::new();
@@ -277,7 +273,6 @@ fn a_snapshot_the_host_retains_defeats_erasure_and_must_be_declared() {
     assert!(audit.erased_where_reachable());
 }
 
-/// Verifies that destroying the anchor key is not erasure.
 #[test]
 fn destroying_the_anchor_key_is_not_erasure() {
     let tmp = Temp::new();
@@ -299,7 +294,6 @@ fn destroying_the_anchor_key_is_not_erasure() {
     assert_eq!(verified.events().len(), 4);
 }
 
-/// Verifies that the audit reports presence not interpretation.
 #[test]
 fn the_audit_reports_presence_not_interpretation() {
     // A byte search is deliberate: a record scan that failed to recognize an
@@ -314,7 +308,6 @@ fn the_audit_reports_presence_not_interpretation() {
     assert!(!retains(b"anything", b""));
 }
 
-/// Verifies that erasure boundaries carry stable codes.
 #[test]
 fn erasure_boundaries_carry_stable_codes() {
     assert_eq!(

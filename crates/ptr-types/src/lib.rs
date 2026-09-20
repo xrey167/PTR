@@ -192,7 +192,6 @@ pub struct SemanticIssue {
 mod tests {
     use super::*;
 
-    /// Verifies that probability is bounded.
     #[test]
     fn probability_is_bounded() {
         assert!(Probability::new(0.5).is_some());
@@ -200,13 +199,11 @@ mod tests {
         assert!(Probability::new(1.1).is_none());
     }
 
-    /// Verifies that lifecycle versions are distinct concepts.
     #[test]
     fn lifecycle_versions_are_distinct_concepts() {
         assert_ne!(Revision(7).0, Generation(8).0);
     }
 
-    /// Verifies that semantic role and epistemic state are independent axes.
     #[test]
     fn semantic_role_and_epistemic_state_are_independent_axes() {
         let role = SemanticRole::Claim;
@@ -218,7 +215,6 @@ mod tests {
         assert_eq!(uncertainty, UncertaintyKind::Distribution);
     }
 
-    /// Verifies that reasoning operator is a typed cross component contract.
     #[test]
     fn reasoning_operator_is_a_typed_cross_component_contract() {
         let operator = ReasoningOperator::Probabilistic;

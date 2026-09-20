@@ -83,7 +83,6 @@ pub enum NeuralError {
 }
 
 impl NeuralError {
-    /// Returns the stable machine-readable diagnostic code.
     pub fn code(&self) -> &'static str {
         match self {
             Self::SizeLimit => "PTR_NEURAL_SIZE_LIMIT",
@@ -167,7 +166,6 @@ pub enum Denial {
 }
 
 impl Denial {
-    /// Returns the stable machine-readable diagnostic code.
     pub fn code(&self) -> &'static str {
         match self {
             Self::Absent { .. } => "PTR_NEURAL_ABSENT",
@@ -231,17 +229,17 @@ impl StateDeclaration {
             provenance: Vec::new(),
         }
     }
-    /// Adds a semantic input read by the state.
+
     pub fn reading(mut self, key: impl Into<String>) -> Self {
         self.semantic_inputs.insert(key.into());
         self
     }
-    /// Adds a lifecycle target under which the state was produced.
+
     pub fn under(mut self, target: impl Into<String>) -> Self {
         self.targets.insert(target.into());
         self
     }
-    /// Adds one provenance reference for the state producer.
+
     pub fn produced_by(mut self, provenance: ProvenanceRef) -> Self {
         self.provenance.push(provenance);
         self
@@ -289,15 +287,14 @@ pub struct NeuralState {
 }
 
 impl NeuralState {
-    /// Constructs a new value.
     pub fn new(binding: StateBinding, payload: Vec<u8>) -> Self {
         Self { binding, payload }
     }
-    /// Returns the state binding.
+
     pub fn binding(&self) -> &StateBinding {
         &self.binding
     }
-    /// Returns the payload length in bytes.
+
     pub fn payload_len(&self) -> usize {
         self.payload.len()
     }
@@ -315,11 +312,10 @@ pub struct AdmittedState<'a> {
 }
 
 impl<'a> AdmittedState<'a> {
-    /// Returns the state binding.
     pub fn binding(&self) -> &'a StateBinding {
         &self.state.binding
     }
-    /// Returns the admitted payload bytes.
+
     pub fn payload(&self) -> &'a [u8] {
         &self.state.payload
     }
@@ -345,11 +341,10 @@ pub struct SealedState {
 }
 
 impl SealedState {
-    /// Returns the canonical encoded bytes.
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
     }
-    /// Returns the trusted anchor.
+
     pub fn anchor(&self) -> NeuralAnchor {
         self.anchor
     }
@@ -837,23 +832,22 @@ pub struct NeuralStateCache {
 }
 
 impl NeuralStateCache {
-    /// Inserts a value.
     pub fn insert(&mut self, key: impl Into<String>, state: NeuralState) -> Option<NeuralState> {
         self.entries.insert(key.into(), state)
     }
-    /// Removes a value.
+
     pub fn remove(&mut self, key: &str) -> Option<NeuralState> {
         self.entries.remove(key)
     }
-    /// Returns the number of entries.
+
     pub fn len(&self) -> usize {
         self.entries.len()
     }
-    /// Returns whether this collection has no entries.
+
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
-    /// Returns the stored state keys.
+
     pub fn keys(&self) -> impl Iterator<Item = &str> {
         self.entries.keys().map(String::as_str)
     }
@@ -935,7 +929,6 @@ mod tests {
         }
     }
 
-    /// Verifies that a binding round trips through its canonical encoding.
     #[test]
     fn a_binding_round_trips_through_its_canonical_encoding() {
         let original = binding();
@@ -943,7 +936,6 @@ mod tests {
         assert_eq!(StateBinding::decode(&bytes).unwrap(), original);
     }
 
-    /// Verifies that a sealed state round trips and carries its payload.
     #[test]
     fn a_sealed_state_round_trips_and_carries_its_payload() {
         let state = NeuralState::new(binding(), vec![0xAB; 64]);
@@ -955,7 +947,6 @@ mod tests {
         assert_eq!(reopened.payload_len(), 64);
     }
 
-    /// Verifies that an anchor that disagrees with the binding is refused.
     #[test]
     fn an_anchor_that_disagrees_with_the_binding_is_refused() {
         let state = NeuralState::new(binding(), vec![1, 2, 3]);
@@ -974,7 +965,6 @@ mod tests {
         );
     }
 
-    /// Verifies that a reordered section is not a second encoding of the same binding.
     #[test]
     fn a_reordered_section_is_not_a_second_encoding_of_the_same_binding() {
         let original = binding();
@@ -994,7 +984,6 @@ mod tests {
         );
     }
 
-    /// Verifies that a third presence value is refused.
     #[test]
     fn a_third_presence_value_is_refused() {
         let original = binding();
@@ -1010,7 +999,6 @@ mod tests {
         );
     }
 
-    /// Verifies that neural faults and denials carry stable codes.
     #[test]
     fn neural_faults_and_denials_carry_stable_codes() {
         assert_eq!(NeuralError::SizeLimit.code(), "PTR_NEURAL_SIZE_LIMIT");

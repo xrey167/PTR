@@ -44,15 +44,15 @@ pub struct ChainOrigin([u8; 32]);
 impl ChainOrigin {
     /// Origin of a log that has no records yet.
     pub const UNSET: Self = Self([0; 32]);
-    /// Constructs a chain origin from the first record digest.
+
     pub fn from_first_record(digest: [u8; 32]) -> Self {
         Self(digest)
     }
-    /// Returns whether this origin identifies a first record.
+
     pub fn is_set(self) -> bool {
         self != Self::UNSET
     }
-    /// Returns the canonical encoded bytes.
+
     pub fn bytes(self) -> [u8; 32] {
         self.0
     }
@@ -69,7 +69,6 @@ impl ChainOrigin {
 pub struct AnchorKey([u8; 32]);
 
 impl AnchorKey {
-    /// Constructs a host-held authentication key from raw bytes.
     pub fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }
@@ -121,7 +120,6 @@ pub enum AnchorError {
 }
 
 impl AnchorError {
-    /// Returns the stable machine-readable diagnostic code.
     pub fn code(self) -> &'static str {
         match self {
             Self::Absent => "PTR_ANCHOR_ABSENT",
@@ -340,15 +338,15 @@ impl AnchorStore {
             current,
         })
     }
-    /// Returns the backing path.
+
     pub fn path(&self) -> &Path {
         &self.path
     }
-    /// Returns the current protected anchor.
+
     pub fn current(&self) -> ProtectedAnchor {
         self.current
     }
-    /// Returns the current monotonic anchor epoch.
+
     pub fn epoch(&self) -> u64 {
         self.current.epoch
     }
@@ -545,7 +543,6 @@ mod tests {
             .collect()
     }
 
-    /// Verifies that hmac matches rfc 4231 vectors.
     #[test]
     fn hmac_matches_rfc_4231_vectors() {
         // Cases 1, 2, 3 and 6; case 6 exercises the key-longer-than-block path.
@@ -576,7 +573,6 @@ mod tests {
         }
     }
 
-    /// Verifies that constant time eq rejects length and content differences.
     #[test]
     fn constant_time_eq_rejects_length_and_content_differences() {
         assert!(constant_time_eq(&[1, 2, 3], &[1, 2, 3]));
@@ -584,7 +580,6 @@ mod tests {
         assert!(!constant_time_eq(&[1, 2, 3], &[1, 2]));
     }
 
-    /// Verifies that redacted debug hides key material.
     #[test]
     fn redacted_debug_hides_key_material() {
         let rendered = format!("{:?}", AnchorKey::from_bytes([7; 32]));
@@ -592,7 +587,6 @@ mod tests {
         assert!(!rendered.contains('7'));
     }
 
-    /// Verifies that reserved flags and base range are rejected.
     #[test]
     fn reserved_flags_and_base_range_are_rejected() {
         let anchor = ProtectedAnchor::initial();

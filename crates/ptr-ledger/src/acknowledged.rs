@@ -125,7 +125,6 @@ pub enum AcknowledgedError {
 }
 
 impl AcknowledgedError {
-    /// Returns the stable machine-readable diagnostic code.
     pub fn code(&self) -> &'static str {
         match self {
             Self::Anchor(error) => error.code(),
@@ -283,11 +282,11 @@ impl AcknowledgedLedger {
         self.fenced = false;
         Ok(index)
     }
-    /// Returns the committed events.
+
     pub fn events(&self) -> &[CommittedEvent] {
         self.log.events()
     }
-    /// Returns the trusted anchor.
+
     pub fn anchor(&self) -> ProtectedAnchor {
         self.anchors.current()
     }
@@ -296,11 +295,11 @@ impl AcknowledgedLedger {
     pub fn epoch(&self) -> u64 {
         self.anchors.epoch()
     }
-    /// Returns the live log path.
+
     pub fn log(&self) -> &FileLedger {
         &self.log
     }
-    /// Returns the paths used by this ledger.
+
     pub fn paths(&self) -> &LogPaths {
         &self.paths
     }

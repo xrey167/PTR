@@ -167,7 +167,6 @@ fn reseal(bytes: &mut [u8], floor: LogAnchor, revision: Revision) -> CompactedAn
     }
 }
 
-/// Verifies that compacted reconstruction equals a full replay.
 #[test]
 fn compacted_reconstruction_equals_a_full_replay() {
     let mut original = fixture();
@@ -199,7 +198,6 @@ fn compacted_reconstruction_equals_a_full_replay() {
     );
 }
 
-/// Verifies that restoring with no retained journal reproduces the floor exactly.
 #[test]
 fn restoring_with_no_retained_journal_reproduces_the_floor_exactly() {
     let original = fixture();
@@ -215,7 +213,6 @@ fn restoring_with_no_retained_journal_reproduces_the_floor_exactly() {
     assert!(restored.committed_events().is_empty());
 }
 
-/// Verifies that a revocation below the floor still denies after compaction.
 #[test]
 fn an_empty_runtime_round_trips_at_the_empty_floor() {
     let original = PtrRuntime::new(PtrConfig::default()).unwrap();
@@ -305,7 +302,6 @@ fn a_revocation_below_the_floor_still_denies_after_compaction() {
     assert!(restored.authorize_action(&superseded).is_err());
 }
 
-/// Verifies that every single bit mutation of a compacted snapshot is rejected.
 #[test]
 fn every_single_bit_mutation_of_a_compacted_snapshot_is_rejected() {
     let original = fixture();
@@ -326,7 +322,6 @@ fn every_single_bit_mutation_of_a_compacted_snapshot_is_rejected() {
     assert!(PtrRuntime::restore_compacted(PtrConfig::default(), &reference, trusted, &[]).is_ok());
 }
 
-/// Verifies that framing length and trusted identity are all required.
 #[test]
 fn framing_length_and_trusted_identity_are_all_required() {
     let original = fixture();
@@ -396,7 +391,6 @@ fn framing_length_and_trusted_identity_are_all_required() {
     }
 }
 
-/// Verifies that a noncanonical lifecycle section is rejected even when resealed.
 #[test]
 fn a_noncanonical_lifecycle_section_is_rejected_even_when_resealed() {
     let original = fixture();
@@ -439,7 +433,6 @@ fn a_noncanonical_lifecycle_section_is_rejected_even_when_resealed() {
     assert!(error.contains("UnsupportedVersion"), "{error}");
 }
 
-/// Verifies that retained records must continue above the floor.
 #[test]
 fn retained_records_must_continue_above_the_floor() {
     let mut original = fixture();
@@ -476,7 +469,6 @@ fn retained_records_must_continue_above_the_floor() {
     assert!(error.contains("ReplayIndexMismatch"), "{error}");
 }
 
-/// Verifies that a restored runtime rejects semantic work against a stale base revision.
 #[test]
 fn a_restored_runtime_rejects_semantic_work_against_a_stale_base_revision() {
     let original = fixture();
@@ -508,7 +500,6 @@ fn a_restored_runtime_rejects_semantic_work_against_a_stale_base_revision() {
     assert!(restored.revision().0 > before.0);
 }
 
-/// Verifies that an exported snapshot carries its own coverage.
 #[test]
 fn an_exported_snapshot_carries_its_own_coverage() {
     let mut original = fixture();

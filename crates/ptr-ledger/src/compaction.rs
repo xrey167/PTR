@@ -35,18 +35,17 @@ pub struct LogPaths {
 }
 
 impl LogPaths {
-    /// Constructs a new value.
     pub fn new(directory: impl Into<PathBuf>, stem: impl Into<String>) -> Self {
         Self {
             directory: directory.into(),
             stem: stem.into(),
         }
     }
-    /// Returns the directory containing the log set.
+
     pub fn directory(&self) -> &Path {
         &self.directory
     }
-    /// Returns the protected-anchor path.
+
     pub fn anchor_path(&self) -> PathBuf {
         self.directory.join(format!("{}{ANCHOR_SUFFIX}", self.stem))
     }
@@ -113,7 +112,6 @@ pub struct RetentionPolicy {
 }
 
 impl RetentionPolicy {
-    /// Constructs a policy that retains the requested number of records.
     pub fn keeping(keep_records: u64) -> Self {
         Self { keep_records }
     }
@@ -175,7 +173,6 @@ pub enum CompactionFault {
 }
 
 impl CompactionFault {
-    /// Returns the stable machine-readable diagnostic code.
     pub fn code(self) -> &'static str {
         match self {
             Self::FloorNotAdvancing => "PTR_COMPACT_FLOOR_NOT_ADVANCING",

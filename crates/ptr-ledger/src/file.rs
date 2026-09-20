@@ -529,7 +529,6 @@ fn unrecoverable(fault: Split) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    /// Verifies that releasing guard unlocks even while duplicate descriptor exists.
     #[test]
     fn releasing_guard_unlocks_even_while_duplicate_descriptor_exists() {
         let path = std::env::temp_dir().join(format!(

@@ -54,7 +54,6 @@ pub enum CompactedError {
 }
 
 impl CompactedError {
-    /// Returns the stable machine-readable diagnostic code.
     pub fn code(self) -> &'static str {
         match self {
             Self::SizeLimit => "PTR_COMPACTED_SIZE_LIMIT",
@@ -113,11 +112,10 @@ pub struct CompactedSnapshot {
 }
 
 impl CompactedSnapshot {
-    /// Returns the canonical encoded bytes.
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
     }
-    /// Returns the trusted anchor.
+
     pub fn anchor(&self) -> CompactedAnchor {
         self.anchor
     }

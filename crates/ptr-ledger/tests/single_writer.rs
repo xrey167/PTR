@@ -6,7 +6,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const PROBE: &str = "PTR_LEDGER_LOCK_TEST_PATH";
 
-/// Verifies that lock probe child.
 #[test]
 fn lock_probe_child() {
     let Some(path) = std::env::var_os(PROBE) else {
@@ -16,7 +15,6 @@ fn lock_probe_child() {
     assert_eq!(error.kind(), ErrorKind::WouldBlock);
 }
 
-/// Verifies that one writer owns recovery and append across processes.
 #[test]
 fn one_writer_owns_recovery_and_append_across_processes() {
     let nonce = SystemTime::now()
