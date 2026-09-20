@@ -4,6 +4,7 @@ maturity = "prototype"
 last_reviewed = "2026-09-20"
 
 implemented = [
+  "Rustdoc covers the protected-anchor, acknowledgment, compaction and erasure APIs plus their integrity and serialization helpers",
   "LogPaths::orphans claims a file only when log_path of the floor its name encodes is that same path, so a neighbouring log set sharing the directory can never have its live log reclaimed as this set's orphan",
   "InMemoryLedger::append is fallible and uses checked arithmetic: an exhausted commit index is refused with PTR_LEDGER_INDEX_EXHAUSTED and nothing is stored, rather than saturating and handing the same index out twice",
   "PTRLOG02 bounded SHA-256 record chain with checked header, sequence, payload and trailer",

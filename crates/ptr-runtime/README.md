@@ -9,10 +9,11 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-20  
-**Code footprint:** 6 Rust source files · 2945 nonblank source lines · 12 integration-test files · 95 `#[test]` markers
+**Code footprint:** 6 Rust source files · 2993 nonblank source lines · 12 integration-test files · 95 `#[test]` markers
 
 ### Implemented now
 
+- Rustdoc covers the compacted-snapshot and neural-state APIs plus their canonical framing helpers and admission diagnostics
 - PTRNEU01 neural/KV/checkpoint admission: opaque state bound to an anchored journal position, per-input semantic value digests, lifecycle generations, provenance and codebook version plus assignment fingerprint
 - Admission is decided at every use rather than at insertion; a payload is reachable only through an admission decision, and a cache exposes no accessor that bypasses one
 - Revocation, supersession, edited or removed inputs, foreign history with identical counters, unverifiable positions, changed codebook assignment and a fenced runtime each deny with their own stable code; failure to verify is a denial rather than an error

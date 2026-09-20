@@ -48,6 +48,7 @@ pub struct LegacyLog {
     events: Vec<CommittedEvent>,
 }
 impl LegacyLog {
+    /// Legacy events held under the migration source's exclusive lock.
     pub fn events(&self) -> &[CommittedEvent] {
         &self.events
     }
@@ -58,6 +59,7 @@ impl LegacyLog {
 // expose or clone this guard; close alone waits for all duplicate descriptors.
 struct LockedFile(File);
 impl LockedFile {
+    /// Acquire exclusive logical ownership of an open file.
     fn new(file: File) -> io::Result<Self> {
         fs4::FileExt::try_lock(&file).map_err(io::Error::from)?;
         Ok(Self(file))
@@ -65,23 +67,28 @@ impl LockedFile {
 }
 impl Deref for LockedFile {
     type Target = File;
+    /// Borrow the owned file handle.
     fn deref(&self) -> &File {
         &self.0
     }
 }
 impl DerefMut for LockedFile {
+    /// Mutably borrow the owned file handle.
     fn deref_mut(&mut self) -> &mut File {
         &mut self.0
     }
 }
 impl Drop for LockedFile {
+    /// Explicitly release the advisory lock before closing the handle.
     fn drop(&mut self) {
         let _ = fs4::FileExt::unlock(&self.0);
     }
 }
+/// Open an existing log and acquire its exclusive writer lock.
 fn lock_existing(path: &Path) -> io::Result<LockedFile> {
     LockedFile::new(OpenOptions::new().read(true).write(true).open(path)?)
 }
+/// Read a held log only when it remains within the framing size bound.
 fn read_bounded(file: &mut File) -> io::Result<Vec<u8>> {
     if file.metadata()?.len() > MAX_LOG_BYTES as u64 {
         return Err(integrity::invalid("PTR_LOG_SIZE_LIMIT"));
@@ -114,6 +121,7 @@ pub(crate) fn sync_parent(path: &Path) -> io::Result<()> {
 }
 
 impl FileLedger {
+    /// Open a strict checked log, creating a new empty one when absent.
     pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
         let path = path.as_ref();
         match OpenOptions::new()
@@ -263,6 +271,7 @@ impl FileLedger {
         Ok(Self::open_legacy_for_migration(path)?.events)
     }
 
+    /// Exclusively open an unchecked legacy source for explicit migration.
     pub fn open_legacy_for_migration(path: impl AsRef<Path>) -> io::Result<LegacyLog> {
         let mut file = lock_existing(path.as_ref())?;
         let events = integrity::decode_legacy_log(&read_bounded(&mut file)?)?;
@@ -272,6 +281,7 @@ impl FileLedger {
         })
     }
 
+    /// Adopt a verified log that begins at the format's empty anchor.
     fn from_verified(
         path: &Path,
         file: LockedFile,
@@ -281,6 +291,7 @@ impl FileLedger {
         Self::from_verified_above(path, file, verified, length, LogAnchor::empty())
     }
 
+    /// Adopt a verified log that continues above a trusted compaction floor.
     fn from_verified_above(
         path: &Path,
         mut file: LockedFile,
@@ -299,6 +310,7 @@ impl FileLedger {
             poisoned: false,
         })
     }
+    /// Filesystem path owned by this ledger handle.
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -339,15 +351,18 @@ impl FileLedger {
         let (_, after) = integrity::encode_record(&first.event, LogAnchor::empty()).ok()?;
         Some(ChainOrigin::from_first_record(after.digest))
     }
+    /// Complete committed records currently retained in this file.
     pub fn events(&self) -> &[CommittedEvent] {
         &self.events
     }
+    /// Tail commitment unless an ambiguous write poisoned the handle.
     pub fn anchor(&self) -> io::Result<LogAnchor> {
         if self.poisoned {
             return Err(io::Error::other("PTR_LOG_INDETERMINATE"));
         }
         Ok(self.anchor)
     }
+    /// Append, synchronize, and publish one checked record.
     pub fn append_durable(&mut self, event: LedgerEvent) -> io::Result<CommitIndex> {
         if self.poisoned {
             return Err(io::Error::other("PTR_LOG_INDETERMINATE"));
@@ -519,6 +534,7 @@ impl RecoverableLog {
     }
 }
 
+/// Convert a nonrepairable split into the stable log error boundary.
 fn unrecoverable(fault: Split) -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidData,

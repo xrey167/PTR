@@ -125,6 +125,7 @@ pub enum AcknowledgedError {
 }
 
 impl AcknowledgedError {
+    /// Stable diagnostic code for this failure.
     pub fn code(&self) -> &'static str {
         match self {
             Self::Anchor(error) => error.code(),
@@ -143,6 +144,7 @@ impl AcknowledgedError {
 }
 
 impl fmt::Display for AcknowledgedError {
+    /// Render the stable code and any underlying log diagnostic.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Log(diagnostic) => write!(f, "{}: {diagnostic}", self.code()),
@@ -154,12 +156,14 @@ impl fmt::Display for AcknowledgedError {
 impl std::error::Error for AcknowledgedError {}
 
 impl From<AnchorError> for AcknowledgedError {
+    /// Preserve a protected-anchor failure at the acknowledged-ledger boundary.
     fn from(error: AnchorError) -> Self {
         Self::Anchor(error)
     }
 }
 
 impl From<io::Error> for AcknowledgedError {
+    /// Preserve an I/O diagnostic as a log failure.
     fn from(error: io::Error) -> Self {
         Self::Log(error.to_string())
     }
@@ -283,10 +287,12 @@ impl AcknowledgedLedger {
         Ok(index)
     }
 
+    /// Committed events currently retained by the live log.
     pub fn events(&self) -> &[CommittedEvent] {
         self.log.events()
     }
 
+    /// The currently protected commitment to this log.
     pub fn anchor(&self) -> ProtectedAnchor {
         self.anchors.current()
     }
@@ -296,10 +302,12 @@ impl AcknowledgedLedger {
         self.anchors.epoch()
     }
 
+    /// The live durable log, exposed read-only.
     pub fn log(&self) -> &FileLedger {
         &self.log
     }
 
+    /// Paths that identify this acknowledged log set.
     pub fn paths(&self) -> &LogPaths {
         &self.paths
     }

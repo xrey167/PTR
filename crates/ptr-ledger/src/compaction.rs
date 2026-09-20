@@ -35,6 +35,7 @@ pub struct LogPaths {
 }
 
 impl LogPaths {
+    /// Name one independently anchored log set within a directory.
     pub fn new(directory: impl Into<PathBuf>, stem: impl Into<String>) -> Self {
         Self {
             directory: directory.into(),
@@ -42,10 +43,12 @@ impl LogPaths {
         }
     }
 
+    /// Directory containing this set's anchor and log generations.
     pub fn directory(&self) -> &Path {
         &self.directory
     }
 
+    /// Path of this set's protected anchor.
     pub fn anchor_path(&self) -> PathBuf {
         self.directory.join(format!("{}{ANCHOR_SUFFIX}", self.stem))
     }
@@ -112,6 +115,7 @@ pub struct RetentionPolicy {
 }
 
 impl RetentionPolicy {
+    /// Retain at least `keep_records` commits above a proposed floor.
     pub fn keeping(keep_records: u64) -> Self {
         Self { keep_records }
     }
@@ -173,6 +177,7 @@ pub enum CompactionFault {
 }
 
 impl CompactionFault {
+    /// Stable diagnostic code for this refusal.
     pub fn code(self) -> &'static str {
         match self {
             Self::FloorNotAdvancing => "PTR_COMPACT_FLOOR_NOT_ADVANCING",
@@ -185,6 +190,7 @@ impl CompactionFault {
 }
 
 impl From<CompactionFault> for AcknowledgedError {
+    /// Preserve a compaction refusal at the acknowledged-ledger boundary.
     fn from(fault: CompactionFault) -> Self {
         Self::Compaction(fault)
     }

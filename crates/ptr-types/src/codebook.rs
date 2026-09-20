@@ -28,10 +28,12 @@ use std::fmt;
 pub struct CodebookVersion(pub u32);
 
 impl CodebookVersion {
+    /// Initial frozen assignment shared by the current type kernel.
     pub const V1: Self = Self(1);
 }
 
 impl fmt::Display for CodebookVersion {
+    /// Render the version in manifest-friendly form.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "v{}", self.0)
     }
@@ -54,6 +56,7 @@ impl TypeCode {
 }
 
 impl fmt::Display for TypeCode {
+    /// Render the raw table index.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
     }
@@ -118,6 +121,7 @@ pub enum CodebookError {
 }
 
 impl CodebookError {
+    /// Stable diagnostic code for this lookup refusal.
     pub fn code(self) -> &'static str {
         match self {
             Self::UnknownVersion { .. } => "PTR_CODEBOOK_UNKNOWN_VERSION",
@@ -128,6 +132,7 @@ impl CodebookError {
 }
 
 impl fmt::Display for CodebookError {
+    /// Render the stable refusal code.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.code())
     }
@@ -182,6 +187,7 @@ impl Codebook {
         Ok(book)
     }
 
+    /// Version that fixes every assignment in this codebook.
     pub fn version(&self) -> CodebookVersion {
         self.version
     }
@@ -269,7 +275,9 @@ impl Codebook {
         out
     }
 
+    /// Stable member names for one family in code order.
     fn member_names(&self, family: CodeFamily) -> Vec<&'static str> {
+        /// Collect names from one typed assignment table.
         fn names<T: CognitiveType>(book: &Codebook) -> Vec<&'static str> {
             T::table(book.version)
                 .unwrap_or(&[])
@@ -287,6 +295,7 @@ impl Codebook {
     }
 }
 
+/// Append a length-prefixed string to the canonical assignment bytes.
 fn put_str(out: &mut Vec<u8>, value: &str) {
     out.extend_from_slice(&(value.len() as u16).to_le_bytes());
     out.extend_from_slice(value.as_bytes());

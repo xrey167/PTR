@@ -28,6 +28,7 @@ pub enum MaskError {
 }
 
 impl MaskError {
+    /// Stable diagnostic code for this mask refusal.
     pub fn code(self) -> &'static str {
         match self {
             Self::LengthMismatch { .. } => "PTR_MASK_LENGTH_MISMATCH",
@@ -37,6 +38,7 @@ impl MaskError {
 }
 
 impl fmt::Display for MaskError {
+    /// Render the stable refusal code.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.code())
     }
@@ -93,10 +95,12 @@ impl ValidityMask {
         }
     }
 
+    /// Number of slots governed by this mask.
     pub fn len(&self) -> usize {
         self.admitted.len()
     }
 
+    /// Whether the mask governs no slots.
     pub fn is_empty(&self) -> bool {
         self.admitted.is_empty()
     }
@@ -109,6 +113,7 @@ impl ValidityMask {
         self.admitted.get(slot).copied().unwrap_or(false)
     }
 
+    /// Number of slots that may participate.
     pub fn admitted_count(&self) -> usize {
         self.admitted.iter().filter(|admitted| **admitted).count()
     }

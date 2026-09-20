@@ -43,6 +43,7 @@ pub enum OutOfReach {
 }
 
 impl OutOfReach {
+    /// Stable diagnostic code for this audit boundary.
     pub fn code(self) -> &'static str {
         match self {
             Self::HostRetainedArtifacts => "PTR_ERASURE_HOST_RETAINED_ARTIFACTS",
@@ -131,6 +132,7 @@ impl ErasureAudit {
         self
     }
 
+    /// Plaintext retained so callers can fold in external artifacts.
     fn needle(&self) -> &[u8] {
         &self.needle
     }
@@ -146,6 +148,7 @@ pub fn retains(artifact: &[u8], plaintext: &[u8]) -> bool {
         .any(|window| window == plaintext)
 }
 
+/// Read a log only when it remains within the framing size bound.
 fn read_bounded(path: &Path) -> io::Result<Vec<u8>> {
     let bytes = fs::read(path)?;
     if bytes.len() > MAX_LOG_BYTES {
@@ -179,6 +182,7 @@ impl LogPaths {
         self.audit_with_live(plaintext, live_base, None)
     }
 
+    /// Audit a set while optionally supplying bytes from an already-open live log.
     pub(crate) fn audit_with_live(
         &self,
         plaintext: &[u8],

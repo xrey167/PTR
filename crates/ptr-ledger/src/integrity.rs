@@ -23,6 +23,7 @@ pub struct LogAnchor {
     pub digest: [u8; 32],
 }
 impl LogAnchor {
+    /// Commitment to the empty checked-log prefix.
     pub fn empty() -> Self {
         Self {
             index: CommitIndex(0),
@@ -37,12 +38,15 @@ pub struct VerifiedLog {
     pub(crate) anchor: LogAnchor,
 }
 impl VerifiedLog {
+    /// Records whose framing and complete hash chain were verified.
     pub fn events(&self) -> &[CommittedEvent] {
         &self.events
     }
+    /// Commitment produced by the verified tail.
     pub fn anchor(&self) -> LogAnchor {
         self.anchor
     }
+    /// Require agreement with an independently retained commitment.
     pub fn require_anchor(&self, trusted: LogAnchor) -> io::Result<()> {
         if self.anchor != trusted {
             return Err(invalid("PTR_LOG_ANCHOR_MISMATCH"));
@@ -51,9 +55,11 @@ impl VerifiedLog {
     }
 }
 
+/// Compute the format's fixed-width SHA-256 digest representation.
 pub fn sha256(bytes: &[u8]) -> [u8; 32] {
     Sha256::digest(bytes).into()
 }
+/// Hash two byte segments under an explicit format domain.
 fn hash_parts(domain: &[u8], a: &[u8], b: &[u8]) -> [u8; 32] {
     let mut hash = Sha256::new();
     hash.update(domain);
@@ -61,10 +67,12 @@ fn hash_parts(domain: &[u8], a: &[u8], b: &[u8]) -> [u8; 32] {
     hash.update(b);
     hash.finalize().into()
 }
+/// Construct a stable invalid-data refusal.
 pub(crate) fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
+/// Encode one record chained from `previous` and return its new anchor.
 pub(crate) fn encode_record(
     event: &LedgerEvent,
     previous: LogAnchor,

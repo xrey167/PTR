@@ -83,6 +83,7 @@ pub enum NeuralError {
 }
 
 impl NeuralError {
+    /// Stable diagnostic code for this framing or construction fault.
     pub fn code(&self) -> &'static str {
         match self {
             Self::SizeLimit => "PTR_NEURAL_SIZE_LIMIT",
@@ -100,6 +101,7 @@ impl NeuralError {
 }
 
 impl std::fmt::Display for NeuralError {
+    /// Render the stable fault code.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.code())
     }
@@ -166,6 +168,7 @@ pub enum Denial {
 }
 
 impl Denial {
+    /// Stable diagnostic code for this admission refusal.
     pub fn code(&self) -> &'static str {
         match self {
             Self::Absent { .. } => "PTR_NEURAL_ABSENT",
@@ -187,6 +190,7 @@ impl Denial {
 }
 
 impl std::fmt::Display for Denial {
+    /// Render the stable refusal code.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.code())
     }
@@ -194,6 +198,7 @@ impl std::fmt::Display for Denial {
 
 impl std::error::Error for Denial {}
 
+/// Lift a neural-state fault into the runtime error boundary.
 fn invalid(kind: NeuralError) -> RuntimeError {
     RuntimeError::Neural(kind)
 }
@@ -230,16 +235,19 @@ impl StateDeclaration {
         }
     }
 
+    /// Declare one semantic key read while producing the state.
     pub fn reading(mut self, key: impl Into<String>) -> Self {
         self.semantic_inputs.insert(key.into());
         self
     }
 
+    /// Declare one lifecycle target whose generation constrained production.
     pub fn under(mut self, target: impl Into<String>) -> Self {
         self.targets.insert(target.into());
         self
     }
 
+    /// Append one provenance entry in declaration order.
     pub fn produced_by(mut self, provenance: ProvenanceRef) -> Self {
         self.provenance.push(provenance);
         self
@@ -287,14 +295,17 @@ pub struct NeuralState {
 }
 
 impl NeuralState {
+    /// Pair an opaque payload with the committed facts it depends on.
     pub fn new(binding: StateBinding, payload: Vec<u8>) -> Self {
         Self { binding, payload }
     }
 
+    /// Binding that must be rechecked before the payload is read.
     pub fn binding(&self) -> &StateBinding {
         &self.binding
     }
 
+    /// Size of the opaque payload without exposing its contents.
     pub fn payload_len(&self) -> usize {
         self.payload.len()
     }
@@ -312,10 +323,12 @@ pub struct AdmittedState<'a> {
 }
 
 impl<'a> AdmittedState<'a> {
+    /// Binding that was checked to produce this admitted handle.
     pub fn binding(&self) -> &'a StateBinding {
         &self.state.binding
     }
 
+    /// Opaque bytes made reachable by the admission decision.
     pub fn payload(&self) -> &'a [u8] {
         &self.state.payload
     }
@@ -341,10 +354,12 @@ pub struct SealedState {
 }
 
 impl SealedState {
+    /// Canonical sealed bytes of this retained state.
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
     }
 
+    /// Trusted identity the host must retain outside the artifact.
     pub fn anchor(&self) -> NeuralAnchor {
         self.anchor
     }
@@ -353,6 +368,7 @@ impl SealedState {
 struct Writer(Vec<u8>);
 
 impl Writer {
+    /// Append bytes while enforcing the binding-size bound.
     fn raw(&mut self, bytes: &[u8]) -> Result<(), RuntimeError> {
         if bytes.len() > MAX_BINDING_BYTES.saturating_sub(self.0.len()) {
             return Err(invalid(NeuralError::SectionLimit));
@@ -360,12 +376,14 @@ impl Writer {
         self.0.extend_from_slice(bytes);
         Ok(())
     }
+    /// Encode a bounded collection count.
     fn count(&mut self, value: usize) -> Result<(), RuntimeError> {
         if value > MAX_ITEMS {
             return Err(invalid(NeuralError::SectionLimit));
         }
         self.raw(&(value as u32).to_le_bytes())
     }
+    /// Encode one nonempty, bounded UTF-8 string.
     fn text(&mut self, value: &str) -> Result<(), RuntimeError> {
         if value.is_empty() || value.len() > MAX_STRING_BYTES {
             return Err(invalid(NeuralError::SectionLimit));
@@ -373,6 +391,7 @@ impl Writer {
         self.raw(&(value.len() as u32).to_le_bytes())?;
         self.raw(value.as_bytes())
     }
+    /// Encode one little-endian unsigned integer.
     fn number(&mut self, value: u64) -> Result<(), RuntimeError> {
         self.raw(&value.to_le_bytes())
     }
@@ -384,6 +403,7 @@ struct Reader<'a> {
 }
 
 impl<'a> Reader<'a> {
+    /// Consume exactly `length` bytes from the binding.
     fn take(&mut self, length: usize) -> Result<&'a [u8], RuntimeError> {
         let end = self
             .offset
@@ -405,6 +425,7 @@ impl<'a> Reader<'a> {
         }
         Ok(value)
     }
+    /// Decode one nonempty, bounded UTF-8 string.
     fn text(&mut self) -> Result<String, RuntimeError> {
         let length = u32::from_le_bytes(self.take(4)?.try_into().expect("fixed length")) as usize;
         if length == 0 || length > MAX_STRING_BYTES {
@@ -413,14 +434,17 @@ impl<'a> Reader<'a> {
         String::from_utf8(self.take(length)?.to_vec())
             .map_err(|_| invalid(NeuralError::NoncanonicalSection))
     }
+    /// Decode one little-endian unsigned integer.
     fn number(&mut self) -> Result<u64, RuntimeError> {
         Ok(u64::from_le_bytes(
             self.take(8)?.try_into().expect("fixed number"),
         ))
     }
+    /// Decode one fixed-width SHA-256 digest.
     fn digest(&mut self) -> Result<[u8; 32], RuntimeError> {
         Ok(self.take(32)?.try_into().expect("fixed digest"))
     }
+    /// Decode the canonical binary presence flag.
     fn flag(&mut self) -> Result<bool, RuntimeError> {
         match self.take(1)?[0] {
             0 => Ok(false),
@@ -430,11 +454,13 @@ impl<'a> Reader<'a> {
             _ => Err(invalid(NeuralError::ReservedField)),
         }
     }
+    /// Whether the binding has no trailing bytes.
     fn finished(&self) -> bool {
         self.offset == self.bytes.len()
     }
 }
 
+/// Require the next decoded key to be strictly greater than its predecessor.
 fn check_ascending(previous: &mut Option<String>, key: &str) -> Result<(), RuntimeError> {
     if previous.as_deref().is_some_and(|last| last >= key) {
         return Err(invalid(NeuralError::NoncanonicalSection));
@@ -482,6 +508,7 @@ impl StateBinding {
         Ok(out.0)
     }
 
+    /// Decode the single canonical representation of a state binding.
     fn decode(bytes: &[u8]) -> Result<Self, RuntimeError> {
         if bytes.len() > MAX_BINDING_BYTES {
             return Err(invalid(NeuralError::SizeLimit));
@@ -832,22 +859,27 @@ pub struct NeuralStateCache {
 }
 
 impl NeuralStateCache {
+    /// Insert or replace retained state without treating it as admitted.
     pub fn insert(&mut self, key: impl Into<String>, state: NeuralState) -> Option<NeuralState> {
         self.entries.insert(key.into(), state)
     }
 
+    /// Remove retained state without reading its payload.
     pub fn remove(&mut self, key: &str) -> Option<NeuralState> {
         self.entries.remove(key)
     }
 
+    /// Number of retained states, admitted or denied.
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
+    /// Whether no state is retained.
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
+    /// Iterate retained keys in deterministic order.
     pub fn keys(&self) -> impl Iterator<Item = &str> {
         self.entries.keys().map(String::as_str)
     }

@@ -54,6 +54,7 @@ pub enum CompactedError {
 }
 
 impl CompactedError {
+    /// Stable diagnostic code for this snapshot refusal.
     pub fn code(self) -> &'static str {
         match self {
             Self::SizeLimit => "PTR_COMPACTED_SIZE_LIMIT",
@@ -70,6 +71,7 @@ impl CompactedError {
 }
 
 impl std::fmt::Display for CompactedError {
+    /// Render the stable refusal code.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.code())
     }
@@ -77,6 +79,7 @@ impl std::fmt::Display for CompactedError {
 
 impl std::error::Error for CompactedError {}
 
+/// Lift a compacted-snapshot fault into the runtime error boundary.
 fn invalid(kind: CompactedError) -> RuntimeError {
     RuntimeError::Compacted(kind)
 }
@@ -112,10 +115,12 @@ pub struct CompactedSnapshot {
 }
 
 impl CompactedSnapshot {
+    /// Canonical sealed bytes of this snapshot.
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
     }
 
+    /// Trusted identity the host must retain outside the snapshot.
     pub fn anchor(&self) -> CompactedAnchor {
         self.anchor
     }
@@ -134,6 +139,7 @@ impl CompactedSnapshot {
 struct Writer(Vec<u8>);
 
 impl Writer {
+    /// Append bytes while enforcing the section-size bound.
     fn raw(&mut self, bytes: &[u8]) -> Result<(), RuntimeError> {
         if bytes.len() > MAX_SECTION_BYTES.saturating_sub(self.0.len()) {
             return Err(invalid(CompactedError::SectionLimit));
@@ -141,12 +147,14 @@ impl Writer {
         self.0.extend_from_slice(bytes);
         Ok(())
     }
+    /// Encode a bounded collection count.
     fn count(&mut self, value: usize) -> Result<(), RuntimeError> {
         if value > MAX_SECTION_ITEMS {
             return Err(invalid(CompactedError::SectionLimit));
         }
         self.raw(&(value as u32).to_le_bytes())
     }
+    /// Encode one nonempty, bounded UTF-8 string.
     fn text(&mut self, value: &str) -> Result<(), RuntimeError> {
         if value.is_empty() || value.len() > MAX_STRING_BYTES {
             return Err(invalid(CompactedError::SectionLimit));
@@ -154,6 +162,7 @@ impl Writer {
         self.raw(&(value.len() as u32).to_le_bytes())?;
         self.raw(value.as_bytes())
     }
+    /// Encode one little-endian unsigned integer.
     fn number(&mut self, value: u64) -> Result<(), RuntimeError> {
         self.raw(&value.to_le_bytes())
     }
@@ -165,6 +174,7 @@ struct Reader<'a> {
 }
 
 impl<'a> Reader<'a> {
+    /// Consume exactly `length` bytes from the section.
     fn take(&mut self, length: usize) -> Result<&'a [u8], RuntimeError> {
         let end = self
             .offset
@@ -186,6 +196,7 @@ impl<'a> Reader<'a> {
         }
         Ok(value)
     }
+    /// Decode one nonempty, bounded UTF-8 string.
     fn text(&mut self) -> Result<String, RuntimeError> {
         let length = u32::from_le_bytes(self.take(4)?.try_into().expect("fixed length")) as usize;
         if length == 0 || length > MAX_STRING_BYTES {
@@ -194,17 +205,20 @@ impl<'a> Reader<'a> {
         String::from_utf8(self.take(length)?.to_vec())
             .map_err(|_| invalid(CompactedError::NoncanonicalSection))
     }
+    /// Decode one little-endian unsigned integer.
     fn number(&mut self) -> Result<u64, RuntimeError> {
         Ok(u64::from_le_bytes(
             self.take(8)?.try_into().expect("fixed number"),
         ))
     }
+    /// Whether the section has no trailing bytes.
     fn finished(&self) -> bool {
         self.offset == self.bytes.len()
     }
 }
 
 impl LifecycleState {
+    /// Encode lifecycle maps and sets in deterministic key order.
     fn encode(&self) -> Result<Vec<u8>, RuntimeError> {
         let mut out = Writer(Vec::new());
         out.raw(LIFECYCLE_MAGIC)?;
@@ -282,6 +296,7 @@ impl LifecycleState {
     }
 }
 
+/// Require the next decoded key to be strictly greater than its predecessor.
 fn check_ascending(previous: &mut Option<String>, key: &str) -> Result<(), RuntimeError> {
     if previous.as_deref().is_some_and(|last| last >= key) {
         return Err(invalid(CompactedError::NoncanonicalSection));
@@ -291,6 +306,7 @@ fn check_ascending(previous: &mut Option<String>, key: &str) -> Result<(), Runti
 }
 
 impl PtrRuntime {
+    /// Capture the lifecycle-owned portion of committed runtime state.
     fn lifecycle_state(&self) -> LifecycleState {
         LifecycleState {
             materialized: self.state.values.clone(),

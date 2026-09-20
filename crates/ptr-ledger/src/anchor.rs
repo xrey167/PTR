@@ -45,14 +45,17 @@ impl ChainOrigin {
     /// Origin of a log that has no records yet.
     pub const UNSET: Self = Self([0; 32]);
 
+    /// Establish an origin from the digest of commit index 1.
     pub fn from_first_record(digest: [u8; 32]) -> Self {
         Self(digest)
     }
 
+    /// Whether a first-record origin has been established.
     pub fn is_set(self) -> bool {
         self != Self::UNSET
     }
 
+    /// Return the origin digest bytes.
     pub fn bytes(self) -> [u8; 32] {
         self.0
     }
@@ -69,18 +72,21 @@ impl ChainOrigin {
 pub struct AnchorKey([u8; 32]);
 
 impl AnchorKey {
+    /// Construct a host-held key from exactly 256 bits of secret material.
     pub fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }
 }
 
 impl fmt::Debug for AnchorKey {
+    /// Render without exposing key material.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("AnchorKey(<redacted>)")
     }
 }
 
 impl Drop for AnchorKey {
+    /// Best-effort overwrite of the owned key bytes.
     fn drop(&mut self) {
         self.0.fill(0);
         let _ = std::hint::black_box(&self.0);
@@ -120,6 +126,7 @@ pub enum AnchorError {
 }
 
 impl AnchorError {
+    /// Stable diagnostic code for this refusal.
     pub fn code(self) -> &'static str {
         match self {
             Self::Absent => "PTR_ANCHOR_ABSENT",
@@ -137,6 +144,7 @@ impl AnchorError {
 }
 
 impl fmt::Display for AnchorError {
+    /// Render the stable refusal code.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.code())
     }
@@ -145,6 +153,7 @@ impl fmt::Display for AnchorError {
 impl std::error::Error for AnchorError {}
 
 impl From<AnchorError> for io::Error {
+    /// Map anchor refusals onto their nearest I/O error category.
     fn from(error: AnchorError) -> Self {
         match error {
             AnchorError::Absent => io::Error::new(io::ErrorKind::NotFound, error.code()),
@@ -187,6 +196,7 @@ impl ProtectedAnchor {
         self.base != LogAnchor::empty()
     }
 
+    /// Validate relationships between the covered position and compaction floor.
     fn check_self(&self) -> Result<(), AnchorError> {
         if self.base.index.0 > self.log.index.0 {
             return Err(AnchorError::BaseRange);
@@ -197,6 +207,7 @@ impl ProtectedAnchor {
         Ok(())
     }
 
+    /// Encode the authenticated portion of an anchor record.
     fn encode(&self) -> [u8; AUTHENTICATED_BYTES] {
         let mut bytes = [0u8; AUTHENTICATED_BYTES];
         bytes[..8].copy_from_slice(MAGIC);
@@ -210,6 +221,7 @@ impl ProtectedAnchor {
         bytes
     }
 
+    /// Decode and validate an authenticated anchor payload.
     fn decode(bytes: &[u8]) -> Result<Self, AnchorError> {
         if bytes.len() != ANCHOR_BYTES {
             return Err(AnchorError::Format);
@@ -339,14 +351,17 @@ impl AnchorStore {
         })
     }
 
+    /// Path of the protected anchor record.
     pub fn path(&self) -> &Path {
         &self.path
     }
 
+    /// Last anchor authenticated and published by this store.
     pub fn current(&self) -> ProtectedAnchor {
         self.current
     }
 
+    /// Current monotonic epoch for use as a rollback witness.
     pub fn epoch(&self) -> u64 {
         self.current.epoch
     }
@@ -409,6 +424,7 @@ impl AnchorStore {
         self.commit(next)
     }
 
+    /// Validate and publish a monotonic successor anchor.
     fn commit(&mut self, next: ProtectedAnchor) -> Result<ProtectedAnchor, AnchorError> {
         next.check_self()?;
         let current = self.current;
@@ -442,12 +458,14 @@ impl AnchorStore {
     }
 }
 
+/// Derive the non-authoritative publication scratch path.
 fn scratch_path(path: &Path) -> PathBuf {
     let mut name = path.file_name().unwrap_or_default().to_os_string();
     name.push(".publishing");
     path.with_file_name(name)
 }
 
+/// Synchronize a complete record before atomically installing its name.
 fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let scratch = scratch_path(path);
     // A scratch file left by an interrupted publication is never authoritative,
@@ -464,6 +482,7 @@ fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
     crate::file::sync_parent(path)
 }
 
+/// Read one anchor only when its on-disk length is exact.
 fn read_exact_anchor(path: &Path) -> io::Result<Vec<u8>> {
     let mut file = File::open(path)?;
     if file.metadata()?.len() != ANCHOR_BYTES as u64 {
@@ -483,6 +502,7 @@ fn read_exact_anchor(path: &Path) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
+/// Authenticate an anchor payload under the format-specific domain.
 fn mac(key: &AnchorKey, message: &[u8]) -> [u8; 32] {
     let mut domained = Vec::with_capacity(MAC_DOMAIN.len() + message.len());
     domained.extend_from_slice(MAC_DOMAIN);

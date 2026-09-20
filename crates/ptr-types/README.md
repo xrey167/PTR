@@ -10,10 +10,11 @@
 
 **Maturity:** `foundation`  
 **Last reviewed:** 2026-09-20  
-**Code footprint:** 4 Rust source files · 1170 nonblank source lines · 4 integration-test files · 32 `#[test]` markers
+**Code footprint:** 4 Rust source files · 1184 nonblank source lines · 4 integration-test files · 32 `#[test]` markers
 
 ### Implemented now
 
+- Rustdoc covers the codebook and validity-mask APIs, stable diagnostic codes and canonical assignment encoder helpers
 - Versioned cognitive codebook: explicit per-version tables assign dense 0..cardinality codes to SemanticRole, EpistemicState, UncertaintyKind, ReasoningOperator and Validity, never Rust discriminants
 - TypeCode is only obtainable against a named CodebookVersion; unknown versions, unassigned codes and unassigned members are three distinct refusals with no defaulting path
 - canonical_bytes commits the whole assignment in code order for binding checkpoints, datasets and runs; hashing stays with the caller so this crate keeps no dependencies
