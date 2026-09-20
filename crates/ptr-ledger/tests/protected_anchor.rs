@@ -545,6 +545,44 @@ fn anchor_advancement_is_monotonic_in_index_epoch_and_digest() {
 }
 
 #[test]
+fn epoch_exhaustion_refuses_all_advances_without_republishing() {
+    let tmp = Temp::new();
+    let exhausted = ProtectedAnchor {
+        epoch: u64::MAX,
+        ..ProtectedAnchor::initial()
+    };
+    let mut store = AnchorStore::initialize(tmp.anchor(), key(), exhausted).unwrap();
+    let before = snapshot(&tmp.anchor());
+
+    assert_eq!(
+        store.acknowledge(
+            LogAnchor {
+                index: CommitIndex(1),
+                digest: [0xaa; 32],
+            },
+            ChainOrigin::from_first_record([0xaa; 32]),
+        ),
+        Err(AnchorError::NonMonotonic)
+    );
+    assert_eq!(
+        store.advance_compacted(
+            LogAnchor {
+                index: CommitIndex(1),
+                digest: [0xaa; 32],
+            },
+            LogAnchor {
+                index: CommitIndex(2),
+                digest: [0xbb; 32],
+            },
+        ),
+        Err(AnchorError::NonMonotonic)
+    );
+
+    assert_eq!(store.current(), exhausted);
+    assert_eq!(snapshot(&tmp.anchor()), before);
+}
+
+#[test]
 fn creating_a_pair_never_adopts_existing_files() {
     let tmp = Temp::new();
     let ledger = make_ledger(&tmp, 1);

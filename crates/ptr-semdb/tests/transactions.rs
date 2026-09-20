@@ -257,3 +257,90 @@ fn seeded_transaction_streams_replay_identical_values_dependencies_and_revisions
         }
     }
 }
+
+#[test]
+fn exported_state_restores_values_dangling_dependencies_and_exact_revision() {
+    let mut original = SemanticHost::default();
+    original.apply_delta(chain()).unwrap();
+
+    // Invalidating the source removes the cached derivations but deliberately
+    // retains their dependency declarations for a later recomputation.
+    let mut removal = SemanticDelta::default();
+    removal.removals.insert("source".into());
+    original.apply_delta(removal).unwrap();
+    let exported = original.export_state();
+
+    assert_eq!(exported.upserts.get("unrelated"), Some(&"retained".into()));
+    assert!(!exported.upserts.contains_key("derived"));
+    assert_eq!(
+        exported.dependencies.get("derived"),
+        Some(&["source".into()].into())
+    );
+    assert_eq!(
+        exported.dependencies.get("plan"),
+        Some(&["derived".into()].into())
+    );
+    assert!(exported.removals.is_empty());
+
+    // Exercise the same canonical codec used by a compacted snapshot rather than
+    // passing the in-memory value straight back to restore.
+    let decoded = SemanticDelta::decode(&exported.encode().unwrap()).unwrap();
+    let mut restored = SemanticHost::restore(Revision(73), decoded).unwrap();
+    assert_eq!(restored.revision(), Revision(73));
+    assert_eq!(restored.export_state(), exported);
+    assert_eq!(restored.snapshot().get("unrelated"), Some("retained"));
+    assert_eq!(restored.snapshot().get("derived"), None);
+
+    // The absent derived value was not laundered into ground state, and its
+    // retained dependency still prevents recomputation without the source.
+    assert_eq!(
+        restored.apply_delta(delta("derived", "stale")),
+        Err(SemanticError::MissingDependency {
+            derived: "derived".into(),
+            input: "source".into(),
+        })
+    );
+    assert_eq!(restored.revision(), Revision(73));
+}
+
+#[test]
+fn restore_rejects_non_snapshot_deltas_through_normal_validation() {
+    let mut removal = SemanticDelta::default();
+    removal.removals.insert("old".into());
+    assert!(matches!(
+        SemanticHost::restore(Revision(4), removal),
+        Err(SemanticError::ConflictingOperation)
+    ));
+
+    let mut missing = delta("derived", "value");
+    missing
+        .dependencies
+        .insert("derived".into(), ["absent".into()].into());
+    assert!(matches!(
+        SemanticHost::restore(Revision(4), missing),
+        Err(SemanticError::MissingDependency { derived, input })
+            if derived == "derived" && input == "absent"
+    ));
+
+    let mut cyclic = SemanticDelta::default();
+    cyclic.dependencies.insert("a".into(), ["b".into()].into());
+    cyclic.dependencies.insert("b".into(), ["a".into()].into());
+    assert!(matches!(
+        SemanticHost::restore(Revision(4), cyclic),
+        Err(SemanticError::CyclicDependency)
+    ));
+}
+
+#[test]
+fn restoring_empty_state_at_the_maximum_revision_preserves_exhaustion() {
+    let mut restored = SemanticHost::restore(Revision(u64::MAX), SemanticDelta::default()).unwrap();
+    assert_eq!(restored.revision(), Revision(u64::MAX));
+    assert_eq!(restored.export_state(), SemanticDelta::default());
+
+    assert_eq!(
+        restored.apply_delta(delta("new", "value")),
+        Err(SemanticError::RevisionExhausted)
+    );
+    assert_eq!(restored.revision(), Revision(u64::MAX));
+    assert!(restored.snapshot().keys().next().is_none());
+}

@@ -6,7 +6,7 @@ use ptr_core::action_head::ActionIr;
 use ptr_ledger::integrity::{self, LogAnchor};
 use ptr_ledger::LedgerEvent;
 use ptr_runtime::compacted::CompactedAnchor;
-use ptr_runtime::PtrRuntime;
+use ptr_runtime::{PtrRuntime, RuntimeError};
 use ptr_security::{AuthorizationDecision, AuthorizationDenial};
 use ptr_semdb::{SemanticDelta, SemanticPayload};
 use ptr_types::{CapabilityId, CommitIndex, Effect, Generation, Revision, TypeId};
@@ -211,6 +211,62 @@ fn restoring_with_no_retained_journal_reproduces_the_floor_exactly() {
     .unwrap();
     assert_equivalent(&original, &restored);
     assert!(restored.committed_events().is_empty());
+}
+
+#[test]
+fn an_empty_runtime_round_trips_at_the_empty_floor() {
+    let original = PtrRuntime::new(PtrConfig::default()).unwrap();
+    let snapshot = original.export_compacted_snapshot().unwrap();
+    assert_eq!(snapshot.covers(), CommitIndex(0));
+    assert_eq!(snapshot.anchor().floor, LogAnchor::empty());
+    assert_eq!(snapshot.anchor().revision, Revision(0));
+
+    let restored = PtrRuntime::restore_compacted(
+        PtrConfig::default(),
+        snapshot.bytes(),
+        snapshot.anchor(),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(restored.revision(), Revision(0));
+    assert_eq!(restored.materialized_state().last_applied, 0);
+    assert!(restored.materialized_state().values.is_empty());
+    assert!(restored.snapshot().keys().next().is_none());
+    assert!(restored.committed_events().is_empty());
+}
+
+#[test]
+fn a_runtime_restored_at_the_index_ceiling_refuses_commits_atomically() {
+    let original = PtrRuntime::new(PtrConfig::default()).unwrap();
+    let snapshot = original.export_compacted_snapshot().unwrap();
+    let mut bytes = snapshot.bytes().to_vec();
+    bytes[16..24].copy_from_slice(&u64::MAX.to_le_bytes());
+    let floor = LogAnchor {
+        index: CommitIndex(u64::MAX),
+        digest: snapshot.anchor().floor.digest,
+    };
+    let anchor = reseal(&mut bytes, floor, Revision(0));
+    let mut restored =
+        PtrRuntime::restore_compacted(PtrConfig::default(), &bytes, anchor, &[]).unwrap();
+
+    let event = LedgerEvent::VerifierAttested {
+        subject: "capsule:a".into(),
+        passed: true,
+    };
+    assert_eq!(
+        restored.commit(event.clone()),
+        Err(RuntimeError::Ledger(
+            "PTR_LEDGER_INDEX_EXHAUSTED".to_owned()
+        ))
+    );
+    assert!(restored.committed_events().is_empty());
+    assert_eq!(restored.materialized_state().last_applied, u64::MAX);
+
+    // A failed append happens after the runtime begins a commit, so the outcome
+    // is conservatively fenced. Retrying cannot invent a record or an index.
+    assert_eq!(restored.commit(event), Err(RuntimeError::ExecutionFenced));
+    assert!(restored.committed_events().is_empty());
+    assert_eq!(restored.materialized_state().last_applied, u64::MAX);
 }
 
 #[test]

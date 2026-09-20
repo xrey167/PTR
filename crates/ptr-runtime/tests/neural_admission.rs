@@ -8,7 +8,7 @@
 //! not a boundary.
 use ptr_config::PtrConfig;
 use ptr_core::action_head::ActionIr;
-use ptr_ledger::integrity;
+use ptr_ledger::integrity::{self, LogAnchor};
 use ptr_ledger::LedgerEvent;
 use ptr_model_api::{InferenceBackend, ModelError, ModelEvent, ModelRequest};
 use ptr_runtime::execution::{
@@ -223,6 +223,38 @@ fn a_revoked_generation_cannot_be_readmitted_after_a_restart() {
                 generation: Generation(1),
             }
         )))
+    );
+}
+
+#[test]
+fn revocation_denial_precedes_every_other_binding_mismatch() {
+    let mut runtime = fixture();
+    let mut binding = runtime.bind_state(&declaration()).unwrap();
+    runtime
+        .commit(LedgerEvent::Revoked {
+            subject: "capsule:a".into(),
+            generation: Generation(1),
+        })
+        .unwrap();
+
+    // All of these fields are independently invalid. Revocation must still be
+    // the verdict because a tombstone is authoritative even when the rest of the
+    // artifact cannot be interpreted or its history cannot be verified.
+    binding.codebook = CodebookVersion(99);
+    binding.codebook_fingerprint = [0; 32];
+    binding.journal = LogAnchor {
+        index: CommitIndex(u64::MAX),
+        digest: [0xff; 32],
+    };
+    binding.revision = Revision(u64::MAX);
+    binding.semantic_inputs.insert("missing".into(), [0; 32]);
+
+    assert_eq!(
+        runtime.admission(&binding),
+        Err(Denial::RevokedGeneration {
+            target: "capsule:a".to_owned(),
+            generation: Generation(1),
+        })
     );
 }
 
