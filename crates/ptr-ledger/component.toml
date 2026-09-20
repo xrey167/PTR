@@ -68,7 +68,7 @@ decisions = [
   "ADR-0009-consensus-ledger-state-separation.md",
 ]
 
-checks = ["a neighbouring log set is never reported as this set's orphan, and short, non-numeric, past-u64 and non-canonical floor fields are all rejected", "an exhausted commit index is refused rather than repeated, leaving the ledger unchanged", 
+checks = ["an exhausted anchor epoch refuses both acknowledge and compacted advance without republishing the record", "a neighbouring log set is never reported as this set's orphan, and short, non-numeric, past-u64 and non-canonical floor fields are all rejected", "an exhausted commit index is refused rather than repeated, leaving the ledger unchanged", 
   "Every single-bit mutation of the reference log, independent hashlib golden vector, ordering and hostile-length rejection",
   "Every partial-frame cut, wrong anchor, complete suffix loss and rehashed alternative-history rejection",
   "Create-new destination safety, guarded legacy migration and duplicate-descriptor unlock regression",

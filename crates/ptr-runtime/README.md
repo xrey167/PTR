@@ -9,7 +9,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-20  
-**Code footprint:** 6 Rust source files · 2945 nonblank source lines · 12 integration-test files · 92 `#[test]` markers
+**Code footprint:** 6 Rust source files · 2945 nonblank source lines · 12 integration-test files · 95 `#[test]` markers
 
 ### Implemented now
 
@@ -77,6 +77,7 @@
 
 ### Current automated checks
 
+- an empty runtime round-trips at the empty floor; a runtime restored at the index ceiling refuses a commit with PTR_LEDGER_INDEX_EXHAUSTED, stores nothing and fences the retry; revocation outranks every other binding mismatch simultaneously
 - an admitted state reproduces the identical inference event sequence after a restart, with binding and opaque payload byte-for-byte equal
 - revocation, supersession, edited/removed inputs, foreign history with identical counters, unverifiable position, compacted restore, contradicting revision, unknown/changed codebook, unknown target and a fenced runtime each denied
 - every single-bit mutation of a sealed state rejected; wrong outer/binding magic, reserved field, length mismatch, byte removal/insertion and undersize rejected after resealing the digest

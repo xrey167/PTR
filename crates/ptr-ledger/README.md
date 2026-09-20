@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-20  
-**Code footprint:** 7 Rust source files · 2751 nonblank source lines · 10 integration-test files · 59 `#[test]` markers
+**Code footprint:** 7 Rust source files · 2751 nonblank source lines · 10 integration-test files · 60 `#[test]` markers
 
 ### Implemented now
 
@@ -78,6 +78,7 @@
 
 ### Current automated checks
 
+- an exhausted anchor epoch refuses both acknowledge and compacted advance without republishing the record
 - a neighbouring log set is never reported as this set's orphan, and short, non-numeric, past-u64 and non-canonical floor fields are all rejected
 - an exhausted commit index is refused rather than repeated, leaving the ledger unchanged
 - Every single-bit mutation of the reference log, independent hashlib golden vector, ordering and hostile-length rejection
