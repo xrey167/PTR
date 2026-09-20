@@ -75,6 +75,7 @@ fn clear_barrier(covers: u64) -> CompactionBarrier {
     }
 }
 
+/// Verifies that retention holds until enough history sits above the floor.
 #[test]
 fn retention_holds_until_enough_history_sits_above_the_floor() {
     let tmp = Temp::new();
@@ -107,6 +108,7 @@ fn retention_holds_until_enough_history_sits_above_the_floor() {
     assert_eq!(plan.tail, ledger.anchor().log);
 }
 
+/// Verifies that an unsafe barrier blocks regardless of retention.
 #[test]
 fn an_unsafe_barrier_blocks_regardless_of_retention() {
     let tmp = Temp::new();
@@ -133,6 +135,7 @@ fn an_unsafe_barrier_blocks_regardless_of_retention() {
     }
 }
 
+/// Verifies that the floor never rises above snapshot coverage.
 #[test]
 fn the_floor_never_rises_above_snapshot_coverage() {
     let tmp = Temp::new();
@@ -159,6 +162,7 @@ fn the_floor_never_rises_above_snapshot_coverage() {
     );
 }
 
+/// Verifies that a cutover reconstructs exactly the retained history.
 #[test]
 fn a_cutover_reconstructs_exactly_the_retained_history() {
     let tmp = Temp::new();
@@ -208,6 +212,7 @@ fn a_cutover_reconstructs_exactly_the_retained_history() {
     assert_eq!(reopened.anchor().base, plan.base);
 }
 
+/// Verifies that a compacted log cannot be read without its trusted floor.
 #[test]
 fn a_compacted_log_cannot_be_read_without_its_trusted_floor() {
     let tmp = Temp::new();
@@ -232,6 +237,7 @@ fn a_compacted_log_cannot_be_read_without_its_trusted_floor() {
     assert_eq!(verified.anchor(), plan.tail);
 }
 
+/// Verifies that an interruption before the commit point keeps the previous log live.
 #[test]
 fn an_interruption_before_the_commit_point_keeps_the_previous_log_live() {
     let tmp = Temp::new();
@@ -268,6 +274,7 @@ fn an_interruption_before_the_commit_point_keeps_the_previous_log_live() {
     assert_eq!(indices(ledger.events()), [3, 4]);
 }
 
+/// Verifies that an interruption after the commit point keeps the new log live.
 #[test]
 fn an_interruption_after_the_commit_point_keeps_the_new_log_live() {
     let tmp = Temp::new();
@@ -301,6 +308,7 @@ fn an_interruption_after_the_commit_point_keeps_the_new_log_live() {
     assert!(outcome.live_log.exists());
 }
 
+/// Verifies that a stale or off boundary plan is refused without touching anything.
 #[test]
 fn a_stale_or_off_boundary_plan_is_refused_without_touching_anything() {
     let tmp = Temp::new();
@@ -371,6 +379,7 @@ fn a_stale_or_off_boundary_plan_is_refused_without_touching_anything() {
     assert!(ledger.compact(good).is_ok());
 }
 
+/// Verifies that an existing destination is never overwritten.
 #[test]
 fn an_existing_destination_is_never_overwritten() {
     let tmp = Temp::new();
@@ -392,6 +401,7 @@ fn an_existing_destination_is_never_overwritten() {
     assert_eq!(indices(ledger.events()), [1, 2, 3, 4]);
 }
 
+/// Verifies that the origin survives discarding the record that defined it.
 #[test]
 fn the_origin_survives_discarding_the_record_that_defined_it() {
     let tmp = Temp::new();
@@ -417,6 +427,7 @@ fn the_origin_survives_discarding_the_record_that_defined_it() {
     assert!(ledger.epoch() > epoch);
 }
 
+/// Verifies that split detection still applies above a compacted floor.
 #[test]
 fn split_detection_still_applies_above_a_compacted_floor() {
     let tmp = Temp::new();

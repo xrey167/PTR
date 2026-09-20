@@ -40,6 +40,7 @@ fn decode(bytes: &[u8]) -> (u32, Vec<(String, Vec<String>)>) {
     (version, decoded)
 }
 
+/// Verifies that canonical bytes are a golden record of the v1 assignment.
 #[test]
 fn canonical_bytes_are_a_golden_record_of_the_v1_assignment() {
     let (version, families) = decode(&Codebook::V1.canonical_bytes());
@@ -115,6 +116,7 @@ fn canonical_bytes_are_a_golden_record_of_the_v1_assignment() {
     );
 }
 
+/// Verifies that the order committed by the bytes is the code order.
 #[test]
 fn the_order_committed_by_the_bytes_is_the_code_order() {
     let book = Codebook::V1;
@@ -134,6 +136,7 @@ fn the_order_committed_by_the_bytes_is_the_code_order() {
     }
 }
 
+/// Verifies that a stored code is meaningless without its version.
 #[test]
 fn a_stored_code_is_meaningless_without_its_version() {
     let book = Codebook::V1;
@@ -150,6 +153,7 @@ fn a_stored_code_is_meaningless_without_its_version() {
     assert_eq!(error.code(), "PTR_CODEBOOK_UNKNOWN_VERSION");
 }
 
+/// Verifies that embedding tables can be sized from the codebook alone.
 #[test]
 fn embedding_tables_can_be_sized_from_the_codebook_alone() {
     let book = Codebook::V1;
@@ -165,6 +169,7 @@ fn embedding_tables_can_be_sized_from_the_codebook_alone() {
     }
 }
 
+/// Verifies that a revoked slot keeps its codes and still cannot participate.
 #[test]
 fn a_revoked_slot_keeps_its_codes_and_still_cannot_participate() {
     let book = Codebook::V1;

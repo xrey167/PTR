@@ -332,6 +332,7 @@ pub fn decode_legacy_log(bytes: &[u8]) -> io::Result<Vec<CommittedEvent>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Verifies that sha256 known answer and checked index.
     #[test]
     fn sha256_known_answer_and_checked_index() {
         assert_eq!(

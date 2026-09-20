@@ -141,6 +141,7 @@ fn reseal(mut bytes: Vec<u8>, anchor: NeuralAnchor) -> (Vec<u8>, NeuralAnchor) {
     (bytes, NeuralAnchor { digest, ..anchor })
 }
 
+/// Verifies that an admitted state reproduces the same inference after a restart.
 #[test]
 fn an_admitted_state_reproduces_the_same_inference_after_a_restart() {
     let tmp = Temp::new();
@@ -184,6 +185,7 @@ fn an_admitted_state_reproduces_the_same_inference_after_a_restart() {
     assert!(runtime.committed_events().len() > 3);
 }
 
+/// Verifies that a revoked generation cannot be readmitted after a restart.
 #[test]
 fn a_revoked_generation_cannot_be_readmitted_after_a_restart() {
     let tmp = Temp::new();
@@ -226,6 +228,7 @@ fn a_revoked_generation_cannot_be_readmitted_after_a_restart() {
     );
 }
 
+/// Verifies that an edited input denies while an unrelated commit does not.
 #[test]
 fn revocation_denial_precedes_every_other_binding_mismatch() {
     let mut runtime = fixture();
@@ -285,6 +288,7 @@ fn an_edited_input_denies_while_an_unrelated_commit_does_not() {
     );
 }
 
+/// Verifies that a removed input denies.
 #[test]
 fn a_removed_input_denies() {
     let mut runtime = fixture();
@@ -304,6 +308,7 @@ fn a_removed_input_denies() {
     );
 }
 
+/// Verifies that a superseded generation denies although the live one is newer.
 #[test]
 fn a_superseded_generation_denies_although_the_live_one_is_newer() {
     let mut runtime = fixture();
@@ -328,6 +333,7 @@ fn a_superseded_generation_denies_although_the_live_one_is_newer() {
     );
 }
 
+/// Verifies that a cache decides admission at every lookup not at insertion.
 #[test]
 fn a_cache_decides_admission_at_every_lookup_not_at_insertion() {
     let mut runtime = fixture();
@@ -376,6 +382,7 @@ fn a_cache_decides_admission_at_every_lookup_not_at_insertion() {
     assert!(cache.is_empty());
 }
 
+/// Verifies that a foreign history with the same counters is denied.
 #[test]
 fn a_foreign_history_with_the_same_counters_is_denied() {
     let mine = fixture();
@@ -417,6 +424,7 @@ fn a_foreign_history_with_the_same_counters_is_denied() {
     );
 }
 
+/// Verifies that a position this runtime cannot check is denied.
 #[test]
 fn a_position_this_runtime_cannot_check_is_denied() {
     let runtime = fixture();
@@ -434,6 +442,7 @@ fn a_position_this_runtime_cannot_check_is_denied() {
     );
 }
 
+/// Verifies that a compacted restore holds no chain base and admits nothing.
 #[test]
 fn a_compacted_restore_holds_no_chain_base_and_admits_nothing() {
     let runtime = fixture();
@@ -455,6 +464,7 @@ fn a_compacted_restore_holds_no_chain_base_and_admits_nothing() {
     assert_eq!(restored.admission(&binding), Err(Denial::UnanchoredHistory));
 }
 
+/// Verifies that a recorded revision that contradicts its position is denied.
 #[test]
 fn a_recorded_revision_that_contradicts_its_position_is_denied() {
     let runtime = fixture();
@@ -470,6 +480,7 @@ fn a_recorded_revision_that_contradicts_its_position_is_denied() {
     );
 }
 
+/// Verifies that a codebook the build lacks or no longer matches is denied.
 #[test]
 fn a_codebook_the_build_lacks_or_no_longer_matches_is_denied() {
     let runtime = fixture();
@@ -503,6 +514,7 @@ fn a_codebook_the_build_lacks_or_no_longer_matches_is_denied() {
     );
 }
 
+/// Verifies that a binding cannot name state the runtime has no facts for.
 #[test]
 fn a_binding_cannot_name_state_the_runtime_has_no_facts_for() {
     let runtime = fixture();
@@ -552,6 +564,7 @@ impl ActionExecutor for AmbiguousExecutor {
     }
 }
 
+/// Verifies that a fenced runtime admits nothing and binds nothing.
 #[test]
 fn a_fenced_runtime_admits_nothing_and_binds_nothing() {
     let mut runtime = fixture();
@@ -613,6 +626,7 @@ fn a_fenced_runtime_admits_nothing_and_binds_nothing() {
     );
 }
 
+/// Verifies that every single bit mutation of a sealed state is rejected.
 #[test]
 fn every_single_bit_mutation_of_a_sealed_state_is_rejected() {
     let runtime = fixture();
@@ -632,6 +646,7 @@ fn every_single_bit_mutation_of_a_sealed_state_is_rejected() {
     }
 }
 
+/// Verifies that framing violations are rejected after the digest is resealed.
 #[test]
 fn framing_violations_are_rejected_after_the_digest_is_resealed() {
     let runtime = fixture();

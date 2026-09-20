@@ -101,6 +101,7 @@ fn make_ledger(tmp: &Temp, records: u64) -> AcknowledgedLedger {
     ledger
 }
 
+/// Verifies that initialization is single shot and round trips through authentication.
 #[test]
 fn initialization_is_single_shot_and_round_trips_through_authentication() {
     let tmp = Temp::new();
@@ -121,6 +122,7 @@ fn initialization_is_single_shot_and_round_trips_through_authentication() {
     );
 }
 
+/// Verifies that absent forged and mutated anchors are all refused.
 #[test]
 fn absent_forged_and_mutated_anchors_are_all_refused() {
     let tmp = Temp::new();
@@ -181,6 +183,7 @@ fn absent_forged_and_mutated_anchors_are_all_refused() {
     assert!(AnchorStore::open(tmp.anchor(), key()).is_ok());
 }
 
+/// Verifies that stale witness rollback is detected only by the retained epoch.
 #[test]
 fn stale_witness_rollback_is_detected_only_by_the_retained_epoch() {
     let tmp = Temp::new();
@@ -221,6 +224,7 @@ fn stale_witness_rollback_is_detected_only_by_the_retained_epoch() {
     ));
 }
 
+/// Verifies that interrupted publication leaves the previous anchor authoritative.
 #[test]
 fn interrupted_publication_leaves_the_previous_anchor_authoritative() {
     let tmp = Temp::new();
@@ -251,6 +255,7 @@ fn interrupted_publication_leaves_the_previous_anchor_authoritative() {
     );
 }
 
+/// Verifies that acknowledged appends keep the pair aligned across reopen.
 #[test]
 fn acknowledged_appends_keep_the_pair_aligned_across_reopen() {
     let tmp = Temp::new();
@@ -274,6 +279,7 @@ fn acknowledged_appends_keep_the_pair_aligned_across_reopen() {
     );
 }
 
+/// Verifies that durable unacknowledged records are kept by default.
 #[test]
 fn durable_unacknowledged_records_are_kept_by_default() {
     let tmp = Temp::new();
@@ -307,6 +313,7 @@ fn durable_unacknowledged_records_are_kept_by_default() {
     assert_eq!(recovered.anchor().origin, before.origin);
 }
 
+/// Verifies that discarding durable records requires an explicit policy.
 #[test]
 fn discarding_durable_records_requires_an_explicit_policy() {
     let tmp = Temp::new();
@@ -337,6 +344,7 @@ fn discarding_durable_records_requires_an_explicit_policy() {
     );
 }
 
+/// Verifies that an incomplete frame is never a record under any policy.
 #[test]
 fn an_incomplete_frame_is_never_a_record_under_any_policy() {
     for policy in [
@@ -380,6 +388,7 @@ fn an_incomplete_frame_is_never_a_record_under_any_policy() {
     }
 }
 
+/// Verifies that a log behind its anchor is refused and left untouched.
 #[test]
 fn a_log_behind_its_anchor_is_refused_and_left_untouched() {
     let tmp = Temp::new();
@@ -421,6 +430,7 @@ fn a_log_behind_its_anchor_is_refused_and_left_untouched() {
     }
 }
 
+/// Verifies that a rehashed alternative suffix is refused although its chain is valid.
 #[test]
 fn a_rehashed_alternative_suffix_is_refused_although_its_chain_is_valid() {
     let tmp = Temp::new();
@@ -450,6 +460,7 @@ fn a_rehashed_alternative_suffix_is_refused_although_its_chain_is_valid() {
     assert_eq!(snapshot(&tmp.log()), alternative);
 }
 
+/// Verifies that an anchor from another log is refused by origin.
 #[test]
 fn an_anchor_from_another_log_is_refused_by_origin() {
     let ours = Temp::new();
@@ -475,6 +486,7 @@ fn an_anchor_from_another_log_is_refused_by_origin() {
     assert_eq!(error.code(), "PTR_ACK_ORIGIN_MISMATCH");
 }
 
+/// Verifies that a failed acknowledgment fences the writer and leaves a recoverable tail.
 #[test]
 fn a_failed_acknowledgment_fences_the_writer_and_leaves_a_recoverable_tail() {
     let tmp = Temp::new();
@@ -510,6 +522,7 @@ fn a_failed_acknowledgment_fences_the_writer_and_leaves_a_recoverable_tail() {
     assert_eq!(recovered.anchor().log.index, CommitIndex(2));
 }
 
+/// Verifies that anchor advancement is monotonic in index epoch and digest.
 #[test]
 fn anchor_advancement_is_monotonic_in_index_epoch_and_digest() {
     let tmp = Temp::new();
@@ -544,6 +557,7 @@ fn anchor_advancement_is_monotonic_in_index_epoch_and_digest() {
     assert_eq!(store.current().log, at(3, 0xcc));
 }
 
+/// Verifies that epoch exhaustion refuses all advances without republishing.
 #[test]
 fn epoch_exhaustion_refuses_all_advances_without_republishing() {
     let tmp = Temp::new();
@@ -582,6 +596,7 @@ fn epoch_exhaustion_refuses_all_advances_without_republishing() {
     assert_eq!(snapshot(&tmp.anchor()), before);
 }
 
+/// Verifies that creating a pair never adopts existing files.
 #[test]
 fn creating_a_pair_never_adopts_existing_files() {
     let tmp = Temp::new();

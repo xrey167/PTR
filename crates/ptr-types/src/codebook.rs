@@ -118,6 +118,7 @@ pub enum CodebookError {
 }
 
 impl CodebookError {
+    /// Returns the stable machine-readable diagnostic code.
     pub fn code(self) -> &'static str {
         match self {
             Self::UnknownVersion { .. } => "PTR_CODEBOOK_UNKNOWN_VERSION",
@@ -181,7 +182,7 @@ impl Codebook {
         }
         Ok(book)
     }
-
+    /// Returns the codebook version.
     pub fn version(&self) -> CodebookVersion {
         self.version
     }
@@ -435,6 +436,7 @@ impl CognitiveType for Validity {
 mod tests {
     use super::*;
 
+    /// Verifies that unknown versions are refused rather than approximated.
     #[test]
     fn unknown_versions_are_refused_rather_than_approximated() {
         assert_eq!(Codebook::at(CodebookVersion::V1), Ok(Codebook::V1));
@@ -448,6 +450,7 @@ mod tests {
         }
     }
 
+    /// Verifies that a code is never a discriminant.
     #[test]
     fn a_code_is_never_a_discriminant() {
         // These exact numbers are the contract. Reordering a kernel enum must break
@@ -571,6 +574,7 @@ mod tests {
         }
     }
 
+    /// Verifies that codes are dense and unique so they can index a table.
     #[test]
     fn codes_are_dense_and_unique_so_they_can_index_a_table() {
         let book = Codebook::V1;
@@ -594,6 +598,7 @@ mod tests {
         assert_eq!(sorted.len(), names.len(), "member names must be distinct");
     }
 
+    /// Verifies that a code outside the assignment is refused.
     #[test]
     fn a_code_outside_the_assignment_is_refused() {
         let book = Codebook::V1;
@@ -611,6 +616,7 @@ mod tests {
         }
     }
 
+    /// Verifies that canonical bytes commit to the whole assignment.
     #[test]
     fn canonical_bytes_commit_to_the_whole_assignment() {
         let bytes = Codebook::V1.canonical_bytes();

@@ -359,6 +359,7 @@ pub struct ProjectSkeleton {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Verifies that revision exhaustion leaves state unchanged.
     #[test]
     fn revision_exhaustion_leaves_state_unchanged() {
         let mut host = SemanticHost::default();
