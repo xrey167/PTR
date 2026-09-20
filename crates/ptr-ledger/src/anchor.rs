@@ -184,7 +184,7 @@ impl ProtectedAnchor {
         }
     }
 
-    /// True when no record has been discarded and the log still begins at index 1.
+    /// True when compaction has discarded at least one record from the log.
     pub fn is_compacted(self) -> bool {
         self.base != LogAnchor::empty()
     }
