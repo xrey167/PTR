@@ -102,7 +102,9 @@ enum RuntimeLedger {
 impl RuntimeLedger {
     fn append(&mut self, event: LedgerEvent) -> Result<CommitIndex, RuntimeError> {
         match self {
-            Self::Memory(ledger) => Ok(ledger.append(event)),
+            Self::Memory(ledger) => ledger
+                .append(event)
+                .map_err(|error| RuntimeError::Ledger(error.to_string())),
             Self::File(ledger) => ledger
                 .append_durable(event)
                 .map_err(|error| RuntimeError::Ledger(error.to_string())),

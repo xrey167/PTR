@@ -9,7 +9,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-20  
-**Code footprint:** 6 Rust source files · 2943 nonblank source lines · 12 integration-test files · 92 `#[test]` markers
+**Code footprint:** 6 Rust source files · 2945 nonblank source lines · 12 integration-test files · 92 `#[test]` markers
 
 ### Implemented now
 
@@ -31,7 +31,7 @@
 - Consume-time freshness, expiry, ownership and mandatory permission checks; permissions/commit/effect epochs invalidate pending permits
 - Executor or ledger ambiguity fences subsequent execution and commits; process-local single-use authority is never replayed
 - Ledger-only lifecycle mutation; invalid/rewinding/tombstoned/cross-project transitions rejected before append and during replay
-- Central runtime object wiring configuration, SemDB, ledger, materialized state, events and permissions
+- Central runtime object wiring configuration, SemDB, ledger, materialized state, events and permissions; an in-memory append that runs out of commit indices surfaces as a ledger error rather than a repeated index
 - Durable standalone runtime constructor opens/replays FileLedger and reconstructs lifecycle/materialized state across restart
 - Text ingestion into revisioned semantic state
 - Current-revision, live-generation/revocation and capability/effect checks for ActionIR delegated through typed ptr-security authorization decisions

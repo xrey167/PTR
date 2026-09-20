@@ -62,6 +62,16 @@ impl LogPaths {
     ///
     /// A crash during a cutover leaves exactly one of these, on either side of
     /// the anchor advance. They are never deleted implicitly.
+    ///
+    /// A file belongs to this set only if it is a name this set could have
+    /// produced: [`LogPaths::log_path`] of the floor its name encodes must be
+    /// exactly this path. Matching the prefix alone is not enough, because the
+    /// prefix of one stem can be the prefix of another — `journal-` also starts
+    /// `journal-backup-00000000000000000000.log` — and
+    /// [`AcknowledgedLedger::reclaim_orphans`](crate::AcknowledgedLedger::reclaim_orphans)
+    /// deletes what this returns. Reporting a neighbouring set's *live* log as
+    /// this set's orphan would destroy committed history that nothing here is
+    /// even responsible for.
     pub fn orphans(&self, live_base: CommitIndex) -> io::Result<Vec<PathBuf>> {
         let live = self.log_path(live_base);
         let prefix = format!("{}-", self.stem);
@@ -71,7 +81,20 @@ impl LogPaths {
             let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
                 continue;
             };
-            if name.starts_with(&prefix) && name.ends_with(LOG_SUFFIX) && path != live {
+            let Some(floor) = name
+                .strip_prefix(&prefix)
+                .and_then(|rest| rest.strip_suffix(LOG_SUFFIX))
+            else {
+                continue;
+            };
+            // Round-tripping the parsed floor rejects everything we could not
+            // have written: another stem's suffix, a non-numeric field, a value
+            // past `u64`, and a non-canonical spelling of a number.
+            let Ok(base) = floor.parse::<u64>() else {
+                continue;
+            };
+            let canonical = self.log_path(CommitIndex(base));
+            if canonical == path && path != live {
                 found.push(path);
             }
         }

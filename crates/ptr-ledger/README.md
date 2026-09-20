@@ -9,11 +9,13 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-19  
-**Code footprint:** 7 Rust source files · 2714 nonblank source lines · 10 integration-test files · 57 `#[test]` markers
+**Last reviewed:** 2026-09-20  
+**Code footprint:** 7 Rust source files · 2751 nonblank source lines · 10 integration-test files · 59 `#[test]` markers
 
 ### Implemented now
 
+- LogPaths::orphans claims a file only when log_path of the floor its name encodes is that same path, so a neighbouring log set sharing the directory can never have its live log reclaimed as this set's orphan
+- InMemoryLedger::append is fallible and uses checked arithmetic: an exhausted commit index is refused with PTR_LEDGER_INDEX_EXHAUSTED and nothing is stored, rather than saturating and handing the same index out twice
 - PTRLOG02 bounded SHA-256 record chain with checked header, sequence, payload and trailer
 - Strict nonmutating open; independently anchored rollback checks and explicit partial-tail recovery
 - Create-new checked-log restore and guarded explicit legacy inspection/migration
@@ -76,6 +78,8 @@
 
 ### Current automated checks
 
+- a neighbouring log set is never reported as this set's orphan, and short, non-numeric, past-u64 and non-canonical floor fields are all rejected
+- an exhausted commit index is refused rather than repeated, leaving the ledger unchanged
 - Every single-bit mutation of the reference log, independent hashlib golden vector, ordering and hostile-length rejection
 - Every partial-frame cut, wrong anchor, complete suffix loss and rehashed alternative-history rejection
 - Create-new destination safety, guarded legacy migration and duplicate-descriptor unlock regression

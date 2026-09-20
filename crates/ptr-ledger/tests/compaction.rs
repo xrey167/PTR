@@ -478,3 +478,49 @@ fn split_detection_still_applies_above_a_compacted_floor() {
     );
     assert!(!split.is_recoverable());
 }
+
+#[test]
+fn a_neighbouring_log_set_is_never_reported_as_this_set_s_orphan() {
+    // `journal-` is also the start of `journal-backup-...`, and reclaim_orphans
+    // deletes what orphans() returns — so a prefix match alone would delete
+    // another set's live log.
+    let tmp = Temp::new();
+    let ours = tmp.paths();
+    let neighbour = LogPaths::new(ours.directory(), "journal-backup");
+
+    let live = ours.log_path(CommitIndex(0));
+    let stale = ours.log_path(CommitIndex(3));
+    let theirs = neighbour.log_path(CommitIndex(0));
+    for path in [&live, &stale, &theirs] {
+        std::fs::write(path, b"").unwrap();
+    }
+    // Names this set could not have written: a short field, a non-numeric one,
+    // a value past u64, and a non-canonical spelling of a number.
+    for name in [
+        "journal-1.log",
+        "journal-000000000000000000ff.log",
+        "journal-99999999999999999999.log",
+        "journal-+0000000000000000001.log",
+    ] {
+        std::fs::write(ours.directory().join(name), b"").unwrap();
+    }
+
+    assert_eq!(
+        ours.orphans(CommitIndex(0)).unwrap(),
+        std::slice::from_ref(&stale)
+    );
+    // Symmetrically, the neighbour does not own ours.
+    assert_eq!(
+        neighbour.orphans(CommitIndex(0)).unwrap(),
+        Vec::<PathBuf>::new()
+    );
+    assert!(theirs.exists());
+
+    // The live log is excluded by identity, not by name shape.
+    assert_eq!(
+        ours.orphans(CommitIndex(3)).unwrap(),
+        [live],
+        "the other floor becomes the orphan once the anchor names this one"
+    );
+    assert!(stale.exists());
+}

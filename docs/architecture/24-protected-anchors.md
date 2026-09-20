@@ -220,6 +220,17 @@ epoch.** Under a rolled-back anchor the live file is the one that looks like an
 orphan, and reclamation would delete exactly the history the anchor exists to
 protect.
 
+Because that call deletes, "log files of this set" has to be exact rather than
+approximate. A file belongs to a set only if it is a name that set could have
+produced — `log_path` of the floor its name encodes must be that same path.
+Matching the stem prefix alone is not enough: `journal-` also starts
+`journal-backup-00000000000000000000.log`, so two log sets sharing a directory
+would each report the other's **live** log as its own orphan, and reclamation
+would destroy committed history belonging to a set this one is not even
+responsible for. Round-tripping the parsed floor also rejects a non-numeric
+field, a value past `u64` and a non-canonical spelling of a number, all of which
+are names this set could not have written.
+
 ### What bounds the floor
 
 `plan_compaction` returns `Retain`, `Blocked(barrier)` or `Compact(plan)`.

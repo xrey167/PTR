@@ -69,7 +69,14 @@ pub struct CommittedEvent {
 }
 
 pub trait Ledger {
-    fn append(&mut self, event: LedgerEvent) -> CommitIndex;
+    /// Append one event and return the index it was committed at.
+    ///
+    /// Fallible because a commit index can run out. Returning the index
+    /// unconditionally would force an implementation to invent one at the
+    /// ceiling, and the only values available there repeat an index already
+    /// handed out — which is worse than refusing, since two records would then
+    /// claim the same position in a history that is supposed to order them.
+    fn append(&mut self, event: LedgerEvent) -> io::Result<CommitIndex>;
     fn events(&self) -> &[CommittedEvent];
 }
 
@@ -99,15 +106,22 @@ impl InMemoryLedger {
 }
 
 impl Ledger for InMemoryLedger {
-    fn append(&mut self, event: LedgerEvent) -> CommitIndex {
-        let index = CommitIndex(
-            self.base
-                .0
-                .saturating_add(self.events.len() as u64)
-                .saturating_add(1),
-        );
+    fn append(&mut self, event: LedgerEvent) -> io::Result<CommitIndex> {
+        // Checked rather than saturating: saturation hands the ceiling out
+        // twice, so the second record silently claims a position the first one
+        // already holds. The index is computed before anything is stored, so a
+        // refused append leaves the ledger exactly as it was.
+        let index = self
+            .base
+            .0
+            .checked_add(self.events.len() as u64)
+            .and_then(|count| count.checked_add(1))
+            .map(CommitIndex)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "PTR_LEDGER_INDEX_EXHAUSTED")
+            })?;
         self.events.push(CommittedEvent { index, event });
-        index
+        Ok(index)
     }
 
     fn events(&self) -> &[CommittedEvent] {

@@ -1,9 +1,11 @@
 version = 1
 id = "ptr-ledger"
 maturity = "prototype"
-last_reviewed = "2026-09-19"
+last_reviewed = "2026-09-20"
 
 implemented = [
+  "LogPaths::orphans claims a file only when log_path of the floor its name encodes is that same path, so a neighbouring log set sharing the directory can never have its live log reclaimed as this set's orphan",
+  "InMemoryLedger::append is fallible and uses checked arithmetic: an exhausted commit index is refused with PTR_LEDGER_INDEX_EXHAUSTED and nothing is stored, rather than saturating and handing the same index out twice",
   "PTRLOG02 bounded SHA-256 record chain with checked header, sequence, payload and trailer",
   "Strict nonmutating open; independently anchored rollback checks and explicit partial-tail recovery",
   "Create-new checked-log restore and guarded explicit legacy inspection/migration",
@@ -66,7 +68,7 @@ decisions = [
   "ADR-0009-consensus-ledger-state-separation.md",
 ]
 
-checks = [
+checks = ["a neighbouring log set is never reported as this set's orphan, and short, non-numeric, past-u64 and non-canonical floor fields are all rejected", "an exhausted commit index is refused rather than repeated, leaving the ledger unchanged", 
   "Every single-bit mutation of the reference log, independent hashlib golden vector, ordering and hostile-length rejection",
   "Every partial-frame cut, wrong anchor, complete suffix loss and rehashed alternative-history rejection",
   "Create-new destination safety, guarded legacy migration and duplicate-descriptor unlock regression",

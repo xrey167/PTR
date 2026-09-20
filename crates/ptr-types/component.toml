@@ -1,7 +1,7 @@
 version = 1
 id = "ptr-types"
 maturity = "foundation"
-last_reviewed = "2026-09-19"
+last_reviewed = "2026-09-20"
 
 implemented = [
   "Versioned cognitive codebook: explicit per-version tables assign dense 0..cardinality codes to SemanticRole, EpistemicState, UncertaintyKind, ReasoningOperator and Validity, never Rust discriminants",
@@ -37,7 +37,7 @@ missing = [
 
 next = [
   "Complete the cognitive contract review and first-component test gate before widening scope",
-  "Define the minimum value structures and versioned cognitive codebook as the next component step",
+  "Define the minimum value structures as the next component step",
   "Migrate model/slot/event confidence fields explicitly without guessing legacy target semantics",
   "Connect typed semantic observations before changing neural mechanisms or running task training",
 ]

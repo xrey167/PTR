@@ -9,7 +9,7 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `foundation`  
-**Last reviewed:** 2026-09-19  
+**Last reviewed:** 2026-09-20  
 **Code footprint:** 4 Rust source files · 1170 nonblank source lines · 4 integration-test files · 32 `#[test]` markers
 
 ### Implemented now
@@ -47,7 +47,7 @@
 ### Next milestones
 
 - Complete the cognitive contract review and first-component test gate before widening scope
-- Define the minimum value structures and versioned cognitive codebook as the next component step
+- Define the minimum value structures as the next component step
 - Migrate model/slot/event confidence fields explicitly without guessing legacy target semantics
 - Connect typed semantic observations before changing neural mechanisms or running task training
 
