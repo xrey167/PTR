@@ -40,6 +40,7 @@
 - [24-protected-anchors.md](24-protected-anchors.md)
 - [25-erasure-and-retention.md](25-erasure-and-retention.md)
 - [26-cognitive-codebook.md](26-cognitive-codebook.md)
+- [27-neural-state-admission.md](27-neural-state-admission.md)
 - [Open architecture catalog](../../research/catalogs/README.md) — unresolved type families, backend slots and component contracts
 
 ## Component-level documentation

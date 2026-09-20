@@ -1,5 +1,6 @@
 pub mod compacted;
 pub mod execution;
+pub mod neural;
 pub mod persistence;
 pub mod semantic;
 
@@ -27,6 +28,7 @@ use std::path::Path;
 pub enum RuntimeError {
     Snapshot(persistence::SnapshotError),
     Compacted(compacted::CompactedError),
+    Neural(neural::NeuralError),
     Semantic(SemanticError),
     InvalidConfig(String),
     Ledger(String),
