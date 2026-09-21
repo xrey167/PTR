@@ -230,19 +230,34 @@ def rebound_names(node: ast.stmt) -> set[str]:
     return names
 
 
-def module_classes(tree: ast.Module) -> dict[str, ast.ClassDef]:
-    """The class each module-scope name is bound to when the module finishes.
+def module_cases(
+    tree: ast.Module, modules: set[str], direct: set[str]
+) -> dict[str, ast.ClassDef]:
+    """The case classes a module still exposes when it finishes running.
+
+    Two questions, and they are asked at different moments, which is the whole
+    shape of this function. **Whether a class is a case** is settled when its
+    `class` statement runs, because that is when Python evaluates its bases and
+    fixes `__bases__` - a later `class Base(TestCase)` cannot reach back and
+    make an earlier subclass of a plain `Base` into a case. **Whether the module
+    still exposes it** is settled at the end, because `unittest` reads the
+    module's attributes once it has finished importing.
+
+    Deciding both from the final bindings was wrong in *both* directions, and
+    all four were measured: a base that becomes a case later, and a base named
+    before it is defined at all, were accepted although discovery collects
+    neither; a base that stops being a case later, and one rebound to a
+    non-class, were refused although discovery collects both - the subclass was
+    built while the base still was one.
+
+    Reading statements in order answers both at once and needs no fixed point: a
+    base has to exist by the time the class statement runs, so one forward pass
+    resolves any chain.
 
     Module scope only, for the same reason the imports are: `unittest` finds
     cases by looking at the module's own attributes. A class nested inside
     another class, defined inside a function, or written under a conditional the
-    module does not take is not one of them, and is not collected.
-
-    Within that scope a name holds **one** object, the last thing bound to it -
-    collecting every `class Blockers` in the file accepted a test from a
-    definition a later statement had already replaced or removed. Statements are
-    read in order and the last binding wins; anything that is not a plain class
-    definition leaves the names it touches unresolved.
+    module does not take is not one of them.
 
     A decorated class is dropped rather than read, because a decorator returns
     whatever it likes and a parse cannot say what. That refuses one thing the
@@ -250,13 +265,26 @@ def module_classes(tree: ast.Module) -> dict[str, ast.ClassDef]:
     failure, the direction this checker is allowed to be wrong in.
     """
     bound: dict[str, ast.ClassDef | None] = {}
+    is_case: dict[str, bool] = {}
     for node in tree.body:
         if isinstance(node, ast.ClassDef) and not node.decorator_list:
+            # Resolved against what is bound *now*, before this class binds.
+            case = any(
+                is_case_base(base, modules, direct)
+                or (isinstance(base, ast.Name) and is_case.get(base.id, False))
+                for base in node.bases
+            )
             bound[node.name] = node
+            is_case[node.name] = case
             continue
         for name in rebound_names(node):
             bound[name] = None
-    return {name: node for name, node in bound.items() if node is not None}
+            is_case.pop(name, None)
+    return {
+        name: node
+        for name, node in bound.items()
+        if node is not None and is_case.get(name, False)
+    }
 
 
 def python_tests(text: str) -> set[str]:
@@ -289,30 +317,9 @@ def python_tests(text: str) -> set[str]:
 
     modules, direct = case_bindings(tree)
 
-    classes = module_classes(tree)
-
-    # A subclass of a case in the same file is a case too, and how many links the
-    # chain has is not something to assume, so this runs to a fixed point.
-    cases: set[str] = set()
-    growing = True
-    while growing:
-        growing = False
-        for name, definition in classes.items():
-            if name in cases:
-                continue
-            inherited = any(
-                isinstance(base, ast.Name) and base.id in cases
-                for base in definition.bases
-            )
-            if inherited or any(
-                is_case_base(base, modules, direct) for base in definition.bases
-            ):
-                cases.add(name)
-                growing = True
-
     found: set[str] = set()
-    for name in cases:
-        for item in classes[name].body:
+    for definition in module_cases(tree, modules, direct).values():
+        for item in definition.body:
             if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 if item.name.startswith(PYTHON_TEST_METHOD_PREFIX):
                     found.add(item.name)

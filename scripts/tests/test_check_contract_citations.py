@@ -498,6 +498,58 @@ class WhatUnittestCollects(unittest.TestCase):
         )
         self.assertEqual(self.errors(), [])
 
+    def test_a_base_that_becomes_a_case_later_does_not_reach_back(self):
+        # The reported case. Python fixes `__bases__` when the class statement
+        # runs, so a later `class Base(TestCase)` cannot make an earlier
+        # subclass of a plain `Base` into a case. Discovery collects nothing.
+        self.python(
+            "import unittest\n\n\nclass Base:\n    pass\n\n\n"
+            f"class Blockers(Base):\n    def {self.NAME}(self):\n        pass\n\n\n"
+            "class Base(unittest.TestCase):\n    pass\n"
+        )
+        errors = self.errors()
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("is not a test", errors[0])
+
+    def test_a_base_named_before_it_is_defined_is_not_a_case(self):
+        self.python(
+            f"import unittest\n\n\nclass Blockers(Base):\n"
+            f"    def {self.NAME}(self):\n        pass\n\n\n"
+            "class Base(unittest.TestCase):\n    pass\n"
+        )
+        self.assertEqual(len(self.errors()), 1)
+
+    def test_a_base_that_stops_being_a_case_later_keeps_the_subclass(self):
+        # The other direction, and the reason this is a forward pass rather than
+        # a stricter rule: the subclass was built while `Base` still was a case,
+        # so discovery collects it and refusing it would be a false failure.
+        # Deciding from the final bindings got this one wrong too.
+        self.python(
+            "import unittest\n\n\nclass Base(unittest.TestCase):\n    pass\n\n\n"
+            f"class Blockers(Base):\n    def {self.NAME}(self):\n        pass\n\n\n"
+            "class Base:\n    pass\n"
+        )
+        self.assertEqual(self.errors(), [])
+
+    def test_a_base_rebound_to_a_non_class_keeps_the_subclass(self):
+        self.python(
+            "import unittest\n\n\nclass Base(unittest.TestCase):\n    pass\n\n\n"
+            f"class Blockers(Base):\n    def {self.NAME}(self):\n        pass\n\n\n"
+            "Base = None\n"
+        )
+        self.assertEqual(self.errors(), [])
+
+    def test_a_chain_of_three_local_classes_still_resolves(self):
+        # The control for dropping the fixed-point loop: a base has to exist by
+        # the time the class statement runs, so one forward pass follows any
+        # chain, and this must not have become a false failure.
+        self.python(
+            "import unittest\n\n\nclass A(unittest.TestCase):\n    pass\n\n\n"
+            "class B(A):\n    pass\n\n\n"
+            f"class Blockers(B):\n    def {self.NAME}(self):\n        pass\n"
+        )
+        self.assertEqual(self.errors(), [])
+
     def test_a_file_that_does_not_parse_defines_no_test(self):
         # Reporting a syntax error is not this checker's job, but crashing on one
         # would take down an invariant run over a file it only skims.
