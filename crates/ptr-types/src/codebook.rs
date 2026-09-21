@@ -84,6 +84,24 @@ impl CodeFamily {
         }
     }
 
+    /// The family a stable name denotes.
+    ///
+    /// An explicit table in both directions, never a position in [`Self::ALL`]: a
+    /// name read from an artifact must map to the same family it mapped to when
+    /// the artifact was written, and an index would silently follow a reordering.
+    /// An unknown name is refused rather than approximated, because guessing the
+    /// family is guessing what every code in that artifact means.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "semantic_role" => Some(Self::SemanticRole),
+            "epistemic_state" => Some(Self::EpistemicState),
+            "uncertainty_kind" => Some(Self::UncertaintyKind),
+            "reasoning_operator" => Some(Self::ReasoningOperator),
+            "validity" => Some(Self::Validity),
+            _ => None,
+        }
+    }
+
     /// Every family, in canonical order.
     pub const ALL: [Self; 5] = [
         Self::SemanticRole,

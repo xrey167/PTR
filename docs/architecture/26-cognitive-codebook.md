@@ -235,15 +235,147 @@ Codes are checked for being dense `0..n` because they index an embedding table
 directly. A gap would leave a row nothing can reach, and a duplicate would make
 two members share one.
 
+## The model's code spaces are the codebook's
+
+A0 used to take the width of every typed table as an argument, and the numbers its
+callers chose disagreed with the kernel:
+
+| Table | Caller's width | Kernel's cardinality |
+|---|---|---|
+| slot type | 8 | 9 semantic roles |
+| epistemic state | 8 (default) or 4 | 6 epistemic states |
+| router output | 3, 4 or 5 | 11 reasoning operators |
+
+Both directions of that mismatch are silent. A table longer than its family trains
+rows that denote nothing. A table shorter than its family cannot represent the
+members past its end — and since the ids were bare integers, an index past the end
+was equally unremarkable.
+
+`PtrA0Config` now derives all three from a `Codebook`, which is the only way to
+obtain them. `provenance_bucket_count` stays a free parameter and is **the one
+recorded exception**: provenance bucketing is a research-local hashing of sources
+with no kernel taxonomy behind it, so there is no family to size it from. Naming it
+an exception is the point — an unexamined free parameter next to three derived ones
+is how the next mismatch gets in.
+
+### Codes are minted, not typed
+
+```rust
+let roles: [&[SemanticRole]; 1] = [&[SemanticRole::Goal, SemanticRole::Claim]];
+let slot_types = CodeGrid::new(&Codebook::V1, &roles, &device)?;
+```
+
+`CodeGrid<T>` is the only thing `forward` accepts, and the only way to build one is
+through `Codebook::code_of`. So an index past the end of a table, or a code from
+another family that happens to be in range, is unrepresentable rather than
+unlikely — an embedding lookup would have answered both without complaint.
+
+The family is a **type parameter**, so passing epistemic codes where semantic roles
+belong does not compile; a `compile_fail` doctest asserts that, paired with the
+otherwise identical doctest that does compile, because a `compile_fail` that fails
+for an unrelated reason passes vacuously. The codebook version travels in the grid
+and is compared in `forward`. With one frozen version that comparison cannot be
+reached from outside — it exists so that adding a second version fails loudly
+rather than reading v2 codes against v1 tables.
+
+## What a stored checkpoint has to carry
+
+Burn records parameters and nothing else: its constant fields are recorded as
+empty. A bare record therefore cannot say which assignment its codes belong to,
+and weights whose codes have been renumbered keep loading, keep producing
+plausible outputs, and are now reading a different taxonomy than the one they
+learned. Nothing fails.
+
+`ptr_types::CheckpointHeader` is the identity prefix that closes it: magic, an
+explicit format version, the model's stable name, the codebook version, **the
+complete assignment verbatim**, and the table widths the weights actually have.
+
+The assignment is stored verbatim rather than as a digest for two reasons. This
+crate has no dependencies and therefore no hasher, and a byte comparison is exact
+where a digest is only probably exact. A reader that wants a fingerprint — as
+`StateBinding` does — hashes `Codebook::canonical_bytes` itself.
+
+The widths in the header are read from the weights, not from the config that built
+them, so the header cannot claim a width the tensors do not have.
+
+Every refusal is distinct and none of them falls back:
+
+| Refusal | What it catches |
+|---|---|
+| `PTR_CKPT_NOT_A_CHECKPOINT` | foreign or empty bytes |
+| `PTR_CKPT_UNKNOWN_FORMAT` | a layout this build does not know, rather than parsing it anyway |
+| `PTR_CKPT_TRUNCATED` / `PTR_CKPT_PAYLOAD_LENGTH` | an artifact that ends inside a field or inside its payload |
+| `PTR_CKPT_TRAILING_BYTES` | writer and reader disagreeing about the layout |
+| `PTR_CKPT_UNKNOWN_FAMILY` | a family name this build does not define |
+| `PTR_CKPT_DUPLICATE_FAMILY` | one family with two widths, so neither is its width |
+| `PTR_CKPT_UNKNOWN_CODEBOOK_VERSION` | codes from a version with no tables here |
+| `PTR_CKPT_CODEBOOK_MOVED` | **the same version with a different assignment** |
+| `PTR_CKPT_TABLE_SIZE` | weights built for eight roles where the kernel defines nine |
+| `PTR_CKPT_MISSING_TABLE` | a family the reader requires and the artifact never recorded |
+
+`CODEBOOK_MOVED` is the one the version number cannot catch, and it is why the
+assignment is carried at all.
+
+A family name is encoded as its stable name and decoded through an explicit table
+in both directions — never a position in `CodeFamily::ALL`, which a reordering
+would silently follow. That is the same rule as codes not being discriminants,
+applied one level up.
+
+Verification names the families the **reader** requires. A model that embeds fewer
+families than the kernel defines is not thereby wrong, so the list cannot live in
+the kernel: `ptr-burn-a0` names its own as `EMBEDDED_FAMILIES`. Naming none still
+checks the assignment, which is the part that decides what every code means.
+
+## A real checkpoint reaching the runtime's admission
+
+`PtrRuntime::bind_checkpoint` reads the header, refuses an artifact whose
+assignment this build cannot reproduce, refuses an artifact and a declaration that
+disagree about the version — one of the two is wrong about what every code means
+and there is no way to tell which from here — and then binds the payload through
+the same `bind_state` path every other neural state uses. One rule set, not a
+producer's copy and a consumer's copy that can drift.
+
+The payload stays opaque. Nothing in `ptr-runtime` can read burn's parameter
+format, and nothing needs to: what a checkpoint must not do is load under an
+assignment it was not trained under.
+
+`crates/ptr-runtime/tests/fixtures/ptr-a0-v1.ckpt` is a **real** A0 checkpoint —
+header from the shared kernel, weights from burn — regenerated by
+`model/burn-a0/examples/write_checkpoint.rs`. The two workspaces do not build
+together, so without a committed artifact nothing would catch them disagreeing
+about the format. The tests bind it, seal it, reopen it against its anchor, and
+check that the weights survive unchanged; then they move the generation it was
+bound under and edit the semantic input it read, and it is refused both times.
+
+## A run manifest records what it is interpretable against
+
+`training/configs/run-default.toml` now carries a `[codebook]` section with both
+`version` and `fingerprint`, and `build_manifest` refuses a run whose config names
+neither, only one, an unknown version, or a moved assignment — four distinct
+reasons, no defaulting path. The artifact's own file digest goes into the run's
+provenance, so it reaches `input_fingerprint_sha256` rather than only being
+reported next to it. The manifest's `schema_version` moves to 4.
+
+One loader serves the whole training stack: `ptr_training.codebook` reads the
+artifact, verifies that its recorded fingerprint really is the digest of its own
+canonical bytes — an artifact that disagrees with itself identifies nothing — and
+`validate_dataset.py` now uses it instead of keeping a second copy of the same
+check.
+
 ## What this does not close
 
-- **Checkpoints and run manifests do not record it yet.** Datasets do. A
-  checkpoint carrying a `StateBinding`, which is what `27-neural-state-admission.md`
-  would need to decide about a real artifact rather than opaque test bytes, is
-  still open.
-- **`slot_type` is still research-local.** Mapping A0's `slot_type_count` onto
-  `SemanticRole` codes from this codebook is not done; slot identity therefore
-  remains outside the versioned contract.
+- **A trainer that writes a checkpoint is still not the thing that binds it.**
+  The artifact carries its assignment; the committed facts are attached when a
+  runtime binds it, and there is no training loop here that does so as part of
+  saving. The seal is the recorded form, and producing one is a separate step.
+- **The codebook version comparison in `forward` is unreachable today.** One
+  frozen version means no test can construct a foreign grid from outside the
+  crate. It is a guard for the second version, not a tested path.
+- **The header is not a manifest.** It records identity, not architecture: a
+  checkpoint loaded into a differently shaped model is refused by burn's own
+  record validation, which reports shapes rather than saying which model it is.
+- **`provenance_bucket_count` remains outside the codebook**, by decision and not
+  by omission. Its width is unchecked against anything.
 - **A consumer can still misuse `slots`.** The admission travels with the output,
   but nothing forces a caller to apply it. Zeroing the excluded rows would hide a
   real zero vector, so the mask is supplied rather than baked in.

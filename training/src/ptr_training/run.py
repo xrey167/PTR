@@ -10,6 +10,8 @@ import sys
 import tomllib
 from pathlib import Path
 
+from ptr_training import codebook as codebook_artifact
+
 ROOT = Path(__file__).resolve().parents[3]
 
 
@@ -121,6 +123,25 @@ def build_manifest(config_path: Path) -> dict:
     hardware_profile_path = ROOT / cfg["run"]["hardware_profile"]
     hardware_profile = file_fingerprint(hardware_profile_path)
 
+    # A run is only interpretable against the assignment its codes belong to, so
+    # the config must name it and the artifact must agree. Both fields are
+    # required: a version with no fingerprint cannot catch a table edited in
+    # place, and neither can be defaulted without adopting an assignment nobody
+    # chose.
+    book = codebook_artifact.load()
+    codebook_artifact.require_identity(
+        cfg.get("codebook", {}),
+        book,
+        version_field="version",
+        fingerprint_field="fingerprint",
+        where=f"{config_path.name} [codebook]",
+    )
+    codebook = {
+        "version": book["version"],
+        "fingerprint_sha256": book["fingerprint_sha256"],
+        "artifact": codebook_artifact.artifact_fingerprint(),
+    }
+
     config_file = file_fingerprint(config_path)
     cargo_lock = file_fingerprint(ROOT / "Cargo.lock")
     uv_lock = file_fingerprint(ROOT / "training" / "uv.lock")
@@ -138,10 +159,11 @@ def build_manifest(config_path: Path) -> dict:
         "a0_manifest": file_fingerprint(ROOT / "model/burn-a0/Cargo.toml"),
         "a0_cargo_lock": file_fingerprint(ROOT / "model/burn-a0/Cargo.lock"),
         "uv_lock": uv_lock,
+        "codebook": codebook,
     }
 
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "status": "prepared",
         "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "git_sha": git["sha"],
@@ -157,6 +179,7 @@ def build_manifest(config_path: Path) -> dict:
         "dataset_card": dataset_card,
         "model_config": model_config,
         "hardware_profile": hardware_profile,
+        "codebook": codebook,
         "cargo_lock_sha256": cargo_lock["sha256"],
         "uv_lock_sha256": uv_lock["sha256"],
         "input_fingerprint_sha256": input_fingerprint(provenance),

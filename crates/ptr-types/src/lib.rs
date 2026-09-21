@@ -1,8 +1,10 @@
 //! Foundational domain types shared by PTR. This crate intentionally has no external dependencies.
 
+mod checkpoint;
 mod codebook;
 mod confidence;
 mod validity_mask;
+pub use checkpoint::{CheckpointError, CheckpointHeader, TableSize, FORMAT_V1};
 pub use codebook::{CodeFamily, Codebook, CodebookError, CodebookVersion, CognitiveType, TypeCode};
 pub use confidence::{ConfidenceEstimate, ConfidenceTarget, ConfidenceTargetMismatch};
 pub use validity_mask::{MaskError, ValidityMask};

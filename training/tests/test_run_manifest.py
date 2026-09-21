@@ -1,7 +1,9 @@
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
+from ptr_training import codebook as codebook_artifact
 from ptr_training.run import (
     ROOT,
     build_manifest,
@@ -9,11 +11,27 @@ from ptr_training.run import (
     write_manifest,
 )
 
+DEFAULT_CONFIG = ROOT / "training" / "configs" / "run-default.toml"
+
+
+def _config_text(**codebook) -> str:
+    """The default run config with its [codebook] section replaced."""
+    original = DEFAULT_CONFIG.read_text(encoding="utf-8")
+    body = original[original.index("[run]") :]
+    lines = ["version = 1", ""]
+    if codebook:
+        lines.append("[codebook]")
+        for key, value in codebook.items():
+            rendered = f'"{value}"' if isinstance(value, str) else str(value)
+            lines.append(f"{key} = {rendered}")
+        lines.append("")
+    return "\n".join(lines) + body
+
 
 class TrainingRunManifestTests(unittest.TestCase):
     def test_default_run_manifest_verifies_registered_dataset_bytes(self):
         manifest = build_manifest(ROOT / "training" / "configs" / "run-default.toml")
-        self.assertEqual(manifest["schema_version"], 3)
+        self.assertEqual(manifest["schema_version"], 4)
         self.assertEqual(manifest["dataset"]["name"], "typed_agent_behavior_v0_2")
         self.assertEqual(manifest["config"]["training"]["backend"], "dry-run")
         self.assertEqual(
@@ -45,6 +63,74 @@ class TrainingRunManifestTests(unittest.TestCase):
             first["input_fingerprint_sha256"],
             second["input_fingerprint_sha256"],
         )
+
+    def test_manifest_records_the_codebook_the_run_is_interpretable_against(self):
+        book = codebook_artifact.load()
+        manifest = build_manifest(DEFAULT_CONFIG)
+        recorded = manifest["codebook"]
+        self.assertEqual(recorded["version"], book["version"])
+        self.assertEqual(recorded["fingerprint_sha256"], book["fingerprint_sha256"])
+        self.assertEqual(
+            recorded["artifact"]["path"], "datasets/generated/codebook.json"
+        )
+        self.assertEqual(len(recorded["artifact"]["sha256"]), 64)
+        # In provenance too, so the artifact's own bytes reach the input
+        # fingerprint rather than only being reported.
+        self.assertEqual(manifest["provenance"]["codebook"], recorded)
+
+    def test_the_codebook_artifact_reaches_the_input_fingerprint(self):
+        manifest = build_manifest(DEFAULT_CONFIG)
+        from ptr_training.run import input_fingerprint
+
+        provenance = dict(manifest["provenance"])
+        moved = dict(provenance["codebook"])
+        moved["fingerprint_sha256"] = "0" * 64
+        provenance["codebook"] = moved
+        self.assertNotEqual(
+            input_fingerprint(provenance), manifest["input_fingerprint_sha256"]
+        )
+
+    def _refused(self, text: str, message: str) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "run.toml"
+            config.write_text(text, encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, message):
+                build_manifest(config)
+
+    def test_a_run_that_names_no_codebook_is_refused(self):
+        self._refused(_config_text(), "version is required")
+
+    def test_a_run_naming_only_a_version_is_refused(self):
+        book = codebook_artifact.load()
+        self._refused(
+            _config_text(version=book["version"]), "fingerprint is required"
+        )
+
+    def test_an_unknown_codebook_version_is_refused_with_its_own_reason(self):
+        book = codebook_artifact.load()
+        self._refused(
+            _config_text(version=99, fingerprint=book["fingerprint_sha256"]),
+            "is not this build",
+        )
+
+    def test_a_moved_assignment_is_refused_with_a_different_reason(self):
+        # The version is right and the assignment behind it has moved: the case a
+        # version number cannot catch, and it must not read as "unknown version".
+        book = codebook_artifact.load()
+        self._refused(
+            _config_text(version=book["version"], fingerprint="0" * 64),
+            "does not match this build",
+        )
+
+    def test_the_default_config_is_what_these_negatives_vary(self):
+        # Without this, a change to the config's shape could make every negative
+        # above pass for the wrong reason.
+        cfg = tomllib.loads(_config_text(**{
+            "version": codebook_artifact.load()["version"],
+            "fingerprint": codebook_artifact.load()["fingerprint_sha256"],
+        }))
+        declared = tomllib.loads(DEFAULT_CONFIG.read_text(encoding="utf-8"))
+        self.assertEqual(cfg, declared)
 
     def test_declared_dataset_hash_mismatch_fails_closed(self):
         dataset = ROOT / "datasets" / "bundles" / "typed_agent_behavior_v0_2.zip"

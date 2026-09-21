@@ -4,12 +4,29 @@ use burn::{
     prelude::*,
     tensor::Int,
 };
-use ptr_burn_a0::{admission_bias, PtrA0, PtrA0Config, PtrSlotMetadata};
-use ptr_types::{Validity, ValidityMask};
+use ptr_burn_a0::{admission_bias, CodeGrid, PtrA0, PtrA0Config, PtrSlotMetadata};
+use ptr_types::{Codebook, EpistemicState, SemanticRole, Validity, ValidityMask};
+
+// The typed arm gives each row a distinct first role; the ablated arm gives them
+// all the same one. That difference is the mechanism under test, and it is now
+// expressed in codebook members rather than in bare integers.
+const TYPED: [&[SemanticRole]; 4] = [
+    &[SemanticRole::Goal, SemanticRole::Resource],
+    &[SemanticRole::Constraint, SemanticRole::Resource],
+    &[SemanticRole::Claim, SemanticRole::Resource],
+    &[SemanticRole::Evidence, SemanticRole::Resource],
+];
+
+const ABLATED: [&[SemanticRole]; 4] = [
+    &[SemanticRole::Goal, SemanticRole::Resource],
+    &[SemanticRole::Goal, SemanticRole::Resource],
+    &[SemanticRole::Goal, SemanticRole::Resource],
+    &[SemanticRole::Goal, SemanticRole::Resource],
+];
 
 struct Batch {
     tokens: Tensor<2, Int>,
-    slot_types: Tensor<2, Int>,
+    slot_types: CodeGrid<SemanticRole>,
     slots: Tensor<3>,
     metadata: PtrSlotMetadata,
     labels: Tensor<1, Int>,
@@ -17,14 +34,17 @@ struct Batch {
 
 fn batch(device: &Device, typed: bool) -> Batch {
     let tokens = Tensor::<2, Int>::from_data([[1, 1], [1, 1], [1, 1], [1, 1]], device);
-    let slot_types = if typed {
-        Tensor::<2, Int>::from_data([[0, 4], [1, 4], [2, 4], [3, 4]], device)
-    } else {
-        Tensor::<2, Int>::from_data([[0, 4], [0, 4], [0, 4], [0, 4]], device)
-    };
+    let roles: &[&[SemanticRole]] = if typed { &TYPED } else { &ABLATED };
+    let slot_types =
+        CodeGrid::new(&Codebook::V1, roles, device).expect("every role is assigned in v1");
     let slots = Tensor::<3>::zeros([4, 2, 12], device);
     let metadata = PtrSlotMetadata {
-        epistemic_ids: Tensor::<2, Int>::zeros([4, 2], device),
+        epistemic: CodeGrid::new(
+            &Codebook::V1,
+            &[&[EpistemicState::Unknown, EpistemicState::Unknown][..]; 4],
+            device,
+        )
+        .expect("every epistemic state is assigned in v1"),
         provenance_ids: Tensor::<2, Int>::zeros([4, 2], device),
         confidence: Tensor::<2>::ones([4, 2], device),
         admission: admission_bias(
@@ -46,7 +66,7 @@ fn batch(device: &Device, typed: bool) -> Batch {
 
 fn clone_metadata(metadata: &PtrSlotMetadata) -> PtrSlotMetadata {
     PtrSlotMetadata {
-        epistemic_ids: metadata.epistemic_ids.clone(),
+        epistemic: metadata.epistemic.clone(),
         provenance_ids: metadata.provenance_ids.clone(),
         confidence: metadata.confidence.clone(),
         admission: metadata.admission.clone(),
@@ -57,7 +77,7 @@ fn loss(model: &PtrA0, batch: &Batch, device: &Device) -> Tensor<1> {
     let logits = model
         .forward(
             batch.tokens.clone(),
-            batch.slot_types.clone(),
+            &batch.slot_types,
             batch.slots.clone(),
             clone_metadata(&batch.metadata),
         )
@@ -71,7 +91,7 @@ fn accuracy(model: &PtrA0, batch: &Batch) -> f32 {
     let logits = model
         .forward(
             batch.tokens.clone(),
-            batch.slot_types.clone(),
+            &batch.slot_types,
             batch.slots.clone(),
             clone_metadata(&batch.metadata),
         )
@@ -88,8 +108,8 @@ fn accuracy(model: &PtrA0, batch: &Batch) -> f32 {
 fn train(typed: bool, seed: u64, steps: usize) -> (f32, f32, f32) {
     let device = Device::flex().autodiff();
     device.seed(seed);
-    let config = PtrA0Config::new(16, 8, 12, 4)
-        .with_metadata_sizes(4, 8)
+    let config = PtrA0Config::new(16, 12)
+        .with_provenance_buckets(8)
         .with_latent_steps(1);
     let mut model = config.init(&device);
     let mut optimizer = AdamConfig::new().init();

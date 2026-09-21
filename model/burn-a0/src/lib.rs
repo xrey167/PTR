@@ -6,43 +6,199 @@ use burn::{
         Int,
     },
 };
-use ptr_types::ValidityMask;
+mod checkpoint;
+pub use checkpoint::{header, load, save, CheckpointIoError, EMBEDDED_FAMILIES, MODEL};
+
+use core::marker::PhantomData;
+use ptr_types::{
+    CodeFamily, Codebook, CodebookError, CodebookVersion, CognitiveType, EpistemicState,
+    ReasoningOperator, SemanticRole, ValidityMask,
+};
+
+/// Why a batch of codes could not be built.
+///
+/// Every variant is a refusal, and none of them substitutes a code. A defaulted
+/// code is how a foreign or stale identity reaches an embedding table without
+/// anyone noticing.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CodeGridError {
+    /// The codebook refused a member: it has no code in this version.
+    Codebook(CodebookError),
+    /// Rows disagree on how many slots they carry, so they cannot index one
+    /// tensor. Not padded, because padding invents slots.
+    Ragged {
+        row: usize,
+        expected: usize,
+        found: usize,
+    },
+    /// No rows, or rows with no slots.
+    Empty,
+}
+
+impl From<CodebookError> for CodeGridError {
+    /// Carry a codebook refusal through unchanged.
+    fn from(error: CodebookError) -> Self {
+        Self::Codebook(error)
+    }
+}
+
+impl core::fmt::Display for CodeGridError {
+    /// Render a stable refusal code.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Codebook(error) => error.fmt(f),
+            Self::Ragged { .. } => f.write_str("PTR_A0_RAGGED_CODE_GRID"),
+            Self::Empty => f.write_str("PTR_A0_EMPTY_CODE_GRID"),
+        }
+    }
+}
+
+impl std::error::Error for CodeGridError {}
+
+/// A rectangular batch of codebook codes for one family, fixed by that family's
+/// type.
+///
+/// Built only through [`Codebook`], so a code the assignment does not define
+/// cannot reach an embedding table. A bare `Tensor<2, Int>` can hold anything: an
+/// index past the end of the table, a code minted under another codebook version,
+/// or a code from another family that happens to be in range. An embedding lookup
+/// answers all three without complaint, and the model is then wrong about what it
+/// is looking at rather than visibly broken.
+///
+/// The family is a type parameter rather than a field, so passing epistemic codes
+/// where semantic roles belong does not compile. The version travels with the
+/// codes for the same reason: a code alone identifies nothing.
+#[derive(Clone, Debug)]
+pub struct CodeGrid<T: CognitiveType> {
+    codebook: CodebookVersion,
+    ids: Tensor<2, Int>,
+    rows: usize,
+    columns: usize,
+    family: PhantomData<T>,
+}
+
+impl<T: CognitiveType> CodeGrid<T> {
+    /// Assign codes to one batch of members.
+    ///
+    /// `rows` is the batch; every row must name the same number of slots.
+    ///
+    /// ```
+    /// use burn::prelude::*;
+    /// use ptr_burn_a0::CodeGrid;
+    /// use ptr_types::{Codebook, SemanticRole};
+    ///
+    /// let device = Device::flex();
+    /// let roles: [&[SemanticRole]; 1] = [&[SemanticRole::Goal, SemanticRole::Action]];
+    /// let grid = CodeGrid::new(&Codebook::V1, &roles, &device).unwrap();
+    /// assert_eq!(grid.dims(), [1, 2]);
+    /// assert_eq!(grid.codebook(), Codebook::V1.version());
+    /// ```
+    pub fn new(book: &Codebook, rows: &[&[T]], device: &Device) -> Result<Self, CodeGridError> {
+        let columns = rows.first().map_or(0, |row| row.len());
+        if rows.is_empty() || columns == 0 {
+            return Err(CodeGridError::Empty);
+        }
+        let mut values: Vec<i32> = Vec::with_capacity(rows.len() * columns);
+        for (index, row) in rows.iter().enumerate() {
+            if row.len() != columns {
+                return Err(CodeGridError::Ragged {
+                    row: index,
+                    expected: columns,
+                    found: row.len(),
+                });
+            }
+            for member in row.iter() {
+                values.push(i32::from(book.code_of(*member)?.index()));
+            }
+        }
+        Ok(Self {
+            codebook: book.version(),
+            ids: Tensor::<1, Int>::from_data(values.as_slice(), device)
+                .reshape([rows.len(), columns]),
+            rows: rows.len(),
+            columns,
+            family: PhantomData,
+        })
+    }
+
+    /// The single family these codes belong to.
+    pub fn family(&self) -> CodeFamily {
+        T::FAMILY
+    }
+
+    /// The codebook version that assigned them.
+    pub fn codebook(&self) -> CodebookVersion {
+        self.codebook
+    }
+
+    /// `[rows, slots]`.
+    pub fn dims(&self) -> [usize; 2] {
+        [self.rows, self.columns]
+    }
+
+    /// The codes as an index tensor.
+    pub fn ids(&self) -> Tensor<2, Int> {
+        self.ids.clone()
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct PtrA0Config {
     pub vocab_size: usize,
-    pub slot_type_count: usize,
-    pub epistemic_count: usize,
+    /// Provenance bucketing is **not** a codebook family: it is a research-local
+    /// hashing of sources with no kernel taxonomy behind it, so its width stays a
+    /// free parameter. Recorded as a deliberate exception rather than pretended
+    /// into the codebook — see `docs/architecture/26-cognitive-codebook.md`.
     pub provenance_bucket_count: usize,
     pub d_model: usize,
-    pub operator_count: usize,
     pub latent_steps: usize,
+    codebook: Codebook,
 }
 
 impl PtrA0Config {
-    pub fn new(
-        vocab_size: usize,
-        slot_type_count: usize,
-        d_model: usize,
-        operator_count: usize,
-    ) -> Self {
+    /// Size the typed tables from the current frozen codebook.
+    pub fn new(vocab_size: usize, d_model: usize) -> Self {
+        Self::at_codebook(vocab_size, d_model, Codebook::V1)
+    }
+
+    /// Size the typed tables from a named codebook.
+    ///
+    /// The three typed widths are no longer arguments. They were, and the numbers
+    /// the callers chose disagreed with the kernel: eight slot types against nine
+    /// semantic roles, eight epistemic states against six, four operators against
+    /// eleven. Rows that correspond to nothing train on nothing, and a table
+    /// shorter than its family silently folds two members onto one code.
+    pub fn at_codebook(vocab_size: usize, d_model: usize, codebook: Codebook) -> Self {
         Self {
             vocab_size,
-            slot_type_count,
-            epistemic_count: 8,
             provenance_bucket_count: 64,
             d_model,
-            operator_count,
             latent_steps: 0,
+            codebook,
         }
     }
 
-    pub fn with_metadata_sizes(
-        mut self,
-        epistemic_count: usize,
-        provenance_bucket_count: usize,
-    ) -> Self {
-        self.epistemic_count = epistemic_count;
+    /// The codebook this model's tables are sized by.
+    pub fn codebook(&self) -> Codebook {
+        self.codebook
+    }
+
+    /// Slot-type table size: one row per [`SemanticRole`] in this codebook.
+    pub fn slot_type_count(&self) -> usize {
+        usize::from(self.codebook.cardinality_of::<SemanticRole>())
+    }
+
+    /// Epistemic table size: one row per [`EpistemicState`] in this codebook.
+    pub fn epistemic_count(&self) -> usize {
+        usize::from(self.codebook.cardinality_of::<EpistemicState>())
+    }
+
+    /// Router width: one logit per [`ReasoningOperator`] in this codebook.
+    pub fn operator_count(&self) -> usize {
+        usize::from(self.codebook.cardinality_of::<ReasoningOperator>())
+    }
+
+    pub fn with_provenance_buckets(mut self, provenance_bucket_count: usize) -> Self {
         self.provenance_bucket_count = provenance_bucket_count;
         self
     }
@@ -56,9 +212,9 @@ impl PtrA0Config {
         let linear = || LinearConfig::new(self.d_model, self.d_model).init(device);
         PtrA0 {
             token_embedding: EmbeddingConfig::new(self.vocab_size, self.d_model).init(device),
-            slot_type_embedding: EmbeddingConfig::new(self.slot_type_count, self.d_model)
+            slot_type_embedding: EmbeddingConfig::new(self.slot_type_count(), self.d_model)
                 .init(device),
-            epistemic_embedding: EmbeddingConfig::new(self.epistemic_count, self.d_model)
+            epistemic_embedding: EmbeddingConfig::new(self.epistemic_count(), self.d_model)
                 .init(device),
             provenance_embedding: EmbeddingConfig::new(self.provenance_bucket_count, self.d_model)
                 .init(device),
@@ -73,10 +229,11 @@ impl PtrA0Config {
             slot_value: linear(),
             raw_output: linear(),
             latent_refine: linear(),
-            router: LinearConfig::new(self.d_model, self.operator_count).init(device),
+            router: LinearConfig::new(self.d_model, self.operator_count()).init(device),
             d_model: self.d_model,
-            operator_count: self.operator_count,
+            operator_count: self.operator_count(),
             latent_steps: self.latent_steps,
+            codebook_version: self.codebook.version().0,
         }
     }
 }
@@ -102,10 +259,47 @@ pub struct PtrA0 {
     d_model: usize,
     operator_count: usize,
     latent_steps: usize,
+    /// Codebook version the tables were sized by. Burn records constants as empty,
+    /// so this does **not** survive a saved record: an artifact that has to carry
+    /// the identity carries it in its own header.
+    codebook_version: u32,
+}
+
+impl PtrA0 {
+    /// The codebook this model's tables were sized by.
+    ///
+    /// The lookup cannot fail: a [`PtrA0`] only comes from [`PtrA0Config::init`],
+    /// which was given a [`Codebook`], and a `Codebook` only exists for a version
+    /// this build defines.
+    pub fn codebook(&self) -> Codebook {
+        Codebook::at(CodebookVersion(self.codebook_version))
+            .expect("the version came from a Codebook this build accepted")
+    }
+
+    /// Router width, one logit per operator in that codebook.
+    pub fn operator_count(&self) -> usize {
+        self.operator_count
+    }
+
+    /// Rows in the slot-type table, read from the weights.
+    ///
+    /// Not the number the config asked for: what a checkpoint has to record is
+    /// what the tensors actually are.
+    pub fn slot_type_rows(&self) -> usize {
+        self.slot_type_embedding.weight.dims()[0]
+    }
+
+    /// Rows in the epistemic table, read from the weights.
+    pub fn epistemic_rows(&self) -> usize {
+        self.epistemic_embedding.weight.dims()[0]
+    }
 }
 
 pub struct PtrSlotMetadata {
-    pub epistemic_ids: Tensor<2, Int>,
+    /// Epistemic state per slot, as codebook codes.
+    pub epistemic: CodeGrid<EpistemicState>,
+    /// Research-local provenance bucket per slot. Not a codebook family; see
+    /// [`PtrA0Config::provenance_bucket_count`].
     pub provenance_ids: Tensor<2, Int>,
     pub confidence: Tensor<2>,
     /// Additive attention bias from [`ValidityMask`]: `0.0` where the slot is
@@ -148,27 +342,106 @@ pub fn admission_bias(masks: &[ValidityMask], device: &Device) -> Tensor<2> {
 }
 
 impl PtrA0 {
+    /// Run the typed and raw paths.
+    ///
+    /// Slot identity arrives as [`CodeGrid<SemanticRole>`] and epistemic state as
+    /// [`CodeGrid<EpistemicState>`], so the two cannot be swapped: the swap is a
+    /// type error, not a plausible-looking output.
+    ///
+    /// ```
+    /// use burn::{prelude::*, tensor::Int};
+    /// use ptr_burn_a0::{admission_bias, CodeGrid, PtrA0Config, PtrSlotMetadata};
+    /// use ptr_types::{Codebook, EpistemicState, SemanticRole, Validity, ValidityMask};
+    ///
+    /// let device = Device::flex();
+    /// let book = Codebook::V1;
+    /// let model = PtrA0Config::new(8, 12).init(&device);
+    /// let roles: [&[SemanticRole]; 1] = [&[SemanticRole::Goal, SemanticRole::Claim]];
+    /// let states: [&[EpistemicState]; 1] = [&[EpistemicState::Observed, EpistemicState::Assumed]];
+    /// let slot_types = CodeGrid::new(&book, &roles, &device).unwrap();
+    /// let epistemic = CodeGrid::new(&book, &states, &device).unwrap();
+    /// let output = model.forward(
+    ///     Tensor::<2, Int>::from_data([[1, 2]], &device),
+    ///     &slot_types,
+    ///     Tensor::<3>::zeros([1, 2, 12], &device),
+    ///     PtrSlotMetadata {
+    ///         epistemic,
+    ///         provenance_ids: Tensor::<2, Int>::zeros([1, 2], &device),
+    ///         confidence: Tensor::<2>::ones([1, 2], &device),
+    ///         admission: admission_bias(
+    ///             &[ValidityMask::from_validities(&[Validity::Live; 2])],
+    ///             &device,
+    ///         ),
+    ///     },
+    /// );
+    /// assert_eq!(output.router_logits.dims(), [1, model.operator_count()]);
+    /// ```
+    ///
+    /// Swapping the two grids does not compile:
+    ///
+    /// ```compile_fail
+    /// use burn::{prelude::*, tensor::Int};
+    /// use ptr_burn_a0::{admission_bias, CodeGrid, PtrA0Config, PtrSlotMetadata};
+    /// use ptr_types::{Codebook, EpistemicState, SemanticRole, Validity, ValidityMask};
+    ///
+    /// let device = Device::flex();
+    /// let book = Codebook::V1;
+    /// let model = PtrA0Config::new(8, 12).init(&device);
+    /// let roles: [&[SemanticRole]; 1] = [&[SemanticRole::Goal, SemanticRole::Claim]];
+    /// let states: [&[EpistemicState]; 1] = [&[EpistemicState::Observed, EpistemicState::Assumed]];
+    /// let slot_types = CodeGrid::new(&book, &roles, &device).unwrap();
+    /// let epistemic = CodeGrid::new(&book, &states, &device).unwrap();
+    /// let _ = model.forward(
+    ///     Tensor::<2, Int>::from_data([[1, 2]], &device),
+    ///     &epistemic,
+    ///     Tensor::<3>::zeros([1, 2, 12], &device),
+    ///     PtrSlotMetadata {
+    ///         epistemic: slot_types,
+    ///         provenance_ids: Tensor::<2, Int>::zeros([1, 2], &device),
+    ///         confidence: Tensor::<2>::ones([1, 2], &device),
+    ///         admission: admission_bias(
+    ///             &[ValidityMask::from_validities(&[Validity::Live; 2])],
+    ///             &device,
+    ///         ),
+    ///     },
+    /// );
+    /// ```
     pub fn forward(
         &self,
         token_ids: Tensor<2, Int>,
-        slot_type_ids: Tensor<2, Int>,
+        slot_types: &CodeGrid<SemanticRole>,
         slot_values: Tensor<3>,
         metadata: PtrSlotMetadata,
     ) -> PtrA0Output {
         let [batch, sequence] = token_ids.dims();
-        let [slot_batch, slot_count] = slot_type_ids.dims();
+        let [slot_batch, slot_count] = slot_types.dims();
         assert_eq!(
             batch, slot_batch,
             "raw and typed paths need the same batch size"
         );
-        assert_eq!(metadata.epistemic_ids.dims(), [batch, slot_count]);
+        // Codes minted under another assignment index these tables just as well as
+        // the right ones, and the result is a model confidently reading the wrong
+        // taxonomy. With a single frozen version this cannot be reached from
+        // outside; it is here so that adding a version fails loudly.
+        let version = self.codebook().version();
+        assert_eq!(
+            slot_types.codebook(),
+            version,
+            "slot codes come from another codebook version"
+        );
+        assert_eq!(
+            metadata.epistemic.codebook(),
+            version,
+            "epistemic codes come from another codebook version"
+        );
+        assert_eq!(metadata.epistemic.dims(), [batch, slot_count]);
         assert_eq!(metadata.provenance_ids.dims(), [batch, slot_count]);
         assert_eq!(metadata.confidence.dims(), [batch, slot_count]);
         assert_eq!(metadata.admission.dims(), [batch, slot_count]);
 
         let raw = self.token_embedding.forward(token_ids);
-        let slot_type = self.slot_type_embedding.forward(slot_type_ids);
-        let epistemic = self.epistemic_embedding.forward(metadata.epistemic_ids);
+        let slot_type = self.slot_type_embedding.forward(slot_types.ids());
+        let epistemic = self.epistemic_embedding.forward(metadata.epistemic.ids());
         let provenance = self.provenance_embedding.forward(metadata.provenance_ids);
         let confidence = self
             .confidence_projection

@@ -6,27 +6,48 @@
 //! claim — a test that only checked one initialisation would not be one.
 
 use burn::{prelude::*, tensor::Int};
-use ptr_burn_a0::{admission_bias, PtrA0, PtrA0Config, PtrSlotMetadata};
-use ptr_types::{Validity, ValidityMask};
+use ptr_burn_a0::{admission_bias, CodeGrid, PtrA0, PtrA0Config, PtrSlotMetadata};
+use ptr_types::{Codebook, EpistemicState, SemanticRole, Validity, ValidityMask};
 
 const SLOTS: usize = 3;
 const D_MODEL: usize = 8;
 
 fn model(device: &Device, seed: u64) -> PtrA0 {
     device.seed(seed);
-    PtrA0Config::new(32, 4, D_MODEL, 3)
-        .with_metadata_sizes(4, 8)
+    PtrA0Config::new(32, D_MODEL)
+        .with_provenance_buckets(8)
         .with_latent_steps(1)
         .init(device)
 }
 
 fn metadata(device: &Device, validities: &[Validity]) -> PtrSlotMetadata {
     PtrSlotMetadata {
-        epistemic_ids: Tensor::<2, Int>::zeros([1, SLOTS], device),
+        epistemic: CodeGrid::new(
+            &Codebook::V1,
+            &[&[EpistemicState::Unknown; SLOTS][..]],
+            device,
+        )
+        .expect("every epistemic state is assigned in v1"),
         provenance_ids: Tensor::<2, Int>::zeros([1, SLOTS], device),
         confidence: Tensor::<2>::ones([1, SLOTS], device),
         admission: admission_bias(&[ValidityMask::from_validities(validities)], device),
     }
+}
+
+/// The slot roles every case here shares. Their identity is irrelevant to these
+/// tests — what is asserted is what admission does — but they must be codebook
+/// codes, because that is now the only thing the model accepts.
+fn slot_types(device: &Device) -> CodeGrid<SemanticRole> {
+    CodeGrid::new(
+        &Codebook::V1,
+        &[&[
+            SemanticRole::Goal,
+            SemanticRole::Claim,
+            SemanticRole::Evidence,
+        ][..]],
+        device,
+    )
+    .expect("every role is assigned in v1")
 }
 
 /// Slot values where `slot` carries `fill` and the others carry 1.0.
@@ -47,7 +68,7 @@ fn run(
 ) -> (Vec<f32>, Vec<f32>) {
     let output = model.forward(
         Tensor::<2, Int>::from_data([[1, 2]], device),
-        Tensor::<2, Int>::zeros([1, SLOTS], device),
+        &slot_types(device),
         slot_values(device, slot, fill),
         metadata(device, validities),
     );

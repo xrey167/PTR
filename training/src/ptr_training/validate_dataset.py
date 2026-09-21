@@ -5,25 +5,26 @@ import json
 from pathlib import Path
 from typing import Any
 
-# The member sets come from the kernel's own tables, not from a copy kept here.
-# A retyped set is what the cognitive codebook exists to prevent: adding a
-# ReasoningOperator variant in Rust used to leave this file silently disagreeing,
-# and nothing failed until a checkpoint meant something different than it said.
-CODEBOOK_PATH = Path(__file__).resolve().parents[3] / "datasets/generated/codebook.json"
+# The member sets, the version and the assignment fingerprint all come from the
+# kernel's own tables through one loader. A retyped set is what the cognitive
+# codebook exists to prevent: adding a ReasoningOperator variant in Rust used to
+# leave this file silently disagreeing, and nothing failed until a checkpoint meant
+# something different than it said.
+#
+# The fallback is for the documented direct invocation
+# (`python training/src/ptr_training/validate_dataset.py <file>`), which puts this
+# file's own directory on the path and not the package's parent.
+try:
+    from ptr_training.codebook import ARTIFACT_PATH as CODEBOOK_PATH
+    from ptr_training.codebook import load as _codebook
+    from ptr_training.codebook import require_identity
+except ModuleNotFoundError:  # pragma: no cover - exercised by the CLI, not the tests
+    import sys
 
-
-def _codebook(path: Path = CODEBOOK_PATH) -> dict[str, Any]:
-    if not path.is_file():
-        raise ValueError(
-            f"{path} is missing; run scripts/generate_codebook.py"
-        )
-    document = json.loads(path.read_text(encoding="utf-8"))
-    document["members"] = {
-        family["family"]: {member["name"] for member in family["members"]}
-        for family in document["families"]
-    }
-    return document
-
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from ptr_training.codebook import ARTIFACT_PATH as CODEBOOK_PATH
+    from ptr_training.codebook import load as _codebook
+    from ptr_training.codebook import require_identity
 
 CODEBOOK = _codebook()
 REASONING_OPERATORS = CODEBOOK["members"]["reasoning_operator"]
@@ -32,32 +33,8 @@ UNCERTAINTY_KINDS = CODEBOOK["members"]["uncertainty_kind"]
 
 
 def _validate_codebook_identity(obj: dict[str, Any]) -> None:
-    """Require the codebook this record was produced under, and check it.
-
-    Both fields are mandatory and there is no defaulting path. A record that
-    names no codebook cannot be checked against one, and treating "absent" as
-    "current" is how a stale integer assignment is adopted without anyone
-    deciding to.
-    """
-    version = obj.get("type_codebook_version")
-    if version is None:
-        raise ValueError("type_codebook_version is required")
-    if version != CODEBOOK["version"]:
-        raise ValueError(
-            f"type_codebook_version {version!r} is not this build's "
-            f"{CODEBOOK['version']!r}"
-        )
-
-    fingerprint = obj.get("type_codebook_fingerprint")
-    if fingerprint is None:
-        raise ValueError("type_codebook_fingerprint is required")
-    if fingerprint != CODEBOOK["fingerprint_sha256"]:
-        # A distinct reason from an unknown version: the version can be right
-        # while the table behind it has moved, which is the silent remapping the
-        # fingerprint exists to catch.
-        raise ValueError(
-            "type_codebook_fingerprint does not match this build's assignment"
-        )
+    """Require the codebook this record was produced under, and check it."""
+    require_identity(obj, CODEBOOK, where="record")
 
 
 def _probability(value: Any, field: str) -> float:

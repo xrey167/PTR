@@ -1,5 +1,12 @@
 version = 1
 
+# The codebook this run's codes belong to. Both fields are required and checked
+# against datasets/generated/codebook.json: the version alone cannot catch tables
+# edited in place, and a defaulted assignment is one nobody chose.
+[codebook]
+version = 1
+fingerprint = "2b6f8175a7a7bb648910e7acb17dcfcff5149834f2fe87355c5d2c4524c113a3"
+
 [run]
 name = "ptr-training-dry-run"
 seed = 17
