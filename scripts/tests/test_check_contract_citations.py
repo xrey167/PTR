@@ -50,29 +50,6 @@ class Fixtures(unittest.TestCase):
         self.assertIn("a_pod_for_one_project_is_invisible_to_another", errors[0])
         self.assertIn("docs/architecture/99-thing.md", errors[0])
 
-    def test_a_python_test_counts_when_the_runner_would_collect_it(self):
-        self.contract("Checked by `a_dependent_the_lockfile_shows_must_be_recorded`.")
-        (self.root / "scripts/tests").mkdir(parents=True)
-        (self.root / "scripts/tests/test_blockers.py").write_text(
-            "def a_dependent_the_lockfile_shows_must_be_recorded(self):\n    pass\n",
-            encoding="utf-8",
-        )
-        self.assertEqual(mod.check(self.root)[0], [])
-
-    def test_a_python_definition_the_runner_never_collects_is_not_a_test(self):
-        # `unittest discover` collects `test*.py`. This fixture previously used
-        # `t.py`, which it does not collect - so the checker was accepting a
-        # citation to something that never runs.
-        self.contract("Checked by `a_dependent_the_lockfile_shows_must_be_recorded`.")
-        (self.root / "scripts/tests").mkdir(parents=True)
-        (self.root / "scripts/tests/t.py").write_text(
-            "def a_dependent_the_lockfile_shows_must_be_recorded(self):\n    pass\n",
-            encoding="utf-8",
-        )
-        errors, _ = mod.check(self.root)
-        self.assertEqual(len(errors), 1, errors)
-        self.assertIn("is not a test", errors[0])
-
     def test_an_ordinary_identifier_is_not_a_citation(self):
         # Four segments or fewer. `provenance_bucket_count` (3),
         # `upstream_retire_when` (3) and `require_current_revision` (3) are fields
@@ -178,6 +155,112 @@ class WhatCountsAsATest(unittest.TestCase):
         # and the function breaks the run, so `#[test]` on one function does not
         # silently bless a later one.
         self.source(f"#[test]\nfn something_else_entirely_here() {{}}\nfn {self.NAME}() {{}}\n")
+        self.assertEqual(len(self.errors()), 1)
+
+
+class WhatUnittestCollects(unittest.TestCase):
+    """A cited Python name must be one the configured runner actually runs.
+
+    CI runs plain `python -m unittest discover -s <dir>` for every Python test
+    directory, so collection means: a file matching `test*.py`, a class derived
+    from `unittest.TestCase`, and a method whose name starts with `test`. Every
+    case below was first put to `unittest.TestLoader().discover()` itself, which
+    collected `test_a_method_of_a_subclass_of_a_local_base` from a file holding
+    all five shapes and nothing else.
+
+    The review that produced this class caught the checker accepting a top-level
+    `def` in a `test*.py` file - written by an earlier fixture of mine, as proof
+    that the Python rule worked.
+    """
+
+    NAME = "test_a_dependent_the_lockfile_shows_must_be_recorded"
+
+    def setUp(self):
+        self._directory = tempfile.TemporaryDirectory()
+        self.root = Path(self._directory.name)
+        self.addCleanup(self._directory.cleanup)
+        (self.root / "docs/architecture").mkdir(parents=True)
+        (self.root / "scripts/tests").mkdir(parents=True)
+        self.contract(self.NAME)
+
+    def contract(self, name):
+        (self.root / "docs/architecture/99-thing.md").write_text(
+            f"A dependent is re-derived offline: `{name}`.", encoding="utf-8"
+        )
+
+    def python(self, body, name="test_blockers.py"):
+        (self.root / "scripts/tests" / name).write_text(body, encoding="utf-8")
+
+    def errors(self):
+        return mod.check(self.root)[0]
+
+    def test_a_test_method_of_a_test_case_counts(self):
+        # The control. Every refusal below has to be about what was written and
+        # not about the scanner failing to read Python at all.
+        self.python(
+            f"import unittest\n\n\nclass Blockers(unittest.TestCase):\n"
+            f"    def {self.NAME}(self):\n        pass\n"
+        )
+        self.assertEqual(self.errors(), [])
+
+    def test_the_base_class_may_be_imported_by_name(self):
+        # `from unittest import TestCase` and `unittest.TestCase` are the same
+        # class, and the runner does not care which spelling reached it.
+        self.python(
+            f"from unittest import TestCase\n\n\nclass Blockers(TestCase):\n"
+            f"    def {self.NAME}(self):\n        pass\n"
+        )
+        self.assertEqual(self.errors(), [])
+
+    def test_a_method_of_a_subclass_of_a_local_case_counts(self):
+        # Verified against `unittest` itself: a subclass of a local `TestCase`
+        # subclass is collected, so refusing it would be a false failure.
+        self.python(
+            f"import unittest\n\n\nclass Base(unittest.TestCase):\n    pass\n\n\n"
+            f"class Blockers(Base):\n    def {self.NAME}(self):\n        pass\n"
+        )
+        self.assertEqual(self.errors(), [])
+
+    def test_a_top_level_definition_is_not_collected(self):
+        # The defect this class exists for. `unittest` collects methods of cases;
+        # a module-level function in `test_blockers.py` is never executed, so a
+        # contract citing one cites nothing.
+        self.python(f"def {self.NAME}(self):\n    pass\n")
+        errors = self.errors()
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("is not a test", errors[0])
+
+    def test_a_method_whose_name_lacks_the_prefix_is_not_collected(self):
+        # `TestLoader.testMethodPrefix` is `test` and CI leaves it there, so a
+        # method named without it sits in a collected class and never runs.
+        name = "a_dependent_the_lockfile_shows_must_be_recorded"
+        self.contract(name)
+        self.python(
+            f"import unittest\n\n\nclass Blockers(unittest.TestCase):\n"
+            f"    def {name}(self):\n        pass\n"
+        )
+        self.assertEqual(len(self.errors()), 1)
+
+    def test_a_method_of_a_class_that_is_not_a_case_is_not_collected(self):
+        self.python(
+            f"class Blockers:\n    def {self.NAME}(self):\n        pass\n"
+        )
+        self.assertEqual(len(self.errors()), 1)
+
+    def test_a_file_the_discovery_pattern_does_not_match_is_not_read(self):
+        # `discover` takes `test*.py`. A properly written case in `blockers.py`
+        # is still never loaded.
+        self.python(
+            f"import unittest\n\n\nclass Blockers(unittest.TestCase):\n"
+            f"    def {self.NAME}(self):\n        pass\n",
+            name="blockers.py",
+        )
+        self.assertEqual(len(self.errors()), 1)
+
+    def test_a_file_that_does_not_parse_defines_no_test(self):
+        # Reporting a syntax error is not this checker's job, but crashing on one
+        # would take down an invariant run over a file it only skims.
+        self.python(f"class Blockers(unittest.TestCase:\n    def {self.NAME}(self)\n")
         self.assertEqual(len(self.errors()), 1)
 
 

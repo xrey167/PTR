@@ -24,6 +24,7 @@ not producing false failures, and it is the right way round.
 
 from __future__ import annotations
 
+import ast
 import re
 import sys
 from pathlib import Path
@@ -53,10 +54,18 @@ CITATION = re.compile(r"`([a-z][a-z0-9]*(?:_[a-z0-9]+){4,})`")
 # in the attribute covers `#[test]`, `#[tokio::test(...)]` and the rest.
 RUST_TEST_ATTRIBUTE = re.compile(r"^\s*#\[[^]]*test")
 RUST_FN = re.compile(r"^\s*(?:pub\s+)?(?:async\s+)?fn\s+([a-z_][a-z0-9_]*)")
-PYTHON_DEF = re.compile(r"^\s*def\s+([a-z_][a-z0-9_]*)")
 # `unittest discover` collects `test*.py` only, so a definition in any other file
 # is not a test however much it looks like one.
 PYTHON_TEST_FILE = "test"
+# ... and within such a file it collects `test*` methods of `TestCase` subclasses
+# only. `TestLoader.testMethodPrefix` is `test` and CI leaves it there:
+# `.github/workflows/ci.yml` runs plain `python -m unittest discover -s <dir>`
+# for every Python test directory in the tree.
+PYTHON_TEST_METHOD_PREFIX = "test"
+# The base classes that make a class a case. `IsolatedAsyncioTestCase` and
+# `FunctionTestCase` are `TestCase` subclasses shipped by `unittest` itself, so a
+# class deriving from either is collected exactly as one deriving from `TestCase`.
+TEST_CASE_BASES = frozenset({"TestCase", "IsolatedAsyncioTestCase", "FunctionTestCase"})
 
 
 def owned(root: Path, paths):
@@ -89,9 +98,76 @@ def rust_tests(text: str) -> set[str]:
     return found
 
 
+def base_name(node: ast.expr) -> str | None:
+    """The trailing name of a base expression: `TestCase` for `unittest.TestCase`.
+
+    Matching on the trailing name rather than the full dotted path is what makes
+    `import unittest` and `from unittest import TestCase` read alike, which is
+    the difference the runner does not care about either.
+    """
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return None
+
+
 def python_tests(text: str) -> set[str]:
-    """Every `def` in a file `unittest discover` collects."""
-    return {m.group(1) for m in (PYTHON_DEF.match(line) for line in text.splitlines()) if m}
+    """Test methods `unittest discover` would actually collect from this file.
+
+    Collection is narrower than "a `def` in a `test*.py` file" in two ways that
+    both matter here, and the first form of this function honoured neither: the
+    name must begin with `TestLoader.testMethodPrefix`, which CI leaves at
+    `test`, and it must be a method of a `unittest.TestCase` subclass. A
+    top-level `def a_property_holds(self)` in `test_thing.py` is never executed
+    by anything, so a citation to it is exactly the dead reference this checker
+    exists to refuse.
+
+    The file is parsed rather than imported. Importing would answer the question
+    exactly - it is what the runner does - and would also execute module-level
+    code from every `test*.py` in the tree during an invariant check, which is a
+    trade this checker is not entitled to make. Parsing costs one thing: a class
+    whose base is only resolvable at import time (a base imported from another
+    module, or built by a factory) is not recognised, and its tests read as
+    absent. That is a false failure rather than a false pass, and it is the right
+    way round for the same reason the citation pattern is narrow.
+    """
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        # A file that does not parse defines no collectable test either, and a
+        # checker is not the place to report a syntax error.
+        return set()
+
+    classes: dict[str, list[ast.ClassDef]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            classes.setdefault(node.name, []).append(node)
+
+    # A subclass of a case in the same file is a case too, and how many links the
+    # chain has is not something to assume, so this runs to a fixed point.
+    cases: set[str] = set()
+    growing = True
+    while growing:
+        growing = False
+        for name, definitions in classes.items():
+            if name in cases:
+                continue
+            for definition in definitions:
+                bases = {base_name(base) for base in definition.bases}
+                if bases & TEST_CASE_BASES or bases & cases:
+                    cases.add(name)
+                    growing = True
+                    break
+
+    found: set[str] = set()
+    for name in cases:
+        for definition in classes[name]:
+            for item in definition.body:
+                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    if item.name.startswith(PYTHON_TEST_METHOD_PREFIX):
+                        found.add(item.name)
+    return found
 
 
 def test_definitions(root: Path) -> set[str]:
@@ -99,9 +175,16 @@ def test_definitions(root: Path) -> set[str]:
 
     This used to concatenate every source file and regex for `fn|def <name>`,
     which accepted three things that are not a test: a mention inside a comment
-    or a string, an ordinary helper function, and a Python definition in a file
-    `unittest discover` never collects. A citation could then survive the removal
-    of the very test it cites, which is the one thing this checker exists to stop.
+    or a string, an ordinary helper function, and a Python definition no runner
+    collects. A citation could then survive the removal of the very test it
+    cites, which is the one thing this checker exists to stop.
+
+    The Python half was wrong twice, and the second time is the one worth
+    recording: narrowing it to files named `test*.py` looked like the fix and was
+    only half of one, because `unittest discover` collects `test*` methods of
+    `TestCase` subclasses from such a file and nothing else. The fixture written
+    to prove the narrowing worked was itself a top-level `def` that no runner
+    would ever execute - the checker accepted it, and so did I.
     """
     found: set[str] = set()
     for area in SOURCE_AREAS:
@@ -145,8 +228,11 @@ def check(root: Path) -> tuple[list[str], int]:
                 f"{name}: cited by {where} and is not a test - either it was "
                 "renamed or removed and the contract still relies on it, or the "
                 "contract names something that was never a test. A helper "
-                "function, a mention in a comment and a Python definition in a "
-                "file `unittest discover` does not collect all count as absent"
+                "function, a mention in a comment, and a Python definition "
+                "`unittest discover` does not collect - one outside a "
+                "`TestCase` subclass, one whose name does not start with "
+                "`test`, or one in a file not named `test*.py` - all count as "
+                "absent"
             )
     return errors, len(cited)
 
