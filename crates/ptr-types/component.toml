@@ -1,9 +1,10 @@
 version = 1
 id = "ptr-types"
 maturity = "foundation"
-last_reviewed = "2026-09-20"
+last_reviewed = "2026-09-21"
 
 implemented = [
+  "ValidityMask and the codebook are consumed by the isolated Burn A0 workspace, which depends on this crate directly: A0 applies attention_bias rather than a learned validity embedding, so lifecycle validity is enforced there by construction instead of weighed",
   "Rustdoc covers the codebook and validity-mask APIs, stable diagnostic codes and canonical assignment encoder helpers",
   "Versioned cognitive codebook: explicit per-version tables assign dense 0..cardinality codes to SemanticRole, EpistemicState, UncertaintyKind, ReasoningOperator and Validity, never Rust discriminants",
   "TypeCode is only obtainable against a named CodebookVersion; unknown versions, unassigned codes and unassigned members are three distinct refusals with no defaulting path",

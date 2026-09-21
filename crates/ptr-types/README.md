@@ -9,11 +9,12 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `foundation`  
-**Last reviewed:** 2026-09-20  
+**Last reviewed:** 2026-09-21  
 **Code footprint:** 4 Rust source files · 1184 nonblank source lines · 4 integration-test files · 32 `#[test]` markers
 
 ### Implemented now
 
+- ValidityMask and the codebook are consumed by the isolated Burn A0 workspace, which depends on this crate directly: A0 applies attention_bias rather than a learned validity embedding, so lifecycle validity is enforced there by construction instead of weighed
 - Rustdoc covers the codebook and validity-mask APIs, stable diagnostic codes and canonical assignment encoder helpers
 - Versioned cognitive codebook: explicit per-version tables assign dense 0..cardinality codes to SemanticRole, EpistemicState, UncertaintyKind, ReasoningOperator and Validity, never Rust discriminants
 - TypeCode is only obtainable against a named CodebookVersion; unknown versions, unassigned codes and unassigned members are three distinct refusals with no defaulting path

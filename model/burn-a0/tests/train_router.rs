@@ -4,7 +4,8 @@ use burn::{
     prelude::*,
     tensor::Int,
 };
-use ptr_burn_a0::{PtrA0Config, PtrSlotMetadata};
+use ptr_burn_a0::{admission_bias, PtrA0Config, PtrSlotMetadata};
+use ptr_types::{Validity, ValidityMask};
 
 struct TrainingBatch {
     tokens: Tensor<2, Int>,
@@ -20,9 +21,14 @@ fn batch(device: &Device) -> TrainingBatch {
     let slots = Tensor::<3>::zeros([4, 2, 12], device);
     let metadata = PtrSlotMetadata {
         epistemic_ids: Tensor::<2, Int>::from_data([[0, 0], [0, 0], [0, 0], [0, 0]], device),
-        validity_ids: Tensor::<2, Int>::from_data([[0, 0], [0, 0], [0, 0], [0, 0]], device),
         provenance_ids: Tensor::<2, Int>::from_data([[0, 0], [0, 0], [0, 0], [0, 0]], device),
         confidence: Tensor::<2>::ones([4, 2], device),
+        admission: admission_bias(
+            &core::array::from_fn::<_, 4, _>(|_| {
+                ValidityMask::from_validities(&[Validity::Live; 2])
+            }),
+            device,
+        ),
     };
     let labels = Tensor::<1, Int>::from_data([0, 1, 2, 3], device);
     TrainingBatch {
@@ -39,7 +45,7 @@ fn tiny_router_task_is_trainable() {
     let device = Device::flex().autodiff();
     device.seed(17);
     let config = PtrA0Config::new(16, 8, 12, 4)
-        .with_metadata_sizes(4, 4, 8)
+        .with_metadata_sizes(4, 8)
         .with_latent_steps(1);
     let mut model = config.init(&device);
     let mut optimizer = AdamConfig::new().init();
@@ -58,9 +64,9 @@ fn tiny_router_task_is_trainable() {
             slots.clone(),
             PtrSlotMetadata {
                 epistemic_ids: metadata.epistemic_ids.clone(),
-                validity_ids: metadata.validity_ids.clone(),
                 provenance_ids: metadata.provenance_ids.clone(),
                 confidence: metadata.confidence.clone(),
+                admission: metadata.admission.clone(),
             },
         )
         .router_logits;
@@ -76,9 +82,9 @@ fn tiny_router_task_is_trainable() {
             slots.clone(),
             PtrSlotMetadata {
                 epistemic_ids: metadata.epistemic_ids.clone(),
-                validity_ids: metadata.validity_ids.clone(),
                 provenance_ids: metadata.provenance_ids.clone(),
                 confidence: metadata.confidence.clone(),
+                admission: metadata.admission.clone(),
             },
         );
         let loss = CrossEntropyLossConfig::new()

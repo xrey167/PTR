@@ -6,13 +6,13 @@ use burn::{
         Int,
     },
 };
+use ptr_types::ValidityMask;
 
 #[derive(Clone, Debug)]
 pub struct PtrA0Config {
     pub vocab_size: usize,
     pub slot_type_count: usize,
     pub epistemic_count: usize,
-    pub validity_count: usize,
     pub provenance_bucket_count: usize,
     pub d_model: usize,
     pub operator_count: usize,
@@ -30,7 +30,6 @@ impl PtrA0Config {
             vocab_size,
             slot_type_count,
             epistemic_count: 8,
-            validity_count: 8,
             provenance_bucket_count: 64,
             d_model,
             operator_count,
@@ -41,11 +40,9 @@ impl PtrA0Config {
     pub fn with_metadata_sizes(
         mut self,
         epistemic_count: usize,
-        validity_count: usize,
         provenance_bucket_count: usize,
     ) -> Self {
         self.epistemic_count = epistemic_count;
-        self.validity_count = validity_count;
         self.provenance_bucket_count = provenance_bucket_count;
         self
     }
@@ -62,8 +59,6 @@ impl PtrA0Config {
             slot_type_embedding: EmbeddingConfig::new(self.slot_type_count, self.d_model)
                 .init(device),
             epistemic_embedding: EmbeddingConfig::new(self.epistemic_count, self.d_model)
-                .init(device),
-            validity_embedding: EmbeddingConfig::new(self.validity_count, self.d_model)
                 .init(device),
             provenance_embedding: EmbeddingConfig::new(self.provenance_bucket_count, self.d_model)
                 .init(device),
@@ -91,7 +86,6 @@ pub struct PtrA0 {
     token_embedding: Embedding,
     slot_type_embedding: Embedding,
     epistemic_embedding: Embedding,
-    validity_embedding: Embedding,
     provenance_embedding: Embedding,
     confidence_projection: Linear,
     metadata_bias: Linear,
@@ -112,15 +106,45 @@ pub struct PtrA0 {
 
 pub struct PtrSlotMetadata {
     pub epistemic_ids: Tensor<2, Int>,
-    pub validity_ids: Tensor<2, Int>,
     pub provenance_ids: Tensor<2, Int>,
     pub confidence: Tensor<2>,
+    /// Additive attention bias from [`ValidityMask`]: `0.0` where the slot is
+    /// admitted, negative infinity where it is not.
+    ///
+    /// Lifecycle validity enters here and nowhere else. It used to be a learned
+    /// embedding summed into the metadata, which made it a hint the rest of the
+    /// network could outvote — and the fact being outvoted was "this generation
+    /// was revoked". Build it with [`admission_bias`].
+    pub admission: Tensor<2>,
 }
 
 pub struct PtrA0Output {
     pub raw: Tensor<3>,
+    /// Per-slot states, including the rows of excluded slots: they are computed
+    /// but nothing the model produces depends on them.
     pub slots: Tensor<3>,
     pub router_logits: Tensor<2>,
+    /// The admission that governed this forward pass, returned so a consumer
+    /// pooling `slots` cannot lose it.
+    pub admission: Tensor<2>,
+}
+
+/// Build the attention bias for a batch of per-slot masks.
+///
+/// The mask itself is computed from committed lifecycle state by `ptr-types`;
+/// this only moves it onto the device. Every row must govern the same number of
+/// slots, because they index one tensor.
+pub fn admission_bias(masks: &[ValidityMask], device: &Device) -> Tensor<2> {
+    let slots = masks.first().map(ValidityMask::len).unwrap_or(0);
+    assert!(
+        masks.iter().all(|mask| mask.len() == slots),
+        "every mask in a batch governs the same slots"
+    );
+    let values: Vec<f32> = masks
+        .iter()
+        .flat_map(ValidityMask::attention_bias)
+        .collect();
+    Tensor::<1>::from_data(values.as_slice(), device).reshape([masks.len(), slots])
 }
 
 impl PtrA0 {
@@ -131,27 +155,28 @@ impl PtrA0 {
         slot_values: Tensor<3>,
         metadata: PtrSlotMetadata,
     ) -> PtrA0Output {
-        let [batch, _sequence] = token_ids.dims();
+        let [batch, sequence] = token_ids.dims();
         let [slot_batch, slot_count] = slot_type_ids.dims();
         assert_eq!(
             batch, slot_batch,
             "raw and typed paths need the same batch size"
         );
         assert_eq!(metadata.epistemic_ids.dims(), [batch, slot_count]);
-        assert_eq!(metadata.validity_ids.dims(), [batch, slot_count]);
         assert_eq!(metadata.provenance_ids.dims(), [batch, slot_count]);
         assert_eq!(metadata.confidence.dims(), [batch, slot_count]);
+        assert_eq!(metadata.admission.dims(), [batch, slot_count]);
 
         let raw = self.token_embedding.forward(token_ids);
         let slot_type = self.slot_type_embedding.forward(slot_type_ids);
         let epistemic = self.epistemic_embedding.forward(metadata.epistemic_ids);
-        let validity = self.validity_embedding.forward(metadata.validity_ids);
         let provenance = self.provenance_embedding.forward(metadata.provenance_ids);
         let confidence = self
             .confidence_projection
             .forward(metadata.confidence.unsqueeze_dim::<3>(2));
 
-        let typed_metadata = slot_type + epistemic + validity + provenance + confidence;
+        // Validity is deliberately absent from this sum. It is admission, not a
+        // feature, and it is applied below where it cannot be weighed.
+        let typed_metadata = slot_type + epistemic + provenance + confidence;
         let slots = slot_values + typed_metadata.clone();
 
         let typed_bias = self.metadata_bias.forward(typed_metadata);
@@ -170,12 +195,43 @@ impl PtrA0 {
         let raw_query = self.raw_query.forward(raw.clone());
         let slot_key = self.slot_key.forward(slots.clone());
         let slot_value = self.slot_value.forward(slots.clone());
+        // The admission bias is added last and is negative infinity for an
+        // excluded slot, so no score this network can produce reaches it: after
+        // the softmax its weight is exactly zero, not merely small.
+        //
+        // A row that admits nothing would be a softmax over nothing but negative
+        // infinity, which is NaN and would poison the whole batch. Such a row
+        // gets a finite bias so the softmax stays defined, and its context is
+        // dropped afterwards instead: with no admissible typed state there is
+        // nothing to attend to, which is an answer rather than a crash.
+        let admitted = metadata.admission.clone().equal_elem(0.0);
+        let any_admitted = admitted.clone().float().sum_dim(1);
+        let nothing_admitted = any_admitted.clone().equal_elem(0.0);
+        let bias = metadata
+            .admission
+            .clone()
+            .reshape([batch, 1, slot_count])
+            .expand([batch, sequence, slot_count])
+            .mask_fill(
+                nothing_admitted
+                    .clone()
+                    .reshape([batch, 1, 1])
+                    .expand([batch, sequence, slot_count]),
+                0.0,
+            );
         let raw_scores = raw_query
             .matmul(slot_key.transpose())
             .div_scalar((self.d_model as f32).sqrt())
-            + cross_bias.transpose();
+            + cross_bias.transpose()
+            + bias;
         let raw_weights = softmax(raw_scores, 2);
-        let raw_context = raw_weights.matmul(slot_value);
+        let raw_context = raw_weights.matmul(slot_value).mask_fill(
+            nothing_admitted
+                .clone()
+                .reshape([batch, 1, 1])
+                .expand([batch, sequence, self.d_model]),
+            0.0,
+        );
         let raw = raw + self.raw_output.forward(raw_context);
 
         for _ in 0..self.latent_steps {
@@ -183,16 +239,25 @@ impl PtrA0 {
             slots = slots + delta;
         }
 
-        let router_logits = self
-            .router
-            .forward(slots.clone())
-            .mean_dim(1)
-            .reshape([batch, self.operator_count]);
+        // Attention is not the only way a slot reaches the output: the router
+        // averages over slots, so an excluded one would contribute through the
+        // mean however it was attended to. Weight the sum by admission instead,
+        // and divide by the admitted count rather than by every slot.
+        let admitted = admitted.float().reshape([batch, slot_count, 1]);
+        let admitted_count = admitted.clone().sum_dim(1).clamp_min(1.0);
+        let router_logits = (self.router.forward(slots.clone())
+            * admitted.expand([batch, slot_count, self.operator_count]))
+        .sum_dim(1)
+        .reshape([batch, self.operator_count])
+            / admitted_count
+                .reshape([batch, 1])
+                .expand([batch, self.operator_count]);
 
         PtrA0Output {
             raw,
             slots,
             router_logits,
+            admission: metadata.admission,
         }
     }
 }

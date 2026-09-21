@@ -4,7 +4,8 @@ use burn::{
     prelude::*,
     tensor::Int,
 };
-use ptr_burn_a0::{PtrA0, PtrA0Config, PtrSlotMetadata};
+use ptr_burn_a0::{admission_bias, PtrA0, PtrA0Config, PtrSlotMetadata};
+use ptr_types::{Validity, ValidityMask};
 
 struct Batch {
     tokens: Tensor<2, Int>,
@@ -24,9 +25,14 @@ fn batch(device: &Device, typed: bool) -> Batch {
     let slots = Tensor::<3>::zeros([4, 2, 12], device);
     let metadata = PtrSlotMetadata {
         epistemic_ids: Tensor::<2, Int>::zeros([4, 2], device),
-        validity_ids: Tensor::<2, Int>::zeros([4, 2], device),
         provenance_ids: Tensor::<2, Int>::zeros([4, 2], device),
         confidence: Tensor::<2>::ones([4, 2], device),
+        admission: admission_bias(
+            &core::array::from_fn::<_, 4, _>(|_| {
+                ValidityMask::from_validities(&[Validity::Live; 2])
+            }),
+            device,
+        ),
     };
     let labels = Tensor::<1, Int>::from_data([0, 1, 2, 3], device);
     Batch {
@@ -41,9 +47,9 @@ fn batch(device: &Device, typed: bool) -> Batch {
 fn clone_metadata(metadata: &PtrSlotMetadata) -> PtrSlotMetadata {
     PtrSlotMetadata {
         epistemic_ids: metadata.epistemic_ids.clone(),
-        validity_ids: metadata.validity_ids.clone(),
         provenance_ids: metadata.provenance_ids.clone(),
         confidence: metadata.confidence.clone(),
+        admission: metadata.admission.clone(),
     }
 }
 
@@ -83,7 +89,7 @@ fn train(typed: bool, seed: u64, steps: usize) -> (f32, f32, f32) {
     let device = Device::flex().autodiff();
     device.seed(seed);
     let config = PtrA0Config::new(16, 8, 12, 4)
-        .with_metadata_sizes(4, 4, 8)
+        .with_metadata_sizes(4, 8)
         .with_latent_steps(1);
     let mut model = config.init(&device);
     let mut optimizer = AdamConfig::new().init();

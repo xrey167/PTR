@@ -123,17 +123,91 @@ of training can recover it.
 - Masks narrow and never widen, including against an all-admitting mask.
 - Length mismatch and out-of-range refused without mutating the mask.
 
+## The model half — enforcement inside Burn A0
+
+Added at `0c1462b`'s successor; A0 sits on its own toolchain with its own CI job, so
+it is a separate change on the same contract.
+
+### Validity left the feature path entirely
+
+A0 used to carry a learned `validity_embedding`, summed into `typed_metadata` and
+from there into the attention scores through `cross_bias`. That made lifecycle
+validity a **hint**: one term among several, which a confident pattern could
+outvote — and the fact being outvoted was "this generation was revoked".
+
+The embedding is gone. `validity_ids` and `validity_count` are gone with it, and
+the count is worth recording as its own small lesson: it defaulted to **8** while
+`V1_VALIDITIES` has exactly **4** members, so half that table indexed nothing the
+contract names.
+
+Validity now enters as `PtrSlotMetadata::admission`, an additive bias built by
+`admission_bias` from a `ValidityMask` the kernel computed. A0 depends on
+`ptr-types` for it — a crate with no dependencies of its own, so the shared
+codebook costs that workspace nothing, and "shared" is the point of the gate.
+
+### Attention was not the only way in
+
+Masking the raw-to-slot attention is necessary and was not sufficient. The router
+averages over slots:
+
+```
+router_logits = router(slots).mean_dim(1)
+```
+
+so an excluded slot reached the output through the mean no matter how it was
+attended to. The router now sums with the admission as a weight and divides by the
+admitted count. Two paths, both closed, and the second one only shows up if you
+look for it rather than stopping at the softmax.
+
+### A row that admits nothing
+
+`ValidityMask::admitting_none` is representable, and a softmax over nothing but
+negative infinity is NaN — which would not merely lose that row, it would poison
+the whole batch. Such a row gets a finite bias so the softmax stays defined and its
+context is dropped afterwards instead. With no admissible typed state there is
+nothing to attend to, which is an answer rather than a crash.
+
+This was found by asserting it, not by reasoning about it: the test failed before
+the fix existed.
+
+### How it is tested, and why not on attention weights
+
+The tests never inspect attention weights. They assert the property instead: **an
+excluded slot's contents cannot change anything the model produces.** The slot's
+value is set to `1.0`, `-50.0` and `1000.0` and the output must be bit-identical,
+across several initialisations — because the claim is about the construction, not
+about one lucky set of weights.
+
+The control needed care. `raw` is a poor observable: scores scale with slot values,
+so a large change saturates the raw-side softmax onto whichever slot wins, and when
+that is not the slot being varied, `raw` stays constant for a reason that has
+nothing to do with admission. That is exactly how a test can pass while proving
+nothing. The control therefore uses the router, which responds to every admitted
+slot.
+
+`Revoked`, `Superseded` and `Disputed` are each checked, with `Live` in the same
+position as the control. `Disputed` is the deliberate one: excluded rather than
+down-weighted, because letting the model reason from a value the verifier fabric
+has contradicted would put a learned score above a deterministic finding.
+
+The excluded slot's own row in `slots` is still computed and returned. Nothing the
+model produces depends on it, and `PtrA0Output::admission` is returned alongside so
+a consumer pooling `slots` cannot lose the mask.
+
 ## What this does not close
 
-- **Burn A0 still embeds a validity id.** Replacing that path with
-  `ValidityMask::attention_bias` inside its attention, and mapping its research-local
-  `slot_type` onto `SemanticRole` codes, is the remaining half of this gate. Burn A0
-  sits outside the production workspace on a different toolchain and has its own CI
-  job, so it is a separate change.
+- **`slot_type` is still research-local.** Mapping A0's `slot_type_count` onto
+  `SemanticRole` codes from this codebook is not done; slot identity therefore
+  remains outside the versioned contract.
+- **A consumer can still misuse `slots`.** The admission travels with the output,
+  but nothing forces a caller to apply it. Zeroing the excluded rows would hide a
+  real zero vector, so the mask is supplied rather than baked in.
 - **Nothing records the version yet.** Datasets, checkpoints and run manifests have
-  to carry `CodebookVersion` and a fingerprint of `canonical_bytes`; that wiring,
-  and the admission decision built on it, belong to the *Checkpoint and neural-state
-  admission* gate, which this unblocks rather than closes.
+  to carry `CodebookVersion` and a fingerprint of `canonical_bytes`.
+  `training/src/ptr_training/validate_dataset.py` accepts `type_codebook_version` as
+  an *optional* free string, checked against neither the kernel's version nor the
+  fingerprint, and no sample dataset carries it at all. That is the remaining piece
+  of this gate.
 - **No semantic payloads reach the model.** "Connect actual semantic payloads to the
   model" remains open; this supplies the identity layer such a connection needs.
 - Nothing here is evidence about model quality, reasoning improvement or the

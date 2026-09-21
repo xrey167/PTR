@@ -31,7 +31,7 @@
 | [ptr-server](../../crates/ptr-server/README.md) | `prototype` | 1 | 105 | 2 | 1 | 3 | 4 | E001:planned, E003:planned | — |
 | [ptr-state](../../crates/ptr-state/README.md) | `prototype` | 1 | 211 | 3 | 2 | 7 | 1 | L001:running, L002:planned, E004:planned | materialized-state:open |
 | [ptr-storage](../../crates/ptr-storage/README.md) | `scaffold` | 1 | 23 | 1 | 1 | 3 | 5 | E004:planned | object-storage:open |
-| [ptr-types](../../crates/ptr-types/README.md) | `foundation` | 4 | 1184 | 4 | 32 | 16 | 11 | M005:planned, L001:running | — |
+| [ptr-types](../../crates/ptr-types/README.md) | `foundation` | 4 | 1184 | 4 | 32 | 17 | 11 | M005:planned, L001:running | — |
 | [ptr-verifier](../../crates/ptr-verifier/README.md) | `scaffold` | 1 | 98 | 2 | 2 | 4 | 4 | F001:planned, Q002:planned, E001:planned | code-quality-verifier:open |
 
 ## Meaning of maturity labels
