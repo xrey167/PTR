@@ -9,7 +9,7 @@ use ptr_ledger::{effect_code, integrity, LedgerEvent, MAX_RETAINED_RESPONSE};
 use ptr_security::{ActionAuthorization, AuthorizationDecision, AuthorizationDenial};
 use ptr_types::{CapabilityId, CommitIndex, Effect, NodeId, ProjectId, TypeId, VerificationLevel};
 use ptr_verifier::{VerificationStatus, Verifier};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -128,6 +128,22 @@ pub trait ActionExecutor: Send + Sync {
     fn execute(&self, dispatch: VerifiedDispatch<'_>) -> Result<Vec<u8>, String>;
 }
 
+/// An adapter whose effect does not finish inside the call.
+///
+/// `start` hands the work off and returns. It must not report success as though the
+/// effect had applied — it has not; all it says is that the work was accepted. What
+/// happened is reported later through
+/// [`PtrRuntime::settle_detached`](crate::PtrRuntime::settle_detached), and until
+/// then the runtime is fenced by the attempt's own record.
+///
+/// Detached work is a property of the **authority**, not of the call: a grant is
+/// either synchronous or detached, decided when the grant is issued. A caller that
+/// could choose would be choosing how its own effect is audited.
+pub trait DetachedExecutor: Send + Sync {
+    /// Accept the work and return. `Err` means it was not accepted.
+    fn start(&self, dispatch: VerifiedDispatch<'_>) -> Result<(), String>;
+}
+
 /// Only the runtime may construct a dispatch after all checks.
 ///
 /// ```compile_fail
@@ -227,7 +243,19 @@ pub struct ExecutionGrant {
     scope: ActionScope,
     required: RequiredVerification,
     verifier: Box<dyn Verifier<ActionIr> + Send + Sync>,
-    executor: Box<dyn ActionExecutor>,
+    dispatch: Dispatcher,
+}
+
+/// How a grant's effect is dispatched.
+///
+/// Two ways, and a grant is one of them. Which one is authority, not preference: a
+/// caller that could pick would be picking how its own effect is audited, and the
+/// audited window for work that finishes later is not the same window.
+enum Dispatcher {
+    /// Finishes inside the call and returns its output.
+    Synchronous(Box<dyn ActionExecutor>),
+    /// Accepts the work and answers later.
+    Detached(Box<dyn DetachedExecutor>),
 }
 
 impl ExecutionGrant {
@@ -245,9 +273,60 @@ impl ExecutionGrant {
             scope,
             required,
             verifier: Box::new(verifier),
-            executor: Box::new(executor),
+            dispatch: Dispatcher::Synchronous(Box::new(executor)),
         }
     }
+
+    /// A grant whose effect is accepted now and reported later.
+    pub fn detached<V, E>(
+        scope: ActionScope,
+        required: RequiredVerification,
+        verifier: V,
+        executor: E,
+    ) -> Self
+    where
+        V: Verifier<ActionIr> + Send + Sync + 'static,
+        E: DetachedExecutor + 'static,
+    {
+        Self {
+            scope,
+            required,
+            verifier: Box::new(verifier),
+            dispatch: Dispatcher::Detached(Box::new(executor)),
+        }
+    }
+
+    /// Whether this grant's effect is reported later.
+    pub fn is_detached(&self) -> bool {
+        matches!(self.dispatch, Dispatcher::Detached(_))
+    }
+}
+
+/// A dispatch whose outcome will be reported later.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DetachedEffect {
+    /// The attempt record this work is audited under, and the index a settlement
+    /// must name.
+    pub attempt: CommitIndex,
+    /// Set when an at-most-once key had already been applied, so nothing was handed
+    /// out this time. The attempt names the earlier one.
+    pub already_applied: bool,
+}
+
+/// What admission decided: either the key's earlier outcome, or a fresh attempt.
+enum Admission {
+    /// An at-most-once key whose outcome is already recorded.
+    Replayed(Vec<u8>),
+    /// A committed attempt, awaiting dispatch.
+    Attempted(Attempted),
+}
+
+/// An attempt that has been committed and not yet dispatched.
+struct Attempted {
+    attempt: CommitIndex,
+    grant: Arc<ExecutionGrant>,
+    principal: String,
+    action: ActionIr,
 }
 
 /// An opaque session capability issued by a trusted host after authentication.
@@ -353,6 +432,16 @@ pub enum ExecutionError {
     DuplicatePeerEntry {
         peer: NodeId,
     },
+    /// The grant dispatches the other way: a detached grant cannot be run
+    /// synchronously and a synchronous one cannot be detached. `detached` says which
+    /// kind the grant is.
+    DispatchMismatch {
+        detached: bool,
+    },
+    /// A settlement named an attempt that is not an outstanding detached one.
+    NotDetached {
+        attempt: CommitIndex,
+    },
     /// The audit record itself could not be committed. Nothing was attempted
     /// when this is returned from the attempt, so it denies rather than fences.
     Audit(Box<RuntimeError>),
@@ -391,6 +480,15 @@ pub(super) struct ExecutionState {
     /// Rebuilt from committed history on every open, which is what makes the
     /// fence survive a restart.
     unsettled: BTreeMap<CommitIndex, UnsettledEffect>,
+    /// Detached attempts this process dispatched.
+    ///
+    /// Deliberately **not** rebuilt from history: the record says an effect was
+    /// attempted, not how it was dispatched, and inventing that distinction on
+    /// reopen would let a restarted runtime accept an "adapter answer" for work it
+    /// never handed to an adapter. After a restart the fence stands and
+    /// reconciliation is the way forward, which is the same answer a crash mid-effect
+    /// gets.
+    detached: BTreeSet<CommitIndex>,
     settled: BTreeMap<String, SettledOutcome>,
     policy: AdmissionPolicy,
 }
@@ -404,6 +502,7 @@ impl Default for ExecutionState {
             next_session: 1,
             uncertain: false,
             unsettled: BTreeMap::new(),
+            detached: BTreeSet::new(),
             settled: BTreeMap::new(),
             policy: AdmissionPolicy::new(),
         }
@@ -722,6 +821,139 @@ impl PtrRuntime {
         session: &ExecutionSession,
         permit: ExecutionPermit,
     ) -> Result<Vec<u8>, ExecutionError> {
+        let attempted = match self.admit_effect(session, permit, false)? {
+            Admission::Replayed(response) => return Ok(response),
+            Admission::Attempted(attempted) => attempted,
+        };
+        let Dispatcher::Synchronous(executor) = &attempted.grant.dispatch else {
+            unreachable!("admit_effect refused the other dispatch kind");
+        };
+        let output = match executor.execute(VerifiedDispatch {
+            action: &attempted.action,
+            principal: &attempted.principal,
+            project: &attempted.grant.scope.project,
+        }) {
+            Ok(output) => output,
+            // An executor error cannot distinguish "did not apply" from "applied
+            // and could not say so", and a panic says even less. The attempt
+            // stays unsettled either way, so the fence outlives this process and
+            // reconciliation is the only way forward.
+            Err(error) => return Err(ExecutionError::Executor(error)),
+        };
+
+        self.record_settlement(attempted.attempt, output.clone())?;
+        Ok(output)
+    }
+
+    /// Dispatch an effect whose outcome arrives later.
+    ///
+    /// The attempt is committed first and is **not** settled, so the runtime stays
+    /// fenced until the adapter reports back. That is the whole point: the audited
+    /// window for detached work is open from here until
+    /// [`PtrRuntime::settle_detached`] or [`PtrRuntime::reconcile_effect`] closes it,
+    /// rather than closing when this call returns. A call that returned unfenced
+    /// would be claiming the effect had finished.
+    ///
+    /// Whether an effect is detached is the grant's to say, not the caller's: a
+    /// synchronous grant is refused here and a detached one is refused on the
+    /// synchronous path.
+    pub fn dispatch_detached(
+        &mut self,
+        session: &ExecutionSession,
+        permit: ExecutionPermit,
+    ) -> Result<DetachedEffect, ExecutionError> {
+        let attempted = match self.admit_effect(session, permit, true)? {
+            // A key whose outcome is already known is answered from history, exactly
+            // as on the synchronous path: a retry must not hand the work out twice.
+            Admission::Replayed(response) => {
+                return Ok(DetachedEffect {
+                    attempt: self.settled_attempt_for(&response),
+                    already_applied: true,
+                })
+            }
+            Admission::Attempted(attempted) => attempted,
+        };
+        let Dispatcher::Detached(executor) = &attempted.grant.dispatch else {
+            unreachable!("admit_effect refused the other dispatch kind");
+        };
+        match executor.start(VerifiedDispatch {
+            action: &attempted.action,
+            principal: &attempted.principal,
+            project: &attempted.grant.scope.project,
+        }) {
+            Ok(()) => {}
+            // "Not accepted" is not "not applied". An adapter that failed while
+            // handing work off may have handed it off, so the attempt stays
+            // unsettled and the fence stands — the same answer a synchronous
+            // executor's error gets, for the same reason.
+            Err(error) => return Err(ExecutionError::Executor(error)),
+        }
+        self.execution.detached.insert(attempted.attempt);
+        Ok(DetachedEffect {
+            attempt: attempted.attempt,
+            already_applied: false,
+        })
+    }
+
+    /// Record the answer a detached adapter eventually gave.
+    ///
+    /// Distinct from [`PtrRuntime::reconcile_effect`], which records what a person
+    /// established from the receiving system. This is the adapter's own report, and
+    /// it is only available for an attempt *this* runtime dispatched: after a restart
+    /// the runtime cannot tell which unsettled attempts were detached, so it does not
+    /// pretend to — the fence stands and reconciliation is the way forward.
+    pub fn settle_detached(
+        &mut self,
+        attempt: CommitIndex,
+        response: Vec<u8>,
+    ) -> Result<CommitIndex, ExecutionError> {
+        if !self.execution.detached.contains(&attempt) {
+            return Err(ExecutionError::NotDetached { attempt });
+        }
+        let settled = self.record_settlement(attempt, response)?;
+        self.execution.detached.remove(&attempt);
+        Ok(settled)
+    }
+
+    /// Attempts this runtime dispatched to a detached adapter and has not heard back
+    /// about, oldest first.
+    pub fn outstanding_detached(&self) -> Vec<CommitIndex> {
+        self.execution.detached.iter().copied().collect()
+    }
+
+    /// Commit a settlement with its response digest, retaining the response only
+    /// within the bound.
+    ///
+    /// The digest is unconditional: "we did not keep the response" must never become
+    /// "we do not know what happened".
+    fn record_settlement(
+        &mut self,
+        attempt: CommitIndex,
+        output: Vec<u8>,
+    ) -> Result<CommitIndex, ExecutionError> {
+        let response_digest = integrity::sha256(&output);
+        let response = (output.len() <= MAX_RETAINED_RESPONSE).then_some(output);
+        self.commit_settlement(LedgerEvent::EffectSettled {
+            attempt,
+            response,
+            response_digest,
+        })
+        .map_err(audit)
+    }
+
+    /// Every check that must hold before an effect is attempted, and the attempt
+    /// record itself.
+    ///
+    /// One sequence for both dispatch kinds. Two copies would be two chances to drift
+    /// on the order that matters — the dispatch kind and every authorization check
+    /// come **before** the attempt is committed, because a refusal must leave no
+    /// record: a record with nothing behind it is a fence with nothing behind it.
+    fn admit_effect(
+        &mut self,
+        session: &ExecutionSession,
+        permit: ExecutionPermit,
+        want_detached: bool,
+    ) -> Result<Admission, ExecutionError> {
         let record = self.execution.session(session)?;
         if !Arc::ptr_eq(&session.issuer, &permit.session.issuer) || session.id != permit.session.id
         {
@@ -742,6 +974,11 @@ impl PtrRuntime {
         }
         let principal = record.principal.clone();
         let grant = permit.grant;
+        if grant.is_detached() != want_detached {
+            return Err(ExecutionError::DispatchMismatch {
+                detached: grant.is_detached(),
+            });
+        }
         self.check_execution_action(&grant.scope.project, &permit.action)?;
         let report = grant.verifier.verify(&permit.action);
         if report.status != VerificationStatus::Pass || !grant.required.accepts(report.level) {
@@ -764,7 +1001,9 @@ impl PtrRuntime {
         // than by applying the effect a second time.
         if let Some(key) = permit.key.as_deref() {
             match self.execution.settled.get(key) {
-                Some(SettledOutcome::Applied { response }) => return Ok(response.clone()),
+                Some(SettledOutcome::Applied { response }) => {
+                    return Ok(Admission::Replayed(response.clone()))
+                }
                 Some(SettledOutcome::AppliedWithoutResponse) => {
                     return Err(ExecutionError::ResponseNotRetained {
                         attempt: self.settled_attempt(key),
@@ -793,28 +1032,31 @@ impl PtrRuntime {
             })
             .map_err(audit)?;
 
-        let output = match grant.executor.execute(VerifiedDispatch {
-            action: &permit.action,
-            principal: &principal,
-            project: &grant.scope.project,
-        }) {
-            Ok(output) => output,
-            // An executor error cannot distinguish "did not apply" from "applied
-            // and could not say so", and a panic says even less. The attempt
-            // stays unsettled either way, so the fence outlives this process and
-            // reconciliation is the only way forward.
-            Err(error) => return Err(ExecutionError::Executor(error)),
-        };
-
-        let response_digest = integrity::sha256(&output);
-        let response = (output.len() <= MAX_RETAINED_RESPONSE).then(|| output.clone());
-        self.commit_settlement(LedgerEvent::EffectSettled {
+        Ok(Admission::Attempted(Attempted {
             attempt,
-            response,
-            response_digest,
-        })
-        .map_err(audit)?;
-        Ok(output)
+            grant,
+            principal,
+            action: permit.action,
+        }))
+    }
+
+    /// The attempt a replayed response came from, for a detached caller that needs
+    /// an index to correlate with.
+    fn settled_attempt_for(&self, response: &[u8]) -> CommitIndex {
+        let digest = integrity::sha256(response);
+        self.committed_events()
+            .iter()
+            .find(|committed| {
+                matches!(
+                    &committed.event,
+                    LedgerEvent::EffectSettled { response_digest, .. } if *response_digest == digest
+                )
+            })
+            .and_then(|committed| match &committed.event {
+                LedgerEvent::EffectSettled { attempt, .. } => Some(*attempt),
+                _ => None,
+            })
+            .unwrap_or_default()
     }
 
     /// The attempt a retained key was settled at, for a diagnostic that would

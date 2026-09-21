@@ -60,7 +60,7 @@ impl Probe {
     }
 }
 
-struct TestVerifier(Probe);
+pub struct TestVerifier(pub Probe);
 impl Verifier<ActionIr> for TestVerifier {
     fn verify(&self, action: &ActionIr) -> VerificationReport {
         self.0.verified.fetch_add(1, Ordering::SeqCst);

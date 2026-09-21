@@ -176,6 +176,64 @@ Negative, one per route back in:
   presence and boolean bytes refused, a truncated digest refused at every length,
   trailing bytes refused.
 
+## Work that does not finish inside the call
+
+The window above opens and closes around a synchronous adapter call, which means an
+effect handed to something that answers later was audited as though it had finished
+when the call returned. "The call returned" and "the effect applied" are different
+facts, and for detached work an unbounded amount of time separates them.
+
+`dispatch_detached` commits the attempt and does **not** settle it. The runtime is
+fenced from the moment the work is handed over until an answer arrives, so a caller
+cannot mistake "accepted" for "done": while the window is open, no permit can be
+prepared, no journal anchor is produced and no compacted snapshot can be exported.
+A call that returned unfenced would be claiming the effect had finished.
+
+### The grant decides, not the caller
+
+A grant is synchronous or detached, fixed when it is issued. A detached grant is
+refused on the synchronous path and a synchronous one is refused on the detached
+path, and both refusals happen **before** the attempt is committed — a refusal must
+leave no record, because a record with nothing behind it is a fence with nothing
+behind it. A caller that could choose would be choosing how its own effect is
+audited.
+
+Both paths share one admission sequence. Two copies would be two chances to drift on
+the ordering that matters.
+
+### Not accepted is not not-applied
+
+An adapter that fails while handing work off may have handed it off. So the attempt
+is committed *before* `start` is called, and an error from `start` leaves the fence
+standing — the same answer a synchronous executor's error gets, for the same reason.
+
+### An answer from the adapter, and an answer from a person
+
+`settle_detached` records what the adapter reported. `reconcile_effect` records what
+a person established from the receiving system. They are different claims and the
+ledger keeps them apart, which is why there are two record types rather than one
+with a flag.
+
+Settlement is available only for an attempt **this runtime** dispatched. The record
+says an effect was attempted, not how it was dispatched, and it is not rebuilt as
+"detached" on reopen: a restarted runtime that accepted an adapter answer for work it
+never handed out would be inventing that distinction. After a restart the fence
+stands and reconciliation is the way forward — the same answer a crash inside a
+synchronous effect gets.
+
+### What detached work does not change
+
+The retention boundary is unchanged: at-most-once holds while the attempt's record is
+retained. A response over the bound is not retained and its digest still is, so "we
+did not keep the response" never becomes "we do not know what happened" — and a later
+retry under that key is refused rather than answered with something the effect never
+produced.
+
+Nothing here supervises the adapter. There is no timeout, no cancellation and no
+retry: a runtime that could decide the work had failed would be deciding something it
+cannot observe. An adapter that never answers leaves a fence, and a fence is
+information.
+
 ## What this does not close
 
 - **At-most-once holds only while the attempt's record is retained.** A

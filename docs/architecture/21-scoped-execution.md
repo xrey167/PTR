@@ -101,6 +101,27 @@ expired permits without sleeping. Compile-fail doctests reject dispatch forgery,
 receipt-to-permit promotion, permit cloning and moving a permit into dispatch twice.
 Test files establish coverage intent; exact-commit executed CI establishes results.
 
+## What "race" can mean here
+
+A permission or lifecycle race is usually imagined as two callers interleaving inside
+one decision. That interleaving is prevented by construction rather than by care:
+`execute_prepared` and `dispatch_detached` take `&mut self`, so nothing — no other
+session, no host call — can run between the last admission check and the executor
+invocation.
+
+What remains observable is the window between **preparing** a permit and **consuming**
+it, and that is what the tests drive: a permission withdrawn there, a peer's policy
+replaced there, a generation revoked or superseded there, another session's effect
+succeeding there. Each refuses the permit, and each refuses it before the verifier or
+the executor is reached — a refusal that arrived after the executor would be a refusal
+of something that had already happened.
+
+Two things follow that are worth saying plainly. Within one process, "a different
+session" can only act through the host, because a session holds no authority to mutate
+the runtime. And a genuinely concurrent race needs two runtimes, which needs a wire:
+that case is open, and it is the same open question as whether peer identity can be
+made unforgeable at the type level.
+
 ## Compatibility and limits
 
 No dependency, lockfile, cargo-deny policy or neural model is changed. Existing
