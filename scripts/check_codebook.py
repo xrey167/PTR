@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -22,9 +23,42 @@ ROOT = Path(__file__).resolve().parents[1]
 ARTIFACT = ROOT / "datasets/generated/codebook.json"
 
 
-def check(path: Path) -> list[str]:
+def tracked(path: Path) -> bool:
+    """Whether git has this file, rather than merely this machine.
+
+    The artifact existing locally is not the same as it being in the repository,
+    and the difference is invisible to every other check here. `datasets/generated`
+    is ignored wholesale, so the first version of this artifact was generated,
+    validated, committed around and never actually committed — four CI jobs then
+    failed on a file that only ever existed on one machine. Nothing else notices
+    that, because everything else reads the working tree.
+    """
+    try:
+        return (
+            subprocess.run(
+                ["git", "ls-files", "--error-unmatch", "--", str(path)],
+                cwd=ROOT,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            ).returncode
+            == 0
+        )
+    except OSError:
+        # No git available: say nothing rather than claim the file is untracked.
+        return True
+
+
+def check(path: Path, require_tracked: bool = False) -> list[str]:
     if not path.is_file():
         return [f"{path} is missing; run scripts/generate_codebook.py"]
+
+    if require_tracked and not tracked(path):
+        return [
+            f"{path} is not tracked by git, so nothing outside this machine can "
+            "read or check it; add it (it is deliberately excepted from the "
+            "datasets/generated ignore rule)"
+        ]
 
     document = json.loads(path.read_text(encoding="utf-8"))
     errors: list[str] = []
@@ -91,7 +125,8 @@ def main() -> int:
     parser.add_argument("--path", type=Path, default=ARTIFACT)
     args = parser.parse_args()
 
-    errors = check(args.path)
+    # The CLI, which is what CI runs, insists the artifact is in the repository.
+    errors = check(args.path, require_tracked=True)
     for error in errors:
         print(f"error: {error}", file=sys.stderr)
     if errors:

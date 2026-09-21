@@ -89,3 +89,29 @@ class RealArtifactTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TrackedTests(unittest.TestCase):
+    """The artifact existing is not the same as the repository having it.
+
+    Every other check here reads the working tree, so none of them can tell the
+    difference — and the difference is the whole value of a committed contract.
+    """
+
+    def test_an_untracked_artifact_is_refused_when_that_is_required(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "codebook.json"
+            path.write_text(json.dumps(artifact()), encoding="utf-8")
+            errors = mod.check(path, require_tracked=True)
+            self.assertTrue(
+                any("not tracked by git" in error for error in errors), errors
+            )
+            # And the same file passes every other check, so the refusal is about
+            # tracking and nothing else.
+            self.assertEqual(mod.check(path), [])
+
+    def test_the_committed_artifact_is_tracked(self):
+        # The regression itself: datasets/generated is ignored wholesale, so this
+        # file needs its own exception and nothing else would notice its absence.
+        self.assertTrue(mod.tracked(mod.ARTIFACT))
+        self.assertEqual(mod.check(mod.ARTIFACT, require_tracked=True), [])

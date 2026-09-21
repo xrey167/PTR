@@ -25,3 +25,9 @@ __pycache__/
 !/datasets/processed/.gitkeep
 /datasets/generated/*
 !/datasets/generated/.gitkeep
+# The codebook artifact is generated, but it is a contract rather than an output:
+# it is what everything outside Rust reads the kernel's tables from, and
+# check_codebook.py exists to catch it drifting from them. A checker cannot compare
+# a committed artifact that was never committed — leaving this ignored made four CI
+# jobs fail on a file that only ever existed on one machine.
+!/datasets/generated/codebook.json
