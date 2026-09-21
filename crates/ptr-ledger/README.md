@@ -9,11 +9,13 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-20  
-**Code footprint:** 7 Rust source files · 2813 nonblank source lines · 10 integration-test files · 60 `#[test]` markers
+**Last reviewed:** 2026-09-21  
+**Code footprint:** 7 Rust source files · 3248 nonblank source lines · 10 integration-test files · 66 `#[test]` markers
 
 ### Implemented now
 
+- EffectAttempted/EffectSettled/EffectReconciled records (tags 9-11, beside the unchanged 0-8) carry an execution audit: the attempt is addressed by its own commit index, and a settled response keeps its digest unconditionally and its bytes up to MAX_RETAINED_RESPONSE
+- Effect and VerificationLevel are written through explicit code tables rather than discriminant casts, so inserting an enum variant breaks a build instead of renumbering records already stored
 - Rustdoc covers the protected-anchor, acknowledgment, compaction and erasure APIs plus their integrity and serialization helpers
 - LogPaths::orphans claims a file only when log_path of the floor its name encodes is that same path, so a neighbouring log set sharing the directory can never have its live log reclaimed as this set's orphan
 - InMemoryLedger::append is fallible and uses checked arithmetic: an exhausted commit index is refused with PTR_LEDGER_INDEX_EXHAUSTED and nothing is stored, rather than saturating and handing the same index out twice
@@ -49,7 +51,6 @@
 - Hardware power-loss evidence; anchor key custody, rotation and hardware-backed sealing
 - Multi-node raft-rs consensus adapter with transport, persistent Raft storage and membership changes
 - fsync/durability modes and revocation barriers
-- Runtime compacted materialized snapshot establishing snapshot_covers, so exact compacted-state reconstruction is not yet demonstrable end to end
 - Distributed snapshot/compaction protocols and cross-node cutover
 - Retention schedule/policy engine and durable snapshot lifecycle tracking; PTR does not enumerate or reclaim host-retained snapshots
 - Storage-residue and model-derived-state erasure, so no all-state-deleted declaration is available
@@ -58,7 +59,6 @@
 
 - Define storage/consensus interfaces around existing Ledger contract
 - Benchmark FileLedger against raft-engine, then connect raft-rs RawNode to raft-engine persistence and network transport
-- Add a ptr-runtime compacted materialized snapshot that covers a floor and restores from a compacted log
 - Expand L001 failpoint matrix to process-abort and durable-backend cases, then run L002 cluster recovery
 
 ### Linked experiments
@@ -79,6 +79,7 @@
 
 ### Current automated checks
 
+- all ten effect and verification codes are pinned to exact bytes, unknown codes are refused at a position located by diffing two records, and invalid presence bytes, truncated digests and trailing bytes are each rejected
 - an exhausted anchor epoch refuses both acknowledge and compacted advance without republishing the record
 - a neighbouring log set is never reported as this set's orphan, and short, non-numeric, past-u64 and non-canonical floor fields are all rejected
 - an exhausted commit index is refused rather than repeated, leaving the ledger unchanged

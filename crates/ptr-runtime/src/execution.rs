@@ -3,10 +3,11 @@
 //! The host authenticates principals and installs grants/adapters; a model never
 //! receives admin access. Handles are process-local capabilities, not wire tokens.
 
-use super::PtrRuntime;
+use super::{PtrRuntime, RuntimeError};
 use ptr_core::action_head::ActionIr;
+use ptr_ledger::{effect_code, integrity, LedgerEvent, MAX_RETAINED_RESPONSE};
 use ptr_security::{ActionAuthorization, AuthorizationDecision, AuthorizationDenial};
-use ptr_types::{CapabilityId, Effect, ProjectId, TypeId, VerificationLevel};
+use ptr_types::{CapabilityId, CommitIndex, Effect, ProjectId, TypeId, VerificationLevel};
 use ptr_verifier::{VerificationStatus, Verifier};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -15,6 +16,59 @@ use std::time::{Duration, Instant};
 
 const MAX_SESSIONS: usize = 1024;
 const MAX_GRANTS: usize = 64;
+const ACTION_DOMAIN: &[u8] = b"PTREXEC01-ACTION";
+
+/// The exact action an audit record commits to, domain-separated so a digest of
+/// these bytes cannot collide with a digest taken elsewhere in the system.
+pub fn action_digest(action: &ActionIr) -> [u8; 32] {
+    let mut material = Vec::from(ACTION_DOMAIN);
+    for field in [
+        action.target.as_str(),
+        action.operation.as_str(),
+        action.capability.0.as_str(),
+        action.input_type.0.as_str(),
+    ] {
+        material.extend_from_slice(&(field.len() as u64).to_le_bytes());
+        material.extend_from_slice(field.as_bytes());
+    }
+    material.extend_from_slice(&(action.payload.len() as u64).to_le_bytes());
+    material.extend_from_slice(&action.payload);
+    material.extend_from_slice(&action.revision.0.to_le_bytes());
+    material.extend_from_slice(&action.generation.0.to_le_bytes());
+    material.push(effect_code(action.effect));
+    integrity::sha256(&material)
+}
+
+/// An attempt whose outcome this runtime does not know.
+///
+/// Its presence *is* the fence. There is no separate flag that a restart could
+/// drop, because the fence is derived from committed history every time the
+/// runtime is built.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnsettledEffect {
+    pub attempt: CommitIndex,
+    pub key: Option<String>,
+    pub target: String,
+    pub operation: String,
+    pub effect: Effect,
+}
+
+/// What a settled or reconciled attempt established, addressed by its
+/// at-most-once key.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SettledOutcome {
+    /// The effect applied and its response is still retained, so a retry under
+    /// the same key is answered from history.
+    Applied { response: Vec<u8> },
+    /// The effect applied, but this runtime cannot reproduce the response: it
+    /// either exceeded [`MAX_RETAINED_RESPONSE`] or was established by
+    /// reconciliation rather than observed. A retry is refused rather than
+    /// answered with something else.
+    AppliedWithoutResponse,
+    /// Reconciliation established that nothing applied, so the at-most-once
+    /// budget was never spent and a later attempt may proceed.
+    NotApplied,
+}
 
 /// An exact match, never a prefix, wildcard or model-supplied permission.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -148,6 +202,10 @@ impl fmt::Debug for ExecutionSession {
 /// Single-use, action-bound preparation. Verification is performed at dispatch,
 /// not trusted from a cached report or a caller-supplied boolean.
 ///
+/// An optional at-most-once key is part of the preparation rather than of the
+/// action, because only the caller knows whether an identical request means
+/// "the same one again" or "do it once more".
+///
 /// ```compile_fail
 /// use ptr_runtime::execution::ExecutionPermit;
 /// fn duplicate(permit: ExecutionPermit) -> ExecutionPermit { permit.clone() }
@@ -172,6 +230,7 @@ pub struct ExecutionPermit {
     grant: Arc<ExecutionGrant>,
     action: ActionIr,
     expires_at: Instant,
+    key: Option<String>,
 }
 
 impl fmt::Debug for ExecutionPermit {
@@ -196,6 +255,27 @@ pub enum ExecutionError {
     ScopeDenied,
     ProjectMismatch,
     RuntimeFenced,
+    /// A committed attempt has no settlement, so an external effect may already
+    /// have applied. Distinct from `RuntimeFenced`, which is ambiguity about
+    /// this runtime's own ledger rather than about the outside world.
+    AmbiguousOutcome {
+        attempt: CommitIndex,
+    },
+    /// A retry under a key whose effect applied, but whose response this runtime
+    /// no longer holds. Refusing is the only honest answer: re-executing would
+    /// apply the effect twice, and inventing a response would be worse.
+    ResponseNotRetained {
+        attempt: CommitIndex,
+    },
+    /// Reconciliation named an attempt that is not awaiting one.
+    UnknownAttempt {
+        attempt: CommitIndex,
+    },
+    InvalidKey,
+    InvalidEvidence,
+    /// The audit record itself could not be committed. Nothing was attempted
+    /// when this is returned from the attempt, so it denies rather than fences.
+    Audit(Box<RuntimeError>),
     AuthorizationDenied(AuthorizationDenial),
     VerificationRejected {
         status: VerificationStatus,
@@ -225,6 +305,10 @@ pub(super) struct ExecutionState {
     sessions: BTreeMap<u64, SessionRecord>,
     next_session: u64,
     uncertain: bool,
+    /// Rebuilt from committed history on every open, which is what makes the
+    /// fence survive a restart.
+    unsettled: BTreeMap<CommitIndex, UnsettledEffect>,
+    settled: BTreeMap<String, SettledOutcome>,
 }
 
 impl Default for ExecutionState {
@@ -235,13 +319,56 @@ impl Default for ExecutionState {
             sessions: BTreeMap::new(),
             next_session: 1,
             uncertain: false,
+            unsettled: BTreeMap::new(),
+            settled: BTreeMap::new(),
         }
     }
 }
 
 impl ExecutionState {
+    /// Either kind of ambiguity blocks execution and commits: this runtime does
+    /// not know the outcome of its own last append, or it does not know whether
+    /// an external effect applied.
     pub(super) fn is_fenced(&self) -> bool {
+        self.uncertain || !self.unsettled.is_empty()
+    }
+
+    /// Ambiguity about the ledger alone. Settling an attempt has to be allowed
+    /// while the attempt fences the runtime, because settling is what ends it.
+    pub(super) fn is_commit_uncertain(&self) -> bool {
         self.uncertain
+    }
+
+    pub(super) fn is_unsettled(&self, attempt: CommitIndex) -> bool {
+        self.unsettled.contains_key(&attempt)
+    }
+
+    pub(super) fn key_in_flight(&self, key: &str) -> bool {
+        self.unsettled
+            .values()
+            .any(|effect| effect.key.as_deref() == Some(key))
+    }
+
+    pub(super) fn record_attempt(&mut self, effect: UnsettledEffect) {
+        self.unsettled.insert(effect.attempt, effect);
+    }
+
+    /// Validation rejects a settlement for an attempt that is not awaiting one,
+    /// before append and again during replay, so the miss is unreachable here.
+    pub(super) fn settle(&mut self, attempt: CommitIndex, outcome: SettledOutcome) {
+        if let Some(effect) = self.unsettled.remove(&attempt) {
+            if let Some(key) = effect.key {
+                self.settled.insert(key, outcome);
+            }
+        }
+    }
+
+    pub(super) fn unsettled_effects(&self) -> Vec<UnsettledEffect> {
+        self.unsettled.values().cloned().collect()
+    }
+
+    fn oldest_unsettled(&self) -> Option<CommitIndex> {
+        self.unsettled.keys().next().copied()
     }
 
     fn allocate_session_id(&mut self) -> Result<u64, ExecutionError> {
@@ -270,6 +397,9 @@ impl ExecutionState {
         if self.uncertain {
             return Err(ExecutionError::RuntimeFenced);
         }
+        if let Some(attempt) = self.oldest_unsettled() {
+            return Err(ExecutionError::AmbiguousOutcome { attempt });
+        }
         let record = self
             .sessions
             .get(&handle.id)
@@ -293,6 +423,9 @@ impl PtrRuntime {
     ) -> Result<ExecutionSession, ExecutionError> {
         if self.execution.uncertain {
             return Err(ExecutionError::RuntimeFenced);
+        }
+        if let Some(attempt) = self.execution.oldest_unsettled() {
+            return Err(ExecutionError::AmbiguousOutcome { attempt });
         }
         let principal = principal.into();
         if !valid_identifier(&principal) {
@@ -350,12 +483,46 @@ impl PtrRuntime {
         Ok(())
     }
 
+    /// Prepare an execution with no at-most-once guarantee: a retry is a new
+    /// request, which is the right default for an action whose repetition is
+    /// meaningful.
     pub fn prepare_execution(
         &self,
         session: &ExecutionSession,
         project: &ProjectId,
         action: &ActionIr,
         ttl: Duration,
+    ) -> Result<ExecutionPermit, ExecutionError> {
+        self.prepare(session, project, action, ttl, None)
+    }
+
+    /// Prepare an execution that must apply at most once under `key`.
+    ///
+    /// The guarantee holds for as long as the attempt's record is retained. A
+    /// floor that rises past it discards the memory, which is a retention
+    /// obligation rather than something this layer can enforce.
+    pub fn prepare_execution_once(
+        &self,
+        session: &ExecutionSession,
+        project: &ProjectId,
+        action: &ActionIr,
+        ttl: Duration,
+        key: impl Into<String>,
+    ) -> Result<ExecutionPermit, ExecutionError> {
+        let key = key.into();
+        if !valid_identifier(&key) {
+            return Err(ExecutionError::InvalidKey);
+        }
+        self.prepare(session, project, action, ttl, Some(key))
+    }
+
+    fn prepare(
+        &self,
+        session: &ExecutionSession,
+        project: &ProjectId,
+        action: &ActionIr,
+        ttl: Duration,
+        key: Option<String>,
     ) -> Result<ExecutionPermit, ExecutionError> {
         let expires_at = deadline(ttl)?;
         let record = self.execution.session(session)?;
@@ -371,7 +538,41 @@ impl PtrRuntime {
             grant: grant.clone(),
             action: action.clone(),
             expires_at: expires_at.min(record.expires_at),
+            key,
         })
+    }
+
+    /// Attempts whose outcome is unknown, oldest first. An operator needs this
+    /// to know what reconciliation is waiting on.
+    pub fn unsettled_effects(&self) -> Vec<UnsettledEffect> {
+        self.execution.unsettled_effects()
+    }
+
+    /// Resolve an attempt this runtime could not observe, with evidence from the
+    /// system that received the effect.
+    ///
+    /// It records what an operator established. It never infers the outcome and
+    /// never retries the effect: a runtime that could work out what happened
+    /// would not have been fenced.
+    pub fn reconcile_effect(
+        &mut self,
+        attempt: CommitIndex,
+        applied: bool,
+        evidence: impl Into<String>,
+    ) -> Result<CommitIndex, ExecutionError> {
+        let evidence = evidence.into();
+        if !valid_identifier(&evidence) {
+            return Err(ExecutionError::InvalidEvidence);
+        }
+        if !self.execution.is_unsettled(attempt) {
+            return Err(ExecutionError::UnknownAttempt { attempt });
+        }
+        self.commit_settlement(LedgerEvent::EffectReconciled {
+            attempt,
+            applied,
+            evidence,
+        })
+        .map_err(audit)
     }
 
     /// Consumes the permit even on rejection, verification failure or panic.
@@ -419,20 +620,77 @@ impl PtrRuntime {
         if Instant::now() >= permit.expires_at {
             return Err(ExecutionError::Expired);
         }
-        self.execution.uncertain = true;
-        self.execution.invalidate_pending();
-        let output = grant
-            .executor
-            .execute(VerifiedDispatch {
-                action: &permit.action,
-                principal: &principal,
-                project: &grant.scope.project,
+
+        // A key that already carries an outcome is answered from history rather
+        // than by applying the effect a second time.
+        if let Some(key) = permit.key.as_deref() {
+            match self.execution.settled.get(key) {
+                Some(SettledOutcome::Applied { response }) => return Ok(response.clone()),
+                Some(SettledOutcome::AppliedWithoutResponse) => {
+                    return Err(ExecutionError::ResponseNotRetained {
+                        attempt: self.settled_attempt(key),
+                    })
+                }
+                Some(SettledOutcome::NotApplied) | None => {}
+            }
+        }
+
+        // Log first. After this append the runtime is fenced by a record rather
+        // than by a flag, so a crash anywhere below still reopens knowing that
+        // an external effect may have applied.
+        let attempt = self
+            .commit(LedgerEvent::EffectAttempted {
+                key: permit.key.clone(),
+                project: grant.scope.project.clone(),
+                principal: principal.clone(),
+                target: permit.action.target.clone(),
+                operation: permit.action.operation.clone(),
+                capability: permit.action.capability.clone(),
+                effect: permit.action.effect,
+                generation: permit.action.generation,
+                revision: permit.action.revision,
+                verification: report.level,
+                action_digest: action_digest(&permit.action),
             })
-            .map_err(ExecutionError::Executor)?;
-        // Error/panic deliberately leaves this runtime fenced. There is no
-        // automatic retry of a possibly applied external effect.
-        self.execution.uncertain = false;
+            .map_err(audit)?;
+
+        let output = match grant.executor.execute(VerifiedDispatch {
+            action: &permit.action,
+            principal: &principal,
+            project: &grant.scope.project,
+        }) {
+            Ok(output) => output,
+            // An executor error cannot distinguish "did not apply" from "applied
+            // and could not say so", and a panic says even less. The attempt
+            // stays unsettled either way, so the fence outlives this process and
+            // reconciliation is the only way forward.
+            Err(error) => return Err(ExecutionError::Executor(error)),
+        };
+
+        let response_digest = integrity::sha256(&output);
+        let response = (output.len() <= MAX_RETAINED_RESPONSE).then(|| output.clone());
+        self.commit_settlement(LedgerEvent::EffectSettled {
+            attempt,
+            response,
+            response_digest,
+        })
+        .map_err(audit)?;
         Ok(output)
+    }
+
+    /// The attempt a retained key was settled at, for a diagnostic that would
+    /// otherwise have to say "some earlier attempt".
+    fn settled_attempt(&self, key: &str) -> CommitIndex {
+        self.committed_events()
+            .iter()
+            .find(|committed| {
+                matches!(
+                    &committed.event,
+                    LedgerEvent::EffectAttempted { key: Some(recorded), .. } if recorded == key
+                )
+            })
+            .map(|committed| committed.index)
+            .unwrap_or_default()
     }
 
     fn check_execution_action(
@@ -465,7 +723,11 @@ impl PtrRuntime {
     }
 }
 
-fn valid_identifier(value: &str) -> bool {
+fn audit(error: RuntimeError) -> ExecutionError {
+    ExecutionError::Audit(Box::new(error))
+}
+
+pub(super) fn valid_identifier(value: &str) -> bool {
     !value.is_empty() && value.trim() == value && !value.chars().any(char::is_control)
 }
 

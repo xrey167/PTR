@@ -8,11 +8,17 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-20  
-**Code footprint:** 6 Rust source files · 2993 nonblank source lines · 12 integration-test files · 95 `#[test]` markers
+**Last reviewed:** 2026-09-21  
+**Code footprint:** 6 Rust source files · 3353 nonblank source lines · 13 integration-test files · 111 `#[test]` markers
 
 ### Implemented now
 
+- Durable execution audit: an effect commits an EffectAttempted record before it is dispatched and an EffectSettled record after, so the window between them is described by committed history rather than by process memory
+- The fence is that record: an attempt with no settlement fences execution and commits, is rebuilt on every open, and therefore survives a crash or panic inside the effect window
+- reconcile_effect commits what an operator established from the receiving system; it never infers an outcome and never retries a possibly-applied effect
+- prepare_execution_once adds an at-most-once key: a retry is answered from history without dispatching again, across restarts, while an attempt reconciled as not applied leaves the key free
+- A response is retained up to MAX_RETAINED_RESPONSE and its digest unconditionally, so a retry whose response was not kept is refused rather than re-executed or answered with something else
+- A denied preparation writes no effect record, and a fenced runtime yields no journal anchor, so no compaction floor can discard a record saying an effect may have applied
 - Rustdoc covers the compacted-snapshot and neural-state APIs plus their canonical framing helpers and admission diagnostics
 - PTRNEU01 neural/KV/checkpoint admission: opaque state bound to an anchored journal position, per-input semantic value digests, lifecycle generations, provenance and codebook version plus assignment fingerprint
 - Admission is decided at every use rather than at insertion; a payload is reachable only through an admission decision, and a cache exposes no accessor that bypasses one
@@ -46,8 +52,9 @@
 
 - Durable compacted-snapshot publication and a runtime backed by an AcknowledgedLedger; compacted restore rebuilds an in-memory ledger above the floor and therefore retains no chain base, so it admits no neural state at all
 - Durable neural-anchor catalog, streamed or memory-mapped payloads, and a training stack that records codebook/binding identity; admission checks the producer's declared input set only, so an undeclared dependency stays invisible
-- Network-authenticated/scoped Pod integration
-- Durable execution audit/idempotency, downstream fencing and compacted materialized snapshots
+- Network-authenticated session admission and project-scoped Pure/Read Pod resolution; PodRegistry::resolve still matches on capability and input type alone
+- Downstream fencing for detached or background executor work; the audited window covers a synchronous adapter call only
+- At-most-once memory is bounded by retention: a floor rising past a settled attempt discards its key, and reconciliation is a privileged host API whose caller this crate does not authenticate
 - Router-driven operator selection around the implemented bounded Pod-resume loop
 - Async isolate scheduler integration
 - Configured raft-engine/raft-rs/Turso backend composition for production runtime modes
@@ -55,6 +62,7 @@
 
 ### Next milestones
 
+- Map an authenticated network peer to a session with an exact grant set, and scope Pod resolution by project
 - Record CodebookVersion, StateBinding and an assignment fingerprint in the training stack's datasets, checkpoints and run manifests; retaining a NeuralAnchor outside the artifact remains a deployment obligation
 - Connect evaluated raft-engine/Turso adapters through typed backend config while preserving FileLedger reference mode
 - Add opaque backend checkpoint handles and async streaming around the implemented observation resume contract
@@ -78,6 +86,12 @@
 
 ### Current automated checks
 
+- a runtime reopened after an executor error or panic is still fenced by the unsettled attempt it left, refuses to register a session and refuses to commit
+- an applied effect commits its attempt before and its settlement after, with the action digest and admitting verification level asserted field by field
+- a retry under an at-most-once key returns the first response without dispatching again, before and after a restart, while a different key does dispatch
+- reconciliation lifts the fence for both outcomes and lets a key reconciled as unapplied execute again
+- a fenced runtime yields no journal anchor and no compacted snapshot; a denied preparation writes no record
+- settlements naming no live attempt, a second live attempt under one key, a malformed key, and a retained response that is oversize or contradicts its digest are each refused before append and during replay
 - an empty runtime round-trips at the empty floor; a runtime restored at the index ceiling refuses a commit with PTR_LEDGER_INDEX_EXHAUSTED, stores nothing and fences the retry; revocation outranks every other binding mismatch simultaneously
 - an admitted state reproduces the identical inference event sequence after a restart, with binding and opaque payload byte-for-byte equal
 - revocation, supersession, edited/removed inputs, foreign history with identical counters, unverifiable position, compacted restore, contradicting revision, unknown/changed codebook, unknown target and a fenced runtime each denied

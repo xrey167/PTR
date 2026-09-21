@@ -28,7 +28,7 @@ impl MaterializedState {
             return ApplyOutcome::Gap;
         }
 
-        for (key, value) in materialized_entries(&committed.event) {
+        for (key, value) in materialized_entries(committed) {
             self.values.insert(key, value);
         }
         self.last_applied = index;
@@ -40,8 +40,9 @@ impl MaterializedState {
     }
 }
 
-fn materialized_entries(event: &LedgerEvent) -> Vec<(String, String)> {
-    match event {
+fn materialized_entries(committed: &CommittedEvent) -> Vec<(String, String)> {
+    let index = committed.index.0;
+    match &committed.event {
         // Lifecycle materialization records the position, not a second copy of
         // semantic payloads. Their authoritative replay belongs to ptr-semdb.
         LedgerEvent::SemanticDeltaCommitted { revision, .. } => {
@@ -82,6 +83,28 @@ fn materialized_entries(event: &LedgerEvent) -> Vec<(String, String)> {
         LedgerEvent::SnapshotCommitted { revision, covers } => vec![
             ("snapshot:last_revision".into(), revision.to_string()),
             ("snapshot:covers_commit".into(), covers.0.to_string()),
+        ],
+        // An attempt is addressed by its own commit position, so a settlement
+        // overwrites the same key rather than adding a second row that a reader
+        // would have to reconcile.
+        LedgerEvent::EffectAttempted {
+            target, operation, ..
+        } => vec![
+            (format!("effect:{index}:state"), "attempted".to_owned()),
+            (format!("effect:{index}:target"), target.clone()),
+            (format!("effect:{index}:operation"), operation.clone()),
+        ],
+        LedgerEvent::EffectSettled { attempt, .. } => {
+            vec![(format!("effect:{}:state", attempt.0), "settled".to_owned())]
+        }
+        LedgerEvent::EffectReconciled {
+            attempt, applied, ..
+        } => vec![
+            (
+                format!("effect:{}:state", attempt.0),
+                "reconciled".to_owned(),
+            ),
+            (format!("effect:{}:applied", attempt.0), applied.to_string()),
         ],
     }
 }
@@ -176,7 +199,7 @@ impl TursoMaterializedState {
             .await
             .map_err(|error| error.to_string())?;
 
-        for (key, value) in materialized_entries(&committed.event) {
+        for (key, value) in materialized_entries(committed) {
             tx.execute(
                 "
                 INSERT INTO ptr_state(key, value, commit_index)

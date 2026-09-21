@@ -1,7 +1,7 @@
 version = 1
 id = "ptr-state"
 maturity = "prototype"
-last_reviewed = "2026-09-19"
+last_reviewed = "2026-09-21"
 
 implemented = [
   "Semantic transaction position and revision materialization without duplicated payload ownership",
@@ -10,6 +10,7 @@ implemented = [
   "Application of Revoked and HardConstraintCommitted ledger events",
   "Monotonic materialization with duplicate/out-of-order/gap detection",
   "All current LedgerEvent variants have deterministic key/value projection semantics",
+  "Effect records project onto the attempt's own commit index, so a settlement overwrites the attempting record's state key instead of adding a second row a reader would have to reconcile",
   "Feature-gated Turso 0.8.0-pre.11 backend persists atomic projection updates and last_applied state",
 ]
 

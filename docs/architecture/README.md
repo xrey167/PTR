@@ -41,6 +41,7 @@
 - [25-erasure-and-retention.md](25-erasure-and-retention.md)
 - [26-cognitive-codebook.md](26-cognitive-codebook.md)
 - [27-neural-state-admission.md](27-neural-state-admission.md)
+- [28-durable-execution-audit.md](28-durable-execution-audit.md)
 - [Open architecture catalog](../../research/catalogs/README.md) — unresolved type families, backend slots and component contracts
 
 ## Component-level documentation
