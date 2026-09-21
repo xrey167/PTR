@@ -14,7 +14,7 @@
 //! fingerprint from these bytes, and a test in this crate asserts the committed
 //! artifact still carries the bytes the kernel produces.
 
-use ptr_types::{CodeFamily, Codebook, CodebookVersion};
+use ptr_types::{CodeFamily, Codebook, CodebookVersion, EXCEPTIONS};
 
 fn main() {
     let version = CodebookVersion::V1;
@@ -38,6 +38,23 @@ fn main() {
         })
         .collect();
 
+    // Recorded exceptions travel with the families, because "this width is not a
+    // family" is a statement about the taxonomy and belongs beside it. They are
+    // deliberately outside `canonical_bytes`: the fingerprint identifies an
+    // assignment of codes, and an exception assigns none, so folding it in would
+    // invalidate every artifact bound to a version whose codes had not moved.
+    let exceptions: Vec<String> = EXCEPTIONS
+        .iter()
+        .map(|exception| {
+            format!(
+                "    {{\n      \"name\": {},\n      \"width\": {},\n      \"reason\": {}\n    }}",
+                quote(exception.name),
+                exception.width,
+                quote(exception.reason)
+            )
+        })
+        .collect();
+
     let hex = to_hex(&book.canonical_bytes());
 
     println!("{{");
@@ -46,6 +63,9 @@ fn main() {
     println!("  \"canonical_bytes_hex\": {},", quote(&hex));
     println!("  \"families\": [");
     println!("{}", families.join(",\n"));
+    println!("  ],");
+    println!("  \"exceptions\": [");
+    println!("{}", exceptions.join(",\n"));
     println!("  ]");
     println!("}}");
 }

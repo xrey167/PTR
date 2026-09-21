@@ -142,13 +142,38 @@ impl<T: CognitiveType> CodeGrid<T> {
     }
 }
 
+/// The name under which the provenance width is recorded in the kernel.
+pub const PROVENANCE_EXCEPTION: &str = "provenance_bucket_count";
+
+/// The recorded width for [`PROVENANCE_EXCEPTION`], read from the kernel rather
+/// than written here.
+///
+/// A literal in this file is a number with no home: invisible to Python, to a
+/// dataset builder and to every check in the repository, so nothing could compare
+/// it to anything. Resolving it from [`ptr_types::EXCEPTIONS`] gives it one home,
+/// and the `const` panics at compile time if the record is ever removed — a
+/// missing exception is a build failure rather than a silent fallback to 64.
+pub const PROVENANCE_BUCKET_COUNT: usize = match ptr_types::exception_width(PROVENANCE_EXCEPTION) {
+    Some(width) => width as usize,
+    None => panic!("the kernel records no width for provenance_bucket_count"),
+};
+
 #[derive(Clone, Debug)]
 pub struct PtrA0Config {
     pub vocab_size: usize,
     /// Provenance bucketing is **not** a codebook family: it is a research-local
-    /// hashing of sources with no kernel taxonomy behind it, so its width stays a
-    /// free parameter. Recorded as a deliberate exception rather than pretended
-    /// into the codebook — see `docs/architecture/26-cognitive-codebook.md`.
+    /// hashing of sources with no kernel taxonomy behind it, so it has no members
+    /// to assign codes to. Its width is a *recorded exception* rather than a
+    /// number invented here — [`ptr_types::EXCEPTIONS`] holds it and
+    /// `datasets/generated/codebook.json` carries it, so a dataset builder and a
+    /// model read one value instead of each picking their own. See
+    /// `docs/architecture/26-cognitive-codebook.md`.
+    ///
+    /// It remains settable, because the exception is a *recorded default* and not
+    /// a constraint: a experiment may legitimately bucket differently. What stops
+    /// two widths meeting silently is the embedding's own shape — a checkpoint
+    /// written at one width is refused by a model built at another, asserted in
+    /// `tests/checkpoint.rs`.
     pub provenance_bucket_count: usize,
     pub d_model: usize,
     pub latent_steps: usize,
@@ -171,7 +196,7 @@ impl PtrA0Config {
     pub fn at_codebook(vocab_size: usize, d_model: usize, codebook: Codebook) -> Self {
         Self {
             vocab_size,
-            provenance_bucket_count: 64,
+            provenance_bucket_count: PROVENANCE_BUCKET_COUNT,
             d_model,
             latent_steps: 0,
             codebook,

@@ -5,7 +5,10 @@ mod codebook;
 mod confidence;
 mod validity_mask;
 pub use checkpoint::{CheckpointError, CheckpointHeader, TableSize, FORMAT_V1};
-pub use codebook::{CodeFamily, Codebook, CodebookError, CodebookVersion, CognitiveType, TypeCode};
+pub use codebook::{
+    exception_width, CodeFamily, Codebook, CodebookError, CodebookException, CodebookVersion,
+    CognitiveType, TypeCode, EXCEPTIONS,
+};
 pub use confidence::{ConfidenceEstimate, ConfidenceTarget, ConfidenceTargetMismatch};
 pub use validity_mask::{MaskError, ValidityMask};
 

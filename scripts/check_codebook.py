@@ -117,6 +117,50 @@ def check(path: Path, require_tracked: bool = False) -> list[str]:
             if isinstance(member, str) and member.encode("utf-8") not in canonical:
                 errors.append(f"{name}: {member!r} is not in the canonical bytes")
 
+    errors.extend(check_exceptions(document, canonical, {f.get("family") for f in families}))
+    return errors
+
+
+def check_exceptions(document: dict, canonical: bytes, family_names: set) -> list[str]:
+    """Widths that model tables are sized by and the taxonomy deliberately omits.
+
+    A recorded exception is a decision; an unrecorded one is indistinguishable
+    from an oversight, which is the whole reason this section exists. What is
+    checked here is that the record is well formed and says why — that the width
+    matches the model built from it is Rust's to assert, and
+    `crates/ptr-types/tests/codebook_artifact.rs` ties this file to the kernel.
+    """
+    errors: list[str] = []
+    exceptions = document.get("exceptions")
+    if not isinstance(exceptions, list):
+        return ["exceptions is absent; an empty list is how a kernel says it has none"]
+
+    seen = set()
+    for exception in exceptions:
+        name = exception.get("name") if isinstance(exception, dict) else None
+        if not isinstance(name, str) or not name:
+            errors.append("an exception has no name")
+            continue
+        if name in seen:
+            errors.append(f"{name}: recorded twice")
+        seen.add(name)
+        width = exception.get("width")
+        # Zero rows is a table nothing can index, which is not an exception but a
+        # mistake; a negative or non-integer width is not a table at all.
+        if not isinstance(width, int) or isinstance(width, bool) or width < 1:
+            errors.append(f"{name}: width {width!r} is not a positive integer")
+        if not (exception.get("reason") or "").strip():
+            errors.append(f"{name}: no reason recorded, so it reads as an oversight")
+        # An exception is by definition not a family. A name in both places would
+        # mean the document says it is inside and outside the taxonomy at once.
+        if name in family_names:
+            errors.append(f"{name}: recorded as an exception and as a family")
+        if name.encode("utf-8") in canonical:
+            errors.append(
+                f"{name}: appears in the canonical bytes, which commit to the code "
+                "assignment; an exception assigns no codes and must stay outside it"
+            )
+
     return errors
 
 
@@ -135,7 +179,8 @@ def main() -> int:
     members = sum(len(family["members"]) for family in document["families"])
     print(
         f"OK: codebook version {document['version']}, "
-        f"{len(document['families'])} families, {members} members"
+        f"{len(document['families'])} families, {members} members, "
+        f"{len(document.get('exceptions', []))} recorded exception(s)"
     )
     return 0
 

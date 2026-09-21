@@ -112,6 +112,80 @@ impl CodeFamily {
     ];
 }
 
+/// A width model tables are sized by that is deliberately **not** a code family.
+///
+/// Every other cardinality an A0 table is built from is the codebook's, and that
+/// is the point of the codebook: a table shorter than its family folds two
+/// members onto one code, and a longer one carries rows that denote nothing. One
+/// width escapes that, and recording it here is what makes the escape a decision
+/// instead of an oversight.
+///
+/// The failure mode is the same one [`Codebook`] exists to prevent, one level
+/// down: ids bucketed into 64 index a 128-row table perfectly well, and the model
+/// reads a provenance it was never given. What stops that between an artifact and
+/// a build is the embedding's own shape — burn refuses the record — which is a
+/// real check reporting a shape rather than a name.
+///
+/// What this type adds is a single home for the number, readable outside Rust
+/// through `datasets/generated/codebook.json`, so a dataset builder and a model
+/// cannot pick two different widths without one of them contradicting a recorded
+/// value.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CodebookException {
+    /// The identifier as it is named in the model configuration.
+    pub name: &'static str,
+    /// The width recorded for it.
+    pub width: u16,
+    /// Why it is outside the taxonomy rather than missing from it.
+    pub reason: &'static str,
+}
+
+/// Every recorded exception, in canonical order.
+///
+/// An empty list would be the honest state for a kernel with no exceptions. This
+/// one has exactly one, and it is written down.
+pub const EXCEPTIONS: [CodebookException; 1] = [CodebookException {
+    name: "provenance_bucket_count",
+    width: 64,
+    reason: "Provenance bucketing is a research-local hashing of sources with no \
+kernel taxonomy behind it, so it has no members to assign codes to. It is sized \
+here rather than in a family because a family with no members is not a family.",
+}];
+
+/// The recorded width for an exception, or `None` when it is not one.
+///
+/// `const` so a consumer can resolve it at compile time rather than copying the
+/// number into its own source. That is the point: a literal in a model crate is a
+/// width with no home, and a `const` that resolves to `None` fails the build where
+/// a runtime lookup would fall back to something plausible.
+pub const fn exception_width(name: &str) -> Option<u16> {
+    let wanted = name.as_bytes();
+    let mut index = 0;
+    while index < EXCEPTIONS.len() {
+        if bytes_eq(EXCEPTIONS[index].name.as_bytes(), wanted) {
+            return Some(EXCEPTIONS[index].width);
+        }
+        index += 1;
+    }
+    None
+}
+
+/// Byte equality written out, because slice comparison is not a const operation
+/// on this crate's MSRV.
+const fn bytes_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut index = 0;
+    while index < left.len() {
+        if left[index] != right[index] {
+            return false;
+        }
+        index += 1;
+    }
+    true
+}
+
 /// Why a codebook lookup was refused.
 ///
 /// Every variant is a refusal. Nothing here falls back to a default, because a
