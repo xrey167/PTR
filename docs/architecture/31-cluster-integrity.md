@@ -315,16 +315,42 @@ the truncate-then-write rule above buys.
 None of that is a *lock*. A local advisory file lock makes one writer per file on
 one machine and says nothing about a second machine.
 
-Be exact about what does exclude a deposed leader on another host, because this
-document said "the protocol" and its own open section said the opposite fourteen
-lines later. What raft gives is a **safety argument among members that run the
-protocol correctly**: a deposed leader may append, it cannot gather a majority, and
-the entry only it held is overwritten. That is why
-`a_deposed_leader_cannot_commit_and_what_it_wrote_alone_does_not_survive`
-passes (`crates/ptr-ledger/tests/raft_cluster.rs`). It is not a *fence*, which is what
-excludes a writer that does not run the protocol correctly — one partitioned from
-its peers but not from the storage they share, or one resumed from a stale image.
-Nothing here provides that, and #15's Gate 2 asked for it.
+Be exact about what raft gives, because this document said "the protocol" and its
+own open section said the opposite fourteen lines later. What raft gives is a
+**safety argument among members that run the protocol correctly**: a deposed leader
+may append, it cannot gather a majority, and the entry only it held is overwritten.
+That is why `a_deposed_leader_cannot_commit_and_what_it_wrote_alone_does_not_survive`
+passes (`crates/ptr-ledger/tests/raft_cluster.rs`). It is not a *fence*, which is
+what excludes a writer that does not run the protocol correctly.
+
+### The fencing token
+
+`FileRaftStorage` records the highest term it has ever accepted a write under, in
+the state file beside term, vote and commit, and refuses any write presenting a
+lower one — `PTR_RAFT_FENCED`, naming both terms. That is what excludes the two
+writers raft's argument does not cover: one partitioned from its peers but not from
+the storage they share, and one resumed from a stale image.
+
+**The token is read from disk on every write, never from memory.** This is the
+whole mechanism, and reading the cached copy instead would fence nothing: a stale
+writer's in-memory token is its own stale copy, so it would happily agree with
+itself. `crates/ptr-ledger/tests/raft_fence.rs` opens *two* handles on one
+directory — the shared-storage case in miniature — and a mutation that consults
+memory rather than disk fails exactly the three tests that use two writers.
+
+Two consequences, stated rather than discovered:
+
+- **A read precedes every write.** That is what a fence costs. It is a small file,
+  and the alternative is a token that cannot see the writer it exists to exclude.
+- **It is a fence, not a lock.** A writer that has caught up to the recorded term
+  proceeds, which is what a legitimate restart does; a second handle is not refused
+  for being second. `the_same_writer_proceeds_once_it_is_no_longer_behind` is the
+  control for exactly that, because a storage that refused every second writer
+  would pass every other test in the file.
+
+The state file format moves to `PTRRST02`. An older file is refused by its magic
+rather than read as one whose token happens to be zero — a state file read as
+unfenced is the failure this exists to prevent.
 
 ## What this does not close
 
@@ -344,6 +370,11 @@ Nothing here provides that, and #15's Gate 2 asked for it.
   are, and nothing here discovers that.
 - **Every exchange opens a connection.** Correct and wasteful. Session reuse is
   listed as missing rather than quietly assumed.
+- **A fence bounds writers, not readers, and only on storage it can see.**
+  `PTR_RAFT_FENCED` stops a writer at a superseded term from changing these files.
+  It says nothing about a writer reaching some *other* copy of the state — a
+  replica, a restored backup, a second mount that is not the same file — because
+  nothing there ever sees the token. The older statement follows, narrowed:
 - **Local file locks fence nothing across nodes, and neither does consensus alone.**
   `FileLedger` takes an advisory lock, which makes one writer per file on one
   machine and says nothing about a second. What raft adds is a safety argument

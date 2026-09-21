@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 /// Marks the state file. A foreign file is refused rather than parsed.
-const STATE_MAGIC: &[u8; 8] = b"PTRRST01";
+const STATE_MAGIC: &[u8; 8] = b"PTRRST02";
 /// Marks each log record.
 const RECORD_MAGIC: &[u8; 8] = b"PTRRFR01";
 /// Marks the log file, once, at offset zero.
@@ -120,7 +120,7 @@ impl FileRaftStorage {
             .open(&log_path)?;
 
         let mut core = if existing {
-            let (hard_state, conf_state, snapshot_metadata) = read_state(&state_path)?;
+            let (hard_state, conf_state, snapshot_metadata, fence) = read_state(&state_path)?;
             let snapshot_data = if snapshot_path.is_file() {
                 let data = fs::read(&snapshot_path)?;
                 if data.len() > MAX_SNAPSHOT_BYTES {
@@ -143,6 +143,7 @@ impl FileRaftStorage {
                 snapshot_data,
                 entries,
                 offsets,
+                fence,
             }
         } else {
             write_log_header(&mut log)?;
@@ -163,6 +164,7 @@ impl FileRaftStorage {
                 snapshot_data: Vec::new(),
                 entries: Vec::new(),
                 offsets: Vec::new(),
+                fence: 0,
             }
         };
         if !existing {
@@ -197,6 +199,12 @@ pub struct Core {
     /// File offset of `entries[i]`, so a conflicting append can shorten the file
     /// instead of rewriting it.
     offsets: Vec<u64>,
+    /// The highest term this storage has ever accepted a write under.
+    ///
+    /// This is the fencing token. It is kept in memory only as a cache of what is
+    /// on disk — every write re-reads the file, because the whole point is to
+    /// notice a *different process* that has moved it on.
+    fence: u64,
 }
 
 impl Core {
@@ -254,6 +262,10 @@ impl Core {
         let Some(first) = entries.first() else {
             return Ok(());
         };
+        // Fenced before a byte of the log moves. An append is a write to the same
+        // shared storage the state file lives on, and a stale writer appending
+        // entries is exactly the case a fence exists to stop.
+        self.fenced_to()?;
         if first.index < self.first_index() {
             return Err(invalid(format!(
                 "append at {} would overwrite compacted history below {}",
@@ -319,6 +331,9 @@ impl Core {
         if snapshot.data.len() > MAX_SNAPSHOT_BYTES {
             return Err(invalid("raft snapshot payload is over the bound"));
         }
+        // Fenced before anything is written, because this path truncates the log
+        // before it persists state: a fenced writer must not get as far as that.
+        self.fenced_to()?;
 
         // The payload lands before the state that points at it: a crash between
         // the two leaves a snapshot file nothing refers to, which is recoverable,
@@ -448,8 +463,44 @@ impl Core {
     }
 
     /// Write the state file atomically.
+    /// Refuse this write if another writer has moved the fence past our term.
+    ///
+    /// Read from **disk**, not from `self.fence`. A stale writer's in-memory copy
+    /// is its own stale copy, so consulting it would fence nothing: the case this
+    /// exists for is a second process that shares the storage and does not run the
+    /// protocol — one partitioned from its peers but not from their disk, or one
+    /// resumed from an old image. It is the term on disk that says the group has
+    /// moved on.
+    ///
+    /// The cost is a read before every write. That is what a fence costs, and it
+    /// is stated in `31-cluster-integrity.md` rather than hidden.
+    fn fenced_to(&mut self) -> io::Result<u64> {
+        let on_disk = match read_state(&self.state_path) {
+            Ok((_, _, _, fence)) => fence,
+            // No state file yet: nothing has claimed this storage, so there is
+            // nothing to be fenced by. Any other error is a real failure and is
+            // not treated as "unfenced".
+            Err(error) if error.kind() == io::ErrorKind::NotFound => 0,
+            Err(error) => return Err(error),
+        };
+        if on_disk > self.hard_state.term {
+            return Err(invalid(format!(
+                "PTR_RAFT_FENCED: storage was claimed at term {on_disk}, this writer is at term {}",
+                self.hard_state.term
+            )));
+        }
+        self.fence = on_disk.max(self.hard_state.term);
+        Ok(self.fence)
+    }
+
     fn persist_state(&mut self) -> io::Result<()> {
-        let bytes = encode_state(&self.hard_state, &self.conf_state, &self.snapshot_metadata);
+        let fence = self.fenced_to()?;
+        let bytes = encode_state(
+            &self.hard_state,
+            &self.conf_state,
+            &self.snapshot_metadata,
+            fence,
+        );
         atomic_write(&self.state_path, &bytes)?;
         sync_dir(&self.dir)
     }
@@ -642,6 +693,7 @@ fn encode_state(
     hard_state: &HardState,
     conf_state: &ConfState,
     snapshot: &SnapshotMetadata,
+    fence: u64,
 ) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(96);
     bytes.extend_from_slice(STATE_MAGIC);
@@ -655,6 +707,7 @@ fn encode_state(
     bytes.push(u8::from(conf_state.auto_leave));
     bytes.extend_from_slice(&snapshot.index.to_le_bytes());
     bytes.extend_from_slice(&snapshot.term.to_le_bytes());
+    bytes.extend_from_slice(&fence.to_le_bytes());
     let digest = sha256(&bytes);
     bytes.extend_from_slice(&digest);
     bytes
@@ -669,7 +722,7 @@ fn put_ids(bytes: &mut Vec<u8>, ids: &[u64]) {
 }
 
 /// Read the state file, or refuse it.
-fn read_state(path: &Path) -> io::Result<(HardState, ConfState, SnapshotMetadata)> {
+fn read_state(path: &Path) -> io::Result<(HardState, ConfState, SnapshotMetadata, u64)> {
     let bytes = fs::read(path)?;
     if bytes.len() < STATE_MAGIC.len() + 32 || &bytes[..STATE_MAGIC.len()] != STATE_MAGIC {
         return Err(invalid("not a PTR raft state file"));
@@ -716,10 +769,11 @@ fn read_state(path: &Path) -> io::Result<(HardState, ConfState, SnapshotMetadata
         term: take_u64(&mut at)?,
         conf_state: None,
     };
+    let fence = take_u64(&mut at)?;
     if at != body.len() {
         return Err(invalid("raft state file has trailing bytes"));
     }
-    Ok((hard_state, conf_state, snapshot))
+    Ok((hard_state, conf_state, snapshot, fence))
 }
 
 /// Read a length-prefixed list of node ids.
