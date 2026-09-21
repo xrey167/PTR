@@ -550,6 +550,49 @@ class WhatUnittestCollects(unittest.TestCase):
         )
         self.assertEqual(self.errors(), [])
 
+    def test_a_module_alias_imported_after_the_class_binds_nothing_in_time(self):
+        # The reported case. Python evaluates the base when the class statement
+        # runs, so `ut` is undefined then, the module raises `NameError` on
+        # import, and discovery collects nothing.
+        self.python(
+            f"class Blockers(ut.TestCase):\n    def {self.NAME}(self):\n        pass\n"
+            "\n\nimport unittest as ut\n"
+        )
+        errors = self.errors()
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("is not a test", errors[0])
+
+    def test_a_class_alias_imported_after_the_class_binds_nothing_in_time(self):
+        self.python(
+            f"class Blockers(Case):\n    def {self.NAME}(self):\n        pass\n"
+            "\n\nfrom unittest import TestCase as Case\n"
+        )
+        self.assertEqual(len(self.errors()), 1)
+
+    def test_a_plain_import_after_the_class_binds_nothing_in_time(self):
+        self.python(
+            f"class Blockers(unittest.TestCase):\n    def {self.NAME}(self):\n        pass\n"
+            "\n\nimport unittest\n"
+        )
+        self.assertEqual(len(self.errors()), 1)
+
+    def test_an_import_the_file_then_shadows_stops_being_a_case_base(self):
+        self.python(
+            "from unittest import TestCase\n\n\nclass TestCase:\n    pass\n\n\n"
+            f"class Blockers(TestCase):\n    def {self.NAME}(self):\n        pass\n"
+        )
+        self.assertEqual(len(self.errors()), 1)
+
+    def test_an_import_that_replaces_a_local_class_becomes_a_case_base(self):
+        # The other order, and the reason reading in statement order is better
+        # than the rule it replaced: this file's test *is* collected, and the
+        # old "drop any name the file defines anywhere" refused it.
+        self.python(
+            "class TestCase:\n    pass\n\n\nfrom unittest import TestCase\n\n\n"
+            f"class Blockers(TestCase):\n    def {self.NAME}(self):\n        pass\n"
+        )
+        self.assertEqual(self.errors(), [])
+
     def test_a_file_that_does_not_parse_defines_no_test(self):
         # Reporting a syntax error is not this checker's job, but crashing on one
         # would take down an invariant run over a file it only skims.

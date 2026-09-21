@@ -107,70 +107,6 @@ def rust_tests(text: str) -> set[str]:
     return found
 
 
-def case_bindings(tree: ast.Module) -> tuple[set[str], set[str]]:
-    """The names in this file that really refer to `unittest`'s case classes.
-
-    Two ways in: a name bound to the `unittest` module itself, for a base
-    written `unittest.TestCase`, and a name bound directly to one of its case
-    classes by `from unittest import TestCase [as ...]`.
-
-    Only imports written directly in the module body count. An import the
-    module does not unconditionally execute binds nothing by the time the class
-    statement runs - `if False:`, `if TYPE_CHECKING:` and an import inside a
-    function all leave the base name undefined, so the module raises on import
-    and `unittest` collects a failure in place of the test. Walking the whole
-    tree accepted all three.
-
-    A name that is also defined in the file - a class, a function or an
-    assignment - is dropped from both sets rather than guessed at. Import order
-    and conditional definitions decide which binding wins at runtime, and a
-    checker that picks one is inventing an answer; dropping it makes the file's
-    tests read as absent, which fails loudly instead of passing wrongly.
-
-    Both rules cost the same thing in the same direction. A `try: import ... /
-    except ImportError:` at module scope is rejected although the import may
-    well succeed, because whether it does is not something a parse can settle.
-    """
-    modules: set[str] = set()
-    direct: set[str] = set()
-    for node in tree.body:
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.asname:
-                    # `import unittest.mock as m` binds `m` to the submodule, so
-                    # only a plain `unittest` alias names the module we want.
-                    if alias.name == UNITTEST_MODULE:
-                        modules.add(alias.asname)
-                elif alias.name == UNITTEST_MODULE or alias.name.startswith(
-                    f"{UNITTEST_MODULE}."
-                ):
-                    # `import unittest.mock` binds `unittest` as well.
-                    modules.add(UNITTEST_MODULE)
-        elif isinstance(node, ast.ImportFrom):
-            from_unittest = node.level == 0 and node.module in (
-                UNITTEST_MODULE,
-                f"{UNITTEST_MODULE}.case",
-                f"{UNITTEST_MODULE}.async_case",
-            )
-            if from_unittest:
-                for alias in node.names:
-                    if alias.name in TEST_CASE_EXPORTS:
-                        direct.add(alias.asname or alias.name)
-
-    shadowed: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-            shadowed.add(node.name)
-        elif isinstance(node, ast.Assign):
-            for target in node.targets:
-                if isinstance(target, ast.Name):
-                    shadowed.add(target.id)
-        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
-            if isinstance(node.target, ast.Name):
-                shadowed.add(node.target.id)
-    return modules - shadowed, direct - shadowed
-
-
 def is_case_base(node: ast.expr, modules: set[str], direct: set[str]) -> bool:
     """Whether this base expression is one of `unittest`'s case classes."""
     if isinstance(node, ast.Name):
@@ -230,42 +166,52 @@ def rebound_names(node: ast.stmt) -> set[str]:
     return names
 
 
-def module_cases(
-    tree: ast.Module, modules: set[str], direct: set[str]
-) -> dict[str, ast.ClassDef]:
+def module_cases(tree: ast.Module) -> dict[str, ast.ClassDef]:
     """The case classes a module still exposes when it finishes running.
 
-    Two questions, and they are asked at different moments, which is the whole
-    shape of this function. **Whether a class is a case** is settled when its
-    `class` statement runs, because that is when Python evaluates its bases and
-    fixes `__bases__` - a later `class Base(TestCase)` cannot reach back and
-    make an earlier subclass of a plain `Base` into a case. **Whether the module
-    still exposes it** is settled at the end, because `unittest` reads the
-    module's attributes once it has finished importing.
+    Every name here is read in statement order, because that is when Python
+    binds it, and three separate rounds of this checker were wrong for the same
+    reason: a fact about a name was taken from the whole file rather than from
+    the point where it is used.
 
-    Deciding both from the final bindings was wrong in *both* directions, and
-    all four were measured: a base that becomes a case later, and a base named
-    before it is defined at all, were accepted although discovery collects
-    neither; a base that stops being a case later, and one rebound to a
-    non-class, were refused although discovery collects both - the subclass was
-    built while the base still was one.
+    - **Whether a base is a `unittest` case class** depends on the imports that
+      have run by then. A `from unittest import TestCase as Case` *after* a
+      `class Blockers(Case)` binds nothing in time - Python raises `NameError`
+      on the class statement and the module never imports - yet reading imports
+      file-wide accepted it.
+    - **Whether a class is a case** is settled when its `class` statement runs,
+      because that is when Python evaluates its bases and fixes `__bases__`. A
+      later `class Base(TestCase)` cannot reach back.
+    - **Whether the module still exposes it** is settled at the end, because
+      `unittest` reads the module's attributes once importing has finished.
 
-    Reading statements in order answers both at once and needs no fixed point: a
-    base has to exist by the time the class statement runs, so one forward pass
-    resolves any chain.
+    Reading in order also replaced a cruder rule it used to need: a name the
+    file defined anywhere was dropped outright, to avoid guessing which binding
+    won. Order answers that exactly - `from unittest import TestCase` followed
+    by `class TestCase:` leaves the class, and the reverse leaves the import.
 
-    Module scope only, for the same reason the imports are: `unittest` finds
-    cases by looking at the module's own attributes. A class nested inside
-    another class, defined inside a function, or written under a conditional the
-    module does not take is not one of them.
+    Module scope only, for the same reason: `unittest` finds cases among the
+    module's own attributes. A class nested in another class, defined inside a
+    function, or written under a conditional the module does not take is not
+    one of them.
 
     A decorated class is dropped rather than read, because a decorator returns
     whatever it likes and a parse cannot say what. That refuses one thing the
     runner does collect - `@unittest.skip` returns the class - which is a false
     failure, the direction this checker is allowed to be wrong in.
     """
+    # Names currently bound to the `unittest` module, and to one of its case
+    # classes. Matching on the trailing name alone would accept any class called
+    # `TestCase`, which a file can define itself.
+    modules: set[str] = set()
+    direct: set[str] = set()
     bound: dict[str, ast.ClassDef | None] = {}
     is_case: dict[str, bool] = {}
+
+    def forget(name: str) -> None:
+        modules.discard(name)
+        direct.discard(name)
+
     for node in tree.body:
         if isinstance(node, ast.ClassDef) and not node.decorator_list:
             # Resolved against what is bound *now*, before this class binds.
@@ -274,12 +220,39 @@ def module_cases(
                 or (isinstance(base, ast.Name) and is_case.get(base.id, False))
                 for base in node.bases
             )
+            forget(node.name)
             bound[node.name] = node
             is_case[node.name] = case
             continue
+
         for name in rebound_names(node):
+            forget(name)
             bound[name] = None
             is_case.pop(name, None)
+
+        # An import rebinds its names and then binds them to what it imported,
+        # so this runs after the clearing above rather than before it.
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.asname:
+                    # `import unittest.mock as m` binds `m` to the submodule, so
+                    # only a plain `unittest` alias names the module we want.
+                    if alias.name == UNITTEST_MODULE:
+                        modules.add(alias.asname)
+                elif alias.name == UNITTEST_MODULE or alias.name.startswith(
+                    f"{UNITTEST_MODULE}."
+                ):
+                    # `import unittest.mock` binds `unittest` as well.
+                    modules.add(UNITTEST_MODULE)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module in (
+            UNITTEST_MODULE,
+            f"{UNITTEST_MODULE}.case",
+            f"{UNITTEST_MODULE}.async_case",
+        ):
+            for alias in node.names:
+                if alias.name in TEST_CASE_EXPORTS:
+                    direct.add(alias.asname or alias.name)
+
     return {
         name: node
         for name, node in bound.items()
@@ -315,10 +288,8 @@ def python_tests(text: str) -> set[str]:
         # checker is not the place to report a syntax error.
         return set()
 
-    modules, direct = case_bindings(tree)
-
     found: set[str] = set()
-    for definition in module_cases(tree, modules, direct).values():
+    for definition in module_cases(tree).values():
         for item in definition.body:
             if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 if item.name.startswith(PYTHON_TEST_METHOD_PREFIX):
