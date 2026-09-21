@@ -11,6 +11,8 @@ test:
 
 repo-check:
 	python3 scripts/check_repo.py
+	python3 scripts/check_msrv_alignment.py
+	python3 scripts/check_contract_citations.py
 
 docs:
 	python3 scripts/update_component_docs.py --write

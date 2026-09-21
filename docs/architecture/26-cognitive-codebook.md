@@ -252,11 +252,43 @@ members past its end — and since the ids were bare integers, an index past the
 was equally unremarkable.
 
 `PtrA0Config` now derives all three from a `Codebook`, which is the only way to
-obtain them. `provenance_bucket_count` stays a free parameter and is **the one
-recorded exception**: provenance bucketing is a research-local hashing of sources
-with no kernel taxonomy behind it, so there is no family to size it from. Naming it
-an exception is the point — an unexamined free parameter next to three derived ones
-is how the next mismatch gets in.
+obtain them. `provenance_bucket_count` is **the one recorded exception**: provenance
+bucketing is a research-local hashing of sources with no kernel taxonomy behind it,
+so it has no members to assign codes to, and a family with no members is not a
+family. Naming it an exception is the point — an unexamined free parameter next to
+three derived ones is how the next mismatch gets in.
+
+Naming it, though, was all that was done at first, and a name is prose. The width
+lived as the literal `64` in one Rust file, where nothing outside Rust could see it
+and no check compared it to anything — so a dataset builder bucketing into 128 and
+a model built at 64 would have agreed about nothing and complained about nothing.
+The failure is the one the codebook exists to prevent, one level down: ids bucketed
+into 64 index a 128-row table perfectly well, and the model reads a provenance it
+was never given.
+
+So the exception is recorded where the taxonomy is recorded. `ptr_types::EXCEPTIONS`
+holds its name, width and reason; the generated artifact carries an `exceptions`
+section beside `families`, so everything outside Rust reads one number; and A0's
+default resolves from that record through a `const fn`, which means removing the
+record fails the **build** rather than falling back to a plausible 64.
+
+**An exception stays outside `canonical_bytes`.** The fingerprint commits to an
+assignment of codes and an exception assigns none, so folding one in would move the
+fingerprint of a version whose codes had not moved — invalidating every dataset,
+checkpoint and run manifest bound to it for a change that renamed nothing. Adding
+this section left the fingerprint at
+`2b6f8175a7a7bb648910e7acb17dcfcff5149834f2fe87355c5d2c4524c113a3`, unchanged, and
+a test asserts the exclusion rather than leaving it to the next person to notice.
+
+**It is a recorded default, not a constraint.** `with_provenance_buckets` still
+takes any width, because an experiment may legitimately bucket differently. What
+stops two widths meeting silently is the embedding's own shape: a checkpoint
+written at one width is refused by a model built at another. Worth being exact
+about *which* check that is — it is burn's record validation, which reports a shape
+mismatch and not a field name. The identity header does not consult the width at
+all, because the width is not a family and the header has no slot for one. Both
+facts are asserted in `tests/checkpoint.rs` rather than assumed, since "the header
+checks it" is what a reader would otherwise suppose.
 
 ### Codes are minted, not typed
 
@@ -368,14 +400,38 @@ check.
   The artifact carries its assignment; the committed facts are attached when a
   runtime binds it, and there is no training loop here that does so as part of
   saving. The seal is the recorded form, and producing one is a separate step.
-- **The codebook version comparison in `forward` is unreachable today.** One
-  frozen version means no test can construct a foreign grid from outside the
-  crate. It is a guard for the second version, not a tested path.
+- **The codebook version comparison in `forward` is entered by a test, which is
+  weaker than a second version existing.** It used to be unreachable: one frozen
+  version means `Codebook::at` refuses every other, and `CodeGrid`'s version is
+  private, so nothing outside the crate could build a foreign grid. A guard nobody
+  has ever entered is a guard whose behaviour is a claim, so a `cfg(test)` module
+  inside the crate relabels a well-formed grid as version 2 and drives both
+  branches — which is the whole hazard in one operation: valid codes, right shape,
+  only the assignment they were minted under changed.
+
+  Two details are what make those tests evidence. Each names its guard's **full**
+  message, because both guards say "another codebook version" and a shorter
+  expectation would let a test aimed at the slot guard pass when the epistemic one
+  fired; and there is a control, because `forward` also panics on a batch mismatch
+  and three dimension checks, so a bare `should_panic` passes on any of five
+  unrelated faults. Removing either guard fails exactly the test aimed at it.
+
+  What is still true: this is a test-only constructor, not a second version. The
+  guard has never been exercised by a real foreign artifact, and it will not be
+  until there is one.
 - **The header is not a manifest.** It records identity, not architecture: a
   checkpoint loaded into a differently shaped model is refused by burn's own
   record validation, which reports shapes rather than saying which model it is.
 - **`provenance_bucket_count` remains outside the codebook**, by decision and not
-  by omission. Its width is unchecked against anything.
+  by omission — but it is no longer unchecked. Its width is a recorded exception
+  in `ptr_types::EXCEPTIONS`, published in the artifact's `exceptions` section, and
+  resolved into A0's default by a `const fn` so a missing record fails the build.
+  What is still true is narrower and worth keeping: **the width is checked by
+  shape, not by name.** A checkpoint at another width is refused by burn's record
+  validation reporting a tensor mismatch, and the identity header never looks at
+  it. Naming that refusal would mean carrying a non-family width in the header,
+  which is a format change to `CheckpointHeader` and a decision about what a
+  checkpoint's identity is for.
 - **A consumer can still misuse `slots`.** The admission travels with the output,
   but nothing forces a caller to apply it. Zeroing the excluded rows would hide a
   real zero vector, so the mask is supplied rather than baked in.

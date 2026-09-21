@@ -126,11 +126,18 @@ archives.
 Current state of the retirement report, which is a real result rather than a
 placeholder:
 
-| Package | Pinned | Newest published | |
+| Package | Pinned | Newest published | Reported state |
 |---|---|---|---|
-| macerator | 0.3.4 | 0.4.0 | candidate |
-| netlink-packet-core | 0.8.2 | 0.9.0 | candidate |
+| macerator | 0.3.4 | 0.4.0 | **not a candidate** — 0.4.0 still declares `paste ^1`, so it does not satisfy `retire_when` |
+| netlink-packet-core | 0.8.2 | 0.9.0 | **blocked** — 0.9.0 is paste-free, and `netdev 0.45.1`, `netlink-packet-route 0.31.0`, `netlink-proto 0.12.2` and `netwatch 0.19.3` require `^0.8.x` |
 | the other 19 | — | equal to pinned | no upgrade can retire them |
+
+Both were reported as `candidate` until the checker learned to ask about the
+condition rather than the version number, and this table said so with them. **The
+number of takeable retirements is zero**, and it is zero for two different
+reasons: one release does not satisfy its condition, the other satisfies it and
+is refused by its dependents. Retiring the second means moving those four
+dependents, not raising the vendored copy.
 
 The nineteen are already at the newest published version: the current upstream
 release still carries the `paste` dependency the alias exists to redirect.
@@ -160,11 +167,56 @@ Negative, one per route back in:
   produces artifacts and checks. Whether a particular distribution satisfies a
   particular licence is not something a generator decides, and the document says
   so in its own header.
-- **Retirement is not performed.** The two candidates are reported, not taken.
-  Moving a patch requires reading the upstream change, rerunning the affected
-  feature/target/MSRV tests, removing the path patch and the source copy and
-  regenerating both provenance inventories — the rule
+- **Retirement is not performed, and neither of the two was ever takeable.** This
+  document previously said "the two candidates are reported, not taken", which
+  reads as effort not yet spent. It was wrong in a way worth recording, because
+  the error was the same one this gate exists to catch — a claim that cannot
+  notice when it stops being true — one level up, in the checker rather than in
+  the prose. The report said CANDIDATE whenever the observed upstream version
+  outranked the pinned one, which asks about a version number and not about the
+  condition in `retire_when`:
+  - **`macerator 0.4.0` never satisfied it.** It still declares `paste ^1`, so the
+    alias it would retire has exactly as much left to redirect as before. It was
+    a candidate only by arithmetic on a version string.
+  - **`netlink-packet-core 0.9.0` does satisfy it** — the release is paste-free —
+    and is refused by its dependents: `netdev 0.45.1` at `^0.8`,
+    `netlink-packet-route 0.31.0` at `^0.8.0`, `netlink-proto 0.12.2` and
+    `netwatch 0.19.3` at `^0.8.1`, none of which admits anything in `0.9`.
+    `0.9.0` is in fact already in this tree for other dependents, which shows
+    plainly that presence upstream is not what decides whether a patch can go.
+
+  The checker now reports three states — not a candidate, blocked by named
+  dependents, or a genuine candidate — and this tree has no package in the third.
+  **The actionable for a blocked package is moving its dependents**, not raising
+  the vendored version: both patches use the renamed-key form, which patches one
+  specific version, so bumping the copy past what a dependent requires leaves that
+  dependent on the *unpatched* upstream while cargo merely notes that the patch
+  went unused. Moving a patch still requires reading the upstream change, rerunning
+  the affected feature/target/MSRV tests, removing the path patch and the source
+  copy and regenerating both provenance inventories — the rule
   `VENDOR_PATCH_POLICY.md` already states.
+- **A dependent's requirement is an observation, not a repository fact.** The
+  checker stays offline, and that property is kept deliberately rather than traded
+  to fix a report. A lockfile records resolved versions and never requirements,
+  and none of these dependents is vendored, so `blocked_by` records each
+  requirement the way `upstream_observed` is recorded: dated, refreshed by
+  `refresh_vendor_upstream.py`, visible rather than absent. What *is* re-derived
+  offline is the dependent set, in both directions — a dependent the lockfile
+  shows and the record omits fails, and so does a recorded dependent the lockfile
+  does not pin at that version.
+- **An optional dependent no lockfile can show still constrains a bump.**
+  `burn-flex 0.22.0-pre.3` requires `macerator ^0.3.4` optionally and is not
+  currently selected, so it appears in no resolved graph. It is recorded with
+  `in_lockfile = false` rather than dropped.
+- **Whether an upstream release satisfies its condition cannot be checked here.**
+  `upstream_retire_when` is an observation like the rest. For the `paste-alias`
+  class the signal is mechanical — the release either declares a dependency on
+  `paste` or does not — but reading it needs the index. For `raft-protobuf` there
+  is no mechanical signal at all: "carries that migration" is something a person
+  reads, and the class records `retire_when_signal: null` rather than pretending
+  otherwise. A record that misstated it would still not produce a false
+  actionable, because the blocker check runs regardless — but it would misstate
+  the reason.
 - **Observations age.** The checker reports the oldest date and deliberately does
   not fail on it, so a stale observation is visible rather than blocking.
   Refreshing stays a deliberate online step.

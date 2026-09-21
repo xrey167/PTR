@@ -3588,6 +3588,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "ptrctl"
+version = "0.1.0"
+dependencies = [
+ "ptr-config",
+]
+
+[[package]]
+name = "ptrd"
+version = "0.1.0"
+dependencies = [
+ "ptr-config",
+ "ptr-runtime",
+ "ptr-server",
+ "tokio",
+]
+
+[[package]]
 name = "quick-xml"
 version = "0.42.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

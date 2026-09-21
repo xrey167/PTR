@@ -142,13 +142,38 @@ impl<T: CognitiveType> CodeGrid<T> {
     }
 }
 
+/// The name under which the provenance width is recorded in the kernel.
+pub const PROVENANCE_EXCEPTION: &str = "provenance_bucket_count";
+
+/// The recorded width for [`PROVENANCE_EXCEPTION`], read from the kernel rather
+/// than written here.
+///
+/// A literal in this file is a number with no home: invisible to Python, to a
+/// dataset builder and to every check in the repository, so nothing could compare
+/// it to anything. Resolving it from [`ptr_types::EXCEPTIONS`] gives it one home,
+/// and the `const` panics at compile time if the record is ever removed — a
+/// missing exception is a build failure rather than a silent fallback to 64.
+pub const PROVENANCE_BUCKET_COUNT: usize = match ptr_types::exception_width(PROVENANCE_EXCEPTION) {
+    Some(width) => width as usize,
+    None => panic!("the kernel records no width for provenance_bucket_count"),
+};
+
 #[derive(Clone, Debug)]
 pub struct PtrA0Config {
     pub vocab_size: usize,
     /// Provenance bucketing is **not** a codebook family: it is a research-local
-    /// hashing of sources with no kernel taxonomy behind it, so its width stays a
-    /// free parameter. Recorded as a deliberate exception rather than pretended
-    /// into the codebook — see `docs/architecture/26-cognitive-codebook.md`.
+    /// hashing of sources with no kernel taxonomy behind it, so it has no members
+    /// to assign codes to. Its width is a *recorded exception* rather than a
+    /// number invented here — [`ptr_types::EXCEPTIONS`] holds it and
+    /// `datasets/generated/codebook.json` carries it, so a dataset builder and a
+    /// model read one value instead of each picking their own. See
+    /// `docs/architecture/26-cognitive-codebook.md`.
+    ///
+    /// It remains settable, because the exception is a *recorded default* and not
+    /// a constraint: a experiment may legitimately bucket differently. What stops
+    /// two widths meeting silently is the embedding's own shape — a checkpoint
+    /// written at one width is refused by a model built at another, asserted in
+    /// `tests/checkpoint.rs`.
     pub provenance_bucket_count: usize,
     pub d_model: usize,
     pub latent_steps: usize,
@@ -171,7 +196,7 @@ impl PtrA0Config {
     pub fn at_codebook(vocab_size: usize, d_model: usize, codebook: Codebook) -> Self {
         Self {
             vocab_size,
-            provenance_bucket_count: 64,
+            provenance_bucket_count: PROVENANCE_BUCKET_COUNT,
             d_model,
             latent_steps: 0,
             codebook,
@@ -565,5 +590,122 @@ mod attention_tests {
             .expect("bias gradient is connected");
         let magnitude: f32 = gradient.abs().sum().into_scalar();
         assert!(magnitude.is_finite() && magnitude > 1.0e-4);
+    }
+}
+
+/// The codebook-version guard in `forward`, entered.
+///
+/// `26-cognitive-codebook.md` recorded this comparison as unreachable: one frozen
+/// version means [`Codebook::at`] refuses every other, and [`CodeGrid`]'s version
+/// is private, so no test outside this crate can build a foreign grid. A guard
+/// nobody has ever entered is a guard whose behaviour is a claim — the repository's
+/// own rule, that a test which has never failed is not evidence it can, applies
+/// just as well to a branch never taken.
+///
+/// These tests enter it from inside the module, where the field is reachable. Two
+/// details make them evidence rather than decoration:
+///
+/// * each names its guard's **full** message. Both guards say "another codebook
+///   version", so a shorter `expected` would let a test aimed at the slot guard
+///   pass when the epistemic one fired.
+/// * `forward` also panics on a batch mismatch and on three dimension checks, so a
+///   `should_panic` with no message at all passes on any of five unrelated faults.
+#[cfg(test)]
+mod codebook_guard_tests {
+    use super::*;
+    use ptr_types::Validity;
+
+    const VOCAB: usize = 16;
+    const D_MODEL: usize = 8;
+
+    /// A version this build has no tables for. `Codebook::at` refuses it, which is
+    /// exactly why the guard cannot be reached from outside.
+    const FOREIGN: CodebookVersion = CodebookVersion(2);
+
+    /// Relabel a well-formed grid as another version, leaving its codes alone.
+    ///
+    /// This is the whole hazard in one function: the codes are valid, the tensor is
+    /// the right shape, and only the assignment they were minted under has changed.
+    /// Nothing downstream could notice.
+    fn relabel<T: CognitiveType>(grid: CodeGrid<T>, codebook: CodebookVersion) -> CodeGrid<T> {
+        CodeGrid { codebook, ..grid }
+    }
+
+    fn slot_types(device: &Device) -> CodeGrid<SemanticRole> {
+        let roles: [&[SemanticRole]; 1] = [&[SemanticRole::Goal, SemanticRole::Action]];
+        CodeGrid::new(&Codebook::V1, &roles, device).expect("assigned in v1")
+    }
+
+    fn epistemic(device: &Device) -> CodeGrid<EpistemicState> {
+        let states: [&[EpistemicState]; 1] = [&[EpistemicState::Observed, EpistemicState::Assumed]];
+        CodeGrid::new(&Codebook::V1, &states, device).expect("assigned in v1")
+    }
+
+    fn metadata(epistemic: CodeGrid<EpistemicState>, device: &Device) -> PtrSlotMetadata {
+        PtrSlotMetadata {
+            epistemic,
+            provenance_ids: Tensor::<2, Int>::zeros([1, 2], device),
+            confidence: Tensor::<2>::ones([1, 2], device),
+            admission: admission_bias(
+                &[ValidityMask::from_validities(&[Validity::Live; 2])],
+                device,
+            ),
+        }
+    }
+
+    fn run(slot_types: CodeGrid<SemanticRole>, epistemic: CodeGrid<EpistemicState>) {
+        let device = Device::flex();
+        let model = PtrA0Config::new(VOCAB, D_MODEL)
+            .with_provenance_buckets(8)
+            .init(&device);
+        let tokens = Tensor::<2, Int>::from_data([[1, 2, 3]], &device);
+        let slots = Tensor::<3>::zeros([1, 2, D_MODEL], &device);
+        let _ = model.forward(tokens, &slot_types, slots, metadata(epistemic, &device));
+    }
+
+    /// The control. Without it, the two refusals below are consistent with a
+    /// `forward` that panics on this input whatever the versions say.
+    #[test]
+    fn matching_versions_pass_through_the_guard() {
+        let device = Device::flex();
+        run(slot_types(&device), epistemic(&device));
+    }
+
+    #[test]
+    #[should_panic(expected = "slot codes come from another codebook version")]
+    fn slot_codes_from_another_version_are_refused() {
+        let device = Device::flex();
+        run(relabel(slot_types(&device), FOREIGN), epistemic(&device));
+    }
+
+    #[test]
+    #[should_panic(expected = "epistemic codes come from another codebook version")]
+    fn epistemic_codes_from_another_version_are_refused() {
+        let device = Device::flex();
+        run(slot_types(&device), relabel(epistemic(&device), FOREIGN));
+    }
+
+    /// The two guards are distinguishable, which is what makes the two tests above
+    /// separate evidence rather than one property asserted twice.
+    #[test]
+    fn the_two_guards_do_not_share_a_message() {
+        let device = Device::flex();
+        let slot = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run(relabel(slot_types(&device), FOREIGN), epistemic(&device))
+        }))
+        .expect_err("the slot guard fires");
+        let epistemic_panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run(slot_types(&device), relabel(epistemic(&device), FOREIGN))
+        }))
+        .expect_err("the epistemic guard fires");
+
+        let message = |payload: &Box<dyn std::any::Any + Send>| -> String {
+            payload
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_string()))
+                .expect("a string panic payload")
+        };
+        assert_ne!(message(&slot), message(&epistemic_panic));
     }
 }

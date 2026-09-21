@@ -7,7 +7,10 @@ fn main() {
     let command = args.next().unwrap_or_else(|| "doctor".into());
     let code = match command.as_str() {
         "doctor" => {
-            let root = args.next().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+            let root = args
+                .next()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("."));
             doctor(&root)
         }
         "layout" => {

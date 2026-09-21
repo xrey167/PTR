@@ -7,7 +7,7 @@
 use burn::{prelude::*, tensor::Int};
 use ptr_burn_a0::{
     admission_bias, header, load, save, CheckpointIoError, CodeGrid, PtrA0, PtrA0Config,
-    PtrSlotMetadata, EMBEDDED_FAMILIES, MODEL,
+    PtrSlotMetadata, EMBEDDED_FAMILIES, MODEL, PROVENANCE_BUCKET_COUNT, PROVENANCE_EXCEPTION,
 };
 use ptr_types::{
     CheckpointError, CheckpointHeader, CodeFamily, Codebook, CodebookVersion, EpistemicState,
@@ -263,4 +263,88 @@ fn every_prefix_of_a_checkpoint_is_refused() {
         );
     }
     load(&bytes, &config(), &device).expect("the whole checkpoint still loads");
+}
+
+/// The provenance width is a recorded exception, and the record is the only copy.
+///
+/// Every other cardinality an A0 table is sized by is the codebook's. This one is
+/// not a family and never will be — it has no members to assign codes to — so what
+/// keeps a dataset builder and a model from choosing two widths is that both read
+/// the same recorded number.
+#[test]
+fn the_default_provenance_width_is_the_one_the_artifact_publishes() {
+    // Deliberately read from the *file*, not from `exception_width`. A0's default
+    // is resolved from the kernel at compile time, so comparing the two in Rust
+    // compares a constant with itself and could not fail whatever either said.
+    // What can fail - and is the thing this exception exists to prevent - is a
+    // model built at one width while the artifact that a dataset builder reads
+    // publishes another.
+    let artifact = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../datasets/generated/codebook.json"
+    ))
+    .expect("datasets/generated/codebook.json is missing; run scripts/generate_codebook.py");
+
+    let built = PtrA0Config::new(VOCAB, D_MODEL).provenance_bucket_count;
+    assert!(
+        artifact.contains(&format!("\"name\": \"{PROVENANCE_EXCEPTION}\"")),
+        "the artifact records no {PROVENANCE_EXCEPTION} exception"
+    );
+    assert!(
+        artifact.contains(&format!("\"width\": {built}")),
+        "a model defaults to {built} provenance buckets and the artifact publishes \
+         another width; run scripts/generate_codebook.py"
+    );
+    assert_eq!(built, PROVENANCE_BUCKET_COUNT);
+}
+
+/// A checkpoint written at one provenance width is refused by a model at another.
+///
+/// This is the property that matters, and it is what makes the width *checked*
+/// rather than merely recorded: codes bucketed into 8 index a 4-row table just as
+/// well as a 4-bucket dataset's, and the model would read a provenance it was
+/// never given. Note what refuses it — the embedding's own shape, through burn's
+/// record validation, which reports a shape and not a field name. That is a real
+/// check reporting the wrong thing, which is why it is asserted here rather than
+/// assumed from the header: the header records identity, and this is architecture.
+#[test]
+fn a_checkpoint_is_refused_by_a_model_with_another_provenance_width() {
+    let device = Device::default();
+    let written = PtrA0Config::new(VOCAB, D_MODEL)
+        .with_provenance_buckets(8)
+        .with_latent_steps(1);
+    let narrower = PtrA0Config::new(VOCAB, D_MODEL)
+        .with_provenance_buckets(4)
+        .with_latent_steps(1);
+
+    let bytes = save(&written.init(&device)).expect("a model saves");
+
+    // The control first: the identical width loads, so the refusal below is about
+    // the width and not about this pair of configs or this artifact.
+    load(&bytes, &written, &device).expect("the same width loads");
+
+    match load(&bytes, &narrower, &device) {
+        Err(CheckpointIoError::Record(_)) => {}
+        Err(other) => panic!("refused, but not by the record: {other:?}"),
+        Ok(_) => panic!("an 8-bucket checkpoint loaded into a 4-bucket model"),
+    }
+}
+
+/// And the identity header does not carry the width, which is the honest limit.
+///
+/// `CheckpointHeader` records the codebook and one `TableSize` per [`CodeFamily`].
+/// The provenance width is not a family, so there is no slot for it and the header
+/// verifies without ever looking at it. The refusal above comes one step later,
+/// from the record. Asserted rather than left implied, because "the header checks
+/// it" is exactly what a reader would assume.
+#[test]
+fn the_header_verifies_without_consulting_the_provenance_width() {
+    let device = Device::default();
+    let wide = PtrA0Config::new(VOCAB, D_MODEL).with_provenance_buckets(8);
+    let narrow = PtrA0Config::new(VOCAB, D_MODEL).with_provenance_buckets(4);
+
+    let written = header(&wide.init(&device));
+    written
+        .verify(&narrow.codebook(), &EMBEDDED_FAMILIES)
+        .expect("the header agrees: the width it differs by is not a family");
 }

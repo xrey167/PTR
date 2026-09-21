@@ -1,6 +1,9 @@
 [workspace]
 resolver = "2"
-members = ["crates/ptr-*", "bins/ptr-*"]
+# `bins/ptr-*` needs the hyphen, so `ptrctl` and `ptrd` are named outright rather
+# than left to a glob that silently omits them. `check_repo.py` asserts that every
+# binary here is a member or an exclusion, so the next one cannot fall through.
+members = ["crates/ptr-*", "bins/ptr-*", "bins/ptrctl", "bins/ptrd"]
 exclude = ["fuzz", "model/burn-a0", "vendor/*"]
 
 [workspace.package]
