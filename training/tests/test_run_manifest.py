@@ -31,7 +31,7 @@ def _config_text(**codebook) -> str:
 class TrainingRunManifestTests(unittest.TestCase):
     def test_default_run_manifest_verifies_registered_dataset_bytes(self):
         manifest = build_manifest(ROOT / "training" / "configs" / "run-default.toml")
-        self.assertEqual(manifest["schema_version"], 4)
+        self.assertEqual(manifest["schema_version"], 5)
         self.assertEqual(manifest["dataset"]["name"], "typed_agent_behavior_v0_2")
         self.assertEqual(manifest["config"]["training"]["backend"], "dry-run")
         self.assertEqual(

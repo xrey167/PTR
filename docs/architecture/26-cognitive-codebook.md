@@ -386,7 +386,8 @@ bound under and edit the semantic input it read, and it is refused both times.
 neither, only one, an unknown version, or a moved assignment — four distinct
 reasons, no defaulting path. The artifact's own file digest goes into the run's
 provenance, so it reaches `input_fingerprint_sha256` rather than only being
-reported next to it. The manifest's `schema_version` moves to 4.
+reported next to it. The manifest's `schema_version` moved to 4 for that change, and
+to 5 for the checkpoint seal below.
 
 One loader serves the whole training stack: `ptr_training.codebook` reads the
 artifact, verifies that its recorded fingerprint really is the digest of its own
@@ -394,12 +395,57 @@ canonical bytes — an artifact that disagrees with itself identifies nothing �
 `validate_dataset.py` now uses it instead of keeping a second copy of the same
 check.
 
+## Sealing is part of saving
+
+A checkpoint carries the assignment it was produced under. It does not carry what
+it was produced *from* — the committed position, the semantic values that were
+read, the generations that were live — because those are facts about a journal,
+and the trainer does not hold one. That is why the artifact and its binding were
+produced by different programs, and why a checkpoint could reach a loader having
+never been bound at all.
+
+`ptrctl seal` is the step that joins them. It opens the journal, resolves each
+declared semantic key against its committed value and each declared target against
+its live generation, binds the artifact through the same `bind_state` path every
+other neural state uses, and writes two files: the sealed artifact, and the anchor.
+
+Three properties are worth stating, because each is a way the step could have been
+written and is not:
+
+- **It refuses before it writes.** A declaration naming a key the journal does not
+  have, an artifact whose assignment this build cannot reproduce, or a family name
+  this build does not define, all leave *nothing* behind. A sealed file beside a
+  checkpoint reads as a successful binding to anything that finds it, so a
+  half-completed seal is worse than none.
+- **The anchor is written separately.** A digest read back out of the artifact it
+  describes proves nothing; the anchor is evidence only while it is retained where
+  the artifact cannot rewrite it. Same rule as `CompactedAnchor`.
+- **Nothing in the declaration is trusted.** It says what the trainer claims to
+  have read and trained under; every entry is resolved against committed history,
+  and an entry that does not resolve is a refusal rather than an empty field.
+
+`bins/ptrctl/tests/seal.rs` drives the real binary against the same committed A0
+checkpoint the runtime's binding tests use. The control is the pair: a sealed
+artifact is admitted by the runtime that sealed it, and then the generation it was
+bound under is moved and the same bytes are refused — so the passing test is
+evidence about the binding rather than evidence that the test is inert.
+
+**Available is not the same as part of saving**, so the pipeline requires it. A run
+config's `[checkpoint]` section names the artifact, its seal and its anchor, and
+`build_manifest` refuses a run that names a checkpoint and stops there — one
+refusal per missing half, no defaulting path, exactly as the `[codebook]` section
+is treated. A run that keeps no checkpoint declares none and is not thereby wrong.
+The anchor is also checked to describe *that* seal: without it a run could retain
+some other state's anchor and every field would still parse.
+
+The three fingerprints reach `input_fingerprint_sha256` rather than sitting beside
+it, so a run whose checkpoint changed is a different run.
+
 ## What this does not close
 
-- **A trainer that writes a checkpoint is still not the thing that binds it.**
-  The artifact carries its assignment; the committed facts are attached when a
-  runtime binds it, and there is no training loop here that does so as part of
-  saving. The seal is the recorded form, and producing one is a separate step.
+- **A detached adapter's own checkpoints are still not covered.** Sealing is the
+  saving path's step, and an adapter that writes weights outside it produces an
+  artifact nothing here binds. What closes that is a settlement channel, not this.
 - **The codebook version comparison in `forward` is entered by a test, which is
   weaker than a second version existing.** It used to be unreachable: one frozen
   version means `Codebook::at` refuses every other, and `CodeGrid`'s version is

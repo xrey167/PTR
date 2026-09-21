@@ -10,6 +10,7 @@ import sys
 import tomllib
 from pathlib import Path
 
+from ptr_training import checkpoint as checkpoint_seal
 from ptr_training import codebook as codebook_artifact
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -142,6 +143,14 @@ def build_manifest(config_path: Path) -> dict:
         "artifact": codebook_artifact.artifact_fingerprint(),
     }
 
+    # A run that kept a checkpoint has to record the seal that was produced when
+    # it was saved. A run that kept none declares nothing and is not thereby wrong.
+    checkpoint = checkpoint_seal.require_seal(
+        cfg.get("checkpoint", {}),
+        ROOT,
+        where=f"{config_path.name} [checkpoint]",
+    )
+
     config_file = file_fingerprint(config_path)
     cargo_lock = file_fingerprint(ROOT / "Cargo.lock")
     uv_lock = file_fingerprint(ROOT / "training" / "uv.lock")
@@ -161,9 +170,11 @@ def build_manifest(config_path: Path) -> dict:
         "uv_lock": uv_lock,
         "codebook": codebook,
     }
+    if checkpoint is not None:
+        provenance["checkpoint"] = checkpoint
 
     return {
-        "schema_version": 4,
+        "schema_version": 5,
         "status": "prepared",
         "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "git_sha": git["sha"],
@@ -180,6 +191,7 @@ def build_manifest(config_path: Path) -> dict:
         "model_config": model_config,
         "hardware_profile": hardware_profile,
         "codebook": codebook,
+        "checkpoint": checkpoint,
         "cargo_lock_sha256": cargo_lock["sha256"],
         "uv_lock_sha256": uv_lock["sha256"],
         "input_fingerprint_sha256": input_fingerprint(provenance),

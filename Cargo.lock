@@ -3592,6 +3592,12 @@ name = "ptrctl"
 version = "0.1.0"
 dependencies = [
  "ptr-config",
+ "ptr-ledger",
+ "ptr-runtime",
+ "ptr-semdb",
+ "ptr-types",
+ "serde",
+ "toml",
 ]
 
 [[package]]
