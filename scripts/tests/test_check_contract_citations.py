@@ -210,6 +210,13 @@ class WhatUnittestCollects(unittest.TestCase):
     def errors(self):
         return mod.check(self.root)[0]
 
+    def case(self):
+        """A collected case, for the rebinding tests to then take apart."""
+        return (
+            "import unittest\n\n\nclass Blockers(unittest.TestCase):\n"
+            f"    def {self.NAME}(self):\n        pass\n\n\n"
+        )
+
     def test_a_test_method_of_a_test_case_counts(self):
         # The control. Every refusal below has to be about what was written and
         # not about the scanner failing to read Python at all.
@@ -450,6 +457,46 @@ class WhatUnittestCollects(unittest.TestCase):
             f"    def {self.NAME}(self):\n        pass\n"
         )
         self.assertEqual(len(self.errors()), 1)
+
+    def test_a_deleted_case_class_is_not_collected(self):
+        # The reported case. `del` leaves the module without that attribute, so
+        # discovery finds nothing.
+        self.python(self.case() + "del Blockers\n")
+        errors = self.errors()
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("is not a test", errors[0])
+
+    def test_a_for_target_unbinds_the_class(self):
+        self.python(self.case() + "for Blockers in [1]:\n    pass\n")
+        self.assertEqual(len(self.errors()), 1)
+
+    def test_a_with_target_unbinds_the_class(self):
+        self.python(self.case() + "import io\nwith io.StringIO() as Blockers:\n    pass\n")
+        self.assertEqual(len(self.errors()), 1)
+
+    def test_an_except_target_unbinds_the_class(self):
+        # Python unbinds an `except ... as` name at the end of the block, so the
+        # class is gone either way. This one is also the case that survived the
+        # first pass of the general rule, because the name is carried as a plain
+        # string rather than as a `Name` node.
+        self.python(
+            self.case()
+            + "try:\n    raise ValueError()\nexcept ValueError as Blockers:\n    pass\n"
+        )
+        self.assertEqual(len(self.errors()), 1)
+
+    def test_a_walrus_unbinds_the_class(self):
+        self.python(self.case() + "if (Blockers := 1):\n    pass\n")
+        self.assertEqual(len(self.errors()), 1)
+
+    def test_a_local_variable_of_the_same_name_leaves_the_class_alone(self):
+        # The control that keeps the rule from being "any mention rebinds": a
+        # function body is another scope, so this file's test is still collected
+        # and refusing it would be a false failure.
+        self.python(
+            self.case() + "def helper():\n    Blockers = 1\n    return Blockers\n"
+        )
+        self.assertEqual(self.errors(), [])
 
     def test_a_file_that_does_not_parse_defines_no_test(self):
         # Reporting a syntax error is not this checker's job, but crashing on one

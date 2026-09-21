@@ -184,6 +184,52 @@ def is_case_base(node: ast.expr, modules: set[str], direct: set[str]) -> bool:
     return False
 
 
+def rebound_names(node: ast.stmt) -> set[str]:
+    """Every module-scope name this statement binds, unbinds or rebinds.
+
+    Enumerating the statement kinds that rebind a name was the wrong shape and
+    kept being incomplete: first assignment and `def`, then `del`, and a probe
+    for `del` turned up four more in the same breath - a `for` target, a `with
+    ... as`, an `except ... as` (which Python unbinds again at the end of the
+    block) and a walrus. Each was a false pass against real discovery.
+
+    So this asks Python's own question instead: what does the statement bind?
+    Any `Store` or `Del` on a bare name counts, as does an import alias, a
+    `global`/`nonlocal` declaration, and the names `except ... as` and `match`
+    captures carry as plain strings rather than as `Name` nodes - which is how
+    `except` slipped through the first pass of this very rule. A `def`, `class` or `lambda` binds its own
+    name and then opens a new scope, so its body is not descended into - which
+    is why `def helper(): Blockers = 1` leaves a module-level `Blockers` alone,
+    a case the previous rule also got right and this one must not lose.
+    """
+    names: set[str] = set()
+    pending = [node]
+    while pending:
+        current = pending.pop()
+        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(current.name)
+            continue
+        if isinstance(current, ast.Lambda):
+            continue
+        if isinstance(current, ast.Name) and isinstance(current.ctx, (ast.Store, ast.Del)):
+            names.add(current.id)
+        elif isinstance(current, (ast.Import, ast.ImportFrom)):
+            for alias in current.names:
+                names.add(alias.asname or alias.name.split(".")[0])
+        elif isinstance(current, (ast.Global, ast.Nonlocal)):
+            names.update(current.names)
+        elif isinstance(current, ast.ExceptHandler) and current.name:
+            # Carried as a plain string rather than a `Name` node, which is how
+            # this one survived the first pass of the rule.
+            names.add(current.name)
+        elif isinstance(current, (ast.MatchAs, ast.MatchStar)) and current.name:
+            names.add(current.name)
+        elif isinstance(current, ast.MatchMapping) and current.rest:
+            names.add(current.rest)
+        pending.extend(ast.iter_child_nodes(current))
+    return names
+
+
 def module_classes(tree: ast.Module) -> dict[str, ast.ClassDef]:
     """The class each module-scope name is bound to when the module finishes.
 
@@ -194,9 +240,9 @@ def module_classes(tree: ast.Module) -> dict[str, ast.ClassDef]:
 
     Within that scope a name holds **one** object, the last thing bound to it -
     collecting every `class Blockers` in the file accepted a test from a
-    definition a later `class Blockers`, `Blockers = None` or `def Blockers`
-    had already replaced. All four were confirmed against real discovery, which
-    returns nothing for each.
+    definition a later statement had already replaced or removed. Statements are
+    read in order and the last binding wins; anything that is not a plain class
+    definition leaves the names it touches unresolved.
 
     A decorated class is dropped rather than read, because a decorator returns
     whatever it likes and a parse cannot say what. That refuses one thing the
@@ -205,20 +251,11 @@ def module_classes(tree: ast.Module) -> dict[str, ast.ClassDef]:
     """
     bound: dict[str, ast.ClassDef | None] = {}
     for node in tree.body:
-        if isinstance(node, ast.ClassDef):
-            bound[node.name] = None if node.decorator_list else node
-        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            bound[node.name] = None
-        elif isinstance(node, ast.Assign):
-            for target in node.targets:
-                if isinstance(target, ast.Name):
-                    bound[target.id] = None
-        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
-            if isinstance(node.target, ast.Name):
-                bound[node.target.id] = None
-        elif isinstance(node, (ast.Import, ast.ImportFrom)):
-            for alias in node.names:
-                bound[alias.asname or alias.name.split(".")[0]] = None
+        if isinstance(node, ast.ClassDef) and not node.decorator_list:
+            bound[node.name] = node
+            continue
+        for name in rebound_names(node):
+            bound[name] = None
     return {name: node for name, node in bound.items() if node is not None}
 
 
