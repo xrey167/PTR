@@ -242,6 +242,31 @@ impl ClusterMember {
         self.locked().take_installed_snapshot_matching(retained)
     }
 
+    /// Propose a change to who votes in this group, and drive it to quiescence.
+    ///
+    /// One voter at a time, and only from the leader — both for the reason
+    /// [`ptr_ledger::MembershipChange`] gives: consecutive configurations have to
+    /// overlap in a majority, or the group can split into two that each believe
+    /// they can commit.
+    ///
+    /// A member being added has to be admitted first, or its peers have nowhere
+    /// to send to it.
+    pub async fn propose_membership(
+        &self,
+        change: ptr_ledger::MembershipChange,
+    ) -> Result<Unreached, ClusterError> {
+        let messages = self
+            .locked()
+            .propose_membership(change)
+            .map_err(ClusterError::Node)?;
+        self.drive(messages).await
+    }
+
+    /// The voters this member currently believes the group has, ascending.
+    pub fn voters(&self) -> Vec<u64> {
+        self.locked().voters()
+    }
+
     /// Account for an installed snapshot: how many events its payload covers.
     pub fn resume_with_applied(&self, applied_events: u64) {
         self.locked().resume_with_applied(applied_events);

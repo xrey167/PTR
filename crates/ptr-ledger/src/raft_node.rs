@@ -14,7 +14,9 @@ use crate::raft_storage::FileRaftStorage;
 use crate::{decode_event, encode_event, integrity, CommittedEvent, LedgerEvent};
 use ptr_types::CommitIndex;
 use raft::codec::Message as _;
-use raft::prelude::{Config as RaftConfig, Entry, EntryType, Message, RawNode};
+use raft::prelude::{
+    ConfChange, ConfChangeType, Config as RaftConfig, Entry, EntryType, Message, RawNode,
+};
 use raft::StateRole;
 use std::path::Path;
 
@@ -89,6 +91,22 @@ impl SnapshotAnchorMismatch {
             Self::Digest => "PTR_SNAPSHOT_ANCHOR_DIGEST",
         }
     }
+}
+
+/// A change to who votes in this group.
+///
+/// One voter at a time, deliberately. Raft's single-step membership change is
+/// safe only because consecutive configurations overlap in a majority; changing
+/// two at once can split the group into two disjoint majorities that each
+/// believe they can commit. Offering a batch API would make that mistake
+/// available, so it is not offered.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MembershipChange {
+    /// Add a voter. The new member must already exist and be reachable, or the
+    /// group loses the ability to commit until it is.
+    AddVoter(u64),
+    /// Remove a voter.
+    RemoveVoter(u64),
 }
 
 /// A Raft member over durable state.
@@ -264,6 +282,51 @@ impl RaftNode {
         self.installed = None;
     }
 
+    /// Propose a change to the group's membership.
+    ///
+    /// Only a leader may: a follower proposing one would be asking peers to
+    /// accept a configuration nobody agreed, so this refuses rather than
+    /// forwarding. The change is not in effect when this returns — it is an
+    /// entry like any other, and it takes hold when it commits and
+    /// [`RaftNode::apply_committed`] applies it, which is what makes a
+    /// membership change survive a restart.
+    pub fn propose_membership(&mut self, change: MembershipChange) -> Result<Vec<Message>, String> {
+        if !self.is_leader() {
+            return Err("only a leader may propose a membership change".into());
+        }
+        let mut cc = ConfChange::default();
+        match change {
+            MembershipChange::AddVoter(id) => {
+                cc.set_change_type(ConfChangeType::AddNode);
+                cc.node_id = id;
+            }
+            MembershipChange::RemoveVoter(id) => {
+                cc.set_change_type(ConfChangeType::RemoveNode);
+                cc.node_id = id;
+            }
+        }
+        self.node
+            .propose_conf_change(Vec::new(), cc)
+            .map_err(|error| error.to_string())?;
+        self.drain()
+    }
+
+    /// The voters this member currently believes the group has, in ascending
+    /// order.
+    ///
+    /// *Believes*: a member that has not yet applied a committed change still
+    /// reports the old set, for the same reason `is_leader` is a belief.
+    ///
+    /// Sorted because raft's own `ConfState` keeps voters in whatever order the
+    /// changes arrived — `[3, 1, 4, 2]` for a group of four — and a membership
+    /// answer that depends on arrival order is one callers would compare wrongly.
+    pub fn voters(&self) -> Vec<u64> {
+        let store = self.node.raft.raft_log.store.clone();
+        let mut voters = store.wl().conf_state().voters.clone();
+        voters.sort_unstable();
+        voters
+    }
+
     /// Stand for election, returning the messages that asks for votes.
     pub fn campaign(&mut self) -> Result<Vec<Message>, String> {
         self.node.campaign().map_err(|error| error.to_string())?;
@@ -373,6 +436,26 @@ impl RaftNode {
     /// different sequences on purpose.
     fn apply_committed(&mut self, entries: Vec<Entry>) -> Result<(), String> {
         for entry in entries {
+            // A configuration change is not a ledger event, but it is not
+            // nothing either: until it is applied here raft's own view of the
+            // group is unchanged, so an entry that committed would have no
+            // effect and the recorded configuration would disagree with the
+            // log that produced it.
+            if entry.get_entry_type() == EntryType::EntryConfChange {
+                let mut cc = ConfChange::default();
+                cc.merge_from_bytes(entry.data.as_ref())
+                    .map_err(|error| error.to_string())?;
+                let state = self
+                    .node
+                    .apply_conf_change(&cc)
+                    .map_err(|error| error.to_string())?;
+                let store = self.node.raft.raft_log.store.clone();
+                store
+                    .wl()
+                    .set_conf_state(state)
+                    .map_err(|error| error.to_string())?;
+                continue;
+            }
             if entry.data.is_empty() || entry.get_entry_type() != EntryType::EntryNormal {
                 continue;
             }

@@ -10,8 +10,8 @@
 //! second implementation of the thing under test.
 
 use ptr_ledger::raft_node::{
-    decode_message, encode_message, RaftNode, RetainedSnapshotAnchor, SnapshotAnchorMismatch,
-    MAX_MESSAGE_BYTES,
+    decode_message, encode_message, MembershipChange, RaftNode, RetainedSnapshotAnchor,
+    SnapshotAnchorMismatch, MAX_MESSAGE_BYTES,
 };
 use ptr_ledger::{CommittedEvent, LedgerEvent};
 use ptr_types::{CapsuleId, Generation, ProjectId};
@@ -796,5 +796,136 @@ fn the_anchor_check_accepts_the_genuine_pair_and_distinguishes_having_nothing() 
             .node(2)
             .take_installed_snapshot_matching(retained_for(&state, covered)),
         Err(SnapshotAnchorMismatch::NothingInstalled)
+    );
+}
+
+#[test]
+fn a_leader_removes_a_voter_and_the_new_configuration_survives_a_restart() {
+    let temp = Temp::new("member-remove");
+    let mut cluster = Cluster::open(&temp);
+    cluster.elect(1);
+    cluster.propose(1, 1).unwrap();
+
+    assert_eq!(
+        cluster.get(1).voters(),
+        vec![1, 2, 3],
+        "the group starts as the three it was opened with"
+    );
+
+    // Member 3 is already gone, which is the case a removal is usually for. It
+    // also keeps the test honest: a removed member that is still being stepped
+    // would refuse the message, since raft will not step a peer that is no longer
+    // in its configuration.
+    cluster.unreachable.insert(3);
+    let messages = cluster
+        .node(1)
+        .propose_membership(MembershipChange::RemoveVoter(3))
+        .expect("a leader may propose");
+    cluster.settle(messages);
+
+    assert_eq!(
+        cluster.get(1).voters(),
+        vec![1, 2],
+        "the leader applied the change it committed"
+    );
+    assert_eq!(
+        cluster.get(2).voters(),
+        vec![1, 2],
+        "and so did the follower that replicated it"
+    );
+
+    // The point of the gate: a configuration that exists only in memory is a
+    // membership change no restart can honour. Reopen member 2 from its own disk
+    // and ask it again.
+    drop(cluster);
+    let reopened = RaftNode::open(&temp.member(2), 2, &VOTERS).unwrap();
+    assert_eq!(
+        reopened.voters(),
+        vec![1, 2],
+        "the recorded configuration is the authority on reopen, not the voters \
+         passed to open"
+    );
+}
+
+#[test]
+fn a_leader_adds_a_voter_and_the_new_member_joins_the_group() {
+    let temp = Temp::new("member-add");
+    let mut cluster = Cluster::open(&temp);
+    cluster.elect(1);
+    cluster.propose(1, 1).unwrap();
+
+    // The joiner is opened knowing only itself; what makes it a voter is the
+    // committed change, not the list it was opened with.
+    cluster
+        .nodes
+        .push(RaftNode::open(&temp.member(4), 4, &[4]).unwrap());
+
+    let messages = cluster
+        .node(1)
+        .propose_membership(MembershipChange::AddVoter(4))
+        .expect("a leader may propose");
+    cluster.settle(messages);
+
+    assert_eq!(
+        cluster.get(1).voters(),
+        vec![1, 2, 3, 4],
+        "the group now counts four voters"
+    );
+    let heartbeat = cluster.node(1).tick().unwrap();
+    cluster.settle(heartbeat);
+    assert_eq!(
+        cluster.events(4),
+        cluster.events(1),
+        "and the joiner is caught up to exactly what the leader committed"
+    );
+}
+
+#[test]
+fn a_follower_cannot_propose_a_membership_change() {
+    let temp = Temp::new("member-follower");
+    let mut cluster = Cluster::open(&temp);
+    cluster.elect(1);
+
+    let error = cluster
+        .node(2)
+        .propose_membership(MembershipChange::RemoveVoter(3))
+        .expect_err("a follower asking peers to accept a configuration nobody agreed");
+    assert!(error.contains("only a leader"), "{error}");
+}
+
+/// The control.
+///
+/// The assertions above would hold just as well if `voters()` reported a
+/// constant, so the observable has to be shown to move only when a change
+/// actually commits: a refused proposal must leave it exactly as it was.
+#[test]
+fn a_refused_proposal_leaves_the_configuration_untouched() {
+    let temp = Temp::new("member-control");
+    let mut cluster = Cluster::open(&temp);
+    cluster.elect(1);
+
+    let before = cluster.get(2).voters();
+    assert!(cluster
+        .node(2)
+        .propose_membership(MembershipChange::RemoveVoter(3))
+        .is_err());
+    assert_eq!(
+        cluster.get(2).voters(),
+        before,
+        "nothing was proposed, so nothing changed"
+    );
+
+    // And the same member reports the change once a leader does commit one, so
+    // the equality above is not simply an inert reading.
+    cluster.unreachable.insert(3);
+    let messages = cluster
+        .node(1)
+        .propose_membership(MembershipChange::RemoveVoter(3))
+        .unwrap();
+    cluster.settle(messages);
+    assert_ne!(
+        cluster.get(2).voters(),
+        before,
+        "the same observable moves when a change really commits"
     );
 }

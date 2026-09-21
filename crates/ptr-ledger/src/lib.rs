@@ -666,7 +666,7 @@ pub mod raft_node;
 pub mod raft_storage;
 #[cfg(feature = "raft-rs-backend")]
 pub use raft_node::{
-    decode_message, encode_message, InstalledSnapshot, RaftMessage, RaftNode,
+    decode_message, encode_message, InstalledSnapshot, MembershipChange, RaftMessage, RaftNode,
     RetainedSnapshotAnchor, SnapshotAnchorMismatch, MAX_MESSAGE_BYTES,
 };
 #[cfg(feature = "raft-rs-backend")]

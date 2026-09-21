@@ -274,6 +274,32 @@ attempt to. A member that accepts a snapshot from the leader its own protocol
 elected is the design. `take_installed_snapshot` remains for the deployment that
 has no second channel, and says in its own documentation what it is trusting.
 
+## Membership is negotiated, not just recorded
+
+A configuration used to be something each member recorded and recovered, and
+nothing could change it: `raft_storage.rs` encodes and decodes `EntryConfChange`
+— it must, since it stores whatever raft hands it — but nothing anywhere proposed
+one, and `apply_committed` skipped the entry type outright. So the storage could
+durably record a membership change that no code could initiate, and a committed
+change would have had no effect on raft's own view of the group.
+
+Both halves are implemented. `propose_membership` refuses from a follower rather
+than forwarding, because a follower proposing would be asking peers to accept a
+configuration nobody agreed. Applying happens where every other committed entry
+is applied, and writes the resulting `ConfState` through `set_conf_state`, so the
+change is durable at the same moment it takes effect rather than at the next
+restart.
+
+`voters()` answers in ascending order. Raft's own `ConfState` keeps voters in
+arrival order — a group of four reports `[3, 1, 4, 2]` — and a membership answer
+whose order depends on how the changes arrived is one callers compare wrongly.
+
+The test that matters is the restart: a four-member removal is committed, the
+cluster is dropped, and a member is reopened from its own disk with the *original*
+three passed to `open`. It reports the new configuration, because the recorded one
+is the authority — which is the property that makes a membership change more than
+an in-memory opinion.
+
 ## Durable fencing, as distinct from protocol fencing
 
 Raft's rules already stop a deposed leader from committing: it cannot gather a
@@ -309,9 +335,13 @@ Nothing here provides that, and #15's Gate 2 asked for it.
 - **Nothing runs the loop.** `ptr-cluster` provides the pieces and no deployment
   drives them: there is no accept/tick service, no policy for a member that stops
   answering, and no backpressure toward one that answers slowly.
-- **Membership is recorded, never negotiated.** Each member records a
-  configuration and recovers it; adding or removing a voter over the wire is not
-  implemented.
+- **Membership changes one voter at a time, and a joiner must be admitted
+  first.** `propose_membership` adds or removes a single voter; a batch API is
+  not offered, because raft's single-step change is safe only while consecutive
+  configurations overlap in a majority and changing two at once can produce two
+  disjoint majorities. A member being added still has to be `admit`ted so its
+  peers have an address for it — the configuration says who votes, not where they
+  are, and nothing here discovers that.
 - **Every exchange opens a connection.** Correct and wasteful. Session reuse is
   listed as missing rather than quietly assumed.
 - **Local file locks fence nothing across nodes, and neither does consensus alone.**
