@@ -430,7 +430,7 @@ fn a_restarted_member_restores_exactly_the_leader_s_committed_state() {
 /// A snapshot payload is the *application's* state, and this is this test's
 /// application. Encoding it here rather than in the library is the point: the raft
 /// layer carries opaque bytes and has no opinion about them, which is what lets a
-/// PTR deployment put a PTRCS001 compacted snapshot there instead of a second
+/// PTR deployment put a PTRCS002 compacted snapshot there instead of a second
 /// artifact invented for raft.
 fn encode_state(events: &[CommittedEvent]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(events.len() * 8);

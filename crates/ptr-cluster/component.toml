@@ -11,7 +11,7 @@ implemented = [
   "A refused frame is answered with an empty batch rather than leaving the peer hanging: the refusal is the receiver's business, not a diagnosis to hand out",
   "A member that cannot be reached is reported rather than raised: a leader that abandoned a proposal because one follower was down could not commit while any member is down, so a transport failure toward one peer is recorded and the round continues while a forged sender or a malformed frame still aborts",
   "One exchange has a deadline, because how long to wait for a member is this layer's policy and not the peer's: without one a member that stopped answering holds up every round it appears in",
-  "Snapshot payloads are carried unread, and the test carries a real PTRCS001 compacted snapshot end to end: it is recorded by the leader, arrives byte for byte at a member the leader cannot replay to, and a runtime restores from exactly those bytes",
+  "Snapshot payloads are carried unread, and the test carries a real PTRCS002 compacted snapshot end to end: it is recorded by the leader, arrives byte for byte at a member the leader cannot replay to, and a runtime restores from exactly those bytes",
   "No background loop, timer or retry policy: the caller drives accept and dispatch, which keeps scheduling decisions where they can be made deliberately and keeps the tests free of sleeps",
   "The whole composition is feature-gated, so iroh and raft stay out of every other workspace build exactly as ptr-net and ptr-ledger keep their own backends out",
 ]
@@ -40,6 +40,6 @@ checks = [
   "a refused frame still receives an answer, and that answer is an empty batch",
   "refusing a stranger's frame does not take a serving member off the air: after the refusal an admitted member still reaches it, so an unadmitted peer cannot silence an admitted one by connecting once",
   "a member that cannot be reached is named in the report while the write is still decided by the majority that answered",
-  "a real PTRCS001 snapshot travels as the payload to a restarted member the leader compacted past, arrives byte for byte, and a runtime restores the state it described from exactly those bytes",
+  "a real PTRCS002 snapshot travels as the payload to a restarted member the leader compacted past, arrives byte for byte, and a runtime restores the state it described from exactly those bytes",
   "frame codec unit tests: round trip including an empty batch, every prefix refused, foreign bytes, trailing bytes, an unknown layout version, an invented count refused by the bound rather than by allocation, an oversize frame refused before parsing, and one distinct code per refusal",
 ]

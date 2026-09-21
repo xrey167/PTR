@@ -48,7 +48,7 @@ missing = [
   "Hardware power-loss evidence; anchor key custody, rotation and hardware-backed sealing",
   "A composition of RaftNode over ptr-net transport on ALPN_RAFT: the group is driven by a test's queue, so there is no framing, no authenticated sender, no bound on what a peer may send and no evidence a real connection carries these messages; ptr-ledger must not depend on transport, so the composition needs its own home",
   "Membership changes: the configuration is recorded and recovered, but adding or removing a voter is not implemented",
-  "Any relation between raft's own log floor and the ledger's retention floor: a snapshot can be recorded and transferred, but the two floors are still independent",
+  "Any relation between raft's own log floor and the ledger's retention floor: a snapshot can be recorded and transferred, but the two floors are still independent. The consequence that had teeth is closed elsewhere — a compacted snapshot now carries the at-most-once obligations the raised floor removes — so what is left here is the structural relation, not a lost guarantee",
   "fsync/durability modes and revocation barriers",
   "Distributed snapshot/compaction protocols and cross-node cutover",
   "Retention schedule/policy engine and durable snapshot lifecycle tracking; PTR does not enumerate or reclaim host-retained snapshots",

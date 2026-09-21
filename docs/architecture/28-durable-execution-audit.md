@@ -234,13 +234,46 @@ retry: a runtime that could decide the work had failed would be deciding somethi
 cannot observe. An adapter that never answers leaves a fence, and a fence is
 information.
 
+## The obligation travels with the floor
+
+At-most-once used to hold only for as long as the attempt's *record* was
+retained, and compaction is precisely the operation that stops retaining it. A
+runtime restored from a compacted snapshot rebuilt its execution state by
+replaying committed records that the raised floor had removed, so it came back
+with no memory of which keys had been spent — and a retry under a spent key
+executed the effect a second time. That was demonstrated rather than reasoned
+about, and `an_at_most_once_key_survives_the_floor_rising_past_its_attempt`
+fails on a build without the fix.
+
+So `PTRCS002` carries a third section, `PTREX001`, holding what the execution
+layer cannot re-derive once the floor has moved: the spent at-most-once keys with
+their outcomes, and the unsettled attempts.
+
+Three things are worth stating exactly, because each is easy to get wrong in the
+telling:
+
+- **The unsettled half was already safe, and is carried anyway.** `journal_anchor`
+  refuses while the runtime is fenced and `export_compacted_snapshot` begins by
+  asking for it, so a fenced runtime cannot produce a snapshot at all and the
+  carried map is empty in practice. It is encoded regardless, so the guarantee
+  stops depending on that one invariant holding somewhere else. The defect that
+  was real, and is closed here, is the **settled** half.
+- **The magic moved rather than only the reserved field.** A `PTRCS001` snapshot
+  is refused with `PTR_COMPACTED_VERSION`, not read as a snapshot whose
+  obligation set happens to be empty — which would restore exactly the runtime
+  that forgets every spent key, silently, which is the failure being closed.
+- **Nothing that belongs to a process travels.** Sessions, the admission policy,
+  detached dispatch and commit-level `uncertain` are this process's, not
+  committed history's. Carrying any of them would let a restored runtime claim
+  knowledge it never had — the same reason `detached` is not rebuilt from history
+  on an ordinary restart.
+
 ## What this does not close
 
-- **At-most-once holds only while the attempt's record is retained.** A
-  compaction floor that rises past a settled attempt discards the memory of its
-  key, and a retry after that will execute again. Unsettled attempts are
-  protected by the fence; settled ones are a retention obligation, in the same
-  direction as the anchor-retention obligations in `24-protected-anchors.md`.
+- **At-most-once holds across compaction, but not across a lost snapshot.** The
+  obligation now travels in the snapshot (below); what remains is the ordinary
+  anchor-retention obligation of `24-protected-anchors.md` — a host that loses
+  the snapshot or its anchor has lost the memory, and no format prevents that.
 - **At-most-once, not exactly-once.** An ambiguous outcome stays ambiguous until
   someone supplies evidence. Nothing here makes an applied effect reversible or
   an unknown one knowable.

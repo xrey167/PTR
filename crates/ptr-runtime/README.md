@@ -9,7 +9,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-21  
-**Code footprint:** 6 Rust source files · 3775 nonblank source lines · 17 integration-test files · 143 `#[test]` markers
+**Code footprint:** 6 Rust source files · 3983 nonblank source lines · 18 integration-test files · 147 `#[test]` markers
 
 ### Implemented now
 
@@ -31,7 +31,8 @@
 - Admission is decided at every use rather than at insertion; a payload is reachable only through an admission decision, and a cache exposes no accessor that bypasses one
 - Revocation, supersession, edited or removed inputs, foreign history with identical counters, unverifiable positions, changed codebook assignment and a fenced runtime each deny with their own stable code; failure to verify is a denial rather than an error
 - bind_state derives every field from committed state and validates its own output through the same admission rules a later use applies
-- PTRCS001 compacted materialized snapshot: committed state at a floor with canonical ascending-key sections, checked framing and an externally retained trusted anchor
+- PTRCS002 compacted materialized snapshot: committed state at a floor with canonical ascending-key sections, checked framing and an externally retained trusted anchor
+- A compacted snapshot carries the execution obligations a raised floor would otherwise discard (PTREX001): spent at-most-once keys with their outcomes, and unsettled attempts, so a restored runtime does not execute a spent key a second time. A PTRCS001 snapshot is refused by version rather than read as an empty obligation set
 - restore_compacted installs floor state then replays the retained journal through the ordinary lifecycle/semantic validation path, keeping committed indices
 - CompactedSnapshot::covers reports only the position it holds, so a compaction barrier cannot claim coverage the snapshot lacks
 - Versioned replay-backed recovery snapshots bind complete journal, semantic revision, commit index and independently trusted SHA-256 anchor

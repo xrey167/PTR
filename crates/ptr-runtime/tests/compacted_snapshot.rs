@@ -343,12 +343,15 @@ fn framing_length_and_trusted_identity_are_all_required() {
     extended.push(0);
     assert!(code(&extended, trusted).contains("Compacted"));
 
-    // A resealed artifact with a reserved bit set is still refused, so the
-    // reserved field is a real constraint and not just digest-protected padding.
-    let mut reserved = reference.clone();
-    reserved[72] = 1;
-    let anchor = reseal(&mut reserved, trusted.floor, trusted.revision);
-    assert!(code(&reserved, anchor).contains("ReservedField"));
+    // Bytes 72..80 were a reserved field in PTRCS001 and are the execution
+    // section's length in PTRCS002. Claiming a longer section than the body holds
+    // is refused after resealing, so the field is a real constraint rather than
+    // digest-protected padding — the same property the reserved check used to
+    // give, now carried by a field that means something.
+    let mut execution_len = reference.clone();
+    execution_len[72] = execution_len[72].wrapping_add(1);
+    let anchor = reseal(&mut execution_len, trusted.floor, trusted.revision);
+    assert!(code(&execution_len, anchor).contains("LengthMismatch"));
 
     // Section lengths that do not add up to the body, resealed.
     let mut lengths = reference.clone();
@@ -356,9 +359,10 @@ fn framing_length_and_trusted_identity_are_all_required() {
     let anchor = reseal(&mut lengths, trusted.floor, trusted.revision);
     assert!(code(&lengths, anchor).contains("LengthMismatch"));
 
-    // Wrong magic.
+    // Wrong magic. PTRCS002 is this build's format, so the unknown version has to
+    // be a different one — a later layout this build has no rules for.
     let mut magic = reference.clone();
-    magic[..8].copy_from_slice(b"PTRCS002");
+    magic[..8].copy_from_slice(b"PTRCS003");
     let anchor = reseal(&mut magic, trusted.floor, trusted.revision);
     assert!(code(&magic, anchor).contains("UnsupportedVersion"));
 

@@ -211,7 +211,7 @@ impl ClusterMember {
 
     /// Record this member's application state at a committed position.
     ///
-    /// The payload is the application's — for PTR, a PTRCS001 compacted snapshot.
+    /// The payload is the application's — for PTR, a PTRCS002 compacted snapshot.
     /// This layer carries it and has no opinion about what is inside.
     pub fn record_snapshot(&self, index: u64, state: Vec<u8>) -> Result<(), ClusterError> {
         self.locked()

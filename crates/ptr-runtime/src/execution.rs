@@ -471,6 +471,13 @@ struct SessionRecord {
     peer: Option<NodeId>,
 }
 
+/// Borrowed view of the obligations a compacted snapshot carries: the fence, and
+/// the at-most-once memory.
+pub(super) type RetainedObligations<'a> = (
+    &'a BTreeMap<CommitIndex, UnsettledEffect>,
+    &'a BTreeMap<String, SettledOutcome>,
+);
+
 pub(super) struct ExecutionState {
     issuer: Arc<()>,
     epoch: Arc<()>,
@@ -515,6 +522,33 @@ impl ExecutionState {
     /// an external effect applied.
     pub(super) fn is_fenced(&self) -> bool {
         self.uncertain || !self.unsettled.is_empty()
+    }
+
+    /// The two things a compacted snapshot has to carry, because compaction is
+    /// what takes the history they are derived from away.
+    ///
+    /// `unsettled` is the fence and `settled` is the at-most-once memory. Both
+    /// are ordinarily rebuilt by replaying committed records on open, which is
+    /// exactly what a raised floor makes impossible — so a snapshot that omits
+    /// them describes a runtime that has silently forgotten what it promised.
+    ///
+    /// The other fields are deliberately **not** here. `sessions`, `policy` and
+    /// `detached` are properties of this process rather than of committed
+    /// history, and `uncertain` is ambiguity about a commit this process
+    /// attempted; carrying any of them across a snapshot would let a restored
+    /// runtime claim knowledge it never had.
+    pub(super) fn retained_obligations(&self) -> RetainedObligations<'_> {
+        (&self.unsettled, &self.settled)
+    }
+
+    /// Reinstate the obligations a snapshot carried.
+    pub(super) fn restore_obligations(
+        &mut self,
+        unsettled: BTreeMap<CommitIndex, UnsettledEffect>,
+        settled: BTreeMap<String, SettledOutcome>,
+    ) {
+        self.unsettled = unsettled;
+        self.settled = settled;
     }
 
     /// Ambiguity about the ledger alone. Settling an attempt has to be allowed
