@@ -1,0 +1,210 @@
+{
+  "schema": "1",
+  "note": "Why each retained downstream patch exists and what would let it go. vendor/ORIGINS.json and vendor/CURRENT.json record what changed; this file records why, per package, so the reason is checkable rather than a prose statement about a count. scripts/check_vendor_retirement.py verifies every field below against the tree.",
+  "classes": {
+    "paste-alias": {
+      "change": "Redirects the dependency named `paste`, which is unmaintained, to the maintained drop-in `pastey =0.2.3` through a Cargo package alias. No source file is touched.",
+      "touches": [
+        "Cargo.lock",
+        "Cargo.toml"
+      ],
+      "retire_when": "An upstream release of this package depends on a maintained macro crate rather than `paste`, so the alias has nothing left to redirect."
+    },
+    "raft-protobuf": {
+      "change": "Migrates legacy protobuf interfaces, the corresponding Prometheus API and an abandoned hash map, and makes the protobuf codec optional so prost stays selected. Described per package in vendor/SECURITY-PATCHES.md.",
+      "touches": null,
+      "retire_when": "An upstream release carries that migration and the optional protobuf-codec selection, and the ledger round-trip, replay and corruption tests pass against it on the actually selected features."
+    }
+  },
+  "packages": [
+    {
+      "name": "burn-dispatch",
+      "version": "0.22.0-pre.3",
+      "directory": "vendor/burn-dispatch-0.22.0-pre.3",
+      "workspace": "burn-a0",
+      "class": "paste-alias",
+      "upstream_observed": null,
+      "observed_at": null
+    },
+    {
+      "name": "burn-ndarray",
+      "version": "0.22.0-pre.3",
+      "directory": "vendor/burn-ndarray-0.22.0-pre.3",
+      "workspace": "burn-a0",
+      "class": "paste-alias",
+      "upstream_observed": null,
+      "observed_at": null
+    },
+    {
+      "name": "burn-vision",
+      "version": "0.22.0-pre.3",
+      "directory": "vendor/burn-vision-0.22.0-pre.3",
+      "workspace": "burn-a0",
+      "class": "paste-alias",
+      "upstream_observed": null,
+      "observed_at": null
+    },
+    {
+      "name": "cubecl-core",
+      "version": "0.11.0-pre.3",
+      "directory": "vendor/cubecl-core-0.11.0-pre.3",
+      "workspace": "burn-a0",
+      "class": "paste-alias",
+      "upstream_observed": null,
+      "observed_at": null
+    },
+    {
+      "name": "cubecl-cpp",
+      "version": "0.11.0-pre.3",
+      "directory": "vendor/cubecl-cpp-0.11.0-pre.3",
+      "workspace": "burn-a0",
+      "class": "paste-alias",
+      "upstream_observed": null,
+      "observed_at": null
+    },
+    {
+      "name": "cubecl-hip",
+      "version": "0.11.0-pre.3",
+      "directory": "vendor/cubecl-hip-0.11.0-pre.3",
+      "workspace": "burn-a0",
+      "class": "paste-alias",
+      "upstream_observed": null,
+      "observed_at": null
+    },
+    {
+      "name": "cubecl-std",
+      "version": "0.11.0-pre.3",
+      "directory": "vendor/cubecl-std-0.11.0-pre.3",
+      "workspace": "burn-a0",
+      "class": "paste-alias",
+      "upstream_observed": null,
+      "observed_at": null
+    },
+    {
+      "name": "gemm",
+      "version": "0.19.0",
+      "directory": "vendor/gemm-0.19.0",
+      "workspace": "burn-a0",
+      "class": "paste-alias",
+      "upstream_observed": null,
+      "observed_at": null
+    },
+    {
+      "name": "gemm-c32",
+      "version": "0.19.0",
+      "directory": "vendor/gemm-c32-0.19.0",
+      "workspace": "burn-a0",
+      "class": "paste-alias",
+      "upstream_observed": null,
+      "observed_at": null
+    },
+    {
+      "name": "gemm-c64",
+      "version": "0.19.0",
+      "directory": "vendor/gemm-c64-0.19.0",
+      "workspace": "burn-a0",
+      "class": "paste-alias",
+      "upstream_observed": null,
+      "observed_at": null
+    },
+    {
+      "name": "gemm-common",
+      "version": "0.19.0",
+      "directory": "vendor/gemm-common-0.19.0",
+      "workspace": "burn-a0",
+      "class": "paste-alias",
+      "upstream_observed": null,
+      "observed_at": null
+    },
+    {
+      "name": "gemm-f16",
+      "version": "0.19.0",
+      "directory": "vendor/gemm-f16-0.19.0",
+      "workspace": "burn-a0",
+      "class": "paste-alias",
+      "upstream_observed": null,
+      "observed_at": null
+    },
+    {
+      "name": "gemm-f32",
+      "version": "0.19.0",
+      "directory": "vendor/gemm-f32-0.19.0",
+      "workspace": "burn-a0",
+      "class": "paste-alias",
+      "upstream_observed": null,
+      "observed_at": null
+    },
+    {
+      "name": "gemm-f64",
+      "version": "0.19.0",
+      "directory": "vendor/gemm-f64-0.19.0",
+      "workspace": "burn-a0",
+      "class": "paste-alias",
+      "upstream_observed": null,
+      "observed_at": null
+    },
+    {
+      "name": "macerator",
+      "version": "0.3.4",
+      "directory": "vendor/macerator-0.3.4",
+      "workspace": "burn-a0",
+      "class": "paste-alias",
+      "upstream_observed": null,
+      "observed_at": null
+    },
+    {
+      "name": "netlink-packet-core",
+      "version": "0.8.2",
+      "directory": "vendor/netlink-packet-core-0.8.2",
+      "workspace": "root",
+      "class": "paste-alias",
+      "upstream_observed": null,
+      "observed_at": null
+    },
+    {
+      "name": "pulp",
+      "version": "0.22.3",
+      "directory": "vendor/pulp-0.22.3",
+      "workspace": "burn-a0",
+      "class": "paste-alias",
+      "upstream_observed": null,
+      "observed_at": null
+    },
+    {
+      "name": "raft",
+      "version": "0.7.0",
+      "directory": "vendor/raft",
+      "workspace": "root",
+      "class": "raft-protobuf",
+      "upstream_observed": null,
+      "observed_at": null
+    },
+    {
+      "name": "raft-engine",
+      "version": "0.4.2",
+      "directory": "vendor/raft-engine",
+      "workspace": "root",
+      "class": "raft-protobuf",
+      "upstream_observed": null,
+      "observed_at": null
+    },
+    {
+      "name": "raft-proto",
+      "version": "0.7.0",
+      "directory": "vendor/raft-proto",
+      "workspace": "root",
+      "class": "raft-protobuf",
+      "upstream_observed": null,
+      "observed_at": null
+    },
+    {
+      "name": "rav1e",
+      "version": "0.8.1",
+      "directory": "vendor/rav1e-0.8.1",
+      "workspace": "burn-a0",
+      "class": "paste-alias",
+      "upstream_observed": null,
+      "observed_at": null
+    }
+  ]
+}

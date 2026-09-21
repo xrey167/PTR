@@ -12,6 +12,11 @@ that upstream has released these patches.
 * raft-engine 0.4.2: migrate real protobuf dependency/API to 3.7.2 and the
   corresponding Prometheus 0.14 API. No log-payload or protocol format waiver.
 
+`RETIREMENT.json` carries the machine-checked version of this file: one record
+per retained package naming its patch class, its patching workspace and the
+condition that would retire it. This prose describes the three Raft packages;
+that record covers all twenty-one.
+
 Compilation, ledger round-trip, replay and corruption tests must pass on the
 actual selected features before integration. Further compiler-driven migrations
 are recorded in the PR review. All upstream sources and licenses are retained.
