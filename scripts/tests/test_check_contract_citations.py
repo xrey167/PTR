@@ -392,6 +392,65 @@ class WhatUnittestCollects(unittest.TestCase):
         )
         self.assertEqual(len(self.errors()), 1)
 
+    def test_a_name_a_later_class_replaces_is_not_collected(self):
+        # A module-scope name holds one object: the last thing bound to it.
+        # Collecting every `class Blockers` in the file accepted a test from a
+        # definition that a later one had already replaced.
+        self.python(
+            f"import unittest\n\n\nclass Blockers(unittest.TestCase):\n"
+            f"    def {self.NAME}(self):\n        pass\n\n\nclass Blockers:\n    pass\n"
+        )
+        errors = self.errors()
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("is not a test", errors[0])
+
+    def test_the_last_binding_wins_rather_than_the_first(self):
+        # The control for the rule above, and the reason it is "last wins"
+        # rather than "a redefined name is unusable": with the order reversed,
+        # discovery does collect the test.
+        self.python(
+            f"import unittest\n\n\nclass Blockers:\n    pass\n\n\n"
+            f"class Blockers(unittest.TestCase):\n    def {self.NAME}(self):\n        pass\n"
+        )
+        self.assertEqual(self.errors(), [])
+
+    def test_a_name_an_assignment_rebinds_is_not_collected(self):
+        self.python(
+            f"import unittest\n\n\nclass Blockers(unittest.TestCase):\n"
+            f"    def {self.NAME}(self):\n        pass\n\n\nBlockers = None\n"
+        )
+        self.assertEqual(len(self.errors()), 1)
+
+    def test_a_name_a_function_rebinds_is_not_collected(self):
+        self.python(
+            f"import unittest\n\n\nclass Blockers(unittest.TestCase):\n"
+            f"    def {self.NAME}(self):\n        pass\n\n\ndef Blockers():\n    pass\n"
+        )
+        self.assertEqual(len(self.errors()), 1)
+
+    def test_a_decorated_class_is_refused_because_a_decorator_returns_anything(self):
+        # `@replace` here returns `object`, and discovery collects nothing. A
+        # parse cannot tell that apart from a decorator that returns the class,
+        # so every decorated class is dropped.
+        self.python(
+            f"import unittest\n\n\ndef replace(cls):\n    return object\n\n\n"
+            f"@replace\nclass Blockers(unittest.TestCase):\n"
+            f"    def {self.NAME}(self):\n        pass\n"
+        )
+        self.assertEqual(len(self.errors()), 1)
+
+    def test_a_skipped_class_is_refused_although_discovery_would_collect_it(self):
+        # The cost of the rule above, pinned rather than left to be rediscovered:
+        # `@unittest.skip` returns the class, so discovery does collect this test
+        # (and then skips it). Refusing it is a false failure - the direction
+        # this checker is allowed to be wrong in.
+        self.python(
+            f'import unittest\n\n\n@unittest.skip("why")\n'
+            f"class Blockers(unittest.TestCase):\n"
+            f"    def {self.NAME}(self):\n        pass\n"
+        )
+        self.assertEqual(len(self.errors()), 1)
+
     def test_a_file_that_does_not_parse_defines_no_test(self):
         # Reporting a syntax error is not this checker's job, but crashing on one
         # would take down an invariant run over a file it only skims.

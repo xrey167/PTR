@@ -184,6 +184,44 @@ def is_case_base(node: ast.expr, modules: set[str], direct: set[str]) -> bool:
     return False
 
 
+def module_classes(tree: ast.Module) -> dict[str, ast.ClassDef]:
+    """The class each module-scope name is bound to when the module finishes.
+
+    Module scope only, for the same reason the imports are: `unittest` finds
+    cases by looking at the module's own attributes. A class nested inside
+    another class, defined inside a function, or written under a conditional the
+    module does not take is not one of them, and is not collected.
+
+    Within that scope a name holds **one** object, the last thing bound to it -
+    collecting every `class Blockers` in the file accepted a test from a
+    definition a later `class Blockers`, `Blockers = None` or `def Blockers`
+    had already replaced. All four were confirmed against real discovery, which
+    returns nothing for each.
+
+    A decorated class is dropped rather than read, because a decorator returns
+    whatever it likes and a parse cannot say what. That refuses one thing the
+    runner does collect - `@unittest.skip` returns the class - which is a false
+    failure, the direction this checker is allowed to be wrong in.
+    """
+    bound: dict[str, ast.ClassDef | None] = {}
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef):
+            bound[node.name] = None if node.decorator_list else node
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            bound[node.name] = None
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    bound[target.id] = None
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+            if isinstance(node.target, ast.Name):
+                bound[node.target.id] = None
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                bound[alias.asname or alias.name.split(".")[0]] = None
+    return {name: node for name, node in bound.items() if node is not None}
+
+
 def python_tests(text: str) -> set[str]:
     """Test methods `unittest discover` would actually collect from this file.
 
@@ -214,14 +252,7 @@ def python_tests(text: str) -> set[str]:
 
     modules, direct = case_bindings(tree)
 
-    # Module scope only, for the same reason the imports are: `unittest` finds
-    # cases by looking at the module's own attributes. A class nested inside
-    # another class, defined inside a function, or written under a conditional
-    # the module does not take is not one of them, and is not collected.
-    classes: dict[str, list[ast.ClassDef]] = {}
-    for node in tree.body:
-        if isinstance(node, ast.ClassDef):
-            classes.setdefault(node.name, []).append(node)
+    classes = module_classes(tree)
 
     # A subclass of a case in the same file is a case too, and how many links the
     # chain has is not something to assume, so this runs to a fixed point.
@@ -229,28 +260,25 @@ def python_tests(text: str) -> set[str]:
     growing = True
     while growing:
         growing = False
-        for name, definitions in classes.items():
+        for name, definition in classes.items():
             if name in cases:
                 continue
-            for definition in definitions:
-                inherited = any(
-                    isinstance(base, ast.Name) and base.id in cases
-                    for base in definition.bases
-                )
-                if inherited or any(
-                    is_case_base(base, modules, direct) for base in definition.bases
-                ):
-                    cases.add(name)
-                    growing = True
-                    break
+            inherited = any(
+                isinstance(base, ast.Name) and base.id in cases
+                for base in definition.bases
+            )
+            if inherited or any(
+                is_case_base(base, modules, direct) for base in definition.bases
+            ):
+                cases.add(name)
+                growing = True
 
     found: set[str] = set()
     for name in cases:
-        for definition in classes[name]:
-            for item in definition.body:
-                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    if item.name.startswith(PYTHON_TEST_METHOD_PREFIX):
-                        found.add(item.name)
+        for item in classes[name].body:
+            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if item.name.startswith(PYTHON_TEST_METHOD_PREFIX):
+                    found.add(item.name)
     return found
 
 
