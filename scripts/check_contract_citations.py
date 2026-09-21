@@ -49,10 +49,14 @@ SOURCE_AREAS = ("crates", "model", "bins", "scripts", "training")
 # Five or more lower-snake segments: long enough that an ordinary identifier does
 # not reach it, short enough that every test name in this repository does.
 CITATION = re.compile(r"`([a-z][a-z0-9]*(?:_[a-z0-9]+){4,})`")
-# A Rust attribute that makes the function below it a test. `#[should_panic]` and
-# `#[ignore]` sit beside one rather than replacing it, so matching "test" anywhere
-# in the attribute covers `#[test]`, `#[tokio::test(...)]` and the rest.
-RUST_TEST_ATTRIBUTE = re.compile(r"^\s*#\[[^]]*test")
+# A Rust attribute that makes the function below it a test: one whose path *is*
+# `test`, possibly qualified - `#[test]`, `#[tokio::test]`, `#[tokio::test(...)]`.
+# Matching "test" anywhere in the attribute also accepted `#[cfg(test)]`, which
+# compiles a function for the test build without making it a test: `cargo test
+# -- --list` names only the `#[test]` one. `#[should_panic]` and `#[ignore]` sit
+# beside a test attribute rather than replacing it, and are handled by the
+# accumulation rule below rather than by this pattern.
+RUST_TEST_ATTRIBUTE = re.compile(r"^\s*#\[\s*(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*test\s*[\])(]")
 RUST_FN = re.compile(r"^\s*(?:pub\s+)?(?:async\s+)?fn\s+([a-z_][a-z0-9_]*)")
 # `unittest discover` collects `test*.py` only, so a definition in any other file
 # is not a test however much it looks like one.
@@ -210,8 +214,12 @@ def python_tests(text: str) -> set[str]:
 
     modules, direct = case_bindings(tree)
 
+    # Module scope only, for the same reason the imports are: `unittest` finds
+    # cases by looking at the module's own attributes. A class nested inside
+    # another class, defined inside a function, or written under a conditional
+    # the module does not take is not one of them, and is not collected.
     classes: dict[str, list[ast.ClassDef]] = {}
-    for node in ast.walk(tree):
+    for node in tree.body:
         if isinstance(node, ast.ClassDef):
             classes.setdefault(node.name, []).append(node)
 

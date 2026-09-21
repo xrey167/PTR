@@ -150,6 +150,22 @@ class WhatCountsAsATest(unittest.TestCase):
         self.source(f"#[derive(Debug)]\nfn {self.NAME}() {{}}\n")
         self.assertEqual(len(self.errors()), 1)
 
+    def test_a_cfg_test_attribute_does_not_make_a_test(self):
+        # `#[cfg(test)]` compiles a function into the test build without making
+        # it a test. Put to `cargo test -- --list` on a crate holding both: it
+        # named the `#[test]` function and not this one.
+        self.source(f"#[cfg(test)]\nfn {self.NAME}() {{}}\n")
+        errors = self.errors()
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("is not a test", errors[0])
+
+    def test_an_attribute_whose_path_merely_ends_in_test_does_not_count(self):
+        # `#[test_case(...)]` is a different attribute from a different crate.
+        # Nothing in this repository uses it; accepting it on the strength of a
+        # shared prefix would be the same mistake as `#[cfg(test)]`.
+        self.source(f"#[test_case(1)]\nfn {self.NAME}() {{}}\n")
+        self.assertEqual(len(self.errors()), 1)
+
     def test_an_attribute_cannot_reach_past_the_function_it_sits_on(self):
         # The control for the accumulation rule: real code between the attribute
         # and the function breaks the run, so `#[test]` on one function does not
@@ -347,6 +363,32 @@ class WhatUnittestCollects(unittest.TestCase):
             f"try:\n    import unittest\nexcept ImportError:\n    unittest = None\n\n\n"
             f"class Blockers(unittest.TestCase):\n"
             f"    def {self.NAME}(self):\n        pass\n"
+        )
+        self.assertEqual(len(self.errors()), 1)
+
+    def test_a_class_nested_in_another_class_is_not_collected(self):
+        # `unittest` finds cases among the module's own attributes. An inner
+        # class is an attribute of the outer class, not of the module, and real
+        # discovery returns nothing for this file.
+        self.python(
+            f"import unittest\n\n\nclass Outer:\n    class Inner(unittest.TestCase):\n"
+            f"        def {self.NAME}(self):\n            pass\n"
+        )
+        errors = self.errors()
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("is not a test", errors[0])
+
+    def test_a_class_under_a_branch_the_module_does_not_take_is_not_collected(self):
+        self.python(
+            f"import unittest\n\nif False:\n    class Blockers(unittest.TestCase):\n"
+            f"        def {self.NAME}(self):\n            pass\n"
+        )
+        self.assertEqual(len(self.errors()), 1)
+
+    def test_a_class_defined_inside_a_function_is_not_collected(self):
+        self.python(
+            f"import unittest\n\n\ndef make():\n    class Blockers(unittest.TestCase):\n"
+            f"        def {self.NAME}(self):\n            pass\n"
         )
         self.assertEqual(len(self.errors()), 1)
 
