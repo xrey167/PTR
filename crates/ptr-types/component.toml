@@ -30,7 +30,7 @@ implemented = [
 
 missing = [
   "A training loop that binds a checkpoint as part of saving it: the header carries the assignment, but attaching committed facts is a separate step a runtime performs afterwards",
-  "The codebook version comparison a foreign CodeGrid would trip is unreachable while only one version exists, so it is a guard for the next version rather than a tested path",
+  "A second codebook version, so the version comparison a foreign CodeGrid trips is exercised by a real artifact rather than by a test-only relabel; with one frozen version Codebook::at refuses every other and no genuine foreign grid exists",
   "Generic semantic wrappers such as Goal<T>, Constraint<T>, Claim<T>, Evidence<T>, Relation<S,P,O>, Resource<T>, Procedure<T> and ActionIntent<T>",
   "Estimate/Interval/Distribution value structures and calibration metadata beyond the current axis enums",
   "Explicit authority/source-authority types kept separate from epistemic and verification state",
@@ -58,6 +58,7 @@ checks = ["A checkpoint header round-trips with its payload; every prefix of one
   "the generated codebook artifact carries this kernel's canonical bytes and every family member; a changed byte and a removed member each fail it", 
   "The artifact carries every recorded exception with its width, checked in both directions so one added in Rust and not regenerated fails, and one the artifact carries and the kernel has dropped fails on the count; an exception name inside the canonical bytes, or shared with a family, is refused",
   "exception_width answers by name and returns None rather than a default for a name it does not record, so a misspelling yields nothing instead of a plausible number",
+  "Both codebook-version guards in A0's forward are entered from a cfg(test) module that relabels a well-formed grid as version 2, each asserted on its guard's full message because the two share a phrase, with matching versions as the control; removing either guard fails exactly the test aimed at it",
   "Every exact numeric code for all 33 members of all five families, so a reordered kernel enum breaks the build rather than a checkpoint",
   "Exhaustive per-family coverage; dense unique codes; unknown version, unassigned code and unassigned member each refused",
   "canonical_bytes decoded by an independent decoder against the exact expected assignment with every byte accounted for",

@@ -400,9 +400,25 @@ check.
   The artifact carries its assignment; the committed facts are attached when a
   runtime binds it, and there is no training loop here that does so as part of
   saving. The seal is the recorded form, and producing one is a separate step.
-- **The codebook version comparison in `forward` is unreachable today.** One
-  frozen version means no test can construct a foreign grid from outside the
-  crate. It is a guard for the second version, not a tested path.
+- **The codebook version comparison in `forward` is entered by a test, which is
+  weaker than a second version existing.** It used to be unreachable: one frozen
+  version means `Codebook::at` refuses every other, and `CodeGrid`'s version is
+  private, so nothing outside the crate could build a foreign grid. A guard nobody
+  has ever entered is a guard whose behaviour is a claim, so a `cfg(test)` module
+  inside the crate relabels a well-formed grid as version 2 and drives both
+  branches — which is the whole hazard in one operation: valid codes, right shape,
+  only the assignment they were minted under changed.
+
+  Two details are what make those tests evidence. Each names its guard's **full**
+  message, because both guards say "another codebook version" and a shorter
+  expectation would let a test aimed at the slot guard pass when the epistemic one
+  fired; and there is a control, because `forward` also panics on a batch mismatch
+  and three dimension checks, so a bare `should_panic` passes on any of five
+  unrelated faults. Removing either guard fails exactly the test aimed at it.
+
+  What is still true: this is a test-only constructor, not a second version. The
+  guard has never been exercised by a real foreign artifact, and it will not be
+  until there is one.
 - **The header is not a manifest.** It records identity, not architecture: a
   checkpoint loaded into a differently shaped model is refused by burn's own
   record validation, which reports shapes rather than saying which model it is.
