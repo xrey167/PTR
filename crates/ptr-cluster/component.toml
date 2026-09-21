@@ -38,6 +38,7 @@ checks = [
   "a peer holding the key admitted for one member cannot send messages claiming to come from another; the refusal names both ids and the member's state is unchanged",
   "a peer that was never admitted is refused by key; a message addressed to another member is refused; a damaged frame arriving on a real connection is refused before it reaches the node",
   "a refused frame still receives an answer, and that answer is an empty batch",
+  "refusing a stranger's frame does not take a serving member off the air: after the refusal an admitted member still reaches it, so an unadmitted peer cannot silence an admitted one by connecting once",
   "a member that cannot be reached is named in the report while the write is still decided by the majority that answered",
   "a real PTRCS001 snapshot travels as the payload to a restarted member the leader compacted past, arrives byte for byte, and a runtime restores the state it described from exactly those bytes",
   "frame codec unit tests: round trip including an empty batch, every prefix refused, foreign bytes, trailing bytes, an unknown layout version, an invented count refused by the bound rather than by allocation, an oversize frame refused before parsing, and one distinct code per refusal",

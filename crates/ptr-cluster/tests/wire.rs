@@ -92,9 +92,16 @@ async fn a_group_forms_over_alpn_raft_and_both_members_hold_the_same_history() {
     let serving = Arc::clone(&follower);
     let server = tokio::spawn(async move {
         loop {
-            if serving.serve_once().await.is_err() {
-                return;
-            }
+            // Keep serving after a refusal or a transient transport error, the way
+            // a real member would. Returning here made a *test harness* decide
+            // whether a member was reachable: `serve_once` reports a refused peer
+            // and a transport hiccup with the same `Err`, so one of either killed
+            // the follower for the rest of the test, and a later round then
+            // reported it unreached. That is what made
+            // `a_member_that_cannot_be_reached_is_reported_rather_than_failing_the_write`
+            // fail on CI while passing here. Every one of these tasks is ended by
+            // `abort()`, so there is nothing for this loop to exit for.
+            let _ = serving.serve_once().await;
         }
     });
 
@@ -302,6 +309,63 @@ async fn a_refused_frame_still_gets_an_answer_rather_than_a_hanging_peer() {
     member.close().await;
 }
 
+/// A serving member survives a refusal, so a stranger cannot take it off the air.
+///
+/// This is about the shape of every serve loop in this file, and it is here because
+/// getting it wrong cost a red CI run.
+/// `a_member_that_cannot_be_reached_is_reported_rather_than_failing_the_write`
+/// reported member *2* unreached — the member that was supposed to answer — and the
+/// cause was the harness, not the code under test: the loop read
+/// `if serve_once().await.is_err() { return }`, and `serve_once` reports a refused
+/// peer and a transport hiccup with the same `Err`. One of either ended the
+/// follower for the rest of the test, and the next round then found it unreachable,
+/// which is exactly what a dead server looks like from outside.
+///
+/// The property worth pinning is the one a real member has: refusing a frame is not
+/// a reason to stop serving. If it were, an unadmitted peer could silence an
+/// admitted one by connecting once — availability handed to whoever calls first,
+/// which is the opposite of what refusing that peer was for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refusal_does_not_take_a_serving_member_off_the_air() {
+    let temp = Temp::new("survives");
+    let (one, two) = pair(&temp).await;
+
+    let follower = Arc::new(two);
+    let serving = Arc::clone(&follower);
+    let server = tokio::spawn(async move {
+        loop {
+            let _ = serving.serve_once().await;
+        }
+    });
+
+    // A peer the follower never admitted, sending a well-formed frame. `serve_once`
+    // answers it and returns `Err`, which is the refusal this test walks over.
+    let stranger = IrohTransport::bind(&[]).await.unwrap();
+    let refused = stranger
+        .request(follower.address(), ALPN_RAFT, &frame(99, 2), 4096)
+        .await
+        .expect("a refusal is still an answer");
+    assert!(
+        decode_batch(&refused).unwrap().is_empty(),
+        "the stranger got a refusal, so the follower did serve it"
+    );
+    stranger.close().await;
+
+    // And now the member that *is* admitted. Under a loop that exits on `Err` the
+    // follower is already gone and this campaign finds it unreached.
+    let unreached = one.campaign().await.unwrap();
+    assert!(
+        unreached.ids().is_empty(),
+        "the follower answered after refusing a stranger, so nothing is unreached: {:?}",
+        unreached.ids()
+    );
+    assert!(one.is_leader(), "two of two answered");
+
+    server.abort();
+    one.close().await;
+    follower.close().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_member_that_cannot_be_reached_is_reported_rather_than_failing_the_write() {
     // A leader that abandoned a proposal because one follower was down could not
@@ -350,9 +414,16 @@ async fn a_member_that_cannot_be_reached_is_reported_rather_than_failing_the_wri
     let serving = Arc::clone(&follower);
     let server = tokio::spawn(async move {
         loop {
-            if serving.serve_once().await.is_err() {
-                return;
-            }
+            // Keep serving after a refusal or a transient transport error, the way
+            // a real member would. Returning here made a *test harness* decide
+            // whether a member was reachable: `serve_once` reports a refused peer
+            // and a transport hiccup with the same `Err`, so one of either killed
+            // the follower for the rest of the test, and a later round then
+            // reported it unreached. That is what made
+            // `a_member_that_cannot_be_reached_is_reported_rather_than_failing_the_write`
+            // fail on CI while passing here. Every one of these tasks is ended by
+            // `abort()`, so there is nothing for this loop to exit for.
+            let _ = serving.serve_once().await;
         }
     });
 
@@ -451,9 +522,16 @@ async fn a_ptrcs001_snapshot_travels_as_the_payload_and_restores_on_the_far_side
     let serving = Arc::clone(&follower);
     let server = tokio::spawn(async move {
         loop {
-            if serving.serve_once().await.is_err() {
-                return;
-            }
+            // Keep serving after a refusal or a transient transport error, the way
+            // a real member would. Returning here made a *test harness* decide
+            // whether a member was reachable: `serve_once` reports a refused peer
+            // and a transport hiccup with the same `Err`, so one of either killed
+            // the follower for the rest of the test, and a later round then
+            // reported it unreached. That is what made
+            // `a_member_that_cannot_be_reached_is_reported_rather_than_failing_the_write`
+            // fail on CI while passing here. Every one of these tasks is ended by
+            // `abort()`, so there is nothing for this loop to exit for.
+            let _ = serving.serve_once().await;
         }
     });
 
@@ -488,9 +566,10 @@ async fn a_ptrcs001_snapshot_travels_as_the_payload_and_restores_on_the_far_side
     let serving_three = Arc::clone(&returning);
     let third = tokio::spawn(async move {
         loop {
-            if serving_three.serve_once().await.is_err() {
-                return;
-            }
+            // Same reason as the loops above: a refusal and a transport hiccup are
+            // the same `Err`, and exiting on either makes the harness, not the
+            // test, decide whether this member is reachable.
+            let _ = serving_three.serve_once().await;
         }
     });
 
