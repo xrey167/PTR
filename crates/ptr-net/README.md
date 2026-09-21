@@ -9,12 +9,13 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-19  
-**Code footprint:** 1 Rust source files · 138 nonblank source lines · 2 integration-test files · 1 `#[test]` markers
+**Last reviewed:** 2026-09-21  
+**Code footprint:** 1 Rust source files · 145 nonblank source lines · 2 integration-test files · 1 `#[test]` markers
 
 ### Implemented now
 
-- ALPN constants for raft, PodWire, model, blob and events protocols
+- ALPN constants for raft, PodWire, model, blob, events and execution protocols
+- The execution wire has its own ALPN rather than sharing the pod wire's: two protocols on one ALPN is how a request meant for one gets parsed by the other, and the parse that succeeds by accident is the dangerous one
 - NodeIdentity scaffold
 - Provider-independent Transport trait
 - Feature-gated Iroh 1.2 direct QUIC adapter with PTR ALPNs and authenticated peer identity
@@ -26,7 +27,7 @@
 
 - Peer discovery/session lifecycle
 - Retry/idempotency and backpressure behavior
-- Raft/PodWire/blob stream adapters; ptr-cluster now carries raft batches over ALPN_RAFT using the request/response path, and a stream adapter would replace that rather than extend it
+- Raft/PodWire/blob stream adapters; ptr-cluster now carries raft batches over ALPN_RAFT and ptr-execwire carries execution requests over ALPN_EXEC, both using the request/response path, and a stream adapter would replace that rather than extend it
 
 ### Next milestones
 

@@ -176,6 +176,14 @@ function_groups = ["encode/decode a batch", "accept and step one frame", "drive 
 notes = ["the only crate that knows both consensus and transport, so neither of them has to", "the sender is the authenticated connection and never the message's from field", "no background loop, timer or retry policy: the caller drives accept and dispatch", "the whole composition is feature-gated so iroh and raft stay out of every other build"]
 
 [[crate]]
+id = "ptr-execwire"
+current_shape = "mostly-flat"
+modules = ["frame", "endpoint"]
+public_groups = ["ExecutionHost", "ExecutionClient", "WireRequest/WireReceipt", "WireOutcome/RefusalCode", "WireError/FrameError"]
+function_groups = ["encode/decode a request", "encode/decode a receipt", "serve one request", "send one request and check its receipt"]
+notes = ["the only crate that knows both execution authority and transport, so neither of them has to", "authenticating a peer is not authorizing an action: a request has no field naming its sender", "a receipt names its author and is bound to the bytes that arrived, and is deliberately not signed", "four outcomes, because reporting an unknown outcome as a refusal would throw the runtime's fence away", "no background loop, timer or retry policy: the caller drives serve and request", "the whole composition is feature-gated so iroh stays out of every other build"]
+
+[[crate]]
 id = "ptr-events"
 current_shape = "flat"
 modules = ["event", "envelope", "topic", "bus", "consumer", "offset", "retention", "adapters"]

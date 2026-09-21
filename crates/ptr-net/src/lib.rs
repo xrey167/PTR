@@ -5,6 +5,13 @@ pub const ALPN_PODWIRE: &[u8] = b"ptr-podwire/1";
 pub const ALPN_MODEL: &[u8] = b"ptr-model/1";
 pub const ALPN_BLOB: &[u8] = b"ptr-blob/1";
 pub const ALPN_EVENTS: &[u8] = b"ptr-events/1";
+/// The execution wire: an action requested across a network boundary.
+///
+/// Its own ALPN rather than `ALPN_PODWIRE`, because the pod wire is Pod access and
+/// this one asks for effects. Two protocols sharing one ALPN is how a request meant
+/// for one gets parsed by the other, and the parse that succeeds by accident is the
+/// dangerous one.
+pub const ALPN_EXEC: &[u8] = b"ptr-exec/1";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NodeIdentity {

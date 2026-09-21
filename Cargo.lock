@@ -3389,6 +3389,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "ptr-execwire"
+version = "0.1.0"
+dependencies = [
+ "ptr-config",
+ "ptr-core",
+ "ptr-ledger",
+ "ptr-net",
+ "ptr-runtime",
+ "ptr-types",
+ "ptr-verifier",
+ "sha2",
+ "tokio",
+]
+
+[[package]]
 name = "ptr-feedback"
 version = "0.1.0"
 dependencies = [

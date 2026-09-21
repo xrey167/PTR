@@ -1,0 +1,57 @@
+version = 1
+id = "ptr-execwire"
+maturity = "prototype"
+last_reviewed = "2026-09-21"
+
+implemented = [
+  "ExecutionHost and ExecutionClient carry one execution request and its receipt over ALPN_EXEC, composing ptr-runtime's execution authority with ptr-net's transport so neither of them has to know about the other",
+  "A request frame has no field naming its sender, so who is asking is the authenticated connection's answer and the principal an action is audited under is the admission policy's — the shape of the format rather than a check performed on it",
+  "A request names the endpoint it is for, so a request that was legitimate at one runtime is refused when relayed to another rather than being indistinguishable from one composed for it",
+  "A receipt names its own author and is bound to a digest of the exact bytes that arrived; a requester checks the author against the peer the connection authenticated before reading anything else, then the request id, then the digest",
+  "Four outcomes rather than two: applied, applied without a response, uncertain, refused — because a wire that reported an unknown outcome as a refusal would invite a retry of an effect that had already applied and throw the runtime's fence away at the last step",
+  "The mapping from runtime refusals onto wire outcomes is an exhaustive match, so a refusal a later build adds breaks the build rather than being reported as nothing having happened",
+  "Every refusal of authority crosses the wire as one code, so a requester cannot tell a peer it never admitted from an action outside its grant; the full reason stays on the host for an operator",
+  "A bounded per-peer replay window refuses a frame sent twice before the runtime is asked anything, spent only after the peer is admitted so an admitted peer's request is treated the same way whatever the runtime then decides",
+  "The window and the at-most-once key are separate and neither stands in for the other: retrying an intent means a new request id with the same key, which is the only combination that says this one again rather than do it once more",
+  "One session per request, revoked when the request is answered: caching it would keep the grants admission returned, so a policy later replaced with narrower grants would not narrow anything until the cache expired",
+  "Every request is answered, including a request this build cannot parse — its receipt is bound to the bytes that arrived, so its sender can still check it against what it sent",
+  "A request/receipt frame format with distinct magics per direction, an explicit layout version, bounded length-prefixed fields, explicit two-way code tables for every enumeration, and a distinct diagnostic code per refusal",
+  "No background loop, timer or retry policy: the caller drives serve_once and request, which keeps scheduling decisions where they can be made deliberately and keeps the tests free of sleeps",
+  "The whole composition is feature-gated, so iroh stays out of every other workspace build exactly as ptr-net keeps its own backend out",
+]
+
+missing = [
+  "Signed receipts, and therefore any third-party evidence: inside one exchange the connection vouches for a receipt's author and outside it nothing does, so this crate offers no way to verify one rather than producing an artifact that looks like evidence and is not",
+  "A peer identity that is unforgeable at the type level, constructible only from an authenticated connection the way VerifiedDispatch is constructible only inside the runtime; that needs a ptr-runtime dependency on ptr-net and is recorded as an open decision",
+  "Detached work over the wire: a detached grant is audited by an attempt that stays unsettled until the adapter reports back, and there is no channel here for that report, so it is refused before the attempt is committed",
+  "Reconciliation: an uncertain outcome is reported and then belongs to the host's operator, because a remote peer must not be able to declare what happened to an effect",
+  "An accept loop a deployment would run, including backpressure toward a peer that asks faster than the runtime can answer",
+  "Session reuse: every request opens a connection, which is correct and wasteful",
+  "Discovery, and any authority over the address a requester is given: a wrong address gets a refusal rather than a wrong execution only because the request names the endpoint it is for",
+  "Any claim about latency, throughput or behaviour under load; the tests establish protocol and identity properties on localhost",
+]
+
+next = [
+  "Decide whether a receipt should be signed, and if so what it attests to, before anything treats one as evidence",
+  "Decide where the accept loop belongs before adding one, since a loop in the wrong place makes the scheduling implicit again",
+]
+
+experiments = []
+evaluations = []
+decisions = ["ADR-0001-rust-runtime.md"]
+
+checks = [
+  "an admitted peer's action is executed over a real ALPN_EXEC connection and the audited principal is the policy's, not a name written into the payload the peer controls",
+  "a receipt naming another runtime is refused, with the same endpoint answering honestly as the control so the refusal is about the name and not about that endpoint",
+  "a receipt answering another request id, and one bound to other bytes, are each refused",
+  "a request addressed to another runtime is refused and writes no ledger record, with the same request addressed correctly as the control",
+  "a peer that was never admitted is refused identically to an admitted peer asking outside its grant, on the first request and on a replay",
+  "the same frame sent twice is refused by the window and the effect applies once",
+  "a retry under a new request id with the same at-most-once key is answered from the record rather than executed again",
+  "a damaged frame arriving on a real connection is refused before it reaches the runtime, writes no record, and is still answered with a receipt bound to the bytes that arrived",
+  "a detached grant is refused over the wire, before the adapter is reached, and leaves the runtime unfenced",
+  "an adapter that cannot say whether it applied yields an uncertain outcome rather than a refusal, the fence stands, and the next request is refused rather than reported as a second uncertainty",
+  "withdrawing a peer takes effect on its very next request over the wire",
+  "two runtimes audit the same peer's requests independently: an at-most-once key spent at one says nothing at the other",
+  "frame codec unit tests: round trip of every outcome, a request never read as a receipt and vice versa, every prefix refused, no single bit change yielding the original request, trailing bytes, an unknown layout version, an invented length refused by the bound, an oversize frame refused before parsing, an unknown effect/outcome/refusal code refused rather than guessed, invalid UTF-8 refused rather than replaced, and one distinct code per refusal",
+]

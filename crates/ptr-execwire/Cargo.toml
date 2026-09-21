@@ -1,0 +1,43 @@
+[package]
+name = "ptr-execwire"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[features]
+default = []
+# The whole composition is this feature. With it off the crate is the wire format
+# and nothing else, so iroh stays out of every other workspace build exactly as
+# ptr-net keeps its own backend out.
+execwire-backend = [
+  "dep:ptr-runtime",
+  "dep:ptr-net",
+  "dep:tokio",
+  "ptr-net/iroh-backend",
+]
+
+[dependencies]
+ptr-types = { workspace = true }
+# The wire carries an action, so the format names the kernel's own action type
+# rather than a parallel struct that would have to be kept in step with it.
+ptr-core = { workspace = true }
+# The same pin ptr-ledger uses. Two pins of a hash would be two digests for the
+# bytes they are both taken over.
+sha2 = { version = "=0.11.0", default-features = false }
+ptr-runtime = { workspace = true, optional = true }
+ptr-net = { workspace = true, optional = true }
+# Only for a deadline on one exchange. How long to wait for an answer is this
+# layer's policy, so the clock belongs here rather than in the transport.
+tokio = { workspace = true, optional = true, features = ["time"] }
+
+[dev-dependencies]
+tokio = { workspace = true }
+ptr-config = { workspace = true }
+ptr-verifier = { workspace = true }
+ptr-ledger = { workspace = true }
+
+[[test]]
+name = "wire"
+path = "tests/wire.rs"
+required-features = ["execwire-backend"]

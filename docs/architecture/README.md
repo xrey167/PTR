@@ -45,6 +45,7 @@
 - [29-peer-admission-and-pod-scope.md](29-peer-admission-and-pod-scope.md)
 - [30-third-party-notices.md](30-third-party-notices.md)
 - [31-cluster-integrity.md](31-cluster-integrity.md)
+- [32-execution-wire.md](32-execution-wire.md)
 - [Open architecture catalog](../../research/catalogs/README.md) — unresolved type families, backend slots and component contracts
 
 ## Component-level documentation

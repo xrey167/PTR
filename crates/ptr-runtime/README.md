@@ -59,13 +59,11 @@
 
 - Durable compacted-snapshot publication and a runtime backed by an AcknowledgedLedger; compacted restore rebuilds an in-memory ledger above the floor and therefore retains no chain base, so it admits no neural state at all
 - Any bound on how long detached work may stay outstanding, and any supervision of a detached adapter: there is no timeout, cancellation or retry, because a runtime that decided the work had failed would be deciding something it cannot observe
-- A truly concurrent permission or lifecycle race, which needs two runtimes and therefore a wire; within one process the interleaving is prevented by exclusive access rather than tested
+- A truly concurrent permission or lifecycle race inside one runtime: exclusive access prevents the interleaving by construction, so the concurrent case is two runtimes deciding at once, which ptr-execwire drives over a real connection rather than this crate
 - Durable neural-anchor catalog and streamed or memory-mapped payloads; admission checks the producer's declared input set only, so an undeclared dependency stays invisible
 - A trainer that binds a checkpoint as it saves one: bind_checkpoint attaches committed facts after the fact, so an artifact between saving and binding carries its assignment but no position
-- A wire protocol: the ALPNs carry no traffic, no request framing or replay window exists, and a forged receipt on the wire is therefore untested; the NodeId passed to admit_peer is taken on the host's word rather than proven by this crate
+- An unforgeable peer identity: the NodeId passed to admit_peer is still taken on the caller's word here, and making it constructible only from an authenticated connection would require this crate to depend on ptr-net, which is an open decision; the execution wire itself now exists in ptr-execwire, where the forged-receipt and cross-runtime cases are tested over a real connection
 - The admission policy is in memory: it is not journaled, so it does not survive a restart and a replayed history does not describe who was admitted when
-- Permission and lifecycle races driven from a second session between preparation and execution
-- Downstream fencing for detached or background executor work; the audited window covers a synchronous adapter call only
 - At-most-once memory is bounded by retention: a floor rising past a settled attempt discards its key, and reconciliation is a privileged host API whose caller this crate does not authenticate
 - Router-driven operator selection around the implemented bounded Pod-resume loop
 - Async isolate scheduler integration
@@ -74,7 +72,8 @@
 
 ### Next milestones
 
-- Define the PodWire request framing and drive admission from ptr-net's authenticated connection rather than from a NodeId the host supplies
+- Decide whether peer identity should be constructible only from an authenticated connection, which would make this crate depend on ptr-net; until then ptr-execwire is the one host that passes an authenticated key and nothing else
+- Define the PodWire request framing, which is still undefined even though the execution wire is not
 - Retaining a NeuralAnchor outside the artifact remains a deployment obligation; nothing here stores one
 - Connect evaluated raft-engine/Turso adapters through typed backend config while preserving FileLedger reference mode
 - Add opaque backend checkpoint handles and async streaming around the implemented observation resume contract

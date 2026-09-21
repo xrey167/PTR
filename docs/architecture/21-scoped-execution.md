@@ -118,9 +118,15 @@ of something that had already happened.
 
 Two things follow that are worth saying plainly. Within one process, "a different
 session" can only act through the host, because a session holds no authority to mutate
-the runtime. And a genuinely concurrent race needs two runtimes, which needs a wire:
-that case is open, and it is the same open question as whether peer identity can be
-made unforgeable at the type level.
+the runtime. And a genuinely concurrent race needs two runtimes, which needs a wire.
+
+That wire now exists: `32-execution-wire.md`, in `crates/ptr-execwire`. Two runtimes
+decide at the same moment there, and a withdrawal at one does not reach the other —
+authority is per runtime, which is what makes the two ledgers independent rather than
+two views of one. What remains open is the *stronger* version of the identity
+property: whether peer identity should be unforgeable at the type level, which needs a
+`ptr-runtime` dependency on `ptr-net` and is the owner's decision. The wire holds the
+property in one place instead; that contract says what the difference costs.
 
 ## Compatibility and limits
 

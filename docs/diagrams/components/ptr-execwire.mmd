@@ -1,0 +1,7 @@
+flowchart LR
+    C["Requester\nExecutionClient"] --> W["ptr-execwire\nrequest/receipt on ALPN_EXEC"]
+    W --> H["ExecutionHost\nPtrRuntime"]
+    W -. "execution authority" .-> R["ptr-runtime"]
+    W -. "authenticated transport" .-> N["ptr-net"]
+    W -. "action contract" .-> K["ptr-core"]
+    W -. "contracts" .-> T["ptr-types"]

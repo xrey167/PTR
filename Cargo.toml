@@ -31,6 +31,7 @@ ptr-search = { path = "crates/ptr-search" }
 ptr-storage = { path = "crates/ptr-storage" }
 ptr-net = { path = "crates/ptr-net" }
 ptr-cluster = { path = "crates/ptr-cluster" }
+ptr-execwire = { path = "crates/ptr-execwire" }
 ptr-events = { path = "crates/ptr-events" }
 ptr-observe = { path = "crates/ptr-observe" }
 ptr-inspect = { path = "crates/ptr-inspect" }

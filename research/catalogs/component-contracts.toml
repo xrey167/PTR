@@ -148,6 +148,13 @@ backend_slots = ["consensus", "network-transport"]
 open_decisions = ["who owns the accept/tick loop", "membership changes over the wire", "snapshot transfer framing", "retry and backpressure toward a slow member"]
 
 [[component]]
+id = "ptr-execwire"
+ports = ["ExecutionHost", "ExecutionClient", "ExecutionWire"]
+type_families = ["network-protocol", "capability-authority", "identity-lifecycle"]
+backend_slots = ["network-transport", "execution-runtime"]
+open_decisions = ["whether a receipt should be signed and what it attests to", "whether a peer identity should be unforgeable at the type level, which needs a ptr-runtime dependency on ptr-net", "who owns the accept loop", "backpressure toward a peer that asks faster than the runtime answers", "a settlement channel for detached work"]
+
+[[component]]
 id = "ptr-events"
 ports = ["EventBus", "EventProducer", "EventConsumer"]
 type_families = ["events-observability", "ledger-consensus"]
