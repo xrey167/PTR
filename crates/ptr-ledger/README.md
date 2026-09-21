@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-21  
-**Code footprint:** 8 Rust source files · 3996 nonblank source lines · 10 integration-test files · 77 `#[test]` markers
+**Code footprint:** 9 Rust source files · 4129 nonblank source lines · 11 integration-test files · 85 `#[test]` markers
 
 ### Implemented now
 
@@ -45,13 +45,16 @@
 - Feature-gated fail-rs injection points around record write/payload/fsync/memory-commit boundaries
 - Feature-gated raft-engine 0.4.2 durable adapter stores ordered PTR ledger events with synchronous writes and reopen validation
 - Feature-gated raft-rs 0.7 single-node consensus harness proposes and commits PTR LedgerEvents through RawNode, over durable state rather than MemStorage: a reopened node replays its committed prefix and tells raft what it already applied
+- RaftNode is one member that hands its outbound messages back instead of dropping them, with no knowledge of transport: ticks are a count rather than a duration, so a partition, a leader change and a duplicated message are testable without a timer
+- Raft messages have a bounded wire encoding; a frame that does not decode is dropped rather than partially stepped, and SingleNodeRaftConsensus is a thin wrapper over the same node so there is one place where entries are persisted, hard state flushed and committed entries applied
 - FileRaftStorage keeps term, vote, commit, configuration, log and snapshot position on disk: the state file is rewritten atomically, entries and hard state are flushed before anything depending on them could leave the node, and a conflicting append truncates the log so the file is always a prefix of one history
 - Raft log records carry an explicit entry-type code and a per-record digest, and indexes must be consecutive from the snapshot position, so a changed record and a removed or duplicated one are separate refusals; a snapshot older than raft asks for is refused rather than fabricated at the requested index
 
 ### Missing for the target architecture
 
 - Hardware power-loss evidence; anchor key custody, rotation and hardware-backed sealing
-- Multi-node raft-rs consensus adapter with transport and membership changes; Raft storage is durable now, but a one-member group still demonstrates nothing about partitions, leader changes or divergent histories
+- A composition of RaftNode over ptr-net transport on ALPN_RAFT: the group is driven by a test's queue, so there is no framing, no authenticated sender, no bound on what a peer may send and no evidence a real connection carries these messages; ptr-ledger must not depend on transport, so the composition needs its own home
+- Membership changes: the configuration is recorded and recovered, but adding or removing a voter is not implemented
 - Snapshot transfer to a follower the leader has compacted past, and any relation between raft's own log floor and the ledger's retention floor
 - fsync/durability modes and revocation barriers
 - Distributed snapshot/compaction protocols and cross-node cutover
@@ -105,6 +108,8 @@
 - raft-engine durable append/reopen ordering integration test
 - raft-rs single-node proposal/commit ordering integration test
 - a reopened node holds exactly the history it committed, index by index, and continues the same sequence; the term and the vote it recorded survive the process and a new election is a later term
+- a three-member group elects exactly one leader with its followers in the same term; a majority commits while a minority decides nothing; a member that knows no leader refuses a write outright and a partitioned follower's forwarded proposal never resurfaces after healing
+- a deposed leader appends but cannot commit and the entry only it held is overwritten rather than resurrected; a leader change leaves one total order with indexes exactly 1..n; duplicated and stale messages change nothing; a restarted member restores exactly the leader's committed state
 - a conflicting append truncates on disk rather than splicing two histories; a gap, a non-consecutive batch, a damaged record digest, a damaged length field, a removed middle record, a torn state file, a snapshot ahead of the commit index and a snapshot older than requested are each refused
 - workspace fmt/check/test/clippy
 

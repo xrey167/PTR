@@ -661,16 +661,18 @@ mod raft_engine_backend {
 pub use raft_engine_backend::RaftEngineLedger;
 
 #[cfg(feature = "raft-rs-backend")]
+pub mod raft_node;
+#[cfg(feature = "raft-rs-backend")]
 pub mod raft_storage;
+#[cfg(feature = "raft-rs-backend")]
+pub use raft_node::{decode_message, encode_message, RaftNode, MAX_MESSAGE_BYTES};
 #[cfg(feature = "raft-rs-backend")]
 pub use raft_storage::{FileRaftStorage, MAX_ENTRY_BYTES, MAX_SNAPSHOT_BYTES};
 
 #[cfg(feature = "raft-rs-backend")]
 mod raft_rs_backend {
     use super::*;
-    use crate::raft_storage::FileRaftStorage;
-    use raft::prelude::{Config as RaftConfig, Entry, EntryType, RawNode};
-    use raft::StateRole;
+    use crate::raft_node::RaftNode;
     use std::path::Path;
 
     #[derive(Clone, Debug, Eq, PartialEq)]
@@ -679,157 +681,64 @@ mod raft_rs_backend {
         pub commit_index: CommitIndex,
     }
 
-    /// A one-member group over **durable** state.
+    /// A one-member group over durable state.
     ///
-    /// It is still one member, so it demonstrates nothing about partitions or
-    /// leader changes. What changed is that the term, the vote and the log survive
-    /// the process: a node that forgets those has agreed to things it can no longer
-    /// account for, which is the part of Raft's safety argument that lives on disk
-    /// rather than in the protocol.
+    /// It is one member, so it demonstrates nothing about partitions or leader
+    /// changes — [`RaftNode`] is what composes into a group. What this adds is the
+    /// convenience a single member allows: a proposal is decided by the time
+    /// `propose` returns, because there is nobody to hear from.
+    ///
+    /// It is the same node type underneath, so there is one place where entries are
+    /// persisted, hard state is flushed and committed entries are applied. Two
+    /// copies of that sequence would be two chances to get the ordering wrong.
     pub struct SingleNodeRaftConsensus {
-        node: RawNode<FileRaftStorage>,
-        committed: Vec<CommittedEvent>,
+        node: RaftNode,
     }
 
     impl SingleNodeRaftConsensus {
         /// Open durable state under `dir`, recovering committed history.
         pub fn open(dir: &Path, node_id: u64) -> Result<Self, String> {
-            let storage =
-                FileRaftStorage::open(dir, &[node_id], &[]).map_err(|error| error.to_string())?;
-            let recovered = storage.wl().committed_entries();
-            // What this node has already applied is what it recovered. Telling
-            // raft `applied: 0` instead makes it re-deliver the whole committed
-            // prefix as newly committed, and the recovered history is then applied
-            // twice — which is how a restart turns two events into four.
-            let applied = storage.wl().hard_state().commit;
-
-            let config = RaftConfig {
-                id: node_id,
-                election_tick: 10,
-                heartbeat_tick: 3,
-                max_size_per_msg: 1024 * 1024,
-                max_inflight_msgs: 256,
-                applied,
-                ..Default::default()
-            };
-            config.validate().map_err(|error| error.to_string())?;
-
-            let logger = slog::Logger::root(slog::Discard, slog::o!());
-            let node =
-                RawNode::new(&config, storage, &logger).map_err(|error| error.to_string())?;
-            let mut consensus = Self {
-                node,
-                committed: Vec::new(),
-            };
-            // Replay first, so the recovered history is what the node continues
-            // from rather than something the new term overwrites.
-            consensus.apply_committed(recovered)?;
-            consensus
-                .node
-                .campaign()
-                .map_err(|error| error.to_string())?;
-            consensus.drain_ready()?;
-            if consensus.node.raft.state != StateRole::Leader {
+            let mut node = RaftNode::open(dir, node_id, &[node_id])?;
+            let outbound = node.campaign()?;
+            if !outbound.is_empty() {
+                return Err("a one-member group has nobody to send votes to".into());
+            }
+            if !node.is_leader() {
                 return Err("single-node raft group failed to become leader".into());
             }
-            Ok(consensus)
+            Ok(Self { node })
         }
 
         pub fn is_leader(&self) -> bool {
-            self.node.raft.state == StateRole::Leader
+            self.node.is_leader()
         }
 
         pub fn committed_events(&self) -> &[CommittedEvent] {
-            &self.committed
+            self.node.committed_events()
         }
 
         /// The durable term this node has seen.
         pub fn term(&self) -> u64 {
-            self.node.raft.term
+            self.node.term()
         }
 
         pub fn propose(&mut self, event: LedgerEvent) -> Result<RaftCommitReceipt, String> {
-            let before = self.committed.len();
-            self.node
-                .propose(Vec::new(), encode_event(&event))
-                .map_err(|error| error.to_string())?;
-            self.drain_ready()?;
+            let before = self.node.committed_events().len();
+            let outbound = self.node.propose(event)?;
+            if !outbound.is_empty() {
+                return Err(
+                    "a one-member group produced a message with no peer to receive it".into(),
+                );
+            }
 
-            let committed = self
-                .committed
-                .get(before)
-                .ok_or_else(|| "proposal was not committed in single-node raft group".to_owned())?;
+            let committed =
+                self.node.committed_events().get(before).ok_or_else(|| {
+                    "proposal was not committed in single-node raft group".to_owned()
+                })?;
             Ok(RaftCommitReceipt {
-                raft_index: self.node.raft.raft_log.committed,
+                raft_index: self.node.raft_committed(),
                 commit_index: committed.index,
             })
-        }
-
-        fn drain_ready(&mut self) -> Result<(), String> {
-            while self.node.has_ready() {
-                let store = self.node.raft.raft_log.store.clone();
-                let mut ready = self.node.ready();
-
-                if !ready.messages().is_empty() {
-                    ready.take_messages();
-                }
-
-                if !ready.snapshot().is_empty() {
-                    store
-                        .wl()
-                        .apply_snapshot(ready.snapshot().clone())
-                        .map_err(|error| error.to_string())?;
-                }
-
-                let committed = ready.take_committed_entries();
-
-                // Entries and hard state are flushed here, before anything that
-                // depends on them could leave the node. With one member nothing
-                // leaves, but the ordering is the contract a group relies on and it
-                // is not something to introduce later.
-                if !ready.entries().is_empty() {
-                    store
-                        .wl()
-                        .append(ready.entries())
-                        .map_err(|error| error.to_string())?;
-                }
-
-                if let Some(hard_state) = ready.hs() {
-                    store
-                        .wl()
-                        .set_hard_state(hard_state)
-                        .map_err(|error| error.to_string())?;
-                }
-
-                if !ready.persisted_messages().is_empty() {
-                    ready.take_persisted_messages();
-                }
-
-                self.apply_committed(committed)?;
-
-                let mut light = self.node.advance(ready);
-                if let Some(commit) = light.commit_index() {
-                    store
-                        .wl()
-                        .set_commit(commit)
-                        .map_err(|error| error.to_string())?;
-                }
-                self.apply_committed(light.take_committed_entries())?;
-                self.node.advance_apply();
-            }
-            Ok(())
-        }
-
-        fn apply_committed(&mut self, entries: Vec<Entry>) -> Result<(), String> {
-            for entry in entries {
-                if entry.data.is_empty() || entry.get_entry_type() != EntryType::EntryNormal {
-                    continue;
-                }
-                let event = decode_event(entry.data.as_ref()).map_err(|error| error.to_string())?;
-                let index = CommitIndex(self.committed.len() as u64 + 1);
-                self.committed.push(CommittedEvent { index, event });
-            }
-            Ok(())
         }
     }
 }

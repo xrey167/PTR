@@ -100,14 +100,73 @@ a file in place, so its cost is proportional to what is *kept* — the opposite 
 what compaction is for. That is acceptable because compaction is rare, and it is
 written down rather than discovered later.
 
+## A group, driven message by message
+
+`RaftNode` is one member that hands its outbound messages back instead of dropping
+them. The single-node harness could throw them away because a one-member group has
+nobody to send to; everything a group does — voting, replicating, deposing a leader
+— is in those messages.
+
+It deliberately knows nothing about transport. Messages come out and go in, and
+whether that happens through a socket, an ALPN on `ptr-net` or a test's own queue
+is not its business. That separation is what makes a partition testable without a
+timer: **nothing here is driven by wall-clock time**, so a test decides exactly
+which message arrives and which does not, and a failure means the code is wrong
+rather than the machine busy.
+
+Ticks are a count, not a duration, for the same reason. `heartbeat_tick` is three,
+so a test that ticks once and expects contact is testing its own arithmetic — which
+is a mistake this repository's tests made once and now has a helper against.
+
+`SingleNodeRaftConsensus` is now a thin wrapper over the same type. Two copies of
+"persist entries, flush hard state, apply committed, advance" would be two chances
+to get that order wrong.
+
+### The order messages leave in
+
+Raft distinguishes `messages` from `persisted_messages`, and the distinction is not
+a preference: the first may go out before the write, the second only after it.
+Sending a vote or an append the sender has not yet flushed is how a crash becomes a
+promise nobody kept. `RaftNode::drain` collects them in that order.
+
+### What the group tests establish
+
+Eight tests in `crates/ptr-ledger/tests/raft_cluster.rs`, all deterministic:
+
+| Property | What would otherwise pass unnoticed |
+|---|---|
+| exactly one leader after an election, with the followers in its term | two leaders, or a follower left in an older term |
+| a majority commits while a minority decides nothing | a minority that commits locally |
+| a member that knows no leader refuses a write outright | a proposal buffered until a leadership that may never come |
+| a partitioned follower's forwarded proposal never resurfaces | a queued write the group never ordered |
+| a deposed leader appends but cannot commit, and what it wrote alone is overwritten | a resurrected entry from a superseded leader |
+| one total order across a leader change, indexes exactly `1..n` | an index assigned twice |
+| duplicated and stale messages change nothing | an old append re-applied |
+| a restarted member restores exactly the leader's committed state | a node that comes back with a different history |
+
+The minority case is worth stating precisely, because the mechanism is not what it
+first looks like. A follower does **not** refuse a proposal: raft forwards it to the
+leader it last knew. So the property is not "propose returns an error" but "the
+write is not ordered and is not held either" — the message is addressed to a member
+it cannot reach, and nothing replays it when the partition heals. The test asserts
+that after healing, too.
+
+A message that does not decode is dropped rather than partially applied: a message
+is a claim about a term and a log position, and half of one claims nothing.
+
 ## What this does not close
 
-- **This is not consensus.** A one-member group agrees with itself. Nothing here
-  demonstrates a partition, a leader change, a duplicated message or a divergent
-  history, and the single-node harness must not be read as evidence about any of
-  them.
 - **There is no transport.** `ALPN_RAFT` still carries no traffic, and the raft
-  backends and `ptr-net` still have no code path between them.
+  backends and `ptr-net` still have no code path between them. The group is
+  composed by a test's queue, which proves the protocol behaviour and proves
+  nothing about a network: no framing, no authenticated sender, no bound on what a
+  peer may send, and no evidence that a real connection carries these messages at
+  all. A composition over `ptr-net` is the next package, and it needs a home —
+  `ptr-ledger` must not depend on transport and `ptr-net` must not depend on the
+  log.
+- **The harness is not a deployment.** It steps nodes in one process and one
+  thread, with delivery in FIFO order. Real reordering, concurrent stepping and
+  partial writes under load are outside it.
 - **Local file locks fence nothing across nodes.** `FileLedger` takes an advisory
   lock, which makes one writer per file on one machine. It says nothing about a
   second machine, and a deposed leader on another host is not excluded by it.

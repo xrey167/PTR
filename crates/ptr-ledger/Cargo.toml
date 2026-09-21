@@ -34,3 +34,8 @@ required-features = ["raft-engine-backend"]
 name = "raft_rs"
 path = "tests/raft_rs.rs"
 required-features = ["raft-rs-backend"]
+
+[[test]]
+name = "raft_cluster"
+path = "tests/raft_cluster.rs"
+required-features = ["raft-rs-backend"]

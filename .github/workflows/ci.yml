@@ -110,6 +110,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo +stable test -p ptr-ledger --features raft-rs-backend --test raft_rs --locked
+      - run: cargo +stable test -p ptr-ledger --features raft-rs-backend --test raft_cluster --locked
   state-turso:
     runs-on: ubuntu-latest
     steps:
