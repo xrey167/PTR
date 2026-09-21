@@ -11,7 +11,7 @@
 //! partition testable without a timer: nothing here is driven by wall-clock time,
 //! so a test decides exactly which message arrives and which does not.
 use crate::raft_storage::FileRaftStorage;
-use crate::{decode_event, encode_event, CommittedEvent, LedgerEvent};
+use crate::{decode_event, encode_event, integrity, CommittedEvent, LedgerEvent};
 use ptr_types::CommitIndex;
 use raft::codec::Message as _;
 use raft::prelude::{Config as RaftConfig, Entry, EntryType, Message, RawNode};
@@ -44,6 +44,51 @@ pub struct InstalledSnapshot {
     pub term: u64,
     /// The application's own encoding of its state at that position.
     pub state: Vec<u8>,
+    /// Digest of `state`, computed **here** from the bytes that arrived rather
+    /// than read out of them.
+    ///
+    /// A digest carried inside the payload would say only that the payload agrees
+    /// with itself. This one exists so a host that retained an anchor out of band
+    /// can compare against something the sender did not get to choose.
+    pub digest: [u8; 32],
+}
+
+/// What a host retained out of band about a snapshot it is willing to accept.
+///
+/// Raft is not Byzantine fault tolerant and this does not make it so: a member
+/// that accepts a snapshot from the leader its protocol elected is the design,
+/// not a gap. What this allows is the deployment that *does* retain anchors
+/// elsewhere — an operator, a control plane, a second channel — to say which
+/// state it expects, so a member does not restore from whatever arrived simply
+/// because it arrived from the current leader.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RetainedSnapshotAnchor {
+    /// The committed position the payload must describe.
+    pub index: u64,
+    /// The digest the payload's bytes must have.
+    pub digest: [u8; 32],
+}
+
+/// Why a member refused to take an installed snapshot.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SnapshotAnchorMismatch {
+    /// No snapshot has been installed, so there is nothing to match.
+    NothingInstalled,
+    /// The payload describes a different committed position than was retained.
+    Index { installed: u64, retained: u64 },
+    /// The payload's bytes are not the ones the retained anchor describes.
+    Digest,
+}
+
+impl SnapshotAnchorMismatch {
+    /// Stable diagnostic code for this refusal.
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::NothingInstalled => "PTR_SNAPSHOT_NONE_INSTALLED",
+            Self::Index { .. } => "PTR_SNAPSHOT_ANCHOR_INDEX",
+            Self::Digest => "PTR_SNAPSHOT_ANCHOR_DIGEST",
+        }
+    }
 }
 
 /// A Raft member over durable state.
@@ -173,6 +218,42 @@ impl RaftNode {
         self.installed.clone()
     }
 
+    /// Take an installed snapshot only if it is the one a host retained an anchor
+    /// for, out of band.
+    ///
+    /// [`RaftNode::take_installed_snapshot`] returns whatever the elected leader
+    /// sent, which rules out a *stranger* — the sender is the authenticated
+    /// connection — but not the leader itself. This is the variant for a
+    /// deployment that knows, by some other route, which state it expects.
+    ///
+    /// A mismatch refuses and **leaves the snapshot installed**: the member stays
+    /// blocked from applying anything further rather than silently continuing as
+    /// though no snapshot had arrived, which is the outcome that would renumber
+    /// every event after it.
+    pub fn take_installed_snapshot_matching(
+        &mut self,
+        retained: RetainedSnapshotAnchor,
+    ) -> Result<InstalledSnapshot, SnapshotAnchorMismatch> {
+        let installed = self
+            .installed
+            .as_ref()
+            .ok_or(SnapshotAnchorMismatch::NothingInstalled)?;
+        if installed.index != retained.index {
+            return Err(SnapshotAnchorMismatch::Index {
+                installed: installed.index,
+                retained: retained.index,
+            });
+        }
+        // Compared in constant time is not the point here — this is an integrity
+        // check against a retained value, not a secret — but it is compared
+        // against the digest computed from the arriving bytes, never one read out
+        // of them.
+        if installed.digest != retained.digest {
+            return Err(SnapshotAnchorMismatch::Digest);
+        }
+        Ok(installed.clone())
+    }
+
     /// Account for an installed snapshot: how many events its payload covers.
     ///
     /// Until this is called, applying further entries is refused. A member that
@@ -242,10 +323,12 @@ impl RaftNode {
                 // this member's to report. What replaces them is the caller's to
                 // decide, which is why nothing further applies until it has.
                 self.committed.clear();
+                let state = snapshot.data.to_vec();
                 self.installed = Some(InstalledSnapshot {
                     index: metadata.index,
                     term: metadata.term,
-                    state: snapshot.data.to_vec(),
+                    digest: integrity::sha256(&state),
+                    state,
                 });
             }
 

@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-21  
-**Code footprint:** 3 Rust source files · 681 nonblank source lines · 1 integration-test files · 6 `#[test]` markers
+**Code footprint:** 3 Rust source files · 698 nonblank source lines · 1 integration-test files · 6 `#[test]` markers
 
 ### Implemented now
 
@@ -21,6 +21,7 @@
 - A refused frame is answered with an empty batch rather than leaving the peer hanging: the refusal is the receiver's business, not a diagnosis to hand out
 - A member that cannot be reached is reported rather than raised: a leader that abandoned a proposal because one follower was down could not commit while any member is down, so a transport failure toward one peer is recorded and the round continues while a forged sender or a malformed frame still aborts
 - One exchange has a deadline, because how long to wait for a member is this layer's policy and not the peer's: without one a member that stopped answering holds up every round it appears in
+- take_installed_snapshot_matching lets a host that retains snapshot anchors out of band refuse a payload the elected leader sent but the host did not expect; take_installed_snapshot remains for deployments with no second channel and documents what it trusts
 - Snapshot payloads are carried unread, and the test carries a real PTRCS002 compacted snapshot end to end: it is recorded by the leader, arrives byte for byte at a member the leader cannot replay to, and a runtime restores from exactly those bytes
 - No background loop, timer or retry policy: the caller drives accept and dispatch, which keeps scheduling decisions where they can be made deliberately and keeps the tests free of sleeps
 - The whole composition is feature-gated, so iroh and raft stay out of every other workspace build exactly as ptr-net and ptr-ledger keep their own backends out

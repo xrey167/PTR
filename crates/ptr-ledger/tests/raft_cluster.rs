@@ -9,7 +9,10 @@
 //! ids whose messages are dropped in both directions. A clever harness would be a
 //! second implementation of the thing under test.
 
-use ptr_ledger::raft_node::{decode_message, encode_message, RaftNode, MAX_MESSAGE_BYTES};
+use ptr_ledger::raft_node::{
+    decode_message, encode_message, RaftNode, RetainedSnapshotAnchor, SnapshotAnchorMismatch,
+    MAX_MESSAGE_BYTES,
+};
 use ptr_ledger::{CommittedEvent, LedgerEvent};
 use ptr_types::{CapsuleId, Generation, ProjectId};
 use raft::prelude::Message;
@@ -664,4 +667,134 @@ fn a_restarted_deposed_leader_cannot_resurrect_the_tail_it_wrote_alone() {
             "the tail it wrote alone must not survive a restart either"
         );
     }
+}
+
+/// The anchor a host retained out of band, for the snapshot member 3 is about to
+/// be sent. Built from the leader's own state so the positive case is the honest
+/// one; the negatives perturb it rather than the payload.
+fn retained_for(state: &[u8], index: u64) -> RetainedSnapshotAnchor {
+    RetainedSnapshotAnchor {
+        index,
+        digest: ptr_ledger::integrity::sha256(state),
+    }
+}
+
+/// Set up a cluster where member 3 has a snapshot installed, and return the
+/// leader's payload and the position it covers.
+fn cluster_with_installed_snapshot(temp: &Temp) -> (Cluster, Vec<u8>, u64) {
+    let mut cluster = Cluster::open(temp);
+    cluster.elect(1);
+    for generation in 1..=3 {
+        cluster.propose(1, generation).unwrap();
+    }
+    cluster.unreachable.insert(3);
+    for generation in 4..=5 {
+        cluster.propose(1, generation).unwrap();
+    }
+    let leader_state = encode_state(&cluster.events(1));
+    let covered = cluster.get(1).raft_committed();
+    cluster
+        .node(1)
+        .record_snapshot(covered, leader_state.clone())
+        .unwrap();
+    cluster.unreachable.remove(&3);
+    cluster.heartbeat(1);
+    assert!(
+        cluster.node(3).take_installed_snapshot().is_some(),
+        "the scenario requires a snapshot to have landed"
+    );
+    (cluster, leader_state, covered)
+}
+
+#[test]
+fn a_snapshot_matching_an_independently_retained_anchor_is_taken() {
+    let temp = Temp::new("anchor-ok");
+    let (mut cluster, state, covered) = cluster_with_installed_snapshot(&temp);
+
+    let taken = cluster
+        .node(3)
+        .take_installed_snapshot_matching(retained_for(&state, covered))
+        .expect("the payload is the one the retained anchor describes");
+    assert_eq!(taken.index, covered);
+    assert_eq!(taken.state, state, "the payload arrives byte for byte");
+    assert_eq!(
+        taken.digest,
+        ptr_ledger::integrity::sha256(&state),
+        "the digest is computed from the bytes that arrived, not read out of them"
+    );
+}
+
+#[test]
+fn a_payload_the_retained_anchor_does_not_describe_is_refused_and_stays_installed() {
+    let temp = Temp::new("anchor-digest");
+    let (mut cluster, state, covered) = cluster_with_installed_snapshot(&temp);
+
+    // Same position, different state: a leader sending a well-formed snapshot for
+    // the right index whose contents are not what the host expects. Raft cannot
+    // tell the difference — the payload is opaque to it — which is exactly why the
+    // anchor has to come from somewhere the sender does not control.
+    let mut elsewhere = state.clone();
+    elsewhere.extend_from_slice(b"not what was retained");
+
+    assert_eq!(
+        cluster
+            .node(3)
+            .take_installed_snapshot_matching(retained_for(&elsewhere, covered)),
+        Err(SnapshotAnchorMismatch::Digest)
+    );
+
+    // The refusal must not look like "no snapshot arrived". A member that carried
+    // on would renumber every event after the snapshot.
+    assert!(
+        cluster.node(3).take_installed_snapshot().is_some(),
+        "a refused snapshot stays installed, so the member stays blocked"
+    );
+}
+
+#[test]
+fn a_payload_describing_another_position_is_refused_by_index() {
+    let temp = Temp::new("anchor-index");
+    let (mut cluster, state, covered) = cluster_with_installed_snapshot(&temp);
+
+    let error = cluster
+        .node(3)
+        .take_installed_snapshot_matching(retained_for(&state, covered + 1))
+        .expect_err("a snapshot for another position is not this one");
+    assert_eq!(
+        error,
+        SnapshotAnchorMismatch::Index {
+            installed: covered,
+            retained: covered + 1
+        },
+        "the refusal names both positions so an operator can tell which is wrong"
+    );
+    assert_eq!(error.code(), "PTR_SNAPSHOT_ANCHOR_INDEX");
+}
+
+/// The control.
+///
+/// Both refusals above would pass against a check that refused everything, so the
+/// same member, in the same state, must still accept the genuine pair — and a
+/// member with nothing installed must say *that* rather than a mismatch.
+#[test]
+fn the_anchor_check_accepts_the_genuine_pair_and_distinguishes_having_nothing() {
+    let temp = Temp::new("anchor-control");
+    let (mut cluster, state, covered) = cluster_with_installed_snapshot(&temp);
+
+    assert!(
+        cluster
+            .node(3)
+            .take_installed_snapshot_matching(retained_for(&state, covered))
+            .is_ok(),
+        "the genuine pair is accepted by the same check that refused the others"
+    );
+
+    // Member 2 never fell behind, so nothing was installed on it. "Nothing to
+    // match" is a different answer from "what arrived is wrong".
+    assert_eq!(
+        cluster
+            .node(2)
+            .take_installed_snapshot_matching(retained_for(&state, covered)),
+        Err(SnapshotAnchorMismatch::NothingInstalled)
+    );
 }

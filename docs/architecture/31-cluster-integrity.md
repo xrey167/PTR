@@ -250,13 +250,29 @@ it were empty would number the next event 1 and disagree with every other member
 about what that index means. The test asserts the refusal, and that the event after a
 snapshot continues the ledger's numbering.
 
-**The anchor travels from the leader, and that is weaker than retaining it.**
-PTRCS002 is verified against a trusted anchor the host retains *outside* the
-artifact, for the reason `24-protected-anchors.md` gives: a digest read back out of
-the file it describes proves nothing. A snapshot arriving over this transport comes
-with its anchor from the authenticated leader, so what it rules out is a *stranger*
-sending a consistent pair — not a compromised leader doing so. Stated here rather
-than left to be assumed, and listed as the crate's next step.
+**The anchor can now be retained independently of the sender.** PTRCS002 is
+verified against a trusted anchor the host retains *outside* the artifact, for the
+reason `24-protected-anchors.md` gives: a digest read back out of the file it
+describes proves nothing. A snapshot arriving over this transport used to come with
+its anchor from the authenticated leader and nothing else, so what it ruled out was
+a *stranger* sending a consistent pair, not the leader itself.
+
+`take_installed_snapshot_matching` takes a `RetainedSnapshotAnchor` — a position and
+a digest the host got from somewhere the sender does not control — and refuses
+anything else. Two details decide whether it is worth anything:
+
+- **The digest compared against is computed here, from the bytes that arrived.** A
+  digest read out of the payload would say only that the payload agrees with
+  itself, which is the mistake `24-protected-anchors.md` exists to name.
+- **A mismatch leaves the snapshot installed.** The member stays blocked rather
+  than continuing as though nothing had arrived — continuing would renumber every
+  event after the snapshot, so a refusal that unblocked the member would trade one
+  failure for a worse one.
+
+What this does **not** do is make raft Byzantine fault tolerant, and it is not an
+attempt to. A member that accepts a snapshot from the leader its own protocol
+elected is the design. `take_installed_snapshot` remains for the deployment that
+has no second channel, and says in its own documentation what it is trusting.
 
 ## Durable fencing, as distinct from protocol fencing
 
@@ -310,7 +326,9 @@ Nothing here provides that, and #15's Gate 2 asked for it.
 - **Compaction is not integrated with the ledger's retention floor.** This is
   raft's own log, distinct from the committed ledger in
   `25-erasure-and-retention.md`, and the two floors are still independent.
-- **A snapshot's anchor is only as trustworthy as the leader that sent it.** See
-  above; retaining anchors independently of the sender is open.
+- **A deployment with no second channel still trusts the leader.** The mechanism
+  for retaining an anchor independently exists; supplying one is the host's, and a
+  host that calls `take_installed_snapshot` is back to trusting the sender. Nothing
+  here can create a second channel for a deployment that has none.
 - **No performance or availability claim.** Every write flushes, which is a
   correctness choice with an obvious cost, unmeasured here.

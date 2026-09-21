@@ -220,8 +220,26 @@ impl ClusterMember {
     }
 
     /// Take the snapshot a leader installed on this member, if one arrived.
+    ///
+    /// What arrives is the elected leader's. Because the sender is the
+    /// authenticated connection, this rules out a *stranger* supplying a
+    /// consistent pair — it does not rule out the leader itself. A deployment
+    /// that retains anchors elsewhere should use
+    /// [`ClusterMember::take_installed_snapshot_matching`] instead.
     pub fn take_installed_snapshot(&self) -> Option<ptr_ledger::InstalledSnapshot> {
         self.locked().take_installed_snapshot()
+    }
+
+    /// Take an installed snapshot only if it matches an anchor retained out of
+    /// band.
+    ///
+    /// A mismatch refuses and leaves the snapshot installed, so the member stays
+    /// blocked rather than continuing as though nothing had arrived.
+    pub fn take_installed_snapshot_matching(
+        &self,
+        retained: ptr_ledger::RetainedSnapshotAnchor,
+    ) -> Result<ptr_ledger::InstalledSnapshot, ptr_ledger::SnapshotAnchorMismatch> {
+        self.locked().take_installed_snapshot_matching(retained)
     }
 
     /// Account for an installed snapshot: how many events its payload covers.

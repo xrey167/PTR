@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-21  
-**Code footprint:** 9 Rust source files · 4228 nonblank source lines · 11 integration-test files · 89 `#[test]` markers
+**Code footprint:** 9 Rust source files · 4308 nonblank source lines · 11 integration-test files · 93 `#[test]` markers
 
 ### Implemented now
 
@@ -50,6 +50,7 @@
 - Raft's message type is re-exported so a transport can name it without declaring its own raft dependency: two pins would be two wire formats for the very messages they exchange
 - Raft messages have a bounded wire encoding; a frame that does not decode is dropped rather than partially stepped, and SingleNodeRaftConsensus is a thin wrapper over the same node so there is one place where entries are persisted, hard state flushed and committed entries applied
 - FileRaftStorage keeps term, vote, commit, configuration, log and snapshot position on disk: the state file is rewritten atomically, entries and hard state are flushed before anything depending on them could leave the node, and a conflicting append truncates the log so the file is always a prefix of one history
+- An installed snapshot carries a digest computed from the bytes that arrived, and take_installed_snapshot_matching accepts it only against a RetainedSnapshotAnchor the host got from somewhere the sender does not control; a mismatch refuses by index or by digest and leaves the snapshot installed so the member stays blocked
 - Raft log records carry an explicit entry-type code and a per-record digest, and indexes must be consecutive from the snapshot position, so a changed record and a removed or duplicated one are separate refusals; a snapshot older than raft asks for is refused rather than fabricated at the requested index
 
 ### Missing for the target architecture
