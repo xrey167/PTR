@@ -257,6 +257,57 @@ class WhatUnittestCollects(unittest.TestCase):
         )
         self.assertEqual(len(self.errors()), 1)
 
+    def test_a_local_class_named_test_case_does_not_make_a_case(self):
+        # A base is matched by where it came from, not by what it is called. A
+        # file defining its own `class TestCase` gets nothing collected at all -
+        # confirmed against `unittest.TestLoader().discover()`, which returns an
+        # empty suite for exactly this file.
+        self.python(
+            f"class TestCase:\n    pass\n\n\nclass Blockers(TestCase):\n"
+            f"    def {self.NAME}(self):\n        pass\n"
+        )
+        errors = self.errors()
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("is not a test", errors[0])
+
+    def test_a_base_imported_from_another_module_is_not_a_case(self):
+        # The same name from somewhere else. Recognising it would be a guess
+        # about a module this checker never reads.
+        self.python(
+            f"from mypkg import TestCase\n\n\nclass Blockers(TestCase):\n"
+            f"    def {self.NAME}(self):\n        pass\n"
+        )
+        self.assertEqual(len(self.errors()), 1)
+
+    def test_a_base_with_no_import_at_all_is_not_a_case(self):
+        self.python(
+            f"class Blockers(TestCase):\n    def {self.NAME}(self):\n        pass\n"
+        )
+        self.assertEqual(len(self.errors()), 1)
+
+    def test_the_module_may_be_aliased(self):
+        self.python(
+            f"import unittest as ut\n\n\nclass Blockers(ut.TestCase):\n"
+            f"    def {self.NAME}(self):\n        pass\n"
+        )
+        self.assertEqual(self.errors(), [])
+
+    def test_the_class_may_be_aliased(self):
+        self.python(
+            f"from unittest import TestCase as Case\n\n\nclass Blockers(Case):\n"
+            f"    def {self.NAME}(self):\n        pass\n"
+        )
+        self.assertEqual(self.errors(), [])
+
+    def test_an_asynchronous_case_counts(self):
+        # `IsolatedAsyncioTestCase` is a `TestCase` subclass shipped by
+        # `unittest`, and discovery treats it identically.
+        self.python(
+            f"import unittest\n\n\nclass Blockers(unittest.IsolatedAsyncioTestCase):\n"
+            f"    async def {self.NAME}(self):\n        pass\n"
+        )
+        self.assertEqual(self.errors(), [])
+
     def test_a_file_that_does_not_parse_defines_no_test(self):
         # Reporting a syntax error is not this checker's job, but crashing on one
         # would take down an invariant run over a file it only skims.

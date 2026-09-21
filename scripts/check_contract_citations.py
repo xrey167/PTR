@@ -62,10 +62,15 @@ PYTHON_TEST_FILE = "test"
 # `.github/workflows/ci.yml` runs plain `python -m unittest discover -s <dir>`
 # for every Python test directory in the tree.
 PYTHON_TEST_METHOD_PREFIX = "test"
-# The base classes that make a class a case. `IsolatedAsyncioTestCase` and
-# `FunctionTestCase` are `TestCase` subclasses shipped by `unittest` itself, so a
-# class deriving from either is collected exactly as one deriving from `TestCase`.
-TEST_CASE_BASES = frozenset({"TestCase", "IsolatedAsyncioTestCase", "FunctionTestCase"})
+# The module a case class has to come from, and the names it exports that are
+# one. `IsolatedAsyncioTestCase` and `FunctionTestCase` are `TestCase` subclasses
+# shipped by `unittest` itself, so a class deriving from either is collected
+# exactly as one deriving from `TestCase`. The module matters as much as the
+# name: a file defining its own `class TestCase` gets nothing collected, so
+# matching on the trailing name alone would accept a citation to a test that
+# never runs.
+UNITTEST_MODULE = "unittest"
+TEST_CASE_EXPORTS = frozenset({"TestCase", "IsolatedAsyncioTestCase", "FunctionTestCase"})
 
 
 def owned(root: Path, paths):
@@ -98,30 +103,83 @@ def rust_tests(text: str) -> set[str]:
     return found
 
 
-def base_name(node: ast.expr) -> str | None:
-    """The trailing name of a base expression: `TestCase` for `unittest.TestCase`.
+def case_bindings(tree: ast.Module) -> tuple[set[str], set[str]]:
+    """The names in this file that really refer to `unittest`'s case classes.
 
-    Matching on the trailing name rather than the full dotted path is what makes
-    `import unittest` and `from unittest import TestCase` read alike, which is
-    the difference the runner does not care about either.
+    Two ways in: a name bound to the `unittest` module itself, for a base
+    written `unittest.TestCase`, and a name bound directly to one of its case
+    classes by `from unittest import TestCase [as ...]`.
+
+    A name that is also defined in the file - a class, a function or an
+    assignment - is dropped from both sets rather than guessed at. Import order
+    and conditional definitions decide which binding wins at runtime, and a
+    checker that picks one is inventing an answer; dropping it makes the file's
+    tests read as absent, which fails loudly instead of passing wrongly.
     """
+    modules: set[str] = set()
+    direct: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.asname:
+                    # `import unittest.mock as m` binds `m` to the submodule, so
+                    # only a plain `unittest` alias names the module we want.
+                    if alias.name == UNITTEST_MODULE:
+                        modules.add(alias.asname)
+                elif alias.name == UNITTEST_MODULE or alias.name.startswith(
+                    f"{UNITTEST_MODULE}."
+                ):
+                    # `import unittest.mock` binds `unittest` as well.
+                    modules.add(UNITTEST_MODULE)
+        elif isinstance(node, ast.ImportFrom):
+            from_unittest = node.level == 0 and node.module in (
+                UNITTEST_MODULE,
+                f"{UNITTEST_MODULE}.case",
+                f"{UNITTEST_MODULE}.async_case",
+            )
+            if from_unittest:
+                for alias in node.names:
+                    if alias.name in TEST_CASE_EXPORTS:
+                        direct.add(alias.asname or alias.name)
+
+    shadowed: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            shadowed.add(node.name)
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    shadowed.add(target.id)
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+            if isinstance(node.target, ast.Name):
+                shadowed.add(node.target.id)
+    return modules - shadowed, direct - shadowed
+
+
+def is_case_base(node: ast.expr, modules: set[str], direct: set[str]) -> bool:
+    """Whether this base expression is one of `unittest`'s case classes."""
     if isinstance(node, ast.Name):
-        return node.id
+        return node.id in direct
     if isinstance(node, ast.Attribute):
-        return node.attr
-    return None
+        return (
+            node.attr in TEST_CASE_EXPORTS
+            and isinstance(node.value, ast.Name)
+            and node.value.id in modules
+        )
+    return False
 
 
 def python_tests(text: str) -> set[str]:
     """Test methods `unittest discover` would actually collect from this file.
 
-    Collection is narrower than "a `def` in a `test*.py` file" in two ways that
-    both matter here, and the first form of this function honoured neither: the
-    name must begin with `TestLoader.testMethodPrefix`, which CI leaves at
-    `test`, and it must be a method of a `unittest.TestCase` subclass. A
-    top-level `def a_property_holds(self)` in `test_thing.py` is never executed
-    by anything, so a citation to it is exactly the dead reference this checker
-    exists to refuse.
+    Collection is narrower than "a `def` in a `test*.py` file" in three ways,
+    and each one was a place this function let a dead citation through. The name
+    must begin with `TestLoader.testMethodPrefix`, which CI leaves at `test`; it
+    must be a method of a class, not a module-level function; and that class
+    must derive from a case class **that came from `unittest`**. The third is
+    not pedantry - a file holding its own `class TestCase` gets nothing
+    collected at all, so a base matched by its trailing name is a citation to a
+    test that never runs.
 
     The file is parsed rather than imported. Importing would answer the question
     exactly - it is what the runner does - and would also execute module-level
@@ -139,6 +197,8 @@ def python_tests(text: str) -> set[str]:
         # checker is not the place to report a syntax error.
         return set()
 
+    modules, direct = case_bindings(tree)
+
     classes: dict[str, list[ast.ClassDef]] = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.ClassDef):
@@ -154,8 +214,13 @@ def python_tests(text: str) -> set[str]:
             if name in cases:
                 continue
             for definition in definitions:
-                bases = {base_name(base) for base in definition.bases}
-                if bases & TEST_CASE_BASES or bases & cases:
+                inherited = any(
+                    isinstance(base, ast.Name) and base.id in cases
+                    for base in definition.bases
+                )
+                if inherited or any(
+                    is_case_base(base, modules, direct) for base in definition.bases
+                ):
                     cases.add(name)
                     growing = True
                     break
@@ -231,7 +296,8 @@ def check(root: Path) -> tuple[list[str], int]:
                 "function, a mention in a comment, and a Python definition "
                 "`unittest discover` does not collect - one outside a "
                 "`TestCase` subclass, one whose name does not start with "
-                "`test`, or one in a file not named `test*.py` - all count as "
+                "`test`, one whose base only shares the name of a `unittest` "
+                "class, or one in a file not named `test*.py` - all count as "
                 "absent"
             )
     return errors, len(cited)
