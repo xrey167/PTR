@@ -308,6 +308,48 @@ class WhatUnittestCollects(unittest.TestCase):
         )
         self.assertEqual(self.errors(), [])
 
+    def test_an_import_the_module_does_not_execute_binds_nothing(self):
+        # `ut` is undefined by the time the class statement runs, so the module
+        # raises on import and `unittest` collects a failure in place of the
+        # test. Confirmed: real discovery returns no such test for this file.
+        self.python(
+            f"if False:\n    import unittest as ut\n\n\nclass Blockers(ut.TestCase):\n"
+            f"    def {self.NAME}(self):\n        pass\n"
+        )
+        errors = self.errors()
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("is not a test", errors[0])
+
+    def test_an_import_under_type_checking_is_not_a_runtime_binding(self):
+        # The same shape as the one above, in the form it actually appears in.
+        self.python(
+            f"from typing import TYPE_CHECKING\n\nif TYPE_CHECKING:\n"
+            f"    from unittest import TestCase\n\n\nclass Blockers(TestCase):\n"
+            f"    def {self.NAME}(self):\n        pass\n"
+        )
+        self.assertEqual(len(self.errors()), 1)
+
+    def test_an_import_inside_a_function_is_not_in_scope_at_class_body(self):
+        self.python(
+            f"def helper():\n    import unittest\n\n\nclass Blockers(unittest.TestCase):\n"
+            f"    def {self.NAME}(self):\n        pass\n"
+        )
+        self.assertEqual(len(self.errors()), 1)
+
+    def test_a_guarded_import_is_refused_although_discovery_would_collect_it(self):
+        # Deliberate conservatism, and the one case where this checker and the
+        # runner disagree: `unittest` does collect this test, because the import
+        # succeeds. Whether it succeeds is not something a parse can settle, so
+        # the refusal is a false failure - the direction this checker is allowed
+        # to be wrong in. Pinned here so the choice stays visible rather than
+        # being rediscovered as a bug.
+        self.python(
+            f"try:\n    import unittest\nexcept ImportError:\n    unittest = None\n\n\n"
+            f"class Blockers(unittest.TestCase):\n"
+            f"    def {self.NAME}(self):\n        pass\n"
+        )
+        self.assertEqual(len(self.errors()), 1)
+
     def test_a_file_that_does_not_parse_defines_no_test(self):
         # Reporting a syntax error is not this checker's job, but crashing on one
         # would take down an invariant run over a file it only skims.

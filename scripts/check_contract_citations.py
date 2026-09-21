@@ -110,15 +110,26 @@ def case_bindings(tree: ast.Module) -> tuple[set[str], set[str]]:
     written `unittest.TestCase`, and a name bound directly to one of its case
     classes by `from unittest import TestCase [as ...]`.
 
+    Only imports written directly in the module body count. An import the
+    module does not unconditionally execute binds nothing by the time the class
+    statement runs - `if False:`, `if TYPE_CHECKING:` and an import inside a
+    function all leave the base name undefined, so the module raises on import
+    and `unittest` collects a failure in place of the test. Walking the whole
+    tree accepted all three.
+
     A name that is also defined in the file - a class, a function or an
     assignment - is dropped from both sets rather than guessed at. Import order
     and conditional definitions decide which binding wins at runtime, and a
     checker that picks one is inventing an answer; dropping it makes the file's
     tests read as absent, which fails loudly instead of passing wrongly.
+
+    Both rules cost the same thing in the same direction. A `try: import ... /
+    except ImportError:` at module scope is rejected although the import may
+    well succeed, because whether it does is not something a parse can settle.
     """
     modules: set[str] = set()
     direct: set[str] = set()
-    for node in ast.walk(tree):
+    for node in tree.body:
         if isinstance(node, ast.Import):
             for alias in node.names:
                 if alias.asname:
