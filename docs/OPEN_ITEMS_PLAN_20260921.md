@@ -507,16 +507,31 @@ Deciding it is a policy choice, not an implementation.
 sentence, above. What exists is raft's safety argument among correct members; a
 fence excludes a writer that is not one.
 
-**C3 — Pod access across a network boundary.** `ALPN_PODWIRE`, `ALPN_MODEL`,
-`ALPN_BLOB` and `ALPN_EVENTS` (`crates/ptr-net/src/lib.rs:4-7`) carry no traffic;
-the only ALPNs any component uses are `ALPN_RAFT` and `ALPN_EXEC`. (They are all
-six *referenced* in `crates/ptr-net/tests/smoke.rs`, by the distinctness test.)
+**C3 — Pod access across a network boundary.** No protocol is defined over
+`ALPN_PODWIRE`, `ALPN_MODEL`, `ALPN_BLOB` or `ALPN_EVENTS`
+(`crates/ptr-net/src/lib.rs:4-7`); the only ALPNs any *component* speaks are
+`ALPN_RAFT` (`ptr-cluster`) and `ALPN_EXEC` (`ptr-execwire`).
+
+Stated exactly, because an earlier draft of this line said they "carry no
+traffic" and that is not true of one of them. `crates/ptr-net/tests/iroh.rs`
+binds `ALPN_PODWIRE` and sends `b"ping"` over it, as an arbitrary label for a
+transport test proving the connection authenticates its peer. Bytes have
+travelled over that ALPN; **Pod access** has not, and a label borrowed by a
+smoke test is not a protocol. All six are also referenced in
+`crates/ptr-net/tests/smoke.rs` by the distinctness test.
 
 **C4 — a settlement channel for detached work.** Detached grants are refused over
 the wire because there is no channel for the adapter's later report. A second
 protocol.
 
-**C5 — membership negotiation over the wire.**
+**C5 — membership negotiation over the wire.** Each member records a
+configuration and recovers it; adding or removing a voter is not implemented.
+Worth being exact about where the line falls, because the tree looks like it
+might be: `crates/ptr-ledger/src/raft_storage.rs:54-64` encodes and decodes
+`EntryConfChange` and `EntryConfChangeV2` entry types, which it must, since it
+stores whatever raft hands it. Nothing anywhere **proposes** one — a search of
+`ptr-cluster` and `raft_node.rs` for `ConfChange` returns nothing. So the
+storage could durably record a membership change that no code can initiate.
 
 **C6 — independent snapshot-anchor retention.** A snapshot's anchor is only as
 trustworthy as the leader that sent it; #20's own acceptance paragraph names this
