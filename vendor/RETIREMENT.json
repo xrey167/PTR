@@ -23,8 +23,8 @@
       "directory": "vendor/burn-dispatch-0.22.0-pre.3",
       "workspace": "burn-a0",
       "class": "paste-alias",
-      "upstream_observed": null,
-      "observed_at": null
+      "upstream_observed": "0.22.0-pre.3",
+      "observed_at": "2026-09-21"
     },
     {
       "name": "burn-ndarray",
@@ -32,8 +32,8 @@
       "directory": "vendor/burn-ndarray-0.22.0-pre.3",
       "workspace": "burn-a0",
       "class": "paste-alias",
-      "upstream_observed": null,
-      "observed_at": null
+      "upstream_observed": "0.22.0-pre.3",
+      "observed_at": "2026-09-21"
     },
     {
       "name": "burn-vision",
@@ -41,8 +41,8 @@
       "directory": "vendor/burn-vision-0.22.0-pre.3",
       "workspace": "burn-a0",
       "class": "paste-alias",
-      "upstream_observed": null,
-      "observed_at": null
+      "upstream_observed": "0.22.0-pre.3",
+      "observed_at": "2026-09-21"
     },
     {
       "name": "cubecl-core",
@@ -50,8 +50,8 @@
       "directory": "vendor/cubecl-core-0.11.0-pre.3",
       "workspace": "burn-a0",
       "class": "paste-alias",
-      "upstream_observed": null,
-      "observed_at": null
+      "upstream_observed": "0.11.0-pre.3",
+      "observed_at": "2026-09-21"
     },
     {
       "name": "cubecl-cpp",
@@ -59,8 +59,8 @@
       "directory": "vendor/cubecl-cpp-0.11.0-pre.3",
       "workspace": "burn-a0",
       "class": "paste-alias",
-      "upstream_observed": null,
-      "observed_at": null
+      "upstream_observed": "0.11.0-pre.3",
+      "observed_at": "2026-09-21"
     },
     {
       "name": "cubecl-hip",
@@ -68,8 +68,8 @@
       "directory": "vendor/cubecl-hip-0.11.0-pre.3",
       "workspace": "burn-a0",
       "class": "paste-alias",
-      "upstream_observed": null,
-      "observed_at": null
+      "upstream_observed": "0.11.0-pre.3",
+      "observed_at": "2026-09-21"
     },
     {
       "name": "cubecl-std",
@@ -77,8 +77,8 @@
       "directory": "vendor/cubecl-std-0.11.0-pre.3",
       "workspace": "burn-a0",
       "class": "paste-alias",
-      "upstream_observed": null,
-      "observed_at": null
+      "upstream_observed": "0.11.0-pre.3",
+      "observed_at": "2026-09-21"
     },
     {
       "name": "gemm",
@@ -86,8 +86,8 @@
       "directory": "vendor/gemm-0.19.0",
       "workspace": "burn-a0",
       "class": "paste-alias",
-      "upstream_observed": null,
-      "observed_at": null
+      "upstream_observed": "0.19.0",
+      "observed_at": "2026-09-21"
     },
     {
       "name": "gemm-c32",
@@ -95,8 +95,8 @@
       "directory": "vendor/gemm-c32-0.19.0",
       "workspace": "burn-a0",
       "class": "paste-alias",
-      "upstream_observed": null,
-      "observed_at": null
+      "upstream_observed": "0.19.0",
+      "observed_at": "2026-09-21"
     },
     {
       "name": "gemm-c64",
@@ -104,8 +104,8 @@
       "directory": "vendor/gemm-c64-0.19.0",
       "workspace": "burn-a0",
       "class": "paste-alias",
-      "upstream_observed": null,
-      "observed_at": null
+      "upstream_observed": "0.19.0",
+      "observed_at": "2026-09-21"
     },
     {
       "name": "gemm-common",
@@ -113,8 +113,8 @@
       "directory": "vendor/gemm-common-0.19.0",
       "workspace": "burn-a0",
       "class": "paste-alias",
-      "upstream_observed": null,
-      "observed_at": null
+      "upstream_observed": "0.19.0",
+      "observed_at": "2026-09-21"
     },
     {
       "name": "gemm-f16",
@@ -122,8 +122,8 @@
       "directory": "vendor/gemm-f16-0.19.0",
       "workspace": "burn-a0",
       "class": "paste-alias",
-      "upstream_observed": null,
-      "observed_at": null
+      "upstream_observed": "0.19.0",
+      "observed_at": "2026-09-21"
     },
     {
       "name": "gemm-f32",
@@ -131,8 +131,8 @@
       "directory": "vendor/gemm-f32-0.19.0",
       "workspace": "burn-a0",
       "class": "paste-alias",
-      "upstream_observed": null,
-      "observed_at": null
+      "upstream_observed": "0.19.0",
+      "observed_at": "2026-09-21"
     },
     {
       "name": "gemm-f64",
@@ -140,8 +140,8 @@
       "directory": "vendor/gemm-f64-0.19.0",
       "workspace": "burn-a0",
       "class": "paste-alias",
-      "upstream_observed": null,
-      "observed_at": null
+      "upstream_observed": "0.19.0",
+      "observed_at": "2026-09-21"
     },
     {
       "name": "macerator",
@@ -149,8 +149,8 @@
       "directory": "vendor/macerator-0.3.4",
       "workspace": "burn-a0",
       "class": "paste-alias",
-      "upstream_observed": null,
-      "observed_at": null
+      "upstream_observed": "0.4.0",
+      "observed_at": "2026-09-21"
     },
     {
       "name": "netlink-packet-core",
@@ -158,8 +158,8 @@
       "directory": "vendor/netlink-packet-core-0.8.2",
       "workspace": "root",
       "class": "paste-alias",
-      "upstream_observed": null,
-      "observed_at": null
+      "upstream_observed": "0.9.0",
+      "observed_at": "2026-09-21"
     },
     {
       "name": "pulp",
@@ -167,8 +167,8 @@
       "directory": "vendor/pulp-0.22.3",
       "workspace": "burn-a0",
       "class": "paste-alias",
-      "upstream_observed": null,
-      "observed_at": null
+      "upstream_observed": "0.22.3",
+      "observed_at": "2026-09-21"
     },
     {
       "name": "raft",
@@ -176,8 +176,8 @@
       "directory": "vendor/raft",
       "workspace": "root",
       "class": "raft-protobuf",
-      "upstream_observed": null,
-      "observed_at": null
+      "upstream_observed": "0.7.0",
+      "observed_at": "2026-09-21"
     },
     {
       "name": "raft-engine",
@@ -185,8 +185,8 @@
       "directory": "vendor/raft-engine",
       "workspace": "root",
       "class": "raft-protobuf",
-      "upstream_observed": null,
-      "observed_at": null
+      "upstream_observed": "0.4.2",
+      "observed_at": "2026-09-21"
     },
     {
       "name": "raft-proto",
@@ -194,8 +194,8 @@
       "directory": "vendor/raft-proto",
       "workspace": "root",
       "class": "raft-protobuf",
-      "upstream_observed": null,
-      "observed_at": null
+      "upstream_observed": "0.7.0",
+      "observed_at": "2026-09-21"
     },
     {
       "name": "rav1e",
@@ -203,8 +203,8 @@
       "directory": "vendor/rav1e-0.8.1",
       "workspace": "burn-a0",
       "class": "paste-alias",
-      "upstream_observed": null,
-      "observed_at": null
+      "upstream_observed": "0.8.1",
+      "observed_at": "2026-09-21"
     }
   ]
 }

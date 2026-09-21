@@ -44,14 +44,23 @@ test, remove its path patch and source copy, regenerate both provenance inventor
 and require clean audit/deny evidence. Never retire a patch by merely suppressing
 an advisory. This maintenance obligation remains open after a green merge.
 
-Whether an upstream release *has* the required change is not answered anywhere in
-this repository. `upstream_observed` in `RETIREMENT.json` is a recorded
-observation with the date it was made, and every entry is currently unobserved;
-the checker reports that as such rather than as "nothing newer exists". It cannot
-look for itself: these packages are patched out of the registry, so cargo never
-caches their index entries, and the checker performs no network access. Refreshing
-an observation is a deliberate online step by a maintainer, after which
-`--require-observations` will pass.
+Whether a *newer release exists* is answered by `scripts/refresh_vendor_upstream.py`,
+which reads the crates.io sparse index, drops yanked versions and records the
+highest remaining one by precedence — not the last line, which is publication
+order and can end on a backport. `upstream_observed` in `RETIREMENT.json` carries
+that observation with the date it was made.
+
+Refreshing is the online half and deliberately not a checker: it writes
+observations and neither passes nor fails. `check_vendor_retirement.py` stays
+offline and reports candidates from what was recorded, so CI never depends on the
+network and a report is reproducible from the repository alone. An observation
+that could not be made is left as it was rather than replaced with a guess, and
+the checker reports the oldest recorded date so staleness is visible — it never
+fails on age, because a check that goes red with the passage of time fails commits
+that changed nothing.
+
+Whether a newer release *contains* the required change is still a human reading.
+A candidate is a prompt to look, not a verdict.
 
 The one-shot candidate preparation and source-retention workflows are removed
 before integration. Normal builds neither fetch a hosted review delta nor grant

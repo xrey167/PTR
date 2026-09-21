@@ -209,11 +209,94 @@ class RefusalTests(unittest.TestCase):
 
 
 class RealTreeTests(unittest.TestCase):
-    def test_the_repository_itself_passes(self):
+    def test_the_repository_itself_passes_with_every_patch_observed(self):
         errors, notes = mod.check(ROOT, False)
         self.assertEqual(errors, [])
-        self.assertEqual(len(notes), 21, notes)
+        # Asserted as a property rather than a note count, which changes every
+        # time an observation is refreshed.
+        self.assertTrue(any("observations recorded" in note for note in notes), notes)
+
+        strict, _ = mod.check(ROOT, True)
+        self.assertEqual(strict, [], "every retained patch must carry an observation")
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+spec_refresh = importlib.util.spec_from_file_location(
+    "refresh_vendor_upstream", ROOT / "scripts/refresh_vendor_upstream.py"
+)
+refresh = importlib.util.module_from_spec(spec_refresh)
+spec_refresh.loader.exec_module(refresh)
+
+
+def index_body(entries):
+    return "\n".join(json.dumps(entry) for entry in entries) + "\n"
+
+
+class IndexPathTests(unittest.TestCase):
+    def test_the_sparse_layout_matches_the_length_rule(self):
+        self.assertEqual(refresh.index_path("a"), "1/a")
+        self.assertEqual(refresh.index_path("ab"), "2/ab")
+        self.assertEqual(refresh.index_path("abc"), "3/a/abc")
+        self.assertEqual(refresh.index_path("raft"), "ra/ft/raft")
+        self.assertEqual(refresh.index_path("macerator"), "ma/ce/macerator")
+        # Names are lowercased for the path even when the crate is not.
+        self.assertEqual(refresh.index_path("Inflector"), "in/fl/inflector")
+
+
+class NewestVersionTests(unittest.TestCase):
+    def test_publication_order_does_not_decide(self):
+        # A backport published after a newer release ends the file; taking the
+        # last line would record 0.3.5 as newest and hide 0.4.0.
+        body = index_body(
+            [
+                {"vers": "0.3.4", "yanked": False},
+                {"vers": "0.4.0", "yanked": False},
+                {"vers": "0.3.5", "yanked": False},
+            ]
+        )
+        self.assertEqual(refresh.newest(body), "0.4.0")
+
+    def test_a_yanked_release_is_not_something_to_move_to(self):
+        body = index_body(
+            [
+                {"vers": "0.3.4", "yanked": False},
+                {"vers": "0.5.0", "yanked": True},
+            ]
+        )
+        self.assertEqual(refresh.newest(body), "0.3.4")
+
+    def test_a_prerelease_does_not_outrank_its_release(self):
+        body = index_body(
+            [
+                {"vers": "0.22.0-pre.3", "yanked": False},
+                {"vers": "0.21.0", "yanked": False},
+            ]
+        )
+        # 0.22.0-pre.3 is still ahead of 0.21.0, and behind a real 0.22.0.
+        self.assertEqual(refresh.newest(body), "0.22.0-pre.3")
+        with_release = index_body(
+            [
+                {"vers": "0.22.0-pre.3", "yanked": False},
+                {"vers": "0.22.0", "yanked": False},
+            ]
+        )
+        self.assertEqual(refresh.newest(with_release), "0.22.0")
+
+    def test_an_index_with_nothing_unyanked_yields_no_observation(self):
+        # The caller must report this rather than record a guess.
+        self.assertIsNone(refresh.newest(index_body([{"vers": "1.0.0", "yanked": True}])))
+        self.assertIsNone(refresh.newest(""))
+
+
+class ObservationAgeTests(unittest.TestCase):
+    def test_the_oldest_observation_date_is_reported_and_never_fatal(self):
+        def observed(tree):
+            tree.retirement["packages"][0]["upstream_observed"] = "0.19.0"
+            tree.retirement["packages"][0]["observed_at"] = "2020-01-01"
+
+        errors, notes = run(observed, require_observations=True)
+        self.assertEqual(errors, [])
+        self.assertTrue(any("oldest 2020-01-01" in note for note in notes), notes)

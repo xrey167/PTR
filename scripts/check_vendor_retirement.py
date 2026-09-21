@@ -172,6 +172,16 @@ def check(root: Path, require_observations: bool) -> tuple[list[str], list[str]]
                 f"on {package.get('observed_at')} — {entry['retire_when']}"
             )
 
+    dates = sorted(
+        package["observed_at"]
+        for package in document.get("packages", [])
+        if package.get("observed_at")
+    )
+    if dates:
+        # Staleness is reported, never failed on: a check that goes red with the
+        # passage of time fails commits that changed nothing.
+        notes.append(f"{len(dates)} observations recorded, oldest {dates[0]}")
+
     return errors, notes
 
 
