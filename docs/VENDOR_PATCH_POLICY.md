@@ -62,6 +62,46 @@ that changed nothing.
 Whether a newer release *contains* the required change is still a human reading.
 A candidate is a prompt to look, not a verdict.
 
+## A newer version is not a retirement
+
+Reporting a candidate from `upstream_observed` alone asks about a version number,
+and the condition recorded in `retire_when` is not about a version number. That
+mistake produced two false actionables, and both are instructive:
+
+- `macerator 0.4.0` outranks the pinned `0.3.4` and **still declares `paste ^1`**.
+  The alias it would retire has as much left to redirect as before. There was
+  never anything to do.
+- `netlink-packet-core 0.9.0` genuinely satisfies the condition — it is paste-free
+  — but `netdev 0.45.1` requires `^0.8`, `netlink-packet-route 0.31.0` requires
+  `^0.8.0`, and `netlink-proto 0.12.2` and `netwatch 0.19.3` require `^0.8.1`.
+  None admits anything in `0.9`, so the resolver would never take it.
+
+So a package with a newer upstream records two further fields and the checker
+reports three states: **not a candidate** (upstream does not satisfy the
+condition), **blocked** (it does, and named dependents refuse it), or **candidate**
+(it does, and nothing refuses it).
+
+**Raising the vendored version is not retiring the patch.** Both patches use the
+renamed-key form of `[patch.crates-io]`, which patches one specific version. Bump
+`vendor/macerator-0.3.4` to `0.4.0` and `burn-ndarray`, `burn-vision` and
+`burn-flex` do not follow it — they resolve to the *unpatched* upstream `0.3.4`,
+which still uses `paste`, while cargo prints only that the patch went unused. The
+actionable for a blocked package is moving its dependents.
+
+**A dependent's existence is a repository fact; its requirement is not.** A
+lockfile records resolved versions, never requirements, and none of these
+dependents is vendored. So `blocked_by` names each dependent with the requirement
+it declares, and the split is deliberate: the *set* is re-derived from the lockfile
+on every run, in both directions, while each *requirement string* is a dated
+observation refreshed alongside `upstream_observed`. This keeps the checker
+offline, which is a property worth more than a report that reads the network.
+
+**An optional dependent that is not selected still constrains a bump.**
+`burn-flex 0.22.0-pre.3` requires `macerator ^0.3.4` optionally, is not currently
+selected, and therefore appears in no resolved graph at all. It is recorded with
+`in_lockfile = false` rather than dropped, and the checker requires that flag to
+match what the lockfile actually shows — in both directions.
+
 The one-shot candidate preparation and source-retention workflows are removed
 before integration. Normal builds neither fetch a hosted review delta nor grant
 CI permission to push to main.
