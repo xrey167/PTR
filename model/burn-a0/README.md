@@ -35,6 +35,20 @@ The remaining alignment work is explicit:
 - `provenance_bucket_count` stays outside the codebook by decision: provenance bucketing is a research-local hashing of sources with no kernel taxonomy to size it from, and its width is checked against nothing;
 - the codebook version travels with every `CodeGrid` and is compared in `forward`, but with one frozen version that comparison cannot be reached from outside the crate — it is a guard for the second version, not a tested path.
 
+## Toolchain
+
+This workspace is excluded from the root workspace and requires **1.95**
+(`Cargo.toml`), which is why `.github/workflows/burn-a0.yml` runs it on stable and
+on 1.95.0 rather than on the repository's 1.85.0 MSRV.
+
+It carries its own `clippy.toml`. Clippy takes its MSRV from the nearest
+`clippy.toml` walking upward and that file wins over `rust-version`, so without
+one here the crate was linted at the root's `1.85.0` and every lint whose
+suggestion needs a newer compiler was suppressed. Clippy does report the
+disagreement on every run, but the message is not a named lint, so `-D warnings`
+cannot promote it and the job exits 0 either way.
+`scripts/check_msrv_alignment.py` is what keeps the two equal.
+
 ## Not implemented yet
 
 - pretrained language backbone;

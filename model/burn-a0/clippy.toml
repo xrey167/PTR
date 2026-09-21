@@ -1,0 +1,12 @@
+# This workspace requires 1.95 (`Cargo.toml`), and clippy takes its MSRV from the
+# nearest `clippy.toml` walking upward — which, without this file, was the root's
+# 1.85.0. Every lint whose suggestion needs anything newer than 1.85 was therefore
+# suppressed here. Clippy does say so on every run ("the MSRV in `clippy.toml` and
+# `Cargo.toml` differ; using `1.85.0`"), but it is not a named lint, so `-D
+# warnings` cannot promote it and the job exits 0 regardless.
+#
+# `scripts/check_msrv_alignment.py` is what makes the two stay equal.
+msrv = "1.95"
+# Unchanged from the root, so this file moves the MSRV and nothing else.
+cognitive-complexity-threshold = 30
+too-many-arguments-threshold = 8
