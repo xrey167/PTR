@@ -462,7 +462,7 @@ async fn a_member_that_cannot_be_reached_is_reported_rather_than_failing_the_wri
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_ptrcs001_snapshot_travels_as_the_payload_and_restores_on_the_far_side() {
+async fn a_ptrcs002_snapshot_travels_as_the_payload_and_restores_on_the_far_side() {
     // "Reusing PTRCS002 rather than inventing a second artifact" is the requirement,
     // so the payload here is a real compacted snapshot exported by a real runtime,
     // and the far side restores a runtime from the bytes that arrived.
@@ -476,7 +476,7 @@ async fn a_ptrcs001_snapshot_travels_as_the_payload_and_restores_on_the_far_side
     use ptr_runtime::PtrRuntime;
     use ptr_semdb::SemanticDelta;
 
-    let temp = Temp::new("ptrcs001");
+    let temp = Temp::new("ptrcs002");
     const THREE: [u64; 3] = [1, 2, 3];
 
     // The application state the snapshot describes.
