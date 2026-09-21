@@ -78,6 +78,30 @@ class WorkspaceMembership(unittest.TestCase):
         self.assertEqual(len(errors), 1, errors)
         self.assertIn("bins/orphan", errors[0])
 
+    def test_a_basename_pattern_does_not_account_for_a_nested_package(self):
+        # Cargo resolves a member path from the workspace root: put to `cargo
+        # metadata`, a workspace with `members = ["ptrctl"]` and the package at
+        # `bins/ptrctl` fails with "failed to read <root>/ptrctl/Cargo.toml". It
+        # never looks in `bins/`, so the package is registered nowhere - which is
+        # exactly what this check exists to report.
+        errors = run(["ptrctl"], [], ["bins/ptrctl"])
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("bins/ptrctl", errors[0])
+
+    def test_a_basename_exclusion_does_not_account_for_a_nested_package(self):
+        # The same rule on the other list. An `exclude` that Cargo reads as a
+        # root-level directory excludes nothing here, so the package is still
+        # unregistered.
+        errors = run(["crates/*"], ["ptrctl"], ["bins/ptrctl"])
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("bins/ptrctl", errors[0])
+
+    def test_a_double_star_spans_separators(self):
+        # The control for the two above, and the reason the matcher is not simply
+        # "same number of segments": `cargo metadata` does accept `**/ptrctl` for
+        # a package at `bins/ptrctl`, so refusing it would be a false failure.
+        self.assertEqual(run(["**/ptrctl"], [], ["bins/ptrctl"]), [])
+
     def test_a_directory_without_a_manifest_is_not_a_package(self):
         directory, root = tree(WORKSPACE.format(members="['bins/ptr-*']", exclude="[]"))
         with directory:

@@ -8,6 +8,7 @@ precisely the kind that is only ever wrong about a directory nobody thought of.
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import sys
 import tomllib
@@ -56,8 +57,31 @@ def owned(root, paths):
 
 
 def matches(relative: str, pattern: str) -> bool:
-    """Cargo's member/exclude globs, where `*` does not cross a path separator."""
-    return PurePosixPath(relative).match(pattern)
+    """Cargo's member/exclude globs: anchored at the workspace root, segment by segment.
+
+    `PurePosixPath.match` was the wrong tool and produced a false pass, which is
+    the one direction this check must not fail in. It matches a pattern with no
+    separator against the *end* of the path, so `members = ["ptrctl"]` read as
+    covering `bins/ptrctl`. Cargo resolves a member path from the workspace root:
+    put to `cargo metadata`, that manifest fails with "failed to read
+    <root>/ptrctl/Cargo.toml" - it never looks in `bins/`. A package registered
+    nowhere would have read as registered.
+
+    `*` matches within one segment and `**` spans any number of them; both were
+    confirmed against `cargo metadata`, which accepted `bins/*` and `**/ptrctl`
+    for a package at `bins/ptrctl`.
+    """
+    return segments_match(PurePosixPath(relative).parts, PurePosixPath(pattern).parts)
+
+
+def segments_match(parts: tuple[str, ...], globs: tuple[str, ...]) -> bool:
+    if not globs:
+        return not parts
+    if globs[0] == "**":
+        return any(segments_match(parts[index:], globs[1:]) for index in range(len(parts) + 1))
+    if not parts:
+        return False
+    return fnmatch.fnmatchcase(parts[0], globs[0]) and segments_match(parts[1:], globs[1:])
 
 
 def check_workspace_membership(root: Path) -> list[str]:
