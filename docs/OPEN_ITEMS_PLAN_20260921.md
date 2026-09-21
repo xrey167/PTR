@@ -429,6 +429,9 @@ property the bullet now claims, so the bullet and the test fail together.
 
 ## Tier B — needs the owner's decision before any code
 
+*Tracked as Part 1 of #23, where each one states what turns on the answer.*
+
+
 **B1 — may `ptr-runtime` depend on `ptr-net`?** Carried from #20 unchanged. With
 that edge a peer identity becomes unforgeable **at the type level** rather than
 un-forged in the one composition that currently gets it right. The cost of not
@@ -498,7 +501,18 @@ Deciding it is a policy choice, not an implementation.
 
 ---
 
-## Tier C — separate gates, each needing its own issue
+## Tier C — separate gates, tracked in #23
+
+*Filed as **one** issue rather than nine. The first draft of this section said
+"each needing its own issue"; #23 carries all of them together, which is the
+shape this repository already uses — #15 carried four gates, #20 carried the
+four #15 closed without, and #23 carries what #21 and #22 leave. Nine separate
+issues would scatter a set that has to be read as one.*
+
+*Two entries below were re-checked before being carried into #23 and did not
+survive the check; both are corrected here and the corrections are quoted in
+#23 rather than applied silently.*
+
 
 **C1 — connect actual semantic payloads to the model.** The dropped clause of
 #15's Gate 3 sentence, above. The largest open piece in the repository.
