@@ -1,0 +1,6 @@
+flowchart LR
+    A["Member A\nRaftNode"] --> W["ptr-cluster\nRaft over ALPN_RAFT"]
+    W --> B["Member B\nRaftNode"]
+    W -. "consensus" .-> L["ptr-ledger"]
+    W -. "authenticated transport" .-> N["ptr-net"]
+    W -. "contracts" .-> T["ptr-types"]

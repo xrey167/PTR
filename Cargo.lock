@@ -3347,6 +3347,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ptr-cluster"
+version = "0.1.0"
+dependencies = [
+ "ptr-ledger",
+ "ptr-net",
+ "ptr-types",
+ "tokio",
+]
+
+[[package]]
 name = "ptr-config"
 version = "0.1.0"
 dependencies = [

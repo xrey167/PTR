@@ -168,6 +168,14 @@ function_groups = ["connect/accept", "send/receive", "authenticate", "session li
 notes = ["Iroh stays feature-gated adapter"]
 
 [[crate]]
+id = "ptr-cluster"
+current_shape = "mostly-flat"
+modules = ["frame", "member"]
+public_groups = ["ClusterMember", "MemberAddress", "batch frame codec", "ClusterError/FrameError"]
+function_groups = ["encode/decode a batch", "accept and step one frame", "drive messages to quiescence"]
+notes = ["the only crate that knows both consensus and transport, so neither of them has to", "the sender is the authenticated connection and never the message's from field", "no background loop, timer or retry policy: the caller drives accept and dispatch", "the whole composition is feature-gated so iroh and raft stay out of every other build"]
+
+[[crate]]
 id = "ptr-events"
 current_shape = "flat"
 modules = ["event", "envelope", "topic", "bus", "consumer", "offset", "retention", "adapters"]

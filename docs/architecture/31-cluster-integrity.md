@@ -154,19 +154,87 @@ that after healing, too.
 A message that does not decode is dropped rather than partially applied: a message
 is a claim about a term and a log position, and half of one claims nothing.
 
+## The wire: `ptr-cluster`
+
+`ptr-ledger` must not depend on transport and `ptr-net` must not depend on the log,
+so a third component knows both and exists precisely so that neither of them has
+to. `ptr-cluster` carries batches of raft messages between authenticated endpoints
+on `ALPN_RAFT`.
+
+### The sender is the connection, not the payload
+
+This is the rule the crate exists for. Every raft message carries a `from` field,
+and a peer can put any number in it. A receiver that believes that field accepts a
+vote or an append attributed to a member that never sent it — which is a forged
+message, not a corrupted one, and no checksum detects it.
+
+So a frame is stepped only when the id its messages claim is the id bound to the
+public key the connection **actually authenticated**, and the same check is applied
+to a reply: the peer answering must be the peer that was asked. A message addressed
+to a different member is refused rather than helpfully forwarded.
+
+Authenticating a peer is still not authorizing an action, which is the distinction
+`29-peer-admission-and-pod-scope.md` draws for execution. Here it means: the
+connection establishes *which member* is speaking, and raft's own rules — terms,
+log matching, quorums — decide whether what it says has any effect.
+
+### One batch, one frame
+
+A step can produce several messages, and a transport that takes them one at a time
+turns one decision into several round trips whose interleaving nobody asked for. So
+a frame carries a batch: magic, an explicit layout version, a count, and each
+message length-prefixed.
+
+The count is a **claim**, not an instruction. A frame that says it carries a million
+messages is refused by the bound rather than by allocating for them, and the test
+asserts that specifically. A frame is bounded, a batch's length is bounded, and a
+frame that disagrees with itself — trailing bytes, a truncated message, an
+undecodable one — is refused whole. A caller that stepped the first message and then
+refused the second would have applied part of a frame it rejected.
+
+A refused frame still gets an answer: an empty batch. The refusal is the receiver's
+business, and a peer left hanging on a connection is the receiver's problem too.
+What the answer deliberately does not carry is *why*, because a diagnosis handed to
+an unauthenticated peer is an oracle.
+
+### What the network tests establish, and what they deliberately do not
+
+Six tests. A two-member group elects a leader over a real connection and both
+members end with the same history — and a majority of two needs the peer's vote, so
+the wire is necessary rather than incidental. A peer holding the key admitted for
+one member cannot send messages claiming to be another. A peer that was never
+admitted is refused by key. A message for another member is refused. A damaged frame
+arriving on a real connection is refused before it reaches the node — the transport
+half of the corruption requirement, whose deterministic half lives in `ptr-ledger`.
+And a refused frame is answered rather than dropped.
+
+Nothing here tests a partition, a leader change or a delayed message. Those are
+protocol properties, and a network test of them would be a test of the test's own
+timing; they are established deterministically in `ptr-ledger`, where no socket is
+involved. Two suites, each proving the thing it can actually prove.
+
+### Not a daemon
+
+There is no background loop, no timer and no retry policy in this crate. A caller
+drives `serve_once` and `dispatch`. That is a deliberate omission rather than an
+unfinished one: a loop in the wrong place makes scheduling implicit, and "when do we
+give up on a member that does not answer" is a policy decision, not a detail. It is
+also what keeps these tests free of sleeps.
+
 ## What this does not close
 
-- **There is no transport.** `ALPN_RAFT` still carries no traffic, and the raft
-  backends and `ptr-net` still have no code path between them. The group is
-  composed by a test's queue, which proves the protocol behaviour and proves
-  nothing about a network: no framing, no authenticated sender, no bound on what a
-  peer may send, and no evidence that a real connection carries these messages at
-  all. A composition over `ptr-net` is the next package, and it needs a home —
-  `ptr-ledger` must not depend on transport and `ptr-net` must not depend on the
-  log.
-- **The harness is not a deployment.** It steps nodes in one process and one
-  thread, with delivery in FIFO order. Real reordering, concurrent stepping and
-  partial writes under load are outside it.
+- **The harness is not a deployment.** The deterministic tests step nodes in one
+  process, with delivery in FIFO order. Real reordering, concurrent stepping and
+  partial writes under load are outside it, and the network tests run two members
+  on localhost.
+- **Nothing runs the loop.** `ptr-cluster` provides the pieces and no deployment
+  drives them: there is no accept/tick service, no policy for a member that stops
+  answering, and no backpressure toward one that answers slowly.
+- **Membership is recorded, never negotiated.** Each member records a
+  configuration and recovers it; adding or removing a voter over the wire is not
+  implemented.
+- **Every exchange opens a connection.** Correct and wasteful. Session reuse is
+  listed as missing rather than quietly assumed.
 - **Local file locks fence nothing across nodes.** `FileLedger` takes an advisory
   lock, which makes one writer per file on one machine. It says nothing about a
   second machine, and a deposed leader on another host is not excluded by it.

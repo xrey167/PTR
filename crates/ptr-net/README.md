@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-19  
-**Code footprint:** 1 Rust source files · 133 nonblank source lines · 2 integration-test files · 1 `#[test]` markers
+**Code footprint:** 1 Rust source files · 138 nonblank source lines · 2 integration-test files · 1 `#[test]` markers
 
 ### Implemented now
 
@@ -20,12 +20,13 @@
 - Feature-gated Iroh 1.2 direct QUIC adapter with PTR ALPNs and authenticated peer identity
 - Iroh response path keeps the connection alive through peer-observed graceful completion
 - Iroh 1.2 optional feature requires Rust 1.91; default runtime core retains a separate Rust 1.85 gate
+- The endpoint address type is re-exported, so a composing crate names an address without declaring its own iroh dependency: two pins of a transport would be two wire formats
 
 ### Missing for the target architecture
 
 - Peer discovery/session lifecycle
 - Retry/idempotency and backpressure behavior
-- Raft/PodWire/blob stream adapters
+- Raft/PodWire/blob stream adapters; ptr-cluster now carries raft batches over ALPN_RAFT using the request/response path, and a stream adapter would replace that rather than extend it
 
 ### Next milestones
 

@@ -18,6 +18,14 @@ use raft::prelude::{Config as RaftConfig, Entry, EntryType, Message, RawNode};
 use raft::StateRole;
 use std::path::Path;
 
+/// Raft's own message type, re-exported so a transport can name it without
+/// depending on the raft crate itself.
+///
+/// One pin in one place: a second crate declaring its own `raft` dependency could
+/// drift to a different version, and the two would then disagree about the wire
+/// format of the very messages they exchange.
+pub use raft::prelude::Message as RaftMessage;
+
 /// Bound on one encoded raft message. A frame past this is refused rather than
 /// allocated for: the sender is not trusted to bound what the receiver reads.
 pub const MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
@@ -211,6 +219,15 @@ impl RaftNode {
         }
         Ok(())
     }
+}
+
+/// The heartbeat message type, for callers that build a message without naming
+/// the raft crate.
+///
+/// A transport test needs *some* well-formed message to send, and this keeps it
+/// from declaring its own `raft` dependency just to name a constant.
+pub fn message_type_heartbeat() -> raft::prelude::MessageType {
+    raft::prelude::MessageType::MsgHeartbeat
 }
 
 /// Encode a raft message for a transport.

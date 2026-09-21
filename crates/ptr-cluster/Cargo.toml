@@ -1,0 +1,32 @@
+[package]
+name = "ptr-cluster"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[features]
+default = []
+# The whole crate is this composition, so its dependencies are its feature. With
+# the feature off the crate is a wire format and nothing else, which keeps iroh and
+# raft out of every other workspace build exactly as ptr-net and ptr-ledger keep
+# their own backends out.
+cluster-backend = [
+  "dep:ptr-ledger",
+  "dep:ptr-net",
+  "ptr-ledger/raft-rs-backend",
+  "ptr-net/iroh-backend",
+]
+
+[dependencies]
+ptr-types = { workspace = true }
+ptr-ledger = { workspace = true, optional = true }
+ptr-net = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[[test]]
+name = "wire"
+path = "tests/wire.rs"
+required-features = ["cluster-backend"]

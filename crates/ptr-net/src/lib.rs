@@ -148,7 +148,12 @@ mod iroh_backend {
 
     pub use IrohIncoming as Incoming;
     pub use IrohTransport as Transport;
+    // Re-exported so a composing crate can name an address without declaring its
+    // own iroh dependency: two pins of a transport would be two wire formats.
+    pub use iroh::EndpointAddr as Address;
 }
 
 #[cfg(feature = "iroh-backend")]
-pub use iroh_backend::{Incoming as IrohIncoming, Transport as IrohTransport};
+pub use iroh_backend::{
+    Address as EndpointAddr, Incoming as IrohIncoming, Transport as IrohTransport,
+};

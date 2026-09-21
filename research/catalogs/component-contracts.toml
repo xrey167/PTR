@@ -141,6 +141,13 @@ backend_slots = ["network-transport"]
 open_decisions = ["NodeId/key binding", "session reuse", "discovery", "retry/backpressure"]
 
 [[component]]
+id = "ptr-cluster"
+ports = ["ClusterMember", "RaftWire"]
+type_families = ["ledger-consensus", "network-protocol", "identity-lifecycle"]
+backend_slots = ["consensus", "network-transport"]
+open_decisions = ["who owns the accept/tick loop", "membership changes over the wire", "snapshot transfer framing", "retry and backpressure toward a slow member"]
+
+[[component]]
 id = "ptr-events"
 ports = ["EventBus", "EventProducer", "EventConsumer"]
 type_families = ["events-observability", "ledger-consensus"]

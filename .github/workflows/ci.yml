@@ -125,3 +125,12 @@ jobs:
       - run: cargo +stable test -p ptr-net --features iroh-backend --test iroh --locked
       - run: rustup toolchain install 1.91.0 --profile minimal
       - run: cargo +1.91.0 test -p ptr-net --features iroh-backend --test iroh --locked
+  cluster-wire:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo +stable test -p ptr-cluster --features cluster-backend --locked
+      - run: cargo +stable clippy -p ptr-cluster --features cluster-backend --all-targets --locked -- -D warnings
+      - run: rustup toolchain install 1.91.0 --profile minimal
+      - run: cargo +1.91.0 test -p ptr-cluster --features cluster-backend --locked
