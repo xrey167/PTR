@@ -8,6 +8,23 @@ use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
 use std::sync::Mutex;
+use std::time::Duration;
+
+/// Whether a refusal means "that member is away" rather than "something is wrong".
+fn is_unreachable(error: &ClusterError) -> bool {
+    matches!(
+        error,
+        ClusterError::Transport(_) | ClusterError::NoAddress { .. }
+    )
+}
+
+/// How long one exchange waits for a peer before calling it unreachable.
+///
+/// A default rather than a rule: the right deadline depends on the deployment, and
+/// what matters here is that there *is* one. Without it a member that stopped
+/// answering holds up every round it appears in, and a single dead host stalls a
+/// group that still has a majority.
+pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Bound on how many delivery rounds one call will drive before giving up.
 ///
@@ -25,6 +42,39 @@ pub struct MemberAddress {
     pub id: u64,
     pub identity: NodeIdentity,
     pub address: ptr_net::EndpointAddr,
+}
+
+/// Members a call could not reach, and why.
+///
+/// Unreachability is ordinary: a member is restarting, or its host is gone. A
+/// leader whose proposal failed because one follower was away would be unable to
+/// commit anything while any member is down, which is the opposite of what a
+/// majority is for. So a transport failure toward one peer is reported rather than
+/// raised, and the caller decides whether it matters.
+///
+/// Refusals that are *not* about reachability — a forged sender, a malformed frame,
+/// a node that would not step — do abort the call. They mean something is wrong,
+/// not that somebody is away.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Unreached(pub Vec<(u64, ClusterError)>);
+
+impl Unreached {
+    /// Whether every peer answered.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// The members that did not answer, each once and in id order.
+    ///
+    /// One call can try a member in several rounds, so the attempts in `0` may name
+    /// it more than once — that is a record of what was attempted, whereas this is
+    /// the answer to "who is away".
+    pub fn ids(&self) -> Vec<u64> {
+        let mut ids: Vec<u64> = self.0.iter().map(|(id, _)| *id).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    }
 }
 
 /// Why a cluster operation was refused.
@@ -94,6 +144,7 @@ pub struct ClusterMember {
     node: Mutex<RaftNode>,
     transport: IrohTransport,
     peers: Vec<MemberAddress>,
+    request_timeout: Duration,
 }
 
 impl ClusterMember {
@@ -108,6 +159,7 @@ impl ClusterMember {
             node: Mutex::new(node),
             transport,
             peers: Vec::new(),
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
         })
     }
 
@@ -124,6 +176,11 @@ impl ClusterMember {
     /// Where other members should send.
     pub fn address(&self) -> ptr_net::EndpointAddr {
         self.transport.direct_addr()
+    }
+
+    /// How long to wait for one peer before treating it as unreachable.
+    pub fn with_request_timeout(&mut self, timeout: Duration) {
+        self.request_timeout = timeout;
     }
 
     /// Admit a peer by id, key and address.
@@ -147,20 +204,49 @@ impl ClusterMember {
         self.locked().committed_events().to_vec()
     }
 
+    /// The raft log position this member considers committed.
+    pub fn raft_committed(&self) -> u64 {
+        self.locked().raft_committed()
+    }
+
+    /// Record this member's application state at a committed position.
+    ///
+    /// The payload is the application's — for PTR, a PTRCS001 compacted snapshot.
+    /// This layer carries it and has no opinion about what is inside.
+    pub fn record_snapshot(&self, index: u64, state: Vec<u8>) -> Result<(), ClusterError> {
+        self.locked()
+            .record_snapshot(index, state)
+            .map_err(ClusterError::Node)
+    }
+
+    /// Take the snapshot a leader installed on this member, if one arrived.
+    pub fn take_installed_snapshot(&self) -> Option<ptr_ledger::InstalledSnapshot> {
+        self.locked().take_installed_snapshot()
+    }
+
+    /// Account for an installed snapshot: how many events its payload covers.
+    pub fn resume_with_applied(&self, applied_events: u64) {
+        self.locked().resume_with_applied(applied_events);
+    }
+
     /// Stand for election and drive the result to quiescence.
-    pub async fn campaign(&self) -> Result<(), ClusterError> {
+    pub async fn campaign(&self) -> Result<Unreached, ClusterError> {
         let messages = self.locked().campaign().map_err(ClusterError::Node)?;
         self.drive(messages).await
     }
 
     /// Advance this member's logical clock once and deliver what it produces.
-    pub async fn tick(&self) -> Result<(), ClusterError> {
+    pub async fn tick(&self) -> Result<Unreached, ClusterError> {
         let messages = self.locked().tick().map_err(ClusterError::Node)?;
         self.drive(messages).await
     }
 
     /// Propose an event and drive the result to quiescence.
-    pub async fn propose(&self, event: LedgerEvent) -> Result<(), ClusterError> {
+    ///
+    /// Whether the proposal was *decided* is not this call's answer: that is what
+    /// [`ClusterMember::committed_events`] says once a majority has replied. A peer
+    /// in the returned [`Unreached`] simply did not answer.
+    pub async fn propose(&self, event: LedgerEvent) -> Result<Unreached, ClusterError> {
         let messages = self.locked().propose(event).map_err(ClusterError::Node)?;
         self.drive(messages).await
     }
@@ -266,11 +352,16 @@ impl ClusterMember {
     }
 
     /// Send messages, step the replies, and repeat until nothing is in flight.
-    async fn drive(&self, initial: Vec<RaftMessage>) -> Result<(), ClusterError> {
+    ///
+    /// A peer that cannot be reached is recorded and skipped; the rest of the round
+    /// proceeds. A leader that abandoned a proposal because one follower was down
+    /// could not commit while any member is down.
+    async fn drive(&self, initial: Vec<RaftMessage>) -> Result<Unreached, ClusterError> {
+        let mut unreached = Unreached::default();
         let mut queue = initial;
         for _ in 0..MAX_ROUNDS {
             if queue.is_empty() {
-                return Ok(());
+                return Ok(unreached);
             }
             let mut grouped: HashMap<u64, Vec<Vec<u8>>> = HashMap::new();
             for message in &queue {
@@ -287,7 +378,14 @@ impl ClusterMember {
                 let batch = grouped
                     .remove(&destination)
                     .expect("destination is present");
-                let replies = self.exchange(destination, &batch).await?;
+                let replies = match self.exchange(destination, &batch).await {
+                    Ok(replies) => replies,
+                    Err(error) if is_unreachable(&error) => {
+                        unreached.0.push((destination, error));
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                };
                 let mut node = self.locked();
                 for message in replies {
                     next.extend(node.step(message).map_err(ClusterError::Node)?);
@@ -306,16 +404,18 @@ impl ClusterMember {
             .find(|known| known.id == to)
             .ok_or(ClusterError::NoAddress { id: to })?;
         let frame = encode_batch(batch)?;
-        let response = self
-            .transport
-            .request(
+        let response = tokio::time::timeout(
+            self.request_timeout,
+            self.transport.request(
                 peer.address.clone(),
                 ALPN_RAFT,
                 &frame,
                 crate::MAX_FRAME_BYTES,
-            )
-            .await
-            .map_err(ClusterError::Transport)?;
+            ),
+        )
+        .await
+        .map_err(|_| ClusterError::Transport("the peer did not answer in time".to_owned()))?
+        .map_err(ClusterError::Transport)?;
 
         let encoded = decode_batch(&response)?;
         let mut messages = Vec::with_capacity(encoded.len());

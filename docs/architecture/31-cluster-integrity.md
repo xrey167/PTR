@@ -221,6 +221,59 @@ unfinished one: a loop in the wrong place makes scheduling implicit, and "when d
 give up on a member that does not answer" is a policy decision, not a detail. It is
 also what keeps these tests free of sleeps.
 
+## Snapshot transfer
+
+A member that falls behind past the leader's log floor cannot be caught up by
+replay, because the entries it needs are gone. The leader sends its state instead.
+
+The payload is **opaque to every layer that carries it**. `ptr-ledger` records
+bytes at a committed position and hands arriving bytes back; `ptr-cluster` frames
+them and checks who sent them. Neither has an opinion about what is inside, which
+is what lets a PTR deployment put a **PTRCS001 compacted snapshot** there rather
+than a second artifact invented for raft. The `ptr-cluster` test carries a real one:
+exported by a real runtime, recorded by the leader, delivered byte for byte to a
+restarted member, and then restored by a runtime from exactly those bytes.
+
+Three things about it are deliberate.
+
+**A leader that recorded no snapshot cannot invent one.** `FileRaftStorage` answers
+`SnapshotTemporarilyUnavailable` rather than fabricating a payload at the requested
+index, so a member behind a floor with no recorded state simply stays behind. Being
+stuck is the honest outcome; a payload that did not match its claimed position would
+be sent to a follower as truth.
+
+**A member must account for what arrived before it applies anything else.** The
+events below a snapshot stop being the member's own to report — they are described by
+a payload only the application can read — so applying further entries is refused
+until the application says how many events the payload covers. Carrying on as though
+it were empty would number the next event 1 and disagree with every other member
+about what that index means. The test asserts the refusal, and that the event after a
+snapshot continues the ledger's numbering.
+
+**The anchor travels from the leader, and that is weaker than retaining it.**
+PTRCS001 is verified against a trusted anchor the host retains *outside* the
+artifact, for the reason `24-protected-anchors.md` gives: a digest read back out of
+the file it describes proves nothing. A snapshot arriving over this transport comes
+with its anchor from the authenticated leader, so what it rules out is a *stranger*
+sending a consistent pair — not a compromised leader doing so. Stated here rather
+than left to be assumed, and listed as the crate's next step.
+
+## Durable fencing, as distinct from protocol fencing
+
+Raft's rules already stop a deposed leader from committing: it cannot gather a
+majority in a superseded term. What is specific to durability is the moment a
+deposed leader **restarts**: the entry it appended alone is on its disk, and a
+restart is exactly when it could come back.
+
+The test restarts it from its own files while the group has moved on. It recovers
+what was committed rather than what it wrote alone, learns the higher term, steps
+down, and the stale tail is truncated — on disk, not merely in memory, which is what
+the truncate-then-write rule above buys.
+
+None of that is a *lock*. A local advisory file lock makes one writer per file on
+one machine and says nothing about a second machine; a deposed leader on another
+host is excluded by the protocol, not by the filesystem.
+
 ## What this does not close
 
 - **The harness is not a deployment.** The deterministic tests step nodes in one
@@ -239,11 +292,10 @@ also what keeps these tests free of sleeps.
   lock, which makes one writer per file on one machine. It says nothing about a
   second machine, and a deposed leader on another host is not excluded by it.
   Durable leadership fencing is a protocol property and it is not implemented.
-- **There is no snapshot transfer.** A snapshot can be recorded and read back on
-  one node. Sending one to a follower the leader has compacted past, reusing
-  PTRCS001 rather than inventing a second artifact, is open.
 - **Compaction is not integrated with the ledger's retention floor.** This is
   raft's own log, distinct from the committed ledger in
-  `25-erasure-and-retention.md`, and the two floors are not yet related.
+  `25-erasure-and-retention.md`, and the two floors are still independent.
+- **A snapshot's anchor is only as trustworthy as the leader that sent it.** See
+  above; retaining anchors independently of the sender is open.
 - **No performance or availability claim.** Every write flushes, which is a
   correctness choice with an obvious cost, unmeasured here.

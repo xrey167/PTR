@@ -30,10 +30,35 @@ pub use raft::prelude::Message as RaftMessage;
 /// allocated for: the sender is not trusted to bound what the receiver reads.
 pub const MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 
+/// State a leader sent to a member it had compacted past.
+///
+/// The payload is opaque here on purpose: a snapshot is the *application's* state,
+/// and this layer carrying it does not entitle it to an opinion about what is
+/// inside. A PTR deployment puts a PTRCS001 compacted snapshot here rather than a
+/// second artifact invented for raft.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InstalledSnapshot {
+    /// The committed position the payload describes.
+    pub index: u64,
+    /// The term at that position.
+    pub term: u64,
+    /// The application's own encoding of its state at that position.
+    pub state: Vec<u8>,
+}
+
 /// A Raft member over durable state.
 pub struct RaftNode {
     node: RawNode<FileRaftStorage>,
     committed: Vec<CommittedEvent>,
+    /// How many events this member has applied in total, including the ones a
+    /// snapshot accounts for. The ledger index of the next event continues from
+    /// here rather than from the length of what is still held.
+    applied_events: u64,
+    /// A snapshot that landed and has not been accounted for yet. While this is
+    /// set, applying anything further is refused: the events below it are described
+    /// by a payload only the application can read, and continuing as though it were
+    /// empty would renumber every event that follows.
+    installed: Option<InstalledSnapshot>,
     id: u64,
 }
 
@@ -73,11 +98,15 @@ impl RaftNode {
 
         let logger = slog::Logger::root(slog::Discard, slog::o!());
         let node = RawNode::new(&config, storage, &logger).map_err(|error| error.to_string())?;
+        let recovered_count = recovered.len() as u64;
         let mut member = Self {
             node,
             committed: Vec::new(),
+            applied_events: 0,
+            installed: None,
             id,
         };
+        let _ = recovered_count;
         member.apply_committed(recovered)?;
         Ok(member)
     }
@@ -110,9 +139,48 @@ impl RaftNode {
         self.node.raft.raft_log.committed
     }
 
-    /// The ledger events this member has applied, in commit order.
+    /// The ledger events this member holds, in commit order.
+    ///
+    /// After a snapshot is installed this holds only what came *after* it: the
+    /// events below are described by the snapshot's payload, which this layer cannot
+    /// read.
     pub fn committed_events(&self) -> &[CommittedEvent] {
         &self.committed
+    }
+
+    /// How many events this member has applied in total, snapshot included.
+    pub fn applied_events(&self) -> u64 {
+        self.applied_events
+    }
+
+    /// Record this member's state at a committed index and discard the log below it.
+    ///
+    /// The payload is the application's; this layer neither builds nor inspects it.
+    /// Recording a snapshot is what makes [`Storage::snapshot`] answerable, which is
+    /// what lets a leader catch up a member it has compacted past — a leader with no
+    /// recorded snapshot has nothing to send, and says so rather than inventing one.
+    pub fn record_snapshot(&mut self, index: u64, state: Vec<u8>) -> Result<(), String> {
+        let store = self.node.raft.raft_log.store.clone();
+        let outcome = store.wl().record_snapshot(index, state);
+        outcome.map_err(|error| error.to_string())
+    }
+
+    /// Take the snapshot a leader installed, if one arrived.
+    ///
+    /// The caller must follow it with [`RaftNode::resume_with_applied`], because only
+    /// the caller knows how many events the payload accounts for.
+    pub fn take_installed_snapshot(&mut self) -> Option<InstalledSnapshot> {
+        self.installed.clone()
+    }
+
+    /// Account for an installed snapshot: how many events its payload covers.
+    ///
+    /// Until this is called, applying further entries is refused. A member that
+    /// carried on as though the snapshot were empty would number the next event 1
+    /// and disagree with every other member about what that index means.
+    pub fn resume_with_applied(&mut self, applied_events: u64) {
+        self.applied_events = applied_events;
+        self.installed = None;
     }
 
     /// Stand for election, returning the messages that asks for votes.
@@ -163,10 +231,22 @@ impl RaftNode {
             outbound.extend(ready.take_messages());
 
             if !ready.snapshot().is_empty() {
+                let snapshot = ready.snapshot().clone();
+                let metadata = snapshot.get_metadata().clone();
                 store
                     .wl()
-                    .apply_snapshot(ready.snapshot().clone())
+                    .apply_snapshot(snapshot.clone())
                     .map_err(|error| error.to_string())?;
+                // The events this member held below the snapshot are now described
+                // by the payload rather than by its own log, so they stop being
+                // this member's to report. What replaces them is the caller's to
+                // decide, which is why nothing further applies until it has.
+                self.committed.clear();
+                self.installed = Some(InstalledSnapshot {
+                    index: metadata.index,
+                    term: metadata.term,
+                    state: snapshot.data.to_vec(),
+                });
             }
 
             let committed = ready.take_committed_entries();
@@ -213,8 +293,15 @@ impl RaftNode {
             if entry.data.is_empty() || entry.get_entry_type() != EntryType::EntryNormal {
                 continue;
             }
+            if self.installed.is_some() {
+                return Err(
+                    "a snapshot is waiting to be accounted for; call resume_with_applied first"
+                        .into(),
+                );
+            }
             let event = decode_event(entry.data.as_ref()).map_err(|error| error.to_string())?;
-            let index = CommitIndex(self.committed.len() as u64 + 1);
+            self.applied_events += 1;
+            let index = CommitIndex(self.applied_events);
             self.committed.push(CommittedEvent { index, event });
         }
         Ok(())

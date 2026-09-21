@@ -16,6 +16,7 @@ use ptr_types::{CapsuleId, Generation, ProjectId};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 struct Temp(PathBuf);
 
@@ -97,7 +98,10 @@ async fn a_group_forms_over_alpn_raft_and_both_members_hold_the_same_history() {
         }
     });
 
-    one.campaign().await.unwrap();
+    assert!(
+        one.campaign().await.unwrap().is_empty(),
+        "both members answered"
+    );
     assert!(
         one.is_leader(),
         "a vote carried over the wire elects a leader"
@@ -296,4 +300,230 @@ async fn a_refused_frame_still_gets_an_answer_rather_than_a_hanging_peer() {
         "the answer to a refused frame is an empty batch, not a diagnosis"
     );
     member.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_member_that_cannot_be_reached_is_reported_rather_than_failing_the_write() {
+    // A leader that abandoned a proposal because one follower was down could not
+    // commit while any member is down, which is the opposite of what a majority is
+    // for. So unreachability is reported and the round continues.
+    let temp = Temp::new("unreached");
+    const THREE: [u64; 3] = [1, 2, 3];
+    let mut one = ClusterMember::bind(&temp.member(1), 1, &THREE)
+        .await
+        .unwrap();
+    let mut two = ClusterMember::bind(&temp.member(2), 2, &THREE)
+        .await
+        .unwrap();
+    let three = ClusterMember::bind(&temp.member(3), 3, &THREE)
+        .await
+        .unwrap();
+
+    for peer in [
+        MemberAddress {
+            id: 2,
+            identity: two.identity(),
+            address: two.address(),
+        },
+        MemberAddress {
+            id: 3,
+            identity: three.identity(),
+            address: three.address(),
+        },
+    ] {
+        one.admit(peer);
+    }
+    two.admit(MemberAddress {
+        id: 1,
+        identity: one.identity(),
+        address: one.address(),
+    });
+
+    // Member 3 is gone, not merely quiet: a bound endpoint that never accepts would
+    // leave the leader waiting instead of failing, which is a different situation.
+    three.close().await;
+    // And a short deadline, because this test is about the reporting rather than
+    // about how patient the default is.
+    one.with_request_timeout(Duration::from_millis(250));
+
+    let follower = Arc::new(two);
+    let serving = Arc::clone(&follower);
+    let server = tokio::spawn(async move {
+        loop {
+            if serving.serve_once().await.is_err() {
+                return;
+            }
+        }
+    });
+
+    let unreached = one.campaign().await.unwrap();
+    assert_eq!(unreached.ids(), vec![3], "member 3 did not answer the vote");
+    assert!(
+        !unreached.0.is_empty(),
+        "every attempt toward it is recorded, not just the member"
+    );
+    assert!(one.is_leader(), "two of three is still a majority");
+
+    let unreached = one.propose(event(1)).await.unwrap();
+    // raft pauses probing a peer that has not answered, so this round may not even
+    // attempt member 3. Either way the property is the same one: the write is decided
+    // by the majority that did answer.
+    assert!(
+        unreached.ids().is_empty() || unreached.ids() == vec![3],
+        "unexpected report: {:?}",
+        unreached.ids()
+    );
+    assert_eq!(
+        one.committed_events().len(),
+        1,
+        "the write was decided by the majority that answered"
+    );
+
+    server.abort();
+    one.close().await;
+    follower.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_ptrcs001_snapshot_travels_as_the_payload_and_restores_on_the_far_side() {
+    // "Reusing PTRCS001 rather than inventing a second artifact" is the requirement,
+    // so the payload here is a real compacted snapshot exported by a real runtime,
+    // and the far side restores a runtime from the bytes that arrived.
+    //
+    // The artifact's anchor travels out of band, which over this transport means
+    // "from the authenticated leader". That is weaker than an anchor retained
+    // independently, and deliberately so rather than by omission: a compromised
+    // leader could send a consistent pair. What it rules out is a *stranger* doing
+    // so, because the sender is the connection.
+    use ptr_config::PtrConfig;
+    use ptr_runtime::PtrRuntime;
+    use ptr_semdb::SemanticDelta;
+
+    let temp = Temp::new("ptrcs001");
+    const THREE: [u64; 3] = [1, 2, 3];
+
+    // The application state the snapshot describes.
+    let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+    let mut delta = SemanticDelta::default();
+    delta
+        .upserts
+        .insert("plan".into(), "carried by raft".into());
+    runtime
+        .apply_semantic_delta(runtime.revision(), delta)
+        .unwrap();
+    let exported = runtime.export_compacted_snapshot().unwrap();
+    let payload = exported.bytes().to_vec();
+    let anchor = exported.anchor();
+    assert_eq!(
+        &payload[..8],
+        b"PTRCS001",
+        "the payload is the artifact itself"
+    );
+
+    let mut one = ClusterMember::bind(&temp.member(1), 1, &THREE)
+        .await
+        .unwrap();
+    let mut two = ClusterMember::bind(&temp.member(2), 2, &THREE)
+        .await
+        .unwrap();
+    let behind = ClusterMember::bind(&temp.member(3), 3, &THREE)
+        .await
+        .unwrap();
+    one.admit(MemberAddress {
+        id: 2,
+        identity: two.identity(),
+        address: two.address(),
+    });
+    one.admit(MemberAddress {
+        id: 3,
+        identity: behind.identity(),
+        address: behind.address(),
+    });
+    two.admit(MemberAddress {
+        id: 1,
+        identity: one.identity(),
+        address: one.address(),
+    });
+    behind.close().await;
+    one.with_request_timeout(Duration::from_millis(250));
+
+    let follower = Arc::new(two);
+    let serving = Arc::clone(&follower);
+    let server = tokio::spawn(async move {
+        loop {
+            if serving.serve_once().await.is_err() {
+                return;
+            }
+        }
+    });
+
+    one.campaign().await.unwrap();
+    for generation in 1..=3 {
+        one.propose(event(generation)).await.unwrap();
+    }
+    assert_eq!(one.committed_events().len(), 3);
+
+    // The leader records its application state at the position it has committed and
+    // discards the log below it, so member 3 can no longer be caught up by replay.
+    let covered = one.raft_committed();
+    one.record_snapshot(covered, payload.clone()).unwrap();
+
+    // Member 3 comes back — a restart, so a new endpoint with a new key over the same
+    // durable state, re-admitted by the leader.
+    let mut restarted = ClusterMember::bind(&temp.member(3), 3, &THREE)
+        .await
+        .unwrap();
+    restarted.admit(MemberAddress {
+        id: 1,
+        identity: one.identity(),
+        address: one.address(),
+    });
+    one.admit(MemberAddress {
+        id: 3,
+        identity: restarted.identity(),
+        address: restarted.address(),
+    });
+
+    let returning = Arc::new(restarted);
+    let serving_three = Arc::clone(&returning);
+    let third = tokio::spawn(async move {
+        loop {
+            if serving_three.serve_once().await.is_err() {
+                return;
+            }
+        }
+    });
+
+    // Drive until the snapshot lands, bounded so a failure is a failure rather than a
+    // hang. Each round is a heartbeat the leader sends to a member it cannot replay to.
+    let mut installed = None;
+    for _ in 0..16 {
+        one.tick().await.unwrap();
+        if let Some(snapshot) = returning.take_installed_snapshot() {
+            installed = Some(snapshot);
+            break;
+        }
+    }
+    let installed = installed.expect("a member the leader cannot replay to receives a snapshot");
+    assert_eq!(
+        installed.state, payload,
+        "the artifact arrives byte for byte, unread by the layer that carried it"
+    );
+
+    // And it is a usable artifact on the far side: a runtime restores from exactly
+    // those bytes, against the anchor the leader also sent.
+    let restored =
+        PtrRuntime::restore_compacted(PtrConfig::default(), &installed.state, anchor, &[])
+            .expect("the bytes that arrived are a restorable snapshot");
+    assert_eq!(
+        restored.snapshot().value("plan"),
+        Some(&ptr_semdb::SemanticValue::from("carried by raft")),
+        "the state the snapshot described is the state that came back"
+    );
+
+    third.abort();
+    server.abort();
+    one.close().await;
+    follower.close().await;
+    returning.close().await;
 }

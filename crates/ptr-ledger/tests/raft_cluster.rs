@@ -424,3 +424,244 @@ fn a_restarted_member_restores_exactly_the_leader_s_committed_state() {
         "the term it recorded is not behind the one it acknowledged"
     );
 }
+
+/// The test's own state machine: the generations it has seen committed, in order.
+///
+/// A snapshot payload is the *application's* state, and this is this test's
+/// application. Encoding it here rather than in the library is the point: the raft
+/// layer carries opaque bytes and has no opinion about them, which is what lets a
+/// PTR deployment put a PTRCS001 compacted snapshot there instead of a second
+/// artifact invented for raft.
+fn encode_state(events: &[CommittedEvent]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(events.len() * 8);
+    for committed in events {
+        match &committed.event {
+            LedgerEvent::CapsuleCommitted { generation, .. } => {
+                bytes.extend_from_slice(&generation.0.to_le_bytes());
+            }
+            other => panic!("this test's state machine does not model {other:?}"),
+        }
+    }
+    bytes
+}
+
+fn decode_state(bytes: &[u8]) -> Vec<u64> {
+    assert_eq!(bytes.len() % 8, 0, "a state payload is whole generations");
+    bytes
+        .chunks_exact(8)
+        .map(|chunk| u64::from_le_bytes(chunk.try_into().expect("eight bytes")))
+        .collect()
+}
+
+#[test]
+fn a_member_compacted_past_is_caught_up_by_a_snapshot_and_equals_a_full_replay() {
+    let temp = Temp::new("snapshot");
+    let mut cluster = Cluster::open(&temp);
+    cluster.elect(1);
+    for generation in 1..=3 {
+        cluster.propose(1, generation).unwrap();
+    }
+    assert_eq!(cluster.events(3).len(), 3, "everyone is up to date first");
+
+    // Member 3 stops hearing anything, and the group moves on without it.
+    cluster.unreachable.insert(3);
+    for generation in 4..=5 {
+        cluster.propose(1, generation).unwrap();
+    }
+    assert_eq!(cluster.events(3).len(), 3, "it is behind by two");
+
+    // The leader records its state and discards the log those entries are in, so
+    // catching member 3 up by replay is no longer possible.
+    let leader_state = encode_state(&cluster.events(1));
+    let covered = cluster.get(1).raft_committed();
+    cluster
+        .node(1)
+        .record_snapshot(covered, leader_state.clone())
+        .unwrap();
+
+    // Heal it. The leader has nothing to replay, so it sends what it does have.
+    cluster.unreachable.remove(&3);
+    cluster.heartbeat(1);
+
+    let installed = cluster
+        .node(3)
+        .take_installed_snapshot()
+        .expect("a member the leader cannot replay to is sent a snapshot");
+    assert_eq!(installed.index, covered);
+    assert_eq!(
+        installed.state, leader_state,
+        "the payload arrives byte for byte"
+    );
+    assert!(
+        cluster.events(3).is_empty(),
+        "what the snapshot describes stops being the member's own to report"
+    );
+
+    // The application accounts for it, and the group continues.
+    let restored = decode_state(&installed.state);
+    assert_eq!(restored, vec![1, 2, 3, 4, 5]);
+    cluster.node(3).resume_with_applied(restored.len() as u64);
+    cluster.propose(1, 6).unwrap();
+
+    // Restored by snapshot equals restored by full replay: member 2 replayed every
+    // entry, member 3 was handed a payload and then one entry, and what they hold is
+    // the same sequence with the same indexes.
+    let by_replay = cluster.events(2);
+    let mut by_snapshot = restored;
+    by_snapshot.extend(
+        cluster
+            .events(3)
+            .iter()
+            .map(|committed| match &committed.event {
+                LedgerEvent::CapsuleCommitted { generation, .. } => generation.0,
+                other => panic!("unexpected {other:?}"),
+            }),
+    );
+    assert_eq!(
+        by_snapshot,
+        decode_state(&encode_state(&by_replay)),
+        "a member restored by snapshot holds the same history as one restored by replay"
+    );
+    let tail = cluster.events(3);
+    assert_eq!(tail.len(), 1);
+    assert_eq!(
+        tail[0].index.0, 6,
+        "the event after a snapshot continues the ledger's numbering rather than restarting it"
+    );
+    assert_eq!(cluster.get(3).applied_events(), 6);
+}
+
+#[test]
+fn a_member_refuses_to_apply_anything_until_a_snapshot_is_accounted_for() {
+    // Carrying on as though the payload were empty would number the next event 1 and
+    // disagree with every other member about what that index means.
+    let temp = Temp::new("unaccounted");
+    let mut cluster = Cluster::open(&temp);
+    cluster.elect(1);
+    for generation in 1..=3 {
+        cluster.propose(1, generation).unwrap();
+    }
+    cluster.unreachable.insert(3);
+    for generation in 4..=5 {
+        cluster.propose(1, generation).unwrap();
+    }
+    let covered = cluster.get(1).raft_committed();
+    let state = encode_state(&cluster.events(1));
+    cluster.node(1).record_snapshot(covered, state).unwrap();
+    cluster.unreachable.remove(&3);
+    cluster.heartbeat(1);
+    assert!(
+        cluster.node(3).take_installed_snapshot().is_some(),
+        "the member was compacted past, so it is sent a snapshot"
+    );
+
+    // Another entry arrives before the application has said what the payload covers.
+    // Appending it is fine; *applying* it is what must be refused, and that happens a
+    // message later when the commit index moves, so keep delivering until one of them
+    // is refused.
+    let messages = cluster.node(1).propose(event(6)).unwrap();
+    let mut queue: VecDeque<Message> = messages.into();
+    let mut refused = None;
+    while let Some(message) = queue.pop_front() {
+        match cluster.node(message.to).step(message) {
+            Ok(produced) => queue.extend(produced),
+            Err(error) => {
+                refused = Some(error);
+                break;
+            }
+        }
+    }
+    let refused = refused.expect("applying an entry above an unaccounted snapshot");
+    assert!(
+        refused.contains("resume_with_applied"),
+        "the refusal must name what is missing: {refused}"
+    );
+}
+
+#[test]
+fn a_leader_with_no_recorded_snapshot_cannot_invent_one_for_a_member_it_compacted_past() {
+    // The storage refuses to fabricate a snapshot at the requested index, so a
+    // leader that never recorded one simply cannot catch the member up. Being stuck
+    // is the honest outcome; a payload that did not match its claimed position would
+    // be sent as truth.
+    let temp = Temp::new("nosnapshot");
+    let mut cluster = Cluster::open(&temp);
+    cluster.elect(1);
+    cluster.propose(1, 1).unwrap();
+    cluster.unreachable.insert(3);
+    cluster.propose(1, 2).unwrap();
+
+    // Compact the leader's log without recording a payload for it: record_snapshot
+    // is the only way to compact, so the closest thing is a snapshot the leader
+    // then cannot serve — which is what a fresh member asking for an old index sees.
+    let ahead = cluster.get(1).raft_committed() + 5;
+    let refused = cluster
+        .node(1)
+        .record_snapshot(ahead, Vec::new())
+        .expect_err("a snapshot ahead of the committed index is refused");
+    assert!(
+        refused.contains("ahead of the committed"),
+        "the refusal must say why: {refused}"
+    );
+
+    // And member 3, still behind, has not been handed anything.
+    cluster.unreachable.remove(&3);
+    cluster.heartbeat(1);
+    assert!(
+        cluster.node(3).take_installed_snapshot().is_none(),
+        "no snapshot was recorded, so none can arrive"
+    );
+    // It catches up by replay instead, because the log was never discarded.
+    assert_eq!(cluster.events(3), cluster.events(1));
+}
+
+#[test]
+fn a_restarted_deposed_leader_cannot_resurrect_the_tail_it_wrote_alone() {
+    // Durable fencing, not protocol fencing: the entry the old leader wrote while
+    // partitioned is on its disk, and a restart is exactly the moment it could come
+    // back. The group's history must win, and the stale tail must leave the file.
+    let temp = Temp::new("fenced");
+    let mut cluster = Cluster::open(&temp);
+    cluster.elect(1);
+    cluster.propose(1, 1).unwrap();
+    let agreed = cluster.events(1);
+
+    cluster.unreachable.insert(1);
+    cluster.propose(1, 99).expect("it still believes it leads");
+    cluster.elect(2);
+    cluster.propose(2, 2).unwrap();
+    let group = cluster.events(2);
+    assert_eq!(group.len(), 2);
+    assert_eq!(agreed.len(), 1);
+
+    // Restart the deposed leader from its own files, with its uncommitted tail still
+    // on disk, and put it back in the group.
+    let reopened = RaftNode::open(&temp.member(1), 1, &VOTERS).unwrap();
+    assert_eq!(
+        reopened.committed_events(),
+        agreed.as_slice(),
+        "it recovers what was committed, not what it wrote alone"
+    );
+    let position = cluster
+        .nodes
+        .iter()
+        .position(|node| node.id() == 1)
+        .expect("member 1");
+    cluster.nodes[position] = reopened;
+    cluster.unreachable.remove(&1);
+    cluster.heartbeat(2);
+
+    assert_eq!(cluster.get(1).role(), StateRole::Follower);
+    assert_eq!(
+        cluster.events(1),
+        group,
+        "a restarted deposed leader ends with the group's history"
+    );
+    for committed in cluster.events(1) {
+        assert_ne!(
+            committed.event,
+            event(99),
+            "the tail it wrote alone must not survive a restart either"
+        );
+    }
+}

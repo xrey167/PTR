@@ -5,11 +5,11 @@
 
 **Component count:** 25  
 **Maturity distribution:** `foundation`: 1, `prototype`: 12, `research-scaffold`: 1, `scaffold`: 11  
-**Rust footprint:** 67 source files · 12497 nonblank source lines · 74 integration-test files · 343 `#[test]` markers
+**Rust footprint:** 67 source files · 12671 nonblank source lines · 74 integration-test files · 347 `#[test]` markers
 
 | Component | Maturity | Rust files | LOC | Test files | Tests | Implemented items | Missing items | Experiments | Evaluations |
 |---|---:|---:|---:|---:|---:|---:|---:|---|---|
-| [ptr-cluster](../../crates/ptr-cluster/README.md) | `prototype` | 3 | 591 | 1 | 6 | 7 | 5 | — | — |
+| [ptr-cluster](../../crates/ptr-cluster/README.md) | `prototype` | 3 | 681 | 1 | 6 | 10 | 5 | — | — |
 | [ptr-config](../../crates/ptr-config/README.md) | `prototype` | 1 | 264 | 4 | 6 | 6 | 3 | E001:planned | — |
 | [ptr-core](../../crates/ptr-core/README.md) | `research-scaffold` | 13 | 211 | 1 | 1 | 8 | 6 | M001:planned, M002:planned, M003:planned, M004:planned, M005:planned, M006:planned, M007:planned, E001:planned, E003:planned, E004:planned | model-framework:open, inference-serving:open |
 | [ptr-events](../../crates/ptr-events/README.md) | `scaffold` | 1 | 16 | 1 | 1 | 2 | 5 | E001:planned, F001:planned | event-streaming:open |
@@ -17,7 +17,7 @@
 | [ptr-feedback](../../crates/ptr-feedback/README.md) | `scaffold` | 1 | 44 | 2 | 2 | 3 | 4 | F001:planned, E001:planned | — |
 | [ptr-ingress](../../crates/ptr-ingress/README.md) | `scaffold` | 1 | 45 | 1 | 1 | 4 | 4 | E001:planned, E004:planned | ingress-classifier:open |
 | [ptr-inspect](../../crates/ptr-inspect/README.md) | `scaffold` | 1 | 23 | 1 | 1 | 3 | 5 | E001:planned | introspection:open |
-| [ptr-ledger](../../crates/ptr-ledger/README.md) | `prototype` | 9 | 4144 | 11 | 85 | 36 | 8 | L001:running, L002:planned, E004:planned | consensus:open, ledger:open |
+| [ptr-ledger](../../crates/ptr-ledger/README.md) | `prototype` | 9 | 4228 | 11 | 89 | 37 | 8 | L001:running, L002:planned, E004:planned | consensus:open, ledger:open |
 | [ptr-memory](../../crates/ptr-memory/README.md) | `scaffold` | 1 | 31 | 1 | 1 | 3 | 5 | Q002:planned, E002:planned, E004:planned | — |
 | [ptr-model-api](../../crates/ptr-model-api/README.md) | `scaffold` | 4 | 83 | 2 | 3 | 5 | 5 | M007:planned, E001:planned, E003:planned | inference-serving:open |
 | [ptr-net](../../crates/ptr-net/README.md) | `prototype` | 1 | 138 | 2 | 1 | 7 | 3 | L002:planned, E001:planned | network:open |

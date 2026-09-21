@@ -23,4 +23,4 @@ pub use frame::{decode_batch, encode_batch, FrameError, MAX_BATCH_MESSAGES, MAX_
 mod member;
 
 #[cfg(feature = "cluster-backend")]
-pub use member::{ClusterError, ClusterMember, MemberAddress};
+pub use member::{ClusterError, ClusterMember, MemberAddress, Unreached, DEFAULT_REQUEST_TIMEOUT};
