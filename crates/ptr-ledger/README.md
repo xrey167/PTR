@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-21  
-**Code footprint:** 7 Rust source files · 3248 nonblank source lines · 10 integration-test files · 66 `#[test]` markers
+**Code footprint:** 8 Rust source files · 3996 nonblank source lines · 10 integration-test files · 77 `#[test]` markers
 
 ### Implemented now
 
@@ -44,12 +44,15 @@
 - Durable reference FileLedger with checked versioned frames, file synchronization and anchor-required tail recovery
 - Feature-gated fail-rs injection points around record write/payload/fsync/memory-commit boundaries
 - Feature-gated raft-engine 0.4.2 durable adapter stores ordered PTR ledger events with synchronous writes and reopen validation
-- Feature-gated raft-rs 0.7 single-node consensus harness proposes and commits PTR LedgerEvents through RawNode
+- Feature-gated raft-rs 0.7 single-node consensus harness proposes and commits PTR LedgerEvents through RawNode, over durable state rather than MemStorage: a reopened node replays its committed prefix and tells raft what it already applied
+- FileRaftStorage keeps term, vote, commit, configuration, log and snapshot position on disk: the state file is rewritten atomically, entries and hard state are flushed before anything depending on them could leave the node, and a conflicting append truncates the log so the file is always a prefix of one history
+- Raft log records carry an explicit entry-type code and a per-record digest, and indexes must be consecutive from the snapshot position, so a changed record and a removed or duplicated one are separate refusals; a snapshot older than raft asks for is refused rather than fabricated at the requested index
 
 ### Missing for the target architecture
 
 - Hardware power-loss evidence; anchor key custody, rotation and hardware-backed sealing
-- Multi-node raft-rs consensus adapter with transport, persistent Raft storage and membership changes
+- Multi-node raft-rs consensus adapter with transport and membership changes; Raft storage is durable now, but a one-member group still demonstrates nothing about partitions, leader changes or divergent histories
+- Snapshot transfer to a follower the leader has compacted past, and any relation between raft's own log floor and the ledger's retention floor
 - fsync/durability modes and revocation barriers
 - Distributed snapshot/compaction protocols and cross-node cutover
 - Retention schedule/policy engine and durable snapshot lifecycle tracking; PTR does not enumerate or reclaim host-retained snapshots
@@ -101,6 +104,8 @@
 - fail-rs panic-after-length-prefix recovery test
 - raft-engine durable append/reopen ordering integration test
 - raft-rs single-node proposal/commit ordering integration test
+- a reopened node holds exactly the history it committed, index by index, and continues the same sequence; the term and the vote it recorded survive the process and a new election is a later term
+- a conflicting append truncates on disk rather than splicing two histories; a gap, a non-consecutive batch, a damaged record digest, a damaged length field, a removed middle record, a torn state file, a snapshot ahead of the commit index and a snapshot older than requested are each refused
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->

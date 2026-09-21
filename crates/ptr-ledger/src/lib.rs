@@ -661,11 +661,17 @@ mod raft_engine_backend {
 pub use raft_engine_backend::RaftEngineLedger;
 
 #[cfg(feature = "raft-rs-backend")]
+pub mod raft_storage;
+#[cfg(feature = "raft-rs-backend")]
+pub use raft_storage::{FileRaftStorage, MAX_ENTRY_BYTES, MAX_SNAPSHOT_BYTES};
+
+#[cfg(feature = "raft-rs-backend")]
 mod raft_rs_backend {
     use super::*;
-    use raft::prelude::{ConfState, Config as RaftConfig, Entry, EntryType, RawNode};
-    use raft::storage::MemStorage;
+    use crate::raft_storage::FileRaftStorage;
+    use raft::prelude::{Config as RaftConfig, Entry, EntryType, RawNode};
     use raft::StateRole;
+    use std::path::Path;
 
     #[derive(Clone, Debug, Eq, PartialEq)]
     pub struct RaftCommitReceipt {
@@ -673,21 +679,37 @@ mod raft_rs_backend {
         pub commit_index: CommitIndex,
     }
 
+    /// A one-member group over **durable** state.
+    ///
+    /// It is still one member, so it demonstrates nothing about partitions or
+    /// leader changes. What changed is that the term, the vote and the log survive
+    /// the process: a node that forgets those has agreed to things it can no longer
+    /// account for, which is the part of Raft's safety argument that lives on disk
+    /// rather than in the protocol.
     pub struct SingleNodeRaftConsensus {
-        node: RawNode<MemStorage>,
+        node: RawNode<FileRaftStorage>,
         committed: Vec<CommittedEvent>,
     }
 
     impl SingleNodeRaftConsensus {
-        pub fn new(node_id: u64) -> Result<Self, String> {
-            let storage = MemStorage::new_with_conf_state(ConfState::from((vec![node_id], vec![])));
+        /// Open durable state under `dir`, recovering committed history.
+        pub fn open(dir: &Path, node_id: u64) -> Result<Self, String> {
+            let storage =
+                FileRaftStorage::open(dir, &[node_id], &[]).map_err(|error| error.to_string())?;
+            let recovered = storage.wl().committed_entries();
+            // What this node has already applied is what it recovered. Telling
+            // raft `applied: 0` instead makes it re-deliver the whole committed
+            // prefix as newly committed, and the recovered history is then applied
+            // twice — which is how a restart turns two events into four.
+            let applied = storage.wl().hard_state().commit;
+
             let config = RaftConfig {
                 id: node_id,
                 election_tick: 10,
                 heartbeat_tick: 3,
                 max_size_per_msg: 1024 * 1024,
                 max_inflight_msgs: 256,
-                applied: 0,
+                applied,
                 ..Default::default()
             };
             config.validate().map_err(|error| error.to_string())?;
@@ -699,6 +721,9 @@ mod raft_rs_backend {
                 node,
                 committed: Vec::new(),
             };
+            // Replay first, so the recovered history is what the node continues
+            // from rather than something the new term overwrites.
+            consensus.apply_committed(recovered)?;
             consensus
                 .node
                 .campaign()
@@ -716,6 +741,11 @@ mod raft_rs_backend {
 
         pub fn committed_events(&self) -> &[CommittedEvent] {
             &self.committed
+        }
+
+        /// The durable term this node has seen.
+        pub fn term(&self) -> u64 {
+            self.node.raft.term
         }
 
         pub fn propose(&mut self, event: LedgerEvent) -> Result<RaftCommitReceipt, String> {
@@ -753,6 +783,10 @@ mod raft_rs_backend {
 
                 let committed = ready.take_committed_entries();
 
+                // Entries and hard state are flushed here, before anything that
+                // depends on them could leave the node. With one member nothing
+                // leaves, but the ordering is the contract a group relies on and it
+                // is not something to introduce later.
                 if !ready.entries().is_empty() {
                     store
                         .wl()
@@ -761,7 +795,10 @@ mod raft_rs_backend {
                 }
 
                 if let Some(hard_state) = ready.hs() {
-                    store.wl().set_hardstate(hard_state.clone());
+                    store
+                        .wl()
+                        .set_hard_state(hard_state)
+                        .map_err(|error| error.to_string())?;
                 }
 
                 if !ready.persisted_messages().is_empty() {
@@ -772,7 +809,10 @@ mod raft_rs_backend {
 
                 let mut light = self.node.advance(ready);
                 if let Some(commit) = light.commit_index() {
-                    store.wl().mut_hard_state().set_commit(commit);
+                    store
+                        .wl()
+                        .set_commit(commit)
+                        .map_err(|error| error.to_string())?;
                 }
                 self.apply_committed(light.take_committed_entries())?;
                 self.node.advance_apply();
