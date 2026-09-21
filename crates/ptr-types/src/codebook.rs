@@ -276,7 +276,11 @@ impl Codebook {
     }
 
     /// Stable member names for one family in code order.
-    fn member_names(&self, family: CodeFamily) -> Vec<&'static str> {
+    ///
+    /// Public because a shared codebook has to be readable from outside Rust: the
+    /// alternative is every other language retyping the table, which is the
+    /// duplication this type exists to prevent.
+    pub fn member_names(&self, family: CodeFamily) -> Vec<&'static str> {
         /// Collect names from one typed assignment table.
         fn names<T: CognitiveType>(book: &Codebook) -> Vec<&'static str> {
             T::table(book.version)

@@ -10,10 +10,11 @@
 
 **Maturity:** `foundation`  
 **Last reviewed:** 2026-09-21  
-**Code footprint:** 4 Rust source files · 1184 nonblank source lines · 4 integration-test files · 32 `#[test]` markers
+**Code footprint:** 4 Rust source files · 1188 nonblank source lines · 5 integration-test files · 34 `#[test]` markers
 
 ### Implemented now
 
+- The codebook is emitted as datasets/generated/codebook.json by a ptr-types example, so anything outside Rust reads the kernel tables instead of retyping them; a test asserts the committed artifact still carries the canonical bytes this kernel produces
 - ValidityMask and the codebook are consumed by the isolated Burn A0 workspace, which depends on this crate directly: A0 applies attention_bias rather than a learned validity embedding, so lifecycle validity is enforced there by construction instead of weighed
 - Rustdoc covers the codebook and validity-mask APIs, stable diagnostic codes and canonical assignment encoder helpers
 - Versioned cognitive codebook: explicit per-version tables assign dense 0..cardinality codes to SemanticRole, EpistemicState, UncertaintyKind, ReasoningOperator and Validity, never Rust discriminants
@@ -69,6 +70,7 @@
 
 ### Current automated checks
 
+- the generated codebook artifact carries this kernel's canonical bytes and every family member; a changed byte and a removed member each fail it
 - Every exact numeric code for all 33 members of all five families, so a reordered kernel enum breaks the build rather than a checkpoint
 - Exhaustive per-family coverage; dense unique codes; unknown version, unassigned code and unassigned member each refused
 - canonical_bytes decoded by an independent decoder against the exact expected assignment with every byte accounted for

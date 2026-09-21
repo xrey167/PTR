@@ -80,6 +80,7 @@ jobs:
       - run: python scripts/check_vendor_integrity.py
       - run: python scripts/check_vendor_retirement.py --require-observations
       - run: python scripts/check_notices.py
+      - run: python scripts/check_codebook.py
       - run: python scripts/update_component_docs.py --check
       - run: python scripts/check_repo.py
       - run: python scripts/check_architecture_catalog.py

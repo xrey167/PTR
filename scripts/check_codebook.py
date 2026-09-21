@@ -1,0 +1,109 @@
+"""Check the generated codebook artifact for self-consistency, offline.
+
+`crates/ptr-types/tests/codebook_artifact.rs` is what catches drift between the
+kernel and this file; it needs cargo. This checker needs nothing but the file and
+answers the question that remains: is the fingerprint the digest of the bytes
+recorded beside it, and does the document describe what it claims to?
+
+A hand-edited fingerprint is the failure worth catching here. Every dataset is
+checked against it, so a wrong one either rejects valid data or admits data
+produced under a table that has moved.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+ARTIFACT = ROOT / "datasets/generated/codebook.json"
+
+
+def check(path: Path) -> list[str]:
+    if not path.is_file():
+        return [f"{path} is missing; run scripts/generate_codebook.py"]
+
+    document = json.loads(path.read_text(encoding="utf-8"))
+    errors: list[str] = []
+
+    if document.get("schema") != "1":
+        errors.append("unsupported schema")
+        return errors
+
+    hex_bytes = document.get("canonical_bytes_hex")
+    if not isinstance(hex_bytes, str) or not hex_bytes:
+        errors.append("canonical_bytes_hex is absent")
+        return errors
+    try:
+        canonical = bytes.fromhex(hex_bytes)
+    except ValueError:
+        errors.append("canonical_bytes_hex is not hex")
+        return errors
+
+    expected = hashlib.sha256(canonical).hexdigest()
+    if document.get("fingerprint_sha256") != expected:
+        errors.append(
+            "fingerprint_sha256 is not the digest of canonical_bytes_hex; "
+            "run scripts/generate_codebook.py"
+        )
+
+    families = document.get("families")
+    if not isinstance(families, list) or not families:
+        errors.append("families is absent or empty")
+        return errors
+
+    for family in families:
+        name = family.get("family")
+        members = family.get("members")
+        if not isinstance(name, str) or not name:
+            errors.append("a family has no name")
+            continue
+        if not isinstance(members, list):
+            errors.append(f"{name}: members is not a list")
+            continue
+        if family.get("cardinality") != len(members):
+            errors.append(
+                f"{name}: cardinality {family.get('cardinality')} does not match "
+                f"{len(members)} members"
+            )
+        # Codes index an embedding table, so they must be exactly 0..n with no
+        # gap and no repeat; a gap would leave a row nothing can reach.
+        codes = [member.get("code") for member in members]
+        if codes != list(range(len(members))):
+            errors.append(f"{name}: codes are not dense 0..{len(members) - 1}: {codes}")
+        names = [member.get("name") for member in members]
+        if len(set(names)) != len(names):
+            errors.append(f"{name}: duplicate member names")
+        # The canonical bytes commit to every member name, so a name present here
+        # and absent there means the document was edited rather than generated.
+        for member in names:
+            if isinstance(member, str) and member.encode("utf-8") not in canonical:
+                errors.append(f"{name}: {member!r} is not in the canonical bytes")
+
+    return errors
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--path", type=Path, default=ARTIFACT)
+    args = parser.parse_args()
+
+    errors = check(args.path)
+    for error in errors:
+        print(f"error: {error}", file=sys.stderr)
+    if errors:
+        return 1
+    document = json.loads(args.path.read_text(encoding="utf-8"))
+    members = sum(len(family["members"]) for family in document["families"])
+    print(
+        f"OK: codebook version {document['version']}, "
+        f"{len(document['families'])} families, {members} members"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

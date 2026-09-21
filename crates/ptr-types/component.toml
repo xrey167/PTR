@@ -4,6 +4,7 @@ maturity = "foundation"
 last_reviewed = "2026-09-21"
 
 implemented = [
+  "The codebook is emitted as datasets/generated/codebook.json by a ptr-types example, so anything outside Rust reads the kernel tables instead of retyping them; a test asserts the committed artifact still carries the canonical bytes this kernel produces",
   "ValidityMask and the codebook are consumed by the isolated Burn A0 workspace, which depends on this crate directly: A0 applies attention_bias rather than a learned validity embedding, so lifecycle validity is enforced there by construction instead of weighed",
   "Rustdoc covers the codebook and validity-mask APIs, stable diagnostic codes and canonical assignment encoder helpers",
   "Versioned cognitive codebook: explicit per-version tables assign dense 0..cardinality codes to SemanticRole, EpistemicState, UncertaintyKind, ReasoningOperator and Validity, never Rust discriminants",
@@ -48,7 +49,7 @@ experiments = ["M005", "L001"]
 evaluations = []
 decisions = ["ADR-0001-rust-runtime.md", "ADR-0003-raw-and-typed.md"]
 
-checks = [
+checks = ["the generated codebook artifact carries this kernel's canonical bytes and every family member; a changed byte and a removed member each fail it", 
   "Every exact numeric code for all 33 members of all five families, so a reordered kernel enum breaks the build rather than a checkpoint",
   "Exhaustive per-family coverage; dense unique codes; unknown version, unassigned code and unassigned member each refused",
   "canonical_bytes decoded by an independent decoder against the exact expected assignment with every byte accounted for",

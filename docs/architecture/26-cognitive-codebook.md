@@ -194,20 +194,62 @@ The excluded slot's own row in `slots` is still computed and returned. Nothing t
 model produces depends on it, and `PtrA0Output::admission` is returned alongside so
 a consumer pooling `slots` cannot lose the mask.
 
+## The codebook as data, for everything outside Rust
+
+`validate_dataset.py` carried its own copies of the operator, epistemic and
+uncertainty member names as Python sets. That is precisely the duplication this
+type exists to prevent: adding a `ReasoningOperator` variant in Rust left the
+Python set silently disagreeing, and nothing failed until a dataset meant
+something different than it said.
+
+`datasets/generated/codebook.json` is now the single readable form — version,
+every family with its members in code order, the canonical bytes as hex, and a
+SHA-256 fingerprint of those bytes. It is produced by
+`crates/ptr-types/examples/codebook.rs` (an example rather than a binary, so the
+ordinary `--all-targets` run builds and lints it) with the fingerprint computed by
+`scripts/generate_codebook.py`, because this crate still has no hasher and no
+dependencies.
+
+Three checks hold the chain together, and each catches something the others
+cannot:
+
+| Check | Catches |
+|---|---|
+| `crates/ptr-types/tests/codebook_artifact.rs` | the kernel's tables and the artifact disagreeing |
+| `scripts/check_codebook.py` | a hand-edited fingerprint, a cardinality that contradicts its member list, a non-dense code sequence, a member absent from the canonical bytes |
+| `validate_dataset.py` | a dataset that names no codebook, an unknown version, a moved assignment |
+
+The drift test was verified by breaking the artifact rather than by reasoning
+about it: changing one byte of the hex fails the canonical-bytes assertion, and
+removing a member fails the family assertion. Different faults, different
+failures.
+
+`type_codebook_version` and `type_codebook_fingerprint` are now **required** in a
+dataset record, with **no defaulting path**. Treating "absent" as "current" is how
+a stale integer assignment gets adopted without anyone deciding to. The two
+failures give distinct reasons, deliberately: the version can be right while the
+table behind it has moved, which is exactly the silent remapping the fingerprint
+exists to catch.
+
+Codes are checked for being dense `0..n` because they index an embedding table
+directly. A gap would leave a row nothing can reach, and a duplicate would make
+two members share one.
+
 ## What this does not close
 
+- **Checkpoints and run manifests do not record it yet.** Datasets do. A
+  checkpoint carrying a `StateBinding`, which is what `27-neural-state-admission.md`
+  would need to decide about a real artifact rather than opaque test bytes, is
+  still open.
 - **`slot_type` is still research-local.** Mapping A0's `slot_type_count` onto
   `SemanticRole` codes from this codebook is not done; slot identity therefore
   remains outside the versioned contract.
 - **A consumer can still misuse `slots`.** The admission travels with the output,
   but nothing forces a caller to apply it. Zeroing the excluded rows would hide a
   real zero vector, so the mask is supplied rather than baked in.
-- **Nothing records the version yet.** Datasets, checkpoints and run manifests have
-  to carry `CodebookVersion` and a fingerprint of `canonical_bytes`.
-  `training/src/ptr_training/validate_dataset.py` accepts `type_codebook_version` as
-  an *optional* free string, checked against neither the kernel's version nor the
-  fingerprint, and no sample dataset carries it at all. That is the remaining piece
-  of this gate.
+- **The artifact is trusted as data, not as authentication.** A fingerprint detects
+  a mismatch; it cannot detect someone who recomputes it. That was true of
+  `canonical_bytes` from the start and is unchanged by writing it to a file.
 - **No semantic payloads reach the model.** "Connect actual semantic payloads to the
   model" remains open; this supplies the identity layer such a connection needs.
 - Nothing here is evidence about model quality, reasoning improvement or the

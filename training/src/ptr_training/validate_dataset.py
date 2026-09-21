@@ -5,34 +5,59 @@ import json
 from pathlib import Path
 from typing import Any
 
-REASONING_OPERATORS = {
-    "semantic",
-    "deductive",
-    "probabilistic",
-    "statistical",
-    "temporal",
-    "causal",
-    "search",
-    "optimization",
-    "simulation",
-    "symbolic",
-    "external_pod",
-}
+# The member sets come from the kernel's own tables, not from a copy kept here.
+# A retyped set is what the cognitive codebook exists to prevent: adding a
+# ReasoningOperator variant in Rust used to leave this file silently disagreeing,
+# and nothing failed until a checkpoint meant something different than it said.
+CODEBOOK_PATH = Path(__file__).resolve().parents[3] / "datasets/generated/codebook.json"
 
-EPISTEMIC_STATES = {
-    "unknown",
-    "assumed",
-    "hypothesis",
-    "observed",
-    "inferred",
-    "verified",
-}
 
-UNCERTAINTY_KINDS = {
-    "point",
-    "interval",
-    "distribution",
-}
+def _codebook(path: Path = CODEBOOK_PATH) -> dict[str, Any]:
+    if not path.is_file():
+        raise ValueError(
+            f"{path} is missing; run scripts/generate_codebook.py"
+        )
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["members"] = {
+        family["family"]: {member["name"] for member in family["members"]}
+        for family in document["families"]
+    }
+    return document
+
+
+CODEBOOK = _codebook()
+REASONING_OPERATORS = CODEBOOK["members"]["reasoning_operator"]
+EPISTEMIC_STATES = CODEBOOK["members"]["epistemic_state"]
+UNCERTAINTY_KINDS = CODEBOOK["members"]["uncertainty_kind"]
+
+
+def _validate_codebook_identity(obj: dict[str, Any]) -> None:
+    """Require the codebook this record was produced under, and check it.
+
+    Both fields are mandatory and there is no defaulting path. A record that
+    names no codebook cannot be checked against one, and treating "absent" as
+    "current" is how a stale integer assignment is adopted without anyone
+    deciding to.
+    """
+    version = obj.get("type_codebook_version")
+    if version is None:
+        raise ValueError("type_codebook_version is required")
+    if version != CODEBOOK["version"]:
+        raise ValueError(
+            f"type_codebook_version {version!r} is not this build's "
+            f"{CODEBOOK['version']!r}"
+        )
+
+    fingerprint = obj.get("type_codebook_fingerprint")
+    if fingerprint is None:
+        raise ValueError("type_codebook_fingerprint is required")
+    if fingerprint != CODEBOOK["fingerprint_sha256"]:
+        # A distinct reason from an unknown version: the version can be right
+        # while the table behind it has moved, which is the silent remapping the
+        # fingerprint exists to catch.
+        raise ValueError(
+            "type_codebook_fingerprint does not match this build's assignment"
+        )
 
 
 def _probability(value: Any, field: str) -> float:
@@ -70,9 +95,7 @@ def _validate_operator_route(obj: dict[str, Any]) -> None:
     ):
         raise ValueError("cost_budget must be a non-negative number")
 
-    codebook = obj.get("type_codebook_version")
-    if codebook is not None and (not isinstance(codebook, str) or not codebook.strip()):
-        raise ValueError("type_codebook_version must be a non-empty string")
+    _validate_codebook_identity(obj)
 
 
 def _validate_epistemic_calibration(obj: dict[str, Any]) -> None:
@@ -103,9 +126,7 @@ def _validate_epistemic_calibration(obj: dict[str, Any]) -> None:
     if "outcome" not in obj:
         raise ValueError("outcome is required")
 
-    codebook = obj.get("type_codebook_version")
-    if codebook is not None and (not isinstance(codebook, str) or not codebook.strip()):
-        raise ValueError("type_codebook_version must be a non-empty string")
+    _validate_codebook_identity(obj)
 
 
 def validate_record(path: Path, obj: dict[str, Any]) -> None:
