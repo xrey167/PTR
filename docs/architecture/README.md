@@ -42,6 +42,7 @@
 - [26-cognitive-codebook.md](26-cognitive-codebook.md)
 - [27-neural-state-admission.md](27-neural-state-admission.md)
 - [28-durable-execution-audit.md](28-durable-execution-audit.md)
+- [29-peer-admission-and-pod-scope.md](29-peer-admission-and-pod-scope.md)
 - [Open architecture catalog](../../research/catalogs/README.md) — unresolved type families, backend slots and component contracts
 
 ## Component-level documentation

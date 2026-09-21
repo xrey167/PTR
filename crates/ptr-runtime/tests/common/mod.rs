@@ -1,3 +1,9 @@
+// Each integration binary compiles this module and uses a subset of it, so
+// "never used" here means "not used by this one binary" rather than unused in
+// the crate. The allow covers that and nothing else: a helper no binary uses is
+// still worth deleting.
+#![allow(dead_code)]
+
 use ptr_config::PtrConfig;
 use ptr_core::action_head::ActionIr;
 use ptr_ledger::LedgerEvent;

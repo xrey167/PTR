@@ -1,5 +1,5 @@
 use ptr_pods::{invoke_with_lease, LeaseInvokeError, Pod, PodLease, PodManifest, Ready};
-use ptr_types::PodId;
+use ptr_types::{PodId, ProjectId};
 
 struct Echo {
     manifest: PodManifest,
@@ -22,6 +22,7 @@ impl Pod for Echo {
 fn pod(id: &str) -> Echo {
     Echo {
         manifest: PodManifest {
+            project: ProjectId::from("p"),
             id: PodId::from(id),
             capabilities: vec![],
             accepts: vec![],

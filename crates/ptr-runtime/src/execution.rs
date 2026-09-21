@@ -7,7 +7,7 @@ use super::{PtrRuntime, RuntimeError};
 use ptr_core::action_head::ActionIr;
 use ptr_ledger::{effect_code, integrity, LedgerEvent, MAX_RETAINED_RESPONSE};
 use ptr_security::{ActionAuthorization, AuthorizationDecision, AuthorizationDenial};
-use ptr_types::{CapabilityId, CommitIndex, Effect, ProjectId, TypeId, VerificationLevel};
+use ptr_types::{CapabilityId, CommitIndex, Effect, NodeId, ProjectId, TypeId, VerificationLevel};
 use ptr_verifier::{VerificationStatus, Verifier};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -156,6 +156,72 @@ impl VerifiedDispatch<'_> {
     }
 }
 
+/// Which peers may be admitted, as what, and with which grants.
+///
+/// The table is host policy. A peer never names its own principal or chooses
+/// its own grants, and nothing in a request can reach this structure — which is
+/// the whole difference between admitting an identity and believing one.
+///
+/// Grants are produced by a closure rather than stored, because a grant owns its
+/// verifier and executor and each session needs its own.
+#[derive(Default)]
+pub struct AdmissionPolicy {
+    entries: BTreeMap<NodeId, PeerAdmission>,
+}
+
+struct PeerAdmission {
+    principal: String,
+    ttl: Duration,
+    grants: Box<dyn Fn() -> Vec<ExecutionGrant> + Send + Sync>,
+}
+
+impl AdmissionPolicy {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Bind a peer the transport authenticated to one principal and one grant
+    /// set.
+    ///
+    /// A second entry for the same peer is refused rather than replacing the
+    /// first: a silent replacement is how a later, weaker entry widens an
+    /// earlier one without anyone deciding to.
+    pub fn admit(
+        &mut self,
+        peer: NodeId,
+        principal: impl Into<String>,
+        ttl: Duration,
+        grants: impl Fn() -> Vec<ExecutionGrant> + Send + Sync + 'static,
+    ) -> Result<(), ExecutionError> {
+        let principal = principal.into();
+        if !valid_identifier(&principal) || !valid_identifier(&peer.0) {
+            return Err(ExecutionError::InvalidSession);
+        }
+        if self.entries.contains_key(&peer) {
+            return Err(ExecutionError::DuplicatePeerEntry { peer });
+        }
+        self.entries.insert(
+            peer,
+            PeerAdmission {
+                principal,
+                ttl,
+                grants: Box::new(grants),
+            },
+        );
+        Ok(())
+    }
+
+    /// Withdraw a peer. Sessions admitted under it stop working immediately,
+    /// because a session's authority is re-derived from this table at every use.
+    pub fn withdraw(&mut self, peer: &NodeId) -> bool {
+        self.entries.remove(peer).is_some()
+    }
+
+    pub fn admits(&self, peer: &NodeId) -> bool {
+        self.entries.contains_key(peer)
+    }
+}
+
 /// Installed by the trusted host, never selected/replaced by an inference caller.
 pub struct ExecutionGrant {
     scope: ActionScope,
@@ -273,6 +339,20 @@ pub enum ExecutionError {
     },
     InvalidKey,
     InvalidEvidence,
+    /// No admission policy entry for this peer. A peer the host never bound is
+    /// not a peer with fewer rights; it is not admitted at all.
+    UnknownPeer {
+        peer: NodeId,
+    },
+    /// The policy no longer admits the peer this session was admitted under.
+    /// Authority is re-derived at every use, so a withdrawal takes effect at
+    /// once rather than when a TTL happens to run out.
+    PeerNotAdmitted {
+        peer: NodeId,
+    },
+    DuplicatePeerEntry {
+        peer: NodeId,
+    },
     /// The audit record itself could not be committed. Nothing was attempted
     /// when this is returned from the attempt, so it denies rather than fences.
     Audit(Box<RuntimeError>),
@@ -297,6 +377,9 @@ struct SessionRecord {
     principal: String,
     expires_at: Instant,
     grants: Vec<Arc<ExecutionGrant>>,
+    /// Set when the session came from the admission policy. Such a session is
+    /// valid only while the policy still admits that peer.
+    peer: Option<NodeId>,
 }
 
 pub(super) struct ExecutionState {
@@ -309,6 +392,7 @@ pub(super) struct ExecutionState {
     /// fence survive a restart.
     unsettled: BTreeMap<CommitIndex, UnsettledEffect>,
     settled: BTreeMap<String, SettledOutcome>,
+    policy: AdmissionPolicy,
 }
 
 impl Default for ExecutionState {
@@ -321,6 +405,7 @@ impl Default for ExecutionState {
             uncertain: false,
             unsettled: BTreeMap::new(),
             settled: BTreeMap::new(),
+            policy: AdmissionPolicy::new(),
         }
     }
 }
@@ -407,6 +492,14 @@ impl ExecutionState {
         if Instant::now() >= record.expires_at {
             return Err(ExecutionError::Expired);
         }
+        // Re-derived, never remembered: the same rule the neural gate applies to
+        // cached state. A session that was admissible when it was issued says
+        // nothing about whether its peer is admissible now.
+        if let Some(peer) = &record.peer {
+            if !self.policy.admits(peer) {
+                return Err(ExecutionError::PeerNotAdmitted { peer: peer.clone() });
+            }
+        }
         Ok(record)
     }
 }
@@ -420,6 +513,16 @@ impl PtrRuntime {
         principal: impl Into<String>,
         grants: Vec<ExecutionGrant>,
         ttl: Duration,
+    ) -> Result<ExecutionSession, ExecutionError> {
+        self.register_session(principal, grants, ttl, None)
+    }
+
+    fn register_session(
+        &mut self,
+        principal: impl Into<String>,
+        grants: Vec<ExecutionGrant>,
+        ttl: Duration,
+        peer: Option<NodeId>,
     ) -> Result<ExecutionSession, ExecutionError> {
         if self.execution.uncertain {
             return Err(ExecutionError::RuntimeFenced);
@@ -459,12 +562,48 @@ impl PtrRuntime {
                 principal,
                 expires_at,
                 grants: grants.into_iter().map(Arc::new).collect(),
+                peer,
             },
         );
         Ok(ExecutionSession {
             issuer: self.execution.issuer.clone(),
             id,
         })
+    }
+
+    /// Install the table that says which peers may be admitted and as what.
+    ///
+    /// Replacing it withdraws every session whose peer the new table does not
+    /// admit, for the same reason a withdrawal does: authority is re-derived.
+    pub fn install_admission_policy(&mut self, policy: AdmissionPolicy) {
+        self.execution.policy = policy;
+    }
+
+    /// Admit a peer the host's transport authenticated.
+    ///
+    /// This layer admits an identity; it does not establish one. The host passes
+    /// what its transport proved — for the iroh backend, the QUIC-authenticated
+    /// `Connection::remote_id` — and never a value read out of a request. The
+    /// principal and the grants come from the policy, so there is no parameter
+    /// through which a caller could name either.
+    pub fn admit_peer(&mut self, peer: &NodeId) -> Result<ExecutionSession, ExecutionError> {
+        let Some(entry) = self.execution.policy.entries.get(peer) else {
+            return Err(ExecutionError::UnknownPeer { peer: peer.clone() });
+        };
+        let principal = entry.principal.clone();
+        let ttl = entry.ttl;
+        let grants = (entry.grants)();
+        self.register_session(principal, grants, ttl, Some(peer.clone()))
+    }
+
+    /// Withdraw a peer from the policy. Sessions admitted under it stop working
+    /// immediately.
+    pub fn withdraw_peer(&mut self, peer: &NodeId) -> Result<(), ExecutionError> {
+        if self.execution.policy.withdraw(peer) {
+            Ok(())
+        } else {
+            Err(ExecutionError::UnknownPeer { peer: peer.clone() })
+        }
     }
 
     /// Revocation removes all grants of this session. Re-registration issues a
@@ -766,6 +905,7 @@ mod tests {
                 principal: "alice".into(),
                 expires_at: Instant::now(),
                 grants: vec![],
+                peer: None,
             },
         );
         let session = ExecutionSession {

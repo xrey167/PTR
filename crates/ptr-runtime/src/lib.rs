@@ -22,7 +22,7 @@ use ptr_security::{
 };
 use ptr_semdb::{PreparedDelta, SemanticError, SemanticHost, SemanticSnapshot};
 use ptr_state::MaterializedState;
-use ptr_types::{CommitIndex, Generation, RequestId, Revision};
+use ptr_types::{CommitIndex, Generation, ProjectId, RequestId, Revision};
 use ptr_verifier::{VerificationStatus, Verifier};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -277,6 +277,7 @@ impl PtrRuntime {
     pub fn run_model_with_pods<B, V>(
         &mut self,
         request_id: RequestId,
+        project: &ProjectId,
         raw_text: impl Into<String>,
         backend: &B,
         pods: &PodRegistry,
@@ -299,12 +300,15 @@ impl PtrRuntime {
                 continue;
             };
 
-            let pod = pods.resolve(&capability, &input_type).ok_or_else(|| {
-                RuntimeError::PodUnavailable {
+            // A Pod in another project is unavailable in exactly the same
+            // words as a Pod that does not exist. Saying which it was would
+            // answer, across the boundary, whether that Pod exists.
+            let pod = pods
+                .resolve(project, &capability, &input_type)
+                .ok_or_else(|| RuntimeError::PodUnavailable {
                     capability: capability.to_string(),
                     input_type: input_type.to_string(),
-                }
-            })?;
+                })?;
 
             if pod
                 .manifest()
@@ -347,6 +351,7 @@ impl PtrRuntime {
     pub fn run_resumable_with_pods<B, V>(
         &mut self,
         request_id: RequestId,
+        project: &ProjectId,
         raw_text: impl Into<String>,
         backend: &B,
         pods: &PodRegistry,
@@ -407,12 +412,15 @@ impl PtrRuntime {
                 return Err(RuntimeError::ModelResumeLimit { max_rounds });
             }
 
-            let pod = pods.resolve(&capability, &input_type).ok_or_else(|| {
-                RuntimeError::PodUnavailable {
+            // A Pod in another project is unavailable in exactly the same
+            // words as a Pod that does not exist. Saying which it was would
+            // answer, across the boundary, whether that Pod exists.
+            let pod = pods
+                .resolve(project, &capability, &input_type)
+                .ok_or_else(|| RuntimeError::PodUnavailable {
                     capability: capability.to_string(),
                     input_type: input_type.to_string(),
-                }
-            })?;
+                })?;
 
             if pod
                 .manifest()

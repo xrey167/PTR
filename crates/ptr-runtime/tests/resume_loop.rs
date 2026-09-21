@@ -6,7 +6,7 @@ use ptr_model_api::{
 use ptr_pods::{DynPod, PodManifest, PodRegistry};
 use ptr_protocol::TypedPayload;
 use ptr_runtime::{PtrRuntime, RuntimeError};
-use ptr_types::{CapabilityId, Effect, PodId, Probability, TypeId, VerificationLevel};
+use ptr_types::{CapabilityId, Effect, PodId, Probability, ProjectId, TypeId, VerificationLevel};
 use ptr_verifier::{VerificationReport, VerificationStatus, Verifier};
 use std::sync::Arc;
 
@@ -92,6 +92,7 @@ fn registry() -> PodRegistry {
     let mut registry = PodRegistry::default();
     registry.register(Arc::new(Echo {
         manifest: PodManifest {
+            project: ProjectId::from("p"),
             id: PodId::from("echo"),
             capabilities: vec![CapabilityId::from("Echo<Text>")],
             accepts: vec![TypeId::from("Text")],
@@ -107,7 +108,15 @@ fn registry() -> PodRegistry {
 fn verified_observation_advances_revision_and_resumes_model() {
     let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
     let run = runtime
-        .run_resumable_with_pods("r1".into(), "start", &TwoStep, &registry(), &Pass, 2)
+        .run_resumable_with_pods(
+            "r1".into(),
+            &ProjectId::from("p"),
+            "start",
+            &TwoStep,
+            &registry(),
+            &Pass,
+            2,
+        )
         .unwrap();
 
     assert_eq!(runtime.revision().0, 2);
@@ -127,7 +136,15 @@ fn verified_observation_advances_revision_and_resumes_model() {
 fn resume_budget_stops_unbounded_tool_loop() {
     let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
     assert_eq!(
-        runtime.run_resumable_with_pods("r1".into(), "start", &LoopForever, &registry(), &Pass, 1,),
+        runtime.run_resumable_with_pods(
+            "r1".into(),
+            &ProjectId::from("p"),
+            "start",
+            &LoopForever,
+            &registry(),
+            &Pass,
+            1,
+        ),
         Err(RuntimeError::ModelResumeLimit { max_rounds: 1 })
     );
 }

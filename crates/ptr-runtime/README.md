@@ -9,10 +9,13 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-21  
-**Code footprint:** 6 Rust source files · 3353 nonblank source lines · 13 integration-test files · 111 `#[test]` markers
+**Code footprint:** 6 Rust source files · 3493 nonblank source lines · 14 integration-test files · 120 `#[test]` markers
 
 ### Implemented now
 
+- AdmissionPolicy maps a transport-authenticated peer to one principal and one grant set; admit_peer takes the peer and nothing else, so no caller-supplied parameter can name either, and a second entry for a peer is refused rather than replacing the first
+- A session admitted from the policy re-derives its authority at every use, so withdrawing a peer or replacing the policy stops live sessions at once instead of when a TTL runs out; a host-registered session carries no peer and is unaffected
+- Pod resolution is scoped by project, and a Pod in another project is unavailable in exactly the same words as one that does not exist, so a refusal is not an existence oracle across the boundary
 - Durable execution audit: an effect commits an EffectAttempted record before it is dispatched and an EffectSettled record after, so the window between them is described by committed history rather than by process memory
 - The fence is that record: an attempt with no settlement fences execution and commits, is rebuilt on every open, and therefore survives a crash or panic inside the effect window
 - reconcile_effect commits what an operator established from the receiving system; it never infers an outcome and never retries a possibly-applied effect
@@ -52,7 +55,9 @@
 
 - Durable compacted-snapshot publication and a runtime backed by an AcknowledgedLedger; compacted restore rebuilds an in-memory ledger above the floor and therefore retains no chain base, so it admits no neural state at all
 - Durable neural-anchor catalog, streamed or memory-mapped payloads, and a training stack that records codebook/binding identity; admission checks the producer's declared input set only, so an undeclared dependency stays invisible
-- Network-authenticated session admission and project-scoped Pure/Read Pod resolution; PodRegistry::resolve still matches on capability and input type alone
+- A wire protocol: the ALPNs carry no traffic, no request framing or replay window exists, and a forged receipt on the wire is therefore untested; the NodeId passed to admit_peer is taken on the host's word rather than proven by this crate
+- The admission policy is in memory: it is not journaled, so it does not survive a restart and a replayed history does not describe who was admitted when
+- Permission and lifecycle races driven from a second session between preparation and execution
 - Downstream fencing for detached or background executor work; the audited window covers a synchronous adapter call only
 - At-most-once memory is bounded by retention: a floor rising past a settled attempt discards its key, and reconciliation is a privileged host API whose caller this crate does not authenticate
 - Router-driven operator selection around the implemented bounded Pod-resume loop
@@ -62,7 +67,7 @@
 
 ### Next milestones
 
-- Map an authenticated network peer to a session with an exact grant set, and scope Pod resolution by project
+- Define the PodWire request framing and drive admission from ptr-net's authenticated connection rather than from a NodeId the host supplies
 - Record CodebookVersion, StateBinding and an assignment fingerprint in the training stack's datasets, checkpoints and run manifests; retaining a NeuralAnchor outside the artifact remains a deployment obligation
 - Connect evaluated raft-engine/Turso adapters through typed backend config while preserving FileLedger reference mode
 - Add opaque backend checkpoint handles and async streaming around the implemented observation resume contract
@@ -86,6 +91,9 @@
 
 ### Current automated checks
 
+- an admitted peer executes only its granted action and the audited principal is the policy's; a different operation or project is denied before any check that could depend on what the caller claims
+- withdrawing a peer refuses a permit issued beforehand, new preparations and re-admission without the TTL moving; replacing the policy kills live sessions and re-admitting does not revive them
+- a Pod in another project is unavailable in a refusal equal to the one for a Pod that does not exist, while the same request inside its own project succeeds
 - a runtime reopened after an executor error or panic is still fenced by the unsettled attempt it left, refuses to register a session and refuses to commit
 - an applied effect commits its attempt before and its settlement after, with the action digest and admitting verification level asserted field by field
 - a retry under an at-most-once key returns the first response without dispatching again, before and after a restart, while a different key does dispatch

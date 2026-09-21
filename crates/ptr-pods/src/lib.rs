@@ -1,11 +1,15 @@
 use ptr_protocol::TypedPayload;
-use ptr_types::{CapabilityId, Effect, PodId, TypeId};
+use ptr_types::{CapabilityId, Effect, PodId, ProjectId, TypeId};
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PodManifest {
+    /// The one project this Pod serves. A Pod that served every project would
+    /// make the project boundary advisory, since resolution is the only thing
+    /// standing between a request and a Pod's data.
+    pub project: ProjectId,
     pub id: PodId,
     pub capabilities: Vec<CapabilityId>,
     pub accepts: Vec<TypeId>,
@@ -27,32 +31,46 @@ pub trait DynPod: Send + Sync {
     fn invoke(&self, input: TypedPayload) -> Result<TypedPayload, String>;
 }
 
+/// Pods addressed by project *and* id.
+///
+/// The project is part of the key rather than a filter applied afterwards, so
+/// two projects may each register an `echo` Pod without one shadowing the
+/// other, and no lookup path exists that forgets to check it.
 #[derive(Default)]
 pub struct PodRegistry {
-    pods: BTreeMap<PodId, Arc<dyn DynPod>>,
+    pods: BTreeMap<(ProjectId, PodId), Arc<dyn DynPod>>,
 }
 
 impl PodRegistry {
     pub fn register(&mut self, pod: Arc<dyn DynPod>) -> Option<Arc<dyn DynPod>> {
-        self.pods.insert(pod.manifest().id.clone(), pod)
+        let manifest = pod.manifest();
+        let key = (manifest.project.clone(), manifest.id.clone());
+        self.pods.insert(key, pod)
     }
 
-    pub fn get(&self, id: &PodId) -> Option<Arc<dyn DynPod>> {
-        self.pods.get(id).cloned()
+    pub fn get(&self, project: &ProjectId, id: &PodId) -> Option<Arc<dyn DynPod>> {
+        self.pods.get(&(project.clone(), id.clone())).cloned()
     }
 
+    /// Resolve within one project only.
+    ///
+    /// A Pod belonging to another project is not a worse match here, it is not a
+    /// match at all: the caller learns nothing about whether it exists.
     pub fn resolve(
         &self,
+        project: &ProjectId,
         capability: &CapabilityId,
         input_type: &TypeId,
     ) -> Option<Arc<dyn DynPod>> {
         self.pods
-            .values()
-            .find(|pod| {
+            .iter()
+            .find(|((pod_project, _), pod)| {
                 let manifest = pod.manifest();
-                manifest.capabilities.contains(capability) && manifest.accepts.contains(input_type)
+                pod_project == project
+                    && manifest.capabilities.contains(capability)
+                    && manifest.accepts.contains(input_type)
             })
-            .cloned()
+            .map(|(_, pod)| pod.clone())
     }
 
     pub fn len(&self) -> usize {
@@ -109,7 +127,7 @@ pub enum LeaseInvokeError<E> {
 ///
 /// ~~~compile_fail
 /// use ptr_pods::{invoke_with_lease, Pod, PodLease, PodManifest, Ready};
-/// use ptr_types::PodId;
+/// use ptr_types::{PodId, ProjectId};
 ///
 /// struct Echo { manifest: PodManifest }
 /// impl Pod for Echo {
@@ -121,7 +139,8 @@ pub enum LeaseInvokeError<E> {
 /// }
 ///
 /// # let manifest = PodManifest {
-/// #   id: PodId::from("echo"), capabilities: vec![], accepts: vec![],
+/// #   project: ProjectId::from("p"), id: PodId::from("echo"),
+/// #   capabilities: vec![], accepts: vec![],
 /// #   produces: vec![], effects: vec![], protocol_version: 1
 /// # };
 /// let pod = Echo { manifest };

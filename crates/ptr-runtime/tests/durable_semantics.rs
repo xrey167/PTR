@@ -12,7 +12,7 @@ use ptr_runtime::{
 };
 use ptr_semdb::{SemanticDelta, SemanticError, SemanticSnapshot, SemanticValue};
 use ptr_types::{
-    CommitIndex, Generation, PodId, Probability, RequestId, Revision, VerificationLevel,
+    CommitIndex, Generation, PodId, Probability, ProjectId, RequestId, Revision, VerificationLevel,
 };
 use ptr_verifier::{VerificationReport, VerificationStatus, Verifier};
 use std::path::PathBuf;
@@ -380,6 +380,7 @@ fn same_type_changed_pod_bytes_advance_revision_and_resume_from_durable_observat
     let tmp = Temp::new();
     let mut pods = PodRegistry::default();
     pods.register(Arc::new(Echo(PodManifest {
+        project: ProjectId::from("p"),
         id: "echo".into(),
         capabilities: vec!["echo".into()],
         accepts: vec!["bytes".into()],
@@ -397,6 +398,7 @@ fn same_type_changed_pod_bytes_advance_revision_and_resume_from_durable_observat
     ] {
         r.run_resumable_with_pods(
             request.clone(),
+            &ProjectId::from("p"),
             "unchanged request",
             &Want(bytes.clone()),
             &pods,
