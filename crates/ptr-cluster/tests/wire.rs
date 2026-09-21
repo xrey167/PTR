@@ -406,9 +406,15 @@ async fn a_member_that_cannot_be_reached_is_reported_rather_than_failing_the_wri
     // Member 3 is gone, not merely quiet: a bound endpoint that never accepts would
     // leave the leader waiting instead of failing, which is a different situation.
     three.close().await;
-    // And a short deadline, because this test is about the reporting rather than
-    // about how patient the default is.
-    one.with_request_timeout(Duration::from_millis(250));
+    // A deadline shorter than the 5s default, because this test is about the
+    // reporting rather than about how patient the default is - but not a tight
+    // one. At 250ms this went red on CI with `unreached == [2, 3]`: member 2 is
+    // healthy and serving, and its *first* answer still costs a QUIC handshake,
+    // which on a loaded runner can outlast a quarter second. That made the
+    // assertion below a claim about latency rather than about reporting, which
+    // is not the property this test exists for. Member 3 is closed, so the
+    // deadline is what bounds it and the test still ends promptly.
+    one.with_request_timeout(Duration::from_secs(2));
 
     let follower = Arc::new(two);
     let serving = Arc::clone(&follower);
@@ -516,7 +522,11 @@ async fn a_ptrcs001_snapshot_travels_as_the_payload_and_restores_on_the_far_side
         address: one.address(),
     });
     behind.close().await;
-    one.with_request_timeout(Duration::from_millis(250));
+    // Same reasoning as the deadline in
+    // `a_member_that_cannot_be_reached_is_reported_rather_than_failing_the_write`:
+    // short enough to bound a member that is gone, long enough that a healthy
+    // member's first answer is never mistaken for silence.
+    one.with_request_timeout(Duration::from_secs(2));
 
     let follower = Arc::new(two);
     let serving = Arc::clone(&follower);
