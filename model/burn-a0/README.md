@@ -32,8 +32,8 @@ never a Rust discriminant.
 The remaining alignment work is explicit:
 
 - add a separate `UncertaintyKind` channel instead of folding distribution semantics into slot type or epistemic state;
-- `provenance_bucket_count` stays outside the codebook by decision: provenance bucketing is a research-local hashing of sources with no kernel taxonomy to size it from, and its width is checked against nothing;
-- the codebook version travels with every `CodeGrid` and is compared in `forward`, but with one frozen version that comparison cannot be reached from outside the crate — it is a guard for the second version, not a tested path.
+- `provenance_bucket_count` stays outside the codebook by decision: provenance bucketing is a research-local hashing of sources with no kernel taxonomy to size it from. Its width is no longer unchecked — it is a recorded exception in `ptr_types::EXCEPTIONS`, published in the generated artifact, and resolved into this crate's default by a `const fn`, so removing the record fails the build. What remains true is narrower: a checkpoint written at another width is refused **by tensor shape**, through burn's record validation, and the identity header never consults the width at all because the width is not a code family. Both are asserted in `tests/checkpoint.rs`;
+- the codebook version travels with every `CodeGrid` and is compared in `forward`. That comparison is exercised by `codebook_guard_tests` in `src/lib.rs`, which relabels a well-formed grid as version 2 from inside the crate and drives both guards, each asserted on its own full panic message because the two share a phrase. Still weaker than it sounds: it is a test-only constructor, not a second version, so the guard has never met a real foreign artifact.
 
 ## Toolchain
 

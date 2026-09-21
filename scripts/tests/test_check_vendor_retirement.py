@@ -358,6 +358,190 @@ class BlockerDerivationTests(unittest.TestCase):
         self.assertTrue(any("BLOCKED" in note for note in notes), notes)
 
 
+class LockfileDependentTests(unittest.TestCase):
+    """A bare `"name"` dependency entry means *the* version, not any version.
+
+    A lock entry omits the version when only one of that crate is in the graph.
+    Deciding that from a count alone accepts a bare entry while the single
+    version present is a *different* one, reporting a dependent of the wrong
+    version - and then `check_blockers` disagrees with its own `in_lockfile`.
+    """
+
+    def lock(self, text):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path = Path(directory.name) / "Cargo.lock"
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_a_bare_entry_matches_only_the_version_actually_present(self):
+        lock = self.lock(
+            '[[package]]\nname = "widget"\nversion = "0.19.0"\n\n'
+            '[[package]]\nname = "consumer"\nversion = "1.0.0"\n'
+            'dependencies = ["widget"]\n'
+        )
+        # Present: the bare entry is this version.
+        self.assertEqual(
+            mod.lockfile_dependents(lock, "widget", "0.19.0"), {("consumer", "1.0.0")}
+        )
+        # Absent: one version exists and it is not the one asked about, so the
+        # bare entry is somebody else's dependency and must not match.
+        self.assertEqual(mod.lockfile_dependents(lock, "widget", "0.20.0"), set())
+
+    def test_a_qualified_entry_still_matches_its_own_version_only(self):
+        lock = self.lock(
+            '[[package]]\nname = "widget"\nversion = "0.19.0"\n\n'
+            '[[package]]\nname = "widget"\nversion = "0.20.0"\n\n'
+            '[[package]]\nname = "consumer"\nversion = "1.0.0"\n'
+            'dependencies = ["widget 0.20.0"]\n'
+        )
+        self.assertEqual(
+            mod.lockfile_dependents(lock, "widget", "0.20.0"), {("consumer", "1.0.0")}
+        )
+        self.assertEqual(mod.lockfile_dependents(lock, "widget", "0.19.0"), set())
+
+    def test_the_real_tree_still_finds_the_netlink_dependents(self):
+        # The control: the rule change must not stop finding what it found before.
+        found = mod.lockfile_dependents(ROOT / "Cargo.lock", "netlink-packet-core", "0.8.2")
+        self.assertIn(("netwatch", "0.19.3"), found)
+        self.assertIn(("netlink-packet-route", "0.31.0"), found)
+
+
+class RenamedDependencyTests(unittest.TestCase):
+    """`name` is the manifest's key; `package` is the crate it resolves to.
+
+    A dependency written `paste = { package = "pastey" }` appears in the sparse
+    index as `name: "paste"` with `package: "pastey"`. Reading `name` reports that
+    release as still depending on `paste` - when it is precisely the release that
+    stopped, which is the whole retirement condition. The mirror case is worse:
+    `alias = { package = "paste" }` reads as paste-free.
+
+    Latent in this tree - `macerator 0.4.0` declares `paste` unrenamed, so no
+    recorded classification changes - but a renamed key is exactly what the
+    `paste-alias` class *is*.
+    """
+
+    def test_a_renamed_dependency_resolves_to_the_crate_not_the_alias(self):
+        self.assertEqual(refresh.resolved_name({"name": "paste", "package": "pastey"}), "pastey")
+        self.assertEqual(refresh.resolved_name({"name": "paste"}), "paste")
+        self.assertEqual(refresh.resolved_name({"name": "paste", "package": None}), "paste")
+
+    def test_a_release_that_renamed_paste_away_is_not_reported_as_using_it(self):
+        entry = {"deps": [{"name": "paste", "package": "pastey", "req": "^0.2"}]}
+        self.assertFalse(refresh.depends_on_paste(entry))
+        # The control: unrenamed, it really does use paste.
+        self.assertTrue(refresh.depends_on_paste({"deps": [{"name": "paste", "req": "^1"}]}))
+
+    def test_a_release_hiding_paste_behind_an_alias_is_still_reported(self):
+        entry = {"deps": [{"name": "macros", "package": "paste", "req": "^1"}]}
+        self.assertTrue(refresh.depends_on_paste(entry))
+
+    def test_a_requirement_is_found_through_a_rename(self):
+        entry = {"deps": [{"name": "local", "package": "widget", "req": "^0.19"}]}
+        self.assertEqual(refresh.requirement_on(entry, "widget"), "^0.19")
+        # And the alias itself is not the crate.
+        self.assertIsNone(refresh.requirement_on(entry, "local"))
+
+
+class IncompleteRefreshTests(unittest.TestCase):
+    """A requirement that could not be read must not shrink the record.
+
+    `check_vendor_retirement.py` re-derives the dependent set from the lockfile in
+    both directions, so dropping a lockfile-visible dependent writes a file that
+    the offline checker then rejects. One transient network error was enough.
+    """
+
+    LOCK = (
+        '[[package]]\nname = "widget"\nversion = "0.19.0"\n\n'
+        '[[package]]\nname = "consumer"\nversion = "1.0.0"\n'
+        'dependencies = ["widget 0.19.0"]\n'
+    )
+
+    def setUp(self):
+        self._directory = tempfile.TemporaryDirectory()
+        self.root = Path(self._directory.name)
+        self.addCleanup(self._directory.cleanup)
+        (self.root / "Cargo.lock").write_text(self.LOCK, encoding="utf-8")
+        self._root, refresh.ROOT = refresh.ROOT, self.root
+        self._fetch = refresh.fetch
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        refresh.ROOT = self._root
+        refresh.fetch = self._fetch
+
+    @staticmethod
+    def package(blocked):
+        return {
+            "name": "widget",
+            "version": "0.19.0",
+            "workspace": "root",
+            "upstream_observed": "0.20.0",
+            "upstream_retire_when": "satisfied",
+            "blocked_by": [dict(entry) for entry in blocked],
+        }
+
+    def test_a_failed_lookup_for_a_lockfile_visible_dependent_changes_nothing(self):
+        # `consumer` is in the lockfile, so it belongs in `blocked_by`; its
+        # requirement lives in the index, which is unreachable here. Before the
+        # fix the dependent was dropped and the document written anyway, so one
+        # transient network error committed a record the checker rejects.
+        recorded = [
+            {"name": "consumer", "version": "1.0.0", "requirement": "^0.19", "in_lockfile": True}
+        ]
+        package, failures = self.package(recorded), []
+        refresh.fetch = lambda name, timeout: (_ for _ in ()).throw(OSError("no network"))
+
+        # `paste-free` is the signal these packages actually carry, so the index
+        # read happens first and its failure must leave everything alone.
+        refresh.refresh_blockers(package, "paste-free", 1.0, failures)
+
+        self.assertEqual(package["blocked_by"], recorded, "the record was rewritten")
+        self.assertEqual(
+            package["upstream_retire_when"],
+            "satisfied",
+            "a failed index read must not restate the retirement condition",
+        )
+        # The reason is the specific one - a failed index read - rather than the
+        # generic "a dependent could not be read"; either way the record stands.
+        self.assertTrue(any(f.startswith("widget: reading") for f in failures), failures)
+
+    def test_a_newly_seen_dependent_that_cannot_be_read_is_not_half_recorded(self):
+        # The sharper case: nothing was recorded before, and the lockfile shows a
+        # dependent whose requirement cannot be read. Writing an empty list here
+        # would produce a document the checker fails, from a network blip.
+        package, failures = self.package([]), []
+        refresh.fetch = lambda name, timeout: (_ for _ in ()).throw(OSError("no network"))
+
+        refresh.refresh_blockers(package, None, 1.0, failures)
+
+        self.assertEqual(package["blocked_by"], [], "nothing was recorded before")
+        self.assertTrue(any("left as it was" in f for f in failures), failures)
+
+    def test_a_complete_refresh_still_rewrites_the_record(self):
+        # The control. Without it the two tests above would pass for a function
+        # that never records anything at all.
+        package, failures = self.package([]), []
+        refresh.fetch = lambda name, timeout: index_body(
+            [{"vers": "1.0.0", "deps": [{"name": "widget", "req": "^0.19"}]}]
+        )
+
+        refresh.refresh_blockers(package, None, 1.0, failures)
+
+        self.assertEqual(failures, [])
+        self.assertEqual(
+            package["blocked_by"],
+            [
+                {
+                    "name": "consumer",
+                    "version": "1.0.0",
+                    "requirement": "^0.19",
+                    "in_lockfile": True,
+                }
+            ],
+        )
+
+
 class CaretTests(unittest.TestCase):
     def test_a_leading_zero_narrows_the_range(self):
         # The two real cases: ^0.8 excludes 0.9.0, ^0.3.4 excludes 0.4.0.
@@ -498,6 +682,13 @@ spec_refresh = importlib.util.spec_from_file_location(
 )
 refresh = importlib.util.module_from_spec(spec_refresh)
 spec_refresh.loader.exec_module(refresh)
+
+
+refresh_spec = importlib.util.spec_from_file_location(
+    "refresh_vendor_upstream", ROOT / "scripts/refresh_vendor_upstream.py"
+)
+refresh = importlib.util.module_from_spec(refresh_spec)
+refresh_spec.loader.exec_module(refresh)
 
 
 def index_body(entries):

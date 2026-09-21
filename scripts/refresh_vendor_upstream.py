@@ -101,13 +101,32 @@ def entry_for(body: str, version: str) -> dict | None:
     return None
 
 
+def resolved_name(dep: dict) -> str:
+    """The crate a dependency record points at.
+
+    In a sparse-index record, `name` is the name the manifest uses and `package`
+    is the crate it resolves to, present only when the two differ. So a dependency
+    written `paste = { package = "pastey" }` appears as `name: "paste"` with
+    `package: "pastey"` — and reading `name` would report a release as still
+    depending on `paste` when it is precisely the release that stopped.
+
+    That is not hypothetical here: a renamed key is exactly what the `paste-alias`
+    class *is*, and this repository writes one itself in `Cargo.toml`. Neither
+    package currently checked has a renamed dependency — `macerator 0.4.0` really
+    does declare `paste` unrenamed, so the recorded classifications do not change —
+    but a checker that would get the alias case backwards is not one to trust with
+    the alias question.
+    """
+    return dep.get("package") or dep["name"]
+
+
 def depends_on_paste(entry: dict) -> bool:
-    return any(dep["name"] == PASTE_CRATE for dep in entry.get("deps", []))
+    return any(resolved_name(dep) == PASTE_CRATE for dep in entry.get("deps", []))
 
 
 def requirement_on(entry: dict, target: str) -> str | None:
     for dep in entry.get("deps", []):
-        if dep["name"] == target:
+        if resolved_name(dep) == target:
             return dep["req"]
     return None
 
@@ -123,15 +142,38 @@ def refresh_blockers(package: dict, signal, timeout: float, failures: list[str])
     """
     name, pinned = package["name"], package["version"]
     observed = package["upstream_observed"]
+    # Everything this function may change, so an incomplete refresh can put the
+    # record back exactly as it was rather than leaving a half-written one.
+    before = {
+        key: package[key]
+        for key in ("upstream_retire_when", "blocked_by")
+        if key in package
+    }
+
+    def abandon(reason: str) -> None:
+        """Leave the record untouched and say why.
+
+        A partially refreshed record is worse than a stale one. The checker
+        re-derives the dependent set from the lockfile in both directions, so a
+        record missing a dependent the lock shows is one it rejects - and writing
+        that from a single transient network error would turn a failed refresh
+        into a failed CI run with no obvious cause. A record left as it was still
+        fails the checker when the tree has genuinely moved, which is correct:
+        that is the signal to run this tool again, online, until it succeeds.
+        """
+        for key in ("upstream_retire_when", "blocked_by"):
+            package.pop(key, None)
+        package.update(before)
+        failures.append(f"{name}: {reason}")
 
     if signal == "paste-free":
         try:
             entry = entry_for(fetch(name, timeout), observed)
         except Exception as error:  # noqa: BLE001
-            failures.append(f"{name}: reading {observed}: {error}")
+            abandon(f"reading {observed}: {error}")
             return
         if entry is None:
-            failures.append(f"{name}: the index does not list {observed}")
+            abandon(f"the index does not list {observed}")
             return
         package["upstream_retire_when"] = (
             "unsatisfied" if depends_on_paste(entry) else "satisfied"
@@ -147,6 +189,12 @@ def refresh_blockers(package: dict, signal, timeout: float, failures: list[str])
     keys = sorted(seen | {k for k, b in existing.items() if not b.get("in_lockfile", True)})
 
     blocked = []
+    # A requirement that could not be read must not silently shrink the record.
+    # Dropping a lockfile-visible dependent here would write a `blocked_by` that
+    # `check_vendor_retirement.py` then rejects, because that checker re-derives
+    # the dependent set from the lockfile in both directions. One transient
+    # network error would be enough to commit a file the offline checker fails.
+    incomplete = False
     for dependent, dependent_version in keys:
         requirement = (existing.get((dependent, dependent_version)) or {}).get("requirement")
         try:
@@ -164,6 +212,7 @@ def refresh_blockers(package: dict, signal, timeout: float, failures: list[str])
         except Exception as error:  # noqa: BLE001
             failures.append(f"{dependent}: {error}")
         if requirement is None:
+            incomplete = True
             continue
         blocked.append(
             {
@@ -173,6 +222,12 @@ def refresh_blockers(package: dict, signal, timeout: float, failures: list[str])
                 "in_lockfile": (dependent, dependent_version) in seen,
             }
         )
+    # Re-derivation is only trustworthy when every dependent was actually read.
+    # This covers both a failed lookup and a dependent the lockfile no longer
+    # shows, since either would otherwise write a set the checker rejects.
+    if incomplete or {(b["name"], b["version"]) for b in blocked} != set(keys):
+        abandon("record left as it was, a dependent's requirement could not be read")
+        return
     package["blocked_by"] = blocked
 
 

@@ -119,7 +119,10 @@ def lockfile_dependents(lock: Path, name: str, version: str) -> set[tuple[str, s
     if not lock.exists():
         return set()
     packages = tomllib.loads(lock.read_text(encoding="utf-8")).get("package", [])
-    unique = len({p["version"] for p in packages if p["name"] == name}) == 1
+    # Tied to the queried version, not merely to there being one of them: a lock
+    # holding a single *different* version of `name` would otherwise let a bare
+    # `"name"` entry match, reporting a dependent of the wrong version.
+    unique = {p["version"] for p in packages if p["name"] == name} == {version}
     found = set()
     for package in packages:
         for entry in package.get("dependencies", []):

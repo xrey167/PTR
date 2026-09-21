@@ -48,24 +48,73 @@ SOURCE_AREAS = ("crates", "model", "bins", "scripts", "training")
 # Five or more lower-snake segments: long enough that an ordinary identifier does
 # not reach it, short enough that every test name in this repository does.
 CITATION = re.compile(r"`([a-z][a-z0-9]*(?:_[a-z0-9]+){4,})`")
-DEFINITION = "(?:fn|def)"
+# A Rust attribute that makes the function below it a test. `#[should_panic]` and
+# `#[ignore]` sit beside one rather than replacing it, so matching "test" anywhere
+# in the attribute covers `#[test]`, `#[tokio::test(...)]` and the rest.
+RUST_TEST_ATTRIBUTE = re.compile(r"^\s*#\[[^]]*test")
+RUST_FN = re.compile(r"^\s*(?:pub\s+)?(?:async\s+)?fn\s+([a-z_][a-z0-9_]*)")
+PYTHON_DEF = re.compile(r"^\s*def\s+([a-z_][a-z0-9_]*)")
+# `unittest discover` collects `test*.py` only, so a definition in any other file
+# is not a test however much it looks like one.
+PYTHON_TEST_FILE = "test"
 
 
 def owned(root: Path, paths):
     return (p for p in paths if not SKIP.intersection(p.relative_to(root).parts))
 
 
-def definitions(root: Path) -> str:
-    """Every source file that could define a cited name, concatenated."""
-    chunks = []
+def rust_tests(text: str) -> set[str]:
+    """Functions carrying a test attribute.
+
+    Attributes accumulate until a non-attribute line, so `#[test]` followed by
+    `#[should_panic(expected = "...")]` and then `fn name` is one test.
+    """
+    found: set[str] = set()
+    attributed = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if RUST_TEST_ATTRIBUTE.match(line):
+            attributed = True
+            continue
+        match = RUST_FN.match(line)
+        if match:
+            if attributed:
+                found.add(match.group(1))
+            attributed = False
+            continue
+        # Blank lines, comments and further attributes do not break the run; any
+        # other code does, so an attribute cannot reach past the function it sits on.
+        if stripped and not stripped.startswith(("#[", "//", "///", "#!")):
+            attributed = False
+    return found
+
+
+def python_tests(text: str) -> set[str]:
+    """Every `def` in a file `unittest discover` collects."""
+    return {m.group(1) for m in (PYTHON_DEF.match(line) for line in text.splitlines()) if m}
+
+
+def test_definitions(root: Path) -> set[str]:
+    """Names of tests that actually exist, rather than text that resembles one.
+
+    This used to concatenate every source file and regex for `fn|def <name>`,
+    which accepted three things that are not a test: a mention inside a comment
+    or a string, an ordinary helper function, and a Python definition in a file
+    `unittest discover` never collects. A citation could then survive the removal
+    of the very test it cites, which is the one thing this checker exists to stop.
+    """
+    found: set[str] = set()
     for area in SOURCE_AREAS:
         base = root / area
         if not base.is_dir():
             continue
-        for pattern in ("*.rs", "*.py"):
-            for path in owned(root, base.rglob(pattern)):
-                chunks.append(path.read_text(encoding="utf-8", errors="replace"))
-    return "\n".join(chunks)
+        for path in owned(root, base.rglob("*.rs")):
+            found |= rust_tests(path.read_text(encoding="utf-8", errors="replace"))
+        for path in owned(root, base.rglob("*.py")):
+            if not path.name.startswith(PYTHON_TEST_FILE):
+                continue
+            found |= python_tests(path.read_text(encoding="utf-8", errors="replace"))
+    return found
 
 
 def citations(root: Path) -> dict[str, set[str]]:
@@ -87,15 +136,17 @@ def citations(root: Path) -> dict[str, set[str]]:
 
 def check(root: Path) -> tuple[list[str], int]:
     errors: list[str] = []
-    blob = definitions(root)
+    defined = test_definitions(root)
     cited = citations(root)
     for name in sorted(cited):
-        if not re.search(rf"\b{DEFINITION} {re.escape(name)}\b", blob):
+        if name not in defined:
             where = ", ".join(sorted(cited[name]))
             errors.append(
-                f"{name}: cited by {where} and defined nowhere - either the test "
-                "was renamed or removed and the contract still relies on it, or "
-                "the contract names a test that was never written"
+                f"{name}: cited by {where} and is not a test - either it was "
+                "renamed or removed and the contract still relies on it, or the "
+                "contract names something that was never a test. A helper "
+                "function, a mention in a comment and a Python definition in a "
+                "file `unittest discover` does not collect all count as absent"
             )
     return errors, len(cited)
 

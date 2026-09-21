@@ -126,11 +126,18 @@ archives.
 Current state of the retirement report, which is a real result rather than a
 placeholder:
 
-| Package | Pinned | Newest published | |
+| Package | Pinned | Newest published | Reported state |
 |---|---|---|---|
-| macerator | 0.3.4 | 0.4.0 | candidate |
-| netlink-packet-core | 0.8.2 | 0.9.0 | candidate |
+| macerator | 0.3.4 | 0.4.0 | **not a candidate** — 0.4.0 still declares `paste ^1`, so it does not satisfy `retire_when` |
+| netlink-packet-core | 0.8.2 | 0.9.0 | **blocked** — 0.9.0 is paste-free, and `netdev 0.45.1`, `netlink-packet-route 0.31.0`, `netlink-proto 0.12.2` and `netwatch 0.19.3` require `^0.8.x` |
 | the other 19 | — | equal to pinned | no upgrade can retire them |
+
+Both were reported as `candidate` until the checker learned to ask about the
+condition rather than the version number, and this table said so with them. **The
+number of takeable retirements is zero**, and it is zero for two different
+reasons: one release does not satisfy its condition, the other satisfies it and
+is refused by its dependents. Retiring the second means moving those four
+dependents, not raising the vendored copy.
 
 The nineteen are already at the newest published version: the current upstream
 release still carries the `paste` dependency the alias exists to redirect.
