@@ -134,9 +134,19 @@ Negative, one per route back in:
 - **Pod project membership is declared, not proven.** A Pod says which project it
   serves in its own manifest. Whoever registers it decides that, exactly as
   whoever installs a grant decides its scope.
-- **Permission and lifecycle races** between preparation and execution remain
-  listed in #20; the existing epoch invalidation covers the local case and has no
-  test that drives the race from a second session.
+- **Permission and lifecycle races** between preparation and execution are driven
+  by six tests in `crates/ptr-runtime/tests/execution_races.rs` (`ea08e0b`),
+  including from a second session —
+  `one_session_s_successful_effect_refuses_another_s_in_flight_permit` and
+  `a_host_session_and_an_admitted_peer_do_not_share_a_fate`. This bullet previously
+  said there was no such test, which stopped being true in the same pull request
+  that wrote it.
+
+  The narrower thing that *is* worth stating: within one process a second session
+  can only act through the host, because a session holds no authority to mutate the
+  runtime, and both dispatch paths take `&mut self` — so the window those tests
+  drive is preparation-to-consumption, not an interleaving. A genuinely concurrent
+  race needs two runtimes, which is `32-execution-wire.md`.
 - **The policy is in memory.** It is not journaled, so it does not survive a
   restart and a replayed history does not describe who was admitted when. The
   audit records the principal an effect ran under, which is a different question.

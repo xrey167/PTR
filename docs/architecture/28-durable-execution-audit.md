@@ -247,9 +247,27 @@ information.
 - **The audit trusts the executor's report.** A `Ok` that did not actually apply
   the effect is recorded as applied. Adapters remain responsible for their own
   truthfulness, the same boundary P0.2 records for dependency declarations.
-- **No network admission and no project-scoped Pods.** Sessions are still
-  process-local handles installed by a trusted host, and `PodRegistry::resolve`
-  still matches on capability and input type alone. Both remain open in #20.
+- ~~**No network admission and no project-scoped Pods.**~~ **Closed, and this
+  bullet was wrong to still be here.** It said `PodRegistry::resolve` "still
+  matches on capability and input type alone"; it has taken a `ProjectId` since
+  `c9ae32e` (`crates/ptr-pods/src/lib.rs`), and a Pod registered for one project is
+  invisible to another, refused identically to one that does not exist — asserted
+  by `a_pod_registered_for_one_project_is_invisible_to_another` and
+  `two_projects_may_each_register_the_same_pod_id_without_shadowing`. Sessions are
+  admitted from an authenticated peer by `29-peer-admission-and-pod-scope.md`, and
+  `a635980` is a host that establishes one from a QUIC connection
+  (`32-execution-wire.md`).
+
+  It is worth naming what kind of error this was, because it is the one this
+  repository keeps finding: a "what this does not close" section is written once
+  and then describes a tree that has moved. Nothing checks a bullet. It is the same
+  class as the stale M001 record and the `component.toml` that claimed the opposite
+  of its own tests, both recorded in #20 — and it was found by reading these
+  sections rather than by any check, which is the honest statement of how far the
+  checking goes.
+- **What replaces it, and is true:** reconciliation remains unauthenticated (below),
+  and `PodRegistry` scopes by a project a Pod *declares* in its own manifest, which
+  is a claim by whoever registers it rather than a proof.
 - **Reconciliation is not authenticated here.** `reconcile_effect` is a
   privileged host API like the rest of the gateway; who may call it is the
   embedding host's question.

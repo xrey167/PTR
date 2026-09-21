@@ -271,8 +271,18 @@ down, and the stale tail is truncated — on disk, not merely in memory, which i
 the truncate-then-write rule above buys.
 
 None of that is a *lock*. A local advisory file lock makes one writer per file on
-one machine and says nothing about a second machine; a deposed leader on another
-host is excluded by the protocol, not by the filesystem.
+one machine and says nothing about a second machine.
+
+Be exact about what does exclude a deposed leader on another host, because this
+document said "the protocol" and its own open section said the opposite fourteen
+lines later. What raft gives is a **safety argument among members that run the
+protocol correctly**: a deposed leader may append, it cannot gather a majority, and
+the entry only it held is overwritten. That is why
+`a_deposed_leader_cannot_commit_and_what_it_wrote_alone_does_not_survive`
+passes (`crates/ptr-ledger/tests/raft_cluster.rs`). It is not a *fence*, which is what
+excludes a writer that does not run the protocol correctly — one partitioned from
+its peers but not from the storage they share, or one resumed from a stale image.
+Nothing here provides that, and #15's Gate 2 asked for it.
 
 ## What this does not close
 
@@ -288,10 +298,15 @@ host is excluded by the protocol, not by the filesystem.
   implemented.
 - **Every exchange opens a connection.** Correct and wasteful. Session reuse is
   listed as missing rather than quietly assumed.
-- **Local file locks fence nothing across nodes.** `FileLedger` takes an advisory
-  lock, which makes one writer per file on one machine. It says nothing about a
-  second machine, and a deposed leader on another host is not excluded by it.
-  Durable leadership fencing is a protocol property and it is not implemented.
+- **Local file locks fence nothing across nodes, and neither does consensus alone.**
+  `FileLedger` takes an advisory lock, which makes one writer per file on one
+  machine and says nothing about a second. What raft adds is a safety argument
+  among correct members — a deposed leader cannot commit, tested — and not a fence
+  against a writer that is not one. **Durable leadership fencing is a protocol
+  property and it is not implemented**, which is the last clause of #15's Gate 2
+  sentence and is carried forward in `docs/OPEN_ITEMS_PLAN_20260921.md` rather than
+  closed here. This document used to assert the opposite in its own body, fourteen
+  lines above this section; that is corrected.
 - **Compaction is not integrated with the ledger's retention floor.** This is
   raft's own log, distinct from the committed ledger in
   `25-erasure-and-retention.md`, and the two floors are still independent.
