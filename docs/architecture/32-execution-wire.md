@@ -179,10 +179,15 @@ not. A receipt is the answer to your own request, not a certificate.
   of its own request and not a measure of the host's traffic.
 - **One connection per request**, which is correct and wasteful — the same open item
   `31-cluster-integrity.md` records.
-- **No discovery and no address authority.** A requester is given an endpoint address
-  by its host out of band. Where that came from is not this layer's question, and a
-  wrong address gets a refusal rather than a wrong execution only because step 3
-  exists.
+- **No discovery.** Which address belongs to an id nobody told you is a mechanism
+  choice with its own trust question, and it is the owner's.
+
+  **Address authority is no longer missing**, and the sentence that used to stand
+  here — *a wrong address gets a refusal rather than a wrong execution only because
+  step 3 exists* — is no longer true. `request` takes a `ptr_net::PeerAddress`, which
+  only a `PeerBook` the deployment installed can produce, and a wrong address fails
+  on the authenticated key before step 3 is reached. Step 3 is now the fourth layer
+  rather than the only one; `34-address-authority.md` has the three beneath it.
 - **No claim about latency, throughput or behaviour under load.** The tests establish
   protocol and identity properties on localhost.
 
