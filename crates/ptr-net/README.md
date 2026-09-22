@@ -9,7 +9,7 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-21  
+**Last reviewed:** 2026-09-22  
 **Code footprint:** 1 Rust source files · 145 nonblank source lines · 2 integration-test files · 1 `#[test]` markers
 
 ### Implemented now
@@ -26,8 +26,9 @@
 ### Missing for the target architecture
 
 - Peer discovery/session lifecycle
+- Any traffic on ALPN_MODEL, ALPN_BLOB or ALPN_EVENTS: three of the six ALPNs are still declared and unspoken
 - Retry/idempotency and backpressure behavior
-- Raft/PodWire/blob stream adapters; ptr-cluster now carries raft batches over ALPN_RAFT and ptr-execwire carries execution requests over ALPN_EXEC, both using the request/response path, and a stream adapter would replace that rather than extend it
+- Raft/PodWire/blob stream adapters; ptr-cluster carries raft batches over ALPN_RAFT, ptr-execwire carries execution requests over ALPN_EXEC and ptr-podwire carries Pod access over ALPN_PODWIRE, all three using the request/response path, and a stream adapter would replace that rather than extend it
 
 ### Next milestones
 

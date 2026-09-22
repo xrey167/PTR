@@ -41,6 +41,11 @@ is Pod access; this one asks for effects. Two protocols sharing one ALPN is how 
 request meant for one gets parsed by the other, and the parse that succeeds by
 accident is the dangerous one.
 
+That separation is no longer hypothetical: `ALPN_PODWIRE` now carries a protocol of
+its own (`33-pod-wire.md`). The two are deliberately not variants of one format —
+their magics differ, their digest domains differ, and a test on each side asserts
+that the other's frame is refused by the first eight bytes.
+
 ## The order of the protocol, which is an order and not a set
 
 A server accepts one connection and answers it. Each step below can only be taken

@@ -9,14 +9,15 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `scaffold`  
-**Last reviewed:** 2026-09-18  
-**Code footprint:** 2 Rust source files · 104 nonblank source lines · 2 integration-test files · 2 `#[test]` markers
+**Last reviewed:** 2026-09-22  
+**Code footprint:** 2 Rust source files · 121 nonblank source lines · 2 integration-test files · 2 `#[test]` markers
 
 ### Implemented now
 
 - PodWire v1 semantic version constant
 - Prost-generated network schemas compiled with vendored protoc
 - TypedPayload, CallFrame and CALL/RET/ERR/EVT/REVOKE domain frames
+- PodCall carries no caller-supplied session identifier: the field is removed and its number and name reserved, because a request that crosses a trust boundary has no field naming its caller — held by a compile-fail doctest rather than by the comment beside it, since a comment cannot notice when somebody reuses the number
 - Frame kind classification independent of transport
 - Validated generated PodCall to domain CallFrame conversion with malformed-frame rejection
 
@@ -25,6 +26,7 @@
 - Semantic version negotiation and compatibility matrix
 - rkyv/local codec adapter and JSON debug adapter
 - Idempotency keys, ACK/CANCEL/BYE/HELLO/DECL frames from the wider PodWire design
+- Anything speaking these messages: they remain a declared shape, and the Pod access protocol that does cross a network boundary is ptr-podwire's own bounded format rather than these
 
 ### Next milestones
 
@@ -50,6 +52,7 @@
 ### Current automated checks
 
 - prost roundtrip and malformed PodCall validation tests
+- a compile-fail doctest that starts compiling, and therefore fails, if session_id is ever restored to PodCall
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->

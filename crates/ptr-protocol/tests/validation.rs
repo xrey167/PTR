@@ -3,7 +3,6 @@ use ptr_protocol::{CallFrame, ProtocolError};
 
 fn valid() -> PodCall {
     PodCall {
-        session_id: "s".into(),
         call_id: "c".into(),
         capability: "predict".into(),
         generation: Some(1),

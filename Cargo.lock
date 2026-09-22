@@ -3479,6 +3479,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ptr-podwire"
+version = "0.1.0"
+dependencies = [
+ "ptr-net",
+ "ptr-pods",
+ "ptr-protocol",
+ "ptr-types",
+ "ptr-verifier",
+ "sha2",
+ "tokio",
+]
+
+[[package]]
 name = "ptr-protocol"
 version = "0.1.0"
 dependencies = [

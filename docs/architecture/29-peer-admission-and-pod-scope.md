@@ -137,13 +137,16 @@ Negative, one per route back in:
   the identity unforgeable **at the type level** — so that no host could pass an
   unproven one — would still require the runtime to depend on the transport, and
   that decision is open.
-- **The wire protocol is no longer missing, and it is one protocol rather than
+- **The wire protocol is no longer missing, and it is three protocols rather than
   five.** `ALPN_EXEC` carries execution requests with a defined request format, a
   receipt bound to the bytes that arrived and a bounded replay window
   (`32-execution-wire.md`); `ALPN_RAFT` carries raft traffic
-  (`31-cluster-integrity.md`). `ALPN_PODWIRE`, `ALPN_MODEL`, `ALPN_BLOB` and
-  `ALPN_EVENTS` still carry nothing, so Pod access across a network boundary
-  remains undefined even though execution no longer is.
+  (`31-cluster-integrity.md`); and `ALPN_PODWIRE` now carries Pod access
+  (`33-pod-wire.md`), which is where the project scope below reaches across a
+  network boundary — a requester cannot name a project, because the format has
+  nowhere to put one, so the project comes from the same kind of host policy this
+  document describes for principals. `ALPN_MODEL`, `ALPN_BLOB` and `ALPN_EVENTS`
+  still carry nothing.
 - **Pod project membership is declared, not proven.** A Pod says which project it
   serves in its own manifest. Whoever registers it decides that, exactly as
   whoever installs a grant decides its scope.

@@ -17,9 +17,15 @@ PodWire defines semantics. Prost/Protobuf is a network encoding candidate. Iroh/
 
 ## ALPN design
 
-Planned independent protocols include:
-- `ptr-raft/1`
-- `ptr-podwire/1`
+One ALPN per protocol, because two protocols on one ALPN is how a request meant for
+one gets parsed by the other.
+
+Spoken today:
+- `ptr-raft/1` — raft traffic between cluster members (`31-cluster-integrity.md`)
+- `ptr-podwire/1` — Pod access (`33-pod-wire.md`)
+- `ptr-exec/1` — execution requests and receipts (`32-execution-wire.md`)
+
+Declared and not yet spoken:
 - `ptr-model/1`
 - `ptr-blob/1`
 - `ptr-events/1`

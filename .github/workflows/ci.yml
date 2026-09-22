@@ -146,3 +146,13 @@ jobs:
       - run: cargo +stable clippy -p ptr-execwire --features execwire-backend --all-targets --locked -- -D warnings
       - run: rustup toolchain install 1.91.0 --profile minimal
       - run: cargo +1.91.0 test -p ptr-execwire --features execwire-backend --locked
+
+  pod-wire:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo +stable test -p ptr-podwire --features podwire-backend --locked
+      - run: cargo +stable clippy -p ptr-podwire --features podwire-backend --all-targets --locked -- -D warnings
+      - run: rustup toolchain install 1.91.0 --profile minimal
+      - run: cargo +1.91.0 test -p ptr-podwire --features podwire-backend --locked

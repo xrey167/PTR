@@ -184,6 +184,14 @@ function_groups = ["encode/decode a request", "encode/decode a receipt", "serve 
 notes = ["the only crate that knows both execution authority and transport, so neither of them has to", "authenticating a peer is not authorizing an action: a request has no field naming its sender", "a receipt names its author and is bound to the bytes that arrived, and is deliberately not signed", "four outcomes, because reporting an unknown outcome as a refusal would throw the runtime's fence away", "no background loop, timer or retry policy: the caller drives serve and request", "the whole composition is feature-gated so iroh stays out of every other build"]
 
 [[crate]]
+id = "ptr-podwire"
+current_shape = "mostly-flat"
+modules = ["frame", "access", "endpoint"]
+public_groups = ["PodHost", "PodClient", "PodAccessPolicy/PodScope", "PodRequest/PodAnswer", "PodOutcome/RefusalCode", "PodWireError/FrameError/PolicyError"]
+function_groups = ["encode/decode a request", "encode/decode an answer", "decide one request from a policy and a registry", "serve one request", "send one request and check its answer"]
+notes = ["the project is policy, not payload: a request frame has no project field, because resolution inside a project is the only thing standing between a request and a Pod's data", "a request names no sender and no session either, so who is asking is the authenticated connection's answer", "one refusal code covers out of scope, not registered and registered in another project, so a cross-project Pod is indistinguishable from one that does not exist", "admission and scope are decided before the registry is touched, so an unadmitted requester cannot probe for Pods", "two outcomes rather than the execution wire's four, and no replay window and no at-most-once key, because nothing reachable here has an effect that could half-apply", "the host holds no runtime and no ledger, so writing nothing to the host's history is a property of the type", "no background loop, timer or retry policy: the caller drives serve and request", "the whole composition is feature-gated so iroh stays out of every other build"]
+
+[[crate]]
 id = "ptr-events"
 current_shape = "flat"
 modules = ["event", "envelope", "topic", "bus", "consumer", "offset", "retention", "adapters"]
