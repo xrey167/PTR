@@ -5,7 +5,9 @@ use burn::{
     tensor::Int,
 };
 use ptr_burn_a0::{admission_bias, CodeGrid, PtrA0, PtrA0Config, PtrSlotMetadata, SlotValues};
-use ptr_types::{Codebook, EpistemicState, SemanticRole, Validity, ValidityMask, SlotEncoding, TypeId};
+use ptr_types::{
+    Codebook, EpistemicState, SemanticRole, SlotEncoding, TypeId, Validity, ValidityMask,
+};
 
 // The typed arm gives each row a distinct first role; the ablated arm gives them
 // all the same one. That difference is the mechanism under test, and it is now

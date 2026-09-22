@@ -5,7 +5,9 @@ use burn::{
     tensor::Int,
 };
 use ptr_burn_a0::{admission_bias, CodeGrid, PtrA0Config, PtrSlotMetadata, SlotValues};
-use ptr_types::{Codebook, EpistemicState, SemanticRole, Validity, ValidityMask, SlotEncoding, TypeId};
+use ptr_types::{
+    Codebook, EpistemicState, SemanticRole, SlotEncoding, TypeId, Validity, ValidityMask,
+};
 
 // One row per target operator. The distinguishing feature is the first slot's
 // semantic role, so the task is "route by type", which is the mechanism this

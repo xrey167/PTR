@@ -907,7 +907,11 @@ mod codebook_guard_tests {
             .iter()
             .map(|payload| {
                 encoding
-                    .encode(&ptr_types::TypeId::from("Document"), payload.as_bytes(), width)
+                    .encode(
+                        &ptr_types::TypeId::from("Document"),
+                        payload.as_bytes(),
+                        width,
+                    )
                     .unwrap()
             })
             .collect();
