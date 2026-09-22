@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `foundation`  
-**Last reviewed:** 2026-09-21  
-**Code footprint:** 5 Rust source files · 1575 nonblank source lines · 6 integration-test files · 55 `#[test]` markers
+**Last reviewed:** 2026-09-22  
+**Code footprint:** 6 Rust source files · 2109 nonblank source lines · 6 integration-test files · 66 `#[test]` markers
 
 ### Implemented now
 
@@ -21,6 +21,11 @@
 - The codebook is emitted as datasets/generated/codebook.json by a ptr-types example, so anything outside Rust reads the kernel tables instead of retyping them; a test asserts the committed artifact still carries the canonical bytes this kernel produces
 - ValidityMask and the codebook are consumed by the isolated Burn A0 workspace, which depends on this crate directly: A0 applies attention_bias rather than a learned validity embedding, so lifecycle validity is enforced there by construction instead of weighed, and its slot-type, epistemic and router widths are the codebook's cardinalities rather than caller arguments
 - Rustdoc covers the codebook and validity-mask APIs, stable diagnostic codes and canonical assignment encoder helpers
+- SlotEncoding turns a committed semantic value into the vector a model reads in a slot, versioned like the codebook because weights trained on one definition are fed a differently shaped input by another; SlotVector is only obtainable from it, so the one input to A0 that was a bare tensor now has the provenance every other input already had
+- The encoding is specified in full here rather than borrowed: this crate has no dependencies and therefore no hash, and the definition has to be byte-identical in the PTR workspace and the isolated model workspace for as long as any checkpoint trained under it exists, which a third party's version pin cannot promise
+- The V1 output values are pinned by a test, so a change to the mixing arithmetic breaks a build rather than a checkpoint somebody loads a year later — the rule codes already follow
+- A slot vector is bounded and of unit L2 norm, because it is summed into the same space as the learned metadata embeddings and unbounded values would swamp them
+- The encoding commits to identity and not to similarity, stated in the module's first paragraph: two payloads that mean nearly the same thing get unrelated vectors, and making nearby meanings land near each other is a learned encoder and an open decision
 - Versioned cognitive codebook: explicit per-version tables assign dense 0..cardinality codes to SemanticRole, EpistemicState, UncertaintyKind, ReasoningOperator and Validity, never Rust discriminants
 - TypeCode is only obtainable against a named CodebookVersion; unknown versions, unassigned codes and unassigned members are three distinct refusals with no defaulting path
 - canonical_bytes commits the whole assignment in code order for binding checkpoints, datasets and runs; hashing stays with the caller so this crate keeps no dependencies
@@ -33,6 +38,7 @@
 - Epistemic<T>, TypedValue<T>, provenance refs and semantic issues
 - Strong identifiers for projects, capsules, artifacts, capabilities, types, Pods, candidates, requests, nodes and evidence
 - Unit checks for probability bounds, lifecycle separation and independent cognitive axes
+- Slot-encoding checks: the V1 values pinned exactly, the same payload stable, one-byte differences separated, the type part of the payload with the type-length collision covered, every vector finite bounded and of unit norm, every position a different function of the payload, the domain separated from the undomained arithmetic by a helper that first proves it reproduces the real function, and a zero width, an over-wide width, an over-large payload and an unknown version each refused rather than clamped or truncated
 - ConfidenceTarget and ConfidenceEstimate with target-checked access and diagnostic ConfidenceTargetMismatch errors
 - Compile-fail documentation rejects implicit confidence-to-verification/effect conversion and unqualified estimate ordering
 - Cognitive contract fixtures cover independent axes, constraints, uncertain claims, conflicting sources and revoked generations

@@ -9,11 +9,14 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-19  
-**Code footprint:** 2 Rust source files · 527 nonblank source lines · 2 integration-test files · 15 `#[test]` markers
+**Last reviewed:** 2026-09-22  
+**Code footprint:** 2 Rust source files · 617 nonblank source lines · 3 integration-test files · 23 `#[test]` markers
 
 ### Implemented now
 
+- SemanticSnapshot::slot_vector is the one door between committed semantic state and what a model reads in a slot: a key the snapshot does not hold is refused rather than encoded as zeros, so a payload the model sees is one the snapshot holds and not an absence dressed as a value
+- A payload's source deliberately does not participate in its slot vector, because provenance has its own channel into the model and a slot's value must not change when only its origin did; the type does participate, so the insensitivity is to the source specifically
+- SemanticValue::Text has no type of its own, so TEXT_TYPE decides in one place what it encodes as — which makes text and the same bytes under that type one claim rather than two, asserted so it stays deliberate
 - Symmetric export_state/restore: published state round-trips through the same canonical delta encoding the journal uses, at an exact caller-supplied revision
 - Text and typed binary/source values share a revisioned semantic state
 - Bounded canonical PTRSD001 delta codec and staged atomic publication
@@ -57,6 +60,9 @@
 
 ### Current automated checks
 
+- a committed value yields a vector of the width asked for, a removed or absent key is refused, the same value is stable across later unrelated commits, and a changed value changes its vector
+- a payload's source does not change its vector while its type does, and text matches the same bytes under TEXT_TYPE
+- an encoding refusal travels out carrying the encoding's own diagnostic code rather than a new one
 - exported state restores values, dangling dependency declarations and the exact revision through the canonical codec; restore refuses removals, missing dependencies and cycles; a restore at the revision ceiling stays exhausted
 - Compacted-snapshot round trip through export_state/restore reproduces ground values, payload bytes, dependency sets and revision exactly
 - local_change_invalidates_only_dependency_closure integration test

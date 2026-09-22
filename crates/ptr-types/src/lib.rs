@@ -3,6 +3,7 @@
 mod checkpoint;
 mod codebook;
 mod confidence;
+mod slot_encoding;
 mod validity_mask;
 pub use checkpoint::{CheckpointError, CheckpointHeader, TableSize, FORMAT_V1};
 pub use codebook::{
@@ -10,6 +11,9 @@ pub use codebook::{
     CognitiveType, TypeCode, EXCEPTIONS,
 };
 pub use confidence::{ConfidenceEstimate, ConfidenceTarget, ConfidenceTargetMismatch};
+pub use slot_encoding::{
+    EncodingError, EncodingVersion, SlotEncoding, SlotVector, MAX_PAYLOAD_BYTES, MAX_SLOT_WIDTH,
+};
 pub use validity_mask::{MaskError, ValidityMask};
 
 use std::fmt;
