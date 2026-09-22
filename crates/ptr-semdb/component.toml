@@ -4,7 +4,7 @@ maturity = "prototype"
 last_reviewed = "2026-09-22"
 
 implemented = [
-  "SemanticSnapshot::slot_vector is the one door between committed semantic state and what a model reads in a slot: a key the snapshot does not hold is refused rather than encoded as zeros, so a payload the model sees is one the snapshot holds and not an absence dressed as a value",
+  "SemanticSnapshot::slot_vector is the door between committed semantic state and what a model reads in a slot: a key the snapshot does not hold is refused rather than encoded as zeros, so a payload that reaches it is one the snapshot holds and not an absence dressed as a value. Nothing calls it yet — model/burn-a0 is an isolated workspace no PTR crate depends on, so there is no integrated path from a snapshot to a model and the door is a mechanism rather than a route",
   "A payload's source deliberately does not participate in its slot vector, because provenance has its own channel into the model and a slot's value must not change when only its origin did; the type does participate, so the insensitivity is to the source specifically",
   "SemanticValue::Text has no type of its own, so TEXT_TYPE decides in one place what it encodes as — which makes text and the same bytes under that type one claim rather than two, asserted so it stays deliberate",
 
@@ -55,6 +55,7 @@ checks = [
   "a committed value yields a vector of the width asked for, a removed or absent key is refused, the same value is stable across later unrelated commits, and a changed value changes its vector",
   "a payload's source does not change its vector while its type does, and text matches the same bytes under TEXT_TYPE",
   "an encoding refusal travels out carrying the encoding's own diagnostic code rather than a new one",
+  "a committed value encodes byte-for-byte as the model-side tests encode the same type and bytes, which is the strongest link available across a workspace split that no caller can cross",
 "exported state restores values, dangling dependency declarations and the exact revision through the canonical codec; restore refuses removals, missing dependencies and cycles; a restore at the revision ceiling stays exhausted", 
   "Compacted-snapshot round trip through export_state/restore reproduces ground values, payload bytes, dependency sets and revision exactly",
   "local_change_invalidates_only_dependency_closure integration test",

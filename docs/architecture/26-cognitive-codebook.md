@@ -443,10 +443,26 @@ it, so a run whose checkpoint changed is a different run.
 
 ## Connecting actual semantic payloads — the clause that had no checkbox
 
-#15's Gate 3 sentence ends *"connect actual semantic payloads to the model"*, and
+Issue #15's Gate 3 sentence ends *"connect actual semantic payloads to the model"*, and
 that clause is **G1** of issue #23. It had no checkbox in #20 at all; it appeared only
 as a bullet under what Gate 3 did not close. Everything above this section is the
-identity layer such a connection needs. This section is the connection.
+identity layer such a connection needs. This section is the **channel** that carries a
+payload — built, typed, versioned, and exercised from both ends.
+
+**It is not an integrated path, and G1 is not closed by it.** Nothing in this
+repository calls `SemanticSnapshot::slot_vector`, and nothing outside
+`model/burn-a0` constructs a `SlotValues`. No caller joins the two halves, and none
+can: `model/burn-a0` is an isolated workspace that no PTR crate depends on, so A0 is
+not reachable from the runtime at all. That was true before this work and is
+unchanged by it — the only contact between the two is the shared `ptr-types` kernel
+and a committed checkpoint fixture.
+
+So what this section establishes is precise and worth stating without inflation: a
+committed value can become a slot vector, a slot vector can reach the router's
+logits, both sides are pinned to one definition in `ptr-types`, and each half has its
+own tests with controls. What is still missing is anything that *runs* the two
+together — which needs A0 to be reachable from the runtime, a larger question nobody
+has taken.
 
 ### The gap, measured rather than asserted
 
@@ -503,13 +519,21 @@ Three decisions worth stating because each could have gone otherwise:
   does participate, so that insensitivity is to the source specifically — a
   `Document` and a `Summary` holding identical bytes are different claims.
 
-### The round trip, and why it is two tests
+### Two halves, and the seam they meet at
 
 `crates/ptr-semdb/tests/slot_vectors.rs` covers committed value → slot vector;
 `model/burn-a0/tests/semantic_payload.rs` covers slot vector → what the model
-produces. They cannot be one test: A0 depends on `ptr-types` and nothing else of
-PTR's, and the two workspaces do not build together — the same split `ptrctl seal`
-hit. `ptr-types` is the seam, which is why the encoding lives there.
+produces. They cannot be one test, and — more importantly — there is no production
+caller joining them either: A0 depends on `ptr-types` and nothing else of PTR's, and
+the two workspaces do not build together. `ptr-types` is the seam, which is why the
+encoding lives there.
+
+What holds the halves to each other in the absence of a caller is that they compute
+the same function. `a_committed_value_encodes_exactly_as_the_model_side_encodes_it`
+asserts that a snapshot's vector for a committed payload is byte-identical to the
+`SlotEncoding::V1.encode` call the model-side tests make for the same type and bytes.
+That is the strongest link available across the split, and it is not a substitute for
+an integrated path.
 
 The model-side test asserts **both** directions, because one alone proves nothing:
 two payloads differing in one slot must change the router's logits with every other

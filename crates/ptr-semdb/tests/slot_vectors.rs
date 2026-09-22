@@ -200,6 +200,48 @@ fn a_payload_s_source_does_not_change_its_slot_vector() {
 }
 
 #[test]
+fn a_committed_value_encodes_exactly_as_the_model_side_encodes_it() {
+    // The two halves of G1 live in workspaces that do not build together, so no test
+    // can run a committed value all the way into the model and no caller joins them
+    // either. What can be asserted is that both sides compute the *same function*:
+    // this is byte-for-byte the call `model/burn-a0/tests/semantic_payload.rs` makes,
+    // with the same type and the same bytes.
+    //
+    // It is the strongest link available across the split and it is not a substitute
+    // for an integrated path. If the semdb door ever stopped delegating to
+    // `SlotEncoding` — folding in a key, a revision or a source — this fails.
+    let mut host = SemanticHost::default();
+    let mut delta = SemanticDelta::default();
+    delta.upserts.insert(
+        "evidence".into(),
+        SemanticValue::Payload(SemanticPayload {
+            type_id: TypeId::from("Document"),
+            source: "operator".into(),
+            bytes: b"a goal".to_vec(),
+        }),
+    );
+    host.apply_delta(delta).expect("a valid delta");
+
+    let through_the_door = host
+        .snapshot()
+        .slot_vector("evidence", SlotEncoding::V1, 8)
+        .expect("a committed payload");
+    let as_the_model_side_encodes_it = SlotEncoding::V1
+        .encode(&TypeId::from("Document"), b"a goal", 8)
+        .expect("a small payload");
+
+    assert_eq!(
+        through_the_door.values(),
+        as_the_model_side_encodes_it.values(),
+        "the committed door and the direct call must produce one vector"
+    );
+    assert_eq!(
+        through_the_door.encoding(),
+        as_the_model_side_encodes_it.encoding()
+    );
+}
+
+#[test]
 fn an_encoding_refusal_travels_out_rather_than_becoming_a_vector() {
     let snapshot = host().snapshot();
     assert_eq!(
