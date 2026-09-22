@@ -5,6 +5,18 @@ requires-python = ">=3.11"
 description = "Training and evaluation utilities for PTR"
 dependencies = []
 
+# CUDA/GPU-specific and heavy; kept out of the base install so dry-run manifest
+# preparation keeps working without a CUDA toolchain. Not wired to any backend
+# dispatch yet — training/continued-pretraining/ stays behind the dry-run gate
+# until evaluations/components/training-backend/ selects a candidate.
+[project.optional-dependencies]
+cpt = [
+  "axolotl",
+  "deepspeed",
+  "bitsandbytes",
+  "transformers",
+]
+
 [project.scripts]
 ptr-dataset-validate = "ptr_training.validate_dataset:main"
 ptr-dataset-manifest = "ptr_training.make_manifest:main"

@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "continued-pretraining"
+path = "training/continued-pretraining"
+tests_dir = "tests"
