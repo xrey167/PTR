@@ -10,11 +10,12 @@
 
 **Maturity:** `foundation`  
 **Last reviewed:** 2026-09-22  
-**Code footprint:** 6 Rust source files · 2109 nonblank source lines · 6 integration-test files · 66 `#[test]` markers
+**Code footprint:** 6 Rust source files · 2146 nonblank source lines · 6 integration-test files · 68 `#[test]` markers
 
 ### Implemented now
 
-- CheckpointHeader carries a stored model artifact's identity: magic, an explicit format version, the model name, the codebook version, the whole assignment verbatim rather than a digest, and the table widths the weights were built for; twelve distinct refusals with no defaulting path
+- CheckpointHeader carries a stored model artifact's identity: magic, an explicit format version, the model name, the codebook version, the whole assignment verbatim rather than a digest, the slot-encoding version, and the table widths the weights were built for; thirteen distinct refusals with no defaulting path
+- The header records the slot-encoding version because nothing else could: every other identity in it eventually shows up as a tensor shape, while an encoding produces the model's input and no parameters, so a checkpoint run under another definition has tensors that are the right shape all the way down
 - CodeFamily::from_name maps a stable family name back through an explicit table in both directions, never a position in ALL, so a reordering cannot silently follow
 - EXCEPTIONS records every width a model table is sized by that is deliberately not a code family, with its name, width and the reason it has no members to assign codes to; exception_width is a const fn so a consumer resolves it at compile time and a removed record fails the build rather than falling back to a literal
 - A recorded exception stays outside canonical_bytes, because the fingerprint commits to an assignment of codes and an exception assigns none; adding the section left the V1 fingerprint unchanged, so no dataset, checkpoint or run manifest bound to it was invalidated
@@ -38,6 +39,7 @@
 - Epistemic<T>, TypedValue<T>, provenance refs and semantic issues
 - Strong identifiers for projects, capsules, artifacts, capabilities, types, Pods, candidates, requests, nodes and evidence
 - Unit checks for probability bounds, lifecycle separation and independent cognitive axes
+- checkpoint format 2 carries the slot-encoding version, a format-1 header is refused rather than read with its table count taken as an encoding, and a header recording another encoding is refused with the intact header as the control
 - Slot-encoding checks: the V1 values pinned exactly, the same payload stable, one-byte differences separated, the type part of the payload with the type-length collision covered, every vector finite bounded and of unit norm, every position a different function of the payload, the domain separated from the undomained arithmetic by a helper that first proves it reproduces the real function, and a zero width, an over-wide width, an over-large payload and an unknown version each refused rather than clamped or truncated
 - ConfidenceTarget and ConfidenceEstimate with target-checked access and diagnostic ConfidenceTargetMismatch errors
 - Compile-fail documentation rejects implicit confidence-to-verification/effect conversion and unqualified estimate ordering

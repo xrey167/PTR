@@ -66,6 +66,16 @@ pub const MAX_NEURAL_BYTES: usize = HEADER + MAX_BINDING_BYTES + MAX_PAYLOAD_BYT
 pub enum NeuralError {
     SizeLimit,
     UnsupportedVersion,
+    /// The artifact names a slot encoding this build has no definition for.
+    ///
+    /// Distinct from `UnsupportedVersion`, which is about a codebook. Nothing here
+    /// trains, so this runtime has no opinion about which encoding a checkpoint
+    /// *should* carry; what it can and must refuse is one it could not reproduce —
+    /// the slot vectors those weights learned from are not vectors this build can
+    /// compute.
+    UnsupportedEncoding {
+        version: ptr_types::EncodingVersion,
+    },
     LengthMismatch,
     ReservedField,
     AnchorMismatch,
@@ -99,6 +109,7 @@ impl NeuralError {
         match self {
             Self::SizeLimit => "PTR_NEURAL_SIZE_LIMIT",
             Self::UnsupportedVersion => "PTR_NEURAL_VERSION",
+            Self::UnsupportedEncoding { .. } => "PTR_NEURAL_ENCODING",
             Self::LengthMismatch => "PTR_NEURAL_LENGTH",
             Self::ReservedField => "PTR_NEURAL_RESERVED_FIELD",
             Self::AnchorMismatch => "PTR_NEURAL_ANCHOR_MISMATCH",
@@ -769,8 +780,22 @@ impl PtrRuntime {
         }
         let book =
             Codebook::at(header.codebook).map_err(|_| invalid(NeuralError::UnsupportedVersion))?;
+        // The encoding is checked by being *resolved*: a definition this build does
+        // not have is one whose slot vectors it cannot recompute, so the weights
+        // learned from inputs nothing here can produce.
+        //
+        // Deliberately not part of the `StateDeclaration`. A declaration says which
+        // committed facts a state was computed from; the encoding is how an artifact
+        // was constructed, which is what a header records — and not every neural
+        // state has slot vectors at all, so a declaration naming one would attach it
+        // to states it does not apply to.
+        let encoding = ptr_types::SlotEncoding::at(header.encoding).ok_or_else(|| {
+            invalid(NeuralError::UnsupportedEncoding {
+                version: header.encoding,
+            })
+        })?;
         header
-            .verify(&book, required)
+            .verify(&book, encoding, required)
             .map_err(|error| invalid(NeuralError::CheckpointHeader(error)))?;
         if payload.len() > MAX_PAYLOAD_BYTES {
             return Err(invalid(NeuralError::SizeLimit));

@@ -5,7 +5,7 @@ mod codebook;
 mod confidence;
 mod slot_encoding;
 mod validity_mask;
-pub use checkpoint::{CheckpointError, CheckpointHeader, TableSize, FORMAT_V1};
+pub use checkpoint::{CheckpointError, CheckpointHeader, TableSize, FORMAT_V2};
 pub use codebook::{
     exception_width, CodeFamily, Codebook, CodebookError, CodebookException, CodebookVersion,
     CognitiveType, TypeCode, EXCEPTIONS,

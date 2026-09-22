@@ -441,6 +441,118 @@ some other state's anchor and every field would still parse.
 The three fingerprints reach `input_fingerprint_sha256` rather than sitting beside
 it, so a run whose checkpoint changed is a different run.
 
+## Connecting actual semantic payloads — the clause that had no checkbox
+
+#15's Gate 3 sentence ends *"connect actual semantic payloads to the model"*, and
+that clause is **G1** of issue #23. It had no checkbox in #20 at all; it appeared only
+as a bullet under what Gate 3 did not close. Everything above this section is the
+identity layer such a connection needs. This section is the connection.
+
+### The gap, measured rather than asserted
+
+`PtrA0::forward` has always taken a `slot_values` tensor, and it is used:
+`slots = slot_values + typed_metadata`. Every call site in the repository passed
+`Tensor::<3>::zeros` — the doctest, the `compile_fail` doctest, the crate's own guard
+test and `tests/train_router.rs` — and `m001_pilot.rs` and `train_router.rs` each
+declared a `slots` field only ever filled with zeros.
+
+So the socket was built, wired in, and left empty. Nothing the model produced could
+depend on what a slot **was**; only on its role, its epistemic state, its provenance
+bucket and its confidence. Nothing could fill it either, because nothing turned a
+committed value into a vector.
+
+It could not be filled *safely*, which is the sharper half. Every other input to that
+function went through the discipline this document describes: a `TypeCode` exists only
+as the output of a versioned assignment, and `CodeGrid` carries the version that
+minted it. `slot_values` was a bare tensor — no type, no version, no provenance. A
+caller could have put anything there.
+
+### What is now in place
+
+Slot **value** gets the treatment slot **identity** already had.
+
+`ptr_types::SlotEncoding` is versioned exactly as the codebook is, and a `SlotVector`
+is obtainable only from it. `SemanticSnapshot::slot_vector` is the one door: a key the
+snapshot does not hold is refused rather than encoded as zeros. A0's `SlotValues` is
+built only from `SlotVector`s, carries the encoding version, and `forward` asserts it
+alongside the codebook asserts. A bare tensor no longer satisfies the signature.
+
+**What the encoding claims: identity, not similarity.** Two payloads that mean almost
+the same thing get unrelated vectors. That is the whole claim, stated in the module's
+first paragraph so nobody has to infer it. What a slot vector establishes is *this
+payload and not another one*, deterministically, in both workspaces.
+
+Three decisions worth stating because each could have gone otherwise:
+
+- **The mixing function is written out rather than borrowed.** This crate has no
+  dependencies and therefore no hash — and that constraint turned out to be the right
+  one. The definition has to be byte-identical in the PTR workspace and in the
+  isolated model workspace, for as long as any checkpoint trained under it exists, and
+  a third party's version pin cannot promise that. So FNV-1a and splitmix64 are
+  spelled out in explicitly wrapping fixed-width arithmetic, and the V1 output values
+  are pinned by a test — a change to the arithmetic breaks a build rather than a
+  checkpoint somebody loads a year later, which is the rule codes already follow.
+  Being obviously not a learned model is a feature: nobody can mistake twenty lines of
+  integer mixing for a representation.
+- **Vectors are bounded and of unit L2 norm**, because they are *summed* into the same
+  space as the learned metadata embeddings. Unbounded values would swamp them; tiny
+  ones would be a channel nothing could learn from. The scale is stated, not tuned,
+  and nothing claims it is the best one.
+- **A payload's `source` does not participate.** Provenance has its own channel into
+  the model, and a slot's value must not change when only its origin did. The type
+  does participate, so that insensitivity is to the source specifically — a
+  `Document` and a `Summary` holding identical bytes are different claims.
+
+### The round trip, and why it is two tests
+
+`crates/ptr-semdb/tests/slot_vectors.rs` covers committed value → slot vector;
+`model/burn-a0/tests/semantic_payload.rs` covers slot vector → what the model
+produces. They cannot be one test: A0 depends on `ptr-types` and nothing else of
+PTR's, and the two workspaces do not build together — the same split `ptrctl seal`
+hit. `ptr-types` is the seam, which is why the encoding lives there.
+
+The model-side test asserts **both** directions, because one alone proves nothing:
+two payloads differing in one slot must change the router's logits with every other
+input held identical, and identical payloads must not change them. The first fails if
+the model ignores slot values; the second fails if the test is measuring
+nondeterminism. Making `forward` ignore `slot_values` — the state of the world before
+this — fails four of the seven.
+
+### The header records the encoding, because nothing else could
+
+`CheckpointHeader`'s format moves to 2 to carry the slot-encoding version. For every
+other identity in that header a wrong value eventually shows up as a shape: a moved
+codebook as a table width, a different `provenance_bucket_count` as a tensor
+mismatch. The encoding produces the model's **input** and no parameters, so a
+checkpoint trained under one definition and run under another has tensors that are
+the right shape all the way down. A recorded version is the only thing that can catch
+it.
+
+`bind_checkpoint` checks it by *resolving* it: a definition this build has no
+implementation of is one whose slot vectors it cannot recompute. It is deliberately
+**not** part of a `StateDeclaration` — a declaration says which committed facts a
+state was computed from, while the encoding is how an artifact was constructed, and
+not every neural state has slot vectors at all.
+
+### Two tests that were wrong, recorded rather than quietly fixed
+
+Mutation testing caught both, and both are the same species of defect.
+
+The first domain-separation test compared at width one, where normalisation collapses
+every vector to ±1: it asserted two values differed when both were exactly `1.0`, and
+passed by luck. It now reimplements the definition with the domain as a parameter,
+proves that helper reproduces the real function, and only then asserts that dropping
+the domain changes the output.
+
+The first width guard asserted only that `forward` panicked. The tensor addition that
+follows panics on a mismatched last dimension by itself, so that test passed with the
+guard deleted. Both new guards now live in the `cfg(test)` module beside the codebook
+guards, where `should_panic` can name the message — and removing either fails exactly
+the test aimed at it.
+
+A payload-length absorption in the mixer was also removed: the payload is last, so
+nothing follows it to be confused with, and no test could justify the line.
+
 ## What this does not close
 
 - **A detached adapter's own checkpoints are still not covered.** Sealing is the
@@ -481,6 +593,29 @@ it, so a run whose checkpoint changed is a different run.
 - **A consumer can still misuse `slots`.** The admission travels with the output,
   but nothing forces a caller to apply it. Zeroing the excluded rows would hide a
   real zero vector, so the mask is supplied rather than baked in.
+- **The slot encoding preserves identity and not similarity, and a learned encoder is
+  the owner's decision.** Nearby meanings get unrelated vectors. Making them land
+  near each other needs a representation somebody trained, a statement of what it was
+  trained on, and a story for what happens to every checkpoint when it is retrained —
+  which is a modelling decision of the same kind as D1 to D6 in issue #23, not an
+  implementation detail. What is in place meanwhile is the boundary any such encoder
+  would arrive through: a versioned definition, a `SlotVector` nothing else can
+  construct, a header that records which one produced a checkpoint's inputs, and a
+  test that a payload reaches the output.
+- **Nothing here claims the encoding is good.** It is deterministic, bounded,
+  distinguishing and specified. Whether a model learns anything useful from it is a
+  question about model quality, which this repository claims nothing about anywhere.
+- **The slot-encoding guard in `forward` is entered by a test rather than by a second
+  definition**, exactly as the codebook guard is, and with the same caveat: a
+  test-only constructor is not a second version, and the guard will not meet a real
+  foreign artifact until one exists.
+- **A model still gets its slot values from whoever calls it.** `SemanticSnapshot`
+  is the door on the PTR side, and A0 cannot see it — the workspaces do not build
+  together, so nothing in the type system forces a caller to have come through that
+  door rather than encoding bytes it made up. The same boundary
+  `29-peer-admission-and-pod-scope.md` states for a peer identity, for the same
+  reason, and it would close the same way: a dependency edge somebody has to decide
+  on.
 - **The artifact is trusted as data, not as authentication.** A fingerprint detects
   a mismatch; it cannot detect someone who recomputes it. That was true of
   `canonical_bytes` from the start and is unchanged by writing it to a file.

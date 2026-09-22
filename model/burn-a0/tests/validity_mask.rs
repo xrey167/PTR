@@ -6,8 +6,10 @@
 //! claim — a test that only checked one initialisation would not be one.
 
 use burn::{prelude::*, tensor::Int};
-use ptr_burn_a0::{admission_bias, CodeGrid, PtrA0, PtrA0Config, PtrSlotMetadata};
-use ptr_types::{Codebook, EpistemicState, SemanticRole, Validity, ValidityMask};
+use ptr_burn_a0::{admission_bias, CodeGrid, PtrA0, PtrA0Config, PtrSlotMetadata, SlotValues};
+use ptr_types::{
+    Codebook, EpistemicState, SemanticRole, SlotEncoding, TypeId, Validity, ValidityMask,
+};
 
 const SLOTS: usize = 3;
 const D_MODEL: usize = 8;
@@ -50,13 +52,23 @@ fn slot_types(device: &Device) -> CodeGrid<SemanticRole> {
     .expect("every role is assigned in v1")
 }
 
-/// Slot values where `slot` carries `fill` and the others carry 1.0.
-fn slot_values(device: &Device, slot: usize, fill: f32) -> Tensor<3> {
-    let mut data = vec![1.0_f32; SLOTS * D_MODEL];
-    for column in 0..D_MODEL {
-        data[slot * D_MODEL + column] = fill;
-    }
-    Tensor::<1>::from_data(data.as_slice(), device).reshape([1, SLOTS, D_MODEL])
+/// Slot values where `slot` carries `payload` and the others carry a fixed one.
+///
+/// A payload rather than a raw float fill, because a raw fill is no longer
+/// expressible: slot values come from a committed value through a named encoding.
+/// That makes these tests stronger rather than weaker — what varies is the thing a
+/// caller actually varies.
+fn slot_values(device: &Device, slot: usize, payload: &[u8]) -> SlotValues {
+    let encoding = SlotEncoding::V1;
+    let vectors: Vec<_> = (0..SLOTS)
+        .map(|index| {
+            let bytes: &[u8] = if index == slot { payload } else { b"unchanged" };
+            encoding
+                .encode(&TypeId::from("Document"), bytes, D_MODEL)
+                .expect("a small payload")
+        })
+        .collect();
+    SlotValues::new(&[vectors.as_slice()], device).expect("one row of slots")
 }
 
 fn run(
@@ -64,12 +76,12 @@ fn run(
     device: &Device,
     validities: &[Validity],
     slot: usize,
-    fill: f32,
+    payload: &[u8],
 ) -> (Vec<f32>, Vec<f32>) {
     let output = model.forward(
         Tensor::<2, Int>::from_data([[1, 2]], device),
         &slot_types(device),
-        slot_values(device, slot, fill),
+        &slot_values(device, slot, payload),
         metadata(device, validities),
     );
     (
@@ -91,13 +103,13 @@ fn an_excluded_slot_cannot_change_anything_the_model_produces() {
         let model = model(&device, seed);
         let validities = [Validity::Live, Validity::Revoked, Validity::Live];
 
-        let (raw, router) = run(&model, &device, &validities, 1, 0.0);
-        for fill in [1.0_f32, -50.0, 1_000.0] {
-            let (other_raw, other_router) = run(&model, &device, &validities, 1, fill);
-            assert_eq!(raw, other_raw, "seed {seed}: raw changed for fill {fill}");
+        let (raw, router) = run(&model, &device, &validities, 1, b"baseline");
+        for payload in [b"a wholly different claim".as_slice(), b"", b"\xff\xff\xff"] {
+            let (other_raw, other_router) = run(&model, &device, &validities, 1, payload);
+            assert_eq!(raw, other_raw, "seed {seed}: raw changed for {payload:?}");
             assert_eq!(
                 router, other_router,
-                "seed {seed}: router changed for fill {fill}"
+                "seed {seed}: router changed for {payload:?}"
             );
         }
 
@@ -105,12 +117,12 @@ fn an_excluded_slot_cannot_change_anything_the_model_produces() {
         // above would pass on a model that ignores every slot.
         //
         // The router is the observable here, not `raw`. Scores scale with slot
-        // values, so a large change saturates the raw-side softmax onto whichever
-        // slot wins; when that is not the slot being varied, `raw` stays constant
-        // for a reason that has nothing to do with admission. The router averages
-        // over admitted slots and responds to every one of them.
-        let (_, baseline_router) = run(&model, &device, &validities, 0, 1.0);
-        let (_, changed_router) = run(&model, &device, &validities, 0, 1_000.0);
+        // values, so a change can saturate the raw-side softmax onto whichever slot
+        // wins; when that is not the slot being varied, `raw` stays constant for a
+        // reason that has nothing to do with admission. The router averages over
+        // admitted slots and responds to every one of them.
+        let (_, baseline_router) = run(&model, &device, &validities, 0, b"baseline");
+        let (_, changed_router) = run(&model, &device, &validities, 0, b"a different claim");
         assert_ne!(
             baseline_router, changed_router,
             "seed {seed}: an admitted slot must reach the router"
@@ -124,8 +136,8 @@ fn every_inadmissible_lifecycle_state_is_excluded_and_live_is_not() {
     let model = model(&device, 11);
     for state in [Validity::Revoked, Validity::Superseded, Validity::Disputed] {
         let validities = [Validity::Live, state, Validity::Live];
-        let (raw, router) = run(&model, &device, &validities, 1, 0.0);
-        let (other_raw, other_router) = run(&model, &device, &validities, 1, 900.0);
+        let (raw, router) = run(&model, &device, &validities, 1, b"baseline");
+        let (other_raw, other_router) = run(&model, &device, &validities, 1, b"a different claim");
         assert_eq!(raw, other_raw, "{state:?} must be excluded");
         assert_eq!(router, other_router, "{state:?} must be excluded");
     }
@@ -133,8 +145,8 @@ fn every_inadmissible_lifecycle_state_is_excluded_and_live_is_not() {
     // The control, on the router for the reason given above: the same slot with
     // Live in its place must reach the output.
     let live = [Validity::Live, Validity::Live, Validity::Live];
-    let (_, router) = run(&model, &device, &live, 1, 0.0);
-    let (_, other_router) = run(&model, &device, &live, 1, 900.0);
+    let (_, router) = run(&model, &device, &live, 1, b"baseline");
+    let (_, other_router) = run(&model, &device, &live, 1, b"a different claim");
     assert_ne!(router, other_router, "a Live slot must still matter");
 }
 
@@ -145,7 +157,7 @@ fn a_batch_row_admitting_nothing_stays_finite() {
     let device = Device::flex();
     let model = model(&device, 5);
     let none = [Validity::Revoked; SLOTS];
-    let (raw, router) = run(&model, &device, &none, 0, 1.0);
+    let (raw, router) = run(&model, &device, &none, 0, b"baseline");
     assert!(
         raw.iter().all(|value| value.is_finite()),
         "raw went non-finite"

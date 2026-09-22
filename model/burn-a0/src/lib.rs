@@ -11,8 +11,8 @@ pub use checkpoint::{header, load, save, CheckpointIoError, EMBEDDED_FAMILIES, M
 
 use core::marker::PhantomData;
 use ptr_types::{
-    CodeFamily, Codebook, CodebookError, CodebookVersion, CognitiveType, EpistemicState,
-    ReasoningOperator, SemanticRole, ValidityMask,
+    CodeFamily, Codebook, CodebookError, CodebookVersion, CognitiveType, EncodingVersion,
+    EpistemicState, ReasoningOperator, SemanticRole, SlotEncoding, SlotVector, ValidityMask,
 };
 
 /// Why a batch of codes could not be built.
@@ -142,6 +142,149 @@ impl<T: CognitiveType> CodeGrid<T> {
     }
 }
 
+/// Why a batch of slot values could not be built.
+///
+/// Every variant is a refusal. None of them pads, truncates or substitutes, because
+/// a slot value nobody committed is a payload the model believes it has seen.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SlotValueError {
+    /// No rows, or rows with no slots.
+    Empty,
+    /// Rows disagree on how many slots they carry, so they cannot index one tensor.
+    Ragged {
+        row: usize,
+        expected: usize,
+        found: usize,
+    },
+    /// Two vectors in one batch were produced by different encoding definitions.
+    ///
+    /// Refused rather than mixed: a batch is one tensor, and a network cannot be
+    /// told that some of its rows mean something else.
+    MixedEncodings {
+        expected: EncodingVersion,
+        found: EncodingVersion,
+    },
+    /// Two vectors in one batch have different widths.
+    MixedWidths { expected: usize, found: usize },
+}
+
+impl core::fmt::Display for SlotValueError {
+    /// Render a stable refusal code.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Empty => f.write_str("PTR_A0_EMPTY_SLOT_VALUES"),
+            Self::Ragged { .. } => f.write_str("PTR_A0_RAGGED_SLOT_VALUES"),
+            Self::MixedEncodings { .. } => f.write_str("PTR_A0_MIXED_SLOT_ENCODINGS"),
+            Self::MixedWidths { .. } => f.write_str("PTR_A0_MIXED_SLOT_WIDTHS"),
+        }
+    }
+}
+
+impl std::error::Error for SlotValueError {}
+
+/// A rectangular batch of slot values: what each slot in each row *is*.
+///
+/// This argument used to be a bare `Tensor<3>`, and it was the only input to
+/// [`PtrA0::forward`] without a type, a version or any provenance — while slot
+/// *identity* next to it could only be a [`CodeGrid`] built through a [`Codebook`].
+/// It was also, at every call site in the repository, `Tensor::<3>::zeros`: the
+/// channel was wired into `slots = slot_values + typed_metadata` and never carried a
+/// value.
+///
+/// So it gets identity's treatment. A `SlotValues` is built only from
+/// [`SlotVector`]s, which `ptr-types` produces only through a named
+/// [`SlotEncoding`], which `ptr-semdb` feeds only from a *committed* value. A tensor
+/// full of numbers nobody can account for no longer satisfies this signature.
+#[derive(Clone, Debug)]
+pub struct SlotValues {
+    encoding: EncodingVersion,
+    values: Tensor<3>,
+    rows: usize,
+    columns: usize,
+    width: usize,
+}
+
+impl SlotValues {
+    /// Assemble one batch of slot values.
+    ///
+    /// `rows` is the batch; every row must carry the same number of slots, and every
+    /// vector the same width and encoding.
+    ///
+    /// ```
+    /// use burn::prelude::*;
+    /// use ptr_burn_a0::SlotValues;
+    /// use ptr_types::{SlotEncoding, TypeId};
+    ///
+    /// let device = Device::flex();
+    /// let book = SlotEncoding::V1;
+    /// let goal = book.encode(&TypeId::from("Text"), b"ship the gate", 4).unwrap();
+    /// let claim = book.encode(&TypeId::from("Document"), b"evidence", 4).unwrap();
+    /// let values = SlotValues::new(&[&[goal, claim]], &device).unwrap();
+    /// assert_eq!(values.dims(), [1, 2, 4]);
+    /// assert_eq!(values.encoding(), SlotEncoding::V1.version());
+    /// ```
+    pub fn new(rows: &[&[SlotVector]], device: &Device) -> Result<Self, SlotValueError> {
+        let columns = rows.first().map_or(0, |row| row.len());
+        if rows.is_empty() || columns == 0 {
+            return Err(SlotValueError::Empty);
+        }
+        let first = &rows[0][0];
+        let encoding = first.encoding();
+        let width = first.width();
+        let mut values: Vec<f32> = Vec::with_capacity(rows.len() * columns * width);
+        for (index, row) in rows.iter().enumerate() {
+            if row.len() != columns {
+                return Err(SlotValueError::Ragged {
+                    row: index,
+                    expected: columns,
+                    found: row.len(),
+                });
+            }
+            for vector in row.iter() {
+                if vector.encoding() != encoding {
+                    return Err(SlotValueError::MixedEncodings {
+                        expected: encoding,
+                        found: vector.encoding(),
+                    });
+                }
+                if vector.width() != width {
+                    return Err(SlotValueError::MixedWidths {
+                        expected: width,
+                        found: vector.width(),
+                    });
+                }
+                values.extend_from_slice(vector.values());
+            }
+        }
+        Ok(Self {
+            encoding,
+            values: Tensor::<1>::from_data(values.as_slice(), device).reshape([
+                rows.len(),
+                columns,
+                width,
+            ]),
+            rows: rows.len(),
+            columns,
+            width,
+        })
+    }
+
+    /// The definition that produced every vector in this batch.
+    pub fn encoding(&self) -> EncodingVersion {
+        self.encoding
+    }
+
+    /// `[rows, slots, width]`.
+    pub fn dims(&self) -> [usize; 3] {
+        [self.rows, self.columns, self.width]
+    }
+
+    /// The values as a tensor.
+    pub fn values(&self) -> Tensor<3> {
+        self.values.clone()
+    }
+}
+
 /// The name under which the provenance width is recorded in the kernel.
 pub const PROVENANCE_EXCEPTION: &str = "provenance_bucket_count";
 
@@ -178,6 +321,11 @@ pub struct PtrA0Config {
     pub d_model: usize,
     pub latent_steps: usize,
     codebook: Codebook,
+    /// The slot-encoding definition this model's inputs are produced by.
+    ///
+    /// Not a table width, so nothing about the tensors records it — which is why the
+    /// checkpoint header carries it explicitly and `forward` asserts it.
+    encoding: SlotEncoding,
 }
 
 impl PtrA0Config {
@@ -200,7 +348,13 @@ impl PtrA0Config {
             d_model,
             latent_steps: 0,
             codebook,
+            encoding: SlotEncoding::V1,
         }
+    }
+
+    /// The slot encoding this model's inputs are produced by.
+    pub fn encoding(&self) -> SlotEncoding {
+        self.encoding
     }
 
     /// The codebook this model's tables are sized by.
@@ -259,6 +413,7 @@ impl PtrA0Config {
             operator_count: self.operator_count(),
             latent_steps: self.latent_steps,
             codebook_version: self.codebook.version().0,
+            encoding_version: self.encoding.version().0,
         }
     }
 }
@@ -288,6 +443,9 @@ pub struct PtrA0 {
     /// so this does **not** survive a saved record: an artifact that has to carry
     /// the identity carries it in its own header.
     codebook_version: u32,
+    /// Slot-encoding version the inputs are produced by, recorded for the same
+    /// reason and with the same caveat.
+    encoding_version: u32,
 }
 
 impl PtrA0 {
@@ -299,6 +457,16 @@ impl PtrA0 {
     pub fn codebook(&self) -> Codebook {
         Codebook::at(CodebookVersion(self.codebook_version))
             .expect("the version came from a Codebook this build accepted")
+    }
+
+    /// The slot encoding this model's inputs are produced by.
+    ///
+    /// The lookup cannot fail: a [`PtrA0`] only comes from [`PtrA0Config::init`],
+    /// which was given a [`SlotEncoding`], and one only exists for a version this
+    /// build defines.
+    pub fn encoding(&self) -> SlotEncoding {
+        SlotEncoding::at(EncodingVersion(self.encoding_version))
+            .expect("the version came from a SlotEncoding this build accepted")
     }
 
     /// Router width, one logit per operator in that codebook.
@@ -375,8 +543,10 @@ impl PtrA0 {
     ///
     /// ```
     /// use burn::{prelude::*, tensor::Int};
-    /// use ptr_burn_a0::{admission_bias, CodeGrid, PtrA0Config, PtrSlotMetadata};
-    /// use ptr_types::{Codebook, EpistemicState, SemanticRole, Validity, ValidityMask};
+    /// use ptr_burn_a0::{admission_bias, CodeGrid, PtrA0Config, PtrSlotMetadata, SlotValues};
+    /// use ptr_types::{
+    ///     Codebook, EpistemicState, SemanticRole, SlotEncoding, TypeId, Validity, ValidityMask,
+    /// };
     ///
     /// let device = Device::flex();
     /// let book = Codebook::V1;
@@ -385,10 +555,14 @@ impl PtrA0 {
     /// let states: [&[EpistemicState]; 1] = [&[EpistemicState::Observed, EpistemicState::Assumed]];
     /// let slot_types = CodeGrid::new(&book, &roles, &device).unwrap();
     /// let epistemic = CodeGrid::new(&book, &states, &device).unwrap();
+    /// let encoding = SlotEncoding::V1;
+    /// let goal = encoding.encode(&TypeId::from("Text"), b"ship the gate", 12).unwrap();
+    /// let claim = encoding.encode(&TypeId::from("Document"), b"the evidence", 12).unwrap();
+    /// let slot_values = SlotValues::new(&[&[goal, claim]], &device).unwrap();
     /// let output = model.forward(
     ///     Tensor::<2, Int>::from_data([[1, 2]], &device),
     ///     &slot_types,
-    ///     Tensor::<3>::zeros([1, 2, 12], &device),
+    ///     &slot_values,
     ///     PtrSlotMetadata {
     ///         epistemic,
     ///         provenance_ids: Tensor::<2, Int>::zeros([1, 2], &device),
@@ -406,8 +580,10 @@ impl PtrA0 {
     ///
     /// ```compile_fail
     /// use burn::{prelude::*, tensor::Int};
-    /// use ptr_burn_a0::{admission_bias, CodeGrid, PtrA0Config, PtrSlotMetadata};
-    /// use ptr_types::{Codebook, EpistemicState, SemanticRole, Validity, ValidityMask};
+    /// use ptr_burn_a0::{admission_bias, CodeGrid, PtrA0Config, PtrSlotMetadata, SlotValues};
+    /// use ptr_types::{
+    ///     Codebook, EpistemicState, SemanticRole, SlotEncoding, TypeId, Validity, ValidityMask,
+    /// };
     ///
     /// let device = Device::flex();
     /// let book = Codebook::V1;
@@ -416,10 +592,12 @@ impl PtrA0 {
     /// let states: [&[EpistemicState]; 1] = [&[EpistemicState::Observed, EpistemicState::Assumed]];
     /// let slot_types = CodeGrid::new(&book, &roles, &device).unwrap();
     /// let epistemic = CodeGrid::new(&book, &states, &device).unwrap();
+    /// let goal = SlotEncoding::V1.encode(&TypeId::from("Text"), b"x", 12).unwrap();
+    /// let slot_values = SlotValues::new(&[&[goal.clone(), goal]], &device).unwrap();
     /// let _ = model.forward(
     ///     Tensor::<2, Int>::from_data([[1, 2]], &device),
     ///     &epistemic,
-    ///     Tensor::<3>::zeros([1, 2, 12], &device),
+    ///     &slot_values,
     ///     PtrSlotMetadata {
     ///         epistemic: slot_types,
     ///         provenance_ids: Tensor::<2, Int>::zeros([1, 2], &device),
@@ -435,7 +613,7 @@ impl PtrA0 {
         &self,
         token_ids: Tensor<2, Int>,
         slot_types: &CodeGrid<SemanticRole>,
-        slot_values: Tensor<3>,
+        slot_values: &SlotValues,
         metadata: PtrSlotMetadata,
     ) -> PtrA0Output {
         let [batch, sequence] = token_ids.dims();
@@ -459,6 +637,20 @@ impl PtrA0 {
             version,
             "epistemic codes come from another codebook version"
         );
+        // Vectors from another definition index nothing — they are simply different
+        // numbers — so no shape would reveal the mismatch and this assert is the only
+        // thing that can. Same reasoning as the codebook asserts above, one step
+        // earlier in the pipeline.
+        assert_eq!(
+            slot_values.encoding(),
+            self.encoding().version(),
+            "slot values come from another slot-encoding version"
+        );
+        assert_eq!(
+            slot_values.dims(),
+            [batch, slot_count, self.d_model],
+            "slot values must cover every slot at the model's width"
+        );
         assert_eq!(metadata.epistemic.dims(), [batch, slot_count]);
         assert_eq!(metadata.provenance_ids.dims(), [batch, slot_count]);
         assert_eq!(metadata.confidence.dims(), [batch, slot_count]);
@@ -475,7 +667,7 @@ impl PtrA0 {
         // Validity is deliberately absent from this sum. It is admission, not a
         // feature, and it is applied below where it cannot be weighed.
         let typed_metadata = slot_type + epistemic + provenance + confidence;
-        let slots = slot_values + typed_metadata.clone();
+        let slots = slot_values.values() + typed_metadata.clone();
 
         let typed_bias = self.metadata_bias.forward(typed_metadata);
         let slot_query = self.slot_query.forward(slots.clone());
@@ -653,14 +845,26 @@ mod codebook_guard_tests {
         }
     }
 
+    /// Two committed payloads, one per slot.
+    fn slot_values(device: &Device) -> SlotValues {
+        let encoding = SlotEncoding::V1;
+        let goal = encoding
+            .encode(&ptr_types::TypeId::from("Text"), b"a goal", D_MODEL)
+            .unwrap();
+        let claim = encoding
+            .encode(&ptr_types::TypeId::from("Document"), b"a claim", D_MODEL)
+            .unwrap();
+        SlotValues::new(&[&[goal, claim]], device).unwrap()
+    }
+
     fn run(slot_types: CodeGrid<SemanticRole>, epistemic: CodeGrid<EpistemicState>) {
         let device = Device::flex();
         let model = PtrA0Config::new(VOCAB, D_MODEL)
             .with_provenance_buckets(8)
             .init(&device);
         let tokens = Tensor::<2, Int>::from_data([[1, 2, 3]], &device);
-        let slots = Tensor::<3>::zeros([1, 2, D_MODEL], &device);
-        let _ = model.forward(tokens, &slot_types, slots, metadata(epistemic, &device));
+        let values = slot_values(&device);
+        let _ = model.forward(tokens, &slot_types, &values, metadata(epistemic, &device));
     }
 
     /// The control. Without it, the two refusals below are consistent with a
@@ -683,6 +887,74 @@ mod codebook_guard_tests {
     fn epistemic_codes_from_another_version_are_refused() {
         let device = Device::flex();
         run(slot_types(&device), relabel(epistemic(&device), FOREIGN));
+    }
+
+    /// Relabel a well-formed batch of slot values as another encoding definition,
+    /// leaving the numbers alone.
+    ///
+    /// The whole hazard in one function, exactly as `relabel` is for codes: the
+    /// values are real, the tensor is the right shape, and only the definition that
+    /// produced them has changed. Unlike a code, a slot value indexes nothing, so
+    /// there is no table bound and no shape for anything downstream to notice.
+    fn reencode(values: SlotValues, encoding: EncodingVersion) -> SlotValues {
+        SlotValues { encoding, ..values }
+    }
+
+    /// Slot values at a width that is not the model's `d_model`.
+    fn at_width(width: usize, device: &Device) -> SlotValues {
+        let encoding = SlotEncoding::V1;
+        let vectors: Vec<_> = ["a goal", "a claim"]
+            .iter()
+            .map(|payload| {
+                encoding
+                    .encode(&ptr_types::TypeId::from("Document"), payload.as_bytes(), width)
+                    .unwrap()
+            })
+            .collect();
+        SlotValues::new(&[vectors.as_slice()], device).unwrap()
+    }
+
+    /// Run `forward` with a given batch of slot values, everything else well formed.
+    fn run_values(values: &SlotValues) {
+        let device = Device::flex();
+        let model = PtrA0Config::new(VOCAB, D_MODEL)
+            .with_provenance_buckets(8)
+            .init(&device);
+        let tokens = Tensor::<2, Int>::from_data([[1, 2, 3]], &device);
+        let _ = model.forward(
+            tokens,
+            &slot_types(&device),
+            values,
+            metadata(epistemic(&device), &device),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "slot values come from another slot-encoding version")]
+    fn slot_values_from_another_encoding_version_are_refused() {
+        let device = Device::flex();
+        run_values(&reencode(slot_values(&device), EncodingVersion(2)));
+    }
+
+    /// A width that is not `d_model` must be refused **by name**.
+    ///
+    /// Asserting only that it panics would prove nothing: the tensor addition that
+    /// follows panics on a mismatched last dimension all by itself, so a bare
+    /// `should_panic` here passes whether this guard exists or not. That is how a
+    /// first version of this test managed to survive deleting the guard it was
+    /// written for.
+    #[test]
+    #[should_panic(expected = "slot values must cover every slot at the model's width")]
+    fn slot_values_at_another_width_are_refused_by_name() {
+        let device = Device::flex();
+        run_values(&at_width(D_MODEL + 1, &device));
+    }
+
+    /// The control for both: the well-formed batch this module builds passes.
+    #[test]
+    fn well_formed_slot_values_pass_through_the_guards() {
+        let device = Device::flex();
+        run_values(&slot_values(&device));
     }
 
     /// The two guards are distinguishable, which is what makes the two tests above

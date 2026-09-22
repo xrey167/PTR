@@ -7,11 +7,12 @@
 use burn::{prelude::*, tensor::Int};
 use ptr_burn_a0::{
     admission_bias, header, load, save, CheckpointIoError, CodeGrid, PtrA0, PtrA0Config,
-    PtrSlotMetadata, EMBEDDED_FAMILIES, MODEL, PROVENANCE_BUCKET_COUNT, PROVENANCE_EXCEPTION,
+    PtrSlotMetadata, SlotValues, EMBEDDED_FAMILIES, MODEL, PROVENANCE_BUCKET_COUNT,
+    PROVENANCE_EXCEPTION,
 };
 use ptr_types::{
-    CheckpointError, CheckpointHeader, CodeFamily, Codebook, CodebookVersion, EpistemicState,
-    SemanticRole, TableSize, Validity, ValidityMask,
+    CheckpointError, CheckpointHeader, CodeFamily, Codebook, CodebookVersion, EncodingVersion,
+    EpistemicState, SemanticRole, SlotEncoding, TableSize, TypeId, Validity, ValidityMask,
 };
 
 const D_MODEL: usize = 12;
@@ -40,6 +41,18 @@ fn metadata(device: &Device) -> PtrSlotMetadata {
     }
 }
 
+/// Two committed payloads, fixed so the logits below are comparable across models.
+fn slot_values(device: &Device) -> SlotValues {
+    let encoding = SlotEncoding::V1;
+    let goal = encoding
+        .encode(&TypeId::from("Text"), b"a goal", D_MODEL)
+        .expect("a small payload");
+    let evidence = encoding
+        .encode(&TypeId::from("Document"), b"some evidence", D_MODEL)
+        .expect("a small payload");
+    SlotValues::new(&[&[goal, evidence]], device).expect("one row of slots")
+}
+
 /// Router logits for a fixed input, as a comparable vector.
 fn logits(model: &PtrA0, device: &Device) -> Vec<f32> {
     let slot_types = CodeGrid::new(
@@ -52,7 +65,7 @@ fn logits(model: &PtrA0, device: &Device) -> Vec<f32> {
         .forward(
             Tensor::<2, Int>::from_data([[1, 2]], device),
             &slot_types,
-            Tensor::<3>::ones([1, 2, D_MODEL], device),
+            &slot_values(device),
             metadata(device),
         )
         .router_logits
@@ -120,7 +133,7 @@ fn the_header_records_the_tables_the_weights_actually_have() {
         Some(model.operator_count() as u16)
     );
     written
-        .verify(&Codebook::V1, &EMBEDDED_FAMILIES)
+        .verify(&Codebook::V1, SlotEncoding::V1, &EMBEDDED_FAMILIES)
         .expect("this build wrote it");
 }
 
@@ -155,6 +168,7 @@ fn a_table_that_disagrees_with_the_codebook_is_refused() {
     let claimed = CheckpointHeader::new(
         MODEL,
         &book,
+        SlotEncoding::V1,
         &[
             TableSize {
                 family: CodeFamily::SemanticRole,
@@ -181,12 +195,45 @@ fn a_table_that_disagrees_with_the_codebook_is_refused() {
 }
 
 #[test]
+fn a_checkpoint_from_another_slot_encoding_is_refused_before_any_weight_is_read() {
+    // The one identity in the header that no tensor could ever reveal. A codebook
+    // that moved eventually shows up as a table width; a slot encoding that moved
+    // shows up as nothing at all, because it produces the model's *input* and no
+    // parameters. So this refusal has to come from the recorded version or from
+    // nowhere.
+    let device = Device::flex();
+    let model = config().init(&device);
+    let record = save(&model).expect("a fresh model serializes");
+
+    let (mut moved, payload) = CheckpointHeader::read(&record).expect("we wrote it");
+    assert_eq!(moved.encoding, EncodingVersion::V1, "written as v1");
+    moved.encoding = EncodingVersion(2);
+    let rewritten = moved.write(payload);
+
+    assert_eq!(
+        load(&rewritten, &config(), &device).expect_err("another encoding"),
+        CheckpointIoError::Header(CheckpointError::EncodingMoved {
+            stored: EncodingVersion(2),
+            required: EncodingVersion::V1,
+        })
+    );
+
+    // The control: the same bytes with the encoding left alone load. So the refusal
+    // is about the encoding and not about the round trip through read and write.
+    let untouched = CheckpointHeader::read(&record)
+        .map(|(header, payload)| header.write(payload))
+        .expect("we wrote it");
+    assert!(load(&untouched, &config(), &device).is_ok());
+}
+
+#[test]
 fn a_checkpoint_missing_a_required_family_is_refused() {
     let device = Device::flex();
     let model = config().init(&device);
     let partial = CheckpointHeader::new(
         MODEL,
         &Codebook::V1,
+        SlotEncoding::V1,
         &[TableSize {
             family: CodeFamily::SemanticRole,
             rows: 9,
@@ -208,6 +255,7 @@ fn another_model_s_checkpoint_is_refused_by_name() {
     let foreign = CheckpointHeader::new(
         "ptr-ar",
         &Codebook::V1,
+        SlotEncoding::V1,
         &[
             TableSize {
                 family: CodeFamily::SemanticRole,
@@ -345,6 +393,6 @@ fn the_header_verifies_without_consulting_the_provenance_width() {
 
     let written = header(&wide.init(&device));
     written
-        .verify(&narrow.codebook(), &EMBEDDED_FAMILIES)
+        .verify(&narrow.codebook(), narrow.encoding(), &EMBEDDED_FAMILIES)
         .expect("the header agrees: the width it differs by is not a family");
 }

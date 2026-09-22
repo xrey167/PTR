@@ -14,8 +14,8 @@ use ptr_runtime::neural::{Denial, NeuralError, StateDeclaration};
 use ptr_runtime::{PtrRuntime, RuntimeError};
 use ptr_semdb::SemanticDelta;
 use ptr_types::{
-    CheckpointError, CheckpointHeader, CodeFamily, Codebook, CodebookVersion, Generation,
-    ProvenanceRef,
+    CheckpointError, CheckpointHeader, CodeFamily, Codebook, CodebookVersion, EncodingVersion,
+    Generation, ProvenanceRef, SlotEncoding,
 };
 
 /// The families A0 embeds. Named here rather than imported: `ptr-burn-a0` is an
@@ -76,8 +76,12 @@ fn the_fixture_is_the_artifact_the_model_writes() {
     assert_eq!(header.table(CodeFamily::SemanticRole), Some(9));
     assert_eq!(header.table(CodeFamily::EpistemicState), Some(6));
     assert_eq!(header.table(CodeFamily::ReasoningOperator), Some(11));
+    // The slot encoding the artifact was produced under. Unlike the table widths
+    // above, nothing in the payload could reveal this: the encoding makes the model's
+    // input and no parameters, so the header is the only record of it.
+    assert_eq!(header.encoding, EncodingVersion::V1);
     header
-        .verify(&Codebook::V1, &EMBEDDED)
+        .verify(&Codebook::V1, SlotEncoding::V1, &EMBEDDED)
         .expect("this build's assignment");
     assert!(
         !payload.is_empty(),

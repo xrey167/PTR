@@ -74,11 +74,17 @@ impl std::error::Error for CheckpointIoError {}
 /// from the config that built them, so the header cannot claim a width the tensors
 /// do not have. The router's width is the count `init` used; a forward pass
 /// asserts it in `tests/forward.rs`.
+///
+/// The slot-encoding version cannot be read from the weights, because the encoding
+/// produces the model's *input* and no parameters. That is exactly why the header
+/// records it: for every other identity in here a wrong value would eventually show
+/// up as a shape, and for this one nothing would.
 pub fn header(model: &PtrA0) -> CheckpointHeader {
     let book = model.codebook();
     CheckpointHeader::new(
         MODEL,
         &book,
+        model.encoding(),
         &[
             TableSize {
                 family: CodeFamily::SemanticRole,
@@ -119,7 +125,7 @@ pub fn load(
             found: header.model,
         });
     }
-    header.verify(&config.codebook(), &EMBEDDED_FAMILIES)?;
+    header.verify(&config.codebook(), config.encoding(), &EMBEDDED_FAMILIES)?;
     let record = ModuleRecord::from_bytes(Bytes::from_bytes_vec(payload.to_vec()))?;
     Ok(config.init(device).try_load_record(record)?)
 }

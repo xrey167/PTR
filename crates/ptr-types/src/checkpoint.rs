@@ -16,7 +16,7 @@
 //! This is a commitment, not authentication. It detects a mismatch between an
 //! artifact and a build. It cannot detect someone who rewrites the header, and
 //! nothing here should be read as claiming otherwise.
-use crate::{CodeFamily, Codebook, CodebookVersion};
+use crate::{CodeFamily, Codebook, CodebookVersion, EncodingVersion, SlotEncoding};
 use std::fmt;
 
 /// Marks the start of a PTR checkpoint. Eight bytes so a truncated or foreign
@@ -24,7 +24,11 @@ use std::fmt;
 const MAGIC: &[u8; 8] = b"PTRCKPT\x00";
 
 /// The only header layout this build writes and reads.
-pub const FORMAT_V1: u16 = 1;
+///
+/// Bumped from 1 when the slot-encoding version joined the header. A layout is not
+/// forward-compatible because its first fields happen to parse, so a format-1
+/// artifact is refused rather than read as though its encoding were this build's.
+pub const FORMAT_V2: u16 = 2;
 
 /// Why a checkpoint was refused.
 ///
@@ -67,6 +71,16 @@ pub enum CheckpointError {
     },
     /// A family the reader requires is not recorded at all.
     MissingTable { family: CodeFamily },
+    /// The artifact's slot encoding is not the one this build produces.
+    ///
+    /// Its own refusal rather than a shape mismatch, because there is no shape to
+    /// mismatch: the encoding produces the model's *input* and no weights, so
+    /// nothing about the tensors would reveal that they were trained on vectors from
+    /// a different definition. A recorded version is the only thing that can.
+    EncodingMoved {
+        stored: EncodingVersion,
+        required: EncodingVersion,
+    },
 }
 
 impl CheckpointError {
@@ -85,6 +99,7 @@ impl CheckpointError {
             Self::CodebookMoved { .. } => "PTR_CKPT_CODEBOOK_MOVED",
             Self::TableSize { .. } => "PTR_CKPT_TABLE_SIZE",
             Self::MissingTable { .. } => "PTR_CKPT_MISSING_TABLE",
+            Self::EncodingMoved { .. } => "PTR_CKPT_ENCODING_MOVED",
         }
     }
 }
@@ -118,6 +133,13 @@ pub struct CheckpointHeader {
     /// That version's complete assignment, verbatim, as
     /// [`Codebook::canonical_bytes`] produced it.
     pub codebook_bytes: Vec<u8>,
+    /// Slot-encoding version the weights were trained against.
+    ///
+    /// Recorded for the reason the codebook is, one step earlier in the pipeline: a
+    /// code identifies nothing without its assignment, and a slot vector identifies
+    /// nothing without the definition that produced it. Unlike a table width, this
+    /// leaves no trace in the tensors, so nothing but this field can catch it.
+    pub encoding: EncodingVersion,
     /// Embedded table sizes, in the order the writer recorded them.
     pub tables: Vec<TableSize>,
 }
@@ -128,11 +150,12 @@ impl CheckpointHeader {
     /// `tables` are the sizes the weights actually have, so they are supplied by
     /// the writer rather than derived here: deriving them from the codebook would
     /// make the header agree with the codebook by construction and check nothing.
-    pub fn new(model: &str, book: &Codebook, tables: &[TableSize]) -> Self {
+    pub fn new(model: &str, book: &Codebook, encoding: SlotEncoding, tables: &[TableSize]) -> Self {
         Self {
             model: model.to_owned(),
             codebook: book.version(),
             codebook_bytes: book.canonical_bytes(),
+            encoding: encoding.version(),
             tables: tables.to_vec(),
         }
     }
@@ -151,7 +174,18 @@ impl CheckpointHeader {
     /// must be recorded and must be exactly its cardinality in `book`. A family
     /// the reader does not name is left alone: a model that embeds fewer families
     /// than the kernel defines is not thereby wrong.
-    pub fn verify(&self, book: &Codebook, required: &[CodeFamily]) -> Result<(), CheckpointError> {
+    pub fn verify(
+        &self,
+        book: &Codebook,
+        encoding: SlotEncoding,
+        required: &[CodeFamily],
+    ) -> Result<(), CheckpointError> {
+        if self.encoding != encoding.version() {
+            return Err(CheckpointError::EncodingMoved {
+                stored: self.encoding,
+                required: encoding.version(),
+            });
+        }
         if self.codebook != book.version() {
             return Err(CheckpointError::UnknownCodebookVersion {
                 version: self.codebook,
@@ -182,11 +216,12 @@ impl CheckpointHeader {
     pub fn write(&self, payload: &[u8]) -> Vec<u8> {
         let mut out = Vec::with_capacity(payload.len() + 128);
         out.extend_from_slice(MAGIC);
-        out.extend_from_slice(&FORMAT_V1.to_le_bytes());
+        out.extend_from_slice(&FORMAT_V2.to_le_bytes());
         put_str(&mut out, &self.model);
         out.extend_from_slice(&self.codebook.0.to_le_bytes());
         out.extend_from_slice(&(self.codebook_bytes.len() as u32).to_le_bytes());
         out.extend_from_slice(&self.codebook_bytes);
+        out.extend_from_slice(&self.encoding.0.to_le_bytes());
         out.extend_from_slice(&(self.tables.len() as u16).to_le_bytes());
         for table in &self.tables {
             put_str(&mut out, table.family.name());
@@ -207,13 +242,14 @@ impl CheckpointHeader {
             return Err(CheckpointError::NotACheckpoint);
         }
         let format = cursor.u16("format")?;
-        if format != FORMAT_V1 {
+        if format != FORMAT_V2 {
             return Err(CheckpointError::UnknownFormat { format });
         }
         let model = cursor.string("model")?;
         let codebook = CodebookVersion(cursor.u32("codebook_version")?);
         let assignment_len = cursor.u32("codebook_bytes_len")? as usize;
         let codebook_bytes = cursor.take(assignment_len, "codebook_bytes")?.to_vec();
+        let encoding = EncodingVersion(cursor.u32("encoding_version")?);
         let table_count = cursor.u16("table_count")? as usize;
         let mut tables: Vec<TableSize> = Vec::with_capacity(table_count);
         for _ in 0..table_count {
@@ -246,6 +282,7 @@ impl CheckpointHeader {
                 model,
                 codebook,
                 codebook_bytes,
+                encoding,
                 tables,
             },
             remaining,

@@ -4,8 +4,8 @@ use burn::{
     prelude::*,
     tensor::Int,
 };
-use ptr_burn_a0::{admission_bias, CodeGrid, PtrA0, PtrA0Config, PtrSlotMetadata};
-use ptr_types::{Codebook, EpistemicState, SemanticRole, Validity, ValidityMask};
+use ptr_burn_a0::{admission_bias, CodeGrid, PtrA0, PtrA0Config, PtrSlotMetadata, SlotValues};
+use ptr_types::{Codebook, EpistemicState, SemanticRole, Validity, ValidityMask, SlotEncoding, TypeId};
 
 // The typed arm gives each row a distinct first role; the ablated arm gives them
 // all the same one. That difference is the mechanism under test, and it is now
@@ -27,7 +27,7 @@ const ABLATED: [&[SemanticRole]; 4] = [
 struct Batch {
     tokens: Tensor<2, Int>,
     slot_types: CodeGrid<SemanticRole>,
-    slots: Tensor<3>,
+    slots: SlotValues,
     metadata: PtrSlotMetadata,
     labels: Tensor<1, Int>,
 }
@@ -37,7 +37,26 @@ fn batch(device: &Device, typed: bool) -> Batch {
     let roles: &[&[SemanticRole]] = if typed { &TYPED } else { &ABLATED };
     let slot_types =
         CodeGrid::new(&Codebook::V1, roles, device).expect("every role is assigned in v1");
-    let slots = Tensor::<3>::zeros([4, 2, 12], device);
+    // One distinct committed payload per slot. Previously zeros, which meant the
+    // typed path was fed slot identity and metadata and no slot *values* at all.
+    let encoding = SlotEncoding::V1;
+    let vectors: Vec<Vec<_>> = (0..4)
+        .map(|row| {
+            (0..2)
+                .map(|slot| {
+                    encoding
+                        .encode(
+                            &TypeId::from("Document"),
+                            format!("row {row} slot {slot}").as_bytes(),
+                            12,
+                        )
+                        .expect("a small payload")
+                })
+                .collect()
+        })
+        .collect();
+    let rows: Vec<&[_]> = vectors.iter().map(Vec::as_slice).collect();
+    let slots = SlotValues::new(&rows, device).expect("a rectangular batch");
     let metadata = PtrSlotMetadata {
         epistemic: CodeGrid::new(
             &Codebook::V1,
@@ -78,7 +97,7 @@ fn loss(model: &PtrA0, batch: &Batch, device: &Device) -> Tensor<1> {
         .forward(
             batch.tokens.clone(),
             &batch.slot_types,
-            batch.slots.clone(),
+            &batch.slots,
             clone_metadata(&batch.metadata),
         )
         .router_logits;
@@ -92,7 +111,7 @@ fn accuracy(model: &PtrA0, batch: &Batch) -> f32 {
         .forward(
             batch.tokens.clone(),
             &batch.slot_types,
-            batch.slots.clone(),
+            &batch.slots,
             clone_metadata(&batch.metadata),
         )
         .router_logits;
