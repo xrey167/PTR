@@ -1,0 +1,12 @@
+version = 1
+id = "R003"
+status = "planned"
+hypothesis = "Full-parameter continued pretraining on the user's own code corpus measurably improves code-task performance over the unmodified base coding LLM."
+metrics = "held-out own-repo completion accuracy/exact-match; held-out own-repo perplexity delta vs base; public code-eval regression (no degradation)"
+baseline = "unmodified base coding LLM checkpoint, same decoding config"
+falsification = "Reject if held-out own-repo performance does not improve over the base checkpoint, or if public code-eval performance regresses."
+hardware_profile = "hardware/dual-rtx3090.toml"
+entrypoint = ""
+seeds = [17, 29, 43, 71, 101]
+results_dir = "results"
+required_artifacts = ["run.json", "metrics.json"]
