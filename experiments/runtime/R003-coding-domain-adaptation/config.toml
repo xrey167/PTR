@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "R003-coding-domain-adaptation"
+path = "experiments/runtime/R003-coding-domain-adaptation"
+tests_dir = "tests"

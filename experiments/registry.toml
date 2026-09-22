@@ -56,6 +56,11 @@ path = "runtime/R002-unseen-pod-generalization"
 status = "planned"
 
 [[experiment]]
+id = "R003"
+path = "runtime/R003-coding-domain-adaptation"
+status = "planned"
+
+[[experiment]]
 id = "L001"
 path = "lifecycle/L001-revocation-crash"
 status = "running"
