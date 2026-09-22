@@ -1,0 +1,11 @@
+# Base-model identity for the coding-pod continued-pretraining track.
+# This is deliberately NOT under model/ — model/ is PTR's own from-scratch
+# architecture research (PTR-A0/AR/Diff); this file describes an external,
+# pretrained checkpoint that PTR continues pretraining rather than designs.
+
+family = "external-coding-llm"
+base_model_id = "unspecified"
+base_model_revision = "unspecified"
+tokenizer = "unspecified"
+license = "unspecified"
+notes = "Fill in the concrete base checkpoint (id/revision/tokenizer/license) once the training-backend evaluation selects a backend and a specific base model is chosen."

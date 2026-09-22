@@ -23,3 +23,10 @@ name = "ptr_future_training_data"
 path = "generated/"
 status = "planned"
 provenance = "must be recorded per dataset card"
+
+[[dataset]]
+name = "own_code_corpus_v0_1"
+path = "bundles/own_code_corpus_v0_1.zip"
+status = "planned"
+provenance = "User's own repositories plus optional permissively-licensed public code datasets, near-deduplicated via MinHash+LSH before import"
+card = "cards/own_code_corpus_v0_1.md"
