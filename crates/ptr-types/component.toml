@@ -61,6 +61,7 @@ evaluations = []
 decisions = ["ADR-0001-rust-runtime.md", "ADR-0003-raw-and-typed.md"]
 
 checks = ["A checkpoint header round-trips with its payload; every prefix of one is refused; trailing bytes, a short payload, an unknown format, an unknown or duplicated family name and a non-UTF-8 field are each refused with their own code",
+  "All thirteen refusals are checked for a distinct code and for rendering as that code, and the hand-written list is held to the enum by an exhaustive match, so a refusal a later build adds stops the test compiling rather than being left out of it unnoticed — which is how the encoding refusal was left out",
   "An assignment moved at the very same codebook version is refused, with the intact header passing as the control; a table width that is not its family's cardinality is refused in both directions",
   "Every family name maps back to its own family and five near-miss spellings map to none",
   "the generated codebook artifact carries this kernel's canonical bytes and every family member; a changed byte and a removed member each fail it", 

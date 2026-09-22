@@ -430,6 +430,32 @@ fn a_family_name_maps_back_to_the_same_family_and_nothing_else_does() {
     }
 }
 
+/// Not a test: a reminder the compiler delivers.
+///
+/// The array in `each_refusal_carries_its_own_diagnostic_code` is written by hand,
+/// and a variant left out of it is invisible — every code the array does list stays
+/// distinct, so the test passes while the omitted refusal's code and rendering go
+/// unchecked. That is how `EncodingMoved` was missed. This match is exhaustive, so a
+/// refusal a later build adds stops this file compiling; the fix is to name it in the
+/// array above as well as here.
+fn _every_refusal_is_accounted_for(error: &CheckpointError) {
+    match error {
+        CheckpointError::NotACheckpoint
+        | CheckpointError::UnknownFormat { .. }
+        | CheckpointError::Truncated { .. }
+        | CheckpointError::NotUtf8 { .. }
+        | CheckpointError::TrailingBytes { .. }
+        | CheckpointError::PayloadLength { .. }
+        | CheckpointError::UnknownFamily { .. }
+        | CheckpointError::DuplicateFamily { .. }
+        | CheckpointError::UnknownCodebookVersion { .. }
+        | CheckpointError::CodebookMoved { .. }
+        | CheckpointError::TableSize { .. }
+        | CheckpointError::MissingTable { .. }
+        | CheckpointError::EncodingMoved { .. } => {}
+    }
+}
+
 #[test]
 fn each_refusal_carries_its_own_diagnostic_code() {
     let errors = [
@@ -461,6 +487,10 @@ fn each_refusal_carries_its_own_diagnostic_code() {
         },
         CheckpointError::MissingTable {
             family: CodeFamily::Validity,
+        },
+        CheckpointError::EncodingMoved {
+            stored: EncodingVersion(2),
+            required: EncodingVersion::V1,
         },
     ];
     let mut codes: Vec<&str> = errors.iter().map(CheckpointError::code).collect();
