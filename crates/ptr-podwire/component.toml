@@ -23,13 +23,14 @@ implemented = [
   "An answer this side cannot encode becomes a refusal rather than no reply at all: the frame bound is enforced by trying to encode rather than by pre-checking one field, because a pre-check on the output bytes would miss the output type and every miss leaves a requester waiting on an open connection",
   "No background loop, timer or retry policy: the caller drives serve_once and request",
   "The whole composition is feature-gated, so iroh stays out of every other workspace build exactly as ptr-net keeps its own backend out",
+  "A requester dials only what the deployment wrote down: request takes a ptr-net PeerAddress, which has no public constructor, so a bare address does not satisfy the signature and an address handed over by a peer or read out of a payload cannot be dialled",
 ]
 
 missing = [
   "Authentication: the peer key is the one ptr-net reports the connection authenticated, and this crate takes the host's word that it passed that rather than something else",
   "Signed answers, and therefore any third-party evidence: inside one exchange the connection vouches for an answer's author and outside it nothing does",
   "A journaled access policy: the scope table is in memory, so it does not survive a restart and nothing records who was admitted to which project when",
-  "Discovery, and any authority over the address a requester is given: a wrong address gets a refusal rather than a wrong Pod only because the request names the endpoint it is for",
+  "Discovery: which address belongs to an id nobody told you is a mechanism choice with its own trust question, recorded as the owner's rather than invented",
   "An accept loop a deployment would run, including backpressure toward a peer that asks faster than the host can answer",
   "Session reuse: every request opens a connection, which is correct and wasteful",
   "Streaming, cancellation and partial answers: one request, one bounded answer",
@@ -62,5 +63,6 @@ checks = [
   "a frame this build cannot parse is refused before any Pod, is still answered, and the answer is bound to the bytes that arrived",
   "an answer naming another endpoint, an answer to another request id and an answer bound to other bytes are each refused, with an honest endpoint answering as the control",
   "a Pod whose output will not fit in a frame yields a refusal bound to the request rather than no reply, with a Pod whose output does fit as the control",
+  "compile-fail doctest: a bare endpoint address is not an argument to request",
   "frame codec unit tests: round trip of every outcome and refusal code, a request never read as an answer and never as the execution wire's frame, every prefix refused, no single bit change yielding the original request, trailing bytes, an unknown layout version, an invented length refused by the bound, an oversize frame refused before parsing and on the way out, an unknown outcome or refusal code refused rather than guessed, zero deliberately not a code, invalid UTF-8 refused rather than replaced, one distinct code per refusal, and this wire's digest asserted different from the execution wire's digest of the same bytes",
 ]

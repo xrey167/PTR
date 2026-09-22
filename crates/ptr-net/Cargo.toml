@@ -25,3 +25,8 @@ tokio = { workspace = true }
 name = "iroh"
 path = "tests/iroh.rs"
 required-features = ["iroh-backend"]
+
+[[test]]
+name = "peers"
+path = "tests/peers.rs"
+required-features = ["iroh-backend"]

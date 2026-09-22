@@ -2,7 +2,7 @@
 
 mod codec;
 
-use ptr_types::{Revision, TypeId};
+use ptr_types::{EncodingError, Revision, SlotEncoding, SlotVector, TypeId};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
@@ -148,6 +148,81 @@ struct SemanticState {
     dependencies: DependencyGraph,
 }
 
+/// The type a bare [`SemanticValue::Text`] encodes under.
+///
+/// `Text` carries no type of its own, and a slot vector needs one: the type is part
+/// of what the encoding commits to. So text is declared to be `Text` here, in one
+/// place, rather than each caller choosing. A consequence worth stating because it
+/// is intended rather than accidental: `Text("x")` and a `Payload` of the same bytes
+/// under this same type encode **identically**, because they are the same claim
+/// about the world differently spelled.
+pub const TEXT_TYPE: &str = "Text";
+
+/// Why a committed value could not be turned into a slot vector.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SlotVectorError {
+    /// Nothing is committed at this key.
+    ///
+    /// A refusal rather than a zero vector. A model handed zeros for a key nothing
+    /// holds would be reading an absence as a value — and zeros are exactly what
+    /// every call site passed before any of this existed, so they are the one thing
+    /// that must never mean "here is a payload".
+    NotCommitted { key: String },
+    /// The encoding refused.
+    Encoding(EncodingError),
+}
+
+impl SlotVectorError {
+    /// Stable diagnostic code for this refusal.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::NotCommitted { .. } => "PTR_SEMDB_NOT_COMMITTED",
+            Self::Encoding(error) => error.code(),
+        }
+    }
+}
+
+impl From<EncodingError> for SlotVectorError {
+    /// Carry an encoding refusal through unchanged.
+    fn from(error: EncodingError) -> Self {
+        Self::Encoding(error)
+    }
+}
+
+impl fmt::Display for SlotVectorError {
+    /// Render the stable refusal code.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.code())
+    }
+}
+
+impl std::error::Error for SlotVectorError {}
+
+impl SemanticValue {
+    /// The type and bytes this value encodes under.
+    ///
+    /// A payload's `source` deliberately does **not** participate. Provenance has
+    /// its own channel into the model — `PtrSlotMetadata::provenance_ids` — and
+    /// folding it in here would make a slot's value change when only its origin did,
+    /// which is a different fact about the world.
+    fn encoded_as(&self) -> (TypeId, &[u8]) {
+        match self {
+            Self::Text(text) => (TypeId::from(TEXT_TYPE), text.as_bytes()),
+            Self::Payload(payload) => (payload.type_id.clone(), payload.bytes.as_slice()),
+        }
+    }
+
+    /// Encode this value as one slot's vector.
+    pub fn slot_vector(
+        &self,
+        encoding: SlotEncoding,
+        width: usize,
+    ) -> Result<SlotVector, EncodingError> {
+        let (type_id, bytes) = self.encoded_as();
+        encoding.encode(&type_id, bytes, width)
+    }
+}
+
 /// Immutable historical view. Possessing it does not establish live admission.
 #[derive(Clone, Debug)]
 pub struct SemanticSnapshot {
@@ -182,6 +257,30 @@ impl SemanticSnapshot {
             .into_iter()
             .flatten()
             .map(String::as_str)
+    }
+
+    /// The slot vector for a committed key, or a refusal.
+    ///
+    /// This is the one door between committed semantic state and what a model reads
+    /// in a slot. A key nothing holds yields [`SlotVectorError::NotCommitted`] rather
+    /// than a vector, so a payload the model sees is one this snapshot actually
+    /// holds — not one a caller composed and not an absence dressed as a value.
+    ///
+    /// It reads from a *snapshot*, so the vector belongs to one revision. Two
+    /// snapshots at different revisions holding the same value give the same vector,
+    /// because the vector is a function of the value and nothing else.
+    pub fn slot_vector(
+        &self,
+        key: &str,
+        encoding: SlotEncoding,
+        width: usize,
+    ) -> Result<SlotVector, SlotVectorError> {
+        let value = self
+            .value(key)
+            .ok_or_else(|| SlotVectorError::NotCommitted {
+                key: key.to_owned(),
+            })?;
+        Ok(value.slot_vector(encoding, width)?)
     }
 }
 

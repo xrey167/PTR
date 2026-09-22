@@ -158,7 +158,7 @@ cannot notice when somebody reuses the number: restoring `session_id = 1` to the
 
 ## Executed evidence
 
-`crates/ptr-podwire`: 14 frame unit tests, 10 in `tests/access.rs`, 8 in
+`crates/ptr-podwire`: 14 frame unit tests, 10 in `tests/access.rs`, 9 in
 `tests/wire.rs` over real authenticated connections. One `compile_fail` doctest in
 `crates/ptr-protocol`.
 
@@ -238,9 +238,15 @@ and the peer the decision runs under.
   `ExecutionGrant` it *could* be rebuilt from history. That makes it a smaller
   problem, not a closed one, and taking it separately would leave two policies with
   two durability stories.
-- **No discovery and no address authority.** A requester is given a host address out
-  of band, and a wrong address gets a refusal rather than a wrong Pod *only because*
-  the request names the endpoint it is for. C8 in issue #23, unchanged.
+- **No discovery.** Which address belongs to an id nobody told you is a mechanism
+  choice with its own trust question, and it is the owner's.
+
+  **Address authority is no longer missing.** This bullet said *no discovery and no
+  address authority*, and that a wrong address gets a refusal only because the
+  request names the endpoint it is for — which stopped being true one commit later.
+  `request` takes a `ptr_net::PeerAddress`, which only a `PeerBook` the deployment
+  installed can produce, and a wrong address fails on the authenticated key before
+  the host is asked anything. See `34-address-authority.md`.
 - **No accept loop, and no backpressure.** `serve_once` answers one connection. A
   peer that asks faster than the host can answer is the deployment's problem, and
   where the loop belongs is D4.

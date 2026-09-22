@@ -47,6 +47,7 @@
 - [31-cluster-integrity.md](31-cluster-integrity.md)
 - [32-execution-wire.md](32-execution-wire.md)
 - [33-pod-wire.md](33-pod-wire.md)
+- [34-address-authority.md](34-address-authority.md)
 - [Open architecture catalog](../../research/catalogs/README.md) — unresolved type families, backend slots and component contracts
 
 ## Component-level documentation

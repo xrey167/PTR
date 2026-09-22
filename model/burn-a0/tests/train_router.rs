@@ -4,8 +4,10 @@ use burn::{
     prelude::*,
     tensor::Int,
 };
-use ptr_burn_a0::{admission_bias, CodeGrid, PtrA0Config, PtrSlotMetadata};
-use ptr_types::{Codebook, EpistemicState, SemanticRole, Validity, ValidityMask};
+use ptr_burn_a0::{admission_bias, CodeGrid, PtrA0Config, PtrSlotMetadata, SlotValues};
+use ptr_types::{
+    Codebook, EpistemicState, SemanticRole, SlotEncoding, TypeId, Validity, ValidityMask,
+};
 
 // One row per target operator. The distinguishing feature is the first slot's
 // semantic role, so the task is "route by type", which is the mechanism this
@@ -20,7 +22,7 @@ const ROLES: [&[SemanticRole]; 4] = [
 struct TrainingBatch {
     tokens: Tensor<2, Int>,
     slot_types: CodeGrid<SemanticRole>,
-    slots: Tensor<3>,
+    slots: SlotValues,
     metadata: PtrSlotMetadata,
     labels: Tensor<1, Int>,
 }
@@ -44,12 +46,35 @@ fn metadata(device: &Device) -> PtrSlotMetadata {
     }
 }
 
+/// One distinct committed payload per slot, so the router has something to learn
+/// from rather than four identical rows.
+fn slot_values(width: usize, device: &Device) -> SlotValues {
+    let encoding = SlotEncoding::V1;
+    let vectors: Vec<Vec<_>> = (0..4)
+        .map(|row| {
+            (0..2)
+                .map(|slot| {
+                    encoding
+                        .encode(
+                            &TypeId::from("Document"),
+                            format!("row {row} slot {slot}").as_bytes(),
+                            width,
+                        )
+                        .expect("a small payload")
+                })
+                .collect()
+        })
+        .collect();
+    let rows: Vec<&[_]> = vectors.iter().map(Vec::as_slice).collect();
+    SlotValues::new(&rows, device).expect("a rectangular batch")
+}
+
 fn batch(device: &Device) -> TrainingBatch {
     TrainingBatch {
         tokens: Tensor::<2, Int>::from_data([[1, 1], [1, 1], [1, 1], [1, 1]], device),
         slot_types: CodeGrid::new(&Codebook::V1, &ROLES, device)
             .expect("every role is assigned in v1"),
-        slots: Tensor::<3>::zeros([4, 2, 12], device),
+        slots: slot_values(12, device),
         metadata: metadata(device),
         labels: Tensor::<1, Int>::from_data([0, 1, 2, 3], device),
     }
@@ -76,7 +101,7 @@ fn tiny_router_task_is_trainable() {
         .forward(
             tokens.clone(),
             &slot_types,
-            slots.clone(),
+            &slots,
             clone_metadata(&metadata),
         )
         .router_logits;
@@ -89,7 +114,7 @@ fn tiny_router_task_is_trainable() {
         let output = model.forward(
             tokens.clone(),
             &slot_types,
-            slots.clone(),
+            &slots,
             clone_metadata(&metadata),
         );
         let loss = CrossEntropyLossConfig::new()
@@ -100,7 +125,7 @@ fn tiny_router_task_is_trainable() {
     }
 
     let final_logits = model
-        .forward(tokens, &slot_types, slots, metadata)
+        .forward(tokens, &slot_types, &slots, metadata)
         .router_logits;
     let final_loss = CrossEntropyLossConfig::new()
         .init(&device)

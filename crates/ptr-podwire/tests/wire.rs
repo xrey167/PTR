@@ -9,7 +9,7 @@
 //! Every test drives one exchange with `tokio::join!` rather than a background
 //! loop, so a failure is a failure of the protocol and never of a race with a
 //! server task.
-use ptr_net::{IrohTransport, ALPN_PODWIRE};
+use ptr_net::{EndpointAddr, IrohTransport, PeerAddress, PeerBook, ALPN_PODWIRE};
 use ptr_pods::{DynPod, PodManifest, PodRegistry};
 use ptr_podwire::{
     decode_answer, decode_request, encode_answer, encode_request, request_digest, PodAccessPolicy,
@@ -101,6 +101,17 @@ fn scope(project: &str) -> PodScope {
         .allow(CapabilityId::from(SUMMARIZE), TypeId::from(DOCUMENT))
 }
 
+/// Where to dial, on the deployment's authority.
+///
+/// A `PodClient` accepts nothing else, so every test here goes through a book — which
+/// is the point: a bare address does not satisfy the signature.
+fn located(address: EndpointAddr) -> PeerAddress {
+    let mut book = PeerBook::new();
+    book.record(address.clone());
+    book.locate(&NodeId(address.id.to_string()))
+        .expect("an address just recorded is locatable")
+}
+
 /// The request every test sends. Note what it does **not** contain: a project, a
 /// session, or anything naming its sender.
 fn request(addressed_to: String, request_id: u64) -> PodRequest {
@@ -130,7 +141,8 @@ async fn an_admitted_peer_reaches_its_project_s_pod_over_a_real_connection() {
 
     let asked = request(host.identity().public_key, 1);
     let address = host.address();
-    let (answered, served) = tokio::join!(client.request(address, &asked), host.serve_once());
+    let (answered, served) =
+        tokio::join!(client.request(located(address), &asked), host.serve_once());
     let answered = answered.unwrap();
     let served = served.unwrap();
 
@@ -187,9 +199,15 @@ async fn two_peers_send_the_same_bytes_and_reach_two_different_projects_pods() {
     let asked = request(host.identity().public_key, 7);
 
     let address = host.address();
-    let (from_alpha, _) = tokio::join!(alpha_client.request(address, &asked), host.serve_once());
+    let (from_alpha, _) = tokio::join!(
+        alpha_client.request(located(address), &asked),
+        host.serve_once()
+    );
     let address = host.address();
-    let (from_beta, _) = tokio::join!(beta_client.request(address, &asked), host.serve_once());
+    let (from_beta, _) = tokio::join!(
+        beta_client.request(located(address), &asked),
+        host.serve_once()
+    );
 
     // One request value, so the frames the two sent are the same bytes. Asserted
     // rather than assumed, because the whole claim rests on it.
@@ -232,7 +250,10 @@ async fn a_peer_the_host_never_admitted_is_refused_and_no_pod_runs() {
 
     let asked = request(host.identity().public_key, 2);
     let address = host.address();
-    let (answered, served) = tokio::join!(stranger.request(address, &asked), host.serve_once());
+    let (answered, served) = tokio::join!(
+        stranger.request(located(address), &asked),
+        host.serve_once()
+    );
 
     assert_eq!(
         answered.unwrap().outcome,
@@ -266,7 +287,7 @@ async fn withdrawing_a_peer_takes_effect_on_its_very_next_request_over_the_wire(
     // The control first: the same peer, the same request, admitted.
     let asked = request(host.identity().public_key, 1);
     let address = host.address();
-    let (answered, _) = tokio::join!(client.request(address, &asked), host.serve_once());
+    let (answered, _) = tokio::join!(client.request(located(address), &asked), host.serve_once());
     assert!(matches!(
         answered.unwrap().outcome,
         PodOutcome::Answered { .. }
@@ -277,7 +298,7 @@ async fn withdrawing_a_peer_takes_effect_on_its_very_next_request_over_the_wire(
 
     let asked = request(host.identity().public_key, 2);
     let address = host.address();
-    let (answered, _) = tokio::join!(client.request(address, &asked), host.serve_once());
+    let (answered, _) = tokio::join!(client.request(located(address), &asked), host.serve_once());
     assert_eq!(
         answered.unwrap().outcome,
         PodOutcome::Refused {
@@ -311,7 +332,8 @@ async fn a_request_addressed_to_another_host_is_refused_and_no_pod_runs() {
     let mut asked = request(host.identity().public_key, 3);
     asked.addressed_to = elsewhere.identity().public_key;
     let address = host.address();
-    let (answered, served) = tokio::join!(client.request(address, &asked), host.serve_once());
+    let (answered, served) =
+        tokio::join!(client.request(located(address), &asked), host.serve_once());
 
     assert_eq!(
         answered.unwrap().outcome,
@@ -328,7 +350,7 @@ async fn a_request_addressed_to_another_host_is_refused_and_no_pod_runs() {
     // The control: the same peer and the same host, addressed correctly.
     let asked = request(host.identity().public_key, 4);
     let address = host.address();
-    let (answered, _) = tokio::join!(client.request(address, &asked), host.serve_once());
+    let (answered, _) = tokio::join!(client.request(located(address), &asked), host.serve_once());
     assert!(matches!(
         answered.unwrap().outcome,
         PodOutcome::Answered { .. }
@@ -416,7 +438,7 @@ async fn an_answer_naming_another_host_is_refused_and_an_honest_one_is_not() {
             .unwrap();
     };
 
-    let (answered, ()) = tokio::join!(client.request(rogue_address, &asked), serving);
+    let (answered, ()) = tokio::join!(client.request(located(rogue_address), &asked), serving);
     match answered.expect_err("an answer naming another endpoint") {
         PodWireError::ForgedAnswer {
             authenticated,
@@ -451,7 +473,7 @@ async fn an_answer_naming_another_host_is_refused_and_an_honest_one_is_not() {
             .await
             .unwrap();
     };
-    let (answered, ()) = tokio::join!(client.request(honest_address, &asked), serving);
+    let (answered, ()) = tokio::join!(client.request(located(honest_address), &asked), serving);
     assert_eq!(
         answered.expect("an honest author is not refused").responder,
         honest_key
@@ -485,7 +507,7 @@ async fn an_answer_to_another_request_and_one_bound_to_other_bytes_are_each_refu
             .await
             .unwrap();
     };
-    let (answered, ()) = tokio::join!(client.request(address, &asked), serving);
+    let (answered, ()) = tokio::join!(client.request(located(address), &asked), serving);
     assert_eq!(
         answered.expect_err("an answer to another request"),
         PodWireError::WrongRequest {
@@ -516,7 +538,7 @@ async fn an_answer_to_another_request_and_one_bound_to_other_bytes_are_each_refu
             .await
             .unwrap();
     };
-    let (answered, ()) = tokio::join!(client.request(address, &asked), serving);
+    let (answered, ()) = tokio::join!(client.request(located(address), &asked), serving);
     assert_eq!(
         answered.expect_err("an answer bound to other bytes"),
         PodWireError::UnboundAnswer
@@ -551,7 +573,8 @@ async fn an_answer_that_will_not_fit_in_a_frame_is_still_an_answer() {
 
     let asked = request(host.identity().public_key, 41);
     let address = host.address();
-    let (answered, served) = tokio::join!(client.request(address, &asked), host.serve_once());
+    let (answered, served) =
+        tokio::join!(client.request(located(address), &asked), host.serve_once());
 
     let answered = answered.expect("the requester is answered rather than left waiting");
     assert_eq!(
@@ -586,7 +609,7 @@ async fn an_answer_that_will_not_fit_in_a_frame_is_still_an_answer() {
     let host = PodHost::bind(registry, policy, Pass).await.unwrap();
     let asked = request(host.identity().public_key, 42);
     let address = host.address();
-    let (answered, _) = tokio::join!(client.request(address, &asked), host.serve_once());
+    let (answered, _) = tokio::join!(client.request(located(address), &asked), host.serve_once());
     assert!(matches!(
         answered.unwrap().outcome,
         PodOutcome::Answered { .. }

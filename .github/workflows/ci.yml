@@ -124,9 +124,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo +stable test -p ptr-net --features iroh-backend --test iroh --locked
+      # Every ptr-net test with the backend on, not only `iroh`: `peers` drives the
+      # address-authority properties and would otherwise never run in CI.
+      - run: cargo +stable test -p ptr-net --features iroh-backend --locked
+      - run: cargo +stable clippy -p ptr-net --features iroh-backend --all-targets --locked -- -D warnings
       - run: rustup toolchain install 1.91.0 --profile minimal
-      - run: cargo +1.91.0 test -p ptr-net --features iroh-backend --test iroh --locked
+      - run: cargo +1.91.0 test -p ptr-net --features iroh-backend --locked
   cluster-wire:
     runs-on: ubuntu-latest
     steps:
