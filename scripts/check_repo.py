@@ -160,7 +160,10 @@ def check(root: Path) -> tuple[list[str], str]:
         if not path.is_file():
             errors.append(f"missing {relative}")
             return set()
-        raw = tomllib.loads(path.read_text(encoding="utf-8"))
+        try:
+            raw = tomllib.loads(path.read_text(encoding="utf-8"))
+        except tomllib.TOMLDecodeError:
+            return set()
         return {x["id"] for x in raw.get(key, [])}
 
     exp_ids = registry("experiments/registry.toml", "experiment")
@@ -168,10 +171,11 @@ def check(root: Path) -> tuple[list[str], str]:
 
     if not (root / "crates").is_dir():
         errors.append("missing crates")
-        return errors, summary
-    crate_dirs = sorted(
-        p for p in (root / "crates").iterdir() if p.is_dir() and (p / "Cargo.toml").exists()
-    )
+        crate_dirs = []
+    else:
+        crate_dirs = sorted(
+            p for p in (root / "crates").iterdir() if p.is_dir() and (p / "Cargo.toml").exists()
+        )
     for crate in crate_dirs:
         name = crate.name
         for rel in ["README.md", "component.toml", "src/lib.rs"]:

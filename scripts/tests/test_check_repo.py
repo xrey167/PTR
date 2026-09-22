@@ -119,5 +119,21 @@ class ThisRepository(unittest.TestCase):
         self.assertEqual(mod.check_workspace_membership(ROOT), [])
 
 
+class RepositoryShape(unittest.TestCase):
+    def test_malformed_registry_and_missing_crates_are_reported(self):
+        directory = tempfile.TemporaryDirectory()
+        root = Path(directory.name)
+        with directory:
+            (root / "experiments").mkdir()
+            (root / "experiments/registry.toml").write_text("[experiment\n", encoding="utf-8")
+
+            errors, summary = mod.check(root)
+
+        self.assertIn("missing README.md", errors)
+        self.assertIn("TOML experiments/registry.toml:", "\n".join(errors))
+        self.assertIn("missing crates", errors)
+        self.assertTrue(summary.startswith("OK: 0 documented crates"), summary)
+
+
 if __name__ == "__main__":
     unittest.main()
