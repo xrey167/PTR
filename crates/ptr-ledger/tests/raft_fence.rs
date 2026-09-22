@@ -184,3 +184,37 @@ fn an_unclaimed_directory_is_not_fenced() {
         .set_hard_state(&at_term(1))
         .expect("a first writer is not fenced by an empty directory");
 }
+
+#[test]
+fn a_fenced_writer_cannot_record_a_snapshot_either() {
+    let temp = Temp::new("record");
+    let stale = FileRaftStorage::open(&temp.0, &VOTERS, &[]).unwrap();
+    // Give the stale writer a committed entry so `record_snapshot` gets past its
+    // own validation and would otherwise reach the destructive part.
+    stale.wl().set_hard_state(&at_term(2)).unwrap();
+    stale.wl().append(&[entry(1, 2)]).unwrap();
+    stale.wl().set_commit(1).unwrap();
+
+    let current = FileRaftStorage::open(&temp.0, &VOTERS, &[]).unwrap();
+    current.wl().set_hard_state(&at_term(9)).unwrap();
+
+    // `record_snapshot` overwrites the shared snapshot payload and then calls
+    // `compact_to`, which rewrites the log and discards its prefix. Both happen
+    // before `persist_state` would reach the fence, so a writer checked only
+    // there has already destroyed shared history by the time it is refused.
+    let before = files(&temp);
+    let error = stale
+        .wl()
+        .record_snapshot(1, b"a payload a fenced writer must not land".to_vec())
+        .expect_err("a fenced writer must not record a snapshot");
+    assert!(error.to_string().contains("PTR_RAFT_FENCED"), "{error}");
+    assert_eq!(
+        files(&temp),
+        before,
+        "neither the log nor the state may move for a fenced writer"
+    );
+    assert!(
+        !temp.0.join("snapshot").exists(),
+        "and no snapshot payload may be left behind"
+    );
+}

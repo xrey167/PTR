@@ -94,10 +94,6 @@ class RealArtifactTests(unittest.TestCase):
         self.assertEqual(mod.check(ROOT / "datasets/generated/codebook.json"), [])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TrackedTests(unittest.TestCase):
     """The artifact existing is not the same as the repository having it.
 
@@ -204,3 +200,7 @@ class ThisArtifactTests(unittest.TestCase):
         self.assertIn("provenance_bucket_count", exceptions)
         self.assertEqual(exceptions["provenance_bucket_count"]["width"], 64)
         self.assertTrue(exceptions["provenance_bucket_count"]["reason"].strip())
+
+
+if __name__ == "__main__":
+    unittest.main()

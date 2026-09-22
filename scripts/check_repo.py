@@ -151,11 +151,24 @@ def check(root: Path) -> tuple[list[str], str]:
             except Exception as e:
                 errors.append(f"JSONL {p.relative_to(root)}:{n}: {e}")
 
-    exp_raw = tomllib.loads((root / "experiments/registry.toml").read_text(encoding="utf-8"))
-    eval_raw = tomllib.loads((root / "evaluations/registry.toml").read_text(encoding="utf-8"))
-    exp_ids = {x["id"] for x in exp_raw.get("experiment", [])}
-    eval_ids = {x["id"] for x in eval_raw.get("component", [])}
+    # Reported, not raised. `check(root)` is driven by fixtures as well as by the
+    # real tree, and a fixture missing a registry should come back as an error in
+    # the list like every other finding rather than as a traceback that hides the
+    # ones already accumulated.
+    def registry(relative: str, key: str) -> set[str]:
+        path = root / relative
+        if not path.is_file():
+            errors.append(f"missing {relative}")
+            return set()
+        raw = tomllib.loads(path.read_text(encoding="utf-8"))
+        return {x["id"] for x in raw.get(key, [])}
 
+    exp_ids = registry("experiments/registry.toml", "experiment")
+    eval_ids = registry("evaluations/registry.toml", "component")
+
+    if not (root / "crates").is_dir():
+        errors.append("missing crates")
+        return errors, summary
     crate_dirs = sorted(
         p for p in (root / "crates").iterdir() if p.is_dir() and (p / "Cargo.toml").exists()
     )

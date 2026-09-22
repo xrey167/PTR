@@ -21,7 +21,7 @@ use super::execution::{SettledOutcome, UnsettledEffect};
 use super::{PtrRuntime, RuntimeError, RuntimeLedger};
 use ptr_config::PtrConfig;
 use ptr_ledger::integrity::{self, LogAnchor};
-use ptr_ledger::{CommittedEvent, InMemoryLedger};
+use ptr_ledger::{CommittedEvent, InMemoryLedger, MAX_RETAINED_RESPONSE};
 use ptr_semdb::{SemanticDelta, SemanticHost};
 use ptr_state::MaterializedState;
 use ptr_types::{CommitIndex, Effect, Generation, Revision};
@@ -167,6 +167,21 @@ impl Writer {
         self.raw(value.as_bytes())
     }
     /// Encode one little-endian unsigned integer.
+    /// Encode one bounded byte string.
+    ///
+    /// Separate from `count`, which bounds a *collection's cardinality* at
+    /// `MAX_SECTION_ITEMS`. A retained response is a payload, not a collection,
+    /// and the runtime accepts one up to `MAX_RETAINED_RESPONSE` — so encoding it
+    /// through `count` refused every legal response over 65,536 bytes and made
+    /// compaction impossible for the rest of that runtime's life.
+    fn blob(&mut self, value: &[u8]) -> Result<(), RuntimeError> {
+        if value.len() > MAX_RETAINED_RESPONSE {
+            return Err(invalid(CompactedError::SectionLimit));
+        }
+        self.raw(&(value.len() as u32).to_le_bytes())?;
+        self.raw(value)
+    }
+
     fn number(&mut self, value: u64) -> Result<(), RuntimeError> {
         self.raw(&value.to_le_bytes())
     }
@@ -210,6 +225,15 @@ impl<'a> Reader<'a> {
             .map_err(|_| invalid(CompactedError::NoncanonicalSection))
     }
     /// Decode one little-endian unsigned integer.
+    /// Decode one bounded byte string, with the same bound the writer used.
+    fn blob(&mut self) -> Result<Vec<u8>, RuntimeError> {
+        let length = u32::from_le_bytes(self.take(4)?.try_into().expect("length bytes")) as usize;
+        if length > MAX_RETAINED_RESPONSE || length > self.bytes.len().saturating_sub(self.offset) {
+            return Err(invalid(CompactedError::SectionLimit));
+        }
+        Ok(self.take(length)?.to_vec())
+    }
+
     fn number(&mut self) -> Result<u64, RuntimeError> {
         Ok(u64::from_le_bytes(
             self.take(8)?.try_into().expect("fixed number"),
@@ -374,8 +398,7 @@ impl ExecutionObligations {
             match outcome {
                 SettledOutcome::Applied { response } => {
                     out.number(0)?;
-                    out.count(response.len())?;
-                    out.raw(response)?;
+                    out.blob(response)?;
                 }
                 SettledOutcome::AppliedWithoutResponse => out.number(1)?,
                 SettledOutcome::NotApplied => out.number(2)?,
@@ -435,12 +458,9 @@ impl ExecutionObligations {
             }
             previous = Some(key.clone());
             let outcome = match reader.number()? {
-                0 => {
-                    let length = reader.count()?;
-                    SettledOutcome::Applied {
-                        response: reader.take(length)?.to_vec(),
-                    }
-                }
+                0 => SettledOutcome::Applied {
+                    response: reader.blob()?,
+                },
                 1 => SettledOutcome::AppliedWithoutResponse,
                 2 => SettledOutcome::NotApplied,
                 _ => return Err(invalid(CompactedError::UnknownTag)),

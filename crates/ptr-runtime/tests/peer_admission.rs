@@ -34,6 +34,29 @@ fn policy_for(action: &ActionIr, probe: &Probe) -> AdmissionPolicy {
     policy
 }
 
+/// The same peer, admitted with a grant that does **not** cover `action`.
+///
+/// Narrowing is the case that matters: a replacement which still admits the peer
+/// but gives it less. A policy identical to the old one cannot show whether
+/// grants were re-derived, because both derivations produce the same answer.
+fn narrower_policy_for(action: &ActionIr, probe: &Probe) -> AdmissionPolicy {
+    let mut policy = AdmissionPolicy::new();
+    let mut narrowed = scope(action);
+    narrowed.operation = "something-else".into();
+    let probe = probe.clone();
+    policy
+        .admit(peer(), "alice", TTL, move || {
+            vec![grant(
+                narrowed.clone(),
+                &probe,
+                RequiredVerification::FullSemantic,
+                ExecutorMode::Success,
+            )]
+        })
+        .unwrap();
+    policy
+}
+
 fn principal_of(runtime: &PtrRuntime) -> Option<String> {
     runtime
         .committed_events()
@@ -241,4 +264,58 @@ fn a_malformed_peer_or_principal_is_refused_by_the_policy() {
             Some(ExecutionError::InvalidSession)
         );
     }
+}
+
+/// A narrowed policy must not leave a live session running under the old grants.
+///
+/// `session()` re-derives whether the peer is *still admitted*; it does not
+/// re-derive what the peer may do, because `SessionRecord` holds the grants
+/// admission returned. So a replacement policy that keeps the peer but narrows it
+/// would leave the wider set in force until the TTL expired — which is the
+/// opposite of this contract's own heading, "authority is re-derived at use,
+/// never remembered".
+#[test]
+fn replacing_the_policy_re_derives_the_grants_a_live_session_runs_under() {
+    let (mut runtime, action) = fixture();
+    let probe = Probe::default();
+    runtime.install_admission_policy(policy_for(&action, &probe));
+    let session = runtime.admit_peer(&peer()).unwrap();
+
+    // Issued under the grants the first policy gave.
+    let permit = runtime
+        .prepare_execution(&session, &ProjectId::from("p"), &action, TTL)
+        .unwrap();
+
+    // A replacement that still admits the peer but grants it less. The live
+    // session must follow the narrowing rather than keep the wider set.
+    runtime.install_admission_policy(narrower_policy_for(&action, &probe));
+
+    assert_eq!(
+        runtime.execute_prepared(&session, permit),
+        Err(ExecutionError::StalePermit),
+        "a permit scoped by the grants that have just been replaced is stale"
+    );
+    assert!(
+        matches!(
+            runtime.prepare_execution(&session, &ProjectId::from("p"), &action, TTL),
+            Err(ExecutionError::ScopeDenied)
+        ),
+        "the session must run under the narrowed grants, not the ones it was \
+         admitted with"
+    );
+    assert_eq!(probe.executions(), 0, "nothing ran under the old authority");
+
+    // The control: the session is not merely dead. Restore the wider policy and
+    // the same handle works again — so the refusal above is the narrowing taking
+    // effect rather than the session having been dropped.
+    runtime.install_admission_policy(policy_for(&action, &probe));
+    let permit = runtime
+        .prepare_execution(&session, &ProjectId::from("p"), &action, TTL)
+        .expect("the peer is still admitted, so its session still resolves");
+    runtime.execute_prepared(&session, permit).unwrap();
+    assert_eq!(
+        probe.executions(),
+        1,
+        "under the grants the current policy gives"
+    );
 }

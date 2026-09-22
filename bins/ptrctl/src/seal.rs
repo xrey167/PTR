@@ -113,14 +113,20 @@ pub fn seal(request: &SealRequest) -> Result<NeuralAnchor, String> {
         .seal()
         .map_err(|error| format!("cannot seal {}: {error:?}", show(&request.checkpoint)))?;
 
-    // Written last, and only together: an anchor on disk for a sealed file that is
-    // not there describes nothing, and a sealed file whose anchor was never
-    // retained cannot be reopened.
+    // The two files have to arrive together or not at all. An anchor describing a
+    // sealed file that is not there points at nothing; a sealed file whose anchor
+    // was never retained cannot be reopened and still *reads* as a successful
+    // binding to anything that finds it, which is the worse of the two.
+    //
+    // They cannot be written atomically as a pair, so the second failing undoes
+    // the first.
     std::fs::write(&request.out, sealed.bytes())
         .map_err(|error| format!("cannot write {}: {error}", show(&request.out)))?;
     let anchor = sealed.anchor();
-    std::fs::write(&request.anchor, anchor_toml(&request.out, anchor))
-        .map_err(|error| format!("cannot write {}: {error}", show(&request.anchor)))?;
+    if let Err(error) = std::fs::write(&request.anchor, anchor_toml(&request.out, anchor)) {
+        let _ = std::fs::remove_file(&request.out);
+        return Err(format!("cannot write {}: {error}", show(&request.anchor)));
+    }
 
     Ok(anchor)
 }

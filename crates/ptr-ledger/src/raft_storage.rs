@@ -120,7 +120,8 @@ impl FileRaftStorage {
             .open(&log_path)?;
 
         let mut core = if existing {
-            let (hard_state, conf_state, snapshot_metadata, fence) = read_state(&state_path)?;
+            let (hard_state, conf_state, snapshot_metadata, fence, applied_events) =
+                read_state(&state_path)?;
             let snapshot_data = if snapshot_path.is_file() {
                 let data = fs::read(&snapshot_path)?;
                 if data.len() > MAX_SNAPSHOT_BYTES {
@@ -144,6 +145,7 @@ impl FileRaftStorage {
                 entries,
                 offsets,
                 fence,
+                applied_events,
             }
         } else {
             write_log_header(&mut log)?;
@@ -165,6 +167,7 @@ impl FileRaftStorage {
                 entries: Vec::new(),
                 offsets: Vec::new(),
                 fence: 0,
+                applied_events: 0,
             }
         };
         if !existing {
@@ -199,6 +202,13 @@ pub struct Core {
     /// File offset of `entries[i]`, so a conflicting append can shorten the file
     /// instead of rewriting it.
     offsets: Vec<u64>,
+    /// How many ledger events this member has applied in total, snapshot
+    /// included.
+    ///
+    /// Durable because a snapshot covers events whose records are gone: a member
+    /// that reopened counting from zero would hand the next event an index the
+    /// snapshot already describes, and two different events would claim it.
+    applied_events: u64,
     /// The highest term this storage has ever accepted a write under.
     ///
     /// This is the fencing token. It is kept in memory only as a cache of what is
@@ -243,6 +253,17 @@ impl Core {
     /// Record a new commit index, flushed before returning.
     pub fn set_commit(&mut self, commit: u64) -> io::Result<()> {
         self.hard_state.commit = commit;
+        self.persist_state()
+    }
+
+    /// How many ledger events this member has applied in total.
+    pub fn applied_events(&self) -> u64 {
+        self.applied_events
+    }
+
+    /// Record how many events the member has applied, flushed before returning.
+    pub fn set_applied_events(&mut self, applied_events: u64) -> io::Result<()> {
+        self.applied_events = applied_events;
         self.persist_state()
     }
 
@@ -380,6 +401,11 @@ impl Core {
             return Err(invalid("snapshot moves the covered position backwards"));
         }
         let term = self.term_of(index)?;
+        // Fenced before the payload lands and before the log is rewritten, for the
+        // same reason `apply_snapshot` fences first: `compact_to` discards the
+        // prefix, so a fenced writer reaching it has already destroyed shared
+        // history it was supposed to be excluded from touching.
+        self.fenced_to()?;
         let snapshot_metadata = SnapshotMetadata {
             index,
             term,
@@ -476,7 +502,7 @@ impl Core {
     /// is stated in `31-cluster-integrity.md` rather than hidden.
     fn fenced_to(&mut self) -> io::Result<u64> {
         let on_disk = match read_state(&self.state_path) {
-            Ok((_, _, _, fence)) => fence,
+            Ok((_, _, _, fence, _)) => fence,
             // No state file yet: nothing has claimed this storage, so there is
             // nothing to be fenced by. Any other error is a real failure and is
             // not treated as "unfenced".
@@ -500,6 +526,7 @@ impl Core {
             &self.conf_state,
             &self.snapshot_metadata,
             fence,
+            self.applied_events,
         );
         atomic_write(&self.state_path, &bytes)?;
         sync_dir(&self.dir)
@@ -694,6 +721,7 @@ fn encode_state(
     conf_state: &ConfState,
     snapshot: &SnapshotMetadata,
     fence: u64,
+    applied_events: u64,
 ) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(96);
     bytes.extend_from_slice(STATE_MAGIC);
@@ -708,6 +736,7 @@ fn encode_state(
     bytes.extend_from_slice(&snapshot.index.to_le_bytes());
     bytes.extend_from_slice(&snapshot.term.to_le_bytes());
     bytes.extend_from_slice(&fence.to_le_bytes());
+    bytes.extend_from_slice(&applied_events.to_le_bytes());
     let digest = sha256(&bytes);
     bytes.extend_from_slice(&digest);
     bytes
@@ -722,7 +751,7 @@ fn put_ids(bytes: &mut Vec<u8>, ids: &[u64]) {
 }
 
 /// Read the state file, or refuse it.
-fn read_state(path: &Path) -> io::Result<(HardState, ConfState, SnapshotMetadata, u64)> {
+fn read_state(path: &Path) -> io::Result<(HardState, ConfState, SnapshotMetadata, u64, u64)> {
     let bytes = fs::read(path)?;
     if bytes.len() < STATE_MAGIC.len() + 32 || &bytes[..STATE_MAGIC.len()] != STATE_MAGIC {
         return Err(invalid("not a PTR raft state file"));
@@ -770,10 +799,11 @@ fn read_state(path: &Path) -> io::Result<(HardState, ConfState, SnapshotMetadata
         conf_state: None,
     };
     let fence = take_u64(&mut at)?;
+    let applied_events = take_u64(&mut at)?;
     if at != body.len() {
         return Err(invalid("raft state file has trailing bytes"));
     }
-    Ok((hard_state, conf_state, snapshot, fence))
+    Ok((hard_state, conf_state, snapshot, fence, applied_events))
 }
 
 /// Read a length-prefixed list of node ids.

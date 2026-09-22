@@ -503,7 +503,10 @@ fn a_member_compacted_past_is_caught_up_by_a_snapshot_and_equals_a_full_replay()
     // The application accounts for it, and the group continues.
     let restored = decode_state(&installed.state);
     assert_eq!(restored, vec![1, 2, 3, 4, 5]);
-    cluster.node(3).resume_with_applied(restored.len() as u64);
+    cluster
+        .node(3)
+        .resume_with_applied(restored.len() as u64)
+        .unwrap();
     cluster.propose(1, 6).unwrap();
 
     // Restored by snapshot equals restored by full replay: member 2 replayed every
@@ -927,5 +930,47 @@ fn a_refused_proposal_leaves_the_configuration_untouched() {
         cluster.get(2).voters(),
         before,
         "the same observable moves when a change really commits"
+    );
+}
+
+#[test]
+fn reopening_after_a_snapshot_continues_the_numbering_it_established() {
+    let temp = Temp::new("applied-events");
+    let mut cluster = Cluster::open(&temp);
+    cluster.elect(1);
+    for generation in 1..=4 {
+        cluster.propose(1, generation).unwrap();
+    }
+    let covered = cluster.get(1).raft_committed();
+    let state = encode_state(&cluster.events(1));
+    cluster.node(1).record_snapshot(covered, state).unwrap();
+    // The application accounts for the four events the payload describes, so the
+    // records below the floor stop being this member's to report.
+    cluster.node(1).resume_with_applied(4).unwrap();
+    cluster.propose(1, 5).unwrap();
+
+    let fifth = cluster
+        .events(1)
+        .last()
+        .expect("the event after the snapshot")
+        .index
+        .0;
+    assert_eq!(fifth, 5, "the fifth event is the fifth event");
+    drop(cluster);
+
+    // The events a snapshot covers are described by a payload, not by records
+    // this member still holds. A restart that counted from zero would hand the
+    // next event an index the snapshot already covers, and two different events
+    // would claim it — which is what happened before the count was made durable.
+    let reopened = RaftNode::open(&temp.member(1), 1, &VOTERS).unwrap();
+    let recovered: Vec<u64> = reopened
+        .committed_events()
+        .iter()
+        .map(|event| event.index.0)
+        .collect();
+    assert_eq!(
+        recovered,
+        vec![5],
+        "the one record above the floor keeps the index it was committed at"
     );
 }

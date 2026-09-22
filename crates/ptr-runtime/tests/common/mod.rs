@@ -76,6 +76,13 @@ pub enum ExecutorMode {
     Success,
     Error,
     Panic,
+    /// Return a response of exactly this many bytes.
+    ///
+    /// For the bound between a *collection's cardinality* and a *payload's
+    /// length*: the runtime retains a response up to `MAX_RETAINED_RESPONSE`, so
+    /// a compacted section that encodes it as a collection refuses every legal
+    /// response past 65,536 bytes.
+    Sized(usize),
 }
 struct TestExecutor {
     probe: Probe,
@@ -92,6 +99,7 @@ impl ActionExecutor for TestExecutor {
             ExecutorMode::Success => Ok(b"executed".to_vec()),
             ExecutorMode::Error => Err("outcome uncertain".into()),
             ExecutorMode::Panic => panic!("simulated adapter panic after effect"),
+            ExecutorMode::Sized(bytes) => Ok(vec![b'x'; bytes]),
         }
     }
 }
@@ -160,6 +168,17 @@ pub fn session(
     probe: &Probe,
     principal: &str,
 ) -> ExecutionSession {
+    session_with(runtime, action, probe, principal, ExecutorMode::Success)
+}
+
+/// A session whose adapter behaves as `mode` says.
+pub fn session_with(
+    runtime: &mut PtrRuntime,
+    action: &ActionIr,
+    probe: &Probe,
+    principal: &str,
+    mode: ExecutorMode,
+) -> ExecutionSession {
     runtime
         .register_execution_session(
             principal,
@@ -167,7 +186,7 @@ pub fn session(
                 scope(action),
                 probe,
                 RequiredVerification::FullSemantic,
-                ExecutorMode::Success,
+                mode,
             )],
             TTL,
         )

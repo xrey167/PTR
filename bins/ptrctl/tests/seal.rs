@@ -307,3 +307,23 @@ requires = ["not_a_family"]
     );
     assert!(!temp.at("model.sealed").exists());
 }
+
+#[test]
+fn a_seal_whose_anchor_cannot_be_written_leaves_no_artifact_behind() {
+    let temp = Temp::new("anchor-fails");
+    let (journal_path, declaration) = saved(&temp, DECLARATION);
+
+    // A directory where the anchor file should go: the seal itself succeeds, and
+    // then retaining its anchor cannot. The two files are not written atomically
+    // as a pair, so the second failing has to undo the first — a sealed artifact
+    // whose anchor was never retained cannot be reopened, and still reads as a
+    // successful binding to anything that finds it.
+    std::fs::create_dir(temp.at("model.anchor.toml")).expect("a directory in the anchor's place");
+
+    let run = seal(&temp, &journal_path, &declaration);
+    assert_eq!(run.status, 1, "the anchor could not be written");
+    assert!(
+        !temp.at("model.sealed").exists(),
+        "the sealed artifact must not outlive the anchor it needs"
+    );
+}

@@ -673,10 +673,6 @@ class RealTreeTests(unittest.TestCase):
         self.assertEqual(strict, [], "every retained patch must carry an observation")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 spec_refresh = importlib.util.spec_from_file_location(
     "refresh_vendor_upstream", ROOT / "scripts/refresh_vendor_upstream.py"
 )
@@ -760,3 +756,7 @@ class ObservationAgeTests(unittest.TestCase):
         errors, notes = run(observed, require_observations=True)
         self.assertEqual(errors, [])
         self.assertTrue(any("oldest 2020-01-01" in note for note in notes), notes)
+
+
+if __name__ == "__main__":
+    unittest.main()

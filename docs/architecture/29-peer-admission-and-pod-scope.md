@@ -46,6 +46,19 @@ explicit that the host decides what a peer receives on *every* admission.
 A session admitted from the policy carries the peer it was admitted for, and
 every use re-checks that the policy still admits it.
 
+Admission is not the only thing that has to be re-derived. A session also holds
+the *grants* admission returned, and re-checking only "is this peer still
+admitted" left a replacement policy that kept a peer with **narrower** grants
+running the live session under the wider set until its TTL expired. So
+`install_admission_policy` re-derives every policy-admitted session's grants and
+principal from the new table.
+
+Two choices inside that are worth stating. A session whose peer the new table
+does not admit is left in place rather than dropped, so `session()` can still
+refuse it by name with `PeerNotAdmitted` instead of a bare `SessionClosed`. And
+the expiry is deliberately not refreshed: a new policy may narrow what a session
+can do, but it must not extend how long it lasts.
+
 This is the same rule `27-neural-state-admission.md` applies to cached state, and
 it is here for the same reason: a session that was admissible when it was issued
 says nothing about whether its peer is admissible now, and revocation is

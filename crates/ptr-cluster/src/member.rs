@@ -268,8 +268,13 @@ impl ClusterMember {
     }
 
     /// Account for an installed snapshot: how many events its payload covers.
-    pub fn resume_with_applied(&self, applied_events: u64) {
-        self.locked().resume_with_applied(applied_events);
+    ///
+    /// Fallible because the count is persisted: a member that recorded it only in
+    /// memory would renumber events the snapshot covers on its next restart.
+    pub fn resume_with_applied(&self, applied_events: u64) -> Result<(), ClusterError> {
+        self.locked()
+            .resume_with_applied(applied_events)
+            .map_err(ClusterError::Node)
     }
 
     /// Stand for election and drive the result to quiescence.

@@ -164,3 +164,55 @@ fn a_corrupted_execution_section_is_refused_rather_than_partially_restored() {
         "a damaged snapshot must be refused, not partially restored"
     );
 }
+
+/// A retained response is a payload, not a collection.
+///
+/// The section first encoded it through the writer's `count`, which bounds a
+/// collection's *cardinality* at 65,536. The runtime accepts a response up to
+/// `MAX_RETAINED_RESPONSE` (1 MiB) and retains it, so any legal response over
+/// 64 KiB made `export_compacted_snapshot` fail — not once, but for the rest of
+/// that runtime's life, because the offending entry stays in `settled`. A runtime
+/// that can never export can never let its floor rise again.
+#[test]
+fn a_retained_response_larger_than_the_item_bound_still_round_trips() {
+    let (mut runtime, action) = fixture();
+    let probe = Probe::default();
+    let opened = session_with(
+        &mut runtime,
+        &action,
+        &probe,
+        "alice",
+        ExecutorMode::Sized(100_000),
+    );
+    let permit = runtime
+        .prepare_execution_once(&opened, &ProjectId::from("p"), &action, TTL, "invoice-9")
+        .unwrap();
+    let answer = runtime.execute_prepared(&opened, permit).unwrap();
+    assert_eq!(
+        answer.len(),
+        100_000,
+        "the effect returned a large response"
+    );
+
+    let restored = round_trip(&runtime);
+    let mut restored = restored;
+    regrant(&mut restored, &action);
+
+    let after = Probe::default();
+    let reopened = session(&mut restored, &action, &after, "alice");
+    let retry = restored
+        .prepare_execution_once(&reopened, &ProjectId::from("p"), &action, TTL, "invoice-9")
+        .unwrap();
+    let replayed = restored.execute_prepared(&reopened, retry).unwrap();
+
+    assert_eq!(
+        after.executions(),
+        0,
+        "the key was spent before the floor rose"
+    );
+    assert_eq!(
+        replayed.len(),
+        100_000,
+        "and the retained response survives the round trip intact"
+    );
+}

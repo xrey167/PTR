@@ -710,6 +710,33 @@ impl PtrRuntime {
     /// admit, for the same reason a withdrawal does: authority is re-derived.
     pub fn install_admission_policy(&mut self, policy: AdmissionPolicy) {
         self.execution.policy = policy;
+        // A session holds the grants admission returned, and `session()` re-derives
+        // only whether the peer is *still admitted* — not what it may do. So a
+        // replacement that kept a peer with narrower grants left the live session
+        // running under the wider set until its TTL expired, which is the opposite
+        // of this layer's own rule: authority is re-derived at use, never
+        // remembered.
+        //
+        // Re-derived here rather than by dropping the session, because dropping it
+        // would replace `PeerNotAdmitted` — which says *why* a withdrawn peer is
+        // refused — with a bare `SessionClosed`. A session whose peer the new table
+        // does not admit is therefore left in place for `session()` to refuse by
+        // name.
+        //
+        // The expiry is deliberately not refreshed: a new policy may narrow what a
+        // session can do, but it must not extend how long it lasts.
+        let entries = &self.execution.policy.entries;
+        for record in self.execution.sessions.values_mut() {
+            let Some(peer) = &record.peer else {
+                continue;
+            };
+            if let Some(entry) = entries.get(peer) {
+                record.principal = entry.principal.clone();
+                record.grants = (entry.grants)().into_iter().map(Arc::new).collect();
+            }
+        }
+        // Permits already issued were scoped by the grants that have just changed.
+        self.execution.invalidate_pending();
     }
 
     /// Admit a peer the host's transport authenticated.

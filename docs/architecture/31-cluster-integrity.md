@@ -331,6 +331,13 @@ lower one — `PTR_RAFT_FENCED`, naming both terms. That is what excludes the tw
 writers raft's argument does not cover: one partitioned from its peers but not from
 the storage they share, and one resumed from a stale image.
 
+**Every path that touches the shared files is fenced**, and they are enumerated
+here because enumerating them in a commit message is how one gets missed:
+`persist_state`, `append`, `apply_snapshot` and `record_snapshot`. The last two
+matter most and were the easiest to overlook — both destroy history before they
+persist state, so a writer checked only at `persist_state` has already truncated
+the log and overwritten the snapshot payload by the time it is refused.
+
 **The token is read from disk on every write, never from memory.** This is the
 whole mechanism, and reading the cached copy instead would fence nothing: a stale
 writer's in-memory token is its own stale copy, so it would happily agree with

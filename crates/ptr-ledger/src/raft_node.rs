@@ -147,6 +147,7 @@ impl RaftNode {
         let storage = FileRaftStorage::open(dir, voters, &[]).map_err(|error| error.to_string())?;
         let recovered = storage.wl().committed_entries();
         let applied = storage.wl().hard_state().commit;
+        let recovered_applied = storage.wl().applied_events();
 
         let config = RaftConfig {
             id,
@@ -165,7 +166,9 @@ impl RaftNode {
         let mut member = Self {
             node,
             committed: Vec::new(),
-            applied_events: 0,
+            // Recovered from the state file, so replay continues the numbering a
+            // snapshot established rather than restarting it.
+            applied_events: recovered_applied,
             installed: None,
             id,
         };
@@ -277,9 +280,16 @@ impl RaftNode {
     /// Until this is called, applying further entries is refused. A member that
     /// carried on as though the snapshot were empty would number the next event 1
     /// and disagree with every other member about what that index means.
-    pub fn resume_with_applied(&mut self, applied_events: u64) {
+    pub fn resume_with_applied(&mut self, applied_events: u64) -> Result<(), String> {
         self.applied_events = applied_events;
         self.installed = None;
+        // Durable, because the events this count covers are described by a
+        // payload rather than by records this member still holds. A restart that
+        // counted from zero would hand the next event an index the snapshot
+        // already covers, and two different events would claim it.
+        let store = self.node.raft.raft_log.store.clone();
+        let outcome = store.wl().set_applied_events(applied_events);
+        outcome.map_err(|error| error.to_string())
     }
 
     /// Propose a change to the group's membership.
