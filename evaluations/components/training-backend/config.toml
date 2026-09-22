@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "training-backend"
+path = "evaluations/components/training-backend"
+tests_dir = "tests"
