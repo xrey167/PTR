@@ -1,5 +1,10 @@
 /target/
 **/target/
+# Sibling build directories from a second toolchain (CARGO_TARGET_DIR=target-stable
+# and the like). `target/` alone does not match them, and `git add -A` swept one
+# 9288-file directory into a commit once.
+/target-*/
+**/target-*/
 __pycache__/
 *.pyc
 .venv/
@@ -25,3 +30,9 @@ __pycache__/
 !/datasets/processed/.gitkeep
 /datasets/generated/*
 !/datasets/generated/.gitkeep
+# The codebook artifact is generated, but it is a contract rather than an output:
+# it is what everything outside Rust reads the kernel's tables from, and
+# check_codebook.py exists to catch it drifting from them. A checker cannot compare
+# a committed artifact that was never committed — leaving this ignored made four CI
+# jobs fail on a file that only ever existed on one machine.
+!/datasets/generated/codebook.json

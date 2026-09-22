@@ -3977,7 +3977,12 @@ version = "0.1.0"
 dependencies = [
  "burn",
  "bytemuck",
+ "ptr-types",
 ]
+
+[[package]]
+name = "ptr-types"
+version = "0.1.0"
 
 [[package]]
 name = "pulp"

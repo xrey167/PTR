@@ -18,9 +18,31 @@ pub struct TypedPayload {
     pub bytes: Vec<u8>,
 }
 
+/// A Pod call, once its required fields are known to be present.
+///
+/// It carries no session identifier. It used to, and `proto/podwire.proto` records
+/// why the field number stays reserved: a request that crosses a trust boundary has
+/// no field naming its caller, so there is nothing for a caller to forge. Which
+/// caller is asking is the authenticated connection's answer — `ptr-podwire` puts
+/// it that way on the wire and `ptr-execwire` does the same for actions.
+///
+/// The reservation is held by this test rather than by the comment in the `.proto`
+/// file: a comment cannot notice when somebody reuses the number. If `session_id`
+/// ever comes back, this stops failing to compile and the test fails.
+///
+/// ```compile_fail
+/// use ptr_protocol::generated::podwire::PodCall;
+/// let _ = PodCall {
+///     session_id: "a caller-supplied identity".into(),
+///     call_id: "c".into(),
+///     capability: "predict".into(),
+///     generation: None,
+///     revision: 0,
+///     payload: None,
+/// };
+/// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CallFrame {
-    pub session_id: String,
     pub call_id: String,
     pub capability: CapabilityId,
     pub generation: Option<Generation>,
@@ -30,7 +52,6 @@ pub struct CallFrame {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProtocolError {
-    MissingSessionId,
     MissingCallId,
     MissingCapability,
     MissingPayload,
@@ -41,9 +62,6 @@ impl TryFrom<generated::podwire::PodCall> for CallFrame {
     type Error = ProtocolError;
 
     fn try_from(value: generated::podwire::PodCall) -> Result<Self, Self::Error> {
-        if value.session_id.trim().is_empty() {
-            return Err(ProtocolError::MissingSessionId);
-        }
         if value.call_id.trim().is_empty() {
             return Err(ProtocolError::MissingCallId);
         }
@@ -56,7 +74,6 @@ impl TryFrom<generated::podwire::PodCall> for CallFrame {
         }
 
         Ok(Self {
-            session_id: value.session_id,
             call_id: value.call_id,
             capability: CapabilityId(value.capability),
             generation: value.generation.map(Generation),

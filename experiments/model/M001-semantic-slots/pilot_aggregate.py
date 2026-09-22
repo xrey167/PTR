@@ -1,5 +1,5 @@
 from __future__ import annotations
-import argparse, datetime as dt, json, subprocess
+import argparse, datetime as dt, hashlib, json, subprocess
 from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[3]
@@ -26,10 +26,35 @@ def main():
         sha=subprocess.check_output(["git","rev-parse","HEAD"],cwd=ROOT,text=True).strip()
     except Exception:
         sha="unknown"
+    # A commit id alone can describe code that was never measured: a pilot is
+    # normally run from the worktree that is about to become the next commit, so
+    # HEAD is its parent, and new files are not in `git diff` at all. Fingerprint
+    # the measured code as it was on disk instead — the model and the type kernel
+    # it embeds, deliberately not this directory, whose contents are the results.
+    measured=["model/burn-a0","crates/ptr-types"]
+    def measured_digest():
+        listing=subprocess.check_output(
+            ["git","ls-files","--cached","--others","--exclude-standard","--"]+measured,
+            cwd=ROOT,text=True).split()
+        digest=hashlib.sha256()
+        for rel in sorted(listing):
+            path=ROOT/rel
+            if not path.is_file():
+                continue
+            digest.update(rel.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(hashlib.sha256(path.read_bytes()).digest())
+        return digest.hexdigest()
+    try:
+        content_sha=measured_digest()
+    except Exception:
+        content_sha=None
     run={
       "experiment_id":"M001-pilot",
       "status":"completed-pilot-only",
       "git_sha":sha,
+      "measured_paths":measured,
+      "measured_content_sha256":content_sha,
       "recorded_at":dt.datetime.now(dt.timezone.utc).isoformat(),
       "scope":metrics["scope"],
       "reporting_restriction":"Do not use this pilot as evidence for M001 superiority or OOD generalization.",

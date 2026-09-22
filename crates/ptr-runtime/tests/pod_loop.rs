@@ -3,7 +3,7 @@ use ptr_model_api::{InferenceBackend, ModelError, ModelEvent, ModelRequest};
 use ptr_pods::{DynPod, PodManifest, PodRegistry};
 use ptr_protocol::TypedPayload;
 use ptr_runtime::{PtrRuntime, RuntimeError};
-use ptr_types::{CapabilityId, Effect, PodId, Probability, TypeId, VerificationLevel};
+use ptr_types::{CapabilityId, Effect, PodId, Probability, ProjectId, TypeId, VerificationLevel};
 use ptr_verifier::{VerificationReport, VerificationStatus, Verifier};
 use std::sync::Arc;
 
@@ -66,6 +66,7 @@ fn registry(effect: Effect) -> PodRegistry {
     let mut registry = PodRegistry::default();
     registry.register(Arc::new(Echo {
         manifest: PodManifest {
+            project: ProjectId::from("p"),
             id: PodId::from("echo"),
             capabilities: vec![CapabilityId::from("Echo<Text>")],
             accepts: vec![TypeId::from("Text")],
@@ -83,6 +84,7 @@ fn model_to_pod_to_verifier_to_semdb_loop_executes() {
     let output = runtime
         .run_model_with_pods(
             "r1".into(),
+            &ProjectId::from("p"),
             "echo hello",
             &WantsEcho,
             &registry(Effect::Pure),
@@ -107,6 +109,7 @@ fn failed_verification_stops_pod_output_promotion() {
     assert_eq!(
         runtime.run_model_with_pods(
             "r1".into(),
+            &ProjectId::from("p"),
             "echo hello",
             &WantsEcho,
             &registry(Effect::Pure),
@@ -123,6 +126,7 @@ fn mutating_pod_cannot_bypass_action_boundary() {
     assert_eq!(
         runtime.run_model_with_pods(
             "r1".into(),
+            &ProjectId::from("p"),
             "echo hello",
             &WantsEcho,
             &registry(Effect::Mutation),
@@ -130,4 +134,52 @@ fn mutating_pod_cannot_bypass_action_boundary() {
         ),
         Err(RuntimeError::PodEffectRequiresActionBoundary { pod: "echo".into() })
     );
+}
+
+#[test]
+fn a_pod_in_another_project_is_unavailable_in_the_same_words_as_one_that_does_not_exist() {
+    let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+    let across_projects = runtime.run_model_with_pods(
+        "r1".into(),
+        &ProjectId::from("other"),
+        "echo hello",
+        &WantsEcho,
+        &registry(Effect::Pure),
+        &Pass,
+    );
+
+    let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+    let no_such_pod = runtime.run_model_with_pods(
+        "r1".into(),
+        &ProjectId::from("other"),
+        "echo hello",
+        &WantsEcho,
+        &PodRegistry::default(),
+        &Pass,
+    );
+
+    assert_eq!(
+        across_projects,
+        Err(RuntimeError::PodUnavailable {
+            capability: "Echo<Text>".into(),
+            input_type: "Text".into(),
+        })
+    );
+    // Identical, deliberately. A distinguishable refusal would answer, from
+    // outside the project, whether that Pod exists inside it.
+    assert_eq!(across_projects, no_such_pod);
+
+    // The same request inside the Pod's own project succeeds, so the refusal
+    // above is the project boundary and not a broken fixture.
+    let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+    assert!(runtime
+        .run_model_with_pods(
+            "r1".into(),
+            &ProjectId::from("p"),
+            "echo hello",
+            &WantsEcho,
+            &registry(Effect::Pure),
+            &Pass,
+        )
+        .is_ok());
 }

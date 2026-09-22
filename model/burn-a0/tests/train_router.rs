@@ -4,33 +4,54 @@ use burn::{
     prelude::*,
     tensor::Int,
 };
-use ptr_burn_a0::{PtrA0Config, PtrSlotMetadata};
+use ptr_burn_a0::{admission_bias, CodeGrid, PtrA0Config, PtrSlotMetadata};
+use ptr_types::{Codebook, EpistemicState, SemanticRole, Validity, ValidityMask};
+
+// One row per target operator. The distinguishing feature is the first slot's
+// semantic role, so the task is "route by type", which is the mechanism this
+// model exists to test.
+const ROLES: [&[SemanticRole]; 4] = [
+    &[SemanticRole::Goal, SemanticRole::Resource],
+    &[SemanticRole::Constraint, SemanticRole::Resource],
+    &[SemanticRole::Claim, SemanticRole::Resource],
+    &[SemanticRole::Evidence, SemanticRole::Resource],
+];
 
 struct TrainingBatch {
     tokens: Tensor<2, Int>,
-    slot_types: Tensor<2, Int>,
+    slot_types: CodeGrid<SemanticRole>,
     slots: Tensor<3>,
     metadata: PtrSlotMetadata,
     labels: Tensor<1, Int>,
 }
 
-fn batch(device: &Device) -> TrainingBatch {
-    let tokens = Tensor::<2, Int>::from_data([[1, 1], [1, 1], [1, 1], [1, 1]], device);
-    let slot_types = Tensor::<2, Int>::from_data([[0, 4], [1, 4], [2, 4], [3, 4]], device);
-    let slots = Tensor::<3>::zeros([4, 2, 12], device);
-    let metadata = PtrSlotMetadata {
-        epistemic_ids: Tensor::<2, Int>::from_data([[0, 0], [0, 0], [0, 0], [0, 0]], device),
-        validity_ids: Tensor::<2, Int>::from_data([[0, 0], [0, 0], [0, 0], [0, 0]], device),
-        provenance_ids: Tensor::<2, Int>::from_data([[0, 0], [0, 0], [0, 0], [0, 0]], device),
+fn metadata(device: &Device) -> PtrSlotMetadata {
+    PtrSlotMetadata {
+        epistemic: CodeGrid::new(
+            &Codebook::V1,
+            &[&[EpistemicState::Unknown, EpistemicState::Unknown][..]; 4],
+            device,
+        )
+        .expect("every epistemic state is assigned in v1"),
+        provenance_ids: Tensor::<2, Int>::zeros([4, 2], device),
         confidence: Tensor::<2>::ones([4, 2], device),
-    };
-    let labels = Tensor::<1, Int>::from_data([0, 1, 2, 3], device);
+        admission: admission_bias(
+            &core::array::from_fn::<_, 4, _>(|_| {
+                ValidityMask::from_validities(&[Validity::Live; 2])
+            }),
+            device,
+        ),
+    }
+}
+
+fn batch(device: &Device) -> TrainingBatch {
     TrainingBatch {
-        tokens,
-        slot_types,
-        slots,
-        metadata,
-        labels,
+        tokens: Tensor::<2, Int>::from_data([[1, 1], [1, 1], [1, 1], [1, 1]], device),
+        slot_types: CodeGrid::new(&Codebook::V1, &ROLES, device)
+            .expect("every role is assigned in v1"),
+        slots: Tensor::<3>::zeros([4, 2, 12], device),
+        metadata: metadata(device),
+        labels: Tensor::<1, Int>::from_data([0, 1, 2, 3], device),
     }
 }
 
@@ -38,8 +59,8 @@ fn batch(device: &Device) -> TrainingBatch {
 fn tiny_router_task_is_trainable() {
     let device = Device::flex().autodiff();
     device.seed(17);
-    let config = PtrA0Config::new(16, 8, 12, 4)
-        .with_metadata_sizes(4, 4, 8)
+    let config = PtrA0Config::new(16, 12)
+        .with_provenance_buckets(8)
         .with_latent_steps(1);
     let mut model = config.init(&device);
     let mut optimizer = AdamConfig::new().init();
@@ -54,14 +75,9 @@ fn tiny_router_task_is_trainable() {
     let initial_logits = model
         .forward(
             tokens.clone(),
-            slot_types.clone(),
+            &slot_types,
             slots.clone(),
-            PtrSlotMetadata {
-                epistemic_ids: metadata.epistemic_ids.clone(),
-                validity_ids: metadata.validity_ids.clone(),
-                provenance_ids: metadata.provenance_ids.clone(),
-                confidence: metadata.confidence.clone(),
-            },
+            clone_metadata(&metadata),
         )
         .router_logits;
     let initial = CrossEntropyLossConfig::new()
@@ -72,14 +88,9 @@ fn tiny_router_task_is_trainable() {
     for _ in 0..120 {
         let output = model.forward(
             tokens.clone(),
-            slot_types.clone(),
+            &slot_types,
             slots.clone(),
-            PtrSlotMetadata {
-                epistemic_ids: metadata.epistemic_ids.clone(),
-                validity_ids: metadata.validity_ids.clone(),
-                provenance_ids: metadata.provenance_ids.clone(),
-                confidence: metadata.confidence.clone(),
-            },
+            clone_metadata(&metadata),
         );
         let loss = CrossEntropyLossConfig::new()
             .init(&device)
@@ -89,7 +100,7 @@ fn tiny_router_task_is_trainable() {
     }
 
     let final_logits = model
-        .forward(tokens, slot_types, slots, metadata)
+        .forward(tokens, &slot_types, slots, metadata)
         .router_logits;
     let final_loss = CrossEntropyLossConfig::new()
         .init(&device)
@@ -100,4 +111,13 @@ fn tiny_router_task_is_trainable() {
         final_loss < initial,
         "expected synthetic router loss to decrease: initial={initial:?} final={final_loss:?}"
     );
+}
+
+fn clone_metadata(metadata: &PtrSlotMetadata) -> PtrSlotMetadata {
+    PtrSlotMetadata {
+        epistemic: metadata.epistemic.clone(),
+        provenance_ids: metadata.provenance_ids.clone(),
+        confidence: metadata.confidence.clone(),
+        admission: metadata.admission.clone(),
+    }
 }

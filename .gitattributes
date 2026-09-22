@@ -12,3 +12,4 @@
 *.jpg binary
 *.jpeg binary
 *.pdf binary
+*.ckpt binary

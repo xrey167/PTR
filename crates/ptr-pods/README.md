@@ -9,11 +9,13 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-18  
-**Code footprint:** 1 Rust source files · 125 nonblank source lines · 3 integration-test files · 4 `#[test]` markers
+**Last reviewed:** 2026-09-21  
+**Code footprint:** 1 Rust source files · 144 nonblank source lines · 3 integration-test files · 6 `#[test]` markers
 
 ### Implemented now
 
+- PodRegistry is keyed by project and id, so two projects may register the same Pod id without shadowing and no lookup path exists that takes an id alone
+- PodManifest declares the one project a Pod serves; resolution inside another project finds nothing rather than a worse match
 - PodManifest with capability, accepted/produced types, effects and protocol version
 - Typed Pod associated Input/Output/Error contract
 - Ready and Revoked lease typestates

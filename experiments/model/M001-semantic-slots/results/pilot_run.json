@@ -1,8 +1,13 @@
 {
   "experiment_id": "M001-pilot",
   "status": "completed-pilot-only",
-  "git_sha": "b8f74007632da210a32e91c9ae7b476b682c9c89",
-  "recorded_at": "2026-09-18T15:18:38.265465+00:00",
+  "git_sha": "344cb3d76be2525fd1c66f65ef5a40eb07a28afe",
+  "measured_paths": [
+    "model/burn-a0",
+    "crates/ptr-types"
+  ],
+  "measured_content_sha256": "b087470d546abddb38c7895568e455012517fa674ca96d1406befd6c16b6a69f",
+  "recorded_at": "2026-09-21T04:04:48.105701+00:00",
   "scope": "synthetic mechanism sanity check; not M001 OOD evidence",
   "reporting_restriction": "Do not use this pilot as evidence for M001 superiority or OOD generalization."
 }

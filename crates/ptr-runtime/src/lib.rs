@@ -7,7 +7,10 @@ pub mod semantic;
 use ptr_config::PtrConfig;
 use ptr_core::action_head::ActionIr;
 use ptr_events::{EventEnvelope, RuntimeEvent};
-use ptr_ledger::{CommittedEvent, FileLedger, InMemoryLedger, Ledger, LedgerEvent};
+use ptr_ledger::{
+    integrity, CommittedEvent, FileLedger, InMemoryLedger, Ledger, LedgerEvent,
+    MAX_RETAINED_RESPONSE,
+};
 use ptr_model_api::{
     InferenceBackend, ModelEvent, ModelObservation, ModelRequest, ModelResumeRequest,
     ResumableInferenceBackend,
@@ -19,7 +22,7 @@ use ptr_security::{
 };
 use ptr_semdb::{PreparedDelta, SemanticError, SemanticHost, SemanticSnapshot};
 use ptr_state::MaterializedState;
-use ptr_types::{CommitIndex, Generation, RequestId, Revision};
+use ptr_types::{CommitIndex, Generation, ProjectId, RequestId, Revision};
 use ptr_verifier::{VerificationStatus, Verifier};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -85,6 +88,25 @@ pub enum RuntimeError {
     SnapshotBeyondHistory {
         covers: CommitIndex,
         last_applied: CommitIndex,
+    },
+    /// An at-most-once key is not a well-formed identifier.
+    InvalidEffectKey {
+        key: String,
+    },
+    /// A second attempt under a key whose first attempt is still unsettled. Two
+    /// live attempts would make the key meaningless, and a settlement could not
+    /// say which of them it ends.
+    EffectKeyInFlight {
+        key: String,
+    },
+    /// A settlement or reconciliation names an attempt that is not awaiting one.
+    UnknownEffectAttempt {
+        attempt: CommitIndex,
+    },
+    /// A retained response is larger than this format allows, or does not match
+    /// the digest committed beside it.
+    InconsistentEffectResponse {
+        attempt: CommitIndex,
     },
 }
 
@@ -255,6 +277,7 @@ impl PtrRuntime {
     pub fn run_model_with_pods<B, V>(
         &mut self,
         request_id: RequestId,
+        project: &ProjectId,
         raw_text: impl Into<String>,
         backend: &B,
         pods: &PodRegistry,
@@ -277,12 +300,15 @@ impl PtrRuntime {
                 continue;
             };
 
-            let pod = pods.resolve(&capability, &input_type).ok_or_else(|| {
-                RuntimeError::PodUnavailable {
+            // A Pod in another project is unavailable in exactly the same
+            // words as a Pod that does not exist. Saying which it was would
+            // answer, across the boundary, whether that Pod exists.
+            let pod = pods
+                .resolve(project, &capability, &input_type)
+                .ok_or_else(|| RuntimeError::PodUnavailable {
                     capability: capability.to_string(),
                     input_type: input_type.to_string(),
-                }
-            })?;
+                })?;
 
             if pod
                 .manifest()
@@ -325,6 +351,7 @@ impl PtrRuntime {
     pub fn run_resumable_with_pods<B, V>(
         &mut self,
         request_id: RequestId,
+        project: &ProjectId,
         raw_text: impl Into<String>,
         backend: &B,
         pods: &PodRegistry,
@@ -385,12 +412,15 @@ impl PtrRuntime {
                 return Err(RuntimeError::ModelResumeLimit { max_rounds });
             }
 
-            let pod = pods.resolve(&capability, &input_type).ok_or_else(|| {
-                RuntimeError::PodUnavailable {
+            // A Pod in another project is unavailable in exactly the same
+            // words as a Pod that does not exist. Saying which it was would
+            // answer, across the boundary, whether that Pod exists.
+            let pod = pods
+                .resolve(project, &capability, &input_type)
+                .ok_or_else(|| RuntimeError::PodUnavailable {
                     capability: capability.to_string(),
                     input_type: input_type.to_string(),
-                }
-            })?;
+                })?;
 
             if pod
                 .manifest()
@@ -502,6 +532,21 @@ impl PtrRuntime {
         self.append_prepared(event, semantic)
     }
 
+    /// Settling or reconciling an attempt is the act that ends a fence, so it
+    /// cannot be gated on the fence it ends. Ambiguity about this runtime's own
+    /// last append still blocks it: appending onto a history whose last outcome
+    /// is unknown would build on a position the runtime cannot describe.
+    pub(crate) fn commit_settlement(
+        &mut self,
+        event: LedgerEvent,
+    ) -> Result<CommitIndex, RuntimeError> {
+        if self.execution.is_commit_uncertain() {
+            return Err(RuntimeError::ExecutionFenced);
+        }
+        self.validate_lifecycle_event(&event)?;
+        self.append_checked(event, None)
+    }
+
     fn append_prepared(
         &mut self,
         event: LedgerEvent,
@@ -510,6 +555,14 @@ impl PtrRuntime {
         if self.execution.is_fenced() {
             return Err(RuntimeError::ExecutionFenced);
         }
+        self.append_checked(event, semantic)
+    }
+
+    fn append_checked(
+        &mut self,
+        event: LedgerEvent,
+        semantic: Option<PreparedDelta>,
+    ) -> Result<CommitIndex, RuntimeError> {
         self.execution.begin_commit();
         let index = self.ledger.append(event)?;
         let committed = self
@@ -590,6 +643,42 @@ impl PtrRuntime {
                     last_applied: CommitIndex(self.state.last_applied),
                 })
             }
+            LedgerEvent::EffectAttempted { key, .. } => {
+                let Some(key) = key else { return Ok(()) };
+                if !execution::valid_identifier(key) {
+                    return Err(RuntimeError::InvalidEffectKey { key: key.clone() });
+                }
+                if self.execution.key_in_flight(key) {
+                    return Err(RuntimeError::EffectKeyInFlight { key: key.clone() });
+                }
+                Ok(())
+            }
+            LedgerEvent::EffectSettled {
+                attempt,
+                response,
+                response_digest,
+            } => {
+                if !self.execution.is_unsettled(*attempt) {
+                    return Err(RuntimeError::UnknownEffectAttempt { attempt: *attempt });
+                }
+                // Checked before anything is allocated from it, and checked
+                // against its own digest: a retained response that disagrees with
+                // the digest beside it is two answers, which is worse than none.
+                if let Some(response) = response {
+                    if response.len() > MAX_RETAINED_RESPONSE
+                        || integrity::sha256(response) != *response_digest
+                    {
+                        return Err(RuntimeError::InconsistentEffectResponse { attempt: *attempt });
+                    }
+                }
+                Ok(())
+            }
+            LedgerEvent::EffectReconciled { attempt, .. } => {
+                if !self.execution.is_unsettled(*attempt) {
+                    return Err(RuntimeError::UnknownEffectAttempt { attempt: *attempt });
+                }
+                Ok(())
+            }
             // Revocation tombstones are monotone and may precede activation.
             // Verifier/snapshot records do not confer permissions or load state.
             LedgerEvent::SemanticDeltaCommitted { .. }
@@ -643,6 +732,45 @@ impl PtrRuntime {
                     .insert((format!("procedure:{id}"), *generation));
             }
             LedgerEvent::VerifierAttested { .. } | LedgerEvent::SnapshotCommitted { .. } => {}
+            LedgerEvent::EffectAttempted {
+                key,
+                target,
+                operation,
+                effect,
+                ..
+            } => {
+                self.execution.record_attempt(execution::UnsettledEffect {
+                    attempt: committed.index,
+                    key: key.clone(),
+                    target: target.clone(),
+                    operation: operation.clone(),
+                    effect: *effect,
+                });
+            }
+            LedgerEvent::EffectSettled {
+                attempt, response, ..
+            } => {
+                let outcome = match response {
+                    Some(response) => execution::SettledOutcome::Applied {
+                        response: response.clone(),
+                    },
+                    None => execution::SettledOutcome::AppliedWithoutResponse,
+                };
+                self.execution.settle(*attempt, outcome);
+            }
+            LedgerEvent::EffectReconciled {
+                attempt, applied, ..
+            } => {
+                // Reconciliation establishes whether the effect applied, never a
+                // response: the runtime that could have reproduced one would not
+                // have needed reconciling.
+                let outcome = if *applied {
+                    execution::SettledOutcome::AppliedWithoutResponse
+                } else {
+                    execution::SettledOutcome::NotApplied
+                };
+                self.execution.settle(*attempt, outcome);
+            }
         }
 
         self.state.apply(committed);

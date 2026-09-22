@@ -9,11 +9,13 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-20  
-**Code footprint:** 7 Rust source files · 2813 nonblank source lines · 10 integration-test files · 60 `#[test]` markers
+**Last reviewed:** 2026-09-21  
+**Code footprint:** 9 Rust source files · 4479 nonblank source lines · 12 integration-test files · 104 `#[test]` markers
 
 ### Implemented now
 
+- EffectAttempted/EffectSettled/EffectReconciled records (tags 9-11, beside the unchanged 0-8) carry an execution audit: the attempt is addressed by its own commit index, and a settled response keeps its digest unconditionally and its bytes up to MAX_RETAINED_RESPONSE
+- Effect and VerificationLevel are written through explicit code tables rather than discriminant casts, so inserting an enum variant breaks a build instead of renumbering records already stored
 - Rustdoc covers the protected-anchor, acknowledgment, compaction and erasure APIs plus their integrity and serialization helpers
 - LogPaths::orphans claims a file only when log_path of the floor its name encodes is that same path, so a neighbouring log set sharing the directory can never have its live log reclaimed as this set's orphan
 - InMemoryLedger::append is fallible and uses checked arithmetic: an exhausted commit index is refused with PTR_LEDGER_INDEX_EXHAUSTED and nothing is stored, rather than saturating and handing the same index out twice
@@ -42,14 +44,25 @@
 - Durable reference FileLedger with checked versioned frames, file synchronization and anchor-required tail recovery
 - Feature-gated fail-rs injection points around record write/payload/fsync/memory-commit boundaries
 - Feature-gated raft-engine 0.4.2 durable adapter stores ordered PTR ledger events with synchronous writes and reopen validation
-- Feature-gated raft-rs 0.7 single-node consensus harness proposes and commits PTR LedgerEvents through RawNode
+- Feature-gated raft-rs 0.7 single-node consensus harness proposes and commits PTR LedgerEvents through RawNode, over durable state rather than MemStorage: a reopened node replays its committed prefix and tells raft what it already applied
+- Snapshot transfer: a member records its application state at a committed position and the log below it is discarded, a member the leader cannot replay to is sent that payload verbatim, and applying anything further is refused until the application has accounted for what the payload covers
+- RaftNode is one member that hands its outbound messages back instead of dropping them, with no knowledge of transport: ticks are a count rather than a duration, so a partition, a leader change and a duplicated message are testable without a timer
+- Raft's message type is re-exported so a transport can name it without declaring its own raft dependency: two pins would be two wire formats for the very messages they exchange
+- Raft messages have a bounded wire encoding; a frame that does not decode is dropped rather than partially stepped, and SingleNodeRaftConsensus is a thin wrapper over the same node so there is one place where entries are persisted, hard state flushed and committed entries applied
+- FileRaftStorage keeps term, vote, commit, configuration, log and snapshot position on disk: the state file is rewritten atomically, entries and hard state are flushed before anything depending on them could leave the node, and a conflicting append truncates the log so the file is always a prefix of one history
+- A member persists how many ledger events it has applied, so reopening after a snapshot continues the numbering the snapshot established instead of handing the next event an index the snapshot already covers
+- FileRaftStorage keeps a fencing token — the highest term it has ever accepted — in the state file, re-read from disk before every write, checked on persist_state, append, apply_snapshot and record_snapshot, and refuses a writer at a lower term with PTR_RAFT_FENCED so a process partitioned from its peers but not from their storage, or resumed from a stale image, cannot write beneath the group
+- propose_membership proposes a single-voter ConfChange from a leader only, and apply_committed applies a committed one through apply_conf_change and persists the resulting ConfState, so a membership change takes effect and becomes durable at the same moment
+- An installed snapshot carries a digest computed from the bytes that arrived, and take_installed_snapshot_matching accepts it only against a RetainedSnapshotAnchor the host got from somewhere the sender does not control; a mismatch refuses by index or by digest and leaves the snapshot installed so the member stays blocked
+- Raft log records carry an explicit entry-type code and a per-record digest, and indexes must be consecutive from the snapshot position, so a changed record and a removed or duplicated one are separate refusals; a snapshot older than raft asks for is refused rather than fabricated at the requested index
 
 ### Missing for the target architecture
 
 - Hardware power-loss evidence; anchor key custody, rotation and hardware-backed sealing
-- Multi-node raft-rs consensus adapter with transport, persistent Raft storage and membership changes
+- A composition of RaftNode over ptr-net transport on ALPN_RAFT: the group is driven by a test's queue, so there is no framing, no authenticated sender, no bound on what a peer may send and no evidence a real connection carries these messages; ptr-ledger must not depend on transport, so the composition needs its own home
+- Membership changes beyond one voter at a time, and any discovery of where a joining voter can be reached: propose_membership adds or removes a single voter, and a joiner must still be given an address out of band
+- Any relation between raft's own log floor and the ledger's retention floor: a snapshot can be recorded and transferred, but the two floors are still independent. The consequence that had teeth is closed elsewhere — a compacted snapshot now carries the at-most-once obligations the raised floor removes — so what is left here is the structural relation, not a lost guarantee
 - fsync/durability modes and revocation barriers
-- Runtime compacted materialized snapshot establishing snapshot_covers, so exact compacted-state reconstruction is not yet demonstrable end to end
 - Distributed snapshot/compaction protocols and cross-node cutover
 - Retention schedule/policy engine and durable snapshot lifecycle tracking; PTR does not enumerate or reclaim host-retained snapshots
 - Storage-residue and model-derived-state erasure, so no all-state-deleted declaration is available
@@ -58,7 +71,6 @@
 
 - Define storage/consensus interfaces around existing Ledger contract
 - Benchmark FileLedger against raft-engine, then connect raft-rs RawNode to raft-engine persistence and network transport
-- Add a ptr-runtime compacted materialized snapshot that covers a floor and restores from a compacted log
 - Expand L001 failpoint matrix to process-abort and durable-backend cases, then run L002 cluster recovery
 
 ### Linked experiments
@@ -79,6 +91,7 @@
 
 ### Current automated checks
 
+- all ten effect and verification codes are pinned to exact bytes, unknown codes are refused at a position located by diffing two records, and invalid presence bytes, truncated digests and trailing bytes are each rejected
 - an exhausted anchor epoch refuses both acknowledge and compacted advance without republishing the record
 - a neighbouring log set is never reported as this set's orphan, and short, non-numeric, past-u64 and non-canonical floor fields are all rejected
 - an exhausted commit index is refused rather than repeated, leaving the ledger unchanged
@@ -100,6 +113,12 @@
 - fail-rs panic-after-length-prefix recovery test
 - raft-engine durable append/reopen ordering integration test
 - raft-rs single-node proposal/commit ordering integration test
+- a reopened node holds exactly the history it committed, index by index, and continues the same sequence; the term and the vote it recorded survive the process and a new election is a later term
+- a three-member group elects exactly one leader with its followers in the same term; a majority commits while a minority decides nothing; a member that knows no leader refuses a write outright and a partitioned follower's forwarded proposal never resurfaces after healing
+- a member compacted past is caught up by a snapshot and ends with the same history as one restored by full replay, with the event after the snapshot continuing the ledger numbering; a member refuses to apply anything until an installed snapshot is accounted for; a leader that recorded no snapshot cannot invent one and the member catches up by replay instead
+- a restarted deposed leader recovers what was committed rather than the tail it wrote alone, and that tail does not survive the restart
+- a deposed leader appends but cannot commit and the entry only it held is overwritten rather than resurrected; a leader change leaves one total order with indexes exactly 1..n; duplicated and stale messages change nothing; a restarted member restores exactly the leader's committed state
+- a conflicting append truncates on disk rather than splicing two histories; a gap, a non-consecutive batch, a damaged record digest, a damaged length field, a removed middle record, a torn state file, a snapshot ahead of the commit index and a snapshot older than requested are each refused
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->

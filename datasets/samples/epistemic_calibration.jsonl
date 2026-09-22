@@ -1,1 +1,1 @@
-{"question":"Will event X occur?","distribution":{"yes":0.6,"no":0.4},"outcome":"yes"}
+{"question": "Will event X occur?", "distribution": {"yes": 0.6, "no": 0.4}, "outcome": "yes", "type_codebook_version": 1, "type_codebook_fingerprint": "2b6f8175a7a7bb648910e7acb17dcfcff5149834f2fe87355c5d2c4524c113a3"}

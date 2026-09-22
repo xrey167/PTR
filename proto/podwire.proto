@@ -3,7 +3,14 @@ package ptr.podwire.v1;
 
 message TypedPayload { string type_id = 1; bytes payload = 2; }
 message PodCall {
-  string session_id = 1;
+  // Field 1 was `string session_id`. A request that crosses a trust boundary has
+  // no field naming its caller: a session is a capability the host holds, not a
+  // string a caller presents, which is why `ExecutionSession` cannot be built from
+  // one. Nothing ever spoke this message, so the field is removed rather than
+  // deprecated — its number and name stay reserved so a later build cannot reuse
+  // them for something else and read an old caller's identity as that.
+  reserved 1;
+  reserved "session_id";
   string call_id = 2;
   string capability = 3;
   optional uint64 generation = 4;

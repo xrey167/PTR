@@ -7,3 +7,11 @@ publish = false
 
 [dependencies]
 ptr-config = { workspace = true }
+ptr-runtime = { workspace = true }
+ptr-types = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+
+[dev-dependencies]
+ptr-ledger = { workspace = true }
+ptr-semdb = { workspace = true }

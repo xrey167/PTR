@@ -39,7 +39,8 @@ use super::{PtrRuntime, RuntimeError, RuntimeLedger};
 use ptr_ledger::integrity::{self, LogAnchor};
 use ptr_semdb::{SemanticDelta, SemanticValue};
 use ptr_types::{
-    Codebook, CodebookVersion, CommitIndex, EvidenceId, Generation, ProvenanceRef, Revision,
+    CheckpointError, CheckpointHeader, CodeFamily, Codebook, CodebookVersion, CommitIndex,
+    EvidenceId, Generation, ProvenanceRef, Revision,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -80,6 +81,16 @@ pub enum NeuralError {
     },
     /// The binding this runtime just built is not one it would admit.
     Unbindable(Denial),
+    /// A stored model artifact's identity header is malformed, or names an
+    /// assignment this build cannot reproduce.
+    CheckpointHeader(CheckpointError),
+    /// The artifact and the declaration disagree about which codebook the state
+    /// belongs to. Not reconciled: one of the two is wrong about what every code
+    /// in the payload means, and there is no way to tell which from here.
+    CheckpointCodebook {
+        artifact: CodebookVersion,
+        declared: CodebookVersion,
+    },
 }
 
 impl NeuralError {
@@ -96,6 +107,8 @@ impl NeuralError {
             Self::UndeclarableInput { .. } => "PTR_NEURAL_UNDECLARABLE_INPUT",
             Self::UndeclarableTarget { .. } => "PTR_NEURAL_UNDECLARABLE_TARGET",
             Self::Unbindable(_) => "PTR_NEURAL_UNBINDABLE",
+            Self::CheckpointHeader(_) => "PTR_NEURAL_CHECKPOINT_HEADER",
+            Self::CheckpointCodebook { .. } => "PTR_NEURAL_CHECKPOINT_CODEBOOK",
         }
     }
 }
@@ -721,6 +734,49 @@ impl PtrRuntime {
         self.admission(&binding)
             .map_err(|denial| invalid(NeuralError::Unbindable(denial)))?;
         Ok(binding)
+    }
+
+    /// Bind a stored model artifact — a real checkpoint, header and weights — to
+    /// the committed facts it was produced under.
+    ///
+    /// The artifact carries the codebook assignment it was trained against, so
+    /// this checks that identity *before* the payload is retained at all, and then
+    /// binds it through [`PtrRuntime::bind_state`] so a checkpoint and any other
+    /// neural state pass the same admission rules.
+    ///
+    /// `required` names the code families the caller needs the artifact to agree
+    /// about. A model that embeds fewer families than the kernel defines is not
+    /// wrong, so this layer cannot know the list: `ptr-burn-a0` names its own as
+    /// `EMBEDDED_FAMILIES`. Naming none still checks the assignment itself, which
+    /// is the part that decides what every code means.
+    ///
+    /// The payload stays opaque here. Nothing in this crate can read burn's
+    /// parameter format, and nothing in this crate needs to: what a checkpoint
+    /// must not do is load under an assignment it was not trained under.
+    pub fn bind_checkpoint(
+        &self,
+        bytes: &[u8],
+        declaration: &StateDeclaration,
+        required: &[CodeFamily],
+    ) -> Result<NeuralState, RuntimeError> {
+        let (header, payload) = CheckpointHeader::read(bytes)
+            .map_err(|error| invalid(NeuralError::CheckpointHeader(error)))?;
+        if header.codebook != declaration.codebook {
+            return Err(invalid(NeuralError::CheckpointCodebook {
+                artifact: header.codebook,
+                declared: declaration.codebook,
+            }));
+        }
+        let book =
+            Codebook::at(header.codebook).map_err(|_| invalid(NeuralError::UnsupportedVersion))?;
+        header
+            .verify(&book, required)
+            .map_err(|error| invalid(NeuralError::CheckpointHeader(error)))?;
+        if payload.len() > MAX_PAYLOAD_BYTES {
+            return Err(invalid(NeuralError::SizeLimit));
+        }
+        let binding = self.bind_state(declaration)?;
+        Ok(NeuralState::new(binding, payload.to_vec()))
     }
 
     /// Decide whether a binding may participate, without holding any payload.

@@ -1,0 +1,9 @@
+flowchart LR
+    C["Requester\nPodClient"] --> W["ptr-podwire\nrequest/answer on ALPN_PODWIRE"]
+    W --> H["PodHost\nregistry + access policy + verifier"]
+    H -. "project comes from policy,\nnever from the request" .-> P["PodAccessPolicy"]
+    W -. "Pod resolution" .-> D["ptr-pods"]
+    W -. "typed payload" .-> O["ptr-protocol"]
+    W -. "output verification" .-> V["ptr-verifier"]
+    W -. "authenticated transport" .-> N["ptr-net"]
+    W -. "contracts" .-> T["ptr-types"]

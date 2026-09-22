@@ -1,6 +1,9 @@
 [workspace]
 resolver = "2"
-members = ["crates/ptr-*", "bins/ptr-*"]
+# `bins/ptr-*` needs the hyphen, so `ptrctl` and `ptrd` are named outright rather
+# than left to a glob that silently omits them. `check_repo.py` asserts that every
+# binary here is a member or an exclusion, so the next one cannot fall through.
+members = ["crates/ptr-*", "bins/ptr-*", "bins/ptrctl", "bins/ptrd"]
 exclude = ["fuzz", "model/burn-a0", "vendor/*"]
 
 [workspace.package]
@@ -30,6 +33,9 @@ ptr-memory = { path = "crates/ptr-memory" }
 ptr-search = { path = "crates/ptr-search" }
 ptr-storage = { path = "crates/ptr-storage" }
 ptr-net = { path = "crates/ptr-net" }
+ptr-cluster = { path = "crates/ptr-cluster" }
+ptr-execwire = { path = "crates/ptr-execwire" }
+ptr-podwire = { path = "crates/ptr-podwire" }
 ptr-events = { path = "crates/ptr-events" }
 ptr-observe = { path = "crates/ptr-observe" }
 ptr-inspect = { path = "crates/ptr-inspect" }

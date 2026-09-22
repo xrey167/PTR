@@ -1,0 +1,260 @@
+{
+  "schema": "1",
+  "note": "Why each retained downstream patch exists and what would let it go. vendor/ORIGINS.json and vendor/CURRENT.json record what changed; this file records why, per package, so the reason is checkable rather than a prose statement about a count. A newer upstream version is not a retirement: a package with one also records whether that release satisfies its class's retire_when, and which dependents' requirements exclude it. scripts/check_vendor_retirement.py verifies every field below against the tree - dependents' existence is re-derived from the lockfile in both directions, while their requirement strings, like upstream_observed, are observations refreshed by scripts/refresh_vendor_upstream.py.",
+  "classes": {
+    "paste-alias": {
+      "change": "Redirects the dependency named `paste`, which is unmaintained, to the maintained drop-in `pastey =0.2.3` through a Cargo package alias. No source file is touched.",
+      "touches": [
+        "Cargo.lock",
+        "Cargo.toml"
+      ],
+      "retire_when": "An upstream release of this package depends on a maintained macro crate rather than `paste`, so the alias has nothing left to redirect.",
+      "retire_when_signal": "paste-free"
+    },
+    "raft-protobuf": {
+      "change": "Migrates legacy protobuf interfaces, the corresponding Prometheus API and an abandoned hash map, and makes the protobuf codec optional so prost stays selected. Described per package in vendor/SECURITY-PATCHES.md.",
+      "touches": null,
+      "retire_when": "An upstream release carries that migration and the optional protobuf-codec selection, and the ledger round-trip, replay and corruption tests pass against it on the actually selected features.",
+      "retire_when_signal": null
+    }
+  },
+  "packages": [
+    {
+      "name": "burn-dispatch",
+      "version": "0.22.0-pre.3",
+      "directory": "vendor/burn-dispatch-0.22.0-pre.3",
+      "workspace": "burn-a0",
+      "class": "paste-alias",
+      "upstream_observed": "0.22.0-pre.3",
+      "observed_at": "2026-09-21"
+    },
+    {
+      "name": "burn-ndarray",
+      "version": "0.22.0-pre.3",
+      "directory": "vendor/burn-ndarray-0.22.0-pre.3",
+      "workspace": "burn-a0",
+      "class": "paste-alias",
+      "upstream_observed": "0.22.0-pre.3",
+      "observed_at": "2026-09-21"
+    },
+    {
+      "name": "burn-vision",
+      "version": "0.22.0-pre.3",
+      "directory": "vendor/burn-vision-0.22.0-pre.3",
+      "workspace": "burn-a0",
+      "class": "paste-alias",
+      "upstream_observed": "0.22.0-pre.3",
+      "observed_at": "2026-09-21"
+    },
+    {
+      "name": "cubecl-core",
+      "version": "0.11.0-pre.3",
+      "directory": "vendor/cubecl-core-0.11.0-pre.3",
+      "workspace": "burn-a0",
+      "class": "paste-alias",
+      "upstream_observed": "0.11.0-pre.3",
+      "observed_at": "2026-09-21"
+    },
+    {
+      "name": "cubecl-cpp",
+      "version": "0.11.0-pre.3",
+      "directory": "vendor/cubecl-cpp-0.11.0-pre.3",
+      "workspace": "burn-a0",
+      "class": "paste-alias",
+      "upstream_observed": "0.11.0-pre.3",
+      "observed_at": "2026-09-21"
+    },
+    {
+      "name": "cubecl-hip",
+      "version": "0.11.0-pre.3",
+      "directory": "vendor/cubecl-hip-0.11.0-pre.3",
+      "workspace": "burn-a0",
+      "class": "paste-alias",
+      "upstream_observed": "0.11.0-pre.3",
+      "observed_at": "2026-09-21"
+    },
+    {
+      "name": "cubecl-std",
+      "version": "0.11.0-pre.3",
+      "directory": "vendor/cubecl-std-0.11.0-pre.3",
+      "workspace": "burn-a0",
+      "class": "paste-alias",
+      "upstream_observed": "0.11.0-pre.3",
+      "observed_at": "2026-09-21"
+    },
+    {
+      "name": "gemm",
+      "version": "0.19.0",
+      "directory": "vendor/gemm-0.19.0",
+      "workspace": "burn-a0",
+      "class": "paste-alias",
+      "upstream_observed": "0.19.0",
+      "observed_at": "2026-09-21"
+    },
+    {
+      "name": "gemm-c32",
+      "version": "0.19.0",
+      "directory": "vendor/gemm-c32-0.19.0",
+      "workspace": "burn-a0",
+      "class": "paste-alias",
+      "upstream_observed": "0.19.0",
+      "observed_at": "2026-09-21"
+    },
+    {
+      "name": "gemm-c64",
+      "version": "0.19.0",
+      "directory": "vendor/gemm-c64-0.19.0",
+      "workspace": "burn-a0",
+      "class": "paste-alias",
+      "upstream_observed": "0.19.0",
+      "observed_at": "2026-09-21"
+    },
+    {
+      "name": "gemm-common",
+      "version": "0.19.0",
+      "directory": "vendor/gemm-common-0.19.0",
+      "workspace": "burn-a0",
+      "class": "paste-alias",
+      "upstream_observed": "0.19.0",
+      "observed_at": "2026-09-21"
+    },
+    {
+      "name": "gemm-f16",
+      "version": "0.19.0",
+      "directory": "vendor/gemm-f16-0.19.0",
+      "workspace": "burn-a0",
+      "class": "paste-alias",
+      "upstream_observed": "0.19.0",
+      "observed_at": "2026-09-21"
+    },
+    {
+      "name": "gemm-f32",
+      "version": "0.19.0",
+      "directory": "vendor/gemm-f32-0.19.0",
+      "workspace": "burn-a0",
+      "class": "paste-alias",
+      "upstream_observed": "0.19.0",
+      "observed_at": "2026-09-21"
+    },
+    {
+      "name": "gemm-f64",
+      "version": "0.19.0",
+      "directory": "vendor/gemm-f64-0.19.0",
+      "workspace": "burn-a0",
+      "class": "paste-alias",
+      "upstream_observed": "0.19.0",
+      "observed_at": "2026-09-21"
+    },
+    {
+      "name": "macerator",
+      "version": "0.3.4",
+      "directory": "vendor/macerator-0.3.4",
+      "workspace": "burn-a0",
+      "class": "paste-alias",
+      "upstream_observed": "0.4.0",
+      "observed_at": "2026-09-21",
+      "upstream_retire_when": "unsatisfied",
+      "blocked_by": [
+        {
+          "name": "burn-flex",
+          "version": "0.22.0-pre.3",
+          "requirement": "^0.3.4",
+          "in_lockfile": false
+        },
+        {
+          "name": "burn-ndarray",
+          "version": "0.22.0-pre.3",
+          "requirement": "^0.3.4",
+          "in_lockfile": true
+        },
+        {
+          "name": "burn-vision",
+          "version": "0.22.0-pre.3",
+          "requirement": "^0.3.4",
+          "in_lockfile": true
+        }
+      ]
+    },
+    {
+      "name": "netlink-packet-core",
+      "version": "0.8.2",
+      "directory": "vendor/netlink-packet-core-0.8.2",
+      "workspace": "root",
+      "class": "paste-alias",
+      "upstream_observed": "0.9.0",
+      "observed_at": "2026-09-21",
+      "upstream_retire_when": "satisfied",
+      "blocked_by": [
+        {
+          "name": "netdev",
+          "version": "0.45.1",
+          "requirement": "^0.8",
+          "in_lockfile": true
+        },
+        {
+          "name": "netlink-packet-route",
+          "version": "0.31.0",
+          "requirement": "^0.8.0",
+          "in_lockfile": true
+        },
+        {
+          "name": "netlink-proto",
+          "version": "0.12.2",
+          "requirement": "^0.8.1",
+          "in_lockfile": true
+        },
+        {
+          "name": "netwatch",
+          "version": "0.19.3",
+          "requirement": "^0.8.1",
+          "in_lockfile": true
+        }
+      ]
+    },
+    {
+      "name": "pulp",
+      "version": "0.22.3",
+      "directory": "vendor/pulp-0.22.3",
+      "workspace": "burn-a0",
+      "class": "paste-alias",
+      "upstream_observed": "0.22.3",
+      "observed_at": "2026-09-21"
+    },
+    {
+      "name": "raft",
+      "version": "0.7.0",
+      "directory": "vendor/raft",
+      "workspace": "root",
+      "class": "raft-protobuf",
+      "upstream_observed": "0.7.0",
+      "observed_at": "2026-09-21"
+    },
+    {
+      "name": "raft-engine",
+      "version": "0.4.2",
+      "directory": "vendor/raft-engine",
+      "workspace": "root",
+      "class": "raft-protobuf",
+      "upstream_observed": "0.4.2",
+      "observed_at": "2026-09-21"
+    },
+    {
+      "name": "raft-proto",
+      "version": "0.7.0",
+      "directory": "vendor/raft-proto",
+      "workspace": "root",
+      "class": "raft-protobuf",
+      "upstream_observed": "0.7.0",
+      "observed_at": "2026-09-21"
+    },
+    {
+      "name": "rav1e",
+      "version": "0.8.1",
+      "directory": "vendor/rav1e-0.8.1",
+      "workspace": "burn-a0",
+      "class": "paste-alias",
+      "upstream_observed": "0.8.1",
+      "observed_at": "2026-09-21"
+    }
+  ]
+}

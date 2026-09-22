@@ -3347,6 +3347,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ptr-cluster"
+version = "0.1.0"
+dependencies = [
+ "ptr-config",
+ "ptr-ledger",
+ "ptr-net",
+ "ptr-runtime",
+ "ptr-semdb",
+ "ptr-types",
+ "tokio",
+]
+
+[[package]]
 name = "ptr-config"
 version = "0.1.0"
 dependencies = [
@@ -3373,6 +3386,21 @@ name = "ptr-exec"
 version = "0.1.0"
 dependencies = [
  "ptr-types",
+]
+
+[[package]]
+name = "ptr-execwire"
+version = "0.1.0"
+dependencies = [
+ "ptr-config",
+ "ptr-core",
+ "ptr-ledger",
+ "ptr-net",
+ "ptr-runtime",
+ "ptr-types",
+ "ptr-verifier",
+ "sha2",
+ "tokio",
 ]
 
 [[package]]
@@ -3448,6 +3476,19 @@ version = "0.1.0"
 dependencies = [
  "ptr-protocol",
  "ptr-types",
+]
+
+[[package]]
+name = "ptr-podwire"
+version = "0.1.0"
+dependencies = [
+ "ptr-net",
+ "ptr-pods",
+ "ptr-protocol",
+ "ptr-types",
+ "ptr-verifier",
+ "sha2",
+ "tokio",
 ]
 
 [[package]]
@@ -3557,6 +3598,29 @@ version = "0.1.0"
 dependencies = [
  "ptr-pods",
  "ptr-types",
+]
+
+[[package]]
+name = "ptrctl"
+version = "0.1.0"
+dependencies = [
+ "ptr-config",
+ "ptr-ledger",
+ "ptr-runtime",
+ "ptr-semdb",
+ "ptr-types",
+ "serde",
+ "toml",
+]
+
+[[package]]
+name = "ptrd"
+version = "0.1.0"
+dependencies = [
+ "ptr-config",
+ "ptr-runtime",
+ "ptr-server",
+ "tokio",
 ]
 
 [[package]]

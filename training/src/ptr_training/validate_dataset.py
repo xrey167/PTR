@@ -5,34 +5,36 @@ import json
 from pathlib import Path
 from typing import Any
 
-REASONING_OPERATORS = {
-    "semantic",
-    "deductive",
-    "probabilistic",
-    "statistical",
-    "temporal",
-    "causal",
-    "search",
-    "optimization",
-    "simulation",
-    "symbolic",
-    "external_pod",
-}
+# The member sets, the version and the assignment fingerprint all come from the
+# kernel's own tables through one loader. A retyped set is what the cognitive
+# codebook exists to prevent: adding a ReasoningOperator variant in Rust used to
+# leave this file silently disagreeing, and nothing failed until a checkpoint meant
+# something different than it said.
+#
+# The fallback is for the documented direct invocation
+# (`python training/src/ptr_training/validate_dataset.py <file>`), which puts this
+# file's own directory on the path and not the package's parent.
+try:
+    from ptr_training.codebook import ARTIFACT_PATH as CODEBOOK_PATH
+    from ptr_training.codebook import load as _codebook
+    from ptr_training.codebook import require_identity
+except ModuleNotFoundError:  # pragma: no cover - exercised by the CLI, not the tests
+    import sys
 
-EPISTEMIC_STATES = {
-    "unknown",
-    "assumed",
-    "hypothesis",
-    "observed",
-    "inferred",
-    "verified",
-}
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from ptr_training.codebook import ARTIFACT_PATH as CODEBOOK_PATH
+    from ptr_training.codebook import load as _codebook
+    from ptr_training.codebook import require_identity
 
-UNCERTAINTY_KINDS = {
-    "point",
-    "interval",
-    "distribution",
-}
+CODEBOOK = _codebook()
+REASONING_OPERATORS = CODEBOOK["members"]["reasoning_operator"]
+EPISTEMIC_STATES = CODEBOOK["members"]["epistemic_state"]
+UNCERTAINTY_KINDS = CODEBOOK["members"]["uncertainty_kind"]
+
+
+def _validate_codebook_identity(obj: dict[str, Any]) -> None:
+    """Require the codebook this record was produced under, and check it."""
+    require_identity(obj, CODEBOOK, where="record")
 
 
 def _probability(value: Any, field: str) -> float:
@@ -70,9 +72,7 @@ def _validate_operator_route(obj: dict[str, Any]) -> None:
     ):
         raise ValueError("cost_budget must be a non-negative number")
 
-    codebook = obj.get("type_codebook_version")
-    if codebook is not None and (not isinstance(codebook, str) or not codebook.strip()):
-        raise ValueError("type_codebook_version must be a non-empty string")
+    _validate_codebook_identity(obj)
 
 
 def _validate_epistemic_calibration(obj: dict[str, Any]) -> None:
@@ -103,9 +103,7 @@ def _validate_epistemic_calibration(obj: dict[str, Any]) -> None:
     if "outcome" not in obj:
         raise ValueError("outcome is required")
 
-    codebook = obj.get("type_codebook_version")
-    if codebook is not None and (not isinstance(codebook, str) or not codebook.strip()):
-        raise ValueError("type_codebook_version must be a non-empty string")
+    _validate_codebook_identity(obj)
 
 
 def validate_record(path: Path, obj: dict[str, Any]) -> None:

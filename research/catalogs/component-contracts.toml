@@ -141,6 +141,27 @@ backend_slots = ["network-transport"]
 open_decisions = ["NodeId/key binding", "session reuse", "discovery", "retry/backpressure"]
 
 [[component]]
+id = "ptr-cluster"
+ports = ["ClusterMember", "RaftWire"]
+type_families = ["ledger-consensus", "network-protocol", "identity-lifecycle"]
+backend_slots = ["consensus", "network-transport"]
+open_decisions = ["who owns the accept/tick loop", "membership changes over the wire", "snapshot transfer framing", "retry and backpressure toward a slow member"]
+
+[[component]]
+id = "ptr-execwire"
+ports = ["ExecutionHost", "ExecutionClient", "ExecutionWire"]
+type_families = ["network-protocol", "capability-authority", "identity-lifecycle"]
+backend_slots = ["network-transport", "execution-runtime"]
+open_decisions = ["whether a receipt should be signed and what it attests to", "whether a peer identity should be unforgeable at the type level, which needs a ptr-runtime dependency on ptr-net", "who owns the accept loop", "backpressure toward a peer that asks faster than the runtime answers", "a settlement channel for detached work"]
+
+[[component]]
+id = "ptr-podwire"
+ports = ["PodHost", "PodClient", "PodAccessPolicy"]
+type_families = ["network-protocol", "capability-authority", "identity-lifecycle"]
+backend_slots = ["network-transport", "pod-environment"]
+open_decisions = ["whether the Pod access policy and the execution admission policy share one durability story before either is journaled", "whether an answer should be signed, which is the receipt question in a second place", "whether a peer identity should be unforgeable at the type level, which needs a ptr-runtime dependency on ptr-net", "who owns the accept loop", "backpressure toward a peer that asks faster than the host answers", "whether a requester should be able to discover a Pod's protocol version rather than only be refused for guessing it wrong"]
+
+[[component]]
 id = "ptr-events"
 ports = ["EventBus", "EventProducer", "EventConsumer"]
 type_families = ["events-observability", "ledger-consensus"]

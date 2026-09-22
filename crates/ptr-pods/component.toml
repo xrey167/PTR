@@ -1,9 +1,11 @@
 version = 1
 id = "ptr-pods"
 maturity = "prototype"
-last_reviewed = "2026-09-18"
+last_reviewed = "2026-09-21"
 
 implemented = [
+  "PodRegistry is keyed by project and id, so two projects may register the same Pod id without shadowing and no lookup path exists that takes an id alone",
+  "PodManifest declares the one project a Pod serves; resolution inside another project finds nothing rather than a worse match",
   "PodManifest with capability, accepted/produced types, effects and protocol version",
   "Typed Pod associated Input/Output/Error contract",
   "Ready and Revoked lease typestates",

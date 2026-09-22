@@ -288,15 +288,16 @@ no sound basis for raising a floor at all.
 
 ```text
 offset size field
-0      8    magic "PTRCS001"
+0      8    magic "PTRCS002"
 8      8    revision               semantic revision at the floor
 16     8    floor_index
 24     32   floor_digest
 56     8    semantic_len
 64     8    lifecycle_len
-72     8    reserved, must be zero
-80     ...  semantic section        canonical SemanticDelta encoding
+72     8    execution_len          was reserved in PTRCS001
+80     ...  semantic section       canonical SemanticDelta encoding
        ...  lifecycle section      PTRLC001
+       ...  execution section      PTREX001
        32   digest                 SHA-256 over all preceding bytes
 ```
 

@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-19  
-**Code footprint:** 1 Rust source files · 188 nonblank source lines · 3 integration-test files · 2 `#[test]` markers
+**Last reviewed:** 2026-09-21  
+**Code footprint:** 1 Rust source files · 211 nonblank source lines · 3 integration-test files · 2 `#[test]` markers
 
 ### Implemented now
 
@@ -19,6 +19,7 @@
 - Application of Revoked and HardConstraintCommitted ledger events
 - Monotonic materialization with duplicate/out-of-order/gap detection
 - All current LedgerEvent variants have deterministic key/value projection semantics
+- Effect records project onto the attempt's own commit index, so a settlement overwrites the attempting record's state key instead of adding a second row a reader would have to reconcile
 - Feature-gated Turso 0.8.0-pre.11 backend persists atomic projection updates and last_applied state
 
 ### Missing for the target architecture

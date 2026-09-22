@@ -357,9 +357,14 @@ fn ambiguous_executor_error_or_panic_fences_new_permits_and_commits() {
             Err(_) | Ok(Err(ExecutionError::Executor(_)))
         ));
         assert_eq!(probe.executions(), 1);
+        // The fence is a committed attempt with no settlement rather than an
+        // in-memory flag, so it names the attempt reconciliation is waiting on.
+        let unsettled = runtime.unsettled_effects();
+        assert_eq!(unsettled.len(), 1);
+        assert_eq!(unsettled[0].target, action.target);
         assert!(matches!(
             runtime.prepare_execution(&session, &ProjectId::from("p"), &action, TTL),
-            Err(ExecutionError::RuntimeFenced)
+            Err(ExecutionError::AmbiguousOutcome { attempt }) if attempt == unsettled[0].attempt
         ));
         assert_eq!(
             runtime.commit(LedgerEvent::Revoked {

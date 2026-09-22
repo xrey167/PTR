@@ -1,0 +1,42 @@
+[package]
+name = "ptr-cluster"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[features]
+default = []
+# The whole crate is this composition, so its dependencies are its feature. With
+# the feature off the crate is a wire format and nothing else, which keeps iroh and
+# raft out of every other workspace build exactly as ptr-net and ptr-ledger keep
+# their own backends out.
+cluster-backend = [
+  "dep:ptr-ledger",
+  "dep:ptr-net",
+  "dep:tokio",
+  "ptr-ledger/raft-rs-backend",
+  "ptr-net/iroh-backend",
+]
+
+[dependencies]
+ptr-types = { workspace = true }
+ptr-ledger = { workspace = true, optional = true }
+ptr-net = { workspace = true, optional = true }
+# Only for a deadline on one exchange. Deciding how long to wait for a member is
+# this layer's policy, so the clock belongs here rather than in the transport.
+tokio = { workspace = true, optional = true, features = ["time"] }
+
+[dev-dependencies]
+tokio = { workspace = true }
+# A snapshot's payload is the application's state, and PTR's is a PTRCS002 compacted
+# snapshot. The test carries a real one so that "reusing PTRCS002" is demonstrated
+# rather than asserted; these are test-only, so no production edge is added.
+ptr-runtime = { workspace = true }
+ptr-config = { workspace = true }
+ptr-semdb = { workspace = true }
+
+[[test]]
+name = "wire"
+path = "tests/wire.rs"
+required-features = ["cluster-backend"]

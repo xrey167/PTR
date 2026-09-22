@@ -1,3 +1,9 @@
+// Each integration binary compiles this module and uses a subset of it, so
+// "never used" here means "not used by this one binary" rather than unused in
+// the crate. The allow covers that and nothing else: a helper no binary uses is
+// still worth deleting.
+#![allow(dead_code)]
+
 use ptr_config::PtrConfig;
 use ptr_core::action_head::ActionIr;
 use ptr_ledger::LedgerEvent;
@@ -54,7 +60,7 @@ impl Probe {
     }
 }
 
-struct TestVerifier(Probe);
+pub struct TestVerifier(pub Probe);
 impl Verifier<ActionIr> for TestVerifier {
     fn verify(&self, action: &ActionIr) -> VerificationReport {
         self.0.verified.fetch_add(1, Ordering::SeqCst);
@@ -70,6 +76,13 @@ pub enum ExecutorMode {
     Success,
     Error,
     Panic,
+    /// Return a response of exactly this many bytes.
+    ///
+    /// For the bound between a *collection's cardinality* and a *payload's
+    /// length*: the runtime retains a response up to `MAX_RETAINED_RESPONSE`, so
+    /// a compacted section that encodes it as a collection refuses every legal
+    /// response past 65,536 bytes.
+    Sized(usize),
 }
 struct TestExecutor {
     probe: Probe,
@@ -86,6 +99,7 @@ impl ActionExecutor for TestExecutor {
             ExecutorMode::Success => Ok(b"executed".to_vec()),
             ExecutorMode::Error => Err("outcome uncertain".into()),
             ExecutorMode::Panic => panic!("simulated adapter panic after effect"),
+            ExecutorMode::Sized(bytes) => Ok(vec![b'x'; bytes]),
         }
     }
 }
@@ -154,6 +168,17 @@ pub fn session(
     probe: &Probe,
     principal: &str,
 ) -> ExecutionSession {
+    session_with(runtime, action, probe, principal, ExecutorMode::Success)
+}
+
+/// A session whose adapter behaves as `mode` says.
+pub fn session_with(
+    runtime: &mut PtrRuntime,
+    action: &ActionIr,
+    probe: &Probe,
+    principal: &str,
+    mode: ExecutorMode,
+) -> ExecutionSession {
     runtime
         .register_execution_session(
             principal,
@@ -161,7 +186,7 @@ pub fn session(
                 scope(action),
                 probe,
                 RequiredVerification::FullSemantic,
-                ExecutorMode::Success,
+                mode,
             )],
             TTL,
         )

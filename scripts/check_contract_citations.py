@@ -1,0 +1,380 @@
+"""A contract that names a test must name one that exists.
+
+Three bullets in `docs/architecture/` asserted things the tree had stopped doing:
+one said `PodRegistry::resolve` "still matches on capability and input type alone"
+after it had taken a `ProjectId` for two commits, one said a race had no test in
+the same pull request that added six, and `31-cluster-integrity.md` asserted and
+denied the same fact about a deposed leader fourteen lines apart. Nothing checks a
+sentence, which is how all three survived.
+
+This does not check sentences either, and pretending otherwise would be the same
+mistake one level up. What it checks is the part of a bullet that *is* mechanical:
+**a cited test name resolves to a test that exists.** The corrections now cite
+tests rather than merely asserting properties, so deleting or renaming one makes
+this checker fail and point at the document that relies on it — the bullet and the
+test fail together, which is the most a checker can offer here.
+
+The heuristic is deliberately narrow. Only a backticked lower-snake identifier of
+five or more segments is treated as a citation, because test names in this
+repository are sentences (`a_pod_registered_for_one_project_is_invisible_to_another`)
+and ordinary identifiers are not (`provenance_bucket_count`, `upstream_retire_when`).
+A name that is a citation and does not look like one is missed; that is the cost of
+not producing false failures, and it is the right way round.
+"""
+
+from __future__ import annotations
+
+import ast
+import re
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+SKIP = {".git", "target", "vendor", ".venv", "node_modules", "__pycache__"}
+# Documents that make claims about what the tree does. Deliberately not every
+# document: `docs/RUST_API_STYLE.md:715` writes
+# "Rust test functions themselves should name the behavior, e.g.
+# `stale_generation_returns_expected_and_actual`" - an illustration of a naming
+# convention, not an assertion that such a test exists. This checker found it on
+# its first run, which is the right kind of finding and the wrong kind of failure.
+# A style guide gives examples; a contract makes claims, and only claims are
+# checkable.
+DOCUMENTS = (
+    "docs/architecture/*.md",
+    "docs/PRIORITIES.md",
+    "docs/OPEN_ITEMS_PLAN_*.md",
+)
+# Where a cited name could be defined.
+SOURCE_AREAS = ("crates", "model", "bins", "scripts", "training")
+# Five or more lower-snake segments: long enough that an ordinary identifier does
+# not reach it, short enough that every test name in this repository does.
+CITATION = re.compile(r"`([a-z][a-z0-9]*(?:_[a-z0-9]+){4,})`")
+# A Rust attribute that makes the function below it a test: one whose path *is*
+# `test`, possibly qualified - `#[test]`, `#[tokio::test]`, `#[tokio::test(...)]`.
+# Matching "test" anywhere in the attribute also accepted `#[cfg(test)]`, which
+# compiles a function for the test build without making it a test: `cargo test
+# -- --list` names only the `#[test]` one. `#[should_panic]` and `#[ignore]` sit
+# beside a test attribute rather than replacing it, and are handled by the
+# accumulation rule below rather than by this pattern.
+RUST_TEST_ATTRIBUTE = re.compile(r"^\s*#\[\s*(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*test\s*[\])(]")
+RUST_FN = re.compile(r"^\s*(?:pub\s+)?(?:async\s+)?fn\s+([a-z_][a-z0-9_]*)")
+# `unittest discover` collects `test*.py` only, so a definition in any other file
+# is not a test however much it looks like one.
+PYTHON_TEST_FILE = "test"
+# ... and within such a file it collects `test*` methods of `TestCase` subclasses
+# only. `TestLoader.testMethodPrefix` is `test` and CI leaves it there:
+# `.github/workflows/ci.yml` runs plain `python -m unittest discover -s <dir>`
+# for every Python test directory in the tree.
+PYTHON_TEST_METHOD_PREFIX = "test"
+# The module a case class has to come from, and the names it exports that are
+# one. `IsolatedAsyncioTestCase` and `FunctionTestCase` are `TestCase` subclasses
+# shipped by `unittest` itself, so a class deriving from either is collected
+# exactly as one deriving from `TestCase`. The module matters as much as the
+# name: a file defining its own `class TestCase` gets nothing collected, so
+# matching on the trailing name alone would accept a citation to a test that
+# never runs.
+UNITTEST_MODULE = "unittest"
+TEST_CASE_EXPORTS = frozenset({"TestCase", "IsolatedAsyncioTestCase", "FunctionTestCase"})
+
+
+def owned(root: Path, paths):
+    return (p for p in paths if not SKIP.intersection(p.relative_to(root).parts))
+
+
+def rust_tests(text: str) -> set[str]:
+    """Functions carrying a test attribute.
+
+    Attributes accumulate until a non-attribute line, so `#[test]` followed by
+    `#[should_panic(expected = "...")]` and then `fn name` is one test.
+    """
+    found: set[str] = set()
+    attributed = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if RUST_TEST_ATTRIBUTE.match(line):
+            attributed = True
+            continue
+        match = RUST_FN.match(line)
+        if match:
+            if attributed:
+                found.add(match.group(1))
+            attributed = False
+            continue
+        # Blank lines, comments and further attributes do not break the run; any
+        # other code does, so an attribute cannot reach past the function it sits on.
+        if stripped and not stripped.startswith(("#[", "//", "///", "#!")):
+            attributed = False
+    return found
+
+
+def is_case_base(node: ast.expr, modules: set[str], direct: set[str]) -> bool:
+    """Whether this base expression is one of `unittest`'s case classes."""
+    if isinstance(node, ast.Name):
+        return node.id in direct
+    if isinstance(node, ast.Attribute):
+        return (
+            node.attr in TEST_CASE_EXPORTS
+            and isinstance(node.value, ast.Name)
+            and node.value.id in modules
+        )
+    return False
+
+
+def rebound_names(node: ast.stmt) -> set[str]:
+    """Every module-scope name this statement binds, unbinds or rebinds.
+
+    Enumerating the statement kinds that rebind a name was the wrong shape and
+    kept being incomplete: first assignment and `def`, then `del`, and a probe
+    for `del` turned up four more in the same breath - a `for` target, a `with
+    ... as`, an `except ... as` (which Python unbinds again at the end of the
+    block) and a walrus. Each was a false pass against real discovery.
+
+    So this asks Python's own question instead: what does the statement bind?
+    Any `Store` or `Del` on a bare name counts, as does an import alias, a
+    `global`/`nonlocal` declaration, and the names `except ... as` and `match`
+    captures carry as plain strings rather than as `Name` nodes - which is how
+    `except` slipped through the first pass of this very rule. A `def`, `class` or `lambda` binds its own
+    name and then opens a new scope, so its body is not descended into - which
+    is why `def helper(): Blockers = 1` leaves a module-level `Blockers` alone,
+    a case the previous rule also got right and this one must not lose.
+    """
+    names: set[str] = set()
+    pending = [node]
+    while pending:
+        current = pending.pop()
+        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(current.name)
+            continue
+        if isinstance(current, ast.Lambda):
+            continue
+        if isinstance(current, ast.Name) and isinstance(current.ctx, (ast.Store, ast.Del)):
+            names.add(current.id)
+        elif isinstance(current, (ast.Import, ast.ImportFrom)):
+            for alias in current.names:
+                names.add(alias.asname or alias.name.split(".")[0])
+        elif isinstance(current, (ast.Global, ast.Nonlocal)):
+            names.update(current.names)
+        elif isinstance(current, ast.ExceptHandler) and current.name:
+            # Carried as a plain string rather than a `Name` node, which is how
+            # this one survived the first pass of the rule.
+            names.add(current.name)
+        elif isinstance(current, (ast.MatchAs, ast.MatchStar)) and current.name:
+            names.add(current.name)
+        elif isinstance(current, ast.MatchMapping) and current.rest:
+            names.add(current.rest)
+        pending.extend(ast.iter_child_nodes(current))
+    return names
+
+
+def module_cases(tree: ast.Module) -> dict[str, ast.ClassDef]:
+    """The case classes a module still exposes when it finishes running.
+
+    Every name here is read in statement order, because that is when Python
+    binds it, and three separate rounds of this checker were wrong for the same
+    reason: a fact about a name was taken from the whole file rather than from
+    the point where it is used.
+
+    - **Whether a base is a `unittest` case class** depends on the imports that
+      have run by then. A `from unittest import TestCase as Case` *after* a
+      `class Blockers(Case)` binds nothing in time - Python raises `NameError`
+      on the class statement and the module never imports - yet reading imports
+      file-wide accepted it.
+    - **Whether a class is a case** is settled when its `class` statement runs,
+      because that is when Python evaluates its bases and fixes `__bases__`. A
+      later `class Base(TestCase)` cannot reach back.
+    - **Whether the module still exposes it** is settled at the end, because
+      `unittest` reads the module's attributes once importing has finished.
+
+    Reading in order also replaced a cruder rule it used to need: a name the
+    file defined anywhere was dropped outright, to avoid guessing which binding
+    won. Order answers that exactly - `from unittest import TestCase` followed
+    by `class TestCase:` leaves the class, and the reverse leaves the import.
+
+    Module scope only, for the same reason: `unittest` finds cases among the
+    module's own attributes. A class nested in another class, defined inside a
+    function, or written under a conditional the module does not take is not
+    one of them.
+
+    A decorated class is dropped rather than read, because a decorator returns
+    whatever it likes and a parse cannot say what. That refuses one thing the
+    runner does collect - `@unittest.skip` returns the class - which is a false
+    failure, the direction this checker is allowed to be wrong in.
+    """
+    # Names currently bound to the `unittest` module, and to one of its case
+    # classes. Matching on the trailing name alone would accept any class called
+    # `TestCase`, which a file can define itself.
+    modules: set[str] = set()
+    direct: set[str] = set()
+    bound: dict[str, ast.ClassDef | None] = {}
+    is_case: dict[str, bool] = {}
+
+    def forget(name: str) -> None:
+        modules.discard(name)
+        direct.discard(name)
+
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and not node.decorator_list:
+            # Resolved against what is bound *now*, before this class binds.
+            case = any(
+                is_case_base(base, modules, direct)
+                or (isinstance(base, ast.Name) and is_case.get(base.id, False))
+                for base in node.bases
+            )
+            forget(node.name)
+            bound[node.name] = node
+            is_case[node.name] = case
+            continue
+
+        for name in rebound_names(node):
+            forget(name)
+            bound[name] = None
+            is_case.pop(name, None)
+
+        # An import rebinds its names and then binds them to what it imported,
+        # so this runs after the clearing above rather than before it.
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.asname:
+                    # `import unittest.mock as m` binds `m` to the submodule, so
+                    # only a plain `unittest` alias names the module we want.
+                    if alias.name == UNITTEST_MODULE:
+                        modules.add(alias.asname)
+                elif alias.name == UNITTEST_MODULE or alias.name.startswith(
+                    f"{UNITTEST_MODULE}."
+                ):
+                    # `import unittest.mock` binds `unittest` as well.
+                    modules.add(UNITTEST_MODULE)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module in (
+            UNITTEST_MODULE,
+            f"{UNITTEST_MODULE}.case",
+            f"{UNITTEST_MODULE}.async_case",
+        ):
+            for alias in node.names:
+                if alias.name in TEST_CASE_EXPORTS:
+                    direct.add(alias.asname or alias.name)
+
+    return {
+        name: node
+        for name, node in bound.items()
+        if node is not None and is_case.get(name, False)
+    }
+
+
+def python_tests(text: str) -> set[str]:
+    """Test methods `unittest discover` would actually collect from this file.
+
+    Collection is narrower than "a `def` in a `test*.py` file" in three ways,
+    and each one was a place this function let a dead citation through. The name
+    must begin with `TestLoader.testMethodPrefix`, which CI leaves at `test`; it
+    must be a method of a class, not a module-level function; and that class
+    must derive from a case class **that came from `unittest`**. The third is
+    not pedantry - a file holding its own `class TestCase` gets nothing
+    collected at all, so a base matched by its trailing name is a citation to a
+    test that never runs.
+
+    The file is parsed rather than imported. Importing would answer the question
+    exactly - it is what the runner does - and would also execute module-level
+    code from every `test*.py` in the tree during an invariant check, which is a
+    trade this checker is not entitled to make. Parsing costs one thing: a class
+    whose base is only resolvable at import time (a base imported from another
+    module, or built by a factory) is not recognised, and its tests read as
+    absent. That is a false failure rather than a false pass, and it is the right
+    way round for the same reason the citation pattern is narrow.
+    """
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        # A file that does not parse defines no collectable test either, and a
+        # checker is not the place to report a syntax error.
+        return set()
+
+    found: set[str] = set()
+    for definition in module_cases(tree).values():
+        for item in definition.body:
+            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if item.name.startswith(PYTHON_TEST_METHOD_PREFIX):
+                    found.add(item.name)
+    return found
+
+
+def test_definitions(root: Path) -> set[str]:
+    """Names of tests that actually exist, rather than text that resembles one.
+
+    This used to concatenate every source file and regex for `fn|def <name>`,
+    which accepted three things that are not a test: a mention inside a comment
+    or a string, an ordinary helper function, and a Python definition no runner
+    collects. A citation could then survive the removal of the very test it
+    cites, which is the one thing this checker exists to stop.
+
+    The Python half was wrong twice, and the second time is the one worth
+    recording: narrowing it to files named `test*.py` looked like the fix and was
+    only half of one, because `unittest discover` collects `test*` methods of
+    `TestCase` subclasses from such a file and nothing else. The fixture written
+    to prove the narrowing worked was itself a top-level `def` that no runner
+    would ever execute - the checker accepted it, and so did I.
+    """
+    found: set[str] = set()
+    for area in SOURCE_AREAS:
+        base = root / area
+        if not base.is_dir():
+            continue
+        for path in owned(root, base.rglob("*.rs")):
+            found |= rust_tests(path.read_text(encoding="utf-8", errors="replace"))
+        for path in owned(root, base.rglob("*.py")):
+            if not path.name.startswith(PYTHON_TEST_FILE):
+                continue
+            found |= python_tests(path.read_text(encoding="utf-8", errors="replace"))
+    return found
+
+
+def citations(root: Path) -> dict[str, set[str]]:
+    """Every cited name, mapped to the documents citing it."""
+    found: dict[str, set[str]] = {}
+    seen: set[Path] = set()
+    for pattern in DOCUMENTS:
+        for document in sorted(root.glob(pattern)):
+            if document in seen:
+                continue
+            seen.add(document)
+            text = document.read_text(encoding="utf-8")
+            for match in CITATION.finditer(text):
+                found.setdefault(match.group(1), set()).add(
+                    str(document.relative_to(root))
+                )
+    return found
+
+
+def check(root: Path) -> tuple[list[str], int]:
+    errors: list[str] = []
+    defined = test_definitions(root)
+    cited = citations(root)
+    for name in sorted(cited):
+        if name not in defined:
+            where = ", ".join(sorted(cited[name]))
+            errors.append(
+                f"{name}: cited by {where} and is not a test - either it was "
+                "renamed or removed and the contract still relies on it, or the "
+                "contract names something that was never a test. A helper "
+                "function, a mention in a comment, and a Python definition "
+                "`unittest discover` does not collect - one outside a "
+                "`TestCase` subclass, one whose name does not start with "
+                "`test`, one whose base only shares the name of a `unittest` "
+                "class, or one in a file not named `test*.py` - all count as "
+                "absent"
+            )
+    return errors, len(cited)
+
+
+def main(argv: list[str]) -> int:
+    root = Path(argv[1]).resolve() if len(argv) > 1 else ROOT
+    errors, total = check(root)
+    for error in errors:
+        print(f"error: {error}", file=sys.stderr)
+    if errors:
+        return 1
+    print(f"OK: {total} test citations in contracts resolve to tests that exist")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

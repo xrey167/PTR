@@ -101,6 +101,33 @@ expired permits without sleeping. Compile-fail doctests reject dispatch forgery,
 receipt-to-permit promotion, permit cloning and moving a permit into dispatch twice.
 Test files establish coverage intent; exact-commit executed CI establishes results.
 
+## What "race" can mean here
+
+A permission or lifecycle race is usually imagined as two callers interleaving inside
+one decision. That interleaving is prevented by construction rather than by care:
+`execute_prepared` and `dispatch_detached` take `&mut self`, so nothing — no other
+session, no host call — can run between the last admission check and the executor
+invocation.
+
+What remains observable is the window between **preparing** a permit and **consuming**
+it, and that is what the tests drive: a permission withdrawn there, a peer's policy
+replaced there, a generation revoked or superseded there, another session's effect
+succeeding there. Each refuses the permit, and each refuses it before the verifier or
+the executor is reached — a refusal that arrived after the executor would be a refusal
+of something that had already happened.
+
+Two things follow that are worth saying plainly. Within one process, "a different
+session" can only act through the host, because a session holds no authority to mutate
+the runtime. And a genuinely concurrent race needs two runtimes, which needs a wire.
+
+That wire now exists: `32-execution-wire.md`, in `crates/ptr-execwire`. Two runtimes
+decide at the same moment there, and a withdrawal at one does not reach the other —
+authority is per runtime, which is what makes the two ledgers independent rather than
+two views of one. What remains open is the *stronger* version of the identity
+property: whether peer identity should be unforgeable at the type level, which needs a
+`ptr-runtime` dependency on `ptr-net` and is the owner's decision. The wire holds the
+property in one place instead; that contract says what the difference costs.
+
 ## Compatibility and limits
 
 No dependency, lockfile, cargo-deny policy or neural model is changed. Existing
