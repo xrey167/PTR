@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-22  
-**Code footprint:** 1 Rust source files · 145 nonblank source lines · 2 integration-test files · 1 `#[test]` markers
+**Code footprint:** 2 Rust source files · 305 nonblank source lines · 3 integration-test files · 1 `#[test]` markers
 
 ### Implemented now
 
@@ -22,11 +22,18 @@
 - Iroh response path keeps the connection alive through peer-observed graceful completion
 - Iroh 1.2 optional feature requires Rust 1.91; default runtime core retains a separate Rust 1.85 gate
 - The endpoint address type is re-exported, so a composing crate names an address without declaring its own iroh dependency: two pins of a transport would be two wire formats
+- PeerBook records where each peer the deployment knows about can be reached, keyed by the id the address itself carries — there is no (peer, address) pair to transpose, so a wrong address lands under its own owner rather than pointing one peer's name at another peer's socket
+- PeerBook replaces an address rather than refusing a second one, unlike the admission tables it otherwise mirrors: an address is a fact about where a node is and a node moves, while a grant is a decision that must not change silently
+- PeerAddress has no public constructor, so the only address either wire client will accept is one a PeerBook produced: a requester cannot dial an address it was handed by a peer, read out of a payload, or learned from the network
+- Nothing in PeerBook reads bytes, which is the mechanism rather than a check: there is no path by which the network can add an entry
+- An address that names the right peer at the wrong socket fails rather than reaching whoever is there, because the key at the far end is authenticated — pinned in the handshake, and compared against the id asked for as a second line
 
 ### Missing for the target architecture
 
 - Peer discovery/session lifecycle
 - Any traffic on ALPN_MODEL, ALPN_BLOB or ALPN_EVENTS: three of the six ALPNs are still declared and unspoken
+- Discovery: finding the address for an id nobody told you is a mechanism choice with its own trust question, and iroh's own address lookup is disabled in this build, so turning it on is a decision about trusting a third party rather than a code change
+- A journaled peer book, and any re-resolution of a stale address: the book is in memory and a deployment whose nodes move must record the new address
 - Retry/idempotency and backpressure behavior
 - Raft/PodWire/blob stream adapters; ptr-cluster carries raft batches over ALPN_RAFT, ptr-execwire carries execution requests over ALPN_EXEC and ptr-podwire carries Pod access over ALPN_PODWIRE, all three using the request/response path, and a stream adapter would replace that rather than extend it
 
@@ -53,6 +60,9 @@
 ### Current automated checks
 
 - Iroh local direct request/response roundtrip verifies authenticated peer identity and ALPN routing
+- an address is locatable only under the id it carries, re-recording returns what it replaced, a forgotten peer is refused from the next lookup, and a truthful address from the book reaches its peer as the control
+- an address pointing the honest id at an impostor's socket fails and the impostor serves nothing, with the honest node at its true address succeeding in the same test so the failure is about the lie
+- compile-fail doctest: PeerAddress cannot be built by a struct literal
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->
@@ -85,6 +95,32 @@ PTR keeps this responsibility in its own crate so the semantics remain stable ev
 - ALPN allocation
 - cluster peer connectivity
 - remote channel lifecycle
+- **address authority**: where each peer the deployment knows about may be dialled
+
+## An address is not an identity
+
+A `NodeId` is a public key and says *who*. An address says *where*, changes when a
+host moves, and on its own is a hint that anyone could answer.
+
+`PeerBook` holds the deployment's answer to *where*. It is keyed by the id the
+address itself carries, so there is no `(peer, address)` pair to transpose: an
+operator who records the wrong address files it under **its own** owner, and a
+requester asking for the intended peer still does not find it. It replaces an
+address rather than refusing a second one — unlike the admission tables it otherwise
+mirrors — because an address is a fact about where a node is and a node moves, while
+a grant is a decision that must not change silently.
+
+`PeerAddress` has no public constructor. Both wire clients accept nothing else, so a
+requester cannot dial an address it was handed by a peer, read out of a payload, or
+learned from the network.
+
+What the book cannot detect is an address that names the right peer at the wrong
+socket. What stops that is the key at the far end being authenticated, so the cost of
+a wrong address is a failed request rather than a request served by the wrong node.
+
+Finding the address for an id nobody told you is **discovery**, which this crate
+deliberately does not do. See
+[`docs/architecture/34-address-authority.md`](../../docs/architecture/34-address-authority.md).
 
 ## Explicit non-responsibilities
 

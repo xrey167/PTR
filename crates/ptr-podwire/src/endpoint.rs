@@ -9,7 +9,7 @@ use crate::frame::{
     decode_answer, decode_request, encode_answer, encode_request, request_digest, FrameError,
     PodAnswer, PodOutcome, PodRequest, RefusalCode, MAX_FRAME_BYTES,
 };
-use ptr_net::{EndpointAddr, IrohTransport, NodeIdentity, ALPN_PODWIRE};
+use ptr_net::{EndpointAddr, IrohTransport, NodeIdentity, PeerAddress, ALPN_PODWIRE};
 use ptr_pods::PodRegistry;
 use ptr_protocol::TypedPayload;
 use ptr_types::NodeId;
@@ -318,19 +318,41 @@ impl PodClient {
 
     /// Send one request and return the answer, or refuse it.
     ///
-    /// Three checks, in this order. The **author** first: an answer from an endpoint
-    /// other than the one the connection authenticated is refused before anything in
-    /// it is read, because nothing in it is worth reading. Then the request id, then
-    /// the digest of the exact bytes that were sent.
+    /// The host is a [`PeerAddress`], which can only have come from a
+    /// [`ptr_net::PeerBook`] the deployment installed. A bare address does not
+    /// satisfy this signature, so a requester cannot dial one it was handed by a
+    /// peer or read out of a payload — and an unrecorded peer is refused by the book
+    /// before any connection is attempted.
+    ///
+    /// ```compile_fail
+    /// # async fn dial(client: &ptr_podwire::PodClient, request: &ptr_podwire::PodRequest) {
+    /// let bare: ptr_net::EndpointAddr = unimplemented!();
+    /// let _ = client.request(bare, request).await;
+    /// # }
+    /// ```
+    ///
+    /// There is deliberately **no** second check here that the request names the peer
+    /// being dialled. It would refuse a local bug one round trip earlier and buy no
+    /// property — the host checks the name it was sent, and must, since a requester is
+    /// not trusted about it.
+    ///
+    /// Then three checks on the answer, in this order. The **author** first: an
+    /// answer from an endpoint other than the one the connection authenticated is
+    /// refused before anything in it is read, because nothing in it is worth
+    /// reading. Then the request id, then the digest of the exact bytes that were
+    /// sent.
     ///
     /// What this does **not** establish: an answer is not signed. Inside this call
     /// the connection vouches for its author; once the bytes are stored or
-    /// forwarded, nothing does.
+    /// forwarded, nothing does. And the book cannot tell a *wrong* address for the
+    /// right peer from a right one — that dial fails on the authenticated key rather
+    /// than reaching the wrong host.
     pub async fn request(
         &self,
-        host: EndpointAddr,
+        host: PeerAddress,
         request: &PodRequest,
     ) -> Result<PodAnswer, PodWireError> {
+        let host: EndpointAddr = host.into_address();
         let authenticated = host.id.to_string();
         let frame = encode_request(request)?;
         let digest = request_digest(&frame);

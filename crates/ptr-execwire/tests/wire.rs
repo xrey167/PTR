@@ -16,7 +16,7 @@ use ptr_execwire::{
     RefusalCode, WireError, WireOutcome, WireReceipt, WireRequest,
 };
 use ptr_ledger::LedgerEvent;
-use ptr_net::{IrohTransport, NodeIdentity, ALPN_EXEC};
+use ptr_net::{EndpointAddr, IrohTransport, NodeIdentity, PeerAddress, PeerBook, ALPN_EXEC};
 use ptr_runtime::execution::{
     ActionExecutor, ActionScope, AdmissionPolicy, DetachedExecutor, ExecutionGrant,
     RequiredVerification, VerifiedDispatch,
@@ -192,6 +192,17 @@ async fn host_admitting(peer: &NodeIdentity, mode: Mode) -> (Arc<ExecutionHost>,
     (Arc::new(host), action, probe)
 }
 
+/// Where to dial, on the deployment's authority.
+///
+/// An `ExecutionClient` accepts nothing else, so every test here goes through a book
+/// — which is the point: a bare address does not satisfy the signature.
+fn located(address: EndpointAddr) -> PeerAddress {
+    let mut book = PeerBook::new();
+    book.record(address.clone());
+    book.locate(&NodeId(address.id.to_string()))
+        .expect("an address just recorded is locatable")
+}
+
 fn request(host: &ExecutionHost, action: &ActionIr, request_id: u64) -> WireRequest {
     WireRequest {
         addressed_to: host.identity().public_key,
@@ -220,8 +231,10 @@ async fn an_admitted_peer_executes_over_the_wire_under_the_principal_policy_name
     asked.action.payload = b"verified payload".to_vec();
 
     let serving = Arc::clone(&host);
-    let (answer, served) =
-        tokio::join!(client.request(host.address(), &asked), serving.serve_once());
+    let (answer, served) = tokio::join!(
+        client.request(located(host.address()), &asked),
+        serving.serve_once()
+    );
     let receipt = answer.unwrap();
     let served = served.unwrap();
 
@@ -311,7 +324,7 @@ async fn a_receipt_naming_another_runtime_is_refused_and_an_honest_one_is_not() 
             .unwrap();
     };
 
-    let (answer, ()) = tokio::join!(client.request(address, &asked), serving);
+    let (answer, ()) = tokio::join!(client.request(located(address), &asked), serving);
     assert_eq!(
         answer.expect_err("a receipt from somebody else"),
         WireError::ForgedReceipt {
@@ -346,7 +359,7 @@ async fn a_receipt_naming_another_runtime_is_refused_and_an_honest_one_is_not() 
             .await
             .unwrap();
     };
-    let (answer, ()) = tokio::join!(client.request(address, &asked), serving);
+    let (answer, ()) = tokio::join!(client.request(located(address), &asked), serving);
     assert_eq!(
         answer.unwrap().outcome,
         WireOutcome::Applied {
@@ -420,7 +433,7 @@ async fn a_receipt_that_answers_a_different_request_is_refused() {
                 .await
                 .unwrap();
         };
-        let (answer, ()) = tokio::join!(client.request(address, &asked), serving);
+        let (answer, ()) = tokio::join!(client.request(located(address), &asked), serving);
         assert_eq!(answer.expect_err(label), expected, "{label}");
     }
 }
@@ -439,8 +452,10 @@ async fn a_request_addressed_to_another_runtime_is_refused_and_writes_no_record(
         ..request(&two, &action, 1)
     };
     let serving = Arc::clone(&two);
-    let (answer, served) =
-        tokio::join!(client.request(two.address(), &asked), serving.serve_once());
+    let (answer, served) = tokio::join!(
+        client.request(located(two.address()), &asked),
+        serving.serve_once()
+    );
     let receipt = answer.unwrap();
     let served = served.unwrap();
 
@@ -465,7 +480,10 @@ async fn a_request_addressed_to_another_runtime_is_refused_and_writes_no_record(
     // The control: the same request, addressed to the runtime it is sent to, applies.
     let asked = request(&two, &action, 2);
     let serving = Arc::clone(&two);
-    let (answer, _) = tokio::join!(client.request(two.address(), &asked), serving.serve_once());
+    let (answer, _) = tokio::join!(
+        client.request(located(two.address()), &asked),
+        serving.serve_once()
+    );
     assert_eq!(
         answer.unwrap().outcome,
         WireOutcome::Applied {
@@ -488,7 +506,7 @@ async fn an_unadmitted_peer_is_refused_exactly_as_an_admitted_one_outside_its_gr
     let serving = Arc::clone(&host);
     let asked = request(&host, &action, 1);
     let (answer, _) = tokio::join!(
-        stranger.request(host.address(), &asked),
+        stranger.request(located(host.address()), &asked),
         serving.serve_once()
     );
     let unadmitted = answer.unwrap().outcome;
@@ -497,7 +515,7 @@ async fn an_unadmitted_peer_is_refused_exactly_as_an_admitted_one_outside_its_gr
     outside.action.operation = "delete".into();
     let serving = Arc::clone(&host);
     let (answer, _) = tokio::join!(
-        admitted.request(host.address(), &outside),
+        admitted.request(located(host.address()), &outside),
         serving.serve_once()
     );
     let out_of_scope = answer.unwrap().outcome;
@@ -520,7 +538,7 @@ async fn an_unadmitted_peer_is_refused_exactly_as_an_admitted_one_outside_its_gr
     // policy.
     let serving = Arc::clone(&host);
     let (answer, _) = tokio::join!(
-        stranger.request(host.address(), &asked),
+        stranger.request(located(host.address()), &asked),
         serving.serve_once()
     );
     assert_eq!(
@@ -539,10 +557,15 @@ async fn the_same_frame_sent_twice_is_refused_by_the_window_and_applies_once() {
     let asked = request(&host, &action, 5);
 
     let serving = Arc::clone(&host);
-    let (first, _) = tokio::join!(client.request(host.address(), &asked), serving.serve_once());
+    let (first, _) = tokio::join!(
+        client.request(located(host.address()), &asked),
+        serving.serve_once()
+    );
     let serving = Arc::clone(&host);
-    let (second, served) =
-        tokio::join!(client.request(host.address(), &asked), serving.serve_once());
+    let (second, served) = tokio::join!(
+        client.request(located(host.address()), &asked),
+        serving.serve_once()
+    );
 
     assert_eq!(
         first.unwrap().outcome,
@@ -582,10 +605,16 @@ async fn a_retry_is_a_new_request_id_with_the_same_key_and_still_applies_once() 
     };
 
     let serving = Arc::clone(&host);
-    let (answer, _) = tokio::join!(client.request(host.address(), &first), serving.serve_once());
+    let (answer, _) = tokio::join!(
+        client.request(located(host.address()), &first),
+        serving.serve_once()
+    );
     let applied = answer.unwrap().outcome;
     let serving = Arc::clone(&host);
-    let (answer, _) = tokio::join!(client.request(host.address(), &retry), serving.serve_once());
+    let (answer, _) = tokio::join!(
+        client.request(located(host.address()), &retry),
+        serving.serve_once()
+    );
     let retried = answer.unwrap().outcome;
 
     assert_eq!(
@@ -676,8 +705,10 @@ async fn a_detached_grant_is_refused_over_the_wire_and_leaves_no_fence() {
 
     let serving = Arc::clone(&host);
     let asked = request(&host, &action, 1);
-    let (answer, served) =
-        tokio::join!(client.request(host.address(), &asked), serving.serve_once());
+    let (answer, served) = tokio::join!(
+        client.request(located(host.address()), &asked),
+        serving.serve_once()
+    );
 
     assert_eq!(
         answer.unwrap().outcome,
@@ -707,7 +738,10 @@ async fn an_uncertain_outcome_is_not_a_refusal_and_the_fence_reaches_the_next_re
 
     let serving = Arc::clone(&host);
     let asked = request(&host, &action, 1);
-    let (answer, _) = tokio::join!(client.request(host.address(), &asked), serving.serve_once());
+    let (answer, _) = tokio::join!(
+        client.request(located(host.address()), &asked),
+        serving.serve_once()
+    );
     assert_eq!(
         answer.unwrap().outcome,
         WireOutcome::Uncertain,
@@ -724,8 +758,10 @@ async fn an_uncertain_outcome_is_not_a_refusal_and_the_fence_reaches_the_next_re
     // this runtime cannot take on more while it does not know what happened.
     let serving = Arc::clone(&host);
     let asked = request(&host, &action, 2);
-    let (answer, served) =
-        tokio::join!(client.request(host.address(), &asked), serving.serve_once());
+    let (answer, served) = tokio::join!(
+        client.request(located(host.address()), &asked),
+        serving.serve_once()
+    );
     assert_eq!(
         answer.unwrap().outcome,
         WireOutcome::Refused {
@@ -751,7 +787,10 @@ async fn withdrawing_a_peer_takes_effect_between_two_requests_over_the_wire() {
 
     let serving = Arc::clone(&host);
     let asked = request(&host, &action, 1);
-    let (answer, _) = tokio::join!(client.request(host.address(), &asked), serving.serve_once());
+    let (answer, _) = tokio::join!(
+        client.request(located(host.address()), &asked),
+        serving.serve_once()
+    );
     assert_eq!(
         answer.unwrap().outcome,
         WireOutcome::Applied {
@@ -765,7 +804,10 @@ async fn withdrawing_a_peer_takes_effect_between_two_requests_over_the_wire() {
 
     let serving = Arc::clone(&host);
     let asked = request(&host, &action, 2);
-    let (answer, _) = tokio::join!(client.request(host.address(), &asked), serving.serve_once());
+    let (answer, _) = tokio::join!(
+        client.request(located(host.address()), &asked),
+        serving.serve_once()
+    );
     assert_eq!(
         answer.unwrap().outcome,
         WireOutcome::Refused {
@@ -791,7 +833,10 @@ async fn two_runtimes_audit_the_same_peer_independently() {
         ..request(&one, &action, 1)
     };
     let serving = Arc::clone(&one);
-    let (answer, _) = tokio::join!(client.request(one.address(), &asked), serving.serve_once());
+    let (answer, _) = tokio::join!(
+        client.request(located(one.address()), &asked),
+        serving.serve_once()
+    );
     assert_eq!(
         answer.unwrap().outcome,
         WireOutcome::Applied {
@@ -804,7 +849,10 @@ async fn two_runtimes_audit_the_same_peer_independently() {
         ..asked
     };
     let serving = Arc::clone(&two);
-    let (answer, _) = tokio::join!(client.request(two.address(), &asked), serving.serve_once());
+    let (answer, _) = tokio::join!(
+        client.request(located(two.address()), &asked),
+        serving.serve_once()
+    );
     assert_eq!(
         answer.unwrap().outcome,
         WireOutcome::Applied {
@@ -842,8 +890,8 @@ async fn two_runtimes_decide_concurrently_and_one_withdrawal_does_not_reach_the_
     let serving_one = Arc::clone(&one);
     let serving_two = Arc::clone(&two);
     let (refused, applied, _, _) = tokio::join!(
-        client.request(one.address(), &refused_at),
-        client.request(two.address(), &applied_at),
+        client.request(located(one.address()), &refused_at),
+        client.request(located(two.address()), &applied_at),
         serving_one.serve_once(),
         serving_two.serve_once()
     );

@@ -164,3 +164,13 @@ mod iroh_backend {
 pub use iroh_backend::{
     Address as EndpointAddr, Incoming as IrohIncoming, Transport as IrohTransport,
 };
+
+/// Where the deployment says each peer can be reached.
+///
+/// Behind the transport feature because an address is the transport's type: a book of
+/// addresses with no transport to dial them would be a map of nowhere.
+#[cfg(feature = "iroh-backend")]
+mod peers;
+
+#[cfg(feature = "iroh-backend")]
+pub use peers::{BookError, PeerAddress, PeerBook};

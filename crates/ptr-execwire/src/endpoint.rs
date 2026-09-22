@@ -8,7 +8,7 @@ use crate::frame::{
     decode_receipt, decode_request, encode_receipt, encode_request, request_digest, FrameError,
     RefusalCode, WireOutcome, WireReceipt, WireRequest, MAX_BODY_BYTES, MAX_FRAME_BYTES,
 };
-use ptr_net::{EndpointAddr, IrohTransport, NodeIdentity, ALPN_EXEC};
+use ptr_net::{EndpointAddr, IrohTransport, NodeIdentity, PeerAddress, ALPN_EXEC};
 use ptr_runtime::execution::{ExecutionError, ExecutionSession};
 use ptr_runtime::PtrRuntime;
 use ptr_types::NodeId;
@@ -488,15 +488,38 @@ impl ExecutionClient {
     /// the digest of the exact bytes that were sent — so a receipt cannot be presented
     /// as the answer to a request it does not belong to.
     ///
+    /// The host is a [`PeerAddress`], which can only have come from a
+    /// [`ptr_net::PeerBook`] the deployment installed. A bare address does not
+    /// satisfy this signature, so a requester cannot dial one it was handed by a peer
+    /// or read out of a payload — and an unrecorded peer is refused by the book
+    /// before any connection is attempted.
+    ///
+    /// ```compile_fail
+    /// # async fn dial(client: &ptr_execwire::ExecutionClient, request: &ptr_execwire::WireRequest) {
+    /// let bare: ptr_net::EndpointAddr = unimplemented!();
+    /// let _ = client.request(bare, request).await;
+    /// # }
+    /// ```
+    ///
+    /// There is deliberately **no** second check here that the request names the peer
+    /// being dialled. It would refuse a local bug one round trip earlier and buy no
+    /// property — the host checks the name it was sent, and must, since a requester is
+    /// not trusted about it. Adding it would also mean a well-behaved client could no
+    /// longer send a misaddressed request at all, leaving the host's own check
+    /// reachable only from a raw transport.
+    ///
     /// What this does **not** establish: a receipt is not signed. Inside this call the
     /// connection vouches for its author; once the bytes are stored or forwarded,
     /// nothing does. A receipt in a file is hearsay, and this crate refuses to pretend
-    /// otherwise by offering no way to verify one.
+    /// otherwise by offering no way to verify one. Nor does the book know a *wrong*
+    /// address for the right runtime from a right one — that dial fails on the
+    /// authenticated key rather than executing at the wrong runtime.
     pub async fn request(
         &self,
-        host: EndpointAddr,
+        host: PeerAddress,
         request: &WireRequest,
     ) -> Result<WireReceipt, WireError> {
+        let host: EndpointAddr = host.into_address();
         let authenticated = host.id.to_string();
         let frame = encode_request(request)?;
         let digest = request_digest(&frame);

@@ -135,7 +135,7 @@ open_decisions = ["content hash algorithm", "streaming API", "access policy", "v
 
 [[component]]
 id = "ptr-net"
-ports = ["Transport", "PeerDirectory", "SessionManager"]
+ports = ["PeerBook", "Transport", "PeerDirectory", "SessionManager"]
 type_families = ["network-protocol", "identity-lifecycle"]
 backend_slots = ["network-transport"]
 open_decisions = ["NodeId/key binding", "session reuse", "discovery", "retry/backpressure"]
@@ -159,7 +159,7 @@ id = "ptr-podwire"
 ports = ["PodHost", "PodClient", "PodAccessPolicy"]
 type_families = ["network-protocol", "capability-authority", "identity-lifecycle"]
 backend_slots = ["network-transport", "pod-environment"]
-open_decisions = ["whether the Pod access policy and the execution admission policy share one durability story before either is journaled", "whether an answer should be signed, which is the receipt question in a second place", "whether a peer identity should be unforgeable at the type level, which needs a ptr-runtime dependency on ptr-net", "who owns the accept loop", "backpressure toward a peer that asks faster than the host answers", "whether a requester should be able to discover a Pod's protocol version rather than only be refused for guessing it wrong"]
+open_decisions = ["whether the Pod access policy and the execution admission policy share one durability story before either is journaled", "whether an answer should be signed, which is the receipt question in a second place", "whether a peer identity should be unforgeable at the type level, which needs a ptr-runtime dependency on ptr-net", "who owns the accept loop", "backpressure toward a peer that asks faster than the host answers", "whether a requester should be able to discover a Pod's protocol version rather than only be refused for guessing it wrong", "which discovery mechanism turns an id into an address, and whose answer to believe"]
 
 [[component]]
 id = "ptr-events"

@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-21  
-**Code footprint:** 3 Rust source files · 1424 nonblank source lines · 1 integration-test files · 14 `#[test]` markers
+**Last reviewed:** 2026-09-22  
+**Code footprint:** 3 Rust source files · 1447 nonblank source lines · 1 integration-test files · 14 `#[test]` markers
 
 ### Implemented now
 
@@ -28,6 +28,8 @@
 - A request/receipt frame format with distinct magics per direction, an explicit layout version, bounded length-prefixed fields, explicit two-way code tables for every enumeration, and a distinct diagnostic code per refusal
 - No background loop, timer or retry policy: the caller drives serve_once and request, which keeps scheduling decisions where they can be made deliberately and keeps the tests free of sleeps
 - The whole composition is feature-gated, so iroh stays out of every other workspace build exactly as ptr-net keeps its own backend out
+- A requester dials only what the deployment wrote down: request takes a ptr-net PeerAddress, which has no public constructor, so a bare address does not satisfy the signature and an address handed over by a peer or read out of a payload cannot be dialled
+- No second check that a request names the peer being dialled, deliberately: it would buy no property since the host checks the name it was sent, and it would leave the host's own check reachable only from a raw transport
 
 ### Missing for the target architecture
 
@@ -37,7 +39,7 @@
 - Reconciliation: an uncertain outcome is reported and then belongs to the host's operator, because a remote peer must not be able to declare what happened to an effect
 - An accept loop a deployment would run, including backpressure toward a peer that asks faster than the runtime can answer
 - Session reuse: every request opens a connection, which is correct and wasteful
-- Discovery, and any authority over the address a requester is given: a wrong address gets a refusal rather than a wrong execution only because the request names the endpoint it is for
+- Discovery: which address belongs to an id nobody told you is a mechanism choice with its own trust question, recorded as the owner's rather than invented
 - Any claim about latency, throughput or behaviour under load; the tests establish protocol and identity properties on localhost
 
 ### Next milestones
@@ -71,6 +73,7 @@
 - an adapter that cannot say whether it applied yields an uncertain outcome rather than a refusal, the fence stands, and the next request is refused rather than reported as a second uncertainty
 - withdrawing a peer takes effect on its very next request over the wire
 - two runtimes audit the same peer's requests independently: an at-most-once key spent at one says nothing at the other
+- compile-fail doctest: a bare endpoint address is not an argument to request, verified against a positive control so it fails on the type rather than on a path
 - frame codec unit tests: round trip of every outcome, a request never read as a receipt and vice versa, every prefix refused, no single bit change yielding the original request, trailing bytes, an unknown layout version, an invented length refused by the bound, an oversize frame refused before parsing, an unknown effect/outcome/refusal code refused rather than guessed, invalid UTF-8 refused rather than replaced, and one distinct code per refusal
 
 <!-- PTR:STATUS:END -->
