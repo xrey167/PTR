@@ -1,0 +1,7 @@
+id = "dual-rtx3090-pcie"
+os = "unspecified"
+cpu = "unspecified"
+ram_gib = 0
+gpu = "2x NVIDIA GeForce RTX 3090, 24 GiB each, 48 GiB combined, PCIe-only (no NVLink bridge)"
+gpu_memory_gib = 48
+notes = "PCIe-only interconnect: published dual-RTX-3090 scaling benchmarks generally use an NVLink bridge, so ZeRO-3/FSDP communication overhead on this profile will be higher than those benchmarks suggest. Replace os/cpu/ram_gib with the actual measured values before publishing benchmark results."
