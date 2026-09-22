@@ -1,0 +1,39 @@
+version = 1
+
+# The codebook this run's codes belong to. Both fields are required and checked
+# against datasets/generated/codebook.json: the version alone cannot catch tables
+# edited in place, and a defaulted assignment is one nobody chose.
+[codebook]
+version = 1
+fingerprint = "2b6f8175a7a7bb648910e7acb17dcfcff5149834f2fe87355c5d2c4524c113a3"
+
+[run]
+name = "coding-pod-continued-pretraining"
+seed = 17
+hardware_profile = "hardware/dual-rtx3090.toml"
+
+[data]
+dataset = "own_code_corpus_v0_1"
+split = "train"
+
+[model]
+family = "external-coding-llm"
+config = "training/continued-pretraining/model.toml"
+
+# Placeholder hyperparameters. Real values depend on which candidate the
+# training-backend evaluation (evaluations/components/training-backend/)
+# selects, and on the final own_code_corpus_v0_1 token count. batch_size=1
+# with heavy gradient accumulation reflects the ~48GB combined, PCIe-only
+# (no NVLink) budget this run targets.
+[training]
+backend = "dry-run"
+precision = "bf16"
+batch_size = 1
+gradient_accumulation = 32
+learning_rate = 0.00002
+max_steps = 1
+checkpoint_every = 1
+
+[evaluation]
+every = 1
+suites = ["coding-pod-heldout"]
