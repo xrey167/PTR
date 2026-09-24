@@ -5,7 +5,13 @@ The pass read every workspace area. Every test suite that CI runs was executed
 locally (see "Evidence base" at the end), and the load-bearing claims below were
 re-checked against the code. It follows the conventions of
 [`OPEN_ITEMS_PLAN_20260921.md`](OPEN_ITEMS_PLAN_20260921.md): every defect names
-the file and line where it can be seen.
+the file and line where it can be seen. A companion document,
+[`PROJECT_MAP.md`](PROJECT_MAP.md), maps the whole repository.
+
+*Revised the same day, after an independent verification pass:*
+- items 1.2, 2.4, 3.5 and 3.7 were corrected;
+- rows 4.15–4.20 were added;
+- the owner decisions were renamed O1–O5.
 
 ## 1. The diagnosis in one paragraph
 
@@ -53,8 +59,9 @@ thesis.**
 - **Test discipline.** 425 default-feature tests, 155 feature-gated backend tests,
   43 Burn A0 tests and 233 Python tests. All of them pass on `e93ed99`.
 - **Honest status vocabulary.** `STATUS.md` says "not yet evidence of superiority".
-  Experiments carry falsification criteria, and `check_research_gates.py` stops
-  unpinned baselines from producing claims.
+  Experiments carry falsification criteria. `check_research_gates.py` stops M001–M005
+  and E002 from being *declared* running or completed while their baselines are
+  unpinned. It is a CI check on the manifest, and it does not stop an execution.
 - **Docs-as-code.** `component.toml` feeds generated README blocks and
   `docs/components/STATUS.md`, and CI fails when they are stale.
 - **Supply-chain hygiene.** Vendored crates are hash-inventoried and each has a
@@ -76,7 +83,7 @@ in this step runs on the CPU `flex` backend that A0 already uses.
 | # | Task | Why / evidence |
 |---|---|---|
 | 1.1 | Implement the ablation switches in A0: no semantic slots, no typed attention bias, no latent recurrence, no router. Read them from `model/configs/ablations.toml`. | That file lists five ablations, but no code reads it. A0 exposes only `latent_steps`, which defaults to 0 (`model/burn-a0/src/lib.rs:349`). |
-| 1.2 | Re-run the M001 pilot on current code, then extend it to a real M001–M004 run: at least 5 seeds, matched parameter count, the two imported hash-verified bundles plus the synthetic set. | The recorded pilot (`experiments/model/M001-semantic-slots/results/pilot_run.json`) was measured at `344cb3d`, before codebook-sized tables and committed slot payloads changed the model. |
+| 1.2 | Replace the M001 pilot with a real M001–M004 run: at least 5 seeds, matched parameter count, the two imported hash-verified bundles plus a synthetic set. Use a task that the ablated arm *could* in principle learn, and give both arms the same payload information. | The recorded pilot (`experiments/model/M001-semantic-slots/results/pilot_run.json`) was re-recorded in `ebe475c`. Since `0fcf7ab`, `examples/m001_pilot.rs` gives distinct per-row slot payloads to *both* arms, so a re-run is confounded. By construction, 0.25 is the most the ablated arm can reach and the typed arm is handed the label (`m001_pilot.rs:15-38`). The pilot is a plumbing check, as its own README says. |
 | 1.3 | Run the experiments through `scripts/run_experiment.py`, and add an aggregation step that turns per-seed records into `metrics.json`. | No committed evidence has come through the runner so far. Per-experiment scripts overwrite fixed file names (`experiments/lifecycle/L001-revocation-crash/aggregate.py:21,38`), and `required_artifacts` expects a `metrics.json` that the runner never produces (`scripts/run_experiment.py:241`). |
 | 1.4 | Fill in `hardware/default.toml` with measured values, and record the profile *contents* in the evidence, not just its path. | 20 of 21 experiments point at a profile whose fields are all `unspecified`. |
 | 1.5 | Make one benchmark suite real, either `semantic-typing` or `operator-routing`: data, scorer, harness, and a reference from the experiment manifest. | All 10 suites under `benchmarks/` are metric-name lists that nothing references. |
@@ -97,7 +104,7 @@ model", as "the largest open piece in the repository". It is still open.
 | 2.1 | Add one real `InferenceBackend` behind `ptr-model-api`. An OpenAI-compatible HTTP client covers vLLM, SGLang, llama.cpp server and Ollama with one adapter. | The only backend is `ReferenceEchoBackend`, and it is what `ptrd` serves (`crates/ptr-server/src/lib.rs:80`). |
 | 2.2 | Make `ModelRequest` carry the snapshot's semantic content (slot values), not only a revision number and raw text. | `crates/ptr-model-api/src/request.rs:4-9`. Invariant 2, "a reasoning run is bound to one immutable semantic revision", is only nominal while the model never sees the snapshot. |
 | 2.3 | Wrap `ptr-burn-a0` as an `InferenceBackend`. This joins the A0 seam in production rather than in two half-tests in two workspaces. | No crate depends on burn-a0. The seam exists only in `crates/ptr-runtime/tests/neural_admission.rs` and `model/burn-a0/tests/semantic_payload.rs`. |
-| 2.4 | Consume `ActionReady` and `OperatorRequested` in the runtime loop. Route `ActionReady` into the existing execution gateway. | The runtime reacts only to `PodRequested` and `Finished` (`crates/ptr-runtime/src/lib.rs:293-301`). The gateway only ever receives an `ActionIr` built by host code. |
+| 2.4 | Give `ModelEvent::ActionReady` a typed `ActionIr` payload, then consume `ActionReady` and `OperatorRequested` in the runtime loop and route actions into the existing execution gateway. | The runtime reacts only to `PodRequested` and `Finished` (`crates/ptr-runtime/src/lib.rs:293-301`). The gateway only ever receives an `ActionIr` built by host code. `ActionReady` carries only `operation: String` (`crates/ptr-model-api/src/event.rs:26-28`), so it cannot express an action. This is a protocol and type change, not only runtime glue. |
 | 2.5 | Give `ptrd` a durable mode (`open_durable`), and make it fail closed on an unreadable config file. | `ptrd` always builds `PtrRuntime::new` in memory and falls back to defaults when the file fails to parse (`bins/ptrd/src/main.rs:29-32,44`). Restarting `ptrd` loses all state. |
 
 ### Step 3 — Make the documents tell the truth again
@@ -113,7 +120,7 @@ than a single instance.
 | 3.2 | Generate each README's "Upstream / Downstream / telemetry" lines from `cargo metadata` instead of hand-writing them, and add a gate for it. | Almost every crate README and diagram claims links that the dependency graph does not have. The most common is a telemetry edge to `ptr-observe`, and no crate depends on `ptr-observe`. |
 | 3.3 | Replace the template header "Maturity: architecture + contract scaffold" with the generated maturity. | This header contradicts the generated block in the same file, for example `crates/ptr-types/README.md:4` against `:11`. |
 | 3.4 | Update the root `README.md` component map and `docs/components/README.md` from 24 to 27 crates. | `ptr-cluster`, `ptr-execwire` and `ptr-podwire` are missing from both. |
-| 3.5 | Refresh `STATUS.md`. | Its "19 architecture experiments remain planned" is now 20. It says "multi-node consensus … incomplete", but a three-member raft group with elections, partitions and snapshot transfer is tested. It says "network authentication, scoped Pod access and durable audit/idempotency remain open", and all three exist. |
+| 3.5 | Refresh `STATUS.md`. | Its "19 architecture experiments remain planned" is now 20. Line 14 says raft-rs runs single-node, and line 39 says "multi-node consensus … incomplete", but a three-member raft group with elections, partitions and snapshot transfer is tested on loopback. Line 38 says "network authentication, scoped Pod access and durable audit/idempotency remain open", and all three exist. Line 11 calls the allow receipts "audit-ready", but every consumer discards them (`crates/ptr-runtime/src/lib.rs:501`, `execution.rs:1162`). |
 | 3.6 | Mark the L001 numbers as historical v1-format evidence in the L001 README itself, then re-run L001 on PTRLOG02. | `results/run.json` and `results/process_crash_run.json` were recorded on 2026-09-18, before PTRLOG02 (`069d4b0`, 2026-09-19). Only `STATUS.md` says so. |
 | 3.7 | Fix the stale single documents listed below the table. | Each was checked against current code. |
 
@@ -130,8 +137,11 @@ The stale single documents for 3.7:
   "don't exist yet". All three exist.
 - `docs/architecture/27-neural-state-admission.md:194-202` says "no real
   checkpoint". A real A0 checkpoint is bound in `checkpoint_binding.rs`.
-- `OPEN_ITEMS_PLAN_20260921.md` still lists C3, C5, C6 and C8 as open. All four
-  are implemented.
+- `OPEN_ITEMS_PLAN_20260921.md` still lists C3, C5, C6 and C8 as open.
+  - C3 (Pod access over the network) and C5 (membership change) are implemented.
+  - C8 is half closed: address authority exists (`PeerBook`), discovery does not.
+  - C6 has an API (`take_installed_snapshot_matching`), but the host must supply
+    the independent anchor.
 - `docs/architecture/26-cognitive-codebook.md:333-344` lists 11 refusal codes.
   The code has 13.
 
@@ -155,6 +165,12 @@ These are small and local, and each one can be verified on its own.
 | 4.12 | The local check lists are a subset of CI, so a contributor can pass every documented command and still fail CI. | `CONTRIBUTING.md:33-48`, the PR template and the `Makefile` all omit vendor, notices, codebook and research-gate checks. `make a0` uses the 1.85 toolchain for a crate that needs 1.95. | Add one `make ci-local` target that mirrors `ci.yml`, and pin `make a0` to `+1.95.0`. |
 | 4.13 | The release archive ships no licence or notice files, and it does ship the `ptr-worker` stub. `gh release create … \|\| true` hides failures. | `.github/workflows/release.yml:22-30`, `bins/ptr-worker/src/main.rs:1-3`. | Package `LICENSE-*`, `NOTICE` and `THIRD-PARTY-NOTICES.md`, drop `ptr-worker` until it does something, and remove `\|\| true`. |
 | 4.14 | A dormant workflow can still push to `main`. | `.github/workflows/one-shot-sync.yml` (`contents: write`, regenerates `Cargo.lock`, commits to main). `docs/VENDOR_PATCH_POLICY.md:105-107` says such workflows are removed. | Delete it, as its raft-engine predecessor was deleted in `ba1eb0e`. |
+| 4.15 | Pod output is promoted on any `Pass`, even at level `Unverified` or with a hard finding. The action gateway refuses both. An empty `effects` list also passes the Pure/Read gate as if it were pure. | Pod loops check only `status == Pass` (`crates/ptr-runtime/src/lib.rs:332-342`, `:444-455`), and so does `ptr-podwire` (`access.rs:189`). The gateway checks level and hard findings (`execution.rs:1044-1053`). | Apply the gateway's `RequiredVerification` rule to Pod output, and require a non-empty effect declaration. |
+| 4.16 | A mistyped journal path silently creates a new, empty journal. | `PtrRuntime::open_durable` → `FileLedger::open` uses `create_new` when the file is absent (`crates/ptr-ledger/src/file.rs:125-137`). `ptrctl seal` uses this unanchored open (`bins/ptrctl/src/seal.rs:105`). | Give `open_durable` an explicit "must exist" mode and use `open_durable_at` with an anchor in `ptrctl seal`. |
+| 4.17 | One panicking action executor takes the execution host down for good. | No `catch_unwind` exists in `ptr-runtime`, `ptr-execwire` or `ptr-server`. `ptr-execwire` holds the runtime in a `std::sync::Mutex` and every later request calls `.lock().expect(..)`, so after one poisoning every request panics. | Contain executor panics at the gateway, and map a poisoned lock to a fenced, reportable state. |
+| 4.18 | `ptr-bench` exits 0 even when `false_accepts`, `recovery_errors` or `tail_trim_errors` is non-zero, and the runner marks a run "completed" from the exit code alone. | `bins/ptr-bench/src/main.rs:176-186`, `:246-257` only print the counters. `scripts/run_experiment.py:229-235`. | Exit non-zero on any hard-invariant violation. |
+| 4.19 | Compaction stops working once SemDB state exceeds the codec bounds. The whole state is exported as one `SemanticDelta`, capped at 16,384 items per list or 4 MiB. | `crates/ptr-runtime/src/compacted.rs:501-505`; `crates/ptr-semdb/src/codec.rs:5-6`. | Chunk the export, or give snapshots their own bounded format. Treat it as a release blocker together with 4.6. |
+| 4.20 | The release job does not wait for CI, and actions are pinned by mutable tag. `dtolnay/rust-toolchain@stable` is a moving branch, and it runs in the release job, which holds `id-token: write`. | `.github/workflows/release.yml` has no `needs` or status gate. `grep uses: .github/workflows/*.yml`. | Gate the release on CI success, and pin actions by commit SHA at least in `release.yml`. |
 
 ### Step 5 — Reduce scope honestly
 
@@ -179,23 +195,30 @@ one is working on.
   implement only when a real model backend makes concurrency matter.
 - **Configuration that does nothing.** 9 of 13 config keys are parsed and validated
   but read by nothing. For example, `runtime.mode = "cluster"` changes nothing, and
-  `observability.*` has no subscriber. Remove or clearly mark inert keys so
-  operators are not misled.
+  `observability.*` has no subscriber. The other four behave in a narrower way than
+  their names suggest:
+  - The three `action_boundary.*` flags feed only the diagnostic `authorize_action`.
+    The execution gateway forces all three checks on
+    (`crates/ptr-runtime/src/execution.rs:1157-1159`).
+  - So in `ptrd`, only `server.bind` changes behaviour.
+
+  Remove or clearly mark inert keys so operators are not misled.
 - **Integration and evaluation stubs.** 33 of 36 integration documents are
   identical 6-line stubs, and 74 of 81 evaluation candidates have no evidence.
   Do not add more until existing ones have measurements.
 
 ### Step 6 — Decisions only the owner can make
 
-Each decision states my recommendation. None of them blocks Steps 1 to 4.
+Each decision states my recommendation. None of them blocks Steps 1 to 4. They are
+numbered O1–O5 so they do not collide with the D1–D6 decisions in issue #23.
 
 | # | Decision | Recommendation |
 |---|---|---|
-| D1 | How should A0 grow after the M001–M004 run? It has no LM head, one layer and single-head attention. | If M001–M004 show an effect, test the mechanisms as an adapter on a small pretrained backbone rather than scaling A0 from scratch. If they do not, record the negative result before changing the design. |
-| D2 | Which backbone for the plain-model baseline and for continued pretraining (ADR-0015)? | Pick one small open model, pin its revision once, and use it for both. It unblocks E002, the M00x gates and R003 together. |
-| D3 | Continued pretraining for a coding Pod (ADR-0015, Proposed) | Pause it until Step 1 has a result. The corpus `own_code_corpus_v0_1` does not exist, so the dry-run manifest cannot even be built (`training/configs/run-coding-pod-cpt.toml:16`). The R003 trust gate is procedural only, because `check_research_gates.py` has no R003 rule. |
-| D4 | Tier B items B1–B5 in the open-items plan (runtime→net dependency, signed receipts, authenticated codebook, accept-loop location, admission-policy journaling, authenticated reconciliation) | Defer them all. They matter for a multi-host deployment, and no binary deploys the network crates yet. `IrohTransport` binds only `127.0.0.1` and gets a new key on every bind (`crates/ptr-net/src/lib.rs:49-52`). |
-| D5 | The eight unconsumed crates (Step 5) | Freeze, as described in Step 5. |
+| O1 | How should A0 grow after the M001–M004 run? It has no LM head, one layer and single-head attention. | If M001–M004 show an effect, test the mechanisms as an adapter on a small pretrained backbone rather than scaling A0 from scratch. If they do not, record the negative result before changing the design. |
+| O2 | Which backbone for the plain-model baseline and for continued pretraining (ADR-0015)? | Pick one small open model, pin its revision once, and use it for both. It unblocks E002, the M00x gates and R003 together. |
+| O3 | Continued pretraining for a coding Pod (ADR-0015, Proposed) | Pause it until Step 1 has a result. The corpus `own_code_corpus_v0_1` does not exist, so the dry-run manifest cannot even be built (`training/configs/run-coding-pod-cpt.toml:16`). The R003 trust gate is procedural only, because `check_research_gates.py` has no R003 rule. |
+| O4 | Tier B items B1–B5 in the open-items plan, renumbered D1–D6 in issue #23 (runtime→net dependency, signed receipts, authenticated codebook, accept-loop location, admission-policy journaling, authenticated reconciliation) | Defer them all. They matter for a multi-host deployment, and no binary deploys the network crates yet. `IrohTransport` binds only `127.0.0.1` and gets a new key on every bind (`crates/ptr-net/src/lib.rs:49-52`). |
+| O5 | The eight unconsumed crates (Step 5) | Freeze, as described in Step 5. |
 
 ## 4. What *not* to do now
 
