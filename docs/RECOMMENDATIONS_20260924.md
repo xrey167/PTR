@@ -8,10 +8,11 @@ re-checked against the code. It follows the conventions of
 the file and line where it can be seen. A companion document,
 [`PROJECT_MAP.md`](PROJECT_MAP.md), maps the whole repository.
 
-*Revised the same day, after an independent verification pass:*
-- items 1.2, 2.4, 3.5 and 3.7 were corrected;
+*Revised the same day, after an independent verification pass and a
+reconciliation against issue #23:*
+- items 1.2, 2.3, 2.4, 3.5 and 3.7 were corrected;
 - rows 4.15–4.20 were added;
-- the owner decisions were renamed O1–O5.
+- the owner decisions were renamed O1–O5, and O6 was added.
 
 ## 1. The diagnosis in one paragraph
 
@@ -82,9 +83,9 @@ in this step runs on the CPU `flex` backend that A0 already uses.
 
 | # | Task | Why / evidence |
 |---|---|---|
-| 1.1 | Implement the ablation switches in A0: no semantic slots, no typed attention bias, no latent recurrence, no router. Read them from `model/configs/ablations.toml`. | That file lists five ablations, but no code reads it. A0 exposes only `latent_steps`, which defaults to 0 (`model/burn-a0/src/lib.rs:349`). |
+| 1.1 | Implement the ablation switches in A0: no semantic slots, no typed attention bias, no latent recurrence, no router. Read them from `model/configs/ablations.toml`. | That file lists five ablations, but no code reads it. A0 exposes only `latent_steps`, which defaults to 0 (`model/burn-a0/src/lib.rs:349`). The fifth ablation, `no-verifier-head`, disables a head A0 does not have. |
 | 1.2 | Replace the M001 pilot with a real M001–M004 run: at least 5 seeds, matched parameter count, the two imported hash-verified bundles plus a synthetic set. Use a task that the ablated arm *could* in principle learn, and give both arms the same payload information. | The recorded pilot (`experiments/model/M001-semantic-slots/results/pilot_run.json`) was re-recorded in `ebe475c`. Since `0fcf7ab`, `examples/m001_pilot.rs` gives distinct per-row slot payloads to *both* arms, so a re-run is confounded. By construction, 0.25 is the most the ablated arm can reach and the typed arm is handed the label (`m001_pilot.rs:15-38`). The pilot is a plumbing check, as its own README says. |
-| 1.3 | Run the experiments through `scripts/run_experiment.py`, and add an aggregation step that turns per-seed records into `metrics.json`. | No committed evidence has come through the runner so far. Per-experiment scripts overwrite fixed file names (`experiments/lifecycle/L001-revocation-crash/aggregate.py:21,38`), and `required_artifacts` expects a `metrics.json` that the runner never produces (`scripts/run_experiment.py:241`). |
+| 1.3 | Run the experiments through `scripts/run_experiment.py`, and add an aggregation step that turns per-seed records into `metrics.json`. | No committed evidence has come through the runner so far. Per-experiment scripts overwrite fixed file names (`experiments/lifecycle/L001-revocation-crash/aggregate.py:21,38`), and `required_artifacts` expects a `metrics.json` that the runner never produces (`scripts/run_experiment.py:241`). 20 of 21 manifests have `entrypoint = ""`, and the validator refuses any active experiment without one (`scripts/run_experiment.py:83-85`), so each of M001–M004 needs a real entrypoint first. |
 | 1.4 | Fill in `hardware/default.toml` with measured values, and record the profile *contents* in the evidence, not just its path. | 20 of 21 experiments point at a profile whose fields are all `unspecified`. |
 | 1.5 | Make one benchmark suite real, either `semantic-typing` or `operator-routing`: data, scorer, harness, and a reference from the experiment manifest. | All 10 suites under `benchmarks/` are metric-name lists that nothing references. |
 | 1.6 | Pin the plain-model baseline's backbone revision. | `research/baselines/plain_model` is unpinned. Until it is pinned, no M00x comparison against a plain model is valid. |
@@ -94,7 +95,7 @@ accuracy by X ± Y over the ablation across 5 seeds", or an honest negative resu
 recorded in `research/falsification/`. Either one is worth more than any further
 infrastructure.
 
-### Step 2 — Connect the path end to end (open item C1)
+### Step 2 — Connect the path end to end (open item C1, called G1 in issue #23)
 
 `OPEN_ITEMS_PLAN_20260921.md` names C1, "connect actual semantic payloads to the
 model", as "the largest open piece in the repository". It is still open.
@@ -103,7 +104,7 @@ model", as "the largest open piece in the repository". It is still open.
 |---|---|---|
 | 2.1 | Add one real `InferenceBackend` behind `ptr-model-api`. An OpenAI-compatible HTTP client covers vLLM, SGLang, llama.cpp server and Ollama with one adapter. | The only backend is `ReferenceEchoBackend`, and it is what `ptrd` serves (`crates/ptr-server/src/lib.rs:80`). |
 | 2.2 | Make `ModelRequest` carry the snapshot's semantic content (slot values), not only a revision number and raw text. | `crates/ptr-model-api/src/request.rs:4-9`. Invariant 2, "a reasoning run is bound to one immutable semantic revision", is only nominal while the model never sees the snapshot. |
-| 2.3 | Wrap `ptr-burn-a0` as an `InferenceBackend`. This joins the A0 seam in production rather than in two half-tests in two workspaces. | No crate depends on burn-a0. The seam exists only in `crates/ptr-runtime/tests/neural_admission.rs` and `model/burn-a0/tests/semantic_payload.rs`. |
+| 2.3 | After owner decision O6, wrap `ptr-burn-a0` as an `InferenceBackend`. This joins the A0 seam in production rather than in two half-tests in two workspaces. | No crate depends on burn-a0. The seam exists only in `crates/ptr-runtime/tests/neural_admission.rs` and `model/burn-a0/tests/semantic_payload.rs`. The 2026-09-22 comment on issue #23 deliberately left this edge unmade: it calls "A0 reachable from the runtime" a workspace-edge question "of the same shape as D1", because A0 is a separate workspace on a separate MSRV. |
 | 2.4 | Give `ModelEvent::ActionReady` a typed `ActionIr` payload, then consume `ActionReady` and `OperatorRequested` in the runtime loop and route actions into the existing execution gateway. | The runtime reacts only to `PodRequested` and `Finished` (`crates/ptr-runtime/src/lib.rs:293-301`). The gateway only ever receives an `ActionIr` built by host code. `ActionReady` carries only `operation: String` (`crates/ptr-model-api/src/event.rs:26-28`), so it cannot express an action. This is a protocol and type change, not only runtime glue. |
 | 2.5 | Give `ptrd` a durable mode (`open_durable`), and make it fail closed on an unreadable config file. | `ptrd` always builds `PtrRuntime::new` in memory and falls back to defaults when the file fails to parse (`bins/ptrd/src/main.rs:29-32,44`). Restarting `ptrd` loses all state. |
 
@@ -120,7 +121,7 @@ than a single instance.
 | 3.2 | Generate each README's "Upstream / Downstream / telemetry" lines from `cargo metadata` instead of hand-writing them, and add a gate for it. | Almost every crate README and diagram claims links that the dependency graph does not have. The most common is a telemetry edge to `ptr-observe`, and no crate depends on `ptr-observe`. |
 | 3.3 | Replace the template header "Maturity: architecture + contract scaffold" with the generated maturity. | This header contradicts the generated block in the same file, for example `crates/ptr-types/README.md:4` against `:11`. |
 | 3.4 | Update the root `README.md` component map and `docs/components/README.md` from 24 to 27 crates. | `ptr-cluster`, `ptr-execwire` and `ptr-podwire` are missing from both. |
-| 3.5 | Refresh `STATUS.md`. | Its "19 architecture experiments remain planned" is now 20. Line 14 says raft-rs runs single-node, and line 39 says "multi-node consensus … incomplete", but a three-member raft group with elections, partitions and snapshot transfer is tested on loopback. Line 38 says "network authentication, scoped Pod access and durable audit/idempotency remain open", and all three exist. Line 11 calls the allow receipts "audit-ready", but every consumer discards them (`crates/ptr-runtime/src/lib.rs:501`, `execution.rs:1162`). |
+| 3.5 | Refresh `STATUS.md`. | Its "19 architecture experiments remain planned" is now 20. Line 14 says raft-rs runs single-node, and line 39 says "multi-node consensus … incomplete", but a three-member raft group with elections, partitions and snapshot transfer is tested on loopback. Line 38 says "network authentication, scoped Pod access and durable audit/idempotency remain open", and all three exist. Line 11 calls the allow receipts "audit-ready", but every consumer discards them (`crates/ptr-runtime/src/lib.rs:501`, `execution.rs:1162`). Line 7 says 24 crates (there are 27, plus 4 binaries). Line 57 says neural checkpoints, authenticated framing and cluster composition remain open, and all three exist at library level. |
 | 3.6 | Mark the L001 numbers as historical v1-format evidence in the L001 README itself, then re-run L001 on PTRLOG02. | `results/run.json` and `results/process_crash_run.json` were recorded on 2026-09-18, before PTRLOG02 (`069d4b0`, 2026-09-19). Only `STATUS.md` says so. |
 | 3.7 | Fix the stale single documents listed below the table. | Each was checked against current code. |
 
@@ -144,6 +145,19 @@ The stale single documents for 3.7:
     the independent anchor.
 - `docs/architecture/26-cognitive-codebook.md:333-344` lists 11 refusal codes.
   The code has 13.
+- The same plan also lists C2, C7 and C9 as open:
+  - C2 (issue #23's G2, the fencing token) is closed in code at `d01336a`, but its
+    only tests are the ones in 4.1 that CI never runs.
+  - C7 is half closed: at-most-once keys survive compaction (`06cbf09`), but the
+    raft floor and the ledger floor are still independent.
+  - C9 is closed (`ef8ad5f`, `ptrctl seal`).
+- `docs/architecture/31-cluster-integrity.md:389-393` says durable leadership
+  fencing "is not implemented", while `:326-330` of the same document describes
+  the fencing token. It is the same self-contradiction that open item A6 fixed once.
+- `docs/PRIORITIES.md:11` and `:26` still list anchors, compaction, neural admission,
+  fencing and negotiated membership as remaining.
+- `docs/ROADMAP.md:8-9` says the next increment "remains minimum semantic values and
+  a versioned codebook". Both exist.
 
 ### Step 4 — Close the concrete defects found
 
@@ -151,7 +165,7 @@ These are small and local, and each one can be verified on its own.
 
 | # | Defect | Evidence | Fix |
 |---|---|---|---|
-| 4.1 | The six `raft_fence.rs` tests never run in CI. They pass locally, 6 of 6. | The file is gated by `#![cfg(feature = "raft-rs-backend")]` (`crates/ptr-ledger/tests/raft_fence.rs:20`) and has no `[[test]]` entry. The only CI job with the feature runs `--test raft_rs` and `--test raft_cluster` (`.github/workflows/ci.yml:114-115`). | Add a `[[test]]` entry with `required-features` and a CI step. |
+| 4.1 | The six `raft_fence.rs` tests never run in CI. They pass locally, 6 of 6. | The file is gated by `#![cfg(feature = "raft-rs-backend")]` (`crates/ptr-ledger/tests/raft_fence.rs:20`) and has no `[[test]]` entry. The only CI job with the feature runs `--test raft_rs` and `--test raft_cluster` (`.github/workflows/ci.yml:114-115`). These six tests are the only evidence for G2, the fencing token, which issue #23 reports as closed. | Add a `[[test]]` entry with `required-features` and a CI step. |
 | 4.2 | A change to `ptr-types` does not trigger A0 CI, although A0 depends on it by path. | The `burn-a0.yml` path filter lists only `model/burn-a0/**`, `vendor/**` and itself. `model/burn-a0/Cargo.toml:12` depends on `../../crates/ptr-types`. | Add `crates/ptr-types/**` to both filters. |
 | 4.3 | `datasets/private/` is not gitignored, although the docs promise it is never committed. | `git check-ignore datasets/private/x` matches nothing. The `.gitignore` covers only raw, processed and generated. | Add `/datasets/private/*` with a `.gitkeep` exception. |
 | 4.4 | `Secret<T>` prints its plaintext through `Debug`. | `crates/ptr-inspect/src/lib.rs:19-20`: `#[derive(Debug)] pub struct Secret<T>(pub T)`. | Write a manual `Debug` that prints `[redacted]`, and make the field private. |
@@ -163,7 +177,7 @@ These are small and local, and each one can be verified on its own.
 | 4.10 | Fuzzing covers only an unused decoder, and no CI job runs it. | `fuzz/fuzz_targets/podwire.rs` targets the prost `PodCall` conversion that nothing speaks. | Add targets for the network-facing decoders (PTRPWREQ, PTREXREQ/PTREXRCP, PTRRAFTW) and PTRLOG02/PTRANC01, plus a CI build step. |
 | 4.11 | Feature-gated ledger and state backends are tested but never clippy-linted or checked at MSRV. | `.github/workflows/ci.yml:97-121`. | Add clippy steps next to the test steps. |
 | 4.12 | The local check lists are a subset of CI, so a contributor can pass every documented command and still fail CI. | `CONTRIBUTING.md:33-48`, the PR template and the `Makefile` all omit vendor, notices, codebook and research-gate checks. `make a0` uses the 1.85 toolchain for a crate that needs 1.95. | Add one `make ci-local` target that mirrors `ci.yml`, and pin `make a0` to `+1.95.0`. |
-| 4.13 | The release archive ships no licence or notice files, and it does ship the `ptr-worker` stub. `gh release create … \|\| true` hides failures. | `.github/workflows/release.yml:22-30`, `bins/ptr-worker/src/main.rs:1-3`. | Package `LICENSE-*`, `NOTICE` and `THIRD-PARTY-NOTICES.md`, drop `ptr-worker` until it does something, and remove `\|\| true`. |
+| 4.13 | The release archive ships no licence or notice files, and it does ship the `ptr-worker` stub. `gh release create … \|\| true` hides failures. | `.github/workflows/release.yml:25-26` (what is packaged), `:48` (`\|\| true`); `bins/ptr-worker/src/main.rs:1-3`. | Package `LICENSE-*`, `NOTICE` and `THIRD-PARTY-NOTICES.md`, drop `ptr-worker` until it does something, and remove `\|\| true`. |
 | 4.14 | A dormant workflow can still push to `main`. | `.github/workflows/one-shot-sync.yml` (`contents: write`, regenerates `Cargo.lock`, commits to main). `docs/VENDOR_PATCH_POLICY.md:105-107` says such workflows are removed. | Delete it, as its raft-engine predecessor was deleted in `ba1eb0e`. |
 | 4.15 | Pod output is promoted on any `Pass`, even at level `Unverified` or with a hard finding. The action gateway refuses both. An empty `effects` list also passes the Pure/Read gate as if it were pure. | Pod loops check only `status == Pass` (`crates/ptr-runtime/src/lib.rs:332-342`, `:444-455`), and so does `ptr-podwire` (`access.rs:189`). The gateway checks level and hard findings (`execution.rs:1044-1053`). | Apply the gateway's `RequiredVerification` rule to Pod output, and require a non-empty effect declaration. |
 | 4.16 | A mistyped journal path silently creates a new, empty journal. | `PtrRuntime::open_durable` → `FileLedger::open` uses `create_new` when the file is absent (`crates/ptr-ledger/src/file.rs:125-137`). `ptrctl seal` uses this unanchored open (`bins/ptrctl/src/seal.rs:105`). | Give `open_durable` an explicit "must exist" mode and use `open_durable_at` with an anchor in `ptrctl seal`. |
@@ -209,8 +223,13 @@ one is working on.
 
 ### Step 6 — Decisions only the owner can make
 
-Each decision states my recommendation. None of them blocks Steps 1 to 4. They are
-numbered O1–O5 so they do not collide with the D1–D6 decisions in issue #23.
+Each decision states my recommendation. They are numbered O1–O6 so they do not
+collide with the D1–D6 decisions in issue #23. Two of them gate earlier steps:
+- **O2 gates Step 1.** `check_research_gates.py:29-34` refuses to let M001–M005 be
+  declared running until the plain-model backbone is pinned.
+- **O6 gates item 2.3.**
+
+The others block nothing in Steps 1 to 4.
 
 | # | Decision | Recommendation |
 |---|---|---|
@@ -219,12 +238,14 @@ numbered O1–O5 so they do not collide with the D1–D6 decisions in issue #23.
 | O3 | Continued pretraining for a coding Pod (ADR-0015, Proposed) | Pause it until Step 1 has a result. The corpus `own_code_corpus_v0_1` does not exist, so the dry-run manifest cannot even be built (`training/configs/run-coding-pod-cpt.toml:16`). The R003 trust gate is procedural only, because `check_research_gates.py` has no R003 rule. |
 | O4 | Tier B items B1–B5 in the open-items plan, renumbered D1–D6 in issue #23 (runtime→net dependency, signed receipts, authenticated codebook, accept-loop location, admission-policy journaling, authenticated reconciliation) | Defer them all. They matter for a multi-host deployment, and no binary deploys the network crates yet. `IrohTransport` binds only `127.0.0.1` and gets a new key on every bind (`crates/ptr-net/src/lib.rs:49-52`). |
 | O5 | The eight unconsumed crates (Step 5) | Freeze, as described in Step 5. |
+| O6 | May a runtime path reach A0? A0 is a separate workspace on Rust 1.95; the root workspace declares 1.85. Issue #23 asked for this to be filed as a decision rather than made quietly. | Yes, but keep the edge out of `ptr-runtime`. Put a small adapter crate in the A0 workspace that implements `ptr-model-api`'s `InferenceBackend`, so the runtime workspace keeps its MSRV and gains no Burn dependency. Take this decision after Step 1 shows whether A0's mechanisms are worth connecting. |
 
 ## 4. What *not* to do now
 
-- **Do not add more cluster or wire features.** That covers C2 to C8, accept loops
-  and session reuse. First the model path must exist (Step 2) and the thesis must
-  have evidence (Step 1).
+- **Do not add more cluster or wire features.** Most of C2–C8 is already built. What
+  remains is C4 (a settlement channel for detached work, blocked on owner decision
+  D6 anyway), discovery, accept loops and session reuse. Leave them until the thesis
+  has evidence (Step 1) and the model path exists (Step 2).
 - **Do not start continued-pretraining runs.** There is no corpus, no pinned base
   model, no held-out code-eval suite and no mechanical trust gate.
 - **Do not add new evaluation slots, integration documents or architecture

@@ -780,7 +780,7 @@ The graft commit `55b5379` already contains the full 24-crate scaffold.
 | Step 01 | First cognitive increment (confidence contract) | doc 20 |
 | Gate 1–4 | Requirement blocks of issues #15/#20 (execution/network trust, cluster integrity, neural lifecycle, dependency retirement) | GitHub issues |
 | A1–A6, B1–B5, C1–C9 | Tiers of the open-items plan: done fixes, owner decisions, separate gates | `docs/OPEN_ITEMS_PLAN_20260921.md` |
-| G1, G2; D1–D6 | Issue #23's renumbering: G1 = semantic payloads to the model (**open**), G2 = durable cross-node fencing (closed); D1–D6 = owner decisions (all undecided) | issue #23 |
+| G1, G2; D1–D6 | Issue #23's renumbering: G1 = semantic payloads to the model (**open**), G2 = durable cross-node fencing (closed in code; its only tests, `raft_fence.rs`, are run by no CI job); D1–D6 = owner decisions (all undecided) | issue #23 |
 | M/S/R/L/Q/F/E + 3 digits | Experiment ids: model, SemDB, runtime/Pods, lifecycle, retrieval, feedback, end-to-end system | `experiments/registry.toml` |
 | ADR-00NN | Architecture decision records | `research/decisions/` |
 | Phase A–G | Target roadmap phases | `docs/ROADMAP.md` |
