@@ -39,3 +39,12 @@ required-features = ["raft-rs-backend"]
 name = "raft_cluster"
 path = "tests/raft_cluster.rs"
 required-features = ["raft-rs-backend"]
+
+# Declared, rather than auto-discovered, so it is selectable with `--test` like
+# its siblings. Auto-discovered, its `#![cfg]` compiled it to nothing in every
+# job that ran without the feature and CI selected only the two targets above,
+# so the fencing token's only tests ran nowhere.
+[[test]]
+name = "raft_fence"
+path = "tests/raft_fence.rs"
+required-features = ["raft-rs-backend"]

@@ -9,7 +9,7 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-21  
+**Last reviewed:** 2026-09-25  
 **Code footprint:** 9 Rust source files · 4479 nonblank source lines · 12 integration-test files · 104 `#[test]` markers
 
 ### Implemented now
@@ -102,6 +102,7 @@
 - Every single-bit mutation and every length variation of the 168-byte anchor record rejected
 - Every log/anchor split outcome: aligned, unacknowledged, lost suffix, rehashed divergence, foreign origin and base mismatch
 - Stale-witness anchor rollback, interrupted publication and fenced writer after failed acknowledgment
+- The six fencing-token tests (tests/raft_fence.rs) are a declared feature test run by the ledger-raft-rs CI job
 - Retention bounds, barrier blocking and snapshot-coverage capping of the proposed floor
 - Cutover interrupted on both sides of its commit point, orphan reclamation and exact retained-suffix reconstruction
 - Stale, non-advancing, above-tail and wrong-digest plans refused without mutation; destination never overwritten
