@@ -44,7 +44,7 @@ ptr-server = { path = "crates/ptr-server" }
 ptr-runtime = { path = "crates/ptr-runtime" }
 
 serde = { version = "1.0", features = ["derive"] }
-toml = "0.8"
+toml = "1.1"
 prost = "0.13"
 prost-build = "0.14"
 protoc-bin-vendored = "3"
