@@ -3,11 +3,19 @@ on:
   push:
     paths:
       - "model/burn-a0/**"
+      # A0 depends on the type kernel by path and its checkpoint tests read the
+      # committed codebook artifact, so a change to either can break it.
+      - "crates/ptr-types/**"
+      - "datasets/generated/codebook.json"
       - "vendor/**"
       - ".github/workflows/burn-a0.yml"
   pull_request:
     paths:
       - "model/burn-a0/**"
+      # A0 depends on the type kernel by path and its checkpoint tests read the
+      # committed codebook artifact, so a change to either can break it.
+      - "crates/ptr-types/**"
+      - "datasets/generated/codebook.json"
       - "vendor/**"
       - ".github/workflows/burn-a0.yml"
 permissions:
