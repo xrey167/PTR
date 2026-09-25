@@ -320,6 +320,16 @@ pub struct PtrA0Config {
     pub provenance_bucket_count: usize,
     pub d_model: usize,
     pub latent_steps: usize,
+    /// Whether typed metadata biases attention between slots and raw tokens: the
+    /// M002 mechanism. On by default. Switched off, the pair bias is zero in both
+    /// directions and `metadata_bias` takes no part in the forward pass, which is
+    /// the only difference; every parameter is still built, from the same random
+    /// draws, so two arms of one seed start from identical weights.
+    ///
+    /// Like `latent_steps`, this is an architecture choice that the checkpoint
+    /// header does not record: a checkpoint is loaded under whatever the config
+    /// passed to [`load`] says.
+    pub typed_attention: bool,
     codebook: Codebook,
     /// The slot-encoding definition this model's inputs are produced by.
     ///
@@ -347,6 +357,7 @@ impl PtrA0Config {
             provenance_bucket_count: PROVENANCE_BUCKET_COUNT,
             d_model,
             latent_steps: 0,
+            typed_attention: true,
             codebook,
             encoding: SlotEncoding::V1,
         }
@@ -387,7 +398,24 @@ impl PtrA0Config {
         self
     }
 
+    pub fn with_typed_attention(mut self, typed_attention: bool) -> Self {
+        self.typed_attention = typed_attention;
+        self
+    }
+
+    /// Build a model with every parameter drawn now, in declaration order, so the
+    /// same seed gives the same weights whatever the model later reads first.
     pub fn init(&self, device: &Device) -> PtrA0 {
+        let model = self.init_lazy(device);
+        model.materialize();
+        model
+    }
+
+    /// Build a model whose parameters are drawn on first read, as Burn does by
+    /// default. Only for a model whose parameters are about to be replaced, as
+    /// [`load`] replaces them: drawing them first would cost a full random model
+    /// and advance the global generator as a side effect of loading.
+    pub(crate) fn init_lazy(&self, device: &Device) -> PtrA0 {
         let linear = || LinearConfig::new(self.d_model, self.d_model).init(device);
         PtrA0 {
             token_embedding: EmbeddingConfig::new(self.vocab_size, self.d_model).init(device),
@@ -412,6 +440,7 @@ impl PtrA0Config {
             d_model: self.d_model,
             operator_count: self.operator_count(),
             latent_steps: self.latent_steps,
+            typed_attention: self.typed_attention,
             codebook_version: self.codebook.version().0,
             encoding_version: self.encoding.version().0,
         }
@@ -439,6 +468,7 @@ pub struct PtrA0 {
     d_model: usize,
     operator_count: usize,
     latent_steps: usize,
+    typed_attention: bool,
     /// Codebook version the tables were sized by. Burn records constants as empty,
     /// so this does **not** survive a saved record: an artifact that has to carry
     /// the identity carries it in its own header.
@@ -449,6 +479,45 @@ pub struct PtrA0 {
 }
 
 impl PtrA0 {
+    /// Draw every parameter now, in declaration order.
+    ///
+    /// Burn initializes a parameter lazily, the first time it is read, from one
+    /// global generator. Left lazy, the draws follow the order in which a forward
+    /// pass first reads the parameters, so two models built from one seed start
+    /// from different weights as soon as one of them skips a module (the typed
+    /// attention switch skips `metadata_bias`), and every later parameter shifts.
+    /// An ablation compares arms of one seed, so the draw order has to be fixed
+    /// here rather than left to the forward pass.
+    fn materialize(&self) {
+        for embedding in [
+            &self.token_embedding,
+            &self.slot_type_embedding,
+            &self.epistemic_embedding,
+            &self.provenance_embedding,
+        ] {
+            let _ = embedding.weight.val();
+        }
+        for linear in [
+            &self.confidence_projection,
+            &self.metadata_bias,
+            &self.slot_query,
+            &self.raw_key,
+            &self.raw_value,
+            &self.slot_output,
+            &self.raw_query,
+            &self.slot_key,
+            &self.slot_value,
+            &self.raw_output,
+            &self.latent_refine,
+            &self.router,
+        ] {
+            let _ = linear.weight.val();
+            if let Some(bias) = &linear.bias {
+                let _ = bias.val();
+            }
+        }
+    }
+
     /// The codebook this model's tables were sized by.
     ///
     /// The lookup cannot fail: a [`PtrA0`] only comes from [`PtrA0Config::init`],
@@ -669,10 +738,15 @@ impl PtrA0 {
         let typed_metadata = slot_type + epistemic + provenance + confidence;
         let slots = slot_values.values() + typed_metadata.clone();
 
-        let typed_bias = self.metadata_bias.forward(typed_metadata);
         let slot_query = self.slot_query.forward(slots.clone());
         let raw_key = self.raw_key.forward(raw.clone());
-        let cross_bias = typed_cross_bias(typed_bias, raw_key.clone());
+        // Switched off, the pair bias is zero in both directions below and
+        // `metadata_bias` is never applied, so it receives no gradient.
+        let cross_bias = if self.typed_attention {
+            typed_cross_bias(self.metadata_bias.forward(typed_metadata), raw_key.clone())
+        } else {
+            Tensor::<3>::zeros([batch, slot_count, sequence], &raw_key.device())
+        };
         let raw_value = self.raw_value.forward(raw.clone());
         let slot_scores = slot_query
             .matmul(raw_key.transpose())
@@ -756,6 +830,169 @@ impl PtrA0 {
 // each raw key's summary so this rank-one bias actually varies across keys.
 fn typed_cross_bias(slot_bias: Tensor<3>, raw_keys: Tensor<3>) -> Tensor<3> {
     slot_bias.matmul(raw_keys.mean_dim(2).transpose())
+}
+
+#[cfg(test)]
+mod typed_attention_switch_tests {
+    //! The M002 switch removes exactly the typed pair bias. Each test builds two
+    //! models from one seeded init, so they differ only where a test makes them.
+    use super::*;
+    use burn::nn::Initializer;
+    use ptr_types::{TypeId, Validity};
+
+    const WIDTH: usize = 8;
+
+    fn inputs(
+        device: &Device,
+    ) -> (
+        Tensor<2, Int>,
+        CodeGrid<SemanticRole>,
+        SlotValues,
+        PtrSlotMetadata,
+    ) {
+        let roles: [&[SemanticRole]; 2] = [
+            &[
+                SemanticRole::Goal,
+                SemanticRole::Evidence,
+                SemanticRole::Constraint,
+            ],
+            &[
+                SemanticRole::Claim,
+                SemanticRole::Resource,
+                SemanticRole::Action,
+            ],
+        ];
+        let states: [&[EpistemicState]; 2] = [
+            &[
+                EpistemicState::Observed,
+                EpistemicState::Hypothesis,
+                EpistemicState::Verified,
+            ],
+            &[
+                EpistemicState::Assumed,
+                EpistemicState::Inferred,
+                EpistemicState::Unknown,
+            ],
+        ];
+        let vectors: Vec<Vec<SlotVector>> = (0..2)
+            .map(|row| {
+                (0..3)
+                    .map(|slot| {
+                        SlotEncoding::V1
+                            .encode(
+                                &TypeId::from("Fact"),
+                                format!("{row}/{slot}").as_bytes(),
+                                WIDTH,
+                            )
+                            .expect("a small payload")
+                    })
+                    .collect()
+            })
+            .collect();
+        let rows: Vec<&[SlotVector]> = vectors.iter().map(Vec::as_slice).collect();
+        (
+            Tensor::<2, Int>::from_data([[1, 5, 9, 2], [7, 3, 3, 8]], device),
+            CodeGrid::new(&Codebook::V1, &roles, device).expect("v1 roles"),
+            SlotValues::new(&rows, device).expect("a rectangular batch"),
+            PtrSlotMetadata {
+                epistemic: CodeGrid::new(&Codebook::V1, &states, device).expect("v1 states"),
+                provenance_ids: Tensor::<2, Int>::from_data([[0, 1, 2], [2, 1, 0]], device),
+                confidence: Tensor::<2>::from_data([[0.9, 0.4, 0.7], [0.2, 1.0, 0.5]], device),
+                admission: admission_bias(
+                    &[
+                        ValidityMask::from_validities(&[Validity::Live; 3]),
+                        ValidityMask::from_validities(&[
+                            Validity::Live,
+                            Validity::Revoked,
+                            Validity::Live,
+                        ]),
+                    ],
+                    device,
+                ),
+            },
+        )
+    }
+
+    fn run(model: &PtrA0, device: &Device) -> PtrA0Output {
+        let (tokens, roles, values, metadata) = inputs(device);
+        model.forward(tokens, &roles, &values, metadata)
+    }
+
+    fn largest_difference(left: Tensor<2>, right: Tensor<2>) -> f32 {
+        (left - right).abs().max().into_scalar()
+    }
+
+    fn config() -> PtrA0Config {
+        PtrA0Config::new(16, WIDTH)
+            .with_provenance_buckets(4)
+            .with_latent_steps(1)
+    }
+
+    #[test]
+    fn switching_it_off_equals_a_zero_pair_bias_and_nothing_else() {
+        let device = Device::flex();
+        device.seed(7);
+        let mut on = config().init(&device);
+        // A metadata_bias that outputs zero makes the pair bias zero, which is what
+        // the switch claims to do; everything else stays as initialized.
+        on.metadata_bias = LinearConfig::new(WIDTH, 1)
+            .with_initializer(Initializer::Zeros)
+            .init(&device);
+        let mut off = on.clone();
+        off.typed_attention = false;
+
+        let (a, b) = (run(&on, &device), run(&off, &device));
+        assert!(largest_difference(a.router_logits, b.router_logits) < 1.0e-6);
+        let slots: f32 = (a.slots - b.slots).abs().max().into_scalar();
+        let raw: f32 = (a.raw - b.raw).abs().max().into_scalar();
+        assert!(slots < 1.0e-6 && raw < 1.0e-6, "slots {slots}, raw {raw}");
+    }
+
+    #[test]
+    fn switching_it_off_changes_what_a_trained_bias_does() {
+        let device = Device::flex();
+        device.seed(7);
+        let on = config().init(&device);
+        device.seed(7);
+        let off = config().with_typed_attention(false).init(&device);
+
+        let difference = largest_difference(
+            run(&on, &device).router_logits,
+            run(&off, &device).router_logits,
+        );
+        assert!(
+            difference > 1.0e-5,
+            "the switch must matter when the bias is not zero: {difference}"
+        );
+    }
+
+    #[test]
+    fn switched_off_the_bias_layer_gets_no_gradient_and_the_rest_still_learns() {
+        let device = Device::flex().autodiff();
+        for typed_attention in [true, false] {
+            device.seed(7);
+            let model = config().with_typed_attention(typed_attention).init(&device);
+            let gradients = run(&model, &device).router_logits.sum().backward();
+            let bias = model.metadata_bias.weight.grad(&gradients);
+            assert_eq!(
+                bias.is_some(),
+                typed_attention,
+                "metadata_bias gradient with typed_attention={typed_attention}"
+            );
+            let router = model
+                .router
+                .weight
+                .grad(&gradients)
+                .expect("the router always learns");
+            let magnitude: f32 = router.abs().sum().into_scalar();
+            assert!(magnitude > 0.0);
+        }
+    }
+
+    #[test]
+    fn it_is_on_by_default() {
+        assert!(PtrA0Config::new(16, WIDTH).typed_attention);
+    }
 }
 
 #[cfg(test)]

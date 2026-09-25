@@ -127,5 +127,5 @@ pub fn load(
     }
     header.verify(&config.codebook(), config.encoding(), &EMBEDDED_FAMILIES)?;
     let record = ModuleRecord::from_bytes(Bytes::from_bytes_vec(payload.to_vec()))?;
-    Ok(config.init(device).try_load_record(record)?)
+    Ok(config.init_lazy(device).try_load_record(record)?)
 }
