@@ -180,8 +180,10 @@ class RepositoryShape(unittest.TestCase):
                 "| [ptr-unlisted](crates/ptr-unlisted/README.md) | x |\n",
                 encoding="utf-8",
             )
+            # Mentioned in prose is not listed in the map.
             (root / "docs/components/README.md").write_text(
-                "| [ptr-listed](../../crates/ptr-listed/README.md) | x | x |\n",
+                "| [ptr-listed](../../crates/ptr-listed/README.md) | x | x |\n"
+                "See [ptr-unlisted](../../crates/ptr-unlisted/README.md) for more.\n",
                 encoding="utf-8",
             )
 

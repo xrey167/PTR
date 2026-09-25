@@ -44,10 +44,15 @@ class TestCounting(unittest.TestCase):
                 "#[test] // trailing comment\n"
                 "fn d() {}\n"
                 "#[test_case(1)]\n"
-                "fn not_counted(_: u8) {}\n",
+                "fn not_counted(_: u8) {}\n"
+                "/// Doc text naming #[test] and #[test] is not a test either.\n"
+                "fn helper() {}\n",
                 encoding="utf-8",
             )
             metrics = mod.code_metrics(crate)
+        # Four attribute lines. The old substring count saw six here (two sync
+        # attributes plus four quotations of the attribute) and none of the async
+        # ones, so it cannot pass this by accident.
         self.assertEqual(metrics["tests"], 4)
         self.assertEqual(metrics["files"], 1)
         self.assertEqual(metrics["test_files"], 1)

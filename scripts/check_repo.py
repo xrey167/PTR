@@ -215,10 +215,13 @@ def check(root: Path) -> tuple[list[str], str]:
         # Both component maps are hand-written tables. ptr-cluster, ptr-execwire
         # and ptr-podwire were added after them and appeared in neither, so the
         # maps listed 24 crates while the workspace had 27.
+        # A row, not a mention: the link must open a table row of the map.
         for relative, link in COMPONENT_MAPS.items():
             path = root / relative
-            if path.is_file() and f"]({link.format(name)})" not in path.read_text(
-                encoding="utf-8"
+            row = f"| [{name}]({link.format(name)}) |"
+            if path.is_file() and not any(
+                line.startswith(row)
+                for line in path.read_text(encoding="utf-8").splitlines()
             ):
                 errors.append(f"{name}: not listed in the component map in {relative}")
 

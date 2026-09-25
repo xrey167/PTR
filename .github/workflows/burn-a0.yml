@@ -4,8 +4,12 @@ on:
     paths:
       - "model/burn-a0/**"
       # A0 depends on the type kernel by path and its checkpoint tests read the
-      # committed codebook artifact, so a change to either can break it.
+      # committed codebook artifact, so a change to either can break it. The
+      # kernel takes its version, edition and rust-version from the root
+      # manifest, and A0's lockfile pins that version, so a root bump breaks
+      # A0's --locked build too.
       - "crates/ptr-types/**"
+      - "Cargo.toml"
       - "datasets/generated/codebook.json"
       - "vendor/**"
       - ".github/workflows/burn-a0.yml"
@@ -13,8 +17,12 @@ on:
     paths:
       - "model/burn-a0/**"
       # A0 depends on the type kernel by path and its checkpoint tests read the
-      # committed codebook artifact, so a change to either can break it.
+      # committed codebook artifact, so a change to either can break it. The
+      # kernel takes its version, edition and rust-version from the root
+      # manifest, and A0's lockfile pins that version, so a root bump breaks
+      # A0's --locked build too.
       - "crates/ptr-types/**"
+      - "Cargo.toml"
       - "datasets/generated/codebook.json"
       - "vendor/**"
       - ".github/workflows/burn-a0.yml"
