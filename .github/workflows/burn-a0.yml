@@ -11,6 +11,8 @@ on:
       - "crates/ptr-types/**"
       - "Cargo.toml"
       - "datasets/generated/codebook.json"
+      # tests/runtime_fixture.rs loads the checkpoint ptr-runtime's tests bind.
+      - "crates/ptr-runtime/tests/fixtures/ptr-a0-v1.ckpt"
       - "vendor/**"
       - ".github/workflows/burn-a0.yml"
   pull_request:
@@ -24,6 +26,8 @@ on:
       - "crates/ptr-types/**"
       - "Cargo.toml"
       - "datasets/generated/codebook.json"
+      # tests/runtime_fixture.rs loads the checkpoint ptr-runtime's tests bind.
+      - "crates/ptr-runtime/tests/fixtures/ptr-a0-v1.ckpt"
       - "vendor/**"
       - ".github/workflows/burn-a0.yml"
 permissions:

@@ -19,6 +19,45 @@ This is the first **trainable tensor implementation** of a PTR model component. 
 - upstream Burn device-dispatch support;
 - Flex CPU forward, autodiff and tiny supervised-router training tests.
 
+## Ablation switches
+
+Each mechanism the M001-M004 hypotheses name can be switched off on `PtrA0Config`
+without removing a module, so every arm of a study builds the same parameters
+from the same random draws. Defaults reproduce the unswitched model, pinned by
+`tests/golden_logits.rs`.
+
+| Switch | Default | Off means |
+|---|---|---|
+| `with_typed_attention` | on | the typed pair bias is zero in both attention directions; `metadata_bias` takes no part |
+| `with_typed_query` | on | the slot->raw query reads the payload hash only, so metadata can steer that read only through the typed bias |
+| `with_latent_steps` | 0 | how many tied refinement steps run (the study's full arm uses 2) |
+| `with_latent_nonlinearity` | on | a refinement step is `slots + latent_refine(slots)`, with no `gelu` |
+| `with_frozen_router` | off | on: the router is excluded from training after init; the forward pass is unchanged |
+
+None of them is recorded in the checkpoint header, like `latent_steps` before
+them: a checkpoint is loaded under whatever the config passed to `load` says.
+
+`init` draws every parameter at once, in declaration order. Burn otherwise draws
+a parameter the first time it is read, so an arm that skipped a module drew every
+later parameter from a shifted stream and two arms of one seed did not start from
+the same weights (`tests/seeded_init.rs`, `tests/seeded_init_arms.rs`). `load`
+keeps the lazy build, because the parameters it creates are replaced at once.
+
+**The raw->slot branch never reaches the output.** `forward` computes the
+raw->slot update (`raw_query`, `slot_key`, `slot_value`, `raw_output`, about a
+quarter of the parameters at the study's width) and returns it as `raw`, but the
+latent loop and the router read only the slots, so no loss on the router logits
+trains it. `the_raw_to_slot_branch_gets_no_gradient_in_any_arm` in `src/lib.rs`
+pins this, so a change that connects it is seen rather than assumed.
+
+Tests T2-T6 of the study design check the switches: each switch changes the
+forward pass and the frozen router does not (`tests/ablation_switches.rs`, and in
+`src/lib.rs` one Adam step leaves a frozen router's weights bit for bit as they
+were); a switch that is off removes exactly its mechanism (`src/lib.rs`); nothing
+about a slot that is not admitted reaches the logits in any arm
+(`tests/admission_invariance.rs`); and the committed runtime fixture still loads
+(`tests/runtime_fixture.rs`).
+
 ## Alignment with the PTR cognitive type kernel
 
 Slot types, epistemic states and operator routing now go through the versioned
