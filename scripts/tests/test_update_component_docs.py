@@ -19,6 +19,22 @@ spec.loader.exec_module(mod)
 
 
 class TestCounting(unittest.TestCase):
+    def test_nested_sync_and_async_tests_count_once_with_crlf_and_tabs(self):
+        """Traverse nested Rust files while ignoring fixtures and unrelated directories."""
+        with tempfile.TemporaryDirectory() as directory:
+            crate = Path(directory)
+            files = {
+                "src/nested/unit.rs": b'\t#[tokio::test]\r\nasync fn unit() {}\r\n',
+                "tests/nested/integration.rs": b'\t#[test]\t// regression\r\nfn integration() {}\r\n',
+                "tests/data.txt": b'#[test]\n',
+                "examples/demo.rs": b'#[test]\n',
+            }
+            for name, contents in files.items():
+                path = crate / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(contents)
+            self.assertEqual(mod.code_metrics(crate), {"files": 1, "loc": 2, "test_files": 1, "tests": 2})
+
     def test_sync_and_async_attributes_count_and_quoted_ones_do_not(self):
         """Count real sync and async test attributes while excluding quoted text and other macros."""
         directory = tempfile.TemporaryDirectory()

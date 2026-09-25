@@ -123,6 +123,86 @@ class Scoring(unittest.TestCase):
         with self.assertRaises(ValueError):
             score.pred_lines("PRED full test_iid 01z\n")
 
+    def test_bad_records_do_not_hide_valid_predictions(self):
+        """Report missing stdout and unknown splits while retaining valid results."""
+        missing = self.write("missing-stdout.json", {"seed": 17, "stdout": None})
+        labels = "".join(format(i.label, "x") for i in self.items["test_iid"])
+        mixed = self.write("mixed-splits.json", run_record(
+            f"PRED full unknown_split 0\nPRED full test_iid {labels}\n"
+        ))
+        document, problems = score.score_records([missing, mixed], self.data)
+        self.assertEqual(len(problems), 2)
+        self.assertIn("no stdout text", problems[0])
+        self.assertIn("unknown split 'unknown_split'", problems[1])
+        self.assertEqual(len(document["results"]), 1)
+        self.assertEqual(document["results"][0]["route_accuracy"], 1.0)
+
+    def test_boolean_correct_is_not_a_rust_count(self):
+        """Boolean status fields cannot masquerade as numeric metric evidence."""
+        rows = [{"arm": "full", "split": "test_iid", "correct": True},
+                {"arm": "other", "split": "test_iid", "correct": 120},
+                {"arm": "full", "split": "val", "correct": 120}]
+        self.assertIsNone(score.rust_final_row(rows, "full", "test_iid"))
+        expected = {"arm": "full", "split": "test_iid", "correct": 0}
+        self.assertEqual(score.rust_final_row(rows + [expected], "full", "test_iid"), expected)
+
+
+class MetricBoundaries(unittest.TestCase):
+    """Hand-built utilities isolate scoring from generator and rule behavior."""
+
+    def item(self, regret=0.25, margin=0.25, split="test_iid", tags=()):
+        """Make a two-candidate example with explicitly known regret and margin."""
+        item = score.Item()
+        item.id, item.split = "boundary", split
+        item.label = 0
+        item.z = [regret, 0.0] + [-1.0] * 9
+        item.margin, item.tags = margin, list(tags)
+        return item
+
+    def test_success_tolerance_does_not_change_exact_route_accuracy(self):
+        """A near-optimal wrong route can succeed without being counted correct."""
+        for regret, success in [(0.25, 1.0), (0.25 + 0.5e-9, 1.0), (0.25 + 2e-9, 0.0)]:
+            with self.subTest(regret=regret):
+                report = score.score_predictions([self.item(regret=regret)], [1])
+                self.assertEqual(report["route_accuracy"], 0.0)
+                self.assertEqual(report["task_success"], success)
+                self.assertAlmostEqual(report["cost_adjusted_regret"], regret, places=12)
+
+    def test_clear_margin_tolerance_and_empty_subset_denominators(self):
+        """Keep tolerance-edge examples and represent empty subsets as unavailable."""
+        for margin, n in [(0.25, 1), (0.25 - 0.5e-9, 1), (0.25 - 2e-9, 0)]:
+            with self.subTest(margin=margin):
+                report = score.score_predictions([self.item(margin=margin)], [0])
+                self.assertEqual(report["subsets"]["clear_margin"], {
+                    "n": n, "correct": n, "accuracy": 1.0 if n else None,
+                })
+                self.assertEqual(report["subsets"]["validity"], {
+                    "n": 0, "correct": 0, "accuracy": None,
+                })
+
+    def test_heldout_subset_is_reported_only_for_its_shift(self):
+        """Held-out accuracy uses its own denominator and only the relevant split."""
+        items = [self.item(split="ood_compose_epi", tags=["heldout"]),
+                 self.item(split="ood_compose_epi")]
+        report = score.score_predictions(items, [0, 1])
+        self.assertEqual(report["route_accuracy"], 0.5)
+        self.assertEqual(report["subsets"]["heldout"], {"n": 1, "correct": 1, "accuracy": 1.0})
+        self.assertNotIn("transfer", report["subsets"])
+        for item in items:
+            item.split = "test_iid"
+        self.assertNotIn("heldout", score.score_predictions(items, [0, 1])["subsets"])
+
+    def test_prediction_count_and_operator_bounds_are_checked(self):
+        """Reject both ends of the code range and both short and long predictions."""
+        item = self.item()
+        for predictions in ([], [0, 0]):
+            with self.subTest(predictions=predictions), self.assertRaisesRegex(ValueError, "predictions for 1 examples"):
+                score.score_predictions([item], predictions)
+        for code in (-1, 11):
+            with self.subTest(code=code), self.assertRaisesRegex(ValueError, "not an operator code"):
+                score.score_predictions([item], [code])
+        self.assertEqual(score.score_predictions([item], [10])["n"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

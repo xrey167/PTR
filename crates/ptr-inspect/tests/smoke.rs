@@ -35,3 +35,31 @@ fn secret_value_is_reachable_only_by_asking_for_it() {
     assert_eq!(secret.clone().into_inner(), "hunter2");
     assert_eq!(secret, Secret::new(String::from("hunter2")));
 }
+
+#[test]
+fn redaction_does_not_require_debug_or_inspectable_on_the_inner_value() {
+    struct Opaque(u8);
+
+    let secret = Secret::new(Opaque(42));
+    assert_eq!(format!("{secret:?}"), "Secret([redacted])");
+    assert_eq!(format!("{secret:#?}"), "Secret([redacted])");
+    assert_eq!(secret.inspect(), InspectNode::Redacted);
+    assert_eq!(secret.expose().0, 42);
+    assert_eq!(secret.into_inner().0, 42);
+}
+
+#[test]
+fn redaction_never_calls_the_inner_debug_implementation() {
+    struct PanickingDebug;
+
+    impl std::fmt::Debug for PanickingDebug {
+        fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            panic!("secret debug must not inspect the wrapped value");
+        }
+    }
+
+    let secret = Secret::new(PanickingDebug);
+    assert_eq!(format!("{secret:?}"), "Secret([redacted])");
+    assert_eq!(format!("{secret:#?}"), "Secret([redacted])");
+    assert_eq!(secret.inspect(), InspectNode::Redacted);
+}

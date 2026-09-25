@@ -121,4 +121,24 @@ fn each_switch_changes_the_forward_pass_it_claims_to_and_no_other() {
         frozen, 0.0,
         "a frozen router must not change the forward pass"
     );
+
+    // With zero refinement steps, neither form of the refinement update runs.
+    // Check the interaction with both query and attention modes using the same
+    // weights, within this single test so the shared RNG cannot race another test.
+    for typed_attention in [false, true] {
+        for typed_query in [false, true] {
+            let zero_step = PtrA0Config::new(16, WIDTH)
+                .with_provenance_buckets(4)
+                .with_latent_steps(0)
+                .with_typed_attention(typed_attention)
+                .with_typed_query(typed_query);
+            let nonlinear = at_seed(zero_step.clone(), &device);
+            let linear = at_seed(zero_step.with_latent_nonlinearity(false), &device);
+            let difference: f32 = (nonlinear - linear).abs().max().into_scalar();
+            assert_eq!(
+                difference, 0.0,
+                "zero steps must ignore the nonlinearity switch: attention={typed_attention}, query={typed_query}"
+            );
+        }
+    }
 }

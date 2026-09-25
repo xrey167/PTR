@@ -14,6 +14,7 @@ import tempfile
 import tomllib
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -198,6 +199,45 @@ class Scaffold(unittest.TestCase):
             before = snapshot(root)
             with self.assertRaisesRegex(ValueError, "already exists"):
                 scaffold.create(root, "model/M011-taken", **FIELDS)
+            self.assertEqual(snapshot(root), before)
+
+    def test_partial_registry_append_is_rolled_back_with_the_scaffold(self):
+        """Undo a registry write that fails after writing some of its bytes."""
+        directory, root = fixture()
+        real_open = Path.open
+        registry = root / "experiments/registry.toml"
+
+        @contextlib.contextmanager
+        def partial_append(path, mode="r", *args, **kwargs):
+            with real_open(path, mode, *args, **kwargs) as handle:
+                if path == registry and mode == "a":
+                    handle.write('\n[[experiment]]\nid = "M014"\n')
+                    handle.flush()
+                    raise OSError(28, "No space left on device")
+                yield handle
+
+        with directory:
+            before = snapshot(root)
+            with patch.object(Path, "open", partial_append):
+                with self.assertRaisesRegex(ValueError, "nothing was kept"):
+                    scaffold.create(root, "model/M014-registry-full", **FIELDS)
+            self.assertEqual(snapshot(root), before)
+            scaffold.create(root, "model/M014-registry-full", **FIELDS)
+            self.assertEqual(validate(root)[0], 0)
+
+    def test_seed_boundaries_round_trip_without_changing_the_callers_list(self):
+        """Accept zero and TOML's largest signed integer as distinct seeds."""
+        directory, root = fixture()
+        seeds = [2**63 - 1, 0]
+        with directory:
+            target = scaffold.create(root, "model/M015-seed-bounds", seeds=seeds, **FIELDS)
+            data = tomllib.loads((target / "experiment.toml").read_text(encoding="utf-8"))
+            self.assertEqual(data["seeds"], [2**63 - 1, 0])
+            self.assertEqual(seeds, [2**63 - 1, 0])
+            self.assertEqual(validate(root)[0], 0)
+            before = snapshot(root)
+            with self.assertRaisesRegex(ValueError, "integer from 0 to"):
+                scaffold.create(root, "model/M016-seed-overflow", seeds=[2**63], **FIELDS)
             self.assertEqual(snapshot(root), before)
 
     def test_seed_lists_are_parsed_strictly(self):

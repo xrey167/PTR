@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location(
@@ -122,6 +123,52 @@ class ExperimentRunnerTests(unittest.TestCase):
         self.assertEqual(calls, [["rustc", "+1.95.0", "--version"], ["rustc", "--version"]])
 
 
+class Provenance(unittest.TestCase):
+    def test_dirty_state_binds_binary_diff_bytes_and_ignores_untracked_outputs(self):
+        """Hash exact diff bytes and request tracked files only from Git."""
+        for status, diff, dirty in [("", b"", False), (" M model.rs\n", b"diff\x00\xff\n", True)]:
+            with self.subTest(dirty=dirty), patch.object(
+                mod.subprocess, "check_output", side_effect=[status, diff]
+            ) as query:
+                self.assertEqual(mod.git_worktree_state(), {
+                    "git_dirty": dirty,
+                    "git_tracked_diff_sha256": hashlib.sha256(diff).hexdigest(),
+                })
+                self.assertEqual(query.call_args_list[0].args[0],
+                                 ["git", "status", "--porcelain", "--untracked-files=no"])
+                self.assertEqual(query.call_args_list[1].args[0],
+                                 ["git", "diff", "--binary", "HEAD"])
+
+    def test_unavailable_git_evidence_never_claims_a_clean_worktree(self):
+        """A failure of either Git query makes both provenance fields unknown."""
+        for replies in ([OSError("no git")], ["", OSError("no diff")]):
+            with self.subTest(replies=replies), patch.object(
+                mod.subprocess, "check_output", side_effect=replies
+            ):
+                self.assertEqual(mod.git_worktree_state(), {
+                    "git_dirty": None, "git_tracked_diff_sha256": None,
+                })
+
+    def test_missing_and_unspecified_hardware_profiles_are_distinct(self):
+        """An absent profile must not look like a measured or declared machine."""
+        with tempfile.TemporaryDirectory() as directory, patch.object(mod, "ROOT", Path(directory)):
+            self.assertIsNone(mod.hardware_profile_record(None))
+            self.assertEqual(mod.hardware_profile_record("hardware/missing.toml"), {
+                "path": "hardware/missing.toml", "sha256": None,
+                "contents": None, "unspecified_fields": None,
+            })
+            path = Path(directory) / "hardware/fixture.toml"
+            path.parent.mkdir()
+            contents = b'cpu = "unspecified"\ngpu = "unspecified"\nram_gb = 32\n'
+            path.write_bytes(contents)
+            self.assertEqual(mod.hardware_profile_record("hardware/fixture.toml"), {
+                "path": "hardware/fixture.toml",
+                "sha256": hashlib.sha256(contents).hexdigest(),
+                "contents": {"cpu": "unspecified", "gpu": "unspecified", "ram_gb": 32},
+                "unspecified_fields": ["cpu", "gpu"],
+            })
+
+
 SEEDS = [1, 2, 3]
 
 
@@ -228,6 +275,67 @@ class Aggregation(unittest.TestCase):
             [{"seed": 2, "status": "failed", "exit_code": 1, "record": failed.name}],
         )
         self.assertIsNone(summary["groups"][0]["metrics"]["accuracy"]["std"])
+
+    def test_all_failed_runs_produce_an_incomplete_record_without_metrics(self):
+        """Keep failure evidence even when no seed produced usable output."""
+        paths = [self.write_run(seed, [], status="failed", stdout="{truncated")
+                 for seed in SEEDS]
+        code, summary = self.run_aggregate()
+        self.assertEqual((code, summary["status"]), (1, "incomplete"))
+        self.assertEqual(summary["completed_seeds"], [])
+        self.assertEqual(summary["missing_seeds"], SEEDS)
+        self.assertEqual(summary["groups"], [])
+        self.assertEqual([r["record"] for r in summary["failed_runs"]],
+                         [p.name for p in paths])
+        self.assertEqual(len(summary["source_records"]), len(SEEDS))
+
+    def test_successful_retry_keeps_the_previous_failure_visible(self):
+        """A completed retry supplies metrics without erasing a failed attempt."""
+        failed = self.write_run(1, [{"accuracy": 99}], status="failed")
+        for seed in SEEDS:
+            self.write_run(seed, [{"accuracy": 0.75}])
+        code, summary = self.run_aggregate()
+        self.assertEqual((code, summary["status"]), (1, "incomplete"))
+        self.assertEqual(summary["missing_seeds"], [])
+        self.assertEqual(summary["failed_runs"][0]["record"], failed.name)
+        metric = summary["groups"][0]["metrics"]["accuracy"]
+        self.assertEqual((metric["n"], metric["mean"], metric["std"]), (3, 0.75, 0.0))
+
+    def test_all_non_finite_values_have_no_numeric_summary(self):
+        """Distinguish reported divergence from missing observations."""
+        for seed, value in zip(SEEDS, [float("nan"), float("inf"), -float("inf")]):
+            self.write_run(seed, [{"arm": "full", "loss": value}])
+        code, summary = self.run_aggregate()
+        metric = summary["groups"][0]["metrics"]["loss"]
+        self.assertEqual((code, metric["n"]), (1, 0))
+        self.assertEqual(metric["by_seed"], {})
+        self.assertEqual(metric["missing_seeds"], [])
+        self.assertEqual(metric["non_finite"], {"1": "nan", "2": "inf", "3": "-inf"})
+        for field in ("mean", "std", "min", "max"):
+            self.assertIsNone(metric[field], field)
+
+    def test_equivalent_provenance_is_independent_of_dictionary_order(self):
+        """Object ordering must not split otherwise identical measurements."""
+        for seed in SEEDS:
+            extra = {"parameters": {"steps": "10", "lr": "0.01"},
+                     "host": {"system": "Linux", "logical_cpus": 4}}
+            if seed == 2:
+                extra = {k: dict(reversed(list(v.items()))) for k, v in extra.items()}
+            self.write_run(seed, [{"accuracy": 0.5}], extra=extra)
+        code, summary = self.run_aggregate()
+        self.assertEqual((code, summary["status"]), (0, "complete"))
+
+    def test_timestamp_collision_cannot_overwrite_an_aggregate(self):
+        """Preserve immutable evidence when two aggregations get the same timestamp."""
+        for seed in SEEDS:
+            self.write_run(seed, [{"accuracy": 0.5}])
+        with patch.object(mod, "utc_stamp", return_value="fixed"):
+            self.assertEqual(self.run_aggregate()[0], 0)
+            path = self.results / "aggregate-fixed-ablation.json"
+            before = path.read_bytes()
+            with self.assertRaises(FileExistsError), contextlib.redirect_stdout(io.StringIO()):
+                mod.aggregate("X001", entrypoint="ablation")
+            self.assertEqual(path.read_bytes(), before)
 
     def test_what_it_refuses_writes_nothing(self):
         """Reject incompatible, ambiguous, or malformed inputs without writing an aggregate."""

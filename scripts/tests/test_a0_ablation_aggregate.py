@@ -10,6 +10,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import math
 import subprocess
 import tempfile
 import tomllib
@@ -81,6 +82,25 @@ SMALL = (0.001, -0.001, 0.002, -0.002, 0.0)
 
 
 class CommonRule(unittest.TestCase):
+    def test_exact_decision_boundaries(self):
+        """Preserve inclusive effect size and strict interval/positive-seed rules."""
+        cases = [
+            ("mean equals minimum", 0.02, [0.01, 0.03], 5, "SUPPORTS"),
+            ("lower equals zero", 0.02, [0.0, 0.04], 5, "INCONCLUSIVE"),
+            ("upper equals minimum", 0.01, [0.0, 0.02], 5, "INCONCLUSIVE"),
+            ("upper below minimum", 0.01, [0.0, math.nextafter(0.02, 0.0)], 5, "FALSIFIES"),
+            ("upper equals zero", -0.01, [-0.02, 0.0], 0, "FALSIFIES"),
+            ("upper below zero", -0.01, [-0.02, math.nextafter(0.0, -1.0)], 0, "HARMFUL"),
+            ("one zero delta", 0.02, [0.01, 0.03], 4, "INCONCLUSIVE"),
+        ]
+        for name, mean, ci, positives, expected in cases:
+            with self.subTest(case=name):
+                stats = {"mean": mean, "ci": ci, "positive_seeds": positives,
+                         "deltas": [0.025] * positives + [0.0] * (5 - positives)}
+                self.assertEqual(agg.common_rule(stats, 0.02, None)[0], expected)
+                self.assertEqual(agg.common_rule(stats, 0.02, "G4 failed"),
+                                 ("INCONCLUSIVE", "G4 failed"))
+
     def test_supports(self):
         """Issue SUPPORTS when the paired effect clears the preregistered minimum."""
         result = run(table(no_semantic_slots_masked=(0.85, SMALL)))
@@ -105,6 +125,40 @@ class CommonRule(unittest.TestCase):
         """Prevent SUPPORTS when any paired seed favors the ablation."""
         result = run(table(no_semantic_slots_masked=(0.85, (0.0, 0.0, 0.0, 0.0, 0.051))))
         self.assertNotEqual(verdict(result, "M001-primary"), "SUPPORTS")
+
+
+class StatisticsAndEndpoints(unittest.TestCase):
+    def test_paired_statistics_use_seedwise_differences_and_sample_deviation(self):
+        """Verify interval arithmetic with exactly representable paired differences."""
+        stats = agg.paired([0.75, 0.5, 0.25], [0.25, 0.25, 0.25], 2.0)
+        self.assertEqual(stats["deltas"], [0.5, 0.25, 0.0])
+        self.assertEqual((stats["mean"], stats["sd"]), (0.25, 0.25))
+        self.assertEqual((stats["min"], stats["max"], stats["positive_seeds"]), (0.0, 0.5, 2))
+        self.assertAlmostEqual(stats["ci"][0], 0.25 - 0.5 / math.sqrt(3))
+        self.assertAlmostEqual(stats["ci"][1], 0.25 + 0.5 / math.sqrt(3))
+
+    def test_one_pair_has_a_zero_width_interval(self):
+        """A single observation has no measured variation and keeps its signed delta."""
+        stats = agg.paired([0.25], [0.5], 2.0)
+        self.assertEqual(stats, {"deltas": [-0.25], "mean": -0.25, "sd": 0.0,
+                                "min": -0.25, "max": -0.25, "positive_seeds": 0,
+                                "ci": [-0.25, -0.25]})
+
+    def test_composite_weights_splits_equally_and_subset_zero_is_valid(self):
+        """Split sizes cannot turn the preregistered composite into a pooled rate."""
+        fixture = {"full": {17: {
+            "small": {"accuracy": 1.0, "n": 1, "subsets": {"validity": {"accuracy": 0.0}}},
+            "large": {"accuracy": 0.0, "n": 99},
+        }}}
+        criteria = {"composites": {"A": ["small", "large"]}}
+        self.assertEqual(agg.endpoint(fixture, "full", 17, "composite:A", criteria), 0.5)
+        self.assertEqual(agg.endpoint(fixture, "full", 17, "split:small", criteria), 1.0)
+        self.assertEqual(agg.endpoint(fixture, "full", 17, "subset:small:validity", criteria), 0.0)
+        fixture["full"][17]["small"]["subsets"]["validity"]["accuracy"] = None
+        with self.assertRaisesRegex(ValueError, "full seed 17: subset small:validity is empty"):
+            agg.endpoint(fixture, "full", 17, "subset:small:validity", criteria)
+        with self.assertRaisesRegex(ValueError, "unknown endpoint"):
+            agg.endpoint(fixture, "full", 17, "pooled:A", criteria)
 
 
 class ChecksAndControls(unittest.TestCase):
@@ -277,6 +331,24 @@ class RecordGates(unittest.TestCase):
         """Select successful retries while excluding seeds with only failed processes."""
         chosen = agg.chosen_per_seed([record(17, status="failed"), record(17), record(29, status="failed")])
         self.assertEqual(sorted(chosen), [17])
+
+    def test_later_failures_do_not_displace_the_last_completed_retry(self):
+        """Select the last success for each seed independently of later failures."""
+        first, last, other = record(17, stdout="first"), record(17, stdout="retry"), record(29)
+        chosen = agg.chosen_per_seed([first, other, last, record(17, status="failed")])
+        self.assertEqual(chosen, {17: last, 29: other})
+
+    def test_rerun_ignores_other_arms_but_requires_full_arm_line_order(self):
+        """Compare only full-arm evidence, without sorting or dropping duplicate lines."""
+        lines = ['{"arm":"full","accuracy":0.75}', 'PRED full test_iid 012']
+        original = record(17, stdout="\n".join(lines))
+        noisy = record(17, stdout="progress\n" + "\n".join(lines)
+                       + '\nPRED raw-blind test_iid 999\n{"arm":"latent-0","accuracy":0.1}')
+        self.assertEqual(agg.rerun_reproduces(original, noisy), {"full_lines": 2, "pass": True})
+        for changed in (list(reversed(lines)), lines + [lines[1]], [lines[0]],
+                        [lines[0], 'PRED full test_iid 013']):
+            with self.subTest(lines=changed):
+                self.assertFalse(agg.rerun_reproduces(original, record(17, stdout="\n".join(changed)))["pass"])
 
     def test_completeness_over_every_kind_of_process(self):
         """Check missing seeds, missing arms, and divergence across evaluation, rerun, and contingency."""

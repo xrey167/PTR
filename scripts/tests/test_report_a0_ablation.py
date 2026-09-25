@@ -74,6 +74,31 @@ class Report(unittest.TestCase):
         self.assertIn("equivalent to the learned one within the preregistered band, as predicted", interpretation)
         self.assertNotIn("could not be shown equivalent", interpretation)
 
+    def test_harmful_note_is_replaced_when_the_verdict_changes(self):
+        """Regeneration creates a harm note, is repeatable, and removes obsolete notes."""
+        path = self.study / "results.json"
+        results = json.loads(path.read_text(encoding="utf-8"))
+        entry = results["verdicts"]["M002-necessity"]
+        entry["verdict"] = "HARMFUL"
+        entry["reason"] = "CI upper < 0: the ablated arm is better"
+        entry["stats"] = {"deltas": [-0.02] * 5, "mean": -0.02, "sd": 0.0,
+                          "ci": [-0.02, -0.02], "positive_seeds": 0}
+        path.write_text(json.dumps(results), encoding="utf-8")
+        self.assertEqual(report.main(), 0)
+        note = self.study / "FALSIFIED-M002-necessity.md"
+        text = note.read_text(encoding="utf-8")
+        self.assertIn("**Verdict:** HARMFUL", text)
+        self.assertIn("removing it made A0 better here", text)
+        self.assertIn("mean -0.0200", text)
+        before = {p.name: p.read_bytes() for p in self.study.glob("*.md")}
+        self.assertEqual(report.main(), 0)
+        self.assertEqual({p.name: p.read_bytes() for p in self.study.glob("*.md")}, before)
+        entry["verdict"] = "INCONCLUSIVE"
+        entry["reason"] = "G4 failed"
+        path.write_text(json.dumps(results), encoding="utf-8")
+        self.assertEqual(report.main(), 0)
+        self.assertFalse(note.exists())
+
 
 if __name__ == "__main__":
     unittest.main()
