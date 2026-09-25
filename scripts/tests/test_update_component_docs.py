@@ -20,6 +20,7 @@ spec.loader.exec_module(mod)
 
 class TestCounting(unittest.TestCase):
     def test_sync_and_async_attributes_count_and_quoted_ones_do_not(self):
+        """Count real sync and async test attributes while excluding quoted text and other macros."""
         directory = tempfile.TemporaryDirectory()
         crate = Path(directory.name)
         with directory:
@@ -58,6 +59,7 @@ class TestCounting(unittest.TestCase):
         self.assertEqual(metrics["test_files"], 1)
 
     def test_async_crates_are_no_longer_undercounted(self):
+        """Require the real server crate's metrics to include its async tests."""
         server = mod.code_metrics(ROOT / "crates/ptr-server")["tests"]
         self.assertGreaterEqual(server, 4)
 

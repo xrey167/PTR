@@ -80,6 +80,7 @@ class Row:
 
 
 def load(data_dir: Path, split: str, with_tags: bool) -> list[Row]:
+    """Read a TSV split, verify its labels and size, and optionally derive tags."""
     rows = []
     for index, line in enumerate((data_dir / f"{split}.tsv").read_text(encoding="utf-8").splitlines()):
         ident, label, regime, budget, tokens, facts = line.split("\t")
@@ -108,6 +109,7 @@ def load(data_dir: Path, split: str, with_tags: bool) -> list[Row]:
 
 
 def data_identity(data_dir: Path) -> dict:
+    """Compare all split hashes and the combined TSV digest with the lock."""
     lock = json.loads(gen.LOCK_PATH.read_text(encoding="utf-8"))
     files = {}
     ok = True
@@ -131,6 +133,7 @@ def data_identity(data_dir: Path) -> dict:
 
 
 def label_stats(rows: list[Row]) -> dict:
+    """Summarize class shares, ties, margins, live facts, and decisive subsets."""
     n = len(rows)
     counts = Counter(r.label for r in rows)
     shares = {gen.OP_NAMES[k]: counts.get(k, 0) / n for k in range(N_OPS)}
@@ -162,6 +165,7 @@ def label_stats(rows: list[Row]) -> dict:
 
 
 def accuracy(predict, rows: list[Row]) -> float:
+    """Return the fraction of rows whose predicted operator matches the label."""
     return sum(predict(r) == r.label for r in rows) / len(rows)
 
 
@@ -169,6 +173,7 @@ def accuracy(predict, rows: list[Row]) -> float:
 
 
 def train_majority(train: list[Row]):
+    """Return a constant predictor and its training-majority operator code."""
     counts = Counter(r.label for r in train)
     best = max(range(N_OPS), key=lambda k: (counts.get(k, 0), -k))
     return lambda r: best, best
@@ -198,9 +203,11 @@ def count_router(train: list[Row]):
             n_slots[y] += 1
 
     def lp(table, y, key, card, total):
+        """Return a Laplace-smoothed log probability for one categorical feature."""
         return math.log((table[y][key] + 1) / (total + card))
 
     def predict(r: Row) -> int:
+        """Choose the most likely operator from live-fact counts, regime, and budget."""
         best, best_y = None, None
         for y in range(N_OPS):
             if cy[y] == 0:
@@ -288,6 +295,7 @@ def train_logistic(feats, train: list[Row], n_features=30, epochs=5, lr0=0.5, se
                     w[k] -= lr * g[k] * v
 
     def predict(r: Row) -> int:
+        """Score sparse features with fitted weights, breaking ties by lowest code."""
         z = [0.0] * N_OPS
         for f, v in feats(r):
             w = weights[f]
@@ -300,7 +308,9 @@ def train_logistic(feats, train: list[Row], n_features=30, epochs=5, lr0=0.5, se
 
 
 def hand_router(weighted: bool):
+    """Build a primary-affinity router with optional confidence and state weights."""
     def predict(r: Row) -> int:
+        """Vote for primary operators using live facts with nonzero confidence gain."""
         z = [0.0] * N_OPS
         for role, e, c, v, _ in r.facts:
             cb = gen.bucket(c)
@@ -312,6 +322,7 @@ def hand_router(weighted: bool):
 
 
 def validity_blind(r: Row) -> int:
+    """Apply the label rule while admitting facts of every validity state."""
     return gen.label_of(r.facts, r.regime, r.budget, admit_all=True)
 
 
@@ -330,6 +341,7 @@ class RawBlindBayes:
     """
 
     def __init__(self) -> None:
+        """Precompute focus priors and fact probabilities with and without the evidence ban."""
         prior = [gen.ROLE_PRIOR.count(r) / len(gen.ROLE_PRIOR) for r in range(gen.N_ROLES)]
         self.focus = {}
         self.fact = {}
@@ -351,6 +363,7 @@ class RawBlindBayes:
                     self.fact[(f1, f2, ban)] = {k: v / z for k, v in q.items()}
 
     def likelihood(self, pairs, ban: bool) -> float:
+        """Marginalize role-state pair likelihoods over the latent focus-role pair."""
         fd = self.focus[ban]
         total = 0.0
         for f1 in range(gen.N_ROLES):
@@ -369,6 +382,7 @@ class RawBlindBayes:
         return total
 
     def posterior_regime(self, facts) -> list[float]:
+        """Infer regime probabilities from facts, dropping impossible held-out pairs if needed."""
         pairs = [(f[0], f[1]) for f in facts]
         lik = {ban: self.likelihood(pairs, ban) for ban in (False, True)}
         weights = [0.25 * lik[r == gen.INTERVENTIONAL] for r in range(4)]
@@ -382,6 +396,7 @@ class RawBlindBayes:
         return [w / s for w in weights] if s > 0 else [0.25] * 4
 
     def decide(self, r: Row) -> tuple[int, float]:
+        """Return the Bayes operator and its posterior mass, marginalizing regime and budget."""
         post = self.posterior_regime(r.facts)
         mass = [0.0] * N_OPS
         for regime in range(4):
@@ -412,6 +427,7 @@ def nuisance_only(train: list[Row]):
                 n_fil[r.label] += 1
 
     def predict(r: Row) -> int:
+        """Predict an operator using only entity IDs and filler-token counts."""
         best, best_y = None, None
         for y in range(N_OPS):
             if cy[y] == 0:
@@ -433,12 +449,14 @@ def nuisance_only(train: list[Row]):
 
 
 def band(ident: str, description: str, measured: float, lower=None, upper=None) -> dict:
+    """Record a measurement and whether it meets the optional inclusive bounds."""
     ok = (lower is None or measured >= lower) and (upper is None or measured <= upper)
     return {"id": ident, "description": description, "measured": measured,
             "lower": lower, "upper": upper, "pass": ok}
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Fit reference predictors, write measured G0 bands, and return their status."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--data", type=Path, default=gen.DEFAULT_OUT)
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
@@ -446,6 +464,7 @@ def main(argv: list[str] | None = None) -> int:
     started = time.perf_counter()
 
     def log(message: str) -> None:
+        """Print elapsed-time progress to standard error."""
         print(f"[{time.perf_counter() - started:6.1f}s] {message}", file=sys.stderr)
 
     identity = data_identity(args.data)
@@ -492,9 +511,11 @@ def main(argv: list[str] | None = None) -> int:
     held = [r for r in epi if "heldout" in r.tags]
 
     def ignore_heldout(r):
+        """Apply the rule after removing held-out role-state combinations."""
         return gen.label_of(r.facts, r.regime, r.budget, drop=lambda f: (f[0], f[1]) in gen.HELD_OUT)
 
     def heldout_as_inferred(r):
+        """Apply the rule after replacing held-out epistemic states with inferred."""
         facts = [(f[0], gen.EPI["inferred"] if (f[0], f[1]) in gen.HELD_OUT else f[1], f[2], f[3], f[4]) for f in r.facts]
         return gen.label_of(facts, r.regime, r.budget)
 
@@ -502,9 +523,11 @@ def main(argv: list[str] | None = None) -> int:
     transfer = [r for r in reg if "transfer" in r.tags]
 
     def ignore_evidence(r):
+        """Apply the rule after removing all evidence facts."""
         return gen.label_of(r.facts, r.regime, r.budget, drop=lambda f: f[0] == gen.EVIDENCE)
 
     def evidence_as(regime):
+        """Build a predictor that assigns evidence facts the supplied regime."""
         return lambda r: gen.label_of(r.facts, r.regime, r.budget, evidence_regime=regime)
 
     no_transfer = {

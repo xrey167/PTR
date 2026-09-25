@@ -66,6 +66,7 @@ def splitmix64(x: int) -> int:
 
 
 def fnv1a64(data: bytes, state: int = FNV_OFFSET) -> int:
+    """Return the wrapping FNV-1a-64 digest, optionally continuing a prior state."""
     for byte in data:
         state ^= byte
         state = (state * FNV_PRIME) & MASK64
@@ -78,23 +79,28 @@ class Stream:
     __slots__ = ("state",)
 
     def __init__(self, seed: int) -> None:
+        """Initialize the stream with the seed reduced to an unsigned 64-bit state."""
         self.state = seed & MASK64
 
     def next(self) -> int:
+        """Advance the state once and return the next splitmix64 output."""
         self.state = (self.state + GOLDEN_GAMMA) & MASK64
         return mix64(self.state)
 
     def u01(self) -> float:
+        """Draw a uniform value in [0, 1) from the next output's upper 53 bits."""
         # (next >> 11) is below 2^53, so the division is exact.
         return (self.next() >> 11) / TWO_POW_53
 
     def randbelow(self, n: int) -> int:
+        """Draw an integer in [0, n) using the stream's float scaling rule."""
         # float64 product, then floor. (2^53 - 1) / 2^53 * n rounds below n for
         # every n used here, so the result is always in 0..n-1.
         return int(self.u01() * n)
 
 
 def example_seed(split: str, index: int) -> int:
+    """Derive an example's independent seed from its split name and index."""
     return splitmix64(BENCHMARK_SEED ^ fnv1a64(split.encode("utf-8")) ^ splitmix64(index))
 
 
@@ -207,14 +213,17 @@ TAG_ORDER = ["validity", "regime", "budget", "confidence", "epistemic", "heldout
 
 
 def _op_code(name: str, regime: int) -> int:
+    """Resolve an affinity's operator name, substituting the regime operator."""
     return REGIME_OP[regime] if name == _REGIME else OP[name]
 
 
 def primary_op(role: int, regime: int) -> int:
+    """Return the primary operator code for a role under the given regime."""
     return _op_code(_AFFINITY_TABLE[ROLE_NAMES[role]][0], regime)
 
 
 def secondary_op(role: int, regime: int) -> int:
+    """Return the secondary operator code for a role under the given regime."""
     return _op_code(_AFFINITY_TABLE[ROLE_NAMES[role]][1], regime)
 
 
@@ -247,14 +256,17 @@ TEST_SPLITS = SPLITS[2:]
 
 
 def p_live(split: str) -> float:
+    """Return the split's probability of sampling a live fact."""
     return 0.50 if split == "ood_validity" else 0.78
 
 
 def n_fillers(split: str) -> int:
+    """Return the filler-token count, including the distractor shift's increase."""
     return 46 if split == "ood_distractors" else 10
 
 
 def entity_base(split: str) -> int:
+    """Return the entity ID offset used to separate the payload-shift pool."""
     return 256 if split == "ood_payload" else 0
 
 
@@ -275,6 +287,7 @@ class Example:
     __slots__ = ("split", "index", "regime", "budget", "facts", "tokens")
 
     def __init__(self, split, index, regime, budget, facts, tokens):
+        """Store the sampled context, ordered fact tuples, and raw tokens."""
         self.split = split
         self.index = index
         self.regime = regime
@@ -285,6 +298,7 @@ class Example:
 
     @property
     def id(self) -> str:
+        """Return the split name and zero-padded example index as a stable ID."""
         return f"{self.split}-{self.index:05d}"
 
 
@@ -414,15 +428,18 @@ def decide(z: list[float]) -> tuple[int, bool]:
 
 
 def label_of(facts, regime: int, budget: int, **counterfactual) -> int:
+    """Return the winning operator after applying any requested counterfactuals."""
     return decide(utilities(facts, regime, budget, **counterfactual))[0]
 
 
 def margin_of(z: list[float]) -> float:
+    """Return the gap between the two highest operator utilities."""
     ordered = sorted(z, reverse=True)
     return ordered[0] - ordered[1]
 
 
 def tags_of(example: Example, label: int) -> list[str]:
+    """Return ordered tags for counterfactuals that change the example's label."""
     facts, regime, budget = example.facts, example.regime, example.budget
     tags = set()
     if label_of(facts, regime, budget, admit_all=True) != label:
@@ -457,6 +474,7 @@ def no_transfer_labels(facts, regime: int, budget: int) -> list[int]:
 
 
 def _clean(x: float, digits: int) -> float:
+    """Round a value for serialization and normalize negative zero to zero."""
     return round(x, digits) + 0.0  # + 0.0 turns -0.0 into 0.0
 
 
@@ -474,6 +492,7 @@ def route_targets(z: list[float]) -> list[float]:
 
 
 def render_task(example: Example) -> str:
+    """Describe the regime, budget, and ordered facts as a routing prompt."""
     parts = []
     for i, (role, epi, c, validity, entity) in enumerate(example.facts):
         parts.append(
@@ -532,6 +551,7 @@ def build(example: Example) -> tuple[dict, str, int]:
 
 
 def jsonl_line(record: dict) -> str:
+    """Serialize a record as compact ASCII JSON followed by one newline."""
     return json.dumps(record, separators=(",", ":"), ensure_ascii=True) + "\n"
 
 
@@ -553,10 +573,12 @@ PREFIX_N = 64
 
 
 def hex64(value: int) -> str:
+    """Format a digest as lowercase hexadecimal padded to 16 characters."""
     return f"{value:016x}"
 
 
 def lock_document(rendered: dict[str, tuple[bytes, bytes, str]]) -> dict:
+    """Build split sizes, hashes, and prefix digests from rendered split bytes."""
     data_state = FNV_OFFSET
     splits = {}
     for split in SPLITS:
@@ -612,10 +634,12 @@ def lock_document(rendered: dict[str, tuple[bytes, bytes, str]]) -> dict:
 
 
 def dump_json(document: dict) -> str:
+    """Serialize a document as indented JSON with a trailing newline."""
     return json.dumps(document, indent=2, sort_keys=False) + "\n"
 
 
 def render_all(verbose: bool = True) -> dict[str, tuple[bytes, bytes, str]]:
+    """Render every split in specification order, optionally reporting progress."""
     rendered = {}
     for split in SPLITS:
         rendered[split] = render_split(split)
@@ -625,9 +649,11 @@ def render_all(verbose: bool = True) -> dict[str, tuple[bytes, bytes, str]]:
 
 
 def compare_lock(expected: dict, actual: dict) -> list[str]:
+    """Return field-level differences between stored and regenerated locks."""
     problems = []
 
     def walk(a, b, path):
+        """Append recursive dictionary differences with their dotted field paths."""
         if isinstance(a, dict) and isinstance(b, dict):
             for key in sorted(set(a) | set(b)):
                 if key not in a:
@@ -644,6 +670,7 @@ def compare_lock(expected: dict, actual: dict) -> list[str]:
 
 
 def check_on_disk(out: Path, lock: dict) -> list[str]:
+    """Check existing split files against lock hashes and report missing files."""
     problems = []
     for split in SPLITS:
         for kind in ("jsonl", "tsv"):
@@ -658,6 +685,7 @@ def check_on_disk(out: Path, lock: dict) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Generate splits or samples, or verify regenerated data against the lock."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT, help="output directory")
     parser.add_argument("--lock", type=Path, default=LOCK_PATH, help="splits.lock.json path")

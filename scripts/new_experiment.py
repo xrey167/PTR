@@ -51,6 +51,7 @@ def check_seeds(seeds: list[int]) -> list[int]:
 
 
 def parse_seeds(text: str) -> list[int]:
+    """Parse comma-separated integers and reject invalid, duplicate, or empty seeds."""
     try:
         seeds = [int(part) for part in text.split(",") if part.strip()]
     except ValueError:
@@ -68,6 +69,7 @@ def manifest(
     hardware_profile: str,
     seeds: list[int],
 ) -> str:
+    """Render a planned experiment manifest with all required schema fields."""
     # Same keys, in the same order, as the manifests already in the tree.
     lines = [
         "version = 1",
@@ -200,6 +202,7 @@ def write_experiment(
     baseline: str,
     falsification: str,
 ) -> None:
+    """Create the experiment manifest, configuration, README, tests, and results directories."""
     target.mkdir(parents=True)
     (target / "experiment.toml").write_text(text, encoding="utf-8")
     (target / "config.toml").write_text(
@@ -234,6 +237,7 @@ def write_experiment(
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Parse scaffold options, create and register an experiment, and report validation errors."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("path", help="<area>/<ID>-<name>, e.g. model/M008-slot-dropout")
     parser.add_argument("--hypothesis", required=True)

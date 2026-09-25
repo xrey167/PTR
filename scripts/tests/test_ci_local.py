@@ -40,6 +40,7 @@ BLOCK_STEPS = {
 
 
 def indent_of(line: str) -> int:
+    """Return the number of leading spaces in a workflow line."""
     return len(line) - len(line.lstrip(" "))
 
 
@@ -141,16 +142,19 @@ def make_targets(path: Path) -> dict[str, tuple[str, list[str]]]:
 
 
 def normalize(command: str) -> str:
+    """Replace a workflow's leading Python command with the Makefile variable."""
     return re.sub(r"^python ", "$(PYTHON) ", command)
 
 
 def carries(line: str, env: dict[str, str]) -> bool:
+    """Check whether a recipe line includes every required environment assignment."""
     return all(f'{k}="{v}"' in line or f"{k}={v}" in line for k, v in env.items())
 
 
 class TheParserReadsWhatTheWorkflowSays(unittest.TestCase):
     # A parse that silently found nothing would make every other test pass.
     def test_it_sees_every_job_a_step_env_and_a_block(self):
+        """Verify that parsing finds real jobs, step environments, and multiline scripts."""
         workflow = parse_workflow(ROOT / ".github/workflows/ci.yml")
         self.assertGreaterEqual(len(workflow["jobs"]), 13, sorted(workflow["jobs"]))
         quality = workflow["jobs"]["quality"]["steps"]
@@ -161,6 +165,7 @@ class TheParserReadsWhatTheWorkflowSays(unittest.TestCase):
         self.assertTrue(any("check_component_metadata.py" in line for line in block["block"]))
 
     def test_it_is_not_fooled_by_the_shapes_that_fooled_the_line_reader(self):
+        """Distinguish actual run steps from matrix items and action inputs named run."""
         text = (
             "jobs:\n"
             "  j:\n"
@@ -190,6 +195,7 @@ class TheParserReadsWhatTheWorkflowSays(unittest.TestCase):
         self.assertEqual(steps[2]["block"], ["echo one", "echo two"])
 
     def test_commented_recipe_lines_are_not_commands(self):
+        """Ignore commented recipes and strip Make's execution prefixes from real commands."""
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "Makefile"
             path.write_text("t:\n\t# cargo test\n\t@echo run\n", encoding="utf-8")
@@ -199,22 +205,26 @@ class TheParserReadsWhatTheWorkflowSays(unittest.TestCase):
 class CiLocalMirrorsCi(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        """Parse the CI workflow and Makefile targets shared by the mirror tests."""
         cls.workflow = parse_workflow(ROOT / ".github/workflows/ci.yml")
         cls.jobs = cls.workflow["jobs"]
         cls.targets = make_targets(ROOT / "Makefile")
 
     def test_no_workflow_or_job_environment_goes_unmirrored(self):
+        """Reject wider environment scopes that the step-only recipe comparison cannot mirror."""
         # Only step-level env is carried into the recipes; anything wider would
         # change every command without appearing in any of them.
         self.assertFalse(self.workflow["env"])
         self.assertEqual([job for job, data in self.jobs.items() if data["env"]], [])
 
     def test_every_job_has_a_target_and_ci_local_runs_them_all(self):
+        """Require one Makefile target per CI job and include them all in ci-local."""
         expected = {f"ci-{job}" for job in self.jobs}
         self.assertEqual(expected - set(self.targets), set())
         self.assertEqual(set(self.targets["ci-local"][0].split()), expected)
 
     def test_every_step_is_reproduced_in_its_jobs_target(self):
+        """Match each CI command, step environment, and known script block to its recipe."""
         for job, data in self.jobs.items():
             recipe = self.targets[f"ci-{job}"][1]
             for step in data["steps"]:
@@ -238,17 +248,20 @@ class CiLocalMirrorsCi(unittest.TestCase):
 class A0MirrorsTheBurnWorkflow(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        """Parse Burn workflow jobs, Makefile targets, and default A0 toolchain variables."""
         cls.jobs = parse_workflow(ROOT / ".github/workflows/burn-a0.yml")["jobs"]
         cls.targets = make_targets(ROOT / "Makefile")
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
         cls.defaults = dict(re.findall(r"^(A0_\w+) \?= (\S+)$", makefile, re.M))
 
     def test_a0_runs_one_target_per_workflow_job(self):
+        """Require the A0 target to run both the stable and MSRV workflow counterparts."""
         expected = {f"a0-{job}" for job in self.jobs}
         self.assertEqual(expected, {"a0-stable", "a0-msrv"})
         self.assertEqual(set(self.targets["a0"][0].split()), expected)
 
     def test_every_step_runs_on_the_toolchain_its_job_uses(self):
+        """Match Burn workflow commands to recipes with explicit per-job toolchain variables."""
         msrv = self.defaults["A0_MSRV"]
         self.assertEqual(self.defaults["A0_STABLE"], "stable")
         for job, data in self.jobs.items():
@@ -269,6 +282,7 @@ class A0MirrorsTheBurnWorkflow(unittest.TestCase):
                     self.assertIn(wanted, recipe)
 
     def test_the_default_msrv_is_the_one_the_workflow_installs(self):
+        """Check that the Makefile's A0 MSRV matches the workflow's installed version."""
         installs = [
             s["run"] for s in self.jobs["msrv"]["steps"]
             if s["run"] and s["run"].startswith("rustup toolchain install ")

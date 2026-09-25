@@ -62,10 +62,12 @@ def table(**levels):
 
 
 def run(t, gates=None, contingency=None):
+    """Apply the real decision rules to synthetic scores and optional gate or contingency overrides."""
     return agg.decide(t, REFERENCES, CRITERIA, gates or PASSING_GATES, contingency)
 
 
 def verdict(result, cid):
+    """Return one contrast's verdict label from an aggregate result."""
     return result["verdicts"][cid]["verdict"]
 
 
@@ -74,28 +76,34 @@ SMALL = (0.001, -0.001, 0.002, -0.002, 0.0)
 
 class CommonRule(unittest.TestCase):
     def test_supports(self):
+        """Issue SUPPORTS when the paired effect clears the preregistered minimum."""
         result = run(table(no_semantic_slots_masked=(0.85, SMALL)))
         self.assertEqual(verdict(result, "M001-primary"), "SUPPORTS")
 
     def test_falsifies(self):
+        """Issue FALSIFIES when the paired effect remains below the required minimum."""
         result = run(table(no_semantic_slots_masked=(0.899, SMALL)))
         self.assertEqual(verdict(result, "M001-primary"), "FALSIFIES")
 
     def test_harmful(self):
+        """Issue HARMFUL when the ablated arm reliably outperforms its comparator."""
         result = run(table(no_semantic_slots_masked=(0.93, SMALL)))
         self.assertEqual(verdict(result, "M001-primary"), "HARMFUL")
 
     def test_inconclusive_when_noisy(self):
+        """Keep a noisy paired effect INCONCLUSIVE when its interval crosses decision bounds."""
         result = run(table(no_semantic_slots_masked=(0.87, (0.06, -0.05, 0.04, -0.06, 0.05))))
         self.assertEqual(verdict(result, "M001-primary"), "INCONCLUSIVE")
 
     def test_one_negative_seed_blocks_supports(self):
+        """Prevent SUPPORTS when any paired seed favors the ablation."""
         result = run(table(no_semantic_slots_masked=(0.85, (0.0, 0.0, 0.0, 0.0, 0.051))))
         self.assertNotEqual(verdict(result, "M001-primary"), "SUPPORTS")
 
 
 class ChecksAndControls(unittest.TestCase):
     def test_a_failed_raw_blind_check_makes_necessity_not_exercised(self):
+        """Mark attention necessity NOT EXERCISED when raw-input use is insufficient without a leak."""
         # full - raw-blind = 0.02 < 0.03 fails the check, and 0.84 stays under the
         # leak alarm (ceiling 0.821 + 0.02), so only the check decides.
         result = run(table(full=0.86, raw_blind=0.84, no_typed_attention=0.76))
@@ -104,19 +112,23 @@ class ChecksAndControls(unittest.TestCase):
         self.assertEqual(verdict(result, "M002-necessity"), "NOT EXERCISED")
 
     def test_the_leak_alarm_outranks_not_exercised(self):
+        """Give the leak alarm priority over a failed raw-blind manipulation check."""
         result = run(table(raw_blind=0.895, no_typed_attention=0.80))
         self.assertTrue(result["leak_alarm"]["active"])
         self.assertIn("HOLD", result["verdicts"]["M002-necessity"]["reason"])
 
     def test_the_frozen_router_equivalent(self):
+        """Recognize a frozen router whose paired interval lies within the equivalence band."""
         result = run(table(frozen_router=(0.90, SMALL)))
         self.assertEqual(verdict(result, "M004-negative-control"), "EQUIVALENT")
 
     def test_the_frozen_router_harmful(self):
+        """Mark the learned router HARMFUL when the frozen router reliably performs better."""
         result = run(table(frozen_router=(0.95, SMALL)))
         self.assertEqual(verdict(result, "M004-negative-control"), "HARMFUL")
 
     def test_harmful_is_recorded_even_inside_the_equivalence_band(self):
+        """Preserve HARMFUL when an entirely negative interval also fits the equivalence band."""
         # CI about (-0.007, -0.003): inside (-0.02, 0.02) and entirely below 0.
         # DESIGN.md records HARMFUL whenever the upper bound is < 0.
         entry = run(table(frozen_router=(0.905, SMALL)))["verdicts"]["M004-negative-control"]
@@ -126,6 +138,7 @@ class ChecksAndControls(unittest.TestCase):
         self.assertIn("inside the equivalence band", entry["reason"])
 
     def test_nonlinearity_supported_and_not_attributable(self):
+        """Require both latent-zero and latent-linear comparisons to support nonlinearity."""
         both = run(table(latent_0=(0.80, SMALL), latent_linear=(0.80, SMALL)))
         self.assertEqual(verdict(both, "M003-nonlinearity"), "SUPPORTS-NONLINEARITY")
         only_zero = run(table(latent_0=(0.80, SMALL), latent_linear=(0.90, SMALL)))
@@ -133,16 +146,19 @@ class ChecksAndControls(unittest.TestCase):
         self.assertIn("not attributable", only_zero["verdicts"]["M003-nonlinearity"]["reason"])
 
     def test_blindness_failure_is_inconclusive(self):
+        """Block sufficiency claims when the blind-query manipulation fails."""
         result = run(table(blind_query_k0=0.95, blind_query_k0_no_typed_attention=0.90))
         self.assertEqual(verdict(result, "M002-sufficiency"), "INCONCLUSIVE")
         self.assertIn("blindness failed", result["verdicts"]["M002-sufficiency"]["reason"])
 
     def test_the_verifier_head_is_never_a_null(self):
+        """Keep the absent verifier-head mechanism NOT TESTED."""
         self.assertEqual(verdict(run(table()), "no-verifier-head"), "NOT TESTED")
 
 
 class GatesAndPreconditions(unittest.TestCase):
     def test_a_failed_gate_blocks_every_mechanism_verdict(self):
+        """Require a failed correctness gate to block an otherwise supported mechanism claim."""
         gates = copy.deepcopy(PASSING_GATES)
         gates["G5"]["pass"] = False
         result = run(table(no_semantic_slots_masked=(0.85, SMALL)), gates)
@@ -150,11 +166,13 @@ class GatesAndPreconditions(unittest.TestCase):
         self.assertIn("G5", result["verdicts"]["M001-primary"]["reason"])
 
     def test_the_leak_alarm_holds_every_verdict(self):
+        """Hold a mechanism verdict when raw-blind accuracy activates the leak alarm."""
         result = run(table(raw_blind=0.86, no_semantic_slots_masked=(0.85, SMALL)))
         self.assertTrue(result["leak_alarm"]["active"])
         self.assertIn("HOLD", result["verdicts"]["M001-primary"]["reason"])
 
     def test_competence_failure_issues_no_verdict(self):
+        """Withhold testable verdicts when the full model fails the competence gate."""
         result = run(table(full=0.80))
         self.assertFalse(result["gates"]["G1"]["pass"])
         issued = {cid: v["verdict"] for cid, v in result["verdicts"].items() if cid != "no-verifier-head"}
@@ -163,10 +181,12 @@ class GatesAndPreconditions(unittest.TestCase):
         self.assertEqual(verdict(result, "no-verifier-head"), "NOT TESTED")
 
     def test_a_restricted_arm_that_failed_to_train(self):
+        """Report a restricted arm below its learnability bar as a training failure."""
         result = run(table(latent_0=0.40))
         self.assertIn("failed to train", result["verdicts"]["M003-nonlinearity"]["reason"])
 
     def test_the_contingency_decides_a_complete_path_arm(self):
+        """Use a successful 4000-step contingency to resolve a weak complete-path arm."""
         weak = table(no_semantic_slots_masked=(0.60, SMALL))
         waiting = run(weak)
         self.assertIn("contingency decides", waiting["verdicts"]["M001-primary"]["reason"])
@@ -176,6 +196,7 @@ class GatesAndPreconditions(unittest.TestCase):
         self.assertEqual(decided["verdicts"]["M001-primary"]["note"], "decided at 4000 steps")
 
     def test_an_arm_still_below_its_bar_at_4000_steps_is_an_optimisation_failure(self):
+        """Keep the contrast INCONCLUSIVE if the contingency arm still fails its learnability bar."""
         weak = table(no_semantic_slots_masked=(0.60, SMALL))
         still_weak = {"full": scores(0.92), "no-semantic-slots-masked": scores(0.62, SMALL)}
         result = run(weak, contingency=still_weak)
@@ -183,6 +204,7 @@ class GatesAndPreconditions(unittest.TestCase):
         self.assertIn("still below its learnability bar at 4000 steps", result["verdicts"]["M001-primary"]["reason"])
 
     def test_the_contingency_is_reported_beside_its_bar(self):
+        """Report contingency steps, learnability thresholds, and per-seed composite scores together."""
         weak = table(no_semantic_slots=(0.60, SMALL))
         rescue = {"full": scores(0.92), "no-semantic-slots": scores(0.86, SMALL)}
         result = run(weak, contingency=rescue)
@@ -193,6 +215,7 @@ class GatesAndPreconditions(unittest.TestCase):
         self.assertEqual(len(rescued["arms"]["full"]["composite_A"]), len(SEEDS))
 
     def test_the_mask_share_is_labelled_with_its_budget(self):
+        """Label mask-share estimates with the budget used by the available arm comparisons."""
         # The contingency decides M001-secondary but did not re-run the masked arm,
         # so the share is the one at S*, and says so; the verdict is unaffected.
         weak = table(no_semantic_slots=(0.60, SMALL), no_semantic_slots_masked=0.80)
@@ -207,6 +230,7 @@ class GatesAndPreconditions(unittest.TestCase):
         self.assertEqual(entry["mask_share_budget"], "4000 steps")
 
     def test_an_arm_the_budget_rule_dropped(self):
+        """Report dropped arms as NOT RUN instead of assigning a mechanism verdict."""
         t = table()
         del t["blind-query-k0"], t["blind-query-k0-no-typed-attention"], t["latent-4"]
         result = run(t)
@@ -216,12 +240,14 @@ class GatesAndPreconditions(unittest.TestCase):
 
 class Reported(unittest.TestCase):
     def test_the_mask_effect_names_an_arm_below_its_bar(self):
+        """Identify undertrained arms that limit interpretation of the mask comparison."""
         clean = run(table(no_semantic_slots=0.80, no_semantic_slots_masked=0.85))
         self.assertEqual(clean["reported"]["mask_effect"]["below_learnability_bar"], [])
         undertrained = run(table(no_semantic_slots=0.60, no_semantic_slots_masked=0.85))
         self.assertEqual(undertrained["reported"]["mask_effect"]["below_learnability_bar"], ["no-semantic-slots"])
 
     def test_transfer_statements_and_the_mask_effect(self):
+        """Derive mask deltas and transfer statements from the synthetic arm scores."""
         result = run(table(no_semantic_slots=0.80, no_semantic_slots_masked=0.85, latent_0=0.20))
         self.assertAlmostEqual(result["reported"]["mask_effect"]["ood_validity"], 0.05)
         self.assertEqual(result["reported"]["transfer"]["full"]["new_role_regime_cell"], "transfers")
@@ -233,6 +259,7 @@ DATA_ROW = '{"row":"data","data_fnv64":"aa","label_fnv64_test_iid":"bb"}'
 
 
 def record(seed, status="completed", stdout=DATA_ROW, sha="c" * 40, dirty=False):
+    """Build a synthetic run record with configurable outcome, stdout, and Git provenance."""
     return {"seed": seed, "status": status, "stdout": stdout, "git_sha": sha, "git_dirty": dirty}
 
 
@@ -241,10 +268,12 @@ class RecordGates(unittest.TestCase):
     rerun and the contingency alike."""
 
     def test_a_retry_replaces_a_failed_process_and_a_failure_never_enters_a_table(self):
+        """Select successful retries while excluding seeds with only failed processes."""
         chosen = agg.chosen_per_seed([record(17, status="failed"), record(17), record(29, status="failed")])
         self.assertEqual(sorted(chosen), [17])
 
     def test_completeness_over_every_kind_of_process(self):
+        """Check missing seeds, missing arms, and divergence across evaluation, rerun, and contingency."""
         full = {s: record(s) for s in SEEDS}
         scores_for = {arm: {s: {} for s in SEEDS} for arm in ("full", "latent-0")}
         planned = {"M001": ["full"], "M003": ["latent-0"]}
@@ -265,6 +294,7 @@ class RecordGates(unittest.TestCase):
         self.assertTrue(any("the budget kept frozen-router" in p for p in problems))
 
     def test_only_the_lr_selection_and_sweep_records_may_follow_the_tag(self):
+        """Reject post-freeze changes outside learning-rate selection and sweep records."""
         sweep = "experiments/model/M001-semantic-slots/results/run-1-seed-17.json"
         evaluation = "experiments/model/M002-typed-attention/results/run-2-seed-17.json"
         entrypoints = {sweep: "a0_sweep_entrypoint", evaluation: "a0_ablation_entrypoint"}
@@ -274,12 +304,14 @@ class RecordGates(unittest.TestCase):
                          [evaluation, "scripts/aggregate_a0_ablation.py"])
 
     def test_provenance_needs_one_commit_and_a_known_clean_worktree(self):
+        """Reject mixed commits and dirty or unknown tracked worktree states."""
         self.assertTrue(agg.provenance({"a": record(17), "b": record(29)})["pass"])
         self.assertFalse(agg.provenance({"a": record(17), "b": record(29, sha="d" * 40)})["pass"])
         self.assertEqual(agg.provenance({"a": record(17), "b": record(29, dirty=True)})["dirty"], ["b"])
         self.assertEqual(agg.provenance({"a": record(17, dirty=None)})["dirty"], ["a"])
 
     def test_data_identity_does_not_pass_vacuously(self):
+        """Fail data identity for absent records, missing data rows, or mismatched digests."""
         self.assertTrue(agg.data_identity({"a": record(17)}, LOCK)["pass"])
         self.assertFalse(agg.data_identity({}, LOCK)["pass"])
         self.assertEqual(agg.data_identity({"a": record(17, stdout="")}, LOCK)["records_without_data_row"], ["a"])
@@ -287,6 +319,7 @@ class RecordGates(unittest.TestCase):
         self.assertEqual(agg.data_identity({"a": other}, LOCK)["records_with_other_data"], ["a"])
 
     def test_the_rerun_must_reproduce_real_lines(self):
+        """Require nonempty, byte-identical full-arm output for a successful rerun gate."""
         lines = '{"row":"final","arm":"full","correct":3}\nPRED full test_iid 0123'
         self.assertTrue(agg.rerun_reproduces(record(17, stdout=lines), record(17, stdout=lines))["pass"])
         self.assertFalse(agg.rerun_reproduces(record(17, stdout=""), record(17, stdout=""))["pass"])

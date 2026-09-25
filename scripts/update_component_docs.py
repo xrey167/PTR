@@ -29,6 +29,7 @@ def bullet(items):
     return "\n".join(f"- {x}" for x in items) if items else "- None recorded."
 
 def code_metrics(crate_dir: Path) -> dict[str, int]:
+    """Count Rust source files, nonblank source lines, test files, and sync or async test markers."""
     source_files = (
         sorted((crate_dir / "src").rglob("*.rs"))
         if (crate_dir / "src").exists()
@@ -56,6 +57,7 @@ def code_metrics(crate_dir: Path) -> dict[str, int]:
     }
 
 def render_section(meta: dict, exps: dict, evals: dict, metrics: dict[str, int]) -> str:
+    """Render a component README section from metadata, registries, and code metrics."""
     exp_lines = []
     for exp_id in meta.get("experiments", []):
         e = exps[exp_id]
@@ -125,6 +127,7 @@ def update_readme(path: Path, section: str) -> str:
     return text.replace(marker, section.strip() + "\n\n" + marker, 1)
 
 def dashboard(metas: list[dict], exps: dict, evals: dict) -> str:
+    """Render the component status dashboard with maturity and footprint totals."""
     rows = []
     maturity_counts: dict[str, int] = {}
     total_loc = total_files = total_test_files = total_tests = 0

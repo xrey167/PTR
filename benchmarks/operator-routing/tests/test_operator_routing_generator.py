@@ -13,6 +13,7 @@ N_MEMORY = 400
 
 
 def tsv_rows(tsv: bytes):
+    """Yield decoded TSV rows while preserving confidence as its serialized text."""
     for line in tsv.decode("utf-8").splitlines():
         ident, label, regime, budget, tokens, facts = line.split("\t")
         parsed = []
@@ -31,6 +32,7 @@ def split_rows(split: str):
 
 class Prng(unittest.TestCase):
     def test_splitmix64_reference_vectors(self):
+        """Pin the first three splitmix64 outputs for a zero seed."""
         # The published splitmix64 sequence for state 0.
         stream = gen.Stream(0)
         self.assertEqual(
@@ -39,16 +41,19 @@ class Prng(unittest.TestCase):
         )
 
     def test_single_value_splitmix64_is_one_output_of_a_stream(self):
+        """Check that the stateless helper agrees with the first seeded stream output."""
         for x in (0, 1, 20260925, (1 << 64) - 1):
             self.assertEqual(gen.splitmix64(x), gen.Stream(x).next())
 
     def test_fnv1a64_reference_vectors(self):
+        """Check generator and scorer hashing against known FNV-1a-64 digests."""
         self.assertEqual(gen.fnv1a64(b""), 0xCBF29CE484222325)
         self.assertEqual(gen.fnv1a64(b"a"), 0xAF63DC4C8601EC8C)
         self.assertEqual(gen.fnv1a64(b"foobar"), 0x85944171F73967E8)
         self.assertEqual(score.fnv1a64(b"foobar"), 0x85944171F73967E8)
 
     def test_pinned_example_seeds(self):
+        """Pin split-derived seeds and stream outputs for cross-language reproducibility."""
         # Cross-language vectors (README.md, PRNG): the Rust loader can check these.
         self.assertEqual(gen.fnv1a64(b"train"), 0xDEE795A6C5087209)
         self.assertEqual(gen.example_seed("train", 0), 0x0E0645255755A741)
@@ -61,11 +66,13 @@ class Prng(unittest.TestCase):
         self.assertEqual(gen.example_seed("ood_payload", 2999), 0x6439903D016197D9)
 
     def test_randbelow_stays_below_n(self):
+        """Check that the largest uniform draw rounds below all supported bounds."""
         top = ((1 << 53) - 1) / 2.0**53
         for n in range(1, 1001):
             self.assertLess(int(top * n), n)
 
     def test_confidence_bucket_is_never_ambiguous(self):
+        """Verify every confidence draw keeps its exact bucket through text serialization."""
         for k in range(1000):
             c = gen.confidence(k)
             expected = (2 * k + 1) // 400  # floor((k + 0.5) / 200), exactly
@@ -76,6 +83,7 @@ class Prng(unittest.TestCase):
 
 class SplitInvariants(unittest.TestCase):
     def test_held_out_cells_only_in_compose_epi(self):
+        """Require held-out role-state pairs to appear only in the epistemic shift."""
         for split in gen.SPLITS:
             rows = split_rows(split)
             held = sum((f[0], f[1]) in gen.HELD_OUT for row in rows for f in row[5])
@@ -86,6 +94,7 @@ class SplitInvariants(unittest.TestCase):
                     self.assertEqual(held, 0)
 
     def test_evidence_under_interventional_only_in_compose_regime(self):
+        """Restrict interventional evidence to the regime-composition split."""
         for split in gen.SPLITS:
             rows = split_rows(split)
             cells = sum(
@@ -99,11 +108,13 @@ class SplitInvariants(unittest.TestCase):
                     self.assertEqual(cells, 0)
 
     def test_every_example_has_a_live_fact(self):
+        """Ensure every sampled example satisfies the live-fact acceptance rule."""
         for split in gen.SPLITS:
             with self.subTest(split=split):
                 self.assertTrue(all(any(f[3] == gen.LIVE for f in row[5]) for row in split_rows(split)))
 
     def test_split_acceptance_rules(self):
+        """Require usable held-out or evidence facts in the corresponding composition shifts."""
         epi = split_rows("ood_compose_epi")
         self.assertTrue(all(
             any(f[3] == gen.LIVE and score.bucket_of(f[2]) > 0 and (f[0], f[1]) in gen.HELD_OUT for f in row[5])
@@ -116,6 +127,7 @@ class SplitInvariants(unittest.TestCase):
         ))
 
     def test_entities_tokens_and_lengths(self):
+        """Check split-specific entity pools, raw fact encodings, filler counts, and lengths."""
         for split in gen.SPLITS:
             base = 256 if split == "ood_payload" else 0
             length = 72 if split == "ood_distractors" else 36
@@ -135,6 +147,7 @@ class SplitInvariants(unittest.TestCase):
                     self.assertTrue(all(152 <= t <= 215 for t in fillers))
 
     def test_token_range_and_ids_everywhere(self):
+        """Check vocabulary bounds, sequential example IDs, and full split sizes when present."""
         for split in gen.SPLITS:
             rows = split_rows(split)
             with self.subTest(split=split):
@@ -147,6 +160,7 @@ class SplitInvariants(unittest.TestCase):
 
 class Digests(unittest.TestCase):
     def test_lock_matches_the_design(self):
+        """Pin the lock's generator version, seed, codebook identity, and split sizes."""
         document = lock()
         self.assertEqual(document["generator_version"], 1)
         self.assertEqual(document["benchmark_seed"], 20260925)
@@ -158,6 +172,7 @@ class Digests(unittest.TestCase):
         })
 
     def test_regenerated_prefixes_match_the_lock(self):
+        """Compare regenerated JSONL and TSV prefix hashes with the committed lock."""
         document = lock()
         n = document["prefix"]["n"]
         for split in gen.SPLITS:
@@ -168,6 +183,7 @@ class Digests(unittest.TestCase):
                 self.assertEqual(hashlib.sha256(tsv).hexdigest(), pinned["tsv_sha256"])
 
     def test_regeneration_is_byte_identical(self):
+        """Ensure repeated rendering has no hidden state that changes output bytes."""
         # Same bytes on a second render in the same process (no hidden state).
         first = gen.render_split("ood_distractors", 20)
         second = gen.render_split("ood_distractors", 20)
@@ -175,6 +191,7 @@ class Digests(unittest.TestCase):
 
     @unittest.skipUnless(data_on_disk(), "generated splits are not on disk")
     def test_files_on_disk_match_the_lock(self):
+        """Verify all split-file hashes, label digests, and the combined TSV digest."""
         document = lock()
         state = gen.FNV_OFFSET
         for split in gen.SPLITS:

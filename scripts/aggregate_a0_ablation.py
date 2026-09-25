@@ -105,6 +105,7 @@ def endpoint(table: dict, arm: str, seed: int, spec: str, criteria: dict) -> flo
 
 
 def mean_over_seeds(table: dict, arm: str, split: str, seeds: list[int]) -> float:
+    """Return an arm's mean split accuracy over the specified seeds."""
     return statistics.fmean(table[arm][s][split]["accuracy"] for s in seeds)
 
 
@@ -178,6 +179,7 @@ def decide(
     result["learnability"] = learn
 
     def blocked(arms: list[str]) -> str | None:
+        """Explain any leak, gate, or learnability condition that blocks these arms."""
         if leak:
             return "HOLD: the raw-blind leak alarm is active"
         if failed_gates:
@@ -210,6 +212,7 @@ def decide(
         return table, ""
 
     def contrast_stats(c: dict, comparator: str, ablated: str, data: dict) -> dict:
+        """Compute paired endpoint differences and uncertainty for the configured contrast."""
         return paired(
             [endpoint(data, comparator, s, c["endpoint"], criteria) for s in seeds],
             [endpoint(data, ablated, s, c["endpoint"], criteria) for s in seeds],
@@ -383,6 +386,7 @@ def decide(
 
 
 def load_score_module():
+    """Import the independent operator-routing scorer from its repository path."""
     path = ROOT / "benchmarks/operator-routing/score.py"
     spec = importlib.util.spec_from_file_location("operator_routing_score", path)
     module = importlib.util.module_from_spec(spec)
@@ -402,14 +406,17 @@ def eval_records(experiment: str, entrypoint: str) -> list[Path]:
 
 
 def git(*args: str) -> str:
+    """Run Git in the repository and return stdout, raising on a nonzero exit."""
     return subprocess.run(["git", *args], cwd=ROOT, text=True, capture_output=True, check=True).stdout
 
 
 def sha256(path: Path) -> str:
+    """Return the SHA-256 hexadecimal digest of a file's bytes."""
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def at_tag(relative: str) -> bytes | None:
+    """Read a file at the preregistration tag, returning None if Git cannot find it."""
     try:
         return subprocess.run(["git", "show", f"{PREREG_TAG}:{relative}"], cwd=ROOT,
                               capture_output=True, check=True).stdout
@@ -418,6 +425,7 @@ def at_tag(relative: str) -> bytes | None:
 
 
 def build_table(paths: list[Path], score) -> tuple[dict, list[str], list[dict]]:
+    """Index independently scored records by arm, seed, and split, reporting duplicates."""
     document, problems = score.score_records(paths, DATA_DIR)
     table: dict = {}
     for entry in document["results"]:
@@ -449,6 +457,7 @@ RUN_RECORD_PATH = re.compile(r"^experiments/model/M00[1-4]-[a-z-]+/results/run-[
 
 
 def has_nan(record: dict) -> bool:
+    """Detect the study binary's compact JSON divergence marker in recorded stdout."""
     return any('"nan":1' in line for line in record.get("stdout", "").splitlines())
 
 
@@ -529,6 +538,7 @@ def rerun_reproduces(original: dict | None, rerun: dict | None) -> dict:
     """G2: the rerun reproduces the full arm's JSON rows and PRED lines byte for
     byte. Both must exist and carry full-arm lines; two empty lists are not a match."""
     def full_lines(record: dict | None) -> list[str]:
+        """Extract full-arm JSON and PRED lines used for exact rerun comparison."""
         if record is None:
             return []
         return [l for l in record.get("stdout", "").splitlines() if '"arm":"full"' in l or l.startswith("PRED full ")]
@@ -537,6 +547,7 @@ def rerun_reproduces(original: dict | None, rerun: dict | None) -> dict:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Verify frozen criteria, score study records, and write gates, verdicts, and metrics."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.parse_args(argv)
     frozen = at_tag("research/falsification/A0-ablations-v1/criteria.toml")
@@ -559,6 +570,7 @@ def main(argv: list[str] | None = None) -> int:
     by_name = {id(r): name for name, r in records.items()}
 
     def chosen_of(kind: str) -> dict[str, dict[int, dict]]:
+        """Select one completed record per experiment and seed for a study phase."""
         out = {}
         for experiment, ps in paths[kind].items():
             if ps:
@@ -608,6 +620,7 @@ def main(argv: list[str] | None = None) -> int:
     if ancestor:
         changed = git("diff", "--name-only", f"{PREREG_TAG}..{sha}").split()
         def entrypoint_at(path: str) -> str | None:
+            """Read a record's entrypoint at the evaluation commit, or None on lookup failure."""
             try:
                 return json.loads(git("show", f"{sha}:{path}")).get("entrypoint")
             except (subprocess.CalledProcessError, json.JSONDecodeError):
@@ -658,11 +671,13 @@ def main(argv: list[str] | None = None) -> int:
     result["stock_aggregate_cross_check"] = {"pass": not stock_mismatch, "mismatches": stock_mismatch}
 
     def per_split(scores_table: dict, arm: str) -> dict:
+        """Export per-seed test metrics for an arm, omitting absent seeds."""
         return {str(s): {split: {k: scores_table[arm][s][split][k] for k in ("n", "correct", "route_accuracy", "cost_adjusted_regret", "task_success", "subsets")}
                          for split in TEST_SPLITS}
                 for s in seeds if s in scores_table.get(arm, {})}
 
     def arms_run(experiment: str, kind: str) -> list[str]:
+        """List arm names reported by selected records for an experiment and phase."""
         return sorted({json.loads(line)["arm"] for r in chosen[kind].get(experiment, {}).values()
                        for line in r["stdout"].splitlines() if line.startswith('{"row":"meta"')})
 

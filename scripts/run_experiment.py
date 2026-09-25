@@ -151,6 +151,7 @@ def write_json_exclusive(path: Path, record: dict) -> None:
 
 
 def validate():
+    """Check experiment manifests, registry coverage, and required scaffold paths."""
     schema = load(ROOT / "experiments/schema.toml")
     required = set(schema["required"])
     allowed = set(schema["allowed_status"])
@@ -195,6 +196,7 @@ def validate():
 
 
 def base_record(exp_id: str, data: dict, root: Path) -> dict:
+    """Capture manifest, Git, host, hardware, and dependency provenance for a run."""
     # Version 2 adds the worktree state, the measured host and the declared
     # hardware profile's contents; every version-1 field keeps its meaning.
     return {
@@ -306,6 +308,7 @@ def run_experiment(
     seed: int,
     params: dict[str, str] | None = None,
 ) -> int:
+    """Execute a seeded entrypoint, persist its outcome, and return its exit status."""
     _, root, data = resolve(exp_id)
     try:
         command = build_command(
@@ -380,6 +383,7 @@ def metric_value(name: str, value) -> float | None:
 
 
 def summarize(by_seed: dict[int, float]) -> dict:
+    """Summarize per-seed values with sample deviation and None for unavailable statistics."""
     if not by_seed:
         return {"n": 0, "mean": None, "std": None, "min": None, "max": None, "by_seed": {}}
     ordered = [by_seed[seed] for seed in sorted(by_seed)]
@@ -396,6 +400,7 @@ def summarize(by_seed: dict[int, float]) -> dict:
 
 
 def canonical(value) -> str:
+    """Serialize a value with sorted JSON keys for stable comparisons."""
     return json.dumps(value, sort_keys=True)
 
 
@@ -573,6 +578,7 @@ def aggregate(
 
 
 def main():
+    """Dispatch registry inspection, validation, execution, and aggregation commands."""
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("list")

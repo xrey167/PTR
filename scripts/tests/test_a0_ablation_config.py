@@ -23,11 +23,13 @@ SWITCHES = ["typed_attention", "typed_query", "latent_nonlinearity", "frozen_rou
 
 
 def study_arms() -> dict[str, dict]:
+    """Load study arm definitions indexed by their configured names."""
     return {arm["name"]: arm for arm in tomllib.loads(STUDY.read_text(encoding="utf-8"))["arm"]}
 
 
 class TheTomlFilesAgree(unittest.TestCase):
     def test_every_arm_but_the_reference_realises_exactly_one_declared_ablation(self):
+        """Require each non-reference arm to map to exactly one applicable ablation."""
         arms = study_arms()
         mapped: dict[str, str] = {}
         for ablation in tomllib.loads(ABLATIONS.read_text(encoding="utf-8"))["ablation"]:
@@ -40,6 +42,7 @@ class TheTomlFilesAgree(unittest.TestCase):
         self.assertEqual(set(mapped), set(arms) - {"full"})
 
     def test_the_reference_arm_is_the_unswitched_model_at_two_latent_steps(self):
+        """Pin the full arm's default switches, typed batch, and two latent steps."""
         full = study_arms()["full"]
         self.assertEqual(
             {key: full[key] for key in SWITCHES + ["latent_steps", "batch"]},
@@ -57,6 +60,7 @@ class TheTomlFilesAgree(unittest.TestCase):
 @unittest.skipUnless(BINARY.exists(), "the study binary is not built (cargo --release into target-a0-study)")
 class TheBinaryAgrees(unittest.TestCase):
     def test_list_arms_equals_the_study_config(self):
+        """Compare the built study binary's arm listing with the preregistered TOML definitions."""
         listed = json.loads(
             subprocess.run(
                 [str(BINARY), "--phase", "list-arms"],

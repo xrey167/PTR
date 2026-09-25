@@ -21,6 +21,7 @@ SCHEMA_PATH = ROOT / "datasets/schemas/operator_route.schema.json"
 
 
 def _load(name: str, path: Path):
+    """Import a file under a distinct module name, reusing the cached module if present."""
     if name in sys.modules:
         return sys.modules[name]
     spec = importlib.util.spec_from_file_location(name, path)
@@ -35,10 +36,12 @@ score = _load("operator_routing_score", SUITE / "score.py")
 
 
 def data_on_disk() -> bool:
+    """Return whether every benchmark split has both TSV and JSONL files."""
     return all((DATA_DIR / f"{s}.{k}").is_file() for s in gen.SPLITS for k in ("tsv", "jsonl"))
 
 
 def lock() -> dict:
+    """Read the committed benchmark split identity document."""
     return json.loads(LOCK_PATH.read_text(encoding="utf-8"))
 
 
@@ -54,6 +57,7 @@ def prefix(split: str, n: int) -> tuple[bytes, bytes, str]:
 
 
 def score_items_from_tsv(split: str, tsv: bytes) -> list:
+    """Parse TSV bytes and independently derive each item's label and metrics."""
     items = []
     for line in tsv.decode("utf-8").splitlines(keepends=True):
         item = score.parse_tsv_line(line, split)

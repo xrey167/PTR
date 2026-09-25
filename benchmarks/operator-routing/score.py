@@ -48,6 +48,7 @@ CLEAR_MARGIN = 0.25
 
 
 def _families() -> dict[str, dict[str, int]]:
+    """Read the committed codebook into name-to-code mappings by family."""
     doc = json.loads(CODEBOOK_JSON.read_text(encoding="utf-8"))
     table = {}
     for fam in doc["families"]:
@@ -125,6 +126,7 @@ class Fact:
     __slots__ = ("role", "state", "conf", "bucket", "validity", "entity")
 
     def __init__(self, role, state, conf, bucket, validity, entity):
+        """Store a scorer fact's names, confidence text and bucket, validity, and entity."""
         self.role, self.state, self.conf = role, state, conf
         self.bucket, self.validity, self.entity = bucket, validity, entity
 
@@ -140,6 +142,7 @@ def scores(
     skip=None,
     evidence_regime=None,
 ) -> list[float]:
+    """Compute operator utilities with optional admission, weighting, and regime counterfactuals."""
     names = [OPERATOR_BY_CODE[c] for c in range(len(OPERATOR_BY_CODE))]
     vote = dict.fromkeys(names, 0.0)
     usable = 0
@@ -165,6 +168,7 @@ def scores(
 
 
 def winner(z: list[float]) -> int:
+    """Choose the highest utility, resolving near ties by cost and then code."""
     top = max(z)
     candidates = [code for code, value in enumerate(z) if top - value <= TOL]
     candidates.sort(key=lambda code: (OPERATOR_COST[OPERATOR_BY_CODE[code]], code))
@@ -179,6 +183,7 @@ class Item:
 
 
 def derive(item: Item) -> None:
+    """Populate an item's independently computed utilities, label, margin, and tags."""
     regime, budget = REGIMES[item.regime], BUDGETS[item.budget]
     z = scores(item.facts, regime, budget)
     item.z = z
@@ -215,6 +220,7 @@ def derive(item: Item) -> None:
 
 
 def parse_tsv_line(line: str, split: str) -> Item:
+    """Parse six TSV fields into an item without deriving its scores or tags."""
     fields = line.rstrip("\n").split("\t")
     if len(fields) != 6:
         raise ValueError(f"{split}: expected 6 TSV fields, found {len(fields)}")
@@ -233,6 +239,7 @@ def parse_tsv_line(line: str, split: str) -> Item:
 
 
 def load_split(data_dir: Path, split: str) -> list[Item]:
+    """Read a TSV split and independently derive scores and tags for every item."""
     items = []
     with (data_dir / f"{split}.tsv").open("r", encoding="utf-8", newline="\n") as handle:
         for line in handle:
@@ -243,6 +250,7 @@ def load_split(data_dir: Path, split: str) -> list[Item]:
 
 
 def fnv1a64(data: bytes, h: int = 0xCBF29CE484222325) -> int:
+    """Return the wrapping FNV-1a-64 digest, optionally continuing a prior state."""
     for b in data:
         h = ((h ^ b) * 0x100000001B3) % (1 << 64)
     return h
@@ -282,6 +290,7 @@ def agree(data_dir: Path, splits=SPLIT_NAMES, verbose=True) -> tuple[int, list[s
 
 
 def round_trip_problems(where: str, item: Item, rec: dict) -> list[str]:
+    """List differences between the TSV item and its JSONL representation."""
     out = []
     if rec["id"] != item.id or rec["split"] != item.split:
         out.append(f"{where}: JSONL id/split {rec['id']}/{rec['split']}")
@@ -312,6 +321,7 @@ PRED_LINE = re.compile(r"^PRED (\S+) (\S+) ([0-9a-fA-F]*)$")
 
 
 def pred_lines(stdout: str) -> list[tuple[str, str, str]]:
+    """Extract PRED triples from stdout, raising ValueError for malformed lines."""
     found = []
     for number, line in enumerate(stdout.splitlines(), 1):
         if not line.startswith("PRED"):
@@ -324,6 +334,7 @@ def pred_lines(stdout: str) -> list[tuple[str, str, str]]:
 
 
 def json_rows(stdout: str) -> list[dict]:
+    """Collect valid JSON object lines from stdout, ignoring other output."""
     rows = []
     for line in stdout.splitlines():
         text = line.strip()
@@ -338,10 +349,12 @@ def json_rows(stdout: str) -> list[dict]:
 
 
 def _rate(correct: int, n: int):
+    """Return counts and accuracy, using None when the subset is empty."""
     return {"n": n, "correct": correct, "accuracy": (correct / n) if n else None}
 
 
 def score_predictions(items: list[Item], predictions: list[int]) -> dict:
+    """Compute routing accuracy, regret, success, and subset metrics for predictions."""
     if len(items) != len(predictions):
         raise ValueError(f"{len(predictions)} predictions for {len(items)} examples")
     n = len(items)
@@ -392,6 +405,7 @@ def rust_final_row(rows: list[dict], arm: str, split: str):
 
 
 def score_records(paths: list[Path], data_dir: Path) -> tuple[dict, list[str]]:
+    """Score recorded PRED lines, compare Rust counts, and return results and problems."""
     cache: dict[str, list[Item]] = {}
     problems: list[str] = []
     results = []
@@ -446,6 +460,7 @@ def score_records(paths: list[Path], data_dir: Path) -> tuple[dict, list[str]]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Check generator agreement or score run records and return a failure status."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--data", type=Path, default=DATA_DIR, help="directory holding <split>.tsv/.jsonl")
     sub = parser.add_subparsers(dest="command", required=True)

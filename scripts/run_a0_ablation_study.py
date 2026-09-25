@@ -65,23 +65,28 @@ RUN_PREFIX = (
 
 
 def config() -> dict:
+    """Load the study's TOML configuration from the repository."""
     return tomllib.loads(CONFIG.read_text(encoding="utf-8"))
 
 
 def data_fnv() -> str:
+    """Return the benchmark lock's combined TSV FNV-1a-64 digest."""
     return json.loads(LOCK.read_text(encoding="utf-8"))["data_fnv1a64"]
 
 
 def say(message: str) -> None:
+    """Print a study progress message and flush it immediately."""
     print(f"[a0-study] {message}", flush=True)
 
 
 def run(command: list[str], **kwargs) -> subprocess.CompletedProcess:
+    """Log and execute a command from the repository root with text output."""
     say("$ " + " ".join(command))
     return subprocess.run(command, cwd=ROOT, text=True, **kwargs)
 
 
 def must(command: list[str], **kwargs) -> subprocess.CompletedProcess:
+    """Execute a command, terminating the study if its exit status is nonzero."""
     result = run(command, **kwargs)
     if result.returncode != 0:
         if kwargs.get("capture_output"):
@@ -91,6 +96,7 @@ def must(command: list[str], **kwargs) -> subprocess.CompletedProcess:
 
 
 def worktree_clean() -> bool:
+    """Report whether tracked files have no staged or unstaged changes."""
     status = subprocess.run(
         ["git", "status", "--porcelain", "--untracked-files=no"],
         cwd=ROOT, text=True, capture_output=True, check=True,
@@ -99,11 +105,13 @@ def worktree_clean() -> bool:
 
 
 def write_json(path: Path, value) -> None:
+    """Create parent directories and write sorted, indented JSON with a newline."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def arms_by_experiment(tiers: set[int]) -> dict[str, list[str]]:
+    """Group configured arm names by experiment for the selected tiers."""
     grouped: dict[str, list[str]] = {name: [] for name in EXPERIMENTS}
     for arm in config()["arm"]:
         if arm["tier"] in tiers:
@@ -112,6 +120,7 @@ def arms_by_experiment(tiers: set[int]) -> dict[str, list[str]]:
 
 
 def rows(stdout: str) -> list[dict]:
+    """Decode stdout lines beginning with an opening brace as JSON records."""
     return [json.loads(line) for line in stdout.splitlines() if line.startswith("{")]
 
 
@@ -119,6 +128,7 @@ def rows(stdout: str) -> list[dict]:
 
 
 def calibrate(d_model: int, steps: int, lr: float) -> dict:
+    """Run one calibration and collect validation accuracy, loss, and step timing."""
     result = must(
         [str(BINARY), "--phase", "calibrate", "--seed", str(config()["seeds"]["calibration"]),
          "--steps", str(steps), "--lr", str(lr), "--d-model", str(d_model),
@@ -142,6 +152,7 @@ def calibrate(d_model: int, steps: int, lr: float) -> dict:
 
 
 def plan_arms(ladder_applied: list[str]) -> dict[str, list[str]]:
+    """Build the arm plan after applying the selected budget-ladder removals."""
     plan = arms_by_experiment({1, 2})
     if "drop latent-4" in ladder_applied:
         plan["M003"] = [a for a in plan["M003"] if a != "latent-4"]
@@ -198,6 +209,7 @@ def budget(steps: int, ms_per_step: float) -> dict:
 
 
 def prefreeze(_args) -> None:
+    """Generate and check data, calibrate training, and write a bounded study plan."""
     if not worktree_clean():
         raise SystemExit("prefreeze runs from a clean commit")
     must([sys.executable, str(BENCHMARK / "generator.py")])
@@ -251,6 +263,7 @@ def prefreeze(_args) -> None:
 
 
 def entrypoints(experiment: str, arms: list[str], steps: int, d_model: int) -> dict[str, str]:
+    """Build runner command templates for an experiment's study phases."""
     common = f"--data {DATA} --data-fnv64 {data_fnv()} --d-model {d_model}"
     lr_file = "research/falsification/A0-ablations-v1/lr_selection.tsv"
     keys = {
@@ -276,10 +289,12 @@ def entrypoints(experiment: str, arms: list[str], steps: int, d_model: int) -> d
 
 
 def toml_string(value: str) -> str:
+    """Encode a string as a quoted TOML-compatible JSON string literal."""
     return json.dumps(value)
 
 
 def prereg(_args) -> None:
+    """Append calibrated A0 entrypoints and the hardware profile to experiment manifests."""
     plan = json.loads((STUDY_DIR / "budget.json").read_text(encoding="utf-8"))
     for experiment, path in EXPERIMENTS.items():
         manifest = ROOT / "experiments" / path / "experiment.toml"
@@ -304,6 +319,7 @@ def prereg(_args) -> None:
 
 
 def runner(experiment: str, entrypoint: str, seed: int, params: dict[str, str]) -> int:
+    """Execute one experiment-runner job and return its process exit status."""
     command = [sys.executable, "scripts/run_experiment.py", "run", experiment,
                "--entrypoint", entrypoint, "--seed", str(seed)]
     for key, value in params.items():
@@ -312,11 +328,13 @@ def runner(experiment: str, entrypoint: str, seed: int, params: dict[str, str]) 
 
 
 def parallel(jobs: list[tuple[str, str, int, dict]], workers: int) -> list[int]:
+    """Run jobs with the requested worker count and return exit codes in job order."""
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
         return list(pool.map(lambda job: runner(*job), jobs))
 
 
 def require_frozen() -> None:
+    """Require the preregistration tag and a clean tracked worktree."""
     tag = subprocess.run(["git", "rev-parse", "--verify", "--quiet", PREREG_TAG],
                          cwd=ROOT, text=True, capture_output=True)
     if tag.returncode != 0:
@@ -326,6 +344,7 @@ def require_frozen() -> None:
 
 
 def sweep(_args) -> None:
+    """Run the budgeted learning-rate grid from a frozen, clean worktree."""
     require_frozen()
     plan = json.loads((STUDY_DIR / "budget.json").read_text(encoding="utf-8"))
     if not plan["sweep"]:
@@ -340,6 +359,7 @@ def sweep(_args) -> None:
 
 
 def records(experiment: str, entrypoint: str) -> list[dict]:
+    """Load an experiment's run records for an entrypoint and attach relative paths."""
     results = ROOT / "experiments" / EXPERIMENTS[experiment] / "results"
     out = []
     for path in sorted(results.glob("run-*.json")):
@@ -369,6 +389,7 @@ def choose_lr(arm: str, by_lr: dict[float, dict], grid: list[float], tolerance: 
 
 
 def select(_args) -> None:
+    """Write per-arm learning rates selected from completed sweeps or the budget fallback."""
     grid = config()["learning_rate"]["grid"]
     tolerance = config()["learning_rate"]["selection_tolerance"]
     plan = json.loads((STUDY_DIR / "budget.json").read_text(encoding="utf-8"))
@@ -409,11 +430,13 @@ def aggregator():
 
 
 def require_eval_commit() -> None:
+    """Reject changes outside the freeze allowance or a missing learning-rate table."""
     require_frozen()
     changed = subprocess.run(["git", "diff", "--name-only", f"{PREREG_TAG}..HEAD"],
                              cwd=ROOT, text=True, capture_output=True, check=True).stdout.split()
 
     def entrypoint_of(path: str) -> str | None:
+        """Read a run record's entrypoint, returning None for unreadable or invalid JSON."""
         try:
             return json.loads((ROOT / path).read_text(encoding="utf-8")).get("entrypoint")
         except (OSError, json.JSONDecodeError):
@@ -448,6 +471,7 @@ def correctness() -> dict:
 
 
 def eval_phase(_args) -> None:
+    """Check correctness, run every evaluation seed and the rerun, and retry failures once."""
     require_eval_commit()
     must(BUILD)
     outcome = correctness()
@@ -469,6 +493,7 @@ def eval_phase(_args) -> None:
 
 
 def contingency(args) -> None:
+    """Run the selected arm and its full-arm comparator at the contingency budget."""
     require_eval_commit()
     seeds = config()["seeds"]["declared"]
     arm = args.arm
@@ -483,11 +508,13 @@ def contingency(args) -> None:
 
 
 def aggregate(_args) -> None:
+    """Run the study aggregator and report generator, stopping on either failure."""
     must([sys.executable, "scripts/aggregate_a0_ablation.py"])
     must([sys.executable, "scripts/report_a0_ablation.py"])
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Dispatch the requested study phase and return zero when it completes."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="phase", required=True)
     for name in ["prefreeze", "prereg", "sweep", "select", "eval", "aggregate"]:

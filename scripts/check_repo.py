@@ -128,6 +128,7 @@ def check_workspace_membership(root: Path) -> list[str]:
 
 
 def check(root: Path) -> tuple[list[str], str]:
+    """Return repository structure and registry errors with a component-count summary."""
     errors: list[str] = []
 
     for rel in REQUIRED:

@@ -21,6 +21,7 @@ spec.loader.exec_module(report)
 @unittest.skipUnless((ROOT / STUDY / "results.json").exists(), "the study has not been aggregated")
 class Report(unittest.TestCase):
     def setUp(self):
+        """Copy study outputs into an isolated tree and redirect the report writer there."""
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp)
         study = self.tmp / STUDY
@@ -38,9 +39,11 @@ class Report(unittest.TestCase):
         self.addCleanup(self.restore)
 
     def restore(self):
+        """Restore the report writer's repository and study paths after the fixture run."""
         report.ROOT, report.STUDY = self.saved
 
     def test_every_verdict_is_reported_and_nulls_get_a_note(self):
+        """Render every verdict and keep falsification notes only for FALSIFIES or HARMFUL outcomes."""
         self.assertEqual(report.main(), 0)
         text = (self.study / "RESULTS.md").read_text(encoding="utf-8")
         verdicts = json.loads((self.study / "results.json").read_text(encoding="utf-8"))["verdicts"]
@@ -51,6 +54,7 @@ class Report(unittest.TestCase):
         self.assertEqual(notes, nulls)
 
     def test_the_interpretation_follows_the_verdicts_it_describes(self):
+        """Change verdict inputs and require the interpretation prose to follow their new outcomes."""
         # Other outcomes must not inherit this run's prose: turn M002-necessity into
         # SUPPORTS, M001-primary into FALSIFIES and the negative control into
         # EQUIVALENT, and every sentence about them has to change with them.

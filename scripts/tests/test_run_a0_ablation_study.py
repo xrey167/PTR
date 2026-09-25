@@ -13,11 +13,13 @@ spec.loader.exec_module(driver)
 
 class BudgetRule(unittest.TestCase):
     def test_fast_enough_runs_every_arm(self):
+        """Keep every arm when projected runtime already fits the budget."""
         plan = driver.budget(2000, 15.0)
         self.assertEqual(plan["ladder_applied"], [])
         self.assertEqual(sum(len(v) for v in plan["arms"].values()), 12)
 
     def test_the_design_worked_example_drops_latent_4_then_the_pair(self):
+        """Reproduce the design's ordered arm removals at its worked timing estimate."""
         # The design: at 20 ms/step, 97 arm-runs take about 23 minutes; dropping
         # latent-4 leaves 89 arm-runs, about 21 -- still over 20, so the pair goes too.
         plan = driver.budget(2000, 20.0)
@@ -26,12 +28,14 @@ class BudgetRule(unittest.TestCase):
         self.assertTrue(plan["within_limit"])
 
     def test_each_step_is_applied_only_when_still_needed(self):
+        """Stop the budget ladder as soon as its first removal meets the limit."""
         plan = driver.budget(2000, 17.4)
         self.assertEqual(plan["ladder_applied"], ["drop latent-4"])
         self.assertIn("blind-query-k0", plan["arms"]["M002"])
         self.assertTrue(plan["within_limit"])
 
     def test_a_slow_host_skips_the_sweep_and_reports_the_cap(self):
+        """Skip the sweep and report an exceeded limit when arm removals remain insufficient."""
         plan = driver.budget(2000, 60.0)
         self.assertFalse(plan["sweep"])
         self.assertFalse(plan["within_limit"])
@@ -47,20 +51,24 @@ def sweep(**by_lr):
 
 class LearningRateSelection(unittest.TestCase):
     def test_the_smallest_rate_within_the_tolerance_of_the_best_wins(self):
+        """Choose the smallest eligible learning rate within tolerance of peak accuracy."""
         lr, flag, eligible = driver.choose_lr("a", sweep(lr_0_002=(0.70, False), lr_0_005=(0.795, False), lr_0_0125=(0.80, False)), GRID, 0.005)
         self.assertEqual((lr, flag), (0.005, ""))
         self.assertEqual(eligible[0.0125], 0.80)
 
     def test_outside_the_tolerance_the_best_wins_and_an_edge_is_flagged(self):
+        """Select a uniquely best boundary rate and flag its position at the grid edge."""
         lr, flag, _ = driver.choose_lr("a", sweep(lr_0_002=(0.70, False), lr_0_005=(0.79, False), lr_0_0125=(0.80, False)), GRID, 0.005)
         self.assertEqual((lr, flag), (0.0125, "edge of grid"))
 
     def test_a_diverged_rate_is_never_chosen(self):
+        """Exclude flagged divergence and non-finite validation accuracy from rate selection."""
         lr, _, eligible = driver.choose_lr("a", sweep(lr_0_002=(0.70, False), lr_0_005=(0.90, True), lr_0_0125=(float("nan"), False)), GRID, 0.005)
         self.assertEqual(lr, 0.002)
         self.assertEqual(sorted(eligible), [0.002])
 
     def test_a_missing_or_wholly_diverged_sweep_stops_the_study(self):
+        """Terminate selection when grid results are missing or every rate diverged."""
         with self.assertRaises(SystemExit):
             driver.choose_lr("a", sweep(lr_0_002=(0.70, False)), GRID, 0.005)
         with self.assertRaises(SystemExit):

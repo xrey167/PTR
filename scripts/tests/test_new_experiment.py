@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def load(name: str):
+    """Import a repository script by name for direct fixture-based testing."""
     spec = importlib.util.spec_from_file_location(name, ROOT / f"scripts/{name}.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -60,6 +61,7 @@ def fixture():
 
 
 def validate(root: Path) -> tuple[int, str]:
+    """Run the real validator against a fixture root, restoring its global paths afterward."""
     saved = runner.ROOT, runner.REGISTRY
     runner.ROOT, runner.REGISTRY = root, root / "experiments/registry.toml"
     try:
@@ -81,6 +83,7 @@ def snapshot(root: Path) -> dict[str, bytes | None]:
 
 class Scaffold(unittest.TestCase):
     def test_a_scaffolded_experiment_passes_the_real_validator(self):
+        """Check that scaffolding writes every required artifact and registers a valid experiment."""
         directory, root = fixture()
         with directory:
             self.assertEqual(validate(root)[0], 0)
@@ -112,6 +115,7 @@ class Scaffold(unittest.TestCase):
                 self.assertIn(value, readme)
 
     def test_text_that_needs_escaping_round_trips(self):
+        """Preserve special characters, Unicode, and seed order through TOML serialization."""
         directory, root = fixture()
         awkward = 'It\'s "typed" \\ not\tplain\nsecond line \x7f ünïcode'
         with directory:
@@ -127,6 +131,7 @@ class Scaffold(unittest.TestCase):
             self.assertEqual(validate(root)[0], 0)
 
     def test_every_refusal_leaves_the_tree_untouched(self):
+        """Reject invalid scaffold inputs without changing any fixture files or directories."""
         cases = [
             ("model/M001-duplicate-id", {}, "already registered"),
             ("model/M010", {}, "name must be lowercase"),
@@ -162,10 +167,12 @@ class Scaffold(unittest.TestCase):
                     self.assertEqual(snapshot(root), before)
 
     def test_a_write_that_fails_midway_leaves_nothing_behind(self):
+        """Roll back a partial write failure and allow the same scaffold to succeed on retry."""
         directory, root = fixture()
         real = Path.write_text
 
         def failing(path, *args, **kwargs):
+            """Simulate a disk-full error at the new experiment's README write."""
             if path.name == "README.md" and "M014" in str(path):
                 raise OSError(28, "No space left on device")
             return real(path, *args, **kwargs)
@@ -184,6 +191,7 @@ class Scaffold(unittest.TestCase):
             self.assertEqual(validate(root)[0], 0)
 
     def test_an_existing_directory_is_never_overwritten(self):
+        """Refuse an occupied experiment directory while preserving the entire tree."""
         directory, root = fixture()
         with directory:
             (root / "experiments/model/M011-taken").mkdir()
@@ -193,12 +201,14 @@ class Scaffold(unittest.TestCase):
             self.assertEqual(snapshot(root), before)
 
     def test_seed_lists_are_parsed_strictly(self):
+        """Accept integer seed lists and reject empty, noninteger, or duplicate entries."""
         self.assertEqual(scaffold.parse_seeds("17, 29,43"), [17, 29, 43])
         for text, message in [("", "at least one"), ("1,x", "integers"), ("5,5", "distinct")]:
             with self.subTest(text=text), self.assertRaisesRegex(ValueError, message):
                 scaffold.parse_seeds(text)
 
     def test_the_cli_requires_every_schema_field(self):
+        """Require the CLI's mandatory experiment fields before creating a scaffold."""
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
             scaffold.main(["model/M012-cli", "--hypothesis", "h"])
         self.assertEqual(raised.exception.code, 2)
@@ -206,6 +216,7 @@ class Scaffold(unittest.TestCase):
 
 class Validator(unittest.TestCase):
     def test_an_unregistered_manifest_is_reported(self):
+        """Report an experiment manifest that is absent from the registry."""
         directory, root = fixture()
         with directory:
             stray = root / "experiments/model/M013-stray"
@@ -224,6 +235,7 @@ class Validator(unittest.TestCase):
         )
 
     def test_the_real_tree_registers_every_manifest(self):
+        """Validate all actual experiment manifests and their registry coverage."""
         code, output = validate(ROOT)
         self.assertEqual(code, 0, output)
 

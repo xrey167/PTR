@@ -75,6 +75,7 @@ class ExperimentRunnerTests(unittest.TestCase):
 
 
     def test_records_measure_the_host_and_bind_the_declared_profile(self):
+        """Check run provenance includes worktree evidence, host facts, and the hardware-profile hash."""
         _, root, data = mod.resolve("M001")
         record = mod.base_record("M001", data, root)
         self.assertEqual(record["schema_version"], 2)
@@ -100,10 +101,12 @@ class ExperimentRunnerTests(unittest.TestCase):
             self.assertIn("cpu", profile["unspecified_fields"])
 
     def test_toolchain_asks_rustc_for_the_toolchain_the_command_names(self):
+        """Query the selected Cargo toolchain and avoid Rust queries for non-Cargo commands."""
         calls = []
         real = mod.subprocess.check_output
 
         def fake(argv, **kwargs):
+            """Record the requested rustc command and return a synthetic version string."""
             calls.append(argv)
             return "rustc 9.99.0 (fake)\n"
 
@@ -126,6 +129,7 @@ class Aggregation(unittest.TestCase):
     """`aggregate` against fixture trees: what it computes, and what it refuses."""
 
     def setUp(self):
+        """Create an isolated experiment registry and redirect runner paths for aggregation tests."""
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name)
@@ -147,6 +151,7 @@ class Aggregation(unittest.TestCase):
 
     def write_run(self, seed, rows, *, status="completed", sha="a" * 40, dirty=False,
                   entrypoint="ablation", stdout=None, extra=None, raw=None):
+        """Write a configurable synthetic run record or raw malformed input and return its path."""
         self.count += 1
         path = self.results / f"run-2026{self.count:04d}-seed-{seed}.json"
         if raw is not None:
@@ -170,12 +175,14 @@ class Aggregation(unittest.TestCase):
         return path
 
     def run_aggregate(self, **kwargs):
+        """Aggregate the fixture's ablation runs and return the exit code and JSON summary."""
         with contextlib.redirect_stdout(io.StringIO()):
             code = mod.aggregate("X001", entrypoint="ablation", **kwargs)
         (out,) = sorted(self.results.glob("aggregate-*.json"))
         return code, json.loads(out.read_text(encoding="utf-8"))
 
     def test_rows_are_grouped_by_their_labels_and_summarized_across_seeds(self):
+        """Group metrics by arm and split, summarize seeds, and bind selected input hashes."""
         values = {1: (0.50, 0.30), 2: (0.70, 0.20), 3: (0.60, 0.40)}
         paths = []
         for seed, (typed, ablated) in values.items():
@@ -207,6 +214,7 @@ class Aggregation(unittest.TestCase):
         )
 
     def test_failed_and_missing_seeds_are_reported_not_dropped(self):
+        """Mark incomplete runs explicitly, preserving failed-run details and missing seeds."""
         self.write_run(1, [{"arm": "typed", "accuracy": 0.5}])
         failed = self.write_run(2, [], status="failed")
 
@@ -222,6 +230,7 @@ class Aggregation(unittest.TestCase):
         self.assertIsNone(summary["groups"][0]["metrics"]["accuracy"]["std"])
 
     def test_what_it_refuses_writes_nothing(self):
+        """Reject incompatible, ambiguous, or malformed inputs without writing an aggregate."""
         cases = [
             ("span 2 commits", lambda: (self.write_run(1, [{"a": 1}]),
                                         self.write_run(2, [{"a": 1}], sha="b" * 40))),
@@ -245,6 +254,7 @@ class Aggregation(unittest.TestCase):
                 self.assertEqual(list(self.results.glob("aggregate-*.json")), [])
 
     def test_gaps_in_what_completed_runs_reported_make_it_incomplete(self):
+        """Mark aggregates incomplete for non-finite values, missing metrics, and missing rows."""
         # Seed 1 diverged (NaN), seed 2 printed an extra row, seed 3 left a metric out.
         self.write_run(1, [], stdout='{"arm": "a", "loss": NaN, "acc": 0.5}\n')
         self.write_run(2, [{"arm": "a", "loss": 0.2, "acc": 0.7}, {"arm": "b", "loss": 0.1}])
@@ -263,6 +273,7 @@ class Aggregation(unittest.TestCase):
         self.assertEqual(by_arm["a"]["missing_seeds"], [])
 
     def test_infinity_is_listed_not_averaged(self):
+        """Exclude infinity from summary statistics while recording its seed as non-finite."""
         for seed in SEEDS:
             self.write_run(seed, [], stdout=f'{{"acc": {1e400 if seed == 2 else 0.5}}}\n'.replace("inf", "Infinity"))
         code, summary = self.run_aggregate()
@@ -270,6 +281,7 @@ class Aggregation(unittest.TestCase):
         self.assertEqual((code, acc["n"], acc["mean"], acc["non_finite"]), (1, 2, 0.5, {"2": "inf"}))
 
     def test_records_that_do_not_measure_the_same_thing_are_refused(self):
+        """Reject runs with differing parameters, toolchains, hosts, or manifest hashes."""
         cases = [
             ("parameters", {"parameters": {"iterations": "100"}}, {"parameters": {"iterations": "100000"}}),
             ("rustc", {"rustc": "rustc 1.95.0"}, {"rustc": "rustc 1.98.1"}),
@@ -287,6 +299,7 @@ class Aggregation(unittest.TestCase):
                 self.assertEqual(list(self.results.glob("aggregate-*.json")), [])
 
     def test_malformed_records_are_errors_not_tracebacks(self):
+        """Return validation errors for invalid seeds, stdout, numeric values, and record JSON."""
         cases = [
             ("not one of the manifest's seeds", lambda: self.write_run(99, [{"a": 1}])),
             ("seed must be an integer", lambda: self.write_run("1", [{"a": 1}])),
@@ -307,6 +320,7 @@ class Aggregation(unittest.TestCase):
                 self.assertEqual(list(self.results.glob("aggregate-*.json")), [])
 
     def test_the_cli_reports_a_refusal_as_an_error_line(self):
+        """Translate aggregation refusal into an ERROR message and CLI exit status two."""
         self.write_run(99, [{"a": 1}])
         argv = sys.argv
         sys.argv = ["run_experiment.py", "aggregate", "X001", "--entrypoint", "ablation"]
@@ -320,6 +334,7 @@ class Aggregation(unittest.TestCase):
         self.assertTrue(err.getvalue().startswith("ERROR: "), err.getvalue())
 
     def test_an_explicit_commit_and_allow_dirty_are_honoured_and_recorded(self):
+        """Honor explicit commit and dirty-worktree overrides and record them in the summary."""
         self.write_run(1, [{"a": 1.0}], sha="a" * 40)
         self.write_run(1, [{"a": 5.0}], sha="b" * 40, dirty=True)
 

@@ -135,6 +135,7 @@ class RepositoryShape(unittest.TestCase):
         self.assertTrue(summary.startswith("OK: 0 documented crates"), summary)
 
     def test_evaluation_registry_and_directories_name_the_same_slots(self):
+        """Report evaluation entries missing from either the registry or the filesystem."""
         directory = tempfile.TemporaryDirectory()
         root = Path(directory.name)
         with directory:
@@ -166,6 +167,7 @@ class RepositoryShape(unittest.TestCase):
         self.assertFalse(any("listed-and-present" in error for error in errors), errors)
 
     def test_a_crate_missing_from_either_component_map_is_reported(self):
+        """Require a component-map table row rather than a prose link for each crate."""
         directory = tempfile.TemporaryDirectory()
         root = Path(directory.name)
         with directory:
@@ -197,10 +199,12 @@ class RepositoryShape(unittest.TestCase):
         self.assertFalse(any("in README.md" in e for e in errors), errors)
 
     def test_the_real_tree_lists_every_crate_in_both_maps(self):
+        """Check that both repository component maps include all actual crates."""
         errors, _ = mod.check(ROOT)
         self.assertEqual([e for e in errors if "component map" in e], [])
 
     def test_the_real_tree_registers_every_evaluation(self):
+        """Check that actual evaluation directories and registry entries agree."""
         errors, _ = mod.check(ROOT)
         self.assertEqual([e for e in errors if "evaluations/" in e], [])
 

@@ -28,10 +28,12 @@ REGIME = {"tabular": 0, "temporal": 1, "interventional": 2, "textual": 3}
 
 
 def fact(role, epistemic, bucket, validity="live", entity=0):
+    """Build a named fact tuple for a hand-checked routing case."""
     return (role, epistemic, bucket, validity, entity)
 
 
 def gen_label(facts, regime, budget, **kw):
+    """Encode named facts and apply the generator's label rule and counterfactuals."""
     encoded = [
         (gen.ROLE[r], gen.EPI[e], gen.confidence(K_FOR_BUCKET[cb]), gen.VALIDITY[v], ent)
         for r, e, cb, v, ent in facts
@@ -40,6 +42,7 @@ def gen_label(facts, regime, budget, **kw):
 
 
 def score_label(facts, regime, budget):
+    """Encode named facts for the independent scorer and return its winning code."""
     encoded = []
     for r, e, cb, v, ent in facts:
         text = f"{gen.confidence(K_FOR_BUCKET[cb]):.4f}"
@@ -171,14 +174,17 @@ CASES = [
 
 class HandCheckedRuleCases(unittest.TestCase):
     def test_there_are_at_least_twelve_cases(self):
+        """Keep the hand-derived rule fixture above its minimum case count."""
         self.assertGreaterEqual(len(CASES), 12)
 
     def test_generator_rule(self):
+        """Compare the generator's decisions with manually derived expected operators."""
         for name, facts, regime, budget, expected in CASES:
             with self.subTest(name):
                 self.assertEqual(gen.OP_NAMES[gen_label(facts, regime, budget)], expected)
 
     def test_score_rule(self):
+        """Compare the independent scorer with manually derived expected operators."""
         for name, facts, regime, budget, expected in CASES:
             with self.subTest(name):
                 self.assertEqual(score.OPERATOR_BY_CODE[score_label(facts, regime, budget)], expected)
@@ -188,15 +194,18 @@ class TieTolerance(unittest.TestCase):
     """Values within 1e-9 of the maximum are tied; ties go to lower COST, then lower code."""
 
     def vector(self, **values):
+        """Build an operator utility vector from named nonzero entries."""
         z = [0.0] * 11
         for name, value in values.items():
             z[gen.OP[name]] = value
         return z
 
     def both(self, z):
+        """Return the generator and scorer's winning operator names for one vector."""
         return gen.OP_NAMES[gen.decide(z)[0]], score.OPERATOR_BY_CODE[score.winner(z)]
 
     def test_within_tolerance_is_a_tie(self):
+        """Verify that a utility gap within tolerance is resolved by operator cost."""
         # symbolic 1.0 + 5e-10 is within 1e-9 of the max, so it ties with deductive 1.0;
         # deductive costs 0.3 < symbolic 0.4.
         z = self.vector(deductive=1.0, symbolic=1.0 + 5e-10)
@@ -204,11 +213,13 @@ class TieTolerance(unittest.TestCase):
         self.assertTrue(gen.decide(z)[1])
 
     def test_outside_tolerance_is_not(self):
+        """Verify that a gap beyond tolerance keeps the strictly higher utility winner."""
         z = self.vector(deductive=1.0, symbolic=1.0 + 2e-9)
         self.assertEqual(self.both(z), ("symbolic", "symbolic"))
         self.assertFalse(gen.decide(z)[1])
 
     def test_float_noise_is_a_tie(self):
+        """Ensure floating-point noise yields a tie resolved by the lower operator code."""
         # 0.1 + 0.2 != 0.3 in float64; the tolerance makes them equal, and temporal (0.5)
         # loses to statistical (0.5) on code.
         z = self.vector(temporal=0.1 + 0.2, statistical=0.3)
@@ -219,6 +230,7 @@ class Counterfactuals(unittest.TestCase):
     """Tags on hand-checked examples, from both implementations."""
 
     def gen_tags(self, facts, regime, budget, split="test_iid"):
+        """Derive generator counterfactual tags for a named fact fixture."""
         encoded = [
             (gen.ROLE[r], gen.EPI[e], gen.confidence(K_FOR_BUCKET[cb]), gen.VALIDITY[v], ent)
             for r, e, cb, v, ent in facts
@@ -227,6 +239,7 @@ class Counterfactuals(unittest.TestCase):
         return gen.tags_of(example, gen.label_of(encoded, REGIME[regime], budget))
 
     def score_tags(self, facts, regime, budget, split="test_iid"):
+        """Derive independent scorer tags for a named fact fixture."""
         item = score.Item()
         item.id, item.split, item.regime, item.budget, item.tokens = "x", split, REGIME[regime], budget, []
         item.facts = []
@@ -237,12 +250,14 @@ class Counterfactuals(unittest.TestCase):
         return item.tags
 
     def test_validity_tag(self):
+        """Tag a case where admitting a disputed fact changes the winning operator."""
         # Admitting the disputed claim turns search (2.10) into deductive (3.875).
         facts = [fact("claim", "verified", 4, "disputed"), fact("goal", "inferred", 2)]
         self.assertIn("validity", self.gen_tags(facts, "tabular", 2))
         self.assertIn("validity", self.score_tags(facts, "tabular", 2))
 
     def test_regime_tag_only_through_claim_and_evidence(self):
+        """Contrast a regime-insensitive goal with regime-sensitive evidence."""
         # A lone goal fact ignores the regime; a lone evidence fact does not.
         goal = [fact("goal", "observed", 2)]
         evidence = [fact("evidence", "verified", 3)]
@@ -252,12 +267,14 @@ class Counterfactuals(unittest.TestCase):
         self.assertIn("regime", self.score_tags(evidence, "temporal", 2))
 
     def test_budget_tag(self):
+        """Tag a case where changing the budget flips the resource fact's winner."""
         # resource/unknown/cb1: external_pod at B=2, probabilistic at B=0 and B=1.
         facts = [fact("resource", "unknown", 1)]
         self.assertIn("budget", self.gen_tags(facts, "textual", 2))
         self.assertIn("budget", self.score_tags(facts, "textual", 2))
 
     def test_confidence_tag_includes_cb0_facts(self):
+        """Ensure flattening confidence admits bucket-zero facts into the counterfactual."""
         # resource/unknown/cb1 at B=0 gives probabilistic 0.075. With G = 1 the cb-0
         # goal/observed fact joins: search .3*.9 + 1.3*2 - 2*0.2 = 2.47 wins, so the tag is set.
         facts = [fact("resource", "unknown", 1), fact("goal", "observed", 0)]
@@ -265,6 +282,7 @@ class Counterfactuals(unittest.TestCase):
         self.assertIn("confidence", self.score_tags(facts, "textual", 0))
 
     def test_epistemic_tag(self):
+        """Tag a case where removing epistemic weights and bonuses changes the winner."""
         # The U-term case. With W = 1 and U = 0 the claim votes deductive 2.0 / statistical
         # 0.9 and the evidence votes statistical 2.0 / probabilistic 0.9: statistical 2.9
         # wins instead of probabilistic.
@@ -273,6 +291,7 @@ class Counterfactuals(unittest.TestCase):
         self.assertIn("epistemic", self.score_tags(facts, "tabular", 2))
 
     def test_heldout_tag(self):
+        """Require the held-out tag only when removing held-out facts changes the label."""
         # (constraint, hypothesis) is held out.
         # No tag: constraint/hypothesis/cb1 votes optimization .5*.8*2 = 0.8; goal/observed/cb4
         # votes search 1.25*1.3*2 = 3.25 and optimization 1.25*1.3*.9 = 1.4625. search 3.25 beats
@@ -288,6 +307,7 @@ class Counterfactuals(unittest.TestCase):
         self.assertIn("heldout", self.score_tags(tag, "tabular", 2, "ood_compose_epi"))
 
     def test_transfer_tag(self):
+        """Tag evidence whose interventional label survives none of the no-transfer alternatives."""
         # evidence/verified/cb3 under interventional votes causal 3.10: label causal. Ignored,
         # the label is semantic (all zero); as tabular/temporal/textual it is statistical,
         # temporal, semantic. None is causal, so the example is in the strict transfer subset.

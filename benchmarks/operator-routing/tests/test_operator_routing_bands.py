@@ -32,14 +32,17 @@ N_SUBSET = 1000
 class RecordedBands(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        """Load the recorded reference measurements shared by the band tests."""
         cls.doc = json.loads(REFERENCES_PATH.read_text(encoding="utf-8"))
 
     def test_references_describe_the_pinned_data(self):
+        """Check reference data identity against the split lock and codebook fingerprint."""
         self.assertEqual(self.doc["data"]["data_fnv1a64"], lock()["data_fnv1a64"])
         self.assertTrue(self.doc["data"]["all_files_match_lock"])
         self.assertEqual(self.doc["type_codebook_fingerprint"], gen.CODEBOOK_FINGERPRINT)
 
     def test_every_band_is_recorded_with_its_value_and_passes(self):
+        """Recompute each recorded band's pass flag from its inclusive bounds."""
         bands = {b["id"]: b for b in self.doc["bands"]}
         self.assertEqual(set(bands), BAND_IDS)
         for ident, entry in bands.items():
@@ -52,6 +55,7 @@ class RecordedBands(unittest.TestCase):
         self.assertTrue(self.doc["all_bands_pass"])
 
     def test_every_reference_line_is_present(self):
+        """Require every reference and evaluation split, including no-transfer subset results."""
         references = self.doc["references"]
         self.assertEqual(set(references), REFERENCE_NAMES)
         for name, values in references.items():
@@ -66,10 +70,12 @@ class LabelBandsOnAPrefix(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        """Independently score regenerated prefixes for the three label-band splits."""
         cls.items = {s: score_items_from_tsv(s, prefix(s, N_SUBSET)[1])
                      for s in ("test_iid", "ood_compose_epi", "ood_compose_regime")}
 
     def test_iid_majority_and_ties(self):
+        """Check the IID prefix's majority share and tie rate against the design limits."""
         items = self.items["test_iid"]
         counts = Counter(i.label for i in items)
         self.assertLessEqual(max(counts.values()) / len(items), 0.25)
@@ -77,6 +83,7 @@ class LabelBandsOnAPrefix(unittest.TestCase):
         self.assertLessEqual(ties / len(items), 0.02)
 
     def test_iid_decisive_rates(self):
+        """Require each IID counterfactual's decisive rate to lie in the declared band."""
         items = self.items["test_iid"]
         for tag in ("validity", "regime", "budget", "confidence", "epistemic"):
             rate = sum(tag in i.tags for i in items) / len(items)
@@ -85,6 +92,7 @@ class LabelBandsOnAPrefix(unittest.TestCase):
                 self.assertLessEqual(rate, 0.40)
 
     def test_compose_rates(self):
+        """Check minimum held-out and regime decisive rates on composition shifts."""
         epi = self.items["ood_compose_epi"]
         regime = self.items["ood_compose_regime"]
         self.assertGreaterEqual(sum("heldout" in i.tags for i in epi) / len(epi), 0.25)

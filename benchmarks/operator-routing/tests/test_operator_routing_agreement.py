@@ -13,6 +13,7 @@ N_MEMORY = 300
 
 class NoSharedCode(unittest.TestCase):
     def test_score_never_imports_the_generator(self):
+        """Ensure scorer imports preserve its independence from generator and reference code."""
         tree = ast.parse((SUITE / "score.py").read_text(encoding="utf-8"))
         imported = set()
         for node in ast.walk(tree):
@@ -25,6 +26,7 @@ class NoSharedCode(unittest.TestCase):
 
 class LabelAgreement(unittest.TestCase):
     def test_in_memory_prefix_of_every_split(self):
+        """Compare independently derived labels, tags, margins, and records on split prefixes."""
         # Labels, tags, margins and utilities, on examples regenerated here.
         for split in gen.SPLITS:
             jsonl, tsv, _labels = prefix(split, N_MEMORY)
@@ -40,6 +42,7 @@ class LabelAgreement(unittest.TestCase):
 
     @unittest.skipUnless(data_on_disk(), "generated splits are not on disk")
     def test_every_record_on_disk(self):
+        """Check scorer agreement and TSV/JSONL round trips across every generated record."""
         # 100% of records: label, tags, margin, utility and the TSV/JSONL round trip.
         checked, problems = score.agree(DATA_DIR, verbose=False)
         self.assertEqual(problems, [])
@@ -48,6 +51,7 @@ class LabelAgreement(unittest.TestCase):
 
 class RoundTrip(unittest.TestCase):
     def test_tsv_parses_back_to_the_generated_example(self):
+        """Ensure TSV encoding preserves IDs, context, tokens, fact fields, and labels."""
         for split in gen.SPLITS:
             _jsonl, tsv, labels = prefix(split, 50)
             lines = tsv.decode("utf-8").splitlines()
@@ -66,6 +70,7 @@ class RoundTrip(unittest.TestCase):
                     self.assertEqual(format(int(label), "x"), labels[index])
 
     def test_jsonl_names_are_codebook_names(self):
+        """Check JSONL names, normalized routing targets, and consistency with the winning label."""
         jsonl, _tsv, _labels = prefix("ood_compose_regime", 50)
         for line in jsonl.decode("utf-8").splitlines():
             record = json.loads(line)

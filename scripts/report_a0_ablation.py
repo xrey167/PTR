@@ -37,6 +37,7 @@ MECHANISM = {
 
 
 def f(value, digits=4) -> str:
+    """Format report values, using an em dash for None and fixed precision for floats."""
     if value is None:
         return "—"
     if isinstance(value, float):
@@ -45,6 +46,7 @@ def f(value, digits=4) -> str:
 
 
 def main() -> int:
+    """Render study verdicts, gates, tables, and interpretation into RESULTS.md."""
     results = json.loads((STUDY / "results.json").read_text(encoding="utf-8"))
     references = json.loads((STUDY / "references.json").read_text(encoding="utf-8"))
     budget = json.loads((STUDY / "budget.json").read_text(encoding="utf-8"))
@@ -62,6 +64,7 @@ def main() -> int:
     below_bar = {arm for arm, status in results.get("learnability", {}).items() if not status["passes"]}
 
     def seed_mean(table: dict, arm: str, split: str, subset: str | None = None) -> float:
+        """Average an arm's split or subset accuracy across the available seeds."""
         by_seed = table[arm].values()
         if subset is None:
             return statistics.fmean(scores[split]["route_accuracy"] for scores in by_seed)
@@ -218,6 +221,7 @@ def main() -> int:
     primary = results["verdicts"].get("M001-primary", {})
 
     def composite_at_s_star(arm: str) -> float:
+        """Average composite-A split accuracies over seeds at the original training budget."""
         return statistics.fmean(
             statistics.fmean(by_split[split]["route_accuracy"] for split in composite_a)
             for by_split in metrics[arm].values()
