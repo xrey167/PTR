@@ -10,6 +10,9 @@ generator_version = 1
 
 [model]
 vocabulary = 216
+# The design's base width. Calibration missed its target at 32 and applied
+# revision-ladder rung R1, so the study runs at d_model 48: see calibration.json,
+# budget.json and the manifests' a0_* entrypoints (--d-model 48).
 d_model = 32
 provenance_buckets = 8
 slots = 6

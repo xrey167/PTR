@@ -162,7 +162,7 @@ def decide(
 
     if not result["gates"]["G1"]["pass"]:
         result["summary"] = (
-            f"A0 (D=32, one block) does not learn operator-routing v1: the full arm's mean "
+            f"A0 (one block, at the calibrated width) does not learn operator-routing v1: the full arm's mean "
             f"test_iid {full_mean:.4f} is below {competence_bar:.4f}. No mechanism verdict is issued."
         )
         for contrast in criteria["contrast"]:
