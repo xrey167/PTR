@@ -170,6 +170,30 @@ class GatesAndPreconditions(unittest.TestCase):
         self.assertEqual(verdict(result, "M001-primary"), "INCONCLUSIVE")
         self.assertIn("still below its learnability bar at 4000 steps", result["verdicts"]["M001-primary"]["reason"])
 
+    def test_the_contingency_is_reported_beside_its_bar(self):
+        weak = table(no_semantic_slots=(0.60, SMALL))
+        rescue = {"full": scores(0.92), "no-semantic-slots": scores(0.86, SMALL)}
+        result = run(weak, contingency=rescue)
+        rescued = result["reported"]["contingency"]
+        self.assertEqual(rescued["steps"], CRITERIA["learnability"]["contingency_steps"])
+        self.assertTrue(rescued["arms"]["no-semantic-slots"]["passes"])
+        self.assertEqual(rescued["arms"]["no-semantic-slots"]["bar"], REFERENCES["references"]["bound_additive"]["test_iid"])
+        self.assertEqual(len(rescued["arms"]["full"]["composite_A"]), len(SEEDS))
+
+    def test_the_mask_share_is_labelled_with_its_budget(self):
+        # The contingency decides M001-secondary but did not re-run the masked arm,
+        # so the share is the one at S*, and says so; the verdict is unaffected.
+        weak = table(no_semantic_slots=(0.60, SMALL), no_semantic_slots_masked=0.80)
+        rescue = {"full": scores(0.92), "no-semantic-slots": scores(0.86, SMALL)}
+        entry = run(weak, contingency=rescue)["verdicts"]["M001-secondary"]
+        self.assertEqual(entry["note"], "decided at 4000 steps")
+        self.assertAlmostEqual(entry["mask_share"], 0.20)
+        self.assertEqual(entry["mask_share_budget"], "S*")
+        both = dict(rescue, **{"no-semantic-slots-masked": scores(0.88)})
+        entry = run(weak, contingency=both)["verdicts"]["M001-secondary"]
+        self.assertAlmostEqual(entry["mask_share"], 0.02)
+        self.assertEqual(entry["mask_share_budget"], "4000 steps")
+
     def test_an_arm_the_budget_rule_dropped(self):
         t = table()
         del t["blind-query-k0"], t["blind-query-k0-no-typed-attention"], t["latent-4"]

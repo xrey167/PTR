@@ -291,12 +291,21 @@ def decide(
                 verdict, reason = common_rule(stats, c["delta_min"], reason_block)
                 text = c["supports"] if verdict == "SUPPORTS" else c["falsifies"] if verdict in ("FALSIFIES", "HARMFUL") else reason
                 entry.update(verdict=verdict, reason=text)
-            if c.get("report_mask_share") and "no-semantic-slots-masked" in data:
-                entry["mask_share"] = statistics.fmean(
-                    endpoint(data, "no-semantic-slots-masked", s, c["endpoint"], criteria)
-                    - endpoint(data, "no-semantic-slots", s, c["endpoint"], criteria)
-                    for s in seeds
-                )
+            if c.get("report_mask_share"):
+                # The share compares the two content-free arms at one budget. The
+                # contingency re-runs only the arm below its bar, so when it decides
+                # and lacks the masked arm, the share is the one at S*, labelled so.
+                pair = ("no-semantic-slots", "no-semantic-slots-masked")
+                share_data = data if all(a in data for a in pair) else table
+                if all(a in share_data for a in pair):
+                    entry["mask_share"] = statistics.fmean(
+                        endpoint(share_data, "no-semantic-slots-masked", s, c["endpoint"], criteria)
+                        - endpoint(share_data, "no-semantic-slots", s, c["endpoint"], criteria)
+                        for s in seeds
+                    )
+                    entry["mask_share_budget"] = (
+                        f"{criteria['learnability']['contingency_steps']} steps" if share_data is contingency else "S*"
+                    )
             dose = c.get("dose_response_arm")
             if dose:
                 if dose in data:
@@ -321,6 +330,22 @@ def decide(
                 - table["no-semantic-slots"][s]["ood_validity"]["accuracy"]
                 for s in seeds
             ),
+        }
+    if contingency:
+        # What the contingency runs reached, beside the bar they were held to.
+        result["reported"]["contingency"] = {
+            "steps": criteria["learnability"]["contingency_steps"],
+            "arms": {
+                arm: {
+                    "mean_test_iid": mean_over_seeds(contingency, arm, "test_iid", seeds),
+                    "bar": learn[arm]["bar"],
+                    "passes": mean_over_seeds(contingency, arm, "test_iid", seeds) >= learn[arm]["bar"],
+                    "test_iid": [contingency[arm][s]["test_iid"]["accuracy"] for s in seeds],
+                    "composite_A": [endpoint(contingency, arm, s, "composite:A", criteria) for s in seeds],
+                }
+                for arm in sorted(contingency)
+                if arm in learn
+            },
         }
     rules = criteria["transfer"]
     heldout_ref = references["no_transfer"]["ood_compose_epi"][rules["heldout_reference"]]
@@ -466,33 +491,45 @@ def main(argv: list[str] | None = None) -> int:
     contingency = build_table(contingency_paths, score)[0] if contingency_paths else None
     result = decide(table, references, criteria, gates, contingency)
 
-    # Cross-check against the stock runner aggregate: per-arm mean accuracy per split.
+    # Cross-check against the stock runner aggregate: per-arm mean accuracy per split,
+    # for the evaluation and, where it ran, the contingency.
     stock_mismatch = []
-    for experiment in EXPERIMENTS:
-        out = subprocess.run([sys.executable, "scripts/run_experiment.py", "aggregate", experiment,
-                              "--entrypoint", "a0_ablation_entrypoint"], cwd=ROOT, text=True, capture_output=True)
-        agg_path = ROOT / out.stdout.strip() if out.stdout.strip() else None
-        if agg_path is None or not agg_path.exists():
-            stock_mismatch.append(f"{experiment}: stock aggregate failed: {out.stderr.strip()[:200]}")
-            continue
-        stock = json.loads(agg_path.read_text())
-        for group in stock["groups"]:
-            key = group["key"]
-            if key.get("row") != "final":
+    for entrypoint, scores_table in (("a0_ablation_entrypoint", table), ("a0_contingency_entrypoint", contingency)):
+        for experiment in EXPERIMENTS:
+            if not eval_records(experiment, entrypoint):
                 continue
-            ours = statistics.fmean(table[key["arm"]][s][key["split"]]["accuracy"] for s in seeds)
-            if abs(group["metrics"]["accuracy"]["mean"] - ours) > 1e-12:
-                stock_mismatch.append(f"{experiment}/{key['arm']}/{key['split']}")
+            out = subprocess.run([sys.executable, "scripts/run_experiment.py", "aggregate", experiment,
+                                  "--entrypoint", entrypoint], cwd=ROOT, text=True, capture_output=True)
+            agg_path = ROOT / out.stdout.strip() if out.stdout.strip() else None
+            if agg_path is None or not agg_path.exists():
+                stock_mismatch.append(f"{experiment}/{entrypoint}: stock aggregate failed: {out.stderr.strip()[:200]}")
+                continue
+            stock = json.loads(agg_path.read_text())
+            for group in stock["groups"]:
+                key = group["key"]
+                if key.get("row") != "final":
+                    continue
+                ours = statistics.fmean(scores_table[key["arm"]][s][key["split"]]["accuracy"] for s in seeds)
+                if abs(group["metrics"]["accuracy"]["mean"] - ours) > 1e-12:
+                    stock_mismatch.append(f"{experiment}/{entrypoint}/{key['arm']}/{key['split']}")
     result["stock_aggregate_cross_check"] = {"pass": not stock_mismatch, "mismatches": stock_mismatch}
+
+    def per_split(scores_table: dict, arm: str) -> dict:
+        return {str(s): {split: {k: scores_table[arm][s][split][k] for k in ("n", "correct", "route_accuracy", "cost_adjusted_regret", "task_success", "subsets")}
+                         for split in TEST_SPLITS}
+                for s in seeds if s in scores_table.get(arm, {})}
 
     for experiment in EXPERIMENTS:
         arms = sorted({json.loads(l)["arm"] for p in paths[experiment] for l in records[p]["stdout"].splitlines() if l.startswith('{"row":"meta"')})
-        metrics = {arm: {str(s): {split: {k: table[arm][s][split][k] for k in ("n", "correct", "route_accuracy", "cost_adjusted_regret", "task_success", "subsets")}
-                                   for split in TEST_SPLITS}
-                         for s in seeds if s in table.get(arm, {})}
-                   for arm in arms}
+        document = {"study": "A0-ablations-v1", "scope": "A0-internal ablation on synthetic operator-routing v1; not this manifest's baseline comparison",
+                    "arms": {arm: per_split(table, arm) for arm in arms}}
+        rescued = eval_records(experiment, "a0_contingency_entrypoint")
+        if rescued:
+            contingency_arms = sorted({json.loads(l)["arm"] for p in rescued for l in json.loads(p.read_text(encoding="utf-8"))["stdout"].splitlines() if l.startswith('{"row":"meta"')})
+            document["contingency_steps"] = criteria["learnability"]["contingency_steps"]
+            document["contingency_arms"] = {arm: per_split(contingency, arm) for arm in contingency_arms}
         out_path = ROOT / "experiments" / EXPERIMENTS[experiment] / "results/a0_internal_metrics.json"
-        out_path.write_text(json.dumps({"study": "A0-ablations-v1", "scope": "A0-internal ablation on synthetic operator-routing v1; not this manifest's baseline comparison", "arms": metrics}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        out_path.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     (STUDY_DIR / "results.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps({cid: v.get("verdict") for cid, v in result["verdicts"].items()}, indent=2))
     return 0

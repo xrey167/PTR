@@ -16,7 +16,8 @@ sequences what that document fixes:
   select       pick each arm's learning rate from the sweep records.
   eval         one runner invocation per (experiment, seed), plus the rerun.
   contingency  the 4000-step reruns the learnability criterion calls for.
-  aggregate    scripts/aggregate_a0_ablation.py.
+  aggregate    scripts/aggregate_a0_ablation.py, then scripts/report_a0_ablation.py
+               (RESULTS.md and a FALSIFIED-<contrast>.md note per null or HARMFUL).
 
 It never edits criteria.toml, and `eval` refuses to start unless the worktree
 is clean and the only files changed since the preregistration tag are the
@@ -463,6 +464,7 @@ def contingency(args) -> None:
 
 def aggregate(_args) -> None:
     must([sys.executable, "scripts/aggregate_a0_ablation.py"])
+    must([sys.executable, "scripts/report_a0_ablation.py"])
 
 
 def main(argv: list[str] | None = None) -> int:
