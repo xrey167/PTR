@@ -18,6 +18,9 @@ const DOMAIN: &[u8] = b"ptr-branch/value-digest/v2";
 const RANGE_DOMAIN: &[u8] = b"ptr-branch/range-digest/v1";
 
 impl ValueDigest {
+    /// Digest a key and its value, or its absence when `value` is `None`.
+    /// Returns `BranchError::InvalidValue` if a present value cannot be
+    /// encoded by the semantic journal.
     pub fn of(key: &str, value: Option<&SemanticValue>) -> Result<Self, BranchError> {
         let mut hasher = Sha256::new();
         hasher.update(DOMAIN);

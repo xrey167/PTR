@@ -170,11 +170,15 @@ impl Lineage {
         self.transition(id, AdapterStatus::Candidate, AdapterStatus::Gated)
     }
 
+    /// Mark a gated adapter as serving. Other serving adapters remain active.
+    /// Returns `LineageError::UnknownAdapter` for an unregistered id or
+    /// `LineageError::InvalidTransition` unless its status is `Gated`.
     pub fn serve(&mut self, id: &AdapterId) -> Result<(), LineageError> {
         self.transition(id, AdapterStatus::Gated, AdapterStatus::Serving)
     }
 
-    /// Retire an adapter from any status. Retirement is final.
+    /// Retire an adapter from any nonretired status. Retirement is final.
+    /// Returns an error for an unknown or already retired adapter.
     pub fn retire(&mut self, id: &AdapterId) -> Result<(), LineageError> {
         let record = self
             .adapters

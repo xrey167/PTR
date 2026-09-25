@@ -33,6 +33,9 @@ pub fn classify_next(last_applied: u64, incoming: u64) -> Option<ApplyOutcome> {
 }
 
 impl MaterializedState {
+    /// Apply the next commit's projection entries and advance `last_applied`.
+    /// Duplicate, older, or skipped indices return the corresponding
+    /// `ApplyOutcome` without changing state.
     pub fn try_apply(&mut self, committed: &CommittedEvent) -> ApplyOutcome {
         let index = committed.index.0;
         if let Some(refusal) = classify_next(self.last_applied, index) {
@@ -216,6 +219,13 @@ impl TursoMaterializedState {
         }
     }
 
+    /// Persist the next commit's projection entries and watermark in one
+    /// transaction, then advance the local watermark. Duplicate, older, or
+    /// skipped indices return an outcome without writing.
+    ///
+    /// # Errors
+    /// Returns database transaction, statement, or commit errors as strings;
+    /// the local watermark advances only after a successful commit.
     pub async fn try_apply(&mut self, committed: &CommittedEvent) -> Result<ApplyOutcome, String> {
         let index = committed.index.0;
         if let Some(refusal) = classify_next(self.last_applied, index) {

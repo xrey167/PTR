@@ -104,6 +104,8 @@ pub struct InMemoryBus {
 }
 
 impl InMemoryBus {
+    /// Create an empty bus with no registered consumers. `capacity` bounds
+    /// the retained record count and is clamped to at least one.
     pub fn new(capacity: usize) -> Self {
         Self {
             capacity: capacity.max(1),
@@ -115,6 +117,9 @@ impl InMemoryBus {
 
     /// Register a consumer starting after `from`. A consumer registered at
     /// `Offset(0)` sees every retained record.
+    ///
+    /// Registering an existing consumer replaces its offset, including when
+    /// `from` moves backward; already trimmed records cannot be recovered.
     pub fn register(&mut self, consumer: &str, from: Offset) {
         self.committed.insert(consumer.to_owned(), from);
     }
@@ -146,6 +151,9 @@ impl InMemoryBus {
 }
 
 impl EventProducer for InMemoryBus {
+    /// Append a record and return its assigned offset after trimming records
+    /// committed by all consumers. With no consumers, prior records are trimmed.
+    /// Returns `BusError::Full` if the retained records still fill capacity.
     fn publish(&mut self, record: NewRecord) -> Result<Offset, BusError> {
         self.trim();
         if self.records.len() >= self.capacity {
@@ -167,6 +175,9 @@ impl EventProducer for InMemoryBus {
 }
 
 impl EventConsumer for InMemoryBus {
+    /// Return up to `max` retained records after the consumer's committed
+    /// offset, in offset order, without advancing it. Zero requests no records.
+    /// Returns `BusError::UnknownConsumer` if the consumer is not registered.
     fn poll(&self, consumer: &str, max: usize) -> Result<Vec<BusRecord>, BusError> {
         let after = self
             .committed
@@ -183,6 +194,10 @@ impl EventConsumer for InMemoryBus {
             .collect())
     }
 
+    /// Acknowledge records through `upto`, inclusive, and trim records
+    /// acknowledged by every consumer. An older offset does not rewind progress.
+    /// Returns `BusError::CommitBeyondEnd` for a future offset or
+    /// `BusError::UnknownConsumer` for an unregistered consumer.
     fn commit(&mut self, consumer: &str, upto: Offset) -> Result<(), BusError> {
         let end = self.end();
         if upto > end {

@@ -90,6 +90,16 @@ impl PtrRuntime {
     /// verifier sees a [`PreparedView`], which cannot be mistaken for a
     /// published snapshot. A validated no-op is returned without appending,
     /// but only after it too has passed verification.
+    ///
+    /// Returns the published revision and affected keys, with no commit index
+    /// for a verified no-op. A changing delta also updates materialized state
+    /// and emits a commit-applied event.
+    ///
+    /// # Errors
+    /// Refuses a fenced runtime, a stale `expected` revision, semantic encoding
+    /// or preparation errors, and a rejected verification report before append.
+    /// Ledger append and state-application errors propagate; an error after
+    /// append begins leaves execution fenced because the commit is uncertain.
     pub fn apply_verified_semantic_delta<F>(
         &mut self,
         expected: Revision,

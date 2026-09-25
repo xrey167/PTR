@@ -77,6 +77,13 @@ pub struct CalibrationSample {
 }
 
 impl TriagePolicy {
+    /// Create a policy with a fraction `calibration_rate` of eligible branches
+    /// reserved for human calibration. Zero disables that slice; the threshold
+    /// is stored without validation.
+    ///
+    /// # Errors
+    /// Returns `ArbiterError::InvalidExploration` unless the rate is finite
+    /// and in `[0, 1)`.
     pub fn new(threshold: AutoThreshold, calibration_rate: f64) -> Result<Self, ArbiterError> {
         if !(calibration_rate.is_finite() && (0.0..1.0).contains(&calibration_rate)) {
             return Err(ArbiterError::InvalidExploration {
@@ -99,7 +106,8 @@ impl TriagePolicy {
     /// Verification is consulted first and cannot be outvoted: a failed report
     /// discards, and a disputed, unknown or below-`FullSemantic` report
     /// escalates, whatever the score. Only a passing, full-semantic or
-    /// deterministic report makes a branch eligible for the threshold.
+    /// deterministic report with no hard findings makes a branch eligible for
+    /// the threshold. A passing report with a hard finding escalates.
     pub fn triage(
         &self,
         report: &VerificationReport,

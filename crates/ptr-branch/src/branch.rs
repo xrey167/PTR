@@ -67,6 +67,8 @@ pub struct SealedBranch {
 }
 
 impl Branch {
+    /// Start an empty speculative branch over `base`, attributed to `author`.
+    /// Reads, lifecycle dependencies, and operations are recorded as they occur.
     pub fn open(id: BranchId, author: PrincipalId, base: SemanticSnapshot) -> Self {
         Self {
             id,
@@ -165,6 +167,10 @@ impl Branch {
         Ok(())
     }
 
+    /// Consume the branch and retain its operations and dependency digests
+    /// for later certification, including base values of every touched key.
+    /// Returns `BranchError::InvalidValue` if a touched base value cannot be
+    /// encoded for its digest; sealing does not certify or commit the branch.
     pub fn seal(self) -> Result<SealedBranch, BranchError> {
         let mut touched_base = BTreeMap::new();
         for op in &self.ops {

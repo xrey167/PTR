@@ -16,6 +16,10 @@ pub struct RateEstimate {
 /// Valid for an unweighted binomial proportion with independent trials. It is
 /// too narrow for weighted, clustered or censored data; use
 /// [`crate::weighted_rate`] for importance-weighted samples.
+///
+/// # Errors
+/// Returns an error for zero trials, successes exceeding trials, or a
+/// nonfinite or nonpositive `z`.
 pub fn wilson_interval(successes: u64, trials: u64, z: f64) -> Result<RateEstimate, StatsError> {
     if successes > trials {
         return Err(StatsError::InvalidCount { successes, trials });
@@ -53,6 +57,12 @@ pub(crate) fn wilson_bounds(p: f64, n: f64, z: f64) -> (f64, f64) {
 /// `successes` in `trials` has probability `delta`. With probability at least
 /// `1 - delta`, the true rate is below it. Found by bisection on the exact
 /// binomial CDF, which is decreasing in `p`.
+///
+/// Returns `1` when there are no trials or every trial succeeded.
+///
+/// # Errors
+/// Returns an error when successes exceed trials or `delta` is not finite
+/// and strictly between zero and one.
 pub fn clopper_pearson_upper(successes: u64, trials: u64, delta: f64) -> Result<f64, StatsError> {
     check_delta(delta)?;
     if successes > trials {
@@ -73,8 +83,8 @@ pub fn clopper_pearson_upper(successes: u64, trials: u64, delta: f64) -> Result<
     Ok(high)
 }
 
-/// `P(X <= k)` for `X ~ Binomial(n, p)`, summed in log space so large `n` does
-/// not underflow.
+/// `P(X <= k)` for `X ~ Binomial(n, p)`, accumulating probabilities from
+/// log-space terms. Very small probabilities can still underflow to zero.
 pub fn binomial_cdf(k: u64, n: u64, p: f64) -> f64 {
     if p <= 0.0 {
         return 1.0;

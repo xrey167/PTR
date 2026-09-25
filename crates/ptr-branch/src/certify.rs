@@ -51,6 +51,8 @@ impl MergePlan {
         Ok(hasher.finalize().into())
     }
 
+    /// Consume the plan into its expected revision and proposed delta.
+    /// The caller must still submit these through runtime verification.
     pub fn into_parts(self) -> (Revision, SemanticDelta) {
         (self.expected, self.delta)
     }

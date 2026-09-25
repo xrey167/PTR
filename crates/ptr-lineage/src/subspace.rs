@@ -10,6 +10,11 @@ pub struct Matrix {
 }
 
 impl Matrix {
+    /// Build a matrix from row-major entries.
+    ///
+    /// # Errors
+    /// Rejects zero dimensions, a length other than `rows * cols`, or nonfinite
+    /// entries. The dimension product must fit in `usize`.
     pub fn new(rows: usize, cols: usize, data: Vec<f64>) -> Result<Self, LineageError> {
         if rows == 0 || cols == 0 {
             return Err(LineageError::Empty { field: "matrix" });
@@ -234,6 +239,9 @@ pub struct LayerUpdate {
 }
 
 impl LayerUpdate {
+    /// Describe the update `B * A` for a layer. Returns
+    /// `LineageError::ShapeMismatch` unless `B`'s column count equals `A`'s
+    /// row count; rank-deficient factors are accepted.
     pub fn new(layer: impl Into<String>, b: Matrix, a: Matrix) -> Result<Self, LineageError> {
         if b.cols != a.rows {
             return Err(LineageError::ShapeMismatch {

@@ -8,6 +8,8 @@ use crate::error::PgError;
 pub struct Identifier(String);
 
 impl Identifier {
+    /// Validate and retain an ASCII identifier matching `[a-z][a-z0-9_]{0,39}`.
+    /// Returns `PgError::InvalidIdentifier` for any other value.
     pub fn new(value: &str) -> Result<Self, PgError> {
         check_identifier(value)?;
         Ok(Self(value.to_owned()))
@@ -86,6 +88,9 @@ pub struct PgConfig {
 
 impl PgConfig {
     /// Resolve the connection string from the environment.
+    ///
+    /// Returns the original string, including surrounding whitespace. An unset,
+    /// non-Unicode, or whitespace-only value becomes `PgError::MissingDsn`.
     pub fn resolve_dsn(&self) -> Result<String, PgError> {
         match std::env::var(&self.dsn_variable) {
             Ok(dsn) if !dsn.trim().is_empty() => Ok(dsn),

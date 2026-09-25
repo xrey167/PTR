@@ -24,8 +24,9 @@ pub struct FusedHit {
 /// Weighted reciprocal rank fusion: `score = sum_l weight_l / (k + rank_l)`,
 /// with ranks starting at 1.
 ///
-/// Unlike [`crate::reciprocal_rank_fusion`], results are keyed by capsule and
-/// generation. Two generations of one capsule are different evidence and are
+/// Results are keyed by capsule and generation, as in
+/// [`crate::reciprocal_rank_fusion`], but retain both fields in each hit.
+/// Two generations of one capsule are different evidence and are
 /// never merged into one score; a stale generation that one backend still
 /// returns cannot borrow the rank of the live one. Ties are broken by capsule,
 /// then generation, so the order is deterministic.
@@ -67,6 +68,10 @@ pub fn weighted_rank_fusion(lists: &[WeightedList<'_>], k: f32) -> Vec<FusedHit>
 /// Fusion Functions for Hybrid Retrieval", TOIS 2023); without labelled
 /// queries, [`weighted_rank_fusion`] is the safer default. Keyed by capsule and
 /// generation, like rank fusion.
+///
+/// Weights are used as supplied; callers must supply nonnegative weights
+/// summing to one for a convex combination. No weight validation or
+/// normalization is performed.
 pub fn convex_score_fusion(lists: &[WeightedList<'_>]) -> Vec<FusedHit> {
     let mut fused: BTreeMap<(CapsuleId, Generation), FusedHit> = BTreeMap::new();
     for list in lists {

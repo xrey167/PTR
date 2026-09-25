@@ -94,6 +94,12 @@ pub struct VoteMatrix {
 }
 
 impl VoteMatrix {
+    /// Validate votes arranged as `votes[item][function]`. An empty item list
+    /// is allowed; each row must contain one vote per function.
+    ///
+    /// # Errors
+    /// Rejects an empty function list, ragged rows, out-of-range class indices,
+    /// class votes from verifiers, and vetoes from nonverifiers.
     pub fn new(
         schema: LabelSchema,
         functions: Vec<LabelingFunction>,
@@ -158,6 +164,10 @@ impl VoteMatrix {
         self.votes.len()
     }
 
+    /// Votes for the zero-based item index, in function order.
+    ///
+    /// # Panics
+    /// Panics if `item` is outside the matrix.
     pub fn row(&self, item: usize) -> &[Vote] {
         &self.votes[item]
     }

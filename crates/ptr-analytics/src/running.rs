@@ -8,6 +8,9 @@ pub struct RunningMoments {
 }
 
 impl RunningMoments {
+    /// Include one observation in the count, mean, and variance.
+    /// Nonfinite values are included without validation and can make the
+    /// summary nonfinite.
     pub fn push(&mut self, value: f64) {
         self.count += 1;
         let delta = value - self.mean;

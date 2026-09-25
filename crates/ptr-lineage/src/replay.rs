@@ -117,6 +117,9 @@ pub struct ReplayPool {
 }
 
 impl ReplayPool {
+    /// Create an empty replay pool. Returns `LineageError::InvalidParameter`
+    /// for nonfinite or nonpositive stability, growth, or difficulty-step
+    /// parameters, a lapse factor outside `(0, 1)`, or nonfinite lapse loss.
     pub fn new(params: ReplayParams) -> Result<Self, LineageError> {
         params.check()?;
         Ok(Self {
@@ -226,10 +229,10 @@ impl ReplayPool {
     /// the Efraimidis-Spirakis rule in a numerically stable form. Its
     /// inclusion probabilities are not proportional to `w`, so a trainer that
     /// reweights by inverse inclusion must compute them, not assume them.
-    /// Unlike `ORDER BY priority LIMIT count`, no stratum and no moderately
-    /// forgotten sample has zero chance, and the same seed returns the same
-    /// draw on the same platform (`ln` comes from the platform's maths
-    /// library).
+    /// A stratum assigned a zero quota contributes no samples. Within each
+    /// selected stratum, sampling uses the positive priorities as weights.
+    /// The same seed returns the same draw on the same platform (`ln` comes
+    /// from the platform's math library).
     pub fn sample(&self, count: usize, now: ModelTime, seed: u64) -> Vec<&str> {
         let mut strata: BTreeMap<&str, Vec<(&ReplaySample, f64)>> = BTreeMap::new();
         for sample in self.samples.values() {

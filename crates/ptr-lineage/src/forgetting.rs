@@ -8,6 +8,11 @@ pub struct AccuracyMatrix {
 }
 
 impl AccuracyMatrix {
+    /// Build a square stage-by-task score matrix. Scores need only be finite;
+    /// they are not restricted to probabilities.
+    ///
+    /// # Errors
+    /// Rejects an empty matrix, rows of the wrong length, or nonfinite scores.
     pub fn new(values: Vec<Vec<f64>>) -> Result<Self, LineageError> {
         let tasks = values.len();
         if tasks == 0 {
@@ -71,6 +76,7 @@ impl AccuracyMatrix {
             .collect()
     }
 
+    /// Mean forgetting over earlier tasks, or zero for a single task.
     pub fn average_forgetting(&self) -> f64 {
         let forgetting = self.task_forgetting();
         if forgetting.is_empty() {
@@ -138,6 +144,9 @@ pub struct PublicSuite {
 }
 
 impl ForgettingGate {
+    /// Report every exceeded forgetting or regression limit and every missed
+    /// backward-transfer minimum. Equality passes each threshold. A NaN public
+    /// score difference is reported as a public-regression violation.
     pub fn evaluate(&self, matrix: &AccuracyMatrix, public: PublicSuite) -> GateReport {
         let mut violations = Vec::new();
         let average = matrix.average_forgetting();

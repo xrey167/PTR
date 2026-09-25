@@ -75,6 +75,9 @@ impl PgSubstrate {
         Ok(())
     }
 
+    /// Load a memory's registration and configuration, or `None` if absent.
+    /// Propagates database errors and reports corrupt stored dimensions or
+    /// projection digests as `PgError::CorruptRow`.
     pub async fn load_memory(&self, id: &str) -> Result<Option<FastMemoryRecord>, PgError> {
         let work = &self.schemas.work;
         let row = self
@@ -273,10 +276,11 @@ impl PgSubstrate {
 
     /// Store a checkpoint as `PTRFW001` bytes bound to `binding_digest`.
     ///
-    /// Refused unless the state folds exactly the stored journal prefix up to
-    /// its applied sequence number: that write must be journaled, and
-    /// `binding_digest` must equal the digest recomputed from the stored
-    /// prefix with [`binding_digest_of`]. The memory row is locked, so no
+    /// The state must match the registered configuration, its applied write
+    /// must be journaled, and `binding_digest` must match the stored prefix
+    /// according to [`binding_digest_of`]. The caller supplies the state cells;
+    /// this method does not refold the journal to verify them.
+    /// The memory row is locked, so no
     /// append interleaves, and the prefix rows are held `FOR SHARE`: a
     /// revocation that deletes one of them either commits first (and this
     /// checkpoint no longer matches the prefix) or waits and then deletes this
@@ -325,13 +329,20 @@ impl PgSubstrate {
         transaction.commit().await.map_err(database)
     }
 
-    /// The newest checkpoint of a memory that still folds exactly the stored
-    /// journal prefix, decoded and integrity-checked.
+    /// The newest checkpoint whose binding matches the stored journal prefix,
+    /// decoded and integrity-checked within the read snapshot.
     ///
     /// Checkpoints are read with their prefix in one repeatable-read snapshot
     /// and each one's binding is recomputed from the prefix; one that no longer
-    /// matches (it folded a write that has since been removed) is skipped, so
-    /// a fold of a revoked input is never handed out.
+    /// matches (it names a write that has since been removed) is skipped.
+    /// Returns `None` if no matching checkpoint exists. State cells are not
+    /// compared with a refold, and lifecycle admission is still required at use.
+    ///
+    /// # Errors
+    /// Propagates database errors and returns `PgError::CorruptRow` for
+    /// malformed bindings, invalid state encodings in a matching checkpoint,
+    /// or a decoded sequence number that disagrees with its row. These errors
+    /// are not skipped in favor of an older checkpoint.
     pub async fn latest_checkpoint(
         &mut self,
         memory: &str,

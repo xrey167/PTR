@@ -100,6 +100,14 @@ pub struct Calibration {
 
 /// Score posteriors against gold labels. Items without a gold label are not
 /// scored. Calibration is reported only when the set was sampled uniformly.
+///
+/// `bins` controls equal-mass calibration bins for a uniform set and is
+/// ignored for an active set.
+///
+/// # Errors
+/// Rejects an empty gold set or a gold item without a posterior. For uniform
+/// sets, also propagates statistics errors for invalid distributions, invalid
+/// truth indices, or zero bins; active sets do not perform those checks.
 pub fn evaluate(
     posteriors: &[Vec<f64>],
     gold: &EvaluationSet,

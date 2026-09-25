@@ -291,6 +291,11 @@ impl SemanticSnapshot {
 /// branch read sets, projection digests — hashes these bytes under its own
 /// domain tag, so no two components can disagree about what "the same value"
 /// means. The payload `source` participates, as it does in the journal.
+///
+/// # Errors
+/// Propagates `SemanticError::InvalidKey` for an invalid key, payload type
+/// identifier, or payload source, and `SemanticError::LimitExceeded` when
+/// the encoded input exceeds the journal encoding bounds.
 pub fn canonical_input_bytes(key: &str, value: &SemanticValue) -> Result<Vec<u8>, SemanticError> {
     let mut delta = SemanticDelta::default();
     delta.upserts.insert(key.to_owned(), value.clone());
@@ -309,15 +314,19 @@ pub struct PreparedView<'a> {
 }
 
 impl<'a> PreparedView<'a> {
+    /// Text at `key` in the prepared state, or `None` for a missing key or a
+    /// payload value.
     pub fn get(&self, key: &str) -> Option<&'a str> {
         match self.value(key)? {
             SemanticValue::Text(text) => Some(text),
             SemanticValue::Payload(_) => None,
         }
     }
+    /// Value at `key` in the prepared state, including payloads; `None` if absent.
     pub fn value(&self, key: &str) -> Option<&'a SemanticValue> {
         self.state.ground.get(key)
     }
+    /// Iterate prepared-state keys in ascending order, including payload keys.
     pub fn keys(&self) -> impl Iterator<Item = &'a str> {
         self.state.ground.keys().map(String::as_str)
     }

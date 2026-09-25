@@ -60,6 +60,10 @@ impl FastMemory {
 
     /// Rebuild a memory from a stored journal. Sequence numbers must strictly
     /// increase; gaps are expected where writes were revoked.
+    ///
+    /// Use original write requests, with sequence numbers starting at one or
+    /// higher. Returns configuration, journal-capacity, sequence-order, or
+    /// write-validation errors; no partially restored memory is returned.
     pub fn restore<I>(config: FastMemoryConfig, journal: I) -> Result<Self, FastMemoryError>
     where
         I: IntoIterator<Item = (WriteSeq, WriteRequest)>,
@@ -106,6 +110,15 @@ impl FastMemory {
     }
 
     /// Admit and fold one write.
+    ///
+    /// Assigns the next sequence number and returns it with the write's
+    /// surprise. Successful writes are journaled and may create a checkpoint.
+    /// The source's lifecycle and input digest are not checked here.
+    ///
+    /// # Errors
+    /// Rejects a full journal, invalid vector lengths, nonfinite vector entries,
+    /// zero or nonfinite head norms, or strength/decay factors outside `(0, 1]`.
+    /// Validation errors leave the journal, state, and next sequence unchanged.
     pub fn write(&mut self, request: WriteRequest) -> Result<WriteReceipt, FastMemoryError> {
         self.check_capacity()?;
         let seq = WriteSeq(self.next_seq);

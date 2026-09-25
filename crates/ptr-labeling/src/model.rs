@@ -209,9 +209,19 @@ pub enum LabelOutcome {
 /// Resolve every item: verifier vetoes first, then the label model.
 ///
 /// Vetoed classes get probability zero whatever the model says; the posterior
-/// is renormalised over the classes that remain. An item on which no
-/// probabilistic function voted is `Unknown` rather than labelled with the
-/// class prior.
+/// is renormalized over the classes that remain. Verifiers ruling out all
+/// classes yield `Disputed`; leaving exactly one yields `Determined`, even
+/// without probabilistic votes. If multiple classes remain and no
+/// probabilistic function voted, the item is `Unknown`.
+///
+/// `model` must have class distributions aligned with the matrix schema.
+///
+/// # Errors
+/// Returns an error if `min_probability` is not finite and in `(0, 1]`, or
+/// if the number of posteriors differs from the number of items.
+///
+/// # Panics
+/// Panics if a posterior lacks a remaining class that must be scored.
 pub fn resolve(
     matrix: &VoteMatrix,
     model: &LabelModel,
