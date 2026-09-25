@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-22  
-**Code footprint:** 2 Rust source files · 617 nonblank source lines · 3 integration-test files · 24 `#[test]` markers
+**Last reviewed:** 2026-09-25  
+**Code footprint:** 2 Rust source files · 657 nonblank source lines · 3 integration-test files · 24 `#[test]` markers
 
 ### Implemented now
 
@@ -28,6 +28,8 @@
 - Stale snapshot detection
 - ProjectSkeleton scaffold
 - Integration regression preserving local dependency closure semantics
+- canonical_input_bytes: the canonical journal encoding of one key and value, shared by neural-state input digests and branch value digests so the two can never disagree about whether an input changed
+- PreparedView over a prepared delta's post-state, so verification can inspect exactly what would be published before anything is appended
 
 ### Missing for the target architecture
 

@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-21  
-**Code footprint:** 1 Rust source files · 211 nonblank source lines · 3 integration-test files · 2 `#[test]` markers
+**Last reviewed:** 2026-09-25  
+**Code footprint:** 1 Rust source files · 237 nonblank source lines · 3 integration-test files · 3 `#[test]` markers
 
 ### Implemented now
 
@@ -21,10 +21,12 @@
 - All current LedgerEvent variants have deterministic key/value projection semantics
 - Effect records project onto the attempt's own commit index, so a settlement overwrites the attempting record's state key instead of adding a second row a reader would have to reconcile
 - Feature-gated Turso 0.8.0-pre.11 backend persists atomic projection updates and last_applied state
+- classify_next is the one function every backend (reference, Turso, PostgreSQL) uses to decide duplicate, out-of-order, gap or next
+- projection_entries is the one event-to-entries mapping, shared by the reference, Turso and ptr-pg so no backend can project an event differently
 
 ### Missing for the target architecture
 
-- Rebuild equivalence tests and CDC projection hooks
+- Rebuild equivalence tests across every backend (the PostgreSQL projection is compared with the reference in ptr-pg; L004 extends it)
 
 ### Next milestones
 
@@ -52,6 +54,8 @@
 - replay ordering/idempotency integration test
 - Turso reopen/monotonicity integration test behind turso-backend feature
 - workspace fmt/check/test/clippy
+- unit test that only the exact next index is applicable and every other index is classified as duplicate, out-of-order or gap
+- ptr-pg postgres test replays a mixed log and compares every entry with MaterializedState
 
 <!-- PTR:STATUS:END -->
 

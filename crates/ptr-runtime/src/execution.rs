@@ -112,7 +112,7 @@ pub enum RequiredVerification {
 }
 
 impl RequiredVerification {
-    fn accepts(self, level: VerificationLevel) -> bool {
+    pub(crate) fn accepts(self, level: VerificationLevel) -> bool {
         matches!(
             (self, level),
             (_, VerificationLevel::Deterministic)

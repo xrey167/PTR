@@ -5,7 +5,12 @@ use super::{PtrRuntime, RuntimeError};
 use ptr_events::RuntimeEvent;
 use ptr_ledger::LedgerEvent;
 use ptr_protocol::TypedPayload;
-use ptr_semdb::{PreparedDelta, SemanticDelta, SemanticError, SemanticPayload, SemanticSnapshot};
+use ptr_semdb::{
+    PreparedDelta, PreparedView, SemanticDelta, SemanticError, SemanticPayload, SemanticSnapshot,
+};
+use ptr_verifier::{VerificationReport, VerificationStatus};
+
+use crate::execution::RequiredVerification;
 use ptr_types::{CommitIndex, PodId, RequestId, Revision};
 use std::collections::BTreeSet;
 
@@ -52,6 +57,75 @@ impl PtrRuntime {
             .semdb
             .prepare_delta(delta)
             .map_err(RuntimeError::Semantic)?;
+        let revision = prepared.revision();
+        let affected = prepared.affected().clone();
+        if revision == expected {
+            return Ok(SemanticCommit {
+                revision,
+                affected,
+                commit_index: None,
+            });
+        }
+        let event = LedgerEvent::SemanticDeltaCommitted {
+            base_revision: expected,
+            revision,
+            encoded_delta,
+        };
+        let index = self.append_prepared(event, Some(prepared))?;
+        Ok(SemanticCommit {
+            revision,
+            affected,
+            commit_index: Some(index),
+        })
+    }
+
+    /// Prepare `delta`, let `verify` judge the exact state it would publish,
+    /// and append that same prepared state only if the report passes at the
+    /// required level with no hard finding.
+    ///
+    /// This is the commit path for work produced elsewhere — a certified agent
+    /// branch, a human-approved plan — where no score may stand in for
+    /// verification: a delta whose report is not `Pass`, is below `required`,
+    /// or carries a hard finding is refused before any byte is appended. The
+    /// verifier sees a [`PreparedView`], which cannot be mistaken for a
+    /// published snapshot. A validated no-op is returned without appending,
+    /// but only after it too has passed verification.
+    pub fn apply_verified_semantic_delta<F>(
+        &mut self,
+        expected: Revision,
+        delta: SemanticDelta,
+        required: RequiredVerification,
+        verify: F,
+    ) -> Result<SemanticCommit, RuntimeError>
+    where
+        F: FnOnce(&PreparedView<'_>) -> VerificationReport,
+    {
+        if self.execution.is_fenced() {
+            return Err(RuntimeError::ExecutionFenced);
+        }
+        if expected != self.revision() {
+            return Err(RuntimeError::Semantic(SemanticError::RevisionMismatch {
+                expected: self.revision(),
+                actual: expected,
+            }));
+        }
+        let encoded_delta = delta.encode().map_err(RuntimeError::Semantic)?;
+        let prepared = self
+            .semdb
+            .prepare_delta(delta)
+            .map_err(RuntimeError::Semantic)?;
+        let report = verify(&prepared.view());
+        let hard_findings = report.findings.iter().filter(|f| f.hard).count();
+        if report.status != VerificationStatus::Pass
+            || !required.accepts(report.level)
+            || hard_findings > 0
+        {
+            return Err(RuntimeError::DeltaVerificationRejected {
+                status: report.status,
+                level: report.level,
+                hard_findings,
+            });
+        }
         let revision = prepared.revision();
         let affected = prepared.affected().clone();
         if revision == expected {

@@ -1,7 +1,7 @@
 version = 1
 id = "ptr-types"
 maturity = "foundation"
-last_reviewed = "2026-09-22"
+last_reviewed = "2026-09-25"
 
 implemented = [
   "CheckpointHeader carries a stored model artifact's identity: magic, an explicit format version, the model name, the codebook version, the whole assignment verbatim rather than a digest, the slot-encoding version, and the table widths the weights were built for; thirteen distinct refusals with no defaulting path",
@@ -34,6 +34,7 @@ implemented = [
   "ConfidenceTarget and ConfidenceEstimate with target-checked access and diagnostic ConfidenceTargetMismatch errors",
   "Compile-fail documentation rejects implicit confidence-to-verification/effect conversion and unqualified estimate ordering",
   "Cognitive contract fixtures cover independent axes, constraints, uncertain claims, conflicting sources and revoked generations",
+  "PrincipalId: the admitted principal a branch, fast memory or effect attempt is attributed to, so audit and attribution use one name",
 ]
 
 missing = [

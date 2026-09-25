@@ -1,13 +1,15 @@
 version = 1
 id = "ptr-search"
 maturity = "prototype"
-last_reviewed = "2026-09-18"
+last_reviewed = "2026-09-25"
 
 implemented = [
   "EvidenceStage promotion states",
   "SearchHit with private evidence stage and explicit promotion API",
   "SearchIndex contract",
   "Reciprocal-rank fusion implementation",
+  "weighted_rank_fusion and convex_score_fusion keyed by capsule and generation, so a stale generation never borrows the live one's rank, with deterministic tie-breaking and per-hit backend attribution",
+  "retain_live filters hits against a live-generation lookup; reciprocal_rank_fusion delegates to the weighted form",
 ]
 
 missing = [
@@ -48,4 +50,6 @@ decisions = [
 checks = [
   "evidence promotion integration test blocks direct Known and stale generation",
   "workspace fmt/check/test/clippy",
+  "fusion unit tests: two generations of one capsule are never merged, agreement across backends outranks a single first place, a zero-weight list contributes nothing, convex fusion normalises each list, stale and unknown generations are dropped",
+  "ptr-pg postgres test fuses full-text and halfvec hits over live generations only",
 ]

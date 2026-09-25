@@ -9,25 +9,26 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `scaffold`  
-**Last reviewed:** 2026-09-18  
-**Code footprint:** 1 Rust source files · 16 nonblank source lines · 1 integration-test files · 1 `#[test]` markers
+**Last reviewed:** 2026-09-25  
+**Code footprint:** 2 Rust source files · 211 nonblank source lines · 2 integration-test files · 4 `#[test]` markers
 
 ### Implemented now
 
 - RuntimeEvent taxonomy for request/snapshot/candidate/Pod/verifier/commit lifecycle
 - EventEnvelope with sequence number
+- EventProducer/EventConsumer contract with at-least-once delivery, monotone commits bounded by the end, and event classes separating projections from telemetry
+- InMemoryBus reference implementation: bounded, refusing a publish rather than dropping a record some registered consumer has not committed
 
 ### Missing for the target architecture
 
-- EventBus producer/consumer contract
 - Apache Iggy adapter
-- Persistent consumer offsets/replay
+- Persistent consumer offsets/replay outside PostgreSQL (the ptr-pg projection event log keeps offsets per consumer)
 - Separation metadata for authoritative projections vs telemetry events
 - Backpressure and retention policy
 
 ### Next milestones
 
-- Define in-process reference EventBus
+- Bridge the ptr-pg projection event log to the EventConsumer contract
 - Implement Iggy adapter behind it
 - Connect trajectory/training consumer
 
@@ -48,6 +49,7 @@
 ### Current automated checks
 
 - workspace fmt/check/test/clippy
+- tests/bus.rs redelivery until commit, backpressure instead of loss, monotone bounded commits
 
 <!-- PTR:STATUS:END -->
 

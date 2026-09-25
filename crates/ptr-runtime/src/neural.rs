@@ -37,7 +37,7 @@
 //! input set. An undeclared dependency is invisible to every check below.
 use super::{PtrRuntime, RuntimeError, RuntimeLedger};
 use ptr_ledger::integrity::{self, LogAnchor};
-use ptr_semdb::{SemanticDelta, SemanticValue};
+use ptr_semdb::{canonical_input_bytes, SemanticValue};
 use ptr_types::{
     CheckpointError, CheckpointHeader, CodeFamily, Codebook, CodebookVersion, CommitIndex,
     EvidenceId, Generation, ProvenanceRef, Revision,
@@ -678,9 +678,7 @@ impl NeuralState {
 /// and a replay cannot disagree about what a semantic value is — the same reason
 /// [`crate::compacted`] reuses it for its semantic section.
 fn input_digest(key: &str, value: &SemanticValue) -> Result<[u8; 32], RuntimeError> {
-    let mut delta = SemanticDelta::default();
-    delta.upserts.insert(key.to_owned(), value.clone());
-    let encoded = delta.encode().map_err(RuntimeError::Semantic)?;
+    let encoded = canonical_input_bytes(key, value).map_err(RuntimeError::Semantic)?;
     let mut material = Vec::with_capacity(INPUT_DOMAIN.len() + encoded.len());
     material.extend_from_slice(INPUT_DOMAIN);
     material.extend_from_slice(&encoded);

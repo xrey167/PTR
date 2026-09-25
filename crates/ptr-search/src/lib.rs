@@ -1,5 +1,8 @@
+mod fusion;
+
 use ptr_types::{CapsuleId, Generation};
-use std::collections::BTreeMap;
+
+pub use fusion::{convex_score_fusion, retain_live, weighted_rank_fusion, FusedHit, WeightedList};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EvidenceStage {
@@ -91,14 +94,19 @@ pub trait SearchIndex {
     fn search(&self, query: &str, limit: usize) -> Vec<SearchHit>;
 }
 
+/// Unweighted reciprocal rank fusion with `k`, returning `(capsule, score)`.
+///
+/// Delegates to [`weighted_rank_fusion`], so two generations of one capsule
+/// stay two entries and a stale generation never adds to the live one's score;
+/// a capsule may therefore appear twice. Prefer [`weighted_rank_fusion`],
+/// which also keeps the generation and the contributing backends.
 pub fn reciprocal_rank_fusion(lists: &[Vec<SearchHit>], k: f32) -> Vec<(CapsuleId, f32)> {
-    let mut scores: BTreeMap<CapsuleId, f32> = BTreeMap::new();
-    for list in lists {
-        for (rank, hit) in list.iter().enumerate() {
-            *scores.entry(hit.capsule.clone()).or_default() += 1.0 / (k + rank as f32 + 1.0);
-        }
-    }
-    let mut out: Vec<_> = scores.into_iter().collect();
-    out.sort_by(|a, b| b.1.total_cmp(&a.1));
-    out
+    let weighted: Vec<WeightedList<'_>> = lists
+        .iter()
+        .map(|hits| WeightedList { weight: 1.0, hits })
+        .collect();
+    weighted_rank_fusion(&weighted, k)
+        .into_iter()
+        .map(|fused| (fused.capsule, fused.score))
+        .collect()
 }

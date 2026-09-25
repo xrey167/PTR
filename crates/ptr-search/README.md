@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-18  
-**Code footprint:** 1 Rust source files · 94 nonblank source lines · 2 integration-test files · 2 `#[test]` markers
+**Last reviewed:** 2026-09-25  
+**Code footprint:** 2 Rust source files · 328 nonblank source lines · 2 integration-test files · 7 `#[test]` markers
 
 ### Implemented now
 
@@ -18,6 +18,8 @@
 - SearchHit with private evidence stage and explicit promotion API
 - SearchIndex contract
 - Reciprocal-rank fusion implementation
+- weighted_rank_fusion and convex_score_fusion keyed by capsule and generation, so a stale generation never borrows the live one's rank, with deterministic tie-breaking and per-hit backend attribution
+- retain_live filters hits against a live-generation lookup; reciprocal_rank_fusion delegates to the weighted form
 
 ### Missing for the target architecture
 
@@ -58,6 +60,8 @@
 
 - evidence promotion integration test blocks direct Known and stale generation
 - workspace fmt/check/test/clippy
+- fusion unit tests: two generations of one capsule are never merged, agreement across backends outranks a single first place, a zero-weight list contributes nothing, convex fusion normalises each list, stale and unknown generations are dropped
+- ptr-pg postgres test fuses full-text and halfvec hits over live generations only
 
 <!-- PTR:STATUS:END -->
 

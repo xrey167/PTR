@@ -66,6 +66,10 @@ string_id!(CandidateId);
 string_id!(RequestId);
 string_id!(NodeId);
 string_id!(EvidenceId);
+// The principal an execution session admitted. Agents are principals: a branch
+// or a fast memory is attributed to the principal that wrote it, the same name
+// an effect attempt records, so audit and attribution never disagree.
+string_id!(PrincipalId);
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
 pub struct Probability(f32);
