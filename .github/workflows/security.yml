@@ -16,7 +16,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo +stable install cargo-audit --version 0.22.2 --locked
       - run: python scripts/security_workspaces.py audit --output /tmp/ptr-audit
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: security-audit-${{ github.sha }}
@@ -31,7 +31,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo +stable install cargo-deny --version 0.20.2 --locked
       - run: python scripts/security_workspaces.py deny --output /tmp/ptr-deny
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: security-deny-${{ github.sha }}
