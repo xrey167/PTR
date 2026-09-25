@@ -15,22 +15,27 @@ reconciliation against issue #23:*
 - the owner decisions were renamed O1–O5, and O6 was added.
 
 *Progress (2026-09-25, same branch).* Twelve of the mechanical items are done, each
-in its own commit and each with a test or a gate that fails if the defect returns:
+in its own commit. Where a test or a gate now fails if the defect returns, the table
+names it; for 4.2, 4.3 and 4.14 nothing does. An independent review of these
+commits then found 13 defects in them, most in the experiment scripts and the CI
+mirror (an aggregate that averaged away NaN seeds, a scaffolder that accepted
+`../`, a mirror test that passed vacuously); each is fixed in a follow-up commit
+with a test that fails on the reviewed version:
 
 | Item | What changed | Guard against regression |
 |---|---|---|
 | 3.1 | The docs generator counts `#[tokio::test]`; the total moves from 446 to 487 | `scripts/tests/test_update_component_docs.py` |
 | 3.4 | `README.md` and `docs/components/README.md` list all 27 crates | `check_repo.py` reports a crate missing from either map |
 | 4.1 | `raft_fence` is a declared `[[test]]` run by the `ledger-raft-rs` job | the CI step itself |
-| 4.2 | `burn-a0.yml` also triggers on `crates/ptr-types/**` and the codebook | — |
+| 4.2 | `burn-a0.yml` also triggers on `crates/ptr-types/**`, the root `Cargo.toml` (the kernel's version comes from it and A0's lockfile pins it) and the codebook | — |
 | 4.3 | `datasets/private/` is ignored except its scaffolding | — |
 | 4.4 | `Secret<T>` prints `Secret([redacted])` and keeps its field private | `crates/ptr-inspect/tests/smoke.rs` |
 | 4.8 | `new_experiment.py` writes every schema key and registers the experiment; `validate` reports unregistered manifests | `scripts/tests/test_new_experiment.py` |
 | 4.9 | `training-backend` is registered | `check_repo.py` compares the registry with the slot directories |
-| 4.11 | The four feature backends are clippy-linted in CI. The first run found a dropped `Result` in `RaftEngineLedger::append_durable` (unreachable with the current key prefix) and two lints in `raft_fence.rs` | the CI steps |
-| 4.12 | `make ci-local` mirrors `ci.yml` job by job, and `make a0` runs on 1.95.0 | `scripts/tests/test_ci_local.py` |
+| 4.11 | The failpoints, raft-engine and turso builds are clippy-linted in CI for the first time, and so are the raft-rs build's test targets (its library was already linted as a dependency of `ptr-cluster`). The first run found a dropped `Result` in `RaftEngineLedger::append_durable` (unreachable with the current key prefix) and two lints in `raft_fence.rs` | the CI steps |
+| 4.12 | `make ci-local` mirrors `ci.yml` job by job, and `make a0` runs burn-a0.yml's two jobs, each on the toolchain its job uses | `scripts/tests/test_ci_local.py` |
 | 4.14 | `one-shot-sync.yml` is deleted | — |
-| 4.18 | `ptr-bench`'s lifecycle probes exit 1 on any nonzero hard counter | unit test of the counter rule; a forced violation was checked by hand |
+| 4.18 | `ptr-bench`'s lifecycle probes exit 1 on any nonzero hard counter | a unit test of the counter rule only (removing the exit call would not fail it); a forced violation was checked by hand |
 
 The rest of this document is unchanged and still describes `e93ed99`.
 
@@ -195,7 +200,7 @@ These are small and local, and each one can be verified on its own.
 | 4.8 | `new_experiment.py` produces a manifest that fails the schema and is never registered. | `scripts/new_experiment.py` writes only `id`, `status` and `hypothesis`. `experiments/schema.toml` requires metrics, seeds, results_dir, baseline, falsification and hardware_profile. | Generate the full schema, register the experiment in `registry.toml`, and add a unit test. |
 | 4.9 | The `training-backend` evaluation slot is missing from `evaluations/registry.toml`. | The registry has 26 components and there are 27 directories under `evaluations/components/`. | Add it, so a crate that references it does not fail with "unknown evaluation". |
 | 4.10 | Fuzzing covers only an unused decoder, and no CI job runs it. | `fuzz/fuzz_targets/podwire.rs` targets the prost `PodCall` conversion that nothing speaks. | Add targets for the network-facing decoders (PTRPWREQ, PTREXREQ/PTREXRCP, PTRRAFTW) and PTRLOG02/PTRANC01, plus a CI build step. |
-| 4.11 | Feature-gated ledger and state backends are tested but never clippy-linted or checked at MSRV. | `.github/workflows/ci.yml:97-121`. | Add clippy steps next to the test steps. |
+| 4.11 | Feature-gated ledger and state backends are tested but never clippy-linted or checked at MSRV. (Correction: the raft-rs library is linted as a dependency of `ptr-cluster`'s feature; its test targets and the other three backends are not.) | `.github/workflows/ci.yml:97-121`. | Add clippy steps next to the test steps. |
 | 4.12 | The local check lists are a subset of CI, so a contributor can pass every documented command and still fail CI. | `CONTRIBUTING.md:33-48`, the PR template and the `Makefile` all omit vendor, notices, codebook and research-gate checks. `make a0` uses the 1.85 toolchain for a crate that needs 1.95. | Add one `make ci-local` target that mirrors `ci.yml`, and pin `make a0` to `+1.95.0`. |
 | 4.13 | The release archive ships no licence or notice files, and it does ship the `ptr-worker` stub. `gh release create … \|\| true` hides failures. | `.github/workflows/release.yml:25-26` (what is packaged), `:48` (`\|\| true`); `bins/ptr-worker/src/main.rs:1-3`. | Package `LICENSE-*`, `NOTICE` and `THIRD-PARTY-NOTICES.md`, drop `ptr-worker` until it does something, and remove `\|\| true`. |
 | 4.14 | A dormant workflow can still push to `main`. | `.github/workflows/one-shot-sync.yml` (`contents: write`, regenerates `Cargo.lock`, commits to main). `docs/VENDOR_PATCH_POLICY.md:105-107` says such workflows are removed. | Delete it, as its raft-engine predecessor was deleted in `ba1eb0e`. |
@@ -205,6 +210,7 @@ These are small and local, and each one can be verified on its own.
 | 4.18 | `ptr-bench` exits 0 even when `false_accepts`, `recovery_errors` or `tail_trim_errors` is non-zero, and the runner marks a run "completed" from the exit code alone. | `bins/ptr-bench/src/main.rs:176-186`, `:246-257` only print the counters. `scripts/run_experiment.py:229-235`. | Exit non-zero on any hard-invariant violation. |
 | 4.19 | Compaction stops working once SemDB state exceeds the codec bounds. The whole state is exported as one `SemanticDelta`, capped at 16,384 items per list or 4 MiB. | `crates/ptr-runtime/src/compacted.rs:501-505`; `crates/ptr-semdb/src/codec.rs:5-6`. | Chunk the export, or give snapshots their own bounded format. Treat it as a release blocker together with 4.6. |
 | 4.20 | The release job does not wait for CI, and actions are pinned by mutable tag. `dtolnay/rust-toolchain@stable` is a moving branch, and it runs in the release job, which holds `id-token: write`. | `.github/workflows/release.yml` has no `needs` or status gate. `grep uses: .github/workflows/*.yml`. | Gate the release on CI success, and pin actions by commit SHA at least in `release.yml`. |
+| 4.21 | No experiment run through the runner can be marked `completed`. *(Found by the review of this branch.)* | `check_research_gates.py:25-27` requires each of a manifest's `required_artifacts` to exist, and every manifest declares the literal `run.json` and `metrics.json`. The runner writes `run-<timestamp>-seed-<n>.json` and `aggregate-*.json`, so only hand-made files (as L001's) can satisfy the gate. | Let a manifest name a complete aggregate as its evidence, and have the gate accept that. |
 
 ### Step 5 — Reduce scope honestly
 

@@ -644,7 +644,7 @@ confirms that the test *names* they cite exist (`scripts/check_contract_citation
 | Workflow | Runs on | Jobs |
 |---|---|---|
 | `ci.yml` | every push and PR | quality (fmt, clippy, rustdoc, template, tracing-adapter) · rust-stable (Linux, Windows) · rust-msrv (1.85) · python-training (3.11, 3.13) · repository-invariants (14 gate scripts + 4 unittest suites) · lifecycle-failpoints · ledger-raft-engine · ledger-raft-rs · state-turso · network-iroh · cluster-wire · execution-wire · pod-wire |
-| `burn-a0.yml` | changes under `model/burn-a0/**` or `vendor/**` (**not** `crates/ptr-types/**`, although A0 depends on it; *fixed on this branch*, which adds `crates/ptr-types/**` and the codebook) | stable, msrv 1.95 |
+| `burn-a0.yml` | changes under `model/burn-a0/**` or `vendor/**` (**not** `crates/ptr-types/**`, although A0 depends on it; *fixed on this branch*, which adds `crates/ptr-types/**`, the root `Cargo.toml` and the codebook) | stable, msrv 1.95 |
 | `sdk.yml` | changes under `sdk/**` | Node 22 and 24 |
 | `security.yml` | every push and PR + weekly | cargo-audit, cargo-deny over the four owned workspaces |
 | `release.yml` | `v*` tags | Linux build, checksums, CycloneDX SBOM, Sigstore attestations. Never exercised; does not wait for CI. |
