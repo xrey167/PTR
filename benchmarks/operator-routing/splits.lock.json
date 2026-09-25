@@ -1,0 +1,169 @@
+{
+  "generator_version": 1,
+  "benchmark_seed": 20260925,
+  "type_codebook_version": 1,
+  "type_codebook_fingerprint": "2b6f8175a7a7bb648910e7acb17dcfcff5149834f2fe87355c5d2c4524c113a3",
+  "data_fnv1a64": "0ad71688f09b0d0d",
+  "data_fnv1a64_definition": "FNV-1a-64 (offset 0xcbf29ce484222325, prime 0x100000001b3) over the raw bytes of the eight TSV files concatenated in this order, with nothing between them: train.tsv, val.tsv, test_iid.tsv, ood_compose_epi.tsv, ood_compose_regime.tsv, ood_distractors.tsv, ood_validity.tsv, ood_payload.tsv",
+  "label_fnv1a64_definition": "FNV-1a-64 over the ASCII string of one lowercase hex digit (label code 0-a) per example, in file order: the PRED-string form of the gold labels",
+  "splits": {
+    "train": {
+      "n": 16000,
+      "jsonl": {
+        "path": "datasets/generated/operator_routing_v1/train.jsonl",
+        "bytes": 38954473,
+        "sha256": "13d663c88f0135782a205c09d507eb61f612be56aa93bf0a720ea32371ead574"
+      },
+      "tsv": {
+        "path": "datasets/generated/operator_routing_v1/train.tsv",
+        "bytes": 3906754,
+        "sha256": "bfbd8a956910302f3072b3117ee8cab2e2a69b09594a72733bc7a2b397e03bf1",
+        "fnv1a64": "fc5c09903d066479"
+      },
+      "label_fnv1a64": "89b416af24b05a74"
+    },
+    "val": {
+      "n": 2000,
+      "jsonl": {
+        "path": "datasets/generated/operator_routing_v1/val.jsonl",
+        "bytes": 4860599,
+        "sha256": "979a33843c9ce80855c0ec825cbb7bfda951f61b3fdc6c50292c45600fbd7221"
+      },
+      "tsv": {
+        "path": "datasets/generated/operator_routing_v1/val.tsv",
+        "bytes": 484281,
+        "sha256": "ebfc79b10cc9387f1424f51da1c7ddf156030a274614dbbef79c493d5b731ef7",
+        "fnv1a64": "eed6bac5c5e1276b"
+      },
+      "label_fnv1a64": "f5a682a6e264f087"
+    },
+    "test_iid": {
+      "n": 3000,
+      "jsonl": {
+        "path": "datasets/generated/operator_routing_v1/test_iid.jsonl",
+        "bytes": 7321288,
+        "sha256": "ee3bd3c01185dbda032b24c7721b18a0396056589e48eab82ba8274d3d497bac"
+      },
+      "tsv": {
+        "path": "datasets/generated/operator_routing_v1/test_iid.tsv",
+        "bytes": 741351,
+        "sha256": "e26a7ea299ec0232925c2a6044c7dc021f0ef89d3dffc3e37cf4e5f99eb3682b",
+        "fnv1a64": "51c636fe5acf8fef"
+      },
+      "label_fnv1a64": "8aa96376d8db568e"
+    },
+    "ood_compose_epi": {
+      "n": 3000,
+      "jsonl": {
+        "path": "datasets/generated/operator_routing_v1/ood_compose_epi.jsonl",
+        "bytes": 7362190,
+        "sha256": "78f444c71df48bfbf0f6a63bab4b283cb9bc0f6720cb13973e47b221ec201d1e"
+      },
+      "tsv": {
+        "path": "datasets/generated/operator_routing_v1/ood_compose_epi.tsv",
+        "bytes": 762389,
+        "sha256": "3b8c5f1edf4d4a3ee4c6131dfcc8cc8a3d9386479803e780aa4d0463863ab9bd",
+        "fnv1a64": "62299eecf9c2b82f"
+      },
+      "label_fnv1a64": "6a1f66bea83db2b3"
+    },
+    "ood_compose_regime": {
+      "n": 3000,
+      "jsonl": {
+        "path": "datasets/generated/operator_routing_v1/ood_compose_regime.jsonl",
+        "bytes": 7429822,
+        "sha256": "5b5a45bf3afc2dfdd8c5dbfeaa3f602363530d3771fb352137e8c00a2f461a72"
+      },
+      "tsv": {
+        "path": "datasets/generated/operator_routing_v1/ood_compose_regime.tsv",
+        "bytes": 771574,
+        "sha256": "ae32c8e9ef583f66e203f64ef4770c4607cf612d78abcb7fee61402e933be8e5",
+        "fnv1a64": "c836cb948f1583b0"
+      },
+      "label_fnv1a64": "aa3b11bf19ad056c"
+    },
+    "ood_distractors": {
+      "n": 3000,
+      "jsonl": {
+        "path": "datasets/generated/operator_routing_v1/ood_distractors.jsonl",
+        "bytes": 7797284,
+        "sha256": "5b9ec7be35ea31595450bd917cf142cdc43295ec825b45ddeb1daf6cc9792bf8"
+      },
+      "tsv": {
+        "path": "datasets/generated/operator_routing_v1/ood_distractors.tsv",
+        "bytes": 1194511,
+        "sha256": "fa3ecb7cf13332f9635e166adf3a3f9761874d0b9f90d489efbc1f13caf785bd",
+        "fnv1a64": "bae7d78764de7206"
+      },
+      "label_fnv1a64": "509c7f3bc62c98db"
+    },
+    "ood_validity": {
+      "n": 3000,
+      "jsonl": {
+        "path": "datasets/generated/operator_routing_v1/ood_validity.jsonl",
+        "bytes": 7393059,
+        "sha256": "c36578917b1ef4220e8309b40d64b14afc3740cf67924490c6378f28a0415c65"
+      },
+      "tsv": {
+        "path": "datasets/generated/operator_routing_v1/ood_validity.tsv",
+        "bytes": 753529,
+        "sha256": "2f118e72d9f11ba68a64caa20fe8f83abe75c3dc9e69d5c21518c436f3b13835",
+        "fnv1a64": "eeebdb0da3be7e74"
+      },
+      "label_fnv1a64": "5ada2d0231cd1a35"
+    },
+    "ood_payload": {
+      "n": 3000,
+      "jsonl": {
+        "path": "datasets/generated/operator_routing_v1/ood_payload.jsonl",
+        "bytes": 7355396,
+        "sha256": "9a30855dbbf54b179224fa16f57d6bbcaaed27268c70b640659074ea7e411c8c"
+      },
+      "tsv": {
+        "path": "datasets/generated/operator_routing_v1/ood_payload.tsv",
+        "bytes": 758294,
+        "sha256": "65c809128904140de9e8177931b473b053019f1cc0f057d4e519d299980d5a3f",
+        "fnv1a64": "195dda0eff15edd6"
+      },
+      "label_fnv1a64": "cbcdf0c3584760ad"
+    }
+  },
+  "prefix": {
+    "n": 64,
+    "definition": "SHA-256 of the first n lines of each file, for fast stability tests",
+    "splits": {
+      "train": {
+        "jsonl_sha256": "e079320cf6c54f9d5f6f95124fa40ece3015f46ba0dc35687ce636eba9cc5398",
+        "tsv_sha256": "17cad262dd5301b7f947f663622c6b33239ff1a4e54b1bf5e7c94643f8e732dd"
+      },
+      "val": {
+        "jsonl_sha256": "7d1d469c65aa063923e26e55ff11191e3c6f2c61ca935cc8b36c63c34e2cf06a",
+        "tsv_sha256": "e587af9c2c81db559692188948f3f277d36f16d89be0c86b8b55e47bd184b92f"
+      },
+      "test_iid": {
+        "jsonl_sha256": "9259b0a4910fdf09b38c84f392733318e54535dd1e6dc16d85cc48d66cd2294a",
+        "tsv_sha256": "234d0d25243f8d5414624eaced1d6705312d157f0d493b524a06559840a3342a"
+      },
+      "ood_compose_epi": {
+        "jsonl_sha256": "b28d1bb65292f0122f394c3c0f7d96ee3f6ed8d535d0b39356d876da44b64d4a",
+        "tsv_sha256": "5afde32737567613716e9560b824942537cd0d5f630b55f0c00ae168a3357754"
+      },
+      "ood_compose_regime": {
+        "jsonl_sha256": "a554644bfb31b1b9b59b065fb7454f628962b136dcf4f5db5709f4d53aadaff0",
+        "tsv_sha256": "8d569e2759992bf1faa764353d8e906f98eab319c483cae8589978a6ea324b61"
+      },
+      "ood_distractors": {
+        "jsonl_sha256": "2ef3694dc34305e764efdc048d62949a74d3077b43500b75aecbb5310320f9e9",
+        "tsv_sha256": "4b0a691170c85e62ceff0915ed3041f03e53522157ccba1ba034f96c7ee50641"
+      },
+      "ood_validity": {
+        "jsonl_sha256": "5b6d3ef3712ea8f6e07b81dadf84395c3e2418e38bf594f5e1b348d5658c5480",
+        "tsv_sha256": "a64381b2c27b9880a4967815003f46c13a82ae58a01c40142e47558cf301cdb3"
+      },
+      "ood_payload": {
+        "jsonl_sha256": "3bd4ab31ab041291034251b7ab5c1af90832227ab6469dc60dd059d59b8961e5",
+        "tsv_sha256": "e2e01eaa68b0a9fb80394541d319748ac7d6969db131efa9423e22215ff10e22"
+      }
+    }
+  }
+}

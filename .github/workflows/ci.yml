@@ -94,6 +94,10 @@ jobs:
       - run: python -m unittest discover -s research/baselines/rag_reference/tests
       - run: python -m unittest discover -s research/baselines/strong_rag/tests
       - run: python -m unittest discover -s docs-site/tests
+      # Writes the operator-routing v1 splits and fails if they differ from the lock,
+      # so the suite below runs on the frozen data rather than skipping.
+      - run: python benchmarks/operator-routing/generator.py
+      - run: python -m unittest discover -s benchmarks/operator-routing/tests
   lifecycle-failpoints:
     runs-on: ubuntu-latest
     steps:

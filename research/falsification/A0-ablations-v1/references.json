@@ -1,0 +1,642 @@
+{
+  "suite": "operator-routing",
+  "generator_version": 1,
+  "benchmark_seed": 20260925,
+  "type_codebook_version": 1,
+  "type_codebook_fingerprint": "2b6f8175a7a7bb648910e7acb17dcfcff5149834f2fe87355c5d2c4524c113a3",
+  "data": {
+    "data_fnv1a64": "0ad71688f09b0d0d",
+    "lock_data_fnv1a64": "0ad71688f09b0d0d",
+    "all_files_match_lock": true,
+    "files": {
+      "train.jsonl": {
+        "sha256": "13d663c88f0135782a205c09d507eb61f612be56aa93bf0a720ea32371ead574",
+        "matches_lock": true
+      },
+      "train.tsv": {
+        "sha256": "bfbd8a956910302f3072b3117ee8cab2e2a69b09594a72733bc7a2b397e03bf1",
+        "matches_lock": true
+      },
+      "val.jsonl": {
+        "sha256": "979a33843c9ce80855c0ec825cbb7bfda951f61b3fdc6c50292c45600fbd7221",
+        "matches_lock": true
+      },
+      "val.tsv": {
+        "sha256": "ebfc79b10cc9387f1424f51da1c7ddf156030a274614dbbef79c493d5b731ef7",
+        "matches_lock": true
+      },
+      "test_iid.jsonl": {
+        "sha256": "ee3bd3c01185dbda032b24c7721b18a0396056589e48eab82ba8274d3d497bac",
+        "matches_lock": true
+      },
+      "test_iid.tsv": {
+        "sha256": "e26a7ea299ec0232925c2a6044c7dc021f0ef89d3dffc3e37cf4e5f99eb3682b",
+        "matches_lock": true
+      },
+      "ood_compose_epi.jsonl": {
+        "sha256": "78f444c71df48bfbf0f6a63bab4b283cb9bc0f6720cb13973e47b221ec201d1e",
+        "matches_lock": true
+      },
+      "ood_compose_epi.tsv": {
+        "sha256": "3b8c5f1edf4d4a3ee4c6131dfcc8cc8a3d9386479803e780aa4d0463863ab9bd",
+        "matches_lock": true
+      },
+      "ood_compose_regime.jsonl": {
+        "sha256": "5b5a45bf3afc2dfdd8c5dbfeaa3f602363530d3771fb352137e8c00a2f461a72",
+        "matches_lock": true
+      },
+      "ood_compose_regime.tsv": {
+        "sha256": "ae32c8e9ef583f66e203f64ef4770c4607cf612d78abcb7fee61402e933be8e5",
+        "matches_lock": true
+      },
+      "ood_distractors.jsonl": {
+        "sha256": "5b9ec7be35ea31595450bd917cf142cdc43295ec825b45ddeb1daf6cc9792bf8",
+        "matches_lock": true
+      },
+      "ood_distractors.tsv": {
+        "sha256": "fa3ecb7cf13332f9635e166adf3a3f9761874d0b9f90d489efbc1f13caf785bd",
+        "matches_lock": true
+      },
+      "ood_validity.jsonl": {
+        "sha256": "c36578917b1ef4220e8309b40d64b14afc3740cf67924490c6378f28a0415c65",
+        "matches_lock": true
+      },
+      "ood_validity.tsv": {
+        "sha256": "2f118e72d9f11ba68a64caa20fe8f83abe75c3dc9e69d5c21518c436f3b13835",
+        "matches_lock": true
+      },
+      "ood_payload.jsonl": {
+        "sha256": "9a30855dbbf54b179224fa16f57d6bbcaaed27268c70b640659074ea7e411c8c",
+        "matches_lock": true
+      },
+      "ood_payload.tsv": {
+        "sha256": "65c809128904140de9e8177931b473b053019f1cc0f057d4e519d299980d5a3f",
+        "matches_lock": true
+      }
+    }
+  },
+  "train_majority_operator": "deductive",
+  "label_stats": {
+    "train": {
+      "n": 16000,
+      "class_shares": {
+        "semantic": 0.0641875,
+        "deductive": 0.194875,
+        "probabilistic": 0.077,
+        "statistical": 0.0515,
+        "temporal": 0.056875,
+        "causal": 0.06775,
+        "search": 0.074875,
+        "optimization": 0.077375,
+        "simulation": 0.088625,
+        "symbolic": 0.107125,
+        "external_pod": 0.1398125
+      },
+      "majority_operator": "deductive",
+      "majority_share": 0.194875,
+      "smallest_operator": "statistical",
+      "smallest_share": 0.0515,
+      "exact_tie_rate": 0.0109375,
+      "margin_below_0_1": 0.06825,
+      "clear_margin_rate": 0.8535,
+      "mean_live_facts": 4.677,
+      "causal_share_under_interventional": 0.09040543943591035
+    },
+    "val": {
+      "n": 2000,
+      "class_shares": {
+        "semantic": 0.0715,
+        "deductive": 0.188,
+        "probabilistic": 0.069,
+        "statistical": 0.0545,
+        "temporal": 0.0555,
+        "causal": 0.0635,
+        "search": 0.0755,
+        "optimization": 0.0745,
+        "simulation": 0.0835,
+        "symbolic": 0.115,
+        "external_pod": 0.1495
+      },
+      "majority_operator": "deductive",
+      "majority_share": 0.188,
+      "smallest_operator": "statistical",
+      "smallest_share": 0.0545,
+      "exact_tie_rate": 0.0045,
+      "margin_below_0_1": 0.0545,
+      "clear_margin_rate": 0.8725,
+      "mean_live_facts": 4.6875,
+      "decisive": {
+        "validity": 0.2005,
+        "regime": 0.21,
+        "budget": 0.1975,
+        "confidence": 0.261,
+        "epistemic": 0.2695
+      }
+    },
+    "test_iid": {
+      "n": 3000,
+      "class_shares": {
+        "semantic": 0.056,
+        "deductive": 0.194,
+        "probabilistic": 0.074,
+        "statistical": 0.058,
+        "temporal": 0.05333333333333334,
+        "causal": 0.06633333333333333,
+        "search": 0.06966666666666667,
+        "optimization": 0.08033333333333334,
+        "simulation": 0.09533333333333334,
+        "symbolic": 0.11166666666666666,
+        "external_pod": 0.14133333333333334
+      },
+      "majority_operator": "deductive",
+      "majority_share": 0.194,
+      "smallest_operator": "temporal",
+      "smallest_share": 0.05333333333333334,
+      "exact_tie_rate": 0.015333333333333332,
+      "margin_below_0_1": 0.07066666666666667,
+      "clear_margin_rate": 0.8566666666666667,
+      "mean_live_facts": 4.668333333333333,
+      "decisive": {
+        "validity": 0.189,
+        "regime": 0.20333333333333334,
+        "budget": 0.20966666666666667,
+        "confidence": 0.2623333333333333,
+        "epistemic": 0.2633333333333333
+      }
+    },
+    "ood_compose_epi": {
+      "n": 3000,
+      "class_shares": {
+        "semantic": 0.046,
+        "deductive": 0.23933333333333334,
+        "probabilistic": 0.06933333333333333,
+        "statistical": 0.039,
+        "temporal": 0.04566666666666667,
+        "causal": 0.09166666666666666,
+        "search": 0.10666666666666667,
+        "optimization": 0.067,
+        "simulation": 0.051,
+        "symbolic": 0.097,
+        "external_pod": 0.14733333333333334
+      },
+      "majority_operator": "deductive",
+      "majority_share": 0.23933333333333334,
+      "smallest_operator": "statistical",
+      "smallest_share": 0.039,
+      "exact_tie_rate": 0.005666666666666667,
+      "margin_below_0_1": 0.06333333333333334,
+      "clear_margin_rate": 0.8676666666666667,
+      "mean_live_facts": 4.845666666666666,
+      "decisive": {
+        "validity": 0.17533333333333334,
+        "regime": 0.178,
+        "budget": 0.187,
+        "confidence": 0.25066666666666665,
+        "epistemic": 0.2693333333333333
+      },
+      "heldout_decisive": 0.35
+    },
+    "ood_compose_regime": {
+      "n": 3000,
+      "class_shares": {
+        "semantic": 0.0,
+        "deductive": 0.073,
+        "probabilistic": 0.11766666666666667,
+        "statistical": 0.0,
+        "temporal": 0.0,
+        "causal": 0.5283333333333333,
+        "search": 0.034333333333333334,
+        "optimization": 0.04633333333333333,
+        "simulation": 0.04766666666666667,
+        "symbolic": 0.07266666666666667,
+        "external_pod": 0.08
+      },
+      "majority_operator": "causal",
+      "majority_share": 0.5283333333333333,
+      "smallest_operator": "semantic",
+      "smallest_share": 0.0,
+      "exact_tie_rate": 0.006333333333333333,
+      "margin_below_0_1": 0.06833333333333333,
+      "clear_margin_rate": 0.8603333333333333,
+      "mean_live_facts": 4.843666666666667,
+      "decisive": {
+        "validity": 0.17366666666666666,
+        "regime": 0.587,
+        "budget": 0.20233333333333334,
+        "confidence": 0.26066666666666666,
+        "epistemic": 0.30033333333333334
+      },
+      "transfer_share": 0.45066666666666666,
+      "transfer_subset_causal_share": 0.9844674556213018
+    },
+    "ood_distractors": {
+      "n": 3000,
+      "class_shares": {
+        "semantic": 0.059,
+        "deductive": 0.187,
+        "probabilistic": 0.08233333333333333,
+        "statistical": 0.050666666666666665,
+        "temporal": 0.06133333333333333,
+        "causal": 0.065,
+        "search": 0.075,
+        "optimization": 0.07633333333333334,
+        "simulation": 0.09033333333333333,
+        "symbolic": 0.116,
+        "external_pod": 0.137
+      },
+      "majority_operator": "deductive",
+      "majority_share": 0.187,
+      "smallest_operator": "statistical",
+      "smallest_share": 0.050666666666666665,
+      "exact_tie_rate": 0.006666666666666667,
+      "margin_below_0_1": 0.06466666666666666,
+      "clear_margin_rate": 0.8536666666666667,
+      "mean_live_facts": 4.691666666666666,
+      "decisive": {
+        "validity": 0.21233333333333335,
+        "regime": 0.214,
+        "budget": 0.21233333333333335,
+        "confidence": 0.259,
+        "epistemic": 0.27666666666666667
+      }
+    },
+    "ood_validity": {
+      "n": 3000,
+      "class_shares": {
+        "semantic": 0.07866666666666666,
+        "deductive": 0.194,
+        "probabilistic": 0.075,
+        "statistical": 0.04566666666666667,
+        "temporal": 0.04533333333333334,
+        "causal": 0.065,
+        "search": 0.086,
+        "optimization": 0.08033333333333334,
+        "simulation": 0.093,
+        "symbolic": 0.099,
+        "external_pod": 0.138
+      },
+      "majority_operator": "deductive",
+      "majority_share": 0.194,
+      "smallest_operator": "temporal",
+      "smallest_share": 0.04533333333333334,
+      "exact_tie_rate": 0.035333333333333335,
+      "margin_below_0_1": 0.10133333333333333,
+      "clear_margin_rate": 0.7993333333333333,
+      "mean_live_facts": 3.068,
+      "decisive": {
+        "validity": 0.42633333333333334,
+        "regime": 0.16833333333333333,
+        "budget": 0.153,
+        "confidence": 0.268,
+        "epistemic": 0.23333333333333334
+      }
+    },
+    "ood_payload": {
+      "n": 3000,
+      "class_shares": {
+        "semantic": 0.058333333333333334,
+        "deductive": 0.19733333333333333,
+        "probabilistic": 0.07633333333333334,
+        "statistical": 0.05466666666666667,
+        "temporal": 0.052,
+        "causal": 0.06633333333333333,
+        "search": 0.07066666666666667,
+        "optimization": 0.07966666666666666,
+        "simulation": 0.08733333333333333,
+        "symbolic": 0.10666666666666667,
+        "external_pod": 0.15066666666666667
+      },
+      "majority_operator": "deductive",
+      "majority_share": 0.19733333333333333,
+      "smallest_operator": "temporal",
+      "smallest_share": 0.052,
+      "exact_tie_rate": 0.011,
+      "margin_below_0_1": 0.06166666666666667,
+      "clear_margin_rate": 0.864,
+      "mean_live_facts": 4.689666666666667,
+      "decisive": {
+        "validity": 0.20966666666666667,
+        "regime": 0.198,
+        "budget": 0.20866666666666667,
+        "confidence": 0.271,
+        "epistemic": 0.2683333333333333
+      }
+    }
+  },
+  "references": {
+    "train_majority": {
+      "val": 0.188,
+      "test_iid": 0.194,
+      "ood_compose_epi": 0.23933333333333334,
+      "ood_compose_regime": 0.073,
+      "ood_distractors": 0.187,
+      "ood_validity": 0.194,
+      "ood_payload": 0.19733333333333333
+    },
+    "count_router": {
+      "val": 0.3675,
+      "test_iid": 0.344,
+      "ood_compose_epi": 0.30333333333333334,
+      "ood_compose_regime": 0.408,
+      "ood_distractors": 0.3443333333333333,
+      "ood_validity": 0.33466666666666667,
+      "ood_payload": 0.3426666666666667
+    },
+    "unbound_bag_of_attributes": {
+      "val": 0.593,
+      "test_iid": 0.5996666666666667,
+      "ood_compose_epi": 0.5936666666666667,
+      "ood_compose_regime": 0.342,
+      "ood_distractors": 0.5953333333333334,
+      "ood_validity": 0.484,
+      "ood_payload": 0.598
+    },
+    "bound_additive": {
+      "val": 0.6635,
+      "test_iid": 0.651,
+      "ood_compose_epi": 0.6383333333333333,
+      "ood_compose_regime": 0.36233333333333334,
+      "ood_distractors": 0.653,
+      "ood_validity": 0.641,
+      "ood_payload": 0.6553333333333333
+    },
+    "hand_primary": {
+      "val": 0.664,
+      "test_iid": 0.6443333333333333,
+      "ood_compose_epi": 0.6656666666666666,
+      "ood_compose_regime": 0.5916666666666667,
+      "ood_distractors": 0.646,
+      "ood_validity": 0.6943333333333334,
+      "ood_payload": 0.6726666666666666
+    },
+    "hand_weighted": {
+      "val": 0.815,
+      "test_iid": 0.8063333333333333,
+      "ood_compose_epi": 0.8063333333333333,
+      "ood_compose_regime": 0.7763333333333333,
+      "ood_distractors": 0.799,
+      "ood_validity": 0.8506666666666667,
+      "ood_payload": 0.8066666666666666
+    },
+    "validity_blind_rule": {
+      "val": 0.7995,
+      "test_iid": 0.811,
+      "ood_compose_epi": 0.8246666666666667,
+      "ood_compose_regime": 0.8263333333333334,
+      "ood_distractors": 0.7876666666666666,
+      "ood_validity": 0.5736666666666667,
+      "ood_payload": 0.7903333333333333
+    },
+    "nuisance_only": {
+      "val": 0.166,
+      "test_iid": 0.17133333333333334,
+      "ood_compose_epi": 0.18666666666666668,
+      "ood_compose_regime": 0.07866666666666666,
+      "ood_distractors": 0.151,
+      "ood_validity": 0.15833333333333333,
+      "ood_payload": 0.05566666666666667
+    },
+    "raw_blind_exact_bayes": {
+      "val": 0.821,
+      "test_iid": 0.8213333333333334,
+      "ood_compose_epi": 0.852,
+      "ood_compose_regime": 0.439,
+      "ood_distractors": 0.8203333333333334,
+      "ood_validity": 0.8523333333333334,
+      "ood_payload": 0.8283333333333334
+    }
+  },
+  "raw_blind_expected_accuracy": {
+    "val": 0.816571996931766,
+    "test_iid": 0.8210990153763784,
+    "ood_compose_epi": 0.8501305050564062,
+    "ood_compose_regime": 0.6187407407407304,
+    "ood_distractors": 0.8174089515113147,
+    "ood_validity": 0.8545062491305994,
+    "ood_payload": 0.8227196564042162
+  },
+  "no_transfer": {
+    "ood_compose_epi": {
+      "ignore_heldout": 0.65,
+      "heldout_as_inferred": 0.8386666666666667,
+      "heldout_subset_n": 1050,
+      "ignore_heldout_on_heldout_subset": 0.0,
+      "heldout_as_inferred_on_heldout_subset": 0.6923809523809524
+    },
+    "ood_compose_regime": {
+      "ignore_evidence": 0.45966666666666667,
+      "evidence_as_tabular": 0.48433333333333334,
+      "evidence_as_temporal": 0.455,
+      "evidence_as_textual": 0.466,
+      "causal_label_share": 0.5283333333333333,
+      "transfer_subset_n": 1352,
+      "max_no_transfer_on_transfer_subset": 0.0
+    }
+  },
+  "bands": [
+    {
+      "id": "test_iid_majority",
+      "description": "share of the most frequent label on test_iid <= 0.25",
+      "measured": 0.194,
+      "lower": null,
+      "upper": 0.25,
+      "pass": true
+    },
+    {
+      "id": "train_min_operator_share",
+      "description": "every operator >= 0.03 of train labels",
+      "measured": 0.0515,
+      "lower": 0.03,
+      "upper": null,
+      "pass": true
+    },
+    {
+      "id": "iid_decisive_validity",
+      "description": "validity-decisive rate on test_iid in [0.12, 0.40]",
+      "measured": 0.189,
+      "lower": 0.12,
+      "upper": 0.4,
+      "pass": true
+    },
+    {
+      "id": "iid_decisive_regime",
+      "description": "regime-decisive rate on test_iid in [0.12, 0.40]",
+      "measured": 0.20333333333333334,
+      "lower": 0.12,
+      "upper": 0.4,
+      "pass": true
+    },
+    {
+      "id": "iid_decisive_budget",
+      "description": "budget-decisive rate on test_iid in [0.12, 0.40]",
+      "measured": 0.20966666666666667,
+      "lower": 0.12,
+      "upper": 0.4,
+      "pass": true
+    },
+    {
+      "id": "iid_decisive_confidence",
+      "description": "confidence-decisive rate on test_iid in [0.12, 0.40]",
+      "measured": 0.2623333333333333,
+      "lower": 0.12,
+      "upper": 0.4,
+      "pass": true
+    },
+    {
+      "id": "iid_decisive_epistemic",
+      "description": "epistemic-decisive rate on test_iid in [0.12, 0.40]",
+      "measured": 0.2633333333333333,
+      "lower": 0.12,
+      "upper": 0.4,
+      "pass": true
+    },
+    {
+      "id": "compose_epi_heldout_decisive",
+      "description": "heldout-decisive rate on ood_compose_epi >= 0.25",
+      "measured": 0.35,
+      "lower": 0.25,
+      "upper": null,
+      "pass": true
+    },
+    {
+      "id": "compose_regime_regime_decisive",
+      "description": "regime-decisive rate on ood_compose_regime >= 0.40",
+      "measured": 0.587,
+      "lower": 0.4,
+      "upper": null,
+      "pass": true
+    },
+    {
+      "id": "iid_exact_ties",
+      "description": "exact-tie rate on test_iid <= 0.02",
+      "measured": 0.015333333333333332,
+      "lower": null,
+      "upper": 0.02,
+      "pass": true
+    },
+    {
+      "id": "hand_weighted",
+      "description": "hand-weighted accuracy on test_iid in [0.74, 0.88]",
+      "measured": 0.8063333333333333,
+      "lower": 0.74,
+      "upper": 0.88,
+      "pass": true
+    },
+    {
+      "id": "bound_additive",
+      "description": "bound additive accuracy on test_iid in [0.58, 0.72]",
+      "measured": 0.651,
+      "lower": 0.58,
+      "upper": 0.72,
+      "pass": true
+    },
+    {
+      "id": "raw_blind_ceiling",
+      "description": "raw-blind exact Bayes accuracy on test_iid in [0.76, 0.86]",
+      "measured": 0.8213333333333334,
+      "lower": 0.76,
+      "upper": 0.86,
+      "pass": true
+    },
+    {
+      "id": "nuisance_only",
+      "description": "nuisance-only predictor (entity ids, fillers) on test_iid <= train-majority + 0.02",
+      "measured": 0.17133333333333334,
+      "lower": null,
+      "upper": 0.214,
+      "pass": true
+    }
+  ],
+  "all_bands_pass": true,
+  "prototype": {
+    "references": {
+      "train_majority": {
+        "test_iid": 0.2,
+        "ood_compose_epi": 0.238,
+        "ood_compose_regime": 0.069,
+        "ood_validity": 0.195
+      },
+      "count_router": {
+        "test_iid": 0.338,
+        "ood_compose_epi": 0.306,
+        "ood_compose_regime": 0.431,
+        "ood_validity": 0.339
+      },
+      "unbound_bag_of_attributes": {
+        "test_iid": 0.583,
+        "ood_compose_epi": 0.575,
+        "ood_compose_regime": 0.34,
+        "ood_validity": 0.508
+      },
+      "bound_additive": {
+        "test_iid": 0.651,
+        "ood_compose_epi": 0.613,
+        "ood_compose_regime": 0.377,
+        "ood_validity": 0.652
+      },
+      "hand_primary": {
+        "test_iid": 0.652,
+        "ood_compose_epi": 0.648,
+        "ood_compose_regime": 0.607,
+        "ood_validity": 0.702
+      },
+      "hand_weighted": {
+        "test_iid": 0.812,
+        "ood_compose_epi": 0.79,
+        "ood_compose_regime": 0.783,
+        "ood_validity": 0.853
+      },
+      "validity_blind_rule": {
+        "test_iid": 0.792,
+        "ood_compose_epi": 0.826,
+        "ood_compose_regime": 0.822,
+        "ood_validity": 0.601
+      },
+      "raw_blind_exact_bayes": {
+        "test_iid": 0.815,
+        "ood_compose_epi": 0.834,
+        "ood_compose_regime": 0.449,
+        "ood_validity": 0.851
+      }
+    },
+    "no_transfer": {
+      "ood_compose_epi": {
+        "ignore_heldout": 0.65,
+        "heldout_as_inferred": 0.835
+      },
+      "ood_compose_regime": {
+        "ignore_evidence": 0.468,
+        "evidence_as_tabular": 0.496,
+        "evidence_as_temporal": 0.465,
+        "evidence_as_textual": 0.479,
+        "causal_label_share": 0.534
+      }
+    },
+    "label_stats_test_iid": {
+      "majority_share": 0.2,
+      "smallest_share": 0.053,
+      "exact_tie_rate": 0.01,
+      "margin_below_0_1": 0.07,
+      "mean_live_facts": 4.68,
+      "decisive": {
+        "validity": 0.208,
+        "regime": 0.221,
+        "budget": 0.192,
+        "confidence": 0.268,
+        "epistemic": 0.271
+      }
+    },
+    "ood_compose_epi_heldout_decisive": 0.35,
+    "ood_compose_regime_regime_decisive": 0.57,
+    "ood_compose_regime_transfer_share": 0.43,
+    "ood_validity_exact_tie_rate": 0.041,
+    "train_causal_share_under_interventional": 0.096
+  },
+  "definitions": {
+    "exact_tie": "two or more operators within 1e-9 of the maximum z",
+    "decisive": "the label changes under the tag's counterfactual (README.md, Tags)",
+    "raw_blind_exact_bayes": "Bayes decision under the exact training-model posterior over (R, B) given every slot field; accuracy against the true label",
+    "raw_blind_expected_accuracy": "mean over examples of the posterior mass of the Bayes decision",
+    "sgd": "zero init, 5 epochs, lr 0.5 * (1 - step/total) + 0.01, per-epoch Fisher-Yates from splitmix64 stream seeded 1"
+  }
+}
