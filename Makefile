@@ -1,4 +1,4 @@
-.PHONY: check test fmt a0 repo-check docs docs-check meta-check experiments-check evals-check msrv python-test manifest tree \
+.PHONY: check test fmt a0 a0-stable a0-msrv repo-check docs docs-check meta-check experiments-check evals-check msrv python-test manifest tree \
 	ci-local ci-quality ci-rust-stable ci-rust-msrv ci-python-training ci-repository-invariants \
 	ci-lifecycle-failpoints ci-ledger-raft-engine ci-ledger-raft-rs ci-state-turso \
 	ci-network-iroh ci-cluster-wire ci-execution-wire ci-pod-wire
@@ -9,15 +9,19 @@
 # be able to get a clean result on half the code they changed and a red CI on the
 # other half. `make a0` is the `burn-a0` workflow's job, step for step.
 #
-# `a0` names its toolchain because the root `rust-toolchain.toml` pins 1.85.0 for
-# every bare `cargo` run from here, and `model/burn-a0` requires 1.95: a bare
-# `make a0` could not build the crate it exists to check.
+# `a0` is the workflow's two jobs, `a0-stable` and `a0-msrv`, and every step names
+# its toolchain: the root `rust-toolchain.toml` pins 1.85.0 for every bare `cargo`
+# run from here, and `model/burn-a0` requires 1.95, so a bare `cargo` could not
+# build the crate at all. `a0-stable` lints on your `stable`, as CI lints on the
+# current one: run `rustup update stable` first, or a lint newer than your
+# toolchain passes here and fails there.
 
 PYTHON ?= python3
-A0_TOOLCHAIN ?= 1.95.0
+A0_STABLE ?= stable
+A0_MSRV ?= 1.95.0
 # The metadata gate compares against where this branch left main, as CI's
 # pull-request run compares against the pull request's base.
-BASE ?= $(shell git merge-base HEAD origin/main)
+BASE ?= $(shell git merge-base HEAD origin/main 2>/dev/null)
 
 check:
 	cargo check --workspace --all-targets --locked
@@ -26,11 +30,18 @@ fmt:
 	cargo fmt --all -- --check
 	cargo fmt --manifest-path model/burn-a0/Cargo.toml -- --check
 
-a0:
-	cargo +$(A0_TOOLCHAIN) fmt --manifest-path model/burn-a0/Cargo.toml -- --check
-	cargo +$(A0_TOOLCHAIN) test --manifest-path model/burn-a0/Cargo.toml --locked
-	cargo +$(A0_TOOLCHAIN) check --manifest-path model/burn-a0/Cargo.toml --examples --locked
-	cargo +$(A0_TOOLCHAIN) clippy --manifest-path model/burn-a0/Cargo.toml --all-targets --locked -- -D warnings
+a0: a0-stable a0-msrv
+
+a0-stable:
+	cargo +$(A0_STABLE) fmt --manifest-path model/burn-a0/Cargo.toml -- --check
+	cargo +$(A0_STABLE) test --manifest-path model/burn-a0/Cargo.toml --locked
+	cargo +$(A0_STABLE) check --manifest-path model/burn-a0/Cargo.toml --examples --locked
+	cargo +$(A0_STABLE) clippy --manifest-path model/burn-a0/Cargo.toml --all-targets --locked -- -D warnings
+
+a0-msrv:
+	rustup toolchain install $(A0_MSRV) --profile minimal
+	cargo +$(A0_MSRV) test --manifest-path model/burn-a0/Cargo.toml --locked
+	cargo +$(A0_MSRV) check --manifest-path model/burn-a0/Cargo.toml --examples --locked
 
 test:
 	cargo test --workspace --locked
@@ -110,6 +121,7 @@ ci-python-training:
 	PYTHONPATH=training/src $(PYTHON) training/src/ptr_training/validate_dataset.py datasets/samples/operator_route.jsonl
 
 ci-repository-invariants:
+	@test -n "$(BASE)" || { echo "BASE is empty: fetch origin/main, or pass BASE=<commit>" >&2; exit 2; }
 	$(PYTHON) scripts/check_component_metadata.py --base $(BASE)
 	$(PYTHON) scripts/check_vendor_integrity.py
 	$(PYTHON) scripts/check_vendor_retirement.py --require-observations

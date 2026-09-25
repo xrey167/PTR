@@ -35,15 +35,19 @@ Before submitting, run what CI runs:
 ```bash
 make ci-local                  # every job in .github/workflows/ci.yml, step for step
 make ci-repository-invariants  # or one job: every target is ci-<job name>
-make a0                        # also when you touch model/burn-a0, crates/ptr-types or the codebook
+make a0                        # also when you touch model/burn-a0, crates/ptr-types, the root Cargo.toml or the codebook
 ```
 
 `make ci-local` needs the `stable`, `1.85.0` and `1.91.0` toolchains (it installs
 the pinned two the way CI does) and builds every feature backend, so it is slow
-the first time. `make a0` uses Rust 1.95.0 by default (`A0_TOOLCHAIN=...` to
-override); add its components with `rustup component add rustfmt clippy
---toolchain 1.95.0`. `scripts/tests/test_ci_local.py` fails when a CI step has no
-counterpart in these targets, so they cannot silently fall behind CI.
+the first time. It reads `BASE` from `origin/main`; without that ref, pass
+`BASE=<commit>`. `make a0` is burn-a0.yml's two jobs: `a0-stable` formats, tests
+and lints on your `stable`, and `a0-msrv` tests on 1.95.0. CI's stable is always
+the current release, so run `rustup update stable` first, or a lint newer than
+your toolchain passes here and fails there (Burn A0 needs at least 1.95).
+`scripts/tests/test_ci_local.py` fails when a CI step, a step's `env:`, or a
+multi-line script step has no counterpart in these targets, so they cannot
+silently fall behind CI.
 
 `python3 scripts/report_rust_api.py --public-only` prints the public Rust API for
 review. It is a report, not a gate, so it is not part of `ci-local`.
