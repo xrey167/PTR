@@ -17,4 +17,6 @@ These are architecture-level requirements. Implementations may strengthen them b
 13. **Secret redaction:** generic inspection/telemetry never exposes secret/private values by default.
 14. **Replayability:** authoritative state can be rebuilt from committed history + validated snapshot.
 15. **Falsifiability:** model/architecture claims require baseline, ablation and failure criteria.
+16. **Projection fidelity:** a projection advances only by records verified against the ledger's own anchors; a projection ahead of or diverging from the ledger is refused and rebuilt, never reconciled.
+17. **Revocable derivation:** derived state that folds lifecycle-managed inputs (fast memories, adapters, labels) names the input generations it depends on, so revoking an input identifies its influence and, where the fold is deterministic, removes it exactly.
 

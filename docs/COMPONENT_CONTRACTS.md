@@ -30,6 +30,12 @@ The axes must not be collapsed into one enum: semantic role, epistemic state, un
 | SemanticCapsule | memory | search/core | generation, claims, provenance, validity |
 | EvidenceCandidate | search | verifier | source ref, index generation, score, method |
 | FlowSignature | core/runtime | observe/verifier | selected operators and transitions |
+| CommittedEvent + LogAnchor | ledger | pg projector | commit index, anchor digest recomputed from the stored anchor |
+| SealedBranch | branch | pg branch store/certifier | base revision, value/range digests, relied generations, typed ops |
+| MergePlan | branch | runtime (verified delta) | certified revision, one SemanticDelta, plan digest |
+| TriageOutcome | branch | pg/analytics | decision, eligibility, calibration slice, score, propensity, policy version |
+| WriteRequest/SourceRef | fastmem | pg journal | source key, generation, input digest, raw key/value cells, gates |
+| MetricSpec/MetricRow | analytics | pg (compiled SQL) | metric, grouping, numerator, denominator |
 
 ## Compatibility
 
