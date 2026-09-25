@@ -4,10 +4,13 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import math
+import os
 import platform
 import re
 import shlex
 import subprocess
+import statistics
 import sys
 import time
 import tomllib
@@ -45,6 +48,95 @@ def git_sha() -> str:
         ).strip()
     except Exception:
         return "unknown"
+
+
+def git_worktree_state() -> dict:
+    """The same rule as training/src/ptr_training/run.py: only tracked files count,
+    so the untracked run records this runner itself writes never make a run dirty."""
+    try:
+        porcelain = subprocess.check_output(
+            ["git", "status", "--porcelain", "--untracked-files=no"],
+            cwd=ROOT,
+            text=True,
+        )
+        diff = subprocess.check_output(["git", "diff", "--binary", "HEAD"], cwd=ROOT)
+        return {
+            "git_dirty": bool(porcelain.strip()),
+            "git_tracked_diff_sha256": hashlib.sha256(diff).hexdigest(),
+        }
+    except Exception:
+        return {"git_dirty": None, "git_tracked_diff_sha256": None}
+
+
+def host_facts() -> dict:
+    """The machine a run executed on, measured rather than declared.
+
+    A manifest names a hardware profile, but `hardware/default.toml`, which most
+    experiments name, is `unspecified` in every field, so the profile alone says
+    nothing about where a number came from."""
+    cpu_model = None
+    cpuinfo = Path("/proc/cpuinfo")
+    if cpuinfo.is_file():
+        for line in cpuinfo.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.lower().startswith("model name") and ":" in line:
+                cpu_model = line.split(":", 1)[1].strip()
+                break
+    if not cpu_model:
+        cpu_model = platform.processor() or None
+    memory_bytes = None
+    meminfo = Path("/proc/meminfo")
+    if meminfo.is_file():
+        for line in meminfo.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.startswith("MemTotal:"):
+                memory_bytes = int(line.split()[1]) * 1024
+                break
+    if memory_bytes is None:
+        try:
+            memory_bytes = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+        except (AttributeError, ValueError, OSError):
+            memory_bytes = None
+    return {
+        "system": platform.system(),
+        "release": platform.release(),
+        "machine": platform.machine(),
+        "cpu_model": cpu_model,
+        "logical_cpus": os.cpu_count(),
+        "memory_bytes": memory_bytes,
+    }
+
+
+def hardware_profile_record(relative: str | None) -> dict | None:
+    """The declared profile's bytes and contents, not only its path, and which of
+    its fields still say `unspecified`."""
+    if not relative:
+        return None
+    path = ROOT / relative
+    if not path.is_file():
+        return {"path": relative, "sha256": None, "contents": None, "unspecified_fields": None}
+    contents = load(path)
+    return {
+        "path": relative,
+        "sha256": sha(path),
+        "contents": contents,
+        "unspecified_fields": sorted(
+            key for key, value in contents.items() if value == "unspecified"
+        ),
+    }
+
+
+def toolchain(command: list[str]) -> str | None:
+    """`rustc --version` for the toolchain a cargo command runs on: the `+name` it
+    names, or the one rust-toolchain.toml pins for the repository root."""
+    if not command or Path(command[0]).name != "cargo":
+        return None
+    query = ["rustc"]
+    if len(command) > 1 and command[1].startswith("+"):
+        query.append(command[1])
+    query.append("--version")
+    try:
+        return subprocess.check_output(query, cwd=ROOT, text=True).strip()
+    except Exception:
+        return None
 
 
 def utc_stamp() -> str:
@@ -103,17 +195,22 @@ def validate():
 
 
 def base_record(exp_id: str, data: dict, root: Path) -> dict:
+    # Version 2 adds the worktree state, the measured host and the declared
+    # hardware profile's contents; every version-1 field keeps its meaning.
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "experiment_id": exp_id,
         "git_sha": git_sha(),
+        **git_worktree_state(),
         "python": sys.version,
         "platform": platform.platform(),
+        "host": host_facts(),
         "manifest": data,
         "manifest_sha256": sha(root / "experiment.toml"),
         "cargo_lock_sha256": sha(ROOT / "Cargo.lock"),
         "uv_lock_sha256": sha(ROOT / "training/uv.lock"),
         "hardware_profile": data.get("hardware_profile"),
+        "hardware_profile_record": hardware_profile_record(data.get("hardware_profile")),
     }
 
 
@@ -229,6 +326,7 @@ def run_experiment(
             "seed": seed,
             "parameters": params or {},
             "command": command,
+            "rustc": toolchain(command),
         }
     )
 
@@ -252,6 +350,158 @@ def run_experiment(
     return exit_code if exit_code is not None else 127
 
 
+def metric_rows(stdout: str) -> list[dict]:
+    """The JSON objects a run printed, one per line. A line that starts like an
+    object but does not parse is an error rather than a row silently lost."""
+    rows = []
+    for number, line in enumerate(stdout.splitlines(), 1):
+        text = line.strip()
+        if not text.startswith("{"):
+            continue
+        try:
+            value = json.loads(text)
+        except json.JSONDecodeError as error:
+            raise ValueError(f"stdout line {number} is not valid JSON: {error}") from None
+        if isinstance(value, dict):
+            rows.append(value)
+    return rows
+
+
+def summarize(by_seed: dict[int, float]) -> dict:
+    ordered = [by_seed[seed] for seed in sorted(by_seed)]
+    return {
+        "n": len(ordered),
+        "mean": statistics.fmean(ordered),
+        # Sample standard deviation: the seeds are a sample of the runs one could
+        # have made, not the whole population of them.
+        "std": statistics.stdev(ordered) if len(ordered) > 1 else None,
+        "min": min(ordered),
+        "max": max(ordered),
+        "by_seed": {str(seed): by_seed[seed] for seed in sorted(by_seed)},
+    }
+
+
+def aggregate(
+    exp_id: str,
+    *,
+    entrypoint: str,
+    git_sha_filter: str | None = None,
+    allow_dirty: bool = False,
+) -> int:
+    """Summarize one entrypoint's run records across seeds into a new, immutable
+    aggregate record.
+
+    A row is a JSON object a run printed on its own line. Its string fields name
+    the row (for example `{"arm": "typed", "split": "ood"}`) and its numeric
+    fields are the metrics summarized across seeds; a numeric `seed` field is
+    taken as a label, not a metric. Refused rather than guessed: records from
+    more than one commit, records from a dirty or unknown worktree (unless
+    `allow_dirty`, which the aggregate then records), two completed records for
+    one seed, and one row name printed twice by one run. Failed runs and
+    declared seeds without a completed run are listed, never dropped, and make
+    the aggregate `incomplete`."""
+    _, root, data = resolve(exp_id)
+    results = root / data.get("results_dir", "results")
+    records = []
+    for path in sorted(results.glob("run-*.json")):
+        record = json.loads(path.read_text(encoding="utf-8"))
+        if record.get("entrypoint") != entrypoint:
+            continue
+        if git_sha_filter and record.get("git_sha") != git_sha_filter:
+            continue
+        records.append((path, record))
+    if not records:
+        raise ValueError(f"no run records for entrypoint {entrypoint!r} in {results.relative_to(ROOT)}")
+
+    shas = sorted({str(record.get("git_sha")) for _, record in records})
+    if len(shas) > 1:
+        raise ValueError(
+            f"records span {len(shas)} commits ({', '.join(shas)}); pass --git-sha to choose one"
+        )
+    unclean = [path.name for path, record in records if record.get("git_dirty") is not False]
+    if unclean and not allow_dirty:
+        raise ValueError(
+            f"{len(unclean)} records come from a dirty or unrecorded worktree "
+            f"({', '.join(unclean)}); pass --allow-dirty to aggregate them anyway"
+        )
+
+    completed: dict[int, tuple[Path, dict]] = {}
+    failed = []
+    for path, record in records:
+        if record.get("status") == "completed":
+            seed = record["seed"]
+            if seed in completed:
+                raise ValueError(
+                    f"seed {seed} has two completed records "
+                    f"({completed[seed][0].name}, {path.name}); pass --git-sha or remove one"
+                )
+            completed[seed] = (path, record)
+        else:
+            failed.append(
+                {
+                    "seed": record.get("seed"),
+                    "status": record.get("status"),
+                    "exit_code": record.get("exit_code"),
+                    "record": path.name,
+                }
+            )
+
+    groups: dict[tuple, dict[str, dict[int, float]]] = {}
+    for seed, (path, record) in sorted(completed.items()):
+        seen = set()
+        try:
+            rows = metric_rows(record.get("stdout", ""))
+        except ValueError as error:
+            raise ValueError(f"{path.name}: {error}") from None
+        for row in rows:
+            key = tuple(sorted((k, v) for k, v in row.items() if isinstance(v, str)))
+            if key in seen:
+                raise ValueError(f"{path.name}: row {dict(key)} is printed more than once")
+            seen.add(key)
+            for name, value in row.items():
+                if name == "seed" or isinstance(value, bool):
+                    continue
+                if isinstance(value, (int, float)) and math.isfinite(value):
+                    groups.setdefault(key, {}).setdefault(name, {})[seed] = value
+    if completed and not groups:
+        raise ValueError("the completed runs printed no JSON metric rows")
+
+    declared = list(data.get("seeds", []))
+    missing = sorted(set(declared) - set(completed))
+    status = "complete" if not missing and not failed else "incomplete"
+    timestamp = utc_stamp()
+    summary = {
+        "schema_version": 1,
+        "kind": "aggregate",
+        "experiment_id": exp_id,
+        "entrypoint": entrypoint,
+        "git_sha": shas[0],
+        "allow_dirty": allow_dirty,
+        "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "status": status,
+        "declared_seeds": declared,
+        "completed_seeds": sorted(completed),
+        "missing_seeds": missing,
+        "failed_runs": failed,
+        "source_records": [
+            {"path": path.name, "sha256": sha(path)} for path, _ in records
+        ],
+        "groups": [
+            {
+                "key": dict(key),
+                "metrics": {
+                    name: summarize(by_seed) for name, by_seed in sorted(metrics.items())
+                },
+            }
+            for key, metrics in sorted(groups.items())
+        ],
+    }
+    out = results / f"aggregate-{timestamp}-{entrypoint}.json"
+    write_json_exclusive(out, summary)
+    print(out.relative_to(ROOT))
+    return 0 if status == "complete" else 1
+
+
 def main():
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -270,6 +520,12 @@ def main():
     run.add_argument("--entrypoint", default="entrypoint")
     run.add_argument("--set", dest="params", action="append", default=[])
 
+    agg = sub.add_parser("aggregate")
+    agg.add_argument("id")
+    agg.add_argument("--entrypoint", default="entrypoint")
+    agg.add_argument("--git-sha")
+    agg.add_argument("--allow-dirty", action="store_true")
+
     args = parser.parse_args()
     if args.cmd == "list":
         for key, value in registry().items():
@@ -283,6 +539,18 @@ def main():
         return
     if args.cmd == "prepare":
         raise SystemExit(prepare(args.id))
+    if args.cmd == "aggregate":
+        try:
+            code = aggregate(
+                args.id,
+                entrypoint=args.entrypoint,
+                git_sha_filter=args.git_sha,
+                allow_dirty=args.allow_dirty,
+            )
+        except ValueError as error:
+            print(f"ERROR: {error}", file=sys.stderr)
+            raise SystemExit(2)
+        raise SystemExit(code)
     if args.cmd == "run":
         try:
             params = parse_params(args.params)
