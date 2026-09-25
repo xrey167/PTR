@@ -33,4 +33,4 @@ pub use error::FastMemoryError;
 pub use memory::{binding_digest_of, FastMemory, RevocationReport, WriteReceipt};
 pub use projection::{IdentifierCodebook, ProjectionSpec, SeededProjection};
 pub use state::{FastWeightState, Readout};
-pub use write::{Decay, MemoryWrite, Query, SourceRef, WriteRequest, WriteSeq};
+pub use write::{validate_write, Decay, MemoryWrite, Query, SourceRef, WriteRequest, WriteSeq};

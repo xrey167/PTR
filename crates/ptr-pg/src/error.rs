@@ -53,7 +53,8 @@ pub enum PgError {
     /// other, so a space is never redefined in place.
     SpaceConflict { space: String },
     /// A fast-memory journal append was refused: the sequence number does not
-    /// follow the journal, the journal is full, or the memory does not exist.
+    /// follow the journal, the journal is full, the memory does not exist, or
+    /// the request fails the memory configuration and admission rules.
     InvalidWrite {
         memory: String,
         reason: &'static str,

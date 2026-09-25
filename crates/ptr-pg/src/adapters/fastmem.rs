@@ -7,8 +7,8 @@
 //! here in the projector's transaction; see `projection.rs`.
 
 use ptr_fastmem::{
-    binding_digest_of, decode_state, encode_state, Decay, FastMemoryConfig, FastWeightState,
-    SourceRef, WriteRequest, WriteSeq,
+    binding_digest_of, decode_state, encode_state, validate_write, Decay, FastMemoryConfig,
+    FastWeightState, SourceRef, WriteRequest, WriteSeq,
 };
 use ptr_types::{Generation, PrincipalId};
 use tokio_postgres::Transaction;
@@ -177,9 +177,11 @@ impl PgSubstrate {
         // after the lock was granted, so it includes the append that held it.
         // Reading both in the locking statement would use the snapshot from
         // before the wait and let two appends pass the same checks.
-        let max_writes: i32 = lock_memory(&transaction, work, memory)
+        let config = load_config(&transaction, work, memory, true)
             .await?
             .ok_or_else(|| refuse("the memory is not registered"))?;
+        validate_write(&config, request)
+            .map_err(|_| refuse("the write does not satisfy the memory configuration"))?;
         let journal = transaction
             .query_one(
                 &format!(
@@ -191,7 +193,7 @@ impl PgSubstrate {
             .await
             .map_err(database)?;
         let (count, last): (i64, i64) = (journal.get(0), journal.get(1));
-        if count >= i64::from(max_writes) {
+        if count >= i64::from(config.max_writes) {
             return Err(refuse("the journal is full"));
         }
         let seq_value = to_i64(seq.0, "seq")?;
@@ -402,23 +404,6 @@ impl PgSubstrate {
         transaction.commit().await.map_err(database)?;
         Ok(None)
     }
-}
-
-/// Lock a memory row and return its journal capacity; `None` when it is not
-/// registered.
-async fn lock_memory(
-    transaction: &Transaction<'_>,
-    work: &str,
-    memory: &str,
-) -> Result<Option<i32>, PgError> {
-    Ok(transaction
-        .query_opt(
-            &format!("SELECT max_writes FROM {work}.fastmem_memory WHERE id = $1 FOR UPDATE"),
-            &[&memory],
-        )
-        .await
-        .map_err(database)?
-        .map(|row| row.get(0)))
 }
 
 /// A memory's shape, optionally locking its row.

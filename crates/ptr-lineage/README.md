@@ -10,12 +10,12 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-25  
-**Code footprint:** 7 Rust source files · 1596 nonblank source lines · 3 integration-test files · 38 `#[test]` markers
+**Code footprint:** 7 Rust source files · 1636 nonblank source lines · 4 integration-test files · 46 `#[test]` markers
 
 ### Implemented now
 
 - Content-addressed adapter records bound to one exact base model and revision, with origin, parent or consolidation sources and a data manifest
-- Registration always starts as a candidate; only a passing forgetting gate lets an adapter serve
+- Registration always starts as a candidate; only a passing forgetting gate report bound to that adapter lets it serve
 - Forgetting gate with thresholds on average and per-task forgetting, backward transfer and public-suite regression, computed from an accuracy matrix
 - Revoking a training input names every adapter, descendant and consolidation that depends on it
 - Principal-angle overlap of the column and row spaces of delta_W = B A per layer, computed from the factors without forming the product, against its chance level, plus activation interference

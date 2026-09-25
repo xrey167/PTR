@@ -253,7 +253,7 @@ current_shape = "modular"
 modules = ["branch", "ops", "digest", "certify", "arbiter", "error"]
 public_groups = ["Branch/SealedBranch", "BranchOp", "digests", "Certification/MergePlan", "triage and off-policy evaluation"]
 function_groups = ["read/scan/stage/seal", "certify", "triage", "calibrate", "evaluate off-policy"]
-notes = ["merge goes through ptr-runtime apply_verified_semantic_delta only"]
+notes = ["callers must route merges through PtrRuntime::apply_verified_semantic_delta; this is not enforced because apply_semantic_delta and MergePlan's expected and delta fields are public"]
 
 [[crate]]
 id = "ptr-fastmem"

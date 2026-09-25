@@ -71,7 +71,7 @@ pub fn clopper_pearson_upper(successes: u64, trials: u64, delta: f64) -> Result<
     if trials == 0 || successes == trials {
         return Ok(1.0);
     }
-    let (mut low, mut high) = (successes as f64 / trials as f64, 1.0);
+    let (mut low, mut high) = (0.0, 1.0);
     for _ in 0..100 {
         let mid = 0.5 * (low + high);
         if binomial_cdf(successes, trials, mid) > delta {
@@ -141,6 +141,15 @@ mod tests {
         let exact = 1.0 - 0.05_f64.powf(1.0 / 50.0);
         assert!((bound - exact).abs() < 1e-9, "{bound} {exact}");
         assert_eq!(clopper_pearson_upper(3, 3, 0.05).unwrap(), 1.0);
+    }
+
+    #[test]
+    fn clopper_pearson_can_find_a_root_below_the_observed_rate() {
+        // For one success in two trials, CDF(p) = 1 - p^2.
+        for delta in [0.01_f64, 0.5, 0.9, 0.999] {
+            let bound = clopper_pearson_upper(1, 2, delta).unwrap();
+            assert!((bound - (1.0 - delta).sqrt()).abs() < 1e-12);
+        }
     }
 
     #[test]

@@ -46,7 +46,7 @@ pub fn krippendorff_alpha_nominal(units: &[Vec<Option<usize>>]) -> Option<f64> {
         .sum();
     let marginal_pairs: f64 = marginals.values().map(|nc| nc * (nc - 1.0)).sum();
     let denominator = n * (n - 1.0) - marginal_pairs;
-    if n <= 1.0 || denominator == 0.0 {
+    if n <= 1.0 || marginals.len() == 1 {
         return None;
     }
     Some(((n - 1.0) * diagonal - marginal_pairs) / denominator)
@@ -78,6 +78,14 @@ mod tests {
             vec![Some(2)],
         ];
         assert_eq!(krippendorff_alpha_nominal(&units), Some(1.0));
+    }
+
+    #[test]
+    fn single_category_with_fractional_coincidences_is_undefined() {
+        for ratings in [4, 7, 11] {
+            let units = vec![vec![Some(0); ratings], vec![Some(0); ratings + 1]];
+            assert_eq!(krippendorff_alpha_nominal(&units), None);
+        }
     }
 
     #[test]

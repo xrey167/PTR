@@ -67,6 +67,7 @@ fn forgetting_gate_accepts_equality_at_every_threshold() {
     };
     assert!(gate
         .evaluate(
+            &ptr_lineage::AdapterId::from("candidate"),
             &matrix,
             PublicSuite {
                 serving: 0.625,
@@ -75,6 +76,7 @@ fn forgetting_gate_accepts_equality_at_every_threshold() {
         )
         .passed());
     let report = gate.evaluate(
+        &ptr_lineage::AdapterId::from("candidate"),
         &matrix,
         PublicSuite {
             serving: 0.75,

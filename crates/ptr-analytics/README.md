@@ -10,14 +10,14 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-25  
-**Code footprint:** 8 Rust source files · 686 nonblank source lines · 1 integration-test files · 19 `#[test]` markers
+**Code footprint:** 8 Rust source files · 714 nonblank source lines · 1 integration-test files · 28 `#[test]` markers
 
 ### Implemented now
 
-- Wilson score interval and one-sided Clopper-Pearson upper bound by bisection on an exact binomial tail
+- Wilson score interval and one-sided Clopper-Pearson upper bound by bisection over the full unit interval on an exact binomial tail
 - Self-normalised Horvitz-Thompson rate with a Wilson interval on the Kish effective sample size, for calibration slices audited at a known rate
 - Brier score and expected calibration error with equal-width or equal-mass binning
-- Krippendorff's alpha for nominal data with missing values
+- Krippendorff's alpha for nominal data with missing values and direct single-category refusal
 - Welford running moments with an exact parallel merge
 - Metric vocabulary (auto-propose share, escalation share, conflict rate, adjudicated harm rate) with grouping, compiled to SQL by ptr-pg and to intervals here
 - Every estimator refuses empty, non-finite or out-of-range input with a typed StatsError code

@@ -110,6 +110,22 @@ impl Query {
     }
 }
 
+/// Validate a composed write against a memory's configuration without changing it.
+///
+/// Uses the same admission rules as writing and restoring a memory. Lifecycle,
+/// journal capacity and sequence checks remain the caller's responsibility.
+///
+/// # Errors
+/// Rejects invalid configurations, dimensions, nonfinite cells, keys that cannot
+/// be normalised, and beta or decay factors outside their supported ranges.
+pub fn validate_write(
+    config: &FastMemoryConfig,
+    request: &WriteRequest,
+) -> Result<(), FastMemoryError> {
+    crate::config::check_config(config)?;
+    admit_write(config, WriteSeq(0), request.clone()).map(|_| ())
+}
+
 pub(crate) fn admit_write(
     config: &FastMemoryConfig,
     seq: WriteSeq,

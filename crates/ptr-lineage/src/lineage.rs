@@ -149,8 +149,8 @@ impl Lineage {
         Ok(())
     }
 
-    /// Promote a candidate on a passing gate report. A failing report changes
-    /// nothing.
+    /// Promote a candidate on a passing gate report for that adapter. A failing
+    /// or mismatched report changes nothing.
     pub fn gate(&mut self, id: &AdapterId, report: &GateReport) -> Result<(), LineageError> {
         let status = self
             .adapters
@@ -164,7 +164,7 @@ impl Lineage {
                 to: AdapterStatus::Gated.name(),
             });
         }
-        if !report.passed() {
+        if report.adapter() != id || !report.passed() {
             return Err(LineageError::GateFailed { id: id.to_string() });
         }
         self.transition(id, AdapterStatus::Candidate, AdapterStatus::Gated)

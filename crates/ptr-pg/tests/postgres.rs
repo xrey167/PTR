@@ -826,6 +826,140 @@ async fn a_write_from_an_inadmissible_source_or_out_of_sequence_is_refused() {
     substrate.drop_all().await.unwrap();
 }
 
+#[tokio::test]
+async fn malformed_writes_never_enter_the_journal() {
+    let mut substrate = substrate().await;
+    substrate.replay(&[capsule(1, "live", 1)]).await.unwrap();
+    substrate
+        .create_memory(&FastMemoryRecord {
+            id: "m1".into(),
+            principal: PrincipalId::from("agent"),
+            thread: "thread".into(),
+            config: memory_config(),
+            projection_digest: [3; 32],
+            codebook_seed: 11,
+        })
+        .await
+        .unwrap();
+    let valid = write_request("live", [2.0, 0.0, 0.0, 0.0], [1.0; 4]);
+    let mut invalid = Vec::new();
+    let mut request = valid.clone();
+    request.key.pop();
+    invalid.push(request);
+    let mut request = valid.clone();
+    request.value.pop();
+    invalid.push(request);
+    for value in [0.0, f32::NAN, f32::INFINITY, f32::MAX] {
+        let mut request = valid.clone();
+        request.key.fill(value);
+        invalid.push(request);
+    }
+    for value in [f32::NAN, f32::INFINITY] {
+        let mut request = valid.clone();
+        request.value[0] = value;
+        invalid.push(request);
+    }
+    for value in [0.0, -0.1, 1.1, f32::NAN, f32::INFINITY] {
+        let mut request = valid.clone();
+        request.beta = value;
+        invalid.push(request);
+        let mut request = valid.clone();
+        request.decay = Decay::Scalar(value);
+        invalid.push(request);
+        let mut request = valid.clone();
+        request.decay = Decay::PerChannel(vec![value; 4]);
+        invalid.push(request);
+    }
+    let mut request = valid.clone();
+    request.decay = Decay::PerChannel(vec![1.0; 3]);
+    invalid.push(request);
+    for request in invalid {
+        assert!(ptr_fastmem::validate_write(&memory_config(), &request).is_err());
+        assert!(matches!(
+            substrate
+                .append_write("m1", ptr_fastmem::WriteSeq(1), &request)
+                .await,
+            Err(PgError::InvalidWrite { .. })
+        ));
+        assert!(substrate.load_journal("m1").await.unwrap().is_empty());
+    }
+    substrate
+        .append_write("m1", ptr_fastmem::WriteSeq(1), &valid)
+        .await
+        .unwrap();
+    let journal = substrate.load_journal("m1").await.unwrap();
+    assert_eq!(journal[0].1, valid);
+    FastMemory::restore(memory_config(), journal).unwrap();
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn invalid_search_parameters_are_refused_before_sql() {
+    let substrate = substrate().await;
+    let schemas = substrate.schemas().clone();
+    substrate.drop_all().await.unwrap();
+    // Missing schemas ensure a valid query would fail if SQL were reached.
+    let mut substrate = PgSubstrate::connect_with(&dsn(), schemas).await.unwrap();
+    let query = HybridQuery {
+        project: None,
+        text: None,
+        embedding: None,
+        limit: 1,
+        rank_constant: 0.0,
+        lexical_weight: 0.0,
+        vector_weight: 0.0,
+    };
+    let mut invalid = query.clone();
+    invalid.limit = 0;
+    assert_eq!(
+        substrate.search(&invalid).await.unwrap_err(),
+        PgError::OutOfRange {
+            field: "query.limit"
+        }
+    );
+    for value in [-1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        for field in [
+            "query.rank_constant",
+            "query.lexical_weight",
+            "query.vector_weight",
+        ] {
+            let mut invalid = query.clone();
+            match field {
+                "query.rank_constant" => invalid.rank_constant = value,
+                "query.lexical_weight" => invalid.lexical_weight = value,
+                _ => invalid.vector_weight = value,
+            }
+            assert_eq!(
+                substrate.search(&invalid).await.unwrap_err(),
+                PgError::OutOfRange { field }
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn ddl_failures_leave_the_connection_outside_a_failed_transaction() {
+    let substrate = substrate().await;
+    let schemas = substrate.schemas().clone();
+    let read_only = format!("{} options='-c default_transaction_read_only=on'", dsn());
+    let mut reader = PgSubstrate::connect_with(&read_only, schemas)
+        .await
+        .unwrap();
+    for _ in 0..2 {
+        for error in [
+            reader.migrate().await.unwrap_err(),
+            reader.rebuild_projection().await.unwrap_err(),
+        ] {
+            assert!(
+                matches!(error, PgError::Database { ref sqlstate, .. }
+                if sqlstate == "25006"),
+                "{error:?}"
+            );
+        }
+    }
+    substrate.drop_all().await.unwrap();
+}
+
 fn sealed_branch(id: &str, author: &str) -> SealedBranch {
     let payload = SemanticValue::Payload(SemanticPayload {
         type_id: TypeId::from("ptr.test.bytes"),

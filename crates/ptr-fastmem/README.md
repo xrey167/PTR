@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-25  
-**Code footprint:** 9 Rust source files · 1681 nonblank source lines · 4 integration-test files · 46 `#[test]` markers
+**Code footprint:** 9 Rust source files · 1709 nonblank source lines · 4 integration-test files · 51 `#[test]` markers
 
 ### Implemented now
 
@@ -21,7 +21,7 @@
 - binding_digest_of names the ordered folded writes by sequence, source key, generation and input digest (not by key and value bits); ptr-pg recomputes it from the stored journal prefix, refuses to store a checkpoint that does not match and never returns one that no longer does
 - Seeded orthogonal key projection and identifier codebook; readouts decode to named capsules or to Unknown below a margin
 - PTRFW001 state codec with full f32 cells and a SHA-256 trailer
-- Bounded shapes, journal length and checkpoint interval with typed refusals
+- Bounded shapes, journal length and checkpoint interval with typed refusals; public validate_write shares restore admission rules
 
 ### Missing for the target architecture
 

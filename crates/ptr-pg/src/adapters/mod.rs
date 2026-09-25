@@ -194,16 +194,16 @@ impl PgSubstrate {
     async fn rebuild_locked(&mut self) -> Result<MigrationReport, PgError> {
         let projection = self.schemas.projection.clone();
         let derived = self.schemas.derived.clone();
-        self.client
+        let transaction = self.client.transaction().await.map_err(database)?;
+        transaction
             .batch_execute(&format!(
-                "BEGIN; \
-                 SET LOCAL lock_timeout = '10s'; \
+                "SET LOCAL lock_timeout = '10s'; \
                  DROP SCHEMA IF EXISTS {derived} CASCADE; \
-                 DROP SCHEMA IF EXISTS {projection} CASCADE; \
-                 COMMIT;"
+                 DROP SCHEMA IF EXISTS {projection} CASCADE;"
             ))
             .await
             .map_err(database)?;
+        transaction.commit().await.map_err(database)?;
         self.migrate_locked().await
     }
 
@@ -213,21 +213,21 @@ impl PgSubstrate {
             let schema = self.schema_of(class).to_owned();
             // SET LOCAL: the timeout bounds this transaction's DDL only and
             // never leaks into the session the projector uses afterwards.
-            self.client
+            let transaction = self.client.transaction().await.map_err(database)?;
+            transaction
                 .batch_execute(&format!(
-                    "BEGIN;
-                     SET LOCAL lock_timeout = '10s';
+                    "SET LOCAL lock_timeout = '10s';
                      CREATE SCHEMA IF NOT EXISTS {schema};
                      CREATE TABLE IF NOT EXISTS {schema}.schema_migration (
                          version integer PRIMARY KEY,
                          name text NOT NULL,
                          checksum bytea NOT NULL,
                          applied_at timestamptz NOT NULL DEFAULT now()
-                     );
-                     COMMIT;"
+                     );"
                 ))
                 .await
                 .map_err(database)?;
+            transaction.commit().await.map_err(database)?;
             let rows = self
                 .client
                 .query(
@@ -310,6 +310,7 @@ fn check_targets(config: &Config) -> Result<(), PgError> {
 
 fn check_loopback(host: &Host) -> Result<(), PgError> {
     match host {
+        #[cfg(unix)]
         Host::Unix(_) => Ok(()),
         Host::Tcp(name) => {
             let loopback = name == "localhost"

@@ -1,4 +1,5 @@
 use crate::error::LineageError;
+use crate::lineage::AdapterId;
 
 /// `values[i][j]`: score on task `j` after training stage `i`, for `T` stages
 /// and `T` tasks (task `j` is the one introduced at stage `j`).
@@ -123,10 +124,16 @@ pub enum GateViolation {
 /// The outcome of a gate. Only [`ForgettingGate::evaluate`] produces one.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GateReport {
+    adapter: AdapterId,
     violations: Vec<GateViolation>,
 }
 
 impl GateReport {
+    /// The adapter whose evaluation produced this report.
+    pub fn adapter(&self) -> &AdapterId {
+        &self.adapter
+    }
+
     pub fn passed(&self) -> bool {
         self.violations.is_empty()
     }
@@ -147,7 +154,12 @@ impl ForgettingGate {
     /// Report every exceeded forgetting or regression limit and every missed
     /// backward-transfer minimum. Equality passes each threshold. A NaN public
     /// score difference is reported as a public-regression violation.
-    pub fn evaluate(&self, matrix: &AccuracyMatrix, public: PublicSuite) -> GateReport {
+    pub fn evaluate(
+        &self,
+        adapter: &AdapterId,
+        matrix: &AccuracyMatrix,
+        public: PublicSuite,
+    ) -> GateReport {
         let mut violations = Vec::new();
         let average = matrix.average_forgetting();
         if average > self.max_average_forgetting {
@@ -179,7 +191,10 @@ impl ForgettingGate {
                 limit: self.max_public_regression,
             });
         }
-        GateReport { violations }
+        GateReport {
+            adapter: adapter.clone(),
+            violations,
+        }
     }
 }
 
@@ -217,6 +232,7 @@ mod tests {
             max_public_regression: 0.01,
         };
         let report = gate.evaluate(
+            &AdapterId::from("candidate"),
             &matrix(),
             PublicSuite {
                 serving: 0.5,
@@ -236,6 +252,7 @@ mod tests {
             max_public_regression: 1.0,
         };
         let report = gate.evaluate(
+            &AdapterId::from("candidate"),
             &matrix(),
             PublicSuite {
                 serving: 0.5,

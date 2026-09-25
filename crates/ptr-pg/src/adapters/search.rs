@@ -234,6 +234,20 @@ impl PgSubstrate {
     /// are still [`SearchHit`]s at the search-candidate stage: using one as
     /// evidence requires observing it against the lifecycle authority.
     pub async fn search(&mut self, query: &HybridQuery) -> Result<SearchResults, PgError> {
+        if query.limit == 0 {
+            return Err(PgError::OutOfRange {
+                field: "query.limit",
+            });
+        }
+        for (field, value) in [
+            ("query.rank_constant", query.rank_constant),
+            ("query.lexical_weight", query.lexical_weight),
+            ("query.vector_weight", query.vector_weight),
+        ] {
+            if !value.is_finite() || value < 0.0 {
+                return Err(PgError::OutOfRange { field });
+            }
+        }
         if let Some(text) = &query.text {
             check_text("query.text", text)?;
         }
