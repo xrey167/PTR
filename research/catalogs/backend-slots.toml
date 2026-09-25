@@ -322,7 +322,7 @@ owner = "ptr-pg"
 status = "prototype"
 contract = "One relational database hosting the anchor-verified ledger projection, live-only derived caches and non-authoritative working state behind PTR-owned adapters."
 evaluation = "relational-substrate"
-candidates = ["PostgreSQL 18 + pgvector 0.8", "PostgreSQL 16 + pgvector 0.7", "Turso/libSQL (projection only)"]
+candidates = ["PostgreSQL 18 + pgvector 0.8", "PostgreSQL 16 + pgvector 0.8", "Turso/libSQL (projection only)"]
 open_questions = ["TLS and role separation", "connection pooling", "logical replication as change feed", "partitioning of the event log"]
 
 [[slot]]

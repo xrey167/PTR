@@ -114,6 +114,14 @@ holds the lock from a second connection and shows the projector waiting and then
 deleting the late row; `only_live_generations_are_indexed_and_superseding_drops_the_old_document`
 covers the refusals.
 
+The ordering needs every statement to take a fresh snapshot after the locks it waited
+for were released, which is read committed. The projector, the cache writer, journal
+appends and checkpoint stores therefore start their transactions at an explicit
+`READ COMMITTED` instead of inheriting `default_transaction_isolation`: under an
+operator's repeatable-read default the projector's delete would otherwise miss a row
+committed while it waited
+(`the_lock_ordering_holds_when_sessions_default_to_repeatable_read`).
+
 Retrieval runs in one read-only repeatable-read snapshot:
 
 - **Lexical:** built-in full text over a stored `tsvector` with the language-neutral
@@ -124,9 +132,13 @@ Retrieval runs in one read-only repeatable-read snapshot:
   bytes and stays inline). Each registered embedding space gets a partial HNSW index
   over the column cast to its fixed dimension, `WHERE space = '<id>'`, so one table
   holds any number of spaces. The query orders by the indexed expression alone, so
-  the planner uses the index, and with pgvector 0.8 a project filter uses iterative
-  scans in strict order. Registering a different definition under an existing space
-  is refused (`SpaceConflict`).
+  the planner uses the index. An HNSW scan otherwise stops at `hnsw.ef_search` rows
+  (40 by default) whatever the limit, so every query sets iterative scans in strict
+  order and an `ef_search` of at least its limit; pgvector 0.8 is therefore the
+  minimum (`vector_search_is_not_truncated_at_the_default_candidate_list`). A vector
+  that is zero once rounded to half precision is refused, since it has no cosine
+  distance. Registering a different definition under an existing space is refused
+  (`SpaceConflict`).
 - **Liveness:** every hit is joined to the lifecycle catalog of the same snapshot.
 - **Fusion:** weighted reciprocal rank fusion keyed by capsule **and** generation, so
   a stale generation can never borrow the live one's rank
@@ -138,13 +150,15 @@ removes a document from both modes in the commit that revokes it.
 
 ### Work: non-authoritative state with database-enforced shape
 
-Sealed branches with every dependency and operation, one triage row per branch, and
-append-only outcomes; fast-memory journals and checkpoints; the adapter catalog, its
+Sealed branches with every dependency and operation, one immutable triage row per
+branch, and append-only outcomes; fast-memory journals and checkpoints; the adapter catalog, its
 data manifest and the replay pool; the weak-supervision store. None of it is derived
 from the ledger, none of it is dropped by a rebuild, none of it is read as authority.
 The database enforces the invariants a row can express: a calibration-slice branch is
-an escalated eligible branch, an ineligible branch has propensity zero, an outcome is
-never rewritten, a held-out sample cannot enter the replay pool, a consolidated
+an escalated eligible branch, an ineligible branch has propensity zero, a logged
+triage or an outcome is never updated or deleted on its own (it goes only when its
+whole branch is erased), a branch is adjudicated once, a held-out sample cannot enter
+the replay pool, a consolidated
 adapter has sources rather than a parent, a label schema has at least two classes.
 Covered by `a_sealed_branch_round_trips_with_every_dependency_and_op`,
 `triage_logs_and_outcomes_feed_the_platform_metrics` and
@@ -156,8 +170,19 @@ Covered by `a_sealed_branch_round_trips_with_every_dependency_and_op`,
   stable code.
 - The connection string is referenced by the name of an environment variable, never
   stored in a config file.
-- The build links no TLS connector, so a non-loopback host is refused rather than
+- The build links no TLS connector, so a non-loopback target is refused rather than
   sent credentials in the clear (`a_non_loopback_host_is_refused_without_a_tls_connector`).
+  Every `hostaddr` is checked as well as every `host`, because the driver connects to
+  `hostaddr` and uses `host` only as a name
+  (`a_hostaddr_that_is_not_loopback_is_refused_whatever_the_host`).
+- A string PostgreSQL `text` cannot hold (one containing NUL) is refused with
+  `InvalidText` before anything is written. A ledger record carrying one is refused as
+  `InvalidRecord`, and the PostgreSQL projection stops at it while the ledger and the
+  other backends continue
+  (`strings_postgresql_text_cannot_hold_are_refused_before_anything_is_written`).
+- Migrations bound their DDL with `SET LOCAL lock_timeout`, so the timeout never
+  leaks into the session the projector uses; a rebuild drops and recreates under the
+  migration lock, so a failed lock wait never leaves the schemas dropped.
 - Schema and space names are `Identifier`s (`[a-z][a-z0-9_]{0,39}`), so everything
   interpolated into DDL needs no quoting.
 - The substrate never creates an extension: installing one is an operator's decision.
@@ -182,7 +207,7 @@ returns `Clean` or `Rebased` with one `MergePlan`: an ordinary `SemanticDelta` a
 revision it was certified against. Concurrent counter additions both survive
 (`two_concurrent_counter_additions_both_survive`).
 
-A plan reaches state only through `Runtime::apply_verified_semantic_delta`, which
+A plan is committed through `Runtime::apply_verified_semantic_delta`, which
 prepares the delta, hands the verifier a view of the post-state and appends only on a
 `Pass` at the required level with no hard finding
 (`a_certified_and_verified_branch_reaches_semantic_state_only_through_the_runtime`,
@@ -192,6 +217,11 @@ certified before another commit is refused by the runtime's revision check
 `a_verified_delta_against_a_moved_revision_is_refused_before_verification`).
 `Runtime::generation_validity` reads a revoked generation as `Revoked` even while it
 is still the live one (`a_revoked_generation_is_revoked_although_it_is_still_the_live_generation`).
+
+Using that path is the caller's obligation, not a type-level guarantee: a `MergePlan`
+exposes its delta, and the runtime's unverified `apply_semantic_delta` is public, so
+nothing stops a caller from committing a plan without verification. Closing that gap
+(a plan consumable only by a verifying entry point) is listed in §7.
 
 ### The arbiter: verification first, calibration second
 
@@ -210,10 +240,12 @@ verification:
   (`the_calibration_slice_escalates_high_scores_and_only_it_can_be_adjudicated`).
 - The threshold is chosen on a fixed grid by conformal risk control,
   `n/(n+1) · R̂(t) + 1/(n+1) ≤ α`, which bounds the expected joint probability that
-  the next eligible branch is auto-proposed and harmful; or — recommended — by
-  Learn-then-Test fixed-sequence testing with one-sided Clopper-Pearson bounds, which
-  bounds the harm rate among auto-proposed branches with probability `1 − δ`
-  (`a_threshold_calibrated_from_adjudicated_slices_is_used_by_the_next_policy`).
+  the next eligible branch is auto-proposed and harmful
+  (`a_threshold_calibrated_from_adjudicated_slices_is_used_by_the_next_policy`); or —
+  recommended — by Learn-then-Test fixed-sequence testing with one-sided
+  Clopper-Pearson bounds, which bounds the harm rate among auto-proposed branches with
+  probability `1 − δ` (`learn_then_test_certifies_the_clean_region_and_bounds_the_harm_rate`,
+  `a_certified_threshold_bounds_the_harm_rate_among_what_the_next_policy_proposes`).
 - Logged propensities make IPS, SNIPS and doubly robust **off-policy evaluation** of
   a new threshold possible; a threshold below anything the log explored is refused as
   a positivity violation
@@ -253,16 +285,35 @@ source removes its writes and refolds from the last checkpoint before the first
 removed write (`the_refold_restarts_from_the_last_checkpoint_before_the_revoked_write`);
 because the fold is deterministic `f32` arithmetic, the result is bit-identical to a
 memory that never saw the writes
-(`revoking_a_source_leaves_exactly_the_state_that_never_saw_it`). A stored journal
-restores to the same state (`a_restored_journal_folds_to_the_same_state_as_the_live_memory`).
+(`revoking_a_source_leaves_exactly_the_state_that_never_saw_it`).
 
-In PostgreSQL the journal stores each write exactly as composed, before
-normalisation, so a restore re-admits the same bits. A tombstone deletes the revoked
-generation's writes and every checkpoint that folded one of them in the projector's
-transaction, and an append from an inadmissible source is refused under the same row
-lock as a search document
-(`a_revocation_deletes_exactly_the_revoked_writes_and_the_checkpoints_that_folded_them`,
-`a_write_from_an_inadmissible_source_or_out_of_sequence_is_refused`).
+A restore needs the writes **as composed**, before key normalisation: re-admitting a
+normalised key normalises it again and can change its bits. The in-process journal
+(`FastMemory::writes`) holds admitted, normalised writes and is not such a journal;
+the storage keeps each `WriteRequest` instead
+(`a_restored_journal_folds_to_the_same_state_as_the_live_memory` restores from the
+requests themselves).
+
+In PostgreSQL the journal stores each `WriteRequest` as `f32` bit patterns, so a
+restore re-admits the same bits. A tombstone deletes the revoked generation's writes,
+and a supersession every other generation's, together with every checkpoint that
+folded one of them, in the projector's transaction; an append from an inadmissible
+source is refused under the same row lock as a search document
+(`a_revocation_deletes_exactly_the_revoked_writes_and_the_checkpoints_that_folded_them`
+restores from the stored journal and compares bits,
+`superseding_a_source_removes_its_fast_memory_writes`,
+`a_write_from_an_inadmissible_source_or_out_of_sequence_is_refused`). An append locks
+the memory row and reads the journal in a statement after that lock, so two
+concurrent appends cannot both pass the sequence and capacity checks
+(`an_append_that_waited_for_another_sees_its_write`).
+
+A checkpoint is bound to `binding_digest_of` its folded writes — their sequence
+numbers, source keys, generations and input digests; the digest binds which writes
+were folded, not their key and value bits. `put_checkpoint` recomputes it from the
+stored journal prefix, holding those rows `FOR SHARE`, and refuses a mismatch;
+`latest_checkpoint` recomputes it again and skips any checkpoint that no longer folds
+the stored prefix, so a fold of a revoked input is never handed out
+(`a_checkpoint_that_does_not_fold_the_stored_journal_is_refused_or_skipped`).
 
 This is **exact revocation, not erasure**: copies of a deleted write may survive in
 dead tuples, WAL and backups until the storage's own erasure obligations
@@ -279,8 +330,12 @@ depends on it (`revoking_one_input_names_its_adapter_every_descendant_and_every_
 
 Interference is the principal-angle overlap `‖Q_iᵀ Q_j‖²_F / min(r_i, r_j)` of the
 column and row spaces of `ΔW = B A`, layer by layer, reported against the overlap two
-random subspaces of those ranks would have
-(`adapters_on_orthogonal_subspaces_do_not_interfere`,
+random subspaces of those ranks would have. The bases are those of the product,
+computed from the factors without forming it (`B A = Q M` with `Q` a basis of `col(B)`
+and `M = QᵀB A`): taking `col(B)` and `row(A)` instead overstates the rank of
+rank-deficient factors and can understate overlap
+(`a_rank_deficient_update_is_measured_on_its_product_not_its_factors`,
+`adapters_on_orthogonal_subspaces_do_not_interfere`,
 `sharing_an_output_direction_is_full_output_overlap_and_names_the_culprit`). When a
 lineage grows too deep or too entangled, the next step is a TIES merge of the full
 updates into one consolidated adapter
@@ -309,8 +364,11 @@ resolves to `Determined` (every other class vetoed), `Estimated` at or above the
 required probability, `Unknown`, or `Disputed` when every class is vetoed
 (`a_verifier_veto_overrides_a_confident_model_and_vetoing_everything_is_a_dispute`).
 Gold labels record their source and whether they were sampled uniformly or
-actively; only uniform gold estimates accuracy. Calibration (Brier, ECE) and
-agreement (Krippendorff's α) come from `ptr-analytics`.
+actively. Only uniform gold estimates population accuracy and calibration; on active
+gold the evaluation reports accuracy on the sampled items only and withholds
+calibration. Calibration (Brier, ECE) comes from `ptr-analytics`, which also provides
+Krippendorff's α for multi-annotator gold; the labeling crate does not compute
+agreement yet.
 
 ## 6. Metrics and change distribution
 
@@ -337,6 +395,12 @@ with Apache Iggy, NATS and Kafka as candidates behind it.
   authentication.
 - **TLS, separate projector/reader/migrator roles, row-level security, pooling and a
   logical-replication consumer.** Until TLS exists the substrate refuses remote hosts.
+- **A merge plan that can only be committed through verification.** Today it is the
+  caller's obligation (§2): `MergePlan` exposes its delta and the runtime's unverified
+  `apply_semantic_delta` is public.
+- **Strings containing NUL in the PostgreSQL substrate.** PostgreSQL `text` cannot
+  hold them; they are refused with a typed error, and the PostgreSQL projection stops
+  at a ledger record carrying one.
 - **Adapters for the lineage and labeling tables.** The schema and its constraints
   exist and are tested; the Rust models are in-memory working models.
 - **`pg_mooncake`, DataFusion, the Iggy SDK and `ort` as dependencies.** None is
@@ -368,8 +432,8 @@ local-vector-search and event-streaming.
 
 ## 9. Toolchain
 
-PostgreSQL 16 or later with pgvector 0.7 or later (`halfvec`); pgvector 0.8 enables
-iterative index scans. The driver is `tokio-postgres` 0.7.18 without default features,
+PostgreSQL 16 or later with pgvector 0.8 or later (`halfvec` and the iterative index
+scans every vector query uses). The driver is `tokio-postgres` 0.7.18 without default features,
 which builds on the workspace MSRV 1.85. The integration tests need
 `PTR_PG_TEST_DSN` naming a loopback server and run in CI as the `state-postgres` job
 against a pgvector service container, on stable and on 1.85.
