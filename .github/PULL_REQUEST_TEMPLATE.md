@@ -16,9 +16,6 @@
 
 ## Checks
 ```
-make docs-check
-make repo-check
-cargo fmt --all -- --check
-cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
+make ci-local   # everything .github/workflows/ci.yml runs
+make a0         # when model/burn-a0, crates/ptr-types or the codebook changed
 ```
