@@ -183,6 +183,14 @@ fn bench_ledger_recovery(iterations: usize, seed: u64) {
         recovery_errors,
         tail_trim_errors
     );
+    exit_on_violations(
+        "ledger-recovery",
+        &[
+            ("false_accepts", false_accepts),
+            ("recovery_errors", recovery_errors),
+            ("tail_trim_errors", tail_trim_errors),
+        ],
+    );
 }
 
 fn bench_ledger_process_crash(iterations: usize, seed: u64) {
@@ -254,6 +262,41 @@ fn bench_ledger_process_crash(iterations: usize, seed: u64) {
         tail_trim_errors,
         child_exit_errors
     );
+    exit_on_violations(
+        "ledger-process-crash",
+        &[
+            ("false_accepts", false_accepts),
+            ("recovery_errors", recovery_errors),
+            ("tail_trim_errors", tail_trim_errors),
+            ("child_exit_errors", child_exit_errors),
+        ],
+    );
+}
+
+// The lifecycle probes' counters are hard invariants, not measurements: any
+// nonzero one means the run refutes what it was measuring (or, for
+// child_exit_errors, never set up the crash it claims to recover from). The
+// runner records a run as completed from the exit status alone, so a violation
+// has to reach the exit status and not only the JSON line. The line is printed
+// first so a failing run still leaves its counters in the record.
+fn exit_on_violations(benchmark: &str, counters: &[(&str, usize)]) {
+    let violated = violated(counters);
+    if !violated.is_empty() {
+        let _ = std::io::stdout().flush();
+        eprintln!(
+            "ptr-bench {benchmark}: hard-invariant counters nonzero: {}",
+            violated.join(", ")
+        );
+        std::process::exit(1);
+    }
+}
+
+fn violated(counters: &[(&str, usize)]) -> Vec<String> {
+    counters
+        .iter()
+        .filter(|(_, count)| *count > 0)
+        .map(|(name, count)| format!("{name}={count}"))
+        .collect()
 }
 
 fn crash_child(path: &Path, subject: &str, partial_len: usize) -> ! {
@@ -347,4 +390,23 @@ fn checked_tail(subject: &str, project: &str, extra: usize) -> Vec<u8> {
     });
     let bytes = ptr_ledger::integrity::encode_log(&events).expect("fixture frame");
     bytes[prefix_len..prefix_len + ptr_ledger::integrity::FRAME_HEADER_BYTES + extra].to_vec()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::violated;
+
+    #[test]
+    fn only_nonzero_hard_counters_are_violations() {
+        assert!(violated(&[]).is_empty());
+        assert!(violated(&[("false_accepts", 0), ("recovery_errors", 0)]).is_empty());
+        assert_eq!(
+            violated(&[
+                ("false_accepts", 0),
+                ("recovery_errors", 2),
+                ("tail_trim_errors", 1),
+            ]),
+            ["recovery_errors=2", "tail_trim_errors=1"]
+        );
+    }
 }
