@@ -9,7 +9,7 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-21  
+**Last reviewed:** 2026-09-25  
 **Code footprint:** 1 Rust source files · 211 nonblank source lines · 3 integration-test files · 3 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
@@ -51,6 +51,7 @@
 
 - replay ordering/idempotency integration test
 - Turso reopen/monotonicity integration test behind turso-backend feature
+- clippy -D warnings over the turso-backend build in the state-turso CI job
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->

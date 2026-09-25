@@ -100,12 +100,14 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo +stable test -p ptr-ledger --features failpoints --test failpoints --locked
+      - run: cargo +stable clippy -p ptr-ledger --features failpoints --all-targets --locked -- -D warnings
   ledger-raft-engine:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo +stable test -p ptr-ledger --features raft-engine-backend --test raft_engine --locked
+      - run: cargo +stable clippy -p ptr-ledger --features raft-engine-backend --all-targets --locked -- -D warnings
   ledger-raft-rs:
     runs-on: ubuntu-latest
     steps:
@@ -114,12 +116,14 @@ jobs:
       - run: cargo +stable test -p ptr-ledger --features raft-rs-backend --test raft_rs --locked
       - run: cargo +stable test -p ptr-ledger --features raft-rs-backend --test raft_cluster --locked
       - run: cargo +stable test -p ptr-ledger --features raft-rs-backend --test raft_fence --locked
+      - run: cargo +stable clippy -p ptr-ledger --features raft-rs-backend --all-targets --locked -- -D warnings
   state-turso:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo +stable test -p ptr-state --features turso-backend --test turso --locked
+      - run: cargo +stable clippy -p ptr-state --features turso-backend --all-targets --locked -- -D warnings
   network-iroh:
     runs-on: ubuntu-latest
     steps:

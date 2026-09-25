@@ -611,11 +611,16 @@ mod raft_engine_backend {
         pub fn append_durable(&mut self, event: LedgerEvent) -> io::Result<CommitIndex> {
             let index = CommitIndex(self.events.len() as u64 + 1);
             let mut batch = LogBatch::default();
-            batch.put(
-                GROUP_ID,
-                event_key(index).into_bytes(),
-                encode_event(&event),
-            );
+            // `put` refuses a key in raft-engine's reserved namespace. Ours never is,
+            // but dropping the refusal would write an empty batch and still record the
+            // event as durably committed.
+            batch
+                .put(
+                    GROUP_ID,
+                    event_key(index).into_bytes(),
+                    encode_event(&event),
+                )
+                .map_err(engine_error)?;
             self.engine.write(&mut batch, true).map_err(engine_error)?;
             self.events.push(CommittedEvent { index, event });
             Ok(index)
