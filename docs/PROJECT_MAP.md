@@ -19,8 +19,9 @@ turns this map into an ordered plan.
 several of the defects it records (recommendations 3.1, 3.4, 4.1–4.4, 4.8, 4.9,
 4.11, 4.12, 4.14 and 4.18). Each statement those fixes made historical is marked
 *Fixed on this branch* where it appears; the figures around it are still those of
-`e93ed99`. It also ran recommendations 1.1–1.5 as a preregistered A0 mechanism
-ablation study on a new synthetic benchmark, operator-routing v1; the statements
+`e93ed99`. It also carried out recommendations 1.1 and 1.3–1.5, and 1.2 in part
+(on a new synthetic benchmark, operator-routing v1, and not on the two imported
+bundles), as a preregistered A0 mechanism ablation study; the statements
 that study changed are marked *Since this map* (results:
 [`RESULTS.md`](../research/falsification/A0-ablations-v1/RESULTS.md), A0-internal
 evidence only).

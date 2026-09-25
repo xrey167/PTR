@@ -3,8 +3,9 @@
     "G0": {
       "detail": {
         "bands_pass": true,
-        "data_fnv_matches": true,
-        "label_fnvs_match": true,
+        "records": 26,
+        "records_with_other_data": [],
+        "records_without_data_row": [],
         "score_generator_disagreements": 0
       },
       "pass": true
@@ -18,7 +19,9 @@
     },
     "G2": {
       "detail": {
-        "rerun_records": 1
+        "full_lines_compared": 23,
+        "rerun_records": 1,
+        "seed": 17
       },
       "pass": true
     },
@@ -28,8 +31,10 @@
     },
     "G4": {
       "detail": {
+        "changed_beyond_lr_selection_and_sweep": [],
         "dirty": [],
         "preregistration_unchanged": true,
+        "records": 26,
         "shas": [
           "4b0ad160a19058da999113329887343c6cc3381d"
         ],
@@ -161,6 +166,9 @@
       "steps": 4000
     },
     "mask_effect": {
+      "below_learnability_bar": [
+        "no-semantic-slots"
+      ],
       "ood_validity": 0.20620000000000002,
       "validity_decisive_test_iid": 0.2673721340388007
     },

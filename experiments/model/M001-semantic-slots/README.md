@@ -25,7 +25,10 @@ data, **not** this manifest's baseline comparison. That comparison needs the pla
 model baseline, which is not pinned yet (owner decision O2), so `status` stays
 `planned` and `metrics.json` stays reserved for it; the study writes
 `results/a0_internal_metrics.json` instead. Design, criteria and results:
-`research/falsification/A0-ablations-v1/`.
+`research/falsification/A0-ablations-v1/`. `hardware_profile` names the
+study's measured host (`hardware/a0-cpu-4core.toml`); when the baseline
+comparison gets its `entrypoint`, the manifest must name the profile of the host
+that runs it.
 
 **Result, 2026-09-25 (A0-internal evidence only; [RESULTS.md](../../../research/falsification/A0-ablations-v1/RESULTS.md)).** M001-primary
 SUPPORTS: at 1500 steps the full arm beat no-semantic-slots-masked on OOD
