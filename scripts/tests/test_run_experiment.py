@@ -78,8 +78,14 @@ class ExperimentRunnerTests(unittest.TestCase):
         _, root, data = mod.resolve("M001")
         record = mod.base_record("M001", data, root)
         self.assertEqual(record["schema_version"], 2)
-        self.assertIn(record["git_dirty"], (True, False))
-        self.assertEqual(len(record["git_tracked_diff_sha256"]), 64)
+        if (ROOT / ".git").exists():
+            self.assertIn(record["git_dirty"], (True, False))
+            self.assertEqual(len(record["git_tracked_diff_sha256"]), 64)
+        else:
+            # An export without history cannot say whether it matches a commit,
+            # and says so rather than claiming clean.
+            self.assertIsNone(record["git_dirty"])
+            self.assertIsNone(record["git_tracked_diff_sha256"])
         host = record["host"]
         self.assertGreaterEqual(host["logical_cpus"], 1)
         self.assertTrue(host["system"])
@@ -140,8 +146,12 @@ class Aggregation(unittest.TestCase):
         self.count = 0
 
     def write_run(self, seed, rows, *, status="completed", sha="a" * 40, dirty=False,
-                  entrypoint="ablation", stdout=None):
+                  entrypoint="ablation", stdout=None, extra=None, raw=None):
         self.count += 1
+        path = self.results / f"run-2026{self.count:04d}-seed-{seed}.json"
+        if raw is not None:
+            path.write_text(raw, encoding="utf-8")
+            return path
         record = {
             "schema_version": 2,
             "experiment_id": "X001",
@@ -155,7 +165,7 @@ class Aggregation(unittest.TestCase):
                 "compiling...\n" + json.dumps(row) + "\n" for row in rows
             ),
         }
-        path = self.results / f"run-2026{self.count:04d}-seed-{seed}.json"
+        record.update(extra or {})
         path.write_text(json.dumps(record), encoding="utf-8")
         return path
 
@@ -233,6 +243,81 @@ class Aggregation(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, message):
                     mod.aggregate("X001", entrypoint="ablation")
                 self.assertEqual(list(self.results.glob("aggregate-*.json")), [])
+
+    def test_gaps_in_what_completed_runs_reported_make_it_incomplete(self):
+        # Seed 1 diverged (NaN), seed 2 printed an extra row, seed 3 left a metric out.
+        self.write_run(1, [], stdout='{"arm": "a", "loss": NaN, "acc": 0.5}\n')
+        self.write_run(2, [{"arm": "a", "loss": 0.2, "acc": 0.7}, {"arm": "b", "loss": 0.1}])
+        self.write_run(3, [{"arm": "a", "loss": 0.4, "acc": None}])
+
+        code, summary = self.run_aggregate()
+
+        self.assertEqual(code, 1)
+        self.assertEqual(summary["status"], "incomplete")
+        by_arm = {group["key"]["arm"]: group for group in summary["groups"]}
+        loss = by_arm["a"]["metrics"]["loss"]
+        self.assertEqual((loss["n"], loss["non_finite"]), (2, {"1": "nan"}))
+        self.assertAlmostEqual(loss["mean"], 0.3)
+        self.assertEqual(by_arm["a"]["metrics"]["acc"]["missing_seeds"], [3])
+        self.assertEqual(by_arm["b"]["missing_seeds"], [1, 3])
+        self.assertEqual(by_arm["a"]["missing_seeds"], [])
+
+    def test_infinity_is_listed_not_averaged(self):
+        for seed in SEEDS:
+            self.write_run(seed, [], stdout=f'{{"acc": {1e400 if seed == 2 else 0.5}}}\n'.replace("inf", "Infinity"))
+        code, summary = self.run_aggregate()
+        acc = summary["groups"][0]["metrics"]["acc"]
+        self.assertEqual((code, acc["n"], acc["mean"], acc["non_finite"]), (1, 2, 0.5, {"2": "inf"}))
+
+    def test_records_that_do_not_measure_the_same_thing_are_refused(self):
+        cases = [
+            ("parameters", {"parameters": {"iterations": "100"}}, {"parameters": {"iterations": "100000"}}),
+            ("rustc", {"rustc": "rustc 1.95.0"}, {"rustc": "rustc 1.98.1"}),
+            ("host", {"host": {"cpu_model": "x"}}, {"host": {"cpu_model": "y"}}),
+            ("manifest_sha256", {"manifest_sha256": "1" * 64}, {"manifest_sha256": "2" * 64}),
+        ]
+        for key, first, second in cases:
+            with self.subTest(key=key):
+                for path in self.results.glob("*.json"):
+                    path.unlink()
+                self.write_run(1, [{"a": 1}], extra=first)
+                self.write_run(2, [{"a": 1}], extra=second)
+                with self.assertRaisesRegex(ValueError, f"records differ in {key}"):
+                    mod.aggregate("X001", entrypoint="ablation")
+                self.assertEqual(list(self.results.glob("aggregate-*.json")), [])
+
+    def test_malformed_records_are_errors_not_tracebacks(self):
+        cases = [
+            ("not one of the manifest's seeds", lambda: self.write_run(99, [{"a": 1}])),
+            ("seed must be an integer", lambda: self.write_run("1", [{"a": 1}])),
+            ("seed must be an integer", lambda: self.write_run(True, [{"a": 1}])),
+            ("seed must be an integer", lambda: self.write_run(None, [{"a": 1}])),
+            ("stdout must be text", lambda: self.write_run(1, [], extra={"stdout": None})),
+            ("does not fit a float", lambda: self.write_run(1, [], stdout='{"a": 1' + "0" * 400 + '}\n')),
+            ("not a readable run record", lambda: self.write_run(1, [], raw="{broken")),
+            ("not a JSON object", lambda: self.write_run(1, [], raw="[1, 2]")),
+        ]
+        for message, arrange in cases:
+            with self.subTest(message=message):
+                for path in self.results.glob("*.json"):
+                    path.unlink()
+                arrange()
+                with self.assertRaisesRegex(ValueError, message):
+                    mod.aggregate("X001", entrypoint="ablation")
+                self.assertEqual(list(self.results.glob("aggregate-*.json")), [])
+
+    def test_the_cli_reports_a_refusal_as_an_error_line(self):
+        self.write_run(99, [{"a": 1}])
+        argv = sys.argv
+        sys.argv = ["run_experiment.py", "aggregate", "X001", "--entrypoint", "ablation"]
+        err = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as raised:
+                mod.main()
+        finally:
+            sys.argv = argv
+        self.assertEqual(raised.exception.code, 2)
+        self.assertTrue(err.getvalue().startswith("ERROR: "), err.getvalue())
 
     def test_an_explicit_commit_and_allow_dirty_are_honoured_and_recorded(self):
         self.write_run(1, [{"a": 1.0}], sha="a" * 40)

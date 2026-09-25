@@ -367,7 +367,21 @@ def metric_rows(stdout: str) -> list[dict]:
     return rows
 
 
+def metric_value(name: str, value) -> float | None:
+    """A row field as a metric: a number, as a float. Strings are labels, and
+    booleans, nulls, lists and objects are not metrics. A number too large for a
+    float is refused rather than rounded to infinity."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        return float(value)
+    except OverflowError:
+        raise ValueError(f"metric {name} = {value} does not fit a float") from None
+
+
 def summarize(by_seed: dict[int, float]) -> dict:
+    if not by_seed:
+        return {"n": 0, "mean": None, "std": None, "min": None, "max": None, "by_seed": {}}
     ordered = [by_seed[seed] for seed in sorted(by_seed)]
     return {
         "n": len(ordered),
@@ -379,6 +393,10 @@ def summarize(by_seed: dict[int, float]) -> dict:
         "max": max(ordered),
         "by_seed": {str(seed): by_seed[seed] for seed in sorted(by_seed)},
     }
+
+
+def canonical(value) -> str:
+    return json.dumps(value, sort_keys=True)
 
 
 def aggregate(
@@ -394,21 +412,40 @@ def aggregate(
     A row is a JSON object a run printed on its own line. Its string fields name
     the row (for example `{"arm": "typed", "split": "ood"}`) and its numeric
     fields are the metrics summarized across seeds; a numeric `seed` field is
-    taken as a label, not a metric. Refused rather than guessed: records from
-    more than one commit, records from a dirty or unknown worktree (unless
-    `allow_dirty`, which the aggregate then records), two completed records for
-    one seed, and one row name printed twice by one run. Failed runs and
-    declared seeds without a completed run are listed, never dropped, and make
-    the aggregate `incomplete`."""
+    taken as a label, not a metric.
+
+    Refused, so nothing is written: records from more than one commit; records
+    from a dirty or unrecorded worktree (unless `allow_dirty`, which the aggregate
+    then records); records that differ in manifest, parameters, toolchain or host,
+    since their numbers do not measure the same thing; a seed the manifest does
+    not declare; two completed records for one seed; one row name printed twice by
+    one run; and a record that is not a well-formed run record.
+
+    Reported, never dropped, and each one makes the aggregate `incomplete`: failed
+    runs; declared seeds with no completed run; a row some completed seeds did not
+    print; a metric some seeds did not report; and a non-finite value (NaN or
+    infinity), which is listed per seed instead of entering the mean."""
     _, root, data = resolve(exp_id)
     results = root / data.get("results_dir", "results")
+    declared = list(data.get("seeds", []))
+
     records = []
     for path in sorted(results.glob("run-*.json")):
-        record = json.loads(path.read_text(encoding="utf-8"))
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ValueError(f"{path.name}: not a readable run record: {error}") from None
+        if not isinstance(record, dict):
+            raise ValueError(f"{path.name}: not a run record (not a JSON object)")
         if record.get("entrypoint") != entrypoint:
             continue
         if git_sha_filter and record.get("git_sha") != git_sha_filter:
             continue
+        seed = record.get("seed")
+        if isinstance(seed, bool) or not isinstance(seed, int):
+            raise ValueError(f"{path.name}: seed must be an integer, found {seed!r}")
+        if seed not in declared:
+            raise ValueError(f"{path.name}: seed {seed} is not one of the manifest's seeds {declared}")
         records.append((path, record))
     if not records:
         raise ValueError(f"no run records for entrypoint {entrypoint!r} in {results.relative_to(ROOT)}")
@@ -424,12 +461,16 @@ def aggregate(
             f"{len(unclean)} records come from a dirty or unrecorded worktree "
             f"({', '.join(unclean)}); pass --allow-dirty to aggregate them anyway"
         )
+    for key in ("manifest_sha256", "parameters", "rustc", "host"):
+        seen = sorted({canonical(record.get(key)) for _, record in records})
+        if len(seen) > 1:
+            raise ValueError(f"records differ in {key} ({' vs '.join(seen)}); they do not measure the same thing")
 
     completed: dict[int, tuple[Path, dict]] = {}
     failed = []
     for path, record in records:
+        seed = record["seed"]
         if record.get("status") == "completed":
-            seed = record["seed"]
             if seed in completed:
                 raise ValueError(
                     f"seed {seed} has two completed records "
@@ -439,37 +480,71 @@ def aggregate(
         else:
             failed.append(
                 {
-                    "seed": record.get("seed"),
+                    "seed": seed,
                     "status": record.get("status"),
                     "exit_code": record.get("exit_code"),
                     "record": path.name,
                 }
             )
 
-    groups: dict[tuple, dict[str, dict[int, float]]] = {}
+    # group label -> metric -> seed -> value (finite) / non-finite spelling
+    finite: dict[tuple, dict[str, dict[int, float]]] = {}
+    non_finite: dict[tuple, dict[str, dict[int, str]]] = {}
+    printed_by: dict[tuple, set[int]] = {}
     for seed, (path, record) in sorted(completed.items()):
-        seen = set()
+        stdout = record.get("stdout")
+        if not isinstance(stdout, str):
+            raise ValueError(f"{path.name}: stdout must be text, found {type(stdout).__name__}")
         try:
-            rows = metric_rows(record.get("stdout", ""))
+            rows = metric_rows(stdout)
         except ValueError as error:
             raise ValueError(f"{path.name}: {error}") from None
+        seen = set()
         for row in rows:
             key = tuple(sorted((k, v) for k, v in row.items() if isinstance(v, str)))
             if key in seen:
                 raise ValueError(f"{path.name}: row {dict(key)} is printed more than once")
             seen.add(key)
-            for name, value in row.items():
-                if name == "seed" or isinstance(value, bool):
+            printed_by.setdefault(key, set()).add(seed)
+            finite.setdefault(key, {})
+            non_finite.setdefault(key, {})
+            for name, raw in row.items():
+                if name == "seed":
                     continue
-                if isinstance(value, (int, float)) and math.isfinite(value):
-                    groups.setdefault(key, {}).setdefault(name, {})[seed] = value
-    if completed and not groups:
+                try:
+                    value = metric_value(name, raw)
+                except ValueError as error:
+                    raise ValueError(f"{path.name}: {error}") from None
+                if value is None:
+                    continue
+                if math.isfinite(value):
+                    finite[key].setdefault(name, {})[seed] = value
+                else:
+                    non_finite[key].setdefault(name, {})[seed] = repr(value)
+    if completed and not printed_by:
         raise ValueError("the completed runs printed no JSON metric rows")
 
-    declared = list(data.get("seeds", []))
+    completed_seeds = sorted(completed)
+    groups = []
+    gaps = False
+    for key in sorted(printed_by):
+        missing_row = sorted(set(completed_seeds) - printed_by[key])
+        metrics = {}
+        for name in sorted(set(finite[key]) | set(non_finite[key])):
+            by_seed = finite[key].get(name, {})
+            bad = non_finite[key].get(name, {})
+            summary = summarize(by_seed)
+            summary["missing_seeds"] = sorted(set(completed_seeds) - set(by_seed) - set(bad))
+            summary["non_finite"] = {str(seed): bad[seed] for seed in sorted(bad)}
+            gaps = gaps or bool(summary["missing_seeds"] or summary["non_finite"])
+            metrics[name] = summary
+        gaps = gaps or bool(missing_row)
+        groups.append({"key": dict(key), "missing_seeds": missing_row, "metrics": metrics})
+
     missing = sorted(set(declared) - set(completed))
-    status = "complete" if not missing and not failed else "incomplete"
+    status = "complete" if not missing and not failed and not gaps else "incomplete"
     timestamp = utc_stamp()
+    first = records[0][1]
     summary = {
         "schema_version": 1,
         "kind": "aggregate",
@@ -479,22 +554,17 @@ def aggregate(
         "allow_dirty": allow_dirty,
         "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "status": status,
+        "parameters": first.get("parameters"),
+        "rustc": first.get("rustc"),
+        "host": first.get("host"),
         "declared_seeds": declared,
-        "completed_seeds": sorted(completed),
+        "completed_seeds": completed_seeds,
         "missing_seeds": missing,
         "failed_runs": failed,
         "source_records": [
             {"path": path.name, "sha256": sha(path)} for path, _ in records
         ],
-        "groups": [
-            {
-                "key": dict(key),
-                "metrics": {
-                    name: summarize(by_seed) for name, by_seed in sorted(metrics.items())
-                },
-            }
-            for key, metrics in sorted(groups.items())
-        ],
+        "groups": groups,
     }
     out = results / f"aggregate-{timestamp}-{entrypoint}.json"
     write_json_exclusive(out, summary)
