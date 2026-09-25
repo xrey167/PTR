@@ -185,6 +185,16 @@ def decide(
                     return f"{arm} failed to train (below its learnability bar)"
                 if not (contingency and arm in contingency):
                     return f"{arm} is below its learnability bar; the 4000-step contingency decides"
+                # criteria.toml: "If the arm is still below the bar, the contrast is
+                # INCONCLUSIVE: an optimisation failure, not evidence that the
+                # mechanism is needed." The bar is the same; only the steps differ.
+                rerun = mean_over_seeds(contingency, arm, "test_iid", seeds)
+                if rerun < status["bar"]:
+                    return (
+                        f"{arm} is still below its learnability bar at 4000 steps "
+                        f"({rerun:.4f} < {status['bar']:.4f}): an optimisation failure, "
+                        "not evidence that the mechanism is needed"
+                    )
         return None
 
     def source(arms: list[str]) -> tuple[dict, str]:

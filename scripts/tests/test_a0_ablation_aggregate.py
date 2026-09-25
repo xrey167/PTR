@@ -163,6 +163,13 @@ class GatesAndPreconditions(unittest.TestCase):
         self.assertEqual(verdict(decided, "M001-primary"), "SUPPORTS")
         self.assertEqual(decided["verdicts"]["M001-primary"]["note"], "decided at 4000 steps")
 
+    def test_an_arm_still_below_its_bar_at_4000_steps_is_an_optimisation_failure(self):
+        weak = table(no_semantic_slots_masked=(0.60, SMALL))
+        still_weak = {"full": scores(0.92), "no-semantic-slots-masked": scores(0.62, SMALL)}
+        result = run(weak, contingency=still_weak)
+        self.assertEqual(verdict(result, "M001-primary"), "INCONCLUSIVE")
+        self.assertIn("still below its learnability bar at 4000 steps", result["verdicts"]["M001-primary"]["reason"])
+
     def test_an_arm_the_budget_rule_dropped(self):
         t = table()
         del t["blind-query-k0"], t["blind-query-k0-no-typed-attention"], t["latent-4"]
