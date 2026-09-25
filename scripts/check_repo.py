@@ -231,6 +231,16 @@ def check(root: Path) -> tuple[list[str], str]:
     comps = list((root / "evaluations/components").glob("*/candidates.toml"))
     if len(comps) < 20:
         errors.append("expected >=20 component evaluations")
+    # The registry is what `evaluations = [...]` in a component.toml is resolved
+    # against, so a slot that exists on disk but not in the registry reads as an
+    # "unknown evaluation" to every crate that cites it. training-backend sat in
+    # exactly that gap: its directory landed without its registry entry, and no
+    # rule compared the two.
+    on_disk = {path.parent.name for path in comps}
+    for eid in sorted(on_disk - eval_ids):
+        errors.append(f"evaluations/components/{eid}: not listed in evaluations/registry.toml")
+    for eid in sorted(eval_ids - on_disk):
+        errors.append(f"evaluations/registry.toml: {eid} has no evaluations/components/{eid}/candidates.toml")
     exps = list((root / "experiments").glob("**/experiment.toml"))
     if len(exps) < 15:
         errors.append("expected >=15 experiments")

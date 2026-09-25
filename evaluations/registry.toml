@@ -130,3 +130,8 @@ status = "open"
 id = "structural-code-search"
 path = "components/structural-code-search/candidates.toml"
 status = "open"
+
+[[component]]
+id = "training-backend"
+path = "components/training-backend/candidates.toml"
+status = "open"
