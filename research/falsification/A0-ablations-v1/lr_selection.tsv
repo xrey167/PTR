@@ -1,0 +1,10 @@
+arm	lr	val_accuracy	flag
+full	0.005	0.903	
+no-semantic-slots	0.005	0.7065	
+no-semantic-slots-masked	0.005	0.6855	
+no-typed-attention	0.005	0.9065	
+raw-blind	0.005	0.7565	
+latent-0	0.005	0.826	
+latent-1	0.0125	0.894	edge of grid
+latent-linear	0.005	0.825	
+frozen-router	0.0125	0.8995	edge of grid
