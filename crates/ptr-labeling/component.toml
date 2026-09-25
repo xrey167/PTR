@@ -1,0 +1,42 @@
+version = 1
+id = "ptr-labeling"
+maturity = "prototype"
+last_reviewed = "2026-09-25"
+
+implemented = [
+  "Label schemas, labeling functions by kind (verifier, heuristic, model, agent) and a vote matrix with abstention",
+  "Verifier-backed functions cast vetoes only; a verifier class vote is refused",
+  "Dawid-Skene EM label model with configurable iterations and tolerance and identifiability warnings for fewer than three modelled functions",
+  "Resolution to Determined (every other class vetoed), Estimated at or above a required probability, Unknown, or Disputed when every class is vetoed",
+  "Gold labels record source (oracle or human with annotator) and sampling (uniform or active); only uniform gold estimates accuracy",
+  "Evaluation with Brier score, expected calibration error and Krippendorff agreement from ptr-analytics",
+  "Acquisition ranking by posterior entropy or margin that never proposes an item verifiers already determined",
+]
+
+missing = [
+  "A dependency-aware model for correlated labeling functions",
+  "Annotator reliability modelling",
+  "Label snapshot registration through ptr-pg",
+]
+
+next = [
+  "Run F002 against majority vote on uniform gold",
+  "Add a labeling adapter to ptr-pg over the existing work schema",
+]
+
+experiments = [
+  "F002",
+]
+
+evaluations = [
+  "label-model",
+]
+
+decisions = [
+  "ADR-0019-adapter-lineage-and-weak-supervision.md",
+]
+
+checks = [
+  "tests/label_model.rs recovery, veto, dispute and identifiability cases",
+  "workspace fmt/check/test/clippy",
+]

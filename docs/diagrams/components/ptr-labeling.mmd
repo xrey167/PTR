@@ -1,0 +1,6 @@
+flowchart LR
+    A["Labeling-function votes"] --> B["ptr-labeling\nWeak Supervision with Verifier Precedence"]
+    B --> C["Probabilistic labels, Unknown, Disputed"]
+    C --> D["Training datasets"]
+    B -. "contracts" .-> T["ptr-types"]
+    L["ptr-ledger (authority)"] -. "never replaced" .-> B

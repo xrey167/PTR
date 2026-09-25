@@ -88,7 +88,7 @@ owner = "ptr-state"
 status = "prototype"
 contract = "Queryable projection rebuilt from committed history."
 evaluation = "materialized-state"
-candidates = ["Turso/libSQL", "SQLite", "PostgreSQL", "redb"]
+candidates = ["Turso/libSQL", "SQLite", "PostgreSQL (ptr-pg)", "redb"]
 open_questions = ["typed projection schema", "migration/versioning", "read consistency", "CDC hooks"]
 
 [[slot]]
@@ -187,7 +187,7 @@ owner = "ptr-events"
 status = "open"
 contract = "Runtime/committed event fan-out with offsets, replay, retention and backpressure."
 evaluation = "event-streaming"
-candidates = ["in-process reference bus", "Apache Iggy", "NATS", "Kafka", "RocketMQ"]
+candidates = ["in-process reference bus", "PostgreSQL projection event log (ptr-pg)", "Apache Iggy", "NATS", "Kafka", "RocketMQ"]
 open_questions = ["authoritative-vs-telemetry classification", "consumer offset model", "retention policy"]
 
 [[slot]]
@@ -315,3 +315,48 @@ contract = "External user/service identity translated into PTR Principal/Session
 evaluation = ""
 candidates = ["OIDC", "local development identity", "service credentials"]
 open_questions = ["multi-tenant scope", "session lifetime", "service-to-service auth"]
+
+[[slot]]
+id = "relational-substrate"
+owner = "ptr-pg"
+status = "prototype"
+contract = "One relational database hosting the anchor-verified ledger projection, live-only derived caches and non-authoritative working state behind PTR-owned adapters."
+evaluation = "relational-substrate"
+candidates = ["PostgreSQL 18 + pgvector 0.8", "PostgreSQL 16 + pgvector 0.7", "Turso/libSQL (projection only)"]
+open_questions = ["TLS and role separation", "connection pooling", "logical replication as change feed", "partitioning of the event log"]
+
+[[slot]]
+id = "fast-weight-memory"
+owner = "ptr-fastmem"
+status = "prototype"
+contract = "Session working memory derived from admissible inputs, decoded into search candidates, exactly revocable."
+evaluation = "fast-weight-memory"
+candidates = ["ptr-fastmem gated delta rule", "recency buffer", "hybrid retrieval only"]
+open_questions = ["learned versus random projections", "capacity per head", "decode margin policy"]
+
+[[slot]]
+id = "label-model"
+owner = "ptr-labeling"
+status = "prototype"
+contract = "Probabilistic labels from labeling-function votes with verifier precedence and explicit Unknown and Disputed outcomes."
+evaluation = "label-model"
+candidates = ["ptr-labeling Dawid-Skene", "majority vote", "Snorkel label model"]
+open_questions = ["correlated labeling functions", "class-conditional abstention", "annotator models"]
+
+[[slot]]
+id = "adapter-serving"
+owner = "ptr-lineage"
+status = "open"
+contract = "Serving admitted adapters over one exact base model without letting a registry row decide which adapter serves."
+evaluation = "adapter-serving"
+candidates = ["vLLM multi-LoRA", "SGLang LoRA", "LoRAX"]
+open_questions = ["checkpoint binding for adapters", "adapter routing", "hot swap under load"]
+
+[[slot]]
+id = "analytics-mirror"
+owner = "ptr-analytics"
+status = "open"
+contract = "Metrics defined once in PTR terms, compiled per backend, optionally mirrored to a columnar engine that never feeds back into state."
+evaluation = "analytics-mirror"
+candidates = ["ptr-analytics metric SQL on PostgreSQL", "pg_duckdb", "Iceberg mirror", "DataFusion"]
+open_questions = ["mirror freshness contract", "metric catalog versioning", "retention of working records"]

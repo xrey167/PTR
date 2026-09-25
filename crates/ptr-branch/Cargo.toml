@@ -1,0 +1,26 @@
+[package]
+name = "ptr-branch"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+ptr-types = { workspace = true }
+# A branch reads one immutable snapshot and merges as one ordinary semantic
+# delta: the same types the runtime commits, so a merge cannot express anything
+# a direct commit could not.
+ptr-semdb = { workspace = true }
+# Triage consumes a verification report and never produces one.
+ptr-verifier = { workspace = true }
+# Calibration bounds come from the shared statistics kernel.
+ptr-analytics = { workspace = true }
+# The same pin every other digest in the workspace uses.
+sha2 = { version = "=0.11.0", default-features = false }
+
+[dev-dependencies]
+# The end-to-end test commits a certified plan through the runtime's verified
+# delta path, the only way a branch reaches semantic state.
+ptr-runtime = { workspace = true }
+ptr-config = { workspace = true }
+ptr-ledger = { workspace = true }

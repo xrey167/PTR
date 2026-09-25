@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "L004-projection-equivalence"
+path = "experiments/lifecycle/L004-projection-equivalence"
+tests_dir = "tests"

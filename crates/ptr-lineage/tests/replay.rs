@@ -1,0 +1,140 @@
+use std::collections::BTreeSet;
+
+use ptr_lineage::{LineageError, ModelTime, NewSample, ReplayParams, ReplayPool, Split};
+
+fn params() -> ReplayParams {
+    ReplayParams {
+        initial_stability: 100.0,
+        growth: 1.5,
+        lapse_factor: 0.3,
+        min_stability: 1.0,
+        difficulty_step: 1.0,
+        lapse_loss: 0.5,
+        max_lapses: 3,
+    }
+}
+
+fn sample(id: &str, stratum: &str) -> NewSample {
+    NewSample {
+        id: id.into(),
+        stratum: stratum.into(),
+        split: Split::Train,
+    }
+}
+
+fn pool(ids: &[(&str, &str)]) -> ReplayPool {
+    let mut pool = ReplayPool::new(params()).unwrap();
+    for (id, stratum) in ids {
+        pool.insert(sample(id, stratum), ModelTime(0.0)).unwrap();
+    }
+    pool
+}
+
+#[test]
+fn a_held_out_sample_can_never_enter_the_pool() {
+    let mut pool = ReplayPool::new(params()).unwrap();
+    let held_out = NewSample {
+        split: Split::HeldOut,
+        ..sample("h1", "t")
+    };
+    assert_eq!(
+        pool.insert(held_out, ModelTime(0.0)).unwrap_err(),
+        LineageError::HeldOutSample { id: "h1".into() }
+    );
+    assert!(pool.is_empty());
+}
+
+#[test]
+fn a_lapsed_sample_outranks_a_retained_one_at_the_same_model_time() {
+    let mut pool = pool(&[("kept", "t"), ("lost", "t")]);
+    pool.record_probe("kept", 0.1, ModelTime(50.0)).unwrap();
+    pool.record_probe("lost", 2.0, ModelTime(50.0)).unwrap();
+    let now = ModelTime(80.0);
+    let kept = pool.priority(pool.get("kept").unwrap(), now);
+    let lost = pool.priority(pool.get("lost").unwrap(), now);
+    assert!(lost > kept, "lost {lost} kept {kept}");
+    assert!(pool.get("lost").unwrap().memory.stability < params().initial_stability);
+    assert!(pool.get("kept").unwrap().memory.stability > params().initial_stability);
+}
+
+#[test]
+fn nothing_is_forgotten_while_the_model_clock_stands_still() {
+    let pool = pool(&[("a", "t")]);
+    assert_eq!(pool.priority(pool.get("a").unwrap(), ModelTime(0.0)), 0.0);
+}
+
+#[test]
+fn a_draw_is_distinct_reproducible_and_covers_every_stratum() {
+    let ids: Vec<(String, String)> = (0..60)
+        .map(|i| (format!("s{i}"), format!("task{}", i % 3)))
+        .collect();
+    let refs: Vec<(&str, &str)> = ids.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+    let pool = pool(&refs);
+    let now = ModelTime(500.0);
+    let first = pool.sample(12, now, 42);
+    assert_eq!(first.len(), 12);
+    assert_eq!(first.iter().collect::<BTreeSet<_>>().len(), 12);
+    assert_eq!(first, pool.sample(12, now, 42));
+    assert_ne!(first, pool.sample(12, now, 43));
+    let strata: BTreeSet<&str> = first
+        .iter()
+        .map(|id| pool.get(id).unwrap().stratum.as_str())
+        .collect();
+    assert_eq!(strata.len(), 3);
+}
+
+#[test]
+fn forgotten_samples_are_drawn_far_more_often_than_retained_ones() {
+    let ids: Vec<String> = (0..40).map(|i| format!("s{i}")).collect();
+    let mut pool = ReplayPool::new(params()).unwrap();
+    for id in &ids {
+        pool.insert(sample(id, "t"), ModelTime(0.0)).unwrap();
+    }
+    // Half the samples lapse, half are retained, all at the same time.
+    for (i, id) in ids.iter().enumerate() {
+        let loss = if i % 2 == 0 { 3.0 } else { 0.0 };
+        pool.record_probe(id, loss, ModelTime(10.0)).unwrap();
+    }
+    let now = ModelTime(60.0);
+    let mut lapsed = 0;
+    let mut retained = 0;
+    for seed in 0..200 {
+        for id in pool.sample(5, now, seed) {
+            let index: usize = id[1..].parse().unwrap();
+            if index % 2 == 0 {
+                lapsed += 1;
+            } else {
+                retained += 1;
+            }
+        }
+    }
+    assert!(lapsed > 3 * retained, "lapsed {lapsed} retained {retained}");
+}
+
+#[test]
+fn asking_for_more_than_the_pool_returns_the_whole_pool_once() {
+    let pool = pool(&[("a", "x"), ("b", "y")]);
+    let drawn = pool.sample(10, ModelTime(5.0), 1);
+    assert_eq!(drawn.len(), 2);
+}
+
+#[test]
+fn a_sample_that_keeps_lapsing_is_withheld_pending_a_label_audit() {
+    let mut pool = pool(&[("noisy", "t"), ("fine", "t")]);
+    for step in 1..=3 {
+        pool.record_probe("noisy", 5.0, ModelTime(step as f64 * 10.0))
+            .unwrap();
+    }
+    let audit: Vec<&str> = pool.needing_audit().map(|s| s.id.as_str()).collect();
+    assert_eq!(audit, vec!["noisy"]);
+    let drawn = pool.sample(2, ModelTime(100.0), 7);
+    assert_eq!(drawn, vec!["fine"]);
+}
+
+#[test]
+fn a_sample_probed_at_this_model_time_is_not_drawn() {
+    let mut pool = pool(&[("a", "t"), ("b", "t")]);
+    pool.record_probe("a", 0.0, ModelTime(40.0)).unwrap();
+    let drawn = pool.sample(2, ModelTime(40.0), 1);
+    assert_eq!(drawn, vec!["b"]);
+}

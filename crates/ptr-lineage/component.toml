@@ -1,0 +1,46 @@
+version = 1
+id = "ptr-lineage"
+maturity = "prototype"
+last_reviewed = "2026-09-25"
+
+implemented = [
+  "Content-addressed adapter records bound to one exact base model and revision, with origin, parent or consolidation sources and a data manifest",
+  "Registration always starts as a candidate; only a passing forgetting gate lets an adapter serve",
+  "Forgetting gate with thresholds on average and per-task forgetting, backward transfer and public-suite regression, computed from an accuracy matrix",
+  "Revoking a training input names every adapter, descendant and consolidation that depends on it",
+  "Principal-angle overlap of update subspaces per layer against its chance level, plus activation interference",
+  "TIES merge of full updates for consolidation, due when depth or overlap exceeds the policy",
+  "FSRS-4.5 forgetting model on the training clock, lapse tracking with label-audit withholding, and stratified Gumbel-top-k sampling without replacement",
+  "Held-out samples cannot enter the replay pool",
+]
+
+missing = [
+  "Adapter promotion and revocation as committed ledger events",
+  "Serving admission through checkpoint binding",
+  "A lineage adapter in ptr-pg over the existing work schema",
+]
+
+next = [
+  "Run R004 against a naive chain and a joint retrain",
+  "Define the AdapterPromoted ledger event and its admission rule",
+]
+
+experiments = [
+  "R004",
+]
+
+evaluations = [
+  "adapter-serving",
+]
+
+decisions = [
+  "ADR-0019-adapter-lineage-and-weak-supervision.md",
+  "ADR-0015-continued-pretraining-coding-pod.md",
+]
+
+checks = [
+  "tests/lineage.rs gate, lineage and erasure propagation",
+  "tests/interference.rs subspace overlap cases",
+  "tests/replay.rs forgetting model and sampling",
+  "workspace fmt/check/test/clippy",
+]

@@ -1,0 +1,44 @@
+version = 1
+id = "ptr-analytics"
+maturity = "prototype"
+last_reviewed = "2026-09-25"
+
+implemented = [
+  "Wilson score interval and one-sided Clopper-Pearson upper bound by bisection on an exact binomial tail",
+  "Self-normalised Horvitz-Thompson rate with a Wilson interval on the Kish effective sample size, for calibration slices audited at a known rate",
+  "Brier score and expected calibration error with equal-width or equal-mass binning",
+  "Krippendorff's alpha for nominal data with missing values",
+  "Welford running moments with an exact parallel merge",
+  "Metric vocabulary (auto-propose share, escalation share, conflict rate, adjudicated harm rate) with grouping, compiled to SQL by ptr-pg and to intervals here",
+  "Every estimator refuses empty, non-finite or out-of-range input with a typed StatsError code",
+]
+
+missing = [
+  "Stratified and sequential (anytime-valid) estimators",
+  "A versioned metric catalog shared with dashboards",
+]
+
+next = [
+  "Add confidence sequences for continuously monitored rates",
+  "Version the metric catalog and record the version with every reported number",
+]
+
+experiments = [
+  "F002",
+  "F003",
+]
+
+evaluations = [
+  "analytics-mirror",
+]
+
+decisions = [
+  "ADR-0017-certified-agent-branches.md",
+  "ADR-0019-adapter-lineage-and-weak-supervision.md",
+]
+
+checks = [
+  "unit tests beside every estimator",
+  "tests/metrics.rs interval and metric-row integration tests",
+  "workspace fmt/check/test/clippy",
+]

@@ -188,3 +188,45 @@ ports = ["PublicApi", "SessionAuthenticator", "StreamingResponse"]
 type_families = ["identity-lifecycle", "model-interface", "capability-authority"]
 backend_slots = ["auth-identity"]
 open_decisions = ["Principal/Session mapping", "streaming protocol", "tenant/policy scope", "rate/backpressure"]
+
+[[component]]
+id = "ptr-analytics"
+ports = ["MetricCompiler (implemented per backend)", "RateEstimator", "CalibrationScorer"]
+type_families = ["statistics-metrics"]
+backend_slots = ["analytics-mirror"]
+open_decisions = ["metric catalog versioning", "stratified and sequential estimators", "mirror engine"]
+
+[[component]]
+id = "ptr-branch"
+ports = ["Branch", "Certifier", "TriagePolicy", "OffPolicyEvaluator"]
+type_families = ["branch-speculation", "semantic-state", "verification", "statistics-metrics"]
+backend_slots = []
+open_decisions = ["branch leases and expiry", "typed merge operators beyond counters and sets", "predicate digests beyond prefixes"]
+
+[[component]]
+id = "ptr-fastmem"
+ports = ["FastMemory", "Decoder", "StateCodec"]
+type_families = ["fast-weight-memory", "search-retrieval", "identity-lifecycle"]
+backend_slots = ["fast-weight-memory"]
+open_decisions = ["projection learning", "capacity and sharding", "neural-state declaration of a memory"]
+
+[[component]]
+id = "ptr-labeling"
+ports = ["LabelModel", "AcquisitionRanker", "GoldEvaluator"]
+type_families = ["weak-supervision", "statistics-metrics"]
+backend_slots = ["label-model"]
+open_decisions = ["correlated functions", "annotator reliability", "snapshot registration"]
+
+[[component]]
+id = "ptr-lineage"
+ports = ["Lineage", "ForgettingGate", "ReplayPool", "InterferenceMeter", "Consolidator"]
+type_families = ["adapter-lineage", "training-evaluation"]
+backend_slots = ["adapter-serving"]
+open_decisions = ["adapter promotion as a ledger event", "serving admission", "consolidation policy"]
+
+[[component]]
+id = "ptr-pg"
+ports = ["Projector", "ProjectionReader", "DerivedSearchCache", "BranchStore", "FastMemoryJournal", "MetricQuery", "MigrationRunner"]
+type_families = ["relational-substrate", "state-projection", "search-retrieval", "branch-speculation", "fast-weight-memory", "statistics-metrics"]
+backend_slots = ["relational-substrate", "materialized-state", "lexical-search", "local-vector-search", "event-streaming"]
+open_decisions = ["TLS connector", "role separation", "pooling", "logical replication", "lineage and labeling adapters"]

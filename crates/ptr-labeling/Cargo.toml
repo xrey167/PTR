@@ -1,0 +1,11 @@
+[package]
+name = "ptr-labeling"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+ptr-types = { workspace = true }
+# Calibration and agreement are computed by the shared statistics kernel.
+ptr-analytics = { workspace = true }

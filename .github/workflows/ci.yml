@@ -119,6 +119,33 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo +stable test -p ptr-state --features turso-backend --test turso --locked
+  state-postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg18
+        env:
+          # A disposable service container reachable on loopback only; this is
+          # not a credential of any real deployment.
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      PTR_PG_TEST_DSN: host=127.0.0.1 port=5432 user=postgres password=postgres dbname=postgres
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo +stable test -p ptr-pg --features postgres-backend --locked
+      - run: cargo +stable clippy -p ptr-pg --features postgres-backend --all-targets --locked -- -D warnings
+      - run: rustup toolchain install 1.85.0 --profile minimal
+      - run: cargo +1.85.0 test -p ptr-pg --features postgres-backend --locked
   network-iroh:
     runs-on: ubuntu-latest
     steps:

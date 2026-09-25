@@ -42,6 +42,11 @@ ptr-inspect = { path = "crates/ptr-inspect" }
 ptr-security = { path = "crates/ptr-security" }
 ptr-server = { path = "crates/ptr-server" }
 ptr-runtime = { path = "crates/ptr-runtime" }
+ptr-fastmem = { path = "crates/ptr-fastmem" }
+ptr-branch = { path = "crates/ptr-branch" }
+ptr-lineage = { path = "crates/ptr-lineage" }
+ptr-labeling = { path = "crates/ptr-labeling" }
+ptr-analytics = { path = "crates/ptr-analytics" }
 
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.8"

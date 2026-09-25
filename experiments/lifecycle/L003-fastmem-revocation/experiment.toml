@@ -1,0 +1,13 @@
+version = 1
+id = "L003"
+status = "planned"
+hypothesis = "Can a revoked input ever influence a fast-memory readout after revocation, replay, restore or crash?"
+metrics = "bit-identity failures; resurrected reads; writes replayed per revocation"
+baseline = "memory rebuilt from scratch without the revoked writes"
+falsification = "Any bit difference from the never-saw-it fold, or any admitted read that depends on a revoked input, is a hard failure."
+hardware_profile = "hardware/default.toml"
+entrypoint = ""
+seeds = [17, 29, 43, 71, 101]
+results_dir = "results"
+required_artifacts = ["run.json", "metrics.json"]
+design = "../../../docs/architecture/35-agentic-substrate.md"

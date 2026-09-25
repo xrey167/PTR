@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "adapter-serving"
+path = "evaluations/components/adapter-serving"
+tests_dir = "tests"

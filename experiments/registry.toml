@@ -104,3 +104,48 @@ status = "planned"
 id = "E004"
 path = "system/E004-long-horizon"
 status = "planned"
+
+[[experiment]]
+id = "M008"
+path = "model/M008-fast-weight-memory"
+status = "planned"
+
+[[experiment]]
+id = "L003"
+path = "lifecycle/L003-fastmem-revocation"
+status = "planned"
+
+[[experiment]]
+id = "L004"
+path = "lifecycle/L004-projection-equivalence"
+status = "planned"
+
+[[experiment]]
+id = "S003"
+path = "semdb/S003-certified-branches"
+status = "planned"
+
+[[experiment]]
+id = "F002"
+path = "feedback/F002-weak-supervision"
+status = "planned"
+
+[[experiment]]
+id = "F003"
+path = "feedback/F003-calibrated-arbiter"
+status = "planned"
+
+[[experiment]]
+id = "R004"
+path = "runtime/R004-adapter-lineage"
+status = "planned"
+
+[[experiment]]
+id = "Q003"
+path = "retrieval/Q003-postgres-hybrid"
+status = "planned"
+
+[[experiment]]
+id = "E005"
+path = "system/E005-agent-memory-benchmark"
+status = "planned"

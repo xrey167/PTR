@@ -1,0 +1,48 @@
+version = 1
+id = "ptr-fastmem"
+maturity = "prototype"
+last_reviewed = "2026-09-25"
+
+implemented = [
+  "Multi-head matrix state updated by the gated delta rule in its Kimi Delta Attention form, with scalar, per-channel or no decay, read by o = S^T q",
+  "Every write names its semantic input, generation and input digest; a read is admitted only while every source is admissible",
+  "Journal of writes as composed plus checkpoints every C writes; revocation refolds from the last checkpoint before the first revoked write",
+  "Deterministic f32 fold: the refolded state is bit-identical to a memory that never saw the revoked writes",
+  "Binding digest over the ordered folded writes so a checkpoint is admissible only as the fold of its journal",
+  "Seeded orthogonal key projection and identifier codebook; readouts decode to named capsules or to Unknown below a margin",
+  "PTRFW001 state codec with full f32 cells and a SHA-256 trailer",
+  "Bounded shapes, journal length and checkpoint interval with typed refusals",
+]
+
+missing = [
+  "Learned key and value projections",
+  "Chunked parallel fold for long journals",
+  "Declaration of a memory as a neural-state binding in ptr-runtime",
+]
+
+next = [
+  "Run M008 against a recency buffer and hybrid retrieval",
+  "Run L003 with crash and restore injection through the ptr-pg journal",
+]
+
+experiments = [
+  "M008",
+  "L003",
+]
+
+evaluations = [
+  "fast-weight-memory",
+]
+
+decisions = [
+  "ADR-0018-revocable-fast-weight-memory.md",
+  "ADR-0008-derived-search-not-authority.md",
+]
+
+checks = [
+  "tests/revocation.rs bit-identical refold and admission denial",
+  "tests/journal.rs restore and checkpoint codec",
+  "tests/recall.rs decode, update and Unknown",
+  "ptr-pg postgres test for journal revocation cascade",
+  "workspace fmt/check/test/clippy",
+]

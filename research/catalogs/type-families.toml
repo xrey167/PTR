@@ -6,8 +6,8 @@ id = "identity-lifecycle"
 owner = "ptr-types"
 status = "prototype"
 purpose = "Stable identities and lifecycle coordinates that cannot be confused by primitive types."
-implemented = ["Revision", "Generation", "CommitIndex", "ProjectId", "CapsuleId", "ArtifactId", "CapabilityId", "TypeId", "PodId", "CandidateId", "RequestId", "NodeId", "EvidenceId"]
-open = ["SessionId", "PrincipalId", "ResourceId", "SnapshotId", "EventId", "TraceId", "BackendId", "ModelId", "DatasetId", "RunId", "CheckpointId", "Epoch/Term type"]
+implemented = ["Revision", "Generation", "CommitIndex", "ProjectId", "CapsuleId", "ArtifactId", "CapabilityId", "TypeId", "PodId", "CandidateId", "RequestId", "NodeId", "EvidenceId", "PrincipalId"]
+open = ["SessionId", "ResourceId", "SnapshotId", "EventId", "TraceId", "BackendId", "ModelId", "DatasetId", "RunId", "CheckpointId", "Epoch/Term type"]
 invariants = ["Revision and Generation remain distinct concepts", "provider identities never replace PTR semantic identities"]
 
 [[family]]
@@ -114,7 +114,7 @@ id = "search-retrieval"
 owner = "ptr-search"
 status = "scaffold"
 purpose = "Backend-neutral retrieval plans and evidence candidates."
-implemented = ["EvidenceCandidate"]
+implemented = ["EvidenceCandidate", "WeightedList", "FusedHit"]
 open = ["SearchQuery", "RetrievalPlan", "SearchBackendId", "SearchMethod", "ScoreSemantics", "IndexGeneration", "ResolvedEvidence", "FusionTrace"]
 invariants = ["scores are backend/method qualified", "search result is not authoritative until live-generation resolution"]
 
@@ -132,7 +132,7 @@ id = "state-projection"
 owner = "ptr-state"
 status = "prototype"
 purpose = "Queryable materialized views derived from committed history."
-implemented = ["MaterializedState"]
+implemented = ["MaterializedState", "ApplyOutcome"]
 open = ["ProjectionKey<T>", "ProjectionValue<T>", "ProjectionVersion", "SchemaVersion", "MigrationPlan", "ProjectionLag"]
 invariants = ["materialized state never outranks ledger", "rebuild is equivalent to incremental application"]
 
@@ -141,8 +141,8 @@ id = "events-observability"
 owner = "ptr-events"
 status = "scaffold"
 purpose = "Typed runtime/committed event distribution with explicit authority-vs-telemetry classification."
-implemented = ["RuntimeEvent", "EventEnvelope"]
-open = ["EventBus", "EventTopic", "ConsumerId", "ConsumerOffset", "EventClass", "RetentionPolicy"]
+implemented = ["RuntimeEvent", "EventEnvelope", "EventProducer", "EventConsumer", "EventClass", "Offset", "InMemoryBus"]
+open = ["EventTopic", "ConsumerId", "RetentionPolicy"]
 invariants = ["telemetry and authority events are distinguishable", "consumer replay is explicit"]
 
 [[family]]
@@ -180,3 +180,57 @@ purpose = "Reproducible datasets, runs, checkpoints, metrics and evaluation evid
 implemented = ["training run manifest v2 preparation", "experiment/evaluation manifest schemas"]
 open = ["DatasetRef", "DatasetSplitRef", "CheckpointRef", "TrainingRunId", "MetricRecord", "EvaluationRun", "BaselineRef", "AblationRef", "HardwareFingerprint"]
 invariants = ["training inputs are hash-addressable", "failed/negative results remain evidence"]
+
+[[family]]
+id = "statistics-metrics"
+owner = "ptr-analytics"
+status = "prototype"
+purpose = "One statistics kernel and one metric vocabulary for every rate, interval, calibration score and agreement coefficient the platform reports."
+implemented = ["RateEstimate", "WeightedOutcome", "WeightedRate", "Binning", "RunningMoments", "Metric", "MetricSpec", "Grouping", "MetricRow", "StatsError"]
+open = ["MetricCatalogVersion", "Stratum", "SequentialTest"]
+invariants = ["intervals are computed once, here", "metrics are defined in PTR terms and compiled per backend", "no metric is evidence about semantic state"]
+
+[[family]]
+id = "branch-speculation"
+owner = "ptr-branch"
+status = "prototype"
+purpose = "Speculative agent branches over immutable snapshots, certified against declared dependencies and triaged by a verifier-bounded calibrated policy."
+implemented = ["BranchId", "Branch", "SealedBranch", "BranchOp", "ValueDigest", "RangeDigest", "Certification", "MergePlan", "TriagePolicy", "TriageDecision", "TriageOutcome", "AutoThreshold", "CalibrationSample", "LoggedTriage", "OffPolicyEstimate", "BranchError", "ArbiterError"]
+open = ["BranchLease", "TypedMergeOperator registry", "PredicateDigest beyond prefixes"]
+invariants = ["a branch never writes semantic state", "a plan reaches state only through verified delta publication", "triage never moves a branch past verification"]
+
+[[family]]
+id = "fast-weight-memory"
+owner = "ptr-fastmem"
+status = "prototype"
+purpose = "A gated delta-rule associative working memory that is a derived, exactly revocable projection of lifecycle-managed inputs."
+implemented = ["FastMemoryConfig", "FastMemory", "FastWeightState", "MemoryWrite", "WriteRequest", "WriteSeq", "SourceRef", "Decay", "Query", "Readout", "WriteReceipt", "RevocationReport", "SeededProjection", "IdentifierCodebook", "FactCode", "DecodePolicy", "Recall", "FastMemoryError"]
+open = ["learned key/value projections", "chunked parallel fold", "sharded journal windows"]
+invariants = ["every write names its source generation and input digest", "a read is admitted only while every source is admissible", "revocation refolds bit-identically to a memory that never saw the revoked writes"]
+
+[[family]]
+id = "weak-supervision"
+owner = "ptr-labeling"
+status = "prototype"
+purpose = "Labeling-function votes, a Dawid-Skene label model with verifier precedence, acquisition ranking and gold labels that cannot be confused with predictions."
+implemented = ["LabelSchema", "LabelingFunction", "FunctionKind", "Vote", "VoteMatrix", "LabelModel", "DawidSkeneParams", "LabelOutcome", "ModelWarning", "GoldLabel", "GoldSource", "GoldSampling", "EvaluationSet", "EvaluationReport", "Calibration", "Acquisition", "LabelingError"]
+open = ["dependency-aware label model", "annotator reliability model", "label snapshot card schema"]
+invariants = ["a verifier veto is never outvoted", "Unknown and Disputed are valid outcomes", "only uniformly sampled gold estimates accuracy"]
+
+[[family]]
+id = "adapter-lineage"
+owner = "ptr-lineage"
+status = "prototype"
+purpose = "Content-addressed adapter identity, gated lifecycle, subspace interference, forgetting-driven replay and consolidation."
+implemented = ["AdapterId", "AdapterRecord", "AdapterStatus", "BaseModel", "Origin", "Lineage", "ConsolidationPolicy", "ForgettingGate", "GateReport", "GateViolation", "AccuracyMatrix", "PublicSuite", "ReplayPool", "ReplaySample", "ReplayParams", "MemoryState", "ModelTime", "Split", "Basis", "Matrix", "LayerUpdate", "InterferenceReport", "LayerInterference", "LineageError"]
+open = ["AdapterPromoted ledger event", "checkpoint binding for serving", "multi-adapter routing"]
+invariants = ["no registry row decides serving", "held-out samples never enter replay", "revoking an input names every dependent adapter"]
+
+[[family]]
+id = "relational-substrate"
+owner = "ptr-pg"
+status = "prototype"
+purpose = "PostgreSQL schemas, migrations, capability probing and adapters for the projection, derived caches and working state."
+implemented = ["Identifier", "SchemaSet", "PgConfig", "SchemaClass", "Migration", "MigrationReport", "Capabilities", "LexicalBackend", "LifecycleChange", "PgSubstrate", "ProjectionApply", "ProjectionEventRow", "EmbeddingSpace", "SearchDocument", "HybridQuery", "SearchResults", "FastMemoryRecord", "FastMemoryCheckpoint", "BranchOutcome", "PgError"]
+open = ["TLS connector", "role separation and row-level security", "connection pool", "logical-replication consumer"]
+invariants = ["the projection advances one verified commit per transaction", "derived rows exist only for live generations", "working state is never read as authority", "driver types never cross the crate boundary"]

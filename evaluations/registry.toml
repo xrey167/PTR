@@ -130,3 +130,28 @@ status = "open"
 id = "structural-code-search"
 path = "components/structural-code-search/candidates.toml"
 status = "open"
+
+[[component]]
+id = "relational-substrate"
+path = "components/relational-substrate/candidates.toml"
+status = "open"
+
+[[component]]
+id = "fast-weight-memory"
+path = "components/fast-weight-memory/candidates.toml"
+status = "open"
+
+[[component]]
+id = "label-model"
+path = "components/label-model/candidates.toml"
+status = "open"
+
+[[component]]
+id = "adapter-serving"
+path = "components/adapter-serving/candidates.toml"
+status = "open"
+
+[[component]]
+id = "analytics-mirror"
+path = "components/analytics-mirror/candidates.toml"
+status = "open"

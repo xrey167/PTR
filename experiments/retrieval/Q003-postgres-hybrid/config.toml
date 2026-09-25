@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "Q003-postgres-hybrid"
+path = "experiments/retrieval/Q003-postgres-hybrid"
+tests_dir = "tests"

@@ -1,0 +1,6 @@
+flowchart LR
+    A["Admissible semantic inputs"] --> B["ptr-fastmem\nRevocable Fast-Weight Working Memory"]
+    B --> C["Decoded search candidates or Unknown"]
+    C --> D["ptr-search (candidate stage)"]
+    B -. "contracts" .-> T["ptr-types"]
+    L["ptr-ledger (authority)"] -. "never replaced" .-> B

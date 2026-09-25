@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "F002-weak-supervision"
+path = "experiments/feedback/F002-weak-supervision"
+tests_dir = "tests"

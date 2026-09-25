@@ -1,0 +1,508 @@
+use crate::error::LineageError;
+use crate::lineage::AdapterId;
+
+/// A dense row-major matrix of `f64`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Matrix {
+    rows: usize,
+    cols: usize,
+    data: Vec<f64>,
+}
+
+impl Matrix {
+    pub fn new(rows: usize, cols: usize, data: Vec<f64>) -> Result<Self, LineageError> {
+        if rows == 0 || cols == 0 {
+            return Err(LineageError::Empty { field: "matrix" });
+        }
+        if data.len() != rows * cols {
+            return Err(LineageError::ShapeMismatch {
+                field: "matrix data",
+                expected: rows * cols,
+                actual: data.len(),
+            });
+        }
+        if data.iter().any(|value| !value.is_finite()) {
+            return Err(LineageError::NonFinite { field: "matrix" });
+        }
+        Ok(Self { rows, cols, data })
+    }
+
+    pub fn rows(&self) -> usize {
+        self.rows
+    }
+
+    pub fn cols(&self) -> usize {
+        self.cols
+    }
+
+    fn column(&self, index: usize) -> Vec<f64> {
+        (0..self.rows)
+            .map(|row| self.data[row * self.cols + index])
+            .collect()
+    }
+
+    /// Entry at `(row, col)`.
+    pub fn get(&self, row: usize, col: usize) -> f64 {
+        self.data[row * self.cols + col]
+    }
+
+    /// Row-major entries.
+    pub fn as_slice(&self) -> &[f64] {
+        &self.data
+    }
+
+    /// `self * other`.
+    pub fn multiply(&self, other: &Matrix) -> Result<Matrix, LineageError> {
+        if self.cols != other.rows {
+            return Err(LineageError::ShapeMismatch {
+                field: "matrix product",
+                expected: self.cols,
+                actual: other.rows,
+            });
+        }
+        let mut data = vec![0.0; self.rows * other.cols];
+        for i in 0..self.rows {
+            for k in 0..self.cols {
+                let left = self.data[i * self.cols + k];
+                if left == 0.0 {
+                    continue;
+                }
+                let row = &other.data[k * other.cols..(k + 1) * other.cols];
+                for (cell, &right) in data[i * other.cols..(i + 1) * other.cols]
+                    .iter_mut()
+                    .zip(row)
+                {
+                    *cell += left * right;
+                }
+            }
+        }
+        Ok(Matrix {
+            rows: self.rows,
+            cols: other.cols,
+            data,
+        })
+    }
+
+    /// Frobenius norm.
+    pub fn frobenius(&self) -> f64 {
+        self.data.iter().map(|x| x * x).sum::<f64>().sqrt()
+    }
+
+    fn transpose(&self) -> Self {
+        let mut data = Vec::with_capacity(self.data.len());
+        for col in 0..self.cols {
+            data.extend(self.column(col));
+        }
+        Self {
+            rows: self.cols,
+            cols: self.rows,
+            data,
+        }
+    }
+}
+
+/// An orthonormal basis of a subspace of `R^dim`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Basis {
+    dim: usize,
+    vectors: Vec<Vec<f64>>,
+}
+
+impl Basis {
+    pub fn dim(&self) -> usize {
+        self.dim
+    }
+
+    /// Dimension of the subspace.
+    pub fn rank(&self) -> usize {
+        self.vectors.len()
+    }
+}
+
+/// Relative size below which a column is treated as linearly dependent.
+const RANK_TOLERANCE: f64 = 1e-10;
+
+/// Orthonormal basis of the column space of `matrix`, by modified Gram-Schmidt
+/// with one full reorthogonalisation pass ("twice is enough"). Columns whose
+/// remainder is negligible relative to their own norm are dropped, so the
+/// basis has the numerical rank of the matrix.
+pub fn column_basis(matrix: &Matrix) -> Basis {
+    let mut vectors: Vec<Vec<f64>> = Vec::new();
+    for index in 0..matrix.cols {
+        let mut column = matrix.column(index);
+        let original = norm(&column);
+        if original == 0.0 {
+            continue;
+        }
+        for _ in 0..2 {
+            for base in &vectors {
+                let projection = dot(&column, base);
+                for (cell, &b) in column.iter_mut().zip(base) {
+                    *cell -= projection * b;
+                }
+            }
+        }
+        let remainder = norm(&column);
+        if remainder <= RANK_TOLERANCE * original {
+            continue;
+        }
+        column.iter_mut().for_each(|cell| *cell /= remainder);
+        vectors.push(column);
+    }
+    Basis {
+        dim: matrix.rows,
+        vectors,
+    }
+}
+
+/// Cosines of the principal angles between two subspaces, largest first.
+///
+/// They are the singular values of `Qa^T Qb` for orthonormal bases `Qa`, `Qb`
+/// (Björck and Golub). There are `min(rank_a, rank_b)` of them, each in
+/// `[0, 1]`; `1` means the subspaces share a direction and `0` that they are
+/// orthogonal along it.
+pub fn principal_cosines(left: &Basis, right: &Basis) -> Result<Vec<f64>, LineageError> {
+    if left.dim != right.dim {
+        return Err(LineageError::ShapeMismatch {
+            field: "subspace dimension",
+            expected: left.dim,
+            actual: right.dim,
+        });
+    }
+    let count = left.rank().min(right.rank());
+    if count == 0 {
+        return Ok(Vec::new());
+    }
+    // cross[i][j] = <left_i, right_j>; gram = cross^T cross is rank_b x rank_b.
+    let cross: Vec<Vec<f64>> = left
+        .vectors
+        .iter()
+        .map(|a| right.vectors.iter().map(|b| dot(a, b)).collect())
+        .collect();
+    let size = right.rank();
+    let mut gram = vec![vec![0.0; size]; size];
+    for (i, gram_row) in gram.iter_mut().enumerate() {
+        for (j, cell) in gram_row.iter_mut().enumerate() {
+            *cell = cross.iter().map(|row| row[i] * row[j]).sum();
+        }
+    }
+    let mut eigenvalues = symmetric_eigenvalues(gram);
+    eigenvalues.sort_by(|a, b| b.total_cmp(a));
+    Ok(eigenvalues
+        .into_iter()
+        .take(count)
+        .map(|value| value.max(0.0).sqrt().min(1.0))
+        .collect())
+}
+
+/// Normalised subspace overlap `||Qa^T Qb||_F^2 / min(rank_a, rank_b)`: the mean
+/// squared principal cosine, `0` for orthogonal subspaces and `1` when the
+/// smaller one lies inside the larger. Compare it with [`chance_overlap`]: two
+/// random subspaces overlap by that much with no interference at all.
+pub fn subspace_overlap(left: &Basis, right: &Basis) -> Result<f64, LineageError> {
+    let cosines = principal_cosines(left, right)?;
+    if cosines.is_empty() {
+        return Ok(0.0);
+    }
+    Ok(cosines.iter().map(|c| c * c).sum::<f64>() / cosines.len() as f64)
+}
+
+/// Expected normalised overlap of two uniformly random subspaces of the given
+/// ranks in `R^dim`: `E ||Qa^T Qb||_F^2 = rank_a * rank_b / dim`, normalised by
+/// the smaller rank, which is `max(rank_a, rank_b) / dim`. Overlaps near this
+/// level carry no evidence of interference; ranks that differ are only
+/// comparable after subtracting it.
+pub fn chance_overlap(left: &Basis, right: &Basis) -> f64 {
+    if left.rank() == 0 || right.rank() == 0 || left.dim == 0 {
+        return 0.0;
+    }
+    left.rank().max(right.rank()) as f64 / left.dim as f64
+}
+
+/// One layer of a low-rank update `delta_W = B A`, with `B` of shape
+/// `d_out x r` and `A` of shape `r x d_in`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LayerUpdate {
+    pub layer: String,
+    pub b: Matrix,
+    pub a: Matrix,
+}
+
+impl LayerUpdate {
+    pub fn new(layer: impl Into<String>, b: Matrix, a: Matrix) -> Result<Self, LineageError> {
+        if b.cols != a.rows {
+            return Err(LineageError::ShapeMismatch {
+                field: "adapter rank",
+                expected: b.cols,
+                actual: a.rows,
+            });
+        }
+        Ok(Self {
+            layer: layer.into(),
+            b,
+            a,
+        })
+    }
+
+    /// Basis of a space containing the column space of `B A` (the outputs the
+    /// update can write). It equals it when `A` has full row rank; otherwise it
+    /// is larger, which can only overstate overlap.
+    pub fn output_basis(&self) -> Basis {
+        column_basis(&self.b)
+    }
+
+    /// Basis of a space containing the row space of `B A` (the inputs the
+    /// update reads).
+    pub fn input_basis(&self) -> Basis {
+        column_basis(&self.a.transpose())
+    }
+
+    /// The full update `delta_W = B A`. Merging and comparing adapters must
+    /// work on this product, never on the factors: `B A = (B G)(G^-1 A)` for
+    /// every invertible `G`, so any operation on `A` and `B` separately
+    /// depends on an arbitrary choice of basis.
+    pub fn delta_weight(&self) -> Matrix {
+        self.b
+            .multiply(&self.a)
+            .expect("rank checked at construction")
+    }
+}
+
+/// Data-dependent interference of a candidate update with an earlier one on
+/// the earlier task's inputs: `||dW_new X||_F / ||dW_old X||_F`, where the
+/// columns of `activations` (`d_in x m`) are held-out inputs of the earlier
+/// task at this layer. Geometry alone ignores which input directions the
+/// earlier task actually uses; this measures how much the new update moves the
+/// layer's output on exactly those inputs, relative to the change the earlier
+/// update made. `None` when the earlier update does not move them at all.
+pub fn activation_interference(
+    candidate: &LayerUpdate,
+    earlier: &LayerUpdate,
+    activations: &Matrix,
+) -> Result<Option<f64>, LineageError> {
+    let new_effect = candidate.b.multiply(&candidate.a.multiply(activations)?)?;
+    let old_effect = earlier.b.multiply(&earlier.a.multiply(activations)?)?;
+    let old_norm = old_effect.frobenius();
+    Ok((old_norm > 0.0).then(|| new_effect.frobenius() / old_norm))
+}
+
+/// Worst overlap of one layer of a candidate adapter with any earlier adapter.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LayerInterference {
+    pub layer: String,
+    pub output_overlap: f64,
+    pub input_overlap: f64,
+    /// Chance level of the output-side overlap for these ranks.
+    pub output_chance: f64,
+    /// Chance level of the input-side overlap for these ranks.
+    pub input_chance: f64,
+    /// The earlier adapter with the largest overlap on this layer.
+    pub worst: Option<AdapterId>,
+}
+
+/// Per-layer interference of a candidate with an existing lineage.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InterferenceReport {
+    pub layers: Vec<LayerInterference>,
+}
+
+impl InterferenceReport {
+    /// The largest overlap on any layer, output or input side.
+    pub fn max_overlap(&self) -> f64 {
+        self.layers
+            .iter()
+            .map(|layer| layer.output_overlap.max(layer.input_overlap))
+            .fold(0.0, f64::max)
+    }
+
+    /// Whether every layer stays within `max_overlap`.
+    pub fn within(&self, max_overlap: f64) -> bool {
+        self.max_overlap() <= max_overlap
+    }
+}
+
+/// Measure how much a candidate adapter's update subspaces overlap those of
+/// earlier adapters, layer by layer.
+///
+/// This is the quantity orthogonal-subspace continual-learning methods
+/// (O-LoRA, InfLoRA) drive towards zero. It is measured between subspaces, not
+/// against the null space of a summed update: the null space of `sum_i dW_i` is
+/// not the intersection of the individual null spaces, so an update inside it
+/// can still overlap every earlier adapter.
+pub fn measure_interference(
+    candidate: &[LayerUpdate],
+    earlier: &[(AdapterId, Vec<LayerUpdate>)],
+) -> Result<InterferenceReport, LineageError> {
+    let mut layers = Vec::with_capacity(candidate.len());
+    for update in candidate {
+        let output = update.output_basis();
+        let input = update.input_basis();
+        let mut worst: Option<AdapterId> = None;
+        let mut output_overlap: f64 = 0.0;
+        let mut input_overlap: f64 = 0.0;
+        let mut output_chance: f64 = 0.0;
+        let mut input_chance: f64 = 0.0;
+        for (id, updates) in earlier {
+            for previous in updates.iter().filter(|p| p.layer == update.layer) {
+                let previous_output = previous.output_basis();
+                let previous_input = previous.input_basis();
+                let out = subspace_overlap(&output, &previous_output)?;
+                let inp = subspace_overlap(&input, &previous_input)?;
+                output_chance = output_chance.max(chance_overlap(&output, &previous_output));
+                input_chance = input_chance.max(chance_overlap(&input, &previous_input));
+                if out.max(inp) > output_overlap.max(input_overlap) {
+                    worst = Some(id.clone());
+                }
+                output_overlap = output_overlap.max(out);
+                input_overlap = input_overlap.max(inp);
+            }
+        }
+        layers.push(LayerInterference {
+            layer: update.layer.clone(),
+            output_overlap,
+            input_overlap,
+            output_chance,
+            input_chance,
+            worst,
+        });
+    }
+    Ok(InterferenceReport { layers })
+}
+
+fn dot(left: &[f64], right: &[f64]) -> f64 {
+    left.iter().zip(right).map(|(l, r)| l * r).sum()
+}
+
+fn norm(values: &[f64]) -> f64 {
+    dot(values, values).sqrt()
+}
+
+/// Eigenvalues of a small symmetric matrix by the cyclic Jacobi method.
+fn symmetric_eigenvalues(mut matrix: Vec<Vec<f64>>) -> Vec<f64> {
+    let size = matrix.len();
+    for _sweep in 0..100 {
+        let off: f64 = (0..size)
+            .flat_map(|i| (0..size).filter(move |&j| j != i).map(move |j| (i, j)))
+            .map(|(i, j)| matrix[i][j] * matrix[i][j])
+            .sum();
+        if off < 1e-30 {
+            break;
+        }
+        for p in 0..size {
+            for q in (p + 1)..size {
+                if matrix[p][q].abs() < 1e-300 {
+                    continue;
+                }
+                let theta = (matrix[q][q] - matrix[p][p]) / (2.0 * matrix[p][q]);
+                let t = theta.signum() / (theta.abs() + (theta * theta + 1.0).sqrt());
+                let t = if theta == 0.0 { 1.0 } else { t };
+                let c = 1.0 / (t * t + 1.0).sqrt();
+                let s = t * c;
+                for row in matrix.iter_mut() {
+                    let (kp, kq) = (row[p], row[q]);
+                    row[p] = c * kp - s * kq;
+                    row[q] = s * kp + c * kq;
+                }
+                // p < q, so row p lies in the first half and row q starts the second.
+                let (upper, lower) = matrix.split_at_mut(q);
+                for (pk, qk) in upper[p].iter_mut().zip(lower[0].iter_mut()) {
+                    let (left, right) = (*pk, *qk);
+                    *pk = c * left - s * right;
+                    *qk = s * left + c * right;
+                }
+            }
+        }
+    }
+    (0..size).map(|i| matrix[i][i]).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn matrix(rows: usize, cols: usize, data: &[f64]) -> Matrix {
+        Matrix::new(rows, cols, data.to_vec()).unwrap()
+    }
+
+    #[test]
+    fn identical_subspaces_overlap_fully_and_orthogonal_ones_not_at_all() {
+        let a = column_basis(&matrix(3, 1, &[1.0, 0.0, 0.0]));
+        let b = column_basis(&matrix(3, 1, &[2.0, 0.0, 0.0]));
+        let c = column_basis(&matrix(3, 1, &[0.0, 5.0, 0.0]));
+        assert!((subspace_overlap(&a, &b).unwrap() - 1.0).abs() < 1e-12);
+        assert!(subspace_overlap(&a, &c).unwrap().abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_45_degree_line_has_cosine_one_over_root_two() {
+        let a = column_basis(&matrix(2, 1, &[1.0, 0.0]));
+        let b = column_basis(&matrix(2, 1, &[1.0, 1.0]));
+        let cosines = principal_cosines(&a, &b).unwrap();
+        assert!((cosines[0] - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_dependent_column_does_not_add_rank() {
+        let basis = column_basis(&matrix(
+            3,
+            3,
+            &[1.0, 2.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+        ));
+        assert_eq!(basis.rank(), 2);
+    }
+
+    #[test]
+    fn a_plane_contains_its_own_line() {
+        // span{e1, e2} and span{e1 + e2}: the line lies inside the plane.
+        let plane = column_basis(&matrix(3, 2, &[1.0, 0.0, 0.0, 1.0, 0.0, 0.0]));
+        let line = column_basis(&matrix(3, 1, &[1.0, 1.0, 0.0]));
+        assert!((subspace_overlap(&plane, &line).unwrap() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn chance_overlap_is_the_larger_rank_over_the_dimension() {
+        let line = column_basis(&matrix(4, 1, &[1.0, 0.0, 0.0, 0.0]));
+        let plane = column_basis(&matrix(4, 2, &[1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0]));
+        assert_eq!(chance_overlap(&line, &plane), 0.5);
+    }
+
+    #[test]
+    fn the_product_of_factors_is_the_update() {
+        let b = matrix(2, 1, &[1.0, 2.0]);
+        let a = matrix(1, 3, &[3.0, 0.0, -1.0]);
+        let update = LayerUpdate::new("q", b, a).unwrap();
+        assert_eq!(
+            update.delta_weight().as_slice(),
+            &[3.0, 0.0, -1.0, 6.0, 0.0, -2.0]
+        );
+    }
+
+    #[test]
+    fn activation_interference_is_zero_on_inputs_the_new_update_ignores() {
+        // The earlier update reads input axis 0; the candidate reads axis 1.
+        let earlier =
+            LayerUpdate::new("q", matrix(2, 1, &[1.0, 0.0]), matrix(1, 2, &[1.0, 0.0])).unwrap();
+        let candidate =
+            LayerUpdate::new("q", matrix(2, 1, &[1.0, 0.0]), matrix(1, 2, &[0.0, 1.0])).unwrap();
+        // The earlier task's inputs lie on axis 0.
+        let inputs = matrix(2, 3, &[1.0, 2.0, -1.0, 0.0, 0.0, 0.0]);
+        assert_eq!(
+            activation_interference(&candidate, &earlier, &inputs).unwrap(),
+            Some(0.0)
+        );
+        // Although both write to the same output direction.
+        assert!(
+            (subspace_overlap(&candidate.output_basis(), &earlier.output_basis()).unwrap() - 1.0)
+                .abs()
+                < 1e-12
+        );
+    }
+
+    #[test]
+    fn jacobi_recovers_known_eigenvalues() {
+        let mut values = symmetric_eigenvalues(vec![vec![2.0, 1.0], vec![1.0, 2.0]]);
+        values.sort_by(f64::total_cmp);
+        assert!((values[0] - 1.0).abs() < 1e-12);
+        assert!((values[1] - 3.0).abs() < 1e-12);
+    }
+}
