@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import importlib.util
 import json
 import math
 import re
@@ -60,10 +61,6 @@ BUILD = [
 RUN_PREFIX = (
     f"cargo {TOOLCHAIN} run --release --locked --offline --quiet --target-dir {TARGET_DIR} "
     "--manifest-path model/burn-a0/Cargo.toml --example a0_ablation --"
-)
-ALLOWED_AFTER_PREREG = re.compile(
-    r"^(research/falsification/A0-ablations-v1/lr_selection\.(tsv|json)"
-    r"|experiments/model/M00[1-4]-[a-z-]+/results/run-[^/]+\.json)$"
 )
 
 
@@ -353,6 +350,24 @@ def records(experiment: str, entrypoint: str) -> list[dict]:
     return out
 
 
+def choose_lr(arm: str, by_lr: dict[float, dict], grid: list[float], tolerance: float) -> tuple[float, str, dict[float, float]]:
+    """The preregistered selection rule for one arm: among the learning rates that
+    did not diverge, the smallest whose validation accuracy is within `tolerance`
+    of the best; flagged when it sits on the edge of the grid. Returns the rate,
+    the flag and every eligible rate's validation accuracy."""
+    missing = [lr for lr in grid if lr not in by_lr]
+    if missing:
+        raise SystemExit(f"{arm}: no sweep result for lr {missing}")
+    eligible = {lr: r["val_accuracy"] for lr, r in by_lr.items()
+                if not r["nan"] and math.isfinite(r["val_accuracy"])}
+    if not eligible:
+        raise SystemExit(f"{arm}: every learning rate diverged")
+    best = max(eligible.values())
+    lr = min(lr for lr, acc in eligible.items() if acc >= best - tolerance)
+    flag = "edge of grid" if lr in (min(grid), max(grid)) else ""
+    return lr, flag, eligible
+
+
 def select(_args) -> None:
     grid = config()["learning_rate"]["grid"]
     tolerance = config()["learning_rate"]["selection_tolerance"]
@@ -371,17 +386,7 @@ def select(_args) -> None:
                 table.append({"arm": arm, "lr": config()["learning_rate"]["calibration"],
                               "flag": "no per-arm lr selection", "val_accuracy": None})
                 continue
-            by_lr = results.get(arm, {})
-            missing = [lr for lr in grid if lr not in by_lr]
-            if missing:
-                raise SystemExit(f"{arm}: no sweep result for lr {missing}")
-            eligible = {lr: r["val_accuracy"] for lr, r in by_lr.items()
-                        if not r["nan"] and math.isfinite(r["val_accuracy"])}
-            if not eligible:
-                raise SystemExit(f"{arm}: every learning rate diverged")
-            best = max(eligible.values())
-            lr = min(lr for lr, acc in eligible.items() if acc >= best - tolerance)
-            flag = "edge of grid" if lr in (min(grid), max(grid)) else ""
+            lr, flag, eligible = choose_lr(arm, results.get(arm, {}), grid, tolerance)
             table.append({"arm": arm, "lr": lr, "flag": flag, "val_accuracy": eligible[lr],
                           "by_lr": {str(k): v for k, v in sorted(eligible.items())}})
     lines = ["arm\tlr\tval_accuracy\tflag"]
@@ -394,11 +399,26 @@ def select(_args) -> None:
 # --------------------------------------------------------------------------- eval / contingency
 
 
+def aggregator():
+    """The aggregator module, whose G4 diff rule the eval phase applies before it
+    starts, so that the check here and the gate in the aggregate are one rule."""
+    spec = importlib.util.spec_from_file_location("aggregate_a0_ablation", ROOT / "scripts/aggregate_a0_ablation.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def require_eval_commit() -> None:
     require_frozen()
     changed = subprocess.run(["git", "diff", "--name-only", f"{PREREG_TAG}..HEAD"],
                              cwd=ROOT, text=True, capture_output=True, check=True).stdout.split()
-    stray = [path for path in changed if not ALLOWED_AFTER_PREREG.match(path)]
+
+    def entrypoint_of(path: str) -> str | None:
+        try:
+            return json.loads((ROOT / path).read_text(encoding="utf-8")).get("entrypoint")
+        except (OSError, json.JSONDecodeError):
+            return None
+    stray = aggregator().freeze_violations(changed, entrypoint_of)
     if stray:
         raise SystemExit(f"G4: files changed since {PREREG_TAG} beyond the lr selection: {stray}")
     if not (STUDY_DIR / "lr_selection.tsv").exists():

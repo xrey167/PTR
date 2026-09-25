@@ -116,6 +116,15 @@ class ChecksAndControls(unittest.TestCase):
         result = run(table(frozen_router=(0.95, SMALL)))
         self.assertEqual(verdict(result, "M004-negative-control"), "HARMFUL")
 
+    def test_harmful_is_recorded_even_inside_the_equivalence_band(self):
+        # CI about (-0.007, -0.003): inside (-0.02, 0.02) and entirely below 0.
+        # DESIGN.md records HARMFUL whenever the upper bound is < 0.
+        entry = run(table(frozen_router=(0.905, SMALL)))["verdicts"]["M004-negative-control"]
+        self.assertLess(entry["stats"]["ci"][1], 0)
+        self.assertGreater(entry["stats"]["ci"][0], -0.02)
+        self.assertEqual(entry["verdict"], "HARMFUL")
+        self.assertIn("inside the equivalence band", entry["reason"])
+
     def test_nonlinearity_supported_and_not_attributable(self):
         both = run(table(latent_0=(0.80, SMALL), latent_linear=(0.80, SMALL)))
         self.assertEqual(verdict(both, "M003-nonlinearity"), "SUPPORTS-NONLINEARITY")
@@ -148,7 +157,10 @@ class GatesAndPreconditions(unittest.TestCase):
     def test_competence_failure_issues_no_verdict(self):
         result = run(table(full=0.80))
         self.assertFalse(result["gates"]["G1"]["pass"])
-        self.assertTrue(all(v["verdict"] == "NOT ISSUED" for v in result["verdicts"].values()))
+        issued = {cid: v["verdict"] for cid, v in result["verdicts"].items() if cid != "no-verifier-head"}
+        self.assertTrue(all(v == "NOT ISSUED" for v in issued.values()))
+        # A contrast that was never testable stays NOT TESTED whatever the gates say.
+        self.assertEqual(verdict(result, "no-verifier-head"), "NOT TESTED")
 
     def test_a_restricted_arm_that_failed_to_train(self):
         result = run(table(latent_0=0.40))
@@ -203,11 +215,84 @@ class GatesAndPreconditions(unittest.TestCase):
 
 
 class Reported(unittest.TestCase):
+    def test_the_mask_effect_names_an_arm_below_its_bar(self):
+        clean = run(table(no_semantic_slots=0.80, no_semantic_slots_masked=0.85))
+        self.assertEqual(clean["reported"]["mask_effect"]["below_learnability_bar"], [])
+        undertrained = run(table(no_semantic_slots=0.60, no_semantic_slots_masked=0.85))
+        self.assertEqual(undertrained["reported"]["mask_effect"]["below_learnability_bar"], ["no-semantic-slots"])
+
     def test_transfer_statements_and_the_mask_effect(self):
         result = run(table(no_semantic_slots=0.80, no_semantic_slots_masked=0.85, latent_0=0.20))
         self.assertAlmostEqual(result["reported"]["mask_effect"]["ood_validity"], 0.05)
         self.assertEqual(result["reported"]["transfer"]["full"]["new_role_regime_cell"], "transfers")
         self.assertEqual(result["reported"]["transfer"]["latent-0"]["new_role_regime_cell"], "does not transfer")
+
+
+LOCK = {"data_fnv1a64": "aa", "splits": {"test_iid": {"label_fnv1a64": "bb"}}}
+DATA_ROW = '{"row":"data","data_fnv64":"aa","label_fnv64_test_iid":"bb"}'
+
+
+def record(seed, status="completed", stdout=DATA_ROW, sha="c" * 40, dirty=False):
+    return {"seed": seed, "status": status, "stdout": stdout, "git_sha": sha, "git_dirty": dirty}
+
+
+class RecordGates(unittest.TestCase):
+    """The gate conditions on run records, which cover the evaluation, the G2
+    rerun and the contingency alike."""
+
+    def test_a_retry_replaces_a_failed_process_and_a_failure_never_enters_a_table(self):
+        chosen = agg.chosen_per_seed([record(17, status="failed"), record(17), record(29, status="failed")])
+        self.assertEqual(sorted(chosen), [17])
+
+    def test_completeness_over_every_kind_of_process(self):
+        full = {s: record(s) for s in SEEDS}
+        scores_for = {arm: {s: {} for s in SEEDS} for arm in ("full", "latent-0")}
+        planned = {"M001": ["full"], "M003": ["latent-0"]}
+        chosen = {"eval": {"M001": full, "M003": full}, "rerun": {"M001": {17: record(17)}},
+                  "contingency": {"M001": full}}
+        self.assertEqual(agg.completeness(chosen, SEEDS, planned, scores_for), [])
+
+        short = dict(full)
+        del short[43]
+        nan = {**full, 71: record(71, stdout=DATA_ROW + '\n{"row":"final","nan":1}')}
+        problems = agg.completeness(
+            {"eval": {"M001": full, "M003": nan}, "rerun": {"M001": {}}, "contingency": {"M001": short}},
+            SEEDS, dict(planned, M004=["frozen-router"]), scores_for)
+        self.assertIn("contingency M001/43: no completed process", problems)
+        self.assertIn("eval M003/71: a non-finite loss", problems)
+        self.assertIn("rerun M001/17: no completed process", problems)
+        self.assertIn("eval M004: no records", problems)
+        self.assertTrue(any("the budget kept frozen-router" in p for p in problems))
+
+    def test_only_the_lr_selection_and_sweep_records_may_follow_the_tag(self):
+        sweep = "experiments/model/M001-semantic-slots/results/run-1-seed-17.json"
+        evaluation = "experiments/model/M002-typed-attention/results/run-2-seed-17.json"
+        entrypoints = {sweep: "a0_sweep_entrypoint", evaluation: "a0_ablation_entrypoint"}
+        changed = ["research/falsification/A0-ablations-v1/lr_selection.tsv", sweep, evaluation,
+                   "scripts/aggregate_a0_ablation.py"]
+        self.assertEqual(agg.freeze_violations(changed, entrypoints.get),
+                         [evaluation, "scripts/aggregate_a0_ablation.py"])
+
+    def test_provenance_needs_one_commit_and_a_known_clean_worktree(self):
+        self.assertTrue(agg.provenance({"a": record(17), "b": record(29)})["pass"])
+        self.assertFalse(agg.provenance({"a": record(17), "b": record(29, sha="d" * 40)})["pass"])
+        self.assertEqual(agg.provenance({"a": record(17), "b": record(29, dirty=True)})["dirty"], ["b"])
+        self.assertEqual(agg.provenance({"a": record(17, dirty=None)})["dirty"], ["a"])
+
+    def test_data_identity_does_not_pass_vacuously(self):
+        self.assertTrue(agg.data_identity({"a": record(17)}, LOCK)["pass"])
+        self.assertFalse(agg.data_identity({}, LOCK)["pass"])
+        self.assertEqual(agg.data_identity({"a": record(17, stdout="")}, LOCK)["records_without_data_row"], ["a"])
+        other = record(17, stdout=DATA_ROW.replace('"aa"', '"ff"'))
+        self.assertEqual(agg.data_identity({"a": other}, LOCK)["records_with_other_data"], ["a"])
+
+    def test_the_rerun_must_reproduce_real_lines(self):
+        lines = '{"row":"final","arm":"full","correct":3}\nPRED full test_iid 0123'
+        self.assertTrue(agg.rerun_reproduces(record(17, stdout=lines), record(17, stdout=lines))["pass"])
+        self.assertFalse(agg.rerun_reproduces(record(17, stdout=""), record(17, stdout=""))["pass"])
+        self.assertFalse(agg.rerun_reproduces(record(17, stdout=lines), None)["pass"])
+        changed = lines.replace("0123", "0124")
+        self.assertFalse(agg.rerun_reproduces(record(17, stdout=lines), record(17, stdout=changed))["pass"])
 
 
 if __name__ == "__main__":

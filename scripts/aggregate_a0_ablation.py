@@ -20,6 +20,7 @@ import hashlib
 import importlib.util
 import json
 import math
+import re
 import statistics
 import subprocess
 import sys
@@ -166,7 +167,10 @@ def decide(
             f"test_iid {full_mean:.4f} is below {competence_bar:.4f}. No mechanism verdict is issued."
         )
         for contrast in criteria["contrast"]:
-            result["verdicts"][contrast["id"]] = {"verdict": "NOT ISSUED", "reason": "G1 (competence) failed"}
+            if contrast["kind"] == "not-tested":
+                result["verdicts"][contrast["id"]] = {"verdict": "NOT TESTED", "reason": contrast["note"]}
+            else:
+                result["verdicts"][contrast["id"]] = {"verdict": "NOT ISSUED", "reason": "G1 (competence) failed"}
         return result
 
     failed_gates = [name for name, gate in result["gates"].items() if not gate["pass"]]
@@ -185,9 +189,10 @@ def decide(
                     return f"{arm} failed to train (below its learnability bar)"
                 if not (contingency and arm in contingency):
                     return f"{arm} is below its learnability bar; the 4000-step contingency decides"
-                # criteria.toml: "If the arm is still below the bar, the contrast is
-                # INCONCLUSIVE: an optimisation failure, not evidence that the
-                # mechanism is needed." The bar is the same; only the steps differ.
+                # DESIGN.md (learnability, "Inconclusive if"): "If the arm is still
+                # below the bar, the contrast is INCONCLUSIVE: an optimisation
+                # failure, not evidence that the mechanism is needed." criteria.toml
+                # sets contingency_steps; the bar is the same, only the steps differ.
                 rerun = mean_over_seeds(contingency, arm, "test_iid", seeds)
                 if rerun < status["bar"]:
                     return (
@@ -238,14 +243,17 @@ def decide(
             reason_block = blocked(arms)
             if reason_block:
                 entry.update(verdict="INCONCLUSIVE", reason=reason_block)
+            elif upper < 0:
+                # DESIGN.md: "HARMFUL (the frozen arm is better) is recorded if the CI
+                # upper bound is < 0", whether or not the CI is also inside the band.
+                inside = " (the CI is also inside the equivalence band)" if -eq < lower else ""
+                entry.update(verdict="HARMFUL", reason=f"CI upper < 0: the frozen arm is better{inside}")
             elif -eq < lower and upper < eq:
                 entry.update(verdict="EQUIVALENT", reason=f"the CI lies inside (-{eq}, {eq})")
             else:
                 verdict, reason = common_rule(stats, c["delta_min"], None)
                 if verdict == "SUPPORTS":
                     entry.update(verdict="SUPPORTS", reason=c["supports"])
-                elif verdict == "HARMFUL":
-                    entry.update(verdict="HARMFUL", reason=reason)
                 else:
                     entry.update(verdict="INCONCLUSIVE", reason="neither EQUIVALENT, SUPPORTS nor HARMFUL")
             hand = refs[c["deterministic_reference"]]["test_iid"]
@@ -319,7 +327,13 @@ def decide(
         result["verdicts"][cid] = entry
 
     if "no-semantic-slots" in table and "no-semantic-slots-masked" in table:
+        # Reported, never a verdict. An arm below its learnability bar makes the
+        # difference partly a training-budget effect, which the report must say.
         result["reported"]["mask_effect"] = {
+            "below_learnability_bar": sorted(
+                arm for arm in ("no-semantic-slots", "no-semantic-slots-masked")
+                if learn.get(arm) and not learn[arm]["passes"]
+            ),
             "validity_decisive_test_iid": statistics.fmean(
                 endpoint(table, "no-semantic-slots-masked", s, "subset:test_iid:validity", criteria)
                 - endpoint(table, "no-semantic-slots", s, "subset:test_iid:validity", criteria)
@@ -377,6 +391,7 @@ def load_score_module():
 
 
 def eval_records(experiment: str, entrypoint: str) -> list[Path]:
+    """Every run record of one entrypoint, in the order the runner wrote them."""
     results = ROOT / "experiments" / EXPERIMENTS[experiment] / "results"
     out = []
     for path in sorted(results.glob("run-*.json")):
@@ -408,8 +423,117 @@ def build_table(paths: list[Path], score) -> tuple[dict, list[str], list[dict]]:
     for entry in document["results"]:
         # score.py names a split's accuracy route_accuracy; the core reads `accuracy`.
         entry["accuracy"] = entry["route_accuracy"]
-        table.setdefault(entry["arm"], {}).setdefault(entry["seed"], {})[entry["split"]] = entry
+        cell = table.setdefault(entry["arm"], {}).setdefault(entry["seed"], {})
+        if entry["split"] in cell:
+            problems.append(f"{entry['record']}: a second score for {entry['arm']}/{entry['seed']}/{entry['split']}")
+        cell[entry["split"]] = entry
     return table, problems, document["results"]
+
+
+# ------------------------------------------------------------------------ record gates
+#
+# Pure functions over run records (dicts as scripts/run_experiment.py writes them),
+# so each gate condition can be tested without a study on disk. They cover every
+# record a verdict can rest on: the evaluation, the G2 rerun and the contingency.
+
+STUDY_KINDS = {
+    "eval": "a0_ablation_entrypoint",
+    "rerun": "a0_rerun_entrypoint",
+    "contingency": "a0_contingency_entrypoint",
+}
+FREEZE_FILES = frozenset({
+    "research/falsification/A0-ablations-v1/lr_selection.tsv",
+    "research/falsification/A0-ablations-v1/lr_selection.json",
+})
+RUN_RECORD_PATH = re.compile(r"^experiments/model/M00[1-4]-[a-z-]+/results/run-[^/]+\.json$")
+
+
+def has_nan(record: dict) -> bool:
+    return any('"nan":1' in line for line in record.get("stdout", "").splitlines())
+
+
+def chosen_per_seed(records: list[dict]) -> dict[int, dict]:
+    """Per seed, the last completed record. DESIGN.md G3 gives a failed or NaN
+    process one full retry, so an earlier failure beside a later success is
+    expected; a record that did not complete never enters a table."""
+    chosen: dict[int, dict] = {}
+    for record in records:
+        if record.get("status") == "completed":
+            chosen[record["seed"]] = record
+    return chosen
+
+
+def completeness(chosen: dict[str, dict[str, dict[int, dict]]], seeds: list[int],
+                 planned: dict[str, list[str]], table: dict) -> list[str]:
+    """G3: every planned process completed with finite losses, and every arm the
+    budget rule kept has scores for every seed. `chosen` is {kind: {experiment:
+    {seed: record}}}; the evaluation must cover every experiment in `planned`, a
+    contingency every seed of each experiment it ran for, and the rerun its seed."""
+    problems = []
+    for kind, by_experiment in chosen.items():
+        for experiment, by_seed in by_experiment.items():
+            wanted = seeds if kind != "rerun" else sorted(by_seed) or [seeds[0]]
+            for seed in wanted:
+                record = by_seed.get(seed)
+                if record is None:
+                    problems.append(f"{kind} {experiment}/{seed}: no completed process")
+                elif has_nan(record):
+                    problems.append(f"{kind} {experiment}/{seed}: a non-finite loss")
+    for experiment in planned:
+        if experiment not in chosen.get("eval", {}):
+            problems.append(f"eval {experiment}: no records")
+        for arm in planned[experiment]:
+            missing = [s for s in seeds if s not in table.get(arm, {})]
+            if missing:
+                problems.append(f"{experiment}: the budget kept {arm}, which has no scores for seeds {missing}")
+    return problems
+
+
+def freeze_violations(changed: list[str], entrypoint_of) -> list[str]:
+    """G4's diff condition (DESIGN.md, G4): between the preregistration tag and the
+    evaluation commit, only the learning-rate selection and the sweep's run records
+    may change. `entrypoint_of(path)` reads a changed run record's entrypoint."""
+    return [
+        path for path in changed
+        if path not in FREEZE_FILES
+        and not (RUN_RECORD_PATH.match(path) and entrypoint_of(path) == "a0_sweep_entrypoint")
+    ]
+
+
+def provenance(records: dict[str, dict]) -> dict:
+    """G4's record condition: one commit, and a clean worktree for every record."""
+    shas = sorted({str(r.get("git_sha")) for r in records.values()})
+    dirty = sorted(name for name, r in records.items() if r.get("git_dirty") is not False)
+    return {"shas": shas, "dirty": dirty, "pass": len(shas) == 1 and not dirty}
+
+
+def data_identity(records: dict[str, dict], lock: dict) -> dict:
+    """G0's record condition: every process read the locked data. A record with
+    no data row fails, so an empty or truncated stdout cannot pass vacuously."""
+    missing, wrong = [], []
+    for name, record in records.items():
+        rows = [json.loads(line) for line in record.get("stdout", "").splitlines() if line.startswith('{"row":"data"')]
+        if not rows:
+            missing.append(name)
+            continue
+        for row in rows:
+            if row.get("data_fnv64") != lock["data_fnv1a64"] or any(
+                row.get(f"label_fnv64_{split}") != info["label_fnv1a64"] for split, info in lock["splits"].items()
+            ):
+                wrong.append(name)
+    return {"records_without_data_row": missing, "records_with_other_data": sorted(set(wrong)),
+            "pass": bool(records) and not missing and not wrong}
+
+
+def rerun_reproduces(original: dict | None, rerun: dict | None) -> dict:
+    """G2: the rerun reproduces the full arm's JSON rows and PRED lines byte for
+    byte. Both must exist and carry full-arm lines; two empty lists are not a match."""
+    def full_lines(record: dict | None) -> list[str]:
+        if record is None:
+            return []
+        return [l for l in record.get("stdout", "").splitlines() if '"arm":"full"' in l or l.startswith("PRED full ")]
+    ours, theirs = full_lines(original), full_lines(rerun)
+    return {"full_lines": len(ours), "pass": bool(ours) and ours == theirs}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -422,81 +546,100 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("criteria.toml differs from the preregistered file; refusing")
     criteria = tomllib.loads(CRITERIA.read_text(encoding="utf-8"))
     references = json.loads((STUDY_DIR / "references.json").read_text(encoding="utf-8"))
+    budget = json.loads((STUDY_DIR / "budget.json").read_text(encoding="utf-8"))
     lock = json.loads(LOCK.read_text(encoding="utf-8"))
     score = load_score_module()
     seeds = criteria["seeds"]
 
-    paths = {e: eval_records(e, "a0_ablation_entrypoint") for e in EXPERIMENTS}
-    records = {p: json.loads(p.read_text(encoding="utf-8")) for ps in paths.values() for p in ps}
-    all_paths = [p for ps in paths.values() for p in ps]
-    table, problems, scored = build_table(all_paths, score)
+    # Every study record, by kind and experiment; the tables use one completed
+    # record per (experiment, seed), and the gates see all of them.
+    paths = {kind: {e: eval_records(e, entrypoint) for e in EXPERIMENTS} for kind, entrypoint in STUDY_KINDS.items()}
+    records = {str(p.relative_to(ROOT)): json.loads(p.read_text(encoding="utf-8"))
+               for by_experiment in paths.values() for ps in by_experiment.values() for p in ps}
+    by_name = {id(r): name for name, r in records.items()}
+
+    def chosen_of(kind: str) -> dict[str, dict[int, dict]]:
+        out = {}
+        for experiment, ps in paths[kind].items():
+            if ps:
+                out[experiment] = chosen_per_seed([records[str(p.relative_to(ROOT))] for p in ps])
+        return out
+
+    chosen = {kind: chosen_of(kind) for kind in STUDY_KINDS}
+    chosen_paths = {kind: [ROOT / by_name[id(r)] for by_seed in chosen[kind].values() for r in by_seed.values()]
+                    for kind in STUDY_KINDS}
+    chosen_records = {by_name[id(r)]: r for kind in STUDY_KINDS for by_seed in chosen[kind].values() for r in by_seed.values()}
+
+    table, problems, scored = build_table(chosen_paths["eval"], score)
+    contingency, contingency_problems, contingency_scored = (
+        build_table(chosen_paths["contingency"], score) if chosen_paths["contingency"] else (None, [], [])
+    )
+    _, rerun_problems, rerun_scored = build_table(chosen_paths["rerun"], score) if chosen_paths["rerun"] else (None, [], [])
     gates: dict = {}
 
-    # G0: data identity and label agreement.
-    data_rows = []
-    for record in records.values():
-        for line in record["stdout"].splitlines():
-            if line.startswith('{"row":"data"'):
-                data_rows.append(json.loads(line))
-    fnv_ok = all(r["data_fnv64"] == lock["data_fnv1a64"] for r in data_rows)
-    labels_ok = all(
-        r[f"label_fnv64_{split}"] == info["label_fnv1a64"]
-        for r in data_rows for split, info in lock["splits"].items()
-    )
+    # G0: data identity and label agreement, for every process a verdict rests on.
+    identity = data_identity(chosen_records, lock)
     agreement, disagreements = score.agree(DATA_DIR, verbose=False)
-    gates["G0"] = {"pass": fnv_ok and labels_ok and not disagreements and references["all_bands_pass"],
-                   "detail": {"data_fnv_matches": fnv_ok, "label_fnvs_match": labels_ok,
+    gates["G0"] = {"pass": identity["pass"] and not disagreements and references["all_bands_pass"],
+                   "detail": {"records": len(chosen_records),
+                              "records_without_data_row": identity["records_without_data_row"],
+                              "records_with_other_data": identity["records_with_other_data"],
                               "score_generator_disagreements": len(disagreements),
                               "bands_pass": references["all_bands_pass"]}}
 
     # G2: the rerun reproduces the full arm's rows and PRED lines byte for byte.
-    rerun = eval_records("M001", "a0_rerun_entrypoint")
-    original = [p for p in paths["M001"] if records[p]["seed"] == 17 and records[p]["status"] == "completed"]
-    def full_lines(stdout: str) -> list[str]:
-        return [l for l in stdout.splitlines() if '"arm":"full"' in l or l.startswith("PRED full ")]
-    g2 = bool(rerun) and len(original) == 1 and full_lines(json.loads(rerun[-1].read_text())["stdout"]) == full_lines(records[original[0]]["stdout"])
-    gates["G2"] = {"pass": g2, "detail": {"rerun_records": len(rerun)}}
+    rerun_seed = next(iter(chosen["rerun"].get("M001", {})), None)
+    reproduced = rerun_reproduces(chosen["eval"].get("M001", {}).get(rerun_seed),
+                                  chosen["rerun"].get("M001", {}).get(rerun_seed))
+    gates["G2"] = {"pass": reproduced["pass"],
+                   "detail": {"rerun_records": len(paths["rerun"]["M001"]), "seed": rerun_seed,
+                              "full_lines_compared": reproduced["full_lines"]}}
 
-    # G3: every planned process completed with finite losses.
-    incomplete = []
-    for experiment in EXPERIMENTS:
-        for seed in seeds:
-            done = [p for p in paths[experiment] if records[p]["seed"] == seed and records[p]["status"] == "completed"]
-            if not done:
-                incomplete.append(f"{experiment}/{seed}")
-            elif any('"nan":1' in l for l in records[done[-1]]["stdout"].splitlines()):
-                incomplete.append(f"{experiment}/{seed} (nan)")
+    # G3: every planned process completed with finite losses, every kept arm scored.
+    incomplete = completeness(chosen, seeds, budget["arms"], table)
     gates["G3"] = {"pass": not incomplete, "detail": incomplete}
 
-    # G4: every record clean, one commit, descended from the tag, nothing else changed.
-    shas = {r.get("git_sha") for r in records.values()}
-    dirty = [str(p) for p, r in records.items() if r.get("git_dirty") is not False]
-    sha = next(iter(shas)) if len(shas) == 1 else None
+    # G4: every record clean, one commit, descended from the tag, and between the
+    # tag and that commit only the lr selection and the sweep records changed.
+    origin = provenance(records)
+    sha = origin["shas"][0] if len(origin["shas"]) == 1 else None
     ancestor = sha is not None and subprocess.run(["git", "merge-base", "--is-ancestor", PREREG_TAG, sha], cwd=ROOT).returncode == 0
+    stray = ["(no single commit)"]
+    if ancestor:
+        changed = git("diff", "--name-only", f"{PREREG_TAG}..{sha}").split()
+        def entrypoint_at(path: str) -> str | None:
+            try:
+                return json.loads(git("show", f"{sha}:{path}")).get("entrypoint")
+            except (subprocess.CalledProcessError, json.JSONDecodeError):
+                return None  # deleted, or not a record: not a sweep record either
+        stray = freeze_violations(changed, entrypoint_at)
     prereg_unchanged = at_tag("research/falsification/A0-ablations-v1/PREREGISTRATION.md") == (STUDY_DIR / "PREREGISTRATION.md").read_bytes()
-    gates["G4"] = {"pass": len(shas) == 1 and not dirty and ancestor and prereg_unchanged,
-                   "detail": {"shas": sorted(str(s) for s in shas), "dirty": dirty, "tag_is_ancestor": ancestor,
+    gates["G4"] = {"pass": origin["pass"] and ancestor and not stray and prereg_unchanged,
+                   "detail": {"records": len(records), "shas": origin["shas"], "dirty": origin["dirty"],
+                              "tag_is_ancestor": ancestor, "changed_beyond_lr_selection_and_sweep": stray,
                               "preregistration_unchanged": prereg_unchanged}}
 
-    # G5: the binary's counts equal score.py's.
-    disagree = [f"{e['arm']}/{e['seed']}/{e['split']}" for e in scored if e.get("rust_count_agrees") is not True]
-    gates["G5"] = {"pass": not disagree and not problems, "detail": {"disagreements": disagree, "problems": problems}}
+    # G5: the binary's counts equal score.py's, on every scored process.
+    disagree = [f"{e['arm']}/{e['seed']}/{e['split']}" + (f" ({kind})" if kind != "eval" else "")
+                for kind, entries in (("eval", scored), ("contingency", contingency_scored), ("rerun", rerun_scored))
+                for e in entries if e.get("rust_count_agrees") is not True]
+    all_problems = problems + contingency_problems + rerun_problems
+    gates["G5"] = {"pass": not disagree and not all_problems, "detail": {"disagreements": disagree, "problems": all_problems}}
 
     # G6: the correctness logs the driver wrote at the evaluation commit.
     g6_path = STUDY_DIR / "logs/g6.json"
     g6 = json.loads(g6_path.read_text()) if g6_path.exists() else {}
     gates["G6"] = {"pass": bool(g6) and all(v == "pass" for v in g6.values()), "detail": g6}
 
-    contingency_paths = [p for e in EXPERIMENTS for p in eval_records(e, "a0_contingency_entrypoint")]
-    contingency = build_table(contingency_paths, score)[0] if contingency_paths else None
     result = decide(table, references, criteria, gates, contingency)
 
     # Cross-check against the stock runner aggregate: per-arm mean accuracy per split,
     # for the evaluation and, where it ran, the contingency.
     stock_mismatch = []
-    for entrypoint, scores_table in (("a0_ablation_entrypoint", table), ("a0_contingency_entrypoint", contingency)):
+    for kind, scores_table in (("eval", table), ("contingency", contingency)):
+        entrypoint = STUDY_KINDS[kind]
         for experiment in EXPERIMENTS:
-            if not eval_records(experiment, entrypoint):
+            if not paths[kind][experiment]:
                 continue
             out = subprocess.run([sys.executable, "scripts/run_experiment.py", "aggregate", experiment,
                                   "--entrypoint", entrypoint], cwd=ROOT, text=True, capture_output=True)
@@ -519,15 +662,16 @@ def main(argv: list[str] | None = None) -> int:
                          for split in TEST_SPLITS}
                 for s in seeds if s in scores_table.get(arm, {})}
 
+    def arms_run(experiment: str, kind: str) -> list[str]:
+        return sorted({json.loads(line)["arm"] for r in chosen[kind].get(experiment, {}).values()
+                       for line in r["stdout"].splitlines() if line.startswith('{"row":"meta"')})
+
     for experiment in EXPERIMENTS:
-        arms = sorted({json.loads(l)["arm"] for p in paths[experiment] for l in records[p]["stdout"].splitlines() if l.startswith('{"row":"meta"')})
         document = {"study": "A0-ablations-v1", "scope": "A0-internal ablation on synthetic operator-routing v1; not this manifest's baseline comparison",
-                    "arms": {arm: per_split(table, arm) for arm in arms}}
-        rescued = eval_records(experiment, "a0_contingency_entrypoint")
-        if rescued:
-            contingency_arms = sorted({json.loads(l)["arm"] for p in rescued for l in json.loads(p.read_text(encoding="utf-8"))["stdout"].splitlines() if l.startswith('{"row":"meta"')})
+                    "arms": {arm: per_split(table, arm) for arm in arms_run(experiment, "eval")}}
+        if experiment in chosen["contingency"]:
             document["contingency_steps"] = criteria["learnability"]["contingency_steps"]
-            document["contingency_arms"] = {arm: per_split(contingency, arm) for arm in contingency_arms}
+            document["contingency_arms"] = {arm: per_split(contingency, arm) for arm in arms_run(experiment, "contingency")}
         out_path = ROOT / "experiments" / EXPERIMENTS[experiment] / "results/a0_internal_metrics.json"
         out_path.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     (STUDY_DIR / "results.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")

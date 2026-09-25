@@ -37,5 +37,35 @@ class BudgetRule(unittest.TestCase):
         self.assertFalse(plan["within_limit"])
 
 
+GRID = [0.002, 0.005, 0.0125]
+
+
+def sweep(**by_lr):
+    """{lr: sweep row} from keyword pairs such as lr_0_005=(0.80, False)."""
+    return {float(k[3:].replace("_", ".")): {"val_accuracy": acc, "nan": nan} for k, (acc, nan) in by_lr.items()}
+
+
+class LearningRateSelection(unittest.TestCase):
+    def test_the_smallest_rate_within_the_tolerance_of_the_best_wins(self):
+        lr, flag, eligible = driver.choose_lr("a", sweep(lr_0_002=(0.70, False), lr_0_005=(0.795, False), lr_0_0125=(0.80, False)), GRID, 0.005)
+        self.assertEqual((lr, flag), (0.005, ""))
+        self.assertEqual(eligible[0.0125], 0.80)
+
+    def test_outside_the_tolerance_the_best_wins_and_an_edge_is_flagged(self):
+        lr, flag, _ = driver.choose_lr("a", sweep(lr_0_002=(0.70, False), lr_0_005=(0.79, False), lr_0_0125=(0.80, False)), GRID, 0.005)
+        self.assertEqual((lr, flag), (0.0125, "edge of grid"))
+
+    def test_a_diverged_rate_is_never_chosen(self):
+        lr, _, eligible = driver.choose_lr("a", sweep(lr_0_002=(0.70, False), lr_0_005=(0.90, True), lr_0_0125=(float("nan"), False)), GRID, 0.005)
+        self.assertEqual(lr, 0.002)
+        self.assertEqual(sorted(eligible), [0.002])
+
+    def test_a_missing_or_wholly_diverged_sweep_stops_the_study(self):
+        with self.assertRaises(SystemExit):
+            driver.choose_lr("a", sweep(lr_0_002=(0.70, False)), GRID, 0.005)
+        with self.assertRaises(SystemExit):
+            driver.choose_lr("a", sweep(lr_0_002=(0.7, True), lr_0_005=(0.7, True), lr_0_0125=(0.7, True)), GRID, 0.005)
+
+
 if __name__ == "__main__":
     unittest.main()
