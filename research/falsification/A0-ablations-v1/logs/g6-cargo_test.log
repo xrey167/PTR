@@ -1,0 +1,143 @@
+
+running 16 tests
+test ablation_mechanism_tests::with_no_latent_step_the_logits_ignore_latent_refine ... ok
+test attention_tests::row_constant_bias_cancels_but_pair_bias_changes_attention_and_has_gradient ... ok
+test ablation_mechanism_tests::with_every_metadata_read_off_a_role_only_shifts_the_logits ... ok
+test codebook_guard_tests::matching_versions_pass_through_the_guard ... ok
+test ablation_mechanism_tests::a_frozen_router_does_not_move_while_the_rest_learns ... ok
+test ablation_mechanism_tests::the_raw_to_slot_branch_gets_no_gradient_in_any_arm ... ok
+test codebook_guard_tests::epistemic_codes_from_another_version_are_refused - should panic ... ok
+test codebook_guard_tests::slot_codes_from_another_version_are_refused - should panic ... ok
+test codebook_guard_tests::slot_values_at_another_width_are_refused_by_name - should panic ... ok
+test typed_attention_switch_tests::it_is_on_by_default ... ok
+test codebook_guard_tests::slot_values_from_another_encoding_version_are_refused - should panic ... ok
+test codebook_guard_tests::well_formed_slot_values_pass_through_the_guards ... ok
+test codebook_guard_tests::the_two_guards_do_not_share_a_message ... ok
+test typed_attention_switch_tests::switching_it_off_equals_a_zero_pair_bias_and_nothing_else ... ok
+test typed_attention_switch_tests::switching_it_off_changes_what_a_trained_bias_does ... ok
+test typed_attention_switch_tests::switched_off_the_bias_layer_gets_no_gradient_and_the_rest_still_learns ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+
+
+running 1 test
+test each_switch_changes_the_forward_pass_it_claims_to_and_no_other ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+
+running 2 tests
+test the_same_change_to_an_admitted_slot_does_reach_the_logits ... ok
+test an_excluded_slot_cannot_reach_the_logits_in_any_arm ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+
+running 12 tests
+test a_checkpoint_missing_a_required_family_is_refused ... ok
+test a_checkpoint_is_refused_by_a_model_with_another_provenance_width ... ok
+test a_checkpoint_for_a_different_architecture_is_refused_rather_than_partly_loaded ... ok
+test a_checkpoint_from_another_slot_encoding_is_refused_before_any_weight_is_read ... ok
+test a_table_that_disagrees_with_the_codebook_is_refused ... ok
+test a_checkpoint_whose_assignment_moved_is_refused_before_any_weight_is_read ... ok
+test the_default_provenance_width_is_the_one_the_artifact_publishes ... ok
+test every_prefix_of_a_checkpoint_is_refused ... ok
+test another_model_s_checkpoint_is_refused_by_name ... ok
+test the_header_records_the_tables_the_weights_actually_have ... ok
+test the_header_verifies_without_consulting_the_provenance_width ... ok
+test a_checkpoint_restores_the_exact_model_it_was_taken_from ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+
+running 6 tests
+test a_ragged_batch_is_refused_and_says_where ... ok
+test every_member_of_an_embedded_family_has_a_row_in_its_table ... ok
+test an_empty_batch_is_refused_rather_than_shaped ... ok
+test every_typed_table_is_exactly_its_family_s_cardinality ... ok
+test a_code_is_the_codebook_s_index_and_carries_its_family_and_version ... ok
+test the_model_reports_the_codebook_its_tables_were_sized_by ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 2 tests
+test forward_preserves_raw_and_slot_shapes ... ok
+test typed_metadata_and_latent_router_path_support_autodiff ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 1 test
+test the_default_forward_pass_is_unchanged ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 1 test
+test the_committed_runtime_fixture_still_loads ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 1 test
+test both_arms_of_one_seed_start_from_the_same_weights_whatever_they_read_first ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 1 test
+test every_arm_of_one_seed_starts_from_the_same_parameters ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+
+running 6 tests
+test a_model_and_its_inputs_name_the_same_encoding ... ok
+test a_ragged_or_mixed_batch_is_refused_rather_than_padded ... ok
+test a_one_byte_difference_is_enough ... ok
+test a_payload_in_any_slot_reaches_the_router ... ok
+test constant_slot_values_cannot_distinguish_anything_which_is_what_zeros_were ... ok
+test a_payload_reaches_the_router_and_an_unchanged_one_does_not_move_it ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 1 test
+test tiny_router_task_is_trainable ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.91s
+
+
+running 4 tests
+test admission_bias_is_zero_and_negative_infinity_in_slot_order ... ok
+test a_batch_row_admitting_nothing_stays_finite ... ok
+test every_inadmissible_lifecycle_state_is_excluded_and_live_is_not ... ok
+test an_excluded_slot_cannot_change_anything_the_model_produces ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+
+running 4 tests
+test src/lib.rs - PtrA0::forward (line 697) - compile fail ... ok
+test src/lib.rs - SlotValues::new (line 213) ... ok
+test src/lib.rs - CodeGrid<T>::new (line 85) ... ok
+test src/lib.rs - PtrA0::forward (line 660) ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.06s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.33s
+     Running unittests src/lib.rs (model/burn-a0/target/debug/deps/ptr_burn_a0-e148479f4eb5637b)
+     Running tests/ablation_switches.rs (model/burn-a0/target/debug/deps/ablation_switches-0c7cde7634eed6fd)
+     Running tests/admission_invariance.rs (model/burn-a0/target/debug/deps/admission_invariance-3f20d8fd7562b37d)
+     Running tests/checkpoint.rs (model/burn-a0/target/debug/deps/checkpoint-3728207d7dbab630)
+     Running tests/code_spaces.rs (model/burn-a0/target/debug/deps/code_spaces-c083a99747335d44)
+     Running tests/forward.rs (model/burn-a0/target/debug/deps/forward-35b48a961119e77f)
+     Running tests/golden_logits.rs (model/burn-a0/target/debug/deps/golden_logits-2ddf914f1e3edf88)
+     Running tests/runtime_fixture.rs (model/burn-a0/target/debug/deps/runtime_fixture-ae23c3ec9a6854fc)
+     Running tests/seeded_init.rs (model/burn-a0/target/debug/deps/seeded_init-e742f7441ea64c3f)
+     Running tests/seeded_init_arms.rs (model/burn-a0/target/debug/deps/seeded_init_arms-6931d73cbdef1d1c)
+     Running tests/semantic_payload.rs (model/burn-a0/target/debug/deps/semantic_payload-68666a356fb103cf)
+     Running tests/train_router.rs (model/burn-a0/target/debug/deps/train_router-164225b766166e6c)
+     Running tests/validity_mask.rs (model/burn-a0/target/debug/deps/validity_mask-d1d155dc34e866c6)
+   Doc-tests ptr_burn_a0

@@ -94,18 +94,24 @@ jobs:
       - run: python -m unittest discover -s research/baselines/rag_reference/tests
       - run: python -m unittest discover -s research/baselines/strong_rag/tests
       - run: python -m unittest discover -s docs-site/tests
+      # Writes the operator-routing v1 splits and fails if they differ from the lock,
+      # so the suite below runs on the frozen data rather than skipping.
+      - run: python benchmarks/operator-routing/generator.py
+      - run: python -m unittest discover -s benchmarks/operator-routing/tests
   lifecycle-failpoints:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo +stable test -p ptr-ledger --features failpoints --test failpoints --locked
+      - run: cargo +stable clippy -p ptr-ledger --features failpoints --all-targets --locked -- -D warnings
   ledger-raft-engine:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo +stable test -p ptr-ledger --features raft-engine-backend --test raft_engine --locked
+      - run: cargo +stable clippy -p ptr-ledger --features raft-engine-backend --all-targets --locked -- -D warnings
   ledger-raft-rs:
     runs-on: ubuntu-latest
     steps:
@@ -113,12 +119,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo +stable test -p ptr-ledger --features raft-rs-backend --test raft_rs --locked
       - run: cargo +stable test -p ptr-ledger --features raft-rs-backend --test raft_cluster --locked
+      - run: cargo +stable test -p ptr-ledger --features raft-rs-backend --test raft_fence --locked
+      - run: cargo +stable clippy -p ptr-ledger --features raft-rs-backend --all-targets --locked -- -D warnings
   state-turso:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo +stable test -p ptr-state --features turso-backend --test turso --locked
+      - run: cargo +stable clippy -p ptr-state --features turso-backend --all-targets --locked -- -D warnings
   network-iroh:
     runs-on: ubuntu-latest
     steps:

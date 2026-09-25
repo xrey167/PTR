@@ -320,6 +320,36 @@ pub struct PtrA0Config {
     pub provenance_bucket_count: usize,
     pub d_model: usize,
     pub latent_steps: usize,
+    /// Whether typed metadata biases attention between slots and raw tokens: the
+    /// M002 mechanism. On by default. Switched off, the pair bias is zero in both
+    /// directions and `metadata_bias` takes no part in the forward pass, which is
+    /// the only difference; every parameter is still built, from the same random
+    /// draws, so two arms of one seed start from identical weights.
+    ///
+    /// Like `latent_steps`, this is an architecture choice that the checkpoint
+    /// header does not record: a checkpoint is loaded under whatever the config
+    /// passed to [`load`] says.
+    pub typed_attention: bool,
+    /// Whether the slot->raw attention query reads the typed slot state (payload
+    /// plus role, epistemic state, provenance and confidence) or the payload hash
+    /// alone. On by default. Switched off, metadata can still steer which raw
+    /// tokens a slot reads, but only through the typed attention bias, which is
+    /// what the study's sufficiency pair isolates. Not recorded in the
+    /// checkpoint header, like `typed_attention`.
+    pub typed_query: bool,
+    /// Whether each latent refinement step applies `gelu`. On by default.
+    /// Switched off, the step is `slots + latent_refine(slots)`: the same
+    /// parameters and depth with no nonlinearity, which separates "the per-slot
+    /// nonlinearity is used" from "the extra parameters are used". Not recorded
+    /// in the checkpoint header.
+    pub latent_nonlinearity: bool,
+    /// Whether the operator router is excluded from training. Off by default.
+    /// It is applied by [`PtrA0Config::init`] after every parameter has been
+    /// drawn, so the router's initial weights are the same as in any other arm
+    /// of the seed, and it never affects [`load`]. The forward pass is unchanged:
+    /// the router still produces the logits, from fixed weights. A training-time
+    /// choice, not recorded in the checkpoint.
+    pub frozen_router: bool,
     codebook: Codebook,
     /// The slot-encoding definition this model's inputs are produced by.
     ///
@@ -347,6 +377,10 @@ impl PtrA0Config {
             provenance_bucket_count: PROVENANCE_BUCKET_COUNT,
             d_model,
             latent_steps: 0,
+            typed_attention: true,
+            typed_query: true,
+            latent_nonlinearity: true,
+            frozen_router: false,
             codebook,
             encoding: SlotEncoding::V1,
         }
@@ -387,7 +421,50 @@ impl PtrA0Config {
         self
     }
 
+    /// Enable or disable the metadata bias in both cross-attention directions.
+    pub fn with_typed_attention(mut self, typed_attention: bool) -> Self {
+        self.typed_attention = typed_attention;
+        self
+    }
+
+    /// Choose typed slot state (`true`) or payload alone (`false`) for slot queries.
+    pub fn with_typed_query(mut self, typed_query: bool) -> Self {
+        self.typed_query = typed_query;
+        self
+    }
+
+    /// Choose GELU (`true`) or a linear residual (`false`) for latent refinement.
+    /// Has no effect when `latent_steps` is zero.
+    pub fn with_latent_nonlinearity(mut self, latent_nonlinearity: bool) -> Self {
+        self.latent_nonlinearity = latent_nonlinearity;
+        self
+    }
+
+    /// Exclude router parameters from gradients when [`Self::init`] builds a model.
+    /// This option does not affect checkpoint loading or forward computations.
+    pub fn with_frozen_router(mut self, frozen_router: bool) -> Self {
+        self.frozen_router = frozen_router;
+        self
+    }
+
+    /// Build a model with every parameter drawn now, in declaration order, so the
+    /// same seed gives the same weights whatever the model later reads first.
     pub fn init(&self, device: &Device) -> PtrA0 {
+        let mut model = self.init_lazy(device);
+        model.materialize();
+        // Only after every draw: excluding a parameter from training reads it, and
+        // reading a lazy parameter early would shift every draw after it.
+        if self.frozen_router {
+            model.router = model.router.no_grad();
+        }
+        model
+    }
+
+    /// Build a model whose parameters are drawn on first read, as Burn does by
+    /// default. Only for a model whose parameters are about to be replaced, as
+    /// [`load`] replaces them: drawing them first would cost a full random model
+    /// and advance the global generator as a side effect of loading.
+    pub(crate) fn init_lazy(&self, device: &Device) -> PtrA0 {
         let linear = || LinearConfig::new(self.d_model, self.d_model).init(device);
         PtrA0 {
             token_embedding: EmbeddingConfig::new(self.vocab_size, self.d_model).init(device),
@@ -412,6 +489,9 @@ impl PtrA0Config {
             d_model: self.d_model,
             operator_count: self.operator_count(),
             latent_steps: self.latent_steps,
+            typed_attention: self.typed_attention,
+            typed_query: self.typed_query,
+            latent_nonlinearity: self.latent_nonlinearity,
             codebook_version: self.codebook.version().0,
             encoding_version: self.encoding.version().0,
         }
@@ -439,6 +519,9 @@ pub struct PtrA0 {
     d_model: usize,
     operator_count: usize,
     latent_steps: usize,
+    typed_attention: bool,
+    typed_query: bool,
+    latent_nonlinearity: bool,
     /// Codebook version the tables were sized by. Burn records constants as empty,
     /// so this does **not** survive a saved record: an artifact that has to carry
     /// the identity carries it in its own header.
@@ -449,6 +532,45 @@ pub struct PtrA0 {
 }
 
 impl PtrA0 {
+    /// Draw every parameter now, in declaration order.
+    ///
+    /// Burn initializes a parameter lazily, the first time it is read, from one
+    /// global generator. Left lazy, the draws follow the order in which a forward
+    /// pass first reads the parameters, so two models built from one seed start
+    /// from different weights as soon as one of them skips a module (the typed
+    /// attention switch skips `metadata_bias`), and every later parameter shifts.
+    /// An ablation compares arms of one seed, so the draw order has to be fixed
+    /// here rather than left to the forward pass.
+    fn materialize(&self) {
+        for embedding in [
+            &self.token_embedding,
+            &self.slot_type_embedding,
+            &self.epistemic_embedding,
+            &self.provenance_embedding,
+        ] {
+            let _ = embedding.weight.val();
+        }
+        for linear in [
+            &self.confidence_projection,
+            &self.metadata_bias,
+            &self.slot_query,
+            &self.raw_key,
+            &self.raw_value,
+            &self.slot_output,
+            &self.raw_query,
+            &self.slot_key,
+            &self.slot_value,
+            &self.raw_output,
+            &self.latent_refine,
+            &self.router,
+        ] {
+            let _ = linear.weight.val();
+            if let Some(bias) = &linear.bias {
+                let _ = bias.val();
+            }
+        }
+    }
+
     /// The codebook this model's tables were sized by.
     ///
     /// The lookup cannot fail: a [`PtrA0`] only comes from [`PtrA0Config::init`],
@@ -540,6 +662,19 @@ impl PtrA0 {
     /// Slot identity arrives as [`CodeGrid<SemanticRole>`] and epistemic state as
     /// [`CodeGrid<EpistemicState>`], so the two cannot be swapped: the swap is a
     /// type error, not a plausible-looking output.
+    ///
+    /// Returns raw-token states, refined slot states, operator logits averaged
+    /// over admitted slots, and the admission bias. Excluded slot states are
+    /// still returned. With finite slot logits, a row admitting no slots has
+    /// zero router logits. The returned raw states do not feed the router.
+    ///
+    /// # Panics
+    ///
+    /// Panics if input batch sizes, slot dimensions, codebook versions, or the
+    /// slot encoding do not match the model. Token and provenance IDs must index
+    /// their respective embedding tables.
+    ///
+    /// # Examples
     ///
     /// ```
     /// use burn::{prelude::*, tensor::Int};
@@ -669,10 +804,21 @@ impl PtrA0 {
         let typed_metadata = slot_type + epistemic + provenance + confidence;
         let slots = slot_values.values() + typed_metadata.clone();
 
-        let typed_bias = self.metadata_bias.forward(typed_metadata);
-        let slot_query = self.slot_query.forward(slots.clone());
+        // The typed query reads the whole slot state; the blind one only the
+        // payload, so metadata can steer this read only through the typed bias.
+        let slot_query = if self.typed_query {
+            self.slot_query.forward(slots.clone())
+        } else {
+            self.slot_query.forward(slot_values.values())
+        };
         let raw_key = self.raw_key.forward(raw.clone());
-        let cross_bias = typed_cross_bias(typed_bias, raw_key.clone());
+        // Switched off, the pair bias is zero in both directions below and
+        // `metadata_bias` is never applied, so it receives no gradient.
+        let cross_bias = if self.typed_attention {
+            typed_cross_bias(self.metadata_bias.forward(typed_metadata), raw_key.clone())
+        } else {
+            Tensor::<3>::zeros([batch, slot_count, sequence], &raw_key.device())
+        };
         let raw_value = self.raw_value.forward(raw.clone());
         let slot_scores = slot_query
             .matmul(raw_key.transpose())
@@ -725,7 +871,12 @@ impl PtrA0 {
         let raw = raw + self.raw_output.forward(raw_context);
 
         for _ in 0..self.latent_steps {
-            let delta = gelu(self.latent_refine.forward(slots.clone()));
+            let refined = self.latent_refine.forward(slots.clone());
+            let delta = if self.latent_nonlinearity {
+                gelu(refined)
+            } else {
+                refined
+            };
             slots = slots + delta;
         }
 
@@ -756,6 +907,457 @@ impl PtrA0 {
 // each raw key's summary so this rank-one bias actually varies across keys.
 fn typed_cross_bias(slot_bias: Tensor<3>, raw_keys: Tensor<3>) -> Tensor<3> {
     slot_bias.matmul(raw_keys.mean_dim(2).transpose())
+}
+
+#[cfg(test)]
+mod typed_attention_switch_tests {
+    //! The M002 switch removes exactly the typed pair bias. Each test compares a
+    //! model with its own clone, so the two differ only where a test makes them.
+    use super::*;
+    use burn::nn::Initializer;
+    use ptr_types::{TypeId, Validity};
+
+    const WIDTH: usize = 8;
+
+    fn inputs(
+        device: &Device,
+    ) -> (
+        Tensor<2, Int>,
+        CodeGrid<SemanticRole>,
+        SlotValues,
+        PtrSlotMetadata,
+    ) {
+        let roles: [&[SemanticRole]; 2] = [
+            &[
+                SemanticRole::Goal,
+                SemanticRole::Evidence,
+                SemanticRole::Constraint,
+            ],
+            &[
+                SemanticRole::Claim,
+                SemanticRole::Resource,
+                SemanticRole::Action,
+            ],
+        ];
+        let states: [&[EpistemicState]; 2] = [
+            &[
+                EpistemicState::Observed,
+                EpistemicState::Hypothesis,
+                EpistemicState::Verified,
+            ],
+            &[
+                EpistemicState::Assumed,
+                EpistemicState::Inferred,
+                EpistemicState::Unknown,
+            ],
+        ];
+        let vectors: Vec<Vec<SlotVector>> = (0..2)
+            .map(|row| {
+                (0..3)
+                    .map(|slot| {
+                        SlotEncoding::V1
+                            .encode(
+                                &TypeId::from("Fact"),
+                                format!("{row}/{slot}").as_bytes(),
+                                WIDTH,
+                            )
+                            .expect("a small payload")
+                    })
+                    .collect()
+            })
+            .collect();
+        let rows: Vec<&[SlotVector]> = vectors.iter().map(Vec::as_slice).collect();
+        (
+            Tensor::<2, Int>::from_data([[1, 5, 9, 2], [7, 3, 3, 8]], device),
+            CodeGrid::new(&Codebook::V1, &roles, device).expect("v1 roles"),
+            SlotValues::new(&rows, device).expect("a rectangular batch"),
+            PtrSlotMetadata {
+                epistemic: CodeGrid::new(&Codebook::V1, &states, device).expect("v1 states"),
+                provenance_ids: Tensor::<2, Int>::from_data([[0, 1, 2], [2, 1, 0]], device),
+                confidence: Tensor::<2>::from_data([[0.9, 0.4, 0.7], [0.2, 1.0, 0.5]], device),
+                admission: admission_bias(
+                    &[
+                        ValidityMask::from_validities(&[Validity::Live; 3]),
+                        ValidityMask::from_validities(&[
+                            Validity::Live,
+                            Validity::Revoked,
+                            Validity::Live,
+                        ]),
+                    ],
+                    device,
+                ),
+            },
+        )
+    }
+
+    fn run(model: &PtrA0, device: &Device) -> PtrA0Output {
+        let (tokens, roles, values, metadata) = inputs(device);
+        model.forward(tokens, &roles, &values, metadata)
+    }
+
+    fn largest_difference(left: Tensor<2>, right: Tensor<2>) -> f32 {
+        (left - right).abs().max().into_scalar()
+    }
+
+    fn config() -> PtrA0Config {
+        PtrA0Config::new(16, WIDTH)
+            .with_provenance_buckets(4)
+            .with_latent_steps(1)
+    }
+
+    #[test]
+    fn switching_it_off_equals_a_zero_pair_bias_and_nothing_else() {
+        let device = Device::flex();
+        device.seed(7);
+        let mut on = config().init(&device);
+        // A metadata_bias that outputs zero makes the pair bias zero, which is what
+        // the switch claims to do; everything else stays as initialized.
+        on.metadata_bias = LinearConfig::new(WIDTH, 1)
+            .with_initializer(Initializer::Zeros)
+            .init(&device);
+        let mut off = on.clone();
+        off.typed_attention = false;
+
+        let (a, b) = (run(&on, &device), run(&off, &device));
+        assert!(largest_difference(a.router_logits, b.router_logits) < 1.0e-6);
+        let slots: f32 = (a.slots - b.slots).abs().max().into_scalar();
+        let raw: f32 = (a.raw - b.raw).abs().max().into_scalar();
+        assert!(slots < 1.0e-6 && raw < 1.0e-6, "slots {slots}, raw {raw}");
+    }
+
+    #[test]
+    fn switching_it_off_changes_what_a_trained_bias_does() {
+        let device = Device::flex();
+        // One model and its clone, not two inits from one seed: the generator is
+        // shared by every test thread, so a second init could draw other weights
+        // and make the two differ for a reason that is not the switch.
+        let on = config().init(&device);
+        let mut off = on.clone();
+        off.typed_attention = false;
+
+        let difference = largest_difference(
+            run(&on, &device).router_logits,
+            run(&off, &device).router_logits,
+        );
+        assert!(
+            difference > 1.0e-5,
+            "the switch must matter when the bias is not zero: {difference}"
+        );
+    }
+
+    #[test]
+    fn switched_off_the_bias_layer_gets_no_gradient_and_the_rest_still_learns() {
+        let device = Device::flex().autodiff();
+        for typed_attention in [true, false] {
+            device.seed(7);
+            let model = config().with_typed_attention(typed_attention).init(&device);
+            let gradients = run(&model, &device).router_logits.sum().backward();
+            let bias = model.metadata_bias.weight.grad(&gradients);
+            assert_eq!(
+                bias.is_some(),
+                typed_attention,
+                "metadata_bias gradient with typed_attention={typed_attention}"
+            );
+            let router = model
+                .router
+                .weight
+                .grad(&gradients)
+                .expect("the router always learns");
+            let magnitude: f32 = router.abs().sum().into_scalar();
+            assert!(magnitude > 0.0);
+        }
+    }
+
+    #[test]
+    fn it_is_on_by_default() {
+        assert!(PtrA0Config::new(16, WIDTH).typed_attention);
+    }
+}
+
+#[cfg(test)]
+mod ablation_mechanism_tests {
+    //! Tests T3 (switch completeness), T5 (the dead raw->slot branch) and the
+    //! frozen-router half of T2 from the A0 ablation study design. Each builds
+    //! one model per configuration and never compares two models drawn from the
+    //! same seed, so tests running in parallel threads cannot disturb them.
+    use super::*;
+    use burn::{
+        nn::{loss::CrossEntropyLossConfig, Initializer},
+        optim::{AdamConfig, GradientsParams},
+    };
+    use ptr_types::{TypeId, Validity};
+
+    const WIDTH: usize = 8;
+
+    fn metadata(
+        device: &Device,
+        roles: [SemanticRole; 3],
+    ) -> (CodeGrid<SemanticRole>, PtrSlotMetadata) {
+        let rows: [&[SemanticRole]; 1] = [&roles];
+        let states: [&[EpistemicState]; 1] = [&[
+            EpistemicState::Observed,
+            EpistemicState::Hypothesis,
+            EpistemicState::Verified,
+        ]];
+        (
+            CodeGrid::new(&Codebook::V1, &rows, device).expect("v1 roles"),
+            PtrSlotMetadata {
+                epistemic: CodeGrid::new(&Codebook::V1, &states, device).expect("v1 states"),
+                provenance_ids: Tensor::<2, Int>::from_data([[0, 1, 2]], device),
+                confidence: Tensor::<2>::from_data([[0.9, 0.4, 0.7]], device),
+                admission: admission_bias(
+                    &[ValidityMask::from_validities(&[Validity::Live; 3])],
+                    device,
+                ),
+            },
+        )
+    }
+
+    fn values(device: &Device) -> SlotValues {
+        let vectors: Vec<SlotVector> = (0..3)
+            .map(|slot| {
+                SlotEncoding::V1
+                    .encode(
+                        &TypeId::from("Entity"),
+                        format!("e{slot}").as_bytes(),
+                        WIDTH,
+                    )
+                    .expect("a small payload")
+            })
+            .collect();
+        SlotValues::new(&[vectors.as_slice()], device).expect("one row")
+    }
+
+    fn logits(
+        model: &PtrA0,
+        tokens: [i64; 4],
+        roles: [SemanticRole; 3],
+        device: &Device,
+    ) -> Tensor<2> {
+        let (roles, metadata) = metadata(device, roles);
+        let tokens = Tensor::<2, Int>::from_data([tokens], device);
+        model
+            .forward(tokens, &roles, &values(device), metadata)
+            .router_logits
+    }
+
+    fn largest(tensor: Tensor<2>) -> f32 {
+        tensor.abs().max().into_scalar()
+    }
+
+    fn config() -> PtrA0Config {
+        PtrA0Config::new(16, WIDTH).with_provenance_buckets(4)
+    }
+
+    /// Every distinct model configuration the study's arms use.
+    fn arm_configs() -> Vec<(&'static str, PtrA0Config)> {
+        let full = config().with_latent_steps(2);
+        vec![
+            ("full", full.clone()),
+            (
+                "no-typed-attention",
+                full.clone().with_typed_attention(false),
+            ),
+            (
+                "blind-query-k0",
+                full.clone().with_typed_query(false).with_latent_steps(0),
+            ),
+            (
+                "blind-query-k0-no-typed-attention",
+                full.clone()
+                    .with_typed_query(false)
+                    .with_latent_steps(0)
+                    .with_typed_attention(false),
+            ),
+            ("latent-0", full.clone().with_latent_steps(0)),
+            (
+                "latent-linear",
+                full.clone().with_latent_nonlinearity(false),
+            ),
+            ("latent-1", full.clone().with_latent_steps(1)),
+            ("latent-4", full.clone().with_latent_steps(4)),
+            ("frozen-router", full.with_frozen_router(true)),
+        ]
+    }
+
+    /// T3a: with no latent step, the refinement layer takes no part.
+    #[test]
+    fn with_no_latent_step_the_logits_ignore_latent_refine() {
+        let device = Device::flex();
+        let model = config().with_latent_steps(0).init(&device);
+        let mut zeroed = model.clone();
+        zeroed.latent_refine = LinearConfig::new(WIDTH, WIDTH)
+            .with_initializer(Initializer::Zeros)
+            .init(&device);
+        let roles = [
+            SemanticRole::Goal,
+            SemanticRole::Claim,
+            SemanticRole::Action,
+        ];
+        let difference = largest(
+            logits(&model, [1, 2, 3, 4], roles, &device)
+                - logits(&zeroed, [1, 2, 3, 4], roles, &device),
+        );
+        assert_eq!(difference, 0.0);
+    }
+
+    /// T3c: one latent step adds exactly gelu(latent_refine(slots)) to the slots,
+    /// and exactly latent_refine(slots) with the nonlinearity switched off.
+    #[test]
+    fn one_latent_step_adds_exactly_its_delta_with_or_without_the_gelu() {
+        let device = Device::flex();
+        let roles = [
+            SemanticRole::Goal,
+            SemanticRole::Claim,
+            SemanticRole::Action,
+        ];
+        let slots_of = |model: &PtrA0| {
+            let (roles, metadata) = metadata(&device, roles);
+            let tokens = Tensor::<2, Int>::from_data([[1, 2, 3, 4]], &device);
+            model
+                .forward(tokens, &roles, &values(&device), metadata)
+                .slots
+        };
+        let stepped = config().with_latent_steps(1).init(&device);
+        let mut before = stepped.clone();
+        before.latent_steps = 0;
+        let start = slots_of(&before);
+        let refined = stepped.latent_refine.forward(start.clone());
+        for (nonlinearity, delta) in [(true, gelu(refined.clone())), (false, refined)] {
+            let mut model = stepped.clone();
+            model.latent_nonlinearity = nonlinearity;
+            let difference: f32 = (slots_of(&model) - (start.clone() + delta))
+                .abs()
+                .max()
+                .into_scalar();
+            assert!(
+                difference < 1.0e-6,
+                "nonlinearity {nonlinearity}: {difference}"
+            );
+        }
+        let mut linear = stepped.clone();
+        linear.latent_nonlinearity = false;
+        let switched: f32 = (slots_of(&stepped) - slots_of(&linear))
+            .abs()
+            .max()
+            .into_scalar();
+        assert!(
+            switched > 1.0e-4,
+            "the gelu must change the step: {switched}"
+        );
+    }
+
+    /// T3b: with the typed query, the typed bias and the latent steps all off,
+    /// a slot's role can only add to its own vote: the effect of changing one role
+    /// is the same whatever the raw tokens are. This is why the blind-query arm
+    /// without typed attention cannot gate raw context by role.
+    #[test]
+    fn with_every_metadata_read_off_a_role_only_shifts_the_logits() {
+        let device = Device::flex();
+        let model = config()
+            .with_latent_steps(0)
+            .with_typed_query(false)
+            .with_typed_attention(false)
+            .init(&device);
+        let a = [
+            SemanticRole::Goal,
+            SemanticRole::Claim,
+            SemanticRole::Action,
+        ];
+        let b = [
+            SemanticRole::Evidence,
+            SemanticRole::Claim,
+            SemanticRole::Action,
+        ];
+        let effect =
+            |tokens| logits(&model, tokens, a, &device) - logits(&model, tokens, b, &device);
+        let first = effect([1, 2, 3, 4]);
+        let second = effect([9, 15, 7, 11]);
+        assert!(
+            largest(first.clone()) > 1.0e-4,
+            "the role must matter at all"
+        );
+        assert!(
+            largest(first - second) < 1.0e-5,
+            "the role's effect must not depend on raw input"
+        );
+
+        // The control: with the typed query back on, the same change does depend
+        // on the raw input, so the invariance above is the switches' doing.
+        let typed = config()
+            .with_latent_steps(0)
+            .with_typed_attention(false)
+            .init(&device);
+        let effect =
+            |tokens| logits(&typed, tokens, a, &device) - logits(&typed, tokens, b, &device);
+        assert!(largest(effect([1, 2, 3, 4]) - effect([9, 15, 7, 11])) > 1.0e-5);
+    }
+
+    /// T5: the raw->slot update never reaches the router, in any arm. Pinned so
+    /// that a future change which connects it is seen rather than assumed.
+    #[test]
+    fn the_raw_to_slot_branch_gets_no_gradient_in_any_arm() {
+        let device = Device::flex().autodiff();
+        for (arm, arm_config) in arm_configs() {
+            let model = arm_config.init(&device);
+            let roles = [
+                SemanticRole::Goal,
+                SemanticRole::Claim,
+                SemanticRole::Action,
+            ];
+            let gradients = logits(&model, [1, 2, 3, 4], roles, &device)
+                .sum()
+                .backward();
+            for (name, layer) in [
+                ("raw_query", &model.raw_query),
+                ("slot_key", &model.slot_key),
+                ("slot_value", &model.slot_value),
+                ("raw_output", &model.raw_output),
+            ] {
+                assert!(
+                    layer.weight.grad(&gradients).is_none(),
+                    "{arm}: {name} got a gradient"
+                );
+            }
+            assert!(
+                model.slot_query.weight.grad(&gradients).is_some(),
+                "{arm}: slot_query must learn"
+            );
+        }
+    }
+
+    /// T2, frozen router: one Adam step moves the upstream layers and leaves the
+    /// router's weights bit for bit as they were; without the switch it moves them.
+    #[test]
+    fn a_frozen_router_does_not_move_while_the_rest_learns() {
+        let device = Device::flex().autodiff();
+        for frozen in [true, false] {
+            let model = config()
+                .with_latent_steps(2)
+                .with_frozen_router(frozen)
+                .init(&device);
+            let router_before = model.router.weight.val().into_data();
+            let query_before = model.slot_query.weight.val().into_data();
+            let roles = [
+                SemanticRole::Goal,
+                SemanticRole::Claim,
+                SemanticRole::Action,
+            ];
+            let loss = CrossEntropyLossConfig::new().init(&device).forward(
+                logits(&model, [1, 2, 3, 4], roles, &device),
+                Tensor::<1, Int>::from_data([3], &device),
+            );
+            let gradients = GradientsParams::from_grads(loss.backward(), &model);
+            let mut optimizer = AdamConfig::new().init();
+            let model = optimizer.step(0.01, model, gradients);
+            assert_eq!(
+                model.router.weight.val().into_data() == router_before,
+                frozen,
+                "router unchanged must mean frozen (frozen={frozen})"
+            );
+            assert_ne!(model.slot_query.weight.val().into_data(), query_before);
+        }
+    }
 }
 
 #[cfg(test)]

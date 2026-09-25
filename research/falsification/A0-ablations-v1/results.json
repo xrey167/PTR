@@ -1,0 +1,548 @@
+{
+  "gates": {
+    "G0": {
+      "detail": {
+        "bands_pass": true,
+        "records": 26,
+        "records_with_other_data": [],
+        "records_without_data_row": [],
+        "score_generator_disagreements": 0
+      },
+      "pass": true
+    },
+    "G1": {
+      "detail": {
+        "bar": 0.8513333333333334,
+        "full_mean_test_iid": 0.8839333333333335
+      },
+      "pass": true
+    },
+    "G2": {
+      "detail": {
+        "full_lines_compared": 23,
+        "rerun_records": 1,
+        "seed": 17
+      },
+      "pass": true
+    },
+    "G3": {
+      "detail": [],
+      "pass": true
+    },
+    "G4": {
+      "detail": {
+        "changed_beyond_lr_selection_and_sweep": [],
+        "dirty": [],
+        "preregistration_unchanged": true,
+        "records": 26,
+        "shas": [
+          "4b0ad160a19058da999113329887343c6cc3381d"
+        ],
+        "tag_is_ancestor": true
+      },
+      "pass": true
+    },
+    "G5": {
+      "detail": {
+        "disagreements": [],
+        "problems": []
+      },
+      "pass": true
+    },
+    "G6": {
+      "detail": {
+        "aggregator_tests": "pass",
+        "benchmark_tests": "pass",
+        "cargo_test": "pass",
+        "config_tests": "pass",
+        "self_test": "pass"
+      },
+      "pass": true
+    }
+  },
+  "leak_alarm": {
+    "active": false,
+    "ceiling": 0.8213333333333334,
+    "raw_blind_mean_test_iid": 0.761
+  },
+  "learnability": {
+    "frozen-router": {
+      "bar": 0.651,
+      "kind": "complete-path",
+      "mean_test_iid": 0.881,
+      "passes": true
+    },
+    "full": {
+      "bar": 0.651,
+      "kind": "complete-path",
+      "mean_test_iid": 0.8839333333333335,
+      "passes": true
+    },
+    "latent-0": {
+      "bar": 0.444,
+      "kind": "restricted",
+      "mean_test_iid": 0.8042666666666667,
+      "passes": true
+    },
+    "latent-1": {
+      "bar": 0.651,
+      "kind": "complete-path",
+      "mean_test_iid": 0.8755333333333333,
+      "passes": true
+    },
+    "latent-linear": {
+      "bar": 0.444,
+      "kind": "restricted",
+      "mean_test_iid": 0.8193333333333334,
+      "passes": true
+    },
+    "no-semantic-slots": {
+      "bar": 0.651,
+      "kind": "complete-path",
+      "mean_test_iid": 0.6306666666666667,
+      "passes": false
+    },
+    "no-semantic-slots-masked": {
+      "bar": 0.651,
+      "kind": "complete-path",
+      "mean_test_iid": 0.74,
+      "passes": true
+    },
+    "no-typed-attention": {
+      "bar": 0.651,
+      "kind": "complete-path",
+      "mean_test_iid": 0.8880666666666667,
+      "passes": true
+    },
+    "raw-blind": {
+      "bar": 0.444,
+      "kind": "restricted",
+      "mean_test_iid": 0.761,
+      "passes": true
+    }
+  },
+  "reported": {
+    "contingency": {
+      "arms": {
+        "full": {
+          "bar": 0.651,
+          "composite_A": [
+            0.7142222222222223,
+            0.7528888888888888,
+            0.7325555555555555,
+            0.7321111111111112,
+            0.7215555555555556
+          ],
+          "mean_test_iid": 0.8896000000000001,
+          "passes": true,
+          "test_iid": [
+            0.8686666666666667,
+            0.903,
+            0.8973333333333333,
+            0.8886666666666667,
+            0.8903333333333333
+          ]
+        },
+        "no-semantic-slots": {
+          "bar": 0.651,
+          "composite_A": [
+            0.7218888888888889,
+            0.7266666666666667,
+            0.7432222222222222,
+            0.6696666666666666,
+            0.7275555555555555
+          ],
+          "mean_test_iid": 0.8684666666666667,
+          "passes": true,
+          "test_iid": [
+            0.873,
+            0.8806666666666667,
+            0.8996666666666666,
+            0.818,
+            0.871
+          ]
+        }
+      },
+      "steps": 4000
+    },
+    "mask_effect": {
+      "below_learnability_bar": [
+        "no-semantic-slots"
+      ],
+      "ood_validity": 0.20620000000000002,
+      "validity_decisive_test_iid": 0.2673721340388007
+    },
+    "transfer": {
+      "frozen-router": {
+        "heldout": [
+          0.7628571428571429,
+          0.7628571428571429,
+          0.7609523809523809,
+          0.7857142857142857,
+          0.7704761904761904
+        ],
+        "heldout_pairs": "transfers",
+        "new_role_regime_cell": "does not transfer",
+        "strict_transfer": [
+          0.004437869822485207,
+          0.0073964497041420114,
+          0.008136094674556213,
+          0.005177514792899409,
+          0.0073964497041420114
+        ]
+      },
+      "full": {
+        "heldout": [
+          0.7723809523809524,
+          0.7752380952380953,
+          0.7771428571428571,
+          0.7752380952380953,
+          0.8038095238095239
+        ],
+        "heldout_pairs": "transfers",
+        "new_role_regime_cell": "does not transfer",
+        "strict_transfer": [
+          0.005917159763313609,
+          0.011834319526627219,
+          0.0073964497041420114,
+          0.008136094674556213,
+          0.005177514792899409
+        ]
+      },
+      "latent-0": {
+        "heldout": [
+          0.6714285714285714,
+          0.6371428571428571,
+          0.66,
+          0.6961904761904761,
+          0.6695238095238095
+        ],
+        "heldout_pairs": "mixed",
+        "new_role_regime_cell": "does not transfer",
+        "strict_transfer": [
+          0.015532544378698224,
+          0.011834319526627219,
+          0.016272189349112426,
+          0.010355029585798817,
+          0.01849112426035503
+        ]
+      },
+      "latent-1": {
+        "heldout": [
+          0.7514285714285714,
+          0.7571428571428571,
+          0.758095238095238,
+          0.7657142857142857,
+          0.780952380952381
+        ],
+        "heldout_pairs": "transfers",
+        "new_role_regime_cell": "does not transfer",
+        "strict_transfer": [
+          0.015532544378698224,
+          0.010355029585798817,
+          0.005177514792899409,
+          0.008875739644970414,
+          0.010355029585798817
+        ]
+      },
+      "latent-linear": {
+        "heldout": [
+          0.6619047619047619,
+          0.6619047619047619,
+          0.6695238095238095,
+          0.6771428571428572,
+          0.6695238095238095
+        ],
+        "heldout_pairs": "does not transfer",
+        "new_role_regime_cell": "does not transfer",
+        "strict_transfer": [
+          0.013313609467455622,
+          0.01775147928994083,
+          0.008136094674556213,
+          0.031804733727810654,
+          0.01257396449704142
+        ]
+      },
+      "no-semantic-slots": {
+        "heldout": [
+          0.4514285714285714,
+          0.4514285714285714,
+          0.4828571428571429,
+          0.40476190476190477,
+          0.47904761904761906
+        ],
+        "heldout_pairs": "does not transfer",
+        "new_role_regime_cell": "does not transfer",
+        "strict_transfer": [
+          0.027366863905325445,
+          0.022189349112426034,
+          0.017011834319526627,
+          0.036242603550295856,
+          0.04142011834319527
+        ]
+      },
+      "no-semantic-slots-masked": {
+        "heldout": [
+          0.6438095238095238,
+          0.5971428571428572,
+          0.6333333333333333,
+          0.6504761904761904,
+          0.49714285714285716
+        ],
+        "heldout_pairs": "does not transfer",
+        "new_role_regime_cell": "does not transfer",
+        "strict_transfer": [
+          0.023668639053254437,
+          0.022189349112426034,
+          0.01257396449704142,
+          0.015532544378698224,
+          0.042899408284023666
+        ]
+      },
+      "no-typed-attention": {
+        "heldout": [
+          0.7847619047619048,
+          0.7704761904761904,
+          0.7447619047619047,
+          0.7780952380952381,
+          0.7857142857142857
+        ],
+        "heldout_pairs": "transfers",
+        "new_role_regime_cell": "does not transfer",
+        "strict_transfer": [
+          0.010355029585798817,
+          0.014053254437869823,
+          0.010355029585798817,
+          0.006656804733727811,
+          0.005917159763313609
+        ]
+      },
+      "raw-blind": {
+        "heldout": [
+          0.7333333333333333,
+          0.7304761904761905,
+          0.6980952380952381,
+          0.7304761904761905,
+          0.7504761904761905
+        ],
+        "heldout_pairs": "transfers",
+        "new_role_regime_cell": "does not transfer",
+        "strict_transfer": [
+          0.0036982248520710057,
+          0.005177514792899409,
+          0.005917159763313609,
+          0.0073964497041420114,
+          0.005177514792899409
+        ]
+      }
+    }
+  },
+  "stock_aggregate_cross_check": {
+    "mismatches": [],
+    "pass": true
+  },
+  "verdicts": {
+    "M001-primary": {
+      "endpoint": "composite:A",
+      "reason": "typed slot content improves OOD routing over index-tagged raw binding in A0",
+      "stats": {
+        "ci": [
+          0.0595248712381084,
+          0.17705290653966937
+        ],
+        "deltas": [
+          0.06344444444444441,
+          0.14577777777777778,
+          0.10477777777777775,
+          0.09299999999999997,
+          0.18444444444444452
+        ],
+        "max": 0.18444444444444452,
+        "mean": 0.11828888888888889,
+        "min": 0.06344444444444441,
+        "positive_seeds": 5,
+        "sd": 0.04733441574140586
+      },
+      "verdict": "SUPPORTS"
+    },
+    "M001-secondary": {
+      "endpoint": "composite:A",
+      "mask_share": 0.0932888888888889,
+      "mask_share_budget": "S*",
+      "note": "decided at 4000 steps",
+      "reason": "neither SUPPORTS nor FALSIFIES holds",
+      "stats": {
+        "ci": [
+          -0.026233140984377346,
+          0.05196647431771073
+        ],
+        "deltas": [
+          -0.0076666666666665995,
+          0.026222222222222147,
+          -0.010666666666666713,
+          0.062444444444444525,
+          -0.005999999999999894
+        ],
+        "max": 0.062444444444444525,
+        "mean": 0.012866666666666693,
+        "min": -0.010666666666666713,
+        "positive_seeds": 2,
+        "sd": 0.03149489474600175
+      },
+      "verdict": "INCONCLUSIVE"
+    },
+    "M002-necessity": {
+      "endpoint": "composite:B",
+      "reason": "the rank-1 typed bias adds nothing measurable beyond QK over metadata-bearing slots in A0",
+      "stats": {
+        "ci": [
+          -0.021346087021436734,
+          0.011079420354770088
+        ],
+        "deltas": [
+          -0.02616666666666667,
+          0.0010000000000000009,
+          0.0076666666666665995,
+          0.00016666666666675933,
+          -0.008333333333333304
+        ],
+        "max": 0.0076666666666665995,
+        "mean": -0.005133333333333323,
+        "min": -0.02616666666666667,
+        "positive_seeds": 3,
+        "sd": 0.013059372964358665
+      },
+      "verdict": "FALSIFIES"
+    },
+    "M002-raw-blind-check": {
+      "endpoint": "split:test_iid",
+      "reason": "mean >= 0.03 and every seed positive",
+      "stats": {
+        "ci": [
+          0.10702029014983128,
+          0.1388463765168354
+        ],
+        "deltas": [
+          0.10133333333333328,
+          0.13533333333333342,
+          0.1283333333333333,
+          0.1243333333333333,
+          0.1253333333333334
+        ],
+        "max": 0.13533333333333342,
+        "mean": 0.12293333333333334,
+        "min": 0.10133333333333328,
+        "positive_seeds": 5,
+        "sd": 0.012817956155331517
+      },
+      "verdict": "PASS"
+    },
+    "M002-sufficiency": {
+      "reason": "not run (budget rule)",
+      "verdict": "NOT RUN"
+    },
+    "M003-depth": {
+      "dose_response": "not run (budget rule)",
+      "endpoint": "composite:C",
+      "reason": "applying the tied refinement a second time gives no measurable benefit at equal parameters",
+      "stats": {
+        "ci": [
+          -0.017210594864316683,
+          0.019077261530983325
+        ],
+        "deltas": [
+          -0.020444444444444376,
+          0.013555555555555543,
+          0.014999999999999902,
+          0.0018888888888888289,
+          -0.005333333333333301
+        ],
+        "max": 0.014999999999999902,
+        "mean": 0.0009333333333333193,
+        "min": -0.020444444444444376,
+        "positive_seeds": 3,
+        "sd": 0.014614934016145768
+      },
+      "verdict": "FALSIFIES"
+    },
+    "M003-nonlinearity": {
+      "attribution_stats": {
+        "ci": [
+          0.0498369453663696,
+          0.07936305463363044
+        ],
+        "deltas": [
+          0.04566666666666663,
+          0.07033333333333336,
+          0.07199999999999995,
+          0.06033333333333335,
+          0.07466666666666677
+        ],
+        "max": 0.07466666666666677,
+        "mean": 0.06460000000000002,
+        "min": 0.04566666666666663,
+        "positive_seeds": 5,
+        "sd": 0.011891640387730862
+      },
+      "component_verdicts": {
+        "latent-0": "SUPPORTS",
+        "latent-linear": "SUPPORTS"
+      },
+      "endpoint": "split:test_iid",
+      "linear_minus_zero": 0.015066666666666673,
+      "reason": "the per-slot gelu, not the extra affine parameters, carries the per-fact gating in A0",
+      "stats": {
+        "ci": [
+          0.06855110601803842,
+          0.09078222731529496
+        ],
+        "deltas": [
+          0.06633333333333336,
+          0.08066666666666666,
+          0.08166666666666667,
+          0.07833333333333337,
+          0.09133333333333338
+        ],
+        "max": 0.09133333333333338,
+        "mean": 0.07966666666666669,
+        "min": 0.06633333333333336,
+        "positive_seeds": 5,
+        "sd": 0.008953584012375533
+      },
+      "verdict": "SUPPORTS-NONLINEARITY"
+    },
+    "M004-negative-control": {
+      "deterministic_reference": {
+        "full_max": 0.8926666666666667,
+        "full_min": 0.863,
+        "hand_weighted_test_iid": 0.8063333333333333,
+        "learned_beats_deterministic": "holds"
+      },
+      "endpoint": "split:test_iid",
+      "reason": "neither EQUIVALENT, SUPPORTS nor HARMFUL",
+      "stats": {
+        "ci": [
+          -0.014428445246319449,
+          0.020295111912986136
+        ],
+        "deltas": [
+          -0.015666666666666718,
+          0.022666666666666724,
+          0.0050000000000000044,
+          -0.0030000000000000027,
+          0.005666666666666709
+        ],
+        "max": 0.022666666666666724,
+        "mean": 0.0029333333333333433,
+        "min": -0.015666666666666718,
+        "positive_seeds": 3,
+        "sd": 0.013984912505188542
+      },
+      "verdict": "INCONCLUSIVE"
+    },
+    "no-verifier-head": {
+      "reason": "not tested: no such module in PtrA0",
+      "verdict": "NOT TESTED"
+    }
+  }
+}

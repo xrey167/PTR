@@ -114,6 +114,15 @@ pub fn save(model: &PtrA0) -> Result<Vec<u8>, CheckpointIoError> {
 /// moved there is no point in loading tensors that would then mean the wrong
 /// thing; the architecture is checked second, by the record itself refusing a
 /// shape that does not fit.
+///
+/// Attention, query, and latent-refinement options come from `config`; the
+/// checkpoint does not record them. `frozen_router` is not applied on this path.
+///
+/// # Errors
+///
+/// Returns a header error for malformed or incompatible identity metadata,
+/// `WrongModel` for another model's checkpoint, or a record error when the
+/// parameter payload cannot be decoded or loaded into the configured model.
 pub fn load(
     bytes: &[u8],
     config: &PtrA0Config,
@@ -127,5 +136,5 @@ pub fn load(
     }
     header.verify(&config.codebook(), config.encoding(), &EMBEDDED_FAMILIES)?;
     let record = ModuleRecord::from_bytes(Bytes::from_bytes_vec(payload.to_vec()))?;
-    Ok(config.init(device).try_load_record(record)?)
+    Ok(config.init_lazy(device).try_load_record(record)?)
 }

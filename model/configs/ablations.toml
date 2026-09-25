@@ -1,15 +1,39 @@
+# The ablations the M001-M004 hypotheses name, and how the A0 mechanism
+# ablation study (research/falsification/A0-ablations-v1) realises each one.
+# `a0_arms` are the study's arm names (model/configs/a0_ablation_study.toml,
+# `a0_ablation --phase list-arms`); scripts/tests/test_a0_ablation_config.py keeps
+# the three in agreement.
 [[ablation]]
 id = "no-semantic-slots"
 disable = ["semantic_slots"]
+a0_status = "run"
+a0_arms = ["no-semantic-slots", "no-semantic-slots-masked"]
+a0_note = "No model change: the slots carry only their index and the facts reach A0 as raw tokens; the masked arm keeps the admission."
+
 [[ablation]]
 id = "no-typed-attention"
 disable = ["typed_attention"]
+a0_status = "run"
+a0_arms = ["no-typed-attention", "raw-blind", "blind-query-k0", "blind-query-k0-no-typed-attention"]
+a0_note = "with_typed_attention(false): necessity given QK. raw-blind is the manipulation check; the blind-query pair tests sufficiency."
+
 [[ablation]]
 id = "no-latent-recurrence"
 disable = ["latent_recurrence"]
+a0_status = "run"
+a0_arms = ["latent-0", "latent-1", "latent-linear", "latent-4"]
+a0_note = "with_latent_steps(0) against the full arm's 2; latent-linear drops the gelu at equal parameters; latent-1 and latent-4 vary depth at equal parameters."
+
 [[ablation]]
 id = "no-router"
 disable = ["operator_router"]
+a0_status = "negative-control"
+a0_arms = ["frozen-router"]
+a0_note = "The router is A0's only output head, so it cannot be removed; the frozen router is a negative control, equivalent by reparameterisation."
+
 [[ablation]]
 id = "no-verifier-head"
 disable = ["verifier_head"]
+a0_status = "not-applicable"
+a0_arms = []
+a0_note = "PtrA0 has no verifier head. Recorded as not tested, never as a null result."

@@ -6,6 +6,30 @@
     "routes"
   ],
   "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Operator-routing v1: '<split>-<index, five digits>'."
+    },
+    "split": {
+      "type": "string",
+      "enum": [
+        "train",
+        "val",
+        "test_iid",
+        "ood_compose_epi",
+        "ood_compose_regime",
+        "ood_distractors",
+        "ood_validity",
+        "ood_payload"
+      ],
+      "description": "Operator-routing v1 split the record belongs to."
+    },
+    "generator_version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Version of benchmarks/operator-routing/generator.py that produced the record."
+    },
     "task": {
       "type": "string",
       "minLength": 1
@@ -50,8 +74,189 @@
       "minimum": 0.0
     },
     "type_codebook_version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "The cognitive type codebook version (datasets/generated/codebook.json `version`). training/src/ptr_training/validate_dataset.py requires it together with type_codebook_fingerprint."
+    },
+    "type_codebook_fingerprint": {
       "type": "string",
-      "description": "Optional while the cognitive type codebook is unfrozen; required before persistent production training/checkpoint compatibility is claimed."
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 fingerprint of the codebook's canonical bytes (datasets/generated/codebook.json `fingerprint_sha256`)."
+    },
+    "regime": {
+      "type": "object",
+      "required": [
+        "code",
+        "name"
+      ],
+      "properties": {
+        "code": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        },
+        "name": {
+          "type": "string",
+          "enum": [
+            "tabular",
+            "temporal",
+            "interventional",
+            "textual"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "description": "Operator-routing v1 problem regime R."
+    },
+    "budget": {
+      "type": "object",
+      "required": [
+        "code",
+        "value"
+      ],
+      "properties": {
+        "code": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2
+        },
+        "value": {
+          "type": "number",
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": false,
+      "description": "Operator-routing v1 budget index B and its value (equal to cost_budget)."
+    },
+    "slots": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "index",
+          "role",
+          "epistemic",
+          "confidence",
+          "confidence_bucket",
+          "validity",
+          "entity",
+          "provenance_bucket"
+        ],
+        "properties": {
+          "index": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "role": {
+            "type": "string",
+            "minLength": 1,
+            "description": "A semantic_role member name from datasets/generated/codebook.json."
+          },
+          "epistemic": {
+            "type": "string",
+            "minLength": 1,
+            "description": "An epistemic_state member name from datasets/generated/codebook.json."
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0.0,
+            "maximum": 1.0
+          },
+          "confidence_bucket": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4
+          },
+          "validity": {
+            "type": "string",
+            "minLength": 1,
+            "description": "A validity member name from datasets/generated/codebook.json."
+          },
+          "entity": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "provenance_bucket": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "description": "Operator-routing v1 typed slots; slot i carries fact i."
+    },
+    "raw_tokens": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 215
+      },
+      "description": "Operator-routing v1 raw token ids (vocabulary 216, 0 = PAD)."
+    },
+    "label": {
+      "type": "object",
+      "required": [
+        "operator",
+        "code"
+      ],
+      "properties": {
+        "operator": {
+          "type": "string",
+          "enum": [
+            "semantic",
+            "deductive",
+            "probabilistic",
+            "statistical",
+            "temporal",
+            "causal",
+            "search",
+            "optimization",
+            "simulation",
+            "symbolic",
+            "external_pod"
+          ]
+        },
+        "code": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10
+        }
+      },
+      "additionalProperties": false,
+      "description": "The rule's argmax operator and its reasoning_operator code."
+    },
+    "utility": {
+      "type": "array",
+      "minItems": 11,
+      "maxItems": 11,
+      "items": {
+        "type": "number"
+      },
+      "description": "Rule utility z_k per operator, in code order."
+    },
+    "margin": {
+      "type": "number",
+      "minimum": 0.0,
+      "description": "Top-1 z minus top-2 z."
+    },
+    "tags": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "enum": [
+          "validity",
+          "regime",
+          "budget",
+          "confidence",
+          "epistemic",
+          "heldout",
+          "transfer"
+        ]
+      },
+      "description": "Counterfactuals that change the label (benchmarks/operator-routing/README.md)."
     }
   },
   "additionalProperties": false

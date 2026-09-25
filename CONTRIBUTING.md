@@ -16,7 +16,7 @@ Every first-class Rust crate owns `crates/<crate>/component.toml`. That file is 
 - decision records;
 - current automated checks.
 
-The generator also derives code footprint metrics directly from `src/` (Rust-file count, nonblank LOC and `#[test]` markers).
+The generator also derives code footprint metrics directly from `src/` and `tests/` (Rust-file count, nonblank LOC, and `#[test]`/`#[tokio::test]` markers).
 
 ### Freshness rule
 
@@ -30,22 +30,27 @@ python3 scripts/update_component_docs.py --write
 
 This refreshes the generated block in each crate README and `docs/components/STATUS.md`. CI rejects stale generated documentation.
 
-Before submitting:
+Before submitting, run what CI runs:
 
 ```bash
-python3 scripts/check_component_metadata.py --base HEAD^
-python3 scripts/update_component_docs.py --check
-python3 scripts/check_repo.py
-python3 scripts/check_architecture_catalog.py
-python3 scripts/check_rust_conventions.py
-python3 scripts/report_rust_api.py --public-only > /tmp/ptr-public-api.md
-python3 scripts/run_experiment.py validate
-python3 scripts/run_component_eval.py validate
-cargo fmt --all -- --check
-cargo check --workspace --all-targets
-cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
+make ci-local                  # every job in .github/workflows/ci.yml, step for step
+make ci-repository-invariants  # or one job: every target is ci-<job name>
+make a0                        # also when you touch model/burn-a0, crates/ptr-types, the root Cargo.toml, the codebook or crates/ptr-runtime/tests/fixtures/ptr-a0-v1.ckpt
 ```
 
+`make ci-local` needs the `stable`, `1.85.0` and `1.91.0` toolchains (it installs
+the pinned two the way CI does) and builds every feature backend, so it is slow
+the first time. It reads `BASE` from `origin/main`; without that ref, pass
+`BASE=<commit>`. `make a0` is burn-a0.yml's two jobs: `a0-stable` formats, tests
+and lints on your `stable`, and `a0-msrv` tests on 1.95.0. CI's stable is always
+the current release, so run `rustup update stable` first, or a lint newer than
+your toolchain passes here and fails there (Burn A0 needs at least 1.95).
+`scripts/tests/test_ci_local.py` fails when a CI step, a step's `env:`, or a
+multi-line script step has no counterpart in these targets, so they cannot
+silently fall behind CI.
+
+`python3 scripts/report_rust_api.py --public-only` prints the public Rust API for
+review. It is a report, not a gate, so it is not part of `ci-local`.
+
 For a new infrastructure candidate use `python3 scripts/new_candidate.py <component> <id>`.
-For a new experiment use `python3 scripts/new_experiment.py <area/id-name> --hypothesis "..."`.
+For a new experiment use `python3 scripts/new_experiment.py <area>/<ID>-<name> --hypothesis "..." --metrics "..." --baseline "..." --falsification "..."` (optionally `--hardware-profile` and `--seeds`). It writes every key `experiments/schema.toml` requires and registers the experiment.

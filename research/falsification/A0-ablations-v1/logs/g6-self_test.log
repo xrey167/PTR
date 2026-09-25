@@ -1,0 +1,3 @@
+{"row":"self-test","test":"T8","passed":1}
+{"row":"data","data_fnv64":"0ad71688f09b0d0d","label_fnv64_train":"89b416af24b05a74","label_fnv64_val":"f5a682a6e264f087","label_fnv64_test_iid":"8aa96376d8db568e","label_fnv64_ood_compose_epi":"6a1f66bea83db2b3","label_fnv64_ood_compose_regime":"aa3b11bf19ad056c","label_fnv64_ood_distractors":"509c7f3bc62c98db","label_fnv64_ood_validity":"5ada2d0231cd1a35","label_fnv64_ood_payload":"cbcdf0c3584760ad"}
+{"row":"self-test","test":"T7","passed":1}

@@ -1,7 +1,7 @@
 version = 1
 id = "ptr-state"
 maturity = "prototype"
-last_reviewed = "2026-09-21"
+last_reviewed = "2026-09-25"
 
 implemented = [
   "Semantic transaction position and revision materialization without duplicated payload ownership",
@@ -42,5 +42,6 @@ decisions = [
 checks = [
   "replay ordering/idempotency integration test",
   "Turso reopen/monotonicity integration test behind turso-backend feature",
+  "clippy -D warnings over the turso-backend build in the state-turso CI job",
   "workspace fmt/check/test/clippy",
 ]

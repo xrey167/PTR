@@ -30,6 +30,15 @@ __pycache__/
 !/datasets/processed/.gitkeep
 /datasets/generated/*
 !/datasets/generated/.gitkeep
+# datasets/README.md: private/ is "never committed if it contains sensitive
+# material". That promise needs a rule behind it, not only a sentence: anything
+# dropped here is ignored, and only the area's own scaffolding stays tracked.
+/datasets/private/*
+!/datasets/private/.gitkeep
+!/datasets/private/config.toml
+!/datasets/private/tests/
+/datasets/private/tests/*
+!/datasets/private/tests/README.md
 # The codebook artifact is generated, but it is a contract rather than an output:
 # it is what everything outside Rust reads the kernel's tables from, and
 # check_codebook.py exists to catch it drifting from them. A checker cannot compare

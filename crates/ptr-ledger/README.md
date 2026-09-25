@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-21  
-**Code footprint:** 9 Rust source files · 4479 nonblank source lines · 12 integration-test files · 104 `#[test]` markers
+**Last reviewed:** 2026-09-25  
+**Code footprint:** 9 Rust source files · 4484 nonblank source lines · 12 integration-test files · 104 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -43,7 +43,7 @@
 - CompactionBarrier scaffold
 - Durable reference FileLedger with checked versioned frames, file synchronization and anchor-required tail recovery
 - Feature-gated fail-rs injection points around record write/payload/fsync/memory-commit boundaries
-- Feature-gated raft-engine 0.4.2 durable adapter stores ordered PTR ledger events with synchronous writes and reopen validation
+- Feature-gated raft-engine 0.4.2 durable adapter stores ordered PTR ledger events with synchronous writes and reopen validation, and propagates a refused batch put instead of recording an event it never wrote
 - Feature-gated raft-rs 0.7 single-node consensus harness proposes and commits PTR LedgerEvents through RawNode, over durable state rather than MemStorage: a reopened node replays its committed prefix and tells raft what it already applied
 - Snapshot transfer: a member records its application state at a committed position and the log below it is discarded, a member the leader cannot replay to is sent that payload verbatim, and applying anything further is refused until the application has accounted for what the payload covers
 - RaftNode is one member that hands its outbound messages back instead of dropping them, with no knowledge of transport: ticks are a count rather than a duration, so a partition, a leader change and a duplicated message are testable without a timer
@@ -102,6 +102,8 @@
 - Every single-bit mutation and every length variation of the 168-byte anchor record rejected
 - Every log/anchor split outcome: aligned, unacknowledged, lost suffix, rehashed divergence, foreign origin and base mismatch
 - Stale-witness anchor rollback, interrupted publication and fenced writer after failed acknowledgment
+- The six fencing-token tests (tests/raft_fence.rs) are a declared feature test run by the ledger-raft-rs CI job
+- clippy -D warnings over the failpoints, raft-engine-backend and raft-rs-backend builds, which no CI job linted before
 - Retention bounds, barrier blocking and snapshot-coverage capping of the proposed floor
 - Cutover interrupted on both sides of its commit point, orphan reclamation and exact retained-suffix reconstruction
 - Stale, non-advancing, above-tail and wrong-digest plans refused without mutation; destination never overwritten

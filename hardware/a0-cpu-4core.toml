@@ -1,0 +1,13 @@
+# Measured on 2026-09-25, not declared: every field below was read from this
+# machine (lscpu, /proc/meminfo, uname, /etc/os-release). It is the host of the
+# A0 mechanism ablation study (research/falsification/A0-ablations-v1). The
+# runner also records host facts in every run record, so a run on another
+# machine is visible even if it names this profile.
+id = "a0-cpu-4core"
+os = "Ubuntu 24.04.4 LTS, Linux 6.18.44 x86_64"
+cpu = "Intel(R) Xeon(R) Processor @ 2.80GHz, 4 vCPU (4 cores, 1 thread per core, 1 socket); AVX, AVX2, AVX-512F/BW/CD/DQ/VL/VNNI"
+ram_gib = 15.7
+gpu = "none"
+gpu_memory_gib = 0
+precision = ["fp32"]
+notes = "Shared cloud container: timing is noisy and is recorded as a diagnostic only. Floating-point results are reproducible bit for bit only on this CPU feature set with the same binary, because the gemm kernel dispatches on AVX-512."

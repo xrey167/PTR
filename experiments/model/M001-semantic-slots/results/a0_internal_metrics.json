@@ -1,0 +1,6169 @@
+{
+  "arms": {
+    "full": {
+      "101": {
+        "ood_compose_epi": {
+          "correct": 2646,
+          "cost_adjusted_regret": 0.04611916666666666,
+          "n": 3000,
+          "route_accuracy": 0.882,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.6755793226381461,
+              "correct": 379,
+              "n": 561
+            },
+            "clear_margin": {
+              "accuracy": 0.930080676142912,
+              "correct": 2421,
+              "n": 2603
+            },
+            "confidence": {
+              "accuracy": 0.7287234042553191,
+              "correct": 548,
+              "n": 752
+            },
+            "epistemic": {
+              "accuracy": 0.75,
+              "correct": 606,
+              "n": 808
+            },
+            "heldout": {
+              "accuracy": 0.8038095238095239,
+              "correct": 844,
+              "n": 1050
+            },
+            "regime": {
+              "accuracy": 0.7883895131086143,
+              "correct": 421,
+              "n": 534
+            },
+            "validity": {
+              "accuracy": 0.7699619771863118,
+              "correct": 405,
+              "n": 526
+            }
+          },
+          "task_success": 0.933
+        },
+        "ood_compose_regime": {
+          "correct": 1221,
+          "cost_adjusted_regret": 2.147682916666673,
+          "n": 3000,
+          "route_accuracy": 0.407,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.38385502471169686,
+              "correct": 233,
+              "n": 607
+            },
+            "clear_margin": {
+              "accuracy": 0.4176675707090275,
+              "correct": 1078,
+              "n": 2581
+            },
+            "confidence": {
+              "accuracy": 0.49232736572890023,
+              "correct": 385,
+              "n": 782
+            },
+            "epistemic": {
+              "accuracy": 0.5904550499445061,
+              "correct": 532,
+              "n": 901
+            },
+            "regime": {
+              "accuracy": 0.07779670641680864,
+              "correct": 137,
+              "n": 1761
+            },
+            "transfer": {
+              "accuracy": 0.005177514792899409,
+              "correct": 7,
+              "n": 1352
+            },
+            "validity": {
+              "accuracy": 0.54510556621881,
+              "correct": 284,
+              "n": 521
+            }
+          },
+          "task_success": 0.44566666666666666
+        },
+        "ood_distractors": {
+          "correct": 2673,
+          "cost_adjusted_regret": 0.04024875000000002,
+          "n": 3000,
+          "route_accuracy": 0.891,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.6985871271585558,
+              "correct": 445,
+              "n": 637
+            },
+            "clear_margin": {
+              "accuracy": 0.9390862944162437,
+              "correct": 2405,
+              "n": 2561
+            },
+            "confidence": {
+              "accuracy": 0.7773487773487774,
+              "correct": 604,
+              "n": 777
+            },
+            "epistemic": {
+              "accuracy": 0.8024096385542169,
+              "correct": 666,
+              "n": 830
+            },
+            "regime": {
+              "accuracy": 0.8364485981308412,
+              "correct": 537,
+              "n": 642
+            },
+            "validity": {
+              "accuracy": 0.8273155416012559,
+              "correct": 527,
+              "n": 637
+            }
+          },
+          "task_success": 0.9423333333333334
+        },
+        "ood_payload": {
+          "correct": 2716,
+          "cost_adjusted_regret": 0.03610708333333334,
+          "n": 3000,
+          "route_accuracy": 0.9053333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.731629392971246,
+              "correct": 458,
+              "n": 626
+            },
+            "clear_margin": {
+              "accuracy": 0.9498456790123457,
+              "correct": 2462,
+              "n": 2592
+            },
+            "confidence": {
+              "accuracy": 0.7798277982779828,
+              "correct": 634,
+              "n": 813
+            },
+            "epistemic": {
+              "accuracy": 0.8,
+              "correct": 644,
+              "n": 805
+            },
+            "regime": {
+              "accuracy": 0.8703703703703703,
+              "correct": 517,
+              "n": 594
+            },
+            "validity": {
+              "accuracy": 0.8394276629570747,
+              "correct": 528,
+              "n": 629
+            }
+          },
+          "task_success": 0.9493333333333334
+        },
+        "ood_validity": {
+          "correct": 2656,
+          "cost_adjusted_regret": 0.028500000000000025,
+          "n": 3000,
+          "route_accuracy": 0.8853333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.6710239651416122,
+              "correct": 308,
+              "n": 459
+            },
+            "clear_margin": {
+              "accuracy": 0.9595496246872394,
+              "correct": 2301,
+              "n": 2398
+            },
+            "confidence": {
+              "accuracy": 0.7375621890547264,
+              "correct": 593,
+              "n": 804
+            },
+            "epistemic": {
+              "accuracy": 0.78,
+              "correct": 546,
+              "n": 700
+            },
+            "regime": {
+              "accuracy": 0.8613861386138614,
+              "correct": 435,
+              "n": 505
+            },
+            "validity": {
+              "accuracy": 0.8248631743549648,
+              "correct": 1055,
+              "n": 1279
+            }
+          },
+          "task_success": 0.9633333333333334
+        },
+        "test_iid": {
+          "correct": 2666,
+          "cost_adjusted_regret": 0.03703124999999999,
+          "n": 3000,
+          "route_accuracy": 0.8886666666666667,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.6899841017488076,
+              "correct": 434,
+              "n": 629
+            },
+            "clear_margin": {
+              "accuracy": 0.9431906614785992,
+              "correct": 2424,
+              "n": 2570
+            },
+            "confidence": {
+              "accuracy": 0.7293519695044473,
+              "correct": 574,
+              "n": 787
+            },
+            "epistemic": {
+              "accuracy": 0.7772151898734178,
+              "correct": 614,
+              "n": 790
+            },
+            "regime": {
+              "accuracy": 0.8590163934426229,
+              "correct": 524,
+              "n": 610
+            },
+            "validity": {
+              "accuracy": 0.798941798941799,
+              "correct": 453,
+              "n": 567
+            }
+          },
+          "task_success": 0.9463333333333334
+        }
+      },
+      "17": {
+        "ood_compose_epi": {
+          "correct": 2573,
+          "cost_adjusted_regret": 0.1051937499999999,
+          "n": 3000,
+          "route_accuracy": 0.8576666666666667,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.6221033868092691,
+              "correct": 349,
+              "n": 561
+            },
+            "clear_margin": {
+              "accuracy": 0.9058778332693046,
+              "correct": 2358,
+              "n": 2603
+            },
+            "confidence": {
+              "accuracy": 0.6928191489361702,
+              "correct": 521,
+              "n": 752
+            },
+            "epistemic": {
+              "accuracy": 0.7091584158415841,
+              "correct": 573,
+              "n": 808
+            },
+            "heldout": {
+              "accuracy": 0.7723809523809524,
+              "correct": 811,
+              "n": 1050
+            },
+            "regime": {
+              "accuracy": 0.7397003745318352,
+              "correct": 395,
+              "n": 534
+            },
+            "validity": {
+              "accuracy": 0.7262357414448669,
+              "correct": 382,
+              "n": 526
+            }
+          },
+          "task_success": 0.9123333333333333
+        },
+        "ood_compose_regime": {
+          "correct": 1207,
+          "cost_adjusted_regret": 2.1606320833333403,
+          "n": 3000,
+          "route_accuracy": 0.4023333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.36079077429983525,
+              "correct": 219,
+              "n": 607
+            },
+            "clear_margin": {
+              "accuracy": 0.4176675707090275,
+              "correct": 1078,
+              "n": 2581
+            },
+            "confidence": {
+              "accuracy": 0.46035805626598464,
+              "correct": 360,
+              "n": 782
+            },
+            "epistemic": {
+              "accuracy": 0.5738068812430632,
+              "correct": 517,
+              "n": 901
+            },
+            "regime": {
+              "accuracy": 0.07382169222032936,
+              "correct": 130,
+              "n": 1761
+            },
+            "transfer": {
+              "accuracy": 0.005917159763313609,
+              "correct": 8,
+              "n": 1352
+            },
+            "validity": {
+              "accuracy": 0.4952015355086372,
+              "correct": 258,
+              "n": 521
+            }
+          },
+          "task_success": 0.44
+        },
+        "ood_distractors": {
+          "correct": 2620,
+          "cost_adjusted_regret": 0.11193624999999992,
+          "n": 3000,
+          "route_accuracy": 0.8733333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.6593406593406593,
+              "correct": 420,
+              "n": 637
+            },
+            "clear_margin": {
+              "accuracy": 0.9250292854353768,
+              "correct": 2369,
+              "n": 2561
+            },
+            "confidence": {
+              "accuracy": 0.7297297297297297,
+              "correct": 567,
+              "n": 777
+            },
+            "epistemic": {
+              "accuracy": 0.7951807228915663,
+              "correct": 660,
+              "n": 830
+            },
+            "regime": {
+              "accuracy": 0.7834890965732088,
+              "correct": 503,
+              "n": 642
+            },
+            "validity": {
+              "accuracy": 0.792778649921507,
+              "correct": 505,
+              "n": 637
+            }
+          },
+          "task_success": 0.9243333333333333
+        },
+        "ood_payload": {
+          "correct": 2647,
+          "cost_adjusted_regret": 0.09277916666666669,
+          "n": 3000,
+          "route_accuracy": 0.8823333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.6869009584664537,
+              "correct": 430,
+              "n": 626
+            },
+            "clear_margin": {
+              "accuracy": 0.9309413580246914,
+              "correct": 2413,
+              "n": 2592
+            },
+            "confidence": {
+              "accuracy": 0.7281672816728167,
+              "correct": 592,
+              "n": 813
+            },
+            "epistemic": {
+              "accuracy": 0.7875776397515528,
+              "correct": 634,
+              "n": 805
+            },
+            "regime": {
+              "accuracy": 0.8181818181818182,
+              "correct": 486,
+              "n": 594
+            },
+            "validity": {
+              "accuracy": 0.7869634340222575,
+              "correct": 495,
+              "n": 629
+            }
+          },
+          "task_success": 0.9346666666666666
+        },
+        "ood_validity": {
+          "correct": 2537,
+          "cost_adjusted_regret": 0.11201375000000004,
+          "n": 3000,
+          "route_accuracy": 0.8456666666666667,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.6579520697167756,
+              "correct": 302,
+              "n": 459
+            },
+            "clear_margin": {
+              "accuracy": 0.9295246038365305,
+              "correct": 2229,
+              "n": 2398
+            },
+            "confidence": {
+              "accuracy": 0.664179104477612,
+              "correct": 534,
+              "n": 804
+            },
+            "epistemic": {
+              "accuracy": 0.7514285714285714,
+              "correct": 526,
+              "n": 700
+            },
+            "regime": {
+              "accuracy": 0.7623762376237624,
+              "correct": 385,
+              "n": 505
+            },
+            "validity": {
+              "accuracy": 0.7795152462861611,
+              "correct": 997,
+              "n": 1279
+            }
+          },
+          "task_success": 0.9356666666666666
+        },
+        "test_iid": {
+          "correct": 2589,
+          "cost_adjusted_regret": 0.11221249999999994,
+          "n": 3000,
+          "route_accuracy": 0.863,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.6661367249602543,
+              "correct": 419,
+              "n": 629
+            },
+            "clear_margin": {
+              "accuracy": 0.9163424124513618,
+              "correct": 2355,
+              "n": 2570
+            },
+            "confidence": {
+              "accuracy": 0.6975857687420585,
+              "correct": 549,
+              "n": 787
+            },
+            "epistemic": {
+              "accuracy": 0.7632911392405063,
+              "correct": 603,
+              "n": 790
+            },
+            "regime": {
+              "accuracy": 0.7918032786885246,
+              "correct": 483,
+              "n": 610
+            },
+            "validity": {
+              "accuracy": 0.7583774250440917,
+              "correct": 430,
+              "n": 567
+            }
+          },
+          "task_success": 0.9206666666666666
+        }
+      },
+      "29": {
+        "ood_compose_epi": {
+          "correct": 2643,
+          "cost_adjusted_regret": 0.04399291666666667,
+          "n": 3000,
+          "route_accuracy": 0.881,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.6755793226381461,
+              "correct": 379,
+              "n": 561
+            },
+            "clear_margin": {
+              "accuracy": 0.9327698809066461,
+              "correct": 2428,
+              "n": 2603
+            },
+            "confidence": {
+              "accuracy": 0.7167553191489362,
+              "correct": 539,
+              "n": 752
+            },
+            "epistemic": {
+              "accuracy": 0.7339108910891089,
+              "correct": 593,
+              "n": 808
+            },
+            "heldout": {
+              "accuracy": 0.7752380952380953,
+              "correct": 814,
+              "n": 1050
+            },
+            "regime": {
+              "accuracy": 0.8089887640449438,
+              "correct": 432,
+              "n": 534
+            },
+            "validity": {
+              "accuracy": 0.7737642585551331,
+              "correct": 407,
+              "n": 526
+            }
+          },
+          "task_success": 0.9373333333333334
+        },
+        "ood_compose_regime": {
+          "correct": 1402,
+          "cost_adjusted_regret": 1.4817099999999983,
+          "n": 3000,
+          "route_accuracy": 0.4673333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.49093904448105435,
+              "correct": 298,
+              "n": 607
+            },
+            "clear_margin": {
+              "accuracy": 0.4707477721813251,
+              "correct": 1215,
+              "n": 2581
+            },
+            "confidence": {
+              "accuracy": 0.5869565217391305,
+              "correct": 459,
+              "n": 782
+            },
+            "epistemic": {
+              "accuracy": 0.683684794672586,
+              "correct": 616,
+              "n": 901
+            },
+            "regime": {
+              "accuracy": 0.14253265190232822,
+              "correct": 251,
+              "n": 1761
+            },
+            "transfer": {
+              "accuracy": 0.011834319526627219,
+              "correct": 16,
+              "n": 1352
+            },
+            "validity": {
+              "accuracy": 0.6084452975047985,
+              "correct": 317,
+              "n": 521
+            }
+          },
+          "task_success": 0.5276666666666666
+        },
+        "ood_distractors": {
+          "correct": 2700,
+          "cost_adjusted_regret": 0.03719000000000001,
+          "n": 3000,
+          "route_accuracy": 0.9,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.7205651491365777,
+              "correct": 459,
+              "n": 637
+            },
+            "clear_margin": {
+              "accuracy": 0.9445529090199141,
+              "correct": 2419,
+              "n": 2561
+            },
+            "confidence": {
+              "accuracy": 0.7927927927927928,
+              "correct": 616,
+              "n": 777
+            },
+            "epistemic": {
+              "accuracy": 0.8180722891566266,
+              "correct": 679,
+              "n": 830
+            },
+            "regime": {
+              "accuracy": 0.838006230529595,
+              "correct": 538,
+              "n": 642
+            },
+            "validity": {
+              "accuracy": 0.8210361067503925,
+              "correct": 523,
+              "n": 637
+            }
+          },
+          "task_success": 0.9486666666666667
+        },
+        "ood_payload": {
+          "correct": 2722,
+          "cost_adjusted_regret": 0.03019166666666666,
+          "n": 3000,
+          "route_accuracy": 0.9073333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.7364217252396166,
+              "correct": 461,
+              "n": 626
+            },
+            "clear_margin": {
+              "accuracy": 0.9540895061728395,
+              "correct": 2473,
+              "n": 2592
+            },
+            "confidence": {
+              "accuracy": 0.7822878228782287,
+              "correct": 636,
+              "n": 813
+            },
+            "epistemic": {
+              "accuracy": 0.8012422360248447,
+              "correct": 645,
+              "n": 805
+            },
+            "regime": {
+              "accuracy": 0.8754208754208754,
+              "correct": 520,
+              "n": 594
+            },
+            "validity": {
+              "accuracy": 0.8267090620031796,
+              "correct": 520,
+              "n": 629
+            }
+          },
+          "task_success": 0.9543333333333334
+        },
+        "ood_validity": {
+          "correct": 2701,
+          "cost_adjusted_regret": 0.019797083333333326,
+          "n": 3000,
+          "route_accuracy": 0.9003333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.7211328976034859,
+              "correct": 331,
+              "n": 459
+            },
+            "clear_margin": {
+              "accuracy": 0.969557964970809,
+              "correct": 2325,
+              "n": 2398
+            },
+            "confidence": {
+              "accuracy": 0.7587064676616916,
+              "correct": 610,
+              "n": 804
+            },
+            "epistemic": {
+              "accuracy": 0.8057142857142857,
+              "correct": 564,
+              "n": 700
+            },
+            "regime": {
+              "accuracy": 0.8930693069306931,
+              "correct": 451,
+              "n": 505
+            },
+            "validity": {
+              "accuracy": 0.8397185301016419,
+              "correct": 1074,
+              "n": 1279
+            }
+          },
+          "task_success": 0.9736666666666667
+        },
+        "test_iid": {
+          "correct": 2678,
+          "cost_adjusted_regret": 0.033042916666666686,
+          "n": 3000,
+          "route_accuracy": 0.8926666666666667,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.7011128775834659,
+              "correct": 441,
+              "n": 629
+            },
+            "clear_margin": {
+              "accuracy": 0.948249027237354,
+              "correct": 2437,
+              "n": 2570
+            },
+            "confidence": {
+              "accuracy": 0.7445997458703939,
+              "correct": 586,
+              "n": 787
+            },
+            "epistemic": {
+              "accuracy": 0.7974683544303798,
+              "correct": 630,
+              "n": 790
+            },
+            "regime": {
+              "accuracy": 0.8524590163934426,
+              "correct": 520,
+              "n": 610
+            },
+            "validity": {
+              "accuracy": 0.8042328042328042,
+              "correct": 456,
+              "n": 567
+            }
+          },
+          "task_success": 0.9493333333333334
+        }
+      },
+      "43": {
+        "ood_compose_epi": {
+          "correct": 2652,
+          "cost_adjusted_regret": 0.05041833333333332,
+          "n": 3000,
+          "route_accuracy": 0.884,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.696969696969697,
+              "correct": 391,
+              "n": 561
+            },
+            "clear_margin": {
+              "accuracy": 0.933154053015751,
+              "correct": 2429,
+              "n": 2603
+            },
+            "confidence": {
+              "accuracy": 0.7300531914893617,
+              "correct": 549,
+              "n": 752
+            },
+            "epistemic": {
+              "accuracy": 0.7660891089108911,
+              "correct": 619,
+              "n": 808
+            },
+            "heldout": {
+              "accuracy": 0.7771428571428571,
+              "correct": 816,
+              "n": 1050
+            },
+            "regime": {
+              "accuracy": 0.797752808988764,
+              "correct": 426,
+              "n": 534
+            },
+            "validity": {
+              "accuracy": 0.7870722433460076,
+              "correct": 414,
+              "n": 526
+            }
+          },
+          "task_success": 0.936
+        },
+        "ood_compose_regime": {
+          "correct": 1276,
+          "cost_adjusted_regret": 2.083047500000006,
+          "n": 3000,
+          "route_accuracy": 0.42533333333333334,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.4200988467874794,
+              "correct": 255,
+              "n": 607
+            },
+            "clear_margin": {
+              "accuracy": 0.4370399070127857,
+              "correct": 1128,
+              "n": 2581
+            },
+            "confidence": {
+              "accuracy": 0.5230179028132992,
+              "correct": 409,
+              "n": 782
+            },
+            "epistemic": {
+              "accuracy": 0.607103218645949,
+              "correct": 547,
+              "n": 901
+            },
+            "regime": {
+              "accuracy": 0.08347529812606473,
+              "correct": 147,
+              "n": 1761
+            },
+            "transfer": {
+              "accuracy": 0.0073964497041420114,
+              "correct": 10,
+              "n": 1352
+            },
+            "validity": {
+              "accuracy": 0.5547024952015355,
+              "correct": 289,
+              "n": 521
+            }
+          },
+          "task_success": 0.4686666666666667
+        },
+        "ood_distractors": {
+          "correct": 2692,
+          "cost_adjusted_regret": 0.04913000000000002,
+          "n": 3000,
+          "route_accuracy": 0.8973333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.6923076923076923,
+              "correct": 441,
+              "n": 637
+            },
+            "clear_margin": {
+              "accuracy": 0.9457243264349864,
+              "correct": 2422,
+              "n": 2561
+            },
+            "confidence": {
+              "accuracy": 0.7631917631917632,
+              "correct": 593,
+              "n": 777
+            },
+            "epistemic": {
+              "accuracy": 0.8228915662650602,
+              "correct": 683,
+              "n": 830
+            },
+            "regime": {
+              "accuracy": 0.8364485981308412,
+              "correct": 537,
+              "n": 642
+            },
+            "validity": {
+              "accuracy": 0.8194662480376766,
+              "correct": 522,
+              "n": 637
+            }
+          },
+          "task_success": 0.946
+        },
+        "ood_payload": {
+          "correct": 2675,
+          "cost_adjusted_regret": 0.03629374999999997,
+          "n": 3000,
+          "route_accuracy": 0.8916666666666667,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.7028753993610224,
+              "correct": 440,
+              "n": 626
+            },
+            "clear_margin": {
+              "accuracy": 0.9429012345679012,
+              "correct": 2444,
+              "n": 2592
+            },
+            "confidence": {
+              "accuracy": 0.7527675276752768,
+              "correct": 612,
+              "n": 813
+            },
+            "epistemic": {
+              "accuracy": 0.7751552795031056,
+              "correct": 624,
+              "n": 805
+            },
+            "regime": {
+              "accuracy": 0.8552188552188552,
+              "correct": 508,
+              "n": 594
+            },
+            "validity": {
+              "accuracy": 0.8251192368839427,
+              "correct": 519,
+              "n": 629
+            }
+          },
+          "task_success": 0.9446666666666667
+        },
+        "ood_validity": {
+          "correct": 2631,
+          "cost_adjusted_regret": 0.03442083333333333,
+          "n": 3000,
+          "route_accuracy": 0.877,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.7342047930283224,
+              "correct": 337,
+              "n": 459
+            },
+            "clear_margin": {
+              "accuracy": 0.9582985821517932,
+              "correct": 2298,
+              "n": 2398
+            },
+            "confidence": {
+              "accuracy": 0.7077114427860697,
+              "correct": 569,
+              "n": 804
+            },
+            "epistemic": {
+              "accuracy": 0.7757142857142857,
+              "correct": 543,
+              "n": 700
+            },
+            "regime": {
+              "accuracy": 0.8495049504950495,
+              "correct": 429,
+              "n": 505
+            },
+            "validity": {
+              "accuracy": 0.8053166536356529,
+              "correct": 1030,
+              "n": 1279
+            }
+          },
+          "task_success": 0.9626666666666667
+        },
+        "test_iid": {
+          "correct": 2665,
+          "cost_adjusted_regret": 0.04686708333333331,
+          "n": 3000,
+          "route_accuracy": 0.8883333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.7106518282988871,
+              "correct": 447,
+              "n": 629
+            },
+            "clear_margin": {
+              "accuracy": 0.9416342412451362,
+              "correct": 2420,
+              "n": 2570
+            },
+            "confidence": {
+              "accuracy": 0.7547649301143583,
+              "correct": 594,
+              "n": 787
+            },
+            "epistemic": {
+              "accuracy": 0.7848101265822784,
+              "correct": 620,
+              "n": 790
+            },
+            "regime": {
+              "accuracy": 0.8524590163934426,
+              "correct": 520,
+              "n": 610
+            },
+            "validity": {
+              "accuracy": 0.7936507936507936,
+              "correct": 450,
+              "n": 567
+            }
+          },
+          "task_success": 0.9436666666666667
+        }
+      },
+      "71": {
+        "ood_compose_epi": {
+          "correct": 2618,
+          "cost_adjusted_regret": 0.05224583333333331,
+          "n": 3000,
+          "route_accuracy": 0.8726666666666667,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.661319073083779,
+              "correct": 371,
+              "n": 561
+            },
+            "clear_margin": {
+              "accuracy": 0.9254706108336535,
+              "correct": 2409,
+              "n": 2603
+            },
+            "confidence": {
+              "accuracy": 0.6875,
+              "correct": 517,
+              "n": 752
+            },
+            "epistemic": {
+              "accuracy": 0.7326732673267327,
+              "correct": 592,
+              "n": 808
+            },
+            "heldout": {
+              "accuracy": 0.7752380952380953,
+              "correct": 814,
+              "n": 1050
+            },
+            "regime": {
+              "accuracy": 0.7808988764044944,
+              "correct": 417,
+              "n": 534
+            },
+            "validity": {
+              "accuracy": 0.7604562737642585,
+              "correct": 400,
+              "n": 526
+            }
+          },
+          "task_success": 0.9263333333333333
+        },
+        "ood_compose_regime": {
+          "correct": 1277,
+          "cost_adjusted_regret": 2.1625970833333406,
+          "n": 3000,
+          "route_accuracy": 0.4256666666666667,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.4332784184514003,
+              "correct": 263,
+              "n": 607
+            },
+            "clear_margin": {
+              "accuracy": 0.4385896939170864,
+              "correct": 1132,
+              "n": 2581
+            },
+            "confidence": {
+              "accuracy": 0.510230179028133,
+              "correct": 399,
+              "n": 782
+            },
+            "epistemic": {
+              "accuracy": 0.6015538290788013,
+              "correct": 542,
+              "n": 901
+            },
+            "regime": {
+              "accuracy": 0.09312890403180012,
+              "correct": 164,
+              "n": 1761
+            },
+            "transfer": {
+              "accuracy": 0.008136094674556213,
+              "correct": 11,
+              "n": 1352
+            },
+            "validity": {
+              "accuracy": 0.527831094049904,
+              "correct": 275,
+              "n": 521
+            }
+          },
+          "task_success": 0.4633333333333333
+        },
+        "ood_distractors": {
+          "correct": 2700,
+          "cost_adjusted_regret": 0.036977083333333334,
+          "n": 3000,
+          "route_accuracy": 0.9,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.706436420722135,
+              "correct": 450,
+              "n": 637
+            },
+            "clear_margin": {
+              "accuracy": 0.9472862163217494,
+              "correct": 2426,
+              "n": 2561
+            },
+            "confidence": {
+              "accuracy": 0.7747747747747747,
+              "correct": 602,
+              "n": 777
+            },
+            "epistemic": {
+              "accuracy": 0.8096385542168675,
+              "correct": 672,
+              "n": 830
+            },
+            "regime": {
+              "accuracy": 0.8566978193146417,
+              "correct": 550,
+              "n": 642
+            },
+            "validity": {
+              "accuracy": 0.8445839874411303,
+              "correct": 538,
+              "n": 637
+            }
+          },
+          "task_success": 0.9483333333333334
+        },
+        "ood_payload": {
+          "correct": 2716,
+          "cost_adjusted_regret": 0.03162333333333332,
+          "n": 3000,
+          "route_accuracy": 0.9053333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.7156549520766773,
+              "correct": 448,
+              "n": 626
+            },
+            "clear_margin": {
+              "accuracy": 0.9513888888888888,
+              "correct": 2466,
+              "n": 2592
+            },
+            "confidence": {
+              "accuracy": 0.7798277982779828,
+              "correct": 634,
+              "n": 813
+            },
+            "epistemic": {
+              "accuracy": 0.7950310559006211,
+              "correct": 640,
+              "n": 805
+            },
+            "regime": {
+              "accuracy": 0.8619528619528619,
+              "correct": 512,
+              "n": 594
+            },
+            "validity": {
+              "accuracy": 0.8235294117647058,
+              "correct": 518,
+              "n": 629
+            }
+          },
+          "task_success": 0.9506666666666667
+        },
+        "ood_validity": {
+          "correct": 2692,
+          "cost_adjusted_regret": 0.024620000000000013,
+          "n": 3000,
+          "route_accuracy": 0.8973333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.7211328976034859,
+              "correct": 331,
+              "n": 459
+            },
+            "clear_margin": {
+              "accuracy": 0.9608006672226855,
+              "correct": 2304,
+              "n": 2398
+            },
+            "confidence": {
+              "accuracy": 0.7450248756218906,
+              "correct": 599,
+              "n": 804
+            },
+            "epistemic": {
+              "accuracy": 0.7828571428571428,
+              "correct": 548,
+              "n": 700
+            },
+            "regime": {
+              "accuracy": 0.8792079207920792,
+              "correct": 444,
+              "n": 505
+            },
+            "validity": {
+              "accuracy": 0.835027365129007,
+              "correct": 1068,
+              "n": 1279
+            }
+          },
+          "task_success": 0.965
+        },
+        "test_iid": {
+          "correct": 2661,
+          "cost_adjusted_regret": 0.037372083333333354,
+          "n": 3000,
+          "route_accuracy": 0.887,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.6963434022257552,
+              "correct": 438,
+              "n": 629
+            },
+            "clear_margin": {
+              "accuracy": 0.943579766536965,
+              "correct": 2425,
+              "n": 2570
+            },
+            "confidence": {
+              "accuracy": 0.7369758576874206,
+              "correct": 580,
+              "n": 787
+            },
+            "epistemic": {
+              "accuracy": 0.7848101265822784,
+              "correct": 620,
+              "n": 790
+            },
+            "regime": {
+              "accuracy": 0.8590163934426229,
+              "correct": 524,
+              "n": 610
+            },
+            "validity": {
+              "accuracy": 0.783068783068783,
+              "correct": 444,
+              "n": 567
+            }
+          },
+          "task_success": 0.9446666666666667
+        }
+      }
+    },
+    "no-semantic-slots": {
+      "101": {
+        "ood_compose_epi": {
+          "correct": 1894,
+          "cost_adjusted_regret": 0.47531791666666684,
+          "n": 3000,
+          "route_accuracy": 0.6313333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.42424242424242425,
+              "correct": 238,
+              "n": 561
+            },
+            "clear_margin": {
+              "accuracy": 0.6653860929696505,
+              "correct": 1732,
+              "n": 2603
+            },
+            "confidence": {
+              "accuracy": 0.30851063829787234,
+              "correct": 232,
+              "n": 752
+            },
+            "epistemic": {
+              "accuracy": 0.33292079207920794,
+              "correct": 269,
+              "n": 808
+            },
+            "heldout": {
+              "accuracy": 0.47904761904761906,
+              "correct": 503,
+              "n": 1050
+            },
+            "regime": {
+              "accuracy": 0.6460674157303371,
+              "correct": 345,
+              "n": 534
+            },
+            "validity": {
+              "accuracy": 0.2946768060836502,
+              "correct": 155,
+              "n": 526
+            }
+          },
+          "task_success": 0.6756666666666666
+        },
+        "ood_compose_regime": {
+          "correct": 1072,
+          "cost_adjusted_regret": 1.605719166666666,
+          "n": 3000,
+          "route_accuracy": 0.35733333333333334,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.34925864909390447,
+              "correct": 212,
+              "n": 607
+            },
+            "clear_margin": {
+              "accuracy": 0.36884928322355676,
+              "correct": 952,
+              "n": 2581
+            },
+            "confidence": {
+              "accuracy": 0.34782608695652173,
+              "correct": 272,
+              "n": 782
+            },
+            "epistemic": {
+              "accuracy": 0.4195338512763596,
+              "correct": 378,
+              "n": 901
+            },
+            "regime": {
+              "accuracy": 0.13003975014196478,
+              "correct": 229,
+              "n": 1761
+            },
+            "transfer": {
+              "accuracy": 0.04142011834319527,
+              "correct": 56,
+              "n": 1352
+            },
+            "validity": {
+              "accuracy": 0.3397312859884837,
+              "correct": 177,
+              "n": 521
+            }
+          },
+          "task_success": 0.4073333333333333
+        },
+        "ood_distractors": {
+          "correct": 1916,
+          "cost_adjusted_regret": 0.4444708333333327,
+          "n": 3000,
+          "route_accuracy": 0.6386666666666667,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.41601255886970173,
+              "correct": 265,
+              "n": 637
+            },
+            "clear_margin": {
+              "accuracy": 0.6778602108551347,
+              "correct": 1736,
+              "n": 2561
+            },
+            "confidence": {
+              "accuracy": 0.36293436293436293,
+              "correct": 282,
+              "n": 777
+            },
+            "epistemic": {
+              "accuracy": 0.4036144578313253,
+              "correct": 335,
+              "n": 830
+            },
+            "regime": {
+              "accuracy": 0.6728971962616822,
+              "correct": 432,
+              "n": 642
+            },
+            "validity": {
+              "accuracy": 0.38618524332810045,
+              "correct": 246,
+              "n": 637
+            }
+          },
+          "task_success": 0.695
+        },
+        "ood_payload": {
+          "correct": 1963,
+          "cost_adjusted_regret": 0.4146574999999999,
+          "n": 3000,
+          "route_accuracy": 0.6543333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.4584664536741214,
+              "correct": 287,
+              "n": 626
+            },
+            "clear_margin": {
+              "accuracy": 0.6952160493827161,
+              "correct": 1802,
+              "n": 2592
+            },
+            "confidence": {
+              "accuracy": 0.34686346863468637,
+              "correct": 282,
+              "n": 813
+            },
+            "epistemic": {
+              "accuracy": 0.37515527950310557,
+              "correct": 302,
+              "n": 805
+            },
+            "regime": {
+              "accuracy": 0.7121212121212122,
+              "correct": 423,
+              "n": 594
+            },
+            "validity": {
+              "accuracy": 0.38791732909379967,
+              "correct": 244,
+              "n": 629
+            }
+          },
+          "task_success": 0.701
+        },
+        "ood_validity": {
+          "correct": 1733,
+          "cost_adjusted_regret": 0.47081249999999925,
+          "n": 3000,
+          "route_accuracy": 0.5776666666666667,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.40305010893246185,
+              "correct": 185,
+              "n": 459
+            },
+            "clear_margin": {
+              "accuracy": 0.640533778148457,
+              "correct": 1536,
+              "n": 2398
+            },
+            "confidence": {
+              "accuracy": 0.31716417910447764,
+              "correct": 255,
+              "n": 804
+            },
+            "epistemic": {
+              "accuracy": 0.3028571428571429,
+              "correct": 212,
+              "n": 700
+            },
+            "regime": {
+              "accuracy": 0.699009900990099,
+              "correct": 353,
+              "n": 505
+            },
+            "validity": {
+              "accuracy": 0.326817826426896,
+              "correct": 418,
+              "n": 1279
+            }
+          },
+          "task_success": 0.6676666666666666
+        },
+        "test_iid": {
+          "correct": 1921,
+          "cost_adjusted_regret": 0.43959333333333206,
+          "n": 3000,
+          "route_accuracy": 0.6403333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.424483306836248,
+              "correct": 267,
+              "n": 629
+            },
+            "clear_margin": {
+              "accuracy": 0.6809338521400778,
+              "correct": 1750,
+              "n": 2570
+            },
+            "confidence": {
+              "accuracy": 0.3202033036848793,
+              "correct": 252,
+              "n": 787
+            },
+            "epistemic": {
+              "accuracy": 0.34430379746835443,
+              "correct": 272,
+              "n": 790
+            },
+            "regime": {
+              "accuracy": 0.6885245901639344,
+              "correct": 420,
+              "n": 610
+            },
+            "validity": {
+              "accuracy": 0.3509700176366843,
+              "correct": 199,
+              "n": 567
+            }
+          },
+          "task_success": 0.6933333333333334
+        }
+      },
+      "17": {
+        "ood_compose_epi": {
+          "correct": 1859,
+          "cost_adjusted_regret": 0.5312654166666663,
+          "n": 3000,
+          "route_accuracy": 0.6196666666666667,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.44919786096256686,
+              "correct": 252,
+              "n": 561
+            },
+            "clear_margin": {
+              "accuracy": 0.6557817902420284,
+              "correct": 1707,
+              "n": 2603
+            },
+            "confidence": {
+              "accuracy": 0.3191489361702128,
+              "correct": 240,
+              "n": 752
+            },
+            "epistemic": {
+              "accuracy": 0.275990099009901,
+              "correct": 223,
+              "n": 808
+            },
+            "heldout": {
+              "accuracy": 0.4514285714285714,
+              "correct": 474,
+              "n": 1050
+            },
+            "regime": {
+              "accuracy": 0.6385767790262172,
+              "correct": 341,
+              "n": 534
+            },
+            "validity": {
+              "accuracy": 0.3041825095057034,
+              "correct": 160,
+              "n": 526
+            }
+          },
+          "task_success": 0.67
+        },
+        "ood_compose_regime": {
+          "correct": 966,
+          "cost_adjusted_regret": 1.8679841666666686,
+          "n": 3000,
+          "route_accuracy": 0.322,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.342668863261944,
+              "correct": 208,
+              "n": 607
+            },
+            "clear_margin": {
+              "accuracy": 0.324680356450988,
+              "correct": 838,
+              "n": 2581
+            },
+            "confidence": {
+              "accuracy": 0.29539641943734013,
+              "correct": 231,
+              "n": 782
+            },
+            "epistemic": {
+              "accuracy": 0.365149833518313,
+              "correct": 329,
+              "n": 901
+            },
+            "regime": {
+              "accuracy": 0.11186825667234526,
+              "correct": 197,
+              "n": 1761
+            },
+            "transfer": {
+              "accuracy": 0.027366863905325445,
+              "correct": 37,
+              "n": 1352
+            },
+            "validity": {
+              "accuracy": 0.2629558541266795,
+              "correct": 137,
+              "n": 521
+            }
+          },
+          "task_success": 0.36233333333333334
+        },
+        "ood_distractors": {
+          "correct": 1851,
+          "cost_adjusted_regret": 0.49521041666666693,
+          "n": 3000,
+          "route_accuracy": 0.617,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.41287284144427,
+              "correct": 263,
+              "n": 637
+            },
+            "clear_margin": {
+              "accuracy": 0.6579461147989066,
+              "correct": 1685,
+              "n": 2561
+            },
+            "confidence": {
+              "accuracy": 0.33462033462033464,
+              "correct": 260,
+              "n": 777
+            },
+            "epistemic": {
+              "accuracy": 0.3204819277108434,
+              "correct": 266,
+              "n": 830
+            },
+            "regime": {
+              "accuracy": 0.6246105919003115,
+              "correct": 401,
+              "n": 642
+            },
+            "validity": {
+              "accuracy": 0.315541601255887,
+              "correct": 201,
+              "n": 637
+            }
+          },
+          "task_success": 0.666
+        },
+        "ood_payload": {
+          "correct": 1871,
+          "cost_adjusted_regret": 0.47077958333333236,
+          "n": 3000,
+          "route_accuracy": 0.6236666666666667,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.4249201277955272,
+              "correct": 266,
+              "n": 626
+            },
+            "clear_margin": {
+              "accuracy": 0.6712962962962963,
+              "correct": 1740,
+              "n": 2592
+            },
+            "confidence": {
+              "accuracy": 0.3013530135301353,
+              "correct": 245,
+              "n": 813
+            },
+            "epistemic": {
+              "accuracy": 0.30062111801242236,
+              "correct": 242,
+              "n": 805
+            },
+            "regime": {
+              "accuracy": 0.6801346801346801,
+              "correct": 404,
+              "n": 594
+            },
+            "validity": {
+              "accuracy": 0.3179650238473768,
+              "correct": 200,
+              "n": 629
+            }
+          },
+          "task_success": 0.6786666666666666
+        },
+        "ood_validity": {
+          "correct": 1619,
+          "cost_adjusted_regret": 0.5561616666666667,
+          "n": 3000,
+          "route_accuracy": 0.5396666666666666,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.35294117647058826,
+              "correct": 162,
+              "n": 459
+            },
+            "clear_margin": {
+              "accuracy": 0.6025854879065888,
+              "correct": 1445,
+              "n": 2398
+            },
+            "confidence": {
+              "accuracy": 0.277363184079602,
+              "correct": 223,
+              "n": 804
+            },
+            "epistemic": {
+              "accuracy": 0.2785714285714286,
+              "correct": 195,
+              "n": 700
+            },
+            "regime": {
+              "accuracy": 0.6732673267326733,
+              "correct": 340,
+              "n": 505
+            },
+            "validity": {
+              "accuracy": 0.253322908522283,
+              "correct": 324,
+              "n": 1279
+            }
+          },
+          "task_success": 0.628
+        },
+        "test_iid": {
+          "correct": 1943,
+          "cost_adjusted_regret": 0.4308279166666659,
+          "n": 3000,
+          "route_accuracy": 0.6476666666666666,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.4133545310015898,
+              "correct": 260,
+              "n": 629
+            },
+            "clear_margin": {
+              "accuracy": 0.6964980544747081,
+              "correct": 1790,
+              "n": 2570
+            },
+            "confidence": {
+              "accuracy": 0.312579415501906,
+              "correct": 246,
+              "n": 787
+            },
+            "epistemic": {
+              "accuracy": 0.30253164556962026,
+              "correct": 239,
+              "n": 790
+            },
+            "regime": {
+              "accuracy": 0.6918032786885245,
+              "correct": 422,
+              "n": 610
+            },
+            "validity": {
+              "accuracy": 0.31393298059964725,
+              "correct": 178,
+              "n": 567
+            }
+          },
+          "task_success": 0.7016666666666667
+        }
+      },
+      "29": {
+        "ood_compose_epi": {
+          "correct": 1862,
+          "cost_adjusted_regret": 0.5063233333333327,
+          "n": 3000,
+          "route_accuracy": 0.6206666666666667,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.42245989304812837,
+              "correct": 237,
+              "n": 561
+            },
+            "clear_margin": {
+              "accuracy": 0.6615443718786016,
+              "correct": 1722,
+              "n": 2603
+            },
+            "confidence": {
+              "accuracy": 0.2872340425531915,
+              "correct": 216,
+              "n": 752
+            },
+            "epistemic": {
+              "accuracy": 0.2537128712871287,
+              "correct": 205,
+              "n": 808
+            },
+            "heldout": {
+              "accuracy": 0.4514285714285714,
+              "correct": 474,
+              "n": 1050
+            },
+            "regime": {
+              "accuracy": 0.6554307116104869,
+              "correct": 350,
+              "n": 534
+            },
+            "validity": {
+              "accuracy": 0.26045627376425856,
+              "correct": 137,
+              "n": 526
+            }
+          },
+          "task_success": 0.669
+        },
+        "ood_compose_regime": {
+          "correct": 962,
+          "cost_adjusted_regret": 1.7603579166666663,
+          "n": 3000,
+          "route_accuracy": 0.32066666666666666,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.33278418451400327,
+              "correct": 202,
+              "n": 607
+            },
+            "clear_margin": {
+              "accuracy": 0.327005036807439,
+              "correct": 844,
+              "n": 2581
+            },
+            "confidence": {
+              "accuracy": 0.30434782608695654,
+              "correct": 238,
+              "n": 782
+            },
+            "epistemic": {
+              "accuracy": 0.3607103218645949,
+              "correct": 325,
+              "n": 901
+            },
+            "regime": {
+              "accuracy": 0.10562180579216354,
+              "correct": 186,
+              "n": 1761
+            },
+            "transfer": {
+              "accuracy": 0.022189349112426034,
+              "correct": 30,
+              "n": 1352
+            },
+            "validity": {
+              "accuracy": 0.2591170825335892,
+              "correct": 135,
+              "n": 521
+            }
+          },
+          "task_success": 0.367
+        },
+        "ood_distractors": {
+          "correct": 1844,
+          "cost_adjusted_regret": 0.51647625,
+          "n": 3000,
+          "route_accuracy": 0.6146666666666667,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.4207221350078493,
+              "correct": 268,
+              "n": 637
+            },
+            "clear_margin": {
+              "accuracy": 0.652869972666927,
+              "correct": 1672,
+              "n": 2561
+            },
+            "confidence": {
+              "accuracy": 0.3075933075933076,
+              "correct": 239,
+              "n": 777
+            },
+            "epistemic": {
+              "accuracy": 0.29759036144578316,
+              "correct": 247,
+              "n": 830
+            },
+            "regime": {
+              "accuracy": 0.7102803738317757,
+              "correct": 456,
+              "n": 642
+            },
+            "validity": {
+              "accuracy": 0.30141287284144425,
+              "correct": 192,
+              "n": 637
+            }
+          },
+          "task_success": 0.665
+        },
+        "ood_payload": {
+          "correct": 1918,
+          "cost_adjusted_regret": 0.448931249999999,
+          "n": 3000,
+          "route_accuracy": 0.6393333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.41054313099041534,
+              "correct": 257,
+              "n": 626
+            },
+            "clear_margin": {
+              "accuracy": 0.6867283950617284,
+              "correct": 1780,
+              "n": 2592
+            },
+            "confidence": {
+              "accuracy": 0.33087330873308735,
+              "correct": 269,
+              "n": 813
+            },
+            "epistemic": {
+              "accuracy": 0.3105590062111801,
+              "correct": 250,
+              "n": 805
+            },
+            "regime": {
+              "accuracy": 0.7003367003367004,
+              "correct": 416,
+              "n": 594
+            },
+            "validity": {
+              "accuracy": 0.30842607313195547,
+              "correct": 194,
+              "n": 629
+            }
+          },
+          "task_success": 0.6903333333333334
+        },
+        "ood_validity": {
+          "correct": 1585,
+          "cost_adjusted_regret": 0.5884174999999996,
+          "n": 3000,
+          "route_accuracy": 0.5283333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.35947712418300654,
+              "correct": 165,
+              "n": 459
+            },
+            "clear_margin": {
+              "accuracy": 0.585487906588824,
+              "correct": 1404,
+              "n": 2398
+            },
+            "confidence": {
+              "accuracy": 0.3034825870646766,
+              "correct": 244,
+              "n": 804
+            },
+            "epistemic": {
+              "accuracy": 0.26857142857142857,
+              "correct": 188,
+              "n": 700
+            },
+            "regime": {
+              "accuracy": 0.6475247524752475,
+              "correct": 327,
+              "n": 505
+            },
+            "validity": {
+              "accuracy": 0.2290852228303362,
+              "correct": 293,
+              "n": 1279
+            }
+          },
+          "task_success": 0.618
+        },
+        "test_iid": {
+          "correct": 1903,
+          "cost_adjusted_regret": 0.4815974999999998,
+          "n": 3000,
+          "route_accuracy": 0.6343333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.397456279809221,
+              "correct": 250,
+              "n": 629
+            },
+            "clear_margin": {
+              "accuracy": 0.6797665369649806,
+              "correct": 1747,
+              "n": 2570
+            },
+            "confidence": {
+              "accuracy": 0.29987293519695046,
+              "correct": 236,
+              "n": 787
+            },
+            "epistemic": {
+              "accuracy": 0.29620253164556964,
+              "correct": 234,
+              "n": 790
+            },
+            "regime": {
+              "accuracy": 0.6852459016393443,
+              "correct": 418,
+              "n": 610
+            },
+            "validity": {
+              "accuracy": 0.25396825396825395,
+              "correct": 144,
+              "n": 567
+            }
+          },
+          "task_success": 0.6886666666666666
+        }
+      },
+      "43": {
+        "ood_compose_epi": {
+          "correct": 1944,
+          "cost_adjusted_regret": 0.4305900000000002,
+          "n": 3000,
+          "route_accuracy": 0.648,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.4295900178253119,
+              "correct": 241,
+              "n": 561
+            },
+            "clear_margin": {
+              "accuracy": 0.6938148290434114,
+              "correct": 1806,
+              "n": 2603
+            },
+            "confidence": {
+              "accuracy": 0.3257978723404255,
+              "correct": 245,
+              "n": 752
+            },
+            "epistemic": {
+              "accuracy": 0.3180693069306931,
+              "correct": 257,
+              "n": 808
+            },
+            "heldout": {
+              "accuracy": 0.4828571428571429,
+              "correct": 507,
+              "n": 1050
+            },
+            "regime": {
+              "accuracy": 0.6292134831460674,
+              "correct": 336,
+              "n": 534
+            },
+            "validity": {
+              "accuracy": 0.311787072243346,
+              "correct": 164,
+              "n": 526
+            }
+          },
+          "task_success": 0.7036666666666667
+        },
+        "ood_compose_regime": {
+          "correct": 966,
+          "cost_adjusted_regret": 1.9867537499999999,
+          "n": 3000,
+          "route_accuracy": 0.322,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.33772652388797364,
+              "correct": 205,
+              "n": 607
+            },
+            "clear_margin": {
+              "accuracy": 0.33514141805501746,
+              "correct": 865,
+              "n": 2581
+            },
+            "confidence": {
+              "accuracy": 0.30179028132992325,
+              "correct": 236,
+              "n": 782
+            },
+            "epistemic": {
+              "accuracy": 0.32963374028856823,
+              "correct": 297,
+              "n": 901
+            },
+            "regime": {
+              "accuracy": 0.10107893242475866,
+              "correct": 178,
+              "n": 1761
+            },
+            "transfer": {
+              "accuracy": 0.017011834319526627,
+              "correct": 23,
+              "n": 1352
+            },
+            "validity": {
+              "accuracy": 0.30710172744721687,
+              "correct": 160,
+              "n": 521
+            }
+          },
+          "task_success": 0.362
+        },
+        "ood_distractors": {
+          "correct": 1890,
+          "cost_adjusted_regret": 0.4719629166666658,
+          "n": 3000,
+          "route_accuracy": 0.63,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.41601255886970173,
+              "correct": 265,
+              "n": 637
+            },
+            "clear_margin": {
+              "accuracy": 0.6720031237797736,
+              "correct": 1721,
+              "n": 2561
+            },
+            "confidence": {
+              "accuracy": 0.35263835263835264,
+              "correct": 274,
+              "n": 777
+            },
+            "epistemic": {
+              "accuracy": 0.3349397590361446,
+              "correct": 278,
+              "n": 830
+            },
+            "regime": {
+              "accuracy": 0.557632398753894,
+              "correct": 358,
+              "n": 642
+            },
+            "validity": {
+              "accuracy": 0.37362637362637363,
+              "correct": 238,
+              "n": 637
+            }
+          },
+          "task_success": 0.68
+        },
+        "ood_payload": {
+          "correct": 1982,
+          "cost_adjusted_regret": 0.41133083333333276,
+          "n": 3000,
+          "route_accuracy": 0.6606666666666666,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.46325878594249204,
+              "correct": 290,
+              "n": 626
+            },
+            "clear_margin": {
+              "accuracy": 0.7044753086419753,
+              "correct": 1826,
+              "n": 2592
+            },
+            "confidence": {
+              "accuracy": 0.3800738007380074,
+              "correct": 309,
+              "n": 813
+            },
+            "epistemic": {
+              "accuracy": 0.3763975155279503,
+              "correct": 303,
+              "n": 805
+            },
+            "regime": {
+              "accuracy": 0.6599326599326599,
+              "correct": 392,
+              "n": 594
+            },
+            "validity": {
+              "accuracy": 0.3751987281399046,
+              "correct": 236,
+              "n": 629
+            }
+          },
+          "task_success": 0.7083333333333334
+        },
+        "ood_validity": {
+          "correct": 1701,
+          "cost_adjusted_regret": 0.5014624999999997,
+          "n": 3000,
+          "route_accuracy": 0.567,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.3790849673202614,
+              "correct": 174,
+              "n": 459
+            },
+            "clear_margin": {
+              "accuracy": 0.6296914095079232,
+              "correct": 1510,
+              "n": 2398
+            },
+            "confidence": {
+              "accuracy": 0.3072139303482587,
+              "correct": 247,
+              "n": 804
+            },
+            "epistemic": {
+              "accuracy": 0.31142857142857144,
+              "correct": 218,
+              "n": 700
+            },
+            "regime": {
+              "accuracy": 0.6574257425742575,
+              "correct": 332,
+              "n": 505
+            },
+            "validity": {
+              "accuracy": 0.3064894448788116,
+              "correct": 392,
+              "n": 1279
+            }
+          },
+          "task_success": 0.653
+        },
+        "test_iid": {
+          "correct": 1945,
+          "cost_adjusted_regret": 0.4245500000000002,
+          "n": 3000,
+          "route_accuracy": 0.6483333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.4260731319554849,
+              "correct": 268,
+              "n": 629
+            },
+            "clear_margin": {
+              "accuracy": 0.6972762645914397,
+              "correct": 1792,
+              "n": 2570
+            },
+            "confidence": {
+              "accuracy": 0.3252858958068615,
+              "correct": 256,
+              "n": 787
+            },
+            "epistemic": {
+              "accuracy": 0.34430379746835443,
+              "correct": 272,
+              "n": 790
+            },
+            "regime": {
+              "accuracy": 0.6377049180327868,
+              "correct": 389,
+              "n": 610
+            },
+            "validity": {
+              "accuracy": 0.3474426807760141,
+              "correct": 197,
+              "n": 567
+            }
+          },
+          "task_success": 0.7033333333333334
+        }
+      },
+      "71": {
+        "ood_compose_epi": {
+          "correct": 1708,
+          "cost_adjusted_regret": 0.6708629166666661,
+          "n": 3000,
+          "route_accuracy": 0.5693333333333334,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.3939393939393939,
+              "correct": 221,
+              "n": 561
+            },
+            "clear_margin": {
+              "accuracy": 0.6081444487130234,
+              "correct": 1583,
+              "n": 2603
+            },
+            "confidence": {
+              "accuracy": 0.2300531914893617,
+              "correct": 173,
+              "n": 752
+            },
+            "epistemic": {
+              "accuracy": 0.19801980198019803,
+              "correct": 160,
+              "n": 808
+            },
+            "heldout": {
+              "accuracy": 0.40476190476190477,
+              "correct": 425,
+              "n": 1050
+            },
+            "regime": {
+              "accuracy": 0.5861423220973783,
+              "correct": 313,
+              "n": 534
+            },
+            "validity": {
+              "accuracy": 0.21673003802281368,
+              "correct": 114,
+              "n": 526
+            }
+          },
+          "task_success": 0.6183333333333333
+        },
+        "ood_compose_regime": {
+          "correct": 919,
+          "cost_adjusted_regret": 1.8395600000000025,
+          "n": 3000,
+          "route_accuracy": 0.30633333333333335,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.3212520593080725,
+              "correct": 195,
+              "n": 607
+            },
+            "clear_margin": {
+              "accuracy": 0.31576908175125923,
+              "correct": 815,
+              "n": 2581
+            },
+            "confidence": {
+              "accuracy": 0.2391304347826087,
+              "correct": 187,
+              "n": 782
+            },
+            "epistemic": {
+              "accuracy": 0.2541620421753607,
+              "correct": 229,
+              "n": 901
+            },
+            "regime": {
+              "accuracy": 0.12095400340715502,
+              "correct": 213,
+              "n": 1761
+            },
+            "transfer": {
+              "accuracy": 0.036242603550295856,
+              "correct": 49,
+              "n": 1352
+            },
+            "validity": {
+              "accuracy": 0.21880998080614203,
+              "correct": 114,
+              "n": 521
+            }
+          },
+          "task_success": 0.3476666666666667
+        },
+        "ood_distractors": {
+          "correct": 1726,
+          "cost_adjusted_regret": 0.6143816666666663,
+          "n": 3000,
+          "route_accuracy": 0.5753333333333334,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.3987441130298273,
+              "correct": 254,
+              "n": 637
+            },
+            "clear_margin": {
+              "accuracy": 0.6122608356110895,
+              "correct": 1568,
+              "n": 2561
+            },
+            "confidence": {
+              "accuracy": 0.25611325611325614,
+              "correct": 199,
+              "n": 777
+            },
+            "epistemic": {
+              "accuracy": 0.2397590361445783,
+              "correct": 199,
+              "n": 830
+            },
+            "regime": {
+              "accuracy": 0.5965732087227414,
+              "correct": 383,
+              "n": 642
+            },
+            "validity": {
+              "accuracy": 0.25588697017268447,
+              "correct": 163,
+              "n": 637
+            }
+          },
+          "task_success": 0.628
+        },
+        "ood_payload": {
+          "correct": 1761,
+          "cost_adjusted_regret": 0.5909358333333323,
+          "n": 3000,
+          "route_accuracy": 0.587,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.3993610223642173,
+              "correct": 250,
+              "n": 626
+            },
+            "clear_margin": {
+              "accuracy": 0.6369598765432098,
+              "correct": 1651,
+              "n": 2592
+            },
+            "confidence": {
+              "accuracy": 0.24723247232472326,
+              "correct": 201,
+              "n": 813
+            },
+            "epistemic": {
+              "accuracy": 0.2248447204968944,
+              "correct": 181,
+              "n": 805
+            },
+            "regime": {
+              "accuracy": 0.5909090909090909,
+              "correct": 351,
+              "n": 594
+            },
+            "validity": {
+              "accuracy": 0.26232114467408585,
+              "correct": 165,
+              "n": 629
+            }
+          },
+          "task_success": 0.638
+        },
+        "ood_validity": {
+          "correct": 1467,
+          "cost_adjusted_regret": 0.6971579166666656,
+          "n": 3000,
+          "route_accuracy": 0.489,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.3311546840958606,
+              "correct": 152,
+              "n": 459
+            },
+            "clear_margin": {
+              "accuracy": 0.5421184320266889,
+              "correct": 1300,
+              "n": 2398
+            },
+            "confidence": {
+              "accuracy": 0.23507462686567165,
+              "correct": 189,
+              "n": 804
+            },
+            "epistemic": {
+              "accuracy": 0.18428571428571427,
+              "correct": 129,
+              "n": 700
+            },
+            "regime": {
+              "accuracy": 0.5623762376237624,
+              "correct": 284,
+              "n": 505
+            },
+            "validity": {
+              "accuracy": 0.20250195465207194,
+              "correct": 259,
+              "n": 1279
+            }
+          },
+          "task_success": 0.577
+        },
+        "test_iid": {
+          "correct": 1748,
+          "cost_adjusted_regret": 0.615294999999999,
+          "n": 3000,
+          "route_accuracy": 0.5826666666666667,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.40381558028616854,
+              "correct": 254,
+              "n": 629
+            },
+            "clear_margin": {
+              "accuracy": 0.6252918287937743,
+              "correct": 1607,
+              "n": 2570
+            },
+            "confidence": {
+              "accuracy": 0.22871664548919948,
+              "correct": 180,
+              "n": 787
+            },
+            "epistemic": {
+              "accuracy": 0.22151898734177214,
+              "correct": 175,
+              "n": 790
+            },
+            "regime": {
+              "accuracy": 0.5918032786885246,
+              "correct": 361,
+              "n": 610
+            },
+            "validity": {
+              "accuracy": 0.24514991181657847,
+              "correct": 139,
+              "n": 567
+            }
+          },
+          "task_success": 0.6296666666666667
+        }
+      }
+    },
+    "no-semantic-slots-masked": {
+      "101": {
+        "ood_compose_epi": {
+          "correct": 1946,
+          "cost_adjusted_regret": 0.4478291666666663,
+          "n": 3000,
+          "route_accuracy": 0.6486666666666666,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.41889483065953653,
+              "correct": 235,
+              "n": 561
+            },
+            "clear_margin": {
+              "accuracy": 0.685747214752209,
+              "correct": 1785,
+              "n": 2603
+            },
+            "confidence": {
+              "accuracy": 0.3125,
+              "correct": 235,
+              "n": 752
+            },
+            "epistemic": {
+              "accuracy": 0.2933168316831683,
+              "correct": 237,
+              "n": 808
+            },
+            "heldout": {
+              "accuracy": 0.49714285714285716,
+              "correct": 522,
+              "n": 1050
+            },
+            "regime": {
+              "accuracy": 0.6198501872659176,
+              "correct": 331,
+              "n": 534
+            },
+            "validity": {
+              "accuracy": 0.43346007604562736,
+              "correct": 228,
+              "n": 526
+            }
+          },
+          "task_success": 0.6963333333333334
+        },
+        "ood_compose_regime": {
+          "correct": 1013,
+          "cost_adjusted_regret": 1.8427879166666676,
+          "n": 3000,
+          "route_accuracy": 0.33766666666666667,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.342668863261944,
+              "correct": 208,
+              "n": 607
+            },
+            "clear_margin": {
+              "accuracy": 0.34831460674157305,
+              "correct": 899,
+              "n": 2581
+            },
+            "confidence": {
+              "accuracy": 0.28005115089514065,
+              "correct": 219,
+              "n": 782
+            },
+            "epistemic": {
+              "accuracy": 0.3118756936736959,
+              "correct": 281,
+              "n": 901
+            },
+            "regime": {
+              "accuracy": 0.1362862010221465,
+              "correct": 240,
+              "n": 1761
+            },
+            "transfer": {
+              "accuracy": 0.042899408284023666,
+              "correct": 58,
+              "n": 1352
+            },
+            "validity": {
+              "accuracy": 0.32821497120921306,
+              "correct": 171,
+              "n": 521
+            }
+          },
+          "task_success": 0.37566666666666665
+        },
+        "ood_distractors": {
+          "correct": 1921,
+          "cost_adjusted_regret": 0.4324404166666667,
+          "n": 3000,
+          "route_accuracy": 0.6403333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.4097331240188383,
+              "correct": 261,
+              "n": 637
+            },
+            "clear_margin": {
+              "accuracy": 0.6786411557985162,
+              "correct": 1738,
+              "n": 2561
+            },
+            "confidence": {
+              "accuracy": 0.3436293436293436,
+              "correct": 267,
+              "n": 777
+            },
+            "epistemic": {
+              "accuracy": 0.3060240963855422,
+              "correct": 254,
+              "n": 830
+            },
+            "regime": {
+              "accuracy": 0.6588785046728972,
+              "correct": 423,
+              "n": 642
+            },
+            "validity": {
+              "accuracy": 0.4521193092621664,
+              "correct": 288,
+              "n": 637
+            }
+          },
+          "task_success": 0.6883333333333334
+        },
+        "ood_payload": {
+          "correct": 1957,
+          "cost_adjusted_regret": 0.4039466666666661,
+          "n": 3000,
+          "route_accuracy": 0.6523333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.42971246006389774,
+              "correct": 269,
+              "n": 626
+            },
+            "clear_margin": {
+              "accuracy": 0.6963734567901234,
+              "correct": 1805,
+              "n": 2592
+            },
+            "confidence": {
+              "accuracy": 0.33825338253382536,
+              "correct": 275,
+              "n": 813
+            },
+            "epistemic": {
+              "accuracy": 0.2732919254658385,
+              "correct": 220,
+              "n": 805
+            },
+            "regime": {
+              "accuracy": 0.6447811447811448,
+              "correct": 383,
+              "n": 594
+            },
+            "validity": {
+              "accuracy": 0.4610492845786963,
+              "correct": 290,
+              "n": 629
+            }
+          },
+          "task_success": 0.7036666666666667
+        },
+        "ood_validity": {
+          "correct": 1969,
+          "cost_adjusted_regret": 0.3427720833333334,
+          "n": 3000,
+          "route_accuracy": 0.6563333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.38344226579520696,
+              "correct": 176,
+              "n": 459
+            },
+            "clear_margin": {
+              "accuracy": 0.7281067556296914,
+              "correct": 1746,
+              "n": 2398
+            },
+            "confidence": {
+              "accuracy": 0.38681592039800994,
+              "correct": 311,
+              "n": 804
+            },
+            "epistemic": {
+              "accuracy": 0.3057142857142857,
+              "correct": 214,
+              "n": 700
+            },
+            "regime": {
+              "accuracy": 0.6871287128712872,
+              "correct": 347,
+              "n": 505
+            },
+            "validity": {
+              "accuracy": 0.5074276778733385,
+              "correct": 649,
+              "n": 1279
+            }
+          },
+          "task_success": 0.7496666666666667
+        },
+        "test_iid": {
+          "correct": 1954,
+          "cost_adjusted_regret": 0.4078641666666664,
+          "n": 3000,
+          "route_accuracy": 0.6513333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.40540540540540543,
+              "correct": 255,
+              "n": 629
+            },
+            "clear_margin": {
+              "accuracy": 0.6961089494163424,
+              "correct": 1789,
+              "n": 2570
+            },
+            "confidence": {
+              "accuracy": 0.3113087674714104,
+              "correct": 245,
+              "n": 787
+            },
+            "epistemic": {
+              "accuracy": 0.2759493670886076,
+              "correct": 218,
+              "n": 790
+            },
+            "regime": {
+              "accuracy": 0.659016393442623,
+              "correct": 402,
+              "n": 610
+            },
+            "validity": {
+              "accuracy": 0.43386243386243384,
+              "correct": 246,
+              "n": 567
+            }
+          },
+          "task_success": 0.7046666666666667
+        }
+      },
+      "17": {
+        "ood_compose_epi": {
+          "correct": 2320,
+          "cost_adjusted_regret": 0.1957412500000002,
+          "n": 3000,
+          "route_accuracy": 0.7733333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.5240641711229946,
+              "correct": 294,
+              "n": 561
+            },
+            "clear_margin": {
+              "accuracy": 0.8213599692662312,
+              "correct": 2138,
+              "n": 2603
+            },
+            "confidence": {
+              "accuracy": 0.5664893617021277,
+              "correct": 426,
+              "n": 752
+            },
+            "epistemic": {
+              "accuracy": 0.4715346534653465,
+              "correct": 381,
+              "n": 808
+            },
+            "heldout": {
+              "accuracy": 0.6438095238095238,
+              "correct": 676,
+              "n": 1050
+            },
+            "regime": {
+              "accuracy": 0.7397003745318352,
+              "correct": 395,
+              "n": 534
+            },
+            "validity": {
+              "accuracy": 0.5950570342205324,
+              "correct": 313,
+              "n": 526
+            }
+          },
+          "task_success": 0.8253333333333334
+        },
+        "ood_compose_regime": {
+          "correct": 1183,
+          "cost_adjusted_regret": 1.7056691666666663,
+          "n": 3000,
+          "route_accuracy": 0.3943333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.400329489291598,
+              "correct": 243,
+              "n": 607
+            },
+            "clear_margin": {
+              "accuracy": 0.4044943820224719,
+              "correct": 1044,
+              "n": 2581
+            },
+            "confidence": {
+              "accuracy": 0.4462915601023018,
+              "correct": 349,
+              "n": 782
+            },
+            "epistemic": {
+              "accuracy": 0.47835738068812433,
+              "correct": 431,
+              "n": 901
+            },
+            "regime": {
+              "accuracy": 0.1198182850653038,
+              "correct": 211,
+              "n": 1761
+            },
+            "transfer": {
+              "accuracy": 0.023668639053254437,
+              "correct": 32,
+              "n": 1352
+            },
+            "validity": {
+              "accuracy": 0.46065259117082535,
+              "correct": 240,
+              "n": 521
+            }
+          },
+          "task_success": 0.44533333333333336
+        },
+        "ood_distractors": {
+          "correct": 2326,
+          "cost_adjusted_regret": 0.1756766666666666,
+          "n": 3000,
+          "route_accuracy": 0.7753333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.5400313971742543,
+              "correct": 344,
+              "n": 637
+            },
+            "clear_margin": {
+              "accuracy": 0.830925419757907,
+              "correct": 2128,
+              "n": 2561
+            },
+            "confidence": {
+              "accuracy": 0.5817245817245817,
+              "correct": 452,
+              "n": 777
+            },
+            "epistemic": {
+              "accuracy": 0.5,
+              "correct": 415,
+              "n": 830
+            },
+            "regime": {
+              "accuracy": 0.7305295950155763,
+              "correct": 469,
+              "n": 642
+            },
+            "validity": {
+              "accuracy": 0.6436420722135008,
+              "correct": 410,
+              "n": 637
+            }
+          },
+          "task_success": 0.836
+        },
+        "ood_payload": {
+          "correct": 2374,
+          "cost_adjusted_regret": 0.15290416666666662,
+          "n": 3000,
+          "route_accuracy": 0.7913333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.5351437699680511,
+              "correct": 335,
+              "n": 626
+            },
+            "clear_margin": {
+              "accuracy": 0.8441358024691358,
+              "correct": 2188,
+              "n": 2592
+            },
+            "confidence": {
+              "accuracy": 0.6100861008610086,
+              "correct": 496,
+              "n": 813
+            },
+            "epistemic": {
+              "accuracy": 0.5254658385093167,
+              "correct": 423,
+              "n": 805
+            },
+            "regime": {
+              "accuracy": 0.7643097643097643,
+              "correct": 454,
+              "n": 594
+            },
+            "validity": {
+              "accuracy": 0.6422893481717011,
+              "correct": 404,
+              "n": 629
+            }
+          },
+          "task_success": 0.844
+        },
+        "ood_validity": {
+          "correct": 2412,
+          "cost_adjusted_regret": 0.13083083333333329,
+          "n": 3000,
+          "route_accuracy": 0.804,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.5119825708061002,
+              "correct": 235,
+              "n": 459
+            },
+            "clear_margin": {
+              "accuracy": 0.8669724770642202,
+              "correct": 2079,
+              "n": 2398
+            },
+            "confidence": {
+              "accuracy": 0.6878109452736318,
+              "correct": 553,
+              "n": 804
+            },
+            "epistemic": {
+              "accuracy": 0.5171428571428571,
+              "correct": 362,
+              "n": 700
+            },
+            "regime": {
+              "accuracy": 0.7386138613861386,
+              "correct": 373,
+              "n": 505
+            },
+            "validity": {
+              "accuracy": 0.7380766223612197,
+              "correct": 944,
+              "n": 1279
+            }
+          },
+          "task_success": 0.8753333333333333
+        },
+        "test_iid": {
+          "correct": 2377,
+          "cost_adjusted_regret": 0.1487383333333333,
+          "n": 3000,
+          "route_accuracy": 0.7923333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.5151033386327504,
+              "correct": 324,
+              "n": 629
+            },
+            "clear_margin": {
+              "accuracy": 0.845136186770428,
+              "correct": 2172,
+              "n": 2570
+            },
+            "confidence": {
+              "accuracy": 0.5870393900889453,
+              "correct": 462,
+              "n": 787
+            },
+            "epistemic": {
+              "accuracy": 0.5113924050632911,
+              "correct": 404,
+              "n": 790
+            },
+            "regime": {
+              "accuracy": 0.7836065573770492,
+              "correct": 478,
+              "n": 610
+            },
+            "validity": {
+              "accuracy": 0.654320987654321,
+              "correct": 371,
+              "n": 567
+            }
+          },
+          "task_success": 0.849
+        }
+      },
+      "29": {
+        "ood_compose_epi": {
+          "correct": 2160,
+          "cost_adjusted_regret": 0.2912200000000004,
+          "n": 3000,
+          "route_accuracy": 0.72,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.46345811051693403,
+              "correct": 260,
+              "n": 561
+            },
+            "clear_margin": {
+              "accuracy": 0.7698809066461775,
+              "correct": 2004,
+              "n": 2603
+            },
+            "confidence": {
+              "accuracy": 0.43882978723404253,
+              "correct": 330,
+              "n": 752
+            },
+            "epistemic": {
+              "accuracy": 0.37376237623762376,
+              "correct": 302,
+              "n": 808
+            },
+            "heldout": {
+              "accuracy": 0.5971428571428572,
+              "correct": 627,
+              "n": 1050
+            },
+            "regime": {
+              "accuracy": 0.6741573033707865,
+              "correct": 360,
+              "n": 534
+            },
+            "validity": {
+              "accuracy": 0.5019011406844106,
+              "correct": 264,
+              "n": 526
+            }
+          },
+          "task_success": 0.774
+        },
+        "ood_compose_regime": {
+          "correct": 1102,
+          "cost_adjusted_regret": 1.4138041666666672,
+          "n": 3000,
+          "route_accuracy": 0.36733333333333335,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.385502471169687,
+              "correct": 234,
+              "n": 607
+            },
+            "clear_margin": {
+              "accuracy": 0.3727237504843084,
+              "correct": 962,
+              "n": 2581
+            },
+            "confidence": {
+              "accuracy": 0.38107416879795397,
+              "correct": 298,
+              "n": 782
+            },
+            "epistemic": {
+              "accuracy": 0.38623751387347394,
+              "correct": 348,
+              "n": 901
+            },
+            "regime": {
+              "accuracy": 0.13003975014196478,
+              "correct": 229,
+              "n": 1761
+            },
+            "transfer": {
+              "accuracy": 0.022189349112426034,
+              "correct": 30,
+              "n": 1352
+            },
+            "validity": {
+              "accuracy": 0.418426103646833,
+              "correct": 218,
+              "n": 521
+            }
+          },
+          "task_success": 0.413
+        },
+        "ood_distractors": {
+          "correct": 2171,
+          "cost_adjusted_regret": 0.25226250000000033,
+          "n": 3000,
+          "route_accuracy": 0.7236666666666667,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.46781789638932497,
+              "correct": 298,
+              "n": 637
+            },
+            "clear_margin": {
+              "accuracy": 0.7754783287778212,
+              "correct": 1986,
+              "n": 2561
+            },
+            "confidence": {
+              "accuracy": 0.5212355212355212,
+              "correct": 405,
+              "n": 777
+            },
+            "epistemic": {
+              "accuracy": 0.4,
+              "correct": 332,
+              "n": 830
+            },
+            "regime": {
+              "accuracy": 0.677570093457944,
+              "correct": 435,
+              "n": 642
+            },
+            "validity": {
+              "accuracy": 0.5494505494505495,
+              "correct": 350,
+              "n": 637
+            }
+          },
+          "task_success": 0.7823333333333333
+        },
+        "ood_payload": {
+          "correct": 2222,
+          "cost_adjusted_regret": 0.2425504166666665,
+          "n": 3000,
+          "route_accuracy": 0.7406666666666667,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.5175718849840255,
+              "correct": 324,
+              "n": 626
+            },
+            "clear_margin": {
+              "accuracy": 0.7881944444444444,
+              "correct": 2043,
+              "n": 2592
+            },
+            "confidence": {
+              "accuracy": 0.5129151291512916,
+              "correct": 417,
+              "n": 813
+            },
+            "epistemic": {
+              "accuracy": 0.4422360248447205,
+              "correct": 356,
+              "n": 805
+            },
+            "regime": {
+              "accuracy": 0.7171717171717171,
+              "correct": 426,
+              "n": 594
+            },
+            "validity": {
+              "accuracy": 0.5739268680445151,
+              "correct": 361,
+              "n": 629
+            }
+          },
+          "task_success": 0.791
+        },
+        "ood_validity": {
+          "correct": 2219,
+          "cost_adjusted_regret": 0.19723583333333322,
+          "n": 3000,
+          "route_accuracy": 0.7396666666666667,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.4662309368191721,
+              "correct": 214,
+              "n": 459
+            },
+            "clear_margin": {
+              "accuracy": 0.8177648040033361,
+              "correct": 1961,
+              "n": 2398
+            },
+            "confidence": {
+              "accuracy": 0.5261194029850746,
+              "correct": 423,
+              "n": 804
+            },
+            "epistemic": {
+              "accuracy": 0.4257142857142857,
+              "correct": 298,
+              "n": 700
+            },
+            "regime": {
+              "accuracy": 0.7267326732673267,
+              "correct": 367,
+              "n": 505
+            },
+            "validity": {
+              "accuracy": 0.6262705238467553,
+              "correct": 801,
+              "n": 1279
+            }
+          },
+          "task_success": 0.8313333333333334
+        },
+        "test_iid": {
+          "correct": 2184,
+          "cost_adjusted_regret": 0.24873249999999986,
+          "n": 3000,
+          "route_accuracy": 0.728,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.44992050874403816,
+              "correct": 283,
+              "n": 629
+            },
+            "clear_margin": {
+              "accuracy": 0.777431906614786,
+              "correct": 1998,
+              "n": 2570
+            },
+            "confidence": {
+              "accuracy": 0.4701397712833545,
+              "correct": 370,
+              "n": 787
+            },
+            "epistemic": {
+              "accuracy": 0.3987341772151899,
+              "correct": 315,
+              "n": 790
+            },
+            "regime": {
+              "accuracy": 0.7147540983606557,
+              "correct": 436,
+              "n": 610
+            },
+            "validity": {
+              "accuracy": 0.54673721340388,
+              "correct": 310,
+              "n": 567
+            }
+          },
+          "task_success": 0.7843333333333333
+        }
+      },
+      "43": {
+        "ood_compose_epi": {
+          "correct": 2312,
+          "cost_adjusted_regret": 0.2088841666666666,
+          "n": 3000,
+          "route_accuracy": 0.7706666666666667,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.5436720142602496,
+              "correct": 305,
+              "n": 561
+            },
+            "clear_margin": {
+              "accuracy": 0.8182865923933922,
+              "correct": 2130,
+              "n": 2603
+            },
+            "confidence": {
+              "accuracy": 0.5305851063829787,
+              "correct": 399,
+              "n": 752
+            },
+            "epistemic": {
+              "accuracy": 0.5086633663366337,
+              "correct": 411,
+              "n": 808
+            },
+            "heldout": {
+              "accuracy": 0.6333333333333333,
+              "correct": 665,
+              "n": 1050
+            },
+            "regime": {
+              "accuracy": 0.7116104868913857,
+              "correct": 380,
+              "n": 534
+            },
+            "validity": {
+              "accuracy": 0.5950570342205324,
+              "correct": 313,
+              "n": 526
+            }
+          },
+          "task_success": 0.8203333333333334
+        },
+        "ood_compose_regime": {
+          "correct": 1125,
+          "cost_adjusted_regret": 1.9270020833333383,
+          "n": 3000,
+          "route_accuracy": 0.375,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.38879736408566723,
+              "correct": 236,
+              "n": 607
+            },
+            "clear_margin": {
+              "accuracy": 0.38512204571871367,
+              "correct": 994,
+              "n": 2581
+            },
+            "confidence": {
+              "accuracy": 0.3976982097186701,
+              "correct": 311,
+              "n": 782
+            },
+            "epistemic": {
+              "accuracy": 0.46503884572697,
+              "correct": 419,
+              "n": 901
+            },
+            "regime": {
+              "accuracy": 0.11016467915956843,
+              "correct": 194,
+              "n": 1761
+            },
+            "transfer": {
+              "accuracy": 0.01257396449704142,
+              "correct": 17,
+              "n": 1352
+            },
+            "validity": {
+              "accuracy": 0.43953934740882916,
+              "correct": 229,
+              "n": 521
+            }
+          },
+          "task_success": 0.421
+        },
+        "ood_distractors": {
+          "correct": 2240,
+          "cost_adjusted_regret": 0.23761333333333345,
+          "n": 3000,
+          "route_accuracy": 0.7466666666666667,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.49293563579277866,
+              "correct": 314,
+              "n": 637
+            },
+            "clear_margin": {
+              "accuracy": 0.7946114798906677,
+              "correct": 2035,
+              "n": 2561
+            },
+            "confidence": {
+              "accuracy": 0.5276705276705277,
+              "correct": 410,
+              "n": 777
+            },
+            "epistemic": {
+              "accuracy": 0.5024096385542168,
+              "correct": 417,
+              "n": 830
+            },
+            "regime": {
+              "accuracy": 0.6526479750778816,
+              "correct": 419,
+              "n": 642
+            },
+            "validity": {
+              "accuracy": 0.5996860282574569,
+              "correct": 382,
+              "n": 637
+            }
+          },
+          "task_success": 0.7993333333333333
+        },
+        "ood_payload": {
+          "correct": 2306,
+          "cost_adjusted_regret": 0.18281666666666654,
+          "n": 3000,
+          "route_accuracy": 0.7686666666666667,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.5175718849840255,
+              "correct": 324,
+              "n": 626
+            },
+            "clear_margin": {
+              "accuracy": 0.8244598765432098,
+              "correct": 2137,
+              "n": 2592
+            },
+            "confidence": {
+              "accuracy": 0.5116851168511685,
+              "correct": 416,
+              "n": 813
+            },
+            "epistemic": {
+              "accuracy": 0.5130434782608696,
+              "correct": 413,
+              "n": 805
+            },
+            "regime": {
+              "accuracy": 0.7373737373737373,
+              "correct": 438,
+              "n": 594
+            },
+            "validity": {
+              "accuracy": 0.6200317965023847,
+              "correct": 390,
+              "n": 629
+            }
+          },
+          "task_success": 0.8306666666666667
+        },
+        "ood_validity": {
+          "correct": 2297,
+          "cost_adjusted_regret": 0.1727558333333333,
+          "n": 3000,
+          "route_accuracy": 0.7656666666666667,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.49455337690631807,
+              "correct": 227,
+              "n": 459
+            },
+            "clear_margin": {
+              "accuracy": 0.8381984987489575,
+              "correct": 2010,
+              "n": 2398
+            },
+            "confidence": {
+              "accuracy": 0.5447761194029851,
+              "correct": 438,
+              "n": 804
+            },
+            "epistemic": {
+              "accuracy": 0.5542857142857143,
+              "correct": 388,
+              "n": 700
+            },
+            "regime": {
+              "accuracy": 0.7425742574257426,
+              "correct": 375,
+              "n": 505
+            },
+            "validity": {
+              "accuracy": 0.6622361219702892,
+              "correct": 847,
+              "n": 1279
+            }
+          },
+          "task_success": 0.851
+        },
+        "test_iid": {
+          "correct": 2278,
+          "cost_adjusted_regret": 0.19088041666666664,
+          "n": 3000,
+          "route_accuracy": 0.7593333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.4864864864864865,
+              "correct": 306,
+              "n": 629
+            },
+            "clear_margin": {
+              "accuracy": 0.8120622568093385,
+              "correct": 2087,
+              "n": 2570
+            },
+            "confidence": {
+              "accuracy": 0.5108005082592122,
+              "correct": 402,
+              "n": 787
+            },
+            "epistemic": {
+              "accuracy": 0.5101265822784811,
+              "correct": 403,
+              "n": 790
+            },
+            "regime": {
+              "accuracy": 0.7180327868852459,
+              "correct": 438,
+              "n": 610
+            },
+            "validity": {
+              "accuracy": 0.5873015873015873,
+              "correct": 333,
+              "n": 567
+            }
+          },
+          "task_success": 0.817
+        }
+      },
+      "71": {
+        "ood_compose_epi": {
+          "correct": 2296,
+          "cost_adjusted_regret": 0.20512541666666667,
+          "n": 3000,
+          "route_accuracy": 0.7653333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.5098039215686274,
+              "correct": 286,
+              "n": 561
+            },
+            "clear_margin": {
+              "accuracy": 0.815981559738763,
+              "correct": 2124,
+              "n": 2603
+            },
+            "confidence": {
+              "accuracy": 0.538563829787234,
+              "correct": 405,
+              "n": 752
+            },
+            "epistemic": {
+              "accuracy": 0.5210396039603961,
+              "correct": 421,
+              "n": 808
+            },
+            "heldout": {
+              "accuracy": 0.6504761904761904,
+              "correct": 683,
+              "n": 1050
+            },
+            "regime": {
+              "accuracy": 0.6872659176029963,
+              "correct": 367,
+              "n": 534
+            },
+            "validity": {
+              "accuracy": 0.5931558935361216,
+              "correct": 312,
+              "n": 526
+            }
+          },
+          "task_success": 0.821
+        },
+        "ood_compose_regime": {
+          "correct": 1185,
+          "cost_adjusted_regret": 1.5264787499999999,
+          "n": 3000,
+          "route_accuracy": 0.395,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.4233937397034596,
+              "correct": 257,
+              "n": 607
+            },
+            "clear_margin": {
+              "accuracy": 0.4013948082138706,
+              "correct": 1036,
+              "n": 2581
+            },
+            "confidence": {
+              "accuracy": 0.4514066496163683,
+              "correct": 353,
+              "n": 782
+            },
+            "epistemic": {
+              "accuracy": 0.46614872364039955,
+              "correct": 420,
+              "n": 901
+            },
+            "regime": {
+              "accuracy": 0.12776831345826234,
+              "correct": 225,
+              "n": 1761
+            },
+            "transfer": {
+              "accuracy": 0.015532544378698224,
+              "correct": 21,
+              "n": 1352
+            },
+            "validity": {
+              "accuracy": 0.4740882917466411,
+              "correct": 247,
+              "n": 521
+            }
+          },
+          "task_success": 0.444
+        },
+        "ood_distractors": {
+          "correct": 2277,
+          "cost_adjusted_regret": 0.20589625000000011,
+          "n": 3000,
+          "route_accuracy": 0.759,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.5290423861852434,
+              "correct": 337,
+              "n": 637
+            },
+            "clear_margin": {
+              "accuracy": 0.8106208512299883,
+              "correct": 2076,
+              "n": 2561
+            },
+            "confidence": {
+              "accuracy": 0.546975546975547,
+              "correct": 425,
+              "n": 777
+            },
+            "epistemic": {
+              "accuracy": 0.5084337349397591,
+              "correct": 422,
+              "n": 830
+            },
+            "regime": {
+              "accuracy": 0.7133956386292835,
+              "correct": 458,
+              "n": 642
+            },
+            "validity": {
+              "accuracy": 0.6263736263736264,
+              "correct": 399,
+              "n": 637
+            }
+          },
+          "task_success": 0.8186666666666667
+        },
+        "ood_payload": {
+          "correct": 2317,
+          "cost_adjusted_regret": 0.1835287499999998,
+          "n": 3000,
+          "route_accuracy": 0.7723333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.5255591054313099,
+              "correct": 329,
+              "n": 626
+            },
+            "clear_margin": {
+              "accuracy": 0.8279320987654321,
+              "correct": 2146,
+              "n": 2592
+            },
+            "confidence": {
+              "accuracy": 0.5498154981549815,
+              "correct": 447,
+              "n": 813
+            },
+            "epistemic": {
+              "accuracy": 0.5366459627329192,
+              "correct": 432,
+              "n": 805
+            },
+            "regime": {
+              "accuracy": 0.7272727272727273,
+              "correct": 432,
+              "n": 594
+            },
+            "validity": {
+              "accuracy": 0.6216216216216216,
+              "correct": 391,
+              "n": 629
+            }
+          },
+          "task_success": 0.8256666666666667
+        },
+        "ood_validity": {
+          "correct": 2301,
+          "cost_adjusted_regret": 0.16788791666666664,
+          "n": 3000,
+          "route_accuracy": 0.767,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.4662309368191721,
+              "correct": 214,
+              "n": 459
+            },
+            "clear_margin": {
+              "accuracy": 0.8432026688907422,
+              "correct": 2022,
+              "n": 2398
+            },
+            "confidence": {
+              "accuracy": 0.5758706467661692,
+              "correct": 463,
+              "n": 804
+            },
+            "epistemic": {
+              "accuracy": 0.5271428571428571,
+              "correct": 369,
+              "n": 700
+            },
+            "regime": {
+              "accuracy": 0.7366336633663366,
+              "correct": 372,
+              "n": 505
+            },
+            "validity": {
+              "accuracy": 0.671618451915559,
+              "correct": 859,
+              "n": 1279
+            }
+          },
+          "task_success": 0.853
+        },
+        "test_iid": {
+          "correct": 2307,
+          "cost_adjusted_regret": 0.18977333333333332,
+          "n": 3000,
+          "route_accuracy": 0.769,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.4944356120826709,
+              "correct": 311,
+              "n": 629
+            },
+            "clear_margin": {
+              "accuracy": 0.8202334630350194,
+              "correct": 2108,
+              "n": 2570
+            },
+            "confidence": {
+              "accuracy": 0.5260482846251588,
+              "correct": 414,
+              "n": 787
+            },
+            "epistemic": {
+              "accuracy": 0.5050632911392405,
+              "correct": 399,
+              "n": 790
+            },
+            "regime": {
+              "accuracy": 0.7524590163934426,
+              "correct": 459,
+              "n": 610
+            },
+            "validity": {
+              "accuracy": 0.6261022927689595,
+              "correct": 355,
+              "n": 567
+            }
+          },
+          "task_success": 0.8276666666666667
+        }
+      }
+    }
+  },
+  "contingency_arms": {
+    "full": {
+      "101": {
+        "ood_compose_epi": {
+          "correct": 2648,
+          "cost_adjusted_regret": 0.048159166666666704,
+          "n": 3000,
+          "route_accuracy": 0.8826666666666667,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.6577540106951871,
+              "correct": 369,
+              "n": 561
+            },
+            "clear_margin": {
+              "accuracy": 0.9312331924702266,
+              "correct": 2424,
+              "n": 2603
+            },
+            "confidence": {
+              "accuracy": 0.7473404255319149,
+              "correct": 562,
+              "n": 752
+            },
+            "epistemic": {
+              "accuracy": 0.7611386138613861,
+              "correct": 615,
+              "n": 808
+            },
+            "heldout": {
+              "accuracy": 0.780952380952381,
+              "correct": 820,
+              "n": 1050
+            },
+            "regime": {
+              "accuracy": 0.8033707865168539,
+              "correct": 429,
+              "n": 534
+            },
+            "validity": {
+              "accuracy": 0.7756653992395437,
+              "correct": 408,
+              "n": 526
+            }
+          },
+          "task_success": 0.9346666666666666
+        },
+        "ood_compose_regime": {
+          "correct": 1190,
+          "cost_adjusted_regret": 2.2247787500000062,
+          "n": 3000,
+          "route_accuracy": 0.39666666666666667,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.357495881383855,
+              "correct": 217,
+              "n": 607
+            },
+            "clear_margin": {
+              "accuracy": 0.40643161565284774,
+              "correct": 1049,
+              "n": 2581
+            },
+            "confidence": {
+              "accuracy": 0.48081841432225064,
+              "correct": 376,
+              "n": 782
+            },
+            "epistemic": {
+              "accuracy": 0.5682574916759157,
+              "correct": 512,
+              "n": 901
+            },
+            "regime": {
+              "accuracy": 0.07211811470755253,
+              "correct": 127,
+              "n": 1761
+            },
+            "transfer": {
+              "accuracy": 0.008875739644970414,
+              "correct": 12,
+              "n": 1352
+            },
+            "validity": {
+              "accuracy": 0.5201535508637236,
+              "correct": 271,
+              "n": 521
+            }
+          },
+          "task_success": 0.42733333333333334
+        },
+        "ood_distractors": {
+          "correct": 2656,
+          "cost_adjusted_regret": 0.04583541666666669,
+          "n": 3000,
+          "route_accuracy": 0.8853333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.6875981161695447,
+              "correct": 438,
+              "n": 637
+            },
+            "clear_margin": {
+              "accuracy": 0.934010152284264,
+              "correct": 2392,
+              "n": 2561
+            },
+            "confidence": {
+              "accuracy": 0.7773487773487774,
+              "correct": 604,
+              "n": 777
+            },
+            "epistemic": {
+              "accuracy": 0.7939759036144578,
+              "correct": 659,
+              "n": 830
+            },
+            "regime": {
+              "accuracy": 0.8442367601246106,
+              "correct": 542,
+              "n": 642
+            },
+            "validity": {
+              "accuracy": 0.8116169544740973,
+              "correct": 517,
+              "n": 637
+            }
+          },
+          "task_success": 0.9383333333333334
+        },
+        "ood_payload": {
+          "correct": 2686,
+          "cost_adjusted_regret": 0.04429624999999999,
+          "n": 3000,
+          "route_accuracy": 0.8953333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.6725239616613419,
+              "correct": 421,
+              "n": 626
+            },
+            "clear_margin": {
+              "accuracy": 0.9429012345679012,
+              "correct": 2444,
+              "n": 2592
+            },
+            "confidence": {
+              "accuracy": 0.7601476014760148,
+              "correct": 618,
+              "n": 813
+            },
+            "epistemic": {
+              "accuracy": 0.7763975155279503,
+              "correct": 625,
+              "n": 805
+            },
+            "regime": {
+              "accuracy": 0.8653198653198653,
+              "correct": 514,
+              "n": 594
+            },
+            "validity": {
+              "accuracy": 0.834658187599364,
+              "correct": 525,
+              "n": 629
+            }
+          },
+          "task_success": 0.9426666666666667
+        },
+        "ood_validity": {
+          "correct": 2653,
+          "cost_adjusted_regret": 0.03269875,
+          "n": 3000,
+          "route_accuracy": 0.8843333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.6492374727668845,
+              "correct": 298,
+              "n": 459
+            },
+            "clear_margin": {
+              "accuracy": 0.9524603836530442,
+              "correct": 2284,
+              "n": 2398
+            },
+            "confidence": {
+              "accuracy": 0.7400497512437811,
+              "correct": 595,
+              "n": 804
+            },
+            "epistemic": {
+              "accuracy": 0.7628571428571429,
+              "correct": 534,
+              "n": 700
+            },
+            "regime": {
+              "accuracy": 0.8712871287128713,
+              "correct": 440,
+              "n": 505
+            },
+            "validity": {
+              "accuracy": 0.8256450351837373,
+              "correct": 1056,
+              "n": 1279
+            }
+          },
+          "task_success": 0.9553333333333334
+        },
+        "test_iid": {
+          "correct": 2671,
+          "cost_adjusted_regret": 0.040116666666666655,
+          "n": 3000,
+          "route_accuracy": 0.8903333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.7027027027027027,
+              "correct": 442,
+              "n": 629
+            },
+            "clear_margin": {
+              "accuracy": 0.9428015564202334,
+              "correct": 2423,
+              "n": 2570
+            },
+            "confidence": {
+              "accuracy": 0.7484116899618806,
+              "correct": 589,
+              "n": 787
+            },
+            "epistemic": {
+              "accuracy": 0.7810126582278482,
+              "correct": 617,
+              "n": 790
+            },
+            "regime": {
+              "accuracy": 0.8754098360655738,
+              "correct": 534,
+              "n": 610
+            },
+            "validity": {
+              "accuracy": 0.8024691358024691,
+              "correct": 455,
+              "n": 567
+            }
+          },
+          "task_success": 0.9446666666666667
+        }
+      },
+      "17": {
+        "ood_compose_epi": {
+          "correct": 2591,
+          "cost_adjusted_regret": 0.11207666666666669,
+          "n": 3000,
+          "route_accuracy": 0.8636666666666667,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.661319073083779,
+              "correct": 371,
+              "n": 561
+            },
+            "clear_margin": {
+              "accuracy": 0.9166346523242412,
+              "correct": 2386,
+              "n": 2603
+            },
+            "confidence": {
+              "accuracy": 0.723404255319149,
+              "correct": 544,
+              "n": 752
+            },
+            "epistemic": {
+              "accuracy": 0.7227722772277227,
+              "correct": 584,
+              "n": 808
+            },
+            "heldout": {
+              "accuracy": 0.7847619047619048,
+              "correct": 824,
+              "n": 1050
+            },
+            "regime": {
+              "accuracy": 0.7265917602996255,
+              "correct": 388,
+              "n": 534
+            },
+            "validity": {
+              "accuracy": 0.7357414448669202,
+              "correct": 387,
+              "n": 526
+            }
+          },
+          "task_success": 0.9176666666666666
+        },
+        "ood_compose_regime": {
+          "correct": 1219,
+          "cost_adjusted_regret": 2.167715833333339,
+          "n": 3000,
+          "route_accuracy": 0.4063333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.38385502471169686,
+              "correct": 233,
+              "n": 607
+            },
+            "clear_margin": {
+              "accuracy": 0.4230918248740798,
+              "correct": 1092,
+              "n": 2581
+            },
+            "confidence": {
+              "accuracy": 0.47698209718670076,
+              "correct": 373,
+              "n": 782
+            },
+            "epistemic": {
+              "accuracy": 0.5726970033296337,
+              "correct": 516,
+              "n": 901
+            },
+            "regime": {
+              "accuracy": 0.07666098807495741,
+              "correct": 135,
+              "n": 1761
+            },
+            "transfer": {
+              "accuracy": 0.005917159763313609,
+              "correct": 8,
+              "n": 1352
+            },
+            "validity": {
+              "accuracy": 0.4990403071017274,
+              "correct": 260,
+              "n": 521
+            }
+          },
+          "task_success": 0.443
+        },
+        "ood_distractors": {
+          "correct": 2618,
+          "cost_adjusted_regret": 0.12547000000000005,
+          "n": 3000,
+          "route_accuracy": 0.8726666666666667,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.6875981161695447,
+              "correct": 438,
+              "n": 637
+            },
+            "clear_margin": {
+              "accuracy": 0.9222959781335416,
+              "correct": 2362,
+              "n": 2561
+            },
+            "confidence": {
+              "accuracy": 0.7477477477477478,
+              "correct": 581,
+              "n": 777
+            },
+            "epistemic": {
+              "accuracy": 0.8,
+              "correct": 664,
+              "n": 830
+            },
+            "regime": {
+              "accuracy": 0.7632398753894081,
+              "correct": 490,
+              "n": 642
+            },
+            "validity": {
+              "accuracy": 0.7896389324960753,
+              "correct": 503,
+              "n": 637
+            }
+          },
+          "task_success": 0.926
+        },
+        "ood_payload": {
+          "correct": 2650,
+          "cost_adjusted_regret": 0.09786208333333345,
+          "n": 3000,
+          "route_accuracy": 0.8833333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.7140575079872205,
+              "correct": 447,
+              "n": 626
+            },
+            "clear_margin": {
+              "accuracy": 0.933641975308642,
+              "correct": 2420,
+              "n": 2592
+            },
+            "confidence": {
+              "accuracy": 0.7539975399753998,
+              "correct": 613,
+              "n": 813
+            },
+            "epistemic": {
+              "accuracy": 0.7751552795031056,
+              "correct": 624,
+              "n": 805
+            },
+            "regime": {
+              "accuracy": 0.803030303030303,
+              "correct": 477,
+              "n": 594
+            },
+            "validity": {
+              "accuracy": 0.8060413354531002,
+              "correct": 507,
+              "n": 629
+            }
+          },
+          "task_success": 0.934
+        },
+        "ood_validity": {
+          "correct": 2561,
+          "cost_adjusted_regret": 0.14457083333333334,
+          "n": 3000,
+          "route_accuracy": 0.8536666666666667,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.6666666666666666,
+              "correct": 306,
+              "n": 459
+            },
+            "clear_margin": {
+              "accuracy": 0.9282735613010842,
+              "correct": 2226,
+              "n": 2398
+            },
+            "confidence": {
+              "accuracy": 0.7263681592039801,
+              "correct": 584,
+              "n": 804
+            },
+            "epistemic": {
+              "accuracy": 0.7528571428571429,
+              "correct": 527,
+              "n": 700
+            },
+            "regime": {
+              "accuracy": 0.697029702970297,
+              "correct": 352,
+              "n": 505
+            },
+            "validity": {
+              "accuracy": 0.800625488663018,
+              "correct": 1024,
+              "n": 1279
+            }
+          },
+          "task_success": 0.9333333333333333
+        },
+        "test_iid": {
+          "correct": 2606,
+          "cost_adjusted_regret": 0.10849208333333321,
+          "n": 3000,
+          "route_accuracy": 0.8686666666666667,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.6804451510333863,
+              "correct": 428,
+              "n": 629
+            },
+            "clear_margin": {
+              "accuracy": 0.9225680933852141,
+              "correct": 2371,
+              "n": 2570
+            },
+            "confidence": {
+              "accuracy": 0.7331639135959339,
+              "correct": 577,
+              "n": 787
+            },
+            "epistemic": {
+              "accuracy": 0.7759493670886076,
+              "correct": 613,
+              "n": 790
+            },
+            "regime": {
+              "accuracy": 0.7918032786885246,
+              "correct": 483,
+              "n": 610
+            },
+            "validity": {
+              "accuracy": 0.7707231040564374,
+              "correct": 437,
+              "n": 567
+            }
+          },
+          "task_success": 0.9303333333333333
+        }
+      },
+      "29": {
+        "ood_compose_epi": {
+          "correct": 2693,
+          "cost_adjusted_regret": 0.03623833333333334,
+          "n": 3000,
+          "route_accuracy": 0.8976666666666666,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.6987522281639929,
+              "correct": 392,
+              "n": 561
+            },
+            "clear_margin": {
+              "accuracy": 0.9419900115251633,
+              "correct": 2452,
+              "n": 2603
+            },
+            "confidence": {
+              "accuracy": 0.7606382978723404,
+              "correct": 572,
+              "n": 752
+            },
+            "epistemic": {
+              "accuracy": 0.7673267326732673,
+              "correct": 620,
+              "n": 808
+            },
+            "heldout": {
+              "accuracy": 0.8123809523809524,
+              "correct": 853,
+              "n": 1050
+            },
+            "regime": {
+              "accuracy": 0.848314606741573,
+              "correct": 453,
+              "n": 534
+            },
+            "validity": {
+              "accuracy": 0.811787072243346,
+              "correct": 427,
+              "n": 526
+            }
+          },
+          "task_success": 0.9463333333333334
+        },
+        "ood_compose_regime": {
+          "correct": 1381,
+          "cost_adjusted_regret": 1.6880266666666655,
+          "n": 3000,
+          "route_accuracy": 0.4603333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.4728171334431631,
+              "correct": 287,
+              "n": 607
+            },
+            "clear_margin": {
+              "accuracy": 0.4715226656334754,
+              "correct": 1217,
+              "n": 2581
+            },
+            "confidence": {
+              "accuracy": 0.5767263427109974,
+              "correct": 451,
+              "n": 782
+            },
+            "epistemic": {
+              "accuracy": 0.6637069922308546,
+              "correct": 598,
+              "n": 901
+            },
+            "regime": {
+              "accuracy": 0.13401476433844406,
+              "correct": 236,
+              "n": 1761
+            },
+            "transfer": {
+              "accuracy": 0.013313609467455622,
+              "correct": 18,
+              "n": 1352
+            },
+            "validity": {
+              "accuracy": 0.5911708253358925,
+              "correct": 308,
+              "n": 521
+            }
+          },
+          "task_success": 0.5163333333333333
+        },
+        "ood_distractors": {
+          "correct": 2702,
+          "cost_adjusted_regret": 0.036805416666666674,
+          "n": 3000,
+          "route_accuracy": 0.9006666666666666,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.6923076923076923,
+              "correct": 441,
+              "n": 637
+            },
+            "clear_margin": {
+              "accuracy": 0.9453338539632956,
+              "correct": 2421,
+              "n": 2561
+            },
+            "confidence": {
+              "accuracy": 0.8005148005148005,
+              "correct": 622,
+              "n": 777
+            },
+            "epistemic": {
+              "accuracy": 0.8204819277108434,
+              "correct": 681,
+              "n": 830
+            },
+            "regime": {
+              "accuracy": 0.8535825545171339,
+              "correct": 548,
+              "n": 642
+            },
+            "validity": {
+              "accuracy": 0.814756671899529,
+              "correct": 519,
+              "n": 637
+            }
+          },
+          "task_success": 0.9493333333333334
+        },
+        "ood_payload": {
+          "correct": 2723,
+          "cost_adjusted_regret": 0.031048333333333317,
+          "n": 3000,
+          "route_accuracy": 0.9076666666666666,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.7252396166134185,
+              "correct": 454,
+              "n": 626
+            },
+            "clear_margin": {
+              "accuracy": 0.9564043209876543,
+              "correct": 2479,
+              "n": 2592
+            },
+            "confidence": {
+              "accuracy": 0.8044280442804428,
+              "correct": 654,
+              "n": 813
+            },
+            "epistemic": {
+              "accuracy": 0.8049689440993789,
+              "correct": 648,
+              "n": 805
+            },
+            "regime": {
+              "accuracy": 0.8787878787878788,
+              "correct": 522,
+              "n": 594
+            },
+            "validity": {
+              "accuracy": 0.8251192368839427,
+              "correct": 519,
+              "n": 629
+            }
+          },
+          "task_success": 0.957
+        },
+        "ood_validity": {
+          "correct": 2716,
+          "cost_adjusted_regret": 0.022031666666666665,
+          "n": 3000,
+          "route_accuracy": 0.9053333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.7145969498910676,
+              "correct": 328,
+              "n": 459
+            },
+            "clear_margin": {
+              "accuracy": 0.9683069224353628,
+              "correct": 2322,
+              "n": 2398
+            },
+            "confidence": {
+              "accuracy": 0.7997512437810945,
+              "correct": 643,
+              "n": 804
+            },
+            "epistemic": {
+              "accuracy": 0.7942857142857143,
+              "correct": 556,
+              "n": 700
+            },
+            "regime": {
+              "accuracy": 0.8673267326732673,
+              "correct": 438,
+              "n": 505
+            },
+            "validity": {
+              "accuracy": 0.8506645817044566,
+              "correct": 1088,
+              "n": 1279
+            }
+          },
+          "task_success": 0.9693333333333334
+        },
+        "test_iid": {
+          "correct": 2709,
+          "cost_adjusted_regret": 0.03300375,
+          "n": 3000,
+          "route_accuracy": 0.903,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.7329093799682035,
+              "correct": 461,
+              "n": 629
+            },
+            "clear_margin": {
+              "accuracy": 0.9525291828793774,
+              "correct": 2448,
+              "n": 2570
+            },
+            "confidence": {
+              "accuracy": 0.7890724269377383,
+              "correct": 621,
+              "n": 787
+            },
+            "epistemic": {
+              "accuracy": 0.8164556962025317,
+              "correct": 645,
+              "n": 790
+            },
+            "regime": {
+              "accuracy": 0.8770491803278688,
+              "correct": 535,
+              "n": 610
+            },
+            "validity": {
+              "accuracy": 0.8236331569664903,
+              "correct": 467,
+              "n": 567
+            }
+          },
+          "task_success": 0.953
+        }
+      },
+      "43": {
+        "ood_compose_epi": {
+          "correct": 2660,
+          "cost_adjusted_regret": 0.04340625,
+          "n": 3000,
+          "route_accuracy": 0.8866666666666667,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.7183600713012478,
+              "correct": 403,
+              "n": 561
+            },
+            "clear_margin": {
+              "accuracy": 0.9362274298885901,
+              "correct": 2437,
+              "n": 2603
+            },
+            "confidence": {
+              "accuracy": 0.7406914893617021,
+              "correct": 557,
+              "n": 752
+            },
+            "epistemic": {
+              "accuracy": 0.7784653465346535,
+              "correct": 629,
+              "n": 808
+            },
+            "heldout": {
+              "accuracy": 0.7961904761904762,
+              "correct": 836,
+              "n": 1050
+            },
+            "regime": {
+              "accuracy": 0.8108614232209738,
+              "correct": 433,
+              "n": 534
+            },
+            "validity": {
+              "accuracy": 0.7813688212927756,
+              "correct": 411,
+              "n": 526
+            }
+          },
+          "task_success": 0.9383333333333334
+        },
+        "ood_compose_regime": {
+          "correct": 1252,
+          "cost_adjusted_regret": 2.1467433333333394,
+          "n": 3000,
+          "route_accuracy": 0.41733333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.3624382207578254,
+              "correct": 220,
+              "n": 607
+            },
+            "clear_margin": {
+              "accuracy": 0.43161565284773346,
+              "correct": 1114,
+              "n": 2581
+            },
+            "confidence": {
+              "accuracy": 0.49744245524296676,
+              "correct": 389,
+              "n": 782
+            },
+            "epistemic": {
+              "accuracy": 0.5893451720310766,
+              "correct": 531,
+              "n": 901
+            },
+            "regime": {
+              "accuracy": 0.07950028392958547,
+              "correct": 140,
+              "n": 1761
+            },
+            "transfer": {
+              "accuracy": 0.011834319526627219,
+              "correct": 16,
+              "n": 1352
+            },
+            "validity": {
+              "accuracy": 0.5316698656429942,
+              "correct": 277,
+              "n": 521
+            }
+          },
+          "task_success": 0.45466666666666666
+        },
+        "ood_distractors": {
+          "correct": 2681,
+          "cost_adjusted_regret": 0.04180708333333332,
+          "n": 3000,
+          "route_accuracy": 0.8936666666666667,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.6813186813186813,
+              "correct": 434,
+              "n": 637
+            },
+            "clear_margin": {
+              "accuracy": 0.9433814916048419,
+              "correct": 2416,
+              "n": 2561
+            },
+            "confidence": {
+              "accuracy": 0.7734877734877735,
+              "correct": 601,
+              "n": 777
+            },
+            "epistemic": {
+              "accuracy": 0.8156626506024096,
+              "correct": 677,
+              "n": 830
+            },
+            "regime": {
+              "accuracy": 0.839563862928349,
+              "correct": 539,
+              "n": 642
+            },
+            "validity": {
+              "accuracy": 0.82574568288854,
+              "correct": 526,
+              "n": 637
+            }
+          },
+          "task_success": 0.9443333333333334
+        },
+        "ood_payload": {
+          "correct": 2695,
+          "cost_adjusted_regret": 0.03853083333333334,
+          "n": 3000,
+          "route_accuracy": 0.8983333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.7108626198083067,
+              "correct": 445,
+              "n": 626
+            },
+            "clear_margin": {
+              "accuracy": 0.9463734567901234,
+              "correct": 2453,
+              "n": 2592
+            },
+            "confidence": {
+              "accuracy": 0.7921279212792128,
+              "correct": 644,
+              "n": 813
+            },
+            "epistemic": {
+              "accuracy": 0.7900621118012422,
+              "correct": 636,
+              "n": 805
+            },
+            "regime": {
+              "accuracy": 0.8653198653198653,
+              "correct": 514,
+              "n": 594
+            },
+            "validity": {
+              "accuracy": 0.8410174880763116,
+              "correct": 529,
+              "n": 629
+            }
+          },
+          "task_success": 0.949
+        },
+        "ood_validity": {
+          "correct": 2656,
+          "cost_adjusted_regret": 0.02596333333333334,
+          "n": 3000,
+          "route_accuracy": 0.8853333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.6949891067538126,
+              "correct": 319,
+              "n": 459
+            },
+            "clear_margin": {
+              "accuracy": 0.9608006672226855,
+              "correct": 2304,
+              "n": 2398
+            },
+            "confidence": {
+              "accuracy": 0.7238805970149254,
+              "correct": 582,
+              "n": 804
+            },
+            "epistemic": {
+              "accuracy": 0.7928571428571428,
+              "correct": 555,
+              "n": 700
+            },
+            "regime": {
+              "accuracy": 0.8594059405940594,
+              "correct": 434,
+              "n": 505
+            },
+            "validity": {
+              "accuracy": 0.8256450351837373,
+              "correct": 1056,
+              "n": 1279
+            }
+          },
+          "task_success": 0.9653333333333334
+        },
+        "test_iid": {
+          "correct": 2692,
+          "cost_adjusted_regret": 0.03474916666666665,
+          "n": 3000,
+          "route_accuracy": 0.8973333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.7313195548489666,
+              "correct": 460,
+              "n": 629
+            },
+            "clear_margin": {
+              "accuracy": 0.9513618677042801,
+              "correct": 2445,
+              "n": 2570
+            },
+            "confidence": {
+              "accuracy": 0.7687420584498094,
+              "correct": 605,
+              "n": 787
+            },
+            "epistemic": {
+              "accuracy": 0.8,
+              "correct": 632,
+              "n": 790
+            },
+            "regime": {
+              "accuracy": 0.8803278688524591,
+              "correct": 537,
+              "n": 610
+            },
+            "validity": {
+              "accuracy": 0.8148148148148148,
+              "correct": 462,
+              "n": 567
+            }
+          },
+          "task_success": 0.9513333333333334
+        }
+      },
+      "71": {
+        "ood_compose_epi": {
+          "correct": 2642,
+          "cost_adjusted_regret": 0.05058624999999995,
+          "n": 3000,
+          "route_accuracy": 0.8806666666666667,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.6648841354723708,
+              "correct": 373,
+              "n": 561
+            },
+            "clear_margin": {
+              "accuracy": 0.927007299270073,
+              "correct": 2413,
+              "n": 2603
+            },
+            "confidence": {
+              "accuracy": 0.738031914893617,
+              "correct": 555,
+              "n": 752
+            },
+            "epistemic": {
+              "accuracy": 0.7660891089108911,
+              "correct": 619,
+              "n": 808
+            },
+            "heldout": {
+              "accuracy": 0.7904761904761904,
+              "correct": 830,
+              "n": 1050
+            },
+            "regime": {
+              "accuracy": 0.8071161048689138,
+              "correct": 431,
+              "n": 534
+            },
+            "validity": {
+              "accuracy": 0.7889733840304183,
+              "correct": 415,
+              "n": 526
+            }
+          },
+          "task_success": 0.931
+        },
+        "ood_compose_regime": {
+          "correct": 1246,
+          "cost_adjusted_regret": 2.204840416666674,
+          "n": 3000,
+          "route_accuracy": 0.41533333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.41515650741350907,
+              "correct": 252,
+              "n": 607
+            },
+            "clear_margin": {
+              "accuracy": 0.4304533126695079,
+              "correct": 1111,
+              "n": 2581
+            },
+            "confidence": {
+              "accuracy": 0.5115089514066496,
+              "correct": 400,
+              "n": 782
+            },
+            "epistemic": {
+              "accuracy": 0.5926748057713651,
+              "correct": 534,
+              "n": 901
+            },
+            "regime": {
+              "accuracy": 0.0868824531516184,
+              "correct": 153,
+              "n": 1761
+            },
+            "transfer": {
+              "accuracy": 0.005177514792899409,
+              "correct": 7,
+              "n": 1352
+            },
+            "validity": {
+              "accuracy": 0.5163147792706334,
+              "correct": 269,
+              "n": 521
+            }
+          },
+          "task_success": 0.453
+        },
+        "ood_distractors": {
+          "correct": 2701,
+          "cost_adjusted_regret": 0.03983791666666666,
+          "n": 3000,
+          "route_accuracy": 0.9003333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.7221350078492935,
+              "correct": 460,
+              "n": 637
+            },
+            "clear_margin": {
+              "accuracy": 0.9457243264349864,
+              "correct": 2422,
+              "n": 2561
+            },
+            "confidence": {
+              "accuracy": 0.8043758043758044,
+              "correct": 625,
+              "n": 777
+            },
+            "epistemic": {
+              "accuracy": 0.8036144578313253,
+              "correct": 667,
+              "n": 830
+            },
+            "regime": {
+              "accuracy": 0.8629283489096573,
+              "correct": 554,
+              "n": 642
+            },
+            "validity": {
+              "accuracy": 0.8414442700156985,
+              "correct": 536,
+              "n": 637
+            }
+          },
+          "task_success": 0.949
+        },
+        "ood_payload": {
+          "correct": 2702,
+          "cost_adjusted_regret": 0.03393874999999999,
+          "n": 3000,
+          "route_accuracy": 0.9006666666666666,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.707667731629393,
+              "correct": 443,
+              "n": 626
+            },
+            "clear_margin": {
+              "accuracy": 0.9529320987654321,
+              "correct": 2470,
+              "n": 2592
+            },
+            "confidence": {
+              "accuracy": 0.7847478474784748,
+              "correct": 638,
+              "n": 813
+            },
+            "epistemic": {
+              "accuracy": 0.7975155279503106,
+              "correct": 642,
+              "n": 805
+            },
+            "regime": {
+              "accuracy": 0.8569023569023569,
+              "correct": 509,
+              "n": 594
+            },
+            "validity": {
+              "accuracy": 0.8155802861685215,
+              "correct": 513,
+              "n": 629
+            }
+          },
+          "task_success": 0.9503333333333334
+        },
+        "ood_validity": {
+          "correct": 2706,
+          "cost_adjusted_regret": 0.025739166666666667,
+          "n": 3000,
+          "route_accuracy": 0.902,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.7124183006535948,
+              "correct": 327,
+              "n": 459
+            },
+            "clear_margin": {
+              "accuracy": 0.9645537948290241,
+              "correct": 2313,
+              "n": 2398
+            },
+            "confidence": {
+              "accuracy": 0.7810945273631841,
+              "correct": 628,
+              "n": 804
+            },
+            "epistemic": {
+              "accuracy": 0.8028571428571428,
+              "correct": 562,
+              "n": 700
+            },
+            "regime": {
+              "accuracy": 0.8633663366336634,
+              "correct": 436,
+              "n": 505
+            },
+            "validity": {
+              "accuracy": 0.8459734167318217,
+              "correct": 1082,
+              "n": 1279
+            }
+          },
+          "task_success": 0.966
+        },
+        "test_iid": {
+          "correct": 2666,
+          "cost_adjusted_regret": 0.03818500000000003,
+          "n": 3000,
+          "route_accuracy": 0.8886666666666667,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.6915739268680445,
+              "correct": 435,
+              "n": 629
+            },
+            "clear_margin": {
+              "accuracy": 0.9447470817120622,
+              "correct": 2428,
+              "n": 2570
+            },
+            "confidence": {
+              "accuracy": 0.7420584498094028,
+              "correct": 584,
+              "n": 787
+            },
+            "epistemic": {
+              "accuracy": 0.7936708860759494,
+              "correct": 627,
+              "n": 790
+            },
+            "regime": {
+              "accuracy": 0.8491803278688524,
+              "correct": 518,
+              "n": 610
+            },
+            "validity": {
+              "accuracy": 0.7865961199294532,
+              "correct": 446,
+              "n": 567
+            }
+          },
+          "task_success": 0.947
+        }
+      }
+    },
+    "no-semantic-slots": {
+      "101": {
+        "ood_compose_epi": {
+          "correct": 2609,
+          "cost_adjusted_regret": 0.07791541666666665,
+          "n": 3000,
+          "route_accuracy": 0.8696666666666667,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.6452762923351159,
+              "correct": 362,
+              "n": 561
+            },
+            "clear_margin": {
+              "accuracy": 0.9131771033422974,
+              "correct": 2377,
+              "n": 2603
+            },
+            "confidence": {
+              "accuracy": 0.738031914893617,
+              "correct": 555,
+              "n": 752
+            },
+            "epistemic": {
+              "accuracy": 0.7264851485148515,
+              "correct": 587,
+              "n": 808
+            },
+            "heldout": {
+              "accuracy": 0.7857142857142857,
+              "correct": 825,
+              "n": 1050
+            },
+            "regime": {
+              "accuracy": 0.8295880149812734,
+              "correct": 443,
+              "n": 534
+            },
+            "validity": {
+              "accuracy": 0.7129277566539924,
+              "correct": 375,
+              "n": 526
+            }
+          },
+          "task_success": 0.918
+        },
+        "ood_compose_regime": {
+          "correct": 1314,
+          "cost_adjusted_regret": 1.9142383333333362,
+          "n": 3000,
+          "route_accuracy": 0.438,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.4464579901153213,
+              "correct": 271,
+              "n": 607
+            },
+            "clear_margin": {
+              "accuracy": 0.4463386284385897,
+              "correct": 1152,
+              "n": 2581
+            },
+            "confidence": {
+              "accuracy": 0.5358056265984654,
+              "correct": 419,
+              "n": 782
+            },
+            "epistemic": {
+              "accuracy": 0.6481687014428413,
+              "correct": 584,
+              "n": 901
+            },
+            "regime": {
+              "accuracy": 0.11186825667234526,
+              "correct": 197,
+              "n": 1761
+            },
+            "transfer": {
+              "accuracy": 0.013313609467455622,
+              "correct": 18,
+              "n": 1352
+            },
+            "validity": {
+              "accuracy": 0.5527831094049904,
+              "correct": 288,
+              "n": 521
+            }
+          },
+          "task_success": 0.4886666666666667
+        },
+        "ood_distractors": {
+          "correct": 2625,
+          "cost_adjusted_regret": 0.05586583333333335,
+          "n": 3000,
+          "route_accuracy": 0.875,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.6577708006279435,
+              "correct": 419,
+              "n": 637
+            },
+            "clear_margin": {
+              "accuracy": 0.9254197579070675,
+              "correct": 2370,
+              "n": 2561
+            },
+            "confidence": {
+              "accuracy": 0.7348777348777349,
+              "correct": 571,
+              "n": 777
+            },
+            "epistemic": {
+              "accuracy": 0.7542168674698795,
+              "correct": 626,
+              "n": 830
+            },
+            "regime": {
+              "accuracy": 0.8738317757009346,
+              "correct": 561,
+              "n": 642
+            },
+            "validity": {
+              "accuracy": 0.7613814756671899,
+              "correct": 485,
+              "n": 637
+            }
+          },
+          "task_success": 0.9283333333333333
+        },
+        "ood_payload": {
+          "correct": 2611,
+          "cost_adjusted_regret": 0.05459625000000009,
+          "n": 3000,
+          "route_accuracy": 0.8703333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.6166134185303515,
+              "correct": 386,
+              "n": 626
+            },
+            "clear_margin": {
+              "accuracy": 0.9278549382716049,
+              "correct": 2405,
+              "n": 2592
+            },
+            "confidence": {
+              "accuracy": 0.7257072570725708,
+              "correct": 590,
+              "n": 813
+            },
+            "epistemic": {
+              "accuracy": 0.7416149068322981,
+              "correct": 597,
+              "n": 805
+            },
+            "regime": {
+              "accuracy": 0.8737373737373737,
+              "correct": 519,
+              "n": 594
+            },
+            "validity": {
+              "accuracy": 0.7424483306836248,
+              "correct": 467,
+              "n": 629
+            }
+          },
+          "task_success": 0.9296666666666666
+        },
+        "ood_validity": {
+          "correct": 2592,
+          "cost_adjusted_regret": 0.044730833333333345,
+          "n": 3000,
+          "route_accuracy": 0.864,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.6318082788671024,
+              "correct": 290,
+              "n": 459
+            },
+            "clear_margin": {
+              "accuracy": 0.9399499582985822,
+              "correct": 2254,
+              "n": 2398
+            },
+            "confidence": {
+              "accuracy": 0.7176616915422885,
+              "correct": 577,
+              "n": 804
+            },
+            "epistemic": {
+              "accuracy": 0.7228571428571429,
+              "correct": 506,
+              "n": 700
+            },
+            "regime": {
+              "accuracy": 0.8792079207920792,
+              "correct": 444,
+              "n": 505
+            },
+            "validity": {
+              "accuracy": 0.764659890539484,
+              "correct": 978,
+              "n": 1279
+            }
+          },
+          "task_success": 0.944
+        },
+        "test_iid": {
+          "correct": 2613,
+          "cost_adjusted_regret": 0.05343291666666669,
+          "n": 3000,
+          "route_accuracy": 0.871,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.6406995230524642,
+              "correct": 403,
+              "n": 629
+            },
+            "clear_margin": {
+              "accuracy": 0.9221789883268483,
+              "correct": 2370,
+              "n": 2570
+            },
+            "confidence": {
+              "accuracy": 0.7217280813214739,
+              "correct": 568,
+              "n": 787
+            },
+            "epistemic": {
+              "accuracy": 0.7379746835443038,
+              "correct": 583,
+              "n": 790
+            },
+            "regime": {
+              "accuracy": 0.8622950819672132,
+              "correct": 526,
+              "n": 610
+            },
+            "validity": {
+              "accuracy": 0.7407407407407407,
+              "correct": 420,
+              "n": 567
+            }
+          },
+          "task_success": 0.9276666666666666
+        }
+      },
+      "17": {
+        "ood_compose_epi": {
+          "correct": 2626,
+          "cost_adjusted_regret": 0.057139583333333265,
+          "n": 3000,
+          "route_accuracy": 0.8753333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.6987522281639929,
+              "correct": 392,
+              "n": 561
+            },
+            "clear_margin": {
+              "accuracy": 0.9216288897426047,
+              "correct": 2399,
+              "n": 2603
+            },
+            "confidence": {
+              "accuracy": 0.7393617021276596,
+              "correct": 556,
+              "n": 752
+            },
+            "epistemic": {
+              "accuracy": 0.7066831683168316,
+              "correct": 571,
+              "n": 808
+            },
+            "heldout": {
+              "accuracy": 0.7752380952380953,
+              "correct": 814,
+              "n": 1050
+            },
+            "regime": {
+              "accuracy": 0.8127340823970037,
+              "correct": 434,
+              "n": 534
+            },
+            "validity": {
+              "accuracy": 0.7319391634980988,
+              "correct": 385,
+              "n": 526
+            }
+          },
+          "task_success": 0.9266666666666666
+        },
+        "ood_compose_regime": {
+          "correct": 1310,
+          "cost_adjusted_regret": 1.7916891666666668,
+          "n": 3000,
+          "route_accuracy": 0.43666666666666665,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.4514003294892916,
+              "correct": 274,
+              "n": 607
+            },
+            "clear_margin": {
+              "accuracy": 0.4502130956993413,
+              "correct": 1162,
+              "n": 2581
+            },
+            "confidence": {
+              "accuracy": 0.5370843989769821,
+              "correct": 420,
+              "n": 782
+            },
+            "epistemic": {
+              "accuracy": 0.5993340732519423,
+              "correct": 540,
+              "n": 901
+            },
+            "regime": {
+              "accuracy": 0.11243611584327087,
+              "correct": 198,
+              "n": 1761
+            },
+            "transfer": {
+              "accuracy": 0.008875739644970414,
+              "correct": 12,
+              "n": 1352
+            },
+            "validity": {
+              "accuracy": 0.5508637236084453,
+              "correct": 287,
+              "n": 521
+            }
+          },
+          "task_success": 0.488
+        },
+        "ood_distractors": {
+          "correct": 2561,
+          "cost_adjusted_regret": 0.07186708333333343,
+          "n": 3000,
+          "route_accuracy": 0.8536666666666667,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.6012558869701727,
+              "correct": 383,
+              "n": 637
+            },
+            "clear_margin": {
+              "accuracy": 0.9113627489262007,
+              "correct": 2334,
+              "n": 2561
+            },
+            "confidence": {
+              "accuracy": 0.6975546975546976,
+              "correct": 542,
+              "n": 777
+            },
+            "epistemic": {
+              "accuracy": 0.6746987951807228,
+              "correct": 560,
+              "n": 830
+            },
+            "regime": {
+              "accuracy": 0.8442367601246106,
+              "correct": 542,
+              "n": 642
+            },
+            "validity": {
+              "accuracy": 0.7582417582417582,
+              "correct": 483,
+              "n": 637
+            }
+          },
+          "task_success": 0.9126666666666666
+        },
+        "ood_payload": {
+          "correct": 2652,
+          "cost_adjusted_regret": 0.04536166666666668,
+          "n": 3000,
+          "route_accuracy": 0.884,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.7060702875399361,
+              "correct": 442,
+              "n": 626
+            },
+            "clear_margin": {
+              "accuracy": 0.9382716049382716,
+              "correct": 2432,
+              "n": 2592
+            },
+            "confidence": {
+              "accuracy": 0.7515375153751538,
+              "correct": 611,
+              "n": 813
+            },
+            "epistemic": {
+              "accuracy": 0.7490683229813665,
+              "correct": 603,
+              "n": 805
+            },
+            "regime": {
+              "accuracy": 0.867003367003367,
+              "correct": 515,
+              "n": 594
+            },
+            "validity": {
+              "accuracy": 0.7615262321144675,
+              "correct": 479,
+              "n": 629
+            }
+          },
+          "task_success": 0.9396666666666667
+        },
+        "ood_validity": {
+          "correct": 2606,
+          "cost_adjusted_regret": 0.04107666666666667,
+          "n": 3000,
+          "route_accuracy": 0.8686666666666667,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.6514161220043573,
+              "correct": 299,
+              "n": 459
+            },
+            "clear_margin": {
+              "accuracy": 0.9428690575479566,
+              "correct": 2261,
+              "n": 2398
+            },
+            "confidence": {
+              "accuracy": 0.7089552238805971,
+              "correct": 570,
+              "n": 804
+            },
+            "epistemic": {
+              "accuracy": 0.7028571428571428,
+              "correct": 492,
+              "n": 700
+            },
+            "regime": {
+              "accuracy": 0.8633663366336634,
+              "correct": 436,
+              "n": 505
+            },
+            "validity": {
+              "accuracy": 0.7849882720875684,
+              "correct": 1004,
+              "n": 1279
+            }
+          },
+          "task_success": 0.9486666666666667
+        },
+        "test_iid": {
+          "correct": 2619,
+          "cost_adjusted_regret": 0.04957083333333336,
+          "n": 3000,
+          "route_accuracy": 0.873,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.6756756756756757,
+              "correct": 425,
+              "n": 629
+            },
+            "clear_margin": {
+              "accuracy": 0.9249027237354086,
+              "correct": 2377,
+              "n": 2570
+            },
+            "confidence": {
+              "accuracy": 0.7268106734434562,
+              "correct": 572,
+              "n": 787
+            },
+            "epistemic": {
+              "accuracy": 0.7291139240506329,
+              "correct": 576,
+              "n": 790
+            },
+            "regime": {
+              "accuracy": 0.8557377049180328,
+              "correct": 522,
+              "n": 610
+            },
+            "validity": {
+              "accuracy": 0.7354497354497355,
+              "correct": 417,
+              "n": 567
+            }
+          },
+          "task_success": 0.931
+        }
+      },
+      "29": {
+        "ood_compose_epi": {
+          "correct": 2621,
+          "cost_adjusted_regret": 0.05969374999999995,
+          "n": 3000,
+          "route_accuracy": 0.8736666666666667,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.6666666666666666,
+              "correct": 374,
+              "n": 561
+            },
+            "clear_margin": {
+              "accuracy": 0.9220130618517096,
+              "correct": 2400,
+              "n": 2603
+            },
+            "confidence": {
+              "accuracy": 0.7313829787234043,
+              "correct": 550,
+              "n": 752
+            },
+            "epistemic": {
+              "accuracy": 0.7475247524752475,
+              "correct": 604,
+              "n": 808
+            },
+            "heldout": {
+              "accuracy": 0.7780952380952381,
+              "correct": 817,
+              "n": 1050
+            },
+            "regime": {
+              "accuracy": 0.7940074906367042,
+              "correct": 424,
+              "n": 534
+            },
+            "validity": {
+              "accuracy": 0.7433460076045627,
+              "correct": 391,
+              "n": 526
+            }
+          },
+          "task_success": 0.924
+        },
+        "ood_compose_regime": {
+          "correct": 1365,
+          "cost_adjusted_regret": 1.765959166666664,
+          "n": 3000,
+          "route_accuracy": 0.455,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.46787479406919275,
+              "correct": 284,
+              "n": 607
+            },
+            "clear_margin": {
+              "accuracy": 0.4618364974815963,
+              "correct": 1192,
+              "n": 2581
+            },
+            "confidence": {
+              "accuracy": 0.571611253196931,
+              "correct": 447,
+              "n": 782
+            },
+            "epistemic": {
+              "accuracy": 0.655937846836848,
+              "correct": 591,
+              "n": 901
+            },
+            "regime": {
+              "accuracy": 0.13287904599659284,
+              "correct": 234,
+              "n": 1761
+            },
+            "transfer": {
+              "accuracy": 0.017011834319526627,
+              "correct": 23,
+              "n": 1352
+            },
+            "validity": {
+              "accuracy": 0.5719769673704415,
+              "correct": 298,
+              "n": 521
+            }
+          },
+          "task_success": 0.5106666666666667
+        },
+        "ood_distractors": {
+          "correct": 2554,
+          "cost_adjusted_regret": 0.0722479166666667,
+          "n": 3000,
+          "route_accuracy": 0.8513333333333334,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.598116169544741,
+              "correct": 381,
+              "n": 637
+            },
+            "clear_margin": {
+              "accuracy": 0.9086294416243654,
+              "correct": 2327,
+              "n": 2561
+            },
+            "confidence": {
+              "accuracy": 0.6962676962676962,
+              "correct": 541,
+              "n": 777
+            },
+            "epistemic": {
+              "accuracy": 0.653012048192771,
+              "correct": 542,
+              "n": 830
+            },
+            "regime": {
+              "accuracy": 0.7975077881619937,
+              "correct": 512,
+              "n": 642
+            },
+            "validity": {
+              "accuracy": 0.7346938775510204,
+              "correct": 468,
+              "n": 637
+            }
+          },
+          "task_success": 0.9106666666666666
+        },
+        "ood_payload": {
+          "correct": 2661,
+          "cost_adjusted_regret": 0.03994083333333333,
+          "n": 3000,
+          "route_accuracy": 0.887,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.6916932907348243,
+              "correct": 433,
+              "n": 626
+            },
+            "clear_margin": {
+              "accuracy": 0.9429012345679012,
+              "correct": 2444,
+              "n": 2592
+            },
+            "confidence": {
+              "accuracy": 0.7650676506765067,
+              "correct": 622,
+              "n": 813
+            },
+            "epistemic": {
+              "accuracy": 0.7701863354037267,
+              "correct": 620,
+              "n": 805
+            },
+            "regime": {
+              "accuracy": 0.8653198653198653,
+              "correct": 514,
+              "n": 594
+            },
+            "validity": {
+              "accuracy": 0.7917329093799682,
+              "correct": 498,
+              "n": 629
+            }
+          },
+          "task_success": 0.9433333333333334
+        },
+        "ood_validity": {
+          "correct": 2616,
+          "cost_adjusted_regret": 0.04101500000000002,
+          "n": 3000,
+          "route_accuracy": 0.872,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.6427015250544662,
+              "correct": 295,
+              "n": 459
+            },
+            "clear_margin": {
+              "accuracy": 0.9457881567973311,
+              "correct": 2268,
+              "n": 2398
+            },
+            "confidence": {
+              "accuracy": 0.7375621890547264,
+              "correct": 593,
+              "n": 804
+            },
+            "epistemic": {
+              "accuracy": 0.7157142857142857,
+              "correct": 501,
+              "n": 700
+            },
+            "regime": {
+              "accuracy": 0.8653465346534653,
+              "correct": 437,
+              "n": 505
+            },
+            "validity": {
+              "accuracy": 0.7857701329163409,
+              "correct": 1005,
+              "n": 1279
+            }
+          },
+          "task_success": 0.9473333333333334
+        },
+        "test_iid": {
+          "correct": 2642,
+          "cost_adjusted_regret": 0.04499833333333334,
+          "n": 3000,
+          "route_accuracy": 0.8806666666666667,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.6836248012718601,
+              "correct": 430,
+              "n": 629
+            },
+            "clear_margin": {
+              "accuracy": 0.9342412451361868,
+              "correct": 2401,
+              "n": 2570
+            },
+            "confidence": {
+              "accuracy": 0.7522236340533672,
+              "correct": 592,
+              "n": 787
+            },
+            "epistemic": {
+              "accuracy": 0.7468354430379747,
+              "correct": 590,
+              "n": 790
+            },
+            "regime": {
+              "accuracy": 0.8377049180327869,
+              "correct": 511,
+              "n": 610
+            },
+            "validity": {
+              "accuracy": 0.7689594356261023,
+              "correct": 436,
+              "n": 567
+            }
+          },
+          "task_success": 0.936
+        }
+      },
+      "43": {
+        "ood_compose_epi": {
+          "correct": 2671,
+          "cost_adjusted_regret": 0.049000833333333306,
+          "n": 3000,
+          "route_accuracy": 0.8903333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.6755793226381461,
+              "correct": 379,
+              "n": 561
+            },
+            "clear_margin": {
+              "accuracy": 0.9393008067614291,
+              "correct": 2445,
+              "n": 2603
+            },
+            "confidence": {
+              "accuracy": 0.7779255319148937,
+              "correct": 585,
+              "n": 752
+            },
+            "epistemic": {
+              "accuracy": 0.7722772277227723,
+              "correct": 624,
+              "n": 808
+            },
+            "heldout": {
+              "accuracy": 0.8085714285714286,
+              "correct": 849,
+              "n": 1050
+            },
+            "regime": {
+              "accuracy": 0.7921348314606742,
+              "correct": 423,
+              "n": 534
+            },
+            "validity": {
+              "accuracy": 0.7623574144486692,
+              "correct": 401,
+              "n": 526
+            }
+          },
+          "task_success": 0.9413333333333334
+        },
+        "ood_compose_regime": {
+          "correct": 1372,
+          "cost_adjusted_regret": 1.837100000000001,
+          "n": 3000,
+          "route_accuracy": 0.4573333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.47775947281713343,
+              "correct": 290,
+              "n": 607
+            },
+            "clear_margin": {
+              "accuracy": 0.46454862456412244,
+              "correct": 1199,
+              "n": 2581
+            },
+            "confidence": {
+              "accuracy": 0.5971867007672634,
+              "correct": 467,
+              "n": 782
+            },
+            "epistemic": {
+              "accuracy": 0.6759156492785794,
+              "correct": 609,
+              "n": 901
+            },
+            "regime": {
+              "accuracy": 0.11925042589437819,
+              "correct": 210,
+              "n": 1761
+            },
+            "transfer": {
+              "accuracy": 0.01257396449704142,
+              "correct": 17,
+              "n": 1352
+            },
+            "validity": {
+              "accuracy": 0.5930902111324377,
+              "correct": 309,
+              "n": 521
+            }
+          },
+          "task_success": 0.5123333333333333
+        },
+        "ood_distractors": {
+          "correct": 2646,
+          "cost_adjusted_regret": 0.04803833333333334,
+          "n": 3000,
+          "route_accuracy": 0.882,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.6875981161695447,
+              "correct": 438,
+              "n": 637
+            },
+            "clear_margin": {
+              "accuracy": 0.932448262397501,
+              "correct": 2388,
+              "n": 2561
+            },
+            "confidence": {
+              "accuracy": 0.767052767052767,
+              "correct": 596,
+              "n": 777
+            },
+            "epistemic": {
+              "accuracy": 0.7433734939759036,
+              "correct": 617,
+              "n": 830
+            },
+            "regime": {
+              "accuracy": 0.8411214953271028,
+              "correct": 540,
+              "n": 642
+            },
+            "validity": {
+              "accuracy": 0.7896389324960753,
+              "correct": 503,
+              "n": 637
+            }
+          },
+          "task_success": 0.9346666666666666
+        },
+        "ood_payload": {
+          "correct": 2735,
+          "cost_adjusted_regret": 0.030252916666666664,
+          "n": 3000,
+          "route_accuracy": 0.9116666666666666,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.7587859424920128,
+              "correct": 475,
+              "n": 626
+            },
+            "clear_margin": {
+              "accuracy": 0.9594907407407407,
+              "correct": 2487,
+              "n": 2592
+            },
+            "confidence": {
+              "accuracy": 0.8228782287822878,
+              "correct": 669,
+              "n": 813
+            },
+            "epistemic": {
+              "accuracy": 0.8409937888198757,
+              "correct": 677,
+              "n": 805
+            },
+            "regime": {
+              "accuracy": 0.8754208754208754,
+              "correct": 520,
+              "n": 594
+            },
+            "validity": {
+              "accuracy": 0.8410174880763116,
+              "correct": 529,
+              "n": 629
+            }
+          },
+          "task_success": 0.9596666666666667
+        },
+        "ood_validity": {
+          "correct": 2654,
+          "cost_adjusted_regret": 0.02979625,
+          "n": 3000,
+          "route_accuracy": 0.8846666666666667,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.673202614379085,
+              "correct": 309,
+              "n": 459
+            },
+            "clear_margin": {
+              "accuracy": 0.9616346955796498,
+              "correct": 2306,
+              "n": 2398
+            },
+            "confidence": {
+              "accuracy": 0.7524875621890548,
+              "correct": 605,
+              "n": 804
+            },
+            "epistemic": {
+              "accuracy": 0.7642857142857142,
+              "correct": 535,
+              "n": 700
+            },
+            "regime": {
+              "accuracy": 0.8673267326732673,
+              "correct": 438,
+              "n": 505
+            },
+            "validity": {
+              "accuracy": 0.8053166536356529,
+              "correct": 1030,
+              "n": 1279
+            }
+          },
+          "task_success": 0.964
+        },
+        "test_iid": {
+          "correct": 2699,
+          "cost_adjusted_regret": 0.03390666666666665,
+          "n": 3000,
+          "route_accuracy": 0.8996666666666666,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.7090620031796503,
+              "correct": 446,
+              "n": 629
+            },
+            "clear_margin": {
+              "accuracy": 0.9509727626459143,
+              "correct": 2444,
+              "n": 2570
+            },
+            "confidence": {
+              "accuracy": 0.7674714104193139,
+              "correct": 604,
+              "n": 787
+            },
+            "epistemic": {
+              "accuracy": 0.8126582278481013,
+              "correct": 642,
+              "n": 790
+            },
+            "regime": {
+              "accuracy": 0.8655737704918033,
+              "correct": 528,
+              "n": 610
+            },
+            "validity": {
+              "accuracy": 0.8042328042328042,
+              "correct": 456,
+              "n": 567
+            }
+          },
+          "task_success": 0.9546666666666667
+        }
+      },
+      "71": {
+        "ood_compose_epi": {
+          "correct": 2417,
+          "cost_adjusted_regret": 0.1446441666666666,
+          "n": 3000,
+          "route_accuracy": 0.8056666666666666,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.6007130124777184,
+              "correct": 337,
+              "n": 561
+            },
+            "clear_margin": {
+              "accuracy": 0.8540145985401459,
+              "correct": 2223,
+              "n": 2603
+            },
+            "confidence": {
+              "accuracy": 0.6289893617021277,
+              "correct": 473,
+              "n": 752
+            },
+            "epistemic": {
+              "accuracy": 0.6113861386138614,
+              "correct": 494,
+              "n": 808
+            },
+            "heldout": {
+              "accuracy": 0.699047619047619,
+              "correct": 734,
+              "n": 1050
+            },
+            "regime": {
+              "accuracy": 0.7134831460674157,
+              "correct": 381,
+              "n": 534
+            },
+            "validity": {
+              "accuracy": 0.591254752851711,
+              "correct": 311,
+              "n": 526
+            }
+          },
+          "task_success": 0.856
+        },
+        "ood_compose_regime": {
+          "correct": 1229,
+          "cost_adjusted_regret": 1.81767666666667,
+          "n": 3000,
+          "route_accuracy": 0.4096666666666667,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.3953871499176277,
+              "correct": 240,
+              "n": 607
+            },
+            "clear_margin": {
+              "accuracy": 0.4215420379697792,
+              "correct": 1088,
+              "n": 2581
+            },
+            "confidence": {
+              "accuracy": 0.489769820971867,
+              "correct": 383,
+              "n": 782
+            },
+            "epistemic": {
+              "accuracy": 0.5471698113207547,
+              "correct": 493,
+              "n": 901
+            },
+            "regime": {
+              "accuracy": 0.11243611584327087,
+              "correct": 198,
+              "n": 1761
+            },
+            "transfer": {
+              "accuracy": 0.01257396449704142,
+              "correct": 17,
+              "n": 1352
+            },
+            "validity": {
+              "accuracy": 0.4779270633397313,
+              "correct": 249,
+              "n": 521
+            }
+          },
+          "task_success": 0.4623333333333333
+        },
+        "ood_distractors": {
+          "correct": 2381,
+          "cost_adjusted_regret": 0.14956625000000012,
+          "n": 3000,
+          "route_accuracy": 0.7936666666666666,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.5525902668759811,
+              "correct": 352,
+              "n": 637
+            },
+            "clear_margin": {
+              "accuracy": 0.8430300663803202,
+              "correct": 2159,
+              "n": 2561
+            },
+            "confidence": {
+              "accuracy": 0.6267696267696268,
+              "correct": 487,
+              "n": 777
+            },
+            "epistemic": {
+              "accuracy": 0.591566265060241,
+              "correct": 491,
+              "n": 830
+            },
+            "regime": {
+              "accuracy": 0.7710280373831776,
+              "correct": 495,
+              "n": 642
+            },
+            "validity": {
+              "accuracy": 0.6138147566718996,
+              "correct": 391,
+              "n": 637
+            }
+          },
+          "task_success": 0.8496666666666667
+        },
+        "ood_payload": {
+          "correct": 2419,
+          "cost_adjusted_regret": 0.12290916666666674,
+          "n": 3000,
+          "route_accuracy": 0.8063333333333333,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.5654952076677316,
+              "correct": 354,
+              "n": 626
+            },
+            "clear_margin": {
+              "accuracy": 0.8607253086419753,
+              "correct": 2231,
+              "n": 2592
+            },
+            "confidence": {
+              "accuracy": 0.6322263222632226,
+              "correct": 514,
+              "n": 813
+            },
+            "epistemic": {
+              "accuracy": 0.6173913043478261,
+              "correct": 497,
+              "n": 805
+            },
+            "regime": {
+              "accuracy": 0.765993265993266,
+              "correct": 455,
+              "n": 594
+            },
+            "validity": {
+              "accuracy": 0.643879173290938,
+              "correct": 405,
+              "n": 629
+            }
+          },
+          "task_success": 0.8636666666666667
+        },
+        "ood_validity": {
+          "correct": 2342,
+          "cost_adjusted_regret": 0.12718708333333326,
+          "n": 3000,
+          "route_accuracy": 0.7806666666666666,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.5337690631808278,
+              "correct": 245,
+              "n": 459
+            },
+            "clear_margin": {
+              "accuracy": 0.8607172643869891,
+              "correct": 2064,
+              "n": 2398
+            },
+            "confidence": {
+              "accuracy": 0.6318407960199005,
+              "correct": 508,
+              "n": 804
+            },
+            "epistemic": {
+              "accuracy": 0.5871428571428572,
+              "correct": 411,
+              "n": 700
+            },
+            "regime": {
+              "accuracy": 0.7584158415841584,
+              "correct": 383,
+              "n": 505
+            },
+            "validity": {
+              "accuracy": 0.6325254104769351,
+              "correct": 809,
+              "n": 1279
+            }
+          },
+          "task_success": 0.8726666666666667
+        },
+        "test_iid": {
+          "correct": 2454,
+          "cost_adjusted_regret": 0.11843874999999997,
+          "n": 3000,
+          "route_accuracy": 0.818,
+          "subsets": {
+            "budget": {
+              "accuracy": 0.5977742448330684,
+              "correct": 376,
+              "n": 629
+            },
+            "clear_margin": {
+              "accuracy": 0.8704280155642024,
+              "correct": 2237,
+              "n": 2570
+            },
+            "confidence": {
+              "accuracy": 0.6340533672172808,
+              "correct": 499,
+              "n": 787
+            },
+            "epistemic": {
+              "accuracy": 0.6177215189873417,
+              "correct": 488,
+              "n": 790
+            },
+            "regime": {
+              "accuracy": 0.7868852459016393,
+              "correct": 480,
+              "n": 610
+            },
+            "validity": {
+              "accuracy": 0.6402116402116402,
+              "correct": 363,
+              "n": 567
+            }
+          },
+          "task_success": 0.8763333333333333
+        }
+      }
+    }
+  },
+  "contingency_steps": 4000,
+  "scope": "A0-internal ablation on synthetic operator-routing v1; not this manifest's baseline comparison",
+  "study": "A0-ablations-v1"
+}
