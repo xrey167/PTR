@@ -123,10 +123,15 @@ impl Basis {
 const RANK_TOLERANCE: f64 = 1e-10;
 
 /// Orthonormal basis of the column space of `matrix`, by modified Gram-Schmidt
-/// with one full reorthogonalisation pass ("twice is enough"). Columns whose
-/// remainder is negligible relative to their own norm are dropped, so the
-/// basis has the numerical rank of the matrix.
+/// with one full reorthogonalisation pass ("twice is enough"). A column whose
+/// remainder is negligible relative to the largest column of the matrix is
+/// dropped, so the basis has the numerical rank of the matrix; a tolerance
+/// relative to each column's own norm would keep a column that is only
+/// rounding noise of the others.
 pub fn column_basis(matrix: &Matrix) -> Basis {
+    let scale = (0..matrix.cols)
+        .map(|index| norm(&matrix.column(index)))
+        .fold(0.0, f64::max);
     let mut vectors: Vec<Vec<f64>> = Vec::new();
     for index in 0..matrix.cols {
         let mut column = matrix.column(index);
@@ -143,7 +148,7 @@ pub fn column_basis(matrix: &Matrix) -> Basis {
             }
         }
         let remainder = norm(&column);
-        if remainder <= RANK_TOLERANCE * original {
+        if remainder <= RANK_TOLERANCE * scale {
             continue;
         }
         column.iter_mut().for_each(|cell| *cell /= remainder);
@@ -244,17 +249,94 @@ impl LayerUpdate {
         })
     }
 
-    /// Basis of a space containing the column space of `B A` (the outputs the
-    /// update can write). It equals it when `A` has full row rank; otherwise it
-    /// is larger, which can only overstate overlap.
+    /// Orthonormal basis of the column space of `delta_W = B A`: the outputs
+    /// the update can write.
     pub fn output_basis(&self) -> Basis {
-        column_basis(&self.b)
+        self.update_bases().0
     }
 
-    /// Basis of a space containing the row space of `B A` (the inputs the
-    /// update reads).
+    /// Orthonormal basis of the row space of `delta_W = B A`: the inputs the
+    /// update reads.
     pub fn input_basis(&self) -> Basis {
-        column_basis(&self.a.transpose())
+        self.update_bases().1
+    }
+
+    /// Bases of the column and row spaces of `B A`, computed without forming
+    /// the `d_out x d_in` product.
+    ///
+    /// With `Q` an orthonormal basis of `col(B)` and `M = (Q^T B) A`, which is
+    /// only `rank(B) x d_in`, `B A = Q M`; so `row(B A) = row(M)` and
+    /// `col(B A) = Q col(M)`. Taking `col(B)` and `row(A)` directly instead is
+    /// wrong whenever the factors are rank-deficient together: `B = [b, b]`,
+    /// `A = [a1; a2]` gives `B A = b (a1 + a2)^T`, whose row space is one
+    /// direction, not the plane `row(A)`. Since the overlap is normalised by
+    /// the smaller rank, a too-large subspace can understate overlap as well
+    /// as overstate it.
+    fn update_bases(&self) -> (Basis, Basis) {
+        let (d_out, d_in) = (self.b.rows, self.a.cols);
+        let q = column_basis(&self.b);
+        let rank = self.b.cols;
+        // M = (Q^T B) A, one row per basis vector of col(B).
+        let m_rows: Vec<Vec<f64>> = q
+            .vectors
+            .iter()
+            .map(|basis_vector| {
+                let r: Vec<f64> = (0..rank)
+                    .map(|column| dot(basis_vector, &self.b.column(column)))
+                    .collect();
+                (0..d_in)
+                    .map(|input| {
+                        r.iter()
+                            .enumerate()
+                            .map(|(inner, coefficient)| coefficient * self.a.get(inner, input))
+                            .sum()
+                    })
+                    .collect()
+            })
+            .collect();
+        if m_rows.is_empty() {
+            return (
+                Basis {
+                    dim: d_out,
+                    vectors: Vec::new(),
+                },
+                Basis {
+                    dim: d_in,
+                    vectors: Vec::new(),
+                },
+            );
+        }
+        let m = Matrix {
+            rows: m_rows.len(),
+            cols: d_in,
+            data: m_rows.concat(),
+        };
+        let input = column_basis(&m.transpose());
+        // An orthonormal basis of col(M) in coordinates of Q, mapped through Q:
+        // orthonormal because Q's columns are.
+        let coordinates = column_basis(&m);
+        let output = coordinates
+            .vectors
+            .iter()
+            .map(|coefficients| {
+                (0..d_out)
+                    .map(|row| {
+                        coefficients
+                            .iter()
+                            .zip(&q.vectors)
+                            .map(|(coefficient, basis_vector)| coefficient * basis_vector[row])
+                            .sum()
+                    })
+                    .collect()
+            })
+            .collect();
+        (
+            Basis {
+                dim: d_out,
+                vectors: output,
+            },
+            input,
+        )
     }
 
     /// The full update `delta_W = B A`. Merging and comparing adapters must

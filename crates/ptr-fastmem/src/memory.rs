@@ -88,7 +88,12 @@ impl FastMemory {
         &self.state
     }
 
-    /// The journal in write order.
+    /// The admitted writes in write order, with keys normalised per head.
+    ///
+    /// These are not the writes as composed: re-admitting a normalised key
+    /// normalises it again, which can change its bits, so this list must not
+    /// be passed back to [`FastMemory::restore`]. A store keeps each
+    /// [`WriteRequest`] as the caller composed it, as `ptr-pg` does.
     pub fn writes(&self) -> &[MemoryWrite] {
         &self.writes
     }
@@ -134,22 +139,14 @@ impl FastMemory {
         Ok(self.state.read(query))
     }
 
-    /// Digest of the ordered set of writes the state folds: sequence number,
-    /// source key, generation and input digest of each. A checkpoint or sealed
-    /// state is bound to this digest, so a state that includes a write another
-    /// journal lacks can never be admitted as that journal's fold.
+    /// Digest of the ordered set of writes the state folds; see
+    /// [`binding_digest_of`].
     pub fn binding_digest(&self) -> [u8; 32] {
-        let mut hasher = Sha256::new();
-        hasher.update(b"ptr-fastmem/binding/v1");
-        for write in &self.writes {
-            let source = write.source();
-            hasher.update(write.seq().0.to_le_bytes());
-            hasher.update((source.key.len() as u64).to_le_bytes());
-            hasher.update(source.key.as_bytes());
-            hasher.update(source.generation.0.to_le_bytes());
-            hasher.update(source.input_digest);
-        }
-        hasher.finalize().into()
+        binding_digest_of(
+            self.writes
+                .iter()
+                .map(|write| (write.seq(), write.source())),
+        )
     }
 
     /// Remove every write whose source matches `is_revoked` and refold.
@@ -237,4 +234,29 @@ impl FastMemory {
         }
         surprise
     }
+}
+
+/// Digest of an ordered set of folded writes: the sequence number, source
+/// key, generation and input digest of each, in order.
+///
+/// A checkpoint is bound to this digest, so a state that folds a write the
+/// journal no longer holds is never admitted as that journal's fold. It binds
+/// which writes were folded, identified by their sources; it does not cover
+/// the key, value, strength or gate bits, which the journal's own storage has
+/// to keep intact. Storage adapters recompute it from their journal rows with
+/// this function, so the encoding exists once.
+pub fn binding_digest_of<'a, I>(writes: I) -> [u8; 32]
+where
+    I: IntoIterator<Item = (WriteSeq, &'a SourceRef)>,
+{
+    let mut hasher = Sha256::new();
+    hasher.update(b"ptr-fastmem/binding/v1");
+    for (seq, source) in writes {
+        hasher.update(seq.0.to_le_bytes());
+        hasher.update((source.key.len() as u64).to_le_bytes());
+        hasher.update(source.key.as_bytes());
+        hasher.update(source.generation.0.to_le_bytes());
+        hasher.update(source.input_digest);
+    }
+    hasher.finalize().into()
 }

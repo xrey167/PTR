@@ -51,3 +51,33 @@ fn a_rank_mismatch_between_b_and_a_is_refused() {
     let a = Matrix::new(1, 4, vec![0.0; 4]).unwrap();
     assert!(LayerUpdate::new("q", b, a).is_err());
 }
+
+#[test]
+fn a_rank_deficient_update_is_measured_on_its_product_not_its_factors() {
+    // B = [e1, 0] and A = [e1; e2]: delta_W = e1 e1^T reads only e1, although
+    // row(A) is the plane {e1, e2}.
+    let b = Matrix::new(3, 2, vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0]).unwrap();
+    let a = Matrix::new(2, 3, vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0]).unwrap();
+    let candidate = LayerUpdate::new("q_proj", b, a).unwrap();
+    assert_eq!(candidate.input_basis().rank(), 1);
+    assert_eq!(candidate.output_basis().rank(), 1);
+    // An earlier adapter reading {e1, e3} and writing {e2, e3}.
+    let earlier_b = Matrix::new(3, 2, vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0]).unwrap();
+    let earlier_a = Matrix::new(2, 3, vec![1.0, 0.0, 0.0, 0.0, 0.0, 1.0]).unwrap();
+    let earlier = LayerUpdate::new("q_proj", earlier_b, earlier_a).unwrap();
+    let report =
+        measure_interference(&[candidate], &[(AdapterId::from("earlier"), vec![earlier])]).unwrap();
+    let layer = &report.layers[0];
+    assert!((layer.input_overlap - 1.0).abs() < 1e-12, "{layer:?}");
+    assert!(layer.output_overlap.abs() < 1e-12, "{layer:?}");
+}
+
+#[test]
+fn factors_that_lose_rank_together_yield_the_rank_of_the_product() {
+    // B = [b, b] and A = [a1; a2]: delta_W = b (a1 + a2)^T has rank one.
+    let b = Matrix::new(2, 2, vec![1.0, 1.0, 2.0, 2.0]).unwrap();
+    let a = Matrix::new(2, 3, vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0]).unwrap();
+    let update = LayerUpdate::new("v_proj", b, a).unwrap();
+    assert_eq!(update.input_basis().rank(), 1);
+    assert_eq!(update.output_basis().rank(), 1);
+}

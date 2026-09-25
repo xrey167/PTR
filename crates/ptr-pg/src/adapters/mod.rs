@@ -10,7 +10,7 @@ mod projection;
 mod search;
 
 use tokio_postgres::config::Host;
-use tokio_postgres::{Client, Config, NoTls};
+use tokio_postgres::{Client, Config, IsolationLevel, NoTls, Transaction};
 
 use crate::capability::Capabilities;
 use crate::config::{PgConfig, SchemaSet};
@@ -49,18 +49,18 @@ impl PgSubstrate {
 
     /// Connect with an explicit connection string.
     ///
-    /// This build links no TLS connector, so it refuses any host that is not a
-    /// loopback address or a Unix socket rather than send credentials in the
-    /// clear. Must be called inside a Tokio runtime.
+    /// This build links no TLS connector, so it refuses any target that is not
+    /// a loopback address or a Unix socket rather than send credentials in the
+    /// clear. When `hostaddr` is given the driver connects to it and uses
+    /// `host` only as a name, so every `hostaddr` must be a loopback address
+    /// as well. Must be called inside a Tokio runtime.
     pub async fn connect_with(dsn: &str, schemas: SchemaSet) -> Result<Self, PgError> {
         let config: Config =
             dsn.parse()
                 .map_err(|error: tokio_postgres::Error| PgError::Connection {
                     message: error.to_string(),
                 })?;
-        for host in config.get_hosts() {
-            check_loopback(host)?;
-        }
+        check_targets(&config)?;
         let (client, connection) = config.connect(NoTls).await.map_err(database)?;
         let connection = tokio::spawn(async move {
             // A closed connection surfaces as an error on the next statement.
@@ -109,36 +109,122 @@ impl PgSubstrate {
     /// changed, and a schema migrated by a newer build.
     pub async fn migrate(&mut self) -> Result<MigrationReport, PgError> {
         self.capabilities().await?.check_supported()?;
+        self.lock_migrations().await?;
+        let result = self.migrate_locked().await;
+        let unlock = self.unlock_migrations().await;
+        let report = result?;
+        unlock?;
+        Ok(report)
+    }
+
+    /// Drop the projection and the derived caches and recreate them empty.
+    /// Working state is untouched. The caller replays the ledger afterwards.
+    ///
+    /// The drop and the recreation run under the migration lock, so another
+    /// migrator cannot interleave, and a lock wait that fails leaves the
+    /// schemas as they were rather than dropped.
+    pub async fn rebuild_projection(&mut self) -> Result<MigrationReport, PgError> {
+        self.capabilities().await?.check_supported()?;
+        self.lock_migrations().await?;
+        let result = self.rebuild_locked().await;
+        let unlock = self.unlock_migrations().await;
+        let report = result?;
+        unlock?;
+        Ok(report)
+    }
+
+    /// Drop all three schemas. For tests and decommissioning only: working
+    /// state is not recoverable from the ledger.
+    pub async fn drop_all(self) -> Result<(), PgError> {
+        let SchemaSet {
+            projection,
+            derived,
+            work,
+        } = self.schemas.clone();
+        self.client
+            .batch_execute(&format!(
+                "DROP SCHEMA IF EXISTS {derived} CASCADE; \
+                 DROP SCHEMA IF EXISTS {projection} CASCADE; \
+                 DROP SCHEMA IF EXISTS {work} CASCADE;"
+            ))
+            .await
+            .map_err(database)?;
+        drop(self.client);
+        let _ = self.connection.await;
+        Ok(())
+    }
+
+    /// A read-committed transaction, whatever the session's default.
+    ///
+    /// The row-lock ordering between the projector and every writer of derived
+    /// or working rows relies on each statement taking a fresh snapshot after
+    /// the locks it waited for were released. Under repeatable read a
+    /// projector's delete would miss a row committed while it waited, so the
+    /// level is pinned here rather than inherited from
+    /// `default_transaction_isolation`.
+    pub(crate) async fn read_committed(&mut self) -> Result<Transaction<'_>, PgError> {
+        self.client
+            .build_transaction()
+            .isolation_level(IsolationLevel::ReadCommitted)
+            .start()
+            .await
+            .map_err(database)
+    }
+
+    /// The session advisory lock every schema change of this instance takes.
+    /// Its wait has no timeout: a second migrator waits for the first.
+    async fn lock_migrations(&self) -> Result<(), PgError> {
         let lock_key = format!("ptr-pg:{}", self.schemas.projection);
         self.client
             .execute("SELECT pg_advisory_lock(hashtext($1))", &[&lock_key])
             .await
             .map_err(database)?;
-        let result = self.migrate_locked().await;
-        let unlock = self
-            .client
+        Ok(())
+    }
+
+    async fn unlock_migrations(&self) -> Result<(), PgError> {
+        let lock_key = format!("ptr-pg:{}", self.schemas.projection);
+        self.client
             .execute("SELECT pg_advisory_unlock(hashtext($1))", &[&lock_key])
             .await
-            .map_err(database);
-        let report = result?;
-        unlock?;
-        Ok(report)
+            .map_err(database)?;
+        Ok(())
+    }
+
+    async fn rebuild_locked(&mut self) -> Result<MigrationReport, PgError> {
+        let projection = self.schemas.projection.clone();
+        let derived = self.schemas.derived.clone();
+        self.client
+            .batch_execute(&format!(
+                "BEGIN; \
+                 SET LOCAL lock_timeout = '10s'; \
+                 DROP SCHEMA IF EXISTS {derived} CASCADE; \
+                 DROP SCHEMA IF EXISTS {projection} CASCADE; \
+                 COMMIT;"
+            ))
+            .await
+            .map_err(database)?;
+        self.migrate_locked().await
     }
 
     async fn migrate_locked(&mut self) -> Result<MigrationReport, PgError> {
         let mut report = MigrationReport::default();
         for class in SchemaClass::ALL {
             let schema = self.schema_of(class).to_owned();
+            // SET LOCAL: the timeout bounds this transaction's DDL only and
+            // never leaks into the session the projector uses afterwards.
             self.client
                 .batch_execute(&format!(
-                    "SET lock_timeout = '10s';
+                    "BEGIN;
+                     SET LOCAL lock_timeout = '10s';
                      CREATE SCHEMA IF NOT EXISTS {schema};
                      CREATE TABLE IF NOT EXISTS {schema}.schema_migration (
                          version integer PRIMARY KEY,
                          name text NOT NULL,
                          checksum bytea NOT NULL,
                          applied_at timestamptz NOT NULL DEFAULT now()
-                     );"
+                     );
+                     COMMIT;"
                 ))
                 .await
                 .map_err(database)?;
@@ -163,6 +249,10 @@ impl PgSubstrate {
             let pending = plan_migrations(class, class.catalog(), &applied)?;
             for migration in pending {
                 let transaction = self.client.transaction().await.map_err(database)?;
+                transaction
+                    .batch_execute("SET LOCAL lock_timeout = '10s'")
+                    .await
+                    .map_err(database)?;
                 transaction
                     .batch_execute(&migration.render(&self.schemas))
                     .await
@@ -192,41 +282,6 @@ impl PgSubstrate {
         Ok(report)
     }
 
-    /// Drop the projection and the derived caches and recreate them empty.
-    /// Working state is untouched. The caller replays the ledger afterwards.
-    pub async fn rebuild_projection(&mut self) -> Result<MigrationReport, PgError> {
-        let projection = self.schemas.projection.clone();
-        let derived = self.schemas.derived.clone();
-        self.client
-            .batch_execute(&format!(
-                "DROP SCHEMA IF EXISTS {derived} CASCADE; DROP SCHEMA IF EXISTS {projection} CASCADE;"
-            ))
-            .await
-            .map_err(database)?;
-        self.migrate().await
-    }
-
-    /// Drop all three schemas. For tests and decommissioning only: working
-    /// state is not recoverable from the ledger.
-    pub async fn drop_all(self) -> Result<(), PgError> {
-        let SchemaSet {
-            projection,
-            derived,
-            work,
-        } = self.schemas.clone();
-        self.client
-            .batch_execute(&format!(
-                "DROP SCHEMA IF EXISTS {derived} CASCADE; \
-                 DROP SCHEMA IF EXISTS {projection} CASCADE; \
-                 DROP SCHEMA IF EXISTS {work} CASCADE;"
-            ))
-            .await
-            .map_err(database)?;
-        drop(self.client);
-        let _ = self.connection.await;
-        Ok(())
-    }
-
     fn schema_of(&self, class: SchemaClass) -> &str {
         match class {
             SchemaClass::Projection => self.schemas.projection.as_str(),
@@ -234,6 +289,23 @@ impl PgSubstrate {
             SchemaClass::Work => self.schemas.work.as_str(),
         }
     }
+}
+
+/// Refuse a connection target that is not local: every `hostaddr` must be a
+/// loopback address, and every `host` a Unix socket, `localhost` or a
+/// loopback address.
+fn check_targets(config: &Config) -> Result<(), PgError> {
+    for address in config.get_hostaddrs() {
+        if !address.is_loopback() {
+            return Err(PgError::TlsRequired {
+                host: address.to_string(),
+            });
+        }
+    }
+    for host in config.get_hosts() {
+        check_loopback(host)?;
+    }
+    Ok(())
 }
 
 fn check_loopback(host: &Host) -> Result<(), PgError> {
@@ -268,6 +340,14 @@ pub(crate) fn database(error: tokio_postgres::Error) -> PgError {
             message: error.to_string(),
         },
     }
+}
+
+/// Refuse a string a PostgreSQL `text` column cannot hold.
+pub(crate) fn check_text(field: &'static str, value: &str) -> Result<(), PgError> {
+    if value.contains('\0') {
+        return Err(PgError::InvalidText { field });
+    }
+    Ok(())
 }
 
 /// `u64` to a signed column, refusing rather than wrapping.

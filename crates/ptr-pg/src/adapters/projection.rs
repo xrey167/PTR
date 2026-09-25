@@ -7,13 +7,15 @@
 //! ledger's and the record is refused. A re-delivered record is accepted only
 //! when its anchor equals the one stored for its index.
 
+use std::collections::BTreeMap;
+
 use ptr_ledger::integrity::{chain_anchors, LogAnchor};
 use ptr_ledger::CommittedEvent;
 use ptr_state::{classify_next, projection_entries, ApplyOutcome};
 use ptr_types::{CommitIndex, Generation, Revision};
 use tokio_postgres::Transaction;
 
-use super::{database, digest_from, to_i64, to_u64, PgSubstrate};
+use super::{check_text, database, digest_from, to_i64, to_u64, PgSubstrate};
 use crate::config::SchemaSet;
 use crate::error::PgError;
 use crate::event::{event_payload, event_subject, event_topic, lifecycle_change, LifecycleChange};
@@ -29,8 +31,9 @@ pub struct ProjectionApply {
     /// being live.
     pub dropped_documents: u64,
     /// Fast-memory journal writes deleted because their source generation was
-    /// revoked, and checkpoints deleted because they folded one of them.
-    pub revoked_writes: u64,
+    /// revoked or superseded, and checkpoints deleted because they folded one
+    /// of them.
+    pub removed_writes: u64,
     pub dropped_checkpoints: u64,
 }
 
@@ -39,7 +42,7 @@ impl ProjectionApply {
         Self {
             outcome,
             dropped_documents: 0,
-            revoked_writes: 0,
+            removed_writes: 0,
             dropped_checkpoints: 0,
         }
     }
@@ -96,8 +99,9 @@ impl PgSubstrate {
                 reason: format!("the anchor is for index {}", anchor.index.0),
             });
         }
+        check_record_text(committed)?;
         let schemas = self.schemas.clone();
-        let transaction = self.client.transaction().await.map_err(database)?;
+        let transaction = self.read_committed().await?;
         let current = lock_watermark(&transaction, &schemas).await?;
 
         if let Some(refusal) = classify_next(current.index.0, index) {
@@ -186,6 +190,16 @@ impl PgSubstrate {
                     )
                     .await
                     .map_err(database)?;
+                // A superseded generation is no longer admissible either, so
+                // fast-memory writes derived from any other generation go too.
+                (report.removed_writes, report.dropped_checkpoints) = remove_fastmem_writes(
+                    &transaction,
+                    work,
+                    &target,
+                    generation,
+                    Removal::OtherThan,
+                )
+                .await?;
             }
             LifecycleChange::Tombstone {
                 subject,
@@ -228,29 +242,14 @@ impl PgSubstrate {
                 // derived from the revoked generation and every checkpoint that
                 // folded one of them. What remains refolds bit-identically to a
                 // memory that never saw the writes.
-                let row = transaction
-                    .query_one(
-                        &format!(
-                            "WITH removed AS ( \
-                                 DELETE FROM {work}.fastmem_write \
-                                 WHERE source_key = $1 AND source_generation = $2 \
-                                 RETURNING memory, seq \
-                             ), first_removed AS ( \
-                                 SELECT memory, min(seq) AS seq FROM removed GROUP BY memory \
-                             ), dropped AS ( \
-                                 DELETE FROM {work}.fastmem_checkpoint c \
-                                 USING first_removed f \
-                                 WHERE c.memory = f.memory AND c.applied_seq >= f.seq \
-                                 RETURNING 1 \
-                             ) \
-                             SELECT (SELECT count(*) FROM removed), (SELECT count(*) FROM dropped)"
-                        ),
-                        &[&subject, &generation],
-                    )
-                    .await
-                    .map_err(database)?;
-                report.revoked_writes = to_u64(row.get(0), "fastmem_write")?;
-                report.dropped_checkpoints = to_u64(row.get(1), "fastmem_checkpoint")?;
+                (report.removed_writes, report.dropped_checkpoints) = remove_fastmem_writes(
+                    &transaction,
+                    work,
+                    &subject,
+                    generation,
+                    Removal::Exactly,
+                )
+                .await?;
             }
             LifecycleChange::Revision { base, revision } => {
                 transaction
@@ -451,6 +450,101 @@ impl PgSubstrate {
     pub fn projection_channel(&self) -> String {
         notify_channel(&self.schemas)
     }
+}
+
+/// Which generations of a source key a removal deletes.
+#[derive(Clone, Copy)]
+enum Removal {
+    /// The revoked generation.
+    Exactly,
+    /// Every generation except the new live one.
+    OtherThan,
+}
+
+/// Delete fast-memory journal writes of `key` at the chosen generations, then
+/// every checkpoint that folded one of them. Returns both counts.
+///
+/// The checkpoint delete is a separate statement on purpose. A checkpoint
+/// writer holds the journal rows it folds `FOR SHARE`; the write delete waits
+/// for it, and a statement issued after that wait takes a snapshot that
+/// includes the checkpoint committed meanwhile, so it is removed too. Folded
+/// into one statement, the checkpoint delete would use the snapshot taken
+/// before the wait and miss it.
+async fn remove_fastmem_writes(
+    transaction: &Transaction<'_>,
+    work: &str,
+    key: &str,
+    generation: i64,
+    removal: Removal,
+) -> Result<(u64, u64), PgError> {
+    let comparison = match removal {
+        Removal::Exactly => "=",
+        Removal::OtherThan => "<>",
+    };
+    let removed = transaction
+        .query(
+            &format!(
+                "DELETE FROM {work}.fastmem_write \
+                 WHERE source_key = $1 AND source_generation {comparison} $2 \
+                 RETURNING memory, seq"
+            ),
+            &[&key, &generation],
+        )
+        .await
+        .map_err(database)?;
+    let mut first_removed: BTreeMap<String, i64> = BTreeMap::new();
+    for row in &removed {
+        let (memory, seq): (String, i64) = (row.get(0), row.get(1));
+        let entry = first_removed.entry(memory).or_insert(seq);
+        *entry = (*entry).min(seq);
+    }
+    let mut dropped = 0;
+    for (memory, seq) in &first_removed {
+        dropped += transaction
+            .execute(
+                &format!(
+                    "DELETE FROM {work}.fastmem_checkpoint \
+                     WHERE memory = $1 AND applied_seq >= $2"
+                ),
+                &[memory, seq],
+            )
+            .await
+            .map_err(database)?;
+    }
+    Ok((removed.len() as u64, dropped))
+}
+
+/// Refuse a record carrying a string PostgreSQL `text` cannot hold, before
+/// anything is written. The projection then stops at this record with a typed
+/// refusal rather than a driver error; the ledger and the other backends are
+/// unaffected.
+fn check_record_text(committed: &CommittedEvent) -> Result<(), PgError> {
+    let index = committed.index.0;
+    let mut strings: Vec<String> = Vec::new();
+    for (key, value) in projection_entries(committed) {
+        strings.push(key);
+        strings.push(value);
+    }
+    match lifecycle_change(committed) {
+        LifecycleChange::SetLive {
+            target, project, ..
+        } => {
+            strings.push(target);
+            strings.extend(project.map(|project| project.0));
+        }
+        LifecycleChange::Tombstone { subject, .. } => strings.push(subject),
+        LifecycleChange::Revision { .. } | LifecycleChange::None => {}
+    }
+    strings.push(event_subject(committed));
+    for value in &strings {
+        if check_text("record", value).is_err() {
+            return Err(PgError::InvalidRecord {
+                index,
+                reason: "a string contains NUL, which PostgreSQL text cannot store".into(),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn notify_channel(schemas: &SchemaSet) -> String {

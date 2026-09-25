@@ -20,7 +20,8 @@ sha2 = { version = "=0.11.0", default-features = false }
 
 [dev-dependencies]
 # The end-to-end test commits a certified plan through the runtime's verified
-# delta path, the only way a branch reaches semantic state.
+# delta path, the path a caller must use: the runtime's unverified
+# apply_semantic_delta is public, so the type system does not enforce it.
 ptr-runtime = { workspace = true }
 ptr-config = { workspace = true }
 ptr-ledger = { workspace = true }

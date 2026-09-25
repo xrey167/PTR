@@ -2,8 +2,10 @@ use crate::error::PgError;
 
 /// Oldest server the substrate supports (`server_version_num`).
 pub const MINIMUM_SERVER: u32 = 160_000;
-/// pgvector version that introduced `halfvec`.
-pub const MINIMUM_PGVECTOR: (u32, u32, u32) = (0, 7, 0);
+/// pgvector 0.8: `halfvec` (0.7) and iterative index scans (0.8). Without
+/// iterative scans an HNSW query returns at most `hnsw.ef_search` rows, so a
+/// filtered or larger query would be silently incomplete.
+pub const MINIMUM_PGVECTOR: (u32, u32, u32) = (0, 8, 0);
 
 /// Lexical ranking the substrate can use.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -128,6 +130,11 @@ mod tests {
         );
         let no_halfvec = Capabilities::from_catalog(180_006, [("vector", "0.6.0")]);
         assert!(no_halfvec.check_supported().is_err());
+        let no_iterative_scans = Capabilities::from_catalog(180_006, [("vector", "0.7.4")]);
+        assert_eq!(
+            no_iterative_scans.check_supported(),
+            Err(PgError::MissingExtension { name: "vector" })
+        );
     }
 
     #[test]

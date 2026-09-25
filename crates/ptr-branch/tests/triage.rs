@@ -1,6 +1,6 @@
 use ptr_branch::{
-    calibrate_threshold, calibration_draw, doubly_robust, evaluate_off_policy, ArbiterError,
-    AutoThreshold, BranchId, LoggedTriage, TriageDecision, TriagePolicy,
+    calibrate_threshold, calibration_draw, certify_threshold, doubly_robust, evaluate_off_policy,
+    ArbiterError, AutoThreshold, BranchId, LoggedTriage, TriageDecision, TriagePolicy,
 };
 use ptr_types::{Probability, VerificationLevel};
 use ptr_verifier::{VerificationReport, VerificationStatus};
@@ -96,6 +96,59 @@ fn a_threshold_calibrated_from_adjudicated_slices_is_used_by_the_next_policy() {
     // rate among proposals.
     let threshold = calibrate_threshold(&samples, 0.1).unwrap();
     assert_eq!(threshold, AutoThreshold::AtLeast(201.0_f32 / 1000.0));
+
+    // The next policy auto-proposes what the calibrated threshold admits and
+    // escalates the rest.
+    let next = TriagePolicy::new(threshold, 0.0).unwrap();
+    assert_eq!(
+        next.triage(&passing(), score(0.5), 0.5).decision,
+        TriageDecision::AutoPropose
+    );
+    assert_eq!(
+        next.triage(&passing(), score(0.1), 0.5).decision,
+        TriageDecision::Escalate
+    );
+}
+
+#[test]
+fn a_certified_threshold_bounds_the_harm_rate_among_what_the_next_policy_proposes() {
+    let logging = TriagePolicy::new(AutoThreshold::Never, 0.999).unwrap();
+    // Sixty clean branches score high; twenty score low and every second one
+    // of those is harmful.
+    let labelled: Vec<(f32, bool)> = (0..60)
+        .map(|i| (0.5 + i as f32 / 200.0, false))
+        .chain((0..20).map(|i| (0.1 + i as f32 / 100.0, i % 2 == 0)))
+        .collect();
+    let samples: Vec<_> = labelled
+        .iter()
+        .enumerate()
+        .map(|(i, &(value, harmful))| {
+            let branch = BranchId(format!("c{i}"));
+            logging
+                .triage(&passing(), score(value), calibration_draw(&branch, 7) * 0.5)
+                .adjudicate(harmful)
+                .expect("calibration slice")
+        })
+        .collect();
+    // Learn-then-Test with Clopper-Pearson bounds at alpha = delta = 0.1.
+    let threshold = certify_threshold(&samples, 0.1, 0.1).unwrap();
+    let AutoThreshold::AtLeast(cut) = threshold else {
+        panic!("sixty clean samples certify a threshold");
+    };
+    let admitted: Vec<_> = labelled.iter().filter(|(value, _)| *value >= cut).collect();
+    let harmful = admitted.iter().filter(|(_, harmful)| *harmful).count();
+    assert!(!admitted.is_empty());
+    assert!(harmful as f64 / admitted.len() as f64 <= 0.1, "{cut}");
+
+    let next = TriagePolicy::new(threshold, 0.05).unwrap();
+    assert_eq!(
+        next.triage(&passing(), score(0.9), 0.5).decision,
+        TriageDecision::AutoPropose
+    );
+    assert_eq!(
+        next.triage(&passing(), score(0.1), 0.5).decision,
+        TriageDecision::Escalate
+    );
 }
 
 #[test]

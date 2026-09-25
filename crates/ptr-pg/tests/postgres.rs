@@ -1,7 +1,7 @@
 //! Integration tests against a real PostgreSQL server.
 //!
 //! `PTR_PG_TEST_DSN` must name a loopback PostgreSQL 16+ server where the
-//! connecting role may create schemas and where pgvector 0.7+ is installed or
+//! connecting role may create schemas and where pgvector 0.8+ is installed or
 //! installable. Every test works in its own schema prefix and drops it at the
 //! end, so tests run in parallel against one database.
 
@@ -35,10 +35,26 @@ fn dsn() -> String {
     }
 }
 
+/// The test server, with every session defaulting to repeatable read. The
+/// substrate must pin the isolation its lock ordering needs rather than
+/// inherit an operator's default. The connection-string parser removes one
+/// level of backslashes and the server's option parser the next, which leaves
+/// the escaped space inside the option value.
+fn repeatable_read_dsn() -> String {
+    format!(
+        "{} options='-c default_transaction_isolation=repeatable\\\\ read'",
+        dsn()
+    )
+}
+
 /// A raw client for setup and for adversarial statements the substrate API
 /// deliberately does not offer.
 async fn raw_client() -> tokio_postgres::Client {
-    let (client, connection) = tokio_postgres::connect(&dsn(), tokio_postgres::NoTls)
+    raw_client_at(&dsn()).await
+}
+
+async fn raw_client_at(dsn: &str) -> tokio_postgres::Client {
+    let (client, connection) = tokio_postgres::connect(dsn, tokio_postgres::NoTls)
         .await
         .expect("connect to PTR_PG_TEST_DSN");
     tokio::spawn(async move {
@@ -49,12 +65,20 @@ async fn raw_client() -> tokio_postgres::Client {
 
 /// A migrated substrate in a fresh schema prefix.
 async fn substrate() -> PgSubstrate {
+    substrate_at(&dsn()).await
+}
+
+async fn substrate_at(dsn: &str) -> PgSubstrate {
     let raw = raw_client().await;
-    // Parallel tests race on CREATE EXTENSION; serialize it.
+    // Parallel tests race on CREATE EXTENSION; serialize it. The lock must be
+    // held until the extension is committed, so it is a transaction lock: a
+    // session lock released inside the batch's implicit transaction would let
+    // the next test in before the extension is visible to it.
     raw.batch_execute(
-        "SELECT pg_advisory_lock(7402301); \
+        "BEGIN; \
+         SELECT pg_advisory_xact_lock(7402301); \
          CREATE EXTENSION IF NOT EXISTS vector; \
-         SELECT pg_advisory_unlock(7402301);",
+         COMMIT;",
     )
     .await
     .expect("pgvector must be installed or installable");
@@ -64,7 +88,7 @@ async fn substrate() -> PgSubstrate {
         NEXT_PREFIX.fetch_add(1, Ordering::SeqCst)
     );
     let schemas = SchemaSet::with_prefix(&prefix).unwrap();
-    let mut substrate = PgSubstrate::connect_with(&dsn(), schemas).await.unwrap();
+    let mut substrate = PgSubstrate::connect_with(dsn, schemas).await.unwrap();
     // A previous run with the same process id may have left schemas behind.
     raw.batch_execute(&format!(
         "DROP SCHEMA IF EXISTS {prefix}_derived CASCADE; \
@@ -529,6 +553,13 @@ async fn only_live_generations_are_indexed_and_superseding_drops_the_old_documen
             .await,
         Err(PgError::InvalidEmbedding { .. })
     ));
+    // Nonzero in f32 but zero once stored in half precision.
+    assert!(matches!(
+        substrate
+            .upsert_document(&document("c1", 2, "second", &[1e-8, 1e-8, 1e-8, 1e-8]))
+            .await,
+        Err(PgError::InvalidEmbedding { .. })
+    ));
     substrate
         .upsert_document(&document(
             "c1",
@@ -703,7 +734,7 @@ async fn a_revocation_deletes_exactly_the_revoked_writes_and_the_checkpoints_tha
     assert_eq!(bits(restored.state().cells()), bits(memory.state().cells()));
 
     let report = substrate.apply_committed(&log[2], chain[2]).await.unwrap();
-    assert_eq!(report.revoked_writes, 1);
+    assert_eq!(report.removed_writes, 1);
     // Checkpoints at 2 and 4; only the one at 4 folded write 3.
     assert_eq!(report.dropped_checkpoints, 1);
 
@@ -1029,6 +1060,40 @@ async fn triage_logs_and_outcomes_feed_the_platform_metrics() {
         .await
         .unwrap_err();
     assert_eq!(error.as_db_error().unwrap().code().code(), "23000");
+
+    // Neither is an outcome removed on its own, nor a logged triage changed,
+    // nor a branch adjudicated twice.
+    for statement in [
+        format!("DELETE FROM {work}.branch_outcome WHERE branch = 'b4'"),
+        format!("UPDATE {work}.branch_triage SET score = 0.1 WHERE branch = 'b1'"),
+        format!("DELETE FROM {work}.branch_triage WHERE branch = 'b1'"),
+    ] {
+        let error = raw.execute(&statement, &[]).await.unwrap_err();
+        assert_eq!(
+            error.as_db_error().unwrap().code().code(),
+            "23000",
+            "{statement}"
+        );
+    }
+    assert!(matches!(
+        substrate
+            .record_outcome(&BranchId::from("b2"), BranchOutcome::AdjudicatedHarmless)
+            .await,
+        Err(PgError::Database { ref sqlstate, .. }) if sqlstate == "23505"
+    ));
+    // Erasing a whole branch removes its triage and outcomes with it.
+    raw.execute(&format!("DELETE FROM {work}.branch WHERE id = 'b4'"), &[])
+        .await
+        .unwrap();
+    let left: i64 = raw
+        .query_one(
+            &format!("SELECT count(*) FROM {work}.branch_outcome WHERE branch = 'b4'"),
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(left, 0);
     substrate.drop_all().await.unwrap();
 }
 
@@ -1117,6 +1182,29 @@ async fn working_state_constraints_hold_in_the_database() {
 }
 
 #[tokio::test]
+async fn a_hostaddr_that_is_not_loopback_is_refused_whatever_the_host() {
+    // With hostaddr set the driver connects there and uses host only as a name.
+    for dsn in [
+        "hostaddr=192.0.2.2 user=ptr",
+        "host=localhost hostaddr=192.0.2.2 user=ptr",
+        "host=/var/run/postgresql hostaddr=192.0.2.2 user=ptr",
+    ] {
+        let schemas = SchemaSet::with_prefix("ptr_unused").unwrap();
+        let error = PgSubstrate::connect_with(dsn, schemas)
+            .await
+            .err()
+            .expect("a remote hostaddr must be refused");
+        assert_eq!(
+            error,
+            PgError::TlsRequired {
+                host: "192.0.2.2".into()
+            },
+            "{dsn}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn a_non_loopback_host_is_refused_without_a_tls_connector() {
     let schemas = SchemaSet::with_prefix("ptr_unused").unwrap();
     let error = PgSubstrate::connect_with("host=db.example.com user=ptr", schemas)
@@ -1133,7 +1221,22 @@ async fn a_non_loopback_host_is_refused_without_a_tls_connector() {
 
 #[tokio::test]
 async fn a_derived_write_holding_the_lifecycle_row_is_ordered_before_the_supersede() {
-    let mut substrate = substrate().await;
+    supersede_waits_for_the_derived_writer(substrate().await).await;
+}
+
+#[tokio::test]
+async fn the_lock_ordering_holds_when_sessions_default_to_repeatable_read() {
+    let isolation: String = raw_client_at(&repeatable_read_dsn())
+        .await
+        .query_one("SHOW default_transaction_isolation", &[])
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(isolation, "repeatable read");
+    supersede_waits_for_the_derived_writer(substrate_at(&repeatable_read_dsn()).await).await;
+}
+
+async fn supersede_waits_for_the_derived_writer(mut substrate: PgSubstrate) {
     let log = vec![capsule(1, "c1", 1), supersede(2, "c1", 1, 2)];
     let chain = anchors(&log);
     substrate.apply_committed(&log[0], chain[0]).await.unwrap();
@@ -1194,5 +1297,266 @@ async fn a_derived_write_holding_the_lifecycle_row_is_ordered_before_the_superse
         .unwrap()
         .get(0);
     assert_eq!(remaining, 0);
+    substrate.drop_all().await.unwrap();
+}
+
+async fn memory_with(substrate: &PgSubstrate, id: &str, max_writes: u32) -> FastMemoryConfig {
+    let config = FastMemoryConfig {
+        max_writes,
+        ..memory_config()
+    };
+    substrate
+        .create_memory(&FastMemoryRecord {
+            id: id.into(),
+            principal: PrincipalId::from("agent-7"),
+            thread: id.into(),
+            config,
+            projection_digest: [3; 32],
+            codebook_seed: 11,
+        })
+        .await
+        .unwrap();
+    config
+}
+
+/// Journal a write from another connection while holding the memory row,
+/// the way a concurrent `append_write` does, and let `append` run meanwhile.
+async fn race_an_append(
+    mut substrate: PgSubstrate,
+    memory: &str,
+    held_seq: i64,
+    racing_seq: u64,
+) -> (PgSubstrate, Result<(), PgError>) {
+    let work = substrate.schemas().work.clone();
+    let mut holder = raw_client().await;
+    let transaction = holder.transaction().await.unwrap();
+    transaction
+        .query_one(
+            &format!("SELECT max_writes FROM {work}.fastmem_memory WHERE id = $1 FOR UPDATE"),
+            &[&memory],
+        )
+        .await
+        .unwrap();
+    transaction
+        .execute(
+            &format!(
+                "INSERT INTO {work}.fastmem_write \
+                 (memory, seq, source_key, source_generation, input_digest, key_cells, \
+                  value_cells, beta, decay_kind) \
+                 VALUES ($1, $2, 'live', 1, decode(repeat('04', 32), 'hex'), \
+                         decode(repeat('00', 16), 'hex'), decode(repeat('00', 16), 'hex'), \
+                         0.5, 'none')"
+            ),
+            &[&memory, &held_seq],
+        )
+        .await
+        .unwrap();
+    let request = write_request("live", [1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]);
+    let memory_id = memory.to_owned();
+    let appender = tokio::spawn(async move {
+        let result = substrate
+            .append_write(&memory_id, ptr_fastmem::WriteSeq(racing_seq), &request)
+            .await;
+        (substrate, result)
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert!(
+        !appender.is_finished(),
+        "the append must wait for the memory row"
+    );
+    transaction.commit().await.unwrap();
+    appender.await.unwrap()
+}
+
+#[tokio::test]
+async fn an_append_that_waited_for_another_sees_its_write() {
+    let mut substrate = substrate().await;
+    substrate.replay(&[capsule(1, "live", 1)]).await.unwrap();
+    // Out of order: seq 3 commits while seq 2 waits.
+    memory_with(&substrate, "ordered", 64).await;
+    let first = write_request("live", [1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]);
+    substrate
+        .append_write("ordered", ptr_fastmem::WriteSeq(1), &first)
+        .await
+        .unwrap();
+    let (mut substrate, result) = race_an_append(substrate, "ordered", 3, 2).await;
+    assert_eq!(
+        result,
+        Err(PgError::InvalidWrite {
+            memory: "ordered".into(),
+            reason: "the sequence number does not follow the journal"
+        })
+    );
+    // Over capacity: the journal fills while the append waits.
+    memory_with(&substrate, "bounded", 2).await;
+    substrate
+        .append_write("bounded", ptr_fastmem::WriteSeq(1), &first)
+        .await
+        .unwrap();
+    let (substrate, result) = race_an_append(substrate, "bounded", 2, 3).await;
+    assert_eq!(
+        result,
+        Err(PgError::InvalidWrite {
+            memory: "bounded".into(),
+            reason: "the journal is full"
+        })
+    );
+    assert_eq!(substrate.load_journal("bounded").await.unwrap().len(), 2);
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn superseding_a_source_removes_its_fast_memory_writes() {
+    let mut substrate = substrate().await;
+    let log = vec![capsule(1, "c1", 1), supersede(2, "c1", 1, 2)];
+    let chain = anchors(&log);
+    substrate.apply_committed(&log[0], chain[0]).await.unwrap();
+    let config = memory_with(&substrate, "m1", 64).await;
+    let request = write_request("c1", [1.0, 0.0, 0.0, 0.0], [0.5, 0.0, 0.0, 0.0]);
+    let mut memory = FastMemory::new(config).unwrap();
+    let receipt = memory.write(request.clone()).unwrap();
+    substrate
+        .append_write("m1", receipt.seq, &request)
+        .await
+        .unwrap();
+    substrate
+        .put_checkpoint("m1", memory.binding_digest(), memory.state())
+        .await
+        .unwrap();
+    let report = substrate.apply_committed(&log[1], chain[1]).await.unwrap();
+    assert_eq!(report.removed_writes, 1);
+    assert_eq!(report.dropped_checkpoints, 1);
+    assert!(substrate.load_journal("m1").await.unwrap().is_empty());
+    assert_eq!(substrate.latest_checkpoint("m1").await.unwrap(), None);
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_checkpoint_that_does_not_fold_the_stored_journal_is_refused_or_skipped() {
+    let mut substrate = substrate().await;
+    let log = vec![
+        capsule(1, "keep", 1),
+        capsule(2, "gone", 1),
+        revoke(3, "gone", 1),
+    ];
+    let chain = anchors(&log);
+    substrate.apply_committed(&log[0], chain[0]).await.unwrap();
+    substrate.apply_committed(&log[1], chain[1]).await.unwrap();
+    let config = memory_with(&substrate, "m1", 64).await;
+    let keep = write_request("keep", [1.0, 0.0, 0.0, 0.0], [0.5, 0.1, 0.0, 0.0]);
+    let gone = write_request("gone", [0.0, 1.0, 0.0, 0.0], [0.9, 0.9, 0.9, 0.9]);
+    let mut memory = FastMemory::new(config).unwrap();
+    for request in [&keep, &gone] {
+        let receipt = memory.write(request.clone()).unwrap();
+        substrate
+            .append_write("m1", receipt.seq, request)
+            .await
+            .unwrap();
+    }
+    // A checkpointer folded both writes; the revocation commits before it stores.
+    let stale_digest = memory.binding_digest();
+    let stale_state = memory.state().clone();
+    substrate.apply_committed(&log[2], chain[2]).await.unwrap();
+    assert!(matches!(
+        substrate
+            .put_checkpoint("m1", stale_digest, &stale_state)
+            .await,
+        Err(PgError::InvalidCheckpoint { .. })
+    ));
+
+    // A fold of the surviving prefix is accepted; a wrong binding is not.
+    let mut clean = FastMemory::new(config).unwrap();
+    clean.write(keep.clone()).unwrap();
+    assert!(matches!(
+        substrate.put_checkpoint("m1", [0; 32], clean.state()).await,
+        Err(PgError::InvalidCheckpoint { .. })
+    ));
+    substrate
+        .put_checkpoint("m1", clean.binding_digest(), clean.state())
+        .await
+        .unwrap();
+
+    // A stale row written behind the substrate's back is never handed out.
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    raw.execute(
+        &format!(
+            "INSERT INTO {work}.fastmem_checkpoint (memory, applied_seq, binding_digest, state) \
+             VALUES ('m1', 2, $1, $2)"
+        ),
+        &[
+            &stale_digest.to_vec(),
+            &ptr_fastmem::encode_state(&stale_state),
+        ],
+    )
+    .await
+    .unwrap();
+    let checkpoint = substrate.latest_checkpoint("m1").await.unwrap().unwrap();
+    assert_eq!(checkpoint.applied.0, 1);
+    assert_eq!(checkpoint.binding_digest, clean.binding_digest());
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn vector_search_is_not_truncated_at_the_default_candidate_list() {
+    let mut substrate = substrate().await;
+    substrate.register_space(&space()).await.unwrap();
+    let raw = raw_client().await;
+    let (projection, derived) = (
+        substrate.schemas().projection.clone(),
+        substrate.schemas().derived.clone(),
+    );
+    raw.batch_execute(&format!(
+        "INSERT INTO {projection}.live_generation (target, generation, project, commit_index) \
+             SELECT 'c' || i, 1, 'atlas', 1 FROM generate_series(1, 2000) i; \
+         INSERT INTO {derived}.search_document \
+             (capsule, generation, project, content_digest, body, space, embedding, \
+              indexed_at_commit) \
+             SELECT 'c' || i, 1, 'atlas', decode(repeat('00', 32), 'hex'), 'doc', 'toy4', \
+                    ARRAY[1 + random(), random(), random(), random()]::real[]::halfvec(4), 0 \
+             FROM generate_series(1, 2000) i; \
+         ANALYZE {derived}.search_document;"
+    ))
+    .await
+    .unwrap();
+    for project in [None, Some(ProjectId::from("atlas"))] {
+        let query = HybridQuery {
+            project,
+            text: None,
+            embedding: Some((space().id, vec![1.0, 0.5, 0.5, 0.5])),
+            limit: 100,
+            lexical_weight: 1.0,
+            vector_weight: 1.0,
+            rank_constant: 60.0,
+        };
+        let results = substrate.search(&query).await.unwrap();
+        assert_eq!(results.vector.len(), 100, "{:?}", query.project);
+    }
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn strings_postgresql_text_cannot_hold_are_refused_before_anything_is_written() {
+    let mut substrate = substrate().await;
+    let mut branch = sealed_branch("b1", "agent-7");
+    branch.ops.push(BranchOp::Put {
+        key: "order:1".into(),
+        value: SemanticValue::from("a\0b"),
+    });
+    assert_eq!(
+        substrate.store_branch(&branch).await.unwrap_err(),
+        PgError::InvalidText {
+            field: "branch_op.value_text"
+        }
+    );
+    assert_eq!(substrate.load_branch(&branch.id).await.unwrap(), None);
+
+    let record = capsule(1, "c\0", 1);
+    let chain = anchors(std::slice::from_ref(&record));
+    assert!(matches!(
+        substrate.apply_committed(&record, chain[0]).await,
+        Err(PgError::InvalidRecord { index: 1, .. })
+    ));
+    assert_eq!(substrate.watermark().await.unwrap(), LogAnchor::empty());
     substrate.drop_all().await.unwrap();
 }

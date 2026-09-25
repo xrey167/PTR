@@ -3,7 +3,7 @@
 
 use ptr_types::CommitIndex;
 
-use super::{database, to_i64, to_u64, PgSubstrate};
+use super::{check_text, database, to_i64, to_u64, PgSubstrate};
 use crate::error::PgError;
 
 /// One row of the projection event log.
@@ -70,6 +70,7 @@ impl PgSubstrate {
     /// The last commit index `consumer` recorded as processed; `0` for a
     /// consumer that never committed.
     pub async fn consumer_offset(&self, consumer: &str) -> Result<CommitIndex, PgError> {
+        check_text("event_consumer.consumer", consumer)?;
         let projection = &self.schemas.projection;
         let row = self
             .client
@@ -97,6 +98,7 @@ impl PgSubstrate {
         consumer: &str,
         offset: CommitIndex,
     ) -> Result<(), PgError> {
+        check_text("event_consumer.consumer", consumer)?;
         let projection = &self.schemas.projection;
         let offset_value = to_i64(offset.0, "offset")?;
         let written = self

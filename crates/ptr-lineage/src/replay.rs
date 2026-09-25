@@ -289,14 +289,11 @@ fn allocate<'a>(count: usize, masses: &[(&'a str, f64, usize)]) -> Vec<(&'a str,
                 (i, exact.floor() as usize, exact - exact.floor())
             })
             .collect();
-        let mut given: usize = shares.iter().map(|(_, whole, _)| whole).sum();
+        let given: usize = shares.iter().map(|(_, whole, _)| whole).sum();
         shares.sort_by(|a, b| b.2.total_cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
-        for share in shares.iter_mut() {
-            if given >= remaining {
-                break;
-            }
+        // The units the floors left over go to the largest remainders, one each.
+        for share in shares.iter_mut().take(remaining.saturating_sub(given)) {
             share.1 += 1;
-            given += 1;
         }
         let mut placed = 0;
         for (i, whole, _) in shares {

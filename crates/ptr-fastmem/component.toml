@@ -6,9 +6,9 @@ last_reviewed = "2026-09-25"
 implemented = [
   "Multi-head matrix state updated by the gated delta rule in its Kimi Delta Attention form, with scalar, per-channel or no decay, read by o = S^T q",
   "Every write names its semantic input, generation and input digest; a read is admitted only while every source is admissible",
-  "Journal of writes as composed plus checkpoints every C writes; revocation refolds from the last checkpoint before the first revoked write",
+  "In-process journal of admitted writes (keys normalised per head) plus checkpoints every C writes; revocation refolds from the last checkpoint before the first revoked write. restore takes the writes as composed (WriteRequest), which the storage keeps: ptr-pg stores each request as f32 bit patterns",
   "Deterministic f32 fold: the refolded state is bit-identical to a memory that never saw the revoked writes",
-  "Binding digest over the ordered folded writes so a checkpoint is admissible only as the fold of its journal",
+  "binding_digest_of names the ordered folded writes by sequence, source key, generation and input digest (not by key and value bits); ptr-pg recomputes it from the stored journal prefix, refuses to store a checkpoint that does not match and never returns one that no longer does",
   "Seeded orthogonal key projection and identifier codebook; readouts decode to named capsules or to Unknown below a margin",
   "PTRFW001 state codec with full f32 cells and a SHA-256 trailer",
   "Bounded shapes, journal length and checkpoint interval with typed refusals",

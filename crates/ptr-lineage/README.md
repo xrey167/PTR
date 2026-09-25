@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-25  
-**Code footprint:** 7 Rust source files · 1518 nonblank source lines · 3 integration-test files · 36 `#[test]` markers
+**Code footprint:** 7 Rust source files · 1596 nonblank source lines · 3 integration-test files · 38 `#[test]` markers
 
 ### Implemented now
 
@@ -18,7 +18,7 @@
 - Registration always starts as a candidate; only a passing forgetting gate lets an adapter serve
 - Forgetting gate with thresholds on average and per-task forgetting, backward transfer and public-suite regression, computed from an accuracy matrix
 - Revoking a training input names every adapter, descendant and consolidation that depends on it
-- Principal-angle overlap of update subspaces per layer against its chance level, plus activation interference
+- Principal-angle overlap of the column and row spaces of delta_W = B A per layer, computed from the factors without forming the product, against its chance level, plus activation interference
 - TIES merge of full updates for consolidation, due when depth or overlap exceeds the policy
 - FSRS-4.5 forgetting model on the training clock, lapse tracking with label-audit withholding, and stratified Gumbel-top-k sampling without replacement
 - Held-out samples cannot enter the replay pool
@@ -50,7 +50,7 @@
 ### Current automated checks
 
 - tests/lineage.rs gate, lineage and erasure propagation
-- tests/interference.rs subspace overlap cases
+- tests/interference.rs subspace overlap cases, including rank-deficient factors measured on their product
 - tests/replay.rs forgetting model and sampling
 - workspace fmt/check/test/clippy
 

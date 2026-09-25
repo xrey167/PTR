@@ -7,12 +7,13 @@
 //! here in the projector's transaction; see `projection.rs`.
 
 use ptr_fastmem::{
-    decode_state, encode_state, Decay, FastMemoryConfig, FastWeightState, SourceRef, WriteRequest,
-    WriteSeq,
+    binding_digest_of, decode_state, encode_state, Decay, FastMemoryConfig, FastWeightState,
+    SourceRef, WriteRequest, WriteSeq,
 };
 use ptr_types::{Generation, PrincipalId};
+use tokio_postgres::Transaction;
 
-use super::{database, digest_from, to_i64, to_u64, PgSubstrate};
+use super::{check_text, database, digest_from, to_i64, to_u64, PgSubstrate};
 use crate::error::PgError;
 
 /// A registered fast memory.
@@ -42,6 +43,9 @@ pub struct FastMemoryCheckpoint {
 impl PgSubstrate {
     /// Register a memory. One memory per principal and thread.
     pub async fn create_memory(&self, record: &FastMemoryRecord) -> Result<(), PgError> {
+        check_text("fastmem_memory.id", &record.id)?;
+        check_text("fastmem_memory.principal", &record.principal.0)?;
+        check_text("fastmem_memory.thread", &record.thread)?;
         let work = &self.schemas.work;
         let config = &record.config;
         self.client
@@ -110,8 +114,11 @@ impl PgSubstrate {
     /// The source generation must be admissible when the write lands: its
     /// live-generation row is held `FOR SHARE` for the transaction, so a
     /// revocation either commits first (and the append is refused) or waits
-    /// for the append and then deletes it. The sequence number must exceed
-    /// every journaled one, and the journal must have room.
+    /// for the append and then deletes it. The memory row is then locked
+    /// `FOR UPDATE`, and the journal's length and last sequence number are
+    /// read in a statement issued after that lock was granted, so they include
+    /// every append committed before: the sequence number must exceed every
+    /// journaled one, and the journal must have room.
     pub async fn append_write(
         &mut self,
         memory: &str,
@@ -132,7 +139,9 @@ impl PgSubstrate {
             Decay::PerChannel(factors) => ("per_channel", Some(cells(factors))),
         };
 
-        let transaction = self.client.transaction().await.map_err(database)?;
+        check_text("fastmem_write.memory", memory)?;
+        check_text("fastmem_write.source_key", &source.key)?;
+        let transaction = self.read_committed().await?;
         let live = transaction
             .query_opt(
                 &format!(
@@ -160,23 +169,25 @@ impl PgSubstrate {
                 generation: source.generation.0,
             });
         }
-        // Lock the memory row so concurrent appends to one journal serialize.
-        let header = transaction
-            .query_opt(
+        // Lock the memory row so concurrent appends to one journal serialize,
+        // then read the journal in a separate statement: its snapshot is taken
+        // after the lock was granted, so it includes the append that held it.
+        // Reading both in the locking statement would use the snapshot from
+        // before the wait and let two appends pass the same checks.
+        let max_writes: i32 = lock_memory(&transaction, work, memory)
+            .await?
+            .ok_or_else(|| refuse("the memory is not registered"))?;
+        let journal = transaction
+            .query_one(
                 &format!(
-                    "SELECT m.max_writes, \
-                            (SELECT count(*) FROM {work}.fastmem_write w WHERE w.memory = m.id), \
-                            (SELECT coalesce(max(seq), 0) FROM {work}.fastmem_write w \
-                             WHERE w.memory = m.id) \
-                     FROM {work}.fastmem_memory m WHERE m.id = $1 FOR UPDATE"
+                    "SELECT count(*), coalesce(max(seq), 0) FROM {work}.fastmem_write \
+                     WHERE memory = $1"
                 ),
                 &[&memory],
             )
             .await
-            .map_err(database)?
-            .ok_or_else(|| refuse("the memory is not registered"))?;
-        let (max_writes, count, last): (i32, i64, i64) =
-            (header.get(0), header.get(1), header.get(2));
+            .map_err(database)?;
+        let (count, last): (i64, i64) = (journal.get(0), journal.get(1));
         if count >= i64::from(max_writes) {
             return Err(refuse("the journal is full"));
         }
@@ -261,68 +272,207 @@ impl PgSubstrate {
     }
 
     /// Store a checkpoint as `PTRFW001` bytes bound to `binding_digest`.
+    ///
+    /// Refused unless the state folds exactly the stored journal prefix up to
+    /// its applied sequence number: that write must be journaled, and
+    /// `binding_digest` must equal the digest recomputed from the stored
+    /// prefix with [`binding_digest_of`]. The memory row is locked, so no
+    /// append interleaves, and the prefix rows are held `FOR SHARE`: a
+    /// revocation that deletes one of them either commits first (and this
+    /// checkpoint no longer matches the prefix) or waits and then deletes this
+    /// checkpoint with the write.
     pub async fn put_checkpoint(
-        &self,
+        &mut self,
         memory: &str,
         binding_digest: [u8; 32],
         state: &FastWeightState,
     ) -> Result<(), PgError> {
-        let work = &self.schemas.work;
-        self.client
+        check_text("fastmem_checkpoint.memory", memory)?;
+        let work = self.schemas.work.clone();
+        let refuse = |reason| PgError::InvalidCheckpoint {
+            memory: memory.to_owned(),
+            reason,
+        };
+        let applied = to_i64(state.applied().0, "applied_seq")?;
+        if applied == 0 {
+            return Err(refuse("an empty state needs no checkpoint"));
+        }
+        let transaction = self.read_committed().await?;
+        let config = load_config(&transaction, work.as_str(), memory, true)
+            .await?
+            .ok_or_else(|| refuse("the memory is not registered"))?;
+        if config != *state.config() {
+            return Err(refuse("the state's shape differs from the memory's"));
+        }
+        let prefix = journal_prefix(&transaction, work.as_str(), memory, applied, true).await?;
+        if prefix.last().map(|(seq, _)| seq.0) != Some(state.applied().0) {
+            return Err(refuse("the applied write is not in the journal"));
+        }
+        let recomputed = binding_digest_of(prefix.iter().map(|(seq, source)| (*seq, source)));
+        if recomputed != binding_digest {
+            return Err(refuse("the state does not fold the stored journal prefix"));
+        }
+        transaction
             .execute(
                 &format!(
                     "INSERT INTO {work}.fastmem_checkpoint (memory, applied_seq, binding_digest, state) \
                      VALUES ($1, $2, $3, $4)"
                 ),
-                &[
-                    &memory,
-                    &to_i64(state.applied().0, "applied_seq")?,
-                    &binding_digest.to_vec(),
-                    &encode_state(state),
-                ],
+                &[&memory, &applied, &binding_digest.to_vec(), &encode_state(state)],
             )
             .await
             .map_err(database)?;
-        Ok(())
+        transaction.commit().await.map_err(database)
     }
 
-    /// The newest checkpoint of a memory, decoded and integrity-checked.
+    /// The newest checkpoint of a memory that still folds exactly the stored
+    /// journal prefix, decoded and integrity-checked.
+    ///
+    /// Checkpoints are read with their prefix in one repeatable-read snapshot
+    /// and each one's binding is recomputed from the prefix; one that no longer
+    /// matches (it folded a write that has since been removed) is skipped, so
+    /// a fold of a revoked input is never handed out.
     pub async fn latest_checkpoint(
-        &self,
+        &mut self,
         memory: &str,
     ) -> Result<Option<FastMemoryCheckpoint>, PgError> {
-        let work = &self.schemas.work;
-        let row = self
+        let work = self.schemas.work.clone();
+        let transaction = self
             .client
-            .query_opt(
+            .build_transaction()
+            .isolation_level(tokio_postgres::IsolationLevel::RepeatableRead)
+            .read_only(true)
+            .start()
+            .await
+            .map_err(database)?;
+        let rows = transaction
+            .query(
                 &format!(
                     "SELECT applied_seq, binding_digest, state FROM {work}.fastmem_checkpoint \
-                     WHERE memory = $1 ORDER BY applied_seq DESC LIMIT 1"
+                     WHERE memory = $1 ORDER BY applied_seq DESC"
                 ),
                 &[&memory],
             )
             .await
             .map_err(database)?;
-        let Some(row) = row else {
-            return Ok(None);
-        };
-        let bytes: Vec<u8> = row.get(2);
-        let state = decode_state(&bytes).map_err(|error| PgError::CorruptRow {
-            table: "fastmem_checkpoint",
-            reason: error.to_string(),
-        })?;
-        let applied = WriteSeq(to_u64(row.get(0), "fastmem_checkpoint")?);
-        if state.applied() != applied {
-            return Err(corrupt_checkpoint(
-                "the state's applied sequence differs from the row",
-            ));
+        let newest = rows.first().map(|row| row.get::<_, i64>(0)).unwrap_or(0);
+        let prefix = journal_prefix(&transaction, work.as_str(), memory, newest, false).await?;
+        for row in rows {
+            let applied_value: i64 = row.get(0);
+            let binding_digest = digest_from(row.get(1), "fastmem_checkpoint")?;
+            let folded: Vec<&(WriteSeq, SourceRef)> = prefix
+                .iter()
+                .filter(|(seq, _)| seq.0 as i64 <= applied_value)
+                .collect();
+            let applied = WriteSeq(to_u64(applied_value, "fastmem_checkpoint")?);
+            let current = folded.last().map(|(seq, _)| *seq) == Some(applied)
+                && binding_digest_of(folded.iter().map(|(seq, source)| (*seq, source)))
+                    == binding_digest;
+            if !current {
+                continue;
+            }
+            let bytes: Vec<u8> = row.get(2);
+            let state = decode_state(&bytes).map_err(|error| PgError::CorruptRow {
+                table: "fastmem_checkpoint",
+                reason: error.to_string(),
+            })?;
+            if state.applied() != applied {
+                return Err(corrupt_checkpoint(
+                    "the state's applied sequence differs from the row",
+                ));
+            }
+            transaction.commit().await.map_err(database)?;
+            return Ok(Some(FastMemoryCheckpoint {
+                applied,
+                binding_digest,
+                state,
+            }));
         }
-        Ok(Some(FastMemoryCheckpoint {
-            applied,
-            binding_digest: digest_from(row.get(1), "fastmem_checkpoint")?,
-            state,
-        }))
+        transaction.commit().await.map_err(database)?;
+        Ok(None)
     }
+}
+
+/// Lock a memory row and return its journal capacity; `None` when it is not
+/// registered.
+async fn lock_memory(
+    transaction: &Transaction<'_>,
+    work: &str,
+    memory: &str,
+) -> Result<Option<i32>, PgError> {
+    Ok(transaction
+        .query_opt(
+            &format!("SELECT max_writes FROM {work}.fastmem_memory WHERE id = $1 FOR UPDATE"),
+            &[&memory],
+        )
+        .await
+        .map_err(database)?
+        .map(|row| row.get(0)))
+}
+
+/// A memory's shape, optionally locking its row.
+async fn load_config(
+    transaction: &Transaction<'_>,
+    work: &str,
+    memory: &str,
+    lock: bool,
+) -> Result<Option<FastMemoryConfig>, PgError> {
+    let locking = if lock { " FOR UPDATE" } else { "" };
+    let row = transaction
+        .query_opt(
+            &format!(
+                "SELECT heads, key_dim, value_dim, checkpoint_interval, max_writes \
+                 FROM {work}.fastmem_memory WHERE id = $1{locking}"
+            ),
+            &[&memory],
+        )
+        .await
+        .map_err(database)?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    Ok(Some(FastMemoryConfig {
+        heads: unsigned(row.get(0))?,
+        key_dim: unsigned(row.get(1))?,
+        value_dim: unsigned(row.get(2))?,
+        checkpoint_interval: unsigned(row.get(3))? as u32,
+        max_writes: unsigned(row.get(4))? as u32,
+    }))
+}
+
+/// The sources of the journal writes up to `applied`, in sequence order,
+/// optionally holding the rows `FOR SHARE`.
+async fn journal_prefix(
+    transaction: &Transaction<'_>,
+    work: &str,
+    memory: &str,
+    applied: i64,
+    lock: bool,
+) -> Result<Vec<(WriteSeq, SourceRef)>, PgError> {
+    let locking = if lock { " FOR SHARE" } else { "" };
+    let rows = transaction
+        .query(
+            &format!(
+                "SELECT seq, source_key, source_generation, input_digest \
+                 FROM {work}.fastmem_write WHERE memory = $1 AND seq <= $2 \
+                 ORDER BY seq{locking}"
+            ),
+            &[&memory, &applied],
+        )
+        .await
+        .map_err(database)?;
+    rows.into_iter()
+        .map(|row| {
+            Ok((
+                WriteSeq(to_u64(row.get(0), "fastmem_write")?),
+                SourceRef {
+                    key: row.get(1),
+                    generation: Generation(to_u64(row.get(2), "fastmem_write")?),
+                    input_digest: digest_from(row.get(3), "fastmem_write")?,
+                },
+            ))
+        })
+        .collect()
 }
 
 fn dimension(value: usize, field: &'static str) -> Result<i32, PgError> {

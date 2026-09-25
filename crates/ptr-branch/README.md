@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-25  
-**Code footprint:** 7 Rust source files · 1462 nonblank source lines · 3 integration-test files · 38 `#[test]` markers
+**Code footprint:** 7 Rust source files · 1462 nonblank source lines · 3 integration-test files · 39 `#[test]` markers
 
 ### Implemented now
 
@@ -19,7 +19,7 @@
 - Put and Remove only on keys the branch read; commutative counter additions and set insertions/removals rebase onto the target value at merge time
 - Reserved request: and pod-output: namespaces cannot be written by a branch
 - Certification refuses a changed read, a phantom under a scanned prefix, a revoked or superseded relied-on generation, or a snapshot older than the base; otherwise it yields one SemanticDelta plus the revision it was certified against
-- End-to-end test commits a certified plan only through Runtime::apply_verified_semantic_delta and shows a plan certified before another commit is refused
+- End-to-end test commits a certified plan through Runtime::apply_verified_semantic_delta and shows a plan certified before another commit is refused; using that path is the caller's obligation, because MergePlan exposes its delta and PtrRuntime::apply_semantic_delta is public and unverified
 - Verifier-bounded triage: only a Pass at full-semantic or deterministic level with no hard finding is eligible for auto-proposal
 - Uniform calibration slice of eligible branches with a deterministic per-branch draw, logged auto-propose propensities and adjudication samples
 - Threshold selection on a fixed grid by conformal risk control or by Learn-then-Test with Clopper-Pearson bounds
@@ -27,6 +27,7 @@
 
 ### Missing for the target architecture
 
+- A merge plan consumable only by a verifying runtime entry point, so committing one without verification is impossible rather than a caller obligation
 - Branch leases, expiry and garbage collection
 - Typed merge operators beyond counters and sets
 - Predicate digests beyond key prefixes
@@ -114,7 +115,7 @@ External projects are **candidates**, not architectural authority. The PTR-owned
 ## Core invariants
 
 1. A branch never writes semantic state.
-2. A merge plan reaches state only through verified delta publication.
+2. A merge plan is committed through verified delta publication. This is the caller's obligation, not a type-level guarantee: the runtime's unverified `apply_semantic_delta` is public.
 3. Triage never moves a branch past verification.
 
 These invariants are executable through the unit and integration tests listed in the status block.

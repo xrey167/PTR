@@ -6,7 +6,7 @@ use ptr_search::{weighted_rank_fusion, FusedHit, SearchHit, WeightedList};
 use ptr_types::{CapsuleId, Generation, ProjectId};
 use tokio_postgres::IsolationLevel;
 
-use super::{database, to_i64, to_u64, PgSubstrate};
+use super::{check_text, database, to_i64, to_u64, PgSubstrate};
 use crate::config::Identifier;
 use crate::error::PgError;
 
@@ -17,6 +17,11 @@ pub const VECTOR_BACKEND: &str = "pgvector-halfvec";
 
 /// Largest magnitude a half-precision value holds.
 const HALF_MAX: f32 = 65_504.0;
+/// Largest magnitude that rounds to zero in half precision: 2^-25 ties to even,
+/// which is zero.
+const HALF_ZERO: f32 = 2.980_232_2e-8;
+/// The `hnsw.ef_search` pgvector accepts at most.
+const MAX_EF_SEARCH: u32 = 1000;
 
 /// A registered embedding space: one model at one revision with one
 /// dimension. Vectors are comparable only within a space.
@@ -83,6 +88,8 @@ impl PgSubstrate {
             });
         }
         let derived = &self.schemas.derived;
+        check_text("embedding_space.model", &space.model)?;
+        check_text("embedding_space.revision", &space.revision)?;
         let id = space.id.as_str();
         let dims = i32::from(space.dims);
         self.client
@@ -134,13 +141,15 @@ impl PgSubstrate {
         let schemas = self.schemas.clone();
         let (projection, derived) = (schemas.projection.as_str(), schemas.derived.as_str());
         let capsule = document.capsule.0.as_str();
+        check_text("search_document.capsule", capsule)?;
+        check_text("search_document.body", &document.body)?;
         let generation = to_i64(document.generation.0, "generation")?;
         let not_live = || PgError::NotLive {
             target: capsule.to_owned(),
             generation: document.generation.0,
         };
 
-        let transaction = self.client.transaction().await.map_err(database)?;
+        let transaction = self.read_committed().await?;
         let live = transaction
             .query_opt(
                 &format!(
@@ -225,7 +234,12 @@ impl PgSubstrate {
     /// are still [`SearchHit`]s at the search-candidate stage: using one as
     /// evidence requires observing it against the lifecycle authority.
     pub async fn search(&mut self, query: &HybridQuery) -> Result<SearchResults, PgError> {
-        let iterative = self.capabilities().await?.iterative_scans();
+        if let Some(text) = &query.text {
+            check_text("query.text", text)?;
+        }
+        if let Some(project) = &query.project {
+            check_text("query.project", &project.0)?;
+        }
         let schemas = self.schemas.clone();
         let (projection, derived) = (schemas.projection.as_str(), schemas.derived.as_str());
         let project = query.project.as_ref().map(|project| project.0.clone());
@@ -278,14 +292,20 @@ impl PgSubstrate {
         if let Some((space, embedding)) = &query.embedding {
             let dims = space_dims(&transaction, derived, space).await?;
             check_embedding(embedding, dims)?;
-            if iterative && project.is_some() {
-                // A filtered approximate scan keeps walking the graph until it
-                // has `limit` rows that pass the filter, in exact order.
-                transaction
-                    .batch_execute("SET LOCAL hnsw.iterative_scan = strict_order")
-                    .await
-                    .map_err(database)?;
-            }
+            // An HNSW scan returns at most `hnsw.ef_search` rows unless it may
+            // iterate, with or without a filter: without both settings a query
+            // for 100 hits silently stops near 40. Iterative scans (pgvector
+            // 0.8, required by the capability check) keep walking the graph in
+            // exact order until `limit` rows pass the filter. Both values are
+            // integers or keywords computed here, never caller text.
+            let ef_search = query.limit.clamp(40, MAX_EF_SEARCH);
+            transaction
+                .batch_execute(&format!(
+                    "SET LOCAL hnsw.iterative_scan = strict_order; \
+                     SET LOCAL hnsw.ef_search = {ef_search};"
+                ))
+                .await
+                .map_err(database)?;
             let id = space.as_str();
             // The ORDER BY is the indexed expression alone, so the planner can
             // use the space's HNSW index; liveness is filtered after it.
@@ -377,9 +397,11 @@ fn check_embedding(vector: &[f32], dims: usize) -> Result<(), PgError> {
             reason: "a value exceeds the half-precision range",
         });
     }
-    if vector.iter().all(|value| *value == 0.0) {
+    // Checked after rounding to half precision, which is what is stored and
+    // compared: a vector of values too small for it is a zero vector there.
+    if vector.iter().all(|value| value.abs() <= HALF_ZERO) {
         return Err(PgError::InvalidEmbedding {
-            reason: "a zero vector has no cosine distance",
+            reason: "the vector is zero in half precision and has no cosine distance",
         });
     }
     Ok(())

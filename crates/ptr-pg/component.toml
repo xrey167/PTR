@@ -12,9 +12,15 @@ implemented = [
   "Derived search documents only for live capsule generations; writers hold the lifecycle row FOR SHARE, and the projector deletes superseded or revoked generations in the same transaction",
   "Hybrid retrieval in one repeatable-read snapshot: built-in full text plus halfvec cosine search over per-space partial HNSW expression indexes with iterative scans, joined to the lifecycle catalog and fused by capsule and generation",
   "Work schema for sealed branches, triage logs and append-only outcomes; fast-memory journals and checkpoints; adapter lineage and replay pool; weak-supervision store",
-  "Tombstones delete the revoked generation's fast-memory writes and the checkpoints that folded them in the projector's transaction; appends are refused for inadmissible sources",
+  "Tombstones delete the revoked generation's fast-memory writes, and supersessions every other generation's, with the checkpoints that folded them, in the projector's transaction; appends are refused for inadmissible sources and read the journal only after taking the memory row lock",
+  "A checkpoint is stored only when its binding digest matches the one recomputed from the journal prefix it folds, and latest_checkpoint skips any that no longer match",
+  "The projector, cache writers, journal appends and checkpoint stores run at an explicit READ COMMITTED whatever the session default, which the lock ordering needs",
+  "Strings PostgreSQL text cannot hold (NUL) are refused with a typed error before anything is written; the projector refuses such a record and stops there",
+  "Logged triage rows and outcomes are never updated or deleted on their own (only with their branch), and a branch is adjudicated once",
+  "Every vector query uses iterative strict-order scans and an ef_search of at least its limit (pgvector 0.8 required), so results are not truncated at the default candidate list",
+  "Migrations bound DDL with SET LOCAL lock_timeout; a rebuild drops and recreates under the migration lock",
   "Platform metrics compiled from ptr-analytics definitions to SQL over the work schema only",
-  "Capability probe that never creates an extension; refusal of non-loopback hosts because the build links no TLS connector",
+  "Capability probe that never creates an extension; refusal of every non-loopback host and hostaddr because the build links no TLS connector",
   "Rebuild drops projection and derived schemas and replays; working state survives",
 ]
 

@@ -58,6 +58,14 @@ pub enum PgError {
         memory: String,
         reason: &'static str,
     },
+    /// A fast-memory checkpoint was refused: it does not fold exactly the
+    /// journal prefix it claims to, or its shape differs from the memory's.
+    InvalidCheckpoint {
+        memory: String,
+        reason: &'static str,
+    },
+    /// A string contains NUL, which a PostgreSQL `text` value cannot hold.
+    InvalidText { field: &'static str },
     /// The database refused a statement.
     Database { sqlstate: String, message: String },
     /// The connection failed or closed.
@@ -86,6 +94,8 @@ impl PgError {
             Self::InvalidEmbedding { .. } => "PTR_PG_INVALID_EMBEDDING",
             Self::SpaceConflict { .. } => "PTR_PG_SPACE_CONFLICT",
             Self::InvalidWrite { .. } => "PTR_PG_INVALID_WRITE",
+            Self::InvalidCheckpoint { .. } => "PTR_PG_INVALID_CHECKPOINT",
+            Self::InvalidText { .. } => "PTR_PG_INVALID_TEXT",
             Self::Database { .. } => "PTR_PG_DATABASE",
             Self::Connection { .. } => "PTR_PG_CONNECTION",
         }
@@ -147,6 +157,13 @@ impl fmt::Display for PgError {
             Self::InvalidWrite { memory, reason } => {
                 write!(formatter, "fast-memory write to {memory:?} refused: {reason}")
             }
+            Self::InvalidCheckpoint { memory, reason } => {
+                write!(formatter, "fast-memory checkpoint of {memory:?} refused: {reason}")
+            }
+            Self::InvalidText { field } => write!(
+                formatter,
+                "{field} contains NUL, which PostgreSQL text cannot store"
+            ),
             Self::Database { sqlstate, message } => write!(formatter, "[{sqlstate}] {message}"),
             Self::Connection { message } => write!(formatter, "connection: {message}"),
         }

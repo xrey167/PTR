@@ -3,9 +3,16 @@
 -- merging goes through certification, verification and the runtime's
 -- revision-checked commit.
 
+-- Refuses every UPDATE and every DELETE issued against the table itself. A
+-- DELETE cascaded from the parent row (pg_trigger_depth() > 1) is let through:
+-- a record is never rewritten or removed on its own, but it goes when the
+-- whole branch or sample it belongs to is erased.
 CREATE FUNCTION {{work}}.refuse_rewrite() RETURNS trigger
     LANGUAGE plpgsql AS $$
 BEGIN
+    IF TG_OP = 'DELETE' AND pg_trigger_depth() > 1 THEN
+        RETURN OLD;
+    END IF;
     RAISE EXCEPTION 'append-only table %.% cannot be updated or deleted',
         TG_TABLE_SCHEMA, TG_TABLE_NAME
         USING ERRCODE = 'integrity_constraint_violation';
@@ -85,6 +92,12 @@ CREATE TABLE {{work}}.branch_triage (
     CHECK (eligible OR auto_propensity = 0)
 );
 
+-- Off-policy evaluation reweights by the logged propensity, so a triage row is
+-- never rewritten.
+CREATE TRIGGER branch_triage_append_only
+    BEFORE UPDATE OR DELETE ON {{work}}.branch_triage
+    FOR EACH ROW EXECUTE FUNCTION {{work}}.refuse_rewrite();
+
 -- Outcomes are appended, never rewritten; an adjudication is a person's
 -- verdict on the branch itself, independent of what later merged.
 CREATE TABLE {{work}}.branch_outcome (
@@ -99,5 +112,11 @@ CREATE TABLE {{work}}.branch_outcome (
 );
 
 CREATE TRIGGER branch_outcome_append_only
-    BEFORE UPDATE ON {{work}}.branch_outcome
+    BEFORE UPDATE OR DELETE ON {{work}}.branch_outcome
     FOR EACH ROW EXECUTE FUNCTION {{work}}.refuse_rewrite();
+
+-- A person adjudicates a branch once: a second, contradicting verdict would be
+-- a rewrite of the first, and the harm rate counts adjudicated branches.
+CREATE UNIQUE INDEX branch_outcome_one_adjudication
+    ON {{work}}.branch_outcome (branch)
+    WHERE outcome IN ('adjudicated_harmful', 'adjudicated_harmless');

@@ -55,5 +55,5 @@ CREATE TABLE {{work}}.replay_probe (
 );
 
 CREATE TRIGGER replay_probe_append_only
-    BEFORE UPDATE ON {{work}}.replay_probe
+    BEFORE UPDATE OR DELETE ON {{work}}.replay_probe
     FOR EACH ROW EXECUTE FUNCTION {{work}}.refuse_rewrite();

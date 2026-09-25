@@ -35,8 +35,8 @@ pub fn metric_sql(spec: MetricSpec, schemas: &SchemaSet) -> String {
             ),
         ),
         Metric::AdjudicatedHarmRate => (
-            "count(*) FILTER (WHERE o.outcome = 'adjudicated_harmful')",
-            "count(*)",
+            "count(DISTINCT o.branch) FILTER (WHERE o.outcome = 'adjudicated_harmful')",
+            "count(DISTINCT o.branch)",
             format!(
                 "{work}.branch_triage t JOIN {work}.branch b ON b.id = t.branch \
                  JOIN {work}.branch_outcome o ON o.branch = t.branch \

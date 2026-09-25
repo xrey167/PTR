@@ -9,7 +9,7 @@ use ptr_branch::{
 use ptr_semdb::{SemanticPayload, SemanticValue};
 use ptr_types::{CommitIndex, Generation, PrincipalId, Revision, TypeId};
 
-use super::{database, digest_from, to_i64, to_u64, PgSubstrate};
+use super::{check_text, database, digest_from, to_i64, to_u64, PgSubstrate};
 use crate::error::PgError;
 
 /// What later happened to a triaged branch.
@@ -53,6 +53,7 @@ impl PgSubstrate {
     /// primary key.
     pub async fn store_branch(&mut self, branch: &SealedBranch) -> Result<(), PgError> {
         let work = self.schemas.work.clone();
+        check_branch_text(branch)?;
         let id = branch.id.0.as_str();
         let transaction = self.client.transaction().await.map_err(database)?;
         transaction
@@ -271,6 +272,8 @@ impl PgSubstrate {
         triage: &TriageOutcome,
         policy_version: &str,
     ) -> Result<(), PgError> {
+        check_text("branch_triage.branch", &branch.0)?;
+        check_text("branch_triage.policy_version", policy_version)?;
         let work = &self.schemas.work;
         let decision = match triage.decision {
             TriageDecision::AutoPropose => "auto_propose",
@@ -307,6 +310,7 @@ impl PgSubstrate {
         branch: &BranchId,
         outcome: BranchOutcome,
     ) -> Result<(), PgError> {
+        check_text("branch_outcome.branch", &branch.0)?;
         let work = &self.schemas.work;
         let commit = outcome
             .commit_index()
@@ -324,6 +328,46 @@ impl PgSubstrate {
             .map_err(database)?;
         Ok(())
     }
+}
+
+/// Refuse a branch with a string PostgreSQL `text` cannot hold, before any row
+/// is written.
+fn check_branch_text(branch: &SealedBranch) -> Result<(), PgError> {
+    check_text("branch.id", &branch.id.0)?;
+    check_text("branch.author", &branch.author.0)?;
+    for key in branch.reads.keys() {
+        check_text("branch_read.key", key)?;
+    }
+    for prefix in branch.scans.keys() {
+        check_text("branch_scan.prefix", prefix)?;
+    }
+    for target in branch.relied.keys() {
+        check_text("branch_relied.target", target)?;
+    }
+    for key in branch.touched_base.keys() {
+        check_text("branch_touched.key", key)?;
+    }
+    for op in &branch.ops {
+        check_text("branch_op.key", op.key())?;
+        match op {
+            BranchOp::Put {
+                value: SemanticValue::Text(text),
+                ..
+            } => check_text("branch_op.value_text", text)?,
+            BranchOp::Put {
+                value: SemanticValue::Payload(payload),
+                ..
+            } => {
+                check_text("branch_op.value_type", &payload.type_id.0)?;
+                check_text("branch_op.value_source", &payload.source)?;
+            }
+            BranchOp::SetInsert { member, .. } | BranchOp::SetRemove { member, .. } => {
+                check_text("branch_op.member", member)?;
+            }
+            BranchOp::Remove { .. } | BranchOp::Add { .. } => {}
+        }
+    }
+    Ok(())
 }
 
 /// One `branch_op` row.
