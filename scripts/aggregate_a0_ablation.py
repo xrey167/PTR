@@ -665,7 +665,11 @@ def main(argv: list[str] | None = None) -> int:
                 key = group["key"]
                 if key.get("row") != "final":
                     continue
-                ours = statistics.fmean(scores_table[key["arm"]][s][key["split"]]["accuracy"] for s in seeds)
+                arm_scores = (scores_table or {}).get(key["arm"], {})
+                if any(key["split"] not in arm_scores.get(s, {}) for s in seeds):
+                    stock_mismatch.append(f"{experiment}/{entrypoint}/{key['arm']}/{key['split']}: missing scores")
+                    continue
+                ours = statistics.fmean(arm_scores[s][key["split"]]["accuracy"] for s in seeds)
                 if abs(group["metrics"]["accuracy"]["mean"] - ours) > 1e-12:
                     stock_mismatch.append(f"{experiment}/{entrypoint}/{key['arm']}/{key['split']}")
     result["stock_aggregate_cross_check"] = {"pass": not stock_mismatch, "mismatches": stock_mismatch}

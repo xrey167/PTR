@@ -298,6 +298,25 @@ class Aggregation(unittest.TestCase):
                     mod.aggregate("X001", entrypoint="ablation")
                 self.assertEqual(list(self.results.glob("aggregate-*.json")), [])
 
+    def test_different_tracked_edits_are_refused_even_with_allow_dirty(self):
+        for seed in (1, 2):
+            self.write_run(seed, [{"a": 1}], dirty=True,
+                           extra={"git_tracked_diff_sha256": str(seed) * 64})
+        with self.assertRaisesRegex(ValueError, "records differ in git_tracked_diff_sha256"):
+            mod.aggregate("X001", entrypoint="ablation", allow_dirty=True)
+        self.assertEqual(list(self.results.glob("aggregate-*.json")), [])
+
+    def test_matching_tracked_diff_hashes_remain_compatible(self):
+        for dirty, digest in ((False, hashlib.sha256(b"").hexdigest()), (True, "1" * 64)):
+            with self.subTest(dirty=dirty):
+                for path in self.results.glob("*.json"):
+                    path.unlink()
+                for seed in SEEDS:
+                    self.write_run(seed, [{"a": 1}], dirty=dirty,
+                                   extra={"git_tracked_diff_sha256": digest})
+                code, summary = self.run_aggregate(allow_dirty=dirty)
+                self.assertEqual((code, summary["status"]), (0, "complete"))
+
     def test_malformed_records_are_errors_not_tracebacks(self):
         """Return validation errors for invalid seeds, stdout, numeric values, and record JSON."""
         cases = [

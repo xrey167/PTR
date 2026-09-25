@@ -35,7 +35,7 @@ Before submitting, run what CI runs:
 ```bash
 make ci-local                  # every job in .github/workflows/ci.yml, step for step
 make ci-repository-invariants  # or one job: every target is ci-<job name>
-make a0                        # also when you touch model/burn-a0, crates/ptr-types, the root Cargo.toml or the codebook
+make a0                        # also when you touch model/burn-a0, crates/ptr-types, the root Cargo.toml, the codebook or crates/ptr-runtime/tests/fixtures/ptr-a0-v1.ckpt
 ```
 
 `make ci-local` needs the `stable`, `1.85.0` and `1.91.0` toolchains (it installs

@@ -466,7 +466,7 @@ def aggregate(
             f"{len(unclean)} records come from a dirty or unrecorded worktree "
             f"({', '.join(unclean)}); pass --allow-dirty to aggregate them anyway"
         )
-    for key in ("manifest_sha256", "parameters", "rustc", "host"):
+    for key in ("manifest_sha256", "parameters", "rustc", "host", "git_tracked_diff_sha256"):
         seen = sorted({canonical(record.get(key)) for _, record in records})
         if len(seen) > 1:
             raise ValueError(f"records differ in {key} ({' vs '.join(seen)}); they do not measure the same thing")

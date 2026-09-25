@@ -17,5 +17,5 @@
 ## Checks
 ```
 make ci-local   # everything .github/workflows/ci.yml runs
-make a0         # when model/burn-a0, crates/ptr-types or the codebook changed
+make a0         # when model/burn-a0, crates/ptr-types, root Cargo.toml, the codebook or crates/ptr-runtime/tests/fixtures/ptr-a0-v1.ckpt changed
 ```

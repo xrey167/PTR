@@ -6,10 +6,16 @@ preregistered rules and the code that applies them drift apart.
 """
 
 import copy
+import contextlib
 import importlib.util
+import io
+import json
+import subprocess
+import tempfile
 import tomllib
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location("aggregate_a0_ablation", ROOT / "scripts/aggregate_a0_ablation.py")
@@ -326,6 +332,62 @@ class RecordGates(unittest.TestCase):
         self.assertFalse(agg.rerun_reproduces(record(17, stdout=lines), None)["pass"])
         changed = lines.replace("0123", "0124")
         self.assertFalse(agg.rerun_reproduces(record(17, stdout=lines), record(17, stdout=changed))["pass"])
+
+
+class StockCrossCheck(unittest.TestCase):
+    def test_missing_scores_are_reported_and_complete_scores_are_compared(self):
+        complete = {"full": scores(0.9)}
+        missing_seed = copy.deepcopy(complete)
+        del missing_seed["full"][SEEDS[0]]
+        missing_split = copy.deepcopy(complete)
+        del missing_split["full"][SEEDS[0]][SPLITS[0]]
+        cases = [("no table", None, 0.9, ": missing scores"),
+                 ("missing arm", {}, 0.9, ": missing scores"),
+                 ("missing seed", missing_seed, 0.9, ": missing scores"),
+                 ("missing split", missing_split, 0.9, ": missing scores"),
+                 ("matching", complete, 0.9, None),
+                 ("mismatch", complete, 0.8, "")]
+        for kind in ("eval", "contingency"):
+            for name, score_table, stock_mean, suffix in cases:
+                with self.subTest(kind=kind, case=name), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    study = root / "study"
+                    study.mkdir()
+                    criteria = agg.CRITERIA.read_bytes()
+                    (study / "criteria.toml").write_bytes(criteria)
+                    (study / "references.json").write_text('{"all_bands_pass": true}')
+                    (study / "budget.json").write_text('{"arms": {}}')
+                    (study / "lock.json").write_text('{}')
+                    (study / "PREREGISTRATION.md").write_bytes(b"preregistered")
+                    results = root / "experiments/model/fixture/results"
+                    results.mkdir(parents=True)
+                    run_path = results / "run.json"
+                    run_path.write_text(json.dumps(record(SEEDS[0], stdout="")))
+                    stock_path = results / "stock.json"
+                    stock_path.write_text(json.dumps({"groups": [
+                        {"key": {"row": "meta"}},
+                        {"key": {"row": "final", "arm": "full", "split": SPLITS[0]},
+                         "metrics": {"accuracy": {"mean": stock_mean}}},
+                        {"key": {"row": "final", "arm": "absent", "split": SPLITS[0]},
+                         "metrics": {"accuracy": {"mean": 0.9}}},
+                    ]}))
+                    with patch.multiple(
+                        agg, ROOT=root, STUDY_DIR=study, CRITERIA=study / "criteria.toml",
+                        LOCK=study / "lock.json", EXPERIMENTS={"M001": "model/fixture"},
+                        at_tag=Mock(side_effect=lambda p: criteria if p.endswith("criteria.toml") else b"preregistered"),
+                        load_score_module=Mock(return_value=Mock(agree=Mock(return_value=(True, [])))),
+                        eval_records=Mock(side_effect=lambda e, entry: [run_path] if entry == agg.STUDY_KINDS[kind] else []),
+                        build_table=Mock(return_value=(score_table, [], [])),
+                        decide=Mock(return_value={"verdicts": {}}),
+                    ), patch.object(agg.subprocess, "run", return_value=subprocess.CompletedProcess(
+                        [], 0, stdout=str(stock_path), stderr=""
+                    )), contextlib.redirect_stdout(io.StringIO()):
+                        self.assertEqual(agg.main([]), 0)
+                    check = json.loads((study / "results.json").read_text())["stock_aggregate_cross_check"]
+                    prefix = f"M001/{agg.STUDY_KINDS[kind]}"
+                    expected = [] if suffix is None else [f"{prefix}/full/{SPLITS[0]}{suffix}"]
+                    expected.append(f"{prefix}/absent/{SPLITS[0]}: missing scores")
+                    self.assertEqual(check, {"pass": False, "mismatches": expected})
 
 
 if __name__ == "__main__":
