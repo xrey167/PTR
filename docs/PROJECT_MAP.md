@@ -15,6 +15,12 @@ marked *static* are counted in source; numbers marked *run* were executed.
 The companion document [`RECOMMENDATIONS_20260924.md`](RECOMMENDATIONS_20260924.md)
 turns this map into an ordered plan.
 
+**Since this map was taken.** The map describes `e93ed99`. The same branch then fixed
+several of the defects it records (recommendations 3.1, 3.4, 4.1–4.4, 4.8, 4.9,
+4.11, 4.12, 4.14 and 4.18). Each statement those fixes made historical is marked
+*Fixed on this branch* where it appears; the figures around it are still those of
+`e93ed99`.
+
 ## Contents
 
 1. [What PTR is, and what it is today](#1-what-ptr-is-and-what-it-is-today)
@@ -99,7 +105,7 @@ cognitive crates hold about **8%** (1,397).
 | `sdk/` | JavaScript client with hand-written TypeScript types | 74 lines; 2 tests | Matches the two HTTP routes |
 | `docs-site/` | single static landing page | | Not published |
 | `scripts/` | 30 Python/shell tools, 15 of them CI gates | ≈4.1k lines; 201 tests *run* | Real and enforced |
-| `.github/` | 6 workflows (13 jobs in `ci.yml`), templates, branch-protection template | | Real (§14) |
+| `.github/` | 6 workflows (13 jobs in `ci.yml`), templates, branch-protection template. *This branch removes `one-shot-sync.yml`, leaving 5.* | | Real (§14) |
 | `vendor/` | 21 vendored, patched crates + origin/retirement records | ≈520k lines | Patched copies (18 `paste`→`pastey` aliases, 3 raft protobuf migrations) |
 | `fuzz/` | 1 fuzz target (separate workspace) | | Targets an unused decoder; not built in CI |
 | `hardware/` | 4 hardware profiles | | `default.toml` (used by 20 experiments) is all `unspecified` |
@@ -259,13 +265,13 @@ maturity this mapping found. *Used by* lists crates that actually import it.
 |---|---|---|---|---|---|
 | `ptr-types` | 2,146 | 68 / 73 (incl. 5 doctests) | foundation → **implemented** | 23 packages + burn-a0 | IDs; `Revision`/`Generation`/`CommitIndex`; bounded `Probability`; the four cognitive axes (`SemanticRole` 9, `EpistemicState` 6, `UncertaintyKind` 3, `ReasoningOperator` 11); `Effect`, `Validity`, `VerificationLevel`; `ConfidenceTarget`/`ConfidenceEstimate`; frozen **Codebook V1** (33 members, 5 families); `ValidityMask`; `SlotEncoding` (an identity hash, not a semantic embedding); `CheckpointHeader` v2 with 13 refusal codes. The confidence API, `Epistemic<T>` and `TypedValue<T>` have no consumer outside the crate. |
 | `ptr-config` | 264 | 6 / 6 | prototype → **partial** | runtime, ptrd, ptrctl, bench | TOML config with defaults → file → env → CLI precedence (the order lives in `ptrd`'s `main`). 13 keys; only `server.bind` changes `ptrd`'s behaviour. The 3 `action_boundary.*` flags affect only the diagnostic `authorize_action`. The other 9 are parsed and read by nothing. |
-| `ptr-inspect` | 23 | 1 / 1 | scaffold → **scaffold** | none | `InspectNode`, `Inspectable`, `Secret<T>`. `Secret<T>` derives `Debug` with a public field, so `{:?}` prints the secret (`src/lib.rs:19-20`). |
+| `ptr-inspect` | 23 | 1 / 1 | scaffold → **scaffold** | none | `InspectNode`, `Inspectable`, `Secret<T>`. `Secret<T>` derives `Debug` with a public field, so `{:?}` prints the secret (`src/lib.rs:19-20`). *Fixed on this branch.* `Debug` prints `Secret([redacted])` and the field is private. |
 
 ### 5.2 Authority, persistence and state
 
 | Crate | Lines | Tests static / run | Declared → Verified | Used by | What it really contains |
 |---|---|---|---|---|---|
-| `ptr-ledger` | 4,479 | 104 / 62 (+37 in CI jobs, +6 `raft_fence` run by no CI job) | prototype → **implemented** | runtime, state, cluster, bench | `LedgerEvent` (12 tagged variants) and codec; `InMemoryLedger`; `FileLedger` with PTRLOG02 hash-chained framing, strict open, failpoints; HMAC anchors (`PTRANC01`) and `AcknowledgedLedger`; compaction cutover; erasure audit; feature-gated raft-rs group on PTR's own `FileRaftStorage` (fencing token, snapshot transfer, one-voter membership changes); a standalone raft-engine adapter. The runtime uses only `InMemoryLedger` and `FileLedger`. Anchors, compaction and erasure run only in ledger tests. |
+| `ptr-ledger` | 4,479 | 104 / 62 (+37 in CI jobs, +6 `raft_fence` run by no CI job; *in CI from this branch*) | prototype → **implemented** | runtime, state, cluster, bench | `LedgerEvent` (12 tagged variants) and codec; `InMemoryLedger`; `FileLedger` with PTRLOG02 hash-chained framing, strict open, failpoints; HMAC anchors (`PTRANC01`) and `AcknowledgedLedger`; compaction cutover; erasure audit; feature-gated raft-rs group on PTR's own `FileRaftStorage` (fencing token, snapshot transfer, one-voter membership changes); a standalone raft-engine adapter. The runtime uses only `InMemoryLedger` and `FileLedger`. Anchors, compaction and erasure run only in ledger tests. |
 | `ptr-state` | 211 | 3 / 2 (+1 Turso) | prototype → **partial** | runtime | Monotonic key/value projector (`try_apply` rejects duplicate, gap, out-of-order). The runtime calls `apply`, which discards those outcomes (`src/lib.rs:38-40`). Feature-gated Turso backend (pre-release pin) not wired into the runtime. |
 | `ptr-storage` | 23 | 1 / 1 | scaffold → **scaffold** | none | An in-memory map keyed by a caller-supplied id. No hashing, no content addressing. |
 
@@ -316,7 +322,7 @@ maturity this mapping found. *Used by* lists crates that actually import it.
 |---|---|---|---|
 | `ptrd` | 48 | 0 | Loads config (falls back to defaults with a warning if the file cannot be parsed), builds an **in-memory** runtime, serves `ptr-server`. `--mode cluster` is validated and ignored. |
 | `ptrctl` | 300 | 8 | `doctor` (layout files, config, tool versions), `layout` (prints a hint), `seal` (binds a neural checkpoint to a journal; opens the journal unanchored and creates an empty one if the path is missing). |
-| `ptr-bench` | 320 | 2 | SemDB and mailbox micro-benchmarks, and the L001 crash probes (`ledger-recovery`, `ledger-process-crash`). Exits 0 even when a hard counter is non-zero. |
+| `ptr-bench` | 320 | 2 | SemDB and mailbox micro-benchmarks, and the L001 crash probes (`ledger-recovery`, `ledger-process-crash`). Exits 0 even when a hard counter is non-zero. *Fixed on this branch.* |
 | `ptr-worker` | 3 | 0 | Prints one line. Ships in the release archive. |
 
 ---
@@ -369,7 +375,7 @@ projection > cache > transient model state. No layer promotes itself upward.
 | HMAC anchors (`PTRANC01`) + `AcknowledgedLedger` | `anchor.rs`, `acknowledged.rs` | Implemented and tested; **not used by the runtime**. |
 | Compaction cutover + compacted snapshots (`PTRCS002` with `PTRLC001`/`PTREX001` sections) | `compaction.rs`; `crates/ptr-runtime/src/compacted.rs` | Implemented. Export encodes all SemDB state as one delta, so it fails beyond 16,384 items or 4 MiB. |
 | Measured erasure (audit that no retained file still holds removed bytes) | `retention.rs` | Implemented; used only by ledger tests. No secure overwrite, by design. |
-| Durable raft (`PTRRST02` state, `PTRRLG01`/`PTRRFR01` log), fencing token, snapshot transfer, one-voter membership | `raft_storage.rs`, `raft_node.rs` (feature `raft-rs-backend`) | Implemented behind the feature; 34 tests in CI. The 6 `raft_fence.rs` tests are not run by any CI job. Committed raft events are not materialized anywhere. |
+| Durable raft (`PTRRST02` state, `PTRRLG01`/`PTRRFR01` log), fencing token, snapshot transfer, one-voter membership | `raft_storage.rs`, `raft_node.rs` (feature `raft-rs-backend`) | Implemented behind the feature; 34 tests in CI. The 6 `raft_fence.rs` tests are not run by any CI job (*Fixed on this branch.*). Committed raft events are not materialized anywhere. |
 | raft-engine adapter | `crates/ptr-ledger/src/lib.rs:560-661` (feature) | Standalone; 1 test; used by nothing. |
 | Materialized state | `ptr-state` | In-memory projector used by the runtime; Turso backend feature-gated and unwired. |
 | L001 crash evidence | `experiments/lifecycle/L001-revocation-crash/results/` | 500 in-process + 250 child-process crash cases, 0 false accepts — recorded 2026-09-18, **before** the PTRLOG02 format (`069d4b0`, 2026-09-19); not re-run since. |
@@ -449,7 +455,7 @@ projection > cache > transient model state. No layer promotes itself upward.
   and no code loads them.
 - **Governance unenforced:** the rules in `DATA_GOVERNANCE.md` (leakage checks,
   teacher identification) are not enforced.
-- **Not gitignored:** `datasets/private/`.
+- **Not gitignored:** `datasets/private/`. *Fixed on this branch.*
 
 **Hardware:** 4 profiles.
 - `default.toml` is used by 20 experiments and is all `unspecified`.
@@ -524,7 +530,7 @@ tests and embedding hosts; *ptrd* means the running daemon.
 | 10 | Provider independence | partial (structural) | PTR-owned traits; backends behind features; no conformance tests | echo only |
 | 11 | Verifier precedence | partial | gateway only; Pod path accepts any `Pass` | no |
 | 12 | Unknown is valid | partial (types) | the runtime treats `Unknown` as rejection | no |
-| 13 | Secret redaction | partial | `AnchorKey` redacts; `Secret<T>` leaks through `Debug`; tracing sink unredacted | weaker (error `Debug` returned to clients) |
+| 13 | Secret redaction | partial | `AnchorKey` redacts; `Secret<T>` leaks through `Debug` (*fixed on this branch*); tracing sink unredacted | weaker (error `Debug` returned to clients) |
 | 14 | Replayability | implemented (host durable path) | replay, recovery and compacted snapshots | no (in-memory) |
 | 15 | Falsifiability | partial (CI metadata) | manifests need `baseline` and `falsification`; no schema field for ablations | n/a |
 
@@ -600,7 +606,7 @@ confirms that the test *names* they cite exist (`scripts/check_contract_citation
 - **The rest:** 74 candidates are `to-evaluate` with no evidence. No slot has
   compared two candidates, and no decision has come out of an evaluation.
 - **Registry gap:** the `training-backend` slot exists as a directory but is missing
-  from `evaluations/registry.toml`.
+  from `evaluations/registry.toml`. *Fixed on this branch.* `check_repo.py` now compares the two.
 
 ### 13.3 Benchmarks, baselines, decisions and claims
 
@@ -638,11 +644,11 @@ confirms that the test *names* they cite exist (`scripts/check_contract_citation
 | Workflow | Runs on | Jobs |
 |---|---|---|
 | `ci.yml` | every push and PR | quality (fmt, clippy, rustdoc, template, tracing-adapter) · rust-stable (Linux, Windows) · rust-msrv (1.85) · python-training (3.11, 3.13) · repository-invariants (14 gate scripts + 4 unittest suites) · lifecycle-failpoints · ledger-raft-engine · ledger-raft-rs · state-turso · network-iroh · cluster-wire · execution-wire · pod-wire |
-| `burn-a0.yml` | changes under `model/burn-a0/**` or `vendor/**` (**not** `crates/ptr-types/**`, although A0 depends on it) | stable, msrv 1.95 |
+| `burn-a0.yml` | changes under `model/burn-a0/**` or `vendor/**` (**not** `crates/ptr-types/**`, although A0 depends on it; *fixed on this branch*, which adds `crates/ptr-types/**` and the codebook) | stable, msrv 1.95 |
 | `sdk.yml` | changes under `sdk/**` | Node 22 and 24 |
 | `security.yml` | every push and PR + weekly | cargo-audit, cargo-deny over the four owned workspaces |
 | `release.yml` | `v*` tags | Linux build, checksums, CycloneDX SBOM, Sigstore attestations. Never exercised; does not wait for CI. |
-| `one-shot-sync.yml` | a change to its own file on `main` | Dormant; can regenerate `Cargo.lock` and push to `main` |
+| `one-shot-sync.yml` | a change to its own file on `main` | Dormant; can regenerate `Cargo.lock` and push to `main`. *Removed on this branch.* |
 
 ### 14.2 The gate scripts (`repository-invariants`)
 
@@ -665,7 +671,7 @@ confirms that the test *names* they cite exist (`scripts/check_contract_citation
 implemented, missing, next, checks, linked experiments/evaluations/ADRs). A
 generator renders it — plus line and test counts — into each README's status
 block and `docs/components/STATUS.md`. The generator counts only the literal
-`#[test]`, so the 41 `#[tokio::test]` tests are invisible to it. The hand-written
+`#[test]`, so the 41 `#[tokio::test]` tests are invisible to it. *Fixed on this branch.* The hand-written
 header line above each generated block is not checked and is often stale.
 
 **Vendoring:** 21 crates, of two kinds:
@@ -677,6 +683,11 @@ Each has a hash inventory and a machine-checked retirement record. None can be
 retired yet.
 
 ### 14.3 Running what CI runs, locally
+
+*On this branch, `make ci-local` (every `ci.yml` job, one `ci-<job>` target each)
+and `make a0` replace the list below, and `scripts/tests/test_ci_local.py` keeps
+them in step with the workflows. The list stays as the record of what was run on
+2026-09-24.*
 
 The documented local lists (`CONTRIBUTING.md`, the PR template, the `Makefile`,
 `docs/DEVELOPMENT_ENVIRONMENT.md`) each cover only a subset of CI. They also run on
@@ -780,7 +791,7 @@ The graft commit `55b5379` already contains the full 24-crate scaffold.
 | Step 01 | First cognitive increment (confidence contract) | doc 20 |
 | Gate 1–4 | Requirement blocks of issues #15/#20 (execution/network trust, cluster integrity, neural lifecycle, dependency retirement) | GitHub issues |
 | A1–A6, B1–B5, C1–C9 | Tiers of the open-items plan: done fixes, owner decisions, separate gates | `docs/OPEN_ITEMS_PLAN_20260921.md` |
-| G1, G2; D1–D6 | Issue #23's renumbering: G1 = semantic payloads to the model (**open**), G2 = durable cross-node fencing (closed in code; its only tests, `raft_fence.rs`, are run by no CI job); D1–D6 = owner decisions (all undecided) | issue #23 |
+| G1, G2; D1–D6 | Issue #23's renumbering: G1 = semantic payloads to the model (**open**), G2 = durable cross-node fencing (closed in code; its only tests, `raft_fence.rs`, are run by no CI job; *in CI from this branch*); D1–D6 = owner decisions (all undecided) | issue #23 |
 | M/S/R/L/Q/F/E + 3 digits | Experiment ids: model, SemDB, runtime/Pods, lifecycle, retrieval, feedback, end-to-end system | `experiments/registry.toml` |
 | ADR-00NN | Architecture decision records | `research/decisions/` |
 | Phase A–G | Target roadmap phases | `docs/ROADMAP.md` |
@@ -808,7 +819,8 @@ The graft commit `55b5379` already contains the full 24-crate scaffold.
   invariants" is partial, and "reproducible artifacts" has its infrastructure in
   place.
 - **Stale status documents:** `README.md` and `STATUS.md` were last edited on
-  2026-09-19. They list 24 crates (there are 27), and they still call several gates
+  2026-09-19. They list 24 crates (there are 27; *the README's component map is
+  fixed on this branch*, `STATUS.md` is not), and they still call several gates
   open that PR #21 and PR #24 closed. The generated `docs/components/STATUS.md` and
   the contract documents 21–34 are the current sources.
 

@@ -14,6 +14,26 @@ reconciliation against issue #23:*
 - rows 4.15–4.20 were added;
 - the owner decisions were renamed O1–O5, and O6 was added.
 
+*Progress (2026-09-25, same branch).* Twelve of the mechanical items are done, each
+in its own commit and each with a test or a gate that fails if the defect returns:
+
+| Item | What changed | Guard against regression |
+|---|---|---|
+| 3.1 | The docs generator counts `#[tokio::test]`; the total moves from 446 to 487 | `scripts/tests/test_update_component_docs.py` |
+| 3.4 | `README.md` and `docs/components/README.md` list all 27 crates | `check_repo.py` reports a crate missing from either map |
+| 4.1 | `raft_fence` is a declared `[[test]]` run by the `ledger-raft-rs` job | the CI step itself |
+| 4.2 | `burn-a0.yml` also triggers on `crates/ptr-types/**` and the codebook | — |
+| 4.3 | `datasets/private/` is ignored except its scaffolding | — |
+| 4.4 | `Secret<T>` prints `Secret([redacted])` and keeps its field private | `crates/ptr-inspect/tests/smoke.rs` |
+| 4.8 | `new_experiment.py` writes every schema key and registers the experiment; `validate` reports unregistered manifests | `scripts/tests/test_new_experiment.py` |
+| 4.9 | `training-backend` is registered | `check_repo.py` compares the registry with the slot directories |
+| 4.11 | The four feature backends are clippy-linted in CI. The first run found a dropped `Result` in `RaftEngineLedger::append_durable` (unreachable with the current key prefix) and two lints in `raft_fence.rs` | the CI steps |
+| 4.12 | `make ci-local` mirrors `ci.yml` job by job, and `make a0` runs on 1.95.0 | `scripts/tests/test_ci_local.py` |
+| 4.14 | `one-shot-sync.yml` is deleted | — |
+| 4.18 | `ptr-bench`'s lifecycle probes exit 1 on any nonzero hard counter | unit test of the counter rule; a forced violation was checked by hand |
+
+The rest of this document is unchanged and still describes `e93ed99`.
+
 ## 1. The diagnosis in one paragraph
 
 PTR has built a strong **hard shell** and has barely started on its **soft core**.
