@@ -892,8 +892,8 @@ fn typed_cross_bias(slot_bias: Tensor<3>, raw_keys: Tensor<3>) -> Tensor<3> {
 
 #[cfg(test)]
 mod typed_attention_switch_tests {
-    //! The M002 switch removes exactly the typed pair bias. Each test builds two
-    //! models from one seeded init, so they differ only where a test makes them.
+    //! The M002 switch removes exactly the typed pair bias. Each test compares a
+    //! model with its own clone, so the two differ only where a test makes them.
     use super::*;
     use burn::nn::Initializer;
     use ptr_types::{TypeId, Validity};
@@ -1009,10 +1009,12 @@ mod typed_attention_switch_tests {
     #[test]
     fn switching_it_off_changes_what_a_trained_bias_does() {
         let device = Device::flex();
-        device.seed(7);
+        // One model and its clone, not two inits from one seed: the generator is
+        // shared by every test thread, so a second init could draw other weights
+        // and make the two differ for a reason that is not the switch.
         let on = config().init(&device);
-        device.seed(7);
-        let off = config().with_typed_attention(false).init(&device);
+        let mut off = on.clone();
+        off.typed_attention = false;
 
         let difference = largest_difference(
             run(&on, &device).router_logits,
@@ -1178,6 +1180,52 @@ mod ablation_mechanism_tests {
                 - logits(&zeroed, [1, 2, 3, 4], roles, &device),
         );
         assert_eq!(difference, 0.0);
+    }
+
+    /// T3c: one latent step adds exactly gelu(latent_refine(slots)) to the slots,
+    /// and exactly latent_refine(slots) with the nonlinearity switched off.
+    #[test]
+    fn one_latent_step_adds_exactly_its_delta_with_or_without_the_gelu() {
+        let device = Device::flex();
+        let roles = [
+            SemanticRole::Goal,
+            SemanticRole::Claim,
+            SemanticRole::Action,
+        ];
+        let slots_of = |model: &PtrA0| {
+            let (roles, metadata) = metadata(&device, roles);
+            let tokens = Tensor::<2, Int>::from_data([[1, 2, 3, 4]], &device);
+            model
+                .forward(tokens, &roles, &values(&device), metadata)
+                .slots
+        };
+        let stepped = config().with_latent_steps(1).init(&device);
+        let mut before = stepped.clone();
+        before.latent_steps = 0;
+        let start = slots_of(&before);
+        let refined = stepped.latent_refine.forward(start.clone());
+        for (nonlinearity, delta) in [(true, gelu(refined.clone())), (false, refined)] {
+            let mut model = stepped.clone();
+            model.latent_nonlinearity = nonlinearity;
+            let difference: f32 = (slots_of(&model) - (start.clone() + delta))
+                .abs()
+                .max()
+                .into_scalar();
+            assert!(
+                difference < 1.0e-6,
+                "nonlinearity {nonlinearity}: {difference}"
+            );
+        }
+        let mut linear = stepped.clone();
+        linear.latent_nonlinearity = false;
+        let switched: f32 = (slots_of(&stepped) - slots_of(&linear))
+            .abs()
+            .max()
+            .into_scalar();
+        assert!(
+            switched > 1.0e-4,
+            "the gelu must change the step: {switched}"
+        );
     }
 
     /// T3b: with the typed query, the typed bias and the latent steps all off,

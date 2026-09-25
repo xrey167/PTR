@@ -53,9 +53,16 @@ pins this, so a change that connects it is seen rather than assumed.
 Tests T2-T6 of the study design check the switches: each switch changes the
 forward pass and the frozen router does not (`tests/ablation_switches.rs`, and in
 `src/lib.rs` one Adam step leaves a frozen router's weights bit for bit as they
-were); a switch that is off removes exactly its mechanism (`src/lib.rs`); nothing
-about a slot that is not admitted reaches the logits in any arm
-(`tests/admission_invariance.rs`); and the committed runtime fixture still loads
+were). A switch that is off removes exactly its mechanism: the typed bias is
+checked against the same model with a zero bias
+(`switching_it_off_equals_a_zero_pair_bias_and_nothing_else`), and the gelu
+against a latent step computed by hand
+(`one_latent_step_adds_exactly_its_delta_with_or_without_the_gelu`), both in
+`src/lib.rs`. The typed query is checked only together with the other metadata
+reads: with all of them off, a slot's role can only shift the logits
+(`with_every_metadata_read_off_a_role_only_shifts_the_logits`). Nothing about a
+slot that is not admitted reaches the logits in any arm
+(`tests/admission_invariance.rs`), and the committed runtime fixture still loads
 (`tests/runtime_fixture.rs`).
 
 ## Alignment with the PTR cognitive type kernel
