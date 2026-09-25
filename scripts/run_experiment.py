@@ -386,7 +386,8 @@ def summarize(by_seed: dict[int, float]) -> dict:
     """Summarize per-seed values with sample deviation and None for unavailable statistics."""
     if not by_seed:
         return {"n": 0, "mean": None, "std": None, "min": None, "max": None, "by_seed": {}}
-    ordered = [by_seed[seed] for seed in sorted(by_seed)]
+    seeds = sorted(by_seed)
+    ordered = [by_seed[seed] for seed in seeds]
     return {
         "n": len(ordered),
         "mean": statistics.fmean(ordered),
@@ -395,7 +396,7 @@ def summarize(by_seed: dict[int, float]) -> dict:
         "std": statistics.stdev(ordered) if len(ordered) > 1 else None,
         "min": min(ordered),
         "max": max(ordered),
-        "by_seed": {str(seed): by_seed[seed] for seed in sorted(by_seed)},
+        "by_seed": {str(seed): by_seed[seed] for seed in seeds},
     }
 
 
@@ -504,13 +505,12 @@ def aggregate(
             rows = metric_rows(stdout)
         except ValueError as error:
             raise ValueError(f"{path.name}: {error}") from None
-        seen = set()
         for row in rows:
             key = tuple(sorted((k, v) for k, v in row.items() if isinstance(v, str)))
-            if key in seen:
+            row_seeds = printed_by.setdefault(key, set())
+            if seed in row_seeds:
                 raise ValueError(f"{path.name}: row {dict(key)} is printed more than once")
-            seen.add(key)
-            printed_by.setdefault(key, set()).add(seed)
+            row_seeds.add(seed)
             finite.setdefault(key, {})
             non_finite.setdefault(key, {})
             for name, raw in row.items():
@@ -529,24 +529,25 @@ def aggregate(
     if completed and not printed_by:
         raise ValueError("the completed runs printed no JSON metric rows")
 
-    completed_seeds = sorted(completed)
+    completed_seed_set = set(completed)
+    completed_seeds = sorted(completed_seed_set)
     groups = []
     gaps = False
     for key in sorted(printed_by):
-        missing_row = sorted(set(completed_seeds) - printed_by[key])
+        missing_row = sorted(completed_seed_set - printed_by[key])
         metrics = {}
         for name in sorted(set(finite[key]) | set(non_finite[key])):
             by_seed = finite[key].get(name, {})
             bad = non_finite[key].get(name, {})
             summary = summarize(by_seed)
-            summary["missing_seeds"] = sorted(set(completed_seeds) - set(by_seed) - set(bad))
+            summary["missing_seeds"] = sorted(completed_seed_set - by_seed.keys() - bad.keys())
             summary["non_finite"] = {str(seed): bad[seed] for seed in sorted(bad)}
             gaps = gaps or bool(summary["missing_seeds"] or summary["non_finite"])
             metrics[name] = summary
         gaps = gaps or bool(missing_row)
         groups.append({"key": dict(key), "missing_seeds": missing_row, "metrics": metrics})
 
-    missing = sorted(set(declared) - set(completed))
+    missing = sorted(set(declared) - completed_seed_set)
     status = "complete" if not missing and not failed and not gaps else "incomplete"
     timestamp = utc_stamp()
     first = records[0][1]

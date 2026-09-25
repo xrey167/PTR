@@ -394,15 +394,15 @@ def load_score_module():
     return module
 
 
-def eval_records(experiment: str, entrypoint: str) -> list[Path]:
-    """Every run record of one entrypoint, in the order the runner wrote them."""
+def load_records(experiment: str) -> dict[Path, dict]:
+    """Read each run once, retaining study records in the order the runner wrote them."""
     results = ROOT / "experiments" / EXPERIMENTS[experiment] / "results"
-    out = []
+    records = {}
     for path in sorted(results.glob("run-*.json")):
         record = json.loads(path.read_text(encoding="utf-8"))
-        if record.get("entrypoint") == entrypoint:
-            out.append(path)
-    return out
+        if record.get("entrypoint") in STUDY_KINDS.values():
+            records[path] = record
+    return records
 
 
 def git(*args: str) -> str:
@@ -564,9 +564,14 @@ def main(argv: list[str] | None = None) -> int:
 
     # Every study record, by kind and experiment; the tables use one completed
     # record per (experiment, seed), and the gates see all of them.
-    paths = {kind: {e: eval_records(e, entrypoint) for e in EXPERIMENTS} for kind, entrypoint in STUDY_KINDS.items()}
-    records = {str(p.relative_to(ROOT)): json.loads(p.read_text(encoding="utf-8"))
-               for by_experiment in paths.values() for ps in by_experiment.values() for p in ps}
+    loaded = {e: load_records(e) for e in EXPERIMENTS}
+    paths = {
+        kind: {e: [p for p, r in loaded[e].items() if r.get("entrypoint") == entrypoint]
+               for e in EXPERIMENTS}
+        for kind, entrypoint in STUDY_KINDS.items()
+    }
+    records = {str(p.relative_to(ROOT)): loaded[e][p]
+               for by_experiment in paths.values() for e, ps in by_experiment.items() for p in ps}
     by_name = {id(r): name for name, r in records.items()}
 
     def chosen_of(kind: str) -> dict[str, dict[int, dict]]:
@@ -582,11 +587,17 @@ def main(argv: list[str] | None = None) -> int:
                     for kind in STUDY_KINDS}
     chosen_records = {by_name[id(r)]: r for kind in STUDY_KINDS for by_seed in chosen[kind].values() for r in by_seed.values()}
 
-    table, problems, scored = build_table(chosen_paths["eval"], score)
-    contingency, contingency_problems, contingency_scored = (
-        build_table(chosen_paths["contingency"], score) if chosen_paths["contingency"] else (None, [], [])
-    )
-    _, rerun_problems, rerun_scored = build_table(chosen_paths["rerun"], score) if chosen_paths["rerun"] else (None, [], [])
+    tables = {}
+    scored = {}
+    all_problems = []
+    for kind in ("eval", "contingency", "rerun"):
+        tables[kind], problems, scored[kind] = (
+            build_table(chosen_paths[kind], score)
+            if kind == "eval" or chosen_paths[kind] else (None, [], [])
+        )
+        all_problems.extend(problems)
+    table = tables["eval"]
+    contingency = tables["contingency"]
     gates: dict = {}
 
     # G0: data identity and label agreement, for every process a verdict rests on.
@@ -634,9 +645,8 @@ def main(argv: list[str] | None = None) -> int:
 
     # G5: the binary's counts equal score.py's, on every scored process.
     disagree = [f"{e['arm']}/{e['seed']}/{e['split']}" + (f" ({kind})" if kind != "eval" else "")
-                for kind, entries in (("eval", scored), ("contingency", contingency_scored), ("rerun", rerun_scored))
+                for kind, entries in scored.items()
                 for e in entries if e.get("rust_count_agrees") is not True]
-    all_problems = problems + contingency_problems + rerun_problems
     gates["G5"] = {"pass": not disagree and not all_problems, "detail": {"disagreements": disagree, "problems": all_problems}}
 
     # G6: the correctness logs the driver wrote at the evaluation commit.

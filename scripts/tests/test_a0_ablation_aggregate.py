@@ -335,6 +335,25 @@ class RecordGates(unittest.TestCase):
 
 
 class StockCrossCheck(unittest.TestCase):
+    def test_load_records_keeps_all_study_phases_and_failures_in_filename_order(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            results = root / "experiments/model/fixture/results"
+            results.mkdir(parents=True)
+            entries = {
+                "run-3.json": {"entrypoint": "a0_contingency_entrypoint", "status": "completed"},
+                "run-2.json": {"entrypoint": "a0_rerun_entrypoint", "status": "failed"},
+                "run-1.json": {"entrypoint": "a0_ablation_entrypoint", "status": "completed"},
+                "run-0.json": {"entrypoint": "a0_sweep_entrypoint", "status": "completed"},
+                "aggregate-1.json": {"entrypoint": "a0_ablation_entrypoint"},
+            }
+            for name, entry in entries.items():
+                (results / name).write_text(json.dumps(entry), encoding="utf-8")
+            with patch.multiple(agg, ROOT=root, EXPERIMENTS={"M001": "model/fixture"}):
+                loaded = agg.load_records("M001")
+            self.assertEqual([p.name for p in loaded], ["run-1.json", "run-2.json", "run-3.json"])
+            self.assertEqual(list(loaded.values()), [entries[f"run-{i}.json"] for i in (1, 2, 3)])
+
     def test_missing_scores_are_reported_and_complete_scores_are_compared(self):
         complete = {"full": scores(0.9)}
         missing_seed = copy.deepcopy(complete)
@@ -361,8 +380,11 @@ class StockCrossCheck(unittest.TestCase):
                     (study / "PREREGISTRATION.md").write_bytes(b"preregistered")
                     results = root / "experiments/model/fixture/results"
                     results.mkdir(parents=True)
-                    run_path = results / "run.json"
-                    run_path.write_text(json.dumps(record(SEEDS[0], stdout="")))
+                    run_path = results / "run-1.json"
+                    run_path.write_text(json.dumps({
+                        **record(SEEDS[0], stdout=""),
+                        "entrypoint": agg.STUDY_KINDS[kind],
+                    }))
                     stock_path = results / "stock.json"
                     stock_path.write_text(json.dumps({"groups": [
                         {"key": {"row": "meta"}},
@@ -376,7 +398,6 @@ class StockCrossCheck(unittest.TestCase):
                         LOCK=study / "lock.json", EXPERIMENTS={"M001": "model/fixture"},
                         at_tag=Mock(side_effect=lambda p: criteria if p.endswith("criteria.toml") else b"preregistered"),
                         load_score_module=Mock(return_value=Mock(agree=Mock(return_value=(True, [])))),
-                        eval_records=Mock(side_effect=lambda e, entry: [run_path] if entry == agg.STUDY_KINDS[kind] else []),
                         build_table=Mock(return_value=(score_table, [], [])),
                         decide=Mock(return_value={"verdicts": {}}),
                     ), patch.object(agg.subprocess, "run", return_value=subprocess.CompletedProcess(
