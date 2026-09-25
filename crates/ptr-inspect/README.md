@@ -9,14 +9,14 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `scaffold`  
-**Last reviewed:** 2026-09-18  
-**Code footprint:** 1 Rust source files · 23 nonblank source lines · 1 integration-test files · 1 `#[test]` markers
+**Last reviewed:** 2026-09-25  
+**Code footprint:** 1 Rust source files · 44 nonblank source lines · 1 integration-test files · 3 `#[test]` markers
 
 ### Implemented now
 
 - Generic InspectNode tree
 - Inspectable trait
-- Secret<T> that always renders Redacted
+- Secret<T> that always renders Redacted, prints Secret([redacted]) through Debug for any T, and keeps its value in a private field reached only through expose/into_inner
 
 ### Missing for the target architecture
 
@@ -47,6 +47,7 @@
 
 ### Current automated checks
 
+- Debug and alternate Debug of a Secret, alone and nested in a derived Debug, never contain the value
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->
