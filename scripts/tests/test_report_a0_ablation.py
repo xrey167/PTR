@@ -50,6 +50,26 @@ class Report(unittest.TestCase):
         notes = {p.name[len("FALSIFIED-"):-len(".md")] for p in self.study.glob("FALSIFIED-*.md")}
         self.assertEqual(notes, nulls)
 
+    def test_the_interpretation_follows_the_verdicts_it_describes(self):
+        # Other outcomes must not inherit this run's prose: turn M002-necessity into
+        # SUPPORTS, M001-primary into FALSIFIES and the negative control into
+        # EQUIVALENT, and every sentence about them has to change with them.
+        path = self.study / "results.json"
+        results = json.loads(path.read_text(encoding="utf-8"))
+        results["verdicts"]["M002-necessity"]["verdict"] = "SUPPORTS"
+        results["verdicts"]["M001-primary"]["verdict"] = "FALSIFIES"
+        results["verdicts"]["M004-negative-control"]["verdict"] = "EQUIVALENT"
+        path.write_text(json.dumps(results), encoding="utf-8")
+        self.assertEqual(report.main(), 0)
+        text = (self.study / "RESULTS.md").read_text(encoding="utf-8")
+        interpretation = text.split("## Interpretation (not a rule output)")[1].split("## Reading these results")[0]
+        self.assertNotIn("Typed slot content helped", interpretation)
+        self.assertIn("M001-primary is FALSIFIES", interpretation)
+        self.assertNotIn("typed attention bias", interpretation)
+        self.assertIn("a second tied refinement step", interpretation)
+        self.assertIn("equivalent to the learned one within the preregistered band, as predicted", interpretation)
+        self.assertNotIn("could not be shown equivalent", interpretation)
+
 
 if __name__ == "__main__":
     unittest.main()

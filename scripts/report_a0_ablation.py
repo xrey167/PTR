@@ -2,10 +2,13 @@
 
 Every number comes from results.json (written by scripts/aggregate_a0_ablation.py),
 the per-experiment results/a0_internal_metrics.json, references.json, budget.json
-and criteria.toml; nothing is transcribed by hand. Every verdict is reported,
+and criteria.toml; no number is transcribed by hand. Every verdict is reported,
 nulls, HARMFUL and INCONCLUSIVE ones included, with its reason and its per-seed
-numbers. Each FALSIFIES or HARMFUL verdict also gets a FALSIFIED-<contrast>.md
-note, as research/falsification/README.md asks ("Record negative results").
+numbers. The interpretation is prose, and each of its sentences is written only
+for the verdicts it describes; the section on what happened after the freeze is
+a hand-written record of this run, marked as such. Each FALSIFIES or HARMFUL
+verdict also gets a FALSIFIED-<contrast>.md note, as research/falsification/
+README.md asks ("Record negative results").
 """
 
 from __future__ import annotations
@@ -24,6 +27,13 @@ EXPERIMENTS = {
     "M004": "model/M004-operator-router",
 }
 SPLITS = ["test_iid", "ood_compose_epi", "ood_compose_regime", "ood_distractors", "ood_validity", "ood_payload"]
+MECHANISM = {
+    "M001-primary": "typed slot content",
+    "M001-secondary": "typed slot content with admission",
+    "M002-necessity": "the rank-1 typed attention bias",
+    "M002-sufficiency": "the typed attention bias as the only metadata-dependent read",
+    "M003-depth": "a second tied refinement step",
+}
 
 
 def f(value, digits=4) -> str:
@@ -38,13 +48,24 @@ def main() -> int:
     results = json.loads((STUDY / "results.json").read_text(encoding="utf-8"))
     references = json.loads((STUDY / "references.json").read_text(encoding="utf-8"))
     budget = json.loads((STUDY / "budget.json").read_text(encoding="utf-8"))
-    composite_a = tomllib.loads((STUDY / "criteria.toml").read_text(encoding="utf-8"))["composites"]["A"]
+    criteria = tomllib.loads((STUDY / "criteria.toml").read_text(encoding="utf-8"))
+    composite_a = criteria["composites"]["A"]
+    contrasts = {c["id"]: c for c in criteria["contrast"]}
     scale = f"one block, d_model {budget['d_model']}, {budget['steps']} steps"
-    metrics = {}
+    metrics, later_metrics = {}, {}
     for experiment, path in EXPERIMENTS.items():
         document = json.loads((ROOT / "experiments" / path / "results/a0_internal_metrics.json").read_text(encoding="utf-8"))
         for arm, by_seed in document["arms"].items():
             metrics[arm] = by_seed
+        for arm, by_seed in document.get("contingency_arms", {}).items():
+            later_metrics[arm] = by_seed
+    below_bar = {arm for arm, status in results.get("learnability", {}).items() if not status["passes"]}
+
+    def seed_mean(table: dict, arm: str, split: str, subset: str | None = None) -> float:
+        by_seed = table[arm].values()
+        if subset is None:
+            return statistics.fmean(scores[split]["route_accuracy"] for scores in by_seed)
+        return statistics.fmean(scores[split]["subsets"][subset]["accuracy"] for scores in by_seed)
 
     out: list[str] = []
     w = out.append
@@ -132,19 +153,40 @@ def main() -> int:
         if "mask_share" in entry:
             at = entry.get("mask_share_budget", "S*")
             why = " (the contingency did not re-run the masked arm, so no share exists at the budget that decided the verdict)" if at == "S*" and entry.get("note") else ""
-            w(f"Mask share of the gap (no-semantic-slots-masked - no-semantic-slots on the endpoint), at {at}: {entry['mask_share']:+.4f}{why}.")
+            undertrained = " At S* no-semantic-slots is below its learnability bar, so this share mixes the mask with undertraining." if at == "S*" and "no-semantic-slots" in below_bar else ""
+            w(f"Mask share of the gap (no-semantic-slots-masked - no-semantic-slots on the endpoint), at {at}: {entry['mask_share']:+.4f}{why}.{undertrained}")
         if "dose_response" in entry:
             w(f"Dose response (latent-4): {entry['dose_response']}.")
         if "deterministic_reference" in entry:
             d = entry["deterministic_reference"]
-            w(f"Learned routing against the designer's deterministic router (hand-weighted {f(d['hand_weighted_test_iid'])} on test_iid): full arm min {f(d['full_min'])}, max {f(d['full_max'])}; the claim 'learned beats deterministic by 5 points on every seed' {d['learned_beats_deterministic']}.")
+            margin = contrasts[cid]["deterministic_margin"]
+            w(f"Learned routing against the designer's deterministic router (hand-weighted {f(d['hand_weighted_test_iid'])} on test_iid): full arm min {f(d['full_min'])}, max {f(d['full_max'])}; the preregistered claim 'learned beats deterministic by {round(100 * margin)} points on every seed' {d['learned_beats_deterministic']}.")
+            if "frozen-router" in metrics:
+                frozen_min = min(scores["test_iid"]["route_accuracy"] for scores in metrics["frozen-router"].values())
+                if frozen_min >= d["hand_weighted_test_iid"] + margin:
+                    w(f"The frozen-router arm, whose readout is never trained, clears the same margin (lowest seed {frozen_min:.4f}), so the margin comes from the learned layers before the readout, not from learning the router.")
+                else:
+                    w(f"The frozen-router arm, whose readout is never trained, has lowest seed {frozen_min:.4f} on test_iid.")
     reported = results.get("reported", {})
     if "mask_effect" in reported:
         m = reported["mask_effect"]
         w("")
         w("## Reported without a verdict")
         w("")
-        w(f"The admission mask on its own (no-semantic-slots-masked - no-semantic-slots): {m['validity_decisive_test_iid']:+.4f} on the validity-decisive subset of test_iid, {m['ood_validity']:+.4f} on ood_validity.")
+        w(f"The admission mask on its own (no-semantic-slots-masked - no-semantic-slots, at S*): {m['validity_decisive_test_iid']:+.4f} on the validity-decisive subset of test_iid, {m['ood_validity']:+.4f} on ood_validity.")
+        if m.get("below_learnability_bar"):
+            caveat = f"This difference is not the mask's effect alone: at S* {', '.join(m['below_learnability_bar'])} is below its learnability bar, so it also measures undertraining."
+            if "no-semantic-slots" in later_metrics and "no-semantic-slots-masked" not in later_metrics:
+                caveat += (
+                    f" At {results['reported']['contingency']['steps']} steps the unmasked arm alone reaches "
+                    f"{seed_mean(later_metrics, 'no-semantic-slots', 'ood_validity'):.4f} on ood_validity and "
+                    f"{seed_mean(later_metrics, 'no-semantic-slots', 'test_iid', 'validity'):.4f} on the validity-decisive subset, "
+                    f"above the masked arm's {seed_mean(metrics, 'no-semantic-slots-masked', 'ood_validity'):.4f} and "
+                    f"{seed_mean(metrics, 'no-semantic-slots-masked', 'test_iid', 'validity'):.4f} at S*. "
+                    "The masked arm was not re-run, so the mask's own effect at matched training is unknown."
+                )
+            w("")
+            w(caveat)
     if "transfer" in reported:
         w("")
         w("Compositional transfer (descriptive; the strict transfer subset of ood_compose_regime, where every no-transfer reference scores 0, and the held-out pairs of ood_compose_epi):")
@@ -156,7 +198,9 @@ def main() -> int:
     w("")
     w("## After the freeze: what happened, in order")
     w("")
-    w("- The lr-selection commit (4b0ad16) held only `lr_selection.*` and the sweep records. The evaluation, the rerun and the contingency all ran from it with a clean worktree: gate G4 checks the evaluation records, and the rerun and contingency records show the same commit and `git_dirty = false`.")
+    w("*A hand-written record of this run, not derived from the aggregate.*")
+    w("")
+    w("- The lr-selection commit (4b0ad16) held only `lr_selection.*` and the sweep records. The evaluation, the rerun and the contingency all ran from it with a clean worktree; gate G4 checks every one of those records and the diff from the tag to that commit.")
     secondary = results["verdicts"].get("M001-secondary", {})
     learn = results.get("learnability", {}).get("no-semantic-slots")
     if learn and not learn["passes"]:
@@ -165,6 +209,8 @@ def main() -> int:
             if rescued and rescued["arms"].get("no-semantic-slots", {}).get("passes") else ""))
     w("- The aggregator as frozen did not re-check the learnability bar on the 4000-step runs, which the criteria require (an arm still below it makes the contrast INCONCLUSIVE). It was fixed in commit bd84b48 after the contingency runs finished and before any of their results were read, with a test that fails against the frozen code; the criteria did not change.")
     w("- A mistake in process, recorded for completeness: while the contingency's first three processes were running, the fix was briefly present as an uncommitted edit, which would have marked any process started then as dirty. It was stashed before the remaining two processes started; all five contingency records show `git_dirty = false` at 4b0ad16.")
+    w("- After the results were read, an independent review found gaps in the gates and the report. G0 and G2 could pass on empty input; G3, G4 and G5 looked only at the evaluation records, not at the rerun and the contingency; G4 did not check the diff from the tag; a failed process's scores could have entered a table; and some of this report's prose was written for this outcome. The commits after 7bc4060 close each gap. No table and no verdict changed, and the aggregator as it stood at the tag, applied to the same tables, gives the same nine verdicts.")
+    w("- A known deviation of no consequence: the learning-rate schedule ends at 0.1000011 x peak on the last step rather than exactly 0.1 x peak (`examples/a0_ablation/train.rs`: the cosine progress reaches (S-101)/(S-100), not 1). It is the same for every arm.")
     w("- The preregistration tag `a0-ablation-prereg-v1` points at 45b2d54. It exists in the working copy the study ran in; this session could push the branch but not tags, so recreate it with `git tag a0-ablation-prereg-v1 45b2d54` before re-running the aggregator elsewhere.")
     w("")
     w("## Interpretation (not a rule output)")
@@ -177,7 +223,9 @@ def main() -> int:
             for by_split in metrics[arm].values()
         )
 
-    if primary.get("stats") and secondary.get("stats") and rescued:
+    verdict_of = {cid: entry.get("verdict") for cid, entry in results["verdicts"].items()}
+    if (verdict_of.get("M001-primary") == "SUPPORTS" and secondary.get("note") == "decided at 4000 steps"
+            and verdict_of.get("M001-secondary") != "SUPPORTS" and rescued and secondary.get("stats")):
         later = {arm: statistics.fmean(status["composite_A"]) for arm, status in rescued["arms"].items()}
         w(f"Typed slot content helped at the preregistered budget: on the OOD composite A the full arm beat the masked content-free arm by {primary['stats']['mean']:+.4f} on average at {budget['steps']} steps. "
           f"The contingency qualifies that. Given {rescued['steps']} steps, the unmasked content-free arm, which must bind every fact from index-tagged raw tokens and learn the Live gate itself, "
@@ -185,12 +233,34 @@ def main() -> int:
           f"the gap closed to {secondary['stats']['mean']:+.4f} (interval [{secondary['stats']['ci'][0]:+.4f}, {secondary['stats']['ci'][1]:+.4f}]). "
           f"At {budget['steps']} steps the masked arm scored {composite_at_s_star('no-semantic-slots-masked'):.4f} there; it was not re-run at {rescued['steps']} steps, so M001-primary's margin is known only at {budget['steps']}. "
           "Much of what typed slots buy in this task may therefore be learning speed rather than a capability the raw path lacks; a study at matched longer budgets for every arm would separate the two.")
+    else:
+        w(f"M001-primary is {verdict_of.get('M001-primary')} and M001-secondary is {verdict_of.get('M001-secondary')}"
+          + (f" ({secondary['note']})" if secondary.get("note") else "") + "; see their details above.")
+    nulls = [cid for cid, v in verdict_of.items() if v == "FALSIFIES" and cid in MECHANISM]
+    harmful = [cid for cid, v in verdict_of.items() if v == "HARMFUL" and cid in MECHANISM]
+    sentences = []
+    if nulls:
+        names = [MECHANISM[cid] for cid in nulls]
+        thresholds = sorted({contrasts[cid]["delta_min"] for cid in nulls})
+        threshold = " or ".join(f"{round(100 * t)} points" for t in thresholds)
+        sentences.append(f"For {' and for '.join(names)}, a benefit of {threshold} or more is excluded at this scale ({', '.join(nulls)}); "
+                         f"{'each is a candidate' if len(nulls) > 1 else 'it is a candidate'} for simplification.")
+    if harmful:
+        sentences.append(f"Removing {' and '.join(MECHANISM[cid] for cid in harmful)} made A0 better ({', '.join(harmful)}).")
     nonlinearity = results["verdicts"].get("M003-nonlinearity", {})
-    if nonlinearity.get("stats") and nonlinearity.get("attribution_stats"):
-        w("")
-        w(f"For the typed attention bias and for a second tied refinement step, a benefit of 2 points or more is excluded at this scale, as the design expected for the first; both are candidates for simplification. "
-          f"The per-slot nonlinearity, by contrast, is used: removing the latent step costs {100 * nonlinearity['stats']['mean']:.1f} points on test_iid, and removing only its gelu costs {100 * nonlinearity['attribution_stats']['mean']:.1f}. "
-          "The frozen router could not be shown equivalent to the learned one within the preregistered band, and nothing about routing follows from it either way.")
+    if nonlinearity.get("verdict") == "SUPPORTS-NONLINEARITY":
+        sentences.append(f"The per-slot nonlinearity is used: removing the latent step costs {100 * nonlinearity['stats']['mean']:.1f} points on test_iid, and removing only its gelu costs {100 * nonlinearity['attribution_stats']['mean']:.1f}.")
+    elif nonlinearity.get("verdict"):
+        sentences.append(f"M003-nonlinearity is {nonlinearity['verdict']}: {nonlinearity.get('reason', '')}.")
+    router = verdict_of.get("M004-negative-control")
+    sentences.append({
+        "INCONCLUSIVE": "The frozen router could not be shown equivalent to the learned one within the preregistered band, and nothing about routing follows from it either way.",
+        "EQUIVALENT": "The frozen router is equivalent to the learned one within the preregistered band, as predicted; nothing about routing follows from it.",
+        "SUPPORTS": "The paired design detected a difference between the frozen and the learned router, two models equivalent up to reparameterisation; this is a probable optimisation artefact, and effects near 2 points elsewhere must be read with it in mind.",
+        "HARMFUL": "The frozen router did better than the learned one, which points at an optimisation effect rather than at routing.",
+    }.get(router, f"The negative control is {router}."))
+    w("")
+    w(" ".join(sentences))
     w("")
     w("## Reading these results")
     w("")
@@ -211,7 +281,8 @@ def main() -> int:
             "",
             f"**Evidence:** endpoint `{entry['endpoint']}`, five declared seeds, paired on seed. Per-seed delta (comparator - ablated): {', '.join(f'{d:+.4f}' for d in stats['deltas'])}; mean {stats['mean']:+.4f}; 95% t-interval [{stats['ci'][0]:+.4f}, {stats['ci'][1]:+.4f}], whose upper bound is below the preregistered minimum effect. All gates passed. Details: `RESULTS.md`, `results.json`.",
             "",
-            f"**Scope:** A0 ({scale}) on the synthetic operator-routing v1. It does not show the mechanism is useless elsewhere, only that it bought nothing measurable here.",
+            f"**Scope:** A0 ({scale}) on the synthetic operator-routing v1. It does not show the mechanism is useless elsewhere, only that "
+            + ("removing it made A0 better here." if entry["verdict"] == "HARMFUL" else "it bought nothing measurable here."),
             "",
             "**Consequence, per research/falsification/README.md:** the component is a candidate for removal or redesign in A0; the target is not redefined.",
         ]
