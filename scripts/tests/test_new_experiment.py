@@ -71,11 +71,11 @@ def validate(root: Path) -> tuple[int, str]:
         runner.ROOT, runner.REGISTRY = saved
 
 
-def snapshot(root: Path) -> dict[str, bytes]:
+def snapshot(root: Path) -> dict[str, bytes | None]:
+    """Every file's bytes and every directory, so a leftover empty directory counts."""
     return {
-        str(path.relative_to(root)): path.read_bytes()
+        str(path.relative_to(root)): path.read_bytes() if path.is_file() else None
         for path in sorted(root.rglob("*"))
-        if path.is_file()
     }
 
 
@@ -138,6 +138,19 @@ class Scaffold(unittest.TestCase):
             ("model/M010-Upper-Slug", {}, "name must be lowercase"),
             ("model/M010-no-hardware", {"hardware_profile": "hardware/absent.toml"}, "does not exist"),
             ("model/M010-empty-field", {"baseline": "  "}, "baseline must not be empty"),
+            # `..` and `.` exist as directories; the area must be a real category name.
+            ("../M010-escape", {}, "unknown experiment area"),
+            ("./M010-dot", {}, "unknown experiment area"),
+            ("model\\M010-backslash", {}, "<area>/<ID>-<name>"),
+            ("model/M010-profile-outside", {"hardware_profile": "/etc/hostname"}, "hardware/<name>.toml"),
+            ("model/M010-profile-config", {"hardware_profile": "hardware/config.toml"}, "not the area's config.toml"),
+            ("model/M010-profile-escape", {"hardware_profile": "hardware/../x.toml"}, "hardware/<name>.toml"),
+            # Undecodable argv bytes arrive as lone surrogates.
+            ("model/M010-not-utf8", {"hypothesis": "caf\udce9"}, "hypothesis is not valid UTF-8"),
+            ("model/M010-no-seeds", {"seeds": []}, "at least one seed"),
+            ("model/M010-huge-seed", {"seeds": [2**70]}, "integer from 0 to"),
+            ("model/M010-negative-seed", {"seeds": [-1]}, "integer from 0 to"),
+            ("model/M010-bool-seed", {"seeds": [True]}, "integer from 0 to"),
         ]
         for path, overrides, message in cases:
             with self.subTest(path=path):
@@ -147,6 +160,28 @@ class Scaffold(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, message):
                         scaffold.create(root, path, **{**FIELDS, **overrides})
                     self.assertEqual(snapshot(root), before)
+
+    def test_a_write_that_fails_midway_leaves_nothing_behind(self):
+        directory, root = fixture()
+        real = Path.write_text
+
+        def failing(path, *args, **kwargs):
+            if path.name == "README.md" and "M014" in str(path):
+                raise OSError(28, "No space left on device")
+            return real(path, *args, **kwargs)
+
+        with directory:
+            before = snapshot(root)
+            Path.write_text = failing
+            try:
+                with self.assertRaisesRegex(ValueError, "nothing was kept"):
+                    scaffold.create(root, "model/M014-disk-full", **FIELDS)
+            finally:
+                Path.write_text = real
+            self.assertEqual(snapshot(root), before)
+            # And the same call succeeds once the disk has room again.
+            scaffold.create(root, "model/M014-disk-full", **FIELDS)
+            self.assertEqual(validate(root)[0], 0)
 
     def test_an_existing_directory_is_never_overwritten(self):
         directory, root = fixture()
