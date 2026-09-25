@@ -37,6 +37,18 @@ with a test that fails on the reviewed version:
 | 4.14 | `one-shot-sync.yml` is deleted | — |
 | 4.18 | `ptr-bench`'s lifecycle probes exit 1 on any nonzero hard counter | a unit test of the counter rule only (removing the exit call would not fail it); a forced violation was checked by hand |
 
+*Progress on Step 1 (2026-09-25, same branch).* Items 1.1 and 1.3–1.5 are done for
+A0's own mechanisms. Item 1.2 is done as an A0-internal study, not as the matched
+baseline comparison, which still waits on 1.6 (owner decision O2):
+
+| Item | What changed | Where |
+|---|---|---|
+| 1.1 | A0 gains four switches beside `latent_steps` (typed attention, typed query, latent nonlinearity, frozen router), each with a unit test of its mechanism. `ablations.toml` maps every ablation onto a study arm, and a test keeps it, the study config and the binary's arm table in agreement. `no-verifier-head` stays "not tested": A0 has no such module | `model/burn-a0/README.md` "Ablation switches", `scripts/tests/test_a0_ablation_config.py` |
+| 1.2 | A preregistered 5-seed ablation study of A0 ran on operator-routing v1 through the runner. Verdicts, A0-internal evidence only: typed slot content SUPPORTS at 1500 steps (the raw-token arm nearly catches up at 4000); typed attention bias and a second refinement step FALSIFIES (a 2-point benefit is excluded); per-slot nonlinearity SUPPORTS; the frozen-router control INCONCLUSIVE | `research/falsification/A0-ablations-v1/RESULTS.md` |
+| 1.3 | `run_experiment.py aggregate` turns per-seed records into one aggregate and refuses mixed commits, dirty worktrees, undeclared seeds and non-finite values. The M001–M004 manifests have `a0_*` entrypoints; `entrypoint` and `metrics.json` stay reserved for the baseline comparison | `scripts/tests/test_run_experiment.py` |
+| 1.4 | `hardware/a0-cpu-4core.toml` holds measured values, and every run record embeds the profile's contents, the host and rustc | `scripts/tests/test_run_experiment.py` |
+| 1.5 | `benchmarks/operator-routing/` has a generator, a scorer written independently of it, references, a split lock and 53 tests; CI regenerates the data and runs the tests | `benchmarks/operator-routing/README.md` |
+
 The rest of this document is unchanged and still describes `e93ed99`.
 
 ## 1. The diagnosis in one paragraph

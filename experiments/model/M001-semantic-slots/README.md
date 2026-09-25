@@ -27,3 +27,12 @@ model baseline, which is not pinned yet (owner decision O2), so `status` stays
 `results/a0_internal_metrics.json` instead. Design, criteria and results:
 `research/falsification/A0-ablations-v1/`.
 
+**Result, 2026-09-25 (A0-internal evidence only; [RESULTS.md](../../../research/falsification/A0-ablations-v1/RESULTS.md)).** M001-primary
+SUPPORTS: at 1500 steps the full arm beat no-semantic-slots-masked on OOD
+composite A by +0.118 (95% interval [+0.060, +0.177], 5 of 5 seeds). M001-secondary
+is INCONCLUSIVE: no-semantic-slots fell below its learnability bar at 1500 steps,
+so the preregistered contingency re-ran it and the full arm at 4000 steps, where
+it reached 0.868 on test_iid and came within +0.013 of the full arm on composite A
+(interval [-0.026, +0.052]). Typed slot content may mostly buy learning speed in
+this task; the masked arm was not re-run at 4000 steps, so that is open.
+

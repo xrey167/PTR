@@ -1,0 +1,7 @@
+{
+  "aggregator_tests": "pass",
+  "benchmark_tests": "pass",
+  "cargo_test": "pass",
+  "config_tests": "pass",
+  "self_test": "pass"
+}

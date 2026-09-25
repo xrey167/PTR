@@ -19,7 +19,11 @@ turns this map into an ordered plan.
 several of the defects it records (recommendations 3.1, 3.4, 4.1–4.4, 4.8, 4.9,
 4.11, 4.12, 4.14 and 4.18). Each statement those fixes made historical is marked
 *Fixed on this branch* where it appears; the figures around it are still those of
-`e93ed99`.
+`e93ed99`. It also ran recommendations 1.1–1.5 as a preregistered A0 mechanism
+ablation study on a new synthetic benchmark, operator-routing v1; the statements
+that study changed are marked *Since this map* (results:
+[`RESULTS.md`](../research/falsification/A0-ablations-v1/RESULTS.md), A0-internal
+evidence only).
 
 ## Contents
 
@@ -423,10 +427,14 @@ projection > cache > transient model state. No layer promotes itself upward.
 - **Tests:** 43 pass on 1.95.0.
 - **M001 pilot:** typed accuracy 1.0 versus ablated 0.25 over 5 seeds. By
   construction the ablated arm cannot exceed 0.25, so the pilot is a plumbing check,
-  as its README says. It is also stale relative to `0fcf7ab`.
+  as its README says. It is also stale relative to `0fcf7ab`. *Since this map:* a
+  rerun gives 1.0 against 1.0, the pilot is marked superseded, and the A0 ablation
+  study replaces it.
 
 **Everything else in `model/`** is specification or placeholder:
 - `configs/ptr-a0.toml` (12 layers, 8 heads) and `ablations.toml` are read by no code.
+  *Since this map:* `ablations.toml` maps each ablation onto an A0 study arm, and a
+  test checks it against the study config and the binary's arm table.
 - MOD-001..012 are hypothesis documents that name `crates/ptr-core` as the
   implementation target, but the implementation is in `burn-a0`.
 - `reference_torch/`, `kernels/`, `artifacts/` and `checkpoints/` are empty.
@@ -804,7 +812,9 @@ The graft commit `55b5379` already contains the full 24-crate scaffold.
   2. Codebook: done in substance.
   3. A complete typed source → snapshot → model → observation path: **open**
      (G1).
-  4. A0 ablations: only the pilot.
+  4. A0 ablations: only the pilot. *Since this map:* a preregistered 5-seed study
+     of A0's own mechanisms has run (A0-internal; the matched baseline comparison
+     still waits on the plain-model backbone).
   5. Real training: not started.
   6. Learned-path integration: not started.
 - **The roadmap phases:**

@@ -18,17 +18,19 @@ This is the implementation order after the architecture-scaffold phase. Status v
 | P1 | Component evaluations with measured evidence | in progress |
 | P1 | Supply-chain audit/deny, SBOM, provenance attestations | every owned workspace covered; scan outcome and release packaging are separate gates |
 | P1 | Dataset cards and contamination governance | prototype |
-| P1 | Burn PTR-A0 typed neural path | prototype |
-| P1 | Epistemic/validity/provenance neural metadata + typed attention bias | prototype |
-| P1 | Latent recurrent refinement + operator router | prototype |
+| P1 | Burn PTR-A0 typed neural path | prototype — the preregistered A0 mechanism ablation study v1 has run on the synthetic operator-routing v1 ([results](../research/falsification/A0-ablations-v1/RESULTS.md)); A0-internal evidence only, not the matched baseline comparison: typed slot content helped at 1500 steps (M001-primary SUPPORTS), but the raw-token arm nearly caught up at 4000 steps (M001-secondary INCONCLUSIVE) |
+| P1 | Epistemic/validity/provenance neural metadata + typed attention bias | prototype — A0-internal evidence only: the admission mask is used (+0.21 on ood_validity), while a benefit of 2 points or more from the rank-1 typed attention bias is excluded in A0 (M002-necessity FALSIFIES) |
+| P1 | Latent recurrent refinement + operator router | prototype — A0-internal evidence only: the per-slot nonlinearity is used (M003-nonlinearity SUPPORTS), a second tied refinement step adds nothing measurable (M003-depth FALSIFIES), and the frozen-router control is INCONCLUSIVE |
 | P1 | Multi-step model resume after verified Pod observation | prototype — bounded verified observation resume implemented |
 | P1 | L001 harder process/failpoint crash schedules | in progress — fail-rs + 250 real child-process abort cases executed |
 | P2 | raft-engine/raft-rs, Turso, Iroh production adapters | prototypes — raft-rs, raft-engine, Turso and direct Iroh adapters integrated; PR #21 adds durable Raft state on disk, a three-member group over ALPN_RAFT and snapshot transfer; durable cross-node leadership fencing, negotiated membership, an accept loop and session reuse remain |
-| P2 | Full model training + matched M001–M005 ablations | planned |
+| P2 | Full model training + matched M001–M005 ablations | planned — the A0 ablation study does not count toward this; the baseline comparisons need the plain model baseline (owner decision O2 in [the recommendations](RECOMMENDATIONS_20260924.md)) |
 | P2 | GitHub branch ruleset/admin metadata | setup scripts/templates ready; admin application remains manual |
 | P2 | Stable release/multi-platform packaging | planned |
 
 The next scientific gate is not a larger model. It is a matched, reproducible M001/M002/M003/M004 experiment where the new neural mechanisms are compared against controlled ablations.
+
+The A0 mechanism ablation study v1 is the A0-internal half of that: controlled ablations of A0's own mechanisms, preregistered and run under the M001–M004 manifests with separate `a0_*` entrypoints. Its verdicts are A0-internal evidence only. They hold for one block at d_model 48 on a synthetic benchmark, and they are not the matched plain-model comparison, so M001–M004 stay `planned`.
 
 See [the security/P0 review](SECURITY_P0_REVIEW_20260919.md) for concrete repairs, remaining architecture gates and the limits of green CI.
 

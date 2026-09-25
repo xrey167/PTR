@@ -19,3 +19,11 @@ model baseline, which is not pinned yet (owner decision O2), so `status` stays
 `results/a0_internal_metrics.json` instead. Design, criteria and results:
 `research/falsification/A0-ablations-v1/`.
 
+**Result, 2026-09-25 (A0-internal evidence only; [RESULTS.md](../../../research/falsification/A0-ablations-v1/RESULTS.md)).** M003-nonlinearity
+SUPPORTS-NONLINEARITY: removing the latent step costs 8.0 points on test_iid
+(interval [+0.069, +0.091]) and removing only its gelu costs 6.5 (interval
+[+0.050, +0.079]), 5 of 5 seeds each. M003-depth FALSIFIES: a second tied
+refinement step adds nothing measurable on composite C (mean +0.001, interval
+[-0.017, +0.019]); see `FALSIFIED-M003-depth.md`. latent-4 was not run (budget
+rule), so there is no dose-response statement.
+
