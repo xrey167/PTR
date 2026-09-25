@@ -14,7 +14,7 @@ notices the licences require to travel with redistributed software; deciding
 whether a particular distribution satisfies them is not something a generator
 can do.
 
-`Package-set-digest: sha256:bb4a69df27f3473b926f4156281116b07f58e5e60d5e1faf4ad3e86cc86548bd`
+`Package-set-digest: sha256:6f65ffb801ab7f2be933ff9836d10927ea1830f3bfeefc3c36878913dd38cb82`
 
 **922 third-party packages · 459 distinct licence texts**
 
@@ -291,7 +291,7 @@ available under the same terms; PTR has made none.
 | float4 | 0.2.0 | MIT | crates.io | model/burn-a0 | [LICENSE](#text-330) |
 | float8 | 0.7.0 | MIT | crates.io | model/burn-a0 | [LICENSE](#text-330) |
 | fnv | 1.0.7 | Apache-2.0 / MIT | crates.io | ., model/burn-a0 | [LICENSE-APACHE](#text-299), [LICENSE-MIT](#text-184) |
-| foldhash | 0.1.5 | Zlib | crates.io | model/burn-a0 | [LICENSE](#text-319) |
+| foldhash | 0.1.5 | Zlib | crates.io | ., fuzz, model/burn-a0 | [LICENSE](#text-319) |
 | foldhash | 0.2.0 | Zlib | crates.io | ., model/burn-a0 | [LICENSE](#text-319) |
 | form_urlencoded | 1.2.2 | MIT OR Apache-2.0 | crates.io | ., model/burn-a0 | [LICENSE-APACHE](#text-299), [LICENSE-MIT](#text-075) |
 | fs2 | 0.4.3 | MIT/Apache-2.0 | crates.io | . | [LICENSE-APACHE](#text-299), [LICENSE-MIT](#text-220) |
@@ -336,7 +336,7 @@ available under the same terms; PTR has made none.
 | half | 2.7.1 | MIT OR Apache-2.0 | crates.io | model/burn-a0 | [LICENSE-APACHE](#text-301), [LICENSE-MIT](#text-154) |
 | hashbrown | 0.13.2 | MIT OR Apache-2.0 | crates.io | model/burn-a0 | [LICENSE-APACHE](#text-299), [LICENSE-MIT](#text-459) |
 | hashbrown | 0.14.5 | MIT OR Apache-2.0 | crates.io | . | [LICENSE-APACHE](#text-299), [LICENSE-MIT](#text-459) |
-| hashbrown | 0.15.5 | MIT OR Apache-2.0 | crates.io | model/burn-a0 | [LICENSE-APACHE](#text-299), [LICENSE-MIT](#text-459) |
+| hashbrown | 0.15.5 | MIT OR Apache-2.0 | crates.io | ., fuzz, model/burn-a0 | [LICENSE-APACHE](#text-299), [LICENSE-MIT](#text-459) |
 | hashbrown | 0.16.1 | MIT OR Apache-2.0 | crates.io | model/burn-a0 | [LICENSE-APACHE](#text-299), [LICENSE-MIT](#text-459) |
 | hashbrown | 0.17.1 | MIT OR Apache-2.0 | crates.io | ., fuzz, model/burn-a0 | [LICENSE-APACHE](#text-299), [LICENSE-MIT](#text-459) |
 | hashlink | 0.12.2 | MIT OR Apache-2.0 | crates.io | model/burn-a0 | [LICENSE-APACHE](#text-347), [LICENSE-MIT](#text-418) |
@@ -555,7 +555,7 @@ available under the same terms; PTR has made none.
 | pbkdf2 | 0.11.0 | MIT OR Apache-2.0 | crates.io | model/burn-a0 | [LICENSE-APACHE](#text-305), [LICENSE-MIT](#text-028) |
 | pem-rfc7468 | 1.0.0 | Apache-2.0 OR MIT | crates.io | . | [LICENSE-APACHE](#text-305), [LICENSE-MIT](#text-128) |
 | percent-encoding | 2.3.2 | MIT OR Apache-2.0 | crates.io | ., model/burn-a0 | [LICENSE-APACHE](#text-299), [LICENSE-MIT](#text-326) |
-| petgraph | 0.7.1 | MIT OR Apache-2.0 | crates.io | ., fuzz | [LICENSE-APACHE](#text-299), [LICENSE-MIT](#text-206) |
+| petgraph | 0.8.3 | MIT OR Apache-2.0 | crates.io | ., fuzz | [LICENSE-APACHE](#text-299), [LICENSE-MIT](#text-206) |
 | pharos | 0.5.3 | Unlicense | crates.io | . | _none shipped_ |
 | phf | 0.13.1 | MIT | crates.io | . | [LICENSE](#text-033) |
 | phf_shared | 0.13.1 | MIT | crates.io | . | [LICENSE](#text-033) |
@@ -593,12 +593,12 @@ available under the same terms; PTR has made none.
 | prometheus-static-metric | 0.5.1 | Apache-2.0 | crates.io | . | _none shipped_ |
 | prost | 0.11.9 | Apache-2.0 | crates.io | . | [LICENSE](#text-299) |
 | prost | 0.13.5 | Apache-2.0 | crates.io | ., fuzz | [LICENSE](#text-299) |
-| prost | 0.14.4 | Apache-2.0 | crates.io | . | [LICENSE](#text-299) |
-| prost-build | 0.13.5 | Apache-2.0 | crates.io | ., fuzz | [LICENSE](#text-299) |
+| prost | 0.14.4 | Apache-2.0 | crates.io | ., fuzz | [LICENSE](#text-299) |
+| prost-build | 0.14.4 | Apache-2.0 | crates.io | ., fuzz | [LICENSE](#text-299) |
 | prost-derive | 0.11.9 | Apache-2.0 | crates.io | . | [LICENSE](#text-299) |
 | prost-derive | 0.13.5 | Apache-2.0 | crates.io | ., fuzz | [LICENSE](#text-299) |
-| prost-derive | 0.14.4 | Apache-2.0 | crates.io | . | [LICENSE](#text-299) |
-| prost-types | 0.13.5 | Apache-2.0 | crates.io | ., fuzz | [LICENSE](#text-299) |
+| prost-derive | 0.14.4 | Apache-2.0 | crates.io | ., fuzz | [LICENSE](#text-299) |
+| prost-types | 0.14.4 | Apache-2.0 | crates.io | ., fuzz | [LICENSE](#text-299) |
 | protobuf | 3.7.2 | MIT | crates.io | . | [LICENSE.txt](#text-230) |
 | protobuf-support | 3.7.2 | MIT | crates.io | . | [LICENSE.txt](#text-230) |
 | protoc-bin-vendored | 3.2.0 | MIT | crates.io | ., fuzz | _none shipped_ |
@@ -12717,7 +12717,7 @@ limitations under the License.
 
 ### <a id="text-206"></a>Text 206
 
-Carried by: either 1.18.0, itertools 0.10.5, itertools 0.12.1, itertools 0.14.0, itertools 0.15.0, petgraph 0.7.1, rawpointer 0.2.1
+Carried by: either 1.18.0, itertools 0.10.5, itertools 0.12.1, itertools 0.14.0, itertools 0.15.0, petgraph 0.8.3, rawpointer 0.2.1
 
 `sha256:7576269ea71f767b99297934c0b2367532690f8c4badc695edf8e04ab6a1e545`
 
@@ -19790,7 +19790,7 @@ Software.
 
 ### <a id="text-299"></a>Text 299
 
-Carried by: addr2line 0.25.1, ahash 0.8.12, aligned 0.4.3, arbitrary 1.4.2, arc-swap 1.9.2, arrayvec 0.7.8, as-slice 0.2.1, async-channel 2.5.0, atomic-waker 1.1.2, autocfg 1.5.1, backtrace 0.3.76, base64 0.22.1, base64 0.23.1, bitflags 1.3.2, bitflags 2.13.2, bitstream-io 4.10.0, bumpalo 3.20.3, bzip2 0.4.4, bzip2-sys 0.1.13+1.0.8, cc 1.4.7, cexpr 0.6.0, cfg-if 1.0.5, concurrent-queue 2.5.0, const-random 0.1.18, const-random-macro 0.1.16, core-foundation 0.10.1, core-foundation-sys 0.8.7, critical-section 1.2.0, crossbeam-channel 0.5.17, crossbeam-deque 0.8.8, crossbeam-epoch 0.9.21, crossbeam-queue 0.3.14, crossbeam-utils 0.8.23, curve25519-dalek-derive 0.1.1, displaydoc 0.2.7, either 1.18.0, embedded-hal 0.2.7, embedded-hal 1.0.0, embedded-hal-async 1.0.0, embedded-io 0.4.0, embedded-io 0.6.1, enumset 1.1.14, enumset_derive 0.15.0, equivalent 1.0.2, errno 0.3.14, event-listener 5.4.2, event-listener-strategy 0.5.4, fastrand 2.5.0, filetime 0.2.29, find-msvc-tools 0.1.13, fixedbitset 0.5.7, flate2 1.1.10, fnv 1.0.7, form_urlencoded 1.2.2, fs2 0.4.3, fs4 1.1.0, futures-lite 2.6.1, gimli 0.32.3, glob 0.3.4, hashbrown 0.13.2, hashbrown 0.14.5, hashbrown 0.15.5, hashbrown 0.16.1, hashbrown 0.17.1, heck 0.4.1, heck 0.5.0, hermit-abi 0.5.3, httparse 1.10.1, hyper-rustls 0.27.9, idna 1.0.3, idna 1.1.0, idna_adapter 1.2.0, idna_adapter 1.2.2, if_chain 1.0.3, indexmap 2.14.2, internment 0.8.6, intrusive-collections 0.9.7, ipconfig 0.3.4, itertools 0.10.5, itertools 0.12.1, itertools 0.14.0, itertools 0.15.0, jni 0.21.1, jobserver 0.1.35, js-sys 0.3.105, khronos-egl 6.0.0, lazy_static 1.5.0, lazycell 1.3.0, libfuzzer-sys 0.4.13, liblzma 0.4.8, liblzma-sys 0.4.9, linux-raw-sys 0.12.1, linux-raw-sys 0.4.15, lock_api 0.4.14, log 0.4.34, matrixmultiply 0.3.11, mime 0.3.17, multimap 0.10.1, nb 0.1.3, nb 1.1.0, ndarray 0.16.1, ndarray 0.17.2, num 0.4.3, num-bigint 0.4.8, num-complex 0.4.6, num-derive 0.4.2, num-integer 0.1.47, num-iter 0.1.46, num-rational 0.4.2, num-traits 0.2.19, num_cpus 1.17.0, object 0.37.3, once_cell 1.21.4, openssl-probe 0.2.1, parking 2.2.1, parking_lot 0.12.5, parking_lot_core 0.9.12, percent-encoding 2.3.2, petgraph 0.7.1, pkg-config 0.3.34, png 0.18.1, polling 3.11.0, postcard 1.1.3, postcard-derive 0.2.2, postgres-protocol 0.6.12, postgres-types 0.2.14, prost 0.11.9, prost 0.13.5, prost 0.14.4, prost-build 0.13.5, prost-derive 0.11.9, prost-derive 0.13.5, prost-derive 0.14.4, prost-types 0.13.5, rawpointer 0.2.1, rayon 1.12.0, rayon-core 1.13.0, regex 1.13.1, regex-automata 0.4.18, regex-lite 0.1.9, regex-syntax 0.8.11, renderdoc-sys 1.1.0, roaring 0.11.5, rustc-demangle 0.1.28, rustc-hash 1.1.0, rustc_version 0.4.1, rustix 0.38.44, rustix 1.1.5, rustls 0.23.45, rustls-native-certs 0.8.4, scoped-tls 1.0.1, scopeguard 1.2.0, security-framework 3.7.0, security-framework-sys 2.17.0, send_wrapper 0.6.0, signal-hook-registry 1.4.8, simd_cesu8 1.2.0, slog 2.8.2, smallvec 1.16.1, socket2 0.6.5, stable_deref_trait 1.2.1, symlink 0.1.0, syn 1.0.109, system-configuration 0.8.0, system-configuration-sys 0.6.0, tar 0.4.46, tempfile 3.27.0, thread_local 1.1.10, tokio-postgres 0.7.18, unicode-bidi 0.3.18, unicode-normalization 0.1.25, unicode-properties 0.1.4, unicode-segmentation 1.13.3, unicode-width 0.1.14, unicode-width 0.2.2, unicode-xid 0.2.6, url 2.5.4, url 2.5.8, uuid 1.26.1, version_check 0.9.5, wasi 0.11.1+wasi-snapshot-preview1, wasi 0.14.7+wasi-0.2.4, wasip2 1.0.4+wasi-0.2.12, wasm-bindgen 0.2.128, wasm-bindgen-futures 0.4.78, wasm-bindgen-macro 0.2.128, wasm-bindgen-macro-support 0.2.128, wasm-bindgen-shared 0.2.128, web-sys 0.3.105, wit-bindgen 0.57.1, xattr 1.6.1
+Carried by: addr2line 0.25.1, ahash 0.8.12, aligned 0.4.3, arbitrary 1.4.2, arc-swap 1.9.2, arrayvec 0.7.8, as-slice 0.2.1, async-channel 2.5.0, atomic-waker 1.1.2, autocfg 1.5.1, backtrace 0.3.76, base64 0.22.1, base64 0.23.1, bitflags 1.3.2, bitflags 2.13.2, bitstream-io 4.10.0, bumpalo 3.20.3, bzip2 0.4.4, bzip2-sys 0.1.13+1.0.8, cc 1.4.7, cexpr 0.6.0, cfg-if 1.0.5, concurrent-queue 2.5.0, const-random 0.1.18, const-random-macro 0.1.16, core-foundation 0.10.1, core-foundation-sys 0.8.7, critical-section 1.2.0, crossbeam-channel 0.5.17, crossbeam-deque 0.8.8, crossbeam-epoch 0.9.21, crossbeam-queue 0.3.14, crossbeam-utils 0.8.23, curve25519-dalek-derive 0.1.1, displaydoc 0.2.7, either 1.18.0, embedded-hal 0.2.7, embedded-hal 1.0.0, embedded-hal-async 1.0.0, embedded-io 0.4.0, embedded-io 0.6.1, enumset 1.1.14, enumset_derive 0.15.0, equivalent 1.0.2, errno 0.3.14, event-listener 5.4.2, event-listener-strategy 0.5.4, fastrand 2.5.0, filetime 0.2.29, find-msvc-tools 0.1.13, fixedbitset 0.5.7, flate2 1.1.10, fnv 1.0.7, form_urlencoded 1.2.2, fs2 0.4.3, fs4 1.1.0, futures-lite 2.6.1, gimli 0.32.3, glob 0.3.4, hashbrown 0.13.2, hashbrown 0.14.5, hashbrown 0.15.5, hashbrown 0.16.1, hashbrown 0.17.1, heck 0.4.1, heck 0.5.0, hermit-abi 0.5.3, httparse 1.10.1, hyper-rustls 0.27.9, idna 1.0.3, idna 1.1.0, idna_adapter 1.2.0, idna_adapter 1.2.2, if_chain 1.0.3, indexmap 2.14.2, internment 0.8.6, intrusive-collections 0.9.7, ipconfig 0.3.4, itertools 0.10.5, itertools 0.12.1, itertools 0.14.0, itertools 0.15.0, jni 0.21.1, jobserver 0.1.35, js-sys 0.3.105, khronos-egl 6.0.0, lazy_static 1.5.0, lazycell 1.3.0, libfuzzer-sys 0.4.13, liblzma 0.4.8, liblzma-sys 0.4.9, linux-raw-sys 0.12.1, linux-raw-sys 0.4.15, lock_api 0.4.14, log 0.4.34, matrixmultiply 0.3.11, mime 0.3.17, multimap 0.10.1, nb 0.1.3, nb 1.1.0, ndarray 0.16.1, ndarray 0.17.2, num 0.4.3, num-bigint 0.4.8, num-complex 0.4.6, num-derive 0.4.2, num-integer 0.1.47, num-iter 0.1.46, num-rational 0.4.2, num-traits 0.2.19, num_cpus 1.17.0, object 0.37.3, once_cell 1.21.4, openssl-probe 0.2.1, parking 2.2.1, parking_lot 0.12.5, parking_lot_core 0.9.12, percent-encoding 2.3.2, petgraph 0.8.3, pkg-config 0.3.34, png 0.18.1, polling 3.11.0, postcard 1.1.3, postcard-derive 0.2.2, postgres-protocol 0.6.12, postgres-types 0.2.14, prost 0.11.9, prost 0.13.5, prost 0.14.4, prost-build 0.14.4, prost-derive 0.11.9, prost-derive 0.13.5, prost-derive 0.14.4, prost-types 0.14.4, rawpointer 0.2.1, rayon 1.12.0, rayon-core 1.13.0, regex 1.13.1, regex-automata 0.4.18, regex-lite 0.1.9, regex-syntax 0.8.11, renderdoc-sys 1.1.0, roaring 0.11.5, rustc-demangle 0.1.28, rustc-hash 1.1.0, rustc_version 0.4.1, rustix 0.38.44, rustix 1.1.5, rustls 0.23.45, rustls-native-certs 0.8.4, scoped-tls 1.0.1, scopeguard 1.2.0, security-framework 3.7.0, security-framework-sys 2.17.0, send_wrapper 0.6.0, signal-hook-registry 1.4.8, simd_cesu8 1.2.0, slog 2.8.2, smallvec 1.16.1, socket2 0.6.5, stable_deref_trait 1.2.1, symlink 0.1.0, syn 1.0.109, system-configuration 0.8.0, system-configuration-sys 0.6.0, tar 0.4.46, tempfile 3.27.0, thread_local 1.1.10, tokio-postgres 0.7.18, unicode-bidi 0.3.18, unicode-normalization 0.1.25, unicode-properties 0.1.4, unicode-segmentation 1.13.3, unicode-width 0.1.14, unicode-width 0.2.2, unicode-xid 0.2.6, url 2.5.4, url 2.5.8, uuid 1.26.1, version_check 0.9.5, wasi 0.11.1+wasi-snapshot-preview1, wasi 0.14.7+wasi-0.2.4, wasip2 1.0.4+wasi-0.2.12, wasm-bindgen 0.2.128, wasm-bindgen-futures 0.4.78, wasm-bindgen-macro 0.2.128, wasm-bindgen-macro-support 0.2.128, wasm-bindgen-shared 0.2.128, web-sys 0.3.105, wit-bindgen 0.57.1, xattr 1.6.1
 
 `sha256:a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2`
 
