@@ -48,4 +48,4 @@ cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 For a new infrastructure candidate use `python3 scripts/new_candidate.py <component> <id>`.
-For a new experiment use `python3 scripts/new_experiment.py <area/id-name> --hypothesis "..."`.
+For a new experiment use `python3 scripts/new_experiment.py <area>/<ID>-<name> --hypothesis "..." --metrics "..." --baseline "..." --falsification "..."` (optionally `--hardware-profile` and `--seeds`). It writes every key `experiments/schema.toml` requires and registers the experiment.

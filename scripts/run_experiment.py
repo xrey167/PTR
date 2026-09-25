@@ -87,6 +87,14 @@ def validate():
             errors.append(f"{exp_id}: missing config.toml")
         if not (root / "tests").exists():
             errors.append(f"{exp_id}: missing tests/")
+    # The loop above sees only what the registry names. A manifest the registry
+    # omits cannot be run (resolve() refuses it) and was checked by nothing,
+    # which is where every experiment the old scaffolder produced ended up.
+    registered = {item["path"] for item in registry().values()}
+    for path in sorted((ROOT / "experiments").glob("**/experiment.toml")):
+        relative = path.parent.relative_to(ROOT / "experiments").as_posix()
+        if relative not in registered:
+            errors.append(f"experiments/{relative}: not listed in experiments/registry.toml")
     if errors:
         print("\n".join("ERROR: " + error for error in errors))
         return 1
