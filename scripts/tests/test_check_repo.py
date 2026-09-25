@@ -165,6 +165,39 @@ class RepositoryShape(unittest.TestCase):
         )
         self.assertFalse(any("listed-and-present" in error for error in errors), errors)
 
+    def test_a_crate_missing_from_either_component_map_is_reported(self):
+        directory = tempfile.TemporaryDirectory()
+        root = Path(directory.name)
+        with directory:
+            for crate in ["ptr-listed", "ptr-unlisted"]:
+                (root / "crates" / crate / "src").mkdir(parents=True)
+                (root / "crates" / crate / "Cargo.toml").write_text(
+                    "[package]\nname = 'x'\n", encoding="utf-8"
+                )
+            (root / "docs/components").mkdir(parents=True)
+            (root / "README.md").write_text(
+                "| [ptr-listed](crates/ptr-listed/README.md) | x |\n"
+                "| [ptr-unlisted](crates/ptr-unlisted/README.md) | x |\n",
+                encoding="utf-8",
+            )
+            (root / "docs/components/README.md").write_text(
+                "| [ptr-listed](../../crates/ptr-listed/README.md) | x | x |\n",
+                encoding="utf-8",
+            )
+
+            errors, _ = mod.check(root)
+
+        self.assertIn(
+            "ptr-unlisted: not listed in the component map in docs/components/README.md",
+            errors,
+        )
+        self.assertFalse(any("ptr-listed: not listed" in e for e in errors), errors)
+        self.assertFalse(any("in README.md" in e for e in errors), errors)
+
+    def test_the_real_tree_lists_every_crate_in_both_maps(self):
+        errors, _ = mod.check(ROOT)
+        self.assertEqual([e for e in errors if "component map" in e], [])
+
     def test_the_real_tree_registers_every_evaluation(self):
         errors, _ = mod.check(ROOT)
         self.assertEqual([e for e in errors if "evaluations/" in e], [])

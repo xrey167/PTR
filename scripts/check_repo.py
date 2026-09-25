@@ -39,6 +39,10 @@ REQUIRED = [
     "docs/TESTING.md",
     "templates/rust-crate/Cargo.toml",
 ]
+COMPONENT_MAPS = {
+    "README.md": "crates/{}/README.md",
+    "docs/components/README.md": "../../crates/{}/README.md",
+}
 COMPONENT_KEYS = [
     "maturity",
     "last_reviewed",
@@ -208,6 +212,15 @@ def check(root: Path) -> tuple[list[str], str]:
             txt = readme.read_text(encoding="utf-8")
             if "<!-- PTR:STATUS:BEGIN -->" not in txt or "<!-- PTR:STATUS:END -->" not in txt:
                 errors.append(f"{name}: README generated status block missing")
+        # Both component maps are hand-written tables. ptr-cluster, ptr-execwire
+        # and ptr-podwire were added after them and appeared in neither, so the
+        # maps listed 24 crates while the workspace had 27.
+        for relative, link in COMPONENT_MAPS.items():
+            path = root / relative
+            if path.is_file() and f"]({link.format(name)})" not in path.read_text(
+                encoding="utf-8"
+            ):
+                errors.append(f"{name}: not listed in the component map in {relative}")
 
     # Every declared workspace-area config must have a sibling tests directory.
     for cfg in owned(root, root.rglob("config.toml")):
