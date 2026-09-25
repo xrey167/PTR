@@ -138,3 +138,30 @@ fn a_sample_probed_at_this_model_time_is_not_drawn() {
     let drawn = pool.sample(2, ModelTime(40.0), 1);
     assert_eq!(drawn, vec!["b"]);
 }
+
+#[test]
+fn nonfinite_probes_leave_the_sample_memory_unchanged() {
+    let mut pool = pool(&[("a", "task")]);
+    pool.record_probe("a", 0.1, ModelTime(10.0)).unwrap();
+    let before = pool.get("a").unwrap().clone();
+    for loss in [f64::NEG_INFINITY, f64::NAN, f64::INFINITY] {
+        assert_eq!(
+            pool.record_probe("a", loss, ModelTime(20.0)),
+            Err(LineageError::NonFinite {
+                field: "probe loss"
+            })
+        );
+        assert_eq!(pool.get("a"), Some(&before));
+    }
+}
+
+#[test]
+fn replay_returns_nothing_for_zero_budget_or_an_entirely_ineligible_pool() {
+    let pool = pool(&[("a", "task"), ("b", "task")]);
+    assert!(pool.sample(0, ModelTime(100.0), 7).is_empty());
+    assert!(pool.sample(10, ModelTime(0.0), 7).is_empty());
+    assert!(ReplayPool::new(params())
+        .unwrap()
+        .sample(10, ModelTime(100.0), 7)
+        .is_empty());
+}

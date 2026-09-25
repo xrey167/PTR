@@ -197,3 +197,113 @@ fn a_vote_for_a_class_outside_the_schema_is_refused() {
     );
     assert!(result.is_err());
 }
+
+#[test]
+fn abstentions_do_not_become_labels_even_with_a_low_resolution_threshold() {
+    let matrix = VoteMatrix::new(
+        LabelSchema::new(["a", "b"]).unwrap(),
+        vec![
+            function("model", FunctionKind::Model),
+            function("check", FunctionKind::Verifier),
+        ],
+        vec![vec![Vote::Abstain, Vote::Abstain]; 3],
+    )
+    .unwrap();
+    assert_eq!(matrix.coverage(), 0.0);
+    let model = fit_label_model(&matrix, DawidSkeneParams::default()).unwrap();
+    assert_eq!(model.priors, vec![0.5, 0.5]);
+    assert!(model.confusion[1].is_none());
+    assert!(model.warnings.contains(&ModelWarning::NoOverlap {
+        function: "model".into()
+    }));
+    assert_eq!(
+        resolve(&matrix, &model, 0.1).unwrap(),
+        vec![LabelOutcome::Unknown; 3]
+    );
+}
+
+#[test]
+fn verifiers_alone_can_determine_a_class_only_by_eliminating_every_alternative() {
+    let matrix = VoteMatrix::new(
+        LabelSchema::new(["a", "b", "c"]).unwrap(),
+        vec![
+            function("first", FunctionKind::Verifier),
+            function("second", FunctionKind::Verifier),
+        ],
+        vec![
+            vec![Vote::Veto(0), Vote::Abstain],
+            vec![Vote::Veto(0), Vote::Veto(1)],
+        ],
+    )
+    .unwrap();
+    let model = fit_label_model(&matrix, DawidSkeneParams::default()).unwrap();
+    assert_eq!(model.confusion, vec![None, None]);
+    assert!(model
+        .warnings
+        .contains(&ModelWarning::FewerThanThreeFunctions { count: 0 }));
+    assert_eq!(
+        resolve(&matrix, &model, 1.0).unwrap(),
+        vec![LabelOutcome::Unknown, LabelOutcome::Determined { class: 2 }]
+    );
+}
+
+#[test]
+fn ragged_vote_rows_report_the_item_and_expected_function_count() {
+    let result = VoteMatrix::new(
+        LabelSchema::new(["a", "b"]).unwrap(),
+        vec![
+            function("first", FunctionKind::Agent),
+            function("second", FunctionKind::Model),
+        ],
+        vec![vec![Vote::Abstain, Vote::Class(1)], vec![Vote::Class(0)]],
+    );
+    assert_eq!(
+        result.unwrap_err(),
+        LabelingError::RaggedVotes {
+            item: 1,
+            expected: 2,
+            actual: 1
+        }
+    );
+}
+
+#[test]
+fn annotation_ties_are_stable_and_budget_zero_never_requests_work() {
+    let posteriors = vec![vec![0.5, 0.5], vec![0.9, 0.1], vec![0.5, 0.5]];
+    let outcomes = vec![LabelOutcome::Unknown; 3];
+    for strategy in [Acquisition::Entropy, Acquisition::Margin] {
+        assert_eq!(
+            rank_for_annotation(&posteriors, &outcomes, strategy, 2),
+            vec![0, 2]
+        );
+        assert_eq!(
+            rank_for_annotation(&posteriors, &outcomes, strategy, 9),
+            vec![0, 2, 1]
+        );
+        assert!(rank_for_annotation(&posteriors, &outcomes, strategy, 0).is_empty());
+    }
+}
+
+#[test]
+fn evaluation_scores_only_gold_items_and_reports_missing_predictions() {
+    let mut set = EvaluationSet::new(GoldSampling::Uniform);
+    set.push(GoldLabel {
+        item: 2,
+        class: 1,
+        source: GoldSource::Oracle,
+    })
+    .unwrap();
+    let predictions = vec![vec![], vec![], vec![0.0, 1.0]];
+    let report = evaluate(&predictions, &set, 5).unwrap();
+    assert_eq!(report.accuracy, 1.0);
+    let calibration = report.calibration.unwrap();
+    assert_eq!(calibration.brier, 0.0);
+    assert_eq!(calibration.expected_calibration_error, 0.0);
+    assert_eq!(
+        evaluate(&predictions[..2], &set, 5).unwrap_err(),
+        LabelingError::LengthMismatch {
+            expected: 3,
+            actual: 2
+        }
+    );
+}

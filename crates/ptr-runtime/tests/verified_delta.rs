@@ -2,7 +2,7 @@ use ptr_config::PtrConfig;
 use ptr_ledger::LedgerEvent;
 use ptr_runtime::execution::RequiredVerification;
 use ptr_runtime::{PtrRuntime, RuntimeError};
-use ptr_semdb::SemanticDelta;
+use ptr_semdb::{SemanticDelta, SemanticError};
 use ptr_types::{CapsuleId, Generation, Probability, ProjectId, Validity, VerificationLevel};
 use ptr_verifier::{Finding, VerificationReport, VerificationStatus};
 
@@ -21,6 +21,156 @@ fn report(status: VerificationStatus, level: VerificationLevel, hard: bool) -> V
             vec![]
         },
     }
+}
+
+#[test]
+fn noops_still_require_verification_and_never_append_a_record() {
+    for status in [VerificationStatus::Pass, VerificationStatus::Fail] {
+        let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+        let revision = runtime.revision();
+        let events = runtime.committed_events().len();
+        let mut calls = 0;
+        let result = runtime.apply_verified_semantic_delta(
+            revision,
+            SemanticDelta::default(),
+            RequiredVerification::Deterministic,
+            |view| {
+                calls += 1;
+                assert_eq!(view.keys().count(), 0);
+                report(status, VerificationLevel::Deterministic, false)
+            },
+        );
+        assert_eq!(calls, 1);
+        match status {
+            VerificationStatus::Pass => {
+                let commit = result.unwrap();
+                assert_eq!(commit.revision, revision);
+                assert_eq!(commit.commit_index, None);
+                assert!(commit.affected.is_empty());
+            }
+            _ => assert!(matches!(
+                result,
+                Err(RuntimeError::DeltaVerificationRejected {
+                    status: VerificationStatus::Fail,
+                    level: VerificationLevel::Deterministic,
+                    hard_findings: 0,
+                })
+            )),
+        }
+        assert_eq!(runtime.revision(), revision);
+        assert_eq!(runtime.committed_events().len(), events);
+    }
+}
+
+#[test]
+fn malformed_deltas_are_rejected_before_the_verifier_runs() {
+    let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+    let revision = runtime.revision();
+    let events = runtime.committed_events().len();
+    let result = runtime.apply_verified_semantic_delta(
+        revision,
+        delta("", "invalid"),
+        RequiredVerification::Deterministic,
+        |_| panic!("invalid input must not reach verification"),
+    );
+    assert!(matches!(
+        result,
+        Err(RuntimeError::Semantic(SemanticError::InvalidKey))
+    ));
+    assert_eq!(runtime.revision(), revision);
+    assert_eq!(runtime.committed_events().len(), events);
+}
+
+#[test]
+fn rejecting_an_overwrite_preserves_values_and_allows_a_verified_retry() {
+    let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+    runtime
+        .apply_semantic_delta(runtime.revision(), delta("price", "10"))
+        .unwrap();
+    let revision = runtime.revision();
+    let events = runtime.committed_events().len();
+    let mut refused = report(
+        VerificationStatus::Pass,
+        VerificationLevel::Deterministic,
+        true,
+    );
+    refused.findings.push(Finding {
+        code: "second".into(),
+        message: "another failure".into(),
+        hard: true,
+    });
+    refused.findings.push(Finding {
+        code: "advice".into(),
+        message: "soft finding".into(),
+        hard: false,
+    });
+    let result = runtime.apply_verified_semantic_delta(
+        revision,
+        delta("price", "12"),
+        RequiredVerification::Deterministic,
+        |view| {
+            assert_eq!(view.get("price"), Some("12"));
+            refused
+        },
+    );
+    assert!(matches!(
+        result,
+        Err(RuntimeError::DeltaVerificationRejected {
+            status: VerificationStatus::Pass,
+            level: VerificationLevel::Deterministic,
+            hard_findings: 2,
+        })
+    ));
+    assert_eq!(runtime.snapshot().get("price"), Some("10"));
+    assert_eq!(runtime.revision(), revision);
+    assert_eq!(runtime.committed_events().len(), events);
+    let commit = runtime
+        .apply_verified_semantic_delta(
+            revision,
+            delta("price", "12"),
+            RequiredVerification::Deterministic,
+            |_| {
+                report(
+                    VerificationStatus::Pass,
+                    VerificationLevel::Deterministic,
+                    false,
+                )
+            },
+        )
+        .unwrap();
+    assert!(commit.commit_index.is_some());
+    assert_eq!(runtime.committed_events().len(), events + 1);
+    assert_eq!(runtime.snapshot().get("price"), Some("12"));
+}
+
+#[test]
+fn full_semantic_verification_does_not_satisfy_a_deterministic_requirement() {
+    let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+    let revision = runtime.revision();
+    let events = runtime.committed_events().len();
+    let result = runtime.apply_verified_semantic_delta(
+        revision,
+        delta("price", "12"),
+        RequiredVerification::Deterministic,
+        |_| {
+            report(
+                VerificationStatus::Pass,
+                VerificationLevel::FullSemantic,
+                false,
+            )
+        },
+    );
+    assert!(matches!(
+        result,
+        Err(RuntimeError::DeltaVerificationRejected {
+            status: VerificationStatus::Pass,
+            level: VerificationLevel::FullSemantic,
+            hard_findings: 0,
+        })
+    ));
+    assert_eq!(runtime.revision(), revision);
+    assert_eq!(runtime.committed_events().len(), events);
+    assert_eq!(runtime.snapshot().get("price"), None);
 }
 
 fn delta(key: &str, value: &str) -> SemanticDelta {

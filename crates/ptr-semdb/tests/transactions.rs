@@ -1,4 +1,7 @@
-use ptr_semdb::{SemanticDelta, SemanticError, SemanticHost, SemanticPayload, MAX_DELTA_BYTES};
+use ptr_semdb::{
+    canonical_input_bytes, SemanticDelta, SemanticError, SemanticHost, SemanticPayload,
+    SemanticValue, MAX_DELTA_BYTES,
+};
 use ptr_types::{Revision, TypeId};
 use std::collections::BTreeSet;
 
@@ -17,6 +20,78 @@ fn chain() -> SemanticDelta {
     d.dependencies
         .insert("plan".into(), ["derived".into()].into());
     d
+}
+
+#[test]
+fn prepared_views_include_removals_invalidations_and_payloads_without_publishing() {
+    let mut host = SemanticHost::default();
+    host.apply_delta(chain()).unwrap();
+    let before = host.snapshot();
+    let payload = SemanticValue::Payload(SemanticPayload {
+        type_id: TypeId::from("application/octet-stream"),
+        source: "verifier".into(),
+        bytes: vec![0, 255],
+    });
+    let mut update = delta("source", "changed");
+    update.removals.insert("unrelated".into());
+    update.upserts.insert("binary".into(), payload.clone());
+    let prepared = host.prepare_delta(update).unwrap();
+    let view = prepared.view();
+    assert_eq!(view.get("source"), Some("changed"));
+    assert_eq!(view.get("binary"), None);
+    assert_eq!(view.value("binary"), Some(&payload));
+    for removed in ["unrelated", "derived", "plan", "missing"] {
+        assert_eq!(view.value(removed), None);
+    }
+    assert_eq!(view.keys().collect::<Vec<_>>(), vec!["binary", "source"]);
+    assert_eq!(host.revision(), before.revision);
+    assert_eq!(host.snapshot().get("source"), Some("one"));
+    assert_eq!(host.snapshot().get("derived"), Some("two"));
+    assert_eq!(host.snapshot().value("binary"), None);
+    host.apply_prepared(prepared).unwrap();
+    assert_eq!(host.snapshot().get("source"), Some("changed"));
+    assert_eq!(host.snapshot().value("binary"), Some(&payload));
+    assert_eq!(before.get("source"), Some("one"));
+}
+
+#[test]
+fn canonical_inputs_round_trip_with_the_key_type_source_and_binary_bytes() {
+    let payload = SemanticPayload {
+        type_id: TypeId::from("binary"),
+        source: "source:a".into(),
+        bytes: vec![0, 255, 10],
+    };
+    let value = SemanticValue::Payload(payload.clone());
+    let bytes = canonical_input_bytes("input:a", &value).unwrap();
+    let decoded = SemanticDelta::decode(&bytes).unwrap();
+    assert_eq!(decoded.upserts.len(), 1);
+    assert_eq!(decoded.upserts.get("input:a"), Some(&value));
+    assert!(decoded.removals.is_empty());
+    assert!(decoded.dependencies.is_empty());
+    assert_ne!(bytes, canonical_input_bytes("input:b", &value).unwrap());
+    for different in [
+        SemanticPayload {
+            source: "source:b".into(),
+            ..payload.clone()
+        },
+        SemanticPayload {
+            type_id: TypeId::from("other"),
+            ..payload.clone()
+        },
+        SemanticPayload {
+            bytes: vec![0, 255, 11],
+            ..payload
+        },
+    ] {
+        assert_ne!(
+            bytes,
+            canonical_input_bytes("input:a", &different.into()).unwrap()
+        );
+    }
+    assert_eq!(
+        canonical_input_bytes("", &"text".into()),
+        Err(SemanticError::InvalidKey)
+    );
 }
 
 #[test]

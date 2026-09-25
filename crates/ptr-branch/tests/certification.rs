@@ -1,14 +1,149 @@
 use std::collections::BTreeSet;
 
 use ptr_branch::{
-    certify, counter_value, read_counter_value, Branch, BranchError, BranchId, BranchOp,
-    Certification,
+    certify, counter_value, read_counter_value, read_set_value, set_value, Branch, BranchError,
+    BranchId, BranchOp, Certification,
 };
 use ptr_semdb::{SemanticDelta, SemanticHost, SemanticValue};
 use ptr_types::{Generation, PrincipalId, Validity};
 
 fn text(value: &str) -> SemanticValue {
     SemanticValue::Text(value.into())
+}
+
+#[test]
+fn a_read_of_an_absent_key_conflicts_with_a_concurrent_insert() {
+    let mut host = SemanticHost::default();
+    let mut work = branch(&host, "absent-read");
+    assert_eq!(work.read("reservation"), Ok(None));
+    work.put("reservation", text("mine")).unwrap();
+    let sealed = work.seal().unwrap();
+    change(&mut host, "reservation", text("theirs"));
+    assert_eq!(
+        certify(&sealed, &host.snapshot(), no_lifecycle).unwrap_err(),
+        BranchError::Conflict {
+            keys: BTreeSet::from(["reservation".into()])
+        }
+    );
+    assert_eq!(host.snapshot().get("reservation"), Some("theirs"));
+}
+
+#[test]
+fn prefix_scans_detect_deletions_and_changes_to_existing_values() {
+    for remove in [false, true] {
+        let mut host = host_with(&[("order:1", text("open"))]);
+        let mut work = branch(&host, "scan");
+        work.scan_prefix("order:").unwrap();
+        let sealed = work.seal().unwrap();
+        let mut delta = SemanticDelta::default();
+        if remove {
+            delta.removals.insert("order:1".into());
+        } else {
+            delta.upserts.insert("order:1".into(), text("closed"));
+        }
+        host.apply_delta(delta).unwrap();
+        assert_eq!(
+            certify(&sealed, &host.snapshot(), no_lifecycle).unwrap_err(),
+            BranchError::Conflict {
+                keys: BTreeSet::from(["order:*".into()])
+            }
+        );
+    }
+}
+
+#[test]
+fn reading_a_counter_prevents_rebasing_an_addition_over_a_changed_value() {
+    let mut host = host_with(&[("stock", counter_value(5))]);
+    let mut work = branch(&host, "stock-check");
+    work.read("stock").unwrap();
+    work.stage_commutative(BranchOp::Add {
+        key: "stock".into(),
+        amount: -2,
+    })
+    .unwrap();
+    let sealed = work.seal().unwrap();
+    change(&mut host, "stock", counter_value(1));
+    assert_eq!(
+        certify(&sealed, &host.snapshot(), no_lifecycle).unwrap_err(),
+        BranchError::Conflict {
+            keys: BTreeSet::from(["stock".into()])
+        }
+    );
+}
+
+#[test]
+fn concurrent_set_insertions_preserve_both_members_in_either_commit_order() {
+    for reverse in [false, true] {
+        let mut host = host_with(&[("tags", set_value(&BTreeSet::from(["base".into()])))]);
+        let sealed: Vec<_> = ["red", "blue"]
+            .into_iter()
+            .map(|member| {
+                let mut work = branch(&host, member);
+                work.stage_commutative(BranchOp::SetInsert {
+                    key: "tags".into(),
+                    member: member.into(),
+                })
+                .unwrap();
+                work.seal().unwrap()
+            })
+            .collect();
+        let order = if reverse { [1, 0] } else { [0, 1] };
+        for (position, index) in order.into_iter().enumerate() {
+            let certification = certify(&sealed[index], &host.snapshot(), no_lifecycle).unwrap();
+            assert_eq!(
+                matches!(certification, Certification::Rebased(_)),
+                position == 1
+            );
+            commit(&mut host, certification);
+        }
+        assert_eq!(
+            read_set_value(host.snapshot().value("tags").unwrap()),
+            Some(BTreeSet::from(["base".into(), "blue".into(), "red".into()]))
+        );
+    }
+}
+
+#[test]
+fn counter_overflow_at_rebase_is_refused_without_changing_the_host() {
+    let mut host = host_with(&[("count", counter_value(0))]);
+    let mut work = branch(&host, "increment");
+    work.stage_commutative(BranchOp::Add {
+        key: "count".into(),
+        amount: 1,
+    })
+    .unwrap();
+    let sealed = work.seal().unwrap();
+    change(&mut host, "count", counter_value(i64::MAX));
+    let revision = host.revision();
+    assert_eq!(
+        certify(&sealed, &host.snapshot(), no_lifecycle).unwrap_err(),
+        BranchError::CounterOverflow {
+            key: "count".into()
+        }
+    );
+    assert_eq!(host.revision(), revision);
+    assert_eq!(
+        read_counter_value(host.snapshot().value("count").unwrap()),
+        Some(i64::MAX)
+    );
+}
+
+#[test]
+fn operations_that_cancel_produce_a_noop_plan_and_preserve_author_identity() {
+    let host = host_with(&[("count", counter_value(5))]);
+    let mut work = branch(&host, "cancelled");
+    for amount in [3, -3] {
+        work.stage_commutative(BranchOp::Add {
+            key: "count".into(),
+            amount,
+        })
+        .unwrap();
+    }
+    let sealed = work.seal().unwrap();
+    assert_eq!(sealed.author, PrincipalId::from("agent-1"));
+    let certification = certify(&sealed, &host.snapshot(), no_lifecycle).unwrap();
+    assert!(certification.plan().is_noop());
+    assert_eq!(certification.plan().expected, host.revision());
 }
 
 fn host_with(entries: &[(&str, SemanticValue)]) -> SemanticHost {

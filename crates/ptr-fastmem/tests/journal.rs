@@ -84,3 +84,65 @@ fn a_full_journal_refuses_further_writes() {
     memory.revoke(|source| source.key == "a");
     assert!(memory.write(write_about("c", 2)).is_ok());
 }
+
+#[test]
+fn an_invalid_write_preserves_state_binding_and_the_next_sequence() {
+    let mut memory = FastMemory::new(config(1)).unwrap();
+    memory.write(write_about("a", 0)).unwrap();
+    let state = memory.state().clone();
+    let binding = memory.binding_digest();
+    let writes = memory.writes().to_vec();
+    let mut invalid = write_about("b", 1);
+    invalid.value.pop();
+    assert_eq!(
+        memory.write(invalid),
+        Err(FastMemoryError::DimensionMismatch {
+            field: "value",
+            expected: config(1).value_len(),
+            actual: config(1).value_len() - 1,
+        })
+    );
+    assert_eq!(memory.state(), &state);
+    assert_eq!(memory.binding_digest(), binding);
+    assert_eq!(memory.writes(), writes);
+    assert_eq!(memory.write(write_about("b", 1)).unwrap().seq, WriteSeq(2));
+}
+
+#[test]
+fn restoring_a_gapped_journal_continues_after_its_largest_sequence() {
+    let mut memory = FastMemory::restore(
+        config(2),
+        [
+            (WriteSeq(3), write_about("a", 0)),
+            (WriteSeq(7), write_about("b", 1)),
+        ],
+    )
+    .unwrap();
+    assert_eq!(memory.state().applied(), WriteSeq(7));
+    assert_eq!(memory.write(write_about("c", 2)).unwrap().seq, WriteSeq(8));
+    assert_eq!(memory.state(), &memory.refold_from_journal());
+}
+
+#[test]
+fn restoring_refuses_zero_sequence_and_journals_over_capacity() {
+    assert_eq!(
+        FastMemory::restore(config(1), [(WriteSeq(0), write_about("a", 0))]).unwrap_err(),
+        FastMemoryError::OutOfOrderWrite {
+            expected: 1,
+            actual: 0
+        }
+    );
+    let mut small = config(1);
+    small.max_writes = 1;
+    assert_eq!(
+        FastMemory::restore(
+            small,
+            [
+                (WriteSeq(1), write_about("a", 0)),
+                (WriteSeq(9), write_about("b", 1)),
+            ]
+        )
+        .unwrap_err(),
+        FastMemoryError::JournalFull { limit: 1 }
+    );
+}

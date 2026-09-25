@@ -3,7 +3,7 @@ use ptr_branch::{
     ArbiterError, AutoThreshold, BranchId, LoggedTriage, TriageDecision, TriagePolicy,
 };
 use ptr_types::{Probability, VerificationLevel};
-use ptr_verifier::{VerificationReport, VerificationStatus};
+use ptr_verifier::{Finding, VerificationReport, VerificationStatus};
 
 fn report(status: VerificationStatus, level: VerificationLevel) -> VerificationReport {
     VerificationReport {
@@ -20,6 +20,54 @@ fn passing() -> VerificationReport {
 
 fn score(value: f32) -> Probability {
     Probability::new(value).unwrap()
+}
+
+#[test]
+fn threshold_equality_is_admitted_and_calibration_equality_is_not_sampled() {
+    let policy = TriagePolicy::new(AutoThreshold::AtLeast(0.5), 0.25).unwrap();
+    let boundary = policy.triage(&passing(), score(0.5), 0.25);
+    assert_eq!(boundary.decision, TriageDecision::AutoPropose);
+    assert!(boundary.eligible);
+    assert!(!boundary.calibration_slice);
+    assert_eq!(boundary.auto_propensity, 0.75);
+    let sampled = policy.triage(&passing(), score(0.5), 0.0);
+    assert_eq!(sampled.decision, TriageDecision::Escalate);
+    assert!(sampled.adjudicate(false).is_some());
+    let below = policy.triage(&passing(), score(0.49), 0.25);
+    assert_eq!(below.decision, TriageDecision::Escalate);
+    assert_eq!(below.auto_propensity, 0.0);
+}
+
+#[test]
+fn a_hard_finding_excludes_a_passing_report_from_proposals_and_calibration() {
+    let policy = TriagePolicy::new(AutoThreshold::AtLeast(0.0), 0.5).unwrap();
+    let mut verified = passing();
+    verified.findings.push(Finding {
+        code: "unsafe".into(),
+        message: "constraint failed".into(),
+        hard: true,
+    });
+    let outcome = policy.triage(&verified, score(1.0), 0.0);
+    assert_eq!(outcome.decision, TriageDecision::Escalate);
+    assert!(!outcome.eligible);
+    assert!(!outcome.calibration_slice);
+    assert_eq!(outcome.auto_propensity, 0.0);
+    assert_eq!(outcome.adjudicate(false), None);
+}
+
+#[test]
+fn off_policy_estimators_refuse_an_empty_log() {
+    let target = TriagePolicy::new(AutoThreshold::Never, 0.0).unwrap();
+    assert_eq!(
+        evaluate_off_policy(&[], &target),
+        Err(ArbiterError::EmptyLog)
+    );
+    assert_eq!(
+        doubly_robust(&[], &target, |_, _| panic!(
+            "empty log must be rejected first"
+        )),
+        Err(ArbiterError::EmptyLog)
+    );
 }
 
 #[test]

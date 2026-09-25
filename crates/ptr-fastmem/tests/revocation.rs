@@ -121,3 +121,39 @@ fn the_binding_digest_names_the_exact_set_of_folded_writes() {
     memory.revoke(|source| source.key == "b");
     assert_ne!(memory.binding_digest(), full);
 }
+
+#[test]
+fn revocation_distinguishes_generations_and_digests_of_the_same_source_key() {
+    let first = write_about("shared", 0);
+    let mut second = write_about("shared", 1);
+    second.source.generation = Generation(2);
+    let mut third = write_about("shared", 2);
+    third.source.generation = Generation(2);
+    let mut memory = FastMemory::new(config(1)).unwrap();
+    for request in [first.clone(), second.clone(), third.clone()] {
+        memory.write(request).unwrap();
+    }
+    let report = memory.revoke(|source| source == &second.source);
+    assert_eq!(report.removed, 1);
+    let clean =
+        FastMemory::restore(config(1), [(WriteSeq(1), first), (WriteSeq(3), third)]).unwrap();
+    assert_eq!(memory.state(), clean.state());
+    assert_eq!(memory.binding_digest(), clean.binding_digest());
+    assert_eq!(memory.sources(), clean.sources());
+}
+
+#[test]
+fn revoking_every_write_resets_cells_and_dependencies_but_keeps_sequence_monotone() {
+    let mut memory = memory_with(2, &SOURCES[..4]);
+    let report = memory.revoke(|_| true);
+    assert_eq!(report.removed, 4);
+    assert_eq!(report.replayed, 0);
+    assert_eq!(report.restarted_from, WriteSeq(0));
+    let empty = FastMemory::new(config(2)).unwrap();
+    assert_eq!(memory.state(), empty.state());
+    assert_eq!(memory.binding_digest(), empty.binding_digest());
+    assert!(memory.sources().is_empty());
+    assert!(memory.writes().is_empty());
+    assert_eq!(memory.write(write_about("e", 4)).unwrap().seq, WriteSeq(5));
+    assert_eq!(memory.state(), &memory.refold_from_journal());
+}
