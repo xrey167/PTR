@@ -220,7 +220,11 @@ def derive(item: Item) -> None:
 
 
 def parse_tsv_line(line: str, split: str) -> Item:
-    """Parse six TSV fields into an item without deriving its scores or tags."""
+    """Parse six TSV fields into an item without deriving its scores or tags.
+
+    Raise ValueError for wrong field counts or invalid numeric text, and KeyError
+    for unknown role, state, or validity codes. Regime and budget are not checked.
+    """
     fields = line.rstrip("\n").split("\t")
     if len(fields) != 6:
         raise ValueError(f"{split}: expected 6 TSV fields, found {len(fields)}")
@@ -354,7 +358,13 @@ def _rate(correct: int, n: int):
 
 
 def score_predictions(items: list[Item], predictions: list[int]) -> dict:
-    """Compute routing accuracy, regret, success, and subset metrics for predictions."""
+    """Compute metrics for predictions paired with independently derived items.
+
+    Regret is mean gold-label utility minus predicted utility; success allows
+    regret <= 0.25 + 1e-9. Empty subsets have None accuracy. Raise ValueError for
+    mismatched lengths or invalid operator codes, and ZeroDivisionError when
+    both input lists are empty.
+    """
     if len(items) != len(predictions):
         raise ValueError(f"{len(predictions)} predictions for {len(items)} examples")
     n = len(items)
@@ -405,7 +415,14 @@ def rust_final_row(rows: list[dict], arm: str, split: str):
 
 
 def score_records(paths: list[Path], data_dir: Path) -> tuple[dict, list[str]]:
-    """Score recorded PRED lines, compare Rust counts, and return results and problems."""
+    """Score recorded PRED lines, compare Rust counts, and return results and problems.
+
+    Missing stdout, unknown splits, invalid prediction counts/codes, and count
+    disagreements become problems. Missing Rust rows yield None comparisons.
+    Malformed PRED syntax and file, record-JSON, or split-loading errors propagate;
+    malformed JSON lines within stdout are ignored. Records are not filtered by
+    completion status.
+    """
     cache: dict[str, list[Item]] = {}
     problems: list[str] = []
     results = []

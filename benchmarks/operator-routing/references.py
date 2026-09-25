@@ -80,7 +80,11 @@ class Row:
 
 
 def load(data_dir: Path, split: str, with_tags: bool) -> list[Row]:
-    """Read a TSV split, verify its labels and size, and optionally derive tags."""
+    """Read a TSV split, verify its labels and size, and optionally derive tags.
+
+    Raise SystemExit on a label or size mismatch; file and parsing errors
+    propagate. With tags disabled, each row's tag set is empty.
+    """
     rows = []
     for index, line in enumerate((data_dir / f"{split}.tsv").read_text(encoding="utf-8").splitlines()):
         ident, label, regime, budget, tokens, facts = line.split("\t")
@@ -382,7 +386,10 @@ class RawBlindBayes:
         return total
 
     def posterior_regime(self, facts) -> list[float]:
-        """Infer regime probabilities from facts, dropping impossible held-out pairs if needed."""
+        """Infer regime probabilities from facts, dropping impossible held-out pairs if needed.
+
+        Return a uniform distribution if the remaining likelihoods still sum to zero.
+        """
         pairs = [(f[0], f[1]) for f in facts]
         lik = {ban: self.likelihood(pairs, ban) for ban in (False, True)}
         weights = [0.25 * lik[r == gen.INTERVENTIONAL] for r in range(4)]

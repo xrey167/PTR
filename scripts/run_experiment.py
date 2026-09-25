@@ -52,7 +52,10 @@ def git_sha() -> str:
 
 def git_worktree_state() -> dict:
     """The same rule as training/src/ptr_training/run.py: only tracked files count,
-    so the untracked run records this runner itself writes never make a run dirty."""
+    so the untracked run records this runner itself writes never make a run dirty.
+    Return the dirty flag and binary diff's SHA-256, or None for both if either
+    Git query fails.
+    """
     try:
         porcelain = subprocess.check_output(
             ["git", "status", "--porcelain", "--untracked-files=no"],
@@ -107,7 +110,11 @@ def host_facts() -> dict:
 
 def hardware_profile_record(relative: str | None) -> dict | None:
     """The declared profile's bytes and contents, not only its path, and which of
-    its fields still say `unspecified`."""
+    its fields still say `unspecified`.
+
+    Return None for an absent path argument, or a record with None metadata for
+    a missing file. Existing files' read and TOML decoding errors propagate.
+    """
     if not relative:
         return None
     path = ROOT / relative
@@ -126,7 +133,9 @@ def hardware_profile_record(relative: str | None) -> dict | None:
 
 def toolchain(command: list[str]) -> str | None:
     """`rustc --version` for the toolchain a cargo command runs on: the `+name` it
-    names, or the one rust-toolchain.toml pins for the repository root."""
+    names, or the one rust-toolchain.toml pins for the repository root.
+    Return None for a non-Cargo command or a failed version query.
+    """
     if not command or Path(command[0]).name != "cargo":
         return None
     query = ["rustc"]
@@ -308,7 +317,12 @@ def run_experiment(
     seed: int,
     params: dict[str, str] | None = None,
 ) -> int:
-    """Execute a seeded entrypoint, persist its outcome, and return its exit status."""
+    """Execute a seeded entrypoint, persist its outcome, and return its exit status.
+
+    Invalid command parameters return 2 without writing a record. Launch errors
+    are recorded and return 127. Unknown experiment IDs raise SystemExit;
+    manifest/provenance reads and result-write errors propagate.
+    """
     _, root, data = resolve(exp_id)
     try:
         command = build_command(
@@ -355,7 +369,7 @@ def run_experiment(
 
 def metric_rows(stdout: str) -> list[dict]:
     """The JSON objects a run printed, one per line. A line that starts like an
-    object but does not parse is an error rather than a row silently lost."""
+    object but does not parse raises ValueError rather than being silently lost."""
     rows = []
     for number, line in enumerate(stdout.splitlines(), 1):
         text = line.strip()
@@ -373,7 +387,9 @@ def metric_rows(stdout: str) -> list[dict]:
 def metric_value(name: str, value) -> float | None:
     """A row field as a metric: a number, as a float. Strings are labels, and
     booleans, nulls, lists and objects are not metrics. A number too large for a
-    float is refused rather than rounded to infinity."""
+    float raises ValueError. Non-numeric values return None; existing NaN and
+    infinity values pass through for the caller to classify.
+    """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     try:
@@ -418,7 +434,7 @@ def aggregate(
     A row is a JSON object a run printed on its own line. Its string fields name
     the row (for example `{"arm": "typed", "split": "ood"}`) and its numeric
     fields are the metrics summarized across seeds; a numeric `seed` field is
-    taken as a label, not a metric.
+    ignored.
 
     Refused, so nothing is written: records from more than one commit; records
     from a dirty or unrecorded worktree (unless `allow_dirty`, which the aggregate
@@ -430,7 +446,14 @@ def aggregate(
     Reported, never dropped, and each one makes the aggregate `incomplete`: failed
     runs; declared seeds with no completed run; a row some completed seeds did not
     print; a metric some seeds did not report; and a non-finite value (NaN or
-    infinity), which is listed per seed instead of entering the mean."""
+    infinity), which is listed per seed instead of entering the mean.
+
+    `git_sha_filter` selects an exact recorded commit before comparisons. Input
+    refusals raise ValueError, including no matching records or completed runs
+    with no JSON rows. Return 0 after writing a complete aggregate, or 1 after
+    writing an incomplete one. Unknown experiments raise SystemExit; manifest
+    reads, source hashing, and output-write errors propagate.
+    """
     _, root, data = resolve(exp_id)
     results = root / data.get("results_dir", "results")
     declared = list(data.get("seeds", []))

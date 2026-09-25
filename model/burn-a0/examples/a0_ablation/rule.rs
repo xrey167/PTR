@@ -28,6 +28,7 @@ pub struct RuleFact {
     pub validity: Validity,
 }
 
+/// Return the state's affinity multiplier and probabilistic-operator bonus.
 fn epistemic_weight(e: EpistemicState) -> (f64, f64) {
     match e {
         EpistemicState::Unknown => (0.30, 0.35),
@@ -39,6 +40,7 @@ fn epistemic_weight(e: EpistemicState) -> (f64, f64) {
     }
 }
 
+/// Return the operator's cost in the label rule's budget units.
 pub fn cost(op: ReasoningOperator) -> f64 {
     match op {
         ReasoningOperator::Semantic => 0.2,
@@ -65,6 +67,8 @@ fn regime_operator(regime: usize) -> ReasoningOperator {
     ][regime]
 }
 
+/// Return a role's primary and secondary operators for the supplied regime code.
+/// Panics for claim or evidence roles if `regime` is outside `0..4`.
 fn affinity(role: SemanticRole, regime: usize) -> (ReasoningOperator, ReasoningOperator) {
     use ReasoningOperator as O;
     match role {
@@ -104,6 +108,11 @@ pub fn operators_by_code() -> [ReasoningOperator; OPERATORS] {
 }
 
 /// z_k for every operator, by codebook code.
+///
+/// `regime` indexes tabular, temporal, interventional, or textual context;
+/// `budget` indexes costs 0.4, 0.7, or 1.0. Only live facts with a nonzero
+/// confidence bucket contribute votes and penalties; no such facts yields zeros.
+/// Out-of-range bucket, regime, or budget indices panic when their tables are read.
 pub fn utilities(facts: &[RuleFact], regime: usize, budget: usize) -> [f64; OPERATORS] {
     let ops = operators_by_code();
     let mut z = [0.0_f64; OPERATORS];
@@ -152,6 +161,8 @@ pub fn decide(z: &[f64; OPERATORS]) -> usize {
         .expect("eleven operators")
 }
 
+/// Return the winning operator code from [`utilities`] using the rule's tie-break.
+/// Uses the same regime and budget indices and propagates its indexing panics.
 pub fn label(facts: &[RuleFact], regime: usize, budget: usize) -> usize {
     decide(&utilities(facts, regime, budget))
 }

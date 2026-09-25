@@ -17,6 +17,8 @@ pub struct Payloads {
 }
 
 impl Payloads {
+    /// Encode all 512 entity IDs and six slot indices at the model's input width.
+    /// Panics if `width` is outside the range supported by `SlotEncoding::V1`.
     pub fn new(width: usize) -> Self {
         let encode = |kind: &str, bytes: String| {
             SlotEncoding::V1
@@ -42,6 +44,16 @@ pub struct Inputs {
     pub metadata: PtrSlotMetadata,
 }
 
+/// Build model inputs in example order using the selected arm's batch variant.
+///
+/// Content-free slots carry their index, fixed role/state, and zero confidence;
+/// their admission mask is retained only when requested. Raw-blind batches replace
+/// tokens with PAD and keep typed slots. Other variants keep the original tokens.
+///
+/// # Panics
+///
+/// Panics for an empty batch, unequal token lengths, malformed slot shapes, or
+/// an entity ID outside the precomputed payload table when typed payloads are used.
 pub fn build(examples: &[&Example], kind: Batch, payloads: &Payloads, device: &Device) -> Inputs {
     let batch = examples.len();
     let length = examples[0].tokens.len();
@@ -135,6 +147,7 @@ pub fn build(examples: &[&Example], kind: Batch, payloads: &Payloads, device: &D
     }
 }
 
+/// Return gold operator codes on `device` in the supplied example order.
 pub fn labels(examples: &[&Example], device: &Device) -> Tensor<1, Int> {
     let labels: Vec<i64> = examples
         .iter()

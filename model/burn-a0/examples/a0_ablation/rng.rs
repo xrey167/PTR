@@ -24,10 +24,12 @@ pub struct SplitMix64 {
 }
 
 impl SplitMix64 {
+    /// Start a stream at `seed` without drawing a value.
     pub fn new(seed: u64) -> Self {
         Self { state: seed }
     }
 
+    /// Advance the wrapping state and return the next splitmix64 output.
     pub fn next_u64(&mut self) -> u64 {
         self.state = self.state.wrapping_add(GOLDEN_GAMMA);
         mix64(self.state)
@@ -63,6 +65,7 @@ pub fn fnv1a64(bytes: &[u8], mut state: u64) -> u64 {
     state
 }
 
+/// Return the offset basis for a new FNV-1a-64 digest.
 pub fn fnv1a64_start() -> u64 {
     FNV_OFFSET
 }

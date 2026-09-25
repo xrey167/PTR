@@ -38,8 +38,11 @@ def toml_string(value: str) -> str:
 
 
 def check_seeds(seeds: list[int]) -> list[int]:
-    """Seeds are passed to entrypoints as decimal text and parsed there, typically
-    as a u64, so they must be distinct non-negative integers that fit one."""
+    """Return a copy of distinct integer seeds in the inclusive range 0..2**63-1.
+
+    Raise ValueError for an empty list, duplicates, booleans, or out-of-range or
+    noninteger values. The upper bound also fits TOML's signed 64-bit integers.
+    """
     if not seeds:
         raise ValueError("at least one seed is required")
     for seed in seeds:
@@ -51,7 +54,10 @@ def check_seeds(seeds: list[int]) -> list[int]:
 
 
 def parse_seeds(text: str) -> list[int]:
-    """Parse comma-separated integers and reject invalid, duplicate, or empty seeds."""
+    """Parse comma-separated seeds, ignoring empty or whitespace-only fields.
+
+    Raise ValueError for invalid integers or a list rejected by check_seeds.
+    """
     try:
         seeds = [int(part) for part in text.split(",") if part.strip()]
     except ValueError:
@@ -101,9 +107,16 @@ def create(
 ) -> Path:
     """Create and register `experiments/<path>` under `root`.
 
-    Every refusal happens before the first write, and a write that fails anyway
-    (a full disk, a permission) removes what was created and restores the
-    registry, so a failed call leaves the tree exactly as it was."""
+    Return the created directory. Validate the area/ID/slug path, required text,
+    hardware profile, seeds, and duplicate ID or destination before writing;
+    invalid inputs raise ValueError. Missing or unreadable registry files and
+    registry decoding errors propagate.
+
+    On an OSError during creation or registration, attempt to remove the new
+    directory and restore the registry, then raise ValueError. Removal errors
+    are ignored; a registry restoration error propagates, so rollback is not
+    guaranteed if cleanup itself fails.
+    """
     seeds = check_seeds(list(DEFAULT_SEEDS) if seeds is None else seeds)
     experiments = root / "experiments"
     registry_path = experiments / "registry.toml"

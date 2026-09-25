@@ -421,21 +421,27 @@ impl PtrA0Config {
         self
     }
 
+    /// Enable or disable the metadata bias in both cross-attention directions.
     pub fn with_typed_attention(mut self, typed_attention: bool) -> Self {
         self.typed_attention = typed_attention;
         self
     }
 
+    /// Choose typed slot state (`true`) or payload alone (`false`) for slot queries.
     pub fn with_typed_query(mut self, typed_query: bool) -> Self {
         self.typed_query = typed_query;
         self
     }
 
+    /// Choose GELU (`true`) or a linear residual (`false`) for latent refinement.
+    /// Has no effect when `latent_steps` is zero.
     pub fn with_latent_nonlinearity(mut self, latent_nonlinearity: bool) -> Self {
         self.latent_nonlinearity = latent_nonlinearity;
         self
     }
 
+    /// Exclude router parameters from gradients when [`Self::init`] builds a model.
+    /// This option does not affect checkpoint loading or forward computations.
     pub fn with_frozen_router(mut self, frozen_router: bool) -> Self {
         self.frozen_router = frozen_router;
         self
@@ -656,6 +662,19 @@ impl PtrA0 {
     /// Slot identity arrives as [`CodeGrid<SemanticRole>`] and epistemic state as
     /// [`CodeGrid<EpistemicState>`], so the two cannot be swapped: the swap is a
     /// type error, not a plausible-looking output.
+    ///
+    /// Returns raw-token states, refined slot states, operator logits averaged
+    /// over admitted slots, and the admission bias. Excluded slot states are
+    /// still returned. With finite slot logits, a row admitting no slots has
+    /// zero router logits. The returned raw states do not feed the router.
+    ///
+    /// # Panics
+    ///
+    /// Panics if input batch sizes, slot dimensions, codebook versions, or the
+    /// slot encoding do not match the model. Token and provenance IDs must index
+    /// their respective embedding tables.
+    ///
+    /// # Examples
     ///
     /// ```
     /// use burn::{prelude::*, tensor::Int};

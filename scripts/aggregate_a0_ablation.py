@@ -67,7 +67,10 @@ def paired(comparator: list[float], ablated: list[float], t_critical: float) -> 
 
 
 def common_rule(stats: dict, delta_min: float, blocked: str | None) -> tuple[str, str]:
-    """SUPPORTS / FALSIFIES (HARMFUL) / INCONCLUSIVE under the common decision rule."""
+    """Return SUPPORTS, FALSIFIES, HARMFUL, or INCONCLUSIVE with its reason.
+
+    A nonempty blocked reason forces INCONCLUSIVE before evaluating statistics.
+    """
     if blocked:
         return "INCONCLUSIVE", blocked
     lower, upper = stats["ci"]
@@ -110,7 +113,7 @@ def mean_over_seeds(table: dict, arm: str, split: str, seeds: list[int]) -> floa
 
 
 def learnability(table: dict, references: dict, criteria: dict, seeds: list[int]) -> dict:
-    """Per arm: whether its 5-seed mean test_iid reaches its bar."""
+    """Per configured arm: whether mean test_iid over the supplied seeds reaches its bar."""
     rules = criteria["learnability"]
     refs = references["references"]
     bound = refs["bound_additive"]["test_iid"]

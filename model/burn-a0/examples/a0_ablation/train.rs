@@ -31,8 +31,11 @@ pub struct Schedule {
 }
 
 impl Schedule {
-    /// Linear warm-up over the first 100 steps, then cosine decay to 0.1 x peak
-    /// at the last step.
+    /// Return the learning rate for a zero-based step: linear warm-up for steps
+    /// 0 through 99, then cosine decay toward 0.1 x peak.
+    /// For `steps > 100`, the floor is reached at `step == steps`, one step after
+    /// the training loop's last update. A schedule shorter than 100 steps uses
+    /// only warm-up when queried within its training range.
     pub fn at(&self, step: usize) -> f64 {
         if step < WARMUP {
             return self.peak * (step + 1) as f64 / WARMUP as f64;
@@ -64,6 +67,7 @@ struct GradientTally<'a> {
 }
 
 impl ModuleVisitor for GradientTally<'_> {
+    /// Accumulate absolute gradients per element, retaining slots without gradients.
     fn visit_float<const D: usize>(&mut self, param: &Param<Tensor<D>>) {
         if self.sums.len() <= self.position {
             self.sums.push(None);
@@ -81,6 +85,7 @@ impl ModuleVisitor for GradientTally<'_> {
     }
 }
 
+/// Count parameter elements with positive accumulated gradient magnitude.
 fn effective(sums: &[Option<Tensor<1>>]) -> usize {
     sums.iter()
         .flatten()
@@ -91,6 +96,7 @@ fn effective(sums: &[Option<Tensor<1>>]) -> usize {
         .sum()
 }
 
+/// Encode a switch as the string label used in study rows.
 fn on(flag: bool) -> &'static str {
     if flag {
         "on"
@@ -99,8 +105,14 @@ fn on(flag: bool) -> &'static str {
     }
 }
 
-/// Train `arm` on the train split for `schedule.steps` steps. A validation row
-/// is written every steps/10 steps when `validate` holds.
+/// Train `arm` on full batches of 128, reseeding model initialization with `seeds.init`.
+///
+/// `seeds.order` controls epoch shuffles; each epoch drops its incomplete batch.
+/// Returns the model, JSON rows, whether any loss was non-finite, and elapsed
+/// milliseconds per step (including validation). When `validate` is true, a row
+/// is collected every `max(steps / 10, 1)` steps. Non-finite losses mark `nan` but
+/// do not stop training. Payload width must match `d_model`; a nonzero step count
+/// requires at least 128 training examples or the epoch calculation panics.
 pub fn train(
     arm: &Arm,
     data: &Dataset,
@@ -223,6 +235,7 @@ pub struct Score {
 }
 
 impl Score {
+    /// Return the fraction of correct predictions, or zero for an empty split.
     pub fn accuracy(&self) -> f64 {
         self.correct as f64 / self.n.max(1) as f64
     }
@@ -230,6 +243,9 @@ impl Score {
 
 /// Forward-only scoring in batches of 500. The prediction is the argmax of the
 /// logits, an exact tie going to the lowest code.
+/// Returns counts, mean negative log-likelihood in natural-log units, expected
+/// calibration error over 15 equal-width confidence bins, and prediction codes.
+/// An empty split produces zero counts and metrics and an empty prediction string.
 pub fn score(model: &PtrA0, arm: &Arm, split: &Split, payloads: &Payloads) -> Score {
     let device = Device::flex();
     let mut correct = 0;

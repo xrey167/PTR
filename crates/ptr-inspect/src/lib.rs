@@ -25,20 +25,24 @@ pub trait Inspectable {
 pub struct Secret<T>(T);
 
 impl<T> Secret<T> {
+    /// Wrap a value so inspection and debug formatting redact it.
     pub fn new(value: T) -> Self {
         Self(value)
     }
 
+    /// Borrow the wrapped value without redaction.
     pub fn expose(&self) -> &T {
         &self.0
     }
 
+    /// Consume the wrapper and return the value without redaction.
     pub fn into_inner(self) -> T {
         self.0
     }
 }
 
 impl<T> std::fmt::Debug for Secret<T> {
+    /// Write `Secret([redacted])`, propagating any formatter error.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Secret([redacted])")
     }

@@ -65,6 +65,7 @@ pub struct Dataset {
 }
 
 impl Dataset {
+    /// Borrow a split by exact name, panicking if the dataset does not contain it.
     pub fn split(&self, name: &str) -> &Split {
         self.splits
             .iter()
@@ -92,6 +93,7 @@ pub struct Tables {
     pub validities: Vec<Validity>,
 }
 
+/// Build role, epistemic-state, and validity lookup tables indexed by v1 codes.
 pub fn tables() -> Tables {
     use EpistemicState as E;
     use SemanticRole as R;
@@ -124,6 +126,7 @@ pub fn tables() -> Tables {
     }
 }
 
+/// Read a zero-based field, returning an error with the line number if absent.
 fn field<'a>(fields: &[&'a str], index: usize, line: usize) -> Result<&'a str, String> {
     fields
         .get(index)
@@ -131,11 +134,17 @@ fn field<'a>(fields: &[&'a str], index: usize, line: usize) -> Result<&'a str, S
         .ok_or_else(|| format!("line {line}: missing field {index}"))
 }
 
+/// Parse a field, reporting its name and line number on conversion failure.
 fn number<T: std::str::FromStr>(text: &str, what: &str, line: usize) -> Result<T, String> {
     text.parse()
         .map_err(|_| format!("line {line}: {what} is not a number: {text:?}"))
 }
 
+/// Parse TSV examples, re-derive gold labels, and compute their label digest.
+///
+/// Returns an error for wrong field or fact counts, numeric conversion failures,
+/// invalid regime, budget, label, or fact-table indices, or label disagreement.
+/// Token ranges and entity-table bounds are not validated here.
 fn parse_split(name: &'static str, text: &str, tables: &Tables) -> Result<Split, String> {
     let mut examples = Vec::new();
     let mut labels = String::new();
@@ -226,6 +235,11 @@ fn parse_split(name: &'static str, text: &str, tables: &Tables) -> Result<Split,
 
 /// Load every split, check the pinned FNV-1a-64 over the eight TSV files, and
 /// re-derive every label.
+///
+/// # Errors
+///
+/// Returns an error for file I/O, invalid UTF-8, a split rejected by the parser,
+/// or a combined digest that differs from `expected_fnv64`.
 pub fn load(directory: &Path, expected_fnv64: u64) -> Result<Dataset, String> {
     let tables = tables();
     let mut fnv = fnv1a64_start();

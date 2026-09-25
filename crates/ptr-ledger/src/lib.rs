@@ -608,6 +608,13 @@ mod raft_engine_backend {
             Ok(Self { engine, events })
         }
 
+        /// Persist and synchronize an event, then return its one-based commit index.
+        ///
+        /// # Errors
+        ///
+        /// Returns an I/O error if the engine rejects the batch entry or the
+        /// synchronized write fails. The in-memory event list advances only
+        /// after a successful write.
         pub fn append_durable(&mut self, event: LedgerEvent) -> io::Result<CommitIndex> {
             let index = CommitIndex(self.events.len() as u64 + 1);
             let mut batch = LogBatch::default();

@@ -103,6 +103,11 @@ fn bench_mailbox(iterations: usize) {
     );
 }
 
+/// Probe recovery from incomplete ledger tails and rejection of revoked actions.
+///
+/// `seed` selects tail lengths and fixture names. Creates and removes temporary
+/// ledgers, prints counters and elapsed nanoseconds as JSON, and exits with status
+/// 1 if any counter is nonzero. Fixture I/O or recovery failures panic.
 fn bench_ledger_recovery(iterations: usize, seed: u64) {
     let start = Instant::now();
     let mut rng = seed;
@@ -193,6 +198,12 @@ fn bench_ledger_recovery(iterations: usize, seed: u64) {
     );
 }
 
+/// Probe ledger recovery after a child process exits with an incomplete tail.
+///
+/// `seed` selects tail lengths and fixture names. Spawns one child per iteration,
+/// removes recovered temporary ledgers, and prints JSON counters and elapsed
+/// nanoseconds. Exits with status 1 for nonzero counters; process setup, fixture
+/// I/O, and recovery failures panic.
 fn bench_ledger_process_crash(iterations: usize, seed: u64) {
     let start = Instant::now();
     let mut rng = seed;
@@ -279,6 +290,7 @@ fn bench_ledger_process_crash(iterations: usize, seed: u64) {
 // runner records a run as completed from the exit status alone, so a violation
 // has to reach the exit status and not only the JSON line. The line is printed
 // first so a failing run still leaves its counters in the record.
+/// Exit with status 1 if any hard-invariant counter is nonzero; otherwise return.
 fn exit_on_violations(benchmark: &str, counters: &[(&str, usize)]) {
     let violated = violated(counters);
     if !violated.is_empty() {
@@ -291,6 +303,7 @@ fn exit_on_violations(benchmark: &str, counters: &[(&str, usize)]) {
     }
 }
 
+/// Return nonzero counters as `name=count` strings in their input order.
 fn violated(counters: &[(&str, usize)]) -> Vec<String> {
     counters
         .iter()

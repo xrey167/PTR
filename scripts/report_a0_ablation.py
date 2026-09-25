@@ -46,7 +46,12 @@ def f(value, digits=4) -> str:
 
 
 def main() -> int:
-    """Render study verdicts, gates, tables, and interpretation into RESULTS.md."""
+    """Write RESULTS.md and replace FALSIFIED-*.md notes with the current nulls.
+
+    Notes are written for FALSIFIES and HARMFUL verdicts. Return 0 on completion;
+    input decoding, file reads, output writes, and stale-note deletion errors
+    propagate, potentially leaving partially updated outputs.
+    """
     results = json.loads((STUDY / "results.json").read_text(encoding="utf-8"))
     references = json.loads((STUDY / "references.json").read_text(encoding="utf-8"))
     budget = json.loads((STUDY / "budget.json").read_text(encoding="utf-8"))

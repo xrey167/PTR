@@ -162,7 +162,9 @@ def plan_arms(ladder_applied: list[str]) -> dict[str, list[str]]:
 
 
 def projected_minutes(plan: dict[str, list[str]], steps: int, sweep_steps: int | None, ms_per_step: float) -> float:
-    """W = [N_eval (S* t + overhead) + N_sweep (S_sweep t + overhead)] / workers,
+    """Return projected wall-clock minutes, converting ms_per_step to seconds.
+
+    W = [N_eval (S* t + overhead) + N_sweep (S_sweep t + overhead)] / (60 * workers),
     where N counts arm-runs: every arm at every declared seed plus the rerun, and
     every arm at every grid rate when the sweep runs."""
     rules = config()
@@ -374,7 +376,9 @@ def choose_lr(arm: str, by_lr: dict[float, dict], grid: list[float], tolerance: 
     """The preregistered selection rule for one arm: among the learning rates that
     did not diverge, the smallest whose validation accuracy is within `tolerance`
     of the best; flagged when it sits on the edge of the grid. Returns the rate,
-    the flag and every eligible rate's validation accuracy."""
+    the flag and every eligible rate's validation accuracy. Raise SystemExit if
+    a grid rate has no result or no rate has finite accuracy without divergence.
+    """
     missing = [lr for lr in grid if lr not in by_lr]
     if missing:
         raise SystemExit(f"{arm}: no sweep result for lr {missing}")

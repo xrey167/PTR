@@ -108,7 +108,11 @@ def example_seed(split: str, index: int) -> int:
 
 
 def load_codebook(path: Path = CODEBOOK_PATH) -> dict[str, dict[str, int]]:
-    """Name -> code for each family, read from the committed artifact."""
+    """Read name-to-code mappings, requiring the frozen version and fingerprint.
+
+    Raise SystemExit for a mismatched digest, fingerprint, or version. File,
+    JSON, hex-decoding, and missing-field errors propagate.
+    """
     document = json.loads(path.read_text(encoding="utf-8"))
     digest = hashlib.sha256(bytes.fromhex(document["canonical_bytes_hex"])).hexdigest()
     if digest != document["fingerprint_sha256"]:
@@ -421,7 +425,10 @@ def utilities(
 
 
 def decide(z: list[float]) -> tuple[int, bool]:
-    """argmax with the rule's tie-break: within 1e-9 of the max, lowest COST, then lowest code."""
+    """Return the winning code and whether multiple utilities lie within 1e-9 of the max.
+
+    Break ties by lowest COST, then lowest code.
+    """
     best = max(z)
     tied = [k for k in range(N_OPS) if z[k] >= best - TIE_TOL]
     return min(tied, key=lambda k: (COST[k], k)), len(tied) > 1
@@ -479,8 +486,11 @@ def _clean(x: float, digits: int) -> float:
 
 
 def route_targets(z: list[float]) -> list[float]:
-    """softmax(z / 0.5), in millionths, residual on the largest entry, so the
-    written targets sum to exactly 1 and do not depend on libm's last bit."""
+    """Return softmax(z / 0.5) rounded to millionths, with residual on the largest entry.
+
+    The integer millionths sum to 1,000,000; the returned floats may still have
+    summation roundoff. Ties for the residual go to the lowest operator code.
+    """
     scaled = [v / SOFTMAX_TEMPERATURE for v in z]
     top = max(scaled)
     weights = [math.exp(v - top) for v in scaled]
@@ -670,7 +680,10 @@ def compare_lock(expected: dict, actual: dict) -> list[str]:
 
 
 def check_on_disk(out: Path, lock: dict) -> list[str]:
-    """Check existing split files against lock hashes and report missing files."""
+    """Return hash mismatches for existing split files; missing files are only noted.
+
+    Missing files do not enter the returned problem list. Read errors propagate.
+    """
     problems = []
     for split in SPLITS:
         for kind in ("jsonl", "tsv"):

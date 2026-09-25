@@ -18,6 +18,7 @@ pub enum Batch {
 }
 
 impl Batch {
+    /// Return the batch variant's name for study output rows.
     pub fn name(self) -> &'static str {
         match self {
             Self::Typed => "typed",
@@ -128,6 +129,7 @@ pub const ARMS: [Arm; 12] = [
     },
 ];
 
+/// Look up an arm by its exact study name, returning an error if it is unknown.
 pub fn find(name: &str) -> Result<Arm, String> {
     ARMS.iter()
         .copied()
@@ -139,6 +141,7 @@ pub const VOCABULARY: usize = 216;
 pub const PROVENANCE_BUCKETS: usize = 8;
 
 impl Arm {
+    /// Configure A0 at width `d_model` with this arm's switches and input tables.
     pub fn config(&self, d_model: usize) -> PtrA0Config {
         PtrA0Config::new(VOCABULARY, d_model)
             .with_provenance_buckets(PROVENANCE_BUCKETS)
@@ -149,6 +152,7 @@ impl Arm {
             .with_frozen_router(self.frozen_router)
     }
 
+    /// Encode a switch as the string label used in study rows.
     fn on(flag: bool) -> &'static str {
         if flag {
             "on"

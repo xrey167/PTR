@@ -40,6 +40,7 @@ struct Args {
 }
 
 impl Args {
+    /// Read `--flag value` pairs, rejecting positional, duplicate, or valueless flags.
     fn parse() -> Result<Self, String> {
         let mut values = BTreeMap::new();
         let mut args = std::env::args().skip(1);
@@ -57,6 +58,7 @@ impl Args {
         Ok(Self { values })
     }
 
+    /// Return a required option's value or an error naming the missing flag.
     fn get(&self, key: &str) -> Result<&str, String> {
         self.values
             .get(key)
@@ -64,12 +66,14 @@ impl Args {
             .ok_or_else(|| format!("--{key} is required"))
     }
 
+    /// Parse a required option, returning an error if it is absent or invalid.
     fn number<T: std::str::FromStr>(&self, key: &str) -> Result<T, String> {
         self.get(key)?
             .parse()
             .map_err(|_| format!("--{key} is not a number"))
     }
 
+    /// Use the default only for an absent option; invalid supplied values are errors.
     fn number_or<T: std::str::FromStr>(&self, key: &str, default: T) -> Result<T, String> {
         match self.values.get(key) {
             Some(_) => self.number(key),
@@ -78,12 +82,15 @@ impl Args {
     }
 }
 
+/// Write and flush one stdout line, panicking on write or flush failure.
 fn emit(line: &str) {
     let mut out = std::io::stdout().lock();
     writeln!(out, "{line}").expect("stdout is writable");
     out.flush().expect("stdout flushes");
 }
 
+/// Load `--data` against hexadecimal `--data-fnv64` and emit its identity row.
+/// Returns argument or dataset-loading errors; output failures panic.
 fn load(args: &Args) -> Result<Dataset, String> {
     let fnv = u64::from_str_radix(args.get("data-fnv64")?, 16)
         .map_err(|_| "--data-fnv64 is not hex".to_owned())?;
@@ -101,6 +108,8 @@ fn load(args: &Args) -> Result<Dataset, String> {
 }
 
 /// Arms named by `--arms`, every one of which must belong to `--experiment`.
+/// If `--arms` is absent, selects all arms for the experiment. Returns an error
+/// for a missing experiment, unknown arm, mismatched experiment, or empty selection.
 fn arms_of(args: &Args) -> Result<Vec<Arm>, String> {
     let experiment = args.get("experiment")?;
     let arms: Vec<Arm> = match args.values.get("arms") {
@@ -126,6 +135,9 @@ fn arms_of(args: &Args) -> Result<Vec<Arm>, String> {
 }
 
 /// `arm<TAB>lr` lines; lines starting with `#` or the header `arm` are skipped.
+/// Blank lines are skipped and later entries replace earlier rates for an arm.
+/// Returns an error for file I/O or a missing or unparseable rate; parsed rates
+/// are not checked for positivity or finiteness.
 fn learning_rates(path: &str) -> Result<BTreeMap<String, f64>, String> {
     let text = std::fs::read_to_string(path).map_err(|error| format!("{path}: {error}"))?;
     let mut rates = BTreeMap::new();
@@ -144,6 +156,7 @@ fn learning_rates(path: &str) -> Result<BTreeMap<String, f64>, String> {
     Ok(rates)
 }
 
+/// Report the arm's elapsed milliseconds per training step to stderr.
 fn timing(phase: &str, arm: &Arm, trained: &train::Trained) {
     eprintln!(
         "timing phase={phase} arm={} ms_per_step={:.3}",
@@ -151,6 +164,8 @@ fn timing(phase: &str, arm: &Arm, trained: &train::Trained) {
     );
 }
 
+/// Train the full arm and emit metadata and validation rows, without test scoring.
+/// Returns false for any non-finite training loss, or an argument or data error.
 fn calibrate(args: &Args) -> Result<bool, String> {
     let data = load(args)?;
     let d_model = args.number_or("d-model", DEFAULT_D_MODEL)?;
@@ -178,6 +193,9 @@ fn calibrate(args: &Args) -> Result<bool, String> {
     Ok(!trained.nan)
 }
 
+/// Train selected arms at one rate with salted seeds and emit validation scores.
+/// Returns argument, arm-selection, or data errors. Non-finite training losses
+/// appear in the rows; the phase still returns true when all arms finish.
 fn sweep(args: &Args) -> Result<bool, String> {
     let data = load(args)?;
     let d_model = args.number_or("d-model", DEFAULT_D_MODEL)?;
@@ -216,6 +234,9 @@ fn sweep(args: &Args) -> Result<bool, String> {
     Ok(true)
 }
 
+/// Train selected arms at their file-provided rates and emit validation and test results.
+/// Returns false if any training loss is non-finite. Argument, data, arm-selection,
+/// and rate-file errors propagate, including a missing rate for a selected arm.
 fn eval(args: &Args) -> Result<bool, String> {
     let data = load(args)?;
     let d_model = args.number_or("d-model", DEFAULT_D_MODEL)?;
@@ -405,6 +426,7 @@ fn self_test(args: &Args) -> Result<bool, String> {
     Ok(true)
 }
 
+/// Dispatch the study phase; exit 2 on a returned error or 3 on a false phase result.
 fn main() {
     let result = Args::parse().and_then(|args| match args.get("phase")? {
         "list-arms" => {
