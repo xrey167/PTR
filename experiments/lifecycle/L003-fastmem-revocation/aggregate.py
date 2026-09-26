@@ -68,6 +68,8 @@ SCOPE = (
 )
 LIMITATIONS = [
     "one PostgreSQL 18 server on loopback; one process per memory, as the design has it",
+    "the server's durability settings are part of each seed's server string; a session kill or "
+    "a dropped client cannot lose a committed transaction whatever they are",
     "memory shapes up to 4 heads of 12x12 and journals up to a few hundred writes",
     "an input's digest is fixed per generation: an input edit at an unchanged generation is the consumer's to exclude and is not exercised",
     "exact revocation only: copies in dead tuples, WAL and backups are storage erasure, audited separately",

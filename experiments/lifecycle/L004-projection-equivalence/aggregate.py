@@ -63,6 +63,8 @@ SCOPE = (
 )
 LIMITATIONS = [
     "one PostgreSQL 18 server with pgvector 0.8 on loopback; 16 and 17 are supported but not run here",
+    "timings come from one shared cloud container with the seeds run one after another; the "
+    "server's durability settings are part of each seed's server string; not a capacity claim",
     "logs of 40-160 records per case plus one long replay per seed; no multi-million-commit ledger",
     "crashes are session terminations and dropped clients; no power loss, torn page or storage fault",
     "readers are not run concurrently with the projector; the fence semantics are covered by the ptr-pg tests",

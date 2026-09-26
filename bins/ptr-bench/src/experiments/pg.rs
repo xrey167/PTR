@@ -213,11 +213,17 @@ pub async fn raw_client() -> Client {
     client
 }
 
-/// The server's version string, recorded with every result.
+/// The server's version and the settings a timing or a durability claim
+/// depends on, recorded with every result: a run against a server with
+/// `fsync` off measures no flush cost. A session kill or a dropped client
+/// cannot lose a committed transaction whatever these say.
 pub async fn server_version(raw: &Client) -> String {
     raw.query_one(
         "SELECT current_setting('server_version') || ' / pgvector ' || \
-         coalesce((SELECT extversion FROM pg_extension WHERE extname = 'vector'), 'none')",
+         coalesce((SELECT extversion FROM pg_extension WHERE extname = 'vector'), 'none') || \
+         ' / fsync=' || current_setting('fsync') || \
+         ' synchronous_commit=' || current_setting('synchronous_commit') || \
+         ' full_page_writes=' || current_setting('full_page_writes')",
         &[],
     )
     .await
