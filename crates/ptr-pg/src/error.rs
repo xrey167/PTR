@@ -79,6 +79,19 @@ pub enum PgError {
         memory: String,
         reason: &'static str,
     },
+    /// A sealed branch was refused before any row was written: its touched
+    /// keys and the input-set digests recorded for them name different keys,
+    /// so a stored copy could not be loaded exactly as it was sealed.
+    InvalidBranch {
+        branch: String,
+        reason: &'static str,
+    },
+    /// A stored branch was sealed before the input set of each touched key was
+    /// recorded (its `branch_touched` row has no `inputs_digest`).
+    /// Certification could not tell whether a touched derived key was rewired
+    /// to other inputs, so the branch cannot be certified and must be re-run
+    /// on a current snapshot.
+    BranchWithoutInputSets { branch: String, key: String },
     /// A string contains NUL, which a PostgreSQL `text` value cannot hold.
     InvalidText { field: &'static str },
     /// The database refused a statement.
@@ -112,6 +125,8 @@ impl PgError {
             Self::InvalidMemory { .. } => "PTR_PG_INVALID_MEMORY",
             Self::InvalidWrite { .. } => "PTR_PG_INVALID_WRITE",
             Self::InvalidCheckpoint { .. } => "PTR_PG_INVALID_CHECKPOINT",
+            Self::InvalidBranch { .. } => "PTR_PG_INVALID_BRANCH",
+            Self::BranchWithoutInputSets { .. } => "PTR_PG_BRANCH_WITHOUT_INPUT_SETS",
             Self::InvalidText { .. } => "PTR_PG_INVALID_TEXT",
             Self::Database { .. } => "PTR_PG_DATABASE",
             Self::Connection { .. } => "PTR_PG_CONNECTION",
@@ -183,6 +198,14 @@ impl fmt::Display for PgError {
             Self::InvalidCheckpoint { memory, reason } => {
                 write!(formatter, "fast-memory checkpoint of {memory:?} refused: {reason}")
             }
+            Self::InvalidBranch { branch, reason } => {
+                write!(formatter, "branch {branch:?} refused: {reason}")
+            }
+            Self::BranchWithoutInputSets { branch, key } => write!(
+                formatter,
+                "branch {branch:?} was sealed before the input set of touched key {key:?} \
+                 was recorded; it cannot be certified and must be re-run"
+            ),
             Self::InvalidText { field } => write!(
                 formatter,
                 "{field} contains NUL, which PostgreSQL text cannot store"

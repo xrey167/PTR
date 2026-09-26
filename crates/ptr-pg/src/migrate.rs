@@ -89,6 +89,11 @@ pub const WORK_MIGRATIONS: &[Migration] = &[
         name: "adapter_interference",
         sql: include_str!("../migrations/work/0007_adapter_interference.sql"),
     },
+    Migration {
+        version: 8,
+        name: "branch_touched_inputs",
+        sql: include_str!("../migrations/work/0008_branch_touched_inputs.sql"),
+    },
 ];
 
 impl Migration {

@@ -9,8 +9,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use ptr_analytics::{Grouping, Metric, MetricRow, MetricSpec, Window};
 use ptr_branch::{
-    AutoThreshold, BranchId, BranchOp, PolicyRecord, RangeDigest, SealedBranch, ThresholdRule,
-    TriageDecision, TriageOutcome, TriagePolicy, ValueDigest,
+    AutoThreshold, BranchId, BranchOp, InputsDigest, PolicyRecord, RangeDigest, SealedBranch,
+    ThresholdRule, TriageDecision, TriageOutcome, TriagePolicy, ValueDigest,
 };
 use ptr_fastmem::{Decay, FastMemory, FastMemoryConfig, SourceRef, WriteRequest};
 use ptr_ledger::integrity::{chain_anchors, LogAnchor};
@@ -1082,10 +1082,28 @@ fn sealed_branch(id: &str, author: &str) -> SealedBranch {
         relied: [("constraint:budget".to_owned(), Generation(3))]
             .into_iter()
             .collect(),
-        touched_base: [(
-            "order:1".to_owned(),
-            ValueDigest::of("order:1", Some(&SemanticValue::from("open"))).unwrap(),
-        )]
+        touched_base: [
+            (
+                "order:1".to_owned(),
+                ValueDigest::of("order:1", Some(&SemanticValue::from("open"))).unwrap(),
+            ),
+            (
+                "stock:widget".to_owned(),
+                ValueDigest::of("stock:widget", None).unwrap(),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+        touched_inputs: [
+            (
+                "order:1".to_owned(),
+                InputsDigest::of("order:1", ["order:2"]),
+            ),
+            (
+                "stock:widget".to_owned(),
+                InputsDigest::of("stock:widget", []),
+            ),
+        ]
         .into_iter()
         .collect(),
         ops: vec![
@@ -1137,6 +1155,94 @@ async fn a_sealed_branch_round_trips_with_every_dependency_and_op() {
         substrate.store_branch(&branch).await,
         Err(PgError::Database { ref sqlstate, .. }) if sqlstate == "23505"
     ));
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn touched_input_sets_survive_a_round_trip_and_a_branch_sealed_before_them_is_refused() {
+    let mut substrate = substrate().await;
+    let branch = sealed_branch("b1", "agent-7");
+    substrate.store_branch(&branch).await.unwrap();
+    let loaded = substrate.load_branch(&branch.id).await.unwrap().unwrap();
+    assert_eq!(loaded.touched_inputs, branch.touched_inputs);
+    // Every touched row carries its digest, the empty input set's included.
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    let stored: Vec<(String, Vec<u8>)> = raw
+        .query(
+            &format!(
+                "SELECT key, inputs_digest FROM {work}.branch_touched \
+                 WHERE branch = 'b1' ORDER BY key"
+            ),
+            &[],
+        )
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| (row.get(0), row.get(1)))
+        .collect();
+    let expected: Vec<(String, Vec<u8>)> = branch
+        .touched_inputs
+        .iter()
+        .map(|(key, digest)| (key.clone(), digest.as_bytes().to_vec()))
+        .collect();
+    assert_eq!(stored, expected);
+
+    // A touched key without an input-set digest, or an input-set digest for
+    // a key without a base digest, is refused before any row is written.
+    let mut partial = sealed_branch("b2", "agent-7");
+    partial.touched_inputs.remove("stock:widget");
+    let mut extra = sealed_branch("b3", "agent-7");
+    extra
+        .touched_inputs
+        .insert("tags:1".into(), InputsDigest::of("tags:1", []));
+    for refused in [partial, extra] {
+        let error = substrate.store_branch(&refused).await.unwrap_err();
+        assert!(
+            matches!(error, PgError::InvalidBranch { ref branch, .. } if *branch == refused.id.0),
+            "{error:?}"
+        );
+        assert_eq!(error.code(), "PTR_PG_INVALID_BRANCH");
+        assert_eq!(substrate.load_branch(&refused.id).await.unwrap(), None);
+    }
+
+    // A branch stored before input sets were recorded, as the earlier schema
+    // wrote it, cannot be certified: loading it says so rather than returning
+    // a branch certification would have to trust.
+    raw.batch_execute(&format!(
+        "INSERT INTO {work}.branch (id, author, base_revision) VALUES ('legacy', 'agent-7', 4); \
+         INSERT INTO {work}.branch_touched (branch, key, base_digest) \
+         VALUES ('legacy', 'order:1', decode(repeat('00', 32), 'hex'));"
+    ))
+    .await
+    .unwrap();
+    let error = substrate
+        .load_branch(&BranchId::from("legacy"))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error,
+        PgError::BranchWithoutInputSets {
+            branch: "legacy".into(),
+            key: "order:1".into(),
+        }
+    );
+    assert_eq!(error.code(), "PTR_PG_BRANCH_WITHOUT_INPUT_SETS");
+    assert!(error.to_string().contains("must be re-run"), "{error}");
+
+    // The column holds a whole digest or nothing.
+    let error = raw
+        .execute(
+            &format!(
+                "INSERT INTO {work}.branch_touched (branch, key, base_digest, inputs_digest) \
+                 VALUES ('legacy', 'order:2', decode(repeat('00', 32), 'hex'), \
+                         decode(repeat('00', 31), 'hex'))"
+            ),
+            &[],
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.as_db_error().unwrap().code().code(), "23514");
     substrate.drop_all().await.unwrap();
 }
 

@@ -4,7 +4,8 @@
 use std::collections::BTreeMap;
 
 use ptr_branch::{
-    BranchId, BranchOp, RangeDigest, SealedBranch, TriageDecision, TriageOutcome, ValueDigest,
+    BranchId, BranchOp, InputsDigest, RangeDigest, SealedBranch, TriageDecision, TriageOutcome,
+    ValueDigest,
 };
 use ptr_semdb::{SemanticPayload, SemanticValue};
 use ptr_types::{CommitIndex, Generation, PrincipalId, Revision, TypeId};
@@ -48,12 +49,21 @@ impl BranchOutcome {
 }
 
 impl PgSubstrate {
-    /// Store a sealed branch with every declared dependency and staged op.
+    /// Store a sealed branch with every declared dependency and staged op,
+    /// including the base value and the base input set of every touched key.
     /// A branch id is stored once; storing it again is refused by the
-    /// primary key.
+    /// primary key. A branch whose touched keys and input-set digests name
+    /// different keys is refused as [`PgError::InvalidBranch`] before any row
+    /// is written.
     pub async fn store_branch(&mut self, branch: &SealedBranch) -> Result<(), PgError> {
         let work = self.schemas.work.clone();
         check_branch_text(branch)?;
+        if !branch.touched_base.keys().eq(branch.touched_inputs.keys()) {
+            return Err(PgError::InvalidBranch {
+                branch: branch.id.0.clone(),
+                reason: "every touched key needs exactly one base digest and one input-set digest",
+            });
+        }
         let id = branch.id.0.as_str();
         let transaction = self.client.transaction().await.map_err(database)?;
         transaction
@@ -103,14 +113,24 @@ impl PgSubstrate {
                 .await
                 .map_err(database)?;
         }
-        for (key, digest) in &branch.touched_base {
+        // The key sets were checked equal above, so the maps zip key by key.
+        for ((key, digest), inputs) in branch
+            .touched_base
+            .iter()
+            .zip(branch.touched_inputs.values())
+        {
             transaction
                 .execute(
                     &format!(
-                        "INSERT INTO {work}.branch_touched (branch, key, base_digest) \
-                         VALUES ($1, $2, $3)"
+                        "INSERT INTO {work}.branch_touched (branch, key, base_digest, inputs_digest) \
+                         VALUES ($1, $2, $3, $4)"
                     ),
-                    &[&id, key, &digest.as_bytes().to_vec()],
+                    &[
+                        &id,
+                        key,
+                        &digest.as_bytes().to_vec(),
+                        &inputs.as_bytes().to_vec(),
+                    ],
                 )
                 .await
                 .map_err(database)?;
@@ -149,6 +169,12 @@ impl PgSubstrate {
     }
 
     /// Load a stored branch exactly as it was sealed.
+    ///
+    /// # Errors
+    /// Refuses a branch stored before the input sets of touched keys were
+    /// recorded as [`PgError::BranchWithoutInputSets`]: it cannot be
+    /// certified and must be re-run. A digest that is not 32 bytes is a
+    /// [`PgError::CorruptRow`].
     pub async fn load_branch(&self, id: &BranchId) -> Result<Option<SealedBranch>, PgError> {
         let work = &self.schemas.work;
         let Some(header) = self
@@ -209,17 +235,32 @@ impl PgSubstrate {
             );
         }
         let mut touched_base = BTreeMap::new();
+        let mut touched_inputs = BTreeMap::new();
         for row in self
             .client
             .query(
-                &format!("SELECT key, base_digest FROM {work}.branch_touched WHERE branch = $1"),
+                &format!(
+                    "SELECT key, base_digest, inputs_digest FROM {work}.branch_touched \
+                     WHERE branch = $1 ORDER BY key"
+                ),
                 &[&id.0],
             )
             .await
             .map_err(database)?
         {
+            let key: String = row.get(0);
+            let Some(inputs) = row.get::<_, Option<Vec<u8>>>(2) else {
+                return Err(PgError::BranchWithoutInputSets {
+                    branch: id.0.clone(),
+                    key,
+                });
+            };
+            touched_inputs.insert(
+                key.clone(),
+                InputsDigest::from_bytes(digest_from(inputs, "branch_touched")?),
+            );
             touched_base.insert(
-                row.get::<_, String>(0),
+                key,
                 ValueDigest::from_bytes(digest_from(row.get(1), "branch_touched")?),
             );
         }
@@ -260,6 +301,7 @@ impl PgSubstrate {
             scans,
             relied,
             touched_base,
+            touched_inputs,
             ops,
         }))
     }

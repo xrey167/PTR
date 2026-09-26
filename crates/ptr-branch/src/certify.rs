@@ -6,8 +6,9 @@ use ptr_semdb::{SemanticDelta, SemanticSnapshot, SemanticValue};
 use ptr_types::{Generation, Revision, Validity};
 
 use crate::branch::{BranchId, SealedBranch};
-use crate::digest::{RangeDigest, ValueDigest};
+use crate::digest::{InputsDigest, RangeDigest, ValueDigest};
 use crate::error::BranchError;
+use crate::ops::BranchOp;
 
 /// A certified branch, ready to be proposed as one ordinary semantic delta.
 ///
@@ -24,7 +25,8 @@ pub struct MergePlan {
     /// changed after the branch base.
     pub rebased: BTreeSet<String>,
     /// Digest of the branch's declared dependencies (reads, scans, relied
-    /// generations). Part of [`MergePlan::digest`].
+    /// generations) and of the input set of every key it touches. Part of
+    /// [`MergePlan::digest`].
     pub dependencies: [u8; 32],
 }
 
@@ -88,9 +90,16 @@ impl Certification {
 /// This is optimistic concurrency certification over the branch's declared
 /// dependencies: every value it read must be unchanged (value digests), every
 /// prefix it scanned must contain exactly the same keys and values (range
-/// digests), and every lifecycle target it relied on must still be live at
-/// that generation according to `validity` (answered by the lifecycle
-/// authority, for example `PtrRuntime::generation_validity`). Anything else is
+/// digests), every key it touches must declare the same input set it declared
+/// at the base (input-set digests; a touched key with no recorded input set
+/// is a conflict too), and every lifecycle target it relied on must still be
+/// live at that generation according to `validity` (answered by the lifecycle
+/// authority, for example `PtrRuntime::generation_validity`). The input-set
+/// check matters because a merge publishes a touched key's value but keeps
+/// the target's dependency set for it: a concurrent delta that rewires a
+/// derived key to other inputs while recomputing it to the same value would
+/// otherwise leave the branch's value standing under inputs it was never
+/// computed from. Anything else is
 /// refused and nothing merges; re-running the agent on the new snapshot is the
 /// only repair, because only the agent knows what else its reasoning used.
 /// Reads the agent did not declare are invisible here — the guarantee is as
@@ -136,6 +145,17 @@ where
         )?;
         if now != *digest {
             conflicts.insert(format!("{prefix}*"));
+        }
+    }
+    let touched: BTreeSet<&str> = branch
+        .ops
+        .iter()
+        .map(BranchOp::key)
+        .chain(branch.touched_inputs.keys().map(String::as_str))
+        .collect();
+    for key in touched {
+        if branch.touched_inputs.get(key) != Some(&InputsDigest::of(key, target.inputs(key))) {
+            conflicts.insert(key.to_owned());
         }
     }
     if !conflicts.is_empty() {
@@ -191,7 +211,7 @@ where
 
 fn dependency_digest(branch: &SealedBranch) -> [u8; 32] {
     let mut hasher = Sha256::new();
-    hasher.update(b"ptr-branch/dependencies/v1");
+    hasher.update(b"ptr-branch/dependencies/v2");
     hasher.update(branch.base_revision.0.to_le_bytes());
     for (key, digest) in &branch.reads {
         hasher.update((key.len() as u64).to_le_bytes());
@@ -209,6 +229,12 @@ fn dependency_digest(branch: &SealedBranch) -> [u8; 32] {
         hasher.update((target.len() as u64).to_le_bytes());
         hasher.update(target.as_bytes());
         hasher.update(generation.0.to_le_bytes());
+    }
+    hasher.update([0xfd]);
+    for (key, digest) in &branch.touched_inputs {
+        hasher.update((key.len() as u64).to_le_bytes());
+        hasher.update(key.as_bytes());
+        hasher.update(digest.as_bytes());
     }
     hasher.finalize().into()
 }

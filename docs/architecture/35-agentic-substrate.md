@@ -163,8 +163,11 @@ adapter has sources rather than a parent, a label schema has at least two classe
 triage row cites a recorded policy, a policy and its calibration set are never
 rewritten and a branch one was calibrated on cannot be deleted, only a model labeling
 function names an adapter, and interference evidence stays within `[0, 1]` and is
-never rewritten.
+never rewritten. A touched key's input-set digest is a whole digest; a branch stored
+before input sets were recorded has none, and loading it is refused because it cannot
+be certified and must be re-run.
 Covered by `a_sealed_branch_round_trips_with_every_dependency_and_op`,
+`touched_input_sets_survive_a_round_trip_and_a_branch_sealed_before_them_is_refused`,
 `triage_logs_and_outcomes_feed_the_platform_metrics`,
 `working_state_constraints_hold_in_the_database`,
 `triage_policies_record_their_calibration_and_hold_out_everything_else`,
@@ -199,16 +202,20 @@ Covered by `a_sealed_branch_round_trips_with_every_dependency_and_op`,
 A branch is a private overlay on one immutable `SemanticSnapshot`. It declares what
 its conclusions depend on: a **value digest** of every key it read (the canonical
 journal bytes `ptr_semdb::canonical_input_bytes`, the same bytes neural-state
-admission digests), a **range digest** of every prefix it scanned, and every
-**lifecycle generation** it relied on. `Put` and `Remove` are accepted only for keys
-the branch read; counter additions and set insertions and removals commute and are
-rebased onto whatever the key holds at merge time. `request:` and `pod-output:` are
-reserved to ingress.
+admission digests), a **range digest** of every prefix it scanned, an **input-set
+digest** of every key it touches (which keys its dependency entry names, the empty
+set included), and every **lifecycle generation** it relied on. `Put` and `Remove`
+are accepted only for keys the branch read; counter additions and set insertions and
+removals commute and are rebased onto whatever the key holds at merge time.
+`request:` and `pod-output:` are reserved to ingress.
 
 Certification against a newer snapshot refuses a changed read
 (`a_value_the_branch_read_that_changed_is_a_conflict_and_nothing_merges`), a phantom
-under a scanned prefix (`a_key_inserted_under_a_scanned_prefix_refuses_certification`)
-and a revoked or superseded relied-on generation
+under a scanned prefix (`a_key_inserted_under_a_scanned_prefix_refuses_certification`),
+a touched key whose input set changed even though every value it read is unchanged
+(`a_touched_key_whose_input_set_changed_conflicts_even_when_every_value_it_read_is_unchanged`):
+a merge keeps the target's dependency set, so a value must not stand under inputs it
+was not computed from; and a revoked or superseded relied-on generation
 (`a_revoked_or_superseded_relied_on_generation_refuses_certification`). Otherwise it
 returns `Clean` or `Rebased` with one `MergePlan`: an ordinary `SemanticDelta` and the
 revision it was certified against. Concurrent counter additions both survive

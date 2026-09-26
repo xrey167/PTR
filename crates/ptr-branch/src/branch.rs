@@ -4,7 +4,7 @@ use std::fmt;
 use ptr_semdb::{SemanticSnapshot, SemanticValue};
 use ptr_types::{Generation, PrincipalId, Revision};
 
-use crate::digest::{RangeDigest, ValueDigest};
+use crate::digest::{InputsDigest, RangeDigest, ValueDigest};
 use crate::error::BranchError;
 use crate::ops::BranchOp;
 
@@ -63,6 +63,11 @@ pub struct SealedBranch {
     pub relied: BTreeMap<String, Generation>,
     /// Digest of each key an operation touches, as of the base.
     pub touched_base: BTreeMap<String, ValueDigest>,
+    /// Digest of the input set each key an operation touches declared at the
+    /// base, including the digest of an empty set for a key with no inputs.
+    /// A merge keeps the target's dependency set for a touched key, so
+    /// certification requires it to be the set the branch computed against.
+    pub touched_inputs: BTreeMap<String, InputsDigest>,
     pub ops: Vec<BranchOp>,
 }
 
@@ -168,15 +173,18 @@ impl Branch {
     }
 
     /// Consume the branch and retain its operations and dependency digests
-    /// for later certification, including base values of every touched key.
+    /// for later certification, including the base value and the base input
+    /// set of every touched key.
     /// Returns `BranchError::InvalidValue` if a touched base value cannot be
     /// encoded for its digest; sealing does not certify or commit the branch.
     pub fn seal(self) -> Result<SealedBranch, BranchError> {
         let mut touched_base = BTreeMap::new();
+        let mut touched_inputs = BTreeMap::new();
         for op in &self.ops {
             let key = op.key();
             if !touched_base.contains_key(key) {
                 touched_base.insert(key.to_owned(), ValueDigest::of(key, self.base.value(key))?);
+                touched_inputs.insert(key.to_owned(), InputsDigest::of(key, self.base.inputs(key)));
             }
         }
         Ok(SealedBranch {
@@ -187,6 +195,7 @@ impl Branch {
             scans: self.scans,
             relied: self.relied,
             touched_base,
+            touched_inputs,
             ops: self.ops,
         })
     }

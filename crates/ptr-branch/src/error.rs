@@ -41,8 +41,9 @@ pub enum BranchError {
         base: Revision,
         snapshot: Revision,
     },
-    /// A value, or a prefix scanned, changed between the branch base and the
-    /// target. Keys under a changed prefix are reported as `prefix*`.
+    /// A value read, a prefix scanned, or the input set of a touched key
+    /// changed between the branch base and the target. Keys under a changed
+    /// prefix are reported as `prefix*`.
     Conflict {
         keys: BTreeSet<String>,
     },
@@ -94,7 +95,9 @@ impl fmt::Display for BranchError {
                 "snapshot revision {} is behind branch base {}",
                 snapshot.0, base.0
             ),
-            Self::Conflict { keys } => write!(formatter, "read set changed at {keys:?}"),
+            Self::Conflict { keys } => {
+                write!(formatter, "declared dependencies changed at {keys:?}")
+            }
             Self::LifecycleChanged { targets } => {
                 write!(
                     formatter,

@@ -370,6 +370,99 @@ fn writing_a_derived_key_reads_its_declared_inputs() {
 }
 
 #[test]
+fn a_touched_key_whose_input_set_changed_conflicts_even_when_every_value_it_read_is_unchanged() {
+    // Each case rewires `derived:d` concurrently while recomputing it to the
+    // value it already had: from `input:a` to `input:b`, from `input:a` to
+    // no inputs at all, and for a key with no inputs, to `input:a`. The
+    // branch computed its value against the base's inputs, and a merge would
+    // keep the target's set, so its value would stand under inputs it was
+    // never computed from.
+    let a = || BTreeSet::from(["input:a".to_owned()]);
+    let b = || BTreeSet::from(["input:b".to_owned()]);
+    for (before, after) in [(a(), b()), (a(), BTreeSet::new()), (BTreeSet::new(), a())] {
+        let mut host = SemanticHost::default();
+        let mut setup = SemanticDelta::default();
+        setup.upserts.insert("input:a".into(), text("1"));
+        setup.upserts.insert("input:b".into(), text("1"));
+        setup.upserts.insert("derived:d".into(), text("2"));
+        setup
+            .dependencies
+            .insert("derived:d".into(), before.clone());
+        host.apply_delta(setup).unwrap();
+
+        let mut work = branch(&host, "b1");
+        work.read("derived:d").unwrap();
+        work.put("derived:d", text("3")).unwrap();
+        let sealed = work.seal().unwrap();
+
+        let mut rewire = SemanticDelta::default();
+        rewire.upserts.insert("derived:d".into(), text("2"));
+        rewire
+            .dependencies
+            .insert("derived:d".into(), after.clone());
+        host.apply_delta(rewire).unwrap();
+        let target = host.snapshot();
+        assert!(target.revision > sealed.base_revision);
+        for (key, value) in [("input:a", "1"), ("input:b", "1"), ("derived:d", "2")] {
+            assert_eq!(target.get(key), Some(value));
+        }
+
+        assert_eq!(
+            certify(&sealed, &target, no_lifecycle).unwrap_err(),
+            BranchError::Conflict {
+                keys: BTreeSet::from(["derived:d".into()])
+            },
+            "{before:?} -> {after:?}"
+        );
+    }
+}
+
+#[test]
+fn a_touched_key_without_a_recorded_input_set_is_a_conflict() {
+    // A sealed branch rebuilt from storage without the input set of a touched
+    // key cannot show that the key's dependencies are unchanged.
+    let host = host_with(&[("a", text("1"))]);
+    let mut work = branch(&host, "b1");
+    work.read("a").unwrap();
+    work.put("a", text("2")).unwrap();
+    let mut sealed = work.seal().unwrap();
+    assert!(certify(&sealed, &host.snapshot(), no_lifecycle).is_ok());
+    sealed.touched_inputs.clear();
+    assert_eq!(
+        certify(&sealed, &host.snapshot(), no_lifecycle).unwrap_err(),
+        BranchError::Conflict {
+            keys: BTreeSet::from(["a".into()])
+        }
+    );
+}
+
+#[test]
+fn a_counter_addition_to_a_key_that_became_derived_is_a_conflict_not_a_rebase() {
+    let mut host = host_with(&[("input:a", text("1")), ("count", counter_value(3))]);
+    let mut work = branch(&host, "b1");
+    work.stage_commutative(BranchOp::Add {
+        key: "count".into(),
+        amount: 1,
+    })
+    .unwrap();
+    let sealed = work.seal().unwrap();
+
+    let mut rewire = SemanticDelta::default();
+    rewire.upserts.insert("count".into(), counter_value(3));
+    rewire
+        .dependencies
+        .insert("count".into(), BTreeSet::from(["input:a".to_owned()]));
+    host.apply_delta(rewire).unwrap();
+
+    assert_eq!(
+        certify(&sealed, &host.snapshot(), no_lifecycle).unwrap_err(),
+        BranchError::Conflict {
+            keys: BTreeSet::from(["count".into()])
+        }
+    );
+}
+
+#[test]
 fn a_branch_reads_its_own_staged_writes() {
     let host = host_with(&[("tags", text("x"))]);
     let mut work = branch(&host, "b1");
@@ -413,6 +506,44 @@ fn the_plan_digest_changes_with_the_delta_and_with_the_dependencies() {
     assert_eq!(base, plan_for("2", false));
     assert_ne!(base, plan_for("3", false));
     assert_ne!(base, plan_for("2", true));
+}
+
+#[test]
+fn the_plan_digest_changes_when_a_touched_key_was_computed_against_another_input_set() {
+    // Two hosts at the same revision with the same values; only the input set
+    // declared for `derived:d` differs. The branch reads every key on both,
+    // so its value digests and its delta are identical.
+    let plan_for = |input: &str| {
+        let mut host = SemanticHost::default();
+        let mut setup = SemanticDelta::default();
+        setup.upserts.insert("input:a".into(), text("1"));
+        setup.upserts.insert("input:b".into(), text("1"));
+        setup.upserts.insert("derived:d".into(), text("2"));
+        setup
+            .dependencies
+            .insert("derived:d".into(), BTreeSet::from([input.to_owned()]));
+        host.apply_delta(setup).unwrap();
+        let mut work = branch(&host, "b1");
+        for key in ["input:a", "input:b", "derived:d"] {
+            work.read(key).unwrap();
+        }
+        work.put("derived:d", text("3")).unwrap();
+        let sealed = work.seal().unwrap();
+        certify(&sealed, &host.snapshot(), no_lifecycle)
+            .unwrap()
+            .plan()
+            .clone()
+    };
+    let from_a = plan_for("input:a");
+    let from_b = plan_for("input:b");
+    assert_eq!(from_a.expected, from_b.expected);
+    assert_eq!(from_a.delta, from_b.delta);
+    assert_ne!(from_a.dependencies, from_b.dependencies);
+    assert_ne!(from_a.digest().unwrap(), from_b.digest().unwrap());
+    assert_eq!(
+        from_a.digest().unwrap(),
+        plan_for("input:a").digest().unwrap()
+    );
 }
 
 #[test]

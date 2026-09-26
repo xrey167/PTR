@@ -195,7 +195,7 @@ id = "branch-speculation"
 owner = "ptr-branch"
 status = "prototype"
 purpose = "Speculative agent branches over immutable snapshots, certified against declared dependencies and triaged by a verifier-bounded calibrated policy."
-implemented = ["BranchId", "Branch", "SealedBranch", "BranchOp", "ValueDigest", "RangeDigest", "Certification", "MergePlan", "TriagePolicy", "TriageDecision", "TriageOutcome", "AutoThreshold", "CalibrationSample", "LoggedTriage", "OffPolicyEstimate", "BranchError", "ArbiterError"]
+implemented = ["BranchId", "Branch", "SealedBranch", "BranchOp", "ValueDigest", "RangeDigest", "InputsDigest", "Certification", "MergePlan", "TriagePolicy", "TriageDecision", "TriageOutcome", "AutoThreshold", "CalibrationSample", "LoggedTriage", "OffPolicyEstimate", "BranchError", "ArbiterError"]
 open = ["BranchLease", "TypedMergeOperator registry", "PredicateDigest beyond prefixes"]
 invariants = ["a branch never writes semantic state", "a plan is committed through verified delta publication (a caller obligation until enforced by type)", "triage never moves a branch past verification"]
 
