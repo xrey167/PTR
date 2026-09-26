@@ -32,6 +32,11 @@ impl RunningMoments {
     /// Combine two independent summaries as if every value had been pushed
     /// into one.
     ///
+    /// Chan's cross term `delta^2 * n1 * n2 / n` is evaluated as
+    /// `delta * (delta * (n1 * (n2 / n)))`: the count factor is at most `n1`,
+    /// and `delta` times it is at most the larger of `n1` and the term, so no
+    /// intermediate overflows unless the term itself does.
+    ///
     /// # Errors
     /// Returns `StatsError::InvalidParameter` when the combined mean or sum
     /// of squared deviations would not be finite.
@@ -45,9 +50,8 @@ impl RunningMoments {
         let count = self.count + other.count;
         let delta = other.mean - self.mean;
         let mean = self.mean + delta * other.count as f64 / count as f64;
-        let m2 = self.m2
-            + other.m2
-            + delta * delta * self.count as f64 * other.count as f64 / count as f64;
+        let factor = self.count as f64 * (other.count as f64 / count as f64);
+        let m2 = self.m2 + other.m2 + delta * (delta * factor);
         Self::checked(count, mean, m2, "summary")
     }
 

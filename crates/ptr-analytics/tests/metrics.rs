@@ -333,3 +333,44 @@ fn a_moment_summary_refuses_what_would_overflow_it_and_stays_unchanged() {
     assert_eq!(moments.mean(), Some(f64::MAX));
     assert_eq!(moments.sample_variance(), Some(0.0));
 }
+
+#[test]
+fn merging_summaries_is_refused_only_when_the_merged_summary_itself_would_overflow() {
+    // Chan's cross term delta^2 * n1 * n2 / n is finite here, but the product
+    // delta^2 * n1 * n2 alone is not: 1e304 * 1e6 in the first case, and
+    // delta^2 = 2.25e308 before the division by two in the second.
+    for (left_values, right_values) in [
+        (vec![0.0; 1000], vec![1e152; 1000]),
+        (vec![0.0], vec![1.5e154]),
+    ] {
+        let mut all = RunningMoments::default();
+        let mut left = RunningMoments::default();
+        let mut right = RunningMoments::default();
+        for &value in &left_values {
+            all.push(value).unwrap();
+            left.push(value).unwrap();
+        }
+        for &value in &right_values {
+            all.push(value).unwrap();
+            right.push(value).unwrap();
+        }
+        for merged in [left.merge(&right), right.merge(&left)] {
+            let merged = merged.unwrap();
+            assert_eq!(merged.count(), all.count());
+            let (mean, expected_mean) = (merged.mean().unwrap(), all.mean().unwrap());
+            assert!(
+                (mean - expected_mean).abs() <= 1e-12 * expected_mean,
+                "{mean}"
+            );
+            let (variance, expected_variance) = (
+                merged.sample_variance().unwrap(),
+                all.sample_variance().unwrap(),
+            );
+            assert!(variance.is_finite());
+            assert!(
+                (variance - expected_variance).abs() <= 1e-9 * expected_variance,
+                "{variance} {expected_variance}"
+            );
+        }
+    }
+}
