@@ -1,7 +1,7 @@
 use ptr_analytics::{
-    brier_score, clopper_pearson_upper, expected_calibration_error, krippendorff_alpha_nominal,
-    weighted_rate, wilson_interval, Binning, Metric, MetricRow, RunningMoments, StatsError,
-    WeightedOutcome,
+    binomial_cdf, brier_score, clopper_pearson_upper, expected_calibration_error,
+    krippendorff_alpha_nominal, weighted_rate, wilson_interval, Binning, Metric, MetricRow,
+    RunningMoments, StatsError, WeightedOutcome,
 };
 
 #[test]
@@ -184,6 +184,32 @@ fn agreement_can_be_negative_and_unpaired_ratings_add_no_evidence() {
     units.extend([vec![Some(99), None], vec![None, None], vec![]]);
     assert_eq!(krippendorff_alpha_nominal(&units), Some(expected));
     assert_eq!(krippendorff_alpha_nominal(&[vec![Some(1)], vec![]]), None);
+}
+
+#[test]
+fn agreement_is_undefined_for_a_single_category_whatever_the_unit_sizes() {
+    // Four raters weight each pair by 1/3, which no binary float holds exactly.
+    let units = vec![
+        vec![Some(7); 4],
+        vec![Some(7); 3],
+        vec![Some(7); 4],
+        vec![Some(7), None],
+    ];
+    assert_eq!(krippendorff_alpha_nominal(&units), None);
+}
+
+#[test]
+fn the_clopper_pearson_bound_holds_for_a_confidence_below_one_half() {
+    // One success in two trials: P(X <= 1) = 1 - p^2, so the bound at
+    // delta = 0.9 is sqrt(0.1), below the observed rate of 0.5.
+    let bound = clopper_pearson_upper(1, 2, 0.9).unwrap();
+    assert!((bound - 0.1_f64.sqrt()).abs() < 1e-9, "{bound}");
+    assert!((binomial_cdf(1, 2, bound) - 0.9).abs() < 1e-9);
+    // Every accepted delta yields the root, above and below the observed rate.
+    for delta in [0.01, 0.25, 0.5, 0.75, 0.99] {
+        let bound = clopper_pearson_upper(3, 10, delta).unwrap();
+        assert!((binomial_cdf(3, 10, bound) - delta).abs() < 1e-9, "{delta}");
+    }
 }
 
 #[test]

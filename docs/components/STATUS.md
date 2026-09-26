@@ -5,11 +5,11 @@
 
 **Component count:** 33  
 **Maturity distribution:** `foundation`: 1, `prototype`: 20, `research-scaffold`: 1, `scaffold`: 11  
-**Rust footprint:** 129 source files · 27841 nonblank source lines · 101 integration-test files · 684 `#[test]` markers
+**Rust footprint:** 129 source files · 27841 nonblank source lines · 101 integration-test files · 686 `#[test]` markers
 
 | Component | Maturity | Rust files | LOC | Test files | Tests | Implemented items | Missing items | Experiments | Evaluations |
 |---|---:|---:|---:|---:|---:|---:|---:|---|---|
-| [ptr-analytics](../../crates/ptr-analytics/README.md) | `prototype` | 8 | 714 | 1 | 28 | 7 | 2 | F002:planned, F003:planned | analytics-mirror:open |
+| [ptr-analytics](../../crates/ptr-analytics/README.md) | `prototype` | 8 | 714 | 1 | 30 | 7 | 2 | F002:planned, F003:planned | analytics-mirror:open |
 | [ptr-branch](../../crates/ptr-branch/README.md) | `prototype` | 7 | 1481 | 3 | 48 | 10 | 4 | S003:planned, F003:planned | — |
 | [ptr-cluster](../../crates/ptr-cluster/README.md) | `prototype` | 3 | 726 | 1 | 6 | 13 | 5 | — | — |
 | [ptr-config](../../crates/ptr-config/README.md) | `prototype` | 1 | 264 | 4 | 6 | 6 | 3 | E001:planned | — |
