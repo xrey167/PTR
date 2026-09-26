@@ -215,8 +215,9 @@ revision it was certified against. Concurrent counter additions both survive
 (`two_concurrent_counter_additions_both_survive`).
 
 A plan is committed through `Runtime::apply_verified_semantic_delta`, which
-prepares the delta, hands the verifier a view of the post-state and appends only on a
-`Pass` at the required level with no hard finding
+prepares the delta, hands the verifier a view of the post-state, its values and its
+dependency sets (`a_verifier_sees_and_can_refuse_the_dependency_set_a_delta_would_install`),
+and appends only on a `Pass` at the required level with no hard finding
 (`a_certified_and_verified_branch_reaches_semantic_state_only_through_the_runtime`,
 `no_score_or_shallow_level_or_hard_finding_gets_a_delta_past_verification`). A plan
 certified before another commit is refused by the runtime's revision check

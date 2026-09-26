@@ -307,7 +307,9 @@ pub fn canonical_input_bytes(key: &str, value: &SemanticValue) -> Result<Vec<u8>
 /// Deliberately not a [`SemanticSnapshot`]: it carries no host identity and no
 /// revision, so it cannot be mistaken for published state or checked as
 /// current. It exists so a verifier can judge the exact state a commit would
-/// publish.
+/// publish: its values and the dependency sets that decide what a later change
+/// invalidates, so two deltas that publish the same values under different
+/// dependency graphs are told apart.
 #[derive(Clone, Copy, Debug)]
 pub struct PreparedView<'a> {
     state: &'a SemanticState,
@@ -329,6 +331,25 @@ impl<'a> PreparedView<'a> {
     /// Iterate prepared-state keys in ascending order, including payload keys.
     pub fn keys(&self) -> impl Iterator<Item = &'a str> {
         self.state.ground.keys().map(String::as_str)
+    }
+    /// The keys `key` is derived from in the prepared state, in ascending
+    /// order; empty for a key with no inputs. Mirrors
+    /// [`SemanticSnapshot::inputs`].
+    pub fn inputs(&self, key: &str) -> impl Iterator<Item = &'a str> {
+        self.state
+            .dependencies
+            .inputs
+            .get(key)
+            .into_iter()
+            .flatten()
+            .map(String::as_str)
+    }
+    /// Every key with a non-empty input set in the prepared state, in
+    /// ascending order. A derived key whose value is absent is included: an
+    /// evicted derivation keeps its dependency entry, so a later upsert must
+    /// still supply its inputs.
+    pub fn derived_keys(&self) -> impl Iterator<Item = &'a str> {
+        self.state.dependencies.inputs.keys().map(String::as_str)
     }
 }
 

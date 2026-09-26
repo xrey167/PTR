@@ -55,6 +55,56 @@ fn prepared_views_include_removals_invalidations_and_payloads_without_publishing
 }
 
 #[test]
+fn prepared_views_show_dependency_sets_so_equal_values_under_different_inputs_differ() {
+    let mut host = SemanticHost::default();
+    host.apply_delta(chain()).unwrap();
+    let rewire = |input: &str| {
+        // Rewiring `derived` invalidates `plan`, so both deltas recompute it.
+        let mut update = delta("derived", "two");
+        update.upserts.insert("plan".into(), "three".into());
+        update.upserts.insert("other".into(), "one".into());
+        update
+            .dependencies
+            .insert("derived".into(), [input.to_owned()].into());
+        host.prepare_delta(update).unwrap()
+    };
+    let (kept, moved) = (rewire("source"), rewire("other"));
+    let (kept, moved) = (kept.view(), moved.view());
+    // The ground state a verifier sees is identical ...
+    assert!(kept.keys().eq(moved.keys()));
+    for key in kept.keys() {
+        assert_eq!(kept.value(key), moved.value(key));
+    }
+    // ... but the dependency graph each would install is not.
+    assert_eq!(kept.inputs("derived").collect::<Vec<_>>(), vec!["source"]);
+    assert_eq!(moved.inputs("derived").collect::<Vec<_>>(), vec!["other"]);
+    assert_eq!(kept.derived_keys().collect::<Vec<_>>(), ["derived", "plan"]);
+    assert_eq!(
+        moved.derived_keys().collect::<Vec<_>>(),
+        ["derived", "plan"]
+    );
+    assert_eq!(kept.inputs("source").count(), 0);
+    assert_eq!(kept.inputs("missing").count(), 0);
+
+    // A derivation evicted by an input change keeps its dependency entry, so
+    // the view lists it although its value is absent; removing a key drops
+    // its own entry.
+    let mut update = SemanticDelta::default();
+    update.removals.insert("source".into());
+    let prepared = host.prepare_delta(update).unwrap();
+    let view = prepared.view();
+    assert_eq!(view.value("derived"), None);
+    assert_eq!(view.value("plan"), None);
+    assert_eq!(view.derived_keys().collect::<Vec<_>>(), ["derived", "plan"]);
+    assert_eq!(view.inputs("plan").collect::<Vec<_>>(), vec!["derived"]);
+    let mut update = SemanticDelta::default();
+    update.removals.insert("derived".into());
+    let prepared = host.prepare_delta(update).unwrap();
+    assert_eq!(prepared.view().derived_keys().collect::<Vec<_>>(), ["plan"]);
+    assert_eq!(prepared.view().inputs("derived").count(), 0);
+}
+
+#[test]
 fn canonical_inputs_round_trip_with_the_key_type_source_and_binary_bytes() {
     let payload = SemanticPayload {
         type_id: TypeId::from("binary"),

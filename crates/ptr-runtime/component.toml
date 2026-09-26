@@ -1,7 +1,7 @@
 version = 1
 id = "ptr-runtime"
 maturity = "prototype"
-last_reviewed = "2026-09-25"
+last_reviewed = "2026-09-26"
 implemented = [
   "bind_checkpoint resolves the slot encoding an artifact records and refuses a definition this build has no implementation of, because weights trained on vectors it cannot recompute are weights it cannot feed; the encoding is deliberately not part of a StateDeclaration, which says which committed facts a state came from rather than how an artifact was constructed",
 
@@ -49,7 +49,7 @@ implemented = [
   "Reference InferenceBackend request loop runs against a revisioned ModelRequest and emits completion event",
   "Typed model→PodRegistry→Pod→Verifier→SemDB observation loop for Pure/Read cognitive Pods",
   "Bounded multi-step model resume loop after verified Pod observations advances semantic revision before continuation",
-  "apply_verified_semantic_delta prepares a delta, hands the verifier a view of the post-state and appends only on a Pass at the required level with no hard finding; a refusal writes nothing and names status, level and finding count",
+  "apply_verified_semantic_delta prepares a delta, hands the verifier a view of the post-state's values and dependency sets and appends only on a Pass at the required level with no hard finding; a refusal writes nothing and names status, level and finding count",
   "generation_validity combines the tombstone set with generation equality, so a revoked generation that is still the live one reads as Revoked rather than Live",
   "Neural-state input digests are computed from ptr-semdb canonical_input_bytes, byte-identical to the previous encoding (committed fixtures unchanged)",
 ]

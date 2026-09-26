@@ -263,6 +263,70 @@ fn a_verified_delta_commits_the_state_its_verifier_saw() {
 }
 
 #[test]
+fn a_verifier_sees_and_can_refuse_the_dependency_set_a_delta_would_install() {
+    let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+    let mut setup = delta("rate:a", "0.19");
+    setup.upserts.insert("rate:b".into(), "0.19".into());
+    let base = runtime.revision();
+    runtime
+        .apply_verified_semantic_delta(base, setup, RequiredVerification::Deterministic, |_| {
+            report(
+                VerificationStatus::Pass,
+                VerificationLevel::Deterministic,
+                false,
+            )
+        })
+        .unwrap();
+    // Both deltas publish the same value; only the declared input differs.
+    let derive = |input: &str| {
+        let mut derived = delta("tax", "19");
+        derived
+            .dependencies
+            .insert("tax".into(), [input.to_owned()].into());
+        derived
+    };
+    // A verifier that admits `tax` only as derived from `rate:a`.
+    let verify = |view: &ptr_semdb::PreparedView<'_>| {
+        let declared = view.derived_keys().collect::<Vec<_>>() == ["tax"]
+            && view.inputs("tax").collect::<Vec<_>>() == ["rate:a"];
+        let status = if declared {
+            VerificationStatus::Pass
+        } else {
+            VerificationStatus::Fail
+        };
+        report(status, VerificationLevel::Deterministic, false)
+    };
+    let revision = runtime.revision();
+    let events = runtime.committed_events().len();
+    assert!(matches!(
+        runtime.apply_verified_semantic_delta(
+            revision,
+            derive("rate:b"),
+            RequiredVerification::Deterministic,
+            verify
+        ),
+        Err(RuntimeError::DeltaVerificationRejected {
+            status: VerificationStatus::Fail,
+            ..
+        })
+    ));
+    assert_eq!(runtime.revision(), revision);
+    assert_eq!(runtime.committed_events().len(), events);
+    assert_eq!(runtime.snapshot().get("tax"), None);
+    runtime
+        .apply_verified_semantic_delta(
+            revision,
+            derive("rate:a"),
+            RequiredVerification::Deterministic,
+            verify,
+        )
+        .unwrap();
+    let snapshot = runtime.snapshot();
+    assert_eq!(snapshot.get("tax"), Some("19"));
+    assert_eq!(snapshot.inputs("tax").collect::<Vec<_>>(), ["rate:a"]);
+}
+
+#[test]
 fn no_score_or_shallow_level_or_hard_finding_gets_a_delta_past_verification() {
     let refusals = [
         report(

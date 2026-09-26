@@ -87,8 +87,10 @@ impl PtrRuntime {
     /// branch, a human-approved plan — where no score may stand in for
     /// verification: a delta whose report is not `Pass`, is below `required`,
     /// or carries a hard finding is refused before any byte is appended. The
-    /// verifier sees a [`PreparedView`], which cannot be mistaken for a
-    /// published snapshot. A validated no-op is returned without appending,
+    /// verifier sees a [`PreparedView`] of the values and the dependency sets
+    /// the delta would publish, which cannot be mistaken for a published
+    /// snapshot, so it can refuse an undeclared or inappropriate dependency as
+    /// well as a wrong value. A validated no-op is returned without appending,
     /// but only after it too has passed verification.
     ///
     /// Returns the published revision and affected keys, with no commit index
