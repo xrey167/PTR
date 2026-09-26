@@ -1,6 +1,6 @@
 use sha2::{Digest, Sha256};
 
-use crate::config::{MAX_HEADS, MAX_HEAD_DIM, MAX_STATE_CELLS};
+use crate::config::{MAX_EMBEDDING_DIM, MAX_HEADS, MAX_HEAD_DIM};
 use crate::error::FastMemoryError;
 
 /// A fixed linear map from an embedding space into per-head key or value
@@ -35,46 +35,16 @@ impl SeededProjection {
     /// Draw the projection. `head_dim` may not exceed `input_dim`, because more
     /// orthonormal rows than input dimensions do not exist.
     ///
-    /// The rows are `heads * head_dim * input_dim` `f32` cells, at most
-    /// [`MAX_STATE_CELLS`]. The product is computed with checked arithmetic and
-    /// refused before anything is allocated, so no spec overflows, wraps or
-    /// requests an unbounded allocation.
+    /// The rows are `heads * head_dim` rows of `input_dim` `f32` cells: at
+    /// most `MAX_HEADS * MAX_HEAD_DIM` rows, the longest key or value vector a
+    /// configuration admits, from an embedding at most [`MAX_EMBEDDING_DIM`]
+    /// wide. Both are checked, the row count with checked arithmetic, before
+    /// anything is allocated, so no spec overflows, wraps or requests more
+    /// than 512 Mi cells, and every memory `check_config` accepts has a key
+    /// and a value projection from every embedding width up to
+    /// [`MAX_EMBEDDING_DIM`] that is at least its head width.
     pub fn new(spec: ProjectionSpec) -> Result<Self, FastMemoryError> {
-        if spec.input_dim == 0 || spec.heads == 0 || spec.head_dim == 0 {
-            return Err(FastMemoryError::InvalidConfig {
-                field: "projection",
-                value: 0,
-                message: "projection dimensions must be positive",
-            });
-        }
-        if spec.head_dim > spec.input_dim {
-            return Err(FastMemoryError::InvalidConfig {
-                field: "head_dim",
-                value: spec.head_dim as u64,
-                message: "a head cannot have more orthonormal rows than input dimensions",
-            });
-        }
-        let cells = spec
-            .heads
-            .checked_mul(spec.head_dim)
-            .and_then(|rows| rows.checked_mul(spec.input_dim));
-        let cells = match cells {
-            Some(cells) if cells <= MAX_STATE_CELLS => cells,
-            Some(cells) => {
-                return Err(FastMemoryError::InvalidConfig {
-                    field: "projection_cells",
-                    value: cells as u64,
-                    message: "projection exceeds the 64 MiB bound on f32 cells",
-                })
-            }
-            None => {
-                return Err(FastMemoryError::InvalidConfig {
-                    field: "projection_cells",
-                    value: u64::MAX,
-                    message: "projection size overflows",
-                })
-            }
-        };
+        let cells = check_spec(&spec)?;
         let mut source = SplitMix64(spec.seed);
         let mut rows = Vec::with_capacity(cells);
         for _ in 0..spec.heads {
@@ -235,6 +205,52 @@ impl IdentifierCodebook {
     }
 }
 
+/// Refuse a spec [`SeededProjection::new`] cannot draw, before anything is
+/// allocated, and return its number of `f32` cells.
+fn check_spec(spec: &ProjectionSpec) -> Result<usize, FastMemoryError> {
+    if spec.input_dim == 0 || spec.heads == 0 || spec.head_dim == 0 {
+        return Err(FastMemoryError::InvalidConfig {
+            field: "projection",
+            value: 0,
+            message: "projection dimensions must be positive",
+        });
+    }
+    if spec.head_dim > spec.input_dim {
+        return Err(FastMemoryError::InvalidConfig {
+            field: "head_dim",
+            value: spec.head_dim as u64,
+            message: "a head cannot have more orthonormal rows than input dimensions",
+        });
+    }
+    if spec.input_dim > MAX_EMBEDDING_DIM {
+        return Err(FastMemoryError::InvalidConfig {
+            field: "input_dim",
+            value: spec.input_dim as u64,
+            message: "embedding is wider than MAX_EMBEDDING_DIM",
+        });
+    }
+    let rows = match spec.heads.checked_mul(spec.head_dim) {
+        Some(rows) if rows <= MAX_HEADS * MAX_HEAD_DIM => rows,
+        Some(rows) => {
+            return Err(FastMemoryError::InvalidConfig {
+                field: "projection_rows",
+                value: rows as u64,
+                message: "projection has more rows than the longest key or value vector",
+            })
+        }
+        None => {
+            return Err(FastMemoryError::InvalidConfig {
+                field: "projection_rows",
+                value: u64::MAX,
+                message: "projection size overflows",
+            })
+        }
+    };
+    // At most 2^16 rows of 2^13 cells: 2^29 fits a 32-bit usize, which
+    // MAX_STATE_CELLS already needs.
+    Ok(rows * spec.input_dim)
+}
+
 fn dot64(left: &[f64], right: &[f64]) -> f64 {
     left.iter().zip(right).map(|(l, r)| l * r).sum()
 }
@@ -310,38 +326,105 @@ mod tests {
     }
 
     #[test]
-    fn a_projection_whose_cell_count_overflows_or_exceeds_the_bound_is_refused_before_allocating() {
-        // The capacity product used to be unchecked: this spec panicked on
-        // overflow in debug builds and wrapped in release builds.
-        assert_eq!(
+    fn a_projection_wider_than_any_embedding_or_longer_than_any_key_is_refused_before_allocating() {
+        let refused = |input_dim, heads, head_dim| {
             SeededProjection::new(ProjectionSpec {
-                input_dim: 2,
-                heads: usize::MAX,
-                head_dim: 2,
+                input_dim,
+                heads,
+                head_dim,
                 seed: 1,
             })
-            .unwrap_err(),
+            .unwrap_err()
+        };
+        // The row product is checked: this spec used to panic on overflow in
+        // debug builds and wrap in release builds.
+        assert_eq!(
+            refused(2, usize::MAX, 2),
             FastMemoryError::InvalidConfig {
-                field: "projection_cells",
+                field: "projection_rows",
                 value: u64::MAX,
                 message: "projection size overflows",
             }
         );
-        // Representable, but one cell beyond the bound.
+        // One head more than any memory has, at the widest head.
         assert_eq!(
-            SeededProjection::new(ProjectionSpec {
-                input_dim: MAX_STATE_CELLS + 1,
-                heads: 1,
-                head_dim: 1,
-                seed: 1,
-            })
-            .unwrap_err(),
+            refused(MAX_HEAD_DIM, MAX_HEADS + 1, MAX_HEAD_DIM),
             FastMemoryError::InvalidConfig {
-                field: "projection_cells",
-                value: (MAX_STATE_CELLS + 1) as u64,
-                message: "projection exceeds the 64 MiB bound on f32 cells",
+                field: "projection_rows",
+                value: ((MAX_HEADS + 1) * MAX_HEAD_DIM) as u64,
+                message: "projection has more rows than the longest key or value vector",
             }
         );
+        // One coordinate wider than the widest supported embedding.
+        assert_eq!(
+            refused(MAX_EMBEDDING_DIM + 1, 1, 1),
+            FastMemoryError::InvalidConfig {
+                field: "input_dim",
+                value: (MAX_EMBEDDING_DIM + 1) as u64,
+                message: "embedding is wider than MAX_EMBEDDING_DIM",
+            }
+        );
+    }
+
+    #[test]
+    fn every_admitted_memory_has_key_and_value_projections_from_every_supported_width() {
+        // Every head count and head width from one to the largest, including
+        // shapes whose state is exactly MAX_STATE_CELLS; the projection of
+        // keys 1024 wide into 64 heads alone has four times as many cells.
+        let sizes = [1, 2, 64, 128, 256, 1024];
+        let widths = [1, 64, 384, 768, 1024, 1536, 3072, 4096, MAX_EMBEDDING_DIM];
+        let mut checked = 0;
+        for heads in [1, 8, MAX_HEADS] {
+            for key_dim in sizes {
+                for value_dim in sizes {
+                    let config = crate::FastMemoryConfig {
+                        heads,
+                        key_dim,
+                        value_dim,
+                        checkpoint_interval: 1,
+                        max_writes: 1,
+                    };
+                    if crate::check_config(&config).is_err() {
+                        continue;
+                    }
+                    for head_dim in [key_dim, value_dim] {
+                        for input_dim in widths.into_iter().filter(|&width| width >= head_dim) {
+                            let spec = ProjectionSpec {
+                                input_dim,
+                                heads,
+                                head_dim,
+                                seed: 1,
+                            };
+                            assert_eq!(
+                                check_spec(&spec),
+                                Ok(heads * head_dim * input_dim),
+                                "{config:?} {spec:?}"
+                            );
+                            checked += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 500, "{checked}");
+    }
+
+    #[test]
+    fn a_projection_with_more_cells_than_a_state_is_drawn() {
+        // 2,049 one-row heads from the widest embedding: 16 Mi + 8 Ki cells,
+        // more than a state may hold, and cheap to draw because a head of one
+        // row is only normalised.
+        let spec = ProjectionSpec {
+            input_dim: MAX_EMBEDDING_DIM,
+            heads: 2049,
+            head_dim: 1,
+            seed: 5,
+        };
+        let projection = SeededProjection::new(spec).unwrap();
+        assert!(projection.rows.len() > crate::MAX_STATE_CELLS);
+        assert_eq!(projection.output_len(), 2049);
+        let embedding = vec![1.0; MAX_EMBEDDING_DIM];
+        assert_eq!(projection.project(&embedding).unwrap().len(), 2049);
     }
 
     #[test]

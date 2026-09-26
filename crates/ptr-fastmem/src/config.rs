@@ -6,9 +6,18 @@ pub const MAX_HEADS: usize = 64;
 pub const MAX_HEAD_DIM: usize = 1024;
 /// Largest supported state, in `f32` cells. 16 Mi cells are 64 MiB, the same
 /// bound `ptr-runtime` places on an opaque neural-state payload, so a state this
-/// crate accepts is always one the admission layer can seal. A
-/// [`crate::SeededProjection`]'s rows are held to the same number of cells.
+/// crate accepts is always one the admission layer can seal.
 pub const MAX_STATE_CELLS: usize = 16 * 1024 * 1024;
+/// Widest embedding a [`crate::SeededProjection`] maps from: 8,192
+/// coordinates, twice the 4,096 of the widest embedding models in common use.
+///
+/// A projection is never sealed as a state, only its digest is bound, so it is
+/// not held to [`MAX_STATE_CELLS`]. It has at most `MAX_HEADS * MAX_HEAD_DIM`
+/// rows (the longest key or value vector a configuration admits) of at most
+/// this many cells, so every memory [`check_config`] accepts has a key and a
+/// value projection from every embedding width up to this one that is at
+/// least its head width.
+pub const MAX_EMBEDDING_DIM: usize = 8192;
 /// Largest supported distance between two checkpoints, in writes.
 pub const MAX_CHECKPOINT_INTERVAL: u32 = 1_000_000;
 /// Largest supported journal. A memory's state depends on every write in its
