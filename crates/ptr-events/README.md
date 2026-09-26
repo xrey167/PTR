@@ -10,7 +10,7 @@
 
 **Maturity:** `scaffold`  
 **Last reviewed:** 2026-09-25  
-**Code footprint:** 2 Rust source files · 211 nonblank source lines · 2 integration-test files · 4 `#[test]` markers
+**Code footprint:** 2 Rust source files · 226 nonblank source lines · 2 integration-test files · 7 `#[test]` markers
 
 ### Implemented now
 
