@@ -869,7 +869,15 @@ stale since fd25359, as each experiment's `results/STALE.toml` records until bot
 integrating this revision: `scripts/check_research_gates.py` fails CI on a completed experiment whose
 archived `run.json` or `mutations.json` ran at code, aggregation scripts or mutation plan HEAD has changed
 without such a marker naming them and the first change (`test_results_of_other_code_fail_without_a_marker`,
-`test_a_dishonest_or_incomplete_marker_is_refused`), and on a marker beside current results.
+`test_a_dishonest_or_incomplete_marker_is_refused`), and on a marker beside current results. A marker names
+a commit at which every stale file has the code it ran, so seed records and a mutation check run at
+different commits with the same code are covered by one marker
+(`test_a_marker_may_name_any_commit_where_every_stale_file_has_the_code_it_ran`,
+`test_a_marker_refuses_a_commit_where_a_stale_file_had_other_code`). The first change is one that descends
+from the results: a base-branch commit merged in never counts, and the merge that brings its change to the
+results' line does, so one marker holds on a pull request's head, on the merge CI checks and on the base
+branch afterwards (`test_a_base_branch_commit_merged_in_does_not_move_the_first_change`,
+`test_a_change_reaching_the_results_only_through_a_merge_is_stale_since_that_merge`).
 
 Evaluations: [relational-substrate](../../evaluations/components/relational-substrate/README.md),
 [fast-weight-memory](../../evaluations/components/fast-weight-memory/README.md),

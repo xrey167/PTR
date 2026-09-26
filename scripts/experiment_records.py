@@ -38,7 +38,13 @@ aggregates only while the recorder is the one that ran it.
 
 Archived results of a completed experiment must describe HEAD's code, or carry
 a `results/STALE.toml` marker saying since when they do not
-(`staleness_errors`, run by `scripts/check_research_gates.py`).
+(`staleness_errors`, run by `scripts/check_research_gates.py`). The marker
+names a commit at which every stale file has the provenance files it ran at,
+which `run.json` and `mutations.json` share even when they ran at different
+commits, and the first commit descending from it that changed one; commits
+merged in from another line of history, such as a pull request's base
+branch, never count as that change, so one marker holds on the pull
+request's head, on the merge CI checks and on the base branch after it.
 """
 
 from __future__ import annotations
@@ -190,14 +196,25 @@ def resolve_commit(value: str, root: Path) -> str | None:
     return parsed.stdout.strip() if parsed.returncode == 0 else None
 
 
-def first_change(base: str, head: str, root: Path, paths: tuple[str, ...]) -> str | None:
-    """The earliest commit after `base` on `head`'s history that changed a
-    file under `paths`, or None when none did."""
-    listed_commits = git(root, "rev-list", "--reverse", "--topo-order", f"{base}..{head}", "--", *paths)
+def is_ancestor(ancestor: str, descendant: str, root: Path) -> bool:
+    """Whether commit `ancestor` is `descendant` or on its history."""
+    return git(root, "merge-base", "--is-ancestor", ancestor, descendant).returncode == 0
+
+
+def changes_after(base: str, head: str, root: Path, paths: tuple[str, ...]) -> list[str]:
+    """The commits that descend from `base`, are `head` or on its history, and
+    changed a file under `paths`, parents before children. Only descendants
+    of `base` count (`--ancestry-path`): a commit merged in from another line
+    of history, say the base branch of a pull request, whose merge CI checks,
+    changed files the results at `base` never ran, but it is not a change
+    after them; the merge that brings it to their line is. Raises
+    `ProvenanceError` when git cannot list them."""
+    listed_commits = git(
+        root, "rev-list", "--reverse", "--topo-order", "--ancestry-path", f"{base}..{head}", "--", *paths
+    )
     if listed_commits.returncode != 0:
         raise ProvenanceError(f"cannot list the commits after {base}: {listed_commits.stderr.strip()}")
-    commits = listed_commits.stdout.split()
-    return commits[0] if commits else None
+    return listed_commits.stdout.split()
 
 
 def listed(paths: list[str], limit: int = 5) -> str:
@@ -354,10 +371,10 @@ def staleness_errors(experiment_id: str, experiment_dir: Path, results_dir: Path
     empty when they do not. `results/run.json` and `results/mutations.json`
     are stale when HEAD's provenance files (`seed_record_paths`,
     `mutation_record_paths`) differ from those at their `git_sha`. Stale
-    results pass only with a `results/STALE.toml` marker that names them
-    (`results_git_sha`), the first commit after them that changed a
-    provenance file (`stale_since`) and a `reason`; a marker next to current
-    results is an error too, so none outlives the rerun that replaces them."""
+    results pass only with a `results/STALE.toml` marker that names them, the
+    first commit after them that changed a provenance file (`stale_since`)
+    and a `reason` (`marker_errors`); a marker next to current results is an
+    error too, so none outlives the rerun that replaces them."""
     results = relative_to_root(results_dir, root)
     errors = []
     stale: dict[str, tuple[str, tuple[str, ...], list[str]]] = {}
@@ -408,7 +425,18 @@ def marker_errors(
     root: Path,
 ) -> list[str]:
     """Why the stale marker `marker` (shown as `shown`) does not honestly
-    describe the `stale` results; empty when it does."""
+    describe the `stale` results; empty when it does.
+
+    `results_git_sha` names the results: a commit on HEAD's history at which
+    every stale file's provenance files are those at its own `git_sha`. When
+    `run.json` and `mutations.json` ran at one commit that is it; when the
+    seeds and the mutation check ran at different commits with the same
+    code, either commit (or any other with that code) is. `stale_since` is a
+    first change after it: a commit that descends from it, is HEAD or on
+    HEAD's history, and changed a provenance file of a stale result, with no
+    such change between the two. Commits that do not descend from the
+    results (a base branch's, merged in) never count; the merge that brings
+    their change to the results' line does."""
     try:
         fields = tomllib.loads(marker.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
@@ -428,16 +456,24 @@ def marker_errors(
             errors.append(f"{experiment_id}: {shown}: {key} {fields[key]!r} is not a commit")
     if errors:
         return errors
-    others = [
-        f"{name} ran at {sha}" for name, (sha, _, _) in stale.items() if resolve_commit(sha, root) != marked
-    ]
+    others = []
+    for name, (sha, name_paths, _) in stale.items():
+        differing = code_changes(sha, marked, root, name_paths)
+        if differing:
+            others.append(f"{name} ran at {sha}, whose provenance files differ there in {listed(differing)}")
     if others:
-        return [f"{experiment_id}: {shown} names results of {marked}, but " + ", ".join(others)]
+        return [f"{experiment_id}: {shown} names results of {marked}, but " + "; ".join(others)]
+    if not is_ancestor(marked, "HEAD", root):
+        return [f"{experiment_id}: {shown} names results of {marked}, which is not on HEAD's history"]
     paths: list[str] = []
     for _, name_paths, _ in stale.values():
         paths.extend(path for path in name_paths if path not in paths)
-    first = first_change(marked, "HEAD", root, tuple(paths))
-    if since != first:
+    changes = changes_after(marked, "HEAD", root, tuple(paths))
+    # A first change is one no other change after the results precedes. Two
+    # lines of history leaving the results each have their own; the marker
+    # may name either.
+    if since not in changes or changes_after(marked, since, root, tuple(paths)) != [since]:
+        first = changes[0] if changes else None
         errors.append(
             f"{experiment_id}: {shown} says stale since {since}, but the first commit after {marked} "
             f"that changed a provenance file is {first}"

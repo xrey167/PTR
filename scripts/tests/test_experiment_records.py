@@ -414,6 +414,48 @@ class StalenessTests(unittest.TestCase):
                 self.assertIn(expected, errors[0])
                 git(self.root, "reset", "-q", "--hard", second)
 
+    def test_a_marker_may_name_any_commit_where_every_stale_file_has_the_code_it_ran(self):
+        # Seeds archived one commit at a time and a mutation check run later:
+        # run.json names the earliest record's commit, mutations.json a later
+        # one with the same code. A marker naming either used to be refused
+        # for the other file, so no marker could cover them.
+        later = commit(self.root, {"experiments/L900-x/results/run-seed-1.json": "{}"}, "archive seed 1")
+        commit(
+            self.root,
+            {"experiments/L900-x/results/mutations.json": json.dumps({"git_sha": later})},
+            "mutation check",
+        )
+        self.assertEqual(self.errors(), [])
+        first = commit(self.root, {"src/lib.rs": "pub fn f() { g() }\n"}, "first change")
+        for marked in (self.code, later):
+            with self.subTest(marked=marked):
+                self.mark(results_git_sha=marked, stale_since=first)
+                self.assertEqual(self.errors(), [])
+                git(self.root, "reset", "-q", "--hard", first)
+
+    def test_a_marker_refuses_a_commit_where_a_stale_file_had_other_code(self):
+        # The mutation plan changed before the mutation check ran, so at the
+        # records' commit mutations.json's provenance differs; the seed
+        # records' provenance holds at the mutation check's commit, which the
+        # marker may name instead.
+        planned = commit(
+            self.root, {"experiments/L900-x/tests/mutations.toml": "[[mutation]]\nname = 'b'\n"}, "plan"
+        )
+        commit(
+            self.root,
+            {"experiments/L900-x/results/mutations.json": json.dumps({"git_sha": planned})},
+            "mutation check",
+        )
+        first = commit(self.root, {"src/lib.rs": "pub fn f() { g() }\n"}, "first change")
+        self.mark(results_git_sha=self.code, stale_since=first)
+        errors = self.errors()
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn(f"names results of {self.code}, but mutations.json ran at {planned}", errors[0])
+        self.assertIn("whose provenance files differ there in experiments/L900-x/tests/mutations.toml", errors[0])
+        git(self.root, "reset", "-q", "--hard", first)
+        self.mark(results_git_sha=planned, stale_since=first)
+        self.assertEqual(self.errors(), [])
+
     def test_a_marker_on_current_results_is_refused(self):
         # A rerun makes the results current; its marker must not outlive it.
         self.mark(stale_since=self.code)
@@ -426,6 +468,139 @@ class StalenessTests(unittest.TestCase):
         self.assertEqual(
             self.errors(), ["L900: experiments/L900-x/results/run.json names no commit it ran at: 'unknown'"]
         )
+
+
+class StaleMergeTests(unittest.TestCase):
+    """`staleness_errors` on merges: the results were archived on one line of
+    history, and another line (the base branch of a pull request) changed a
+    provenance file after the two diverged. CI checks the pull request's head
+    on push and a merge of it into the base branch on pull_request, and the
+    base branch after the merge."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.directory.name)
+        self.experiment = self.root / "experiments/L900-x"
+        self.results = self.experiment / "results"
+        git(self.root, "init", "-q")
+        commit(
+            self.root,
+            {
+                "Cargo.toml": "[workspace]\n",
+                "Cargo.lock": "v1\n",
+                "src/lib.rs": "pub fn f() {}\n",
+                "experiments/L900-x/aggregate.py": "HARD = ['a']\n",
+            },
+            "fork point",
+        )
+        git(self.root, "checkout", "-q", "-b", "pr")
+        self.code = commit(self.root, {"src/lib.rs": "pub fn f() { a() }\n"}, "pr code")
+        commit(
+            self.root,
+            {"experiments/L900-x/results/run.json": json.dumps({"git_sha": self.code})},
+            "archive",
+        )
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    def errors(self) -> list[str]:
+        return mod.staleness_errors("L900", self.experiment, self.results, self.root)
+
+    def mark(self, stale_since: str) -> None:
+        commit(
+            self.root,
+            {
+                "experiments/L900-x/results/STALE.toml": (
+                    f'results_git_sha = "{self.code}"\nstale_since = "{stale_since}"\nreason = "rerun pending"\n'
+                )
+            },
+            "mark",
+        )
+
+    def bump_main(self) -> str:
+        """A dependency bump on main, which never saw the results."""
+        git(self.root, "checkout", "-q", "main")
+        bump = commit(self.root, {"Cargo.lock": "v2\n"}, "bump a dependency")
+        git(self.root, "checkout", "-q", "pr")
+        return bump
+
+    def merge(self, into: str, other: str) -> str:
+        git(self.root, "checkout", "-q", into)
+        git(self.root, "-c", "user.name=t", "-c", "user.email=t@t", "merge", "-q", "--no-ff", "-m", "merge", other)
+        return git(self.root, "rev-parse", "HEAD")
+
+    def test_a_base_branch_commit_merged_in_does_not_move_the_first_change(self):
+        first = commit(self.root, {"src/lib.rs": "pub fn f() { b() }\n"}, "later code change")
+        self.mark(stale_since=first)
+        self.assertEqual(self.errors(), [])
+        self.bump_main()
+        # The pull_request merge ref and main after the merge: the bump sorts
+        # before the change in topological order but never descended from the
+        # results, so it used to be named as their first change.
+        self.merge("main", "pr")
+        self.assertEqual(self.errors(), [])
+        # The pull request merging its base in keeps its marker too.
+        self.merge("pr", "main")
+        self.assertEqual(self.errors(), [])
+
+    def test_a_change_reaching_the_results_only_through_a_merge_is_stale_since_that_merge(self):
+        bump = self.bump_main()
+        merged = self.merge("pr", "main")
+        # The bump changed the lock file the results never ran, and it reached
+        # their line of history at the merge.
+        errors = self.errors()
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("changed since, in Cargo.lock", errors[0])
+        self.mark(stale_since=bump)
+        errors = self.errors()
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn(f"says stale since {bump}, but the first commit after {self.code}", errors[0])
+        self.assertIn(f"is {merged}", errors[0])
+        git(self.root, "reset", "-q", "--hard", merged)
+        self.mark(stale_since=merged)
+        self.assertEqual(self.errors(), [])
+
+
+    def test_each_line_of_history_leaving_the_results_has_its_own_first_change(self):
+        # Two branches off the results each change the code and are merged:
+        # either change is where the results first went stale on its line,
+        # and the merge, which both precede, is not.
+        git(self.root, "checkout", "-q", "-b", "other")
+        theirs = commit(self.root, {"Cargo.lock": "v3\n"}, "other line's change")
+        git(self.root, "checkout", "-q", "pr")
+        ours = commit(self.root, {"src/lib.rs": "pub fn f() { b() }\n"}, "this line's change")
+        merged = self.merge("pr", "other")
+        for since, accepted in ((ours, True), (theirs, True), (merged, False)):
+            with self.subTest(since=since):
+                self.mark(stale_since=since)
+                errors = self.errors()
+                if accepted:
+                    self.assertEqual(errors, [])
+                else:
+                    self.assertEqual(len(errors), 1, errors)
+                    self.assertIn(f"says stale since {merged}", errors[0])
+                git(self.root, "reset", "-q", "--hard", merged)
+
+    def test_a_marker_naming_a_commit_off_heads_history_is_refused(self):
+        # main takes the same code as the results in a commit of its own: its
+        # provenance matches, but no change after it leads to HEAD.
+        git(self.root, "checkout", "-q", "main")
+        twin = commit(self.root, {"src/lib.rs": "pub fn f() { a() }\n"}, "same code on main")
+        git(self.root, "checkout", "-q", "pr")
+        first = commit(self.root, {"src/lib.rs": "pub fn f() { b() }\n"}, "later code change")
+        commit(
+            self.root,
+            {
+                "experiments/L900-x/results/STALE.toml": (
+                    f'results_git_sha = "{twin}"\nstale_since = "{first}"\nreason = "rerun pending"\n'
+                )
+            },
+            "mark",
+        )
+        errors = self.errors()
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn(f"names results of {twin}, which is not on HEAD's history", errors[0])
 
 
 class AggregatorTests(unittest.TestCase):
