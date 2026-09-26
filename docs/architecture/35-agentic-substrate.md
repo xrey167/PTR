@@ -163,8 +163,9 @@ adapter has sources rather than a parent, a label schema has at least two classe
 triage row logged since policies are recorded cites a recorded policy, a policy and
 its calibration set are never rewritten and the set is complete when the policy
 commits (a sample appended later is refused), a branch one was calibrated on cannot
-be deleted, only a model labeling function names an adapter, and interference
-evidence stays within `[0, 1]` and is never rewritten.
+be deleted, only a model labeling function names an adapter, and an adapter has at
+most one interference report, which is complete when it commits, stays within
+`[0, 1]` and is never rewritten.
 A touched key's input-set digest is a whole digest; a branch stored
 before input sets were recorded has none, and loading it is refused because it cannot
 be certified and must be re-run.
@@ -176,8 +177,9 @@ Covered by `a_sealed_branch_round_trips_with_every_dependency_and_op`,
 `a_calibration_set_is_complete_when_its_policy_commits_and_never_grows`,
 `policy_rows_that_break_a_rule_level_or_size_constraint_are_refused`,
 `a_work_schema_holding_triage_rows_upgrades_and_keeps_their_unrecorded_policies`,
-`a_labeling_function_names_an_adapter_only_as_a_model` and
-`interference_reports_are_stored_once_as_measured`.
+`a_labeling_function_names_an_adapter_only_as_a_model`,
+`interference_reports_are_stored_once_as_measured` and
+`an_empty_interference_report_or_one_for_an_unknown_adapter_stores_nothing`.
 
 ### Boundary rules
 
@@ -378,9 +380,12 @@ rank-deficient factors and can understate overlap
 lineage grows too deep or too entangled, the next step is a TIES merge of the full
 updates into one consolidated adapter
 (`consolidation_resets_depth_and_is_due_past_the_policy_limits`). The report is stored
-with the candidate, one row per layer, so a promotion or consolidation decision can be
-audited against the evidence it was made on
-(`interference_reports_are_stored_once_as_measured`).
+with the candidate, one row per layer under one header row per adapter, so a promotion
+or consolidation decision can be audited against the evidence it was made on; a second
+report for the adapter is refused rather than merged into the first, and an empty one
+is refused before anything is written
+(`interference_reports_are_stored_once_as_measured`,
+`an_empty_interference_report_or_one_for_an_unknown_adapter_stores_nothing`).
 
 Replay samples carry an FSRS-4.5 memory state updated from probe losses on the
 training clock, not wall time; priority grows with forgetting and difficulty, and

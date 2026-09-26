@@ -2621,6 +2621,9 @@ async fn interference_reports_are_stored_once_as_measured() {
     }
     // Layers come back in name order, exactly as measured.
     let report = InterferenceReport {
+        layers: vec![layer("q", 0.4, Some("a1")), layer("k", 0.1, None)],
+    };
+    let stored = InterferenceReport {
         layers: vec![layer("k", 0.1, None), layer("q", 0.4, Some("a1"))],
     };
     let adapter = AdapterId::from("a2");
@@ -2630,7 +2633,7 @@ async fn interference_reports_are_stored_once_as_measured() {
         .unwrap();
     assert_eq!(
         substrate.load_interference(&adapter).await.unwrap(),
-        Some(report.clone())
+        Some(stored.clone())
     );
     assert_eq!(
         substrate
@@ -2639,28 +2642,56 @@ async fn interference_reports_are_stored_once_as_measured() {
             .unwrap(),
         None
     );
-    // Stored once: a second report for the adapter is refused.
-    assert!(matches!(
-        substrate.record_interference(&adapter, &report).await,
-        Err(PgError::Database { ref sqlstate, .. }) if sqlstate == "23505"
-    ));
-    // An overlap outside [0, 1] refuses the whole report.
-    let impossible = InterferenceReport {
-        layers: vec![layer("k", 0.2, None), layer("v", 1.5, None)],
+    // Stored once: a second report for the adapter is refused whether it
+    // repeats, overlaps or avoids the stored layers, and never merges into
+    // the first.
+    for second in [
+        report.clone(),
+        InterferenceReport {
+            layers: vec![layer("k", 0.2, None), layer("v", 0.3, None)],
+        },
+        InterferenceReport {
+            layers: vec![layer("v", 0.3, None)],
+        },
+    ] {
+        assert!(matches!(
+            substrate.record_interference(&adapter, &second).await,
+            Err(PgError::Database { ref sqlstate, .. }) if sqlstate == "23505"
+        ));
+        assert_eq!(
+            substrate.load_interference(&adapter).await.unwrap(),
+            Some(stored.clone())
+        );
+    }
+    // Every overlap and chance level lies in [0, 1]; one layer outside it
+    // refuses the whole report.
+    let outside = |edit: fn(&mut LayerInterference)| {
+        let mut refused = layer("v", 0.2, None);
+        edit(&mut refused);
+        InterferenceReport {
+            layers: vec![layer("k", 0.2, None), refused],
+        }
     };
-    assert!(matches!(
-        substrate
-            .record_interference(&AdapterId::from("a3"), &impossible)
-            .await,
-        Err(PgError::Database { ref sqlstate, .. }) if sqlstate == "23514"
-    ));
-    assert_eq!(
-        substrate
-            .load_interference(&AdapterId::from("a3"))
-            .await
-            .unwrap(),
-        None
-    );
+    for impossible in [
+        outside(|layer| layer.output_overlap = 1.5),
+        outside(|layer| layer.input_overlap = -0.25),
+        outside(|layer| layer.output_chance = f64::NAN),
+        outside(|layer| layer.input_chance = 1.5),
+    ] {
+        assert!(matches!(
+            substrate
+                .record_interference(&AdapterId::from("a3"), &impossible)
+                .await,
+            Err(PgError::Database { ref sqlstate, .. }) if sqlstate == "23514"
+        ));
+        assert_eq!(
+            substrate
+                .load_interference(&AdapterId::from("a3"))
+                .await
+                .unwrap(),
+            None
+        );
+    }
     // The worst overlap names another catalogued adapter.
     for (worst, code) in [("a3", "23514"), ("no-such-adapter", "23503")] {
         let naming = InterferenceReport {
@@ -2673,15 +2704,126 @@ async fn interference_reports_are_stored_once_as_measured() {
             Err(PgError::Database { ref sqlstate, .. }) if sqlstate == code
         ));
     }
+    // A layer appended to a stored report in a later transaction is refused
+    // when it commits, and a report whose layer rows do not match its layer
+    // count cannot commit.
     let error = raw
         .execute(
             &format!(
-                "UPDATE {work}.adapter_interference SET output_overlap = 0 WHERE adapter = 'a2'"
+                "INSERT INTO {work}.adapter_interference \
+                 (adapter, layer, output_overlap, input_overlap, output_chance, input_chance) \
+                 VALUES ('a2', 'v', 0.1, 0.1, 0.1, 0.1)"
             ),
             &[],
         )
         .await
         .unwrap_err();
     assert_eq!(error.as_db_error().unwrap().code().code(), "23000");
+    let error = raw
+        .batch_execute(&format!(
+            "BEGIN; \
+             INSERT INTO {work}.adapter_interference_report (adapter, layer_count) \
+             VALUES ('a3', 2); \
+             INSERT INTO {work}.adapter_interference \
+             (adapter, layer, output_overlap, input_overlap, output_chance, input_chance) \
+             VALUES ('a3', 'k', 0.1, 0.1, 0.1, 0.1); \
+             COMMIT;"
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(error.as_db_error().unwrap().code().code(), "23000");
+    assert_eq!(
+        substrate
+            .load_interference(&AdapterId::from("a3"))
+            .await
+            .unwrap(),
+        None
+    );
+    // Neither a report nor any of its layers is ever updated or deleted.
+    for statement in [
+        format!("UPDATE {work}.adapter_interference SET output_overlap = 0 WHERE adapter = 'a2'"),
+        format!("DELETE FROM {work}.adapter_interference WHERE adapter = 'a2'"),
+        format!(
+            "UPDATE {work}.adapter_interference_report SET recorded_at = now() \
+             WHERE adapter = 'a2'"
+        ),
+        format!("DELETE FROM {work}.adapter_interference_report WHERE adapter = 'a2'"),
+    ] {
+        let error = raw.execute(&statement, &[]).await.unwrap_err();
+        assert_eq!(
+            error.as_db_error().unwrap().code().code(),
+            "23000",
+            "{statement}"
+        );
+    }
+    // A report that no longer has its recorded layer count (here past a
+    // disabled check) is refused on load rather than returned.
+    raw.batch_execute(&format!(
+        "ALTER TABLE {work}.adapter_interference \
+             DISABLE TRIGGER adapter_interference_layer_count; \
+         INSERT INTO {work}.adapter_interference \
+             (adapter, layer, output_overlap, input_overlap, output_chance, input_chance) \
+             VALUES ('a2', 'v', 0.1, 0.1, 0.1, 0.1); \
+         ALTER TABLE {work}.adapter_interference \
+             ENABLE TRIGGER adapter_interference_layer_count;"
+    ))
+    .await
+    .unwrap();
+    assert!(matches!(
+        substrate.load_interference(&adapter).await,
+        Err(PgError::CorruptRow {
+            table: "adapter_interference",
+            ..
+        })
+    ));
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn an_empty_interference_report_or_one_for_an_unknown_adapter_stores_nothing() {
+    let mut substrate = substrate().await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    insert_adapter(&raw, &work, "a1").await;
+    let adapter = AdapterId::from("a1");
+    // An empty report is refused before anything is written, so it neither
+    // claims the adapter's one report nor loads back as evidence.
+    let error = substrate
+        .record_interference(&adapter, &InterferenceReport { layers: vec![] })
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        PgError::InvalidInterference { adapter: ref refused, .. } if refused == "a1"
+    ));
+    assert_eq!(error.code(), "PTR_PG_INVALID_INTERFERENCE");
+    let headers: i64 = raw
+        .query_one(
+            &format!("SELECT count(*) FROM {work}.adapter_interference_report"),
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(headers, 0);
+    assert_eq!(substrate.load_interference(&adapter).await.unwrap(), None);
+    let report = InterferenceReport {
+        layers: vec![layer("k", 0.1, None)],
+    };
+    substrate
+        .record_interference(&adapter, &report)
+        .await
+        .unwrap();
+    assert_eq!(
+        substrate.load_interference(&adapter).await.unwrap(),
+        Some(report.clone())
+    );
+    // An adapter the catalog does not know gets no report.
+    let ghost = AdapterId::from("ghost");
+    assert!(matches!(
+        substrate.record_interference(&ghost, &report).await,
+        Err(PgError::Database { ref sqlstate, .. }) if sqlstate == "23503"
+    ));
+    assert_eq!(substrate.load_interference(&ghost).await.unwrap(), None);
     substrate.drop_all().await.unwrap();
 }

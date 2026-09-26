@@ -88,6 +88,13 @@ pub enum PgError {
         branch: String,
         reason: &'static str,
     },
+    /// An interference report was refused before any row was written: it
+    /// has no layer (storing it would record no evidence while claiming the
+    /// adapter's one report) or more layers than the table can count.
+    InvalidInterference {
+        adapter: String,
+        reason: &'static str,
+    },
     /// A stored branch was sealed before the input set of each touched key was
     /// recorded (its `branch_touched` row has no `inputs_digest`).
     /// Certification could not tell whether a touched derived key was rewired
@@ -128,6 +135,7 @@ impl PgError {
             Self::InvalidWrite { .. } => "PTR_PG_INVALID_WRITE",
             Self::InvalidCheckpoint { .. } => "PTR_PG_INVALID_CHECKPOINT",
             Self::InvalidBranch { .. } => "PTR_PG_INVALID_BRANCH",
+            Self::InvalidInterference { .. } => "PTR_PG_INVALID_INTERFERENCE",
             Self::BranchWithoutInputSets { .. } => "PTR_PG_BRANCH_WITHOUT_INPUT_SETS",
             Self::InvalidText { .. } => "PTR_PG_INVALID_TEXT",
             Self::Database { .. } => "PTR_PG_DATABASE",
@@ -202,6 +210,9 @@ impl fmt::Display for PgError {
             }
             Self::InvalidBranch { branch, reason } => {
                 write!(formatter, "branch {branch:?} refused: {reason}")
+            }
+            Self::InvalidInterference { adapter, reason } => {
+                write!(formatter, "interference report for {adapter:?} refused: {reason}")
             }
             Self::BranchWithoutInputSets { branch, key } => write!(
                 formatter,
