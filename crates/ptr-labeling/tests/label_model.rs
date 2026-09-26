@@ -429,3 +429,40 @@ fn per_function_accuracy_refuses_an_actively_sampled_or_misaligned_gold_set() {
         Err(LabelingError::Statistics { .. })
     ));
 }
+
+#[test]
+fn an_em_tolerance_outside_zero_to_one_is_refused_and_zero_waits_for_a_fixed_point() {
+    let (matrix, _) = synthetic();
+    for tolerance in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1e-12, 1.0, 5.0] {
+        let params = DawidSkeneParams {
+            tolerance,
+            ..DawidSkeneParams::default()
+        };
+        assert_eq!(
+            fit_label_model(&matrix, params).unwrap_err(),
+            LabelingError::InvalidParameter {
+                field: "tolerance",
+                message: "must lie in [0, 1)"
+            },
+            "{tolerance}"
+        );
+    }
+    // No probabilistic vote: the posteriors never move, so a zero tolerance
+    // is met on the first iteration.
+    let silent = VoteMatrix::new(
+        LabelSchema::new(["a", "b"]).unwrap(),
+        vec![function("model", FunctionKind::Model)],
+        vec![vec![Vote::Abstain]; 3],
+    )
+    .unwrap();
+    let exact = DawidSkeneParams {
+        tolerance: 0.0,
+        ..DawidSkeneParams::default()
+    };
+    let model = fit_label_model(&silent, exact).unwrap();
+    assert_eq!(model.iterations, 1);
+    assert!(!model
+        .warnings
+        .iter()
+        .any(|warning| matches!(warning, ModelWarning::NotConverged { .. })));
+}

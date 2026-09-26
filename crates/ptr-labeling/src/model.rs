@@ -7,7 +7,12 @@ use crate::votes::{FunctionKind, Vote, VoteMatrix};
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DawidSkeneParams {
     pub max_iterations: usize,
-    /// Stop when no posterior moves by more than this.
+    /// Stop when no posterior moves by more than this. It must lie in
+    /// `[0, 1)`: a posterior is a probability, so no step moves it by more
+    /// than one, and a tolerance of one or more would call every fit converged
+    /// after its first iteration. Zero stops only at an exact fixed point,
+    /// where no posterior moves at all; otherwise the fit runs to
+    /// `max_iterations` and warns that it did not converge.
     pub tolerance: f64,
     /// Additive (Dirichlet) smoothing of priors and confusion matrices, which
     /// keeps every probability positive so one vote can never zero a class.
@@ -63,6 +68,11 @@ pub struct LabelModel {
 /// identifiable only up to a permutation of classes. Correlated functions
 /// double-count evidence and make posteriors overconfident; the model cannot
 /// see that, the calibration report can.
+///
+/// # Errors
+/// Refuses zero `max_iterations`, a `tolerance` outside `[0, 1)` (including a
+/// nonfinite one), a `smoothing` that is not finite and positive, and a matrix
+/// without items.
 pub fn fit_label_model(
     matrix: &VoteMatrix,
     params: DawidSkeneParams,
@@ -71,6 +81,12 @@ pub fn fit_label_model(
         return Err(LabelingError::InvalidParameter {
             field: "max_iterations",
             message: "at least one iteration is required",
+        });
+    }
+    if !(0.0..1.0).contains(&params.tolerance) {
+        return Err(LabelingError::InvalidParameter {
+            field: "tolerance",
+            message: "must lie in [0, 1)",
         });
     }
     if !(params.smoothing.is_finite() && params.smoothing > 0.0) {
