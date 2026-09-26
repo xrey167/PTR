@@ -1,12 +1,19 @@
 version = 1
 id = "L004"
-status = "planned"
+status = "running"
 hypothesis = "Is a PostgreSQL projection rebuilt by replay always equal to the reference projection, and does it refuse every foreign or rolled-back history?"
 metrics = "state and lifecycle divergence count; foreign histories accepted; rebuild time per 100k commits"
 baseline = "ptr-state MaterializedState reference and the Turso backend"
 falsification = "Any divergence from the reference or any accepted foreign or rolled-back history is a hard failure."
 hardware_profile = "hardware/default.toml"
-entrypoint = ""
+# Turso is the third implementation the baseline names and needs the stable
+# toolchain; postgres_entrypoint runs the same harness without it on the MSRV.
+entrypoint = "cargo +stable run --release --locked -p ptr-bench --features turso-oracle -- projection-equivalence <iterations> <seed>"
+postgres_entrypoint = "cargo run --release --locked -p ptr-bench --features postgres-experiments -- projection-equivalence <iterations> <seed>"
+# The harness reads a loopback PostgreSQL 16+ server with pgvector 0.8+ from
+# this environment variable; the connection string is never recorded.
+server_environment = "PTR_PG_EXPERIMENT_DSN"
+iterations = 40
 seeds = [17, 29, 43, 71, 101]
 results_dir = "results"
 required_artifacts = ["run.json", "metrics.json"]

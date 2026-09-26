@@ -47,6 +47,7 @@ ptr-branch = { path = "crates/ptr-branch" }
 ptr-lineage = { path = "crates/ptr-lineage" }
 ptr-labeling = { path = "crates/ptr-labeling" }
 ptr-analytics = { path = "crates/ptr-analytics" }
+ptr-pg = { path = "crates/ptr-pg" }
 
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.8"

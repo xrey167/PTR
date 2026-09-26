@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-25  
-**Code footprint:** 14 Rust source files · 3452 nonblank source lines · 2 integration-test files · 23 `#[test]` markers
+**Code footprint:** 14 Rust source files · 3490 nonblank source lines · 2 integration-test files · 23 `#[test]` markers
 
 ### Implemented now
 
@@ -48,7 +48,7 @@
 
 ### Linked experiments
 
-- [L004](../../experiments/lifecycle/L004-projection-equivalence/README.md) — `planned`
+- [L004](../../experiments/lifecycle/L004-projection-equivalence/README.md) — `running`
 - [Q003](../../experiments/retrieval/Q003-postgres-hybrid/README.md) — `planned`
 
 ### Technology evaluations

@@ -137,6 +137,7 @@ jobs:
           --health-retries 20
     env:
       PTR_PG_TEST_DSN: host=127.0.0.1 port=5432 user=postgres password=postgres dbname=postgres
+      PTR_PG_EXPERIMENT_DSN: host=127.0.0.1 port=5432 user=postgres password=postgres dbname=postgres
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -146,6 +147,12 @@ jobs:
       - run: cargo +stable clippy -p ptr-pg --features postgres-backend --all-targets --locked -- -D warnings
       - run: rustup toolchain install 1.85.0 --profile minimal
       - run: cargo +1.85.0 test -p ptr-pg --features postgres-backend --locked
+      # The L003 and L004 harnesses: linted with every oracle and smoke-run for
+      # two cases each so they stay executable. Archived results come from the
+      # seeds their manifests declare, not from these runs.
+      - run: cargo +stable clippy -p ptr-bench --features turso-oracle --all-targets --locked -- -D warnings
+      - run: cargo +stable run -p ptr-bench --features turso-oracle --locked -- projection-equivalence 2 17
+      - run: cargo +stable run -p ptr-bench --features postgres-experiments --locked -- fastmem-revocation 2 17
   network-iroh:
     runs-on: ubuntu-latest
     steps:

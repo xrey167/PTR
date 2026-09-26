@@ -245,6 +245,11 @@ async fn replay_projects_state_and_lifecycle_exactly_as_the_reference_does() {
             "{key}"
         );
     }
+    // Every entry at once: no key the reference lacks, none missing.
+    assert_eq!(
+        substrate.state_entries(fence).await.unwrap(),
+        reference.values
+    );
 
     // Superseding moves the live generation; revoking never does, it only
     // makes the live generation inadmissible.
@@ -406,6 +411,21 @@ async fn a_read_fenced_beyond_the_watermark_is_refused() {
             .await
             .unwrap(),
         Some("1".into())
+    );
+    assert_eq!(
+        substrate.state_entries(CommitIndex(2)).await.unwrap_err(),
+        PgError::ProjectionBehind {
+            watermark: 1,
+            fence: 2
+        }
+    );
+    assert_eq!(
+        substrate
+            .state_entries(CommitIndex(1))
+            .await
+            .unwrap()
+            .get("capsule:c1:generation"),
+        Some(&"1".to_owned())
     );
     substrate.drop_all().await.unwrap();
 }

@@ -371,6 +371,45 @@ impl PgSubstrate {
         Ok(row.get(1))
     }
 
+    /// Every projected state entry, refusing unless the projection has applied
+    /// at least `fence`. Read in one repeatable-read snapshot, so the entries
+    /// and the watermark belong to the same applied prefix.
+    pub async fn state_entries(
+        &mut self,
+        fence: CommitIndex,
+    ) -> Result<BTreeMap<String, String>, PgError> {
+        let projection = self.schemas.projection.clone();
+        let transaction = self
+            .client
+            .build_transaction()
+            .isolation_level(tokio_postgres::IsolationLevel::RepeatableRead)
+            .read_only(true)
+            .start()
+            .await
+            .map_err(database)?;
+        let watermark: i64 = transaction
+            .query_one(
+                &format!("SELECT last_applied FROM {projection}.projection_watermark WHERE id = 1"),
+                &[],
+            )
+            .await
+            .map_err(database)?
+            .get(0);
+        check_fence(watermark, fence)?;
+        let rows = transaction
+            .query(
+                &format!("SELECT key, value FROM {projection}.state_entry ORDER BY key"),
+                &[],
+            )
+            .await
+            .map_err(database)?;
+        transaction.commit().await.map_err(database)?;
+        Ok(rows
+            .into_iter()
+            .map(|row| (row.get::<_, String>(0), row.get::<_, String>(1)))
+            .collect())
+    }
+
     /// The live generation of a lifecycle target (a capsule id,
     /// `constraint:<key>` or `procedure:<id>`), as of at least `fence`.
     pub async fn live_generation(

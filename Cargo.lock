@@ -3454,10 +3454,15 @@ dependencies = [
  "ptr-config",
  "ptr-core",
  "ptr-exec",
+ "ptr-fastmem",
  "ptr-ledger",
+ "ptr-pg",
  "ptr-runtime",
  "ptr-semdb",
+ "ptr-state",
  "ptr-types",
+ "tokio",
+ "tokio-postgres",
 ]
 
 [[package]]

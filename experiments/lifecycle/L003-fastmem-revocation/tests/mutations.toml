@@ -1,0 +1,175 @@
+# Defects the L003 harness must detect; run with
+# `python scripts/mutation_check.py L003`. Each `find` must occur exactly once
+# in its file (checked in CI), so the list cannot drift from the code silently.
+# The lock mutations need a race to land in a narrow window and run more cases.
+
+package = "ptr-bench"
+features = "postgres-experiments"
+subcommand = "fastmem-revocation"
+cases = 4
+seed = 17
+hard_counters = [
+    "invalid_logs",
+    "bit_identity_failures",
+    "readout_failures",
+    "resurrected_reads",
+    "false_denials",
+    "admission_divergences",
+    "journal_mismatches",
+    "removed_count_mismatches",
+    "inadmissible_appends_accepted",
+    "append_false_refusals",
+    "checkpoint_false_refusals",
+    "stale_checkpoints_accepted",
+    "checkpoint_violations",
+    "stale_checkpoint_rows",
+    "atomicity_failures",
+    "crash_recovery_failures",
+    "race_violations",
+    "read_failures",
+]
+
+[[mutation]]
+name = "tombstone-removes-other-generations"
+description = "A revocation deletes every other generation's journal writes instead of its own."
+file = "crates/ptr-pg/src/adapters/projection.rs"
+find = '''
+        Removal::Exactly => "=",
+'''
+replace = '''
+        Removal::Exactly => "<>",
+'''
+
+[[mutation]]
+name = "supersession-removes-nothing"
+description = "A supersession deletes only the new generation's writes, which do not exist."
+file = "crates/ptr-pg/src/adapters/projection.rs"
+find = '''
+        Removal::OtherThan => "<>",
+'''
+replace = '''
+        Removal::OtherThan => "=",
+'''
+
+[[mutation]]
+name = "checkpoint-cascade-skipped"
+description = "Checkpoints that folded a removed write are kept."
+file = "crates/ptr-pg/src/adapters/projection.rs"
+find = '''
+                     WHERE memory = $1 AND applied_seq >= $2"
+'''
+replace = '''
+                     WHERE memory = $1 AND applied_seq >= $2 AND false"
+'''
+
+[[mutation]]
+name = "checkpoint-cascade-off-by-one"
+description = "The checkpoint taken at exactly the first removed write is kept."
+file = "crates/ptr-pg/src/adapters/projection.rs"
+find = '''
+                     WHERE memory = $1 AND applied_seq >= $2"
+'''
+replace = '''
+                     WHERE memory = $1 AND applied_seq > $2"
+'''
+
+[[mutation]]
+name = "append-ignores-tombstone"
+description = "An append from a revoked generation is accepted."
+file = "crates/ptr-pg/src/adapters/fastmem.rs"
+find = '''
+        if live.map(|row| row.get::<_, i64>(0)) != Some(generation) || revoked {
+'''
+replace = '''
+        if live.map(|row| row.get::<_, i64>(0)) != Some(generation) || (revoked && false) {
+'''
+
+[[mutation]]
+name = "append-ignores-live-generation"
+description = "An append from a generation that is not live is accepted."
+file = "crates/ptr-pg/src/adapters/fastmem.rs"
+find = '''
+        if live.map(|row| row.get::<_, i64>(0)) != Some(generation) || revoked {
+'''
+replace = '''
+        if (live.map(|row| row.get::<_, i64>(0)) != Some(generation) && false) || revoked {
+'''
+
+[[mutation]]
+name = "append-without-row-lock"
+description = "An append reads the live generation without holding its row, so a revocation can pass it."
+file = "crates/ptr-pg/src/adapters/fastmem.rs"
+cases = 10
+find = '''
+                     WHERE target = $1 FOR SHARE"
+'''
+replace = '''
+                     WHERE target = $1"
+'''
+
+[[mutation]]
+name = "checkpoint-prefix-without-lock"
+description = "A checkpoint reads its journal prefix without holding the rows, so a revocation can pass it."
+file = "crates/ptr-pg/src/adapters/fastmem.rs"
+cases = 10
+find = '''
+        let prefix = journal_prefix(&transaction, work.as_str(), memory, applied, true).await?;
+'''
+replace = '''
+        let prefix = journal_prefix(&transaction, work.as_str(), memory, applied, false).await?;
+'''
+
+[[mutation]]
+name = "checkpoint-binding-unchecked"
+description = "A checkpoint is stored without recomputing its binding from the journal."
+file = "crates/ptr-pg/src/adapters/fastmem.rs"
+find = '''
+        if recomputed != binding_digest {
+'''
+replace = '''
+        if false && recomputed != binding_digest {
+'''
+
+[[mutation]]
+name = "latest-checkpoint-skips-nothing"
+description = "The newest checkpoint is handed out without checking that it still folds the journal."
+file = "crates/ptr-pg/src/adapters/fastmem.rs"
+find = '''
+            if !current {
+'''
+replace = '''
+            if false && !current {
+'''
+
+[[mutation]]
+name = "journal-cells-lose-a-bit"
+description = "A journal read drops the lowest bit of each float's first byte."
+file = "crates/ptr-pg/src/adapters/fastmem.rs"
+find = '''
+        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+'''
+replace = '''
+        .map(|chunk| f32::from_le_bytes([chunk[0] & 0xFE, chunk[1], chunk[2], chunk[3]]))
+'''
+
+[[mutation]]
+name = "refold-keeps-straddling-checkpoint"
+description = "A refold restarts from the checkpoint taken at the first revoked write."
+file = "crates/ptr-fastmem/src/memory.rs"
+find = '''
+            .retain(|checkpoint| checkpoint.applied() < first_seq);
+'''
+replace = '''
+            .retain(|checkpoint| checkpoint.applied() <= first_seq);
+'''
+
+[[mutation]]
+name = "read-admission-skipped"
+description = "A read is admitted without checking its writes' sources."
+file = "crates/ptr-fastmem/src/memory.rs"
+find = '''
+        if denied > 0 {
+'''
+replace = '''
+        if false && denied > 0 {
+'''

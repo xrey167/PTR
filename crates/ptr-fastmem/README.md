@@ -37,7 +37,7 @@
 ### Linked experiments
 
 - [M008](../../experiments/model/M008-fast-weight-memory/README.md) — `planned`
-- [L003](../../experiments/lifecycle/L003-fastmem-revocation/README.md) — `planned`
+- [L003](../../experiments/lifecycle/L003-fastmem-revocation/README.md) — `running`
 
 ### Technology evaluations
 
