@@ -5,7 +5,9 @@
 //! installable. Every test works in its own schema prefix and drops it at the
 //! end, so tests run in parallel against one database.
 
+use std::future::Future;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Duration;
 
 use ptr_analytics::{Grouping, Metric, MetricRow, MetricSpec, Window};
 use ptr_branch::{
@@ -312,6 +314,133 @@ async fn a_work_schema_holding_triage_rows_upgrades_and_keeps_their_unrecorded_p
         Err(PgError::Database { ref sqlstate, .. }) if sqlstate == "23503"
     ));
     substrate.drop_all().await.unwrap();
+}
+
+/// Whether any session of the test database holds the migration lock of
+/// `schemas`. `pg_locks` shows a bigint advisory key as its high half
+/// (`classid`) and its low half (`objid`), with `objsubid` 1.
+async fn migration_lock_held(raw: &tokio_postgres::Client, schemas: &SchemaSet) -> bool {
+    raw.query_one(
+        "SELECT EXISTS (SELECT 1 FROM pg_locks \
+         WHERE locktype = 'advisory' AND granted AND objsubid = 1 \
+           AND database = (SELECT oid FROM pg_database WHERE datname = current_database()) \
+           AND ((classid::bigint << 32) | objid::bigint) = hashtext($1)::bigint)",
+        &[&format!("ptr-pg:{}", schemas.projection)],
+    )
+    .await
+    .unwrap()
+    .get(0)
+}
+
+/// A third session holding the projection's migration table, so a schema
+/// change that has taken the migration lock blocks at its first statement on
+/// that table. `ROLLBACK` on the returned session releases it.
+async fn block_schema_changes(schemas: &SchemaSet) -> tokio_postgres::Client {
+    let blocker = raw_client().await;
+    blocker
+        .batch_execute(&format!(
+            "BEGIN; LOCK TABLE {}.schema_migration IN ACCESS EXCLUSIVE MODE",
+            schemas.projection
+        ))
+        .await
+        .unwrap();
+    blocker
+}
+
+/// Drive `change` until it holds the migration lock of `schemas` (it cannot
+/// finish while [`block_schema_changes`] holds the table), then drop it where
+/// it stands, as a caller's timeout or an aborted task does.
+async fn cancel_once_locked(
+    change: impl Future,
+    raw: &tokio_postgres::Client,
+    schemas: &SchemaSet,
+) {
+    let mut change = std::pin::pin!(change);
+    for _ in 0..500 {
+        let finished = tokio::time::timeout(Duration::from_millis(20), change.as_mut()).await;
+        assert!(finished.is_err(), "a blocked schema change finished");
+        if migration_lock_held(raw, schemas).await {
+            return;
+        }
+    }
+    panic!("the schema change never took the migration lock");
+}
+
+#[tokio::test]
+async fn a_migration_cancelled_while_holding_the_lock_does_not_block_the_next_migrator() {
+    let mut first = substrate().await;
+    let schemas = first.schemas().clone();
+    let raw = raw_client().await;
+    let blocker = block_schema_changes(&schemas).await;
+    cancel_once_locked(first.migrate(), &raw, &schemas).await;
+    blocker.batch_execute("ROLLBACK").await.unwrap();
+
+    // The first substrate's session stays open; the lock went with the
+    // cancelled migration's own session.
+    let mut second = PgSubstrate::connect_with(&dsn(), schemas.clone())
+        .await
+        .unwrap();
+    let report = tokio::time::timeout(Duration::from_secs(30), second.migrate())
+        .await
+        .expect("a cancelled migration must not keep the migration lock")
+        .unwrap();
+    assert!(report.projection.is_empty() && report.derived.is_empty() && report.work.is_empty());
+    assert!(!migration_lock_held(&raw, &schemas).await);
+    first.capabilities().await.unwrap();
+    drop(second);
+    first.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_migration_retried_after_a_cancellation_completes_and_leaves_no_lock_held() {
+    let mut substrate = substrate().await;
+    let schemas = substrate.schemas().clone();
+    let raw = raw_client().await;
+    let blocker = block_schema_changes(&schemas).await;
+    cancel_once_locked(substrate.migrate(), &raw, &schemas).await;
+    blocker.batch_execute("ROLLBACK").await.unwrap();
+
+    // Every attempt takes the lock afresh, so the retry never re-enters one
+    // the cancelled attempt still holds and one unlock releases it.
+    let report = tokio::time::timeout(Duration::from_secs(30), substrate.migrate())
+        .await
+        .expect("a retry must not wait for the cancelled attempt")
+        .unwrap();
+    assert!(report.projection.is_empty() && report.derived.is_empty() && report.work.is_empty());
+    assert!(!migration_lock_held(&raw, &schemas).await);
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_rebuild_cancelled_while_holding_the_lock_releases_it_and_keeps_the_schemas() {
+    let mut first = substrate().await;
+    let schemas = first.schemas().clone();
+    let raw = raw_client().await;
+    let blocker = block_schema_changes(&schemas).await;
+    cancel_once_locked(first.rebuild_projection(), &raw, &schemas).await;
+    blocker.batch_execute("ROLLBACK").await.unwrap();
+
+    // Another migrator gets the lock, and finds nothing to apply: the
+    // cancelled rebuild's drop was rolled back, not left half done.
+    let mut second = PgSubstrate::connect_with(&dsn(), schemas.clone())
+        .await
+        .unwrap();
+    let report = tokio::time::timeout(Duration::from_secs(30), second.migrate())
+        .await
+        .expect("a cancelled rebuild must not keep the migration lock")
+        .unwrap();
+    assert!(report.projection.is_empty() && report.derived.is_empty() && report.work.is_empty());
+    drop(second);
+
+    // A retry on the same substrate rebuilds and leaves no lock behind.
+    let report = tokio::time::timeout(Duration::from_secs(30), first.rebuild_projection())
+        .await
+        .expect("a retried rebuild must not wait for the cancelled attempt")
+        .unwrap();
+    assert_eq!(report.projection, vec![1]);
+    assert_eq!(report.derived, vec![1]);
+    assert!(!migration_lock_held(&raw, &schemas).await);
+    first.drop_all().await.unwrap();
 }
 
 #[tokio::test]

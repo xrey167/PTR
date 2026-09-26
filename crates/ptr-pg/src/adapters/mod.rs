@@ -11,6 +11,7 @@ mod policy;
 mod projection;
 mod search;
 
+use tokio::task::JoinHandle;
 use tokio_postgres::config::Host;
 use tokio_postgres::{Client, Config, IsolationLevel, NoTls, Transaction};
 
@@ -31,7 +32,10 @@ pub use search::{
 pub struct PgSubstrate {
     client: Client,
     schemas: SchemaSet,
-    connection: tokio::task::JoinHandle<()>,
+    connection: JoinHandle<()>,
+    /// The configuration `client` was opened with, already checked by
+    /// [`check_targets`]. Schema changes open their lock session from it.
+    config: Config,
 }
 
 /// What a migration run applied, per schema class.
@@ -62,16 +66,12 @@ impl PgSubstrate {
                 .map_err(|error: tokio_postgres::Error| PgError::Connection {
                     message: error.to_string(),
                 })?;
-        check_targets(&config)?;
-        let (client, connection) = config.connect(NoTls).await.map_err(database)?;
-        let connection = tokio::spawn(async move {
-            // A closed connection surfaces as an error on the next statement.
-            let _ = connection.await;
-        });
+        let (client, connection) = open_session(&config).await?;
         Ok(Self {
             client,
             schemas,
             connection,
+            config,
         })
     }
 
@@ -106,16 +106,22 @@ impl PgSubstrate {
     /// Create the three schemas if needed and apply every pending migration.
     ///
     /// Runs under a session advisory lock keyed by the schema prefix, so two
-    /// processes migrating one instance serialize. Refuses a server without the
-    /// capabilities the schema needs, an applied migration whose checksum
-    /// changed, and a schema migrated by a newer build.
+    /// processes migrating one instance serialize. The lock is held by a
+    /// session of its own, opened to the same checked target: a migration
+    /// whose future is cancelled or unwinds releases it when that session
+    /// closes, while this substrate's session stays open, and a retry takes it
+    /// afresh. The migrations themselves run on this substrate's session, each
+    /// in its own transaction, so one in flight at a cancellation either
+    /// commits with its `schema_migration` row or rolls back. Refuses a server
+    /// without the capabilities the schema needs, an applied migration whose
+    /// checksum changed, and a schema migrated by a newer build.
     pub async fn migrate(&mut self) -> Result<MigrationReport, PgError> {
         self.capabilities().await?.check_supported()?;
-        self.lock_migrations().await?;
+        let lock = MigrationLock::acquire(&self.config, &self.schemas).await?;
         let result = self.migrate_locked().await;
-        let unlock = self.unlock_migrations().await;
+        let release = lock.release().await;
         let report = result?;
-        unlock?;
+        release?;
         Ok(report)
     }
 
@@ -124,14 +130,18 @@ impl PgSubstrate {
     ///
     /// The drop and the recreation run under the migration lock, so another
     /// migrator cannot interleave, and a lock wait that fails leaves the
-    /// schemas as they were rather than dropped.
+    /// schemas as they were rather than dropped. The lock is released as for
+    /// [`migrate`](Self::migrate) when the rebuild's future is cancelled or
+    /// unwinds: a drop that has not committed is rolled back with its
+    /// transaction, and schemas dropped before the cancellation are recreated
+    /// by the next migration.
     pub async fn rebuild_projection(&mut self) -> Result<MigrationReport, PgError> {
         self.capabilities().await?.check_supported()?;
-        self.lock_migrations().await?;
+        let lock = MigrationLock::acquire(&self.config, &self.schemas).await?;
         let result = self.rebuild_locked().await;
-        let unlock = self.unlock_migrations().await;
+        let release = lock.release().await;
         let report = result?;
-        unlock?;
+        release?;
         Ok(report)
     }
 
@@ -171,26 +181,6 @@ impl PgSubstrate {
             .start()
             .await
             .map_err(database)
-    }
-
-    /// The session advisory lock every schema change of this instance takes.
-    /// Its wait has no timeout: a second migrator waits for the first.
-    async fn lock_migrations(&self) -> Result<(), PgError> {
-        let lock_key = format!("ptr-pg:{}", self.schemas.projection);
-        self.client
-            .execute("SELECT pg_advisory_lock(hashtext($1))", &[&lock_key])
-            .await
-            .map_err(database)?;
-        Ok(())
-    }
-
-    async fn unlock_migrations(&self) -> Result<(), PgError> {
-        let lock_key = format!("ptr-pg:{}", self.schemas.projection);
-        self.client
-            .execute("SELECT pg_advisory_unlock(hashtext($1))", &[&lock_key])
-            .await
-            .map_err(database)?;
-        Ok(())
     }
 
     async fn rebuild_locked(&mut self) -> Result<MigrationReport, PgError> {
@@ -293,6 +283,70 @@ impl PgSubstrate {
     }
 }
 
+/// The session advisory lock every schema change of an instance takes, held
+/// by a session of its own.
+///
+/// PostgreSQL releases a session lock when its session ends. Dropping the
+/// guard drops that session's client, which ends its connection task and with
+/// it the server session, so a schema change whose future is cancelled or
+/// unwinds after taking the lock releases it as soon as the session closes,
+/// never leaving it with the substrate's session. Every acquisition opens a
+/// fresh session, so a retry never re-enters a lock an earlier attempt still
+/// holds, and one unlock always releases it. The key is the one earlier
+/// builds took on the substrate's session, so they serialize with this one.
+struct MigrationLock {
+    client: Client,
+    connection: JoinHandle<()>,
+    key: String,
+}
+
+impl MigrationLock {
+    /// Open a session to the target of `config`, which [`open_session`]
+    /// checks as it checks every other, and wait there for the lock of
+    /// `schemas`. The wait has no timeout: a second migrator waits for the
+    /// first.
+    async fn acquire(config: &Config, schemas: &SchemaSet) -> Result<Self, PgError> {
+        let (client, connection) = open_session(config).await?;
+        let key = format!("ptr-pg:{}", schemas.projection);
+        client
+            .execute("SELECT pg_advisory_lock(hashtext($1))", &[&key])
+            .await
+            .map_err(database)?;
+        Ok(Self {
+            client,
+            connection,
+            key,
+        })
+    }
+
+    /// Unlock explicitly, then close the session and wait for its connection
+    /// to end. The session closes even when the unlock fails, which releases
+    /// the lock all the same.
+    async fn release(self) -> Result<(), PgError> {
+        let unlocked = self
+            .client
+            .execute("SELECT pg_advisory_unlock(hashtext($1))", &[&self.key])
+            .await
+            .map_err(database);
+        drop(self.client);
+        let _ = self.connection.await;
+        unlocked.map(|_| ())
+    }
+}
+
+/// Open a session to a target [`check_targets`] accepts, its connection driven
+/// by a task of its own. Every session the substrate opens goes through here,
+/// so none of them reaches a non-loopback target.
+async fn open_session(config: &Config) -> Result<(Client, JoinHandle<()>), PgError> {
+    check_targets(config)?;
+    let (client, connection) = config.connect(NoTls).await.map_err(database)?;
+    let connection = tokio::spawn(async move {
+        // A closed connection surfaces as an error on the next statement.
+        let _ = connection.await;
+    });
+    Ok((client, connection))
+}
+
 /// Refuse a connection target that is not local: every `hostaddr` must be a
 /// loopback address, and every `host` a Unix socket, `localhost` or a
 /// loopback address.
@@ -371,4 +425,25 @@ pub(crate) fn digest_from(bytes: Vec<u8>, table: &'static str) -> Result<[u8; 32
         table,
         reason: "digest is not 32 bytes".into(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn the_migration_lock_session_is_refused_a_target_that_is_not_loopback() {
+        let schemas = SchemaSet::with_prefix("ptr").unwrap();
+        for (dsn, host) in [
+            ("host=db.example.com user=ptr", "db.example.com"),
+            ("host=localhost hostaddr=192.0.2.2 user=ptr", "192.0.2.2"),
+        ] {
+            let config: Config = dsn.parse().unwrap();
+            let refused = MigrationLock::acquire(&config, &schemas)
+                .await
+                .err()
+                .expect("a remote lock session must be refused");
+            assert_eq!(refused, PgError::TlsRequired { host: host.into() }, "{dsn}");
+        }
+    }
 }

@@ -59,7 +59,14 @@ that this build does not know (`UnknownMigration`) is refused. Checksums are tak
 over LF-normalised SQL, so a Windows checkout does not change a migration's
 identity (`.gitattributes` also pins `*.sql` to LF). Covered by
 `migrations_apply_once_and_record_their_checksums` and
-`an_edited_migration_is_refused_as_drift`.
+`an_edited_migration_is_refused_as_drift`. The lock is held by a session of its own,
+opened to the same checked loopback target, while the migrations run on the
+substrate's session: a migration or rebuild whose future is cancelled or unwinds
+releases the lock when that session closes, rather than leaving it with a session
+that stays open, and a retry takes it afresh instead of re-entering it
+(`a_migration_cancelled_while_holding_the_lock_does_not_block_the_next_migrator`,
+`a_migration_retried_after_a_cancellation_completes_and_leaves_no_lock_held`,
+`a_rebuild_cancelled_while_holding_the_lock_releases_it_and_keeps_the_schemas`).
 
 ### Projection: one verified commit per transaction
 
