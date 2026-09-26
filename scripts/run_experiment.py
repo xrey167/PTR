@@ -17,6 +17,9 @@ ROOT = Path(__file__).resolve().parents[1]
 REGISTRY = ROOT / "experiments/registry.toml"
 PLACEHOLDER = re.compile(r"<([A-Za-z][A-Za-z0-9_-]*)>")
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import experiment_records  # noqa: E402
+
 
 def load(path: Path):
     return tomllib.loads(path.read_text(encoding="utf-8"))
@@ -201,6 +204,12 @@ def run_experiment(
     seed: int,
     params: dict[str, str] | None = None,
 ) -> int:
+    """Run one seed of `exp_id` through `entrypoint` and write its record to
+    the experiment's results. Refuses with status 2, before anything runs or
+    is written, an undeclared seed, an unresolved command, and a working tree
+    with uncommitted or untracked provenance files or experiment files
+    (`experiment_records.uncommitted_files`), so the record's `git_sha` is
+    the code that ran."""
     _, root, data = resolve(exp_id)
     try:
         command = build_command(
@@ -211,6 +220,26 @@ def run_experiment(
         return 2
 
     results = root / data.get("results_dir", "results")
+    # The record names HEAD as the code it ran, so HEAD must hold every file
+    # that decides the run: refuse before anything runs or is written.
+    try:
+        dirty = experiment_records.uncommitted_files(
+            ROOT,
+            experiment_records.tree_pathspecs(
+                root, results, ROOT, experiment_records.seed_record_paths(root, ROOT)
+            ),
+        )
+    except experiment_records.ProvenanceError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 2
+    if dirty:
+        print(
+            "ERROR: refusing to run from a working tree whose sources HEAD does not hold; "
+            f"commit or remove {experiment_records.listed(dirty)}",
+            file=sys.stderr,
+        )
+        return 2
+
     timestamp = utc_stamp()
     record = base_record(exp_id, data, root)
     record.update(

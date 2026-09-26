@@ -124,10 +124,11 @@ class MutationCheckTests(unittest.TestCase):
         self.assertEqual(errors, ["no mutation named 'typo'", "no mutation selected"])
         self.assertEqual(mod.select({}, []), ([], ["no mutation selected"]))
 
-    def run_main(self, only, rebuild_exit):
+    def run_main(self, only, rebuild_exit, dirty=None):
         """`main` over a one-mutation plan whose mutation is killed, with the
         final rebuild exiting `rebuild_exit`; returns its exit status and the
-        mutations it ran. `--only` keeps it from writing a record."""
+        mutations it ran. `--only` keeps it from writing a record; without it
+        (`only` None) the working tree reports the uncommitted files `dirty`."""
         plan = {
             "package": "ptr-bench",
             "features": "postgres-experiments",
@@ -146,10 +147,13 @@ class MutationCheckTests(unittest.TestCase):
         def rebuild(command, **_kwargs):
             return subprocess.CompletedProcess(command, rebuild_exit, "", "error: disk full")
 
-        argv = ["mutation_check.py", "L003", "--only", *only]
+        argv = ["mutation_check.py", "L003"] + ([] if only is None else ["--only", *only])
         with (
             mock.patch.object(sys, "argv", argv),
-            mock.patch.object(mod, "experiment_root", return_value=ROOT),
+            mock.patch.object(
+                mod, "experiment_root", return_value=ROOT / "experiments/lifecycle/L003-fastmem-revocation"
+            ),
+            mock.patch.object(mod.experiment_records, "uncommitted_files", return_value=dirty) as listed,
             mock.patch.object(mod, "load_plan", return_value=plan),
             mock.patch.object(mod, "anchor_errors", return_value=[]),
             mock.patch.object(mod, "run_mutation", side_effect=run_mutation),
@@ -157,6 +161,8 @@ class MutationCheckTests(unittest.TestCase):
             contextlib.redirect_stdout(io.StringIO()),
         ):
             status = mod.main()
+        # A run that records nothing has no need of a clean tree.
+        self.assertEqual(listed.called, only is None)
         return status, ran
 
     def test_an_unknown_only_name_fails_without_running_anything(self):
@@ -166,6 +172,22 @@ class MutationCheckTests(unittest.TestCase):
     def test_a_failed_rebuild_of_the_unmutated_harness_fails_the_run(self):
         # Every mutation was killed, but the binary may still hold the last one.
         self.assertEqual(self.run_main(["drop-row-lock"], 101), (1, ["drop-row-lock"]))
+
+    def test_a_recorded_run_from_a_dirty_source_tree_is_refused_before_it_mutates(self):
+        # mutations.json names HEAD as the code it mutated.
+        self.assertEqual(self.run_main(None, 0, dirty=["crates/ptr-pg/src/adapters/fastmem.rs"]), (2, []))
+
+    def test_the_recorded_run_checks_the_mutation_provenance_of_its_experiment(self):
+        experiment = "experiments/lifecycle/L003-fastmem-revocation"
+        specs = mod.experiment_records.tree_pathspecs(
+            ROOT / experiment,
+            ROOT / experiment / "results",
+            ROOT,
+            mod.experiment_records.mutation_record_paths(ROOT / experiment, ROOT),
+        )
+        for spec in ("*.rs", "scripts/mutation_check.py", f"{experiment}/tests/mutations.toml", experiment):
+            self.assertIn(spec, specs)
+        self.assertIn(f":(exclude){experiment}/results", specs)
 
 
 if __name__ == "__main__":

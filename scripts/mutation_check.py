@@ -13,9 +13,13 @@ only on other counters is recorded as `failed-elsewhere`: the defect may have
 broken something unrelated first (a query that no longer binds, say), which
 shows nothing about whether the harness sees the defect itself. Exiting any
 other way (a panic, a build failure, a timeout) or passing is recorded as it
-is. The record goes to the experiment's `results/mutations.json`. Every name
-given to `--only` must be one the plan lists. Afterwards the unmutated harness
-is rebuilt, and the run fails if that rebuild does.
+is. The record goes to the experiment's `results/mutations.json`, stamped with
+HEAD, so a run that writes it refuses to start from a working tree with
+uncommitted or untracked provenance files (`scripts/experiment_records.py`);
+the aggregators accept it only while its commit has the checkout's code,
+checker and mutation plan. Every name given to `--only` must be one the plan
+lists. Afterwards the unmutated harness is rebuilt, and the run fails if that
+rebuild does.
 
     python scripts/mutation_check.py L004
     python scripts/mutation_check.py L003 --only append-without-row-lock
@@ -37,6 +41,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 REGISTRY = ROOT / "experiments/registry.toml"
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import experiment_records  # noqa: E402
 
 
 def load_toml(path: Path) -> dict:
@@ -241,6 +248,28 @@ def main() -> int:
     if errors:
         print("\n".join("ERROR: " + error for error in errors))
         return 2
+    if not args.only:
+        # The record names HEAD as the code it mutated, so HEAD must hold
+        # every file that decides it: refuse before planting anything.
+        try:
+            dirty = experiment_records.uncommitted_files(
+                ROOT,
+                experiment_records.tree_pathspecs(
+                    exp_root,
+                    exp_root / "results",
+                    ROOT,
+                    experiment_records.mutation_record_paths(exp_root, ROOT),
+                ),
+            )
+        except experiment_records.ProvenanceError as error:
+            print(f"ERROR: {error}")
+            return 2
+        if dirty:
+            print(
+                "ERROR: refusing to record mutations from a working tree whose sources HEAD does not "
+                f"hold; commit or remove {experiment_records.listed(dirty)}"
+            )
+            return 2
     outcomes = []
     for mutation in selected:
         outcome = run_mutation(plan, mutation, args.timeout)

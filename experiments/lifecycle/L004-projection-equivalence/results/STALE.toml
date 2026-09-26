@@ -1,0 +1,13 @@
+# The archived results in this directory no longer describe the checkout's code.
+# scripts/check_research_gates.py accepts stale results only with this marker,
+# checks that it names them and the first commit that changed a file their
+# provenance covers (scripts/experiment_records.py), and fails once it sits next
+# to current results; aggregate.py removes it when it writes fresh ones.
+results_git_sha = "ad2f8d1a50b875f62f7899a8c0eb60dac000639f"
+stale_since = "fd25359cdb89750d16649445e2d271e2c8431ef4"
+reason = """The seed records ran at c897127..0b54173 and were aggregated, with the mutation \
+check, at ad2f8d1. Later commits changed the code they exercised (crates/ptr-pg, \
+crates/ptr-runtime, bins/ptr-bench/src/experiments), the aggregator's \
+pass criteria and the provenance rules, so the counts in README.md \
+describe ad2f8d1's code only. A rerun of all five seeds and the mutation check at \
+the commit that integrates these changes is pending."""

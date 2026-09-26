@@ -844,7 +844,12 @@ another by idea.
 L004 and L003 are completed for PostgreSQL 18 (2026-09-26): over five seeds each, with crashes, commits the
 server failed and races, no projection diverged from the reference, no foreign history was accepted, no
 refold differed by a bit and no revoked input was read; every planted defect of their mutation lists was
-detected. Results and limitations are in each experiment's `results/`.
+detected. Results and limitations are in each experiment's `results/`. Those results ran at ad2f8d1 and are
+stale since fd25359, as each experiment's `results/STALE.toml` records until both are rerun at the commit
+integrating this revision: `scripts/check_research_gates.py` fails CI on a completed experiment whose
+archived `run.json` or `mutations.json` ran at code, aggregation scripts or mutation plan HEAD has changed
+without such a marker naming them and the first change (`test_results_of_other_code_fail_without_a_marker`,
+`test_a_dishonest_or_incomplete_marker_is_refused`), and on a marker beside current results.
 
 Evaluations: [relational-substrate](../../evaluations/components/relational-substrate/README.md),
 [fast-weight-memory](../../evaluations/components/fast-weight-memory/README.md),
