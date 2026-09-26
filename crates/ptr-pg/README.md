@@ -9,16 +9,16 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-25  
+**Last reviewed:** 2026-09-26  
 **Code footprint:** 14 Rust source files · 3512 nonblank source lines · 2 integration-test files · 23 `#[test]` markers
 
 ### Implemented now
 
 - Three schema classes per instance (projection, derived, work) with separate checksummed migration catalogs, per-schema migration tables, an advisory lock, drift and newer-build refusal, and LF-normalised checksums
 - Projector applies one commit per transaction behind a watermark row lock, deciding the next index with ptr-state classify_next and projecting exactly ptr-state projection_entries
-- Every record's anchor is recomputed with ptr-ledger chain_anchors from the stored one and compared with the ledger's; a foreign, rolled-back or re-delivered-but-different record is refused
+- Every record's anchor is recomputed with ptr-ledger chain_anchors from the stored one and compared with the ledger's; a foreign, rolled-back or re-delivered-but-different record is refused, and a redelivered index counts as a duplicate only when the record itself recomputes to the stored anchor from the one before it
 - Lifecycle catalog keyed exactly as the runtime keys it: live generations, an append-only tombstone set, the revision map and an append-only projection event log with consumer offsets and NOTIFY on commit
-- Fenced reads that refuse rather than serve a projection behind the requested commit
+- Fenced reads that refuse rather than serve a projection behind the requested commit, including every state entry at once in one repeatable-read snapshot
 - Derived search documents only for live capsule generations; writers hold the lifecycle row FOR SHARE, and the projector deletes superseded or revoked generations in the same transaction
 - Hybrid retrieval in one repeatable-read snapshot: built-in full text plus halfvec cosine search over per-space partial HNSW expression indexes with iterative scans, joined to the lifecycle catalog and fused by capsule and generation
 - Work schema for sealed branches, triage logs and append-only outcomes; fast-memory journals and checkpoints; adapter lineage and replay pool; weak-supervision store
@@ -42,7 +42,7 @@
 
 ### Next milestones
 
-- Run L004 against the reference and Turso backends
+- Archive L004 results for the declared seeds (the harness, its mutation list and a CI smoke run exist)
 - Run Q003 against the reference retrieval baselines
 - Add TLS and separate projector, reader and migrator roles
 
