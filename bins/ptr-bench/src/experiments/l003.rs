@@ -21,7 +21,9 @@
 //! fold bit for bit, and a read in the window between the change's commit and
 //! the refold must be denied. Processes crash mid-append, mid-revocation and
 //! between operations, and an operation reported done must be found durable;
-//! appends and checkpoints race revocations on separate sessions.
+//! an append whose commit the server fails must report it and leave the
+//! journal as it was; appends and checkpoints race revocations on separate
+//! sessions.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};

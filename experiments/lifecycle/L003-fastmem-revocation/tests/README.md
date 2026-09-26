@@ -5,6 +5,12 @@ The harness is `ptr-bench fastmem-revocation`
 built with the `postgres-experiments` feature. It reads a loopback PostgreSQL server
 from `PTR_PG_EXPERIMENT_DSN` and exits 1 on any hard failure.
 
+Commit faults are deterministic: a deferred constraint trigger, armed from a
+separate session around one append, fails the append's transaction at COMMIT after
+every statement succeeded. An append reported done, or a journal that changed, fails
+the run. Crash and race outcomes still depend on timing, which is why every seed
+must see both sides of each.
+
 [`mutations.toml`](mutations.toml) lists defects planted one at a time in the
 projector's cascade, the journal and checkpoint store, and `ptr-fastmem` itself to
 show the harness fails on them:

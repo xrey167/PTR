@@ -9,8 +9,9 @@
 //! `generation_validity` for every target and generation, its revisions. The
 //! PostgreSQL projection receives the log record by record with injected
 //! crashes (the client dropping an in-flight transaction, the server killing
-//! the session), redeliveries and gaps, and is compared with the oracle in
-//! full. Forked histories that diverge behind, at and ahead of the projection
+//! the session), commits the server fails after every statement succeeded,
+//! two projectors racing for one record, redeliveries and gaps, and is
+//! compared with the oracle in full. Forked histories that diverge behind, at and ahead of the projection
 //! must be refused; a legitimate catch-up from an older backup must not be.
 //! Finally the projection is rebuilt from the log and compared again, and a
 //! record PostgreSQL text cannot hold must be refused without moving the

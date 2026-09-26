@@ -6,6 +6,13 @@ built with the `postgres-experiments` feature (or `turso-oracle`, which adds Tur
 a third implementation). It reads a loopback PostgreSQL server from
 `PTR_PG_EXPERIMENT_DSN` and exits 1 on any hard failure.
 
+Commit faults are deterministic: a deferred constraint trigger, armed from a
+separate session around one pre-drawn record, fails that record's transaction at
+COMMIT after every statement succeeded. A projector that reports the record applied,
+or leaves any of it visible, fails the run. Crash outcomes (whether a killed
+transaction had committed) still depend on timing, which is why every seed must
+see both.
+
 [`mutations.toml`](mutations.toml) lists defects planted one at a time in the
 projector to show the harness fails on them:
 
