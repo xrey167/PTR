@@ -322,6 +322,20 @@ async fn a_redelivered_record_is_a_duplicate_and_a_different_one_is_foreign_hist
             .unwrap_err(),
         PgError::ForeignHistory { index: 2 }
     );
+    // The true anchor does not make a different record a duplicate, at the
+    // head or behind it; the true record with a foreign anchor is refused too.
+    for (record, anchor) in [
+        (&other[1], chain[1]),
+        (&capsule(1, "other", 1), chain[0]),
+        (&log[1], other_chain[1]),
+    ] {
+        assert_eq!(
+            substrate.apply_committed(record, anchor).await.unwrap_err(),
+            PgError::ForeignHistory {
+                index: record.index.0
+            }
+        );
+    }
     let gap = substrate
         .apply_committed(
             &capsule(9, "c9", 1),

@@ -23,6 +23,7 @@ hard_counters = [
     "stale_checkpoints_accepted",
     "checkpoint_violations",
     "stale_checkpoint_rows",
+    "checkpoints_lost",
     "atomicity_failures",
     "crash_recovery_failures",
     "race_violations",
@@ -172,4 +173,49 @@ find = '''
 '''
 replace = '''
         if false && denied > 0 {
+'''
+
+[[mutation]]
+name = "append-commit-error-ignored"
+description = "An append is reported done even when its commit failed."
+file = "crates/ptr-pg/src/adapters/fastmem.rs"
+cases = 12
+find = '''
+                    &decay_cells,
+                ],
+            )
+            .await
+            .map_err(database)?;
+        transaction.commit().await.map_err(database)
+'''
+replace = '''
+                    &decay_cells,
+                ],
+            )
+            .await
+            .map_err(database)?;
+        let _ = transaction.commit().await;
+        Ok(())
+'''
+
+[[mutation]]
+name = "latest-checkpoint-oldest-first"
+description = "The oldest matching checkpoint is handed out instead of the newest."
+file = "crates/ptr-pg/src/adapters/fastmem.rs"
+find = '''
+                     WHERE memory = $1 ORDER BY applied_seq DESC"
+'''
+replace = '''
+                     WHERE memory = $1 ORDER BY applied_seq ASC"
+'''
+
+[[mutation]]
+name = "checkpoint-cascade-deletes-all"
+description = "A revocation deletes every checkpoint of an affected memory, including ones that folded none of its writes."
+file = "crates/ptr-pg/src/adapters/projection.rs"
+find = '''
+                     WHERE memory = $1 AND applied_seq >= $2"
+'''
+replace = '''
+                     WHERE memory = $1 AND applied_seq >= $2 * 0"
 '''

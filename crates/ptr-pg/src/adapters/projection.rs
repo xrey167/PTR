@@ -110,6 +110,28 @@ impl PgSubstrate {
                 if stored != Some(anchor.digest) {
                     return Err(PgError::ForeignHistory { index });
                 }
+                // The anchor alone does not identify the record: a different
+                // record handed over with the true anchor passes the comparison
+                // above. Recompute this record's anchor from the stored one
+                // before it, as the ledger computed it.
+                let previous = match index.saturating_sub(1) {
+                    0 => LogAnchor::empty(),
+                    before => LogAnchor {
+                        index: CommitIndex(before),
+                        digest: applied_anchor(&transaction, &schemas, before)
+                            .await?
+                            .ok_or_else(|| PgError::CorruptRow {
+                                table: "applied_commit",
+                                reason: format!("no anchor for applied commit {before}"),
+                            })?,
+                    },
+                };
+                let recomputed = chain_anchors(std::slice::from_ref(committed), previous)
+                    .ok()
+                    .and_then(|mut anchors| anchors.pop());
+                if recomputed != Some(anchor) {
+                    return Err(PgError::ForeignHistory { index });
+                }
             }
             transaction.rollback().await.map_err(database)?;
             return Ok(ProjectionApply::refused(refusal));

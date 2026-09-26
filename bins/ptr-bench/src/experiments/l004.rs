@@ -23,10 +23,10 @@ use std::time::{Duration, Instant};
 use ptr_config::PtrConfig;
 use ptr_ledger::integrity::{chain_anchors, sha256, LogAnchor};
 use ptr_ledger::{CommittedEvent, LedgerEvent};
-use ptr_pg::{event_payload, event_subject, event_topic, PgError, PgSubstrate};
+use ptr_pg::{PgError, PgSubstrate, ProjectionApply};
 use ptr_runtime::PtrRuntime;
 use ptr_semdb::{SemanticDelta, SemanticHost, SemanticValue};
-use ptr_state::{ApplyOutcome, MaterializedState};
+use ptr_state::{projection_entries, ApplyOutcome, MaterializedState};
 use ptr_types::{
     CapabilityId, CapsuleId, CommitIndex, Effect, Generation, ProjectId, Validity,
     VerificationLevel,
@@ -270,8 +270,13 @@ async fn long_replay(raw: &Client, seed: u64, rng: &mut Rng, metrics: &mut Metri
 }
 
 async fn run_case(raw: &Client, seed: u64, case: usize, rng: &mut Rng, metrics: &mut Metrics) {
+    // The ledger the case projects, and the records it grows by later for the
+    // catch-up probe: generated together, so the extension carries every event
+    // kind the generator produces, lifecycle changes included.
     let length = rng.range(40, 160) as usize;
-    let log = generate_log(rng, length);
+    let extension = rng.range(3, 12) as usize;
+    let extended = generate_log(rng, length + extension);
+    let log = extended[..length].to_vec();
     let anchors = chain_anchors(&log, LogAnchor::empty()).expect("the generated log chains");
     metrics.records += log.len() as u64;
 
@@ -292,12 +297,24 @@ async fn run_case(raw: &Client, seed: u64, case: usize, rng: &mut Rng, metrics: 
     for record in &log {
         reference.apply(record);
     }
+    // A self-check of the harness, not of the projection: the runtime builds
+    // its state through the same reference.
     if reference.values != oracle.materialized_state().values {
         diverged(
             &mut metrics.invalid_logs,
             format!("seed {seed} case {case}: the reference and the runtime disagree"),
         );
     }
+    let extended_oracle = match PtrRuntime::replay(PtrConfig::default(), &extended) {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            diverged(
+                &mut metrics.invalid_logs,
+                format!("seed {seed} case {case}: the runtime refused the extension: {error:?}"),
+            );
+            return;
+        }
+    };
 
     let instance = Instance::new("l004", seed, case);
     let mut substrate = instance.create(raw).await;
@@ -317,17 +334,66 @@ async fn run_case(raw: &Client, seed: u64, case: usize, rng: &mut Rng, metrics: 
         if step.crash && crashed_at != Some(next) {
             crashed_at = Some(next);
             metrics.crash_injections += 1;
-            substrate = crash_during_apply(
+            let (fresh, returned) = crash_during_apply(
                 &instance, raw, substrate, record, anchor, step.kill, step.delay, metrics,
             )
             .await;
-            let watermark = substrate.watermark().await.expect("watermark after crash");
+            substrate = fresh;
+            let returned = match returned {
+                Ok(returned) => returned,
+                Err(error) => {
+                    diverged(
+                        &mut metrics.crash_recovery_failures,
+                        format!("seed {seed} case {case}: {error}"),
+                    );
+                    break;
+                }
+            };
+            let watermark = match substrate.watermark().await {
+                Ok(watermark) => watermark,
+                Err(error) => {
+                    diverged(
+                        &mut metrics.read_failures,
+                        format!("seed {seed} case {case}: the watermark after a crash is unreadable: {error:?}"),
+                    );
+                    break;
+                }
+            };
             let index = record.index.0;
+            // What the projector told its caller before the crash reached it:
+            // a record reported applied must be found committed.
+            let acknowledged = matches!(
+                &returned,
+                Some(Ok(report)) if report.outcome == ApplyOutcome::Applied
+            );
             if watermark.index.0 == index && watermark == anchor {
                 metrics.crashes_committed += 1;
             } else if watermark.index.0 + 1 == index
                 && (index == 1 || watermark == anchors[next - 1])
             {
+                if acknowledged {
+                    diverged(
+                        &mut metrics.crash_recovery_failures,
+                        format!(
+                            "seed {seed} case {case}: record {index} was reported applied but rolled back"
+                        ),
+                    );
+                    break;
+                }
+                // Rolled back means nothing of the record may be visible: the
+                // projection must still be the reference at the prefix.
+                let problems =
+                    check_prefix(&mut substrate, raw, &instance.prefix, &log[..next]).await;
+                if !problems.is_empty() {
+                    diverged(
+                        &mut metrics.crash_recovery_failures,
+                        format!(
+                            "seed {seed} case {case}: after a rolled-back crash at {index}: {}",
+                            problems.join("; ")
+                        ),
+                    );
+                    break;
+                }
                 metrics.crashes_rolled_back += 1;
                 continue;
             } else {
@@ -442,6 +508,8 @@ async fn run_case(raw: &Client, seed: u64, case: usize, rng: &mut Rng, metrics: 
     let fence = CommitIndex(log.len() as u64);
     compare_with_oracle(
         &mut substrate,
+        raw,
+        &instance.prefix,
         &oracle,
         &log,
         anchors[anchors.len() - 1],
@@ -457,7 +525,19 @@ async fn run_case(raw: &Client, seed: u64, case: usize, rng: &mut Rng, metrics: 
 
     // Forked histories and the legitimate catch-up.
     probe_foreign_histories(&mut substrate, &log, &anchors, rng, seed, case, metrics).await;
-    let extended = probe_catch_up(raw, &mut substrate, &log, rng, seed, case, metrics).await;
+    probe_catch_up(
+        raw,
+        &instance,
+        &mut substrate,
+        &extended,
+        log.len(),
+        &extended_oracle,
+        rng,
+        seed,
+        case,
+        metrics,
+    )
+    .await;
 
     // Rebuild onto an unrelated log first: replaying the same log would rewrite
     // the same keys and hide whatever a rebuild failed to clear, so the rebuilt
@@ -478,6 +558,8 @@ async fn run_case(raw: &Client, seed: u64, case: usize, rng: &mut Rng, metrics: 
                 Ok(applied) if applied == unrelated.len() as u64 => {
                     compare_with_oracle(
                         &mut substrate,
+                        raw,
+                        &instance.prefix,
                         &unrelated_oracle,
                         &unrelated,
                         unrelated_anchors[unrelated_anchors.len() - 1],
@@ -508,31 +590,39 @@ async fn run_case(raw: &Client, seed: u64, case: usize, rng: &mut Rng, metrics: 
     let applied = substrate.replay(&extended).await;
     metrics.rebuild_ns += started.elapsed().as_nanos();
     metrics.rebuild_commits += extended.len() as u64;
-    let mut rebuilt_reference = MaterializedState::default();
-    for record in &extended {
-        rebuilt_reference.apply(record);
-    }
-    let fence = CommitIndex(extended.len() as u64);
-    let entries = substrate.state_entries(fence).await;
-    let watermark = substrate
-        .watermark()
-        .await
-        .expect("watermark after rebuild");
     let expected_head = extended_anchors[extended_anchors.len() - 1];
-    if rebuilt.is_err()
-        || !matches!(applied, Ok(count) if count == extended.len() as u64)
-        || !matches!(&entries, Ok(entries) if *entries == rebuilt_reference.values)
-        || watermark != expected_head
-    {
+    if rebuilt.is_err() || !matches!(applied, Ok(count) if count == extended.len() as u64) {
         diverged(
             &mut metrics.rebuild_divergences,
             format!(
-                "seed {seed} case {case}: the rebuilt projection differs from the reference \
-                 (replay {applied:?}, watermark {})",
-                watermark.index.0
+                "seed {seed} case {case}: the rebuild of the true ledger failed (replay {applied:?})"
             ),
         );
     }
+    compare_with_oracle(
+        &mut substrate,
+        raw,
+        &instance.prefix,
+        &extended_oracle,
+        &extended,
+        expected_head,
+        CommitIndex(extended.len() as u64),
+        seed,
+        case,
+        metrics,
+    )
+    .await;
+    let watermark = match substrate.watermark().await {
+        Ok(watermark) => watermark,
+        Err(error) => {
+            diverged(
+                &mut metrics.read_failures,
+                format!("seed {seed} case {case}: the watermark after the rebuild is unreadable: {error:?}"),
+            );
+            let _ = substrate.drop_all().await;
+            return;
+        }
+    };
 
     metrics.nul_probes += 1;
     let nul_record = CommittedEvent {
@@ -548,8 +638,8 @@ async fn run_case(raw: &Client, seed: u64, case: usize, rng: &mut Rng, metrics: 
     )
     .expect("the NUL record chains")[0];
     match substrate.apply_committed(&nul_record, nul_anchor).await {
-        Err(PgError::InvalidRecord { .. })
-            if substrate.watermark().await.expect("watermark") == watermark => {}
+        Err(PgError::InvalidRecord { .. }) if matches!(substrate.watermark().await, Ok(after) if after == watermark) =>
+            {}
         other => diverged(
             &mut metrics.nul_failures,
             format!("seed {seed} case {case}: a NUL record gave {other:?}"),
@@ -589,7 +679,8 @@ impl RecordPlan {
 
 /// Apply one record in a task and crash it: drop the task mid-flight (a client
 /// crash) or terminate the server session (a server-side kill). Returns a
-/// fresh session, as a restarted process would open.
+/// fresh session, as a restarted process would open, and what the projector
+/// returned if it finished before the crash reached it.
 #[allow(clippy::too_many_arguments)]
 async fn crash_during_apply(
     instance: &Instance,
@@ -600,24 +691,229 @@ async fn crash_during_apply(
     kill: bool,
     delay: Duration,
     metrics: &mut Metrics,
-) -> PgSubstrate {
+) -> (
+    PgSubstrate,
+    Result<Option<Result<ProjectionApply, PgError>>, String>,
+) {
     let record = record.clone();
-    let task = tokio::spawn(async move {
-        let result = substrate.apply_committed(&record, anchor).await;
-        (substrate, result)
-    });
+    let task = tokio::spawn(async move { substrate.apply_committed(&record, anchor).await });
     if kill {
         metrics.server_kills += 1;
     } else {
         metrics.client_aborts += 1;
     }
-    pg::crash_task(instance, raw, task, kill, delay).await;
-    instance.connect().await
+    let returned = pg::crash_task(instance, raw, task, kill, delay).await;
+    (instance.connect().await, returned)
+}
+
+/// The lifecycle catalog a log implies, folded here from the events
+/// themselves rather than through `ptr_pg`'s mapping: the live generation and
+/// project of every target, and the tombstone set.
+type Catalog = (
+    BTreeMap<String, (u64, Option<String>)>,
+    BTreeSet<(String, u64)>,
+);
+
+fn expected_catalog(log: &[CommittedEvent]) -> Catalog {
+    let mut live: BTreeMap<String, (u64, Option<String>)> = BTreeMap::new();
+    let mut tombstones = BTreeSet::new();
+    let set_live = |live: &mut BTreeMap<String, (u64, Option<String>)>,
+                    target: String,
+                    generation: u64,
+                    project: Option<String>| {
+        // A commit that names no project keeps the one the target has.
+        let project = project.or_else(|| live.get(&target).and_then(|(_, kept)| kept.clone()));
+        live.insert(target, (generation, project));
+    };
+    for record in log {
+        match &record.event {
+            LedgerEvent::CapsuleCommitted {
+                project,
+                capsule,
+                generation,
+            } => set_live(
+                &mut live,
+                capsule.0.clone(),
+                generation.0,
+                Some(project.0.clone()),
+            ),
+            LedgerEvent::CapsuleSuperseded { capsule, new, .. } => {
+                set_live(&mut live, capsule.0.clone(), new.0, None)
+            }
+            LedgerEvent::HardConstraintCommitted { key, generation } => {
+                set_live(&mut live, format!("constraint:{key}"), generation.0, None)
+            }
+            LedgerEvent::ProcedurePromoted { id, generation } => {
+                set_live(&mut live, format!("procedure:{id}"), generation.0, None)
+            }
+            LedgerEvent::Revoked {
+                subject,
+                generation,
+            } => {
+                tombstones.insert((subject.clone(), generation.0));
+            }
+            LedgerEvent::ProcedureRevoked { id, generation } => {
+                tombstones.insert((format!("procedure:{id}"), generation.0));
+            }
+            _ => {}
+        }
+    }
+    (live, tombstones)
+}
+
+/// The lifecycle catalog as stored, read row by row, plus the number of
+/// revisions recorded.
+async fn stored_catalog(raw: &Client, prefix: &str) -> Result<(Catalog, i64), String> {
+    let live_rows = raw
+        .query(
+            &format!("SELECT target, generation, project FROM {prefix}_projection.live_generation"),
+            &[],
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    let tombstone_rows = raw
+        .query(
+            &format!("SELECT subject, generation FROM {prefix}_projection.tombstone"),
+            &[],
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    let revisions: i64 = raw
+        .query_one(
+            &format!("SELECT count(*) FROM {prefix}_projection.semantic_revision"),
+            &[],
+        )
+        .await
+        .map_err(|error| error.to_string())?
+        .get(0);
+    let live = live_rows
+        .iter()
+        .map(|row| {
+            (
+                row.get::<_, String>(0),
+                (row.get::<_, i64>(1) as u64, row.get::<_, Option<String>>(2)),
+            )
+        })
+        .collect();
+    let tombstones = tombstone_rows
+        .iter()
+        .map(|row| (row.get::<_, String>(0), row.get::<_, i64>(1) as u64))
+        .collect();
+    Ok(((live, tombstones), revisions))
+}
+
+fn revision_count(log: &[CommittedEvent]) -> i64 {
+    log.iter()
+        .filter(|record| matches!(record.event, LedgerEvent::SemanticDeltaCommitted { .. }))
+        .count() as i64
+}
+
+/// Everything a rolled-back record could have left behind: the projection
+/// must be exactly the reference of `prefix` — its state, its event count,
+/// its lifecycle catalog and its revisions. Returns what differs.
+async fn check_prefix(
+    substrate: &mut PgSubstrate,
+    raw: &Client,
+    prefix: &str,
+    applied: &[CommittedEvent],
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    let fence = CommitIndex(applied.len() as u64);
+    let mut reference = MaterializedState::default();
+    for record in applied {
+        reference.apply(record);
+    }
+    match substrate.state_entries(fence).await {
+        Ok(entries) if entries == reference.values => {}
+        Ok(_) => problems.push("the state differs from the prefix".into()),
+        Err(error) => problems.push(format!("the state is unreadable: {error:?}")),
+    }
+    match substrate
+        .events_after(CommitIndex(0), applied.len() as u32 + 10)
+        .await
+    {
+        Ok(events) if events.len() == applied.len() => {}
+        Ok(events) => problems.push(format!(
+            "{} event rows for {} commits",
+            events.len(),
+            applied.len()
+        )),
+        Err(error) => problems.push(format!("the event log is unreadable: {error:?}")),
+    }
+    match stored_catalog(raw, prefix).await {
+        Ok((catalog, revisions)) => {
+            if catalog != expected_catalog(applied) {
+                problems.push("the lifecycle catalog differs from the prefix".into());
+            }
+            if revisions != revision_count(applied) {
+                problems.push(format!("{revisions} revisions recorded"));
+            }
+        }
+        Err(error) => problems.push(format!("the catalog is unreadable: {error}")),
+    }
+    problems
+}
+
+/// The topic each event kind is published under, written out here so the
+/// harness does not check `ptr_pg`'s mapping against itself.
+fn expected_topic(event: &LedgerEvent) -> &'static str {
+    match event {
+        LedgerEvent::SemanticDeltaCommitted { .. } => "semantic.delta_committed",
+        LedgerEvent::CapsuleCommitted { .. } => "capsule.committed",
+        LedgerEvent::CapsuleSuperseded { .. } => "capsule.superseded",
+        LedgerEvent::Revoked { .. } => "lifecycle.revoked",
+        LedgerEvent::HardConstraintCommitted { .. } => "constraint.committed",
+        LedgerEvent::VerifierAttested { .. } => "verifier.attested",
+        LedgerEvent::ProcedurePromoted { .. } => "procedure.promoted",
+        LedgerEvent::ProcedureRevoked { .. } => "procedure.revoked",
+        LedgerEvent::SnapshotCommitted { .. } => "snapshot.committed",
+        LedgerEvent::EffectAttempted { .. } => "effect.attempted",
+        LedgerEvent::EffectSettled { .. } => "effect.settled",
+        LedgerEvent::EffectReconciled { .. } => "effect.reconciled",
+    }
+}
+
+/// The subject a consumer partitions by, as doc 35 defines it: the lifecycle
+/// target, the attested subject, the revision, the snapshot, or the effect
+/// attempt's commit index.
+fn expected_subject(record: &CommittedEvent) -> String {
+    match &record.event {
+        LedgerEvent::CapsuleCommitted { capsule, .. }
+        | LedgerEvent::CapsuleSuperseded { capsule, .. } => capsule.0.clone(),
+        LedgerEvent::Revoked { subject, .. } | LedgerEvent::VerifierAttested { subject, .. } => {
+            subject.clone()
+        }
+        LedgerEvent::HardConstraintCommitted { key, .. } => format!("constraint:{key}"),
+        LedgerEvent::ProcedurePromoted { id, .. } | LedgerEvent::ProcedureRevoked { id, .. } => {
+            format!("procedure:{id}")
+        }
+        LedgerEvent::SemanticDeltaCommitted { revision, .. } => format!("revision:{}", revision.0),
+        LedgerEvent::SnapshotCommitted { revision, .. } => format!("snapshot:{revision}"),
+        LedgerEvent::EffectAttempted { .. } => format!("effect:{}", record.index.0),
+        LedgerEvent::EffectSettled { attempt, .. }
+        | LedgerEvent::EffectReconciled { attempt, .. } => format!("effect:{}", attempt.0),
+    }
+}
+
+/// An event row's payload must carry the commit index and exactly the entries
+/// the reference projects for the record.
+fn payload_matches(row: &ptr_pg::ProjectionEventRow, record: &CommittedEvent) -> bool {
+    let expected: BTreeMap<String, String> = projection_entries(record).into_iter().collect();
+    let Some(entries) = row.payload["entries"].as_object() else {
+        return false;
+    };
+    row.payload["commit_index"].as_u64() == Some(record.index.0)
+        && entries.len() == expected.len()
+        && entries
+            .iter()
+            .all(|(key, value)| value.as_str() == expected.get(key).map(String::as_str))
 }
 
 #[allow(clippy::too_many_arguments)]
 async fn compare_with_oracle(
     substrate: &mut PgSubstrate,
+    raw: &Client,
+    prefix: &str,
     oracle: &PtrRuntime,
     log: &[CommittedEvent],
     head: LogAnchor,
@@ -725,6 +1021,56 @@ async fn compare_with_oracle(
         }
     }
 
+    // The whole lifecycle catalog as stored — live generations with their
+    // projects, tombstones, the number of revisions — against the one the log
+    // implies: this also shows rows left over for targets the log never names.
+    match stored_catalog(raw, prefix).await {
+        Ok((catalog, revisions)) => {
+            let expected = expected_catalog(log);
+            for (target, (generation, _)) in &expected.0 {
+                if oracle.live_generation(target) != Some(Generation(*generation)) {
+                    diverged(
+                        &mut metrics.invalid_logs,
+                        format!("seed {seed} case {case}: the harness's catalog disagrees with the runtime on {target:?}"),
+                    );
+                }
+            }
+            if catalog.0 != expected.0 {
+                diverged(
+                    &mut metrics.lifecycle_divergences,
+                    format!(
+                        "seed {seed} case {case}: {} live-generation rows, {} expected, or a generation or project differs",
+                        catalog.0.len(),
+                        expected.0.len()
+                    ),
+                );
+            }
+            if catalog.1 != expected.1 {
+                diverged(
+                    &mut metrics.lifecycle_divergences,
+                    format!(
+                        "seed {seed} case {case}: {} tombstones, {} expected",
+                        catalog.1.len(),
+                        expected.1.len()
+                    ),
+                );
+            }
+            if revisions != revision_count(log) {
+                diverged(
+                    &mut metrics.revision_divergences,
+                    format!(
+                        "seed {seed} case {case}: {revisions} revisions recorded, {} expected",
+                        revision_count(log)
+                    ),
+                );
+            }
+        }
+        Err(error) => diverged(
+            &mut metrics.read_failures,
+            format!("seed {seed} case {case}: the lifecycle catalog is unreadable: {error}"),
+        ),
+    }
+
     // Revisions: which commit published each one.
     for record in log {
         if let LedgerEvent::SemanticDeltaCommitted { revision, .. } = &record.event {
@@ -741,8 +1087,8 @@ async fn compare_with_oracle(
         }
     }
 
-    // The event log: one row per commit, the topic, subject and payload the
-    // mapping defines, in commit order.
+    // The event log: one row per commit, in commit order, with the topic and
+    // subject written out above and the entries the reference projects.
     let events = match substrate
         .events_after(CommitIndex(0), log.len() as u32 + 10)
         .await
@@ -768,9 +1114,9 @@ async fn compare_with_oracle(
     }
     for (row, record) in events.iter().zip(log) {
         if row.commit_index != record.index
-            || row.topic != event_topic(&record.event)
-            || row.subject != event_subject(record)
-            || row.payload != event_payload(record)
+            || row.topic != expected_topic(&record.event)
+            || row.subject != expected_subject(record)
+            || !payload_matches(row, record)
         {
             diverged(
                 &mut metrics.event_log_divergences,
@@ -782,15 +1128,15 @@ async fn compare_with_oracle(
         }
     }
 
-    let watermark = substrate.watermark().await.expect("watermark");
-    if watermark != head {
-        diverged(
+    match substrate.watermark().await {
+        Ok(watermark) if watermark == head => {}
+        other => diverged(
             &mut metrics.watermark_divergences,
             format!(
-                "seed {seed} case {case}: watermark {} differs from the ledger head {}",
-                watermark.index.0, head.index.0
+                "seed {seed} case {case}: watermark {other:?} differs from the ledger head {}",
+                head.index.0
             ),
-        );
+        ),
     }
 }
 
@@ -885,6 +1231,31 @@ async fn probe_foreign_histories(
         "a different record at an applied index",
     );
 
+    // The forked record handed over with the true anchor of its index, and
+    // the true record with the forked anchor: the anchor alone must not make
+    // a different record a duplicate.
+    let mixed = rng.range(fork_at as u64, head as u64) as usize - 1;
+    let result = substrate
+        .apply_committed(&beside[mixed], anchors[mixed])
+        .await;
+    refused(
+        Ok(matches!(
+            result,
+            Err(PgError::ForeignHistory { .. } | PgError::InvalidRecord { .. })
+        )),
+        "a different record with the true anchor at an applied index",
+    );
+    let result = substrate
+        .apply_committed(&log[mixed], beside_anchors[mixed])
+        .await;
+    refused(
+        Ok(matches!(
+            result,
+            Err(PgError::ForeignHistory { .. } | PgError::InvalidRecord { .. })
+        )),
+        "the true record with a forked anchor at an applied index",
+    );
+
     // A record handed over with another index's anchor.
     let result = substrate.apply_committed(&log[head - 1], anchors[0]).await;
     refused(
@@ -893,50 +1264,43 @@ async fn probe_foreign_histories(
     );
 
     // None of the refusals may have moved the projection.
-    let watermark = substrate.watermark().await.expect("watermark");
+    let watermark = substrate.watermark().await;
     refused(
-        Ok(watermark == anchors[head - 1]),
+        Ok(matches!(watermark, Ok(watermark) if watermark == anchors[head - 1])),
         "a refusal that moved the watermark",
     );
 }
 
-/// The negative control: an instance restored from an older backup catches up
-/// with the true ledger, which has grown meanwhile. Nothing here may be
-/// refused, and the caught-up projection must equal the full one. Returns the
-/// extended log, which the main instance also applies.
+/// The negative control: the ledger grows by records of every kind, and both
+/// the projection and an instance restored from an older backup catch up with
+/// it. Nothing here may be refused, and both must then equal the runtime's
+/// replay of the grown ledger in full.
 #[allow(clippy::too_many_arguments)]
 async fn probe_catch_up(
     raw: &Client,
+    instance: &Instance,
     substrate: &mut PgSubstrate,
-    log: &[CommittedEvent],
+    extended: &[CommittedEvent],
+    applied: usize,
+    oracle: &PtrRuntime,
     rng: &mut Rng,
     seed: u64,
     case: usize,
     metrics: &mut Metrics,
-) -> Vec<CommittedEvent> {
-    let mut extended = log.to_vec();
-    for _ in 0..rng.range(1, 5) {
-        let index = extended.len() as u64 + 1;
-        extended.push(CommittedEvent {
-            index: CommitIndex(index),
-            event: LedgerEvent::VerifierAttested {
-                subject: format!("extension-{index}"),
-                passed: rng.chance(0.5),
-            },
-        });
-    }
-    let anchors = chain_anchors(&extended, LogAnchor::empty()).expect("extension chains");
+) {
+    let anchors = chain_anchors(extended, LogAnchor::empty()).expect("extension chains");
     let head = anchors[anchors.len() - 1];
+    let fence = CommitIndex(extended.len() as u64);
 
     // The main instance is simply behind the grown ledger.
     match substrate.check_against_ledger(head).await {
-        Ok(behind) if behind == (extended.len() - log.len()) as u64 => {}
+        Ok(behind) if behind == (extended.len() - applied) as u64 => {}
         other => diverged(
             &mut metrics.false_refusals,
             format!("seed {seed} case {case}: a legitimate catch-up check gave {other:?}"),
         ),
     }
-    for (record, anchor) in extended[log.len()..].iter().zip(&anchors[log.len()..]) {
+    for (record, anchor) in extended[applied..].iter().zip(&anchors[applied..]) {
         match substrate.apply_committed(record, *anchor).await {
             Ok(report) if report.outcome == ApplyOutcome::Applied => {}
             other => diverged(
@@ -948,13 +1312,26 @@ async fn probe_catch_up(
             ),
         }
     }
+    compare_with_oracle(
+        substrate,
+        raw,
+        &instance.prefix,
+        oracle,
+        extended,
+        head,
+        fence,
+        seed,
+        case,
+        metrics,
+    )
+    .await;
 
     // A second instance restored from a backup taken at a random earlier
     // index catches up from there.
     metrics.backup_catchups += 1;
     let backup = Instance::new("l004b", seed, case);
     let mut restored = backup.create(raw).await;
-    let taken_at = rng.range(0, log.len() as u64) as usize;
+    let taken_at = rng.range(0, applied as u64) as usize;
     if let Err(error) = restored.replay(&extended[..taken_at]).await {
         diverged(
             &mut metrics.false_refusals,
@@ -968,6 +1345,7 @@ async fn probe_catch_up(
             format!("seed {seed} case {case}: a restored backup's check gave {other:?}"),
         ),
     }
+    let mut caught_up = true;
     for (record, anchor) in extended[taken_at..].iter().zip(&anchors[taken_at..]) {
         if !matches!(
             restored.apply_committed(record, *anchor).await,
@@ -980,23 +1358,33 @@ async fn probe_catch_up(
                     record.index.0
                 ),
             );
+            caught_up = false;
             break;
         }
     }
-    let fence = CommitIndex(extended.len() as u64);
-    let main = substrate.state_entries(fence).await;
-    let caught_up = restored.state_entries(fence).await;
-    let restored_head = restored.watermark().await;
-    if !matches!((&main, &caught_up), (Ok(main), Ok(caught_up)) if main == caught_up)
-        || !matches!(restored_head, Ok(anchor) if anchor == head)
-    {
-        diverged(
-            &mut metrics.catchup_divergences,
-            format!("seed {seed} case {case}: the caught-up backup differs from the projection"),
-        );
+    if caught_up {
+        let before = metrics.hard_failures();
+        compare_with_oracle(
+            &mut restored,
+            raw,
+            &backup.prefix,
+            oracle,
+            extended,
+            head,
+            fence,
+            seed,
+            case,
+            metrics,
+        )
+        .await;
+        if metrics.hard_failures() > before {
+            diverged(
+                &mut metrics.catchup_divergences,
+                format!("seed {seed} case {case}: the caught-up backup differs from the reference"),
+            );
+        }
     }
     restored.drop_all().await.expect("drop backup instance");
-    extended
 }
 
 #[cfg(feature = "turso-oracle")]

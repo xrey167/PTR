@@ -19,6 +19,23 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 RESULTS = HERE / "results"
 
+COVERAGE = [
+    "revocations_with_removal",
+    "window_denials",
+    "stale_checkpoints_refused",
+    "planted_stale_checkpoints",
+    "checkpoints_verified",
+    "inadmissible_probes",
+    "process_crashes",
+    "append_crashes_committed",
+    "writes_lost_in_crashes",
+    "revocation_crashes_committed",
+    "revocation_crashes_rolled_back",
+    "append_races_append_first",
+    "append_races_revocation_first",
+    "checkpoint_races_stored",
+    "checkpoint_races_refused",
+]
 HARD = [
     "invalid_logs",
     "bit_identity_failures",
@@ -34,6 +51,7 @@ HARD = [
     "stale_checkpoints_accepted",
     "checkpoint_violations",
     "stale_checkpoint_rows",
+    "checkpoints_lost",
     "atomicity_failures",
     "crash_recovery_failures",
     "race_violations",
@@ -51,6 +69,9 @@ LIMITATIONS = [
     "memory shapes up to 4 heads of 12x12 and journals up to a few hundred writes",
     "an input's digest is fixed per generation: an input edit at an unchanged generation is the consumer's to exclude and is not exercised",
     "exact revocation only: copies in dead tuples, WAL and backups are storage erasure, audited separately",
+    "the never-saw-it fold uses ptr-fastmem's own delta-rule arithmetic; that arithmetic is checked by the crate's unit tests, not here",
+    "a restore always folds the whole journal; restoring from a checkpoint plus the journal suffix has no API and is not exercised",
+    "the process is handed each committed record; reading the projection event log to drive the refold is not exercised",
     "the seed fixes every choice; crash and race outcomes depend on timing",
 ]
 
@@ -138,6 +159,14 @@ def main() -> None:
 
     hard_failures = sum(totals.get(key, 0) for key in HARD)
     hard_pass = hard_failures == 0 and all(record["exit_code"] == 0 for record in records)
+    # A run that never reached a probe proves nothing about it: every seed must
+    # have seen both outcomes of every crash and race and exercised every probe.
+    coverage = {
+        f"seed {result['seed']}: {name}": result.get(name, 0) > 0
+        for result in seeds
+        for name in COVERAGE
+    }
+    coverage_ok = all(coverage.values())
     servers = sorted({result["server"] for result in seeds})
 
     metrics = {
@@ -149,6 +178,7 @@ def main() -> None:
         "totals": totals,
         "derived": derived,
         "hard_failures": hard_failures,
+        "probe_coverage": coverage,
         "mutation_checks": mutations,
     }
     (RESULTS / "metrics.json").write_text(
@@ -163,11 +193,15 @@ def main() -> None:
         "entrypoint": manifest["entrypoint"],
         "seeds": records,
         "hard_pass": hard_pass,
+        "probe_coverage_ok": coverage_ok,
         "mutation_checks": mutations,
         "limitations": LIMITATIONS,
     }
     (RESULTS / "run.json").write_text(json.dumps(run, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    print(f"L003 hard_pass={hard_pass} cases={totals['cases']} hard_failures={hard_failures}")
+    print(
+        f"L003 hard_pass={hard_pass} coverage_ok={coverage_ok} cases={totals['cases']} "
+        f"hard_failures={hard_failures}"
+    )
 
 
 if __name__ == "__main__":

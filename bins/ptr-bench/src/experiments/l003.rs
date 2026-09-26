@@ -8,14 +8,19 @@
 //! journal writes and checkpoints a change makes inadmissible; the process
 //! holding the memories refolds them in memory when it sees the change.
 //!
-//! The oracle depends on neither the memory nor the database: the runtime's
-//! replay of the ledger decides which source generations are admissible, and
-//! the harness's own record of every acknowledged write, as composed, folded
-//! from scratch without the inadmissible ones, is the never-saw-it fold. After
-//! every lifecycle change the refolded memory, the journal PostgreSQL kept and
-//! the newest checkpoint it hands out are compared with that fold bit for bit,
-//! and a read in the window between the change's commit and the refold must be
-//! denied. Processes crash mid-append, mid-revocation and between operations;
+//! The oracle is independent of the database and of the revocation path: the
+//! runtime's replay of the ledger decides which source generations are
+//! admissible, and the harness's own record of every acknowledged write, as
+//! composed, folded from scratch without the inadmissible ones, is the
+//! never-saw-it fold. That fold uses `ptr-fastmem`'s own arithmetic (the
+//! delta rule is checked against its closed form by the crate's unit tests);
+//! what it is independent of is the refold, its checkpoints, the journal store
+//! and the projector's cascade, which are what this experiment tests. After
+//! every record the refolded memory, the journal PostgreSQL kept, every
+//! stored checkpoint and the newest one handed out are compared with that
+//! fold bit for bit, and a read in the window between the change's commit and
+//! the refold must be denied. Processes crash mid-append, mid-revocation and
+//! between operations, and an operation reported done must be found durable;
 //! appends and checkpoints race revocations on separate sessions.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -23,8 +28,8 @@ use std::time::{Duration, Instant};
 
 use ptr_config::PtrConfig;
 use ptr_fastmem::{
-    binding_digest_of, encode_state, Decay, FastMemory, FastMemoryConfig, FastWeightState, Query,
-    SourceRef, WriteRequest, WriteSeq,
+    binding_digest_of, decode_state, encode_state, Decay, FastMemory, FastMemoryConfig,
+    FastWeightState, Query, SourceRef, WriteRequest, WriteSeq,
 };
 use ptr_ledger::integrity::{chain_anchors, sha256, LogAnchor};
 use ptr_ledger::{CommittedEvent, LedgerEvent};
@@ -113,6 +118,8 @@ struct Metrics {
     stale_checkpoints_accepted: u64,
     checkpoint_violations: u64,
     stale_checkpoint_rows: u64,
+    /// Checkpoints stored and still folding the journal that disappeared.
+    checkpoints_lost: u64,
     atomicity_failures: u64,
     crash_recovery_failures: u64,
     race_violations: u64,
@@ -135,6 +142,7 @@ impl Metrics {
             + self.stale_checkpoints_accepted
             + self.checkpoint_violations
             + self.stale_checkpoint_rows
+            + self.checkpoints_lost
             + self.atomicity_failures
             + self.crash_recovery_failures
             + self.race_violations
@@ -208,6 +216,7 @@ impl Metrics {
             ),
             ("checkpoint_violations", self.checkpoint_violations),
             ("stale_checkpoint_rows", self.stale_checkpoint_rows),
+            ("checkpoints_lost", self.checkpoints_lost),
             ("atomicity_failures", self.atomicity_failures),
             ("crash_recovery_failures", self.crash_recovery_failures),
             ("race_violations", self.race_violations),
@@ -628,6 +637,10 @@ struct Tracked {
     config: FastMemoryConfig,
     memory: FastMemory,
     acknowledged: Vec<(WriteSeq, WriteRequest)>,
+    /// Checkpoints the store accepted, by applied sequence number, with the
+    /// journal prefix each folded. One stays valid while the journal keeps
+    /// exactly that prefix; once it is not, it is dropped for good.
+    stored: BTreeMap<WriteSeq, Vec<(WriteSeq, SourceRef)>>,
 }
 
 impl Tracked {
@@ -640,6 +653,32 @@ impl Tracked {
             .cloned()
             .collect()
     }
+
+    /// Record a checkpoint the store accepted, folding `journal` up to
+    /// `applied`.
+    fn remember(&mut self, applied: WriteSeq, journal: &[(WriteSeq, WriteRequest)]) {
+        self.stored
+            .insert(applied, prefix_sources(journal, applied));
+    }
+
+    /// Drop every remembered checkpoint that no longer folds a prefix of
+    /// `journal`, and return the valid ones.
+    fn valid_checkpoints(&mut self, journal: &[(WriteSeq, WriteRequest)]) -> BTreeSet<WriteSeq> {
+        self.stored
+            .retain(|applied, folded| prefix_sources(journal, *applied) == *folded);
+        self.stored.keys().copied().collect()
+    }
+}
+
+fn prefix_sources(
+    journal: &[(WriteSeq, WriteRequest)],
+    applied: WriteSeq,
+) -> Vec<(WriteSeq, SourceRef)> {
+    journal
+        .iter()
+        .filter(|(seq, _)| *seq <= applied)
+        .map(|(seq, request)| (*seq, request.source.clone()))
+        .collect()
 }
 
 /// The process's two sessions: one appends and checkpoints, one projects.
@@ -725,6 +764,7 @@ impl Case<'_> {
             config,
             memory: FastMemory::new(config).expect("a supported shape"),
             acknowledged: Vec::new(),
+            stored: BTreeMap::new(),
         });
     }
 
@@ -819,21 +859,23 @@ impl Case<'_> {
                 );
             }
         }
-        if !matches!(
+        // Every record is checked, not only those the projector's mapping calls
+        // lifecycle changes: a change mapped to nothing must still show here.
+        if matches!(
             change,
             LifecycleChange::SetLive { .. } | LifecycleChange::Tombstone { .. }
         ) {
-            return;
+            self.metrics.lifecycle_records += 1;
         }
-        self.metrics.lifecycle_records += 1;
         for (index, expected) in post.iter().enumerate() {
             self.check_journal(index, expected).await;
             self.check_checkpoint_rows(index, expected).await;
             if window {
                 self.window_probe(index, expected, rng).await;
             }
-            // The process sees the change on the projection event log and
-            // refolds without every write it made inadmissible.
+            // The process is handed the committed record, as a consumer of the
+            // projection's change feed would be, and refolds without every
+            // write the change made inadmissible.
             let report = self.memories[index]
                 .memory
                 .revoke(|source| removed_by(&change, source));
@@ -878,27 +920,48 @@ impl Case<'_> {
     }
 
     /// Every stored checkpoint must still fold exactly the journal prefix it
-    /// names: a revocation deletes the ones that folded a removed write, even
-    /// one committed while it waited.
+    /// names — its binding and, decoded, its cells — because a revocation
+    /// deletes the ones that folded a removed write, even one committed while
+    /// it waited. And every checkpoint the store accepted that still folds the
+    /// journal must still be there: the cascade deletes nothing it need not.
     async fn check_checkpoint_rows(&mut self, index: usize, expected: &[(WriteSeq, WriteRequest)]) {
         let id = self.memories[index].id.clone();
-        let rows = self
+        let config = self.memories[index].config;
+        let rows = match self
             .raw
             .query(
                 &format!(
-                    "SELECT applied_seq, binding_digest FROM {}_work.fastmem_checkpoint \
+                    "SELECT applied_seq, binding_digest, state FROM {}_work.fastmem_checkpoint \
                      WHERE memory = $1",
                     self.instance.prefix
                 ),
                 &[&id],
             )
             .await
-            .expect("read checkpoint rows");
+        {
+            Ok(rows) => rows,
+            Err(error) => {
+                diverged(
+                    &mut self.metrics.read_failures,
+                    format!(
+                        "{}: the checkpoint rows are unreadable: {error}",
+                        self.label
+                    ),
+                );
+                return;
+            }
+        };
+        let mut present = BTreeSet::new();
         for row in rows {
             let applied = WriteSeq(row.get::<_, i64>(0) as u64);
+            present.insert(applied);
             let digest: Vec<u8> = row.get(1);
-            let prefix: Vec<&(WriteSeq, WriteRequest)> =
-                expected.iter().filter(|(seq, _)| *seq <= applied).collect();
+            let bytes: Vec<u8> = row.get(2);
+            let prefix: Vec<(WriteSeq, WriteRequest)> = expected
+                .iter()
+                .filter(|(seq, _)| *seq <= applied)
+                .cloned()
+                .collect();
             let binding =
                 binding_digest_of(prefix.iter().map(|(seq, request)| (*seq, &request.source)));
             let current =
@@ -908,6 +971,31 @@ impl Case<'_> {
                     &mut self.metrics.stale_checkpoint_rows,
                     format!(
                         "{}: a checkpoint of {id:?} at {} no longer folds the journal",
+                        self.label, applied.0
+                    ),
+                );
+                continue;
+            }
+            let folded = FastMemory::restore(config, prefix)
+                .ok()
+                .zip(decode_state(&bytes).ok())
+                .is_some_and(|(fold, state)| same_state(fold.state(), &state));
+            if !folded {
+                diverged(
+                    &mut self.metrics.checkpoint_violations,
+                    format!(
+                        "{}: the stored state of {id:?} at {} is not the fold of its prefix",
+                        self.label, applied.0
+                    ),
+                );
+            }
+        }
+        for applied in self.memories[index].valid_checkpoints(expected) {
+            if !present.contains(&applied) {
+                diverged(
+                    &mut self.metrics.checkpoints_lost,
+                    format!(
+                        "{}: the checkpoint of {id:?} at {} still folds the journal but is gone",
                         self.label, applied.0
                     ),
                 );
@@ -1163,10 +1251,31 @@ impl Case<'_> {
     ) {
         let id = self.memories[index].id.clone();
         let config = self.memories[index].config;
+        let newest = self.memories[index]
+            .valid_checkpoints(expected)
+            .last()
+            .copied();
         match self.sessions.writer().latest_checkpoint(&id).await {
-            Ok(None) => {}
+            Ok(None) if newest.is_none() => {}
+            Ok(None) => diverged(
+                &mut self.metrics.checkpoint_violations,
+                format!(
+                    "{}: no checkpoint of {id:?} was handed out, the newest valid is at {}",
+                    self.label,
+                    newest.map_or(0, |applied| applied.0)
+                ),
+            ),
             Ok(Some(checkpoint)) => {
                 self.metrics.checkpoints_verified += 1;
+                if Some(checkpoint.applied) != newest {
+                    diverged(
+                        &mut self.metrics.checkpoint_violations,
+                        format!(
+                            "{}: the checkpoint of {id:?} handed out is at {}, the newest valid at {:?}",
+                            self.label, checkpoint.applied.0, newest
+                        ),
+                    );
+                }
                 let prefix: Vec<(WriteSeq, WriteRequest)> = expected
                     .iter()
                     .filter(|(seq, _)| *seq <= checkpoint.applied)
@@ -1325,7 +1434,11 @@ impl Case<'_> {
             .put_checkpoint(&id, binding, &state)
             .await
         {
-            Ok(()) => self.metrics.checkpoints_put += 1,
+            Ok(()) => {
+                self.metrics.checkpoints_put += 1;
+                let journal = self.memories[index].expected(&self.ledger.oracle);
+                self.memories[index].remember(state.applied(), &journal);
+            }
             Err(error) => diverged(
                 &mut self.metrics.checkpoint_false_refusals,
                 format!(
@@ -1544,7 +1657,11 @@ impl Case<'_> {
             },
         );
         match stored {
-            Ok(()) => self.metrics.checkpoint_races_stored += 1,
+            Ok(()) => {
+                // Stored before the change: it folded the journal as it was.
+                self.metrics.checkpoint_races_stored += 1;
+                self.memories[index].remember(state.applied(), &pre[index]);
+            }
             Err(PgError::InvalidCheckpoint { .. }) => self.metrics.checkpoint_races_refused += 1,
             Err(error) => diverged(
                 &mut self.metrics.read_failures,
@@ -1605,12 +1722,22 @@ impl Case<'_> {
             .take()
             .expect("the projector session is open");
         let in_flight = record.clone();
-        let task = tokio::spawn(async move {
-            let result = projector.apply_committed(&in_flight, anchor).await;
-            (projector, result)
-        });
-        pg::crash_task(&self.instance, self.raw, task, kill, delay).await;
+        // The session ends with the task, as it would with the process.
+        let task = tokio::spawn(async move { projector.apply_committed(&in_flight, anchor).await });
+        let returned = pg::crash_task(&self.instance, self.raw, task, kill, delay).await;
         self.sessions = Sessions::open(&self.instance).await;
+        let acknowledged = match returned {
+            Ok(Some(Ok(report))) => report.outcome == ApplyOutcome::Applied,
+            Ok(_) => false,
+            Err(error) => {
+                diverged(
+                    &mut self.metrics.crash_recovery_failures,
+                    format!("{}: {error}", self.label),
+                );
+                self.broken = true;
+                return;
+            }
+        };
 
         let watermark = match self.sessions.projector().watermark().await {
             Ok(watermark) => watermark,
@@ -1625,6 +1752,16 @@ impl Case<'_> {
         };
         let committed = if watermark == anchor {
             true
+        } else if watermark == self.ledger.head && acknowledged {
+            diverged(
+                &mut self.metrics.crash_recovery_failures,
+                format!(
+                    "{}: record {} was reported applied but rolled back",
+                    self.label, record.index.0
+                ),
+            );
+            self.broken = true;
+            return;
         } else if watermark == self.ledger.head {
             false
         } else {
@@ -1697,12 +1834,22 @@ impl Case<'_> {
             .expect("the writer session is open");
         let (id, in_flight) = (self.memories[index].id.clone(), request.clone());
         let seq = receipt.seq;
-        let task = tokio::spawn(async move {
-            let result = writer.append_write(&id, seq, &in_flight).await;
-            (writer, result)
-        });
-        pg::crash_task(&self.instance, self.raw, task, kill, delay).await;
+        // The session ends with the task, as it would with the process.
+        let task = tokio::spawn(async move { writer.append_write(&id, seq, &in_flight).await });
+        let returned = pg::crash_task(&self.instance, self.raw, task, kill, delay).await;
         self.sessions = Sessions::open(&self.instance).await;
+        let acknowledged = match returned {
+            Ok(Some(result)) => result.is_ok(),
+            Ok(None) => false,
+            Err(error) => {
+                diverged(
+                    &mut self.metrics.crash_recovery_failures,
+                    format!("{}: {error}", self.label),
+                );
+                self.broken = true;
+                return;
+            }
+        };
 
         let expected = self.memories[index].expected(&self.ledger.oracle);
         let mut with_write = expected.clone();
@@ -1714,6 +1861,13 @@ impl Case<'_> {
                 self.metrics.writes_acknowledged += 1;
                 self.memories[index].acknowledged.push((seq, request));
             }
+            Ok(journal) if same_journal(&journal, &expected) && acknowledged => diverged(
+                &mut self.metrics.atomicity_failures,
+                format!(
+                    "{}: an append reported done was not in the journal after the crash",
+                    self.label
+                ),
+            ),
             Ok(journal) if same_journal(&journal, &expected) => {
                 self.metrics.writes_lost_in_crashes += 1;
             }

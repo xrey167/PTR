@@ -23,6 +23,7 @@ hard_counters = [
     "false_refusals",
     "catchup_divergences",
     "rebuild_divergences",
+    "duel_failures",
     "turso_divergences",
     "read_failures",
     "nul_failures",
@@ -184,4 +185,86 @@ replace = '''
             .await
             .map_err(database)?;
         Ok(report)
+'''
+
+[[mutation]]
+name = "projection-commit-error-ignored"
+description = "The projector reports a record applied even when its commit failed."
+file = "crates/ptr-pg/src/adapters/projection.rs"
+cases = 12
+find = '''
+        transaction.commit().await.map_err(database)?;
+        Ok(report)
+'''
+replace = '''
+        let _ = transaction.commit().await;
+        Ok(report)
+'''
+
+[[mutation]]
+name = "state-committed-before-watermark"
+description = "A commit's state entries are committed before its lifecycle rows, events and watermark."
+file = "crates/ptr-pg/src/adapters/projection.rs"
+cases = 12
+find = '''
+                .map_err(database)?;
+        }
+
+        match lifecycle_change(committed) {
+'''
+replace = '''
+                .map_err(database)?;
+        }
+        transaction.commit().await.map_err(database)?;
+        let transaction = self.read_committed().await?;
+        lock_watermark(&transaction, &schemas).await?;
+
+        match lifecycle_change(committed) {
+'''
+
+[[mutation]]
+name = "project-overwritten-on-supersede"
+description = "A supersession or a constraint or procedure activation clears the target's project."
+file = "crates/ptr-pg/src/adapters/projection.rs"
+find = '''
+                                 project = coalesce(EXCLUDED.project, \
+                                                    {projection}.live_generation.project), \
+'''
+replace = '''
+                                 project = EXCLUDED.project, \
+'''
+
+[[mutation]]
+name = "event-subject-wrong"
+description = "A settled or reconciled effect is published under its own commit index instead of its attempt's."
+file = "crates/ptr-pg/src/event.rs"
+find = '''
+            format!("effect:{}", attempt.0)
+'''
+replace = '''
+            format!("effect:{}", committed.index.0)
+'''
+
+[[mutation]]
+name = "event-topics-swapped"
+description = "Supersessions and revocations are published under each other's topic."
+file = "crates/ptr-pg/src/event.rs"
+find = '''
+        LedgerEvent::CapsuleSuperseded { .. } => "capsule.superseded",
+        LedgerEvent::Revoked { .. } => "lifecycle.revoked",
+'''
+replace = '''
+        LedgerEvent::CapsuleSuperseded { .. } => "lifecycle.revoked",
+        LedgerEvent::Revoked { .. } => "capsule.superseded",
+'''
+
+[[mutation]]
+name = "redelivery-record-unchecked"
+description = "A redelivered index is a duplicate whenever its anchor matches, whatever record comes with it."
+file = "crates/ptr-pg/src/adapters/projection.rs"
+find = '''
+                if recomputed != Some(anchor) {
+'''
+replace = '''
+                if false && recomputed != Some(anchor) {
 '''

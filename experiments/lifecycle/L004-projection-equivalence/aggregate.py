@@ -19,6 +19,19 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 RESULTS = HERE / "results"
 
+COVERAGE = [
+    "crashes_committed",
+    "crashes_rolled_back",
+    "client_aborts",
+    "server_kills",
+    "redeliveries",
+    "gap_probes",
+    "duel_probes",
+    "foreign_probes",
+    "backup_catchups",
+    "nul_probes",
+    "long_replay_commits",
+]
 HARD = [
     "invalid_logs",
     "state_divergences",
@@ -51,6 +64,7 @@ LIMITATIONS = [
     "crashes are session terminations and dropped clients; no power loss, torn page or storage fault",
     "readers are not run concurrently with the projector; the fence semantics are covered by the ptr-pg tests",
     "the seed fixes every log and probe; only whether a crashed transaction had committed depends on timing",
+    "Turso exposes point reads only, so it is compared for every key the reference holds but extra Turso keys would not show",
 ]
 
 
@@ -129,6 +143,14 @@ def main() -> None:
 
     hard_failures = sum(totals.get(key, 0) for key in HARD)
     hard_pass = hard_failures == 0 and all(record["exit_code"] == 0 for record in records)
+    # A run that never reached a probe proves nothing about it: every seed must
+    # have crashed on both sides of the commit and exercised every probe.
+    coverage = {
+        f"seed {result['seed']}: {name}": result.get(name, 0) > 0
+        for result in seeds
+        for name in COVERAGE
+    }
+    coverage_ok = all(coverage.values())
     servers = sorted({result["server"] for result in seeds})
 
     metrics = {
@@ -141,6 +163,7 @@ def main() -> None:
         "totals": totals,
         "derived": derived,
         "hard_failures": hard_failures,
+        "probe_coverage": coverage,
         "mutation_checks": mutations,
     }
     (RESULTS / "metrics.json").write_text(
@@ -155,11 +178,15 @@ def main() -> None:
         "entrypoint": manifest["entrypoint"],
         "seeds": records,
         "hard_pass": hard_pass,
+        "probe_coverage_ok": coverage_ok,
         "mutation_checks": mutations,
         "limitations": LIMITATIONS,
     }
     (RESULTS / "run.json").write_text(json.dumps(run, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    print(f"L004 hard_pass={hard_pass} cases={totals['cases']} hard_failures={hard_failures}")
+    print(
+        f"L004 hard_pass={hard_pass} coverage_ok={coverage_ok} cases={totals['cases']} "
+        f"hard_failures={hard_failures}"
+    )
 
 
 if __name__ == "__main__":

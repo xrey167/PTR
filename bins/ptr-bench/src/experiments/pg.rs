@@ -33,9 +33,12 @@ pub struct Instance {
 
 impl Instance {
     pub fn new(tag: &str, seed: u64, case: usize) -> Self {
-        let prefix = format!("{tag}_{seed}_{case}_{}", std::process::id());
+        // A process runs one seed, and the process id keeps concurrent runs
+        // apart, so the seed's low digits suffice; the prefix stays within
+        // the identifier bound for any seed and case count.
+        let prefix = format!("{tag}_{}_{case}_{}", seed % 1_000_000, std::process::id());
         let schemas = SchemaSet::with_prefix(&prefix).expect("experiment prefix is an identifier");
-        let tagged_dsn = format!("{} application_name={prefix}", dsn());
+        let tagged_dsn = tag_dsn(&dsn(), &prefix);
         Self {
             prefix,
             schemas,
@@ -84,28 +87,47 @@ impl Instance {
     }
 }
 
+/// Tag every session a connection string opens with `application_name`, in
+/// either form libpq accepts: key/value pairs or a URL.
+pub fn tag_dsn(dsn: &str, application_name: &str) -> String {
+    let trimmed = dsn.trim();
+    if trimmed.starts_with("postgres://") || trimmed.starts_with("postgresql://") {
+        let separator = if trimmed.contains('?') { '&' } else { '?' };
+        format!("{trimmed}{separator}application_name={application_name}")
+    } else {
+        format!("{trimmed} application_name={application_name}")
+    }
+}
+
+/// How long a crashed instance's sessions may take to disappear.
+const SESSION_DEADLINE: Duration = Duration::from_secs(60);
+
 /// Crash the process that runs `task`: terminate its server sessions (a kill
 /// the server sees mid-statement or mid-transaction) or drop the task where
 /// it stands (a client crash). Every other session of the instance must
-/// already be closed, as it is when the whole process dies. Returns once the
-/// server has released every session of the instance, so a restarted process
-/// never waits on a dead one's locks.
+/// already be closed, as it is when the whole process dies.
+///
+/// Returns what the task returned if it finished before the crash reached it
+/// (`None` when it was dropped first), so the caller can hold an
+/// acknowledgement to what the server kept: an operation reported done must
+/// be found committed. Returns an error if the server has not released every
+/// session of the instance within a minute, instead of waiting forever.
 pub async fn crash_task<T: Send + 'static>(
     instance: &Instance,
     raw: &Client,
     task: tokio::task::JoinHandle<T>,
     kill: bool,
     delay: Duration,
-) {
+) -> Result<Option<T>, String> {
     tokio::time::sleep(delay).await;
-    if kill {
+    let returned = if kill {
         instance.kill_sessions(raw).await;
-        // Whatever the task returns, its session is gone or suspect.
-        let _ = task.await;
+        task.await.ok()
     } else {
         task.abort();
-        let _ = task.await;
-    }
+        task.await.ok()
+    };
+    let started = std::time::Instant::now();
     loop {
         let alive: i64 = raw
             .query_one(
@@ -113,10 +135,16 @@ pub async fn crash_task<T: Send + 'static>(
                 &[&instance.prefix],
             )
             .await
-            .expect("count instance sessions")
+            .map_err(|error| format!("counting sessions failed: {error}"))?
             .get(0);
         if alive == 0 {
-            return;
+            return Ok(returned);
+        }
+        if started.elapsed() > SESSION_DEADLINE {
+            return Err(format!(
+                "{alive} sessions of {} outlived the crash by a minute",
+                instance.prefix
+            ));
         }
         tokio::time::sleep(Duration::from_millis(2)).await;
     }
@@ -174,4 +202,34 @@ pub fn json_string(value: &str) -> String {
     }
     out.push('"');
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn both_connection_string_forms_are_tagged() {
+        assert_eq!(
+            tag_dsn("host=127.0.0.1 user=postgres", "l004_17_0_9"),
+            "host=127.0.0.1 user=postgres application_name=l004_17_0_9"
+        );
+        assert_eq!(
+            tag_dsn("postgres://postgres@127.0.0.1/db", "x"),
+            "postgres://postgres@127.0.0.1/db?application_name=x"
+        );
+        assert_eq!(
+            tag_dsn("postgresql://127.0.0.1/db?sslmode=disable", "x"),
+            "postgresql://127.0.0.1/db?sslmode=disable&application_name=x"
+        );
+    }
+
+    #[test]
+    fn a_prefix_fits_the_identifier_bound_for_any_seed() {
+        let instance_prefix = format!("l004b_{}_{}_{}", u64::MAX % 1_000_000, 99_999, 4_194_304);
+        assert!(
+            SchemaSet::with_prefix(&instance_prefix).is_ok(),
+            "{instance_prefix}"
+        );
+    }
 }
