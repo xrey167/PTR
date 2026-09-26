@@ -25,17 +25,54 @@ fn score(value: f32) -> Probability {
 #[test]
 fn threshold_equality_is_admitted_and_calibration_equality_is_not_sampled() {
     let policy = TriagePolicy::new(AutoThreshold::AtLeast(0.5), 0.25).unwrap();
-    let boundary = policy.triage(&passing(), score(0.5), 0.25);
+    let boundary = policy.triage(&passing(), score(0.5), 0.25).unwrap();
     assert_eq!(boundary.decision, TriageDecision::AutoPropose);
     assert!(boundary.eligible);
     assert!(!boundary.calibration_slice);
     assert_eq!(boundary.auto_propensity, 0.75);
-    let sampled = policy.triage(&passing(), score(0.5), 0.0);
+    let sampled = policy.triage(&passing(), score(0.5), 0.0).unwrap();
     assert_eq!(sampled.decision, TriageDecision::Escalate);
     assert!(sampled.adjudicate(false).is_some());
-    let below = policy.triage(&passing(), score(0.49), 0.25);
+    let below = policy.triage(&passing(), score(0.49), 0.25).unwrap();
     assert_eq!(below.decision, TriageDecision::Escalate);
     assert_eq!(below.auto_propensity, 0.0);
+}
+
+#[test]
+fn a_draw_outside_the_unit_interval_is_refused_rather_than_skewing_the_slice() {
+    // With a NaN or a draw of at least one, `draw < rate` is false for every
+    // branch, so an admitted branch would always be auto-proposed while its
+    // logged propensity still claimed 1 - rate; a negative draw would put
+    // every branch in the slice.
+    let policy = TriagePolicy::new(AutoThreshold::AtLeast(0.5), 0.25).unwrap();
+    for draw in [
+        f64::NAN,
+        1.0,
+        1.5,
+        f64::INFINITY,
+        -0.1,
+        -f64::MIN_POSITIVE,
+        f64::NEG_INFINITY,
+    ] {
+        let refused = policy.triage(&passing(), score(0.9), draw);
+        assert!(
+            matches!(refused, Err(ArbiterError::InvalidDraw { .. })),
+            "draw {draw} gave {refused:?}"
+        );
+        assert_eq!(refused.unwrap_err().code(), "PTR_ARBITER_INVALID_DRAW");
+        // The draw is the caller's input, so it is refused whatever the
+        // verification report says.
+        let failed = report(VerificationStatus::Fail, VerificationLevel::Deterministic);
+        assert!(matches!(
+            policy.triage(&failed, score(0.9), draw),
+            Err(ArbiterError::InvalidDraw { .. })
+        ));
+    }
+    // The endpoints of the documented range are accepted.
+    assert!(policy.triage(&passing(), score(0.9), 0.0).is_ok());
+    assert!(policy
+        .triage(&passing(), score(0.9), 1.0 - f64::EPSILON / 2.0)
+        .is_ok());
 }
 
 #[test]
@@ -47,7 +84,7 @@ fn a_hard_finding_excludes_a_passing_report_from_proposals_and_calibration() {
         message: "constraint failed".into(),
         hard: true,
     });
-    let outcome = policy.triage(&verified, score(1.0), 0.0);
+    let outcome = policy.triage(&verified, score(1.0), 0.0).unwrap();
     assert_eq!(outcome.decision, TriageDecision::Escalate);
     assert!(!outcome.eligible);
     assert!(!outcome.calibration_slice);
@@ -73,11 +110,13 @@ fn off_policy_estimators_refuse_an_empty_log() {
 #[test]
 fn a_failed_verification_discards_whatever_the_score() {
     let policy = TriagePolicy::new(AutoThreshold::AtLeast(0.0), 0.0).unwrap();
-    let outcome = policy.triage(
-        &report(VerificationStatus::Fail, VerificationLevel::Deterministic),
-        score(1.0),
-        0.5,
-    );
+    let outcome = policy
+        .triage(
+            &report(VerificationStatus::Fail, VerificationLevel::Deterministic),
+            score(1.0),
+            0.5,
+        )
+        .unwrap();
     assert_eq!(outcome.decision, TriageDecision::Discard);
     assert!(!outcome.eligible);
 }
@@ -96,7 +135,7 @@ fn disputed_unknown_or_shallow_verification_escalates_whatever_the_score() {
         ),
         report(VerificationStatus::Pass, VerificationLevel::SampleVerified),
     ] {
-        let outcome = policy.triage(&report, score(1.0), 0.9);
+        let outcome = policy.triage(&report, score(1.0), 0.9).unwrap();
         assert_eq!(outcome.decision, TriageDecision::Escalate);
         assert!(!outcome.eligible);
     }
@@ -105,17 +144,17 @@ fn disputed_unknown_or_shallow_verification_escalates_whatever_the_score() {
 #[test]
 fn the_calibration_slice_escalates_high_scores_and_only_it_can_be_adjudicated() {
     let policy = TriagePolicy::new(AutoThreshold::AtLeast(0.5), 0.2).unwrap();
-    let sliced = policy.triage(&passing(), score(0.9), 0.1);
+    let sliced = policy.triage(&passing(), score(0.9), 0.1).unwrap();
     assert_eq!(sliced.decision, TriageDecision::Escalate);
     assert!(sliced.calibration_slice);
     assert!(sliced.adjudicate(false).is_some());
 
-    let auto = policy.triage(&passing(), score(0.9), 0.7);
+    let auto = policy.triage(&passing(), score(0.9), 0.7).unwrap();
     assert_eq!(auto.decision, TriageDecision::AutoPropose);
     assert!((auto.auto_propensity - 0.8).abs() < 1e-12);
     assert!(auto.adjudicate(false).is_none());
 
-    let low = policy.triage(&passing(), score(0.2), 0.7);
+    let low = policy.triage(&passing(), score(0.2), 0.7).unwrap();
     assert_eq!(low.decision, TriageDecision::Escalate);
     assert!(low.adjudicate(true).is_none());
 }
@@ -127,11 +166,13 @@ fn a_threshold_calibrated_from_adjudicated_slices_is_used_by_the_next_policy() {
         .map(|i| {
             let branch = BranchId(format!("b{i}"));
             let score_value = i as f32 / 40.0;
-            let outcome = logging.triage(
-                &passing(),
-                score(score_value),
-                calibration_draw(&branch, 1) * 0.5,
-            );
+            let outcome = logging
+                .triage(
+                    &passing(),
+                    score(score_value),
+                    calibration_draw(&branch, 1) * 0.5,
+                )
+                .unwrap();
             outcome
                 .adjudicate(score_value < 0.3)
                 .expect("calibration slice")
@@ -149,11 +190,11 @@ fn a_threshold_calibrated_from_adjudicated_slices_is_used_by_the_next_policy() {
     // escalates the rest.
     let next = TriagePolicy::new(threshold, 0.0).unwrap();
     assert_eq!(
-        next.triage(&passing(), score(0.5), 0.5).decision,
+        next.triage(&passing(), score(0.5), 0.5).unwrap().decision,
         TriageDecision::AutoPropose
     );
     assert_eq!(
-        next.triage(&passing(), score(0.1), 0.5).decision,
+        next.triage(&passing(), score(0.1), 0.5).unwrap().decision,
         TriageDecision::Escalate
     );
 }
@@ -174,6 +215,7 @@ fn a_certified_threshold_bounds_the_harm_rate_among_what_the_next_policy_propose
             let branch = BranchId(format!("c{i}"));
             logging
                 .triage(&passing(), score(value), calibration_draw(&branch, 7) * 0.5)
+                .unwrap()
                 .adjudicate(harmful)
                 .expect("calibration slice")
         })
@@ -190,11 +232,11 @@ fn a_certified_threshold_bounds_the_harm_rate_among_what_the_next_policy_propose
 
     let next = TriagePolicy::new(threshold, 0.05).unwrap();
     assert_eq!(
-        next.triage(&passing(), score(0.9), 0.5).decision,
+        next.triage(&passing(), score(0.9), 0.5).unwrap().decision,
         TriageDecision::AutoPropose
     );
     assert_eq!(
-        next.triage(&passing(), score(0.1), 0.5).decision,
+        next.triage(&passing(), score(0.1), 0.5).unwrap().decision,
         TriageDecision::Escalate
     );
 }
@@ -213,11 +255,13 @@ fn log_under(policy: &TriagePolicy, scores: &[f32]) -> Vec<LoggedTriage> {
         .iter()
         .enumerate()
         .map(|(i, &value)| {
-            let outcome = policy.triage(
-                &passing(),
-                score(value),
-                calibration_draw(&BranchId(format!("b{i}")), 3),
-            );
+            let outcome = policy
+                .triage(
+                    &passing(),
+                    score(value),
+                    calibration_draw(&BranchId(format!("b{i}")), 3),
+                )
+                .unwrap();
             let mut logged = LoggedTriage::from(&outcome);
             logged.reward = match outcome.decision {
                 TriageDecision::AutoPropose => 1.0,

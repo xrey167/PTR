@@ -414,3 +414,24 @@ fn the_plan_digest_changes_with_the_delta_and_with_the_dependencies() {
     assert_ne!(base, plan_for("3", false));
     assert_ne!(base, plan_for("2", true));
 }
+
+#[test]
+fn the_plan_digest_binds_the_branch_so_an_approval_cannot_be_replayed_for_another() {
+    let host = host_with(&[("a", text("1"))]);
+    let plan_for = |id: &str| {
+        let mut work = branch(&host, id);
+        work.read("a").unwrap();
+        work.put("a", text("2")).unwrap();
+        certify(&work.seal().unwrap(), &host.snapshot(), no_lifecycle)
+            .unwrap()
+            .plan()
+            .clone()
+    };
+    let first = plan_for("b1");
+    let second = plan_for("b2");
+    // Everything but the branch identity is the same.
+    assert_eq!(first.expected, second.expected);
+    assert_eq!(first.delta, second.delta);
+    assert_eq!(first.dependencies, second.dependencies);
+    assert_ne!(first.digest().unwrap(), second.digest().unwrap());
+}

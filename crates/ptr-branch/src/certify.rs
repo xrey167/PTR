@@ -34,16 +34,22 @@ impl MergePlan {
         self.delta.upserts.is_empty() && self.delta.removals.is_empty()
     }
 
-    /// Digest of what a person approves: the expected revision, the canonical
-    /// delta encoding and the dependency digest. An approval bound to this
-    /// digest stands for exactly this plan; a re-certification that changes
-    /// the delta or the dependencies yields a different digest and voids it.
+    /// Digest of what a person approves: the branch id (length-delimited),
+    /// the expected revision, the canonical delta encoding and the dependency
+    /// digest. An approval bound to this digest stands for exactly this plan
+    /// of exactly this branch: a re-certification that changes the delta or
+    /// the dependencies yields a different digest and voids it, and another
+    /// branch proposing the same delta against the same revision with the same
+    /// dependencies yields a different digest, so the approval cannot be
+    /// replayed for it.
     pub fn digest(&self) -> Result<[u8; 32], BranchError> {
         let encoded = self.delta.encode().map_err(|_| BranchError::InvalidValue {
             key: "<merge delta>".into(),
         })?;
         let mut hasher = Sha256::new();
-        hasher.update(b"ptr-branch/merge-plan/v1");
+        hasher.update(b"ptr-branch/merge-plan/v2");
+        hasher.update((self.branch.0.len() as u64).to_le_bytes());
+        hasher.update(self.branch.0.as_bytes());
         hasher.update(self.expected.0.to_le_bytes());
         hasher.update((encoded.len() as u64).to_le_bytes());
         hasher.update(&encoded);

@@ -108,19 +108,33 @@ impl TriagePolicy {
     /// escalates, whatever the score. Only a passing, full-semantic or
     /// deterministic report with no hard findings makes a branch eligible for
     /// the threshold. A passing report with a hard finding escalates.
+    ///
+    /// # Errors
+    /// Returns `ArbiterError::InvalidDraw` unless `draw` is finite and in
+    /// `[0, 1)`, whatever the report. A NaN or a draw of at least one would
+    /// keep every eligible branch out of the calibration slice, and a negative
+    /// draw would put every one in it, while the logged `auto_propensity`
+    /// still claimed `1 - calibration_rate`: the slice would stop being a
+    /// uniform sample and off-policy estimates would reweight by a propensity
+    /// the policy never had.
     pub fn triage(
         &self,
         report: &VerificationReport,
         score: Probability,
         draw: f64,
-    ) -> TriageOutcome {
+    ) -> Result<TriageOutcome, ArbiterError> {
+        if !(draw.is_finite() && (0.0..1.0).contains(&draw)) {
+            return Err(ArbiterError::InvalidDraw { draw });
+        }
         let score = score.get();
-        let forced = |decision| TriageOutcome {
-            decision,
-            eligible: false,
-            calibration_slice: false,
-            score,
-            auto_propensity: 0.0,
+        let forced = |decision| {
+            Ok(TriageOutcome {
+                decision,
+                eligible: false,
+                calibration_slice: false,
+                score,
+                auto_propensity: 0.0,
+            })
         };
         match report.status {
             VerificationStatus::Fail => return forced(TriageDecision::Discard),
@@ -153,13 +167,13 @@ impl TriagePolicy {
         } else {
             TriageDecision::Escalate
         };
-        TriageOutcome {
+        Ok(TriageOutcome {
             decision,
             eligible: true,
             calibration_slice,
             score,
             auto_propensity,
-        }
+        })
     }
 
     /// Probability this policy takes `action` on a logged record.

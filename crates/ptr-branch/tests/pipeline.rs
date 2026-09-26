@@ -53,11 +53,13 @@ fn a_certified_and_verified_branch_reaches_semantic_state_only_through_the_runti
     .unwrap();
 
     let policy = TriagePolicy::new(AutoThreshold::AtLeast(0.8), 0.0).unwrap();
-    let triage = policy.triage(
-        &passing(),
-        Probability::new(0.9).unwrap(),
-        calibration_draw(&sealed.id, 1),
-    );
+    let triage = policy
+        .triage(
+            &passing(),
+            Probability::new(0.9).unwrap(),
+            calibration_draw(&sealed.id, 1),
+        )
+        .unwrap();
     assert_eq!(triage.decision, TriageDecision::AutoPropose);
 
     let (expected, delta) = certification.plan().clone().into_parts();

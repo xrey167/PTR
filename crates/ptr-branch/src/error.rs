@@ -116,6 +116,8 @@ pub enum ArbiterError {
     EmptyCalibration,
     /// A calibration rate outside `[0, 1)`.
     InvalidExploration { rate: f64 },
+    /// A calibration draw that is not a finite number in `[0, 1)`.
+    InvalidDraw { draw: f64 },
     /// A logged propensity outside `[0, 1]`, or a logged action the logging
     /// policy gave zero probability.
     InvalidPropensity { index: usize, value: f64 },
@@ -132,6 +134,7 @@ impl ArbiterError {
             Self::InvalidRisk { .. } => "PTR_ARBITER_INVALID_RISK",
             Self::EmptyCalibration => "PTR_ARBITER_EMPTY_CALIBRATION",
             Self::InvalidExploration { .. } => "PTR_ARBITER_INVALID_EXPLORATION",
+            Self::InvalidDraw { .. } => "PTR_ARBITER_INVALID_DRAW",
             Self::InvalidPropensity { .. } => "PTR_ARBITER_INVALID_PROPENSITY",
             Self::PositivityViolation { .. } => "PTR_ARBITER_POSITIVITY_VIOLATION",
             Self::EmptyLog => "PTR_ARBITER_EMPTY_LOG",
@@ -148,6 +151,9 @@ impl fmt::Display for ArbiterError {
             Self::EmptyCalibration => write!(formatter, "no calibration samples"),
             Self::InvalidExploration { rate } => {
                 write!(formatter, "calibration rate {rate} is outside [0, 1)")
+            }
+            Self::InvalidDraw { draw } => {
+                write!(formatter, "calibration draw {draw} is outside [0, 1)")
             }
             Self::InvalidPropensity { index, value } => {
                 write!(formatter, "record {index} has invalid propensity {value}")
