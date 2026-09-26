@@ -1,6 +1,6 @@
 mod common;
 
-use common::{config, write_about};
+use common::{codebook, config, write_about};
 use ptr_fastmem::{
     decode_state, encode_state, Decay, FastMemory, FastMemoryConfig, FastMemoryError,
     FastWeightState, Query, SourceRef, WriteRequest, WriteSeq, MAX_VALUE_MAGNITUDE,
@@ -9,7 +9,7 @@ use ptr_types::Generation;
 
 #[test]
 fn a_restored_journal_folds_to_the_same_state_as_the_live_memory() {
-    let mut live = FastMemory::new(config(3)).unwrap();
+    let mut live = FastMemory::new(config(3), codebook(&config(3))).unwrap();
     for (salt, source) in ["a", "b", "c", "d", "e"].iter().enumerate() {
         live.write(write_about(source, salt as u32)).unwrap();
     }
@@ -31,7 +31,7 @@ fn a_restored_journal_folds_to_the_same_state_as_the_live_memory() {
         journal.iter().map(|(seq, _)| seq.0).collect::<Vec<_>>(),
         vec![1, 2, 4, 5]
     );
-    let restored = FastMemory::restore(config(3), journal).unwrap();
+    let restored = FastMemory::restore(config(3), codebook(&config(3)), journal).unwrap();
     assert_eq!(restored.state().cells(), live.state().cells());
 }
 
@@ -42,7 +42,7 @@ fn a_journal_that_goes_backwards_is_refused() {
         (WriteSeq(2), write_about("b", 1)),
     ];
     assert_eq!(
-        FastMemory::restore(config(2), journal).unwrap_err(),
+        FastMemory::restore(config(2), codebook(&config(2)), journal).unwrap_err(),
         FastMemoryError::OutOfOrderWrite {
             expected: 3,
             actual: 2
@@ -52,7 +52,7 @@ fn a_journal_that_goes_backwards_is_refused() {
 
 #[test]
 fn the_incremental_state_is_the_fold_of_its_journal() {
-    let mut memory = FastMemory::new(config(2)).unwrap();
+    let mut memory = FastMemory::new(config(2), codebook(&config(2))).unwrap();
     for salt in 0..7 {
         memory
             .write(write_about(&format!("s{salt}"), salt))
@@ -63,7 +63,7 @@ fn the_incremental_state_is_the_fold_of_its_journal() {
 
 #[test]
 fn an_encoded_checkpoint_restores_bit_for_bit() {
-    let mut memory = FastMemory::new(config(2)).unwrap();
+    let mut memory = FastMemory::new(config(2), codebook(&config(2))).unwrap();
     for salt in 0..3 {
         memory
             .write(write_about(&format!("s{salt}"), salt))
@@ -78,7 +78,7 @@ fn an_encoded_checkpoint_restores_bit_for_bit() {
 fn a_full_journal_refuses_further_writes() {
     let mut small = config(2);
     small.max_writes = 2;
-    let mut memory = FastMemory::new(small).unwrap();
+    let mut memory = FastMemory::new(small, codebook(&small)).unwrap();
     memory.write(write_about("a", 0)).unwrap();
     memory.write(write_about("b", 1)).unwrap();
     assert_eq!(
@@ -91,7 +91,7 @@ fn a_full_journal_refuses_further_writes() {
 
 #[test]
 fn an_invalid_write_preserves_state_binding_and_the_next_sequence() {
-    let mut memory = FastMemory::new(config(1)).unwrap();
+    let mut memory = FastMemory::new(config(1), codebook(&config(1))).unwrap();
     memory.write(write_about("a", 0)).unwrap();
     let state = memory.state().clone();
     let binding = memory.binding_digest();
@@ -116,6 +116,7 @@ fn an_invalid_write_preserves_state_binding_and_the_next_sequence() {
 fn restoring_a_gapped_journal_continues_after_its_largest_sequence() {
     let mut memory = FastMemory::restore(
         config(2),
+        codebook(&config(2)),
         [
             (WriteSeq(3), write_about("a", 0)),
             (WriteSeq(7), write_about("b", 1)),
@@ -130,7 +131,12 @@ fn restoring_a_gapped_journal_continues_after_its_largest_sequence() {
 #[test]
 fn restoring_refuses_zero_sequence_and_journals_over_capacity() {
     assert_eq!(
-        FastMemory::restore(config(1), [(WriteSeq(0), write_about("a", 0))]).unwrap_err(),
+        FastMemory::restore(
+            config(1),
+            codebook(&config(1)),
+            [(WriteSeq(0), write_about("a", 0))]
+        )
+        .unwrap_err(),
         FastMemoryError::OutOfOrderWrite {
             expected: 1,
             actual: 0
@@ -141,6 +147,7 @@ fn restoring_refuses_zero_sequence_and_journals_over_capacity() {
     assert_eq!(
         FastMemory::restore(
             small,
+            codebook(&small),
             [
                 (WriteSeq(1), write_about("a", 0)),
                 (WriteSeq(9), write_about("b", 1)),
@@ -163,19 +170,27 @@ fn restoring_a_journal_whose_last_sequence_has_no_successor_is_refused() {
         ],
     ] {
         assert_eq!(
-            FastMemory::restore(config(1), journal).unwrap_err(),
+            FastMemory::restore(config(1), codebook(&config(1)), journal).unwrap_err(),
             FastMemoryError::SequenceExhausted { seq: u64::MAX }
         );
     }
-    let last =
-        FastMemory::restore(config(1), [(WriteSeq(u64::MAX - 1), write_about("a", 0))]).unwrap();
+    let last = FastMemory::restore(
+        config(1),
+        codebook(&config(1)),
+        [(WriteSeq(u64::MAX - 1), write_about("a", 0))],
+    )
+    .unwrap();
     assert_eq!(last.state().applied(), WriteSeq(u64::MAX - 1));
 }
 
 #[test]
 fn a_write_that_would_take_the_last_sequence_number_is_refused_and_leaves_the_memory_unchanged() {
-    let mut memory =
-        FastMemory::restore(config(1), [(WriteSeq(u64::MAX - 1), write_about("a", 0))]).unwrap();
+    let mut memory = FastMemory::restore(
+        config(1),
+        codebook(&config(1)),
+        [(WriteSeq(u64::MAX - 1), write_about("a", 0))],
+    )
+    .unwrap();
     let state = memory.state().clone();
     let binding = memory.binding_digest();
     let writes = memory.writes().to_vec();
@@ -199,7 +214,7 @@ fn a_write_that_could_overflow_the_fold_is_refused_and_leaves_the_memory_unchang
     // f32::MAX and then -f32::MAX under one unit key: the second write's error
     // `target - current` is -inf. Both writes used to be folded and journaled,
     // leaving infinite cells that no checkpoint could decode.
-    let mut memory = FastMemory::new(config(1)).unwrap();
+    let mut memory = FastMemory::new(config(1), codebook(&config(1))).unwrap();
     memory.write(write_about("a", 0)).unwrap();
     let state = memory.state().clone();
     let binding = memory.binding_digest();
@@ -233,7 +248,12 @@ fn restoring_a_journal_whose_fold_could_overflow_is_refused() {
     let mut down = write_about("a", 0);
     down.value.fill(-f32::MAX);
     assert_eq!(
-        FastMemory::restore(config(1), [(WriteSeq(1), up), (WriteSeq(2), down)]).unwrap_err(),
+        FastMemory::restore(
+            config(1),
+            codebook(&config(1)),
+            [(WriteSeq(1), up), (WriteSeq(2), down)]
+        )
+        .unwrap_err(),
         FastMemoryError::ValueOutOfRange {
             index: 0,
             value: f32::MAX
@@ -256,7 +276,7 @@ fn writes_at_the_value_bound_fold_to_finite_decodable_state_in_every_refold() {
         })
         .collect();
     let finite = |state: &FastWeightState| state.cells().iter().all(|cell| cell.is_finite());
-    let mut memory = FastMemory::new(config(4)).unwrap();
+    let mut memory = FastMemory::new(config(4), codebook(&config(4))).unwrap();
     for request in &requests {
         assert!(memory.write(request.clone()).unwrap().surprise.is_finite());
     }
@@ -265,6 +285,7 @@ fn writes_at_the_value_bound_fold_to_finite_decodable_state_in_every_refold() {
     memory.revoke(|source| source.key == "s3");
     let never = FastMemory::restore(
         config(4),
+        codebook(&config(4)),
         requests
             .iter()
             .enumerate()
@@ -307,7 +328,7 @@ fn keys_whose_squares_underflow_fold_to_a_finite_decodable_state_in_every_refold
         beta: 1.0,
         decay: Decay::None,
     };
-    let mut memory = FastMemory::new(config).unwrap();
+    let mut memory = FastMemory::new(config, codebook(&config)).unwrap();
     for _ in 0..60 {
         assert!(memory.write(request.clone()).unwrap().surprise.is_finite());
     }
@@ -320,8 +341,12 @@ fn keys_whose_squares_underflow_fold_to_a_finite_decodable_state_in_every_refold
     let readout = memory.read_admitted(&query, |_| true).unwrap();
     assert!((readout.values[0] - 1.0).abs() < 1e-5, "{readout:?}");
 
-    let restored =
-        FastMemory::restore(config, (1..=60).map(|seq| (WriteSeq(seq), request.clone()))).unwrap();
+    let restored = FastMemory::restore(
+        config,
+        codebook(&config),
+        (1..=60).map(|seq| (WriteSeq(seq), request.clone())),
+    )
+    .unwrap();
     assert_eq!(restored.state(), memory.state());
     assert_eq!(memory.state(), &memory.refold_from_journal());
     assert_eq!(

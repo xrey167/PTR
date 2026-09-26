@@ -11,13 +11,40 @@ use crate::state::Readout;
 /// Backend label carried by every hit this crate produces.
 pub const FASTMEM_BACKEND: &str = "fastmem";
 
-/// An explicit fact a readout may be decoded into: a capsule at one generation
-/// and the identifier code its writes stored as value.
+/// An explicit fact a readout may be decoded into: a capsule at one generation,
+/// the identifier code its writes stored as value, and the codebook the code
+/// is from.
+///
+/// Its fields are private and it is built only by [`IdentifierCodebook::fact`]
+/// (which [`FastMemory::fact_codes`] uses), so its code is always its
+/// codebook's code for the fact, and [`decode_readout`] can refuse a code
+/// from another codebook than the readout's.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FactCode {
-    pub capsule: CapsuleId,
-    pub generation: Generation,
-    pub code: Vec<f32>,
+    capsule: CapsuleId,
+    generation: Generation,
+    code: Vec<f32>,
+    codebook: IdentifierCodebook,
+}
+
+impl FactCode {
+    pub fn capsule(&self) -> &CapsuleId {
+        &self.capsule
+    }
+
+    pub fn generation(&self) -> Generation {
+        self.generation
+    }
+
+    /// The fact's code: `codebook().code_for(capsule(), generation())`.
+    pub fn code(&self) -> &[f32] {
+        &self.code
+    }
+
+    /// The codebook the code is from.
+    pub fn codebook(&self) -> IdentifierCodebook {
+        self.codebook
+    }
 }
 
 impl IdentifierCodebook {
@@ -26,6 +53,17 @@ impl IdentifierCodebook {
     /// readouts against it; a new generation is a new fact identity.
     pub fn code_for(&self, capsule: &CapsuleId, generation: Generation) -> Vec<f32> {
         self.code(&format!("{capsule}@{}", generation.0))
+    }
+
+    /// A fact as a decoding candidate: its code under this codebook, bound to
+    /// this codebook.
+    pub fn fact(&self, capsule: CapsuleId, generation: Generation) -> FactCode {
+        FactCode {
+            code: self.code_for(&capsule, generation),
+            capsule,
+            generation,
+            codebook: *self,
+        }
     }
 }
 
@@ -36,12 +74,14 @@ const NON_CAPSULE_NAMESPACES: [&str; 2] = ["constraint:", "procedure:"];
 
 impl FastMemory {
     /// The candidate facts a readout may decode into: every distinct capsule
-    /// source the journal holds, and nothing else. A fact that was never
+    /// source the journal holds, and nothing else, each coded with this
+    /// memory's own codebook ([`Self::codebook`]). A fact that was never
     /// written, or whose writes were revoked, is not a candidate. Writes derived
     /// from a `constraint:<key>` or `procedure:<id>` source still shape the
     /// state and still gate reads, but they are not candidates: a decoded hit
     /// names a capsule, and those sources are not capsules.
-    pub fn fact_codes(&self, book: &IdentifierCodebook) -> Vec<FactCode> {
+    pub fn fact_codes(&self) -> Vec<FactCode> {
+        let book = self.codebook();
         let sources: BTreeSet<(String, Generation)> = self
             .writes()
             .iter()
@@ -54,15 +94,7 @@ impl FastMemory {
             .collect();
         sources
             .into_iter()
-            .map(|(key, generation)| {
-                let capsule = CapsuleId::from(key.as_str());
-                let code = book.code_for(&capsule, generation);
-                FactCode {
-                    capsule,
-                    generation,
-                    code,
-                }
-            })
+            .map(|(key, generation)| book.fact(CapsuleId::from(key.as_str()), generation))
             .collect()
     }
 }
@@ -102,11 +134,17 @@ pub enum Recall {
 /// live generations and verified before it is relied on. Ties are broken by
 /// capsule, then generation. A returned `Hits` always names at least one fact.
 ///
+/// Every fact code must be from the readout's codebook, the one its memory's
+/// values are codes of. A code from another codebook of the same length would
+/// score plausible but meaningless weights (crosstalk only), so it is refused,
+/// not scored.
+///
 /// # Errors
 /// Before scoring, refuses a policy with a zero limit or a NaN, infinite or
-/// negative threshold. Then refuses a fact code whose length differs from the
-/// readout's, and a score that is not finite (a nonfinite readout or code cell,
-/// or an overflowing product), which the confidence checks could not order.
+/// negative threshold. Then refuses a fact code from another codebook than the
+/// readout's (`CodebookMismatch`) or whose length differs from the readout's,
+/// and a score that is not finite (a nonfinite readout or code cell, or an
+/// overflowing product), which the confidence checks could not order.
 pub fn decode_readout<'a, I>(
     readout: &Readout,
     facts: I,
@@ -118,6 +156,13 @@ where
     check_policy(&policy)?;
     let mut scored = Vec::new();
     for (index, fact) in facts.into_iter().enumerate() {
+        if fact.codebook != readout.codebook() {
+            return Err(FastMemoryError::CodebookMismatch {
+                index,
+                expected: readout.codebook(),
+                actual: fact.codebook,
+            });
+        }
         if fact.code.len() != readout.values.len() {
             return Err(FastMemoryError::DimensionMismatch {
                 field: "fact code",
@@ -198,12 +243,22 @@ mod tests {
     use crate::write::WriteSeq;
     use ptr_search::EvidenceStage;
 
+    /// The codebook every hand-made fact and readout here claims.
+    fn book() -> IdentifierCodebook {
+        IdentifierCodebook::new(1, 2).unwrap()
+    }
+
     fn fact(id: &str, code: Vec<f32>) -> FactCode {
         FactCode {
             capsule: CapsuleId::from(id),
             generation: Generation(2),
             code,
+            codebook: book(),
         }
+    }
+
+    fn readout(values: Vec<f32>, as_of: u64) -> Readout {
+        Readout::new(values, WriteSeq(as_of), book())
     }
 
     fn policy() -> DecodePolicy {
@@ -216,10 +271,7 @@ mod tests {
 
     #[test]
     fn a_clear_winner_is_named_and_starts_as_a_search_candidate() {
-        let readout = Readout {
-            values: vec![0.9, 0.1],
-            as_of: WriteSeq(3),
-        };
+        let readout = readout(vec![0.9, 0.1], 3);
         let facts = [fact("b", vec![0.0, 1.0]), fact("a", vec![1.0, 0.0])];
         let Recall::Hits(hits) = decode_readout(&readout, &facts, policy()).unwrap() else {
             panic!("a clear winner is named");
@@ -233,18 +285,12 @@ mod tests {
     #[test]
     fn an_ambiguous_or_weak_readout_is_unknown() {
         let facts = [fact("a", vec![1.0, 0.0]), fact("b", vec![0.0, 1.0])];
-        let ambiguous = Readout {
-            values: vec![0.7, 0.65],
-            as_of: WriteSeq(1),
-        };
+        let ambiguous = readout(vec![0.7, 0.65], 1);
         assert_eq!(
             decode_readout(&ambiguous, &facts, policy()).unwrap(),
             Recall::Unknown
         );
-        let weak = Readout {
-            values: vec![0.3, 0.0],
-            as_of: WriteSeq(1),
-        };
+        let weak = readout(vec![0.3, 0.0], 1);
         assert_eq!(
             decode_readout(&weak, &facts, policy()).unwrap(),
             Recall::Unknown
@@ -260,10 +306,7 @@ mod tests {
         let facts = [fact("a", vec![1.0, 0.0]), fact("b", vec![0.0, 1.0])];
         // Ambiguous under any sound margin: a NaN margin used to name "a", and
         // a NaN minimum score used to return `Hits` naming nothing.
-        let ambiguous = Readout {
-            values: vec![0.7, 0.65],
-            as_of: WriteSeq(1),
-        };
+        let ambiguous = readout(vec![0.7, 0.65], 1);
         let unsound = [
             ("min_margin", f32::NAN),
             ("min_margin", -0.1),
@@ -305,10 +348,7 @@ mod tests {
             min_score: 0.0,
             min_margin: -0.0,
         };
-        let clear = Readout {
-            values: vec![0.9, 0.1],
-            as_of: WriteSeq(1),
-        };
+        let clear = readout(vec![0.9, 0.1], 1);
         let Recall::Hits(hits) = decode_readout(&clear, &facts, permissive).unwrap() else {
             panic!("zero thresholds still name a clear winner");
         };
@@ -321,10 +361,7 @@ mod tests {
         let facts = [fact("a", vec![1.0, 0.0]), fact("b", vec![1.0, 1.0])];
         // NaN * 0 is NaN, so the poisoned cell spoils the first score already;
         // unchecked, both NaN scores used to decode to `Hits` naming nothing.
-        let poisoned = Readout {
-            values: vec![0.9, f32::NAN],
-            as_of: WriteSeq(1),
-        };
+        let poisoned = readout(vec![0.9, f32::NAN], 1);
         assert_eq!(
             decode_readout(&poisoned, &facts, policy()),
             Err(FastMemoryError::NonFinite {
@@ -332,10 +369,7 @@ mod tests {
                 index: 0
             })
         );
-        let overflowing = Readout {
-            values: vec![f32::MAX, f32::MAX],
-            as_of: WriteSeq(1),
-        };
+        let overflowing = readout(vec![f32::MAX, f32::MAX], 1);
         assert_eq!(
             decode_readout(&overflowing, &facts, policy()),
             Err(FastMemoryError::NonFinite {
@@ -343,5 +377,51 @@ mod tests {
                 index: 1
             })
         );
+    }
+
+    #[test]
+    fn a_fact_code_from_another_codebook_is_refused_before_scoring() {
+        // Same length, other seed: the codes are unrelated to what the
+        // memory stored, and scoring them used to name a fact by crosstalk.
+        let other = IdentifierCodebook::new(2, 2).unwrap();
+        let clear = readout(vec![0.9, 0.1], 1);
+        let foreign = [
+            fact("a", vec![1.0, 0.0]),
+            other.fact(CapsuleId::from("b"), Generation(2)),
+        ];
+        assert_eq!(
+            decode_readout(&clear, &foreign, policy()),
+            Err(FastMemoryError::CodebookMismatch {
+                index: 1,
+                expected: book(),
+                actual: other,
+            })
+        );
+        assert_eq!(
+            FastMemoryError::CodebookMismatch {
+                index: 1,
+                expected: book(),
+                actual: other,
+            }
+            .code(),
+            "PTR_FASTMEM_CODEBOOK_MISMATCH"
+        );
+        // A codebook of another length with the same seed is another codebook.
+        let longer = IdentifierCodebook::new(1, 3).unwrap();
+        assert!(matches!(
+            decode_readout(
+                &clear,
+                &[longer.fact(CapsuleId::from("a"), Generation(2))],
+                policy()
+            ),
+            Err(FastMemoryError::CodebookMismatch { index: 0, .. })
+        ));
+        // The readout's own codebook decodes.
+        let own = book().fact(CapsuleId::from("a"), Generation(2));
+        assert_eq!(
+            own.code(),
+            book().code_for(&CapsuleId::from("a"), Generation(2))
+        );
+        assert!(decode_readout(&clear, [&own], policy()).is_ok());
     }
 }

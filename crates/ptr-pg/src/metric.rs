@@ -67,8 +67,12 @@ pub fn metric_sql(spec: MetricSpec, schemas: &SchemaSet) -> String {
         ),
         // A branch is merged at most once and reverted at most once (the
         // outcome key is (branch, outcome)), so both counts are of branches.
-        // The window applies to the merge only: its revert counts whenever it
-        // was stamped.
+        // A revert is a later commit undoing the merge, so it counts only at
+        // a commit index after the merge's: `record_outcome` refuses any
+        // other, and a row written around it (before the check existed, or
+        // by another writer) is not counted as reverting a merge it
+        // precedes. The window applies to the merge only: its revert counts
+        // whenever it was stamped.
         Metric::RevertShare => (
             "count(r.branch)",
             "count(*)",
@@ -76,7 +80,7 @@ pub fn metric_sql(spec: MetricSpec, schemas: &SchemaSet) -> String {
                 "{work}.branch_outcome o JOIN {work}.branch b ON b.id = o.branch \
                  LEFT JOIN {work}.branch_triage t ON t.branch = o.branch \
                  LEFT JOIN {work}.branch_outcome r ON r.branch = o.branch \
-                 AND r.outcome = 'reverted'"
+                 AND r.outcome = 'reverted' AND r.commit_index > o.commit_index"
             ),
             vec!["o.outcome = 'merged'".to_owned()],
             "o.observed_at",
@@ -128,6 +132,11 @@ mod tests {
                     assert_eq!(
                         sql.contains("make_interval(days => 7)"),
                         window == Window::LastDays(7),
+                        "{sql}"
+                    );
+                    assert_eq!(
+                        sql.contains("r.commit_index > o.commit_index"),
+                        metric == Metric::RevertShare,
                         "{sql}"
                     );
                 }

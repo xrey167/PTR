@@ -7,7 +7,7 @@
 //! ledger's and the record is refused. A re-delivered record is accepted only
 //! when its anchor equals the one stored for its index.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ptr_ledger::integrity::{chain_anchors, LogAnchor};
 use ptr_ledger::CommittedEvent;
@@ -35,6 +35,40 @@ pub struct ProjectionApply {
     /// of them.
     pub removed_writes: u64,
     pub dropped_checkpoints: u64,
+}
+
+/// The admissibility of a set of lifecycle sources, answered from one
+/// projection snapshot and naming the commit that snapshot reflects.
+///
+/// Returned by [`PgSubstrate::source_admission`]. A read decided with
+/// [`admits`](Self::admits) — for example the predicate of
+/// `ptr_fastmem::FastMemory::read_admitted` — is bound to the lifecycle state
+/// after exactly [`as_of`](Self::as_of): a revocation committed at a later
+/// index is not reflected, and the caller can tell, by comparing indices,
+/// whether a revocation it learns of came before or after its decision.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SourceAdmission {
+    as_of: CommitIndex,
+    admissible: BTreeSet<(String, Generation)>,
+}
+
+impl SourceAdmission {
+    /// The projection's applied commit index when the answer was taken.
+    pub fn as_of(&self) -> CommitIndex {
+        self.as_of
+    }
+
+    /// Whether `(target, generation)` was asked and was admissible at
+    /// [`as_of`](Self::as_of): the target's live generation and not revoked.
+    /// A source that was not asked is not admitted.
+    pub fn admits(&self, target: &str, generation: Generation) -> bool {
+        self.admissible.contains(&(target.to_owned(), generation))
+    }
+
+    /// The asked sources that were admissible, in order.
+    pub fn admissible(&self) -> &BTreeSet<(String, Generation)> {
+        &self.admissible
+    }
 }
 
 impl ProjectionApply {
@@ -485,6 +519,90 @@ impl PgSubstrate {
             .map_err(database)?;
         check_fence(row.get(0), fence)?;
         Ok(row.get(1))
+    }
+
+    /// Whether each of `sources` is admissible, all answered by one statement
+    /// and so from one snapshot, together with the commit index that snapshot
+    /// reflects. The rule is [`is_admissible`](Self::is_admissible)'s: the
+    /// target's live generation and not in the revocation set.
+    ///
+    /// Asking source by source takes one snapshot per source, and none of
+    /// them names the commit it reflects, so a revocation committing between
+    /// two answers splits the decision across lifecycle states. Here the
+    /// projector's transaction, which moves the watermark together with the
+    /// lifecycle rows, is either wholly visible or not at all, so
+    /// [`SourceAdmission::as_of`] is the commit every answer holds at. The
+    /// answer is still a snapshot: a read decided with it reflects nothing
+    /// committed after `as_of`, and whatever the read yields must still pass
+    /// the lifecycle check at use.
+    ///
+    /// # Errors
+    /// Refuses a target PostgreSQL `text` cannot hold
+    /// ([`PgError::InvalidText`]) or a generation beyond `i64`
+    /// ([`PgError::OutOfRange`]) before the statement runs, and a projection
+    /// that has not applied `fence` ([`PgError::ProjectionBehind`]).
+    pub async fn source_admission<'a, I>(
+        &self,
+        sources: I,
+        fence: CommitIndex,
+    ) -> Result<SourceAdmission, PgError>
+    where
+        I: IntoIterator<Item = (&'a str, Generation)>,
+    {
+        let asked: BTreeSet<(&str, Generation)> = sources.into_iter().collect();
+        let mut targets = Vec::with_capacity(asked.len());
+        let mut generations = Vec::with_capacity(asked.len());
+        for (target, generation) in &asked {
+            check_text("source.target", target)?;
+            targets.push(*target);
+            generations.push(to_i64(generation.0, "generation")?);
+        }
+        let projection = &self.schemas.projection;
+        let row = self
+            .client
+            .query_one(
+                &format!(
+                    "SELECT w.last_applied, coalesce(( \
+                         SELECT array_agg(s.position) \
+                         FROM unnest($1::text[], $2::bigint[]) \
+                              WITH ORDINALITY AS s(target, generation, position) \
+                         WHERE EXISTS (SELECT 1 FROM {projection}.live_generation l \
+                                       WHERE l.target = s.target \
+                                         AND l.generation = s.generation) \
+                           AND NOT EXISTS (SELECT 1 FROM {projection}.tombstone t \
+                                           WHERE t.subject = s.target \
+                                             AND t.generation = s.generation)), \
+                         '{{}}'::bigint[]) \
+                     FROM {projection}.projection_watermark w WHERE w.id = 1"
+                ),
+                &[&targets, &generations],
+            )
+            .await
+            .map_err(database)?;
+        let watermark: i64 = row.get(0);
+        check_fence(watermark, fence)?;
+        let asked: Vec<(&str, Generation)> = asked.into_iter().collect();
+        let admissible = row
+            .get::<_, Vec<i64>>(1)
+            .into_iter()
+            .map(|position| {
+                usize::try_from(position)
+                    .ok()
+                    .and_then(|position| position.checked_sub(1))
+                    .and_then(|index| asked.get(index))
+                    .map(|(target, generation)| ((*target).to_owned(), *generation))
+                    .ok_or_else(|| PgError::CorruptRow {
+                        table: "live_generation",
+                        reason: format!(
+                            "the admission names source {position}, which was not asked"
+                        ),
+                    })
+            })
+            .collect::<Result<BTreeSet<_>, _>>()?;
+        Ok(SourceAdmission {
+            as_of: CommitIndex(to_u64(watermark, "projection_watermark")?),
+            admissible,
+        })
     }
 
     /// The commit that published `revision`, if the projection has seen it.

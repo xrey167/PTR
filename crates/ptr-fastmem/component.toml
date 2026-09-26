@@ -5,7 +5,8 @@ last_reviewed = "2026-09-26"
 
 implemented = [
   "Multi-head matrix state updated by the gated delta rule in its Kimi Delta Attention form, with scalar, per-channel or no decay, read by o = S^T q",
-  "Every write names its semantic input, generation and input digest; a read is admitted only if every source is admissible according to the caller's lifecycle view when the read is made (a revocation committed after that view is not seen, so decoded candidates still pass the lifecycle check at use), and only for a query normalised for the memory's head shape (a Query keeps heads and key_dim; any other shape is a DimensionMismatch)",
+  "Every write names its semantic input, generation and input digest; a read is admitted only if every source is admissible according to the caller's lifecycle view when the read is made (a revocation committed after that view is not seen, so decoded candidates still pass the lifecycle check at use; ptr-pg source_admission answers a whole source set from one snapshot and names the commit it reflects), and only for a query normalised for the memory's head shape (a Query keeps heads and key_dim; any other shape is a DimensionMismatch)",
+  "A memory is bound when it is created or restored to the IdentifierCodebook (seed and code length, which must be the value length) its values are codes of; its readouts carry that codebook, fact_codes derives candidates from it, FactCode is built only by a codebook and keeps it, and decode_readout refuses a fact code from any other codebook (CodebookMismatch) instead of scoring crosstalk of the right length; ptr-pg restore_memory binds a stored memory to the codebook seed its registration records",
   "In-process journal of admitted writes (keys normalised per head) plus checkpoints every C writes; revocation refolds from the last checkpoint before the first revoked write. restore takes the writes as composed (WriteRequest), which the storage keeps: ptr-pg stores each request as f32 bit patterns",
   "Deterministic f32 fold: the refolded state is bit-identical to a memory that never saw the revoked writes",
   "binding_digest_of names the ordered folded writes by sequence, source key, generation and input digest (not by key and value bits); ptr-pg recomputes it from the stored journal prefix, refuses to store a checkpoint that does not match and never returns one that no longer does",
@@ -43,7 +44,7 @@ decisions = [
 checks = [
   "tests/revocation.rs bit-identical refold and admission denial",
   "tests/journal.rs restore and checkpoint codec",
-  "tests/recall.rs decode, update and Unknown",
+  "tests/recall.rs decode, update, Unknown and the codebook a readout decodes against",
   "ptr-pg postgres test for journal revocation cascade",
   "L003 revocation exactness through the ptr-pg journal (ptr-bench fastmem-revocation): five seeds on PostgreSQL 18, 16 of 16 planted defects detected",
   "workspace fmt/check/test/clippy",

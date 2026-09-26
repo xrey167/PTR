@@ -4,11 +4,12 @@
 use std::collections::BTreeMap;
 
 use ptr_branch::{
-    BranchError, BranchId, BranchOp, InputsDigest, RangeDigest, SealedBranch, SealedBranchParts,
-    TriageDecision, TriageOutcome, ValueDigest,
+    ArbiterError, AutoThreshold, BranchError, BranchId, BranchOp, InputsDigest, RangeDigest,
+    SealedBranch, SealedBranchParts, TriageDecision, TriageOutcome, TriagePolicy, ValueDigest,
 };
 use ptr_semdb::{SemanticPayload, SemanticValue};
 use ptr_types::{CommitIndex, Generation, PrincipalId, Revision, TypeId};
+use tokio_postgres::IsolationLevel;
 
 use super::{check_text, database, digest_from, to_i64, to_u64, PgSubstrate};
 use crate::error::PgError;
@@ -18,7 +19,9 @@ use crate::error::PgError;
 pub enum BranchOutcome {
     /// Its merge plan committed at this index.
     Merged(CommitIndex),
-    /// A later commit at this index reverted it.
+    /// A later commit at this index reverted it. It is recorded only after
+    /// the branch's merge and only at a greater index
+    /// ([`PgSubstrate::record_outcome`] refuses any other).
     Reverted(CommitIndex),
     /// Certification against a newer snapshot refused it.
     Conflicted,
@@ -176,6 +179,13 @@ impl PgSubstrate {
 
     /// Load a stored branch exactly as it was sealed.
     ///
+    /// The header and every child table are read in one read-only
+    /// repeatable-read transaction, so all of them come from one snapshot: a
+    /// branch deleted while it is loaded, whose cascade removes its reads,
+    /// digests and operations, comes back whole (the snapshot precedes the
+    /// delete) or as `None` (it follows it), never assembled from the rows
+    /// read before the delete and the absence of those read after it.
+    ///
     /// The rows are rebuilt through `SealedBranch::from_parts`, so what comes
     /// back passes every sealing invariant a freshly sealed branch does; rows
     /// changed after they were stored come back as an error, never as a
@@ -191,10 +201,17 @@ impl PgSubstrate {
     /// key, a touched key without its base value or input set, a base value
     /// or input set no operation needs), are a [`PgError::CorruptBranch`]
     /// naming the `BranchError`.
-    pub async fn load_branch(&self, id: &BranchId) -> Result<Option<SealedBranch>, PgError> {
-        let work = &self.schemas.work;
-        let Some(header) = self
+    pub async fn load_branch(&mut self, id: &BranchId) -> Result<Option<SealedBranch>, PgError> {
+        let work = self.schemas.work.clone();
+        let transaction = self
             .client
+            .build_transaction()
+            .isolation_level(IsolationLevel::RepeatableRead)
+            .read_only(true)
+            .start()
+            .await
+            .map_err(database)?;
+        let Some(header) = transaction
             .query_opt(
                 &format!("SELECT author, base_revision FROM {work}.branch WHERE id = $1"),
                 &[&id.0],
@@ -206,8 +223,7 @@ impl PgSubstrate {
         };
 
         let mut reads = BTreeMap::new();
-        for row in self
-            .client
+        for row in transaction
             .query(
                 &format!("SELECT key, digest FROM {work}.branch_read WHERE branch = $1"),
                 &[&id.0],
@@ -222,8 +238,7 @@ impl PgSubstrate {
             }
         }
         let mut scans = BTreeMap::new();
-        for row in self
-            .client
+        for row in transaction
             .query(
                 &format!("SELECT prefix, digest FROM {work}.branch_scan WHERE branch = $1"),
                 &[&id.0],
@@ -238,8 +253,7 @@ impl PgSubstrate {
             }
         }
         let mut relied = BTreeMap::new();
-        for row in self
-            .client
+        for row in transaction
             .query(
                 &format!(
                     "SELECT target, generation FROM {work}.branch_relied WHERE branch = $1 \
@@ -274,8 +288,7 @@ impl PgSubstrate {
         }
         let mut touched_base = BTreeMap::new();
         let mut touched_inputs = BTreeMap::new();
-        for row in self
-            .client
+        for row in transaction
             .query(
                 &format!(
                     "SELECT key, base_digest, inputs_digest FROM {work}.branch_touched \
@@ -301,8 +314,7 @@ impl PgSubstrate {
                 return Err(stored_twice("branch_touched", "a key"));
             }
         }
-        let ops = self
-            .client
+        let ops = transaction
             .query(
                 &format!(
                     "SELECT kind, key, value_kind, value_text, value_type, value_source, \
@@ -329,6 +341,7 @@ impl PgSubstrate {
                 .into_op()
             })
             .collect::<Result<Vec<_>, _>>()?;
+        transaction.commit().await.map_err(database)?;
 
         SealedBranch::from_parts(SealedBranchParts {
             id: id.clone(),
@@ -351,25 +364,76 @@ impl PgSubstrate {
     /// Log a branch's triage with what off-policy evaluation needs later: the
     /// score, the propensity of auto-proposing and the policy version.
     ///
-    /// The version must name a recorded policy (a foreign key refuses any
-    /// other), but the triage is stored as given: that its decision and
-    /// propensity are the ones that policy produces for its eligibility,
-    /// slice flag and score is the caller's obligation.
+    /// The row is bound to the policy it cites: in one transaction the cited
+    /// policy's threshold and calibration rate are loaded (its row held `FOR
+    /// KEY SHARE`, the lock the foreign key takes, though a recorded policy is
+    /// never rewritten), and the triage is written only if that policy can
+    /// have produced it, [`TriagePolicy::explains`]: for its eligibility and
+    /// score, the decision, calibration-slice flag and auto-propose
+    /// propensity are the ones the policy's rules give, compared exactly
+    /// (the policy computes the propensity as `1 - calibration_rate`, and
+    /// both columns keep their values bit for bit). Calibration and
+    /// off-policy evaluation reweight by the logged propensity under the
+    /// cited policy, so a row another policy made would bias both.
+    ///
+    /// What the check cannot see is the verification report and the
+    /// calibration draw: that a branch was eligible, and that a slice
+    /// branch's draw fell below the rate, remain the caller's word.
+    ///
+    /// # Errors
+    /// Refuses a version no policy is recorded under and a triage the cited
+    /// policy cannot have produced as [`PgError::InvalidTriage`], with the
+    /// rule it breaks, before anything is written; a stored policy that is
+    /// not a valid one as [`PgError::CorruptRow`].
     pub async fn record_triage(
-        &self,
+        &mut self,
         branch: &BranchId,
         triage: &TriageOutcome,
         policy_version: &str,
     ) -> Result<(), PgError> {
         check_text("branch_triage.branch", &branch.0)?;
         check_text("branch_triage.policy_version", policy_version)?;
-        let work = &self.schemas.work;
+        let refuse = |reason| PgError::InvalidTriage {
+            branch: branch.0.clone(),
+            policy_version: policy_version.to_owned(),
+            reason,
+        };
+        let work = self.schemas.work.clone();
         let decision = match triage.decision {
             TriageDecision::AutoPropose => "auto_propose",
             TriageDecision::Escalate => "escalate",
             TriageDecision::Discard => "discard",
         };
-        self.client
+        let transaction = self.read_committed().await?;
+        let Some(row) = transaction
+            .query_opt(
+                &format!(
+                    "SELECT threshold, calibration_rate FROM {work}.triage_policy \
+                     WHERE version = $1 FOR KEY SHARE"
+                ),
+                &[&policy_version],
+            )
+            .await
+            .map_err(database)?
+        else {
+            return Err(refuse("the cited policy is not recorded"));
+        };
+        let threshold = match row.get::<_, Option<f32>>(0) {
+            None => AutoThreshold::Never,
+            Some(threshold) => AutoThreshold::AtLeast(threshold),
+        };
+        let policy =
+            TriagePolicy::new(threshold, row.get(1)).map_err(|error| PgError::CorruptRow {
+                table: "triage_policy",
+                reason: error.to_string(),
+            })?;
+        policy.explains(triage).map_err(|error| {
+            refuse(match error {
+                ArbiterError::UnexplainedTriage { reason } => reason,
+                _ => "the cited policy cannot have produced this triage",
+            })
+        })?;
+        transaction
             .execute(
                 &format!(
                     "INSERT INTO {work}.branch_triage \
@@ -389,11 +453,24 @@ impl PgSubstrate {
             )
             .await
             .map_err(database)?;
-        Ok(())
+        transaction.commit().await.map_err(database)
     }
 
     /// Append an observed outcome. Each outcome kind is recorded once per
     /// branch and never rewritten.
+    ///
+    /// A revert is a later commit undoing the branch's merge, so
+    /// [`BranchOutcome::Reverted`] is written only if the branch's merge is
+    /// recorded at a smaller commit index. The merge is read and the revert
+    /// inserted in one statement, so they come from one snapshot, and a merge
+    /// row is never rewritten or removed on its own; since a branch is merged
+    /// once, no merge can be recorded after its revert either.
+    ///
+    /// # Errors
+    /// Refuses a revert with no recorded merge, or at a commit index not
+    /// greater than the merge's, as [`PgError::InvalidOutcome`], writing
+    /// nothing; an outcome kind recorded twice as the primary key's
+    /// [`PgError::Database`].
     pub async fn record_outcome(
         &self,
         branch: &BranchId,
@@ -405,6 +482,37 @@ impl PgSubstrate {
             .commit_index()
             .map(|index| to_i64(index, "commit_index"))
             .transpose()?;
+        if let BranchOutcome::Reverted(_) = outcome {
+            let row = self
+                .client
+                .query_one(
+                    &format!(
+                        "WITH merge AS ( \
+                             SELECT commit_index FROM {work}.branch_outcome \
+                             WHERE branch = $1 AND outcome = 'merged'), \
+                         inserted AS ( \
+                             INSERT INTO {work}.branch_outcome (branch, outcome, commit_index) \
+                             SELECT $1, 'reverted', $2 FROM merge WHERE commit_index < $2 \
+                             RETURNING 1) \
+                         SELECT (SELECT commit_index FROM merge), \
+                                EXISTS (SELECT 1 FROM inserted)"
+                    ),
+                    &[&branch.0, &commit],
+                )
+                .await
+                .map_err(database)?;
+            let (merged, inserted): (Option<i64>, bool) = (row.get(0), row.get(1));
+            if inserted {
+                return Ok(());
+            }
+            return Err(PgError::InvalidOutcome {
+                branch: branch.0.clone(),
+                reason: match merged {
+                    None => "a revert needs the branch's recorded merge",
+                    Some(_) => "a revert commits after the merge it reverts",
+                },
+            });
+        }
         self.client
             .execute(
                 &format!(

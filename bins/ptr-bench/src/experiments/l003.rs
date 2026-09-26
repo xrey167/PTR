@@ -31,7 +31,7 @@ use std::time::{Duration, Instant};
 use ptr_config::PtrConfig;
 use ptr_fastmem::{
     binding_digest_of, decode_state, encode_state, Decay, FastMemory, FastMemoryConfig,
-    FastWeightState, Query, SourceRef, WriteRequest, WriteSeq,
+    FastWeightState, IdentifierCodebook, Query, SourceRef, WriteRequest, WriteSeq,
 };
 use ptr_ledger::integrity::{chain_anchors, sha256, LogAnchor};
 use ptr_ledger::{CommittedEvent, LedgerEvent};
@@ -646,6 +646,9 @@ impl Ledger {
 struct Tracked {
     id: String,
     config: FastMemoryConfig,
+    /// The codebook the registration records; every fold of the journal is
+    /// bound to it, as the store's own restore binds it.
+    codebook: IdentifierCodebook,
     memory: FastMemory,
     acknowledged: Vec<(WriteSeq, WriteRequest)>,
     /// Checkpoints the store accepted, by applied sequence number, with the
@@ -770,10 +773,12 @@ impl Case<'_> {
             .await
             .expect("register a memory");
         self.metrics.memories += 1;
+        let codebook = record.codebook().expect("a supported shape has a codebook");
         self.memories.push(Tracked {
             id: record.id,
             config,
-            memory: FastMemory::new(config).expect("a supported shape"),
+            codebook,
+            memory: FastMemory::new(config, codebook).expect("a supported shape"),
             acknowledged: Vec::new(),
             stored: BTreeMap::new(),
         });
@@ -955,6 +960,7 @@ impl Case<'_> {
     async fn check_checkpoint_rows(&mut self, index: usize, expected: &[(WriteSeq, WriteRequest)]) {
         let id = self.memories[index].id.clone();
         let config = self.memories[index].config;
+        let codebook = self.memories[index].codebook;
         let rows = match self
             .raw
             .query(
@@ -1004,7 +1010,7 @@ impl Case<'_> {
                 );
                 continue;
             }
-            let folded = FastMemory::restore(config, prefix)
+            let folded = FastMemory::restore(config, codebook, prefix)
                 .ok()
                 .zip(decode_state(&bytes).ok())
                 .is_some_and(|(fold, state)| same_state(fold.state(), &state));
@@ -1210,7 +1216,8 @@ impl Case<'_> {
     ) {
         self.metrics.bit_identity_checks += 1;
         let config = self.memories[index].config;
-        let never = match FastMemory::restore(config, expected.iter().cloned()) {
+        let codebook = self.memories[index].codebook;
+        let never = match FastMemory::restore(config, codebook, expected.iter().cloned()) {
             Ok(never) => never,
             Err(error) => {
                 diverged(
@@ -1279,6 +1286,7 @@ impl Case<'_> {
     ) {
         let id = self.memories[index].id.clone();
         let config = self.memories[index].config;
+        let codebook = self.memories[index].codebook;
         let newest = self.memories[index]
             .valid_checkpoints(expected)
             .last()
@@ -1313,7 +1321,7 @@ impl Case<'_> {
                     binding_digest_of(prefix.iter().map(|(seq, request)| (*seq, &request.source)));
                 let folded = prefix.last().map(|(seq, _)| *seq) == Some(checkpoint.applied)
                     && binding == checkpoint.binding_digest
-                    && FastMemory::restore(config, prefix)
+                    && FastMemory::restore(config, codebook, prefix)
                         .is_ok_and(|fold| same_state(fold.state(), &checkpoint.state));
                 if !folded {
                     diverged(
@@ -1340,8 +1348,9 @@ impl Case<'_> {
     async fn restore_memory(&mut self, index: usize) {
         let id = self.memories[index].id.clone();
         let config = self.memories[index].config;
+        let codebook = self.memories[index].codebook;
         match self.sessions.writer().load_journal(&id).await {
-            Ok(journal) => match FastMemory::restore(config, journal) {
+            Ok(journal) => match FastMemory::restore(config, codebook, journal) {
                 Ok(memory) => {
                     self.memories[index].memory = memory;
                     self.metrics.restores += 1;

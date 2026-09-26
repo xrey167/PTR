@@ -168,7 +168,14 @@ impl SeededProjection {
 /// nearly orthogonal, so `<S^T q, code(id)>` estimates the memory's weight on
 /// that fact plus crosstalk of standard deviation about
 /// `sqrt(sum_j w_j^2 / n)`.
-#[derive(Clone, Debug, Eq, PartialEq)]
+///
+/// The seed and length are the codebook's identity: two codebooks with equal
+/// seeds and lengths derive the same code for every id, and codebooks that
+/// differ in either derive unrelated ones. A [`crate::FastMemory`] is bound to
+/// the codebook its values are codes of, and its readouts carry it, so
+/// decoding a readout against another codebook's codes, which would score
+/// plausible but meaningless weights, is refused.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct IdentifierCodebook {
     seed: u64,
     len: usize,
@@ -195,6 +202,11 @@ impl IdentifierCodebook {
             });
         }
         Ok(Self { seed, len })
+    }
+
+    /// The seed every code is derived from.
+    pub fn seed(&self) -> u64 {
+        self.seed
     }
 
     pub fn len(&self) -> usize {

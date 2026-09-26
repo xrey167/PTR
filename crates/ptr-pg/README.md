@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-26  
-**Code footprint:** 16 Rust source files · 4670 nonblank source lines · 2 integration-test files · 25 `#[test]` markers
+**Code footprint:** 16 Rust source files · 5026 nonblank source lines · 2 integration-test files · 25 `#[test]` markers
 
 ### Implemented now
 
@@ -25,8 +25,12 @@
 - Hybrid retrieval in one repeatable-read snapshot: built-in full text plus halfvec cosine search over per-space partial HNSW expression indexes with iterative scans, joined to the lifecycle catalog and fused by capsule and generation
 - Work schema for sealed branches, triage logs and append-only outcomes; fast-memory journals and checkpoints; adapter lineage and replay pool; weak-supervision store
 - A sealed branch is stored with the base value and base input-set digest of every touched key; a branch stored before input sets were recorded is refused on load (BranchWithoutInputSets) because it cannot be certified and must be re-run
-- store_branch takes only a SealedBranch, which exists only once ptr_branch::SealedBranch::from_parts has checked every sealing invariant, and rechecks them before any row is written (InvalidBranch); load_branch rebuilds every stored branch through that constructor, so rows changed to write a reserved namespace, overwrite an unread key or break the touched-key bookkeeping, or relying on two generations of one target, are refused as CorruptBranch and a key stored twice as CorruptRow, never returned as a branch to certify
-- Tombstones delete the revoked generation's fast-memory writes, and supersessions every other generation's, with the checkpoints that folded them, in the projector's transaction; appends validate requests against the locked memory configuration and are refused for inadmissible sources and read the journal only after taking the memory row lock; a memory is registered only if ptr-fastmem accepts its configuration
+- store_branch takes only a SealedBranch, which exists only once ptr_branch::SealedBranch::from_parts has checked every sealing invariant, and rechecks them before any row is written (InvalidBranch); load_branch rebuilds every stored branch through that constructor, so rows changed to write a reserved namespace, overwrite an unread key or break the touched-key bookkeeping, or relying on two generations of one target, are refused as CorruptBranch and a key stored twice as CorruptRow, never returned as a branch to certify; it reads the header and every child table in one read-only repeatable-read snapshot, so a branch deleted while it loads comes back whole or as None, never assembled from partial reads
+- record_triage loads the cited policy in the transaction that writes the row and refuses, as InvalidTriage before anything is written, a version no policy is recorded under and a row that policy cannot have produced (ptr_branch::TriagePolicy::explains: decision, slice flag or propensity inconsistent with its threshold and calibration rate for the row's eligibility and score, or a score that is not a probability); the verification report and the calibration draw are not stored, so eligibility and a slice branch's draw remain the caller's word
+- record_outcome writes a revert only after the branch's recorded merge and at a greater commit index, reading the merge and inserting the revert in one statement, and refuses any other as InvalidOutcome; the revert share counts a revert only at a commit index after its merge's, so a row written around that check is not counted as reverting a merge it precedes
+- Tombstones delete the revoked generation's fast-memory writes, and supersessions every other generation's, with the checkpoints that folded them, in the projector's transaction; appends validate requests against the locked memory configuration and are refused for inadmissible sources and read the journal only after taking the memory row lock; a memory is registered only if ptr-fastmem accepts its configuration, and every loader (load_memory, restore_memory and the registration read by appends and checkpoints) refuses a stored configuration outside check_config's ranges as CorruptRow
+- restore_memory reads a registration and its journal in one repeatable-read snapshot and restores the memory bound to the IdentifierCodebook whose seed the registration records, so a memory loaded from PostgreSQL decodes against no other codebook
+- source_admission answers the admissibility of a whole source set (live generation and not revoked, is_admissible's rule) in one statement and returns the projection commit index that snapshot reflects, so a caller binds a fast-memory read decision to one lifecycle state; is_admissible answers one source per statement and names no commit
 - A checkpoint is stored only when its binding digest matches the one recomputed from the stored journal prefix up to its applied write, and latest_checkpoint skips any whose binding no longer matches; the state cells are the writer's and are never refolded, so the writer stores FastMemory::state with FastMemory::binding_digest of the same memory
 - The projector, cache writers, journal appends and checkpoint stores run at an explicit READ COMMITTED whatever the session default, which the lock ordering needs
 - Strings PostgreSQL text cannot hold (NUL) are refused with a typed error before anything is written; the projector refuses such a record and stops there
@@ -47,7 +51,7 @@
 - Adapters for the rest of the lineage catalog and for the labeling tables (interference reports and triage policies have them)
 - Effect applier for business tables through the effect boundary
 - Replay sample and probe rows keyed by the training chain whose clock they were measured on, added with the replay-table adapter before it reads or writes a replay row
-- record_triage refusing a triage whose decision or propensity does not follow from the policy version it cites; today it and the foreign key check only that the version exists, so logging the cited policy's outcome is a caller obligation
+- The verification report and calibration draw behind a logged triage, so storage could check eligibility and slice membership too; record_triage checks only what the row and its cited policy determine
 - Fast memories registered only with the principal of the admitted execution session; FastMemoryRecord::principal, like a stored branch's author, is whatever PrincipalId the caller passes
 
 ### Next milestones

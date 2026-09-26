@@ -1,4 +1,5 @@
 use crate::config::FastMemoryConfig;
+use crate::projection::IdentifierCodebook;
 use crate::write::{Decay, MemoryWrite, Query, WriteSeq};
 
 /// The fast-weight matrices of one memory, after a known number of writes.
@@ -27,12 +28,34 @@ pub struct FastWeightState {
     applied: WriteSeq,
 }
 
-/// One read: `heads * value_dim` values, head by head.
+/// One read: `heads * value_dim` values, head by head, and the identifier
+/// codebook of the memory it was read from.
+///
+/// Only [`crate::FastMemory::read_admitted`] makes a readout, so its codebook
+/// is always the one the memory's values are codes of; [`crate::decode_readout`]
+/// refuses fact codes from any other.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Readout {
     pub values: Vec<f32>,
     /// The last write this readout reflects.
     pub as_of: WriteSeq,
+    codebook: IdentifierCodebook,
+}
+
+impl Readout {
+    pub(crate) fn new(values: Vec<f32>, as_of: WriteSeq, codebook: IdentifierCodebook) -> Self {
+        Self {
+            values,
+            as_of,
+            codebook,
+        }
+    }
+
+    /// The codebook of the memory this readout was read from: the only one
+    /// whose fact codes it may be decoded against.
+    pub fn codebook(&self) -> IdentifierCodebook {
+        self.codebook
+    }
 }
 
 impl FastWeightState {
@@ -109,10 +132,11 @@ impl FastWeightState {
         surprise
     }
 
-    /// `o_h = S_h^T q_h` for every head. Crate-internal: callers read through
-    /// [`crate::FastMemory::read_admitted`], which checks the query's head
-    /// shape against this configuration and every input first.
-    pub(crate) fn read(&self, query: &Query) -> Readout {
+    /// `o_h = S_h^T q_h` for every head, concatenated. Crate-internal: callers
+    /// read through [`crate::FastMemory::read_admitted`], which checks the
+    /// query's head shape against this configuration and every input first,
+    /// and binds the values to the memory's codebook.
+    pub(crate) fn read(&self, query: &Query) -> Vec<f32> {
         let key_dim = self.config.key_dim;
         let value_dim = self.config.value_dim;
         let mut values = vec![0.0_f32; self.config.value_len()];
@@ -128,10 +152,7 @@ impl FastWeightState {
                 }
             }
         }
-        Readout {
-            values,
-            as_of: self.applied,
-        }
+        values
     }
 }
 
@@ -200,8 +221,8 @@ mod tests {
     fn a_full_strength_write_is_recalled_exactly_under_its_key() {
         let mut state = FastWeightState::empty(config());
         state.apply(&write(1, [1.0, 0.0], [3.0, -2.0], 1.0, Decay::None));
-        assert_eq!(state.read(&query([1.0, 0.0])).values, vec![3.0, -2.0]);
-        assert_eq!(state.read(&query([0.0, 1.0])).values, vec![0.0, 0.0]);
+        assert_eq!(state.read(&query([1.0, 0.0])), vec![3.0, -2.0]);
+        assert_eq!(state.read(&query([0.0, 1.0])), vec![0.0, 0.0]);
     }
 
     #[test]
@@ -211,7 +232,7 @@ mod tests {
         let mut state = FastWeightState::empty(config());
         state.apply(&write(1, [1.0, 0.0], [3.0, -2.0], 1.0, Decay::None));
         state.apply(&write(2, [1.0, 0.0], [5.0, 7.0], 1.0, Decay::None));
-        assert_eq!(state.read(&query([1.0, 0.0])).values, vec![5.0, 7.0]);
+        assert_eq!(state.read(&query([1.0, 0.0])), vec![5.0, 7.0]);
     }
 
     #[test]
@@ -219,7 +240,7 @@ mod tests {
         let mut state = FastWeightState::empty(config());
         state.apply(&write(1, [1.0, 0.0], [4.0, 0.0], 1.0, Decay::None));
         state.apply(&write(2, [1.0, 0.0], [8.0, 0.0], 0.25, Decay::None));
-        assert_eq!(state.read(&query([1.0, 0.0])).values, vec![5.0, 0.0]);
+        assert_eq!(state.read(&query([1.0, 0.0])), vec![5.0, 0.0]);
     }
 
     #[test]
@@ -227,8 +248,8 @@ mod tests {
         let mut state = FastWeightState::empty(config());
         state.apply(&write(1, [1.0, 0.0], [1.0, 2.0], 1.0, Decay::None));
         state.apply(&write(2, [0.0, 1.0], [3.0, 4.0], 1.0, Decay::None));
-        assert_eq!(state.read(&query([1.0, 0.0])).values, vec![1.0, 2.0]);
-        assert_eq!(state.read(&query([0.0, 1.0])).values, vec![3.0, 4.0]);
+        assert_eq!(state.read(&query([1.0, 0.0])), vec![1.0, 2.0]);
+        assert_eq!(state.read(&query([0.0, 1.0])), vec![3.0, 4.0]);
     }
 
     #[test]
@@ -245,8 +266,8 @@ mod tests {
             1.0,
             Decay::PerChannel(vec![0.5, 1.0]),
         ));
-        assert_eq!(state.read(&query([1.0, 0.0])).values, vec![1.0, 1.0]);
-        assert_eq!(state.read(&query([0.0, 1.0])).values, vec![4.0, 4.0]);
+        assert_eq!(state.read(&query([1.0, 0.0])), vec![1.0, 1.0]);
+        assert_eq!(state.read(&query([0.0, 1.0])), vec![4.0, 4.0]);
     }
 
     #[test]
@@ -261,7 +282,7 @@ mod tests {
                 Decay::Scalar(0.99),
             ));
         }
-        let recalled = state.read(&query([0.6, 0.8])).values;
+        let recalled = state.read(&query([0.6, 0.8]));
         assert!(recalled.iter().all(|value| value.abs() <= 1.0 + 1e-5));
         assert_eq!(state.applied(), WriteSeq(200));
     }

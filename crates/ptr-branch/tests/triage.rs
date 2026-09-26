@@ -1,7 +1,7 @@
 use ptr_branch::{
     calibrate_threshold, calibration_draw, certify_threshold, doubly_robust, evaluate_off_policy,
     ArbiterError, AutoThreshold, BranchId, CalibrationSample, LoggedTriage, OffPolicyEstimate,
-    PolicyRecord, ThresholdRule, TriageDecision, TriagePolicy,
+    PolicyRecord, ThresholdRule, TriageDecision, TriageOutcome, TriagePolicy,
 };
 use ptr_types::{Probability, VerificationLevel};
 use ptr_verifier::{Finding, VerificationReport, VerificationStatus};
@@ -756,4 +756,175 @@ fn doubly_robust_scales_before_it_multiplies_so_a_finite_estimate_is_returned() 
     let expected = 2.0 * (-0.15 * f64::MAX + (0.3 / 0.7) * f64::MAX);
     let dr = doubly_robust(&log, &policy, model).unwrap();
     assert!((dr - expected).abs() <= 1e-12 * expected, "{dr} {expected}");
+}
+
+#[test]
+fn a_logged_score_that_is_not_a_probability_is_refused_before_any_reweighting() {
+    // An eligible escalated record with a NaN score and propensity zero: NaN
+    // admits nothing under an `AtLeast` target, so the target escalates it
+    // with probability one and the record used to be reweighted by one as if
+    // its score meant something. A score above one or an infinite one used
+    // to surface as a positivity violation instead of as the bad score.
+    let target = TriagePolicy::new(AutoThreshold::AtLeast(0.5), 0.3).unwrap();
+    let model = |_: &LoggedTriage, _: TriageDecision| 0.5;
+    for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -0.25, 1.5] {
+        for eligible_record in [true, false] {
+            let log = [
+                eligible(TriageDecision::AutoPropose, 0.7, 1.0),
+                LoggedTriage {
+                    eligible: eligible_record,
+                    score: value,
+                    decision: TriageDecision::Escalate,
+                    auto_propensity: 0.0,
+                    reward: 0.2,
+                },
+            ];
+            let refused = evaluate_off_policy(&log, &target).unwrap_err();
+            assert!(
+                matches!(refused, ArbiterError::InvalidScore { index: 1, value: seen }
+                    if seen.to_bits() == value.to_bits()),
+                "{value} eligible={eligible_record}: {refused:?}"
+            );
+            assert_eq!(refused.code(), "PTR_ARBITER_INVALID_SCORE");
+            assert!(
+                matches!(
+                    doubly_robust(&log, &target, model),
+                    Err(ArbiterError::InvalidScore { index: 1, .. })
+                ),
+                "{value} eligible={eligible_record}"
+            );
+        }
+    }
+    // The ends of the unit interval are scores.
+    for value in [0.0, 1.0] {
+        let mut record = eligible(TriageDecision::Escalate, 0.0, 0.2);
+        record.score = value;
+        if value >= 0.5 {
+            record.decision = TriageDecision::AutoPropose;
+            record.auto_propensity = 0.7;
+        }
+        assert!(evaluate_off_policy(&[record], &target).is_ok(), "{value}");
+        assert!(doubly_robust(&[record], &target, model).is_ok(), "{value}");
+    }
+}
+
+#[test]
+fn a_policy_explains_every_triage_it_produces_and_nothing_else() {
+    let policy = TriagePolicy::new(AutoThreshold::AtLeast(0.5), 0.25).unwrap();
+    let mut hard = passing();
+    hard.findings.push(Finding {
+        code: "unsafe".into(),
+        message: "constraint failed".into(),
+        hard: true,
+    });
+    let reports = [
+        passing(),
+        report(VerificationStatus::Pass, VerificationLevel::FullSemantic),
+        report(VerificationStatus::Fail, VerificationLevel::Deterministic),
+        report(
+            VerificationStatus::Disputed,
+            VerificationLevel::Deterministic,
+        ),
+        report(VerificationStatus::Pass, VerificationLevel::SampleVerified),
+        hard,
+    ];
+    for verified in &reports {
+        for value in [0.0, 0.25, 0.49, 0.5, 0.9, 1.0] {
+            for draw in [0.0, 0.1, 0.25, 0.9] {
+                let triage = policy.triage(verified, score(value), draw).unwrap();
+                assert_eq!(policy.explains(&triage), Ok(()), "{triage:?}");
+            }
+        }
+    }
+
+    let unexplained = |triage: &TriageOutcome| match policy.explains(triage) {
+        Err(ArbiterError::UnexplainedTriage { reason }) => reason,
+        other => panic!("{triage:?} was explained: {other:?}"),
+    };
+    // Another policy's triages, cited as this one's: its propensity, or its
+    // decision for this score, is not one this policy logs.
+    let other = TriagePolicy::new(AutoThreshold::AtLeast(0.8), 0.1).unwrap();
+    let theirs = other.triage(&passing(), score(0.85), 0.5).unwrap();
+    assert_eq!(theirs.decision, TriageDecision::AutoPropose);
+    assert_eq!(
+        unexplained(&theirs),
+        "the auto-propose propensity is not the one the policy logs for this score"
+    );
+    let below_theirs = other.triage(&passing(), score(0.6), 0.5).unwrap();
+    assert_eq!(below_theirs.decision, TriageDecision::Escalate);
+    assert_eq!(
+        unexplained(&below_theirs),
+        "the auto-propose propensity is not the one the policy logs for this score"
+    );
+    // The right propensity with a decision the threshold does not make.
+    let mut escalated_above = policy.triage(&passing(), score(0.9), 0.5).unwrap();
+    escalated_above.decision = TriageDecision::Escalate;
+    assert_eq!(
+        unexplained(&escalated_above),
+        "outside the calibration slice the policy auto-proposes exactly the scores its \
+         threshold admits"
+    );
+    let mut proposed_below = policy.triage(&passing(), score(0.2), 0.5).unwrap();
+    proposed_below.decision = TriageDecision::AutoPropose;
+    assert_eq!(
+        unexplained(&proposed_below),
+        "outside the calibration slice the policy auto-proposes exactly the scores its \
+         threshold admits"
+    );
+    // Eligible rows the policy never writes.
+    let mut discarded = policy.triage(&passing(), score(0.2), 0.5).unwrap();
+    discarded.decision = TriageDecision::Discard;
+    assert_eq!(
+        unexplained(&discarded),
+        "an eligible branch is never discarded"
+    );
+    let mut sliced = policy.triage(&passing(), score(0.9), 0.1).unwrap();
+    sliced.decision = TriageDecision::AutoPropose;
+    assert_eq!(
+        unexplained(&sliced),
+        "a calibration-slice branch is escalated"
+    );
+    let never_sliced = TriagePolicy::new(AutoThreshold::AtLeast(0.5), 0.0).unwrap();
+    let slice = policy.triage(&passing(), score(0.2), 0.1).unwrap();
+    assert!(slice.calibration_slice);
+    assert_eq!(
+        never_sliced.explains(&slice),
+        Err(ArbiterError::UnexplainedTriage {
+            reason: "a policy with calibration rate zero has no calibration slice",
+        })
+    );
+    // Rows verification decided, but not the way verification decides.
+    let failed = policy
+        .triage(
+            &report(VerificationStatus::Fail, VerificationLevel::Deterministic),
+            score(0.9),
+            0.5,
+        )
+        .unwrap();
+    let mut forced_auto = failed.clone();
+    forced_auto.decision = TriageDecision::AutoPropose;
+    assert_eq!(
+        unexplained(&forced_auto),
+        "verification alone never auto-proposes"
+    );
+    let mut forced_slice = failed.clone();
+    forced_slice.calibration_slice = true;
+    assert_eq!(
+        unexplained(&forced_slice),
+        "a calibration-slice branch is eligible"
+    );
+    let mut forced_propensity = failed;
+    forced_propensity.auto_propensity = 0.75;
+    assert_eq!(
+        unexplained(&forced_propensity),
+        "a branch verification decided has auto-propose propensity zero"
+    );
+    // A score no triage sees.
+    for value in [f32::NAN, -0.1, 1.5, f32::INFINITY] {
+        let mut scored = policy.triage(&passing(), score(0.2), 0.5).unwrap();
+        scored.score = value;
+        let refused = policy.explains(&scored).unwrap_err();
+        assert_eq!(refused.code(), "PTR_ARBITER_UNEXPLAINED_TRIAGE");
+        assert_eq!(unexplained(&scored), "the score is not a probability");
+    }
 }

@@ -7,11 +7,12 @@
 //! here in the projector's transaction; see `projection.rs`.
 
 use ptr_fastmem::{
-    binding_digest_of, check_config, decode_state, encode_state, validate_write, Decay,
-    FastMemoryConfig, FastWeightState, SourceRef, WriteRequest, WriteSeq,
+    binding_digest_of, check_config, decode_state, encode_state, validate_write, Decay, FastMemory,
+    FastMemoryConfig, FastMemoryError, FastWeightState, IdentifierCodebook, SourceRef,
+    WriteRequest, WriteSeq,
 };
 use ptr_types::{Generation, PrincipalId};
-use tokio_postgres::Transaction;
+use tokio_postgres::{IsolationLevel, Row, Transaction};
 
 use super::{check_text, database, digest_from, to_i64, to_u64, PgSubstrate};
 use crate::error::PgError;
@@ -31,6 +32,20 @@ pub struct FastMemoryRecord {
     /// Seed of the identifier codebook. Stored in a signed column by bit
     /// pattern, so every `u64` round-trips.
     pub codebook_seed: u64,
+}
+
+impl FastMemoryRecord {
+    /// The identifier codebook the memory's values are codes of: this seed,
+    /// with codes as long as one value of the configuration. A memory
+    /// rebuilt from storage ([`PgSubstrate::restore_memory`]) is bound to it,
+    /// so its readouts decode against no other codebook.
+    ///
+    /// # Errors
+    /// Refuses a configuration whose values no codebook can code (it fails
+    /// [`check_config`], which every stored record passes).
+    pub fn codebook(&self) -> Result<IdentifierCodebook, FastMemoryError> {
+        IdentifierCodebook::new(self.codebook_seed, self.config.value_len())
+    }
 }
 
 /// A stored checkpoint: a state its writer declared to be the fold of the
@@ -97,40 +112,75 @@ impl PgSubstrate {
     }
 
     /// Load a memory's registration and configuration, or `None` if absent.
-    /// Propagates database errors and reports corrupt stored dimensions or
-    /// projection digests as `PgError::CorruptRow`.
+    ///
+    /// The stored configuration is returned only if it passes
+    /// [`check_config`], as every loader here requires: the table bounds each
+    /// dimension but not their product, so a row registered before
+    /// [`create_memory`](Self::create_memory) checked the configuration, or
+    /// written around it, can hold a state beyond `MAX_STATE_CELLS` that no
+    /// write could ever be appended to.
+    ///
+    /// # Errors
+    /// Propagates database errors and reports corrupt stored dimensions, a
+    /// configuration outside the supported ranges or a malformed projection
+    /// digest as `PgError::CorruptRow` naming `fastmem_memory`.
     pub async fn load_memory(&self, id: &str) -> Result<Option<FastMemoryRecord>, PgError> {
-        let work = &self.schemas.work;
         let row = self
             .client
-            .query_opt(
-                &format!(
-                    "SELECT principal, thread, heads, key_dim, value_dim, checkpoint_interval, \
-                            max_writes, projection_digest, codebook_seed \
-                     FROM {work}.fastmem_memory WHERE id = $1"
-                ),
-                &[&id],
-            )
+            .query_opt(&memory_query(self.schemas.work.as_str()), &[&id])
             .await
             .map_err(database)?;
-        let Some(row) = row else {
+        row.map(|row| memory_record(id, &row)).transpose()
+    }
+
+    /// Rebuild a registered memory from its stored journal, or `None` if it
+    /// is not registered.
+    ///
+    /// The registration and the journal are read in one read-only
+    /// repeatable-read snapshot, and the journal is restored with
+    /// [`FastMemory::restore`] under the configuration and the identifier
+    /// codebook the registration records ([`FastMemoryRecord::codebook`]).
+    /// The stored `codebook_seed` thus binds every memory loaded here: its
+    /// readouts carry that codebook, and `ptr_fastmem::decode_readout`
+    /// refuses fact codes from any other.
+    ///
+    /// # Errors
+    /// Propagates database errors; a registration [`load_memory`](Self::load_memory)
+    /// refuses, or a journal row that is malformed or that
+    /// [`FastMemory::restore`] refuses (out of order, beyond the configured
+    /// journal, failing the write rules), is a `PgError::CorruptRow`.
+    pub async fn restore_memory(&mut self, id: &str) -> Result<Option<FastMemory>, PgError> {
+        let work = self.schemas.work.clone();
+        let transaction = self
+            .client
+            .build_transaction()
+            .isolation_level(IsolationLevel::RepeatableRead)
+            .read_only(true)
+            .start()
+            .await
+            .map_err(database)?;
+        let Some(row) = transaction
+            .query_opt(&memory_query(work.as_str()), &[&id])
+            .await
+            .map_err(database)?
+        else {
             return Ok(None);
         };
-        let config = FastMemoryConfig {
-            heads: unsigned(row.get(2))?,
-            key_dim: unsigned(row.get(3))?,
-            value_dim: unsigned(row.get(4))?,
-            checkpoint_interval: unsigned(row.get(5))? as u32,
-            max_writes: unsigned(row.get(6))? as u32,
-        };
-        Ok(Some(FastMemoryRecord {
-            id: id.to_owned(),
-            principal: PrincipalId(row.get(0)),
-            thread: row.get(1),
-            config,
-            projection_digest: digest_from(row.get(7), "fastmem_memory")?,
-            codebook_seed: row.get::<_, i64>(8) as u64,
-        }))
+        let record = memory_record(id, &row)?;
+        let codebook = record.codebook().map_err(|error| {
+            corrupt_memory(&format!("the stored codebook is not supported: {error}"))
+        })?;
+        let journal = transaction
+            .query(&journal_query(work.as_str()), &[&id])
+            .await
+            .map_err(database)?
+            .iter()
+            .map(journal_entry)
+            .collect::<Result<Vec<_>, _>>()?;
+        transaction.commit().await.map_err(database)?;
+        FastMemory::restore(record.config, codebook, journal)
+            .map(Some)
+            .map_err(|error| corrupt(&format!("the stored journal does not restore: {error}")))
     }
 
     /// Append one write to a memory's journal.
@@ -253,47 +303,12 @@ impl PgSubstrate {
         &self,
         memory: &str,
     ) -> Result<Vec<(WriteSeq, WriteRequest)>, PgError> {
-        let work = &self.schemas.work;
-        let rows = self
-            .client
-            .query(
-                &format!(
-                    "SELECT seq, source_key, source_generation, input_digest, key_cells, \
-                            value_cells, beta, decay_kind, decay_cells \
-                     FROM {work}.fastmem_write WHERE memory = $1 ORDER BY seq"
-                ),
-                &[&memory],
-            )
+        self.client
+            .query(&journal_query(self.schemas.work.as_str()), &[&memory])
             .await
-            .map_err(database)?;
-        rows.into_iter()
-            .map(|row| {
-                let decay_kind: String = row.get(7);
-                let decay_cells: Option<Vec<u8>> = row.get(8);
-                let decay = match (decay_kind.as_str(), decay_cells) {
-                    ("none", None) => Decay::None,
-                    ("scalar", Some(bytes)) => match floats(&bytes)?.as_slice() {
-                        [factor] => Decay::Scalar(*factor),
-                        _ => return Err(corrupt("a scalar decay is not one value")),
-                    },
-                    ("per_channel", Some(bytes)) => Decay::PerChannel(floats(&bytes)?),
-                    _ => return Err(corrupt("decay kind and cells disagree")),
-                };
-                Ok((
-                    WriteSeq(to_u64(row.get(0), "fastmem_write")?),
-                    WriteRequest {
-                        source: SourceRef {
-                            key: row.get(1),
-                            generation: Generation(to_u64(row.get(2), "fastmem_write")?),
-                            input_digest: digest_from(row.get(3), "fastmem_write")?,
-                        },
-                        key: floats(&row.get::<_, Vec<u8>>(4))?,
-                        value: floats(&row.get::<_, Vec<u8>>(5))?,
-                        beta: row.get(6),
-                        decay,
-                    },
-                ))
-            })
+            .map_err(database)?
+            .iter()
+            .map(journal_entry)
             .collect()
     }
 
@@ -437,7 +452,71 @@ impl PgSubstrate {
     }
 }
 
-/// A memory's shape, optionally locking its row.
+/// The registration of one memory, `$1`, as [`memory_record`] reads it.
+fn memory_query(work: &str) -> String {
+    format!(
+        "SELECT principal, thread, heads, key_dim, value_dim, checkpoint_interval, \
+                max_writes, projection_digest, codebook_seed \
+         FROM {work}.fastmem_memory WHERE id = $1"
+    )
+}
+
+/// One row of [`memory_query`], its configuration checked by
+/// [`stored_config`].
+fn memory_record(id: &str, row: &Row) -> Result<FastMemoryRecord, PgError> {
+    let config = stored_config(row.get(2), row.get(3), row.get(4), row.get(5), row.get(6))?;
+    Ok(FastMemoryRecord {
+        id: id.to_owned(),
+        principal: PrincipalId(row.get(0)),
+        thread: row.get(1),
+        config,
+        projection_digest: digest_from(row.get(7), "fastmem_memory")?,
+        codebook_seed: row.get::<_, i64>(8) as u64,
+    })
+}
+
+/// The journal of one memory, `$1`, in sequence order, as [`journal_entry`]
+/// reads it.
+fn journal_query(work: &str) -> String {
+    format!(
+        "SELECT seq, source_key, source_generation, input_digest, key_cells, \
+                value_cells, beta, decay_kind, decay_cells \
+         FROM {work}.fastmem_write WHERE memory = $1 ORDER BY seq"
+    )
+}
+
+/// One row of [`journal_query`] as the write request it stores.
+fn journal_entry(row: &Row) -> Result<(WriteSeq, WriteRequest), PgError> {
+    let decay_kind: String = row.get(7);
+    let decay_cells: Option<Vec<u8>> = row.get(8);
+    let decay = match (decay_kind.as_str(), decay_cells) {
+        ("none", None) => Decay::None,
+        ("scalar", Some(bytes)) => match floats(&bytes)?.as_slice() {
+            [factor] => Decay::Scalar(*factor),
+            _ => return Err(corrupt("a scalar decay is not one value")),
+        },
+        ("per_channel", Some(bytes)) => Decay::PerChannel(floats(&bytes)?),
+        _ => return Err(corrupt("decay kind and cells disagree")),
+    };
+    Ok((
+        WriteSeq(to_u64(row.get(0), "fastmem_write")?),
+        WriteRequest {
+            source: SourceRef {
+                key: row.get(1),
+                generation: Generation(to_u64(row.get(2), "fastmem_write")?),
+                input_digest: digest_from(row.get(3), "fastmem_write")?,
+            },
+            key: floats(&row.get::<_, Vec<u8>>(4))?,
+            value: floats(&row.get::<_, Vec<u8>>(5))?,
+            beta: row.get(6),
+            decay,
+        },
+    ))
+}
+
+/// A memory's shape, optionally locking its row. The shape is checked as
+/// [`PgSubstrate::load_memory`] checks it, so an append or a checkpoint never
+/// proceeds against a configuration no memory can have.
 async fn load_config(
     transaction: &Transaction<'_>,
     work: &str,
@@ -458,13 +537,34 @@ async fn load_config(
     let Some(row) = row else {
         return Ok(None);
     };
-    Ok(Some(FastMemoryConfig {
-        heads: unsigned(row.get(0))?,
-        key_dim: unsigned(row.get(1))?,
-        value_dim: unsigned(row.get(2))?,
-        checkpoint_interval: unsigned(row.get(3))? as u32,
-        max_writes: unsigned(row.get(4))? as u32,
-    }))
+    stored_config(row.get(0), row.get(1), row.get(2), row.get(3), row.get(4)).map(Some)
+}
+
+/// Rebuild a stored configuration and refuse it, as a corrupt
+/// `fastmem_memory` row, unless it passes [`check_config`]. Every loader goes
+/// through here.
+fn stored_config(
+    heads: i32,
+    key_dim: i32,
+    value_dim: i32,
+    checkpoint_interval: i32,
+    max_writes: i32,
+) -> Result<FastMemoryConfig, PgError> {
+    let count = |value: i32| {
+        u32::try_from(value).map_err(|_| corrupt_memory("negative journal or checkpoint bound"))
+    };
+    let config = FastMemoryConfig {
+        heads: unsigned(heads)?,
+        key_dim: unsigned(key_dim)?,
+        value_dim: unsigned(value_dim)?,
+        checkpoint_interval: count(checkpoint_interval)?,
+        max_writes: count(max_writes)?,
+    };
+    check_config(&config).map_err(|error| PgError::CorruptRow {
+        table: "fastmem_memory",
+        reason: format!("the stored configuration is not supported: {error}"),
+    })?;
+    Ok(config)
 }
 
 /// The sources of the journal writes up to `applied`, in sequence order,

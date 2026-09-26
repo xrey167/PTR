@@ -1,5 +1,7 @@
 use std::fmt;
 
+use crate::projection::IdentifierCodebook;
+
 /// Every way a fast-memory operation can refuse. Each variant names the value it
 /// saw and, where one exists, the value it expected, so a refusal can be read
 /// without re-running the computation that produced it.
@@ -45,6 +47,15 @@ pub enum FastMemoryError {
     /// A read was refused because the state depends on inputs that are no
     /// longer admissible; they must be excluded (refolded away) first.
     Denied { sources: usize },
+    /// A fact code handed to decoding is from another identifier codebook
+    /// than the readout's memory (another seed or length): its scores would
+    /// be crosstalk, plausible but meaningless. `index` is the fact's
+    /// position among the candidates.
+    CodebookMismatch {
+        index: usize,
+        expected: IdentifierCodebook,
+        actual: IdentifierCodebook,
+    },
     /// Serialized state is malformed; `reason` names the first check that failed.
     CorruptState { reason: &'static str },
     /// Serialized state parsed but its digest does not match its bytes.
@@ -67,6 +78,7 @@ impl FastMemoryError {
             Self::SequenceExhausted { .. } => "PTR_FASTMEM_SEQUENCE_EXHAUSTED",
             Self::JournalFull { .. } => "PTR_FASTMEM_JOURNAL_FULL",
             Self::Denied { .. } => "PTR_FASTMEM_DENIED",
+            Self::CodebookMismatch { .. } => "PTR_FASTMEM_CODEBOOK_MISMATCH",
             Self::CorruptState { .. } => "PTR_FASTMEM_CORRUPT_STATE",
             Self::DigestMismatch => "PTR_FASTMEM_DIGEST_MISMATCH",
         }
@@ -122,6 +134,19 @@ impl fmt::Display for FastMemoryError {
             Self::Denied { sources } => write!(
                 formatter,
                 "state depends on {sources} inputs that are no longer admissible"
+            ),
+            Self::CodebookMismatch {
+                index,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "fact code {index} is from codebook seed {} length {}, the readout's memory \
+                 uses seed {} length {}",
+                actual.seed(),
+                actual.len(),
+                expected.seed(),
+                expected.len()
             ),
             Self::CorruptState { reason } => {
                 write!(formatter, "corrupt fast-memory state: {reason}")
@@ -186,6 +211,11 @@ mod tests {
             FastMemoryError::SequenceExhausted { seq: u64::MAX },
             FastMemoryError::JournalFull { limit: 1 },
             FastMemoryError::Denied { sources: 1 },
+            FastMemoryError::CodebookMismatch {
+                index: 0,
+                expected: IdentifierCodebook::new(1, 2).unwrap(),
+                actual: IdentifierCodebook::new(2, 2).unwrap(),
+            },
             FastMemoryError::CorruptState { reason: "" },
             FastMemoryError::DigestMismatch,
         ];

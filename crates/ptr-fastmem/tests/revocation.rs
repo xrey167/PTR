@@ -1,13 +1,13 @@
 mod common;
 
-use common::{config, write_about};
+use common::{codebook, config, write_about};
 use ptr_fastmem::{FastMemory, FastMemoryConfig, FastMemoryError, Query, SourceRef, WriteSeq};
 use ptr_types::Generation;
 
 const SOURCES: [&str; 9] = ["a", "b", "c", "d", "e", "f", "g", "h", "i"];
 
 fn memory_with(interval: u32, sources: &[&str]) -> FastMemory {
-    let mut memory = FastMemory::new(config(interval)).unwrap();
+    let mut memory = FastMemory::new(config(interval), codebook(&config(interval))).unwrap();
     for source in sources {
         // The salt is the source's position in SOURCES, so a source writes the
         // same request whichever memory it is written into.
@@ -186,14 +186,18 @@ fn revocation_distinguishes_generations_and_digests_of_the_same_source_key() {
     second.source.generation = Generation(2);
     let mut third = write_about("shared", 2);
     third.source.generation = Generation(2);
-    let mut memory = FastMemory::new(config(1)).unwrap();
+    let mut memory = FastMemory::new(config(1), codebook(&config(1))).unwrap();
     for request in [first.clone(), second.clone(), third.clone()] {
         memory.write(request).unwrap();
     }
     let report = memory.revoke(|source| source == &second.source);
     assert_eq!(report.removed, 1);
-    let clean =
-        FastMemory::restore(config(1), [(WriteSeq(1), first), (WriteSeq(3), third)]).unwrap();
+    let clean = FastMemory::restore(
+        config(1),
+        codebook(&config(1)),
+        [(WriteSeq(1), first), (WriteSeq(3), third)],
+    )
+    .unwrap();
     assert_eq!(memory.state(), clean.state());
     assert_eq!(memory.binding_digest(), clean.binding_digest());
     assert_eq!(memory.sources(), clean.sources());
@@ -206,7 +210,7 @@ fn revoking_every_write_resets_cells_and_dependencies_but_keeps_sequence_monoton
     assert_eq!(report.removed, 4);
     assert_eq!(report.replayed, 0);
     assert_eq!(report.restarted_from, WriteSeq(0));
-    let empty = FastMemory::new(config(2)).unwrap();
+    let empty = FastMemory::new(config(2), codebook(&config(2))).unwrap();
     assert_eq!(memory.state(), empty.state());
     assert_eq!(memory.binding_digest(), empty.binding_digest());
     assert!(memory.sources().is_empty());

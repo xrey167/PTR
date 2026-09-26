@@ -15,7 +15,10 @@ use ptr_branch::{
     RangeDigest, SealedBranch, SealedBranchParts, ThresholdRule, TriageDecision, TriageOutcome,
     TriagePolicy, ValueDigest,
 };
-use ptr_fastmem::{Decay, FastMemory, FastMemoryConfig, SourceRef, WriteRequest};
+use ptr_fastmem::{
+    decode_readout, Decay, DecodePolicy, FastMemory, FastMemoryConfig, FastMemoryError,
+    IdentifierCodebook, Query, SourceRef, WriteRequest,
+};
 use ptr_ledger::integrity::{chain_anchors, LogAnchor};
 use ptr_ledger::{CommittedEvent, LedgerEvent};
 use ptr_lineage::{
@@ -313,7 +316,7 @@ async fn a_work_schema_holding_triage_rows_upgrades_and_keeps_their_unrecorded_p
         .store_branch(&sealed_branch("new", "agent-a"))
         .await
         .unwrap();
-    assert!(matches!(
+    assert_eq!(
         substrate
             .record_triage(
                 &BranchId::from("new"),
@@ -321,8 +324,12 @@ async fn a_work_schema_holding_triage_rows_upgrades_and_keeps_their_unrecorded_p
                 "policy-0"
             )
             .await,
-        Err(PgError::Database { ref sqlstate, .. }) if sqlstate == "23503"
-    ));
+        Err(PgError::InvalidTriage {
+            branch: "new".into(),
+            policy_version: "policy-0".into(),
+            reason: "the cited policy is not recorded",
+        })
+    );
     substrate.drop_all().await.unwrap();
 }
 
@@ -1146,6 +1153,12 @@ fn memory_config() -> FastMemoryConfig {
     }
 }
 
+/// The identifier codebook of a test memory: seed 11, the seed every
+/// registration here records.
+fn codebook(config: &FastMemoryConfig) -> IdentifierCodebook {
+    IdentifierCodebook::new(11, config.value_len()).unwrap()
+}
+
 fn write_request(source: &str, key: [f32; 4], value: [f32; 4]) -> WriteRequest {
     WriteRequest {
         source: SourceRef {
@@ -1198,7 +1211,7 @@ async fn a_revocation_deletes_exactly_the_revoked_writes_and_the_checkpoints_tha
         write_request("gone", [0.3, 0.3, 0.9, 0.0], [0.9, 0.9, 0.9, 0.9]),
         write_request("keep", [0.1, 0.0, 0.0, 1.0], [0.0, 0.0, 0.4, 0.7]),
     ];
-    let mut memory = FastMemory::new(config).unwrap();
+    let mut memory = FastMemory::new(config, codebook(&config)).unwrap();
     for (position, request) in requests.iter().enumerate() {
         let receipt = memory.write(request.clone()).unwrap();
         substrate
@@ -1214,7 +1227,7 @@ async fn a_revocation_deletes_exactly_the_revoked_writes_and_the_checkpoints_tha
     }
     // A stored journal refolds to the in-process state, bit for bit.
     let journal = substrate.load_journal("m1").await.unwrap();
-    let restored = FastMemory::restore(config, journal).unwrap();
+    let restored = FastMemory::restore(config, codebook(&config), journal).unwrap();
     assert_eq!(bits(restored.state().cells()), bits(memory.state().cells()));
 
     let report = substrate.apply_committed(&log[2], chain[2]).await.unwrap();
@@ -1225,10 +1238,10 @@ async fn a_revocation_deletes_exactly_the_revoked_writes_and_the_checkpoints_tha
     memory.revoke(|source| source.key == "gone");
     let journal = substrate.load_journal("m1").await.unwrap();
     assert_eq!(journal.len(), 3);
-    let refolded = FastMemory::restore(config, journal).unwrap();
+    let refolded = FastMemory::restore(config, codebook(&config), journal).unwrap();
     assert_eq!(bits(refolded.state().cells()), bits(memory.state().cells()));
     // ...and equals a memory that never saw the revoked write.
-    let mut never = FastMemory::new(config).unwrap();
+    let mut never = FastMemory::new(config, codebook(&config)).unwrap();
     for request in requests
         .iter()
         .filter(|request| request.source.key == "keep")
@@ -1239,7 +1252,7 @@ async fn a_revocation_deletes_exactly_the_revoked_writes_and_the_checkpoints_tha
 
     let checkpoint = substrate.latest_checkpoint("m1").await.unwrap().unwrap();
     assert_eq!(checkpoint.applied.0, 2);
-    let mut prefix = FastMemory::new(config).unwrap();
+    let mut prefix = FastMemory::new(config, codebook(&config)).unwrap();
     for request in &requests[..2] {
         prefix.write(request.clone()).unwrap();
     }
@@ -1381,7 +1394,7 @@ async fn malformed_writes_never_enter_the_journal() {
         .unwrap();
     let journal = substrate.load_journal("m1").await.unwrap();
     assert_eq!(journal[0].1, valid);
-    FastMemory::restore(memory_config(), journal).unwrap();
+    FastMemory::restore(memory_config(), codebook(&memory_config()), journal).unwrap();
     substrate.drop_all().await.unwrap();
 }
 
@@ -1915,19 +1928,36 @@ async fn a_stored_branch_relying_on_two_generations_of_one_target_is_refused_on_
     substrate.drop_all().await.unwrap();
 }
 
+/// A triage with this decision, eligibility and slice flag as the policy
+/// [`record_manual_policy`] records logs it: an eligible branch escalated
+/// outside the slice scored below the threshold of 0.5, every other one 0.8,
+/// and an eligible branch scoring 0.8 has propensity `1 - 0.1`. A combination
+/// that policy never produces (an auto-proposed slice branch, say) keeps
+/// these fields and is refused by `record_triage`.
 fn triage(decision: TriageDecision, eligible: bool, calibration_slice: bool) -> TriageOutcome {
+    let score = if eligible && decision == TriageDecision::Escalate && !calibration_slice {
+        0.2
+    } else {
+        0.8
+    };
     TriageOutcome {
         decision,
         eligible,
         calibration_slice,
-        score: 0.8,
-        auto_propensity: if eligible { 0.9 } else { 0.0 },
+        score,
+        auto_propensity: if eligible && score >= 0.5 { 0.9 } else { 0.0 },
     }
+}
+
+/// The policy [`record_manual_policy`] records: auto-propose from 0.5, with a
+/// tenth of eligible branches in the calibration slice.
+fn manual_policy() -> TriagePolicy {
+    TriagePolicy::new(AutoThreshold::AtLeast(0.5), 0.1).unwrap()
 }
 
 /// Record the manual policy a test's triage rows cite.
 async fn record_manual_policy(substrate: &mut PgSubstrate, version: &str) {
-    let policy = TriagePolicy::new(AutoThreshold::Never, 0.1).unwrap();
+    let policy = manual_policy();
     substrate
         .record_policy(&PolicyRecord::manual(version, policy).unwrap())
         .await
@@ -2055,7 +2085,7 @@ async fn triage_logs_and_outcomes_feed_the_platform_metrics() {
         .store_branch(&sealed_branch("b5", "agent-a"))
         .await
         .unwrap();
-    assert!(matches!(
+    assert_eq!(
         substrate
             .record_triage(
                 &BranchId::from("b5"),
@@ -2063,8 +2093,12 @@ async fn triage_logs_and_outcomes_feed_the_platform_metrics() {
                 "policy-1"
             )
             .await,
-        Err(PgError::Database { ref sqlstate, .. }) if sqlstate == "23514"
-    ));
+        Err(PgError::InvalidTriage {
+            branch: "b5".into(),
+            policy_version: "policy-1".into(),
+            reason: "a calibration-slice branch is escalated",
+        })
+    );
     let raw = raw_client().await;
     let work = substrate.schemas().work.clone();
     let error = raw
@@ -2530,7 +2564,7 @@ async fn superseding_a_source_removes_its_fast_memory_writes() {
     substrate.apply_committed(&log[0], chain[0]).await.unwrap();
     let config = memory_with(&substrate, "m1", 64).await;
     let request = write_request("c1", [1.0, 0.0, 0.0, 0.0], [0.5, 0.0, 0.0, 0.0]);
-    let mut memory = FastMemory::new(config).unwrap();
+    let mut memory = FastMemory::new(config, codebook(&config)).unwrap();
     let receipt = memory.write(request.clone()).unwrap();
     substrate
         .append_write("m1", receipt.seq, &request)
@@ -2562,7 +2596,7 @@ async fn a_checkpoint_that_does_not_fold_the_stored_journal_is_refused_or_skippe
     let config = memory_with(&substrate, "m1", 64).await;
     let keep = write_request("keep", [1.0, 0.0, 0.0, 0.0], [0.5, 0.1, 0.0, 0.0]);
     let gone = write_request("gone", [0.0, 1.0, 0.0, 0.0], [0.9, 0.9, 0.9, 0.9]);
-    let mut memory = FastMemory::new(config).unwrap();
+    let mut memory = FastMemory::new(config, codebook(&config)).unwrap();
     for request in [&keep, &gone] {
         let receipt = memory.write(request.clone()).unwrap();
         substrate
@@ -2582,7 +2616,7 @@ async fn a_checkpoint_that_does_not_fold_the_stored_journal_is_refused_or_skippe
     ));
 
     // A fold of the surviving prefix is accepted; a wrong binding is not.
-    let mut clean = FastMemory::new(config).unwrap();
+    let mut clean = FastMemory::new(config, codebook(&config)).unwrap();
     clean.write(keep.clone()).unwrap();
     assert!(matches!(
         substrate.put_checkpoint("m1", [0; 32], clean.state()).await,
@@ -2956,12 +2990,24 @@ async fn calibration_branch(
         .store_branch(&sealed_branch(id, "agent-c"))
         .await
         .unwrap();
+    // The propensity the cited policy logs for this score, as its triage
+    // computes it.
+    let cited = substrate
+        .load_policy(policy)
+        .await
+        .unwrap()
+        .unwrap()
+        .policy();
+    let auto_propensity = match cited.threshold() {
+        AutoThreshold::AtLeast(threshold) if score >= threshold => 1.0 - cited.calibration_rate(),
+        _ => 0.0,
+    };
     let outcome = TriageOutcome {
         decision: TriageDecision::Escalate,
         eligible: true,
         calibration_slice: true,
         score,
-        auto_propensity: 0.0,
+        auto_propensity,
     };
     substrate
         .record_triage(&BranchId::from(id), &outcome, policy)
@@ -2988,7 +3034,7 @@ async fn triage_policies_record_their_calibration_and_hold_out_everything_else()
         .store_branch(&sealed_branch("x", "agent-c"))
         .await
         .unwrap();
-    assert!(matches!(
+    assert_eq!(
         substrate
             .record_triage(
                 &BranchId::from("x"),
@@ -2996,8 +3042,12 @@ async fn triage_policies_record_their_calibration_and_hold_out_everything_else()
                 "unrecorded"
             )
             .await,
-        Err(PgError::Database { ref sqlstate, .. }) if sqlstate == "23503"
-    ));
+        Err(PgError::InvalidTriage {
+            branch: "x".into(),
+            policy_version: "unrecorded".into(),
+            reason: "the cited policy is not recorded",
+        })
+    );
 
     let bootstrap = PolicyRecord::manual(
         "bootstrap",
@@ -3795,6 +3845,486 @@ async fn an_interference_report_measured_for_another_adapter_is_refused_before_a
     assert_eq!(
         substrate.load_interference(&a1).await.unwrap(),
         Some(measured)
+    );
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_triage_is_logged_only_under_a_policy_that_can_have_produced_it() {
+    let mut substrate = substrate().await;
+    let a = TriagePolicy::new(AutoThreshold::AtLeast(0.5), 0.1).unwrap();
+    let b = TriagePolicy::new(AutoThreshold::AtLeast(0.8), 0.3).unwrap();
+    for (version, policy) in [("policy-a", a), ("policy-b", b)] {
+        substrate
+            .record_policy(&PolicyRecord::manual(version, policy).unwrap())
+            .await
+            .unwrap();
+    }
+    for id in ["t1", "t2", "t3"] {
+        substrate
+            .store_branch(&sealed_branch(id, "agent-t"))
+            .await
+            .unwrap();
+    }
+    // A auto-proposes a score of 0.6 with propensity 1 - 0.1; B escalates it
+    // with propensity zero. Cited as B's, A's row used to be stored, and
+    // off-policy evaluation reweighted it by a propensity B never had.
+    let from_a = TriageOutcome {
+        decision: TriageDecision::AutoPropose,
+        eligible: true,
+        calibration_slice: false,
+        score: 0.6,
+        auto_propensity: 0.9,
+    };
+    let from_b = TriageOutcome {
+        decision: TriageDecision::Escalate,
+        auto_propensity: 0.0,
+        ..from_a.clone()
+    };
+    assert_eq!(a.explains(&from_a), Ok(()));
+    assert_eq!(b.explains(&from_b), Ok(()));
+    let unexplained = |branch: &str, version: &str, reason| {
+        Err(PgError::InvalidTriage {
+            branch: branch.into(),
+            policy_version: version.into(),
+            reason,
+        })
+    };
+    let wrong_propensity =
+        "the auto-propose propensity is not the one the policy logs for this score";
+    assert_eq!(
+        substrate
+            .record_triage(&BranchId::from("t1"), &from_a, "policy-b")
+            .await,
+        unexplained("t1", "policy-b", wrong_propensity)
+    );
+    assert_eq!(
+        substrate
+            .record_triage(&BranchId::from("t2"), &from_b, "policy-a")
+            .await,
+        unexplained("t2", "policy-a", wrong_propensity)
+    );
+    // A score that is not a probability is refused as the triage it cannot
+    // be, before the table's CHECK sees it.
+    let unscored = TriageOutcome {
+        decision: TriageDecision::Escalate,
+        eligible: false,
+        calibration_slice: false,
+        score: f32::NAN,
+        auto_propensity: 0.0,
+    };
+    assert_eq!(
+        substrate
+            .record_triage(&BranchId::from("t3"), &unscored, "policy-a")
+            .await,
+        unexplained("t3", "policy-a", "the score is not a probability")
+    );
+    // The refusals wrote nothing; each row is logged under the policy that
+    // made it.
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    let logged: i64 = raw
+        .query_one(&format!("SELECT count(*) FROM {work}.branch_triage"), &[])
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(logged, 0);
+    substrate
+        .record_triage(&BranchId::from("t1"), &from_a, "policy-a")
+        .await
+        .unwrap();
+    substrate
+        .record_triage(&BranchId::from("t2"), &from_b, "policy-b")
+        .await
+        .unwrap();
+    let cited: Vec<(String, String)> = raw
+        .query(
+            &format!("SELECT branch, policy_version FROM {work}.branch_triage ORDER BY branch"),
+            &[],
+        )
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| (row.get(0), row.get(1)))
+        .collect();
+    assert_eq!(
+        cited,
+        [
+            ("t1".to_owned(), "policy-a".to_owned()),
+            ("t2".to_owned(), "policy-b".to_owned())
+        ]
+    );
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_revert_is_recorded_and_counted_only_after_the_merge_it_reverts() {
+    let mut substrate = substrate().await;
+    record_manual_policy(&mut substrate, "policy-v").await;
+    for id in ["v1", "v2", "v3"] {
+        substrate
+            .store_branch(&sealed_branch(id, "agent-v"))
+            .await
+            .unwrap();
+        substrate
+            .record_triage(
+                &BranchId::from(id),
+                &triage(TriageDecision::AutoPropose, true, false),
+                "policy-v",
+            )
+            .await
+            .unwrap();
+    }
+    let refused = |branch: &str, reason| {
+        Err(PgError::InvalidOutcome {
+            branch: branch.into(),
+            reason,
+        })
+    };
+    let v1 = BranchId::from("v1");
+    // Nothing to revert yet.
+    assert_eq!(
+        substrate
+            .record_outcome(&v1, BranchOutcome::Reverted(CommitIndex(5)))
+            .await,
+        refused("v1", "a revert needs the branch's recorded merge")
+    );
+    substrate
+        .record_outcome(&v1, BranchOutcome::Merged(CommitIndex(9)))
+        .await
+        .unwrap();
+    // Before the merge, or at its own commit.
+    for index in [5, 9] {
+        assert_eq!(
+            substrate
+                .record_outcome(&v1, BranchOutcome::Reverted(CommitIndex(index)))
+                .await,
+            refused("v1", "a revert commits after the merge it reverts")
+        );
+    }
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    let reverts: i64 = raw
+        .query_one(
+            &format!("SELECT count(*) FROM {work}.branch_outcome WHERE outcome = 'reverted'"),
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(reverts, 0, "a refused revert writes nothing");
+    substrate
+        .record_outcome(&v1, BranchOutcome::Reverted(CommitIndex(10)))
+        .await
+        .unwrap();
+    substrate
+        .record_outcome(
+            &BranchId::from("v2"),
+            BranchOutcome::Merged(CommitIndex(11)),
+        )
+        .await
+        .unwrap();
+    // A revert stored ahead of its merge by a writer that went around
+    // `record_outcome`: the share counts only the revert that follows its
+    // merge, so v3's merge is not reported reverted.
+    raw.batch_execute(&format!(
+        "INSERT INTO {work}.branch_outcome (branch, outcome, commit_index) \
+         VALUES ('v3', 'reverted', 5); \
+         INSERT INTO {work}.branch_outcome (branch, outcome, commit_index) \
+         VALUES ('v3', 'merged', 9)"
+    ))
+    .await
+    .unwrap();
+    assert_eq!(
+        substrate
+            .metric(MetricSpec {
+                metric: Metric::RevertShare,
+                grouping: Grouping::Overall,
+                window: Window::All,
+            })
+            .await
+            .unwrap(),
+        vec![MetricRow {
+            group: String::new(),
+            numerator: 1,
+            denominator: 3,
+        }]
+    );
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_branch_deleted_while_it_loads_comes_back_whole_or_not_at_all() {
+    let mut substrate = substrate().await;
+    let work = substrate.schemas().work.clone();
+    let branch = sealed_branch("torn", "agent-l");
+    substrate.store_branch(&branch).await.unwrap();
+    // Hold `branch_read` so the load stops after reading the header, delete
+    // the branch (its cascade removes every child row) and let the load go
+    // on. Statements with a snapshot each used to read the header from before
+    // the delete and the children from after it, and returned a branch with
+    // no reads, digests or operations.
+    let mut holder = raw_client().await;
+    let transaction = holder.transaction().await.unwrap();
+    transaction
+        .batch_execute(&format!(
+            "LOCK TABLE {work}.branch_read IN ACCESS EXCLUSIVE MODE"
+        ))
+        .await
+        .unwrap();
+    let id = branch.id().clone();
+    let loader = tokio::spawn(async move {
+        let loaded = substrate.load_branch(&id).await;
+        (substrate, loaded)
+    });
+    let observer = raw_client().await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let waiting: bool = observer
+            .query_one(
+                "SELECT EXISTS (SELECT 1 FROM pg_locks l JOIN pg_class c ON c.oid = l.relation \
+                 WHERE NOT l.granted AND c.relname = 'branch_read' \
+                   AND c.relnamespace = $1::text::regnamespace)",
+                &[&work.as_str()],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        if waiting {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the load must wait for branch_read"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    transaction
+        .execute(&format!("DELETE FROM {work}.branch WHERE id = 'torn'"), &[])
+        .await
+        .unwrap();
+    transaction.commit().await.unwrap();
+    let (mut substrate, loaded) = loader.await.unwrap();
+    // The load's snapshot was taken with its first statement, before the
+    // delete committed, so it sees the whole branch.
+    assert_eq!(loaded, Ok(Some(branch)));
+    assert_eq!(
+        substrate.load_branch(&BranchId::from("torn")).await,
+        Ok(None)
+    );
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_stored_configuration_fast_memory_refuses_is_a_corrupt_row_in_every_loader() {
+    let mut substrate = substrate().await;
+    substrate.replay(&[capsule(1, "live", 1)]).await.unwrap();
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    // Each dimension within its column's bounds, their product 64 Mi cells:
+    // a row registered before `create_memory` checked the configuration.
+    raw.execute(
+        &format!(
+            "INSERT INTO {work}.fastmem_memory (id, principal, thread, heads, key_dim, \
+             value_dim, checkpoint_interval, max_writes, projection_digest, codebook_seed) \
+             VALUES ('huge', 'agent-7', 'huge', 64, 1024, 1024, 2, 64, \
+                     decode(repeat('03', 32), 'hex'), 11)"
+        ),
+        &[],
+    )
+    .await
+    .unwrap();
+    let unsupported = |error: PgError| match error {
+        PgError::CorruptRow {
+            table: "fastmem_memory",
+            reason,
+        } => assert!(
+            reason.starts_with("the stored configuration is not supported"),
+            "{reason}"
+        ),
+        other => panic!("{other:?}"),
+    };
+    unsupported(substrate.load_memory("huge").await.unwrap_err());
+    unsupported(
+        substrate
+            .restore_memory("huge")
+            .await
+            .map(|_| ())
+            .unwrap_err(),
+    );
+    let request = write_request("live", [1.0, 0.0, 0.0, 0.0], [0.5, 0.0, 0.0, 0.0]);
+    unsupported(
+        substrate
+            .append_write("huge", ptr_fastmem::WriteSeq(1), &request)
+            .await
+            .unwrap_err(),
+    );
+    let config = memory_config();
+    let mut memory = FastMemory::new(config, codebook(&config)).unwrap();
+    memory.write(request).unwrap();
+    unsupported(
+        substrate
+            .put_checkpoint("huge", memory.binding_digest(), memory.state())
+            .await
+            .unwrap_err(),
+    );
+    assert!(substrate.load_journal("huge").await.unwrap().is_empty());
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_restored_memory_decodes_only_against_the_codebook_its_registration_records() {
+    let mut substrate = substrate().await;
+    substrate
+        .replay(&[capsule(1, "c1", 1), capsule(2, "c2", 1)])
+        .await
+        .unwrap();
+    let config = memory_config();
+    let register = |id: &str, codebook_seed| FastMemoryRecord {
+        id: id.into(),
+        principal: PrincipalId::from("agent-7"),
+        thread: id.into(),
+        config,
+        projection_digest: [3; 32],
+        codebook_seed,
+    };
+    let mut restored = Vec::new();
+    for (id, seed) in [("m11", 11), ("m12", 12)] {
+        substrate.create_memory(&register(id, seed)).await.unwrap();
+        let book = IdentifierCodebook::new(seed, config.value_len()).unwrap();
+        assert_eq!(
+            substrate.load_memory(id).await.unwrap().unwrap().codebook(),
+            Ok(book)
+        );
+        let mut live = FastMemory::new(config, book).unwrap();
+        for (source, key) in [("c1", [1.0, 0.0, 0.0, 0.0]), ("c2", [0.0, 1.0, 0.0, 0.0])] {
+            let request = WriteRequest {
+                value: book.code_for(&CapsuleId::from(source), Generation(1)),
+                ..write_request(source, key, [0.0; 4])
+            };
+            let receipt = live.write(request.clone()).unwrap();
+            substrate
+                .append_write(id, receipt.seq, &request)
+                .await
+                .unwrap();
+        }
+        let memory = substrate.restore_memory(id).await.unwrap().unwrap();
+        assert_eq!(memory.codebook(), book);
+        assert_eq!(bits(memory.state().cells()), bits(live.state().cells()));
+        restored.push(memory);
+    }
+    let query = Query::new(&config, vec![1.0, 0.0, 0.0, 0.0]).unwrap();
+    let policy = DecodePolicy {
+        limit: 2,
+        min_score: 0.0,
+        min_margin: 0.0,
+    };
+    let readout = restored[0].read_admitted(&query, |_| true).unwrap();
+    assert!(decode_readout(&readout, &restored[0].fact_codes(), policy).is_ok());
+    // The other memory has the same shape, so its codes have the same length;
+    // scored, they would be crosstalk.
+    assert_eq!(
+        decode_readout(&readout, &restored[1].fact_codes(), policy),
+        Err(FastMemoryError::CodebookMismatch {
+            index: 0,
+            expected: codebook(&config),
+            actual: IdentifierCodebook::new(12, config.value_len()).unwrap(),
+        })
+    );
+    assert!(substrate.restore_memory("absent").await.unwrap().is_none());
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_source_set_is_judged_from_one_snapshot_at_the_commit_it_names() {
+    let mut substrate = substrate().await;
+    let log = vec![capsule(1, "a", 1), capsule(2, "b", 1), revoke(3, "a", 1)];
+    let chain = anchors(&log);
+    substrate.apply_committed(&log[0], chain[0]).await.unwrap();
+    substrate.apply_committed(&log[1], chain[1]).await.unwrap();
+    let asked = [
+        ("a", Generation(1)),
+        ("b", Generation(1)),
+        ("b", Generation(2)),
+        ("never", Generation(1)),
+    ];
+    let admissible = |pairs: &[(&str, u64)]| {
+        pairs
+            .iter()
+            .map(|(target, generation)| ((*target).to_owned(), Generation(*generation)))
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    let before = substrate
+        .source_admission(asked, CommitIndex(2))
+        .await
+        .unwrap();
+    assert_eq!(before.as_of(), CommitIndex(2));
+    assert_eq!(before.admissible(), &admissible(&[("a", 1), ("b", 1)]));
+    // A source that was not asked is not admitted.
+    assert!(!before.admits("c", Generation(1)));
+
+    // A read decided with the answer is bound to commit 2.
+    let config = memory_config();
+    let mut memory = FastMemory::new(config, codebook(&config)).unwrap();
+    for (source, key) in [("a", [1.0, 0.0, 0.0, 0.0]), ("b", [0.0, 1.0, 0.0, 0.0])] {
+        memory
+            .write(write_request(source, key, [0.5, 0.0, 0.0, 0.0]))
+            .unwrap();
+    }
+    let query = Query::new(&config, vec![1.0, 0.0, 0.0, 0.0]).unwrap();
+    let decided = |admission: &ptr_pg::SourceAdmission| {
+        memory.read_admitted(&query, |source| {
+            admission.admits(&source.key, source.generation)
+        })
+    };
+    assert!(decided(&before).is_ok());
+
+    // Revoking a@1 at commit 3: the next answer names commit 3 and denies
+    // the read, and the earlier one says it was taken before the revocation.
+    substrate.apply_committed(&log[2], chain[2]).await.unwrap();
+    let after = substrate
+        .source_admission(asked, CommitIndex(2))
+        .await
+        .unwrap();
+    assert_eq!(after.as_of(), CommitIndex(3));
+    assert_eq!(after.admissible(), &admissible(&[("b", 1)]));
+    assert_eq!(
+        decided(&after).unwrap_err(),
+        FastMemoryError::Denied { sources: 1 }
+    );
+    assert!(before.as_of() < after.as_of());
+    // Each answer is the per-source rule's.
+    for (target, generation) in asked {
+        assert_eq!(
+            substrate
+                .is_admissible(target, generation, CommitIndex(3))
+                .await
+                .unwrap(),
+            after.admits(target, generation),
+            "{target}@{}",
+            generation.0
+        );
+    }
+    assert_eq!(
+        substrate.source_admission(asked, CommitIndex(4)).await,
+        Err(PgError::ProjectionBehind {
+            watermark: 3,
+            fence: 4
+        })
+    );
+    let nothing = substrate
+        .source_admission(std::iter::empty(), CommitIndex(3))
+        .await
+        .unwrap();
+    assert_eq!(nothing.as_of(), CommitIndex(3));
+    assert!(nothing.admissible().is_empty());
+    assert_eq!(
+        substrate
+            .source_admission([("a\0", Generation(1))], CommitIndex(3))
+            .await,
+        Err(PgError::InvalidText {
+            field: "source.target"
+        })
     );
     substrate.drop_all().await.unwrap();
 }

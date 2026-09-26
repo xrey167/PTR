@@ -1,6 +1,6 @@
 use ptr_fastmem::{
-    decode_readout, Decay, DecodePolicy, FastMemory, FastMemoryConfig, IdentifierCodebook,
-    ProjectionSpec, Query, Recall, SeededProjection, SourceRef, WriteRequest,
+    decode_readout, Decay, DecodePolicy, FastMemory, FastMemoryConfig, FastMemoryError,
+    IdentifierCodebook, ProjectionSpec, Query, Recall, SeededProjection, SourceRef, WriteRequest,
 };
 use ptr_types::{CapsuleId, Generation};
 
@@ -85,13 +85,13 @@ fn policy() -> DecodePolicy {
 
 fn recall(memory: &FastMemory, codec: &Codec, cue: &str) -> Recall {
     let readout = memory.read_admitted(&codec.query(cue), |_| true).unwrap();
-    decode_readout(&readout, &memory.fact_codes(&codec.values), policy()).unwrap()
+    decode_readout(&readout, &memory.fact_codes(), policy()).unwrap()
 }
 
 #[test]
 fn a_cue_recalls_the_fact_written_under_it_as_a_named_capsule() {
     let codec = Codec::new();
-    let mut memory = FastMemory::new(config()).unwrap();
+    let mut memory = FastMemory::new(config(), codec.values).unwrap();
     let pairs = [
         ("favourite colour", "pref-color"),
         ("home city", "pref-city"),
@@ -113,7 +113,7 @@ fn an_update_under_the_same_cue_recalls_the_newer_fact() {
     // Two different live facts answer the same cue; the delta rule replaces the
     // association instead of adding to it, so the newer one is recalled alone.
     let codec = Codec::new();
-    let mut memory = FastMemory::new(config()).unwrap();
+    let mut memory = FastMemory::new(config(), codec.values).unwrap();
     memory
         .write(codec.write("home city", "city-from-2024-profile", 1))
         .unwrap();
@@ -132,7 +132,7 @@ fn an_update_under_the_same_cue_recalls_the_newer_fact() {
 #[test]
 fn an_unrelated_cue_is_unknown_rather_than_a_guess() {
     let codec = Codec::new();
-    let mut memory = FastMemory::new(config()).unwrap();
+    let mut memory = FastMemory::new(config(), codec.values).unwrap();
     memory
         .write(codec.write("favourite colour", "pref-color", 1))
         .unwrap();
@@ -145,7 +145,7 @@ fn an_unrelated_cue_is_unknown_rather_than_a_guess() {
 #[test]
 fn a_revoked_fact_is_no_longer_a_decoding_candidate() {
     let codec = Codec::new();
-    let mut memory = FastMemory::new(config()).unwrap();
+    let mut memory = FastMemory::new(config(), codec.values).unwrap();
     memory
         .write(codec.write("home city", "pref-city", 1))
         .unwrap();
@@ -154,9 +154,9 @@ fn a_revoked_fact_is_no_longer_a_decoding_candidate() {
         .unwrap();
     memory.revoke(|source| source.key == "pref-city");
     assert!(memory
-        .fact_codes(&codec.values)
+        .fact_codes()
         .iter()
-        .all(|fact| fact.capsule != CapsuleId::from("pref-city")));
+        .all(|fact| *fact.capsule() != CapsuleId::from("pref-city")));
     assert_eq!(recall(&memory, &codec, "home city"), Recall::Unknown);
 }
 
@@ -167,7 +167,7 @@ fn constraint_and_procedure_sources_are_never_decoded_as_capsules() {
     // state and gate reads, but must never decode to a hit for a fabricated
     // capsule such as `constraint:budget`.
     let codec = Codec::new();
-    let mut memory = FastMemory::new(config()).unwrap();
+    let mut memory = FastMemory::new(config(), codec.values).unwrap();
     memory
         .write(codec.write("monthly budget", "constraint:budget", 1))
         .unwrap();
@@ -178,9 +178,9 @@ fn constraint_and_procedure_sources_are_never_decoded_as_capsules() {
         .write(codec.write("home city", "pref-city", 1))
         .unwrap();
     let candidates: Vec<CapsuleId> = memory
-        .fact_codes(&codec.values)
+        .fact_codes()
         .into_iter()
-        .map(|fact| fact.capsule)
+        .map(|fact| fact.capsule().clone())
         .collect();
     assert_eq!(candidates, vec![CapsuleId::from("pref-city")]);
     assert_eq!(memory.sources().len(), 3);
@@ -190,4 +190,57 @@ fn constraint_and_procedure_sources_are_never_decoded_as_capsules() {
         Recall::Hits(hits) => assert_eq!(hits[0].capsule, CapsuleId::from("pref-city")),
         Recall::Unknown => panic!("the capsule source is still recalled"),
     }
+}
+
+#[test]
+fn a_readout_decodes_only_against_the_codebook_its_memory_was_written_with() {
+    let codec = Codec::new();
+    let mut memory = FastMemory::new(config(), codec.values).unwrap();
+    memory
+        .write(codec.write("home city", "pref-city", 1))
+        .unwrap();
+    let readout = memory
+        .read_admitted(&codec.query("home city"), |_| true)
+        .unwrap();
+    assert_eq!(readout.codebook(), codec.values);
+    // Another memory of the same shape under another seed: its codes have
+    // the same length, and scoring them used to report crosstalk as weights.
+    let other = IdentifierCodebook::new(30, HEADS * HEAD_DIM).unwrap();
+    let mut foreign = FastMemory::new(config(), other).unwrap();
+    foreign
+        .write(WriteRequest {
+            value: other.code_for(&CapsuleId::from("pref-city"), Generation(1)),
+            ..codec.write("home city", "pref-city", 1)
+        })
+        .unwrap();
+    assert_eq!(
+        decode_readout(&readout, &foreign.fact_codes(), policy()),
+        Err(FastMemoryError::CodebookMismatch {
+            index: 0,
+            expected: codec.values,
+            actual: other,
+        })
+    );
+    let named = other.fact(CapsuleId::from("pref-city"), Generation(1));
+    assert!(matches!(
+        decode_readout(&readout, [&named], policy()),
+        Err(FastMemoryError::CodebookMismatch { .. })
+    ));
+    // Its own codes name the fact.
+    match decode_readout(&readout, &memory.fact_codes(), policy()).unwrap() {
+        Recall::Hits(hits) => assert_eq!(hits[0].capsule, CapsuleId::from("pref-city")),
+        Recall::Unknown => panic!("the fact written under the cue is recalled"),
+    }
+    // A memory is never bound to a codebook whose codes are not values.
+    let short = IdentifierCodebook::new(29, HEADS * HEAD_DIM - 1).unwrap();
+    let refused = FastMemoryError::DimensionMismatch {
+        field: "codebook",
+        expected: HEADS * HEAD_DIM,
+        actual: HEADS * HEAD_DIM - 1,
+    };
+    assert_eq!(FastMemory::new(config(), short).unwrap_err(), refused);
+    assert_eq!(
+        FastMemory::restore(config(), short, std::iter::empty()).unwrap_err(),
+        refused
+    );
 }

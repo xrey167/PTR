@@ -164,6 +164,12 @@ pub enum ArbiterError {
     /// A logged reward that is not a finite number: any estimate that
     /// averaged it would be NaN or infinite rather than a refusal.
     InvalidReward { index: usize, value: f64 },
+    /// A logged score that is not a finite number in `[0, 1]`, the range of
+    /// every score a triage sees. A target policy's probability of each
+    /// action is computed from the score, so a NaN would silently read as
+    /// "below every threshold" and one outside the range as a score no
+    /// triage ever had.
+    InvalidScore { index: usize, value: f32 },
     /// The evaluated policy takes an action the logging policy never took for
     /// this record, so no reweighting can estimate its value.
     PositivityViolation { index: usize },
@@ -182,6 +188,13 @@ pub enum ArbiterError {
     },
     /// A calibration set names one branch twice; the unit is the branch.
     DuplicateCalibrationBranch { branch: String },
+    /// A triage cited as a policy's is not one that policy can produce, for
+    /// any verification report, score and calibration draw: its decision,
+    /// slice flag or auto-propose propensity contradicts the policy's
+    /// threshold and calibration rate for its eligibility and score, or its
+    /// score is not a probability. Calibration and off-policy evaluation
+    /// would attribute it to a logging policy that never made it.
+    UnexplainedTriage { reason: &'static str },
 }
 
 impl ArbiterError {
@@ -194,12 +207,14 @@ impl ArbiterError {
             Self::InvalidDraw { .. } => "PTR_ARBITER_INVALID_DRAW",
             Self::InvalidPropensity { .. } => "PTR_ARBITER_INVALID_PROPENSITY",
             Self::InvalidReward { .. } => "PTR_ARBITER_INVALID_REWARD",
+            Self::InvalidScore { .. } => "PTR_ARBITER_INVALID_SCORE",
             Self::PositivityViolation { .. } => "PTR_ARBITER_POSITIVITY_VIOLATION",
             Self::NonFiniteEstimate { .. } => "PTR_ARBITER_NONFINITE_ESTIMATE",
             Self::EmptyLog => "PTR_ARBITER_EMPTY_LOG",
             Self::EmptyVersion => "PTR_ARBITER_EMPTY_VERSION",
             Self::InvalidRule { .. } => "PTR_ARBITER_INVALID_RULE",
             Self::DuplicateCalibrationBranch { .. } => "PTR_ARBITER_DUPLICATE_CALIBRATION_BRANCH",
+            Self::UnexplainedTriage { .. } => "PTR_ARBITER_UNEXPLAINED_TRIAGE",
         }
     }
 }
@@ -229,6 +244,9 @@ impl fmt::Display for ArbiterError {
             Self::InvalidReward { index, value } => {
                 write!(formatter, "record {index} has nonfinite reward {value}")
             }
+            Self::InvalidScore { index, value } => {
+                write!(formatter, "record {index} has score {value} outside [0, 1]")
+            }
             Self::PositivityViolation { index } => write!(
                 formatter,
                 "record {index}: the evaluated policy takes an action the logging policy never took"
@@ -246,6 +264,12 @@ impl fmt::Display for ArbiterError {
                 formatter,
                 "branch {branch:?} appears twice in one calibration set"
             ),
+            Self::UnexplainedTriage { reason } => {
+                write!(
+                    formatter,
+                    "the policy cannot have produced this triage: {reason}"
+                )
+            }
         }
     }
 }

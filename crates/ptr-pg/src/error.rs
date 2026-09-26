@@ -132,6 +132,26 @@ pub enum PgError {
     /// to other inputs, so the branch cannot be certified and must be re-run
     /// on a current snapshot.
     BranchWithoutInputSets { branch: String, key: String },
+    /// A triage row was refused before it was written: the policy version it
+    /// cites is not recorded, or that policy cannot have produced it
+    /// (`ptr_branch::TriagePolicy::explains` names why: a decision, slice
+    /// flag or auto-propose propensity its threshold and calibration rate do
+    /// not give for the row's eligibility and score, or a score that is not
+    /// a probability). Calibration and off-policy evaluation would otherwise
+    /// attribute the decision to a logging policy that never made it.
+    InvalidTriage {
+        branch: String,
+        policy_version: String,
+        reason: &'static str,
+    },
+    /// An outcome was refused before it was written: a revert names no
+    /// recorded merge of the branch, or a commit index that does not follow
+    /// the merge's. A revert is a later commit undoing the merge, and the
+    /// revert share counts it only as one.
+    InvalidOutcome {
+        branch: String,
+        reason: &'static str,
+    },
     /// A string contains NUL, which a PostgreSQL `text` value cannot hold.
     InvalidText { field: &'static str },
     /// The database refused a statement.
@@ -171,6 +191,8 @@ impl PgError {
             Self::CorruptBranch { .. } => "PTR_PG_CORRUPT_BRANCH",
             Self::InvalidInterference { .. } => "PTR_PG_INVALID_INTERFERENCE",
             Self::BranchWithoutInputSets { .. } => "PTR_PG_BRANCH_WITHOUT_INPUT_SETS",
+            Self::InvalidTriage { .. } => "PTR_PG_INVALID_TRIAGE",
+            Self::InvalidOutcome { .. } => "PTR_PG_INVALID_OUTCOME",
             Self::InvalidText { .. } => "PTR_PG_INVALID_TEXT",
             Self::Database { .. } => "PTR_PG_DATABASE",
             Self::Connection { .. } => "PTR_PG_CONNECTION",
@@ -270,6 +292,17 @@ impl fmt::Display for PgError {
                 "branch {branch:?} was sealed before the input set of touched key {key:?} \
                  was recorded; it cannot be certified and must be re-run"
             ),
+            Self::InvalidTriage {
+                branch,
+                policy_version,
+                reason,
+            } => write!(
+                formatter,
+                "triage of {branch:?} under policy {policy_version:?} refused: {reason}"
+            ),
+            Self::InvalidOutcome { branch, reason } => {
+                write!(formatter, "outcome of {branch:?} refused: {reason}")
+            }
             Self::InvalidText { field } => write!(
                 formatter,
                 "{field} contains NUL, which PostgreSQL text cannot store"

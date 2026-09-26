@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-26  
-**Code footprint:** 7 Rust source files · 2336 nonblank source lines · 4 integration-test files · 79 `#[test]` markers
+**Code footprint:** 7 Rust source files · 2450 nonblank source lines · 4 integration-test files · 81 `#[test]` markers
 
 ### Implemented now
 
@@ -28,7 +28,8 @@
 - Threshold selection on a fixed grid by conformal risk control or by Learn-then-Test with Clopper-Pearson bounds; Learn-then-Test skips exactly the thresholds its own bound cannot pass with no harm, so it never certifies nothing because a closed-form start fell one sample short
 - Every policy, including one rebuilt from storage by PolicyRecord::from_parts, holds a threshold that is a finite score in [0, 1]; NaN, infinite or out-of-range thresholds are refused (InvalidThreshold) rather than silently never or always auto-proposing
 - PolicyRecord names a policy's version, threshold rule and levels and exactly which adjudicated calibration-slice branches chose its threshold; held_out returns the adjudications it was not calibrated on, the only ones its harm rate may be estimated from
-- Off-policy evaluation by IPS, SNIPS and doubly robust estimates with a positivity check; a log with a propensity outside [0, 1], a propensity so small that its importance weight is infinite, or a nonfinite reward is refused rather than estimated; SNIPS and the effective sample size are computed on weights divided by the largest, the doubly robust estimate on weights divided by the largest and residuals divided by twice the log's length before any product, so no intermediate overflows an estimate that is itself finite, and an estimate that is still not finite is refused (NonFiniteEstimate) rather than returned
+- TriagePolicy::explains says whether a policy can have produced a triage for some report, score and draw: a verification-decided triage is discarded or escalated outside the slice with propensity zero; an eligible one is never discarded, carries exactly the propensity the threshold gives its score, is escalated in the slice (which only a positive rate has) and otherwise auto-proposed exactly when the threshold admits its score; a score that is not a probability is refused (UnexplainedTriage names the rule); ptr-pg refuses to log a triage its cited policy does not explain
+- Off-policy evaluation by IPS, SNIPS and doubly robust estimates with a positivity check; a log with a propensity outside [0, 1], a propensity so small that its importance weight is infinite, a score that is not a finite number in [0, 1] (InvalidScore, checked before any target probability is computed from it), or a nonfinite reward is refused rather than estimated; SNIPS and the effective sample size are computed on weights divided by the largest, the doubly robust estimate on weights divided by the largest and residuals divided by twice the log's length before any product, so no intermediate overflows an estimate that is itself finite, and an estimate that is still not finite is refused (NonFiniteEstimate) rather than returned
 
 ### Missing for the target architecture
 
@@ -64,7 +65,7 @@
 - tests/certification.rs conflict, phantom, input-set and lifecycle cases
 - tests/sealing.rs and certify unit tests: every sealing invariant refused by the constructor and by certification on its own
 - tests/pipeline.rs end-to-end verified merge through ptr-runtime
-- tests/triage.rs eligibility, calibration and off-policy evaluation
+- tests/triage.rs eligibility, calibration, which triages a policy explains and off-policy evaluation
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->

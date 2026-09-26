@@ -197,6 +197,84 @@ impl TriagePolicy {
         })
     }
 
+    /// Whether this policy can have produced `triage`: whether some
+    /// verification report, the triage's score and some calibration draw in
+    /// `[0, 1)` make [`Self::triage`] return exactly this decision, slice flag
+    /// and auto-propose propensity. A triage log cites the policy that made
+    /// each row; calibration and off-policy evaluation trust that citation,
+    /// so storage checks it with this before a row is written.
+    ///
+    /// The rules are those of [`Self::triage`]. A branch verification decided
+    /// (`eligible` false) is discarded or escalated, outside the calibration
+    /// slice, with propensity zero, whatever the policy. An eligible branch is
+    /// never discarded; its propensity is `1 - calibration_rate` when the
+    /// threshold admits its score and zero otherwise, compared exactly (the
+    /// policy computes it the same way, and storage keeps both bit for bit);
+    /// in the calibration slice, which only a positive rate has, it is
+    /// escalated, and outside it auto-proposed exactly when the threshold
+    /// admits its score.
+    ///
+    /// # Errors
+    /// Returns `ArbiterError::UnexplainedTriage` naming the first rule the
+    /// triage breaks, the first being a score that is not a finite number in
+    /// `[0, 1]`: every triage sees a `Probability`.
+    pub fn explains(&self, triage: &TriageOutcome) -> Result<(), ArbiterError> {
+        let refuse = |reason| Err(ArbiterError::UnexplainedTriage { reason });
+        if !(0.0..=1.0).contains(&triage.score) {
+            return refuse("the score is not a probability");
+        }
+        if !triage.eligible {
+            if triage.decision == TriageDecision::AutoPropose {
+                return refuse("verification alone never auto-proposes");
+            }
+            if triage.calibration_slice {
+                return refuse("a calibration-slice branch is eligible");
+            }
+            if triage.auto_propensity != 0.0 {
+                return refuse("a branch verification decided has auto-propose propensity zero");
+            }
+            return Ok(());
+        }
+        if triage.decision == TriageDecision::Discard {
+            return refuse("an eligible branch is never discarded");
+        }
+        let admitted = self.threshold.admits(triage.score);
+        let propensity = if admitted {
+            1.0 - self.calibration_rate
+        } else {
+            0.0
+        };
+        if triage.auto_propensity != propensity {
+            return refuse(
+                "the auto-propose propensity is not the one the policy logs for this score",
+            );
+        }
+        if triage.calibration_slice {
+            // `draw < calibration_rate` for a draw in [0, 1) needs a positive
+            // rate.
+            if self.calibration_rate == 0.0 {
+                return refuse("a policy with calibration rate zero has no calibration slice");
+            }
+            if triage.decision != TriageDecision::Escalate {
+                return refuse("a calibration-slice branch is escalated");
+            }
+            return Ok(());
+        }
+        // A rate below one leaves draws outside the slice.
+        let expected = if admitted {
+            TriageDecision::AutoPropose
+        } else {
+            TriageDecision::Escalate
+        };
+        if triage.decision != expected {
+            return refuse(
+                "outside the calibration slice the policy auto-proposes exactly the scores its \
+                 threshold admits",
+            );
+        }
+        Ok(())
+    }
+
     /// Probability this policy takes `action` on a logged record.
     fn probability(&self, record: &LoggedTriage, action: TriageDecision) -> f64 {
         if !record.eligible {
@@ -543,6 +621,8 @@ fn check_level(field: &'static str, value: f64) -> Result<(), ArbiterError> {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LoggedTriage {
     pub eligible: bool,
+    /// The score the logging policy saw: a finite number in `[0, 1]`, which
+    /// the off-policy estimators check before reweighting by it.
     pub score: f32,
     pub decision: TriageDecision,
     /// The logging policy's probability of auto-proposing this record.
@@ -606,10 +686,12 @@ pub struct OffPolicyEstimate {
 /// # Errors
 /// Refuses an empty log, a propensity outside `[0, 1]`, a logged action the
 /// logging policy gave zero probability or one it gave so small a probability
-/// that the importance weight is not finite (`InvalidPropensity`), a reward
-/// that is not finite (`InvalidReward`), and a positivity violation, at the
-/// first record that shows one; then an estimate that is not finite
-/// (`NonFiniteEstimate`). Nothing nonfinite is ever returned as an estimate.
+/// that the importance weight is not finite (`InvalidPropensity`), a score
+/// that is not a finite number in `[0, 1]` (`InvalidScore`, before any
+/// target probability is computed from it), a reward that is not finite
+/// (`InvalidReward`), and a positivity violation, at the first record that
+/// shows one; then an estimate that is not finite (`NonFiniteEstimate`).
+/// Nothing nonfinite is ever returned as an estimate.
 pub fn evaluate_off_policy(
     log: &[LoggedTriage],
     target: &TriagePolicy,
@@ -664,7 +746,8 @@ pub fn evaluate_off_policy(
 ///
 /// # Errors
 /// Refuses the logs [`evaluate_off_policy`] refuses for their records, a
-/// nonfinite logged reward or an infinite importance weight included, and an
+/// nonfinite logged reward, a score outside `[0, 1]` or an infinite
+/// importance weight included, and an
 /// estimate that is not finite (`NonFiniteEstimate`), as a reward model's
 /// nonfinite prediction makes it.
 pub fn doubly_robust<M>(
@@ -724,6 +807,14 @@ fn importance_weights(
             return Err(ArbiterError::InvalidPropensity {
                 index,
                 value: record.auto_propensity,
+            });
+        }
+        // `contains` is false for NaN and both infinities. Checked before
+        // any target probability, which is computed from the score.
+        if !(0.0..=1.0).contains(&record.score) {
+            return Err(ArbiterError::InvalidScore {
+                index,
+                value: record.score,
             });
         }
         if !record.reward.is_finite() {

@@ -193,8 +193,7 @@ triage or an outcome is never updated or deleted on its own (it goes only when i
 whole branch is erased), a branch is adjudicated once, a held-out sample cannot enter
 the replay pool, a consolidated
 adapter has sources rather than a parent, a label schema has at least two classes, a
-triage row logged since policies are recorded cites a recorded policy (whether the
-row follows from that policy is not checked), a policy and its calibration set are
+triage row logged since policies are recorded cites a recorded policy, a policy and its calibration set are
 never rewritten and the set is complete when the policy commits (a sample appended
 later is refused), a branch one was calibrated on cannot be deleted, only a model
 labeling function names an adapter, and an adapter has at most one interference
@@ -214,6 +213,23 @@ request text or a Pod output, to overwrite a key the branch did not read, or to
 break the bookkeeping of touched keys, come back as `CorruptBranch` naming the
 `BranchError`, never as a branch to certify
 (`a_branch_writing_a_reserved_namespace_is_never_stored_and_tampered_rows_never_load`).
+It reads the header and every child table in one read-only repeatable-read
+snapshot, so a branch deleted while it loads, whose cascade removes its reads,
+digests and operations, comes back whole or as `None`, never assembled from rows
+read on both sides of the delete
+(`a_branch_deleted_while_it_loads_comes_back_whole_or_not_at_all`).
+`record_triage` loads the cited policy in the transaction that writes the row and
+refuses, as `InvalidTriage`, a version no policy is recorded under and a row that
+policy cannot have produced (`TriagePolicy::explains`): for the row's eligibility and
+score, a decision, slice flag or propensity its threshold and calibration rate do not
+give, or a score that is not a probability
+(`a_policy_explains_every_triage_it_produces_and_nothing_else`,
+`a_triage_is_logged_only_under_a_policy_that_can_have_produced_it`). What it cannot
+see is the verification report and the calibration draw, so a row's eligibility and
+a slice branch's draw remain the caller's word. `record_outcome` writes a revert only
+after the branch's merge and at a greater commit index, reading the merge and
+inserting the revert in one statement, and refuses any other as `InvalidOutcome`
+(`a_revert_is_recorded_and_counted_only_after_the_merge_it_reverts`).
 Rows relying on two generations of one target, which the primary key already
 refuses, are `CorruptBranch` (`ConflictingReliance`) rather than collapsed to either
 (`a_stored_branch_relying_on_two_generations_of_one_target_is_refused_on_load`).
@@ -374,8 +390,10 @@ verification:
   (`a_threshold_outside_the_unit_interval_is_refused_wherever_a_policy_is_built`).
 - Logged propensities make IPS, SNIPS and doubly robust **off-policy evaluation** of
   a new threshold possible; a threshold below anything the log explored is refused as
-  a positivity violation, a log with a nonfinite reward or a propensity so small that
-  its importance weight is infinite is refused rather than estimated, and an estimate
+  a positivity violation, a log with a nonfinite reward, a score that is not a finite
+  number in `[0, 1]` (checked before any target probability is computed from it) or a
+  propensity so small that its importance weight is infinite is refused rather than
+  estimated, and an estimate
   is never returned unless it is finite: SNIPS and the effective sample size are
   computed on weights divided by the largest, and the doubly robust estimate on
   weights divided by the largest and residuals halved and divided by the log's
@@ -384,6 +402,7 @@ verification:
   (`a_lower_threshold_than_the_log_ever_explored_is_refused_as_a_positivity_violation`,
   `evaluating_the_logging_policy_on_its_own_log_returns_its_mean_reward`,
   `a_nonfinite_logged_reward_is_refused_by_every_off_policy_estimate`,
+  `a_logged_score_that_is_not_a_probability_is_refused_before_any_reweighting`,
   `off_policy_estimates_of_extreme_but_valid_logs_are_finite`,
   `an_infinite_importance_weight_or_a_nonfinite_estimate_is_refused`,
   `doubly_robust_scales_before_it_multiplies_so_a_finite_estimate_is_returned`).
@@ -395,6 +414,8 @@ verification:
   from work version 5 on cite it by a foreign key, which is not validated against
   older rows: those keep the versions they named, which no table recorded
   (`a_work_schema_holding_triage_rows_upgrades_and_keeps_their_unrecorded_policies`).
+  A row is logged only if the policy it cites can have produced it
+  (`TriagePolicy::explains`, checked by `record_triage`; §1).
   A policy's harm rate may only be estimated on adjudications it was not calibrated on
   (`PolicyRecord::held_out`), the disjointness F003 needs. Disjointness is not
   sufficient: the calibration subset, rule and levels must be fixed before the
@@ -439,14 +460,25 @@ is decoded against the codes of the facts actually written into named capsules a
 lowest evidence stage, or into `Unknown` when no fact reaches the minimum score or the
 best does not lead the runner-up by the minimum margin
 (`an_unrelated_cue_is_unknown_rather_than_a_guess`,
-`an_update_under_the_same_cue_recalls_the_newer_fact`).
+`an_update_under_the_same_cue_recalls_the_newer_fact`). A memory is bound to the
+`IdentifierCodebook` (seed and code length) its values are codes of when it is
+created or restored, its readouts carry that codebook, `fact_codes` derives candidates
+from it, and a fact code from any other codebook, whose scores would be crosstalk of
+the right length, is refused (`CodebookMismatch`) rather than scored
+(`a_fact_code_from_another_codebook_is_refused_before_scoring`,
+`a_readout_decodes_only_against_the_codebook_its_memory_was_written_with`).
 
 Every write names its semantic input, generation and input digest. A read is admitted
 only if every source is admissible according to the caller's lifecycle view when the
 read is made (`a_read_is_denied_while_the_state_still_depends_on_a_revoked_input`).
 The decision is only as current as that view: a revocation that commits after it was
 taken is not seen (an external authority can only be consulted before a synchronous
-read), so decoded candidates must still pass the lifecycle check at use. Revoking a
+read), so decoded candidates must still pass the lifecycle check at use. PostgreSQL
+answers a whole source set in one statement with the projection commit index it was
+taken at (`source_admission`), so a caller binds a read decision to one lifecycle
+snapshot and can tell whether a revocation it learns of came before or after it
+(`a_source_set_is_judged_from_one_snapshot_at_the_commit_it_names`); asking
+`is_admissible` source by source takes one snapshot per source and names none. Revoking a
 source removes its writes and refolds from the last checkpoint before the first
 removed write (`the_refold_restarts_from_the_last_checkpoint_before_the_revoked_write`);
 because the fold is deterministic `f32` arithmetic, the result is bit-identical to a
@@ -471,7 +503,15 @@ restores from the stored journal and compares bits,
 `a_write_from_an_inadmissible_source_or_out_of_sequence_is_refused`). An append locks
 the memory row and reads the journal in a statement after that lock, so two
 concurrent appends cannot both pass the sequence and capacity checks
-(`an_append_that_waited_for_another_sees_its_write`).
+(`an_append_that_waited_for_another_sees_its_write`). Every loader, the registration
+read by an append or a checkpoint included, refuses a stored configuration outside
+`check_config`'s ranges as a corrupt row: the table bounds each dimension but not
+their product
+(`a_stored_configuration_fast_memory_refuses_is_a_corrupt_row_in_every_loader`).
+`restore_memory` reads the registration and the journal in one snapshot and restores
+the memory bound to the codebook whose seed the registration records, so a memory
+loaded from PostgreSQL decodes against no other codebook
+(`a_restored_memory_decodes_only_against_the_codebook_its_registration_records`).
 
 A checkpoint is bound to `binding_digest_of` the writes it claims to fold — their
 sequence numbers, source keys, generations and input digests; the digest binds which
@@ -620,7 +660,10 @@ adjudication for `AdjudicatedHarmRate`; and the merge for `RevertShare`, whose
 numerator counts those merges reverted by the time of the query whenever the revert
 was stamped
 (`every_metric_windows_a_branch_once_on_the_record_that_enters_its_denominator`,
-`revert_share_counts_merged_branches_later_reverted_within_a_window`). A columnar
+`revert_share_counts_merged_branches_later_reverted_within_a_window`). A revert
+counts only at a commit index after its merge's: `record_outcome` refuses any other,
+and a row written around it is not counted as reverting a merge it precedes
+(`a_revert_is_recorded_and_counted_only_after_the_merge_it_reverts`). A columnar
 mirror (`pg_duckdb`, an Iceberg mirror, DataFusion) is an evaluation slot and never
 feeds back into state.
 
@@ -689,7 +732,7 @@ another by idea.
 | Index `branch_status_idx` | defer | Status is split into the immutable triage decision and append-only outcomes, both constrained in the database. `adjudicated_samples` and `RevertShare` already select branches by outcome, and windowed metrics filter on when the triage or outcome was recorded (§6); each reads every matching row, and no measurement yet shows that costing anything. | Branch leases, expiry and garbage collection are built (their listing query adds the index it needs), or a relational-substrate measurement at a stated volume shows `adjudicated_samples`, a windowed metric or the lease listing scanning. |
 | Semantic operation descriptor (`semantic_op`) | defer | An operation's kind is its merge semantics (`Put`, `Remove`, `Add`, `SetInsert`, `SetRemove`), a value's meaning is its payload type and source, and the verifier judges the post-state (§2). A descriptive kind that neither certification nor verification reads is not stored. A business operation with its own merge rule, such as repricing, becomes a typed merge operator if those are added (missing in `ptr-branch`); the free-text reason is the branch intent. | S003 shows `Put` conflicts on keys whose domain update commutes, which would justify a typed merge operator for that update. |
 | Agent-stated intent per delta | adopt-later | A sealed branch may carry one optional intent written by its agent, stored with the branch in the work schema (one per branch, since a branch merges as one delta). It is shown to whoever reviews an escalated or calibration-slice branch; certification, triage and verification never read it, so it cannot outweigh verification (INVARIANT 11). F003 fixes before its first adjudication whether adjudicators see it. | F003's adjudication protocol is written, or the first review surface for escalated branches is built. |
-| Merge rationale | adopt-later | As a structured reason, not free text. A triage logged since policies are recorded cites a `triage_policy` row and carries every input of that policy's rule except the calibration draw (eligibility, slice flag, score and propensity), so its decision and propensity can be recomputed from the two rows and compared. Nothing compares them when the row is logged: `record_triage` and the foreign key check only that the cited version exists, so logging the outcome of the policy it cites is the caller's obligation until `record_triage` refuses a row that policy could not have produced (missing in `ptr-pg`). Still to be stored are the reason for a verification-decided triage (status, level, hard-finding codes) and for a certification refusal (the keys of `BranchError::Conflict`, the targets of `LifecycleChanged`, the key of `UnreadTarget`); `branch_outcome` keeps only a label. Readable text is rendered from these fields, so it cannot disagree with them. | The first review surface that shows why a branch was escalated or refused, or an F003 analysis that breaks escalations down by verification cause. |
+| Merge rationale | adopt-later | As a structured reason, not free text. A triage logged since policies are recorded cites a `triage_policy` row and carries every input of that policy's rule except the calibration draw (eligibility, slice flag, score and propensity), so its decision and propensity can be recomputed from the two rows and compared. `record_triage` compares them when the row is logged and refuses a row the cited policy cannot have produced (`TriagePolicy::explains`, `a_triage_is_logged_only_under_a_policy_that_can_have_produced_it`); the verification report and the calibration draw are not stored, so eligibility and a slice branch's draw remain the caller's word. Still to be stored are the reason for a verification-decided triage (status, level, hard-finding codes) and for a certification refusal (the keys of `BranchError::Conflict`, the targets of `LifecycleChanged`, the key of `UnreadTarget`); `branch_outcome` keeps only a label. Readable text is rendered from these fields, so it cannot disagree with them. | The first review surface that shows why a branch was escalated or refused, or an F003 analysis that breaks escalations down by verification cause. |
 | Delta embeddings for similarity search | defer | Nothing uses precedent: triage reads the verification report, the score and a calibration draw, and precedent weights were replaced by calibration. Revocation does not reach branch operations in the work schema, so embeddings of them could return content from a revoked input. If a need appears, an embedding of a committed delta enters the derived schema only under its contract: it names the generations its merged branch relied on, the projector deletes it in the transaction that tombstones or supersedes any of them, a rebuild drops it, and a hit stays a candidate (ADR-0008, ADR-0016, INVARIANT 17). | A named consumer, and an ablation in F003 or S003 showing that retrieving similar committed changes improves adjudication accuracy or lowers the conflict rate. |
 | HNSW cosine index on delta embeddings | defer | Deferred with delta embeddings. The mechanism exists for search documents (§1): `halfvec` embeddings, one partial HNSW cosine index per registered space and iterative strict-order scans, in PostgreSQL with no separate vector store; a delta index would reuse it. | Delta embeddings are adopted. |
 | Index `delta_entity_idx` over `entity_table`/`entity_id` | reject | Branches and deltas do not address business tables, which only the effect boundary writes (ADR-0012, ADR-0016). Changes to a semantic key are in the ledger's committed deltas; the projection records revision positions, not payloads, and every backend projects exactly `ptr_state::projection_entries` (§1). | A consumer (audit or adjudication) needs every committed change to one key; `projection_entries` then gains (key, revision) positions, which the projector writes and a rebuild replays. |

@@ -4,6 +4,7 @@ use sha2::{Digest, Sha256};
 
 use crate::config::{check_config, FastMemoryConfig};
 use crate::error::FastMemoryError;
+use crate::projection::IdentifierCodebook;
 use crate::state::{FastWeightState, Readout};
 use crate::write::{admit_write, MemoryWrite, Query, SourceRef, WriteRequest, WriteSeq};
 
@@ -15,9 +16,16 @@ use crate::write::{admit_write, MemoryWrite, Query, SourceRef, WriteRequest, Wri
 /// semantic input it came from, revoking that input removes its writes from the
 /// journal and refolds the state from the last checkpoint that precedes them.
 /// The result is bit-identical to a memory that never received those writes.
+///
+/// A memory is bound to the [`IdentifierCodebook`] its values are codes of,
+/// fixed when it is created or restored: writers compose values with
+/// [`Self::codebook`], every readout carries it, [`Self::fact_codes`] derives
+/// candidates from it, and [`crate::decode_readout`] refuses a fact code from
+/// any other codebook.
 #[derive(Clone, Debug)]
 pub struct FastMemory {
     config: FastMemoryConfig,
+    codebook: IdentifierCodebook,
     state: FastWeightState,
     writes: Vec<MemoryWrite>,
     checkpoints: Vec<FastWeightState>,
@@ -46,11 +54,27 @@ pub struct RevocationReport {
 }
 
 impl FastMemory {
-    /// An empty memory.
-    pub fn new(config: FastMemoryConfig) -> Result<Self, FastMemoryError> {
+    /// An empty memory whose values are codes of `codebook`.
+    ///
+    /// # Errors
+    /// Refuses a configuration outside the supported ranges, then a codebook
+    /// whose codes are not as long as a value (`DimensionMismatch` naming
+    /// `codebook`): no code of it could be written or decoded.
+    pub fn new(
+        config: FastMemoryConfig,
+        codebook: IdentifierCodebook,
+    ) -> Result<Self, FastMemoryError> {
         check_config(&config)?;
+        if codebook.len() != config.value_len() {
+            return Err(FastMemoryError::DimensionMismatch {
+                field: "codebook",
+                expected: config.value_len(),
+                actual: codebook.len(),
+            });
+        }
         Ok(Self {
             config,
+            codebook,
             state: FastWeightState::empty(config),
             writes: Vec::new(),
             checkpoints: Vec::new(),
@@ -64,14 +88,20 @@ impl FastMemory {
     /// Use original write requests, with sequence numbers starting at one or
     /// higher and below `u64::MAX`, so the restored memory can number its next
     /// write. Every write is admitted by the same rules as [`Self::write`].
-    /// Returns configuration, journal-capacity, sequence-order,
+    /// `codebook` must be the one the journal's values are codes of, as its
+    /// store records it (`ptr-pg` keeps its seed with the memory).
+    /// Returns configuration, codebook, journal-capacity, sequence-order,
     /// sequence-exhaustion, or write-validation errors; no partially restored
     /// memory is returned.
-    pub fn restore<I>(config: FastMemoryConfig, journal: I) -> Result<Self, FastMemoryError>
+    pub fn restore<I>(
+        config: FastMemoryConfig,
+        codebook: IdentifierCodebook,
+        journal: I,
+    ) -> Result<Self, FastMemoryError>
     where
         I: IntoIterator<Item = (WriteSeq, WriteRequest)>,
     {
-        let mut memory = Self::new(config)?;
+        let mut memory = Self::new(config, codebook)?;
         for (seq, request) in journal {
             if seq.0 < memory.next_seq {
                 return Err(FastMemoryError::OutOfOrderWrite {
@@ -90,6 +120,12 @@ impl FastMemory {
 
     pub fn config(&self) -> &FastMemoryConfig {
         &self.config
+    }
+
+    /// The codebook this memory's values are codes of. Writers compose each
+    /// value as `codebook().code_for(capsule, generation)`.
+    pub fn codebook(&self) -> IdentifierCodebook {
+        self.codebook
     }
 
     pub fn state(&self) -> &FastWeightState {
@@ -148,7 +184,8 @@ impl FastMemory {
     /// an external authority, which a synchronous predicate can only consult
     /// beforehand) is not seen, so decoded candidates must still pass the
     /// lifecycle check at use. The readout is a derived value, never evidence;
-    /// it enters reasoning only through decoding into search candidates.
+    /// it enters reasoning only through decoding into search candidates, and
+    /// carries this memory's codebook so it is decoded against no other.
     ///
     /// # Errors
     /// First refuses a query normalised for another head shape
@@ -169,7 +206,11 @@ impl FastMemory {
         if denied > 0 {
             return Err(FastMemoryError::Denied { sources: denied });
         }
-        Ok(self.state.read(query))
+        Ok(Readout::new(
+            self.state.read(query),
+            self.state.applied(),
+            self.codebook,
+        ))
     }
 
     /// Digest of the ordered set of writes the state folds; see

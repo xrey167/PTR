@@ -50,5 +50,5 @@ pub use migrate::{
 pub use adapters::{
     BranchOutcome, EmbeddingSpace, FastMemoryCheckpoint, FastMemoryRecord, HybridQuery,
     MigrationReport, PgSubstrate, ProjectionApply, ProjectionEventRow, SearchDocument,
-    SearchResults, LEXICAL_BACKEND, VECTOR_BACKEND,
+    SearchResults, SourceAdmission, LEXICAL_BACKEND, VECTOR_BACKEND,
 };

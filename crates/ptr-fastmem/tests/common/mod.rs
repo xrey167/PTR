@@ -1,4 +1,4 @@
-use ptr_fastmem::{Decay, FastMemoryConfig, SourceRef, WriteRequest};
+use ptr_fastmem::{Decay, FastMemoryConfig, IdentifierCodebook, SourceRef, WriteRequest};
 use ptr_types::Generation;
 
 pub fn config(checkpoint_interval: u32) -> FastMemoryConfig {
@@ -9,6 +9,12 @@ pub fn config(checkpoint_interval: u32) -> FastMemoryConfig {
         checkpoint_interval,
         max_writes: 4096,
     }
+}
+
+/// The identifier codebook a test memory of `config` is bound to.
+#[allow(dead_code)]
+pub fn codebook(config: &FastMemoryConfig) -> IdentifierCodebook {
+    IdentifierCodebook::new(7, config.value_len()).unwrap()
 }
 
 /// A deterministic, dense write about `source` at generation 1. Values depend on
