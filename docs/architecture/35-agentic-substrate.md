@@ -219,6 +219,36 @@ rewritten. The size of a calibration set and of an interference report is checke
 by counting it once, at commit for its header row and at the end of each statement
 that adds to it, so recording a set of N rows in one statement reads O(N) rows
 rather than a count per row.
+Work migration 9 adds what the Rust constructors enforce and the rows did not, so a
+row written around them is refused by the database. A stored branch is never
+rewritten, and when its transaction commits every `Put` or `Remove` names a key it
+read, every operated key has its base value and input set, a base value is recorded
+only for an operated key and equals that key's read, no operation writes a reserved
+namespace, a set member is non-empty and an operation carries only its kind's value
+columns (`branch_rows_written_directly_keep_every_sealing_invariant`). A triage row
+keeps the rules every policy shares: verification alone never auto-proposes, an
+eligible branch is never discarded, outside the slice it is auto-proposed exactly when
+its propensity is positive, and a slice propensity is below one
+(`a_triage_row_keeps_the_rules_every_policy_shares`); a revert needs an earlier merge.
+A fast memory's state fits `MAX_STATE_CELLS`, its registration and journal rows are
+never rewritten, and a write has the key, value and decay lengths its configuration
+admits (`fast_memory_rows_keep_the_shape_their_configuration_admits`). An adapter
+registers as a candidate on its parent's base and changes only its status, along its
+lifecycle; a consolidated adapter commits with at least one source, only a
+consolidated adapter has sources, each on its base, and sources and data manifests go
+only with their adapter, so the edges erasure follows cannot be lost
+(`a_consolidated_adapter_has_sources_on_its_base_and_only_it_has_them`). Replay rows
+are finite, where `stability > 0` alone admitted NaN and infinity, and the training
+clock never runs back (`replay_rows_are_finite_and_the_training_clock_never_runs_back`).
+A label schema has at least two distinct, non-empty, non-NULL classes indexed from
+one and is never rewritten
+(`a_label_schema_needs_two_distinct_non_empty_classes_and_is_never_rewritten`); a
+labeling function has a non-empty name and is never rewritten, only a verifier vetoes
+and only other kinds vote a class, and every vote and gold label names a class of its
+schema (`only_a_verifier_vetoes_and_every_vote_names_a_class_of_its_schema`). The
+checks are added NOT VALID, so a schema holding older rows still upgrades and the
+loaders keep refusing those rows; the tests that tamper with stored rows write them
+as a store from before version 9 could.
 A touched key's input-set digest is a whole digest; a branch stored
 before input sets were recorded has none, and loading it is refused because it cannot
 be certified and must be re-run.

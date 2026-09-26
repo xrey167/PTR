@@ -94,6 +94,11 @@ pub const WORK_MIGRATIONS: &[Migration] = &[
         name: "branch_touched_inputs",
         sql: include_str!("../migrations/work/0008_branch_touched_inputs.sql"),
     },
+    Migration {
+        version: 9,
+        name: "work_invariants",
+        sql: include_str!("../migrations/work/0009_work_invariants.sql"),
+    },
 ];
 
 impl Migration {

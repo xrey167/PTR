@@ -73,6 +73,59 @@ async fn raw_client_at(dsn: &str) -> tokio_postgres::Client {
     client
 }
 
+/// Run `sql` as a writer from before work migration 9 could have: with the
+/// server's triggers off (`session_replication_role = replica`, which the test
+/// server's superuser may set) and with the NOT VALID `checks` migration 9
+/// added, which rows written before it never had to pass, dropped for the
+/// write and added back NOT VALID after it. All of it is one transaction, and
+/// the setting ends with it.
+async fn write_before_invariants(
+    raw: &tokio_postgres::Client,
+    work: &impl std::fmt::Display,
+    checks: &[(&str, &str)],
+    sql: &str,
+) {
+    let mut drop = String::new();
+    let mut restore = String::new();
+    for (table, check) in checks {
+        let definition: String = raw
+            .query_one(
+                "SELECT pg_get_constraintdef(oid) FROM pg_constraint \
+                 WHERE conname = $1 AND conrelid = $2::text::regclass",
+                &[check, &format!("{work}.{table}")],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert!(definition.ends_with("NOT VALID"), "{definition}");
+        drop.push_str(&format!(
+            "ALTER TABLE {work}.{table} DROP CONSTRAINT {check}; "
+        ));
+        restore.push_str(&format!(
+            "ALTER TABLE {work}.{table} ADD CONSTRAINT {check} {definition}; "
+        ));
+    }
+    raw.batch_execute(&format!(
+        "BEGIN; SET LOCAL session_replication_role = replica; {drop}{sql}; {restore}COMMIT;"
+    ))
+    .await
+    .unwrap();
+}
+
+/// The SQLSTATE a statement the database refused carries.
+async fn refused_sqlstate(raw: &tokio_postgres::Client, sql: &str) -> String {
+    let error = match raw.batch_execute(sql).await {
+        Ok(()) => panic!("the database accepted {sql}"),
+        Err(error) => error,
+    };
+    error
+        .as_db_error()
+        .unwrap_or_else(|| panic!("{sql}: {error}"))
+        .code()
+        .code()
+        .to_owned()
+}
+
 /// A migrated substrate in a fresh schema prefix.
 async fn substrate() -> PgSubstrate {
     substrate_at(&dsn()).await
@@ -1759,13 +1812,15 @@ async fn touched_input_sets_survive_a_round_trip_and_a_branch_sealed_before_them
     // A branch stored before input sets were recorded, as the earlier schema
     // wrote it, cannot be certified: loading it says so rather than returning
     // a branch certification would have to trust.
-    raw.batch_execute(&format!(
+    let legacy = format!(
         "INSERT INTO {work}.branch (id, author, base_revision) VALUES ('legacy', 'agent-7', 4); \
          INSERT INTO {work}.branch_touched (branch, key, base_digest) \
          VALUES ('legacy', 'order:1', decode(repeat('00', 32), 'hex'));"
-    ))
-    .await
-    .unwrap();
+    );
+    // A base value with no operation and no input set is refused when it
+    // commits now; only a store from before work migration 9 holds one.
+    assert_eq!(refused_sqlstate(&raw, &legacy).await, "23000");
+    write_before_invariants(&raw, &work, &[], &legacy).await;
     let error = substrate
         .load_branch(&BranchId::from("legacy"))
         .await
@@ -1925,9 +1980,27 @@ async fn a_branch_writing_a_reserved_namespace_is_never_stored_and_tampered_rows
             substrate.load_branch(branch.id()).await.unwrap(),
             Some(branch.clone())
         );
-        raw.batch_execute(&tamper.replace("{work}", work.as_str()))
-            .await
-            .unwrap();
+        let tamper = tamper.replace("{work}", work.as_str());
+        // The database refuses every one of these rows now: a check refuses
+        // the reserved key of t2, and triggers the rest (a rewrite, or a
+        // sealing invariant when the transaction commits).
+        let expected = if id == "t2" { "23514" } else { "23000" };
+        assert_eq!(refused_sqlstate(&raw, &tamper).await, expected, "{id}");
+        assert_eq!(
+            substrate.load_branch(branch.id()).await.unwrap(),
+            Some(branch.clone())
+        );
+        // Rows a store written before work migration 9 can hold.
+        write_before_invariants(
+            &raw,
+            &work,
+            &[
+                ("branch_op", "branch_op_key_not_reserved"),
+                ("branch_op", "branch_op_member_not_empty"),
+            ],
+            &tamper,
+        )
+        .await;
         let error = substrate.load_branch(branch.id()).await.unwrap_err();
         assert_eq!(
             error,
@@ -1965,18 +2038,23 @@ async fn a_stored_branch_relying_on_two_generations_of_one_target_is_refused_on_
         .await
         .unwrap_err();
     assert_eq!(error.as_db_error().unwrap().code().code(), "23505");
-    // Rows written once the keys are dropped are refused on load rather than
-    // collapsed to whichever row came last.
-    raw.batch_execute(&format!(
-        "ALTER TABLE {work}.branch_relied DROP CONSTRAINT branch_relied_pkey; \
-         ALTER TABLE {work}.branch_read DROP CONSTRAINT branch_read_pkey; \
-         INSERT INTO {work}.branch_relied (branch, target, generation) \
-         VALUES ('b1', 'constraint:budget', 4), ('b2', 'constraint:budget', 3); \
-         INSERT INTO {work}.branch_read (branch, key, digest) \
-         VALUES ('b3', 'order:1', decode(repeat('00', 32), 'hex'));"
-    ))
-    .await
-    .unwrap();
+    // Rows written once the keys are dropped, by a writer from before work
+    // migration 9, are refused on load rather than collapsed to whichever row
+    // came last.
+    write_before_invariants(
+        &raw,
+        &work,
+        &[],
+        &format!(
+            "ALTER TABLE {work}.branch_relied DROP CONSTRAINT branch_relied_pkey; \
+             ALTER TABLE {work}.branch_read DROP CONSTRAINT branch_read_pkey; \
+             INSERT INTO {work}.branch_relied (branch, target, generation) \
+             VALUES ('b1', 'constraint:budget', 4), ('b2', 'constraint:budget', 3); \
+             INSERT INTO {work}.branch_read (branch, key, digest) \
+             VALUES ('b3', 'order:1', decode(repeat('00', 32), 'hex'));"
+        ),
+    )
+    .await;
     let error = substrate
         .load_branch(&BranchId::from("b1"))
         .await
@@ -2407,6 +2485,480 @@ async fn working_state_constraints_hold_in_the_database() {
             "{statement}"
         );
     }
+    substrate.drop_all().await.unwrap();
+}
+
+/// An adapter row registered on base `model@r1`.
+fn adapter_row(
+    work: &impl std::fmt::Display,
+    id: &str,
+    model: &str,
+    origin: &str,
+    parent: Option<&str>,
+    status: &str,
+) -> String {
+    let parent = parent.map_or("NULL".to_owned(), |parent| format!("'{parent}'"));
+    format!(
+        "INSERT INTO {work}.adapter \
+         (id, domain, base_model, base_revision, origin, parent, rank, artifact, \
+          artifact_sha256, data_fingerprint, status) \
+         VALUES ('{id}', 'support', '{model}', 'r1', '{origin}', {parent}, 8, 'artifact', \
+                 decode(repeat('00', 32), 'hex'), decode(repeat('00', 32), 'hex'), '{status}'); "
+    )
+}
+
+#[tokio::test]
+async fn a_consolidated_adapter_has_sources_on_its_base_and_only_it_has_them() {
+    let substrate = substrate().await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    let adapter = |id: &str, model: &str, origin: &str, parent: Option<&str>| {
+        adapter_row(&work, id, model, origin, parent, "candidate")
+    };
+    raw.batch_execute(
+        &[
+            adapter("t1", "m", "trained", None),
+            adapter("t2", "m", "trained", Some("t1")),
+            adapter("other", "m2", "trained", None),
+        ]
+        .concat(),
+    )
+    .await
+    .unwrap();
+    let source = |consolidated: &str, source: &str| {
+        format!(
+            "INSERT INTO {work}.adapter_source (consolidated, source) \
+             VALUES ('{consolidated}', '{source}'); "
+        )
+    };
+    for (why, sql) in [
+        // Committed alone, it lost the edges erasure follows from its inputs.
+        (
+            "a consolidation naming no source",
+            adapter("c0", "m", "consolidated", None),
+        ),
+        ("a source of a trained adapter", source("t2", "t1")),
+        (
+            "a source on another base",
+            adapter("c1", "m", "consolidated", None) + &source("c1", "other"),
+        ),
+        (
+            "a parent on another base",
+            adapter("t3", "m2", "trained", Some("t1")),
+        ),
+        (
+            "a registration that is not a candidate",
+            adapter_row(&work, "t4", "m", "trained", None, "serving"),
+        ),
+    ] {
+        assert_eq!(refused_sqlstate(&raw, &sql).await, "23000", "{why}");
+    }
+    // A consolidation and its sources written in one transaction commit.
+    raw.batch_execute(&format!(
+        "BEGIN; {}{}{}COMMIT;",
+        adapter("c1", "m", "consolidated", None),
+        source("c1", "t1"),
+        source("c1", "t2")
+    ))
+    .await
+    .unwrap();
+    raw.batch_execute(&format!(
+        "INSERT INTO {work}.adapter_input (adapter, input) VALUES ('t1', 'doc-1')"
+    ))
+    .await
+    .unwrap();
+    // Sources, the data manifest and every field but the status are part of
+    // the registered record.
+    for sql in [
+        format!("DELETE FROM {work}.adapter_source WHERE consolidated = 'c1' AND source = 't1'"),
+        format!("UPDATE {work}.adapter_source SET source = 'other' WHERE consolidated = 'c1'"),
+        format!("DELETE FROM {work}.adapter_input WHERE adapter = 't1'"),
+        format!("UPDATE {work}.adapter SET origin = 'trained' WHERE id = 'c1'"),
+        format!("UPDATE {work}.adapter SET parent = NULL WHERE id = 't2'"),
+        format!("UPDATE {work}.adapter SET status = 'serving' WHERE id = 't1'"),
+    ] {
+        assert_eq!(refused_sqlstate(&raw, &sql).await, "23000", "{sql}");
+    }
+    for status in ["gated", "serving", "retired"] {
+        raw.batch_execute(&format!(
+            "UPDATE {work}.adapter SET status = '{status}' WHERE id = 't1'"
+        ))
+        .await
+        .unwrap();
+    }
+    assert_eq!(
+        refused_sqlstate(
+            &raw,
+            &format!("UPDATE {work}.adapter SET status = 'gated' WHERE id = 't1'")
+        )
+        .await,
+        "23000"
+    );
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_label_schema_needs_two_distinct_non_empty_classes_and_is_never_rewritten() {
+    let substrate = substrate().await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    for classes in [
+        "ARRAY['yes', 'yes']",
+        "ARRAY['yes', '']",
+        "ARRAY['yes', NULL]",
+        "ARRAY['only']",
+        "'{}'::text[]",
+        "'{{yes,no},{maybe,never}}'::text[]",
+        // Class 0 of a vote is element 1.
+        "'[0:1]={yes,no}'::text[]",
+    ] {
+        assert_eq!(
+            refused_sqlstate(
+                &raw,
+                &format!("INSERT INTO {work}.label_schema (id, classes) VALUES ('s', {classes})")
+            )
+            .await,
+            "23514",
+            "{classes}"
+        );
+    }
+    raw.batch_execute(&format!(
+        "INSERT INTO {work}.label_schema (id, classes) VALUES ('s', ARRAY['yes', 'no'])"
+    ))
+    .await
+    .unwrap();
+    assert_eq!(
+        refused_sqlstate(
+            &raw,
+            &format!("UPDATE {work}.label_schema SET classes = ARRAY['yes', 'no', 'maybe']")
+        )
+        .await,
+        "23000"
+    );
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn only_a_verifier_vetoes_and_every_vote_names_a_class_of_its_schema() {
+    let substrate = substrate().await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    raw.batch_execute(&format!(
+        "INSERT INTO {work}.label_schema (id, classes) VALUES ('s', ARRAY['yes', 'no']); \
+         INSERT INTO {work}.label_item (label_schema, item) VALUES ('s', 'i1'); \
+         INSERT INTO {work}.labeling_function (name, kind) \
+         VALUES ('check', 'verifier'), ('rule', 'heuristic'), ('model', 'model'), \
+                ('agent', 'agent')"
+    ))
+    .await
+    .unwrap();
+    let vote = |function: &str, kind: &str, class: i32| {
+        format!(
+            "INSERT INTO {work}.label_vote (label_schema, item, function, vote_kind, class) \
+             VALUES ('s', 'i1', '{function}', '{kind}', {class})"
+        )
+    };
+    for sql in [
+        vote("rule", "veto", 0),
+        vote("model", "veto", 0),
+        vote("agent", "veto", 0),
+        vote("check", "class", 0),
+        vote("rule", "class", 2),
+        vote("check", "veto", 2),
+        format!(
+            "INSERT INTO {work}.gold_label (label_schema, item, class, source, sampling) \
+             VALUES ('s', 'i1', 2, 'oracle', 'uniform')"
+        ),
+    ] {
+        assert_eq!(refused_sqlstate(&raw, &sql).await, "23000", "{sql}");
+    }
+    for sql in [
+        vote("check", "veto", 1),
+        vote("rule", "class", 0),
+        vote("model", "class", 0),
+        vote("agent", "class", 1),
+        format!(
+            "INSERT INTO {work}.gold_label (label_schema, item, class, source, sampling) \
+             VALUES ('s', 'i1', 0, 'oracle', 'uniform')"
+        ),
+    ] {
+        raw.batch_execute(&sql).await.unwrap();
+    }
+    // A stored vote keeps the kind its function may cast, and a function
+    // keeps the kind its votes were checked against.
+    for sql in [
+        format!("UPDATE {work}.label_vote SET vote_kind = 'veto' WHERE function = 'rule'"),
+        format!("UPDATE {work}.labeling_function SET kind = 'heuristic' WHERE name = 'check'"),
+    ] {
+        assert_eq!(refused_sqlstate(&raw, &sql).await, "23000", "{sql}");
+    }
+    // Names are non-empty, as VoteMatrix::new requires of them and of an
+    // adapter a model function names.
+    for sql in [
+        format!("INSERT INTO {work}.labeling_function (name, kind) VALUES ('', 'heuristic')"),
+        format!(
+            "INSERT INTO {work}.labeling_function (name, kind, adapter) VALUES ('m2', 'model', '')"
+        ),
+    ] {
+        assert_eq!(refused_sqlstate(&raw, &sql).await, "23514", "{sql}");
+    }
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn branch_rows_written_directly_keep_every_sealing_invariant() {
+    let mut substrate = substrate().await;
+    substrate
+        .store_branch(&sealed_branch("b1", "agent-7"))
+        .await
+        .unwrap();
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    let zeros = "decode(repeat('00', 32), 'hex')";
+    for (sql, sqlstate) in [
+        (
+            format!(
+                "INSERT INTO {work}.branch_op (branch, ordinal, kind, key, member) \
+                 VALUES ('b1', 9, 'set_insert', 'tags:1', '')"
+            ),
+            "23514",
+        ),
+        // A text value that also carries payload bytes.
+        (
+            format!(
+                "INSERT INTO {work}.branch_op \
+                 (branch, ordinal, kind, key, value_kind, value_text, value_bytes) \
+                 VALUES ('b1', 9, 'put', 'order:1', 'text', 'x', '\\x00')"
+            ),
+            "23514",
+        ),
+        // An operation on a key with no recorded base value or input set.
+        (
+            format!(
+                "INSERT INTO {work}.branch_op (branch, ordinal, kind, key, amount) \
+                 VALUES ('b1', 9, 'add', 'stock:gadget', 1)"
+            ),
+            "23000",
+        ),
+        // A read of a touched key whose digest is not its base value.
+        (
+            format!(
+                "INSERT INTO {work}.branch_read (branch, key, digest) \
+                 VALUES ('b1', 'stock:widget', {zeros})"
+            ),
+            "23000",
+        ),
+        (
+            format!("UPDATE {work}.branch SET author = 'agent-8' WHERE id = 'b1'"),
+            "23000",
+        ),
+        (
+            format!("DELETE FROM {work}.branch_scan WHERE branch = 'b1'"),
+            "23000",
+        ),
+        (
+            format!("UPDATE {work}.branch_relied SET generation = 4 WHERE branch = 'b1'"),
+            "23000",
+        ),
+    ] {
+        assert_eq!(refused_sqlstate(&raw, &sql).await, sqlstate, "{sql}");
+    }
+    // Rows written in one transaction are checked when it commits, whatever
+    // their order: the operation here precedes the rows it needs.
+    raw.batch_execute(&format!(
+        "BEGIN; \
+         INSERT INTO {work}.branch (id, author, base_revision) VALUES ('raw', 'agent-7', 4); \
+         INSERT INTO {work}.branch_op (branch, ordinal, kind, key) \
+         VALUES ('raw', 0, 'remove', 'order:7'); \
+         INSERT INTO {work}.branch_touched (branch, key, base_digest, inputs_digest) \
+         VALUES ('raw', 'order:7', {zeros}, {zeros}); \
+         INSERT INTO {work}.branch_read (branch, key, digest) VALUES ('raw', 'order:7', {zeros}); \
+         COMMIT;"
+    ))
+    .await
+    .unwrap();
+    assert!(substrate
+        .load_branch(&BranchId::from("raw"))
+        .await
+        .unwrap()
+        .is_some());
+    // A whole branch still goes, with every row describing it.
+    raw.batch_execute(&format!(
+        "DELETE FROM {work}.branch WHERE id IN ('b1', 'raw')"
+    ))
+    .await
+    .unwrap();
+    assert_eq!(substrate.load_branch(&BranchId::from("b1")).await, Ok(None));
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_triage_row_keeps_the_rules_every_policy_shares() {
+    let mut substrate = substrate().await;
+    record_manual_policy(&mut substrate, "policy-t").await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    let triage = |branch: &str, decision: &str, eligible: bool, slice: bool, propensity: f64| {
+        format!(
+            "INSERT INTO {work}.branch_triage (branch, decision, eligible, calibration_slice, \
+             score, auto_propensity, policy_version) \
+             VALUES ('{branch}', '{decision}', {eligible}, {slice}, 0.5, {propensity}, \
+                     'policy-t')"
+        )
+    };
+    for (index, (decision, eligible, slice, propensity)) in [
+        // Verification alone never auto-proposes.
+        ("auto_propose", false, false, 0.0),
+        // An eligible branch is never discarded.
+        ("discard", true, false, 0.0),
+        // Outside the slice, auto-proposed exactly when admitted.
+        ("auto_propose", true, false, 0.0),
+        ("escalate", true, false, 0.9),
+        // A slice needs a calibration rate above zero.
+        ("escalate", true, true, 1.0),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let branch = format!("r{index}");
+        substrate
+            .store_branch(&sealed_branch(&branch, "agent-7"))
+            .await
+            .unwrap();
+        let sql = triage(&branch, decision, eligible, slice, propensity);
+        assert_eq!(refused_sqlstate(&raw, &sql).await, "23514", "{sql}");
+    }
+    for (index, (decision, eligible, slice, propensity)) in [
+        ("discard", false, false, 0.0),
+        ("escalate", false, false, 0.0),
+        ("auto_propose", true, false, 0.9),
+        ("escalate", true, false, 0.0),
+        ("escalate", true, true, 0.9),
+        ("escalate", true, true, 0.0),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let branch = format!("a{index}");
+        substrate
+            .store_branch(&sealed_branch(&branch, "agent-7"))
+            .await
+            .unwrap();
+        raw.batch_execute(&triage(&branch, decision, eligible, slice, propensity))
+            .await
+            .unwrap();
+    }
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn fast_memory_rows_keep_the_shape_their_configuration_admits() {
+    let substrate = substrate().await;
+    let config = memory_config();
+    substrate
+        .create_memory(&FastMemoryRecord {
+            id: "m1".into(),
+            principal: PrincipalId::from("agent-7"),
+            thread: "t1".into(),
+            config,
+            projection_digest: [3; 32],
+            codebook_seed: 11,
+        })
+        .await
+        .unwrap();
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    // One head of four key and four value cells: 16 bytes each.
+    let write = |seq: i64, key: usize, value: usize, decay: &str, decay_bytes: Option<usize>| {
+        let cells = |bytes: usize| format!("decode(repeat('00', {bytes}), 'hex')");
+        format!(
+            "INSERT INTO {work}.fastmem_write \
+             (memory, seq, source_key, source_generation, input_digest, key_cells, \
+              value_cells, beta, decay_kind, decay_cells) \
+             VALUES ('m1', {seq}, 'c1', 1, decode(repeat('00', 32), 'hex'), {}, {}, 0.5, \
+                     '{decay}', {})",
+            cells(key),
+            cells(value),
+            decay_bytes.map_or("NULL".to_owned(), cells)
+        )
+    };
+    for sql in [
+        write(1, 12, 16, "none", None),
+        write(1, 16, 20, "none", None),
+        write(1, 16, 16, "scalar", Some(8)),
+        write(1, 16, 16, "per_channel", Some(4)),
+    ] {
+        assert_eq!(refused_sqlstate(&raw, &sql).await, "23000", "{sql}");
+    }
+    for sql in [
+        write(1, 16, 16, "none", None),
+        write(2, 16, 16, "scalar", Some(4)),
+        write(3, 16, 16, "per_channel", Some(16)),
+    ] {
+        raw.batch_execute(&sql).await.unwrap();
+    }
+    // The registration its journal was written under, and the journal, are
+    // never rewritten.
+    for sql in [
+        format!("UPDATE {work}.fastmem_memory SET value_dim = 8 WHERE id = 'm1'"),
+        format!("UPDATE {work}.fastmem_write SET beta = 1 WHERE memory = 'm1'"),
+    ] {
+        assert_eq!(refused_sqlstate(&raw, &sql).await, "23000", "{sql}");
+    }
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn replay_rows_are_finite_and_the_training_clock_never_runs_back() {
+    let substrate = substrate().await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    let sample = |stability: &str, difficulty: &str, time: &str| {
+        format!(
+            "INSERT INTO {work}.replay_sample \
+             (id, stratum, split, stability, difficulty, last_probe_model_time) \
+             VALUES ('s1', 'x', 'train', {stability}, {difficulty}, {time})"
+        )
+    };
+    // `stability > 0` holds for NaN and Infinity in PostgreSQL.
+    for (stability, difficulty, time) in [
+        ("'NaN'", "5", "10"),
+        ("'Infinity'", "5", "10"),
+        ("1", "'NaN'", "10"),
+        ("1", "5", "'NaN'"),
+        ("1", "5", "'-Infinity'"),
+    ] {
+        let sql = sample(stability, difficulty, time);
+        assert_eq!(refused_sqlstate(&raw, &sql).await, "23514", "{sql}");
+    }
+    raw.batch_execute(&sample("1", "5", "10")).await.unwrap();
+    let probe = |time: &str, loss: &str| {
+        format!(
+            "INSERT INTO {work}.replay_probe (sample, model_time, loss) \
+             VALUES ('s1', {time}, {loss})"
+        )
+    };
+    for (sql, sqlstate) in [
+        (probe("'NaN'", "0.1"), "23514"),
+        (probe("11", "'Infinity'"), "23514"),
+        // Before the sample's last probe.
+        (probe("9", "0.1"), "23000"),
+    ] {
+        assert_eq!(refused_sqlstate(&raw, &sql).await, sqlstate, "{sql}");
+    }
+    raw.batch_execute(&probe("12", "0.1")).await.unwrap();
+    for sql in [
+        // Before a probe already recorded.
+        probe("11", "0.1"),
+        format!("UPDATE {work}.replay_sample SET last_probe_model_time = 5"),
+    ] {
+        assert_eq!(refused_sqlstate(&raw, &sql).await, "23000", "{sql}");
+    }
+    raw.batch_execute(&format!(
+        "UPDATE {work}.replay_sample SET last_probe_model_time = 12, lapses = 1"
+    ))
+    .await
+    .unwrap();
     substrate.drop_all().await.unwrap();
 }
 
@@ -2855,7 +3407,7 @@ async fn revert_share_counts_merged_branches_later_reverted_within_a_window() {
         &format!(
             "INSERT INTO {work}.branch_triage (branch, decision, eligible, calibration_slice, \
              score, auto_propensity, policy_version, decided_at) \
-             VALUES ('r4', 'escalate', true, false, 0.2, 0.9, 'policy-r', \
+             VALUES ('r4', 'escalate', true, false, 0.2, 0.0, 'policy-r', \
                      now() - interval '30 days')"
         ),
         &[],
@@ -2964,7 +3516,14 @@ async fn every_metric_windows_a_branch_once_on_the_record_that_enters_its_denomi
             .store_branch(&sealed_branch(id, "agent-w"))
             .await
             .unwrap();
-        let propensity: f64 = if eligible { 0.5 } else { 0.0 };
+        // Outside the calibration slice every policy logs a positive
+        // propensity exactly for the eligible branches it auto-proposes, and
+        // the table requires it.
+        let propensity: f64 = if eligible && (slice || decision == "auto_propose") {
+            0.5
+        } else {
+            0.0
+        };
         raw.execute(
             &format!(
                 "INSERT INTO {work}.branch_triage (branch, decision, eligible, \
@@ -4103,16 +4662,17 @@ async fn a_revert_is_recorded_and_counted_only_after_the_merge_it_reverts() {
         .await
         .unwrap();
     // A revert stored ahead of its merge by a writer that went around
-    // `record_outcome`: the share counts only the revert that follows its
+    // `record_outcome`: the database refuses it now, and of one stored before
+    // work migration 9 the share counts only the revert that follows its
     // merge, so v3's merge is not reported reverted.
-    raw.batch_execute(&format!(
+    let ahead = format!(
         "INSERT INTO {work}.branch_outcome (branch, outcome, commit_index) \
          VALUES ('v3', 'reverted', 5); \
          INSERT INTO {work}.branch_outcome (branch, outcome, commit_index) \
          VALUES ('v3', 'merged', 9)"
-    ))
-    .await
-    .unwrap();
+    );
+    assert_eq!(refused_sqlstate(&raw, &ahead).await, "23000");
+    write_before_invariants(&raw, &work, &[], &ahead).await;
     assert_eq!(
         substrate
             .metric(MetricSpec {
@@ -4200,18 +4760,22 @@ async fn a_stored_configuration_fast_memory_refuses_is_a_corrupt_row_in_every_lo
     let raw = raw_client().await;
     let work = substrate.schemas().work.clone();
     // Each dimension within its column's bounds, their product 64 Mi cells:
-    // a row registered before `create_memory` checked the configuration.
-    raw.execute(
-        &format!(
-            "INSERT INTO {work}.fastmem_memory (id, principal, thread, heads, key_dim, \
-             value_dim, checkpoint_interval, max_writes, projection_digest, codebook_seed) \
-             VALUES ('huge', 'agent-7', 'huge', 64, 1024, 1024, 2, 64, \
-                     decode(repeat('03', 32), 'hex'), 11)"
-        ),
-        &[],
+    // the table refuses it now, and a row registered before `create_memory`
+    // and the table checked the product still reaches every loader.
+    let huge = format!(
+        "INSERT INTO {work}.fastmem_memory (id, principal, thread, heads, key_dim, \
+         value_dim, checkpoint_interval, max_writes, projection_digest, codebook_seed) \
+         VALUES ('huge', 'agent-7', 'huge', 64, 1024, 1024, 2, 64, \
+                 decode(repeat('03', 32), 'hex'), 11)"
+    );
+    assert_eq!(refused_sqlstate(&raw, &huge).await, "23514");
+    write_before_invariants(
+        &raw,
+        &work,
+        &[("fastmem_memory", "fastmem_memory_state_cells")],
+        &huge,
     )
-    .await
-    .unwrap();
+    .await;
     let unsupported = |error: PgError| match error {
         PgError::CorruptRow {
             table: "fastmem_memory",
