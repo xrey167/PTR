@@ -1221,15 +1221,28 @@ async fn probe_foreign_histories(
         "the next record of a diverged ledger",
     );
 
-    // A different record redelivered at an applied index.
-    let redelivered = rng.range(fork_at as u64, head as u64) as usize - 1;
-    let result = substrate
-        .apply_committed(&beside[redelivered], beside_anchors[redelivered])
-        .await;
-    refused(
-        Ok(matches!(result, Err(PgError::ForeignHistory { .. }))),
-        "a different record at an applied index",
-    );
+    // A different record redelivered at an applied index, with the anchor of
+    // its own history: at the first divergent index, where that anchor still
+    // chains from the shared prefix and only the stored anchor tells them
+    // apart, and at a random later one.
+    for (redelivered, what) in [
+        (
+            fork_at - 1,
+            "the forked record at the first divergent index",
+        ),
+        (
+            rng.range(fork_at as u64, head as u64) as usize - 1,
+            "a different record at an applied index",
+        ),
+    ] {
+        let result = substrate
+            .apply_committed(&beside[redelivered], beside_anchors[redelivered])
+            .await;
+        refused(
+            Ok(matches!(result, Err(PgError::ForeignHistory { .. }))),
+            what,
+        );
+    }
 
     // The forked record handed over with the true anchor of its index, and
     // the true record with the forked anchor: the anchor alone must not make
