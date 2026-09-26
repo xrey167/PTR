@@ -13,7 +13,9 @@ only on other counters is recorded as `failed-elsewhere`: the defect may have
 broken something unrelated first (a query that no longer binds, say), which
 shows nothing about whether the harness sees the defect itself. Exiting any
 other way (a panic, a build failure, a timeout) or passing is recorded as it
-is. The record goes to the experiment's `results/mutations.json`.
+is. The record goes to the experiment's `results/mutations.json`. Every name
+given to `--only` must be one the plan lists. Afterwards the unmutated harness
+is rebuilt, and the run fails if that rebuild does.
 
     python scripts/mutation_check.py L004
     python scripts/mutation_check.py L003 --only append-without-row-lock
@@ -196,6 +198,20 @@ def run_mutation(plan: dict, mutation: dict, timeout: int) -> dict:
     return outcome
 
 
+def select(plan: dict, only: list[str]) -> tuple[list[dict], list[str]]:
+    """The mutations to run: every one the plan lists or, given `only`, those
+    it names, and the errors in that request. A name the plan does not list is
+    an error, and so is an empty selection: a typo must not pass by testing
+    nothing."""
+    mutations = plan.get("mutation", [])
+    known = {mutation["name"] for mutation in mutations}
+    errors = [f"no mutation named {name!r}" for name in only if name not in known]
+    selected = [mutation for mutation in mutations if not only or mutation["name"] in only]
+    if not selected:
+        errors.append("no mutation selected")
+    return selected, errors
+
+
 def git_sha() -> str:
     try:
         return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
@@ -221,16 +237,27 @@ def main() -> int:
         print(f"OK: {len(plan.get('mutation', []))} mutation anchors for {args.id}")
         return 0
 
-    selected = [m for m in plan["mutation"] if not args.only or m["name"] in args.only]
+    selected, errors = select(plan, args.only)
+    if errors:
+        print("\n".join("ERROR: " + error for error in errors))
+        return 2
     outcomes = []
     for mutation in selected:
         outcome = run_mutation(plan, mutation, args.timeout)
         outcomes.append(outcome)
         print(f"{outcome['name']}: {outcome['result']} {outcome.get('counters', {})}", flush=True)
 
-    # Rebuild the unmutated harness so no mutated binary is left behind.
-    build, _ = binary_command(plan, 1, int(plan["seed"]))
-    subprocess.run(build, cwd=ROOT, capture_output=True, text=True, check=False)
+    # Rebuild the unmutated harness so no mutated binary is left behind. Until
+    # that succeeds the binary may still hold the last mutation, so a failed
+    # rebuild fails the run whatever the mutations did.
+    build, run = binary_command(plan, 1, int(plan["seed"]))
+    rebuilt = subprocess.run(build, cwd=ROOT, capture_output=True, text=True, check=False)
+    restored = rebuilt.returncode == 0
+    if not restored:
+        print(
+            f"ERROR: rebuilding the unmutated harness failed; {run[0]} may still hold a mutation\n"
+            + rebuilt.stderr[-2000:]
+        )
 
     if not args.only:
         record = {
@@ -245,7 +272,8 @@ def main() -> int:
         out = exp_root / "results/mutations.json"
         out.write_text(json.dumps(record, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         print(out.relative_to(ROOT))
-    return 0 if all(outcome["result"] == "killed" for outcome in outcomes) else 1
+    killed = all(outcome["result"] == "killed" for outcome in outcomes)
+    return 0 if restored and killed else 1
 
 
 if __name__ == "__main__":

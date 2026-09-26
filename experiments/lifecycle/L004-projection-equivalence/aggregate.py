@@ -4,6 +4,9 @@ Inputs are the run records `scripts/run_experiment.py run L004 --seed <s>
 --set iterations=<n>` writes (results/run-<timestamp>-seed-<s>.json); by
 default the newest record of every declared seed. Every declared seed must be
 present, and the run passes only if every seed exited 0 with no hard failure.
+The records must be of one configuration and have run the checkout's code
+(`scripts/experiment_records.py`); `git_sha` in run.json is the commit they ran
+at, and `aggregated_at_git_sha` the commit this script ran at.
 """
 
 from __future__ import annotations
@@ -12,12 +15,16 @@ import argparse
 import datetime as dt
 import json
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 RESULTS = HERE / "results"
+
+sys.path.insert(0, str(ROOT / "scripts"))
+import experiment_records  # noqa: E402
 
 COVERAGE = [
     "crashes_committed",
@@ -107,14 +114,27 @@ def main() -> None:
     if missing:
         raise SystemExit(f"no run record for seeds {missing}")
 
+    chosen = {seed: json.loads(per_seed[seed].read_text(encoding="utf-8")) for seed in manifest["seeds"]}
+    try:
+        revision = experiment_records.source_revision(
+            "L004", manifest, {per_seed[seed].name: chosen[seed] for seed in chosen}, ROOT
+        )
+    except experiment_records.ProvenanceError as error:
+        raise SystemExit(f"L004: refusing to aggregate: {error}")
+
     seeds = []
     records = []
     for seed in manifest["seeds"]:
-        record = json.loads(per_seed[seed].read_text(encoding="utf-8"))
+        record = chosen[seed]
         result = last_json_line(record["stdout"])
         seeds.append(result)
         records.append(
-            {"seed": seed, "record": per_seed[seed].name, "exit_code": record["exit_code"]}
+            {
+                "seed": seed,
+                "record": per_seed[seed].name,
+                "git_sha": record["git_sha"],
+                "exit_code": record["exit_code"],
+            }
         )
 
     counters = sorted(
@@ -178,7 +198,8 @@ def main() -> None:
         "experiment_id": "L004",
         "status": manifest["status"],
         "scope": SCOPE,
-        "git_sha": git_sha(),
+        "git_sha": revision,
+        "aggregated_at_git_sha": git_sha(),
         "recorded_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "entrypoint": manifest["entrypoint"],
         "seeds": records,

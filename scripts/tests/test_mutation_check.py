@@ -1,7 +1,12 @@
+import contextlib
 import importlib.util
+import io
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location(
@@ -106,6 +111,61 @@ class MutationCheckTests(unittest.TestCase):
         stdout = 'Compiling\n{"a":1}\nnoise\n{"hard_failures":2}\n'
         self.assertEqual(mod.last_json_line(stdout), {"hard_failures": 2})
         self.assertEqual(mod.last_json_line("nothing"), {})
+
+    def test_only_must_name_mutations_the_plan_lists(self):
+        plan = {"mutation": [{"name": "a"}, {"name": "b"}]}
+        self.assertEqual(mod.select(plan, []), ([{"name": "a"}, {"name": "b"}], []))
+        self.assertEqual(mod.select(plan, ["b"]), ([{"name": "b"}], []))
+        selected, errors = mod.select(plan, ["b", "typo"])
+        self.assertEqual(selected, [{"name": "b"}])
+        self.assertEqual(errors, ["no mutation named 'typo'"])
+        selected, errors = mod.select(plan, ["typo"])
+        self.assertEqual(selected, [])
+        self.assertEqual(errors, ["no mutation named 'typo'", "no mutation selected"])
+        self.assertEqual(mod.select({}, []), ([], ["no mutation selected"]))
+
+    def run_main(self, only, rebuild_exit):
+        """`main` over a one-mutation plan whose mutation is killed, with the
+        final rebuild exiting `rebuild_exit`; returns its exit status and the
+        mutations it ran. `--only` keeps it from writing a record."""
+        plan = {
+            "package": "ptr-bench",
+            "features": "postgres-experiments",
+            "subcommand": "fastmem-revocation",
+            "cases": 1,
+            "seed": 17,
+            "hard_counters": ["lost"],
+            "mutation": [{"name": "drop-row-lock", "expect": ["lost"]}],
+        }
+        ran = []
+
+        def run_mutation(_plan, mutation, _timeout):
+            ran.append(mutation["name"])
+            return {"name": mutation["name"], "result": "killed", "counters": {"lost": 1}}
+
+        def rebuild(command, **_kwargs):
+            return subprocess.CompletedProcess(command, rebuild_exit, "", "error: disk full")
+
+        argv = ["mutation_check.py", "L003", "--only", *only]
+        with (
+            mock.patch.object(sys, "argv", argv),
+            mock.patch.object(mod, "experiment_root", return_value=ROOT),
+            mock.patch.object(mod, "load_plan", return_value=plan),
+            mock.patch.object(mod, "anchor_errors", return_value=[]),
+            mock.patch.object(mod, "run_mutation", side_effect=run_mutation),
+            mock.patch.object(mod.subprocess, "run", side_effect=rebuild),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            status = mod.main()
+        return status, ran
+
+    def test_an_unknown_only_name_fails_without_running_anything(self):
+        self.assertEqual(self.run_main(["drop-row-lock"], 0), (0, ["drop-row-lock"]))
+        self.assertEqual(self.run_main(["drop-row-lok"], 0), (2, []))
+
+    def test_a_failed_rebuild_of_the_unmutated_harness_fails_the_run(self):
+        # Every mutation was killed, but the binary may still hold the last one.
+        self.assertEqual(self.run_main(["drop-row-lock"], 101), (1, ["drop-row-lock"]))
 
 
 if __name__ == "__main__":
