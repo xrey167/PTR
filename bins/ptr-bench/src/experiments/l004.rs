@@ -341,7 +341,23 @@ async fn run_case(raw: &Client, seed: u64, case: usize, rng: &mut Rng, metrics: 
         let record = &log[next];
         let anchor = anchors[next];
         let step = &plan[next];
-        if step.fault && faulted_at != Some(next) {
+        let faulting = step.fault && faulted_at != Some(next);
+        let crashing = step.crash && crashed_at != Some(next);
+        if faulting || crashing {
+            // A probe charges what it finds after the fault or crash to that
+            // fault or crash, so the projection must hold the prefix before it;
+            // a divergence already there is the earlier records' failure.
+            let standing = check_prefix(&mut substrate, raw, &instance.prefix, &log[..next]).await;
+            if !standing.is_empty() {
+                count_standing(
+                    metrics,
+                    &standing,
+                    &format!("seed {seed} case {case}: before record {}", record.index.0),
+                );
+                break;
+            }
+        }
+        if faulting {
             // The server fails the commit after every statement succeeded; the
             // record is then sent again, and the next pass applies it.
             faulted_at = Some(next);
@@ -370,7 +386,7 @@ async fn run_case(raw: &Client, seed: u64, case: usize, rng: &mut Rng, metrics: 
             }
             continue;
         }
-        if step.crash && crashed_at != Some(next) {
+        if crashing {
             crashed_at = Some(next);
             metrics.crash_injections += 1;
             let (fresh, returned) = crash_during_apply(
@@ -428,7 +444,7 @@ async fn run_case(raw: &Client, seed: u64, case: usize, rng: &mut Rng, metrics: 
                         &mut metrics.crash_recovery_failures,
                         format!(
                             "seed {seed} case {case}: after a rolled-back crash at {index}: {}",
-                            problems.join("; ")
+                            describe(&problems)
                         ),
                     );
                     break;
@@ -809,7 +825,7 @@ async fn fault_during_apply(
     } else {
         Some(format!(
             "after a failed commit of {index}: {}",
-            problems.join("; ")
+            describe(&problems)
         ))
     }
 }
@@ -924,7 +940,7 @@ async fn check_prefix(
     raw: &Client,
     prefix: &str,
     applied: &[CommittedEvent],
-) -> Vec<String> {
+) -> Vec<(Part, String)> {
     let mut problems = Vec::new();
     let fence = CommitIndex(applied.len() as u64);
     let mut reference = MaterializedState::default();
@@ -933,33 +949,77 @@ async fn check_prefix(
     }
     match substrate.state_entries(fence).await {
         Ok(entries) if entries == reference.values => {}
-        Ok(_) => problems.push("the state differs from the prefix".into()),
-        Err(error) => problems.push(format!("the state is unreadable: {error:?}")),
+        Ok(_) => problems.push((Part::State, "the state differs from the prefix".into())),
+        Err(error) => problems.push((
+            Part::Unreadable,
+            format!("the state is unreadable: {error:?}"),
+        )),
     }
     match substrate
         .events_after(CommitIndex(0), applied.len() as u32 + 10)
         .await
     {
         Ok(events) if events.len() == applied.len() => {}
-        Ok(events) => problems.push(format!(
-            "{} event rows for {} commits",
-            events.len(),
-            applied.len()
+        Ok(events) => problems.push((
+            Part::EventLog,
+            format!("{} event rows for {} commits", events.len(), applied.len()),
         )),
-        Err(error) => problems.push(format!("the event log is unreadable: {error:?}")),
+        Err(error) => problems.push((
+            Part::Unreadable,
+            format!("the event log is unreadable: {error:?}"),
+        )),
     }
     match stored_catalog(raw, prefix).await {
         Ok((catalog, revisions)) => {
             if catalog != expected_catalog(applied) {
-                problems.push("the lifecycle catalog differs from the prefix".into());
+                problems.push((
+                    Part::Lifecycle,
+                    "the lifecycle catalog differs from the prefix".into(),
+                ));
             }
             if revisions != revision_count(applied) {
-                problems.push(format!("{revisions} revisions recorded"));
+                problems.push((Part::Revisions, format!("{revisions} revisions recorded")));
             }
         }
-        Err(error) => problems.push(format!("the catalog is unreadable: {error}")),
+        Err(error) => problems.push((
+            Part::Unreadable,
+            format!("the catalog is unreadable: {error}"),
+        )),
     }
     problems
+}
+
+/// Which part of a projection a prefix check found wrong.
+#[derive(Clone, Copy)]
+enum Part {
+    State,
+    EventLog,
+    Lifecycle,
+    Revisions,
+    Unreadable,
+}
+
+fn describe(problems: &[(Part, String)]) -> String {
+    problems
+        .iter()
+        .map(|(_, message)| message.as_str())
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// Count a divergence found before a probe as what it is: the earlier
+/// records' failure, not the probe's.
+fn count_standing(metrics: &mut Metrics, problems: &[(Part, String)], context: &str) {
+    for (part, message) in problems {
+        let counter = match part {
+            Part::State => &mut metrics.state_divergences,
+            Part::EventLog => &mut metrics.event_log_divergences,
+            Part::Lifecycle => &mut metrics.lifecycle_divergences,
+            Part::Revisions => &mut metrics.revision_divergences,
+            Part::Unreadable => &mut metrics.read_failures,
+        };
+        diverged(counter, format!("{context}: {message}"));
+    }
 }
 
 /// The topic each event kind is published under, written out here so the

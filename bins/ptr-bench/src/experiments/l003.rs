@@ -904,6 +904,23 @@ impl Case<'_> {
         }
     }
 
+    /// Before a crash or fault probe: every journal must already be what the
+    /// model says, since the probe charges what it finds afterwards to the
+    /// crash or fault it injects. A journal wrong before it is the earlier
+    /// operations' failure, counted as a journal mismatch; the case stops.
+    async fn journals_hold(&mut self) -> bool {
+        let before = self.metrics.journal_mismatches + self.metrics.read_failures;
+        for index in 0..self.memories.len() {
+            let expected = self.memories[index].expected(&self.ledger.oracle);
+            self.check_journal(index, &expected).await;
+        }
+        let held = self.metrics.journal_mismatches + self.metrics.read_failures == before;
+        if !held {
+            self.broken = true;
+        }
+        held
+    }
+
     /// The journal PostgreSQL holds, bit for bit.
     async fn check_journal(&mut self, index: usize, expected: &[(WriteSeq, WriteRequest)]) {
         self.metrics.journal_checks += 1;
@@ -1720,6 +1737,9 @@ impl Case<'_> {
         let post = self.expected_all(&after);
         let kill = rng.chance(0.5);
         let delay = Duration::from_micros(rng.below(4000));
+        if !self.journals_hold().await {
+            return;
+        }
         self.metrics.revocation_crashes += 1;
         if kill {
             self.metrics.server_kills += 1;
@@ -1822,7 +1842,7 @@ impl Case<'_> {
     /// any failed append.
     async fn fault_append(&mut self, rng: &mut Rng) {
         let sources = self.ledger.admissible_sources();
-        if sources.is_empty() {
+        if sources.is_empty() || !self.journals_hold().await {
             return;
         }
         let source = rng.pick(&sources).clone();
@@ -1884,7 +1904,7 @@ impl Case<'_> {
     /// full or not at all, and the restarted process restores every memory.
     async fn crash_append(&mut self, rng: &mut Rng) {
         let sources = self.ledger.admissible_sources();
-        if sources.is_empty() {
+        if sources.is_empty() || !self.journals_hold().await {
             return;
         }
         let source = rng.pick(&sources).clone();
