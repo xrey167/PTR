@@ -888,6 +888,161 @@ fn a_model_with_no_mass_on_the_classes_left_resolves_to_unknown() {
 }
 
 #[test]
+fn a_posterior_entry_above_one_is_refused_whatever_the_tolerance_on_the_total() {
+    let matrix = two_heuristics_and_a_third(vec![vec![Vote::Class(0); 3]]);
+    let mut model = fit_label_model(&matrix, DawidSkeneParams::default()).unwrap();
+    let mut uniform = EvaluationSet::new(GoldSampling::Uniform);
+    let mut active = EvaluationSet::new(GoldSampling::Active);
+    for set in [&mut uniform, &mut active] {
+        set.push(GoldLabel {
+            item: 0,
+            class: 0,
+            source: GoldSource::Oracle,
+        })
+        .unwrap();
+    }
+    // Each sums to one within the 1e-6 tolerance, and every entry is finite
+    // and non-negative: they were accepted, ranked by a negative entropy and
+    // scored as probabilities.
+    for posterior in [vec![1.0000005, 0.0], vec![1.0 + f64::EPSILON, -0.0]] {
+        model.posteriors = vec![posterior.clone()];
+        assert_eq!(
+            resolve(&matrix, &model, 0.5),
+            Err(LabelingError::InvalidPosterior { item: 0 }),
+            "{posterior:?}"
+        );
+        for strategy in [Acquisition::Entropy, Acquisition::Margin] {
+            assert_eq!(
+                rank_for_annotation(
+                    std::slice::from_ref(&posterior),
+                    &[LabelOutcome::Unknown],
+                    strategy,
+                    1
+                ),
+                Err(LabelingError::InvalidPosterior { item: 0 }),
+                "{posterior:?} {strategy:?}"
+            );
+        }
+        for set in [&uniform, &active] {
+            assert_eq!(
+                evaluate(std::slice::from_ref(&posterior), set, 5),
+                Err(LabelingError::InvalidPosterior { item: 0 }),
+                "{posterior:?}"
+            );
+        }
+    }
+    // One is a probability, and so is a zero of either sign.
+    for posterior in [vec![1.0, 0.0], vec![1.0, -0.0]] {
+        model.posteriors = vec![posterior.clone()];
+        assert_eq!(
+            resolve(&matrix, &model, 0.5).unwrap(),
+            vec![LabelOutcome::Estimated {
+                class: 0,
+                probability: 1.0
+            }],
+            "{posterior:?}"
+        );
+        assert!(evaluate(std::slice::from_ref(&posterior), &uniform, 5).is_ok());
+    }
+}
+
+#[test]
+fn posterior_mass_left_below_the_smallest_normal_f64_resolves_to_unknown() {
+    let (c0, c1, c2, a) = (
+        Vote::Class(0),
+        Vote::Class(1),
+        Vote::Class(2),
+        Vote::Abstain,
+    );
+    let mut votes = vec![vec![c0, c0, a]; 10];
+    votes.extend(vec![vec![c1, c1, a]; 10]);
+    votes.extend(vec![vec![c2, c2, a]; 30]);
+    votes.push(vec![c0, c0, Vote::Veto(0)]);
+    let matrix = VoteMatrix::new(
+        LabelSchema::new(["a", "b", "c"]).unwrap(),
+        vec![
+            function("h1", FunctionKind::Heuristic),
+            function("h2", FunctionKind::Heuristic),
+            function("v", FunctionKind::Verifier),
+        ],
+        votes,
+    )
+    .unwrap();
+    // The smallest smoothed probability, about 7.8e-164, is a normal number,
+    // so this smoothing is accepted.
+    let model = fit_label_model(
+        &matrix,
+        DawidSkeneParams {
+            smoothing: 3.98e-162,
+            ..DawidSkeneParams::default()
+        },
+    )
+    .unwrap();
+    // Class 0 leads the last item by about 744 nats over class 1 and 745
+    // over class 2, so the model gives class 1 about 0.75 of what the veto
+    // leaves. Stored as probabilities, class 1 is one subnormal unit and
+    // class 2 zero, and dividing by that residue estimated class 1 at
+    // probability one.
+    let posterior = &model.posteriors[50];
+    assert_eq!(posterior[0], 1.0, "{posterior:?}");
+    assert!(posterior[1] > 0.0, "{posterior:?}");
+    assert!(
+        posterior[1] + posterior[2] < f64::MIN_POSITIVE,
+        "{posterior:?}"
+    );
+    for min_probability in [f64::MIN_POSITIVE, 0.5, 0.9, 1.0] {
+        assert_eq!(
+            resolve(&matrix, &model, min_probability).unwrap()[50],
+            LabelOutcome::Unknown,
+            "{min_probability}"
+        );
+    }
+    // The items no verifier touched keep their estimates.
+    let outcomes = resolve(&matrix, &model, 0.9).unwrap();
+    for (item, class) in [(0, 0), (10, 1), (20, 2)] {
+        assert!(
+            matches!(outcomes[item], LabelOutcome::Estimated { class: estimated, .. } if estimated == class),
+            "{item}: {:?}",
+            outcomes[item]
+        );
+    }
+
+    // At the boundary: two subnormals summing to exactly the smallest normal
+    // f64 are resolved from their exact ratio, one unit less is not.
+    let matrix = VoteMatrix::new(
+        LabelSchema::new(["a", "b", "c"]).unwrap(),
+        vec![
+            function("rule", FunctionKind::Heuristic),
+            function("check", FunctionKind::Verifier),
+        ],
+        vec![vec![Vote::Class(0), Vote::Veto(0)]],
+    )
+    .unwrap();
+    let mut model = fit_label_model(&matrix, DawidSkeneParams::default()).unwrap();
+    let quarter = f64::MIN_POSITIVE / 4.0;
+    model.posteriors = vec![vec![1.0, 3.0 * quarter, quarter]];
+    assert_eq!(
+        resolve(&matrix, &model, 0.7).unwrap(),
+        vec![LabelOutcome::Estimated {
+            class: 1,
+            probability: 0.75
+        }]
+    );
+    let unit = f64::from_bits(1);
+    for posterior in [
+        vec![1.0, 3.0 * quarter, quarter - unit],
+        vec![1.0, unit, 0.0],
+    ] {
+        model.posteriors = vec![posterior.clone()];
+        assert_eq!(
+            resolve(&matrix, &model, f64::MIN_POSITIVE).unwrap(),
+            vec![LabelOutcome::Unknown],
+            "{posterior:?}"
+        );
+    }
+}
+
+#[test]
 fn a_gold_item_at_the_largest_index_is_reported_missing_rather_than_overflowing() {
     let mut set = EvaluationSet::new(GoldSampling::Uniform);
     set.push(GoldLabel {

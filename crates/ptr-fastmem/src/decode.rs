@@ -16,9 +16,11 @@ pub const FASTMEM_BACKEND: &str = "fastmem";
 /// is from.
 ///
 /// Its fields are private and it is built only by [`IdentifierCodebook::fact`]
-/// (which [`FastMemory::fact_codes`] uses), so its code is always its
-/// codebook's code for the fact, and [`decode_readout`] can refuse a code
-/// from another codebook than the readout's.
+/// and [`FastMemory::fact_codes`], so its code is always its codebook's code
+/// for the fact, and [`decode_readout`] can refuse a code from another
+/// codebook than the readout's. Neither builds one for a lifecycle target
+/// that is not a capsule (`constraint:<key>` or `procedure:<id>`), and
+/// [`decode_readout`] refuses one again: a hit names a capsule.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FactCode {
     capsule: CapsuleId,
@@ -55,9 +57,25 @@ impl IdentifierCodebook {
         self.code(&format!("{capsule}@{}", generation.0))
     }
 
-    /// A fact as a decoding candidate: its code under this codebook, bound to
-    /// this codebook.
-    pub fn fact(&self, capsule: CapsuleId, generation: Generation) -> FactCode {
+    /// A capsule at one generation as a decoding candidate: its code under
+    /// this codebook, bound to this codebook.
+    ///
+    /// # Errors
+    /// Refuses a lifecycle target that is not a capsule, one whose id starts
+    /// with `constraint:` or `procedure:` (`ReservedTarget`): the runtime
+    /// accepts no capsule id in either namespace, and a hit decoded from it
+    /// would name a hard constraint or a procedure as a capsule.
+    pub fn fact(
+        &self,
+        capsule: CapsuleId,
+        generation: Generation,
+    ) -> Result<FactCode, FastMemoryError> {
+        check_capsule(&capsule)?;
+        Ok(self.capsule_fact(capsule, generation))
+    }
+
+    /// [`Self::fact`] for a target already known to be a capsule.
+    fn capsule_fact(&self, capsule: CapsuleId, generation: Generation) -> FactCode {
         FactCode {
             code: self.code_for(&capsule, generation),
             capsule,
@@ -69,8 +87,29 @@ impl IdentifierCodebook {
 
 /// Prefixes of the lifecycle targets that are not capsules. The runtime refuses
 /// a capsule id in either namespace, so a source key carrying one names a hard
-/// constraint or a procedure, never a capsule.
+/// constraint or a procedure, never a capsule. [`is_reserved_target`] is the
+/// one test of it: fact candidates, explicit ([`IdentifierCodebook::fact`]) or
+/// derived ([`FastMemory::fact_codes`]), and decoding ([`decode_readout`]) all
+/// apply it.
 const NON_CAPSULE_NAMESPACES: [&str; 2] = ["constraint:", "procedure:"];
+
+/// Whether a lifecycle target is in a namespace reserved for targets that are
+/// not capsules.
+fn is_reserved_target(target: &str) -> bool {
+    NON_CAPSULE_NAMESPACES
+        .iter()
+        .any(|namespace| target.starts_with(namespace))
+}
+
+/// Refuse a fact candidate whose capsule is a reserved lifecycle target.
+fn check_capsule(capsule: &CapsuleId) -> Result<(), FastMemoryError> {
+    if is_reserved_target(&capsule.0) {
+        return Err(FastMemoryError::ReservedTarget {
+            target: capsule.0.clone(),
+        });
+    }
+    Ok(())
+}
 
 impl FastMemory {
     /// The candidate facts a readout may decode into: every distinct capsule
@@ -79,22 +118,19 @@ impl FastMemory {
     /// written, or whose writes were revoked, is not a candidate. Writes derived
     /// from a `constraint:<key>` or `procedure:<id>` source still shape the
     /// state and still gate reads, but they are not candidates: a decoded hit
-    /// names a capsule, and those sources are not capsules.
+    /// names a capsule, and those sources are not capsules
+    /// ([`IdentifierCodebook::fact`] refuses them by the same test).
     pub fn fact_codes(&self) -> Vec<FactCode> {
         let book = self.codebook();
         let sources: BTreeSet<(String, Generation)> = self
             .writes()
             .iter()
             .map(|write| (write.source().key.clone(), write.source().generation))
-            .filter(|(key, _)| {
-                !NON_CAPSULE_NAMESPACES
-                    .iter()
-                    .any(|namespace| key.starts_with(namespace))
-            })
+            .filter(|(key, _)| !is_reserved_target(key))
             .collect();
         sources
             .into_iter()
-            .map(|(key, generation)| book.fact(CapsuleId::from(key.as_str()), generation))
+            .map(|(key, generation)| book.capsule_fact(CapsuleId(key), generation))
             .collect()
     }
 }
@@ -137,14 +173,18 @@ pub enum Recall {
 /// Every fact code must be from the readout's codebook, the one its memory's
 /// values are codes of. A code from another codebook of the same length would
 /// score plausible but meaningless weights (crosstalk only), so it is refused,
-/// not scored.
+/// not scored. Every fact must name a capsule: a hit is a capsule candidate,
+/// and a lifecycle target that is not one is refused, not decoded.
 ///
 /// # Errors
 /// Before scoring, refuses a policy with a zero limit or a NaN, infinite or
-/// negative threshold. Then refuses a fact code from another codebook than the
-/// readout's (`CodebookMismatch`) or whose length differs from the readout's,
-/// and a score that is not finite (a nonfinite readout or code cell, or an
-/// overflowing product), which the confidence checks could not order.
+/// negative threshold. Then refuses, fact by fact, a fact code from another
+/// codebook than the readout's (`CodebookMismatch`), one naming a
+/// `constraint:` or `procedure:` target (`ReservedTarget`, which no public
+/// constructor of [`FactCode`] builds), one whose length differs from the
+/// readout's, and a score that is not finite (a nonfinite readout or code
+/// cell, or an overflowing product), which the confidence checks could not
+/// order.
 pub fn decode_readout<'a, I>(
     readout: &Readout,
     facts: I,
@@ -163,6 +203,7 @@ where
                 actual: fact.codebook,
             });
         }
+        check_capsule(&fact.capsule)?;
         if fact.code.len() != readout.values.len() {
             return Err(FastMemoryError::DimensionMismatch {
                 field: "fact code",
@@ -380,6 +421,53 @@ mod tests {
     }
 
     #[test]
+    fn a_constraint_or_procedure_target_is_neither_built_nor_decoded_as_a_fact() {
+        // The runtime reports these targets' generations as live, so a hit
+        // naming one would pass the lifecycle check at use as a capsule.
+        for target in [
+            "constraint:budget",
+            "procedure:deploy",
+            "constraint:",
+            "procedure:",
+        ] {
+            assert_eq!(
+                book().fact(CapsuleId::from(target), Generation(2)),
+                Err(FastMemoryError::ReservedTarget {
+                    target: target.into()
+                }),
+                "{target}"
+            );
+        }
+        assert_eq!(
+            FastMemoryError::ReservedTarget {
+                target: "constraint:budget".into()
+            }
+            .code(),
+            "PTR_FASTMEM_RESERVED_TARGET"
+        );
+        // Only the prefixes are reserved.
+        for capsule in ["budget-constraint:1", "procedure", "constraints"] {
+            assert!(
+                book().fact(CapsuleId::from(capsule), Generation(2)).is_ok(),
+                "{capsule}"
+            );
+        }
+        // A fact code built around the constructor, which only this crate
+        // can do, is refused at decode before it is scored: it would lead.
+        let clear = readout(vec![0.9, 0.1], 1);
+        let facts = [
+            fact("b", vec![0.0, 1.0]),
+            fact("procedure:deploy", vec![1.0, 0.0]),
+        ];
+        assert_eq!(
+            decode_readout(&clear, &facts, policy()),
+            Err(FastMemoryError::ReservedTarget {
+                target: "procedure:deploy".into()
+            })
+        );
+    }
+
+    #[test]
     fn a_fact_code_from_another_codebook_is_refused_before_scoring() {
         // Same length, other seed: the codes are unrelated to what the
         // memory stored, and scoring them used to name a fact by crosstalk.
@@ -387,7 +475,7 @@ mod tests {
         let clear = readout(vec![0.9, 0.1], 1);
         let foreign = [
             fact("a", vec![1.0, 0.0]),
-            other.fact(CapsuleId::from("b"), Generation(2)),
+            other.fact(CapsuleId::from("b"), Generation(2)).unwrap(),
         ];
         assert_eq!(
             decode_readout(&clear, &foreign, policy()),
@@ -411,13 +499,13 @@ mod tests {
         assert!(matches!(
             decode_readout(
                 &clear,
-                &[longer.fact(CapsuleId::from("a"), Generation(2))],
+                &[longer.fact(CapsuleId::from("a"), Generation(2)).unwrap()],
                 policy()
             ),
             Err(FastMemoryError::CodebookMismatch { index: 0, .. })
         ));
         // The readout's own codebook decodes.
-        let own = book().fact(CapsuleId::from("a"), Generation(2));
+        let own = book().fact(CapsuleId::from("a"), Generation(2)).unwrap();
         assert_eq!(
             own.code(),
             book().code_for(&CapsuleId::from("a"), Generation(2))

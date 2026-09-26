@@ -2,10 +2,15 @@ use ptr_types::Generation;
 
 use crate::config::{FastMemoryConfig, MAX_VALUE_MAGNITUDE};
 use crate::error::FastMemoryError;
+use crate::projection::SeededProjection;
 
-/// Position of a write in one memory's journal. The first write is `1`; the
-/// last a journal may hold is `u64::MAX - 1`, so every journaled write has a
-/// successor to number the next one.
+/// Position of a write in one memory's journal. The first write is `1`. A
+/// memory takes no number at or above its limit, `u64::MAX` unless
+/// [`FastMemory::with_sequence_limit`](crate::FastMemory::with_sequence_limit)
+/// lowered it, so the last a journal may hold is `u64::MAX - 1` and the
+/// number after every journaled write is representable; a memory whose
+/// journal ends just below its limit refuses its next write
+/// (`SequenceExhausted`).
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct WriteSeq(pub u64);
 
@@ -97,33 +102,96 @@ impl MemoryWrite {
     }
 }
 
-/// A validated query: one unit vector per head, and the head shape it was
-/// normalised for.
+/// A validated query: one unit vector per head, the head shape it was
+/// normalised for, and the key projection it states it was projected by.
 ///
 /// The flattened key alone does not say where one head ends and the next
 /// begins, so the query keeps `heads` and `key_dim`; a memory reads it only
-/// when both equal its own configuration.
+/// when both equal its own configuration. Nor does it say which projection
+/// produced it: a query built by [`Self::project`] or
+/// [`Self::with_projection`] carries that projection's digest, and a memory
+/// bound to a projection ([`crate::FastMemory::with_projection`]) reads it
+/// only when the digests are equal. A query built by [`Self::new`] states no
+/// projection, and such a memory refuses it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Query {
     heads: usize,
     key_dim: usize,
     key: Vec<f32>,
+    projection: Option<[u8; 32]>,
 }
 
 impl Query {
-    /// Normalise a raw query against `config`.
+    /// Normalise a raw query against `config`, stating no key projection.
+    ///
+    /// Only a memory bound to no projection reads it; one bound to a
+    /// projection refuses it (`ProjectionMismatch`).
     ///
     /// # Errors
     /// Rejects a configuration outside the supported ranges, a raw query whose
     /// length is not `heads * key_dim`, nonfinite entries, and all-zero heads.
     pub fn new(config: &FastMemoryConfig, raw: Vec<f32>) -> Result<Self, FastMemoryError> {
+        Self::normalised(config, raw, None)
+    }
+
+    /// Normalise a raw query against `config`, stating that it was projected
+    /// by the projection with digest `projection` ([`SeededProjection::digest`]).
+    ///
+    /// For callers that hold the projected vector and the digest a store
+    /// recorded rather than the projection itself. That the vector came from
+    /// that projection is the caller's claim; [`Self::project`] makes it by
+    /// construction.
+    ///
+    /// # Errors
+    /// Those of [`Self::new`].
+    pub fn with_projection(
+        config: &FastMemoryConfig,
+        projection: [u8; 32],
+        raw: Vec<f32>,
+    ) -> Result<Self, FastMemoryError> {
+        Self::normalised(config, raw, Some(projection))
+    }
+
+    /// Project `embedding` with `projection` and normalise it against
+    /// `config`, stating the projection's digest.
+    ///
+    /// # Errors
+    /// Rejects a configuration outside the supported ranges, a projection
+    /// whose head count or head width differs from `config`'s
+    /// (`DimensionMismatch` naming `projection_heads` or
+    /// `projection_head_dim`), the errors of [`SeededProjection::project`],
+    /// and an all-zero projected head.
+    pub fn project(
+        config: &FastMemoryConfig,
+        projection: &SeededProjection,
+        embedding: &[f32],
+    ) -> Result<Self, FastMemoryError> {
+        crate::config::check_config(config)?;
+        check_len("projection_heads", config.heads, projection.heads())?;
+        check_len("projection_head_dim", config.key_dim, projection.head_dim())?;
+        let raw = projection.project(embedding)?;
+        Self::normalised(config, raw, Some(projection.digest()))
+    }
+
+    fn normalised(
+        config: &FastMemoryConfig,
+        raw: Vec<f32>,
+        projection: Option<[u8; 32]>,
+    ) -> Result<Self, FastMemoryError> {
         crate::config::check_config(config)?;
         let key = normalized_heads(config, "query", raw)?;
         Ok(Self {
             heads: config.heads,
             key_dim: config.key_dim,
             key,
+            projection,
         })
+    }
+
+    /// The digest of the key projection the query states it was projected
+    /// by, or `None` for a query built by [`Self::new`].
+    pub fn projection_digest(&self) -> Option<[u8; 32]> {
+        self.projection
     }
 
     /// The number of heads the query was normalised for.

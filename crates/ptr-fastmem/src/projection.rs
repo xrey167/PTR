@@ -20,6 +20,9 @@ pub struct SeededProjection {
     heads: usize,
     head_dim: usize,
     rows: Vec<f32>,
+    /// [`Self::digest`], computed once when the rows are drawn: every query
+    /// [`crate::Query::project`] builds states it.
+    digest: [u8; 32],
 }
 
 /// Parameters of a projection.
@@ -72,16 +75,28 @@ impl SeededProjection {
                 rows.extend(row.into_iter().map(|cell| cell as f32));
             }
         }
+        let digest = rows_digest(spec.input_dim, spec.heads, spec.head_dim, &rows);
         Ok(Self {
             input_dim: spec.input_dim,
             heads: spec.heads,
             head_dim: spec.head_dim,
             rows,
+            digest,
         })
     }
 
     pub fn input_dim(&self) -> usize {
         self.input_dim
+    }
+
+    /// The number of heads the projection maps into.
+    pub fn heads(&self) -> usize {
+        self.heads
+    }
+
+    /// The number of coordinates per head.
+    pub fn head_dim(&self) -> usize {
+        self.head_dim
     }
 
     /// `heads * head_dim`.
@@ -145,18 +160,24 @@ impl SeededProjection {
     /// Digest of the projection's exact rows (their `f32` bit patterns) and
     /// shape. A memory's keys are only meaningful under the projection that
     /// produced them, so a sealed memory binds this digest the way a neural
-    /// state binds its codebook fingerprint.
+    /// state binds its codebook fingerprint: a memory bound to it
+    /// ([`crate::FastMemory::with_projection`]) reads only queries that state
+    /// it ([`crate::Query::project`]).
     pub fn digest(&self) -> [u8; 32] {
-        let mut hasher = Sha256::new();
-        hasher.update(b"ptr-fastmem/projection/v1");
-        for dimension in [self.input_dim, self.heads, self.head_dim] {
-            hasher.update((dimension as u64).to_le_bytes());
-        }
-        for row in &self.rows {
-            hasher.update(row.to_bits().to_le_bytes());
-        }
-        hasher.finalize().into()
+        self.digest
     }
+}
+
+fn rows_digest(input_dim: usize, heads: usize, head_dim: usize, rows: &[f32]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"ptr-fastmem/projection/v1");
+    for dimension in [input_dim, heads, head_dim] {
+        hasher.update((dimension as u64).to_le_bytes());
+    }
+    for row in rows {
+        hasher.update(row.to_bits().to_le_bytes());
+    }
+    hasher.finalize().into()
 }
 
 /// Seeded quasi-orthogonal value codes, one per fact identity.
@@ -507,6 +528,11 @@ mod tests {
         let a = SeededProjection::new(spec(7)).unwrap();
         assert_eq!(a.digest(), SeededProjection::new(spec(7)).unwrap().digest());
         assert_ne!(a.digest(), SeededProjection::new(spec(8)).unwrap().digest());
+        // The digest kept with the projection is the digest of its rows.
+        assert_eq!(
+            a.digest(),
+            rows_digest(a.input_dim, a.heads, a.head_dim, &a.rows)
+        );
     }
 
     #[test]

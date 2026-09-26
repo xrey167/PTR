@@ -210,6 +210,81 @@ fn a_write_that_would_take_the_last_sequence_number_is_refused_and_leaves_the_me
 }
 
 #[test]
+fn a_memory_with_a_sequence_limit_refuses_the_write_that_would_reach_it_before_folding() {
+    // A store that journals no number at or above 10 restores a journal
+    // ending at 9: the next write would take 10, and is refused as the
+    // memory refuses u64::MAX, leaving it unchanged.
+    let limit = WriteSeq(10);
+    let mut memory = FastMemory::restore(
+        config(1),
+        codebook(&config(1)),
+        [(WriteSeq(9), write_about("a", 0))],
+    )
+    .unwrap()
+    .with_sequence_limit(limit)
+    .unwrap();
+    assert_eq!(memory.sequence_limit(), limit);
+    let state = memory.state().clone();
+    let binding = memory.binding_digest();
+    let writes = memory.writes().to_vec();
+    assert_eq!(
+        memory.write(write_about("b", 1)),
+        Err(FastMemoryError::SequenceExhausted { seq: 10 })
+    );
+    assert_eq!(memory.state(), &state);
+    assert_eq!(memory.binding_digest(), binding);
+    assert_eq!(memory.writes(), writes);
+    memory.revoke(|_| true);
+    assert_eq!(
+        memory.write(write_about("b", 1)),
+        Err(FastMemoryError::SequenceExhausted { seq: 10 })
+    );
+
+    // A memory that already took a number the limit excludes is refused the
+    // limit, naming that number, whether it restored it or revoked it since.
+    let restored = || {
+        FastMemory::restore(
+            config(1),
+            codebook(&config(1)),
+            [(WriteSeq(10), write_about("a", 0))],
+        )
+        .unwrap()
+    };
+    assert_eq!(
+        restored().with_sequence_limit(limit).unwrap_err(),
+        FastMemoryError::SequenceExhausted { seq: 10 }
+    );
+    let mut revoked = restored();
+    revoked.revoke(|_| true);
+    assert_eq!(
+        revoked.with_sequence_limit(limit).unwrap_err(),
+        FastMemoryError::SequenceExhausted { seq: 10 }
+    );
+
+    // A limit only lowers, and an empty memory takes every number below it.
+    let mut fresh = FastMemory::new(config(1), codebook(&config(1)))
+        .unwrap()
+        .with_sequence_limit(WriteSeq(3))
+        .unwrap()
+        .with_sequence_limit(WriteSeq(100))
+        .unwrap();
+    assert_eq!(fresh.sequence_limit(), WriteSeq(3));
+    assert_eq!(fresh.write(write_about("a", 0)).unwrap().seq, WriteSeq(1));
+    assert_eq!(fresh.write(write_about("b", 1)).unwrap().seq, WriteSeq(2));
+    assert_eq!(
+        fresh.write(write_about("c", 2)),
+        Err(FastMemoryError::SequenceExhausted { seq: 3 })
+    );
+    // Without a limit, a memory's limit is u64::MAX.
+    assert_eq!(
+        FastMemory::new(config(1), codebook(&config(1)))
+            .unwrap()
+            .sequence_limit(),
+        WriteSeq(u64::MAX)
+    );
+}
+
+#[test]
 fn a_write_that_could_overflow_the_fold_is_refused_and_leaves_the_memory_unchanged() {
     // f32::MAX and then -f32::MAX under one unit key: the second write's error
     // `target - current` is -inf. Both writes used to be folded and journaled,

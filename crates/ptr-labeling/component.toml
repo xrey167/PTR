@@ -8,7 +8,7 @@ implemented = [
   "A fitted LabelModel is bound to its vote matrix by VoteMatrix::digest (SHA-256 of schema, functions and votes, set only by fit_label_model); resolve refuses any other matrix, even one of the same shape, with MatrixMismatch",
   "Verifier-backed functions cast vetoes only; a verifier class vote is refused",
   "Dawid-Skene EM label model with configurable iterations and a tolerance in [0, 1) (refused outside it, so a vacuous tolerance cannot hide non-convergence) and identifiability warnings for fewer than three modelled functions; smoothing too small for every smoothed probability to stay a positive normal number is refused, larger smoothing up to f64::MAX is normalized without overflow, and every fitted probability is finite",
-  "Resolution to Determined (every other class vetoed), Estimated at or above a required probability, Unknown (also when the classes left carry no posterior mass), or Disputed when every class is vetoed; a posterior that is not a probability distribution over the schema is refused before any item is resolved",
+  "Resolution to Determined (every other class vetoed), Estimated at or above a required probability, Unknown (also when the classes left carry less posterior mass than f64::MIN_POSITIVE, none included: stored subnormal posteriors have lost their ratio to underflow, so no share is computed from them), or Disputed when every class is vetoed; a posterior that is not a probability distribution over the schema (an entry outside [0, 1], checked on its own whatever the 1e-6 tolerance on the total) is refused before any item is resolved",
   "Gold labels record source (oracle or human with annotator) and sampling (uniform or active); an evaluation set holds one resolved gold label per item and refuses a second; only uniform gold estimates population accuracy and calibration, while active gold reports accuracy on the sampled items and no calibration",
   "Evaluation with Brier score and expected calibration error from ptr-analytics; every scoring path refuses a gold class outside the scored classes, and evaluation a scored posterior that is not a probability distribution, before scoring and whatever the sampling; a gold item at usize::MAX is reported missing without overflow",
   "A model labeling function may name the adapter that produced its votes (refused on any other kind); function_accuracy scores each function's class votes (never abstentions or vetoes) against uniform gold with a Wilson interval and refuses an invalid z whatever the votes, so labeling quality is measured per adapter",
@@ -41,7 +41,7 @@ decisions = [
 ]
 
 checks = [
-  "tests/label_model.rs recovery, veto, dispute and identifiability cases, and gold-set, gold-class, z, tolerance, smoothing, posterior and annotation-alignment refusals",
+  "tests/label_model.rs recovery, veto, dispute and identifiability cases, and gold-set, gold-class, z, tolerance, smoothing, posterior (including an entry above one within the total's tolerance) and annotation-alignment refusals; subnormal posterior mass left by vetoes resolves to Unknown",
   "tests/label_model.rs: empty and duplicate function names are refused; a model is refused with any matrix but the one it was fitted on (other votes, functions or schema of the same shape) and accepted with an equal rebuilt one",
   "workspace fmt/check/test/clippy",
 ]

@@ -40,7 +40,9 @@ pub enum FastMemoryError {
     OutOfOrderWrite { expected: u64, actual: u64 },
     /// A write would be journaled at `u64::MAX`, the one sequence number
     /// without a successor: no write could be numbered after it, so a journal
-    /// may not end there.
+    /// may not end there. Likewise a write at or above the lower limit
+    /// `FastMemory::with_sequence_limit` set, or a limit set below a number
+    /// the memory already took (`seq` is that number).
     SequenceExhausted { seq: u64 },
     /// The journal holds its configured maximum of writes.
     JournalFull { limit: u32 },
@@ -55,6 +57,19 @@ pub enum FastMemoryError {
         index: usize,
         expected: IdentifierCodebook,
         actual: IdentifierCodebook,
+    },
+    /// A fact candidate names a lifecycle target in a namespace reserved for
+    /// targets that are not capsules (`constraint:<key>`, `procedure:<id>`).
+    /// A decoded hit names a capsule, and the runtime accepts no capsule id in
+    /// either namespace, so such a candidate is neither built nor decoded.
+    ReservedTarget { target: String },
+    /// A query is read by a memory bound to a key projection (its digest,
+    /// `expected`) but was projected by another one, or states none
+    /// (`actual`): its scores against keys written under that projection
+    /// would be crosstalk, plausible but meaningless.
+    ProjectionMismatch {
+        expected: [u8; 32],
+        actual: Option<[u8; 32]>,
     },
     /// Serialized state is malformed; `reason` names the first check that failed.
     CorruptState { reason: &'static str },
@@ -79,6 +94,8 @@ impl FastMemoryError {
             Self::JournalFull { .. } => "PTR_FASTMEM_JOURNAL_FULL",
             Self::Denied { .. } => "PTR_FASTMEM_DENIED",
             Self::CodebookMismatch { .. } => "PTR_FASTMEM_CODEBOOK_MISMATCH",
+            Self::ReservedTarget { .. } => "PTR_FASTMEM_RESERVED_TARGET",
+            Self::ProjectionMismatch { .. } => "PTR_FASTMEM_PROJECTION_MISMATCH",
             Self::CorruptState { .. } => "PTR_FASTMEM_CORRUPT_STATE",
             Self::DigestMismatch => "PTR_FASTMEM_DIGEST_MISMATCH",
         }
@@ -126,7 +143,8 @@ impl fmt::Display for FastMemoryError {
             ),
             Self::SequenceExhausted { seq } => write!(
                 formatter,
-                "write sequence {seq} leaves no successor for a later write"
+                "write sequence {seq} is not below the memory's sequence limit, so no write can \
+                 be numbered after it"
             ),
             Self::JournalFull { limit } => {
                 write!(formatter, "journal holds its limit of {limit} writes")
@@ -148,6 +166,20 @@ impl fmt::Display for FastMemoryError {
                 expected.seed(),
                 expected.len()
             ),
+            Self::ReservedTarget { target } => write!(
+                formatter,
+                "{target:?} is a constraint or procedure target, not a capsule: it is no fact \
+                 candidate"
+            ),
+            Self::ProjectionMismatch { expected, actual } => {
+                write!(formatter, "the query states key projection ")?;
+                match actual {
+                    Some(actual) => write_hex(formatter, actual)?,
+                    None => write!(formatter, "none")?,
+                }
+                write!(formatter, ", the memory's keys were written under ")?;
+                write_hex(formatter, expected)
+            }
             Self::CorruptState { reason } => {
                 write!(formatter, "corrupt fast-memory state: {reason}")
             }
@@ -157,6 +189,12 @@ impl fmt::Display for FastMemoryError {
 }
 
 impl std::error::Error for FastMemoryError {}
+
+fn write_hex(formatter: &mut fmt::Formatter<'_>, digest: &[u8; 32]) -> fmt::Result {
+    digest
+        .iter()
+        .try_for_each(|byte| write!(formatter, "{byte:02x}"))
+}
 
 #[cfg(test)]
 mod tests {
@@ -171,6 +209,23 @@ mod tests {
         .to_string();
         assert!(message.contains('4'));
         assert!(message.contains('9'));
+    }
+
+    #[test]
+    fn a_projection_mismatch_names_both_digests_in_full() {
+        let message = FastMemoryError::ProjectionMismatch {
+            expected: [0xab; 32],
+            actual: Some([0x01; 32]),
+        }
+        .to_string();
+        assert!(message.contains(&"ab".repeat(32)), "{message}");
+        assert!(message.contains(&"01".repeat(32)), "{message}");
+        let unstated = FastMemoryError::ProjectionMismatch {
+            expected: [0xab; 32],
+            actual: None,
+        }
+        .to_string();
+        assert!(unstated.contains("projection none"), "{unstated}");
     }
 
     #[test]
@@ -215,6 +270,13 @@ mod tests {
                 index: 0,
                 expected: IdentifierCodebook::new(1, 2).unwrap(),
                 actual: IdentifierCodebook::new(2, 2).unwrap(),
+            },
+            FastMemoryError::ReservedTarget {
+                target: "constraint:budget".into(),
+            },
+            FastMemoryError::ProjectionMismatch {
+                expected: [1; 32],
+                actual: None,
             },
             FastMemoryError::CorruptState { reason: "" },
             FastMemoryError::DigestMismatch,

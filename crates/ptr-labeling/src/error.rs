@@ -36,9 +36,10 @@ pub enum LabelingError {
     /// An evaluation set already holds a gold label for this item.
     DuplicateGoldItem { item: usize },
     /// The posterior of an item is not a probability distribution: it is
-    /// empty, has an entry that is negative or not finite, does not sum to
-    /// one within `1e-6` (the tolerance of the statistics kernel), or does not
-    /// have one entry per class of the schema it is resolved against.
+    /// empty, has an entry outside `[0, 1]` (NaN included; each entry is
+    /// checked on its own, whatever the tolerance on the total), does not sum
+    /// to one within `1e-6` (the tolerance of the statistics kernel), or does
+    /// not have one entry per class of the schema it is resolved against.
     InvalidPosterior { item: usize },
 }
 

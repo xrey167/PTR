@@ -42,13 +42,7 @@ struct Codec {
 impl Codec {
     fn new() -> Self {
         Self {
-            keys: SeededProjection::new(ProjectionSpec {
-                input_dim: EMBEDDING_DIM,
-                heads: HEADS,
-                head_dim: HEAD_DIM,
-                seed: 11,
-            })
-            .unwrap(),
+            keys: key_projection(11),
             values: IdentifierCodebook::new(29, HEADS * HEAD_DIM).unwrap(),
         }
     }
@@ -73,6 +67,21 @@ impl Codec {
     fn query(&self, cue: &str) -> Query {
         Query::new(&config(), self.keys.project(&embed(cue)).unwrap()).unwrap()
     }
+
+    /// A query that states the key projection it was projected by.
+    fn projected_query(&self, cue: &str) -> Query {
+        Query::project(&config(), &self.keys, &embed(cue)).unwrap()
+    }
+}
+
+fn key_projection(seed: u64) -> SeededProjection {
+    SeededProjection::new(ProjectionSpec {
+        input_dim: EMBEDDING_DIM,
+        heads: HEADS,
+        head_dim: HEAD_DIM,
+        seed,
+    })
+    .unwrap()
 }
 
 fn policy() -> DecodePolicy {
@@ -221,7 +230,9 @@ fn a_readout_decodes_only_against_the_codebook_its_memory_was_written_with() {
             actual: other,
         })
     );
-    let named = other.fact(CapsuleId::from("pref-city"), Generation(1));
+    let named = other
+        .fact(CapsuleId::from("pref-city"), Generation(1))
+        .unwrap();
     assert!(matches!(
         decode_readout(&readout, [&named], policy()),
         Err(FastMemoryError::CodebookMismatch { .. })
@@ -242,5 +253,126 @@ fn a_readout_decodes_only_against_the_codebook_its_memory_was_written_with() {
     assert_eq!(
         FastMemory::restore(config(), short, std::iter::empty()).unwrap_err(),
         refused
+    );
+}
+
+#[test]
+fn a_constraint_or_procedure_target_is_refused_as_an_explicit_fact_candidate() {
+    // The write's value is the code of the constraint target itself, so a
+    // candidate built for it scored 1.0 and decoded to a hit naming
+    // `constraint:budget` as a capsule; the runtime reports that
+    // constraint's generation as live, so a lifecycle check kept it.
+    let codec = Codec::new();
+    let mut memory = FastMemory::new(config(), codec.values).unwrap();
+    memory
+        .write(codec.write("monthly budget", "constraint:budget", 1))
+        .unwrap();
+    memory
+        .write(codec.write("release steps", "procedure:deploy", 1))
+        .unwrap();
+    for target in ["constraint:budget", "procedure:deploy"] {
+        assert_eq!(
+            codec.values.fact(CapsuleId::from(target), Generation(1)),
+            Err(FastMemoryError::ReservedTarget {
+                target: target.into()
+            })
+        );
+    }
+    assert!(memory.fact_codes().is_empty());
+    assert_eq!(recall(&memory, &codec, "monthly budget"), Recall::Unknown);
+}
+
+#[test]
+fn a_memory_bound_to_a_key_projection_reads_only_queries_that_state_it() {
+    let codec = Codec::new();
+    let digest = codec.keys.digest();
+    let mut memory = FastMemory::with_projection(config(), codec.values, digest).unwrap();
+    assert_eq!(memory.projection_digest(), Some(digest));
+    let mut journal = Vec::new();
+    for (cue, capsule) in [
+        ("home city", "pref-city"),
+        ("favourite colour", "pref-color"),
+    ] {
+        let request = codec.write(cue, capsule, 1);
+        let receipt = memory.write(request.clone()).unwrap();
+        journal.push((receipt.seq, request));
+    }
+    let restored =
+        FastMemory::restore_with_projection(config(), codec.values, digest, journal.clone())
+            .unwrap();
+    assert_eq!(restored.projection_digest(), Some(digest));
+
+    // Same heads and head width, another seed: the query has the right
+    // shape, and it used to be read and scored against keys it was not
+    // projected like.
+    let other = key_projection(12);
+    let foreign = Query::project(&config(), &other, &embed("home city")).unwrap();
+    assert_eq!(foreign.projection_digest(), Some(other.digest()));
+    let unstated = codec.query("home city");
+    assert_eq!(unstated.projection_digest(), None);
+    for bound in [&memory, &restored] {
+        assert_eq!(
+            bound.read_admitted(&foreign, |_| true).unwrap_err(),
+            FastMemoryError::ProjectionMismatch {
+                expected: digest,
+                actual: Some(other.digest()),
+            }
+        );
+        assert_eq!(
+            bound.read_admitted(&unstated, |_| true).unwrap_err(),
+            FastMemoryError::ProjectionMismatch {
+                expected: digest,
+                actual: None,
+            }
+        );
+        // A query projected by the memory's own projection is read, and so
+        // is a raw one that states its digest.
+        for query in [
+            codec.projected_query("home city"),
+            Query::with_projection(
+                &config(),
+                digest,
+                codec.keys.project(&embed("home city")).unwrap(),
+            )
+            .unwrap(),
+        ] {
+            let readout = bound.read_admitted(&query, |_| true).unwrap();
+            match decode_readout(&readout, &bound.fact_codes(), policy()).unwrap() {
+                Recall::Hits(hits) => assert_eq!(hits[0].capsule, CapsuleId::from("pref-city")),
+                Recall::Unknown => panic!("the fact written under the cue is recalled"),
+            }
+        }
+    }
+    assert_eq!(
+        FastMemoryError::ProjectionMismatch {
+            expected: digest,
+            actual: None
+        }
+        .code(),
+        "PTR_FASTMEM_PROJECTION_MISMATCH"
+    );
+
+    // A memory created or restored without a projection states none and
+    // reads a query of its head shape from any projection.
+    let unbound = FastMemory::restore(config(), codec.values, journal).unwrap();
+    assert_eq!(unbound.projection_digest(), None);
+    assert!(unbound.read_admitted(&foreign, |_| true).is_ok());
+    assert!(unbound.read_admitted(&unstated, |_| true).is_ok());
+
+    // A projection of another head shape does not project a query at all.
+    let narrower = SeededProjection::new(ProjectionSpec {
+        input_dim: EMBEDDING_DIM,
+        heads: HEADS * 2,
+        head_dim: HEAD_DIM / 2,
+        seed: 11,
+    })
+    .unwrap();
+    assert_eq!(
+        Query::project(&config(), &narrower, &embed("home city")).unwrap_err(),
+        FastMemoryError::DimensionMismatch {
+            field: "projection_heads",
+            expected: HEADS,
+            actual: HEADS * 2,
+        }
     );
 }

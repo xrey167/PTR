@@ -22,14 +22,31 @@ use crate::write::{admit_write, MemoryWrite, Query, SourceRef, WriteRequest, Wri
 /// [`Self::codebook`], every readout carries it, [`Self::fact_codes`] derives
 /// candidates from it, and [`crate::decode_readout`] refuses a fact code from
 /// any other codebook.
+///
+/// Its keys are only meaningful under the key projection that produced them
+/// ([`crate::SeededProjection::digest`]). A memory created or restored with
+/// that digest ([`Self::with_projection`], [`Self::restore_with_projection`])
+/// reads only queries stating the same digest ([`Query::project`],
+/// [`Query::with_projection`]) and refuses any other query of the right shape
+/// (`ProjectionMismatch`), whose readout would be crosstalk. A memory created
+/// or restored without one ([`Self::new`], [`Self::restore`]) states no
+/// projection and reads a query of its head shape from any projection, so a
+/// store that records a memory's projection must restore it with that
+/// projection for the check to apply. Write keys are not checked against the
+/// projection: composing them with the one the memory names is the writer's
+/// obligation.
 #[derive(Clone, Debug)]
 pub struct FastMemory {
     config: FastMemoryConfig,
     codebook: IdentifierCodebook,
+    projection: Option<[u8; 32]>,
     state: FastWeightState,
     writes: Vec<MemoryWrite>,
     checkpoints: Vec<FastWeightState>,
     next_seq: u64,
+    /// The first sequence number this memory never takes: `u64::MAX` unless
+    /// [`Self::with_sequence_limit`] lowered it.
+    seq_limit: u64,
 }
 
 /// What one write did.
@@ -54,7 +71,9 @@ pub struct RevocationReport {
 }
 
 impl FastMemory {
-    /// An empty memory whose values are codes of `codebook`.
+    /// An empty memory whose values are codes of `codebook`, bound to no key
+    /// projection: it reads a query of its head shape from any projection.
+    /// [`Self::with_projection`] binds one.
     ///
     /// # Errors
     /// Refuses a configuration outside the supported ranges, then a codebook
@@ -63,6 +82,29 @@ impl FastMemory {
     pub fn new(
         config: FastMemoryConfig,
         codebook: IdentifierCodebook,
+    ) -> Result<Self, FastMemoryError> {
+        Self::empty(config, codebook, None)
+    }
+
+    /// An empty memory whose values are codes of `codebook` and whose keys
+    /// are projected by the key projection with digest `projection`
+    /// ([`crate::SeededProjection::digest`]): [`Self::read_admitted`] refuses
+    /// a query that does not state that digest.
+    ///
+    /// # Errors
+    /// Those of [`Self::new`].
+    pub fn with_projection(
+        config: FastMemoryConfig,
+        codebook: IdentifierCodebook,
+        projection: [u8; 32],
+    ) -> Result<Self, FastMemoryError> {
+        Self::empty(config, codebook, Some(projection))
+    }
+
+    fn empty(
+        config: FastMemoryConfig,
+        codebook: IdentifierCodebook,
+        projection: Option<[u8; 32]>,
     ) -> Result<Self, FastMemoryError> {
         check_config(&config)?;
         if codebook.len() != config.value_len() {
@@ -75,10 +117,12 @@ impl FastMemory {
         Ok(Self {
             config,
             codebook,
+            projection,
             state: FastWeightState::empty(config),
             writes: Vec::new(),
             checkpoints: Vec::new(),
             next_seq: 1,
+            seq_limit: u64::MAX,
         })
     }
 
@@ -89,7 +133,10 @@ impl FastMemory {
     /// higher and below `u64::MAX`, so the restored memory can number its next
     /// write. Every write is admitted by the same rules as [`Self::write`].
     /// `codebook` must be the one the journal's values are codes of, as its
-    /// store records it (`ptr-pg` keeps its seed with the memory).
+    /// store records it (`ptr-pg` keeps its seed with the memory). The
+    /// restored memory is bound to no key projection, like one from
+    /// [`Self::new`]; [`Self::restore_with_projection`] binds the one a store
+    /// records.
     /// Returns configuration, codebook, journal-capacity, sequence-order,
     /// sequence-exhaustion, or write-validation errors; no partially restored
     /// memory is returned.
@@ -101,7 +148,34 @@ impl FastMemory {
     where
         I: IntoIterator<Item = (WriteSeq, WriteRequest)>,
     {
-        let mut memory = Self::new(config, codebook)?;
+        Self::restore_into(Self::new(config, codebook)?, journal)
+    }
+
+    /// [`Self::restore`], binding the restored memory to the key projection
+    /// with digest `projection`, as [`Self::with_projection`] does: the
+    /// digest its store recorded for the memory's keys.
+    ///
+    /// # Errors
+    /// Those of [`Self::restore`].
+    pub fn restore_with_projection<I>(
+        config: FastMemoryConfig,
+        codebook: IdentifierCodebook,
+        projection: [u8; 32],
+        journal: I,
+    ) -> Result<Self, FastMemoryError>
+    where
+        I: IntoIterator<Item = (WriteSeq, WriteRequest)>,
+    {
+        Self::restore_into(
+            Self::with_projection(config, codebook, projection)?,
+            journal,
+        )
+    }
+
+    fn restore_into<I>(mut memory: Self, journal: I) -> Result<Self, FastMemoryError>
+    where
+        I: IntoIterator<Item = (WriteSeq, WriteRequest)>,
+    {
         for (seq, request) in journal {
             if seq.0 < memory.next_seq {
                 return Err(FastMemoryError::OutOfOrderWrite {
@@ -110,12 +184,44 @@ impl FastMemory {
                 });
             }
             memory.check_capacity()?;
-            let next_seq = successor(seq)?;
+            let next_seq = memory.successor(seq)?;
             let write = admit_write(&memory.config, seq, request)?;
             memory.next_seq = next_seq;
             let _surprise = memory.fold(write);
         }
         Ok(memory)
+    }
+
+    /// This memory, taking no sequence number at or above `limit`: a write
+    /// that would take one is refused as `SequenceExhausted` before anything
+    /// changes, as a write that would take `u64::MAX` always is. A limit
+    /// only ever lowers: the memory keeps the smaller of `limit` and the one
+    /// it had.
+    ///
+    /// A store whose sequence column holds fewer numbers than `u64` restores
+    /// a memory with its own limit (`ptr-pg` journals no number at or above
+    /// `i64::MAX`), so the memory refuses the write the store would refuse
+    /// rather than fold one it cannot journal. Its sequence space is then
+    /// exhausted after `limit - 1`, however much room its journal has.
+    ///
+    /// # Errors
+    /// `SequenceExhausted` naming the largest sequence number the memory has
+    /// taken, restored or since revoked, when that is at or above `limit`:
+    /// the memory already holds, or has handed out, a number the limit
+    /// excludes.
+    pub fn with_sequence_limit(mut self, limit: WriteSeq) -> Result<Self, FastMemoryError> {
+        let taken = self.next_seq - 1;
+        if taken > 0 && taken >= limit.0 {
+            return Err(FastMemoryError::SequenceExhausted { seq: taken });
+        }
+        self.seq_limit = self.seq_limit.min(limit.0);
+        Ok(self)
+    }
+
+    /// The first sequence number this memory never takes: `u64::MAX`, or
+    /// the lower limit [`Self::with_sequence_limit`] set.
+    pub fn sequence_limit(&self) -> WriteSeq {
+        WriteSeq(self.seq_limit)
     }
 
     pub fn config(&self) -> &FastMemoryConfig {
@@ -126,6 +232,13 @@ impl FastMemory {
     /// value as `codebook().code_for(capsule, generation)`.
     pub fn codebook(&self) -> IdentifierCodebook {
         self.codebook
+    }
+
+    /// The digest of the key projection this memory is bound to, or `None`
+    /// for a memory from [`Self::new`] or [`Self::restore`], which reads
+    /// queries from any projection.
+    pub fn projection_digest(&self) -> Option<[u8; 32]> {
+        self.projection
     }
 
     pub fn state(&self) -> &FastWeightState {
@@ -157,8 +270,9 @@ impl FastMemory {
     ///
     /// # Errors
     /// Rejects a full journal, a write that would take sequence number
-    /// `u64::MAX` (it has no successor, so its journal could not be restored),
-    /// invalid vector lengths, nonfinite vector entries, value cells beyond
+    /// `u64::MAX` (it has no successor, so its journal could not be restored)
+    /// or one at or above a lower limit [`Self::with_sequence_limit`] set
+    /// (both `SequenceExhausted`), invalid vector lengths, nonfinite vector entries, value cells beyond
     /// [`crate::MAX_VALUE_MAGNITUDE`] (the bound that keeps every fold of
     /// admitted writes finite), all-zero key heads, or
     /// strength/decay factors outside `(0, 1]`. Validation errors leave the
@@ -166,7 +280,7 @@ impl FastMemory {
     pub fn write(&mut self, request: WriteRequest) -> Result<WriteReceipt, FastMemoryError> {
         self.check_capacity()?;
         let seq = WriteSeq(self.next_seq);
-        let next_seq = successor(seq)?;
+        let next_seq = self.successor(seq)?;
         let write = admit_write(&self.config, seq, request)?;
         self.next_seq = next_seq;
         let surprise = self.fold(write);
@@ -191,13 +305,24 @@ impl FastMemory {
     /// First refuses a query normalised for another head shape
     /// (`DimensionMismatch` naming `query_heads` or `query_key_dim`): its
     /// components would be split into heads it was not normalised for, and the
-    /// readout would be plausible but wrong. Then refuses a state that depends
-    /// on an inadmissible source (`Denied`).
+    /// readout would be plausible but wrong. Then, if this memory is bound to
+    /// a key projection, refuses a query that states another projection or
+    /// none (`ProjectionMismatch`): scored against keys it was not projected
+    /// like, it would read crosstalk as weights. Then refuses a state that
+    /// depends on an inadmissible source (`Denied`).
     pub fn read_admitted<F>(&self, query: &Query, admissible: F) -> Result<Readout, FastMemoryError>
     where
         F: Fn(&SourceRef) -> bool,
     {
         query.check_shape(&self.config)?;
+        if let Some(expected) = self.projection {
+            if query.projection_digest() != Some(expected) {
+                return Err(FastMemoryError::ProjectionMismatch {
+                    expected,
+                    actual: query.projection_digest(),
+                });
+            }
+        }
         let denied = self
             .writes
             .iter()
@@ -308,16 +433,18 @@ impl FastMemory {
         }
         surprise
     }
-}
 
-/// The sequence number after `seq`. A journaled write must leave a successor
-/// free, so `u64::MAX` is refused before anything changes: a write or restore
-/// that took it would leave no number for the next write, and a journal ending
-/// there could not be restored.
-fn successor(seq: WriteSeq) -> Result<u64, FastMemoryError> {
-    seq.0
-        .checked_add(1)
-        .ok_or(FastMemoryError::SequenceExhausted { seq: seq.0 })
+    /// The sequence number after `seq`, refusing a `seq` at or above the
+    /// memory's limit before anything changes. The limit is at most
+    /// `u64::MAX`, so the successor never overflows: a write or restore that
+    /// took `u64::MAX` would leave no number for the next write, and a
+    /// journal ending there could not be restored.
+    fn successor(&self, seq: WriteSeq) -> Result<u64, FastMemoryError> {
+        if seq.0 >= self.seq_limit {
+            return Err(FastMemoryError::SequenceExhausted { seq: seq.0 });
+        }
+        Ok(seq.0 + 1)
+    }
 }
 
 /// Digest of an ordered set of folded writes: the sequence number, source

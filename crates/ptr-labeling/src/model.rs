@@ -252,8 +252,10 @@ pub enum LabelOutcome {
     /// Verifiers ruled out every class. Nothing learned can settle that; a
     /// person must.
     Disputed { vetoed: BTreeSet<usize> },
-    /// No class is determined and none reaches the required probability, or no
-    /// probabilistic function voted at all. Unknown is a valid answer.
+    /// No class is determined and none reaches the required probability, no
+    /// probabilistic function voted at all, or the classes the verifiers left
+    /// carry less posterior mass than `f64::MIN_POSITIVE` (see [`resolve`]).
+    /// Unknown is a valid answer.
     Unknown,
 }
 
@@ -265,8 +267,19 @@ pub enum LabelOutcome {
 /// without probabilistic votes. If multiple classes remain and no
 /// probabilistic function voted, the item is `Unknown`.
 ///
-/// When the model puts no probability on any class the verifiers left, no
-/// class reaches the required probability and the item is `Unknown`.
+/// The shares are computed only when the classes the verifiers left carry
+/// posterior mass of at least `f64::MIN_POSITIVE`, the smallest normal `f64`.
+/// The fit computes posteriors in log space but stores them as probabilities:
+/// a class the model puts more than about 708 nats below the leading one is
+/// stored as a subnormal, with an absolute rounding error of up to one
+/// subnormal unit (`2^-1074`), or as zero. Over less mass than
+/// `f64::MIN_POSITIVE` that error can be the whole share (a stored posterior
+/// of `[1, 5e-324, 0]` with class 0 vetoed would estimate class 1 at
+/// probability one, whatever the model's log posterior gives it), so such an
+/// item is `Unknown`, as is one whose classes left carry no mass at all, even
+/// when the model's exact posterior would reach the required probability.
+/// Over at least `f64::MIN_POSITIVE`, subnormal rounding moves each share by
+/// at most about `2.2e-16` times the number of classes left.
 ///
 /// # Errors
 /// Returns an error if `min_probability` is not finite and in `(0, 1]`,
@@ -276,10 +289,11 @@ pub enum LabelOutcome {
 /// and votes), an error if the number of posteriors differs from the number of
 /// items, and
 /// `LabelingError::InvalidPosterior` for the first posterior that is not a
-/// probability distribution over the schema's classes, before any item is
-/// resolved: a negative or out-of-range entry would resolve to a
-/// "probability" above one, and an entry beyond the schema would drop mass
-/// unseen.
+/// probability distribution over the schema's classes (an entry outside
+/// `[0, 1]`, a total off one by `1e-6` or more, or an entry count other than
+/// the schema's), before any item is resolved: a negative entry would resolve
+/// to a "probability" above one, and an entry beyond the schema would drop
+/// mass unseen.
 pub fn resolve(
     matrix: &VoteMatrix,
     model: &LabelModel,
@@ -328,9 +342,14 @@ pub fn resolve(
                 return LabelOutcome::Unknown;
             }
             let posterior = &model.posteriors[item];
-            // With no mass left every share is 0 / 0, a NaN, which reaches no
-            // required probability: the item is Unknown.
             let mass: f64 = remaining.iter().map(|&c| posterior[c]).sum();
+            // Below the smallest normal f64 the stored posteriors of the
+            // classes left have lost their ratio to underflow (and with no
+            // mass left every share would be 0 / 0): the model says nothing
+            // reliable about them, so the item is Unknown.
+            if mass < f64::MIN_POSITIVE {
+                return LabelOutcome::Unknown;
+            }
             let (class, probability) = remaining
                 .iter()
                 .map(|&c| (c, posterior[c] / mass))
@@ -350,12 +369,16 @@ pub fn resolve(
 const DISTRIBUTION_TOLERANCE: f64 = 1e-6;
 
 /// Refuse a posterior that is not a probability distribution: empty, with an
-/// entry that is negative or not finite, or not summing to one within
+/// entry outside `[0, 1]` (NaN included), or not summing to one within
 /// [`DISTRIBUTION_TOLERANCE`].
+///
+/// Every entry is held to `[0, 1]` on its own, whatever the tolerance on the
+/// total: `[1.0000005, 0]` sums to one within it, but its first entry is not a
+/// probability, and ranking and scoring would consume it as one.
 pub(crate) fn check_posterior(item: usize, posterior: &[f64]) -> Result<(), LabelingError> {
     let total: f64 = posterior.iter().sum();
     let valid = !posterior.is_empty()
-        && posterior.iter().all(|p| p.is_finite() && *p >= 0.0)
+        && posterior.iter().all(|p| (0.0..=1.0).contains(p))
         && (total - 1.0).abs() < DISTRIBUTION_TOLERANCE;
     if valid {
         Ok(())
