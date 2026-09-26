@@ -28,6 +28,8 @@ pub enum LabelingError {
     Empty { field: &'static str },
     /// A function that is not a model names an adapter, or names an empty one.
     AdapterAttribution { function: String },
+    /// An evaluation set already holds a gold label for this item.
+    DuplicateGoldItem { item: usize },
 }
 
 impl LabelingError {
@@ -42,6 +44,7 @@ impl LabelingError {
             Self::InvalidParameter { .. } => "PTR_LABELING_INVALID_PARAMETER",
             Self::Empty { .. } => "PTR_LABELING_EMPTY",
             Self::AdapterAttribution { .. } => "PTR_LABELING_ADAPTER_ATTRIBUTION",
+            Self::DuplicateGoldItem { .. } => "PTR_LABELING_DUPLICATE_GOLD_ITEM",
         }
     }
 }
@@ -75,6 +78,12 @@ impl fmt::Display for LabelingError {
                 formatter,
                 "{function:?} names an adapter but is not a model, or names an empty one"
             ),
+            Self::DuplicateGoldItem { item } => {
+                write!(
+                    formatter,
+                    "item {item} already has a gold label in this set"
+                )
+            }
         }
     }
 }

@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use ptr_analytics::{
     brier_score, expected_calibration_error, wilson_interval, Binning, RateEstimate,
 };
@@ -37,11 +39,15 @@ pub struct GoldLabel {
     pub source: GoldSource,
 }
 
-/// Gold labels of one kind of source and one sampling design.
+/// Gold labels of one kind of source and one sampling design, at most one per
+/// item.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EvaluationSet {
     sampling: GoldSampling,
     labels: Vec<GoldLabel>,
+    /// The items `labels` covers, so a second label for one is refused without
+    /// a scan.
+    items: BTreeSet<usize>,
 }
 
 impl EvaluationSet {
@@ -49,11 +55,21 @@ impl EvaluationSet {
         Self {
             sampling,
             labels: Vec::new(),
+            items: BTreeSet::new(),
         }
     }
 
     /// Add a gold label. An oracle label and a human label may not share a set,
-    /// because an evaluation that mixes them measures neither.
+    /// because an evaluation that mixes them measures neither. An item takes
+    /// one resolved gold label: scoring counts every label as an independent
+    /// trial, so a repeated item would count twice and a conflicting one would
+    /// score one prediction both right and wrong. Several annotators' labels
+    /// for an item are resolved into one before it is added.
+    ///
+    /// # Errors
+    /// Refuses a label whose source kind differs from the labels already in
+    /// the set, and a label for an item the set already holds, even with the
+    /// same class. A refused label leaves the set unchanged.
     pub fn push(&mut self, label: GoldLabel) -> Result<(), LabelingError> {
         if let Some(first) = self.labels.first() {
             let same_kind = matches!(
@@ -67,6 +83,9 @@ impl EvaluationSet {
                     message: "oracle and human labels may not be mixed in one evaluation set",
                 });
             }
+        }
+        if !self.items.insert(label.item) {
+            return Err(LabelingError::DuplicateGoldItem { item: label.item });
         }
         self.labels.push(label);
         Ok(())

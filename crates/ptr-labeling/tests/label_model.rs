@@ -431,6 +431,50 @@ fn per_function_accuracy_refuses_an_actively_sampled_or_misaligned_gold_set() {
 }
 
 #[test]
+fn an_evaluation_set_holds_one_gold_label_per_item() {
+    let mut set = EvaluationSet::new(GoldSampling::Uniform);
+    let label = |item, class| GoldLabel {
+        item,
+        class,
+        source: GoldSource::Human {
+            annotator: format!("annotator-{class}"),
+        },
+    };
+    set.push(label(3, 0)).unwrap();
+    // A conflicting label, and a repeat of the same class, for item 3.
+    for class in [1, 0] {
+        assert_eq!(
+            set.push(label(3, class)).unwrap_err(),
+            LabelingError::DuplicateGoldItem { item: 3 }
+        );
+    }
+    set.push(label(0, 1)).unwrap();
+    assert_eq!(set.len(), 2);
+
+    // The refused labels leave no trace, so each item is scored once: had the
+    // conflicting label been kept, the posterior on item 3 would count as
+    // right and wrong, and the rule's vote on it as two trials.
+    let posteriors = vec![vec![0.2, 0.8], vec![], vec![], vec![0.9, 0.1]];
+    let report = evaluate(&posteriors, &set, 1).unwrap();
+    assert_eq!(report.accuracy, 1.0);
+    let matrix = VoteMatrix::new(
+        LabelSchema::new(["a", "b"]).unwrap(),
+        vec![function("rule", FunctionKind::Heuristic)],
+        vec![
+            vec![Vote::Class(0)],
+            vec![Vote::Abstain],
+            vec![Vote::Abstain],
+            vec![Vote::Class(0)],
+        ],
+    )
+    .unwrap();
+    let estimate = function_accuracy(&matrix, &set, 1.96).unwrap()[0]
+        .estimate
+        .unwrap();
+    assert_eq!((estimate.successes, estimate.trials), (1, 2));
+}
+
+#[test]
 fn an_em_tolerance_outside_zero_to_one_is_refused_and_zero_waits_for_a_fixed_point() {
     let (matrix, _) = synthetic();
     for tolerance in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1e-12, 1.0, 5.0] {

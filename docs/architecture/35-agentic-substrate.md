@@ -417,7 +417,9 @@ resolves to `Determined` (every other class vetoed), `Estimated` at or above the
 required probability, `Unknown`, or `Disputed` when every class is vetoed
 (`a_verifier_veto_overrides_a_confident_model_and_vetoing_everything_is_a_dispute`).
 Gold labels record their source and whether they were sampled uniformly or
-actively. Only uniform gold estimates population accuracy and calibration; on active
+actively. An evaluation set holds one resolved gold label per item
+(`an_evaluation_set_holds_one_gold_label_per_item`).
+Only uniform gold estimates population accuracy and calibration; on active
 gold the evaluation reports accuracy on the sampled items only and withholds
 calibration. Calibration (Brier, ECE) comes from `ptr-analytics`, which also provides
 Krippendorff's α for multi-annotator gold; the labeling crate does not compute

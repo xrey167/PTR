@@ -8,7 +8,7 @@ implemented = [
   "Verifier-backed functions cast vetoes only; a verifier class vote is refused",
   "Dawid-Skene EM label model with configurable iterations and a tolerance in [0, 1) (refused outside it, so a vacuous tolerance cannot hide non-convergence) and identifiability warnings for fewer than three modelled functions",
   "Resolution to Determined (every other class vetoed), Estimated at or above a required probability, Unknown, or Disputed when every class is vetoed",
-  "Gold labels record source (oracle or human with annotator) and sampling (uniform or active); only uniform gold estimates population accuracy and calibration, while active gold reports accuracy on the sampled items and no calibration",
+  "Gold labels record source (oracle or human with annotator) and sampling (uniform or active); an evaluation set holds one resolved gold label per item and refuses a second; only uniform gold estimates population accuracy and calibration, while active gold reports accuracy on the sampled items and no calibration",
   "Evaluation with Brier score and expected calibration error from ptr-analytics",
   "A model labeling function may name the adapter that produced its votes (refused on any other kind); function_accuracy scores each function's class votes against uniform gold with a Wilson interval, so labeling quality is measured per adapter",
   "Acquisition ranking by posterior entropy or margin that never proposes an item verifiers already determined",
