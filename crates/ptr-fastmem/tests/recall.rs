@@ -159,3 +159,35 @@ fn a_revoked_fact_is_no_longer_a_decoding_candidate() {
         .all(|fact| fact.capsule != CapsuleId::from("pref-city")));
     assert_eq!(recall(&memory, &codec, "home city"), Recall::Unknown);
 }
+
+#[test]
+fn constraint_and_procedure_sources_are_never_decoded_as_capsules() {
+    // Sources use the lifecycle target vocabulary, in which hard constraints
+    // and procedures are targets but not capsules. Their writes still shape the
+    // state and gate reads, but must never decode to a hit for a fabricated
+    // capsule such as `constraint:budget`.
+    let codec = Codec::new();
+    let mut memory = FastMemory::new(config()).unwrap();
+    memory
+        .write(codec.write("monthly budget", "constraint:budget", 1))
+        .unwrap();
+    memory
+        .write(codec.write("release steps", "procedure:deploy", 1))
+        .unwrap();
+    memory
+        .write(codec.write("home city", "pref-city", 1))
+        .unwrap();
+    let candidates: Vec<CapsuleId> = memory
+        .fact_codes(&codec.values)
+        .into_iter()
+        .map(|fact| fact.capsule)
+        .collect();
+    assert_eq!(candidates, vec![CapsuleId::from("pref-city")]);
+    assert_eq!(memory.sources().len(), 3);
+    assert_eq!(recall(&memory, &codec, "monthly budget"), Recall::Unknown);
+    assert_eq!(recall(&memory, &codec, "release steps"), Recall::Unknown);
+    match recall(&memory, &codec, "home city") {
+        Recall::Hits(hits) => assert_eq!(hits[0].capsule, CapsuleId::from("pref-city")),
+        Recall::Unknown => panic!("the capsule source is still recalled"),
+    }
+}

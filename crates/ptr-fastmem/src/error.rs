@@ -26,6 +26,12 @@ pub enum FastMemoryError {
     ZeroKey { head: usize },
     /// A value is NaN or infinite.
     NonFinite { field: &'static str, index: usize },
+    /// A written value cell exceeds [`crate::MAX_VALUE_MAGNITUDE`] in
+    /// magnitude; beyond it a fold of admitted writes could overflow `f32`.
+    ValueOutOfRange { index: usize, value: f32 },
+    /// A decode threshold is NaN, infinite or negative; a comparison against
+    /// it could not refuse an ambiguous or weak readout.
+    InvalidThreshold { field: &'static str, value: f32 },
     /// A write sequence number did not advance the journal by exactly one.
     OutOfOrderWrite { expected: u64, actual: u64 },
     /// The journal holds its configured maximum of writes.
@@ -49,6 +55,8 @@ impl FastMemoryError {
             Self::InvalidDecay { .. } => "PTR_FASTMEM_INVALID_DECAY",
             Self::ZeroKey { .. } => "PTR_FASTMEM_ZERO_KEY",
             Self::NonFinite { .. } => "PTR_FASTMEM_NON_FINITE",
+            Self::ValueOutOfRange { .. } => "PTR_FASTMEM_VALUE_OUT_OF_RANGE",
+            Self::InvalidThreshold { .. } => "PTR_FASTMEM_INVALID_THRESHOLD",
             Self::OutOfOrderWrite { .. } => "PTR_FASTMEM_OUT_OF_ORDER_WRITE",
             Self::JournalFull { .. } => "PTR_FASTMEM_JOURNAL_FULL",
             Self::Denied { .. } => "PTR_FASTMEM_DENIED",
@@ -84,6 +92,15 @@ impl fmt::Display for FastMemoryError {
             Self::NonFinite { field, index } => {
                 write!(formatter, "{field}[{index}] is not finite")
             }
+            Self::ValueOutOfRange { index, value } => write!(
+                formatter,
+                "value[{index}]={value} exceeds the magnitude bound {}",
+                crate::MAX_VALUE_MAGNITUDE
+            ),
+            Self::InvalidThreshold { field, value } => write!(
+                formatter,
+                "{field}={value} is not a finite, non-negative threshold"
+            ),
             Self::OutOfOrderWrite { expected, actual } => write!(
                 formatter,
                 "write sequence {actual} does not follow the journal, expected {expected}"
@@ -142,6 +159,14 @@ mod tests {
             FastMemoryError::NonFinite {
                 field: "value",
                 index: 0,
+            },
+            FastMemoryError::ValueOutOfRange {
+                index: 0,
+                value: f32::MAX,
+            },
+            FastMemoryError::InvalidThreshold {
+                field: "min_margin",
+                value: f32::NAN,
             },
             FastMemoryError::OutOfOrderWrite {
                 expected: 1,

@@ -1,6 +1,6 @@
 use ptr_types::Generation;
 
-use crate::config::FastMemoryConfig;
+use crate::config::{FastMemoryConfig, MAX_VALUE_MAGNITUDE};
 use crate::error::FastMemoryError;
 
 /// Position of a write in one memory's journal. The first write is `1`.
@@ -52,7 +52,8 @@ pub struct WriteRequest {
     pub source: SourceRef,
     /// `heads * key_dim` values; each head's slice is normalised on admission.
     pub key: Vec<f32>,
-    /// `heads * value_dim` values.
+    /// `heads * value_dim` values, each at most [`MAX_VALUE_MAGNITUDE`] in
+    /// magnitude.
     pub value: Vec<f32>,
     /// Write strength in `(0, 1]`. At `1` the value previously associated with
     /// this exact key is replaced outright.
@@ -60,7 +61,8 @@ pub struct WriteRequest {
     pub decay: Decay,
 }
 
-/// A validated write: finite, correctly shaped, unit keys per head.
+/// A validated write: finite, correctly shaped, values within
+/// [`MAX_VALUE_MAGNITUDE`], unit keys per head.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MemoryWrite {
     seq: WriteSeq,
@@ -116,8 +118,9 @@ impl Query {
 /// journal capacity and sequence checks remain the caller's responsibility.
 ///
 /// # Errors
-/// Rejects invalid configurations, dimensions, nonfinite cells, keys that cannot
-/// be normalised, and beta or decay factors outside their supported ranges.
+/// Rejects invalid configurations, dimensions, nonfinite cells, value cells
+/// beyond [`MAX_VALUE_MAGNITUDE`], keys that cannot be normalised, and beta or
+/// decay factors outside their supported ranges.
 pub fn validate_write(
     config: &FastMemoryConfig,
     request: &WriteRequest,
@@ -143,6 +146,18 @@ pub(crate) fn admit_write(
     }
     check_len("value", config.value_len(), value.len())?;
     check_finite("value", &value)?;
+    // A per-write bound, not a check on the folded state: admission must not
+    // depend on the state, or a refold without a revoked write could admit a
+    // different set of writes than a memory that never saw it.
+    if let Some(index) = value
+        .iter()
+        .position(|cell| cell.abs() > MAX_VALUE_MAGNITUDE)
+    {
+        return Err(FastMemoryError::ValueOutOfRange {
+            index,
+            value: value[index],
+        });
+    }
     match &decay {
         Decay::None => {}
         Decay::Scalar(factor) => check_decay(0, *factor)?,
@@ -289,5 +304,25 @@ mod tests {
                 index: 2
             }
         );
+    }
+
+    #[test]
+    fn a_value_beyond_the_magnitude_bound_is_refused_at_its_index() {
+        let beyond = f32::from_bits(MAX_VALUE_MAGNITUDE.to_bits() + 1);
+        for value in [beyond, -beyond, f32::MAX, -f32::MAX] {
+            let mut bad = request();
+            bad.value[3] = value;
+            assert_eq!(
+                admit_write(&config(), WriteSeq(1), bad.clone()).unwrap_err(),
+                FastMemoryError::ValueOutOfRange { index: 3, value }
+            );
+            assert_eq!(
+                validate_write(&config(), &bad).unwrap_err(),
+                FastMemoryError::ValueOutOfRange { index: 3, value }
+            );
+        }
+        let mut at_bound = request();
+        at_bound.value = vec![MAX_VALUE_MAGNITUDE, -MAX_VALUE_MAGNITUDE, 0.0, 1.0];
+        assert!(admit_write(&config(), WriteSeq(1), at_bound).is_ok());
     }
 }

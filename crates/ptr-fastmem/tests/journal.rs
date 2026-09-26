@@ -1,7 +1,10 @@
 mod common;
 
 use common::{config, write_about};
-use ptr_fastmem::{decode_state, encode_state, FastMemory, FastMemoryError, WriteSeq};
+use ptr_fastmem::{
+    decode_state, encode_state, Decay, FastMemory, FastMemoryError, FastWeightState, WriteSeq,
+    MAX_VALUE_MAGNITUDE,
+};
 
 #[test]
 fn a_restored_journal_folds_to_the_same_state_as_the_live_memory() {
@@ -144,5 +147,92 @@ fn restoring_refuses_zero_sequence_and_journals_over_capacity() {
         )
         .unwrap_err(),
         FastMemoryError::JournalFull { limit: 1 }
+    );
+}
+
+#[test]
+fn a_write_that_could_overflow_the_fold_is_refused_and_leaves_the_memory_unchanged() {
+    // f32::MAX and then -f32::MAX under one unit key: the second write's error
+    // `target - current` is -inf. Both writes used to be folded and journaled,
+    // leaving infinite cells that no checkpoint could decode.
+    let mut memory = FastMemory::new(config(1)).unwrap();
+    memory.write(write_about("a", 0)).unwrap();
+    let state = memory.state().clone();
+    let binding = memory.binding_digest();
+    let writes = memory.writes().to_vec();
+    for extreme in [f32::MAX, -f32::MAX] {
+        let mut request = write_about("b", 1);
+        request.value.fill(extreme);
+        assert_eq!(
+            memory.write(request),
+            Err(FastMemoryError::ValueOutOfRange {
+                index: 0,
+                value: extreme
+            })
+        );
+    }
+    assert_eq!(memory.state(), &state);
+    assert_eq!(memory.binding_digest(), binding);
+    assert_eq!(memory.writes(), writes);
+    assert_eq!(memory.write(write_about("b", 1)).unwrap().seq, WriteSeq(2));
+    assert_eq!(memory.state(), &memory.refold_from_journal());
+    assert_eq!(
+        decode_state(&encode_state(memory.state())).unwrap(),
+        *memory.state()
+    );
+}
+
+#[test]
+fn restoring_a_journal_whose_fold_could_overflow_is_refused() {
+    let mut up = write_about("a", 0);
+    up.value.fill(f32::MAX);
+    let mut down = write_about("a", 0);
+    down.value.fill(-f32::MAX);
+    assert_eq!(
+        FastMemory::restore(config(1), [(WriteSeq(1), up), (WriteSeq(2), down)]).unwrap_err(),
+        FastMemoryError::ValueOutOfRange {
+            index: 0,
+            value: f32::MAX
+        }
+    );
+}
+
+#[test]
+fn writes_at_the_value_bound_fold_to_finite_decodable_state_in_every_refold() {
+    // The overflowing pattern above at the largest admitted magnitude: signs
+    // alternate at full strength under three shared keys.
+    let requests: Vec<_> = (0..64_u32)
+        .map(|index| {
+            let mut request = write_about(&format!("s{}", index % 8), index % 3);
+            let sign = if index % 2 == 0 { 1.0 } else { -1.0 };
+            request.value.fill(sign * MAX_VALUE_MAGNITUDE);
+            request.beta = 1.0;
+            request.decay = Decay::None;
+            request
+        })
+        .collect();
+    let finite = |state: &FastWeightState| state.cells().iter().all(|cell| cell.is_finite());
+    let mut memory = FastMemory::new(config(4)).unwrap();
+    for request in &requests {
+        assert!(memory.write(request.clone()).unwrap().surprise.is_finite());
+    }
+    assert!(finite(memory.state()));
+
+    memory.revoke(|source| source.key == "s3");
+    let never = FastMemory::restore(
+        config(4),
+        requests
+            .iter()
+            .enumerate()
+            .filter(|(_, request)| request.source.key != "s3")
+            .map(|(index, request)| (WriteSeq(index as u64 + 1), request.clone())),
+    )
+    .unwrap();
+    assert!(finite(memory.state()));
+    assert_eq!(memory.state(), never.state());
+    assert_eq!(memory.state(), &memory.refold_from_journal());
+    assert_eq!(
+        decode_state(&encode_state(memory.state())).unwrap(),
+        *memory.state()
     );
 }

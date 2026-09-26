@@ -29,15 +29,28 @@ impl IdentifierCodebook {
     }
 }
 
+/// Prefixes of the lifecycle targets that are not capsules. The runtime refuses
+/// a capsule id in either namespace, so a source key carrying one names a hard
+/// constraint or a procedure, never a capsule.
+const NON_CAPSULE_NAMESPACES: [&str; 2] = ["constraint:", "procedure:"];
+
 impl FastMemory {
-    /// The candidate facts a readout may decode into: every distinct source
-    /// the journal holds, and nothing else. A fact that was never written, or
-    /// whose writes were revoked, is not a candidate.
+    /// The candidate facts a readout may decode into: every distinct capsule
+    /// source the journal holds, and nothing else. A fact that was never
+    /// written, or whose writes were revoked, is not a candidate. Writes derived
+    /// from a `constraint:<key>` or `procedure:<id>` source still shape the
+    /// state and still gate reads, but they are not candidates: a decoded hit
+    /// names a capsule, and those sources are not capsules.
     pub fn fact_codes(&self, book: &IdentifierCodebook) -> Vec<FactCode> {
         let sources: BTreeSet<(String, Generation)> = self
             .writes()
             .iter()
             .map(|write| (write.source().key.clone(), write.source().generation))
+            .filter(|(key, _)| {
+                !NON_CAPSULE_NAMESPACES
+                    .iter()
+                    .any(|namespace| key.starts_with(namespace))
+            })
             .collect();
         sources
             .into_iter()
@@ -55,13 +68,19 @@ impl FastMemory {
 }
 
 /// When a readout is confident enough to name a fact.
+///
+/// [`decode_readout`] refuses a policy with a zero `limit` or a threshold that
+/// is NaN, infinite or negative: a comparison against a NaN threshold is never
+/// true, so such a policy would let an ambiguous or weak readout through.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DecodePolicy {
+    /// Most hits returned; at least one.
     pub limit: usize,
-    /// Minimum `<readout, code>` for a fact to be returned at all.
+    /// Minimum `<readout, code>` for a fact to be returned at all. Finite and
+    /// non-negative.
     pub min_score: f32,
     /// Minimum lead of the best fact over the runner-up. Below it the readout
-    /// is ambiguous and the answer is `Unknown`.
+    /// is ambiguous and the answer is `Unknown`. Finite and non-negative.
     pub min_margin: f32,
 }
 
@@ -81,7 +100,13 @@ pub enum Recall {
 /// orthogonal codes it estimates the memory's weight on that fact. Hits start
 /// at the lowest evidence stage, so a recall must still be resolved against
 /// live generations and verified before it is relied on. Ties are broken by
-/// capsule, then generation.
+/// capsule, then generation. A returned `Hits` always names at least one fact.
+///
+/// # Errors
+/// Before scoring, refuses a policy with a zero limit or a NaN, infinite or
+/// negative threshold. Then refuses a fact code whose length differs from the
+/// readout's, and a score that is not finite (a nonfinite readout or code cell,
+/// or an overflowing product), which the confidence checks could not order.
 pub fn decode_readout<'a, I>(
     readout: &Readout,
     facts: I,
@@ -90,8 +115,9 @@ pub fn decode_readout<'a, I>(
 where
     I: IntoIterator<Item = &'a FactCode>,
 {
+    check_policy(&policy)?;
     let mut scored = Vec::new();
-    for fact in facts {
+    for (index, fact) in facts.into_iter().enumerate() {
         if fact.code.len() != readout.values.len() {
             return Err(FastMemoryError::DimensionMismatch {
                 field: "fact code",
@@ -105,6 +131,12 @@ where
             .zip(&fact.code)
             .map(|(r, c)| r * c)
             .sum();
+        if !score.is_finite() {
+            return Err(FastMemoryError::NonFinite {
+                field: "score",
+                index,
+            });
+        }
         scored.push((score, fact));
     }
     scored.sort_by(|left, right| {
@@ -136,6 +168,28 @@ where
             })
             .collect(),
     ))
+}
+
+/// Refuse a policy under which the confidence checks would fail open: with a
+/// NaN threshold every `<` against it is false, and a zero limit turns a clear
+/// winner into an empty `Hits`.
+fn check_policy(policy: &DecodePolicy) -> Result<(), FastMemoryError> {
+    if policy.limit == 0 {
+        return Err(FastMemoryError::InvalidConfig {
+            field: "limit",
+            value: 0,
+            message: "a decode must be allowed to name at least one fact",
+        });
+    }
+    for (field, value) in [
+        ("min_score", policy.min_score),
+        ("min_margin", policy.min_margin),
+    ] {
+        if !(value.is_finite() && value >= 0.0) {
+            return Err(FastMemoryError::InvalidThreshold { field, value });
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -198,6 +252,96 @@ mod tests {
         assert_eq!(
             decode_readout(&weak, std::iter::empty(), policy()).unwrap(),
             Recall::Unknown
+        );
+    }
+
+    #[test]
+    fn a_policy_that_would_fail_open_is_refused_before_scoring() {
+        let facts = [fact("a", vec![1.0, 0.0]), fact("b", vec![0.0, 1.0])];
+        // Ambiguous under any sound margin: a NaN margin used to name "a", and
+        // a NaN minimum score used to return `Hits` naming nothing.
+        let ambiguous = Readout {
+            values: vec![0.7, 0.65],
+            as_of: WriteSeq(1),
+        };
+        let unsound = [
+            ("min_margin", f32::NAN),
+            ("min_margin", -0.1),
+            ("min_margin", f32::NEG_INFINITY),
+            ("min_score", f32::NAN),
+            ("min_score", -1.0),
+            ("min_score", f32::INFINITY),
+        ];
+        for (field, value) in unsound {
+            let mut bad = policy();
+            match field {
+                "min_margin" => bad.min_margin = value,
+                _ => bad.min_score = value,
+            }
+            for candidates in [&facts[..], &[]] {
+                let refused = decode_readout(&ambiguous, candidates, bad);
+                assert!(
+                    matches!(
+                        refused,
+                        Err(FastMemoryError::InvalidThreshold { field: named, value: seen })
+                            if named == field && seen.to_bits() == value.to_bits()
+                    ),
+                    "{field}={value}: {refused:?}"
+                );
+            }
+        }
+        let nothing = DecodePolicy {
+            limit: 0,
+            ..policy()
+        };
+        assert!(matches!(
+            decode_readout(&ambiguous, &facts, nothing),
+            Err(FastMemoryError::InvalidConfig { field: "limit", .. })
+        ));
+
+        // Zero thresholds are sound: the clear winner is still named alone.
+        let permissive = DecodePolicy {
+            limit: 1,
+            min_score: 0.0,
+            min_margin: -0.0,
+        };
+        let clear = Readout {
+            values: vec![0.9, 0.1],
+            as_of: WriteSeq(1),
+        };
+        let Recall::Hits(hits) = decode_readout(&clear, &facts, permissive).unwrap() else {
+            panic!("zero thresholds still name a clear winner");
+        };
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].capsule, CapsuleId::from("a"));
+    }
+
+    #[test]
+    fn a_nonfinite_score_is_refused_rather_than_ranked() {
+        let facts = [fact("a", vec![1.0, 0.0]), fact("b", vec![1.0, 1.0])];
+        // NaN * 0 is NaN, so the poisoned cell spoils the first score already;
+        // unchecked, both NaN scores used to decode to `Hits` naming nothing.
+        let poisoned = Readout {
+            values: vec![0.9, f32::NAN],
+            as_of: WriteSeq(1),
+        };
+        assert_eq!(
+            decode_readout(&poisoned, &facts, policy()),
+            Err(FastMemoryError::NonFinite {
+                field: "score",
+                index: 0
+            })
+        );
+        let overflowing = Readout {
+            values: vec![f32::MAX, f32::MAX],
+            as_of: WriteSeq(1),
+        };
+        assert_eq!(
+            decode_readout(&overflowing, &facts, policy()),
+            Err(FastMemoryError::NonFinite {
+                field: "score",
+                index: 1
+            })
         );
     }
 }

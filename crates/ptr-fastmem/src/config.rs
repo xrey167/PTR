@@ -14,6 +14,21 @@ pub const MAX_CHECKPOINT_INTERVAL: u32 = 1_000_000;
 /// journal, and a neural-state binding lists every input it depends on; 65,536
 /// is the binding item bound, so a memory can always be declared in full.
 pub const MAX_WRITES: u32 = 65_536;
+/// Largest magnitude a written value cell may have: `2^24`.
+///
+/// Admission checks it per write, independently of the state, so that no fold
+/// of admitted writes can leave `f32`'s range. A write grows a head's Frobenius
+/// norm by at most `beta * ||v||` (the rest of the update is a contraction), and
+/// a head's value slice of at most [`MAX_HEAD_DIM`] cells has `||v|| <= 2^5 *
+/// 2^24`, so [`MAX_WRITES`] writes keep every head below `2^16 * 2^29 = 2^45`
+/// in exact arithmetic; `f32` rounding over the longest journal multiplies that
+/// by less than `2^6`. Every cell, readout and squared error a fold computes
+/// therefore stays below `2^112`, well inside `f32`'s `2^128`. Because the bound
+/// does not depend on the state, every order and every subset of admitted
+/// writes folds to finite cells: a write, a restore of its journal and a refold
+/// after revocation admit exactly the same writes, and every checkpoint they
+/// produce can be decoded again.
+pub const MAX_VALUE_MAGNITUDE: f32 = 16_777_216.0;
 
 /// Shape of one fast-weight memory.
 ///

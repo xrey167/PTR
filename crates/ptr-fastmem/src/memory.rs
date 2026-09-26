@@ -62,7 +62,8 @@ impl FastMemory {
     /// increase; gaps are expected where writes were revoked.
     ///
     /// Use original write requests, with sequence numbers starting at one or
-    /// higher. Returns configuration, journal-capacity, sequence-order, or
+    /// higher. Every write is admitted by the same rules as [`Self::write`].
+    /// Returns configuration, journal-capacity, sequence-order, or
     /// write-validation errors; no partially restored memory is returned.
     pub fn restore<I>(config: FastMemoryConfig, journal: I) -> Result<Self, FastMemoryError>
     where
@@ -117,8 +118,10 @@ impl FastMemory {
     ///
     /// # Errors
     /// Rejects a full journal, invalid vector lengths, nonfinite vector entries,
-    /// zero or nonfinite head norms, or strength/decay factors outside `(0, 1]`.
-    /// Validation errors leave the journal, state, and next sequence unchanged.
+    /// value cells beyond [`crate::MAX_VALUE_MAGNITUDE`] (the bound that keeps
+    /// every fold of admitted writes finite), zero or nonfinite head norms, or
+    /// strength/decay factors outside `(0, 1]`. Validation errors leave the
+    /// journal, state, and next sequence unchanged.
     pub fn write(&mut self, request: WriteRequest) -> Result<WriteReceipt, FastMemoryError> {
         self.check_capacity()?;
         let seq = WriteSeq(self.next_seq);

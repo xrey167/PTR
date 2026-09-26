@@ -26,7 +26,7 @@ mod write;
 pub use codec::{decode_state, encode_state, STATE_MAGIC};
 pub use config::{
     check_config, FastMemoryConfig, MAX_CHECKPOINT_INTERVAL, MAX_HEADS, MAX_HEAD_DIM,
-    MAX_STATE_CELLS, MAX_WRITES,
+    MAX_STATE_CELLS, MAX_VALUE_MAGNITUDE, MAX_WRITES,
 };
 pub use decode::{decode_readout, DecodePolicy, FactCode, Recall, FASTMEM_BACKEND};
 pub use error::FastMemoryError;
