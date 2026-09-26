@@ -1,6 +1,8 @@
 # Defects the L004 harness must detect; run with
 # `python scripts/mutation_check.py L004`. Each `find` must occur exactly once
 # in its file (checked in CI), so the list cannot drift from the code silently.
+# `expect` names the hard counters that show the defect: a run that fails only
+# on others (a query that no longer binds, say) does not count as detecting it.
 # A mutation that only a crash can expose runs more cases.
 
 package = "ptr-bench"
@@ -33,6 +35,7 @@ hard_counters = [
 [[mutation]]
 name = "anchor-chain-check-removed"
 description = "The projector applies a record without checking that it chains from the stored anchor."
+expect = ["foreign_histories_accepted"]
 file = "crates/ptr-pg/src/adapters/projection.rs"
 find = '''
         if recomputed != anchor {
@@ -44,6 +47,7 @@ replace = '''
 [[mutation]]
 name = "redelivery-anchor-check-removed"
 description = "A redelivered index is reported as a duplicate without comparing its anchor."
+expect = ["foreign_histories_accepted"]
 file = "crates/ptr-pg/src/adapters/projection.rs"
 find = '''
                 if stored != Some(anchor.digest) {
@@ -55,6 +59,7 @@ replace = '''
 [[mutation]]
 name = "ledger-head-digest-ignored"
 description = "The head check compares indexes only, not digests."
+expect = ["foreign_histories_accepted"]
 file = "crates/ptr-pg/src/adapters/projection.rs"
 find = '''
         if ledger == projection && ledger_head.digest != watermark.digest {
@@ -66,6 +71,7 @@ replace = '''
 [[mutation]]
 name = "anchor-index-check-removed"
 description = "A record is accepted with another index's anchor."
+expect = ["foreign_histories_accepted"]
 file = "crates/ptr-pg/src/adapters/projection.rs"
 find = '''
         if anchor.index != committed.index {
@@ -77,6 +83,7 @@ replace = '''
 [[mutation]]
 name = "state-value-not-updated"
 description = "An upsert of a state entry keeps the old value."
+expect = ["state_divergences"]
 file = "crates/ptr-pg/src/adapters/projection.rs"
 find = '''
                          SET value = EXCLUDED.value, commit_index = EXCLUDED.commit_index"
@@ -88,6 +95,7 @@ replace = '''
 [[mutation]]
 name = "live-generation-not-updated"
 description = "An activation keeps the previous live generation."
+expect = ["lifecycle_divergences"]
 file = "crates/ptr-pg/src/adapters/projection.rs"
 find = '''
                              SET generation = EXCLUDED.generation, \
@@ -99,6 +107,7 @@ replace = '''
 [[mutation]]
 name = "tombstone-off-by-one"
 description = "A revocation tombstones the next generation instead of its own."
+expect = ["lifecycle_divergences"]
 file = "crates/ptr-pg/src/adapters/projection.rs"
 find = '''
                         &[&subject, &generation, &commit],
@@ -110,6 +119,7 @@ replace = '''
 [[mutation]]
 name = "revision-map-off-by-one"
 description = "A semantic revision is recorded under the wrong number."
+expect = ["revision_divergences"]
 file = "crates/ptr-pg/src/adapters/projection.rs"
 find = '''
                             &to_i64(revision, "revision")?,
@@ -121,6 +131,7 @@ replace = '''
 [[mutation]]
 name = "nul-check-removed"
 description = "A record PostgreSQL text cannot hold reaches the database."
+expect = ["nul_failures"]
 file = "crates/ptr-pg/src/adapters/projection.rs"
 find = '''
         check_record_text(committed)?;
@@ -132,6 +143,7 @@ replace = '''
 [[mutation]]
 name = "watermark-in-second-transaction"
 description = "A commit's rows and its watermark are written in two transactions."
+expect = ["crash_recovery_failures", "commit_fault_failures", "duel_failures"]
 file = "crates/ptr-pg/src/adapters/projection.rs"
 cases = 10
 find = '''
@@ -154,6 +166,7 @@ replace = '''
 [[mutation]]
 name = "rebuild-leaves-state-residue"
 description = "A rebuild carries the previous projection's state entries over."
+expect = ["extra_or_missing_keys", "rebuild_divergences"]
 file = "crates/ptr-pg/src/adapters/mod.rs"
 find = '''
         let derived = self.schemas.derived.clone();
@@ -191,6 +204,7 @@ replace = '''
 [[mutation]]
 name = "projection-commit-error-ignored"
 description = "The projector reports a record applied even when its commit failed."
+expect = ["commit_fault_failures"]
 file = "crates/ptr-pg/src/adapters/projection.rs"
 cases = 12
 find = '''
@@ -205,6 +219,7 @@ replace = '''
 [[mutation]]
 name = "state-committed-before-watermark"
 description = "A commit's state entries are committed before its lifecycle rows, events and watermark."
+expect = ["crash_recovery_failures", "commit_fault_failures", "duel_failures"]
 file = "crates/ptr-pg/src/adapters/projection.rs"
 cases = 12
 find = '''
@@ -226,6 +241,7 @@ replace = '''
 [[mutation]]
 name = "project-overwritten-on-supersede"
 description = "A supersession or a constraint or procedure activation clears the target's project."
+expect = ["lifecycle_divergences"]
 file = "crates/ptr-pg/src/adapters/projection.rs"
 find = '''
                                  project = coalesce(EXCLUDED.project, \
@@ -238,6 +254,7 @@ replace = '''
 [[mutation]]
 name = "event-subject-wrong"
 description = "A settled or reconciled effect is published under its own commit index instead of its attempt's."
+expect = ["event_log_divergences"]
 file = "crates/ptr-pg/src/event.rs"
 find = '''
             format!("effect:{}", attempt.0)
@@ -249,6 +266,7 @@ replace = '''
 [[mutation]]
 name = "event-topics-swapped"
 description = "Supersessions and revocations are published under each other's topic."
+expect = ["event_log_divergences"]
 file = "crates/ptr-pg/src/event.rs"
 find = '''
         LedgerEvent::CapsuleSuperseded { .. } => "capsule.superseded",
@@ -262,6 +280,7 @@ replace = '''
 [[mutation]]
 name = "redelivery-record-unchecked"
 description = "A redelivered index is a duplicate whenever its anchor matches, whatever record comes with it."
+expect = ["foreign_histories_accepted"]
 file = "crates/ptr-pg/src/adapters/projection.rs"
 find = '''
                 if recomputed != Some(anchor) {

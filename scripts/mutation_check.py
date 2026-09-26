@@ -5,11 +5,15 @@ fail. Each experiment that opts in lists defects in `tests/mutations.toml`: a
 source file, an exact text that must occur there once, and its replacement, plus
 optional further edits (`[[mutation.also]]`, each with its own `find`,
 `replace` and optionally `file`) when one defect spans several places.
+Each mutation also names the hard counters that show its defect (`expect`).
 This script plants one defect at a time, rebuilds the harness, runs it, and
 restores the file whatever happens. A mutation is *killed* when the harness
-exits with status 1 and reports hard failures; exiting any other way (a panic,
-a build failure, a timeout) or passing is recorded as it is. The record goes to
-the experiment's `results/mutations.json`.
+exits with status 1 and one of its expected counters fired. A run that fails
+only on other counters is recorded as `failed-elsewhere`: the defect may have
+broken something unrelated first (a query that no longer binds, say), which
+shows nothing about whether the harness sees the defect itself. Exiting any
+other way (a panic, a build failure, a timeout) or passing is recorded as it
+is. The record goes to the experiment's `results/mutations.json`.
 
     python scripts/mutation_check.py L004
     python scripts/mutation_check.py L003 --only append-without-row-lock
@@ -55,7 +59,25 @@ def load_plan(exp_root: Path) -> dict:
     names = [mutation["name"] for mutation in plan.get("mutation", [])]
     if len(names) != len(set(names)):
         raise SystemExit(f"{path.relative_to(ROOT)}: duplicate mutation names")
+    errors = expectation_errors(plan)
+    if errors:
+        raise SystemExit(f"{path.relative_to(ROOT)}: " + "; ".join(errors))
     return plan
+
+
+def expectation_errors(plan: dict) -> list[str]:
+    """Every mutation must name at least one expected counter, and each must
+    be one of the plan's hard counters."""
+    hard = set(plan.get("hard_counters", []))
+    errors = []
+    for mutation in plan.get("mutation", []):
+        expected = mutation.get("expect", [])
+        if not expected:
+            errors.append(f"{mutation['name']}: no expected counter")
+        for counter in expected:
+            if counter not in hard:
+                errors.append(f"{mutation['name']}: {counter!r} is not a hard counter")
+    return errors
 
 
 def edits(mutation: dict) -> list[tuple[str, str, str]]:
@@ -115,6 +137,24 @@ def last_json_line(stdout: str) -> dict:
     return {}
 
 
+def classify(returncode: int, metrics: dict, plan: dict, mutation: dict) -> tuple[str, dict]:
+    """The result of one run of a mutated harness and the hard counters that
+    fired."""
+    fired = {
+        key: value
+        for key, value in metrics.items()
+        if key in plan.get("hard_counters", []) and isinstance(value, int) and value > 0
+    }
+    hard = int(metrics.get("hard_failures", 0))
+    if returncode == 0:
+        return "survived", fired
+    if returncode == 1 and hard > 0:
+        if any(counter in fired for counter in mutation.get("expect", [])):
+            return "killed", fired
+        return "failed-elsewhere", fired
+    return "crashed", fired
+
+
 def run_mutation(plan: dict, mutation: dict, timeout: int) -> dict:
     cases = int(mutation.get("cases", plan["cases"]))
     seed = int(mutation.get("seed", plan["seed"]))
@@ -143,20 +183,15 @@ def run_mutation(plan: dict, mutation: dict, timeout: int) -> dict:
         for file, text in originals.items():
             (ROOT / file).write_text(text, encoding="utf-8")
     metrics = last_json_line(ran.stdout)
-    hard = int(metrics.get("hard_failures", 0))
-    fired = {
-        key: value
-        for key, value in metrics.items()
-        if key in plan.get("hard_counters", []) and isinstance(value, int) and value > 0
-    }
-    killed = ran.returncode == 1 and hard > 0
+    result, fired = classify(ran.returncode, metrics, plan, mutation)
     outcome.update(
-        result="killed" if killed else ("survived" if ran.returncode == 0 else "crashed"),
+        result=result,
         exit_code=ran.returncode,
-        hard_failures=hard,
+        hard_failures=int(metrics.get("hard_failures", 0)),
+        expected=list(mutation.get("expect", [])),
         counters=fired,
     )
-    if not killed:
+    if result != "killed":
         outcome["detail"] = ran.stderr[-2000:]
     return outcome
 

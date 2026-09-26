@@ -66,6 +66,42 @@ class MutationCheckTests(unittest.TestCase):
         self.assertEqual(run[1:], ["fastmem-revocation", "4", "17"])
         self.assertTrue(run[0].endswith("target/release/ptr-bench"))
 
+    def test_every_mutation_names_a_hard_counter_it_expects(self):
+        for exp_id, root in experiments_with_mutations():
+            with self.subTest(experiment=exp_id):
+                plan = mod.load_plan(root)
+                self.assertEqual(mod.expectation_errors(plan), [])
+        plan = {
+            "hard_counters": ["a", "b"],
+            "mutation": [
+                {"name": "none"},
+                {"name": "empty", "expect": []},
+                {"name": "unknown", "expect": ["a", "c"]},
+                {"name": "fine", "expect": ["b"]},
+            ],
+        }
+        errors = mod.expectation_errors(plan)
+        self.assertEqual(len(errors), 3)
+        self.assertTrue(any(error.startswith("none: no expected") for error in errors))
+        self.assertTrue(any(error.startswith("empty: no expected") for error in errors))
+        self.assertTrue(any(error.startswith("unknown: 'c' is not") for error in errors))
+
+    def test_a_mutation_is_killed_only_by_a_counter_it_expects(self):
+        plan = {"hard_counters": ["lost", "read_failures"]}
+        mutation = {"expect": ["lost"]}
+        self.assertEqual(
+            mod.classify(1, {"hard_failures": 3, "lost": 3}, plan, mutation),
+            ("killed", {"lost": 3}),
+        )
+        # A defect that broke a query first shows nothing about the defect.
+        self.assertEqual(
+            mod.classify(1, {"hard_failures": 2, "read_failures": 2}, plan, mutation),
+            ("failed-elsewhere", {"read_failures": 2}),
+        )
+        self.assertEqual(mod.classify(0, {"hard_failures": 0}, plan, mutation)[0], "survived")
+        self.assertEqual(mod.classify(101, {}, plan, mutation)[0], "crashed")
+        self.assertEqual(mod.classify(1, {}, plan, mutation)[0], "crashed")
+
     def test_the_last_json_line_is_the_result(self):
         stdout = 'Compiling\n{"a":1}\nnoise\n{"hard_failures":2}\n'
         self.assertEqual(mod.last_json_line(stdout), {"hard_failures": 2})
