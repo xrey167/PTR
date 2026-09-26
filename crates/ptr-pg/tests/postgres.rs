@@ -2125,7 +2125,13 @@ async fn strings_postgresql_text_cannot_hold_are_refused_before_anything_is_writ
 async fn revert_share_counts_merged_branches_later_reverted_within_a_window() {
     let mut substrate = substrate().await;
     record_manual_policy(&mut substrate, "policy-r").await;
-    for (id, author) in [("r1", "agent-a"), ("r2", "agent-a"), ("r3", "agent-b")] {
+    for (id, author) in [
+        ("r1", "agent-a"),
+        ("r2", "agent-a"),
+        ("r3", "agent-b"),
+        ("r5", "agent-b"),
+        ("r6", "agent-a"),
+    ] {
         substrate
             .store_branch(&sealed_branch(id, author))
             .await
@@ -2143,13 +2149,16 @@ async fn revert_share_counts_merged_branches_later_reverted_within_a_window() {
         ("r1", BranchOutcome::Merged(CommitIndex(10))),
         ("r1", BranchOutcome::Reverted(CommitIndex(12))),
         ("r2", BranchOutcome::Merged(CommitIndex(11))),
+        ("r5", BranchOutcome::Merged(CommitIndex(14))),
+        ("r6", BranchOutcome::Merged(CommitIndex(15))),
     ] {
         substrate
             .record_outcome(&BranchId::from(id), outcome)
             .await
             .unwrap();
     }
-    // A merge and a triage from a month ago, as the store's clock recorded them.
+    // A merge and a triage from a month ago, as the store's clock recorded
+    // them; the month-old merge is reverted today.
     let raw = raw_client().await;
     let work = substrate.schemas().work.clone();
     raw.execute(
@@ -2162,6 +2171,13 @@ async fn revert_share_counts_merged_branches_later_reverted_within_a_window() {
     .await
     .unwrap();
     substrate
+        .record_outcome(
+            &BranchId::from("r3"),
+            BranchOutcome::Reverted(CommitIndex(13)),
+        )
+        .await
+        .unwrap();
+    substrate
         .store_branch(&sealed_branch("r4", "agent-b"))
         .await
         .unwrap();
@@ -2171,6 +2187,19 @@ async fn revert_share_counts_merged_branches_later_reverted_within_a_window() {
              score, auto_propensity, policy_version, decided_at) \
              VALUES ('r4', 'escalate', true, false, 0.2, 0.9, 'policy-r', \
                      now() - interval '30 days')"
+        ),
+        &[],
+    )
+    .await
+    .unwrap();
+    // Merges inside the window whose reverts carry stamps outside it: nothing
+    // orders the stamps of two records, and a merge counts as reverted
+    // whenever its revert was stamped.
+    raw.execute(
+        &format!(
+            "INSERT INTO {work}.branch_outcome (branch, outcome, commit_index, observed_at) \
+             VALUES ('r5', 'reverted', 16, now() - interval '10 days'), \
+                    ('r6', 'reverted', 17, now() - interval '10 days')"
         ),
         &[],
     )
@@ -2193,39 +2222,42 @@ async fn revert_share_counts_merged_branches_later_reverted_within_a_window() {
             .metric(revert(Grouping::Overall, Window::All))
             .await
             .unwrap(),
-        vec![row("", 1, 3)]
+        vec![row("", 4, 5)]
     );
-    // Only merges within the window enter the denominator.
+    // Only merges within the window enter the denominator, and each of them
+    // counts as reverted wherever its revert's stamp falls: the month-old
+    // merge reverted today is outside, the reverts stamped before the window
+    // of their merges count.
     assert_eq!(
         substrate
             .metric(revert(Grouping::Overall, Window::LastDays(7)))
             .await
             .unwrap(),
-        vec![row("", 1, 2)]
+        vec![row("", 3, 4)]
     );
     assert_eq!(
         substrate
             .metric(revert(Grouping::ByPrincipal, Window::All))
             .await
             .unwrap(),
-        vec![row("agent-a", 1, 2), row("agent-b", 0, 1)]
+        vec![row("agent-a", 2, 3), row("agent-b", 2, 2)]
     );
     assert_eq!(
         substrate
             .metric(revert(Grouping::ByPolicyVersion, Window::LastDays(7)))
             .await
             .unwrap(),
-        vec![row("policy-r", 1, 2)]
+        vec![row("policy-r", 3, 4)]
     );
     // A triage-based metric is windowed on the triage.
     let auto = |window| spec(Metric::AutoProposeShare, Grouping::Overall, window);
     assert_eq!(
         substrate.metric(auto(Window::All)).await.unwrap(),
-        vec![row("", 3, 4)]
+        vec![row("", 5, 6)]
     );
     assert_eq!(
         substrate.metric(auto(Window::LastDays(7))).await.unwrap(),
-        vec![row("", 3, 3)]
+        vec![row("", 5, 5)]
     );
     // A zero-day window counts nothing.
     assert_eq!(
@@ -2235,6 +2267,121 @@ async fn revert_share_counts_merged_branches_later_reverted_within_a_window() {
             .unwrap(),
         vec![]
     );
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn every_metric_windows_a_branch_once_on_the_record_that_enters_its_denominator() {
+    let mut substrate = substrate().await;
+    record_manual_policy(&mut substrate, "policy-w").await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    // (branch, decision, eligible, calibration slice, days since the triage)
+    let triages = [
+        ("m1", "auto_propose", true, false, 3),
+        ("m2", "auto_propose", true, false, 31),
+        ("m3", "auto_propose", true, false, 4),
+        ("m4", "auto_propose", true, false, 41),
+        ("c1", "escalate", true, false, 11),
+        ("c2", "discard", false, false, 2),
+        ("s1", "escalate", true, true, 30),
+        ("s2", "escalate", true, true, 30),
+        ("s3", "escalate", true, true, 3),
+        ("e1", "escalate", true, false, 2),
+    ];
+    for (id, decision, eligible, slice, days) in triages {
+        substrate
+            .store_branch(&sealed_branch(id, "agent-w"))
+            .await
+            .unwrap();
+        let propensity: f64 = if eligible { 0.5 } else { 0.0 };
+        raw.execute(
+            &format!(
+                "INSERT INTO {work}.branch_triage (branch, decision, eligible, \
+                 calibration_slice, score, auto_propensity, policy_version, decided_at) \
+                 VALUES ($1, $2, $3, $4, 0.5, $5, 'policy-w', \
+                         now() - make_interval(days => $6))"
+            ),
+            &[&id, &decision, &eligible, &slice, &propensity, &days],
+        )
+        .await
+        .unwrap();
+    }
+    // (branch, outcome, commit index, days since it was observed)
+    let outcomes: [(&str, &str, Option<i64>, i32); 13] = [
+        // Merged in the window and reverted since.
+        ("m1", "merged", Some(1), 2),
+        ("m1", "reverted", Some(5), 1),
+        // Merged a month ago and reverted in the window.
+        ("m2", "merged", Some(2), 30),
+        ("m2", "reverted", Some(6), 1),
+        ("m3", "merged", Some(3), 3),
+        ("m4", "merged", Some(4), 40),
+        // Conflicted before the window and discarded in it: the branch
+        // entered the record before the window.
+        ("c1", "conflicted", None, 10),
+        ("c1", "discarded", None, 1),
+        ("c2", "conflicted", None, 1),
+        // Triaged a month ago and adjudicated in the window.
+        ("s1", "adjudicated_harmful", None, 1),
+        ("s2", "adjudicated_harmful", None, 20),
+        ("s3", "adjudicated_harmless", None, 1),
+        // Adjudicated in the window, but outside the calibration slice.
+        ("e1", "adjudicated_harmful", None, 1),
+    ];
+    for (id, outcome, commit, days) in outcomes {
+        raw.execute(
+            &format!(
+                "INSERT INTO {work}.branch_outcome (branch, outcome, commit_index, observed_at) \
+                 VALUES ($1, $2, $3, now() - make_interval(days => $4))"
+            ),
+            &[&id, &outcome, &commit, &days],
+        )
+        .await
+        .unwrap();
+    }
+
+    let counts = |metric: Metric, window: Window| {
+        let substrate = &substrate;
+        async move {
+            let rows = substrate
+                .metric(MetricSpec {
+                    metric,
+                    grouping: Grouping::Overall,
+                    window,
+                })
+                .await
+                .unwrap();
+            assert_eq!(rows.len(), 1, "{metric:?} {window:?}: {rows:?}");
+            (rows[0].numerator, rows[0].denominator)
+        }
+    };
+    let week = Window::LastDays(7);
+    // On the triage: auto-proposed m1..m4 over the eligible (all but c2),
+    // and within the week m1 and m3 over m1, m3, s3 and e1.
+    assert_eq!(counts(Metric::AutoProposeShare, Window::All).await, (4, 9));
+    assert_eq!(counts(Metric::AutoProposeShare, week).await, (2, 4));
+    // On the triage: escalated c1, s1, s2, s3 and e1 over all ten, and within
+    // the week s3 and e1 over m1, m3, c2, s3 and e1.
+    assert_eq!(counts(Metric::EscalationShare, Window::All).await, (5, 10));
+    assert_eq!(counts(Metric::EscalationShare, week).await, (2, 5));
+    // On the branch's first outcome, once per branch: c1 and c2 conflicted
+    // over all ten; within the week c2 over m1, m3, c2, s1, s3 and e1. c1
+    // and m2, whose first outcomes precede the week, are in neither count.
+    assert_eq!(counts(Metric::ConflictRate, Window::All).await, (2, 10));
+    assert_eq!(counts(Metric::ConflictRate, week).await, (1, 6));
+    // On the adjudication, over the calibration slice only: s1 and s2
+    // harmful over s1, s2 and s3; within the week s1 over s1 and s3.
+    assert_eq!(
+        counts(Metric::AdjudicatedHarmRate, Window::All).await,
+        (2, 3)
+    );
+    assert_eq!(counts(Metric::AdjudicatedHarmRate, week).await, (1, 2));
+    // On the merge: m1 and m2 reverted over the four merges; within the week
+    // m1 over m1 and m3, while m2's revert in the week does not bring back
+    // its month-old merge.
+    assert_eq!(counts(Metric::RevertShare, Window::All).await, (2, 4));
+    assert_eq!(counts(Metric::RevertShare, week).await, (1, 2));
     substrate.drop_all().await.unwrap();
 }
 

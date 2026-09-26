@@ -9,18 +9,21 @@
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Metric {
     /// Eligible triaged branches that were auto-proposed, over eligible
-    /// triaged branches.
+    /// triaged branches. Windowed on the branch's triage.
     AutoProposeShare,
     /// Triaged branches that were escalated to a person, over all triaged
-    /// branches.
+    /// branches. Windowed on the branch's triage.
     EscalationShare,
     /// Certified branches whose certification ended in conflict, over branches
-    /// with any recorded outcome.
+    /// with any recorded outcome. Each branch counts once however many
+    /// outcomes it has: in the numerator if any of them is a conflict.
+    /// Windowed on the branch's first recorded outcome.
     ConflictRate,
     /// Calibration-slice branches adjudicated harmful, over adjudicated
     /// calibration-slice branches. Because the slice is a uniform random sample
     /// of eligible branches, this is an unbiased estimate of the harm rate the
-    /// arbiter's threshold is calibrated against.
+    /// arbiter's threshold is calibrated against. Windowed on the branch's
+    /// adjudication, of which it has at most one.
     AdjudicatedHarmRate,
     /// Merged branches that were later reverted, over merged branches. A
     /// descriptive operational signal, not a harm rate: only auto-proposed and
@@ -28,7 +31,7 @@ pub enum Metric {
     /// something, and a revert is recorded only once someone makes it, so this
     /// share is neither an unbiased nor a calibrated estimate of harm. The
     /// harm rate the arbiter is calibrated against is
-    /// [`Metric::AdjudicatedHarmRate`].
+    /// [`Metric::AdjudicatedHarmRate`]. Windowed on the branch's merge.
     RevertShare,
 }
 
@@ -65,12 +68,23 @@ pub enum Grouping {
 
 /// Which records a metric counts, by when they were recorded.
 ///
-/// Each metric is windowed on the record that puts a branch into its
-/// denominator: the triage for [`Metric::AutoProposeShare`] and
-/// [`Metric::EscalationShare`], the recorded outcome for
-/// [`Metric::ConflictRate`], the adjudication for
-/// [`Metric::AdjudicatedHarmRate`], and the merge for [`Metric::RevertShare`],
-/// whose numerator then counts those merges reverted by the time of the query.
+/// Each metric counts a branch at most once and is windowed on one timestamp
+/// per branch, that of the record that puts the branch into its denominator;
+/// the numerator then counts those branches whenever the record that
+/// qualifies them was stamped:
+///
+/// * [`Metric::AutoProposeShare`] and [`Metric::EscalationShare`]: the
+///   branch's triage, of which it has one.
+/// * [`Metric::ConflictRate`]: the branch's first recorded outcome, whatever
+///   outcomes follow; a branch whose first outcome precedes the window is in
+///   neither count, even when a later outcome falls inside it.
+/// * [`Metric::AdjudicatedHarmRate`]: the branch's adjudication, of which it
+///   has at most one, not its triage.
+/// * [`Metric::RevertShare`]: the branch's merge; the numerator counts those
+///   merges reverted by the time of the query, whenever the revert was
+///   stamped, and a merge from before the window is in neither count, even
+///   when its revert falls inside it.
+///
 /// A window is measured back from when the query runs, on the clock of the
 /// store that answers it; it is an operational view, never evidence about
 /// semantic state.

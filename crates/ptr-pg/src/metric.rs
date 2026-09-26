@@ -7,9 +7,11 @@ use crate::config::SchemaSet;
 /// The query returns rows `(grp text, numerator bigint, denominator bigint)`,
 /// one per group, ordered by group. The metric's meaning is defined in
 /// `ptr-analytics`; this is only its Postgres rendering, and it reads working
-/// state, never the projection. A [`Window`] bounds the timestamp of the
-/// record that puts a branch into the denominator, measured back from the
-/// server's `now()`; the day count is a `u16`, so it is rendered literally.
+/// state, never the projection. Each branch is counted once, and a [`Window`]
+/// bounds the one timestamp per branch that `ptr-analytics` names for the
+/// metric (the record that puts the branch into the denominator), measured
+/// back from the server's `now()`; the day count is a `u16`, so it is
+/// rendered literally.
 pub fn metric_sql(spec: MetricSpec, schemas: &SchemaSet) -> String {
     let work = schemas.work.as_str();
     let group = match spec.grouping {
@@ -33,16 +35,26 @@ pub fn metric_sql(spec: MetricSpec, schemas: &SchemaSet) -> String {
             Vec::new(),
             "t.decided_at",
         ),
+        // A branch can hold several outcomes (the key is (branch, outcome)),
+        // so outcomes are aggregated per branch before the window applies: a
+        // branch conflicted if any of its outcomes is a conflict, and entered
+        // the record with its first outcome.
         Metric::ConflictRate => (
-            "count(DISTINCT o.branch) FILTER (WHERE o.outcome = 'conflicted')",
-            "count(DISTINCT o.branch)",
+            "count(*) FILTER (WHERE o.conflicted)",
+            "count(*)",
             format!(
-                "{work}.branch_outcome o JOIN {work}.branch b ON b.id = o.branch \
+                "(SELECT branch, bool_or(outcome = 'conflicted') AS conflicted, \
+                         min(observed_at) AS first_observed \
+                  FROM {work}.branch_outcome GROUP BY branch) o \
+                 JOIN {work}.branch b ON b.id = o.branch \
                  LEFT JOIN {work}.branch_triage t ON t.branch = o.branch"
             ),
             Vec::new(),
-            "o.observed_at",
+            "o.first_observed",
         ),
+        // A branch is adjudicated at most once (branch_outcome_one_adjudication)
+        // and triaged once, so each branch is one row, windowed on its
+        // adjudication.
         Metric::AdjudicatedHarmRate => (
             "count(DISTINCT o.branch) FILTER (WHERE o.outcome = 'adjudicated_harmful')",
             "count(DISTINCT o.branch)",
@@ -55,6 +67,8 @@ pub fn metric_sql(spec: MetricSpec, schemas: &SchemaSet) -> String {
         ),
         // A branch is merged at most once and reverted at most once (the
         // outcome key is (branch, outcome)), so both counts are of branches.
+        // The window applies to the merge only: its revert counts whenever it
+        // was stamped.
         Metric::RevertShare => (
             "count(r.branch)",
             "count(*)",

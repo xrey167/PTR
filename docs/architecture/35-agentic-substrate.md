@@ -436,9 +436,17 @@ records, and computes its interval
 the definition to SQL over the work schema only. `RevertShare` counts merged branches
 later reverted; it is a descriptive operational signal, not a harm rate (reverts are
 decided by people who noticed something), and the calibrated harm rate remains
-`AdjudicatedHarmRate`. Any metric can be restricted to the last so many days, measured
-on the record that puts a branch into its denominator
-(`revert_share_counts_merged_branches_later_reverted_within_a_window`). A columnar
+`AdjudicatedHarmRate`. Any metric can be restricted to the last so many days. Each
+counts a branch once and is windowed on one timestamp per branch, that of the record
+that puts the branch into its denominator: the triage for `AutoProposeShare` and
+`EscalationShare`; the first recorded outcome for `ConflictRate`, whose numerator
+counts those branches with a conflict among their outcomes, so a branch that
+conflicted before the window and was discarded inside it is in neither count; the
+adjudication for `AdjudicatedHarmRate`; and the merge for `RevertShare`, whose
+numerator counts those merges reverted by the time of the query whenever the revert
+was stamped
+(`every_metric_windows_a_branch_once_on_the_record_that_enters_its_denominator`,
+`revert_share_counts_merged_branches_later_reverted_within_a_window`). A columnar
 mirror (`pg_duckdb`, an Iceberg mirror, DataFusion) is an evaluation slot and never
 feeds back into state.
 
