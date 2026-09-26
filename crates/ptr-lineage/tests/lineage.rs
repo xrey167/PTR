@@ -202,3 +202,46 @@ fn revoking_one_input_names_its_adapter_every_descendant_and_every_consolidation
         .affected_by(&BTreeSet::from(["unrelated".to_owned()]))
         .is_empty());
 }
+
+#[test]
+fn a_consolidation_must_name_a_registered_source_other_than_itself() {
+    let mut lineage = Lineage::new(base());
+    lineage.register(trained("a1", None)).unwrap();
+    // An empty source set would restart the depth count and leave erasure
+    // nothing to follow from the inputs merged into it.
+    assert_eq!(
+        lineage.register(record(
+            "c1",
+            Origin::Consolidated {
+                from: BTreeSet::new(),
+            },
+        )),
+        Err(LineageError::Empty {
+            field: "consolidation sources"
+        })
+    );
+    assert!(lineage.get(&AdapterId::from("c1")).is_none());
+    // Naming itself is naming an adapter that is not registered yet.
+    assert_eq!(
+        lineage.register(record(
+            "c1",
+            Origin::Consolidated {
+                from: BTreeSet::from([AdapterId::from("a1"), AdapterId::from("c1")]),
+            },
+        )),
+        Err(LineageError::UnknownAdapter { id: "c1".into() })
+    );
+    assert!(lineage.get(&AdapterId::from("c1")).is_none());
+    lineage
+        .register(record(
+            "c1",
+            Origin::Consolidated {
+                from: BTreeSet::from([AdapterId::from("a1")]),
+            },
+        ))
+        .unwrap();
+    assert_eq!(
+        lineage.affected_by(&BTreeSet::from(["a1-input".to_owned()])),
+        BTreeSet::from([AdapterId::from("a1"), AdapterId::from("c1")])
+    );
+}

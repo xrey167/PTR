@@ -12,7 +12,8 @@ pub enum LineageError {
     /// A matrix, vector or scalar input holds NaN or infinity, or an update
     /// would store one.
     NonFinite { field: &'static str },
-    /// A matrix has no rows or no columns.
+    /// A matrix has no rows or no columns, or a set that needs a member has
+    /// none.
     Empty { field: &'static str },
     /// An adapter id is already registered.
     DuplicateAdapter { id: String },

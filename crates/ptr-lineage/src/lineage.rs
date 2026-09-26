@@ -41,7 +41,8 @@ impl fmt::Display for BaseModel {
 pub enum Origin {
     /// Trained from the base, or continued from a parent adapter.
     Trained { parent: Option<AdapterId> },
-    /// Produced by merging earlier adapters into one.
+    /// Produced by merging earlier adapters into one. At least one source
+    /// must be named: the sources are the edges erasure follows.
     Consolidated { from: BTreeSet<AdapterId> },
 }
 
@@ -116,7 +117,18 @@ impl Lineage {
     }
 
     /// Register a new adapter as a candidate. Its base must be the lineage base
-    /// and every adapter it names must already be registered.
+    /// and every adapter it names must already be registered, so none can
+    /// name itself.
+    ///
+    /// # Errors
+    /// Returns `LineageError::BaseMismatch` for another base,
+    /// `LineageError::DuplicateAdapter` for an id already registered,
+    /// `LineageError::Empty` for a consolidation that names no source (it
+    /// would restart the depth count while giving erasure no edge to follow
+    /// from the inputs merged into it), `LineageError::UnknownAdapter` for a
+    /// parent or source that is not registered, and
+    /// `LineageError::InvalidParameter` for rank zero. A refused record
+    /// registers nothing.
     pub fn register(&mut self, mut record: AdapterRecord) -> Result<(), LineageError> {
         if record.base != self.base {
             return Err(LineageError::BaseMismatch {
@@ -131,6 +143,11 @@ impl Lineage {
         }
         let named: Vec<&AdapterId> = match &record.origin {
             Origin::Trained { parent } => parent.iter().collect(),
+            Origin::Consolidated { from } if from.is_empty() => {
+                return Err(LineageError::Empty {
+                    field: "consolidation sources",
+                });
+            }
             Origin::Consolidated { from } => from.iter().collect(),
         };
         if let Some(missing) = named.iter().find(|id| !self.adapters.contains_key(id)) {

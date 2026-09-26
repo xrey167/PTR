@@ -4,7 +4,7 @@ maturity = "prototype"
 last_reviewed = "2026-09-26"
 
 implemented = [
-  "Content-addressed adapter records bound to one exact base model and revision, with origin, parent or consolidation sources and a data manifest",
+  "Content-addressed adapter records bound to one exact base model and revision, with origin, parent or consolidation sources and a data manifest; a consolidation must name at least one registered source",
   "Registration always starts as a candidate; only a passing forgetting gate report bound to that adapter lets it serve",
   "Forgetting gate with thresholds on average and per-task forgetting, backward transfer and public-suite regression, computed from an accuracy matrix; a nonfinite threshold or public-suite score is refused before anything is evaluated",
   "Revoking a training input names every adapter, descendant and consolidation that depends on it",
