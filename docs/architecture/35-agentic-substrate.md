@@ -67,6 +67,18 @@ that stays open, and a retry takes it afresh instead of re-entering it
 (`a_migration_cancelled_while_holding_the_lock_does_not_block_the_next_migrator`,
 `a_migration_retried_after_a_cancellation_completes_and_leaves_no_lock_held`,
 `a_rebuild_cancelled_while_holding_the_lock_releases_it_and_keeps_the_schemas`).
+The lock is taken with `pg_try_advisory_lock`, retried while another session holds
+it, so no statement waits on it: a migration cancelled while it waits leaves no
+session queued on the lock
+(`a_migration_cancelled_while_waiting_for_the_lock_leaves_no_session_behind`). The
+lock's session turns `idle_session_timeout` off, since it is idle while the
+migrations run, and every migration and the rebuild's drop commit only after that
+session has confirmed it still holds the lock; a lock lost to a terminated session
+rolls the change back with `MigrationLockLost` rather than letting a second migrator
+run beside it
+(`the_migration_lock_outlives_an_idle_session_timeout_while_a_migration_runs`,
+`a_migration_whose_lock_session_ends_rolls_back_instead_of_committing_unlocked`,
+`a_rebuild_whose_lock_session_ends_keeps_the_schemas_it_was_dropping`).
 
 ### Projection: one verified commit per transaction
 

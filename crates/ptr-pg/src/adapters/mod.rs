@@ -11,6 +11,8 @@ mod policy;
 mod projection;
 mod search;
 
+use std::time::Duration;
+
 use tokio::task::JoinHandle;
 use tokio_postgres::config::Host;
 use tokio_postgres::{Client, Config, IsolationLevel, NoTls, Transaction};
@@ -110,15 +112,22 @@ impl PgSubstrate {
     /// session of its own, opened to the same checked target: a migration
     /// whose future is cancelled or unwinds releases it when that session
     /// closes, while this substrate's session stays open, and a retry takes it
-    /// afresh. The migrations themselves run on this substrate's session, each
-    /// in its own transaction, so one in flight at a cancellation either
-    /// commits with its `schema_migration` row or rolls back. Refuses a server
-    /// without the capabilities the schema needs, an applied migration whose
-    /// checksum changed, and a schema migrated by a newer build.
+    /// afresh. A migration cancelled while it waits for the lock leaves no
+    /// session behind either: the lock is taken with `pg_try_advisory_lock`,
+    /// retried while another session holds it, so no statement of it waits on
+    /// the lock. The migrations themselves run on this substrate's session,
+    /// each in its own transaction, so one in flight at a cancellation either
+    /// commits with its `schema_migration` row or rolls back; and each commits
+    /// only after the lock's session has confirmed that it still holds the
+    /// lock, so a lock lost mid-migration rolls that migration back with
+    /// [`PgError::MigrationLockLost`] instead of letting a second migrator run
+    /// beside it. Refuses a server without the capabilities the schema needs,
+    /// an applied migration whose checksum changed, and a schema migrated by a
+    /// newer build.
     pub async fn migrate(&mut self) -> Result<MigrationReport, PgError> {
         self.capabilities().await?.check_supported()?;
         let lock = MigrationLock::acquire(&self.config, &self.schemas).await?;
-        let result = self.migrate_locked().await;
+        let result = self.migrate_locked(&lock).await;
         let release = lock.release().await;
         let report = result?;
         release?;
@@ -134,11 +143,13 @@ impl PgSubstrate {
     /// [`migrate`](Self::migrate) when the rebuild's future is cancelled or
     /// unwinds: a drop that has not committed is rolled back with its
     /// transaction, and schemas dropped before the cancellation are recreated
-    /// by the next migration.
+    /// by the next migration. The drop, like every migration, commits only
+    /// while the lock is confirmed held, and is rolled back with
+    /// [`PgError::MigrationLockLost`] otherwise.
     pub async fn rebuild_projection(&mut self) -> Result<MigrationReport, PgError> {
         self.capabilities().await?.check_supported()?;
         let lock = MigrationLock::acquire(&self.config, &self.schemas).await?;
-        let result = self.rebuild_locked().await;
+        let result = self.rebuild_locked(&lock).await;
         let release = lock.release().await;
         let report = result?;
         release?;
@@ -183,7 +194,7 @@ impl PgSubstrate {
             .map_err(database)
     }
 
-    async fn rebuild_locked(&mut self) -> Result<MigrationReport, PgError> {
+    async fn rebuild_locked(&mut self, lock: &MigrationLock) -> Result<MigrationReport, PgError> {
         let projection = self.schemas.projection.clone();
         let derived = self.schemas.derived.clone();
         let transaction = self.client.transaction().await.map_err(database)?;
@@ -195,11 +206,14 @@ impl PgSubstrate {
             ))
             .await
             .map_err(database)?;
+        lock.confirm().await?;
         transaction.commit().await.map_err(database)?;
-        self.migrate_locked().await
+        self.migrate_locked(lock).await
     }
 
-    async fn migrate_locked(&mut self) -> Result<MigrationReport, PgError> {
+    /// Every transaction here confirms the lock right before it commits; an
+    /// error drops the open transaction, which rolls it back.
+    async fn migrate_locked(&mut self, lock: &MigrationLock) -> Result<MigrationReport, PgError> {
         let mut report = MigrationReport::default();
         for class in SchemaClass::ALL {
             let schema = self.schema_of(class).to_owned();
@@ -219,6 +233,7 @@ impl PgSubstrate {
                 ))
                 .await
                 .map_err(database)?;
+            lock.confirm().await?;
             transaction.commit().await.map_err(database)?;
             let rows = self
                 .client
@@ -263,6 +278,7 @@ impl PgSubstrate {
                     )
                     .await
                     .map_err(database)?;
+                lock.confirm().await?;
                 transaction.commit().await.map_err(database)?;
                 match class {
                     SchemaClass::Projection => report.projection.push(migration.version),
@@ -283,6 +299,10 @@ impl PgSubstrate {
     }
 }
 
+/// How long a migration waits between two attempts to take the migration
+/// lock while another session holds it.
+const LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(100);
+
 /// The session advisory lock every schema change of an instance takes, held
 /// by a session of its own.
 ///
@@ -294,6 +314,10 @@ impl PgSubstrate {
 /// fresh session, so a retry never re-enters a lock an earlier attempt still
 /// holds, and one unlock always releases it. The key is the one earlier
 /// builds took on the substrate's session, so they serialize with this one.
+///
+/// The session runs nothing while the schema change does, so it is kept
+/// from ending for being idle, and the change confirms on it that the lock is
+/// still held before each commit (see [`Self::confirm`]).
 struct MigrationLock {
     client: Client,
     connection: JoinHandle<()>,
@@ -302,21 +326,75 @@ struct MigrationLock {
 
 impl MigrationLock {
     /// Open a session to the target of `config`, which [`open_session`]
-    /// checks as it checks every other, and wait there for the lock of
-    /// `schemas`. The wait has no timeout: a second migrator waits for the
-    /// first.
+    /// checks as it checks every other, and take the lock of `schemas` there.
+    /// The wait has no timeout: a second migrator waits for the first.
+    ///
+    /// The lock is taken with `pg_try_advisory_lock`, retried every
+    /// [`LOCK_RETRY_INTERVAL`] while another session holds it, rather than
+    /// waited for with `pg_advisory_lock`. A future dropped while it waits
+    /// (a caller's timeout, an aborted task) thus has no statement
+    /// outstanding, or only a try that answers at once, so its connection
+    /// task ends the session as soon as the client is dropped. A blocking
+    /// wait would keep the connection open until its answer arrived, and the
+    /// server does not notice a closed client while a backend waits on a
+    /// lock: every cancelled attempt would leave a session queued on the lock
+    /// until the holder released it.
+    ///
+    /// Before taking the lock the session sets `idle_session_timeout` to
+    /// zero, whatever the connection string or the server configures: it is
+    /// idle while the schema change runs on the substrate's session, and a
+    /// session ended for being idle would take the lock with it.
     async fn acquire(config: &Config, schemas: &SchemaSet) -> Result<Self, PgError> {
         let (client, connection) = open_session(config).await?;
-        let key = format!("ptr-pg:{}", schemas.projection);
         client
-            .execute("SELECT pg_advisory_lock(hashtext($1))", &[&key])
+            .batch_execute("SET idle_session_timeout = 0")
             .await
             .map_err(database)?;
+        let key = format!("ptr-pg:{}", schemas.projection);
+        loop {
+            let taken: bool = client
+                .query_one("SELECT pg_try_advisory_lock(hashtext($1))", &[&key])
+                .await
+                .map_err(database)?
+                .get(0);
+            if taken {
+                break;
+            }
+            tokio::time::sleep(LOCK_RETRY_INTERVAL).await;
+        }
         Ok(Self {
             client,
             connection,
             key,
         })
+    }
+
+    /// Confirm on the lock's session that it still holds the lock, right
+    /// before a schema change commits. A session that was terminated or lost
+    /// its connection no longer holds it, and another migrator may already
+    /// have taken it, so the change must roll back rather than commit:
+    /// refuses with [`PgError::MigrationLockLost`] whenever the lock cannot be
+    /// confirmed. A session ended between this answer and the commit, a
+    /// window of one round trip, still lets that one change commit; the next
+    /// confirmation then refuses.
+    async fn confirm(&self) -> Result<(), PgError> {
+        let held = self
+            .client
+            .query_one(
+                "SELECT EXISTS (SELECT 1 FROM pg_locks \
+                 WHERE locktype = 'advisory' AND pid = pg_backend_pid() AND granted \
+                   AND objsubid = 1 \
+                   AND database = (SELECT oid FROM pg_database \
+                                   WHERE datname = current_database()) \
+                   AND ((classid::bigint << 32) | objid::bigint) = hashtext($1)::bigint)",
+                &[&self.key],
+            )
+            .await
+            .map(|row| row.get::<_, bool>(0));
+        match held {
+            Ok(true) => Ok(()),
+            Ok(false) | Err(_) => Err(PgError::MigrationLockLost),
+        }
     }
 
     /// Unlock explicitly, then close the session and wait for its connection

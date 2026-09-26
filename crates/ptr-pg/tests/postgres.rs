@@ -443,6 +443,230 @@ async fn a_rebuild_cancelled_while_holding_the_lock_releases_it_and_keeps_the_sc
     first.drop_all().await.unwrap();
 }
 
+/// Wait until `change` holds the migration lock of `schemas`; `change` must
+/// be blocked (by [`block_schema_changes`] or otherwise) once it has it.
+async fn wait_for_migration_lock(raw: &tokio_postgres::Client, schemas: &SchemaSet) {
+    for _ in 0..500 {
+        if migration_lock_held(raw, schemas).await {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("the schema change never took the migration lock");
+}
+
+/// Terminate the session holding the migration lock of `schemas`, as an
+/// operator reaping connections or a failed network path would end it, and
+/// wait until the server has released the lock.
+async fn terminate_migration_lock_session(raw: &tokio_postgres::Client, schemas: &SchemaSet) {
+    let terminated = raw
+        .query(
+            "SELECT pg_terminate_backend(pid) FROM pg_locks \
+             WHERE locktype = 'advisory' AND granted AND objsubid = 1 \
+               AND database = (SELECT oid FROM pg_database WHERE datname = current_database()) \
+               AND ((classid::bigint << 32) | objid::bigint) = hashtext($1)::bigint",
+            &[&format!("ptr-pg:{}", schemas.projection)],
+        )
+        .await
+        .unwrap();
+    assert_eq!(terminated.len(), 1);
+    for _ in 0..500 {
+        if !migration_lock_held(raw, schemas).await {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("the terminated session kept the migration lock");
+}
+
+/// How many server sessions carry `application_name`, once every one that is
+/// closing has gone, or after ten seconds.
+async fn settled_sessions(
+    raw: &tokio_postgres::Client,
+    application_name: &str,
+    expected: i64,
+) -> i64 {
+    let mut sessions = 0;
+    for _ in 0..500 {
+        sessions = raw
+            .query_one(
+                "SELECT count(*) FROM pg_stat_activity WHERE application_name = $1",
+                &[&application_name],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        if sessions == expected {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    sessions
+}
+
+#[tokio::test]
+async fn a_migration_cancelled_while_waiting_for_the_lock_leaves_no_session_behind() {
+    let application_name = format!("ptrt_lock_wait_{}", std::process::id());
+    let mut substrate =
+        substrate_at(&format!("{} application_name={application_name}", dsn())).await;
+    let schemas = substrate.schemas().clone();
+    let raw = raw_client().await;
+    // Another migrator holds the lock, as one stuck mid-migration would.
+    let holder = raw_client().await;
+    let key = format!("ptr-pg:{}", schemas.projection);
+    holder
+        .execute("SELECT pg_advisory_lock(hashtext($1))", &[&key])
+        .await
+        .unwrap();
+    // A supervisor retries the migration under a timeout while it waits.
+    for _ in 0..5 {
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), substrate.migrate())
+                .await
+                .is_err(),
+            "a migration finished while another session held the lock"
+        );
+    }
+    // Only the substrate's own session remains: no cancelled attempt left a
+    // session behind, queued on the lock or otherwise.
+    assert_eq!(settled_sessions(&raw, &application_name, 1).await, 1);
+
+    // Once the holder releases the lock, the next migration takes it.
+    holder
+        .execute("SELECT pg_advisory_unlock(hashtext($1))", &[&key])
+        .await
+        .unwrap();
+    let report = tokio::time::timeout(Duration::from_secs(30), substrate.migrate())
+        .await
+        .expect("the migration lock is free")
+        .unwrap();
+    assert!(report.projection.is_empty() && report.derived.is_empty() && report.work.is_empty());
+    assert!(!migration_lock_held(&raw, &schemas).await);
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn the_migration_lock_outlives_an_idle_session_timeout_while_a_migration_runs() {
+    // Every session of this substrate ends after one idle second, as a server
+    // configured with idle_session_timeout ends them.
+    let timed_out = format!("{} options='-c idle_session_timeout=1000'", dsn());
+    let mut substrate = substrate_at(&timed_out).await;
+    let schemas = substrate.schemas().clone();
+    let raw = raw_client().await;
+    let blocker = block_schema_changes(&schemas).await;
+    let migration = tokio::spawn(async move {
+        let report = substrate.migrate().await;
+        drop(substrate);
+        report
+    });
+    wait_for_migration_lock(&raw, &schemas).await;
+    // The lock's session is idle while the migration waits on the blocked
+    // table, well past the timeout; it still holds the lock.
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    assert!(
+        migration_lock_held(&raw, &schemas).await,
+        "the migration lock went with a session ended for being idle"
+    );
+    blocker.batch_execute("ROLLBACK").await.unwrap();
+    let report = migration.await.unwrap().unwrap();
+    assert!(report.projection.is_empty() && report.derived.is_empty() && report.work.is_empty());
+    assert!(!migration_lock_held(&raw, &schemas).await);
+    PgSubstrate::connect_with(&dsn(), schemas)
+        .await
+        .unwrap()
+        .drop_all()
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_migration_whose_lock_session_ends_rolls_back_instead_of_committing_unlocked() {
+    let mut substrate = unmigrated_substrate_at(&dsn()).await;
+    let schemas = substrate.schemas().clone();
+    let raw = raw_client().await;
+    // An uncreated projection schema whose name another transaction is
+    // creating: the migration's CREATE SCHEMA waits for that transaction.
+    let blocker = raw_client().await;
+    blocker
+        .batch_execute(&format!("BEGIN; CREATE SCHEMA {}", schemas.projection))
+        .await
+        .unwrap();
+    let migration = tokio::spawn(async move {
+        let report = substrate.migrate().await;
+        (substrate, report)
+    });
+    wait_for_migration_lock(&raw, &schemas).await;
+    terminate_migration_lock_session(&raw, &schemas).await;
+    blocker.batch_execute("ROLLBACK").await.unwrap();
+
+    // The first migration transaction must not commit once the lock is gone,
+    // and nothing after it runs.
+    let (mut substrate, report) = migration.await.unwrap();
+    let refused = report.unwrap_err();
+    assert_eq!(refused, PgError::MigrationLockLost);
+    assert_eq!(refused.code(), "PTR_PG_MIGRATION_LOCK_LOST");
+    // One round trip on the substrate's session: its rollback has run.
+    substrate.capabilities().await.unwrap();
+    let created: i64 = raw
+        .query_one(
+            "SELECT count(*) FROM pg_namespace WHERE nspname = ANY($1)",
+            &[&vec![
+                schemas.projection.to_string(),
+                schemas.derived.to_string(),
+                schemas.work.to_string(),
+            ]],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(created, 0);
+
+    // A retry takes the lock afresh and applies everything.
+    let report = substrate.migrate().await.unwrap();
+    assert_eq!(report.projection, vec![1]);
+    assert_eq!(report.work.len(), WORK_MIGRATIONS.len());
+    assert!(!migration_lock_held(&raw, &schemas).await);
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_rebuild_whose_lock_session_ends_keeps_the_schemas_it_was_dropping() {
+    let mut substrate = substrate().await;
+    let schemas = substrate.schemas().clone();
+    let raw = raw_client().await;
+    let projection_oid = || async {
+        raw.query_one(
+            "SELECT oid FROM pg_namespace WHERE nspname = $1",
+            &[&schemas.projection.to_string()],
+        )
+        .await
+        .unwrap()
+        .get::<_, u32>(0)
+    };
+    let before = projection_oid().await;
+    let blocker = block_schema_changes(&schemas).await;
+    let rebuild = tokio::spawn(async move {
+        let report = substrate.rebuild_projection().await;
+        (substrate, report)
+    });
+    wait_for_migration_lock(&raw, &schemas).await;
+    terminate_migration_lock_session(&raw, &schemas).await;
+    blocker.batch_execute("ROLLBACK").await.unwrap();
+
+    // The drop must not commit once the lock is gone.
+    let (mut substrate, report) = rebuild.await.unwrap();
+    assert_eq!(report, Err(PgError::MigrationLockLost));
+    substrate.capabilities().await.unwrap();
+    assert_eq!(projection_oid().await, before);
+
+    // A retry rebuilds and leaves no lock behind.
+    let report = substrate.rebuild_projection().await.unwrap();
+    assert_eq!(report.projection, vec![1]);
+    assert_ne!(projection_oid().await, before);
+    assert!(!migration_lock_held(&raw, &schemas).await);
+    substrate.drop_all().await.unwrap();
+}
+
 #[tokio::test]
 async fn replay_projects_state_and_lifecycle_exactly_as_the_reference_does() {
     let mut substrate = substrate().await;

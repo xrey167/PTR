@@ -30,7 +30,8 @@ ptr-analytics = { workspace = true }
 sha2 = { version = "=0.11.0", default-features = false }
 serde_json = { workspace = true }
 tokio-postgres = { version = "=0.7.18", default-features = false, features = ["runtime"], optional = true }
-tokio = { workspace = true, optional = true }
+# Timers for the migration lock's retry interval.
+tokio = { workspace = true, optional = true, features = ["time"] }
 
 [dev-dependencies]
 tokio = { workspace = true }

@@ -186,11 +186,11 @@ replace = '''
 [[mutation.also]]
 find = '''
         transaction.commit().await.map_err(database)?;
-        self.migrate_locked().await
+        self.migrate_locked(lock).await
 '''
 replace = '''
         transaction.commit().await.map_err(database)?;
-        let report = self.migrate_locked().await?;
+        let report = self.migrate_locked(lock).await?;
         self.client
             .batch_execute(&format!(
                 "INSERT INTO {projection}.state_entry (key, value, commit_index) \

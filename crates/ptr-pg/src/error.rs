@@ -21,6 +21,12 @@ pub enum PgError {
     UnknownMigration { version: u32 },
     /// The migration catalog itself is malformed.
     InvalidCatalog { message: &'static str },
+    /// The session holding the migration lock ended (it was terminated, or
+    /// its connection failed) before a schema change committed, so the
+    /// change was rolled back rather than committed without the lock. The
+    /// changes committed before it were made under the lock; a retry takes
+    /// the lock afresh and applies what is still pending.
+    MigrationLockLost,
     /// A value read back from the database is not a valid domain value.
     CorruptRow { table: &'static str, reason: String },
     /// A record does not chain from the projection's stored anchor, or a
@@ -119,6 +125,7 @@ impl PgError {
             Self::MigrationDrift { .. } => "PTR_PG_MIGRATION_DRIFT",
             Self::UnknownMigration { .. } => "PTR_PG_UNKNOWN_MIGRATION",
             Self::InvalidCatalog { .. } => "PTR_PG_INVALID_CATALOG",
+            Self::MigrationLockLost => "PTR_PG_MIGRATION_LOCK_LOST",
             Self::CorruptRow { .. } => "PTR_PG_CORRUPT_ROW",
             Self::ForeignHistory { .. } => "PTR_PG_FOREIGN_HISTORY",
             Self::InvalidRecord { .. } => "PTR_PG_INVALID_RECORD",
@@ -165,6 +172,11 @@ impl fmt::Display for PgError {
                 write!(formatter, "database has migration {version} this build does not know")
             }
             Self::InvalidCatalog { message } => write!(formatter, "invalid migration catalog: {message}"),
+            Self::MigrationLockLost => write!(
+                formatter,
+                "the migration lock's session ended before a schema change committed; \
+                 the change was rolled back"
+            ),
             Self::CorruptRow { table, reason } => write!(formatter, "corrupt row in {table}: {reason}"),
             Self::ForeignHistory { index } => {
                 write!(formatter, "record {index} is not part of the projected history")

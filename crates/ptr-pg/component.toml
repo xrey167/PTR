@@ -4,7 +4,7 @@ maturity = "prototype"
 last_reviewed = "2026-09-26"
 
 implemented = [
-  "Three schema classes per instance (projection, derived, work) with separate checksummed migration catalogs, per-schema migration tables, an advisory lock held by a session of its own that a cancelled or unwinding migration or rebuild releases when that session closes, drift and newer-build refusal, and LF-normalised checksums",
+  "Three schema classes per instance (projection, derived, work) with separate checksummed migration catalogs, per-schema migration tables, an advisory lock held by a session of its own that a cancelled or unwinding migration or rebuild releases when that session closes, taken with retried pg_try_advisory_lock so a migration cancelled while waiting leaves no session queued on it, kept from idle_session_timeout and confirmed held before every migration and rebuild drop commits (a lost lock rolls the change back with MigrationLockLost), drift and newer-build refusal, and LF-normalised checksums",
   "Projector applies one commit per transaction behind a watermark row lock, deciding the next index with ptr-state classify_next and projecting exactly ptr-state projection_entries",
   "Every record's anchor is recomputed with ptr-ledger chain_anchors from the stored one and compared with the ledger's; a foreign, rolled-back or re-delivered-but-different record is refused, and a redelivered index counts as a duplicate only when the record itself recomputes to the stored anchor from the one before it",
   "Lifecycle catalog keyed exactly as the runtime keys it: live generations, an append-only tombstone set, the revision map and an append-only projection event log with consumer offsets and NOTIFY on commit",
