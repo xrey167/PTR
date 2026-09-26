@@ -90,6 +90,10 @@ struct Metrics {
     process_crashes: u64,
     append_crashes: u64,
     append_crashes_committed: u64,
+    /// Appends whose commit the server failed after every statement had
+    /// succeeded: the append must report the error and leave the journal as
+    /// it was, and the process drops the write it had folded.
+    commit_faults: u64,
     revocation_crashes: u64,
     revocation_crashes_committed: u64,
     revocation_crashes_rolled_back: u64,
@@ -122,6 +126,7 @@ struct Metrics {
     checkpoints_lost: u64,
     atomicity_failures: u64,
     crash_recovery_failures: u64,
+    commit_fault_failures: u64,
     race_violations: u64,
     read_failures: u64,
 }
@@ -145,6 +150,7 @@ impl Metrics {
             + self.checkpoints_lost
             + self.atomicity_failures
             + self.crash_recovery_failures
+            + self.commit_fault_failures
             + self.race_violations
             + self.read_failures
     }
@@ -174,6 +180,7 @@ impl Metrics {
             ("process_crashes", self.process_crashes),
             ("append_crashes", self.append_crashes),
             ("append_crashes_committed", self.append_crashes_committed),
+            ("commit_faults", self.commit_faults),
             ("revocation_crashes", self.revocation_crashes),
             (
                 "revocation_crashes_committed",
@@ -219,6 +226,7 @@ impl Metrics {
             ("checkpoints_lost", self.checkpoints_lost),
             ("atomicity_failures", self.atomicity_failures),
             ("crash_recovery_failures", self.crash_recovery_failures),
+            ("commit_fault_failures", self.commit_fault_failures),
             ("race_violations", self.race_violations),
             ("read_failures", self.read_failures),
         ]
@@ -297,7 +305,8 @@ async fn run_case(raw: &Client, seed: u64, case: usize, rng: &mut Rng, metrics: 
             break;
         }
         match rng.below(100) {
-            0..=43 => run.write(rng).await,
+            0..=41 => run.write(rng).await,
+            42..=43 => run.fault_append(rng).await,
             44 => {
                 // A burst grows the journals to a hundred writes and more.
                 for _ in 0..rng.range(40, 150) {
@@ -1803,6 +1812,70 @@ impl Case<'_> {
             self.metrics.revocation_crashes_rolled_back += 1;
             self.apply_prepared(record, anchor, after, rng).await;
         }
+    }
+
+    /// The server fails an append's commit after every statement succeeded:
+    /// the append must return the injected fault, the journal must be what it
+    /// was, and the process drops the write it had folded, as it does after
+    /// any failed append.
+    async fn fault_append(&mut self, rng: &mut Rng) {
+        let sources = self.ledger.admissible_sources();
+        if sources.is_empty() {
+            return;
+        }
+        let source = rng.pick(&sources).clone();
+        let index = rng.index(self.memories.len());
+        let request = compose(rng, &self.memories[index].config, source);
+        let Ok(receipt) = self.memories[index].memory.write(request.clone()) else {
+            return;
+        };
+        self.metrics.commit_faults += 1;
+        let id = self.memories[index].id.clone();
+        self.instance
+            .arm_commit_fault(self.raw, "work", "fastmem_write")
+            .await;
+        let returned = self
+            .sessions
+            .writer()
+            .append_write(&id, receipt.seq, &request)
+            .await;
+        self.instance
+            .disarm_commit_fault(self.raw, "work", "fastmem_write")
+            .await;
+        match returned {
+            Err(error) if pg::is_commit_fault(&error) => {}
+            Ok(()) => diverged(
+                &mut self.metrics.commit_fault_failures,
+                format!(
+                    "{}: an append was reported done though its commit failed",
+                    self.label
+                ),
+            ),
+            Err(error) => diverged(
+                &mut self.metrics.commit_fault_failures,
+                format!(
+                    "{}: an append under a commit fault gave {error:?}, not the fault",
+                    self.label
+                ),
+            ),
+        }
+        let expected = self.memories[index].expected(&self.ledger.oracle);
+        match self.sessions.writer().load_journal(&id).await {
+            Ok(journal) if same_journal(&journal, &expected) => {}
+            Ok(_) => diverged(
+                &mut self.metrics.commit_fault_failures,
+                format!(
+                    "{}: an append whose commit failed changed the journal",
+                    self.label
+                ),
+            ),
+            Err(error) => diverged(
+                &mut self.metrics.read_failures,
+                format!("{}: the journal is unreadable: {error:?}", self.label),
+            ),
+        }
+        self.restore_memory(index).await;
+        self.check_fold(index, &expected, rng).await;
     }
 
     /// The process crashes while it appends: the journal holds the write in

@@ -78,6 +78,11 @@ struct Metrics {
     crashes_committed: u64,
     crashes_rolled_back: u64,
     crash_recovery_failures: u64,
+    /// Records whose commit the server failed after every statement had
+    /// succeeded: the projector must report an error, leave the projection at
+    /// the prefix, and apply the record when it is sent again.
+    commit_faults: u64,
+    commit_fault_failures: u64,
     redeliveries: u64,
     redelivery_failures: u64,
     gap_probes: u64,
@@ -119,6 +124,7 @@ impl Metrics {
             + self.event_log_divergences
             + self.watermark_divergences
             + self.crash_recovery_failures
+            + self.commit_fault_failures
             + self.redelivery_failures
             + self.gap_failures
             + self.foreign_histories_accepted
@@ -151,6 +157,8 @@ impl Metrics {
                 "crash_recovery_failures",
                 self.crash_recovery_failures.into(),
             ),
+            ("commit_faults", self.commit_faults.into()),
+            ("commit_fault_failures", self.commit_fault_failures.into()),
             ("redeliveries", self.redeliveries.into()),
             ("redelivery_failures", self.redelivery_failures.into()),
             ("gap_probes", self.gap_probes.into()),
@@ -327,10 +335,40 @@ async fn run_case(raw: &Client, seed: u64, case: usize, rng: &mut Rng, metrics: 
     let started = Instant::now();
     let mut next = 0usize;
     let mut crashed_at = None;
+    let mut faulted_at = None;
     while next < log.len() {
         let record = &log[next];
         let anchor = anchors[next];
         let step = &plan[next];
+        if step.fault && faulted_at != Some(next) {
+            // The server fails the commit after every statement succeeded; the
+            // record is then sent again, and the next pass applies it.
+            faulted_at = Some(next);
+            metrics.commit_faults += 1;
+            let previous = if next == 0 {
+                LogAnchor::empty()
+            } else {
+                anchors[next - 1]
+            };
+            let problem = fault_during_apply(
+                raw,
+                &instance,
+                &mut substrate,
+                record,
+                anchor,
+                previous,
+                &log[..next],
+            )
+            .await;
+            if let Some(problem) = problem {
+                diverged(
+                    &mut metrics.commit_fault_failures,
+                    format!("seed {seed} case {case}: {problem}"),
+                );
+                break;
+            }
+            continue;
+        }
         if step.crash && crashed_at != Some(next) {
             crashed_at = Some(next);
             metrics.crash_injections += 1;
@@ -444,8 +482,15 @@ async fn run_case(raw: &Client, seed: u64, case: usize, rng: &mut Rng, metrics: 
             match substrate.apply_committed(record, anchor).await {
                 Ok(report) if report.outcome == ApplyOutcome::Applied => {}
                 other => {
+                    // A record re-sent after a failed commit that does not
+                    // apply is the commit fault's failure.
+                    let counter = if faulted_at == Some(next) && crashed_at != Some(next) {
+                        &mut metrics.commit_fault_failures
+                    } else {
+                        &mut metrics.crash_recovery_failures
+                    };
                     diverged(
-                        &mut metrics.crash_recovery_failures,
+                        counter,
                         format!(
                             "seed {seed} case {case}: record {} was not applied: {other:?}",
                             record.index.0
@@ -661,6 +706,7 @@ struct RecordPlan {
     earlier: u64,
     gap: bool,
     duel: bool,
+    fault: bool,
 }
 
 impl RecordPlan {
@@ -673,6 +719,7 @@ impl RecordPlan {
             earlier: rng.next_u64(),
             gap: rng.chance(0.03),
             duel: rng.chance(0.04),
+            fault: rng.chance(0.04),
         }
     }
 }
@@ -704,6 +751,66 @@ async fn crash_during_apply(
     }
     let returned = pg::crash_task(instance, raw, task, kill, delay).await;
     (instance.connect().await, returned)
+}
+
+/// Apply one record while its commit is armed to fail. The projector must
+/// return the injected fault, not a report; the watermark must still be the
+/// prefix's anchor and the projection the reference at the prefix. Returns
+/// what went wrong, if anything.
+async fn fault_during_apply(
+    raw: &Client,
+    instance: &Instance,
+    substrate: &mut PgSubstrate,
+    record: &CommittedEvent,
+    anchor: LogAnchor,
+    previous: LogAnchor,
+    prefix: &[CommittedEvent],
+) -> Option<String> {
+    let index = record.index.0;
+    instance
+        .arm_commit_fault(raw, "projection", "projection_watermark")
+        .await;
+    let returned = substrate.apply_committed(record, anchor).await;
+    instance
+        .disarm_commit_fault(raw, "projection", "projection_watermark")
+        .await;
+    match &returned {
+        Err(error) if pg::is_commit_fault(error) => {}
+        Ok(report) => {
+            return Some(format!(
+                "record {index} was reported {:?} though its commit failed",
+                report.outcome
+            ))
+        }
+        Err(error) => {
+            return Some(format!(
+                "record {index} under a commit fault gave {error:?}, not the fault"
+            ))
+        }
+    }
+    match substrate.watermark().await {
+        Ok(watermark) if watermark == previous => {}
+        Ok(watermark) => {
+            return Some(format!(
+                "after a failed commit of {index} the watermark is {}",
+                watermark.index.0
+            ))
+        }
+        Err(error) => {
+            return Some(format!(
+                "after a failed commit of {index} the watermark is unreadable: {error:?}"
+            ))
+        }
+    }
+    let problems = check_prefix(substrate, raw, &instance.prefix, prefix).await;
+    if problems.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "after a failed commit of {index}: {}",
+            problems.join("; ")
+        ))
+    }
 }
 
 /// The lifecycle catalog a log implies, folded here from the events

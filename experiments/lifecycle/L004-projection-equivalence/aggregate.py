@@ -22,6 +22,7 @@ RESULTS = HERE / "results"
 COVERAGE = [
     "crashes_committed",
     "crashes_rolled_back",
+    "commit_faults",
     "client_aborts",
     "server_kills",
     "redeliveries",
@@ -41,6 +42,7 @@ HARD = [
     "event_log_divergences",
     "watermark_divergences",
     "crash_recovery_failures",
+    "commit_fault_failures",
     "redelivery_failures",
     "gap_failures",
     "foreign_histories_accepted",
@@ -54,8 +56,9 @@ HARD = [
 ]
 SCOPE = (
     "generated ledgers of every event kind replayed into a PostgreSQL projection on one "
-    "local server, with client and server crashes, redeliveries, gaps, dueling projectors, "
-    "forked histories, a backup catch-up, rebuilds onto unrelated and true histories, "
+    "local server, with client and server crashes, commits the server fails, redeliveries, "
+    "gaps, dueling projectors, forked histories, a backup catch-up, rebuilds onto unrelated "
+    "and true histories, "
     "compared with the runtime replay, the MaterializedState reference and Turso"
 )
 LIMITATIONS = [

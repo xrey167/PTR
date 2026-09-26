@@ -29,6 +29,7 @@ COVERAGE = [
     "process_crashes",
     "append_crashes_committed",
     "writes_lost_in_crashes",
+    "commit_faults",
     "revocation_crashes_committed",
     "revocation_crashes_rolled_back",
     "append_races_append_first",
@@ -54,15 +55,16 @@ HARD = [
     "checkpoints_lost",
     "atomicity_failures",
     "crash_recovery_failures",
+    "commit_fault_failures",
     "race_violations",
     "read_failures",
 ]
 SCOPE = (
     "fast memories with PostgreSQL journals and checkpoints, fed from lifecycle targets a "
     "ledger commits, supersedes and revokes through the projector, with crashes mid-append, "
-    "mid-revocation and between operations, appends and checkpoints racing revocations and "
-    "stale checkpoints planted in storage, compared bit for bit with the never-saw-it fold "
-    "the runtime replay admits"
+    "mid-revocation and between operations, appends whose commit the server fails, appends "
+    "and checkpoints racing revocations and stale checkpoints planted in storage, compared "
+    "bit for bit with the never-saw-it fold the runtime replay admits"
 )
 LIMITATIONS = [
     "one PostgreSQL 18 server on loopback; one process per memory, as the design has it",

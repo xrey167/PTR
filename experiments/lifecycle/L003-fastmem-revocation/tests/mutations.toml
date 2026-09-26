@@ -26,6 +26,7 @@ hard_counters = [
     "checkpoints_lost",
     "atomicity_failures",
     "crash_recovery_failures",
+    "commit_fault_failures",
     "race_violations",
     "read_failures",
 ]

@@ -17,6 +17,7 @@ hard_counters = [
     "event_log_divergences",
     "watermark_divergences",
     "crash_recovery_failures",
+    "commit_fault_failures",
     "redelivery_failures",
     "gap_failures",
     "foreign_histories_accepted",

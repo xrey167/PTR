@@ -23,6 +23,17 @@ pub fn dsn() -> String {
     }
 }
 
+/// The message an injected commit fault raises, which the harnesses require
+/// in the error an operation returns: any other error is not the fault.
+pub const COMMIT_FAULT: &str = "injected commit fault";
+
+const FAULT_TRIGGER: &str = "ptr_bench_commit_fault";
+
+/// Whether `error` is the injected commit fault, as the server reported it.
+pub fn is_commit_fault(error: &ptr_pg::PgError) -> bool {
+    matches!(error, ptr_pg::PgError::Database { message, .. } if message == COMMIT_FAULT)
+}
+
 /// One substrate instance: its schemas and the connection string that tags
 /// its sessions with `application_name = prefix`, so a crash can target them.
 pub struct Instance {
@@ -70,6 +81,37 @@ impl Instance {
         PgSubstrate::connect_with(&self.tagged_dsn, self.schemas.clone())
             .await
             .expect("connect experiment instance")
+    }
+
+    /// Make every transaction that inserts or updates a row of `table`, in the
+    /// instance's `class` schema (`projection` or `work`), fail at COMMIT
+    /// after all of its statements succeeded, the way a deferred constraint or
+    /// any other error raised at commit does. A deferred constraint trigger
+    /// raises [`COMMIT_FAULT`]; its function lives in the work schema, so
+    /// dropping the instance removes it. Armed and disarmed from the raw
+    /// session between operations, so no other session holds the table.
+    pub async fn arm_commit_fault(&self, raw: &Client, class: &str, table: &str) {
+        let prefix = &self.prefix;
+        raw.batch_execute(&format!(
+            "CREATE OR REPLACE FUNCTION {prefix}_work.{FAULT_TRIGGER}() RETURNS trigger \
+             LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION '{COMMIT_FAULT}'; END $$; \
+             DROP TRIGGER IF EXISTS {FAULT_TRIGGER} ON {prefix}_{class}.{table}; \
+             CREATE CONSTRAINT TRIGGER {FAULT_TRIGGER} \
+             AFTER INSERT OR UPDATE ON {prefix}_{class}.{table} \
+             DEFERRABLE INITIALLY DEFERRED FOR EACH ROW \
+             EXECUTE FUNCTION {prefix}_work.{FAULT_TRIGGER}();"
+        ))
+        .await
+        .expect("arm the commit fault");
+    }
+
+    pub async fn disarm_commit_fault(&self, raw: &Client, class: &str, table: &str) {
+        let prefix = &self.prefix;
+        raw.batch_execute(&format!(
+            "DROP TRIGGER IF EXISTS {FAULT_TRIGGER} ON {prefix}_{class}.{table};"
+        ))
+        .await
+        .expect("disarm the commit fault");
     }
 
     /// Terminate every server session of this instance: a crash of the
