@@ -22,13 +22,23 @@ pub struct ModelTime(pub f64);
 
 /// Memory state of one sample in the style of FSRS: stability `S` (model time
 /// until retrievability falls to 0.9) and difficulty `D` in `[1, 10]`.
+///
+/// A pool keeps every state it holds finite, with a positive stability, a
+/// difficulty in `[1, 10]` and a finite last probe. The fields are public,
+/// so a state built by hand can break any of that; [`ReplayPool::priority`]
+/// refuses one that does.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MemoryState {
     pub stability: f64,
     pub difficulty: f64,
+    /// Model time of the last recorded probe, or of admission while
+    /// `probes` is zero.
     pub last_probe: ModelTime,
     /// How often probes found the sample forgotten.
     pub lapses: u32,
+    /// How many probes were recorded (saturating at `u32::MAX`). While it
+    /// is zero no probe was, and `last_probe` is the admission time.
+    pub probes: u32,
 }
 
 /// A sample in the replay pool.
@@ -58,6 +68,9 @@ pub struct ReplayParams {
     pub growth: f64,
     /// Factor applied to stability after a lapse.
     pub lapse_factor: f64,
+    /// The floor a lapse cannot push stability below. At most
+    /// `initial_stability`: every stability a pool holds is then at least
+    /// this floor, so a lapse never raises one.
     pub min_stability: f64,
     /// Difficulty change per probe.
     pub difficulty_step: f64,
@@ -85,6 +98,14 @@ impl ReplayParams {
                     message: "must be finite and positive",
                 });
             }
+        }
+        // A floor above the initial stability would lift a fresh sample's
+        // stability on its first lapse and rank it below a retained one.
+        if self.min_stability > self.initial_stability {
+            return Err(LineageError::InvalidParameter {
+                field: "min_stability",
+                message: "must not exceed initial_stability",
+            });
         }
         if !(self.lapse_factor.is_finite() && self.lapse_factor > 0.0 && self.lapse_factor < 1.0) {
             return Err(LineageError::InvalidParameter {
@@ -139,6 +160,12 @@ pub fn retrievability(elapsed: f64, stability: f64) -> Result<f64, LineageError>
     Ok((1.0 + FACTOR * elapsed.max(0.0) / stability).powf(DECAY))
 }
 
+/// The refusal of a model time before a sample's last probe.
+const PRECEDES_LAST_PROBE: LineageError = LineageError::InvalidParameter {
+    field: "model time",
+    message: "must not precede the sample's last probe",
+};
+
 /// A pool of replayable training samples scheduled by measured forgetting.
 #[derive(Clone, Debug)]
 pub struct ReplayPool {
@@ -149,8 +176,8 @@ pub struct ReplayPool {
 impl ReplayPool {
     /// Create an empty replay pool. Returns `LineageError::InvalidParameter`
     /// for nonfinite or nonpositive stability, growth, or difficulty-step
-    /// parameters, a lapse factor outside `(0, 1)`, nonfinite lapse loss, or
-    /// a lapse limit of zero.
+    /// parameters, a minimum stability above the initial one, a lapse factor
+    /// outside `(0, 1)`, nonfinite lapse loss, or a lapse limit of zero.
     pub fn new(params: ReplayParams) -> Result<Self, LineageError> {
         params.check()?;
         Ok(Self {
@@ -201,6 +228,7 @@ impl ReplayPool {
                     difficulty: 5.0,
                     last_probe: now,
                     lapses: 0,
+                    probes: 0,
                 },
             },
         );
@@ -223,10 +251,15 @@ impl ReplayPool {
     /// retained forever and its priority zero forever),
     /// `LineageError::UnknownSample` for an id not in the pool, and
     /// `LineageError::InvalidParameter` when `now` precedes the sample's last
-    /// probe: the clock is monotone, and moving the last probe backward would
-    /// make the sample look more forgotten than it is. The new memory state is
-    /// computed in full before anything is stored, so a refused probe leaves
-    /// the sample's memory unchanged.
+    /// probe (the clock is monotone, and moving the last probe backward would
+    /// make the sample look more forgotten than it is) or equals the model
+    /// time of a probe already recorded for it. The weights, and so the
+    /// measurement, do not change while the clock stands still: a repeated
+    /// probe would count one lapse again (or lower the difficulty again), and
+    /// the store keys probes by sample and model time. A first probe at the
+    /// model time the sample was admitted at is recorded. The new memory state
+    /// is computed in full before anything is stored, so a refused probe
+    /// leaves the sample's memory unchanged.
     pub fn record_probe(
         &mut self,
         id: &str,
@@ -250,19 +283,24 @@ impl ReplayPool {
             .ok_or_else(|| LineageError::UnknownSample { id: id.to_owned() })?;
         let memory = sample.memory;
         if now.0 < memory.last_probe.0 {
+            return Err(PRECEDES_LAST_PROBE);
+        }
+        if memory.probes > 0 && now.0 == memory.last_probe.0 {
             return Err(LineageError::InvalidParameter {
                 field: "model time",
-                message: "must not precede the sample's last probe",
+                message: "must follow the sample's last probe",
             });
         }
         let elapsed = now.0 - memory.last_probe.0;
         let recall = retrievability(elapsed, memory.stability)?;
+        let probes = memory.probes.saturating_add(1);
         let updated = if loss > params.lapse_loss {
             MemoryState {
                 stability: (memory.stability * params.lapse_factor).max(params.min_stability),
                 difficulty: (memory.difficulty + params.difficulty_step).min(10.0),
                 last_probe: now,
                 lapses: memory.lapses.saturating_add(1),
+                probes,
             }
         } else {
             let ease = (11.0 - memory.difficulty) / 10.0;
@@ -271,6 +309,7 @@ impl ReplayPool {
                 difficulty: (memory.difficulty - params.difficulty_step).max(1.0),
                 last_probe: now,
                 lapses: memory.lapses,
+                probes,
             }
         };
         for (field, value) in [
@@ -286,23 +325,57 @@ impl ReplayPool {
     }
 
     /// Replay priority: how forgotten the sample probably is, weighted up for
-    /// difficult samples.
+    /// difficult samples. For a state the pool could hold it lies in
+    /// `[0, 2]`.
+    ///
+    /// The sample need not come from this pool, and its fields are public,
+    /// so before anything is computed the parts of its state the priority
+    /// reads are checked against what [`ReplayPool::insert`] and
+    /// [`ReplayPool::record_probe`] keep: a finite last probe no later than
+    /// `now`, a difficulty in `[1, 10]` and a finite positive stability. A
+    /// state built by hand could otherwise return a NaN, infinite or negative
+    /// priority as if it were a measurement. Lapse and probe counts are not
+    /// read and not checked.
     ///
     /// # Errors
     /// Returns `LineageError::NonFinite` for a nonfinite `now`, as
     /// [`ReplayPool::insert`] and [`ReplayPool::record_probe`] do: a NaN or
     /// negative infinite clock would count as no time elapsed and give every
-    /// sample priority zero. A sample built by hand with a NaN last probe or
-    /// a stability that is not finite and positive is refused by
-    /// [`retrievability`].
+    /// sample priority zero. For the sample's state it returns
+    /// `LineageError::NonFinite` for a nonfinite last probe (field
+    /// `"last probe"`) or difficulty, `LineageError::InvalidParameter` for a
+    /// difficulty outside `[1, 10]` or a last probe later than `now` (which
+    /// would count as no time elapsed, as a probe earlier than the last one
+    /// does in [`ReplayPool::record_probe`]), and the refusal of
+    /// [`retrievability`] for a stability that is not finite and positive.
     pub fn priority(&self, sample: &ReplaySample, now: ModelTime) -> Result<f64, LineageError> {
         if !now.0.is_finite() {
             return Err(LineageError::NonFinite {
                 field: "model time",
             });
         }
-        let recall = retrievability(now.0 - sample.memory.last_probe.0, sample.memory.stability)?;
-        Ok((1.0 - recall) * (1.0 + sample.memory.difficulty / 10.0))
+        let memory = &sample.memory;
+        if !memory.last_probe.0.is_finite() {
+            return Err(LineageError::NonFinite {
+                field: "last probe",
+            });
+        }
+        if now.0 < memory.last_probe.0 {
+            return Err(PRECEDES_LAST_PROBE);
+        }
+        if !memory.difficulty.is_finite() {
+            return Err(LineageError::NonFinite {
+                field: "difficulty",
+            });
+        }
+        if !(1.0..=10.0).contains(&memory.difficulty) {
+            return Err(LineageError::InvalidParameter {
+                field: "difficulty",
+                message: "must lie in [1, 10]",
+            });
+        }
+        let recall = retrievability(now.0 - memory.last_probe.0, memory.stability)?;
+        Ok((1.0 - recall) * (1.0 + memory.difficulty / 10.0))
     }
 
     /// Samples withheld from replay pending a label audit.
@@ -333,7 +406,11 @@ impl ReplayPool {
     /// # Errors
     /// Returns `LineageError::NonFinite` for a nonfinite `now` before anything
     /// is drawn: at a NaN or negative infinite model time every priority
-    /// would be zero and the draw silently empty.
+    /// would be zero and the draw silently empty. Returns
+    /// `LineageError::InvalidParameter`, before anything is drawn, when `now`
+    /// precedes the last probe of any pooled sample, withheld or not, as
+    /// [`ReplayPool::priority`] does for one sample: the clock is monotone,
+    /// and such a sample would silently count as retained.
     pub fn sample(
         &self,
         count: usize,
@@ -344,6 +421,15 @@ impl ReplayPool {
             return Err(LineageError::NonFinite {
                 field: "model time",
             });
+        }
+        // Withheld samples included: any probe later than `now` means the
+        // clock ran back.
+        if self
+            .samples
+            .values()
+            .any(|sample| now.0 < sample.memory.last_probe.0)
+        {
+            return Err(PRECEDES_LAST_PROBE);
         }
         let mut strata: BTreeMap<&str, Vec<(&ReplaySample, f64)>> = BTreeMap::new();
         for sample in self.samples.values() {

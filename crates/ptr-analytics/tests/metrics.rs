@@ -131,6 +131,7 @@ fn calibration_reports_the_invalid_item_and_alignment_errors() {
         vec![f64::NAN, 0.0],
         vec![f64::INFINITY, 0.0],
         vec![0.2, 0.2],
+        vec![1.0000005, 0.0],
     ] {
         let predictions = [vec![1.0, 0.0], bad];
         assert_eq!(

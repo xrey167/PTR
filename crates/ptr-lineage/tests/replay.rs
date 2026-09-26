@@ -1,6 +1,8 @@
 use std::collections::BTreeSet;
 
-use ptr_lineage::{LineageError, ModelTime, NewSample, ReplayParams, ReplayPool, Split};
+use ptr_lineage::{
+    LineageError, ModelTime, NewSample, ReplayParams, ReplayPool, ReplaySample, Split,
+};
 
 fn params() -> ReplayParams {
     ReplayParams {
@@ -192,8 +194,19 @@ fn a_probe_earlier_than_the_last_one_is_refused_and_changes_nothing() {
             priority
         );
     }
-    // A probe at the same model time is not a step backward.
-    pool.record_probe("a", 0.1, ModelTime(50.0)).unwrap();
+    // A probe at the model time of the last one is not a step backward; it
+    // is refused as a repeat of that probe, and only when one was recorded
+    // (a_second_probe_at_the_model_time_of_the_last_one_is_refused_and_changes_nothing).
+    assert_eq!(
+        pool.record_probe("a", 0.1, ModelTime(50.0)),
+        Err(LineageError::InvalidParameter {
+            field: "model time",
+            message: "must follow the sample's last probe",
+        })
+    );
+    assert_eq!(pool.get("a"), Some(&before));
+    pool.insert(sample("b", "task"), ModelTime(50.0)).unwrap();
+    pool.record_probe("b", 0.1, ModelTime(50.0)).unwrap();
 }
 
 #[test]
@@ -314,4 +327,136 @@ fn a_lapse_limit_of_zero_is_refused() {
         ..params()
     })
     .is_ok());
+}
+
+#[test]
+fn a_priority_of_a_hand_built_state_the_pool_could_not_hold_is_refused() {
+    let pool = pool(&[("a", "t")]);
+    let valid = pool.get("a").unwrap().clone();
+    let with = |change: &dyn Fn(&mut ReplaySample)| {
+        let mut sample = valid.clone();
+        change(&mut sample);
+        pool.priority(&sample, ModelTime(80.0))
+    };
+    // A NaN, infinite or out-of-range difficulty would return NaN, infinity
+    // or a negative priority rather than an error.
+    for difficulty in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        assert_eq!(
+            with(&|sample| sample.memory.difficulty = difficulty),
+            Err(LineageError::NonFinite {
+                field: "difficulty"
+            }),
+            "{difficulty}"
+        );
+    }
+    for difficulty in [0.999, -30.0, 10.001, 1e300] {
+        assert_eq!(
+            with(&|sample| sample.memory.difficulty = difficulty),
+            Err(LineageError::InvalidParameter {
+                field: "difficulty",
+                message: "must lie in [1, 10]",
+            }),
+            "{difficulty}"
+        );
+    }
+    for difficulty in [1.0, 10.0] {
+        assert!(with(&|sample| sample.memory.difficulty = difficulty).unwrap() > 0.0);
+    }
+    for stability in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        assert_eq!(
+            with(&|sample| sample.memory.stability = stability),
+            Err(LineageError::InvalidParameter {
+                field: "stability",
+                message: "must be finite and positive",
+            }),
+            "{stability}"
+        );
+    }
+    // A last probe no insert or probe could store: nonfinite, or later than
+    // the model time asked about, which would count as no time elapsed.
+    for last in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        assert_eq!(
+            with(&|sample| sample.memory.last_probe = ModelTime(last)),
+            Err(LineageError::NonFinite {
+                field: "last probe"
+            }),
+            "{last}"
+        );
+    }
+    assert_eq!(
+        with(&|sample| sample.memory.last_probe = ModelTime(90.0)),
+        Err(LineageError::InvalidParameter {
+            field: "model time",
+            message: "must not precede the sample's last probe",
+        })
+    );
+    // A draw at a model time before a recorded probe is refused as well.
+    let mut probed = pool.clone();
+    probed.record_probe("a", 0.1, ModelTime(50.0)).unwrap();
+    assert_eq!(
+        probed.sample(1, ModelTime(40.0), 1),
+        Err(LineageError::InvalidParameter {
+            field: "model time",
+            message: "must not precede the sample's last probe",
+        })
+    );
+    assert_eq!(probed.sample(1, ModelTime(60.0), 1).unwrap(), vec!["a"]);
+}
+
+#[test]
+fn a_minimum_stability_above_the_initial_one_is_refused_so_a_lapse_never_raises_stability() {
+    // With a floor of 200, a lapse would move a fresh sample from 100 to 200
+    // and rank it below a retained one.
+    assert_eq!(
+        ReplayPool::new(ReplayParams {
+            min_stability: 200.0,
+            ..params()
+        })
+        .unwrap_err(),
+        LineageError::InvalidParameter {
+            field: "min_stability",
+            message: "must not exceed initial_stability",
+        }
+    );
+    // At the initial stability itself, a lapse keeps a fresh sample where it
+    // was and never raises it.
+    let mut pool = ReplayPool::new(ReplayParams {
+        min_stability: params().initial_stability,
+        ..params()
+    })
+    .unwrap();
+    pool.insert(sample("lost", "t"), ModelTime(0.0)).unwrap();
+    for step in 1..=3 {
+        let before = pool.get("lost").unwrap().memory.stability;
+        pool.record_probe("lost", 2.0, ModelTime(step as f64 * 50.0))
+            .unwrap();
+        assert!(pool.get("lost").unwrap().memory.stability <= before);
+    }
+}
+
+#[test]
+fn a_second_probe_at_the_model_time_of_the_last_one_is_refused_and_changes_nothing() {
+    let mut pool = pool(&[("s", "t"), ("fresh", "t")]);
+    pool.record_probe("s", 2.0, ModelTime(50.0)).unwrap();
+    let before = pool.get("s").unwrap().clone();
+    assert_eq!((before.memory.lapses, before.memory.probes), (1, 1));
+    // The same weights measured again, however often it is delivered, are
+    // one measurement: the store keys probes by sample and model time.
+    for loss in [2.0, 2.0, 0.1] {
+        assert_eq!(
+            pool.record_probe("s", loss, ModelTime(50.0)),
+            Err(LineageError::InvalidParameter {
+                field: "model time",
+                message: "must follow the sample's last probe",
+            })
+        );
+        assert_eq!(pool.get("s"), Some(&before));
+    }
+    assert_eq!(pool.needing_audit().count(), 0);
+    // A first probe at the model time the sample was admitted at is not a
+    // repeat, and a later probe is recorded as usual.
+    pool.record_probe("fresh", 0.1, ModelTime(0.0)).unwrap();
+    assert_eq!(pool.get("fresh").unwrap().memory.probes, 1);
+    pool.record_probe("s", 2.0, ModelTime(60.0)).unwrap();
+    assert_eq!(pool.get("s").unwrap().memory.lapses, 2);
 }

@@ -189,18 +189,40 @@ impl Matrix {
     /// exponent zero. A positive scale changes no span, basis or ratio of
     /// norms, and the division is exact unless an entry underflows.
     fn rescaled(&self) -> (Matrix, i32) {
+        let mut matrix = self.clone();
+        let exponent = matrix.rescale();
+        (matrix, exponent)
+    }
+
+    /// [`Matrix::rescaled`], when no nonzero entry is more than
+    /// `2^MAX_FACTOR_SPREAD` times smaller than the largest; `None`
+    /// otherwise. Every nonzero entry of the result is then at least
+    /// `2^-400` in magnitude, so the division is exact and no product of two
+    /// entries underflows.
+    fn rescaled_within_spread(&self) -> Option<Matrix> {
+        let (smallest, largest) = self
+            .data
+            .iter()
+            .filter(|value| **value != 0.0)
+            .map(|value| scale::exact_exponent(*value))
+            .fold((i32::MAX, i32::MIN), |(low, high), exponent| {
+                (low.min(exponent), high.max(exponent))
+            });
+        if smallest <= largest && largest - smallest > MAX_FACTOR_SPREAD {
+            return None;
+        }
+        Some(self.rescaled().0)
+    }
+
+    /// Divide this matrix in place as [`Matrix::rescaled`] does, and return
+    /// the exponent of the power of two it was divided by.
+    fn rescale(&mut self) -> i32 {
         let Some(exponent) = scale::exponent(self.data.iter().copied()) else {
-            return (self.clone(), 0);
+            return 0;
         };
         let factor = scale::power_of_two(exponent);
-        (
-            Matrix {
-                rows: self.rows,
-                cols: self.cols,
-                data: self.data.iter().map(|x| x / factor).collect(),
-            },
-            exponent,
-        )
+        self.data.iter_mut().for_each(|x| *x /= factor);
+        exponent
     }
 
     fn transpose(&self) -> Self {
@@ -237,6 +259,23 @@ impl Basis {
 /// Relative size below which a column is treated as linearly dependent.
 const RANK_TOLERANCE: f64 = 1e-10;
 
+/// Largest spread, in powers of two, between the largest and the smallest
+/// nonzero magnitude of either factor for which the bases of an update are
+/// computed from its factors ([`LayerUpdate::input_basis`]). Factors held as
+/// `f32` or `bf16` spread over at most 277.
+const MAX_FACTOR_SPREAD: i32 = 400;
+
+/// Largest ratio, on either side of an update, between the size the
+/// product's largest column (row) could have without cancellation and the
+/// size it has, for which its bases are computed from its factors
+/// ([`LayerUpdate::input_basis`]).
+const MAX_CANCELLATION: f64 = 256.0;
+
+/// A row is left out of the orthonormal basis of a factor ([`RowSpan`]) only
+/// when what orthogonalisation leaves of it is at most this fraction,
+/// `2^-50`, of its own norm: a few units in the last place.
+const FACTOR_TOLERANCE: f64 = 1.0 / (1u64 << 50) as f64;
+
 /// Orthonormal basis of the column space of `matrix`, by modified Gram-Schmidt
 /// with one full reorthogonalisation pass ("twice is enough"). A column whose
 /// remainder is negligible relative to the largest column of the matrix is
@@ -250,37 +289,40 @@ const RANK_TOLERANCE: f64 = 1e-10;
 /// the same matrix near one, where squared norms would otherwise overflow or
 /// underflow and drop every column.
 pub fn column_basis(matrix: &Matrix) -> Basis {
-    let (matrix, _) = matrix.rescaled();
-    let matrix = &matrix;
-    let scale = (0..matrix.cols)
-        .map(|index| norm(&matrix.column(index)))
-        .fold(0.0, f64::max);
+    row_basis(matrix.transpose())
+}
+
+/// Orthonormal basis of the span of the rows of `matrix`: [`column_basis`] of
+/// its transpose, with the same arithmetic on the same values in the same
+/// order, but reading each vector from contiguous memory. The matrix is
+/// divided in place.
+fn row_basis(mut matrix: Matrix) -> Basis {
+    matrix.rescale();
+    let dim = matrix.cols;
+    let scale = matrix.data.chunks_exact(dim).map(norm).fold(0.0, f64::max);
     let mut vectors: Vec<Vec<f64>> = Vec::new();
-    for index in 0..matrix.cols {
-        let mut column = matrix.column(index);
-        let original = norm(&column);
+    for row in matrix.data.chunks_exact(dim) {
+        let original = norm(row);
         if original == 0.0 {
             continue;
         }
+        let mut vector = row.to_vec();
         for _ in 0..2 {
             for base in &vectors {
-                let projection = dot(&column, base);
-                for (cell, &b) in column.iter_mut().zip(base) {
+                let projection = dot(&vector, base);
+                for (cell, &b) in vector.iter_mut().zip(base) {
                     *cell -= projection * b;
                 }
             }
         }
-        let remainder = norm(&column);
+        let remainder = norm(&vector);
         if remainder <= RANK_TOLERANCE * scale {
             continue;
         }
-        column.iter_mut().for_each(|cell| *cell /= remainder);
-        vectors.push(column);
+        vector.iter_mut().for_each(|cell| *cell /= remainder);
+        vectors.push(vector);
     }
-    Basis {
-        dim: matrix.rows,
-        vectors,
-    }
+    Basis { dim, vectors }
 }
 
 /// Cosines of the principal angles between two subspaces, largest first.
@@ -413,98 +455,145 @@ impl LayerUpdate {
     }
 
     /// Orthonormal basis of the column space of `delta_W = B A`: the outputs
-    /// the update can write.
+    /// the update can write. It is [`column_basis`] of the product, computed
+    /// as described under [`LayerUpdate::input_basis`].
     pub fn output_basis(&self) -> Basis {
         self.update_bases().0
     }
 
     /// Orthonormal basis of the row space of `delta_W = B A`: the inputs the
-    /// update reads.
+    /// update reads. It is [`column_basis`] of the transposed product.
+    ///
+    /// Both bases are the Gram-Schmidt of [`column_basis`] over the columns
+    /// (rows) of `B A` in order, with its rank tolerance relative to the
+    /// largest of them; they are never `col(B)` and `row(A)`, which are
+    /// wrong whenever the factors are rank-deficient together: `B = [b, b]`,
+    /// `A = [a1; a2]` gives `B A = b (a1 + a2)^T`, whose row space is one
+    /// direction, not the plane `row(A)`; since the overlap is normalised by
+    /// the smaller rank, a too-large subspace can understate overlap as well
+    /// as overstate it. That Gram-Schmidt runs on one of two
+    /// representations of the product, with `r` the inner dimension of the
+    /// factors.
+    ///
+    /// **From the factors**, in `O((d_out + d_in) r^2)` time and
+    /// `O((d_out + d_in) r)` memory. Each factor is divided by the power of
+    /// two at or below its largest entry, and orthonormal bases `Q_B` of
+    /// `col(B)` and `Q_A` of `row(A)` are built by Gram-Schmidt with one
+    /// reorthogonalisation pass, leaving a column of `B` (row of `A`) out
+    /// only when what is left of it is at most `2^-50` of its own norm, never
+    /// for being small beside another. The Gram-Schmidt of the product then
+    /// runs on the coordinates of its columns in `Q_B` (rows in `Q_A`),
+    /// which have the lengths and inner products of the columns (rows)
+    /// themselves up to rounding, and the result is mapped back through
+    /// `Q_B` (`Q_A`). This representation is used only where the factors are
+    /// smaller than the product, `(d_out + d_in) r < d_out d_in`, and both
+    /// checks hold:
+    ///
+    /// 1. no nonzero entry of either factor is more than `2^400` times
+    ///    smaller than the largest entry of that factor, so the division is
+    ///    exact and no product of two factor entries underflows;
+    /// 2. on each side, the largest column (row) of the product, as its
+    ///    coordinates give it, is at least `2^-8` of the largest size a
+    ///    column (row) could have without cancellation: `sum_k |b_k| |a_kj|`
+    ///    for column `j` and `sum_k |b_ik| |a_k|` for row `i`, with `b_k` the
+    ///    columns of `B` and `a_k` the rows of `A`.
+    ///
+    /// Its rounding, like that of the direct product, is bounded relative to
+    /// those sizes without cancellation, which check 2 keeps within `2^8` of
+    /// the largest column (row), where the rank tolerance applies. The bases
+    /// agree with those taken from the formed product up to that rounding,
+    /// not bit for bit; the rank can differ only for a column (row) whose
+    /// remainder lies within it of the tolerance.
+    ///
+    /// **From the formed product** otherwise, in `O(d_out d_in r)` time with
+    /// memory for a few `d_out x d_in` matrices, as
+    /// [`LayerUpdate::delta_weight`] takes. Every entry of `B A` is the
+    /// in-order sum of products, rounded as `f64` rounds each step but with
+    /// an exponent range `f64` does not bound (the direct product wherever
+    /// it provably is exactly that, as for [`activation_interference`]), and
+    /// the product is then divided by the power of two at or below its
+    /// largest entry, which is exact except for entries more than `2^1022`
+    /// times smaller than the largest (rounded to subnormal values or zero),
+    /// far below the rank tolerance. Such bases depend on the factors only
+    /// through that product: factorizations whose products are computed as
+    /// the same matrix give the same bases, and a direction the product
+    /// keeps after large terms cancel is kept however large they were. It
+    /// is the representation used where factors cancel: `B = [MAX, MAX;
+    /// MIN_POSITIVE, 0]` and `A = [1; -1]` multiply to `MIN_POSITIVE e2`,
+    /// which dividing `B` by its largest power of two flushes, and which a
+    /// rank tolerance relative to `B` drops, leaving no update at all; they
+    /// fail both checks.
     pub fn input_basis(&self) -> Basis {
         self.update_bases().1
     }
 
-    /// Bases of the column and row spaces of `B A`, computed without forming
-    /// the `d_out x d_in` product.
-    ///
-    /// With `Q` an orthonormal basis of `col(B)` and `M = (Q^T B) A`, which is
-    /// only `rank(B) x d_in`, `B A = Q M`; so `row(B A) = row(M)` and
-    /// `col(B A) = Q col(M)`. Taking `col(B)` and `row(A)` directly instead is
-    /// wrong whenever the factors are rank-deficient together: `B = [b, b]`,
-    /// `A = [a1; a2]` gives `B A = b (a1 + a2)^T`, whose row space is one
-    /// direction, not the plane `row(A)`. Since the overlap is normalised by
-    /// the smaller rank, a too-large subspace can understate overlap as well
-    /// as overstate it.
-    ///
-    /// Both factors are first divided by powers of two, which changes neither
-    /// space, so `M` stays in range for factors of any finite magnitude.
+    /// The output and input bases: from the factors where they are smaller
+    /// than the product and both checks under [`LayerUpdate::input_basis`]
+    /// hold, from the formed product otherwise.
     fn update_bases(&self) -> (Basis, Basis) {
-        let (b, _) = self.b.rescaled();
-        let (a, _) = self.a.rescaled();
+        let (d_out, rank, d_in) = (
+            self.b.rows as u128,
+            self.b.cols as u128,
+            self.a.cols as u128,
+        );
+        let thinner = (d_out + d_in) * rank < d_out * d_in;
+        thinner
+            .then(|| self.factored_bases())
+            .flatten()
+            .unwrap_or_else(|| self.product_bases())
+    }
+
+    /// The output and input bases, from the formed product.
+    fn product_bases(&self) -> (Basis, Basis) {
+        let product = self.product_at_scale();
+        (row_basis(product.transpose()), row_basis(product))
+    }
+
+    /// The output and input bases, from the factors, or `None` when either
+    /// check under [`LayerUpdate::input_basis`] fails.
+    fn factored_bases(&self) -> Option<(Basis, Basis)> {
+        let b = self.b.rescaled_within_spread()?;
+        let a = self.a.rescaled_within_spread()?;
         let (d_out, d_in) = (b.rows, a.cols);
-        let q = column_basis(&b);
-        let rank = b.cols;
-        // M = (Q^T B) A, one row per basis vector of col(B).
-        let m_rows: Vec<Vec<f64>> = q
-            .vectors
-            .iter()
-            .map(|basis_vector| {
-                let r: Vec<f64> = (0..rank)
-                    .map(|column| dot(basis_vector, &b.column(column)))
-                    .collect();
-                (0..d_in)
-                    .map(|input| {
-                        r.iter()
-                            .enumerate()
-                            .map(|(inner, coefficient)| coefficient * a.get(inner, input))
-                            .sum()
-                    })
-                    .collect()
-            })
-            .collect();
-        if m_rows.is_empty() {
-            return (
-                Basis {
-                    dim: d_out,
-                    vectors: Vec::new(),
-                },
-                Basis {
-                    dim: d_in,
-                    vectors: Vec::new(),
-                },
-            );
+        // The rows of B^T are the columns of B.
+        let b_columns = b.transpose();
+        let (col_b, row_a) = (RowSpan::of(&b_columns), RowSpan::of(&a));
+        // Column j of B A is sum_k A[k][j] b_k; row i is sum_k B[i][k] a_k.
+        let (columns, output_uncancelled) = col_b.combinations(&a);
+        let (rows, input_uncancelled) = row_a.combinations(&b_columns);
+        if output_uncancelled == 0.0 {
+            // Every term b_ik a_kj is zero (then input_uncancelled is zero
+            // too), and so is the product.
+            let empty = |dim| Basis {
+                dim,
+                vectors: Vec::new(),
+            };
+            return Some((empty(d_out), empty(d_in)));
         }
-        let m = Matrix {
-            rows: m_rows.len(),
-            cols: d_in,
-            data: m_rows.concat(),
-        };
-        let input = column_basis(&m.transpose());
-        // An orthonormal basis of col(M) in coordinates of Q, mapped through Q:
-        // orthonormal because Q's columns are.
-        let coordinates = column_basis(&m);
-        let output = coordinates
-            .vectors
-            .iter()
-            .map(|coefficients| {
-                (0..d_out)
-                    .map(|row| {
-                        coefficients
-                            .iter()
-                            .zip(&q.vectors)
-                            .map(|(coefficient, basis_vector)| coefficient * basis_vector[row])
-                            .sum()
-                    })
-                    .collect()
-            })
-            .collect();
-        (
-            Basis {
-                dim: d_out,
-                vectors: output,
-            },
-            input,
-        )
+        let columns = within_cancellation(columns, output_uncancelled)?;
+        let rows = within_cancellation(rows, input_uncancelled)?;
+        Some((
+            col_b.lift(&row_basis(columns)),
+            row_a.lift(&row_basis(rows)),
+        ))
+    }
+
+    /// `B A`, every entry the in-order sum of products with an exponent range
+    /// `f64` does not bound (the direct product where it provably is exactly
+    /// that sum, the wide one otherwise), brought to scale by [`at_scale`],
+    /// which treats equal entries alike whichever way they were computed.
+    fn product_at_scale(&self) -> Matrix {
+        match self.b.product_in_range(&self.a) {
+            Some(direct) => at_scale(
+                direct.rows,
+                direct.cols,
+                direct.data.iter().copied().map(Wide::new),
+            ),
+            None => {
+                let wide = WideMatrix::of(&self.b).times(&WideMatrix::of(&self.a));
+                at_scale(wide.rows, wide.cols, wide.data.iter().copied())
+            }
+        }
     }
 
     /// The full update `delta_W = B A`. Merging and comparing adapters must
@@ -633,17 +722,197 @@ impl WideMatrix {
     }
 }
 
+/// The `rows x cols` matrix of `entries` divided by the power of two at or
+/// below their largest magnitude (subnormal magnitudes included), as `f64`
+/// entries below two in magnitude: exact for entries within `2^1022` of the
+/// largest, and rounded once, to a subnormal value or zero, for smaller ones.
+/// All-zero entries stay zero. The result depends only on the values of the
+/// entries, and a positive scale changes no span or basis.
+fn at_scale<I>(rows: usize, cols: usize, entries: I) -> Matrix
+where
+    I: Iterator<Item = Wide> + Clone,
+{
+    let shift = entries
+        .clone()
+        .filter_map(Wide::exponent)
+        .max()
+        .map_or(0, |largest| -largest);
+    Matrix {
+        rows,
+        cols,
+        data: entries
+            .map(|entry| entry.times_power_of_two(shift).to_f64())
+            .collect(),
+    }
+}
+
+/// The rows `x_k` of a matrix in an orthonormal basis `q_l` of their span:
+/// `x_k = sum_l coefficients[k][l] q_l + e_k`, by modified Gram-Schmidt with
+/// one reorthogonalisation pass. `e_k` is rounding error, except where what
+/// orthogonalisation left of `x_k` was at most [`FACTOR_TOLERANCE`] of
+/// `|x_k|` and was left out rather than made a basis vector: a row is never
+/// left out for being small beside another row.
+struct RowSpan {
+    /// The dimension of the rows.
+    dim: usize,
+    /// `|x_k|` for each row.
+    norms: Vec<f64>,
+    /// One entry per row, each holding at least one coefficient per basis
+    /// vector.
+    coefficients: Vec<Vec<f64>>,
+    /// The orthonormal basis.
+    basis: Vec<Vec<f64>>,
+}
+
+impl RowSpan {
+    fn of(matrix: &Matrix) -> Self {
+        let dim = matrix.cols;
+        let mut norms = Vec::with_capacity(matrix.rows);
+        let mut coefficients = vec![vec![0.0; matrix.rows]; matrix.rows];
+        let mut basis: Vec<Vec<f64>> = Vec::new();
+        for (row, (x, coefficients)) in matrix
+            .data
+            .chunks_exact(dim)
+            .zip(coefficients.iter_mut())
+            .enumerate()
+        {
+            let original = norm(x);
+            norms.push(original);
+            if original == 0.0 {
+                continue;
+            }
+            let mut vector = x.to_vec();
+            for _ in 0..2 {
+                for (coefficient, base) in coefficients.iter_mut().zip(&basis) {
+                    let projection = dot(&vector, base);
+                    *coefficient += projection;
+                    for (cell, &b) in vector.iter_mut().zip(base) {
+                        *cell -= projection * b;
+                    }
+                }
+            }
+            let remainder = norm(&vector);
+            if remainder <= FACTOR_TOLERANCE * original {
+                continue;
+            }
+            vector.iter_mut().for_each(|cell| *cell /= remainder);
+            // At most one basis vector per row so far, so this is in range.
+            debug_assert!(basis.len() <= row);
+            coefficients[basis.len()] = remainder;
+            basis.push(vector);
+        }
+        Self {
+            dim,
+            norms,
+            coefficients,
+            basis,
+        }
+    }
+
+    /// For each column `j` of `weights`, whose rows match the rows `x_k`:
+    /// the coordinates in this basis of `sum_k weights[k][j] x_k`, summed
+    /// over `k` in order, as one row of the returned matrix; and the largest
+    /// over `j` of `sum_k |weights[k][j]| |x_k|`, the size such a
+    /// combination could have without cancellation.
+    fn combinations(&self, weights: &Matrix) -> (Matrix, f64) {
+        debug_assert_eq!(weights.rows, self.norms.len());
+        let (count, rank) = (weights.cols, self.basis.len());
+        let mut data = vec![0.0; count * rank];
+        let mut uncancelled = vec![0.0; count];
+        for ((row, coefficients), size) in weights
+            .data
+            .chunks_exact(count)
+            .zip(&self.coefficients)
+            .zip(&self.norms)
+        {
+            for (j, &weight) in row.iter().enumerate() {
+                if weight == 0.0 {
+                    continue;
+                }
+                uncancelled[j] += weight.abs() * size;
+                for (cell, &coefficient) in
+                    data[j * rank..(j + 1) * rank].iter_mut().zip(coefficients)
+                {
+                    *cell += weight * coefficient;
+                }
+            }
+        }
+        let largest = uncancelled.into_iter().fold(0.0, f64::max);
+        (
+            Matrix {
+                rows: count,
+                cols: rank,
+                data,
+            },
+            largest,
+        )
+    }
+
+    /// The vectors `sum_l w_l q_l` for the vectors `w` of an orthonormal
+    /// basis of coordinates in this basis: orthonormal as well, up to
+    /// rounding, since the `q_l` are.
+    fn lift(&self, coordinates: &Basis) -> Basis {
+        let vectors = coordinates
+            .vectors
+            .iter()
+            .map(|weights| {
+                let mut vector = vec![0.0; self.dim];
+                for (&weight, base) in weights.iter().zip(&self.basis) {
+                    for (cell, &q) in vector.iter_mut().zip(base) {
+                        *cell += weight * q;
+                    }
+                }
+                vector
+            })
+            .collect();
+        Basis {
+            dim: self.dim,
+            vectors,
+        }
+    }
+}
+
+/// `coordinates` divided by the power of two at or below its largest entry,
+/// when its largest row is at least `1 / MAX_CANCELLATION` of `uncancelled`,
+/// the largest size a row could have without cancellation; `None`
+/// otherwise. The matrix must have at least one column.
+fn within_cancellation(mut coordinates: Matrix, uncancelled: f64) -> Option<Matrix> {
+    let exponent = coordinates.rescale();
+    let largest = coordinates
+        .data
+        .chunks_exact(coordinates.cols)
+        .map(norm)
+        .fold(0.0, f64::max);
+    let uncancelled = scale::times_power_of_two(uncancelled, -exponent);
+    (uncancelled <= MAX_CANCELLATION * largest).then_some(coordinates)
+}
+
 /// Worst overlap of one layer of a candidate adapter with any earlier adapter.
+///
+/// Each side is reported as one comparison: the largest overlap with any
+/// earlier update on the layer and the chance level of that same comparison,
+/// so the two can be compared with each other. The output and the input side
+/// may come from different earlier updates.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LayerInterference {
     pub layer: String,
+    /// The largest [`subspace_overlap`] of the output spaces with an earlier
+    /// update on this layer; zero when there is none.
     pub output_overlap: f64,
+    /// The largest [`subspace_overlap`] of the input spaces with an earlier
+    /// update on this layer; zero when there is none.
     pub input_overlap: f64,
-    /// Chance level of the output-side overlap for these ranks.
+    /// [`chance_overlap`] of the comparison that produced `output_overlap`:
+    /// of earlier updates with that overlap, the lowest chance level, which
+    /// the overlap exceeds the most. Zero when no earlier update is on this
+    /// layer.
     pub output_chance: f64,
-    /// Chance level of the input-side overlap for these ranks.
+    /// [`chance_overlap`] of the comparison that produced `input_overlap`,
+    /// chosen as for `output_chance`.
     pub input_chance: f64,
-    /// The earlier adapter with the largest overlap on this layer.
+    /// The first earlier adapter, in the order given, with the largest
+    /// overlap on this layer on either side; `None` when every overlap is
+    /// zero.
     pub worst: Option<AdapterId>,
 }
 
@@ -695,35 +964,54 @@ impl InterferenceReport {
 /// against the null space of a summed update: the null space of `sum_i dW_i` is
 /// not the intersection of the individual null spaces, so an update inside it
 /// can still overlap every earlier adapter.
+///
+/// The bases of each update are computed once, and only for earlier updates
+/// on a layer the candidate updates. Their cost is that of
+/// [`LayerUpdate::input_basis`]: `O((d_out + d_in) r^2)` time and
+/// `O((d_out + d_in) r)` memory for an update whose bases come from its
+/// factors, and `O(d_out d_in r)` time with memory for a few `d_out x d_in`
+/// matrices for one whose factors are not smaller than the product, cancel,
+/// or spread over more than `2^400`, whose bases come from the formed
+/// product.
 pub fn measure_interference(
     candidate: &AdapterId,
     updates: &[LayerUpdate],
     earlier: &[(AdapterId, Vec<LayerUpdate>)],
 ) -> Result<InterferenceReport, LineageError> {
+    let previous: Vec<(&AdapterId, &str, (Basis, Basis))> = earlier
+        .iter()
+        .flat_map(|(id, previous)| previous.iter().map(move |update| (id, update)))
+        .filter(|(_, previous)| updates.iter().any(|update| update.layer == previous.layer))
+        .map(|(id, previous)| (id, previous.layer.as_str(), previous.update_bases()))
+        .collect();
     let mut layers = Vec::with_capacity(updates.len());
     for update in updates {
-        let output = update.output_basis();
-        let input = update.input_basis();
+        let (output, input) = update.update_bases();
         let mut worst: Option<AdapterId> = None;
-        let mut output_overlap: f64 = 0.0;
-        let mut input_overlap: f64 = 0.0;
-        let mut output_chance: f64 = 0.0;
-        let mut input_chance: f64 = 0.0;
-        for (id, updates) in earlier {
-            for previous in updates.iter().filter(|p| p.layer == update.layer) {
-                let previous_output = previous.output_basis();
-                let previous_input = previous.input_basis();
-                let out = subspace_overlap(&output, &previous_output)?;
-                let inp = subspace_overlap(&input, &previous_input)?;
-                output_chance = output_chance.max(chance_overlap(&output, &previous_output)?);
-                input_chance = input_chance.max(chance_overlap(&input, &previous_input)?);
-                if out.max(inp) > output_overlap.max(input_overlap) {
-                    worst = Some(id.clone());
-                }
-                output_overlap = output_overlap.max(out);
-                input_overlap = input_overlap.max(inp);
+        // (overlap, chance level) of the comparison reported on each side.
+        let mut output_side: Option<(f64, f64)> = None;
+        let mut input_side: Option<(f64, f64)> = None;
+        let largest = |side: Option<(f64, f64)>| side.map_or(0.0, |(overlap, _)| overlap);
+        for (id, _, (previous_output, previous_input)) in previous
+            .iter()
+            .filter(|(_, layer, _)| *layer == update.layer)
+        {
+            let out = (
+                subspace_overlap(&output, previous_output)?,
+                chance_overlap(&output, previous_output)?,
+            );
+            let inp = (
+                subspace_overlap(&input, previous_input)?,
+                chance_overlap(&input, previous_input)?,
+            );
+            if out.0.max(inp.0) > largest(output_side).max(largest(input_side)) {
+                worst = Some((*id).clone());
             }
+            output_side = Some(stronger(output_side, out));
+            input_side = Some(stronger(input_side, inp));
         }
+        let (output_overlap, output_chance) = output_side.unwrap_or((0.0, 0.0));
+        let (input_overlap, input_chance) = input_side.unwrap_or((0.0, 0.0));
         layers.push(LayerInterference {
             layer: update.layer.clone(),
             output_overlap,
@@ -737,6 +1025,17 @@ pub fn measure_interference(
         candidate: candidate.clone(),
         layers,
     })
+}
+
+/// Of the comparison kept so far on one side of a layer and a new one, each
+/// `(overlap, chance level)`, the one to report: the larger overlap, and of
+/// equal overlaps the lower chance level, which the overlap exceeds the most.
+/// The kept one wins a full tie, so the first in order is reported.
+fn stronger(kept: Option<(f64, f64)>, new: (f64, f64)) -> (f64, f64) {
+    match kept {
+        Some(kept) if kept.0 > new.0 || (kept.0 == new.0 && kept.1 <= new.1) => kept,
+        _ => new,
+    }
 }
 
 fn dot(left: &[f64], right: &[f64]) -> f64 {
@@ -903,6 +1202,215 @@ mod tests {
         assert_eq!(
             matrix(1, 1, &[1e200]).product_in_range(&matrix(1, 1, &[1e200])),
             None
+        );
+    }
+
+    #[test]
+    fn equal_products_give_equal_bases_whether_formed_directly_or_wide() {
+        let tiny = f64::MIN_POSITIVE;
+        // B A = [tiny / 2; tiny / 4], subnormal after the normal terms cancel:
+        // formed directly, since every term is at least MIN_POSITIVE.
+        let cancelling = LayerUpdate::new(
+            "q",
+            matrix(2, 2, &[1.5 * tiny, tiny, 1.25 * tiny, tiny]),
+            matrix(2, 1, &[1.0, -1.0]),
+        )
+        .unwrap();
+        // The same product from subnormal factors, formed wide.
+        let subnormal = LayerUpdate::new(
+            "q",
+            matrix(2, 1, &[tiny / 2.0, tiny / 4.0]),
+            matrix(1, 1, &[1.0]),
+        )
+        .unwrap();
+        assert!(cancelling.b.product_in_range(&cancelling.a).is_some());
+        assert!(subnormal.b.product_in_range(&subnormal.a).is_none());
+        assert_eq!(cancelling.product_at_scale(), subnormal.product_at_scale());
+        assert_eq!(cancelling.product_at_scale().as_slice(), &[1.0, 0.5]);
+        assert_eq!(cancelling.update_bases(), subnormal.update_bases());
+        assert_eq!(cancelling.output_basis().rank(), 1);
+    }
+
+    /// Deterministic entries in `[-1, 1)`.
+    fn pseudo_random(count: usize, seed: u64) -> Vec<f64> {
+        let mut state = seed;
+        (0..count)
+            .map(|_| {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                (state >> 11) as f64 / (1u64 << 52) as f64 - 1.0
+            })
+            .collect()
+    }
+
+    /// Equal ranks and a full overlap on each side, and orthonormal vectors
+    /// in the first pair of bases.
+    fn assert_same_spaces(bases: &(Basis, Basis), expected: &(Basis, Basis)) {
+        for (basis, expected) in [(&bases.0, &expected.0), (&bases.1, &expected.1)] {
+            assert_eq!(
+                (basis.dim(), basis.rank()),
+                (expected.dim(), expected.rank())
+            );
+            if basis.rank() > 0 {
+                let overlap = subspace_overlap(basis, expected).unwrap();
+                assert!((overlap - 1.0).abs() < 1e-12, "{overlap}");
+            }
+            for (i, u) in basis.vectors.iter().enumerate() {
+                for (j, v) in basis.vectors.iter().enumerate() {
+                    let expected = if i == j { 1.0 } else { 0.0 };
+                    assert!((dot(u, v) - expected).abs() < 1e-12, "{i} {j}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bases_from_the_factors_are_those_of_the_formed_product_whatever_the_shape_or_rank() {
+        // (d_out, r, d_in), including an inner dimension above both sides.
+        for (d_out, r, d_in) in [(7, 3, 5), (2, 4, 3), (40, 6, 25), (1, 2, 9), (9, 1, 1)] {
+            let b = pseudo_random(d_out * r, 1);
+            let a = pseudo_random(r * d_in, 2);
+            let update = LayerUpdate::new("q", matrix(d_out, r, &b), matrix(r, d_in, &a)).unwrap();
+            let factored = update
+                .factored_bases()
+                .expect("random factors do not cancel");
+            assert_same_spaces(&factored, &update.product_bases());
+            let rank = d_out.min(r).min(d_in);
+            assert_eq!((factored.0.rank(), factored.1.rank()), (rank, rank));
+        }
+        // Rank-deficient factors: a column of B twice another, and a zero
+        // row of A, so B A has rank r - 2.
+        let (d_out, r, d_in) = (12, 4, 10);
+        let mut b = pseudo_random(d_out * r, 3);
+        for row in 0..d_out {
+            b[row * r + 1] = 2.0 * b[row * r];
+        }
+        let mut a = pseudo_random(r * d_in, 4);
+        a[3 * d_in..].fill(0.0);
+        let update = LayerUpdate::new("q", matrix(d_out, r, &b), matrix(r, d_in, &a)).unwrap();
+        let factored = update.factored_bases().expect("no cancellation");
+        assert_same_spaces(&factored, &update.product_bases());
+        assert_eq!((factored.0.rank(), factored.1.rank()), (2, 2));
+        // The rank tolerance is relative to the product, not to the factors:
+        // with B = diag(1, s) and A = I, a direction of s = 1e-9 is kept and
+        // one of 1e-11 is not, whatever the path, although the factors keep
+        // both.
+        for (small, rank) in [(1e-9, 2), (1e-11, 1)] {
+            let update = LayerUpdate::new(
+                "q",
+                matrix(2, 2, &[1.0, 0.0, 0.0, small]),
+                matrix(2, 2, &[1.0, 0.0, 0.0, 1.0]),
+            )
+            .unwrap();
+            let factored = update.factored_bases().expect("no cancellation");
+            assert_same_spaces(&factored, &update.product_bases());
+            assert_eq!((factored.0.rank(), factored.1.rank()), (rank, rank));
+        }
+    }
+
+    #[test]
+    fn factors_that_cancel_or_spread_too_far_are_measured_on_their_formed_product() {
+        // An 8 x 8 update of rank 2, (8 + 8) 2 < 8 * 8, so thin enough to be
+        // measured from its factors: B holds `top` in its first two rows and
+        // zeros below, and A the all-ones row times `first` and `second`, so
+        // B A = (first b_0 + second b_1) 1^T.
+        let thin = |top: [f64; 4], first: f64, second: f64| {
+            let mut b = vec![0.0; 16];
+            b[..4].copy_from_slice(&top);
+            let mut a = vec![first; 8];
+            a.extend([second; 8]);
+            LayerUpdate::new("q", matrix(8, 2, &b), matrix(2, 8, &a)).unwrap()
+        };
+        let from_the_factors = |update: &LayerUpdate| {
+            let factored = update.factored_bases().expect("within both checks");
+            assert_same_spaces(&factored, &update.product_bases());
+            assert_eq!(update.update_bases(), factored);
+        };
+        let from_the_product = |update: &LayerUpdate| {
+            assert_eq!(update.factored_bases(), None);
+            assert_eq!(update.update_bases(), update.product_bases());
+        };
+        // B A = (1 - (1 - 2^-7)) e1 1^T = 2^-7 e1 1^T, 255 times below the
+        // size of its terms, (2 - 2^-7) e1 1^T: from the factors. With 2^-8,
+        // 511 times below: on the formed product.
+        from_the_factors(&thin([1.0, -1.0, 0.0, 0.0], 1.0, 1.0 - 2f64.powi(-7)));
+        from_the_product(&thin([1.0, -1.0, 0.0, 0.0], 1.0, 1.0 - 2f64.powi(-8)));
+        // Terms that cancel exactly leave no update.
+        let cancelled = thin([1.0, -1.0, 0.0, 0.0], 1.0, 1.0);
+        from_the_product(&cancelled);
+        assert_eq!(
+            (
+                cancelled.output_basis().rank(),
+                cancelled.input_basis().rank()
+            ),
+            (0, 0)
+        );
+        // b_0 = e1 + 1e-12 e2 and b_1 = e1: B A = 1e-12 e2 1^T, 2e12 below its
+        // terms, of which a basis of col(B) keeps only rounding.
+        let steep = thin([1.0, 1.0, 1e-12, 0.0], 1.0, -1.0);
+        from_the_product(&steep);
+        let mut e2 = vec![0.0; 8];
+        e2[1] = 1.0;
+        assert_eq!(steep.output_basis().vectors, vec![e2.clone()]);
+        // A factor spread over 400 powers of two is measured from the
+        // factors, and one spread over 401 on the formed product; so is
+        // b_0 = MAX e1 + MIN_POSITIVE e2, b_1 = MAX e1, spread over 2045.
+        let spread = |exponent: i32| thin([1.0, 2f64.powi(exponent), 0.0, 0.0], 1.0, 1.0);
+        from_the_factors(&spread(-400));
+        from_the_product(&spread(-401));
+        let extreme = thin([f64::MAX, f64::MAX, f64::MIN_POSITIVE, 0.0], 1.0, -1.0);
+        from_the_product(&extreme);
+        assert_eq!(extreme.output_basis().vectors, vec![e2]);
+    }
+
+    #[test]
+    fn bases_come_from_the_factors_only_where_the_factors_are_smaller_than_the_product() {
+        // (d_out + d_in) r against d_out d_in: 20 >= 6, 20 >= 9, 36 >= 35 and
+        // 10 >= 9 are formed, 390 < 1000 and 8 < 16 are not.
+        for (d_out, r, d_in, thinner) in [
+            (2, 4, 3, false),
+            (1, 2, 9, false),
+            (7, 3, 5, false),
+            (9, 1, 1, false),
+            (40, 6, 25, true),
+            (4, 1, 4, true),
+        ] {
+            let b = pseudo_random(d_out * r, 5);
+            let a = pseudo_random(r * d_in, 6);
+            let update = LayerUpdate::new("q", matrix(d_out, r, &b), matrix(r, d_in, &a)).unwrap();
+            let factored = update
+                .factored_bases()
+                .expect("random factors do not cancel");
+            let expected = if thinner {
+                factored
+            } else {
+                update.product_bases()
+            };
+            assert_eq!(update.update_bases(), expected, "{d_out} {r} {d_in}");
+        }
+    }
+
+    #[test]
+    fn an_update_whose_every_term_is_zero_has_empty_bases_from_the_factors() {
+        // B's nonzero column meets A's zero row, and B's zero column A's
+        // nonzero row: every b_ik a_kj is zero.
+        let update = LayerUpdate::new(
+            "q",
+            matrix(3, 2, &[1.0, 0.0, 2.0, 0.0, 3.0, 0.0]),
+            matrix(2, 2, &[0.0, 0.0, 4.0, 5.0]),
+        )
+        .unwrap();
+        let factored = update.factored_bases().expect("nothing cancels");
+        assert_eq!(factored, update.product_bases());
+        assert_eq!(
+            (
+                factored.0.dim(),
+                factored.0.rank(),
+                factored.1.dim(),
+                factored.1.rank()
+            ),
+            (3, 0, 2, 0)
         );
     }
 

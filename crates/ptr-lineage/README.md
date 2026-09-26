@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-26  
-**Code footprint:** 8 Rust source files · 2557 nonblank source lines · 4 integration-test files · 76 `#[test]` markers
+**Code footprint:** 8 Rust source files · 3147 nonblank source lines · 5 integration-test files · 87 `#[test]` markers
 
 ### Implemented now
 
@@ -18,9 +18,9 @@
 - Registration always starts as a candidate; only a passing forgetting gate report bound to that adapter lets it serve
 - Forgetting gate with thresholds on average and per-task forgetting, backward transfer and public-suite regression, computed from an accuracy matrix whose summaries never overflow for finite scores (infinite only when the exact value exceeds f64::MAX, never NaN); a nonfinite threshold or public-suite score is refused before anything is evaluated
 - Revoking a training input names every adapter, descendant and consolidation that depends on it
-- Principal-angle overlap of the column and row spaces of delta_W = B A per layer, computed from the factors without forming the product, against its chance level, plus activation interference; a report names the candidate adapter measure_interference measured it for, so storing it under another adapter by mistake is refused (ptr-pg), though its fields are public and a report relabelled or built by hand names whatever it was given; bases and norms are computed at a power-of-two scale, and interference effects and product entries whose running sums overflow with an exponent range f64 does not bound, rounding each step as f64 does, so finite factors of any magnitude are measured, an entry far smaller than the largest of its matrix keeps its effect, and only a product entry or ratio beyond f64::MAX is refused; matrix shapes whose size overflows and subspaces of different dimensions are refused, an entry index outside a matrix panics instead of reading another row, and a layer update can only be built with aligned factors
+- Principal-angle overlap of the column and row spaces of delta_W = B A per layer, by Gram-Schmidt over the columns and rows of the product, never col(B) and row(A): run in coordinates of orthonormal bases of the factors, in O((d_out + d_in) r^2) time and O((d_out + d_in) r) memory, where the factors are smaller than the product, no factor entry is more than 2^400 below the largest of its factor and the product's largest column and row are at most 2^8 below their size without cancellation, agreeing with the formed product up to rounding; and on the formed product otherwise, in O(d_out d_in r) time, where factorizations whose products are computed as the same matrix give the same bases and a direction left after large terms cancel is kept; each side reported with the chance level of the comparison that produced its overlap, plus activation interference; a report names the candidate adapter measure_interference measured it for, so storing it under another adapter by mistake is refused (ptr-pg), though its fields are public and a report relabelled or built by hand names whatever it was given; bases and norms are computed at a power-of-two scale, and interference effects, the products bases are taken from and product entries whose running sums overflow with an exponent range f64 does not bound, rounding each step as f64 does, so finite factors of any magnitude are measured, an entry far smaller than the largest of its matrix keeps its effect, and only a product entry or ratio beyond f64::MAX is refused; matrix shapes whose size overflows and subspaces of different dimensions are refused, an entry index outside a matrix panics instead of reading another row, and a layer update can only be built with aligned factors
 - TIES merge of full updates for consolidation, finite for any finite updates (the sign election and the mean cannot overflow, and an entry far smaller than entries that cancel exactly still decides the sign), due when depth or overlap exceeds the policy or when an overlap cannot be compared with it; a report with a NaN overlap is within no limit
-- FSRS-4.5 forgetting model on the training clock, lapse tracking with label-audit withholding, and stratified Gumbel-top-k sampling without replacement; model times must be finite (probes, draws and priorities alike) and never precede a sample's last probe, a lapse limit of zero is refused, a draw reserves memory only for the samples it can return, and a probe whose update would store a nonfinite stability or difficulty is refused with the sample unchanged
+- FSRS-4.5 forgetting model on the training clock, lapse tracking with label-audit withholding, and stratified Gumbel-top-k sampling without replacement; model times must be finite (probes, draws and priorities alike) and never precede a sample's last probe, a second probe at the model time of a recorded one is refused as a repeat, a priority refuses a hand-built state with a nonfinite or out-of-range difficulty, a stability that is not finite and positive or a nonfinite last probe, a minimum stability above the initial one is refused so a lapse never raises stability, a lapse limit of zero is refused, a draw reserves memory only for the samples it can return, and a probe whose update would store a nonfinite stability or difficulty is refused with the sample unchanged
 - Held-out samples cannot enter the replay pool
 
 ### Missing for the target architecture
@@ -53,9 +53,10 @@
 ### Current automated checks
 
 - tests/lineage.rs gate, lineage and erasure propagation
-- tests/interference.rs subspace overlap cases, including rank-deficient factors measured on their product and factors of extreme magnitude
+- tests/interference.rs subspace overlap cases, including rank-deficient factors measured on their product, factors of extreme magnitude, factors whose product cancels and chance levels paired with their overlaps
+- tests/interference_cost.rs peak heap of measuring a 2048 x 3072 rank-4 layer, pinned below a sixteenth of its product's size, with bases checked against the formed product
 - tests/consolidation.rs TIES merge and forgetting summaries, including inputs whose running sums overflow
-- tests/replay.rs forgetting model and sampling, including nonfinite model times and unbounded draw counts
+- tests/replay.rs forgetting model and sampling, including nonfinite model times, unbounded draw counts, repeated probes, hand-built memory states and a stability floor above the initial stability
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->

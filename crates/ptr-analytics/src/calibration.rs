@@ -20,6 +20,14 @@ pub enum Binning {
 
 /// Multiclass Brier score: mean squared distance between each predicted
 /// distribution and the one-hot truth. Lower is better; `0` is perfect.
+///
+/// # Errors
+/// `StatsError::Empty` without items, `StatsError::LengthMismatch` unless
+/// there is one distribution per truth index, and
+/// `StatsError::InvalidDistribution` for the first item whose distribution
+/// is empty, has an entry outside `[0, 1]` (each entry is checked on its
+/// own, whatever the tolerance on the total), does not sum to one within
+/// `1e-6`, or has no entry for the true class.
 pub fn brier_score(probabilities: &[Vec<f64>], truth: &[usize]) -> Result<f64, StatsError> {
     check_aligned(probabilities, truth)?;
     let total: f64 = probabilities
@@ -43,6 +51,10 @@ pub fn brier_score(probabilities: &[Vec<f64>], truth: &[usize]) -> Result<f64, S
 /// Meaningful only on a gold set sampled uniformly from the population the
 /// model labels; labels chosen by active learning are a biased sample and
 /// overstate or understate calibration.
+///
+/// # Errors
+/// The input is refused as by [`brier_score`], so every confidence lies in
+/// `[0, 1]`, and `StatsError::InvalidParameter` for zero bins.
 pub fn expected_calibration_error(
     probabilities: &[Vec<f64>],
     truth: &[usize],
@@ -132,6 +144,18 @@ fn check_bins(count: usize) -> Result<(), StatsError> {
     Ok(())
 }
 
+/// Tolerance on the total of a predicted distribution.
+const DISTRIBUTION_TOLERANCE: f64 = 1e-6;
+
+/// Refuse misaligned or empty input, and any item whose predicted
+/// distribution is empty, has an entry outside `[0, 1]` (NaN included), does
+/// not sum to one within [`DISTRIBUTION_TOLERANCE`], or has no entry for the
+/// true class.
+///
+/// Every entry is held to `[0, 1]` on its own, whatever the tolerance on the
+/// total: `[1.0000005, 0]` sums to one within it, but its first entry is not
+/// a probability, and scoring it would report a Brier score above 2 or a
+/// confidence above 1.
 fn check_aligned(probabilities: &[Vec<f64>], truth: &[usize]) -> Result<(), StatsError> {
     if truth.is_empty() {
         return Err(StatsError::Empty { field: "truth" });
@@ -146,8 +170,8 @@ fn check_aligned(probabilities: &[Vec<f64>], truth: &[usize]) -> Result<(), Stat
         let total: f64 = p.iter().sum();
         let valid = !p.is_empty()
             && t < p.len()
-            && p.iter().all(|q| q.is_finite() && *q >= 0.0)
-            && (total - 1.0).abs() < 1e-6;
+            && p.iter().all(|q| (0.0..=1.0).contains(q))
+            && (total - 1.0).abs() < DISTRIBUTION_TOLERANCE;
         if !valid {
             return Err(StatsError::InvalidDistribution { item });
         }
@@ -184,6 +208,32 @@ mod tests {
         assert_eq!(
             brier_score(&[vec![0.5, 0.2]], &[0]).unwrap_err(),
             StatsError::InvalidDistribution { item: 0 }
+        );
+    }
+
+    #[test]
+    fn an_entry_above_one_is_refused_although_the_total_is_within_tolerance() {
+        // Both totals are within 1e-6 of one, but 1.0000005 and 1 + EPSILON
+        // are not probabilities: scored alone, the first would give a Brier
+        // score above 2, the largest a distribution can have, against class
+        // 1, and a confidence above 1 against class 0.
+        for bad in [vec![1.0000005, 0.0], vec![1.0 + f64::EPSILON, -0.0]] {
+            let refused = Err(StatsError::InvalidDistribution { item: 1 });
+            let predictions = [vec![0.0, 1.0], bad];
+            assert_eq!(brier_score(&predictions, &[1, 1]), refused);
+            for binning in [Binning::EqualWidth(10), Binning::EqualMass(2)] {
+                assert_eq!(
+                    expected_calibration_error(&predictions, &[1, 0], binning),
+                    refused
+                );
+            }
+        }
+        // A signed zero is a probability of zero, and one is a probability.
+        let edge = [vec![1.0, -0.0]];
+        assert_eq!(brier_score(&edge, &[0]), Ok(0.0));
+        assert_eq!(
+            expected_calibration_error(&edge, &[0], Binning::EqualWidth(10)),
+            Ok(0.0)
         );
     }
 }

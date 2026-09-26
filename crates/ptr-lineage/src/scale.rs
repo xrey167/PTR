@@ -19,7 +19,13 @@
 //! move: a sum of squares, or a basis taken with a rank tolerance relative
 //! to the largest column. A signed sum, whose large terms may cancel, and a
 //! product, which may read only the small entries, are computed on [`Wide`]
-//! values instead.
+//! values instead; a product of factors, whose entries may cancel to far
+//! less than any factor entry, is brought to scale only once it is formed.
+//! Bases of such a product are taken from its factors, each brought to
+//! scale on its own, only where no entry of a factor is more than `2^400`
+//! below the largest of that factor and the product's largest column and
+//! row are at most `2^8` below the size their terms would give them without
+//! cancellation.
 
 /// The exponent `e` of the power of two at or below the largest magnitude in
 /// `values` (`2^e <= max |v| < 2^(e + 1)`), raised to `-1022` for a subnormal
@@ -91,6 +97,22 @@ impl Wide {
 
     pub(crate) fn is_zero(self) -> bool {
         self.significand == 0.0
+    }
+
+    /// `floor(log2 |self|)` for a nonzero value, `None` for zero.
+    pub(crate) fn exponent(self) -> Option<i32> {
+        (!self.is_zero()).then_some(self.exponent)
+    }
+
+    /// `self * 2^shift`, exactly: only the exponent changes.
+    pub(crate) fn times_power_of_two(self, shift: i32) -> Self {
+        if self.is_zero() {
+            return self;
+        }
+        Self {
+            significand: self.significand,
+            exponent: self.exponent + shift,
+        }
     }
 
     /// `1.0` or `-1.0` for a nonzero value, `0.0` for zero.

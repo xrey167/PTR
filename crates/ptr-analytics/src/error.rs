@@ -7,7 +7,10 @@ pub enum StatsError {
     Empty { field: &'static str },
     /// Two inputs that must align have different lengths.
     LengthMismatch { expected: usize, actual: usize },
-    /// A probability vector is not a distribution, or a truth index is outside it.
+    /// A probability vector is not a distribution (it is empty, has an entry
+    /// outside `[0, 1]`, NaN included, or does not sum to one within `1e-6`;
+    /// each entry is checked on its own, whatever the tolerance on the
+    /// total), or a truth index is outside it.
     InvalidDistribution { item: usize },
     /// A parameter is outside its valid range.
     InvalidParameter {

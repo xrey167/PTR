@@ -309,3 +309,120 @@ fn a_layer_update_exposes_its_checked_factors() {
     assert_eq!(update.layer(), "q_proj");
     assert_eq!((update.b(), update.a()), (&b, &a));
 }
+
+#[test]
+fn update_bases_keep_a_component_that_cancellation_makes_the_whole_product_depend_on() {
+    // B A = [MAX - MAX; MIN_POSITIVE] = MIN_POSITIVE e2. Dividing B by the
+    // power of two at or below MAX flushes its lower-left entry to zero, and
+    // a rank tolerance relative to B drops that direction as well, so the
+    // factors alone leave no update at all.
+    let cancelling = LayerUpdate::new(
+        "q",
+        matrix(2, 2, &[f64::MAX, f64::MAX, f64::MIN_POSITIVE, 0.0]),
+        matrix(2, 1, &[1.0, -1.0]),
+    )
+    .unwrap();
+    // The same update, factored without cancellation.
+    let direct = LayerUpdate::new(
+        "q",
+        matrix(2, 1, &[0.0, f64::MIN_POSITIVE]),
+        matrix(1, 1, &[1.0]),
+    )
+    .unwrap();
+    assert_eq!(cancelling.delta_weight(), direct.delta_weight());
+    for update in [&cancelling, &direct] {
+        assert_eq!(
+            (update.output_basis().rank(), update.input_basis().rank()),
+            (1, 1)
+        );
+    }
+    assert_eq!(cancelling.output_basis(), direct.output_basis());
+    assert_eq!(cancelling.input_basis(), direct.input_basis());
+    assert_eq!(
+        cancelling.output_basis(),
+        column_basis(&matrix(2, 1, &[0.0, 1.0]))
+    );
+    // Nothing extreme is needed: 1e-12 is below the rank tolerance of B, not
+    // of B A = [0; 1e-12], and another factorization of that product
+    // (B G, G^-1 A with G = diag(2, 1/2)) gives the same bases.
+    let near_one =
+        |b: &[f64], a: &[f64]| LayerUpdate::new("q", matrix(2, 2, b), matrix(2, 1, a)).unwrap();
+    let first = near_one(&[1.0, 1.0, 1e-12, 0.0], &[1.0, -1.0]);
+    let second = near_one(&[2.0, 0.5, 2e-12, 0.0], &[0.5, -2.0]);
+    assert_eq!(first.delta_weight(), second.delta_weight());
+    for update in [&first, &second] {
+        assert_eq!(update.output_basis(), direct.output_basis());
+        assert_eq!(update.input_basis(), direct.input_basis());
+    }
+    // An update that writes exactly where an earlier one does is not
+    // measured as harmless.
+    let report = measure_interference(
+        &candidate(),
+        &[cancelling],
+        &[(AdapterId::from("earlier"), vec![direct])],
+    )
+    .unwrap();
+    let layer = &report.layers[0];
+    assert!((layer.output_overlap - 1.0).abs() < 1e-12, "{layer:?}");
+    assert!((layer.input_overlap - 1.0).abs() < 1e-12, "{layer:?}");
+    assert!(!report.within(0.5));
+}
+
+#[test]
+fn a_layer_reports_the_chance_level_of_the_comparison_that_produced_each_overlap() {
+    // A 10 x 16 layer. The candidate writes e1 and reads e1.
+    let axis = |dim: usize, index: usize| {
+        let mut vector = vec![0.0; dim];
+        vector[index] = 1.0;
+        vector
+    };
+    let candidate_update = LayerUpdate::new(
+        "q",
+        matrix(10, 1, &axis(10, 0)),
+        matrix(1, 16, &axis(16, 0)),
+    )
+    .unwrap();
+    // X is rank one: it writes (e1 + e2) / sqrt 2, an output overlap of 0.5
+    // at a chance level of 1/10, and reads e2.
+    let mut diagonal = vec![0.0; 10];
+    diagonal[0] = std::f64::consts::FRAC_1_SQRT_2;
+    diagonal[1] = std::f64::consts::FRAC_1_SQRT_2;
+    let x = LayerUpdate::new("q", matrix(10, 1, &diagonal), matrix(1, 16, &axis(16, 1))).unwrap();
+    // Y is rank eight: it writes e3..e10 and reads e9..e16, overlapping the
+    // candidate nowhere, at chance levels of 8/10 and 8/16.
+    let mut writes = vec![0.0; 80];
+    let mut reads = vec![0.0; 128];
+    for inner in 0..8 {
+        writes[(inner + 2) * 8 + inner] = 1.0;
+        reads[inner * 16 + inner + 8] = 1.0;
+    }
+    let y = LayerUpdate::new("q", matrix(10, 8, &writes), matrix(8, 16, &reads)).unwrap();
+    assert_eq!((y.output_basis().rank(), y.input_basis().rank()), (8, 8));
+    for earlier in [
+        vec![
+            (AdapterId::from("x"), vec![x.clone()]),
+            (AdapterId::from("y"), vec![y.clone()]),
+        ],
+        vec![
+            (AdapterId::from("y"), vec![y.clone()]),
+            (AdapterId::from("x"), vec![x.clone()]),
+        ],
+    ] {
+        let report = measure_interference(
+            &candidate(),
+            std::slice::from_ref(&candidate_update),
+            &earlier,
+        )
+        .unwrap();
+        let layer = &report.layers[0];
+        assert!((layer.output_overlap - 0.5).abs() < 1e-12, "{layer:?}");
+        // X's chance level, not Y's 0.8: the overlap is five times its own
+        // chance level, not below the largest one.
+        assert_eq!(layer.output_chance, 0.1, "{layer:?}");
+        // Neither reads e1; of two equal overlaps the one furthest above its
+        // chance level is kept, here X's at 1/16 rather than Y's 1/2.
+        assert!(layer.input_overlap.abs() < 1e-12, "{layer:?}");
+        assert_eq!(layer.input_chance, 1.0 / 16.0, "{layer:?}");
+        assert_eq!(layer.worst, Some(AdapterId::from("x")));
+    }
+}
