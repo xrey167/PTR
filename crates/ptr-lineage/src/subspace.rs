@@ -14,15 +14,23 @@ impl Matrix {
     ///
     /// # Errors
     /// Rejects zero dimensions, a length other than `rows * cols`, or nonfinite
-    /// entries. The dimension product must fit in `usize`.
+    /// entries. A dimension product that does not fit in `usize` is refused
+    /// with `LineageError::InvalidParameter` rather than wrapped, so no length
+    /// can match it.
     pub fn new(rows: usize, cols: usize, data: Vec<f64>) -> Result<Self, LineageError> {
         if rows == 0 || cols == 0 {
             return Err(LineageError::Empty { field: "matrix" });
         }
-        if data.len() != rows * cols {
+        let expected = rows
+            .checked_mul(cols)
+            .ok_or(LineageError::InvalidParameter {
+                field: "matrix dimensions",
+                message: "rows * cols overflows usize",
+            })?;
+        if data.len() != expected {
             return Err(LineageError::ShapeMismatch {
                 field: "matrix data",
-                expected: rows * cols,
+                expected,
                 actual: data.len(),
             });
         }
@@ -585,6 +593,27 @@ mod tests {
             (subspace_overlap(&candidate.output_basis(), &earlier.output_basis()).unwrap() - 1.0)
                 .abs()
                 < 1e-12
+        );
+    }
+
+    #[test]
+    fn overflowing_dimensions_are_refused_rather_than_wrapped() {
+        let overflow = Err(LineageError::InvalidParameter {
+            field: "matrix dimensions",
+            message: "rows * cols overflows usize",
+        });
+        // 2 * (usize::MAX / 2 + 1) wraps to exactly 0, so an unchecked product
+        // would match an empty buffer (or panic in a debug build).
+        assert_eq!(Matrix::new(2, usize::MAX / 2 + 1, Vec::new()), overflow);
+        assert_eq!(Matrix::new(usize::MAX, usize::MAX, vec![0.0]), overflow);
+        // The largest representable product is still only a length check.
+        assert_eq!(
+            Matrix::new(1, usize::MAX, vec![0.0]),
+            Err(LineageError::ShapeMismatch {
+                field: "matrix data",
+                expected: usize::MAX,
+                actual: 1,
+            })
         );
     }
 

@@ -151,15 +151,47 @@ pub struct PublicSuite {
 }
 
 impl ForgettingGate {
+    fn check(&self) -> Result<(), LineageError> {
+        let thresholds = [
+            ("max_average_forgetting", self.max_average_forgetting),
+            ("max_task_forgetting", self.max_task_forgetting),
+            ("min_backward_transfer", self.min_backward_transfer),
+            ("max_public_regression", self.max_public_regression),
+        ];
+        for (field, value) in thresholds {
+            if !value.is_finite() {
+                return Err(LineageError::InvalidParameter {
+                    field,
+                    message: "must be finite",
+                });
+            }
+        }
+        Ok(())
+    }
+
     /// Report every exceeded forgetting or regression limit and every missed
-    /// backward-transfer minimum. Equality passes each threshold. A NaN public
-    /// score difference is reported as a public-regression violation.
+    /// backward-transfer minimum. Equality passes each threshold. A drop in
+    /// public score that overflows to positive infinity exceeds every limit
+    /// and is reported as a public-regression violation.
+    ///
+    /// # Errors
+    /// Returns `LineageError::InvalidParameter` for a nonfinite threshold and
+    /// `LineageError::NonFinite` for a nonfinite public-suite score, before
+    /// anything is evaluated: every comparison with NaN is false, so a NaN
+    /// limit would otherwise report no violation and pass, and an infinite
+    /// score would pass as an unbounded improvement.
     pub fn evaluate(
         &self,
         adapter: &AdapterId,
         matrix: &AccuracyMatrix,
         public: PublicSuite,
-    ) -> GateReport {
+    ) -> Result<GateReport, LineageError> {
+        self.check()?;
+        if !(public.serving.is_finite() && public.candidate.is_finite()) {
+            return Err(LineageError::NonFinite {
+                field: "public suite score",
+            });
+        }
         let mut violations = Vec::new();
         let average = matrix.average_forgetting();
         if average > self.max_average_forgetting {
@@ -191,10 +223,10 @@ impl ForgettingGate {
                 limit: self.max_public_regression,
             });
         }
-        GateReport {
+        Ok(GateReport {
             adapter: adapter.clone(),
             violations,
-        }
+        })
     }
 }
 
@@ -231,35 +263,112 @@ mod tests {
             min_backward_transfer: -0.1,
             max_public_regression: 0.01,
         };
-        let report = gate.evaluate(
-            &AdapterId::from("candidate"),
-            &matrix(),
-            PublicSuite {
-                serving: 0.5,
-                candidate: 0.45,
-            },
-        );
+        let report = gate
+            .evaluate(
+                &AdapterId::from("candidate"),
+                &matrix(),
+                PublicSuite {
+                    serving: 0.5,
+                    candidate: 0.45,
+                },
+            )
+            .unwrap();
         assert!(!report.passed());
         assert_eq!(report.violations().len(), 4);
     }
 
-    #[test]
-    fn a_nan_public_score_fails_rather_than_passes() {
-        let gate = ForgettingGate {
+    fn lenient_gate() -> ForgettingGate {
+        ForgettingGate {
             max_average_forgetting: 1.0,
             max_task_forgetting: 1.0,
             min_backward_transfer: -1.0,
             max_public_regression: 1.0,
+        }
+    }
+
+    #[test]
+    fn a_nonfinite_public_score_is_refused_rather_than_passed() {
+        let scores = [
+            (0.5, f64::NAN),
+            (f64::NAN, 0.5),
+            (0.5, f64::INFINITY),
+            (f64::NEG_INFINITY, 0.5),
+            (f64::INFINITY, f64::INFINITY),
+        ];
+        for (serving, candidate) in scores {
+            assert_eq!(
+                lenient_gate().evaluate(
+                    &AdapterId::from("candidate"),
+                    &matrix(),
+                    PublicSuite { serving, candidate },
+                ),
+                Err(LineageError::NonFinite {
+                    field: "public suite score"
+                }),
+                "serving {serving} candidate {candidate}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_nonfinite_threshold_is_refused_before_evaluation() {
+        let public = PublicSuite {
+            serving: 0.9,
+            candidate: 0.0,
         };
-        let report = gate.evaluate(
-            &AdapterId::from("candidate"),
-            &matrix(),
-            PublicSuite {
-                serving: 0.5,
-                candidate: f64::NAN,
-            },
-        );
-        assert!(!report.passed());
+        for limit in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let gates = [
+                (
+                    "max_average_forgetting",
+                    ForgettingGate {
+                        max_average_forgetting: limit,
+                        ..lenient_gate()
+                    },
+                ),
+                (
+                    "max_task_forgetting",
+                    ForgettingGate {
+                        max_task_forgetting: limit,
+                        ..lenient_gate()
+                    },
+                ),
+                (
+                    "min_backward_transfer",
+                    ForgettingGate {
+                        min_backward_transfer: limit,
+                        ..lenient_gate()
+                    },
+                ),
+                (
+                    "max_public_regression",
+                    ForgettingGate {
+                        max_public_regression: limit,
+                        ..lenient_gate()
+                    },
+                ),
+            ];
+            for (field, gate) in gates {
+                assert_eq!(
+                    gate.evaluate(&AdapterId::from("candidate"), &matrix(), public),
+                    Err(LineageError::InvalidParameter {
+                        field,
+                        message: "must be finite",
+                    }),
+                    "{field} = {limit}"
+                );
+            }
+        }
+        // All-NaN limits compare false everywhere; they must not yield a
+        // passing report for a candidate that regressed badly.
+        let nan_gate = ForgettingGate {
+            max_average_forgetting: f64::NAN,
+            max_task_forgetting: f64::NAN,
+            min_backward_transfer: f64::NAN,
+            max_public_regression: f64::NAN,
+        };
+        assert!(nan_gate
+            .evaluate(&AdapterId::from("candidate"), &matrix(), public)
+            .is_err());
     }
 
     #[test]

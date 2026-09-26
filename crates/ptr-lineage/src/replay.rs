@@ -142,9 +142,20 @@ impl ReplayPool {
 
     /// Admit a training sample. Held-out samples are refused by type of split,
     /// not by convention.
+    ///
+    /// # Errors
+    /// Returns `LineageError::HeldOutSample` for a held-out sample,
+    /// `LineageError::NonFinite` for a nonfinite `now` (a NaN or infinite
+    /// last probe would make the sample's priority zero forever), or
+    /// `LineageError::DuplicateSample` for an id already pooled.
     pub fn insert(&mut self, sample: NewSample, now: ModelTime) -> Result<(), LineageError> {
         if sample.split == Split::HeldOut {
             return Err(LineageError::HeldOutSample { id: sample.id });
+        }
+        if !now.0.is_finite() {
+            return Err(LineageError::NonFinite {
+                field: "model time",
+            });
         }
         if self.samples.contains_key(&sample.id) {
             return Err(LineageError::DuplicateSample { id: sample.id });
@@ -172,6 +183,14 @@ impl ReplayPool {
     /// stability grows, more so when it was probed late (low retrievability)
     /// and when it is easy; a lapsed sample's stability shrinks and its
     /// difficulty rises.
+    ///
+    /// # Errors
+    /// Returns `LineageError::NonFinite` for a nonfinite loss or `now`,
+    /// `LineageError::UnknownSample` for an id not in the pool, and
+    /// `LineageError::InvalidParameter` when `now` precedes the sample's last
+    /// probe: the clock is monotone, and moving the last probe backward would
+    /// make the sample look more forgotten than it is. A refused probe leaves
+    /// the sample's memory unchanged.
     pub fn record_probe(
         &mut self,
         id: &str,
@@ -183,12 +202,23 @@ impl ReplayPool {
                 field: "probe loss",
             });
         }
+        if !now.0.is_finite() {
+            return Err(LineageError::NonFinite {
+                field: "model time",
+            });
+        }
         let params = self.params;
         let sample = self
             .samples
             .get_mut(id)
             .ok_or_else(|| LineageError::UnknownSample { id: id.to_owned() })?;
         let memory = &mut sample.memory;
+        if now.0 < memory.last_probe.0 {
+            return Err(LineageError::InvalidParameter {
+                field: "model time",
+                message: "must not precede the sample's last probe",
+            });
+        }
         let elapsed = now.0 - memory.last_probe.0;
         let recall = retrievability(elapsed, memory.stability);
         if loss > params.lapse_loss {

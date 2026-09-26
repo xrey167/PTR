@@ -74,15 +74,18 @@ fn forgetting_gate_accepts_equality_at_every_threshold() {
                 candidate: 0.5
             }
         )
+        .unwrap()
         .passed());
-    let report = gate.evaluate(
-        &ptr_lineage::AdapterId::from("candidate"),
-        &matrix,
-        PublicSuite {
-            serving: 0.75,
-            candidate: 0.5,
-        },
-    );
+    let report = gate
+        .evaluate(
+            &ptr_lineage::AdapterId::from("candidate"),
+            &matrix,
+            PublicSuite {
+                serving: 0.75,
+                candidate: 0.5,
+            },
+        )
+        .unwrap();
     assert_eq!(
         report.violations(),
         &[GateViolation::PublicRegression {

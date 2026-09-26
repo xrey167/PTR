@@ -49,26 +49,30 @@ fn gate() -> ForgettingGate {
 
 fn passing_report() -> ptr_lineage::GateReport {
     let matrix = AccuracyMatrix::new(vec![vec![0.8, 0.1], vec![0.79, 0.9]]).unwrap();
-    gate().evaluate(
-        &AdapterId::from("a1"),
-        &matrix,
-        PublicSuite {
-            serving: 0.6,
-            candidate: 0.6,
-        },
-    )
+    gate()
+        .evaluate(
+            &AdapterId::from("a1"),
+            &matrix,
+            PublicSuite {
+                serving: 0.6,
+                candidate: 0.6,
+            },
+        )
+        .unwrap()
 }
 
 fn failing_report() -> ptr_lineage::GateReport {
     let matrix = AccuracyMatrix::new(vec![vec![0.8, 0.1], vec![0.5, 0.9]]).unwrap();
-    gate().evaluate(
-        &AdapterId::from("a1"),
-        &matrix,
-        PublicSuite {
-            serving: 0.6,
-            candidate: 0.6,
-        },
-    )
+    gate()
+        .evaluate(
+            &AdapterId::from("a1"),
+            &matrix,
+            PublicSuite {
+                serving: 0.6,
+                candidate: 0.6,
+            },
+        )
+        .unwrap()
 }
 
 #[test]

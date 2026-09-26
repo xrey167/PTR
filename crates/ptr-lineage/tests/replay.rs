@@ -165,3 +165,54 @@ fn replay_returns_nothing_for_zero_budget_or_an_entirely_ineligible_pool() {
         .sample(10, ModelTime(100.0), 7)
         .is_empty());
 }
+
+#[test]
+fn a_probe_earlier_than_the_last_one_is_refused_and_changes_nothing() {
+    let mut pool = pool(&[("a", "task")]);
+    pool.record_probe("a", 0.1, ModelTime(50.0)).unwrap();
+    let before = pool.get("a").unwrap().clone();
+    let priority = pool.priority(&before, ModelTime(60.0));
+    for loss in [0.1, 3.0] {
+        assert_eq!(
+            pool.record_probe("a", loss, ModelTime(10.0)),
+            Err(LineageError::InvalidParameter {
+                field: "model time",
+                message: "must not precede the sample's last probe",
+            })
+        );
+        assert_eq!(pool.get("a"), Some(&before));
+        assert_eq!(
+            pool.priority(pool.get("a").unwrap(), ModelTime(60.0)),
+            priority
+        );
+    }
+    // A probe at the same model time is not a step backward.
+    pool.record_probe("a", 0.1, ModelTime(50.0)).unwrap();
+}
+
+#[test]
+fn a_nonfinite_model_time_is_refused_and_changes_nothing() {
+    let mut pool = pool(&[("a", "task")]);
+    pool.record_probe("a", 0.1, ModelTime(10.0)).unwrap();
+    let before = pool.get("a").unwrap().clone();
+    for now in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        for loss in [0.1, 3.0] {
+            assert_eq!(
+                pool.record_probe("a", loss, ModelTime(now)),
+                Err(LineageError::NonFinite {
+                    field: "model time"
+                })
+            );
+            assert_eq!(pool.get("a"), Some(&before));
+        }
+        assert_eq!(
+            pool.insert(sample("b", "task"), ModelTime(now)),
+            Err(LineageError::NonFinite {
+                field: "model time"
+            })
+        );
+        assert!(pool.get("b").is_none());
+    }
+    // The sample is still drawable once the clock moves on.
+    assert_eq!(pool.sample(1, ModelTime(1e9), 1), vec!["a"]);
+}
