@@ -490,6 +490,13 @@ impl PolicyRecord {
 
     /// The adjudicated samples this policy was not calibrated on: the only
     /// ones its harm rate may be estimated from.
+    ///
+    /// Disjointness is necessary for an honest held-out estimate, not
+    /// sufficient. The calibration subset, the rule and its levels must have
+    /// been fixed before anyone looked at the outcomes of these samples, as
+    /// the F003 pre-registration requires; a policy tuned until its held-out
+    /// harm looked acceptable has seen them. This returns the complement of
+    /// the recorded calibration set and cannot check that precondition.
     pub fn held_out<'a>(
         &self,
         adjudicated: &'a [(BranchId, CalibrationSample)],

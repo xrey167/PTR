@@ -160,10 +160,12 @@ triage or an outcome is never updated or deleted on its own (it goes only when i
 whole branch is erased), a branch is adjudicated once, a held-out sample cannot enter
 the replay pool, a consolidated
 adapter has sources rather than a parent, a label schema has at least two classes, a
-triage row cites a recorded policy, a policy and its calibration set are never
-rewritten and a branch one was calibrated on cannot be deleted, only a model labeling
-function names an adapter, and interference evidence stays within `[0, 1]` and is
-never rewritten. A touched key's input-set digest is a whole digest; a branch stored
+triage row logged since policies are recorded cites a recorded policy, a policy and
+its calibration set are never rewritten and the set is complete when the policy
+commits (a sample appended later is refused), a branch one was calibrated on cannot
+be deleted, only a model labeling function names an adapter, and interference
+evidence stays within `[0, 1]` and is never rewritten.
+A touched key's input-set digest is a whole digest; a branch stored
 before input sets were recorded has none, and loading it is refused because it cannot
 be certified and must be re-run.
 Covered by `a_sealed_branch_round_trips_with_every_dependency_and_op`,
@@ -171,6 +173,9 @@ Covered by `a_sealed_branch_round_trips_with_every_dependency_and_op`,
 `triage_logs_and_outcomes_feed_the_platform_metrics`,
 `working_state_constraints_hold_in_the_database`,
 `triage_policies_record_their_calibration_and_hold_out_everything_else`,
+`a_calibration_set_is_complete_when_its_policy_commits_and_never_grows`,
+`policy_rows_that_break_a_rule_level_or_size_constraint_are_refused`,
+`a_work_schema_holding_triage_rows_upgrades_and_keeps_their_unrecorded_policies`,
 `a_labeling_function_names_an_adapter_only_as_a_model` and
 `interference_reports_are_stored_once_as_measured`.
 
@@ -272,13 +277,21 @@ verification:
   a Wilson interval on the Kish effective sample size
   (`a_calibration_slice_reweighted_by_its_rate_estimates_the_population_rate`).
 - Every policy is **recorded** with its version, its rule and levels, and exactly
-  which adjudicated calibration-slice branches chose its threshold; triage rows cite
-  it by a foreign key. A policy's harm rate may only be estimated on adjudications it
-  was not calibrated on (`PolicyRecord::held_out`), the disjointness F003 needs, and a
-  policy calibrated on a branch nobody adjudicated is refused
+  which adjudicated calibration-slice branches chose its threshold; triage rows logged
+  from work version 5 on cite it by a foreign key, which is not validated against
+  older rows: those keep the versions they named, which no table recorded
+  (`a_work_schema_holding_triage_rows_upgrades_and_keeps_their_unrecorded_policies`).
+  A policy's harm rate may only be estimated on adjudications it was not calibrated on
+  (`PolicyRecord::held_out`), the disjointness F003 needs. Disjointness is not
+  sufficient: the calibration subset, rule and levels must be fixed before the
+  held-out outcomes are looked at, as F003's pre-registration requires, and nothing
+  in the record can check that. A policy calibrated on a branch nobody adjudicated, or
+  whose rule, rerun on the stored adjudications of its calibration branches, chooses
+  another threshold, is refused
   (`a_recorded_policy_names_its_calibration_branches_and_holds_out_the_rest`,
   `a_recorded_policy_refuses_what_would_make_its_evaluation_dishonest`,
-  `triage_policies_record_their_calibration_and_hold_out_everything_else`).
+  `triage_policies_record_their_calibration_and_hold_out_everything_else`,
+  `a_policy_is_recorded_only_when_its_rule_on_the_stored_adjudications_chooses_it`).
 
 ## 3. Fast-weight working memory (`ptr-fastmem`)
 

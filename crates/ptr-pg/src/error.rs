@@ -53,8 +53,10 @@ pub enum PgError {
     /// other, so a space is never redefined in place.
     SpaceConflict { space: String },
     /// A triage policy record was refused: a calibration branch is not an
-    /// adjudicated calibration-slice branch, so the policy would claim a
-    /// guarantee its samples do not support.
+    /// adjudicated calibration-slice branch, or the record's rule, rerun on
+    /// the stored adjudications of its calibration branches, chooses another
+    /// threshold, so the policy would claim a guarantee its samples do not
+    /// support.
     InvalidPolicy {
         version: String,
         reason: &'static str,

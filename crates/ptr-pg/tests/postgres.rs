@@ -9,8 +9,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use ptr_analytics::{Grouping, Metric, MetricRow, MetricSpec, Window};
 use ptr_branch::{
-    AutoThreshold, BranchId, BranchOp, InputsDigest, PolicyRecord, RangeDigest, SealedBranch,
-    ThresholdRule, TriageDecision, TriageOutcome, TriagePolicy, ValueDigest,
+    AutoThreshold, BranchId, BranchOp, CalibrationSample, InputsDigest, PolicyRecord, RangeDigest,
+    SealedBranch, ThresholdRule, TriageDecision, TriageOutcome, TriagePolicy, ValueDigest,
 };
 use ptr_fastmem::{Decay, FastMemory, FastMemoryConfig, SourceRef, WriteRequest};
 use ptr_ledger::integrity::{chain_anchors, LogAnchor};
@@ -18,7 +18,7 @@ use ptr_ledger::{CommittedEvent, LedgerEvent};
 use ptr_lineage::{AdapterId, InterferenceReport, LayerInterference};
 use ptr_pg::{
     BranchOutcome, EmbeddingSpace, FastMemoryRecord, HybridQuery, Identifier, PgError, PgSubstrate,
-    SchemaSet, SearchDocument, LEXICAL_BACKEND, VECTOR_BACKEND,
+    SchemaSet, SearchDocument, LEXICAL_BACKEND, VECTOR_BACKEND, WORK_MIGRATIONS,
 };
 use ptr_search::EvidenceStage;
 use ptr_semdb::{SemanticPayload, SemanticValue};
@@ -71,6 +71,14 @@ async fn substrate() -> PgSubstrate {
 }
 
 async fn substrate_at(dsn: &str) -> PgSubstrate {
+    let mut substrate = unmigrated_substrate_at(dsn).await;
+    substrate.migrate().await.unwrap();
+    substrate
+}
+
+/// A substrate in a fresh schema prefix with nothing migrated yet, on a
+/// server where pgvector is installed.
+async fn unmigrated_substrate_at(dsn: &str) -> PgSubstrate {
     let raw = raw_client().await;
     // Parallel tests race on CREATE EXTENSION; serialize it. The lock must be
     // held until the extension is committed, so it is a transaction lock: a
@@ -90,7 +98,7 @@ async fn substrate_at(dsn: &str) -> PgSubstrate {
         NEXT_PREFIX.fetch_add(1, Ordering::SeqCst)
     );
     let schemas = SchemaSet::with_prefix(&prefix).unwrap();
-    let mut substrate = PgSubstrate::connect_with(dsn, schemas).await.unwrap();
+    let substrate = PgSubstrate::connect_with(dsn, schemas).await.unwrap();
     // A previous run with the same process id may have left schemas behind.
     raw.batch_execute(&format!(
         "DROP SCHEMA IF EXISTS {prefix}_derived CASCADE; \
@@ -99,7 +107,6 @@ async fn substrate_at(dsn: &str) -> PgSubstrate {
     ))
     .await
     .unwrap();
-    substrate.migrate().await.unwrap();
     substrate
 }
 
@@ -226,6 +233,84 @@ async fn an_edited_migration_is_refused_as_drift() {
         substrate.migrate().await.unwrap_err(),
         PgError::MigrationDrift { version: 2 }
     );
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_work_schema_holding_triage_rows_upgrades_and_keeps_their_unrecorded_policies() {
+    let mut substrate = unmigrated_substrate_at(&dsn()).await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    // A work schema as a build before recorded policies left it: migrations 1
+    // to 4 applied, and a triage row citing a policy no table recorded.
+    raw.batch_execute(&format!(
+        "CREATE SCHEMA {work}; \
+         CREATE TABLE {work}.schema_migration ( \
+             version integer PRIMARY KEY, \
+             name text NOT NULL, \
+             checksum bytea NOT NULL, \
+             applied_at timestamptz NOT NULL DEFAULT now())"
+    ))
+    .await
+    .unwrap();
+    for migration in &WORK_MIGRATIONS[..4] {
+        raw.batch_execute(&migration.render(substrate.schemas()))
+            .await
+            .unwrap();
+        raw.execute(
+            &format!(
+                "INSERT INTO {work}.schema_migration (version, name, checksum) \
+                 VALUES ($1, $2, $3)"
+            ),
+            &[
+                &(migration.version as i32),
+                &migration.name,
+                &migration.checksum().to_vec(),
+            ],
+        )
+        .await
+        .unwrap();
+    }
+    raw.batch_execute(&format!(
+        "INSERT INTO {work}.branch (id, author, base_revision) VALUES ('legacy', 'agent-a', 0); \
+         INSERT INTO {work}.branch_triage \
+             (branch, decision, eligible, calibration_slice, score, auto_propensity, \
+              policy_version) \
+         VALUES ('legacy', 'escalate', true, false, 0.5, 0.0, 'policy-0')"
+    ))
+    .await
+    .unwrap();
+
+    let report = substrate.migrate().await.unwrap();
+    assert_eq!(
+        report.work,
+        (5..=WORK_MIGRATIONS.len() as u32).collect::<Vec<_>>()
+    );
+    // The legacy row keeps citing the version it was logged under.
+    let cited: String = raw
+        .query_one(
+            &format!("SELECT policy_version FROM {work}.branch_triage WHERE branch = 'legacy'"),
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(cited, "policy-0");
+    // A triage logged from now on must cite a recorded policy.
+    substrate
+        .store_branch(&sealed_branch("new", "agent-a"))
+        .await
+        .unwrap();
+    assert!(matches!(
+        substrate
+            .record_triage(
+                &BranchId::from("new"),
+                &triage(TriageDecision::Escalate, true, false),
+                "policy-0"
+            )
+            .await,
+        Err(PgError::Database { ref sqlstate, .. }) if sqlstate == "23503"
+    ));
     substrate.drop_all().await.unwrap();
 }
 
@@ -2146,14 +2231,18 @@ async fn triage_policies_record_their_calibration_and_hold_out_everything_else()
     ));
     assert_eq!(substrate.load_policy("policy-3").await.unwrap(), None);
 
-    // A recorded policy and its calibration set are never rewritten, and a
-    // branch a policy was calibrated on cannot be deleted.
+    // A recorded policy and its calibration set are never rewritten, not even
+    // a policy nothing cites, and a branch a policy was calibrated on cannot
+    // be deleted.
+    record_manual_policy(&mut substrate, "unused").await;
     let raw = raw_client().await;
     let work = substrate.schemas().work.clone();
     for statement in [
         format!(
             "UPDATE {work}.triage_policy SET calibration_rate = 0.5 WHERE version = 'policy-2'"
         ),
+        format!("DELETE FROM {work}.triage_policy WHERE version = 'unused'"),
+        format!("UPDATE {work}.triage_policy_sample SET branch = 'h0' WHERE branch = 'c00'"),
         format!("DELETE FROM {work}.triage_policy_sample WHERE branch = 'c00'"),
     ] {
         let error = raw.execute(&statement, &[]).await.unwrap_err();
@@ -2168,6 +2257,291 @@ async fn triage_policies_record_their_calibration_and_hold_out_everything_else()
         .await
         .unwrap_err();
     assert_eq!(error.as_db_error().unwrap().code().code(), "23503");
+    substrate.drop_all().await.unwrap();
+}
+
+/// The refusal of a calibration branch that is not an adjudicated
+/// calibration-slice branch.
+const NOT_ADJUDICATED: &str = "a calibration branch is not an adjudicated calibration-slice branch";
+
+/// The refusal of a record whose rule, rerun on the stored adjudications of
+/// its calibration branches, chooses another threshold.
+const NOT_REPRODUCED: &str =
+    "the rule on the stored adjudications of the calibration branches chooses another threshold";
+
+/// A calibration sample as the adjudication of an eligible triage at `score`.
+fn sample(score: f32, harmful: bool) -> CalibrationSample {
+    TriageOutcome {
+        decision: TriageDecision::Escalate,
+        eligible: true,
+        calibration_slice: true,
+        score,
+        auto_propensity: 0.0,
+    }
+    .adjudicate(harmful)
+    .unwrap()
+}
+
+#[tokio::test]
+async fn a_policy_is_recorded_only_when_its_rule_on_the_stored_adjudications_chooses_it() {
+    let mut substrate = substrate().await;
+    record_manual_policy(&mut substrate, "bootstrap").await;
+    for i in 0..40 {
+        let score = i as f32 / 40.0;
+        calibration_branch(
+            &mut substrate,
+            &format!("c{i:02}"),
+            score,
+            "bootstrap",
+            Some(score < 0.3),
+        )
+        .await;
+    }
+    let samples = substrate.adjudicated_samples().await.unwrap();
+    let rule = ThresholdRule::LearnThenTest {
+        alpha: 0.2,
+        delta: 0.1,
+    };
+    let honest = PolicyRecord::calibrate("honest", rule, 0.05, &samples).unwrap();
+
+    // A threshold nobody computed from these adjudications, the stored
+    // branches with their verdicts flipped, and one half's samples under the
+    // other half's branches each claim a guarantee the stored evidence does
+    // not give.
+    let invented = PolicyRecord::from_parts(
+        "invented",
+        AutoThreshold::AtLeast(0.0),
+        0.05,
+        rule,
+        honest.calibrated_on().to_vec(),
+    )
+    .unwrap();
+    let flipped: Vec<(BranchId, CalibrationSample)> = (0..40)
+        .map(|i| {
+            let score = i as f32 / 40.0;
+            (BranchId(format!("c{i:02}")), sample(score, score >= 0.3))
+        })
+        .collect();
+    let flipped = PolicyRecord::calibrate("flipped", rule, 0.05, &flipped).unwrap();
+    let misattributed: Vec<(BranchId, CalibrationSample)> = samples[..20]
+        .iter()
+        .zip(&samples[20..])
+        .map(|((branch, _), (_, other))| (branch.clone(), *other))
+        .collect();
+    let misattributed =
+        PolicyRecord::calibrate("misattributed", rule, 0.05, &misattributed).unwrap();
+    for forged in [&invented, &flipped, &misattributed] {
+        let stored: Vec<(BranchId, CalibrationSample)> = samples
+            .iter()
+            .filter(|(branch, _)| forged.calibrated_on().contains(branch))
+            .cloned()
+            .collect();
+        let chosen = PolicyRecord::calibrate(forged.version(), rule, 0.05, &stored).unwrap();
+        assert_ne!(forged.policy().threshold(), chosen.policy().threshold());
+        assert_eq!(
+            substrate.record_policy(forged).await,
+            Err(PgError::InvalidPolicy {
+                version: forged.version().to_owned(),
+                reason: NOT_REPRODUCED,
+            })
+        );
+        assert_eq!(substrate.load_policy(forged.version()).await.unwrap(), None);
+    }
+
+    // An adjudicated branch outside the calibration slice, and a slice branch
+    // whose only outcome is a merge, are no calibration evidence, even paired
+    // with the very sample their stored row would give.
+    substrate
+        .store_branch(&sealed_branch("outside", "agent-c"))
+        .await
+        .unwrap();
+    substrate
+        .record_triage(
+            &BranchId::from("outside"),
+            &triage(TriageDecision::Escalate, true, false),
+            "bootstrap",
+        )
+        .await
+        .unwrap();
+    substrate
+        .record_outcome(
+            &BranchId::from("outside"),
+            BranchOutcome::AdjudicatedHarmless,
+        )
+        .await
+        .unwrap();
+    calibration_branch(&mut substrate, "merged", 0.5, "bootstrap", None).await;
+    substrate
+        .record_outcome(
+            &BranchId::from("merged"),
+            BranchOutcome::Merged(CommitIndex(3)),
+        )
+        .await
+        .unwrap();
+    for (branch, score) in [("outside", 0.8), ("merged", 0.5)] {
+        let mut with_branch = samples.clone();
+        with_branch.push((BranchId::from(branch), sample(score, false)));
+        let version = format!("with-{branch}");
+        let record = PolicyRecord::calibrate(version.as_str(), rule, 0.05, &with_branch).unwrap();
+        assert_eq!(
+            substrate.record_policy(&record).await,
+            Err(PgError::InvalidPolicy {
+                version: version.clone(),
+                reason: NOT_ADJUDICATED,
+            })
+        );
+        assert_eq!(substrate.load_policy(&version).await.unwrap(), None);
+    }
+
+    substrate.record_policy(&honest).await.unwrap();
+    assert_eq!(substrate.load_policy("honest").await.unwrap(), Some(honest));
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_calibration_set_is_complete_when_its_policy_commits_and_never_grows() {
+    let mut substrate = substrate().await;
+    record_manual_policy(&mut substrate, "bootstrap").await;
+    for i in 0..12 {
+        calibration_branch(
+            &mut substrate,
+            &format!("c{i:02}"),
+            i as f32 / 12.0,
+            "bootstrap",
+            Some(i < 3),
+        )
+        .await;
+    }
+    let samples = substrate.adjudicated_samples().await.unwrap();
+    let rule = ThresholdRule::ConformalRiskControl { alpha: 0.3 };
+    let record = PolicyRecord::calibrate("policy-2", rule, 0.05, &samples[..10]).unwrap();
+    substrate.record_policy(&record).await.unwrap();
+
+    // A sample appended in a later transaction is refused when it commits,
+    // for a calibrated and for a manual policy alike.
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    for (policy, branch) in [("policy-2", "c10"), ("bootstrap", "c11")] {
+        let error = raw
+            .execute(
+                &format!(
+                    "INSERT INTO {work}.triage_policy_sample (policy_version, branch) \
+                     VALUES ($1, $2)"
+                ),
+                &[&policy, &branch],
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.as_db_error().unwrap().code().code(),
+            "23000",
+            "{policy}"
+        );
+    }
+    assert_eq!(
+        substrate.load_policy("policy-2").await.unwrap(),
+        Some(record.clone())
+    );
+
+    // A policy whose sample rows fall short of or exceed its calibration size
+    // cannot commit.
+    for (size, branches) in [(2, &["c10"][..]), (1, &["c10", "c11"][..])] {
+        let samples: String = branches
+            .iter()
+            .map(|branch| {
+                format!(
+                    "INSERT INTO {work}.triage_policy_sample (policy_version, branch) \
+                     VALUES ('sized', '{branch}');"
+                )
+            })
+            .collect();
+        let error = raw
+            .batch_execute(&format!(
+                "BEGIN; \
+                 INSERT INTO {work}.triage_policy \
+                     (version, rule, calibration_rate, alpha, calibration_size) \
+                 VALUES ('sized', 'conformal_risk_control', 0.05, 0.3, {size}); \
+                 {samples} \
+                 COMMIT;"
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.as_db_error().unwrap().code().code(),
+            "23000",
+            "size {size}"
+        );
+        assert_eq!(substrate.load_policy("sized").await.unwrap(), None);
+    }
+
+    // A calibration set that no longer has its recorded size (here past a
+    // disabled check) is refused on load rather than returned.
+    raw.batch_execute(&format!(
+        "ALTER TABLE {work}.triage_policy_sample \
+             DISABLE TRIGGER triage_policy_sample_calibration_size; \
+         INSERT INTO {work}.triage_policy_sample (policy_version, branch) \
+             VALUES ('policy-2', 'c10'); \
+         ALTER TABLE {work}.triage_policy_sample \
+             ENABLE TRIGGER triage_policy_sample_calibration_size;"
+    ))
+    .await
+    .unwrap();
+    assert!(matches!(
+        substrate.load_policy("policy-2").await,
+        Err(PgError::CorruptRow {
+            table: "triage_policy",
+            ..
+        })
+    ));
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn policy_rows_that_break_a_rule_level_or_size_constraint_are_refused() {
+    let substrate = substrate().await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    for values in [
+        // An empty version and an unknown rule.
+        "('', 'manual', NULL, 0.1, NULL, NULL, 0)",
+        "('p', 'bayes', NULL, 0.1, 0.2, NULL, 3)",
+        // A manual threshold has no risk level; a calibrated one has one.
+        "('p', 'manual', NULL, 0.1, 0.2, NULL, 0)",
+        "('p', 'conformal_risk_control', NULL, 0.1, NULL, NULL, 3)",
+        // Only learn-then-test has a confidence level.
+        "('p', 'conformal_risk_control', NULL, 0.1, 0.2, 0.1, 3)",
+        "('p', 'learn_then_test', NULL, 0.1, 0.2, NULL, 3)",
+        // A threshold lies in [0, 1], a calibration rate in [0, 1), a risk or
+        // confidence level in (0, 1).
+        "('p', 'manual', 1.5, 0.1, NULL, NULL, 0)",
+        "('p', 'manual', -0.1, 0.1, NULL, NULL, 0)",
+        "('p', 'manual', NULL, 1.0, NULL, NULL, 0)",
+        "('p', 'conformal_risk_control', NULL, 0.1, 1.0, NULL, 3)",
+        "('p', 'learn_then_test', NULL, 0.1, 0.2, 0.0, 3)",
+        // A manual threshold was calibrated on nothing, a calibrated one on
+        // something, and no set has a negative size.
+        "('p', 'manual', NULL, 0.1, NULL, NULL, 2)",
+        "('p', 'conformal_risk_control', NULL, 0.1, 0.2, NULL, 0)",
+        "('p', 'conformal_risk_control', NULL, 0.1, 0.2, NULL, -1)",
+    ] {
+        let error = raw
+            .execute(
+                &format!(
+                    "INSERT INTO {work}.triage_policy \
+                     (version, rule, threshold, calibration_rate, alpha, delta, \
+                      calibration_size) \
+                     VALUES {values}"
+                ),
+                &[],
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.as_db_error().unwrap().code().code(),
+            "23514",
+            "{values}"
+        );
+    }
     substrate.drop_all().await.unwrap();
 }
 
