@@ -424,10 +424,61 @@ fn per_function_accuracy_refuses_an_actively_sampled_or_misaligned_gold_set() {
             actual: 400
         }
     );
-    assert!(matches!(
-        function_accuracy(&matrix, &gold(&truth), 0.0),
-        Err(LabelingError::Statistics { .. })
-    ));
+    assert_eq!(
+        function_accuracy(&matrix, &gold(&truth), 0.0).unwrap_err(),
+        LabelingError::InvalidParameter {
+            field: "z",
+            message: "must be finite and positive"
+        }
+    );
+}
+
+#[test]
+fn per_function_accuracy_refuses_an_invalid_z_whatever_the_votes() {
+    // No function casts a class vote on the gold item, so no interval is
+    // computed; z is refused anyway.
+    let silent = VoteMatrix::new(
+        LabelSchema::new(["a", "b"]).unwrap(),
+        vec![
+            LabelingFunction::model("ranker", "adapter-1"),
+            function("check", FunctionKind::Verifier),
+        ],
+        vec![vec![Vote::Abstain, Vote::Veto(1)]],
+    )
+    .unwrap();
+    let mut gold_item = EvaluationSet::new(GoldSampling::Uniform);
+    gold_item
+        .push(GoldLabel {
+            item: 0,
+            class: 0,
+            source: GoldSource::Oracle,
+        })
+        .unwrap();
+    assert_eq!(
+        function_accuracy(&silent, &gold_item, 1.96).unwrap()[0].estimate,
+        None
+    );
+    let (voting, truth) = synthetic();
+    for (matrix, gold) in [(&silent, gold_item), (&voting, gold(&truth))] {
+        for z in [f64::NAN, f64::INFINITY, -1.0, 0.0] {
+            assert_eq!(
+                function_accuracy(matrix, &gold, z).unwrap_err(),
+                LabelingError::InvalidParameter {
+                    field: "z",
+                    message: "must be finite and positive"
+                },
+                "{z}"
+            );
+        }
+        // Its square overflows, so no interval at it is finite.
+        assert_eq!(
+            function_accuracy(matrix, &gold, 1e200).unwrap_err(),
+            LabelingError::InvalidParameter {
+                field: "z",
+                message: "is too large for a finite interval"
+            }
+        );
+    }
 }
 
 #[test]

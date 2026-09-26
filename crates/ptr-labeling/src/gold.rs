@@ -142,14 +142,30 @@ pub struct FunctionAccuracy {
 /// sampled set over-represents the items the model found hardest.
 ///
 /// # Errors
-/// Refuses an empty or actively sampled gold set, and a gold item beyond the
-/// vote matrix or a gold class outside its schema, before any vote is scored.
-/// Also refuses a `z` that is not finite and positive.
+/// Refuses, whatever the votes, a `z` that is not finite and positive or whose
+/// square overflows. Refuses an empty or actively sampled gold set, and a gold
+/// item beyond the vote matrix or a gold class outside its schema, before any
+/// vote is scored.
 pub fn function_accuracy(
     matrix: &VoteMatrix,
     gold: &EvaluationSet,
     z: f64,
 ) -> Result<Vec<FunctionAccuracy>, LabelingError> {
+    // The same bounds `wilson_interval` applies, checked here so that a bad
+    // `z` is refused even when no function cast a class vote on a gold item
+    // and no interval is computed.
+    if !(z.is_finite() && z > 0.0) {
+        return Err(LabelingError::InvalidParameter {
+            field: "z",
+            message: "must be finite and positive",
+        });
+    }
+    if !(z * z).is_finite() {
+        return Err(LabelingError::InvalidParameter {
+            field: "z",
+            message: "is too large for a finite interval",
+        });
+    }
     if gold.is_empty() {
         return Err(LabelingError::Empty {
             field: "evaluation set",
