@@ -56,11 +56,14 @@ flowchart LR
 ## 1. PostgreSQL in three schema classes (`ptr-pg`)
 
 A substrate instance is three schemas derived from one prefix (`<prefix>_projection`,
-`<prefix>_derived`, `<prefix>_work`). `connect_with` refuses any other set of names
-(`InvalidSchemaSet`), so the three are distinct and two instances either are one or
-share no schema: a rebuild never drops, and a projector never writes, another
-instance's schema, and the migration lock, keyed by the projection schema's name,
-covers all three (`a_schema_set_is_accepted_only_as_the_three_schemas_of_one_prefix`,
+`<prefix>_derived`, `<prefix>_work`); `pg` and any prefix beginning `pg_` are refused,
+since PostgreSQL reserves names beginning `pg_` for system schemas and would refuse to
+create them (`a_prefix_yields_three_distinct_schemas`). `connect_with` refuses any
+other set of names (`InvalidSchemaSet`), so the three are distinct and two instances
+either are one or share no schema: a rebuild never drops, and a projector never
+writes, another instance's schema, and the migration lock, keyed by the projection
+schema's name, covers all three
+(`a_schema_set_is_accepted_only_as_the_three_schemas_of_one_prefix`,
 `a_schema_set_not_made_from_one_prefix_is_refused_before_it_connects`). `drop_all`,
 for tests and decommissioning, drops the three schemas without taking the lock, so
 its caller keeps every other session of the instance away. Each class has its own checksummed migration
@@ -190,15 +193,16 @@ triage or an outcome is never updated or deleted on its own (it goes only when i
 whole branch is erased), a branch is adjudicated once, a held-out sample cannot enter
 the replay pool, a consolidated
 adapter has sources rather than a parent, a label schema has at least two classes, a
-triage row logged since policies are recorded cites a recorded policy, a policy and
-its calibration set are never rewritten and the set is complete when the policy
-commits (a sample appended later is refused), a branch one was calibrated on cannot
-be deleted, only a model labeling function names an adapter, and an adapter has at
-most one interference report, which is complete when it commits, stays within
-`[0, 1]` and is never rewritten. The size of a calibration set and of an
-interference report is checked by counting it once, at commit for its header row
-and at the end of each statement that adds to it, so recording a set of N rows in
-one statement reads O(N) rows rather than a count per row.
+triage row logged since policies are recorded cites a recorded policy (whether the
+row follows from that policy is not checked), a policy and its calibration set are
+never rewritten and the set is complete when the policy commits (a sample appended
+later is refused), a branch one was calibrated on cannot be deleted, only a model
+labeling function names an adapter, and an adapter has at most one interference
+report, which is complete when it commits, stays within `[0, 1]` and is never
+rewritten. The size of a calibration set and of an interference report is checked
+by counting it once, at commit for its header row and at the end of each statement
+that adds to it, so recording a set of N rows in one statement reads O(N) rows
+rather than a count per row.
 A touched key's input-set digest is a whole digest; a branch stored
 before input sets were recorded has none, and loading it is refused because it cannot
 be certified and must be re-run.
@@ -257,8 +261,13 @@ insertions and removals commute and are rebased onto whatever the key holds at m
 time. An operation is checked before anything is recorded, so a refused one leaves no
 read of its key's inputs behind to refuse the branch later
 (`a_refused_commutative_operation_leaves_no_read_of_its_inputs_behind`), and a set
-the journal cannot carry is refused rather than encoded with truncated lengths
-(`a_set_the_journal_cannot_carry_is_refused_rather_than_truncated`).
+whose encoding is longer than the journal's `MAX_DELTA_BYTES` is refused rather than
+encoded with truncated lengths
+(`a_set_the_journal_cannot_carry_is_refused_rather_than_truncated`). Staging checks
+the set alone: a merge whose whole delta, with its keys, types and framing, is longer
+than that limit is certified, then refused when its plan is digested for approval
+and when it is applied, never truncated and never committed
+(`a_merge_delta_the_journal_cannot_carry_is_refused_at_approval_and_commit_not_truncated`).
 `request:` and `pod-output:` are reserved to ingress.
 
 Certification against a newer snapshot refuses a changed read
@@ -464,11 +473,17 @@ rank-deficient factors and can understate overlap
 (`a_rank_deficient_update_is_measured_on_its_product_not_its_factors`,
 `adapters_on_orthogonal_subspaces_do_not_interfere`,
 `sharing_an_output_direction_is_full_output_overlap_and_names_the_culprit`). Bases,
-norms and interference ratios do not depend on the scale of the factors, and are
-computed on factors divided by powers of two: finite updates of any magnitude are
-measured, and only a product entry or ratio that is itself beyond `f64::MAX` is
-refused (`update_subspaces_are_measured_whatever_the_scale_of_the_factors`,
-`activation_interference_does_not_depend_on_the_scale_of_updates_or_inputs`). When a
+norms and interference ratios do not depend on the scale of the factors. Bases and
+norms are computed on factors divided by powers of two; interference effects, and a
+product entry whose running sum overflows, are computed with an exponent range `f64`
+does not bound, rounding every step as `f64` does, so an entry far below the largest
+of its matrix keeps its effect and large terms that cancel leave the small one that
+decides the entry. Finite updates of any magnitude are measured, and only a product
+entry or ratio that is itself beyond `f64::MAX` is refused
+(`update_subspaces_are_measured_whatever_the_scale_of_the_factors`,
+`activation_interference_does_not_depend_on_the_scale_of_updates_or_inputs`,
+`activation_interference_keeps_an_input_or_factor_entry_far_below_the_largest_of_its_matrix`,
+`a_product_entry_whose_large_terms_cancel_keeps_the_small_term_that_decides_it`). When a
 lineage grows too deep or too entangled, the next step is a TIES merge of the full
 updates into one consolidated adapter
 (`consolidation_resets_depth_and_is_due_past_the_policy_limits`); consolidation is
@@ -477,17 +492,24 @@ overlap is within no limit
 (`consolidation_is_due_when_an_overlap_or_its_limit_cannot_be_compared`,
 `a_report_with_a_nan_overlap_is_not_within_any_limit`). A merge of finite updates is
 finite: the sign election and the mean are computed without an overflowing running
-sum (`ties_merges_entries_near_the_largest_finite_value_without_overflow`,
-`the_elected_sign_is_that_of_the_true_sum_when_a_running_sum_would_overflow`). A report
-names the candidate it was measured for
+sum, and the elected sign is that of the in-order sum with an unbounded exponent
+range, even when large entries cancel exactly and a far smaller one decides it
+(`ties_merges_entries_near_the_largest_finite_value_without_overflow`,
+`the_elected_sign_is_that_of_the_true_sum_when_a_running_sum_would_overflow`,
+`an_entry_too_small_to_survive_rescaling_still_decides_the_sign_when_the_large_ones_cancel`).
+A report names the candidate it was measured for
 (`a_report_names_the_candidate_it_was_measured_for`). It is stored
 with the candidate, one row per layer under one header row per adapter, so a promotion
 or consolidation decision can be audited against the evidence it was made on; a report
-measured for another adapter, a second report for the adapter (rather than merged into
+naming another adapter, a second report for the adapter (rather than merged into
 the first) and an empty one are refused, the first and the last before anything is
 written (`interference_reports_are_stored_once_as_measured`,
 `an_empty_interference_report_or_one_for_an_unknown_adapter_stores_nothing`,
 `an_interference_report_measured_for_another_adapter_is_refused_before_anything_is_written`).
+That check catches a report passed with the wrong adapter, not a forged one: the
+report's fields are public, so one relabelled or built by hand is stored as the
+adapter it names, and recording only what `measure_interference` measured is the
+caller's obligation.
 
 Replay samples carry an FSRS-4.5 memory state updated from probe losses on the
 training clock, not wall time; priority grows with forgetting and difficulty, and
@@ -623,14 +645,14 @@ another by idea.
 | Lance files on object storage for ML datasets | defer | Datasets are zip bundles of JSONL records (the two imported bundles are under 1 MB), registered by SHA-256 and described by dataset cards; adapter weights are content-addressed `ptr-storage` artifacts, and `ptr-storage` is a scaffold with no OpenDAL backend or verify-on-read. LanceDB is a candidate of the local-vector-search and multimodal-search-store slots only. Any later format keeps the SHA-256 identity and the card. | A dataset outgrows a bundle or training needs streamed columnar reads, once `ptr-storage` has a production backend with verify-on-read; or the local-vector-search evaluation selects LanceDB, or the multimodal slot does once it has an evaluation. |
 | "The Turbopuffer principles are covered" | defer | The text that defined them is not available; the proposal only names them. Dense retrieval is pgvector `halfvec` HNSW in PostgreSQL, one partial index per embedding space over live generations only (§1); object storage is a `ptr-storage` scaffold for artifacts; scale-out search is the deferred distributed-search slot. | The definition is recovered. An object-storage-first or tiered index is then evaluated in the distributed-search slot once Q003 or a measured corpus shows that one PostgreSQL instance is not enough. |
 | **Agents, branches and deltas (L4)** | | | |
-| An `agent` table | replaced | Replaced by `PrincipalId`: an agent is the principal its execution session admitted, from a peer the transport authenticated (`AdmissionPolicy`, doc 29). Branches (`branch.author`), fast memories (`fastmem_memory.principal`) and effect attempts record it, and `Grouping::ByPrincipal` groups metrics by it. A table of names would hold identity the host never admitted. There is no `lora_chain_id`: an adapter belongs to a domain, not to an agent (ADR-0019), and no registry row decides which adapter serves (§4). | Durable principal records are defined by the `auth-identity` slot or the open principal/session identity decision of `ptr-types`. An agent-specific adapter would also need R004 or E005 evidence that per-agent adapters beat per-domain ones, and promotion as a ledger event. |
+| An `agent` table | replaced | Replaced by `PrincipalId`: an agent is the principal its execution session admitted, from a peer the transport authenticated (`AdmissionPolicy`, doc 29). Effect attempts take it from the admitted session (`VerifiedDispatch`). Branches (`branch.author`) and fast memories (`fastmem_memory.principal`) record the `PrincipalId` their caller passes: `Branch::open` and `FastMemoryRecord` accept any, so recording the admitted principal is the caller's obligation until they are opened only through an entry point that takes it from the session (missing in `ptr-branch` and `ptr-pg`). `Grouping::ByPrincipal` groups metrics by what they record. A table of names would add identity the host never admitted. There is no `lora_chain_id`: an adapter belongs to a domain, not to an agent (ADR-0019), and no registry row decides which adapter serves (§4). | Durable principal records are defined by the `auth-identity` slot or the open principal/session identity decision of `ptr-types`. An agent-specific adapter would also need R004 or E005 evidence that per-agent adapters beat per-domain ones, and promotion as a ledger event. |
 | Role-specialised agents (`agent.role`) | replaced | Replaced by grants and typed capabilities. What a principal may do is its host-installed `ExecutionGrant`s over exact `ActionScope`s; specialised functions such as OCR are Pods addressed by typed capability (ADR-0011), and adapters are specialised by `domain`. No role label is stored, since no admission, certification or triage check would read one. | A check has to depend on an agent's function and its grants cannot express it; or F003, broken down by principal, shows harm rates whose intervals do not overlap with each principal past the Learn-then-Test minimum, and policies are then stratified per principal first, under the conditions of the per-entity-type policies row. |
 | Branch hierarchy (`parent_id`) | reject | A branch is a private overlay on one committed snapshot, and nothing it stages is visible to another branch, so no branch forks from another: certification checks its digests against committed snapshots only (§2). Its ancestry is `base_revision` on the ledger's revision chain. Work that builds on another branch waits for it to merge or re-runs on the new snapshot. | A certification rule for dependencies on uncommitted operations exists and S003 shows that waiting for a parent branch to merge costs throughput. |
 | Index `branch_parent_idx` | reject | Rejected with the branch hierarchy: there is no parent column. A branch is loaded by id (`load_branch`), and its ancestry is `base_revision`. | The branch hierarchy is reopened. |
 | Index `branch_status_idx` | defer | Status is split into the immutable triage decision and append-only outcomes, both constrained in the database. `adjudicated_samples` and `RevertShare` already select branches by outcome, and windowed metrics filter on when the triage or outcome was recorded (§6); each reads every matching row, and no measurement yet shows that costing anything. | Branch leases, expiry and garbage collection are built (their listing query adds the index it needs), or a relational-substrate measurement at a stated volume shows `adjudicated_samples`, a windowed metric or the lease listing scanning. |
 | Semantic operation descriptor (`semantic_op`) | defer | An operation's kind is its merge semantics (`Put`, `Remove`, `Add`, `SetInsert`, `SetRemove`), a value's meaning is its payload type and source, and the verifier judges the post-state (§2). A descriptive kind that neither certification nor verification reads is not stored. A business operation with its own merge rule, such as repricing, becomes a typed merge operator if those are added (missing in `ptr-branch`); the free-text reason is the branch intent. | S003 shows `Put` conflicts on keys whose domain update commutes, which would justify a typed merge operator for that update. |
 | Agent-stated intent per delta | adopt-later | A sealed branch may carry one optional intent written by its agent, stored with the branch in the work schema (one per branch, since a branch merges as one delta). It is shown to whoever reviews an escalated or calibration-slice branch; certification, triage and verification never read it, so it cannot outweigh verification (INVARIANT 11). F003 fixes before its first adjudication whether adjudicators see it. | F003's adjudication protocol is written, or the first review surface for escalated branches is built. |
-| Merge rationale | adopt-later | As a structured reason, not free text. A triage logged since policies are recorded can be reproduced from its row and the `triage_policy` row it cites. Still to be stored are the reason for a verification-decided triage (status, level, hard-finding codes) and for a certification refusal (the keys of `BranchError::Conflict`, the targets of `LifecycleChanged`, the key of `UnreadTarget`); `branch_outcome` keeps only a label. Readable text is rendered from these fields, so it cannot disagree with the rule that decided. | The first review surface that shows why a branch was escalated or refused, or an F003 analysis that breaks escalations down by verification cause. |
+| Merge rationale | adopt-later | As a structured reason, not free text. A triage logged since policies are recorded cites a `triage_policy` row and carries every input of that policy's rule except the calibration draw (eligibility, slice flag, score and propensity), so its decision and propensity can be recomputed from the two rows and compared. Nothing compares them when the row is logged: `record_triage` and the foreign key check only that the cited version exists, so logging the outcome of the policy it cites is the caller's obligation until `record_triage` refuses a row that policy could not have produced (missing in `ptr-pg`). Still to be stored are the reason for a verification-decided triage (status, level, hard-finding codes) and for a certification refusal (the keys of `BranchError::Conflict`, the targets of `LifecycleChanged`, the key of `UnreadTarget`); `branch_outcome` keeps only a label. Readable text is rendered from these fields, so it cannot disagree with them. | The first review surface that shows why a branch was escalated or refused, or an F003 analysis that breaks escalations down by verification cause. |
 | Delta embeddings for similarity search | defer | Nothing uses precedent: triage reads the verification report, the score and a calibration draw, and precedent weights were replaced by calibration. Revocation does not reach branch operations in the work schema, so embeddings of them could return content from a revoked input. If a need appears, an embedding of a committed delta enters the derived schema only under its contract: it names the generations its merged branch relied on, the projector deletes it in the transaction that tombstones or supersedes any of them, a rebuild drops it, and a hit stays a candidate (ADR-0008, ADR-0016, INVARIANT 17). | A named consumer, and an ablation in F003 or S003 showing that retrieving similar committed changes improves adjudication accuracy or lowers the conflict rate. |
 | HNSW cosine index on delta embeddings | defer | Deferred with delta embeddings. The mechanism exists for search documents (§1): `halfvec` embeddings, one partial HNSW cosine index per registered space and iterative strict-order scans, in PostgreSQL with no separate vector store; a delta index would reuse it. | Delta embeddings are adopted. |
 | Index `delta_entity_idx` over `entity_table`/`entity_id` | reject | Branches and deltas do not address business tables, which only the effect boundary writes (ADR-0012, ADR-0016). Changes to a semantic key are in the ledger's committed deltas; the projection records revision positions, not payloads, and every backend projects exactly `ptr_state::projection_entries` (§1). | A consumer (audit or adjudication) needs every committed change to one key; `projection_entries` then gains (key, revision) positions, which the projector writes and a rebuild replays. |
@@ -644,7 +666,7 @@ another by idea.
 | Delta-to-memory link (`wmp_projection_event.delta_id`) | replaced | Replaced by the write's source: each fast-memory write names the lifecycle input it was derived from (`SourceRef`: key, generation, input digest), stored as `source_key`, `source_generation` and `input_digest` and indexed for revocation. The commit that published the generation is its lifecycle event on the projection event log; `live_generation` records only the target's latest lifecycle change. A write never cites a semantic delta, which publishes a revision, not a generation, and so has no tombstone or supersession that could revoke the write. | Memory sources are widened beyond lifecycle generations, which first needs a revocation event for the new kind of source (INVARIANT 17). |
 | Every content change also updates working memory | reject | Branch operations are speculative and have no generation, and a memory admits only committed, live generations, so staging a change never writes a memory; an agent sees its own staged changes through `Branch::read`. A merged delta publishes a revision, not a generation, so it is no source either. The admissible form is a writer that composes memory writes from committed lifecycle changes read from the projection event log. | The admissible writer is built when M008 shows an update-aware recall gain at equal tokens and the memory is declared as a neural-state binding in `ptr-runtime` (missing in `ptr-fastmem`). |
 | **Adapter lineage (L3)** | | | |
-| `orthogonality_proof` JSONB column | adopt-now | Adopted as typed tables (work migration 0007; §4): `adapter_interference_report`, one header row per adapter with its layer count and `recorded_at`, and `adapter_interference`, one row per layer with the output and input overlap, their chance levels and the worst earlier adapter, as `ptr-lineage`'s `InterferenceReport` measured them. `PgSubstrate::record_interference` stores a report once, only under the adapter it was measured for (`InterferenceReport::candidate`), complete when it commits and never rewritten, and `load_interference` reads it back. The null-space projection is not stored: the null space of a sum is not the intersection of the null spaces. Tests: `interference_reports_are_stored_once_as_measured`, `an_empty_interference_report_or_one_for_an_unknown_adapter_stores_nothing`, `an_interference_report_measured_for_another_adapter_is_refused_before_anything_is_written`, `a_calibration_set_and_an_interference_report_are_counted_once_not_once_per_row`. | Implemented. |
+| `orthogonality_proof` JSONB column | adopt-now | Adopted as typed tables (work migration 0007; §4): `adapter_interference_report`, one header row per adapter with its layer count and `recorded_at`, and `adapter_interference`, one row per layer with the output and input overlap, their chance levels and the worst earlier adapter, as `ptr-lineage`'s `InterferenceReport` measured them. `PgSubstrate::record_interference` stores a report once, only under the adapter it names (`InterferenceReport::candidate`, which `measure_interference` sets; the public field proves no provenance), complete when it commits and never rewritten, and `load_interference` reads it back. The null-space projection is not stored: the null space of a sum is not the intersection of the null spaces. Tests: `interference_reports_are_stored_once_as_measured`, `an_empty_interference_report_or_one_for_an_unknown_adapter_stores_nothing`, `an_interference_report_measured_for_another_adapter_is_refused_before_anything_is_written`, `a_calibration_set_and_an_interference_report_are_counted_once_not_once_per_row`. | Implemented. |
 | Per-layer overlap score as JSON proof | adopt-now | Adopted as typed rows, not JSON: each `LayerInterference` becomes one `adapter_interference` row under its report's header, so the per-layer evidence behind `ConsolidationPolicy`'s overlap limit can be queried next to the adapter catalog. `ptr-lineage` keeps no serialization dependency, and no work-schema table uses `jsonb`. Tests as in the previous row. | Implemented. |
 | Index `lora_adapter_chain_idx` | defer | `parent` and `adapter_source` replace the ordered `(chain_id, sequence_no)` chain, so the index has nothing to cover; the only secondary index serves erasure lookups by input, and interference reports are read by primary key. Indexes for the lineage walks (children by `parent`, consolidations by `source`, adapters by base model, revision and domain) come with the adapter for the rest of the lineage catalog. | That adapter exists and its query plans show sequential scans on a realistically sized catalog. |
 | Table `lora_training_run` | adopt-later | With the first adapter actually trained (the default backend is `dry-run`): one work-schema row per run naming the training chain (the identity replay rows are keyed by), the adapter produced, the run manifest's `input_fingerprint_sha256` and the adapter's `data_fingerprint` (different digests: the first covers code, configuration, hardware and dataset artifact, the second the exact training input with replay ids), the trigger, the replay and new sample counts, wall-clock and model time at start and end, and the gate result. Training stays outside `ptr-lineage`; `TrainingRunId` and `TrainingChainId` are open in the training-evaluation family. | An R004 run, or a selected training backend that trains adapters. |

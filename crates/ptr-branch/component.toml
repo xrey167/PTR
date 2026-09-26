@@ -6,7 +6,7 @@ last_reviewed = "2026-09-26"
 implemented = [
   "Branch overlay on one SemanticSnapshot recording value digests of every read, range digests of every scanned prefix, input-set digests of every touched key and every relied-on lifecycle generation",
   "Value digests hash the canonical journal bytes neural-state admission digests, so a branch and an admitted neural state never disagree about whether an input changed",
-  "Put and Remove only on keys the branch read; commutative counter additions and set insertions/removals rebase onto the target value at merge time; a refused operation records nothing, not even the reads of its key's inputs; a set whose encoding is longer than the journal's MAX_DELTA_BYTES is refused (InvalidValue, set_value returns None) rather than encoded with truncated lengths",
+  "Put and Remove only on keys the branch read; commutative counter additions and set insertions/removals rebase onto the target value at merge time; a refused operation records nothing, not even the reads of its key's inputs; a set whose encoding is longer than the journal's MAX_DELTA_BYTES is refused (InvalidValue, set_value returns None) rather than encoded with truncated lengths; staging checks the set alone, and a merge delta longer than that limit with its keys and framing is refused by MergePlan::digest and at commit, never truncated",
   "A branch relies on at most one generation of a lifecycle target: declaring another is refused (ConflictingReliance) and keeps the first, since two generations are never live together",
   "Reserved request: and pod-output: namespaces cannot be written by a branch",
   "Certification refuses a changed read, a phantom under a scanned prefix, a touched key whose input set changed or was not recorded (a merge keeps the target's dependency set, so a value never stands under inputs it was not computed from), a revoked or superseded relied-on generation, or a snapshot older than the base; it rechecks what staging guarantees of a SealedBranch rebuilt from its public fields, refusing a Put or Remove of an unread key (UnreadTarget), an operated key with no recorded base value, and an unread input of an operated key (Conflict); otherwise it yields one SemanticDelta plus the revision it was certified against, and MergePlan::digest binds the branch id and every declared dependency including touched keys' input sets, so an approval cannot be replayed for another branch",
@@ -21,6 +21,7 @@ implemented = [
 
 missing = [
   "A merge plan consumable only by a verifying runtime entry point, so committing one without verification is impossible rather than a caller obligation",
+  "Opening a branch only through an entry point that takes its author from the admitted execution session; Branch::open records whatever PrincipalId its caller passes, so naming the admitted principal is a caller obligation",
   "Branch leases, expiry and garbage collection",
   "Typed merge operators beyond counters and sets",
   "Predicate digests beyond key prefixes",

@@ -74,6 +74,10 @@ pub struct SealedBranch {
 impl Branch {
     /// Start an empty speculative branch over `base`, attributed to `author`.
     /// Reads, lifecycle dependencies, and operations are recorded as they occur.
+    ///
+    /// `author` is recorded as given: nothing here checks that it is the
+    /// principal the caller's execution session admitted, so passing that
+    /// one is the caller's obligation.
     pub fn open(id: BranchId, author: PrincipalId, base: SemanticSnapshot) -> Self {
         Self {
             id,

@@ -205,6 +205,57 @@ fn activation_interference_does_not_depend_on_the_scale_of_updates_or_inputs() {
 }
 
 #[test]
+fn activation_interference_keeps_an_input_or_factor_entry_far_below_the_largest_of_its_matrix() {
+    let reads_second = |weight: f64| {
+        LayerUpdate::new("q", matrix(1, 1, &[1.0]), matrix(1, 2, &[0.0, weight])).unwrap()
+    };
+    // Both updates read only the second input, 1e-30 beside an input of 1e300
+    // that neither reads: dividing the activations by the power of two at or
+    // below 1e300 would flush it to zero and report no earlier effect at all.
+    assert_eq!(
+        activation_interference(
+            &reads_second(2.0),
+            &reads_second(1.0),
+            &matrix(2, 1, &[1e300, 1e-30])
+        ),
+        Ok(Some(2.0))
+    );
+    // The same when the effects themselves (2e-400 and 1e-400) are below the
+    // range of f64, so the direct product is zero as well.
+    assert_eq!(
+        activation_interference(
+            &reads_second(2e-100),
+            &reads_second(1e-100),
+            &matrix(2, 1, &[1e300, 1e-300])
+        ),
+        Ok(Some(2.0))
+    );
+    // A factor entry: the earlier update reaches its output only through the
+    // 1e-30 of B = diag(1e300, 1e-30).
+    let earlier = LayerUpdate::new(
+        "q",
+        matrix(2, 2, &[1e300, 0.0, 0.0, 1e-30]),
+        matrix(2, 1, &[0.0, 1.0]),
+    )
+    .unwrap();
+    let candidate = LayerUpdate::new("q", matrix(2, 1, &[0.0, 1.0]), matrix(1, 1, &[1.0])).unwrap();
+    let ratio = activation_interference(&candidate, &earlier, &matrix(1, 1, &[1.0]))
+        .unwrap()
+        .unwrap();
+    assert!((ratio / 1e30 - 1.0).abs() < 1e-15, "{ratio}");
+}
+
+#[test]
+fn a_product_entry_whose_large_terms_cancel_keeps_the_small_term_that_decides_it() {
+    // MAX + MAX overflows as a running sum, and dividing the row by 2^1023
+    // would flush 1e-20 to zero; with an unbounded exponent range the sum
+    // returns to zero and ends at 1e-20.
+    let row = matrix(1, 5, &[f64::MAX, f64::MAX, -f64::MAX, -f64::MAX, 1e-20]);
+    let ones = matrix(5, 1, &[1.0; 5]);
+    assert_eq!(row.multiply(&ones).unwrap().as_slice(), &[1e-20]);
+}
+
+#[test]
 fn a_report_with_a_nan_overlap_is_not_within_any_limit() {
     let layer = |overlap: f64| LayerInterference {
         layer: "q".into(),

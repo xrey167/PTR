@@ -5,7 +5,9 @@ use std::fmt;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PgError {
     /// A schema or embedding-space identifier is not a safe SQL identifier:
-    /// not `[a-z][a-z0-9_]{0,39}`, or a keyword PostgreSQL reserves.
+    /// not `[a-z][a-z0-9_]{0,39}`, or a keyword PostgreSQL reserves. A
+    /// schema prefix is also refused when its names would begin `pg_`,
+    /// which PostgreSQL reserves for system schemas.
     InvalidIdentifier { value: String },
     /// A schema set is not the three schemas `SchemaSet::with_prefix` makes of
     /// one prefix. Its names could be another instance's, which a rebuild
@@ -107,7 +109,7 @@ pub enum PgError {
         reason: &'static str,
     },
     /// An interference report was refused before any row was written: it
-    /// was measured for another adapter than the one it is recorded for, it
+    /// names another adapter than the one it is recorded for, it
     /// has no layer (storing it would record no evidence while claiming the
     /// adapter's one report), or more layers than the table can count.
     InvalidInterference {

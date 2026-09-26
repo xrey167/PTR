@@ -1,6 +1,6 @@
 use crate::error::LineageError;
 use crate::lineage::AdapterId;
-use crate::scale;
+use crate::scale::{self, Wide};
 
 /// A dense row-major matrix of `f64`.
 #[derive(Clone, Debug, PartialEq)]
@@ -84,8 +84,10 @@ impl Matrix {
     /// product exceeds `f64::MAX`, so the result is a matrix
     /// [`Matrix::new`] would accept. An entry that is finite although its
     /// running sum overflows (`MAX + MAX - MAX`) is not refused: such entries
-    /// are recomputed from both factors divided by powers of two and scaled
-    /// back; every other entry is the direct sum of products.
+    /// are recomputed as the same in-order sum of products with an exponent
+    /// range `f64` does not bound, so large terms that cancel leave the small
+    /// ones that decide the entry (`MAX + MAX - MAX - MAX + 1e-20` is
+    /// `1e-20`); every other entry is the direct sum of products.
     pub fn multiply(&self, other: &Matrix) -> Result<Matrix, LineageError> {
         if self.cols != other.rows {
             return Err(LineageError::ShapeMismatch {
@@ -98,13 +100,12 @@ impl Matrix {
         if product.data.iter().all(|cell| cell.is_finite()) {
             return Ok(product);
         }
-        let (left, left_exponent) = self.rescaled();
-        let (right, right_exponent) = other.rescaled();
-        // Entries below two in magnitude: no sum of products overflows.
-        let rescaled = left.product(&right);
-        for (cell, small) in product.data.iter_mut().zip(rescaled.data) {
+        let (left, right) = (WideMatrix::of(self), WideMatrix::of(other));
+        for (index, cell) in product.data.iter_mut().enumerate() {
             if !cell.is_finite() {
-                *cell = scale::times_power_of_two(small, left_exponent + right_exponent);
+                *cell = left
+                    .entry_of_product(&right, index / other.cols, index % other.cols)
+                    .to_f64();
             }
         }
         if product.data.iter().any(|cell| !cell.is_finite()) {
@@ -139,6 +140,34 @@ impl Matrix {
             cols: other.cols,
             data,
         }
+    }
+
+    /// The direct product when it is exactly the product with an unbounded
+    /// exponent range: no entry overflows, and the smallest nonzero
+    /// magnitudes of the two factors multiply to at least
+    /// `f64::MIN_POSITIVE`, so no product of two entries underflows and the
+    /// sums of such products lose nothing either. `None` otherwise.
+    fn product_in_range(&self, other: &Matrix) -> Option<Matrix> {
+        let smallest = |matrix: &Matrix| {
+            matrix
+                .data
+                .iter()
+                .filter(|value| **value != 0.0)
+                .map(|value| scale::exact_exponent(*value))
+                .min()
+        };
+        if let (Some(left), Some(right)) = (smallest(self), smallest(other)) {
+            // 2^left * 2^right is at most the smallest nonzero product.
+            if left + right < -1022 {
+                return None;
+            }
+        }
+        let product = self.product(other);
+        product
+            .data
+            .iter()
+            .all(|cell| cell.is_finite())
+            .then_some(product)
     }
 
     /// Frobenius norm, computed on the matrix divided by a power of two so
@@ -500,11 +529,15 @@ impl LayerUpdate {
 /// layer's output on exactly those inputs, relative to the change the earlier
 /// update made. `None` when the earlier update does not move them at all.
 ///
-/// The ratio does not depend on the scale of either update or of the
-/// activations, and it is computed that way: every factor and both effects
-/// are divided by powers of two, whose exponents are added back to the ratio
-/// alone. Finite inputs whose effects would overflow or underflow (updates
-/// and inputs of `1e100`, or of `1e-100`) therefore still give their ratio.
+/// Each effect `B (A X)` and its norm are computed as `f64` computes them,
+/// rounding every step the same way, but with an exponent range `f64` does
+/// not bound; only the ratio is rounded into range. Finite inputs whose
+/// effects would overflow or underflow (updates and inputs of `1e100`, or of
+/// `1e-100`) therefore still give their ratio, and an entry far smaller than
+/// the largest of its matrix keeps its effect: an input of `1e-30` beside
+/// one of `1e300` that no update reads still moves the output by `1e-30`.
+/// Where no intermediate result leaves the range of `f64` the effects are
+/// the direct products.
 ///
 /// # Errors
 /// Returns `LineageError::ShapeMismatch` when the activations do not have
@@ -515,13 +548,12 @@ pub fn activation_interference(
     earlier: &LayerUpdate,
     activations: &Matrix,
 ) -> Result<Option<f64>, LineageError> {
-    let (inputs, _) = activations.rescaled();
-    let (new_norm, new_exponent) = rescaled_effect_norm(candidate, &inputs)?;
-    let (old_norm, old_exponent) = rescaled_effect_norm(earlier, &inputs)?;
-    if old_norm == 0.0 {
+    let new_norm = effect_norm(candidate, activations)?;
+    let old_norm = effect_norm(earlier, activations)?;
+    if old_norm.is_zero() {
         return Ok(None);
     }
-    let ratio = scale::times_power_of_two(new_norm / old_norm, new_exponent - old_exponent);
+    let ratio = new_norm.ratio(old_norm);
     if !ratio.is_finite() {
         return Err(LineageError::NonFinite {
             field: "activation interference",
@@ -530,19 +562,75 @@ pub fn activation_interference(
     Ok(Some(ratio))
 }
 
-/// `||B A X||_F` as `(norm, exponent)`, the norm of the effect being
-/// `norm * 2^exponent` up to the scale of `X`. With `B`, `A` and the effect
-/// each divided by the power of two at or below its largest entry, the norm
-/// is zero or between `2^-52` and `2 sqrt(entries)`, so a ratio of two of
-/// them is finite and nonzero whatever the magnitudes.
-fn rescaled_effect_norm(update: &LayerUpdate, inputs: &Matrix) -> Result<(f64, i32), LineageError> {
-    let (b, b_exponent) = update.b.rescaled();
-    let (a, a_exponent) = update.a.rescaled();
-    let (effect, effect_exponent) = b.multiply(&a.multiply(inputs)?)?.rescaled();
-    Ok((
-        effect.sum_of_squares().sqrt(),
-        b_exponent + a_exponent + effect_exponent,
-    ))
+/// `||B (A X)||_F`, every product entry the in-order sum of products and the
+/// norm the root of the in-order sum of squares, rounded as `f64` rounds
+/// them but with an unbounded exponent range. The direct products are used
+/// when they provably are exactly that ([`Matrix::product_in_range`]).
+fn effect_norm(update: &LayerUpdate, inputs: &Matrix) -> Result<Wide, LineageError> {
+    if update.a.cols != inputs.rows {
+        return Err(LineageError::ShapeMismatch {
+            field: "matrix product",
+            expected: update.a.cols,
+            actual: inputs.rows,
+        });
+    }
+    let direct = update
+        .a
+        .product_in_range(inputs)
+        .and_then(|reads| update.b.product_in_range(&reads));
+    let effect = match direct {
+        Some(effect) => WideMatrix::of(&effect),
+        None => WideMatrix::of(&update.b)
+            .times(&WideMatrix::of(&update.a).times(&WideMatrix::of(inputs))),
+    };
+    Ok(effect
+        .data
+        .iter()
+        .fold(Wide::ZERO, |sum, &entry| sum + entry * entry)
+        .sqrt())
+}
+
+/// A matrix of [`Wide`] entries, for products whose entries leave the range
+/// of `f64`.
+struct WideMatrix {
+    rows: usize,
+    cols: usize,
+    data: Vec<Wide>,
+}
+
+impl WideMatrix {
+    fn of(matrix: &Matrix) -> Self {
+        Self {
+            rows: matrix.rows,
+            cols: matrix.cols,
+            data: matrix.data.iter().copied().map(Wide::new).collect(),
+        }
+    }
+
+    /// Entry `(row, col)` of `self * other`: the in-order sum of products,
+    /// skipping zero terms as [`Matrix::product`] does.
+    fn entry_of_product(&self, other: &WideMatrix, row: usize, col: usize) -> Wide {
+        (0..self.cols)
+            .map(|inner| self.data[row * self.cols + inner])
+            .enumerate()
+            .filter(|(_, left)| !left.is_zero())
+            .fold(Wide::ZERO, |sum, (inner, left)| {
+                sum + left * other.data[inner * other.cols + col]
+            })
+    }
+
+    /// `self * other`, for matching shapes.
+    fn times(&self, other: &WideMatrix) -> WideMatrix {
+        debug_assert_eq!(self.cols, other.rows);
+        let data = (0..self.rows * other.cols)
+            .map(|index| self.entry_of_product(other, index / other.cols, index % other.cols))
+            .collect();
+        WideMatrix {
+            rows: self.rows,
+            cols: other.cols,
+            data,
+        }
+    }
 }
 
 /// Worst overlap of one layer of a candidate adapter with any earlier adapter.
@@ -564,7 +652,10 @@ pub struct LayerInterference {
 pub struct InterferenceReport {
     /// The adapter whose updates were measured. [`measure_interference`]
     /// sets it, and a store records the report as this adapter's evidence
-    /// only (`ptr-pg` refuses it under any other).
+    /// only (`ptr-pg` refuses it under any other). That catches a report
+    /// passed with the wrong adapter; it proves no provenance, since the
+    /// field is public and a report relabelled or built by hand names
+    /// whatever it was given.
     pub candidate: AdapterId,
     pub layers: Vec<LayerInterference>,
 }
@@ -596,8 +687,8 @@ impl InterferenceReport {
 }
 
 /// Measure how much the update subspaces of adapter `candidate` overlap those
-/// of earlier adapters, layer by layer. The report names `candidate`, so it
-/// cannot be taken for another adapter's evidence.
+/// of earlier adapters, layer by layer. The report names `candidate`, so a
+/// store can refuse it under any other adapter.
 ///
 /// This is the quantity orthogonal-subspace continual-learning methods
 /// (O-LoRA, InfLoRA) drive towards zero. It is measured between subspaces, not
@@ -774,6 +865,44 @@ mod tests {
             (subspace_overlap(&candidate.output_basis(), &earlier.output_basis()).unwrap() - 1.0)
                 .abs()
                 < 1e-12
+        );
+    }
+
+    #[test]
+    fn the_wide_product_is_the_direct_product_wherever_that_stays_in_range() {
+        // Deterministic entries of mixed signs and magnitudes, with zeros.
+        let entries = |count: usize, seed: u64| -> Vec<f64> {
+            let mut state = seed;
+            (0..count)
+                .map(|_| {
+                    state = state
+                        .wrapping_mul(6364136223846793005)
+                        .wrapping_add(1442695040888963407);
+                    let unit = (state >> 11) as f64 / (1u64 << 53) as f64;
+                    match state % 5 {
+                        0 => 0.0,
+                        1 => unit * 1e-150,
+                        2 => -unit * 1e150,
+                        _ => unit - 0.5,
+                    }
+                })
+                .collect()
+        };
+        let left = matrix(3, 4, &entries(12, 1));
+        let right = matrix(4, 5, &entries(20, 2));
+        let direct = left.product_in_range(&right).expect("in range");
+        let wide = WideMatrix::of(&left).times(&WideMatrix::of(&right));
+        let wide: Vec<f64> = wide.data.iter().map(|entry| entry.to_f64()).collect();
+        assert_eq!(wide.as_slice(), direct.as_slice());
+        assert_eq!(left.multiply(&right).unwrap(), direct);
+        // Out of range, the direct product is not taken for the exact one.
+        assert_eq!(
+            matrix(1, 1, &[1e-200]).product_in_range(&matrix(1, 1, &[1e-200])),
+            None
+        );
+        assert_eq!(
+            matrix(1, 1, &[1e200]).product_in_range(&matrix(1, 1, &[1e200])),
+            None
         );
     }
 

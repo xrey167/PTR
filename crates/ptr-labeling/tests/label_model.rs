@@ -874,11 +874,17 @@ fn a_model_with_no_mass_on_the_classes_left_resolves_to_unknown() {
     )
     .unwrap();
     let mut model = fit_label_model(&matrix, DawidSkeneParams::default()).unwrap();
-    model.posteriors = vec![vec![1.0, 0.0, 0.0]];
-    assert_eq!(
-        resolve(&matrix, &model, 0.5).unwrap(),
-        vec![LabelOutcome::Unknown]
-    );
+    // Every share of the classes left is 0 / 0, which reaches no required
+    // probability however small, whatever the sign of the zeros.
+    for posterior in [vec![1.0, 0.0, 0.0], vec![1.0, -0.0, 0.0]] {
+        model.posteriors = vec![posterior];
+        for min_probability in [f64::MIN_POSITIVE, 0.5, 1.0] {
+            assert_eq!(
+                resolve(&matrix, &model, min_probability).unwrap(),
+                vec![LabelOutcome::Unknown]
+            );
+        }
+    }
 }
 
 #[test]

@@ -181,8 +181,15 @@ pub struct SchemaSet {
 
 impl SchemaSet {
     /// `<prefix>_projection`, `<prefix>_derived` and `<prefix>_work`.
+    ///
+    /// # Errors
+    /// Returns `PgError::InvalidIdentifier` for a prefix whose names would
+    /// not be identifiers or would be longer than 40 bytes, and for `pg` or
+    /// any prefix beginning `pg_`: every name it yields would begin `pg_`,
+    /// which PostgreSQL reserves for system schemas, so `CREATE SCHEMA`
+    /// would refuse it (SQLSTATE 42939) and no migration could run.
     pub fn with_prefix(prefix: &str) -> Result<Self, PgError> {
-        if prefix.len() > 29 {
+        if prefix.len() > 29 || prefix == "pg" || prefix.starts_with("pg_") {
             return Err(PgError::InvalidIdentifier {
                 value: prefix.to_owned(),
             });
@@ -344,6 +351,19 @@ mod tests {
                 derived: name("cache"),
                 work: name("state"),
             },
+            // The three names of prefix `pg`, and of one beginning `pg_`:
+            // PostgreSQL reserves `pg_` for system schemas and refuses to
+            // create them.
+            SchemaSet {
+                projection: name("pg_projection"),
+                derived: name("pg_derived"),
+                work: name("pg_work"),
+            },
+            SchemaSet {
+                projection: name("pg_x_projection"),
+                derived: name("pg_x_derived"),
+                work: name("pg_x_work"),
+            },
         ] {
             let refused = composed.check().unwrap_err();
             assert_eq!(refused.code(), "PTR_PG_INVALID_SCHEMA_SET", "{composed:?}");
@@ -366,6 +386,21 @@ mod tests {
         assert_eq!(set.work.as_str(), "ptr_work");
         assert!(SchemaSet::with_prefix("Ptr").is_err());
         assert!(SchemaSet::with_prefix(&"p".repeat(30)).is_err());
+        // Names beginning `pg_` are reserved for system schemas.
+        for reserved in ["pg", "pg_", "pg_x", "pg_catalog"] {
+            assert_eq!(
+                SchemaSet::with_prefix(reserved),
+                Err(PgError::InvalidIdentifier {
+                    value: reserved.into()
+                }),
+                "{reserved}"
+            );
+        }
+        // Only the names are reserved, not every prefix beginning `pg`.
+        assert_eq!(
+            SchemaSet::with_prefix("pgx").unwrap().projection.as_str(),
+            "pgx_projection"
+        );
     }
 
     #[test]

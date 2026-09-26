@@ -752,3 +752,36 @@ fn a_set_the_journal_cannot_carry_is_refused_rather_than_truncated() {
     );
     assert!(work.seal().unwrap().ops.is_empty());
 }
+
+#[test]
+fn a_merge_delta_the_journal_cannot_carry_is_refused_at_approval_and_commit_not_truncated() {
+    // The set's own encoding is exactly MAX_DELTA_BYTES (count, then length
+    // and bytes of "a" and of the new member), so staging accepts it; the
+    // delta that carries it also holds the key, the type, the source and
+    // their framing, which no journal delta has room for.
+    let host = host_with(&[(
+        "tags",
+        set_value(&BTreeSet::from(["a".to_owned()])).unwrap(),
+    )]);
+    let mut work = branch(&host, "b1");
+    work.stage_commutative(BranchOp::SetInsert {
+        key: "tags".into(),
+        member: "m".repeat(ptr_semdb::MAX_DELTA_BYTES - 13),
+    })
+    .unwrap();
+    let certification = certify(&work.seal().unwrap(), &host.snapshot(), no_lifecycle).unwrap();
+    let plan = certification.plan();
+    assert_eq!(
+        plan.digest(),
+        Err(BranchError::InvalidValue {
+            key: "<merge delta>".into()
+        })
+    );
+    let mut host = host;
+    let before = host.revision();
+    assert_eq!(
+        host.apply_delta(plan.delta.clone()),
+        Err(ptr_semdb::SemanticError::LimitExceeded)
+    );
+    assert_eq!(host.revision(), before);
+}

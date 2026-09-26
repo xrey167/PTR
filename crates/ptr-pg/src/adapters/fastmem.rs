@@ -20,6 +20,8 @@ use crate::error::PgError;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FastMemoryRecord {
     pub id: String,
+    /// The memory's owner, stored as given: that it is the principal the
+    /// caller's execution session admitted is the caller's obligation.
     pub principal: PrincipalId,
     pub thread: String,
     pub config: FastMemoryConfig,

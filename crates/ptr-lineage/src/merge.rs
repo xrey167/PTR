@@ -13,8 +13,11 @@ use crate::scale;
 /// averages. The election and the mean are the direct in-order sums wherever
 /// no partial sum overflows; a column whose running sum would overflow (two
 /// entries of `f64::MAX`, or `1e308, 1e308, -1e308, -1e308, -1e308`, whose
-/// true sum is negative) is summed again divided by a power of two, which
-/// changes no sign and cannot overflow.
+/// true sum is negative) is summed again with an exponent range `f64` does
+/// not bound, rounding each step as `f64` does. Its sign is that of the
+/// in-order sum computed without overflow, even when the large entries
+/// cancel exactly and an entry far smaller than them decides it
+/// (`MAX, MAX, -MAX, -MAX, 1e-20` elects plus).
 ///
 /// This is the consolidation step of a lineage: several adapters' deltas
 /// become one, so serving cost and chain depth stop growing. The merged update
@@ -54,16 +57,15 @@ pub fn ties_merge(vectors: &[Vec<f64>], density: f64) -> Result<Vec<f64>, Lineag
     Ok((0..len)
         .map(|index| {
             let column: Vec<f64> = trimmed.iter().map(|v| v[index]).collect();
-            // Only the sign of the sum is used, and scaling by a power of two
-            // keeps it.
-            let (sum, _) = scale::sum(&column);
-            if sum == 0.0 {
+            // Only the sign of the sum is used.
+            let sign = scale::sum(&column).signum();
+            if sign == 0.0 {
                 return 0.0;
             }
             // Not empty: a sum of one sign has a term of that sign.
             let agreeing: Vec<f64> = column
                 .into_iter()
-                .filter(|value| *value != 0.0 && value.signum() == sum.signum())
+                .filter(|value| *value != 0.0 && value.signum() == sign)
                 .collect();
             scale::mean(&agreeing)
         })

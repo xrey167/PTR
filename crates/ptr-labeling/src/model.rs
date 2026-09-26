@@ -307,10 +307,9 @@ pub fn resolve(
                 return LabelOutcome::Unknown;
             }
             let posterior = &model.posteriors[item];
+            // With no mass left every share is 0 / 0, a NaN, which reaches no
+            // required probability: the item is Unknown.
             let mass: f64 = remaining.iter().map(|&c| posterior[c]).sum();
-            if mass <= 0.0 {
-                return LabelOutcome::Unknown;
-            }
             let (class, probability) = remaining
                 .iter()
                 .map(|&c| (c, posterior[c] / mass))

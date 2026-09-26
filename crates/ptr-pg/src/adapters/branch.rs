@@ -308,6 +308,11 @@ impl PgSubstrate {
 
     /// Log a branch's triage with what off-policy evaluation needs later: the
     /// score, the propensity of auto-proposing and the policy version.
+    ///
+    /// The version must name a recorded policy (a foreign key refuses any
+    /// other), but the triage is stored as given: that its decision and
+    /// propensity are the ones that policy produces for its eligibility,
+    /// slice flag and score is the caller's obligation.
     pub async fn record_triage(
         &self,
         branch: &BranchId,

@@ -87,6 +87,42 @@ fn the_elected_sign_is_that_of_the_true_sum_when_a_running_sum_would_overflow() 
 }
 
 #[test]
+fn an_entry_too_small_to_survive_rescaling_still_decides_the_sign_when_the_large_ones_cancel() {
+    // The running sum overflows at MAX + MAX; with an unbounded exponent range
+    // the large entries then cancel exactly and 1e-20 makes the sum positive.
+    // Dividing the column by 2^1023 would flush 1e-20 to zero and elect no
+    // sign. The merged entry is the mean of MAX, MAX and 1e-20.
+    assert_eq!(
+        ties_merge(
+            &[
+                vec![f64::MAX],
+                vec![f64::MAX],
+                vec![-f64::MAX],
+                vec![-f64::MAX],
+                vec![1e-20]
+            ],
+            1.0
+        )
+        .unwrap(),
+        vec![f64::MAX / 3.0 * 2.0]
+    );
+    assert_eq!(
+        ties_merge(
+            &[
+                vec![-1e308],
+                vec![-1e308],
+                vec![1e308],
+                vec![1e308],
+                vec![-1e-300]
+            ],
+            1.0
+        )
+        .unwrap(),
+        vec![-1e308 / 3.0 * 2.0]
+    );
+}
+
+#[test]
 fn summaries_of_extreme_finite_scores_do_not_overflow() {
     // The mean of two scores of 1e308 is 1e308, not their overflowing sum.
     let matrix = AccuracyMatrix::new(vec![vec![1e308, 0.0], vec![1e308, 1e308]]).unwrap();
