@@ -450,7 +450,7 @@ impl PolicyRecord {
             (ThresholdRule::Manual, false) => {
                 return Err(ArbiterError::InvalidRule {
                     rule: rule.name(),
-                    message: "a manual threshold was calibrated on nothing",
+                    message: "a manual threshold must not name calibration branches",
                 })
             }
             (ThresholdRule::Manual, true) => {}

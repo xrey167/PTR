@@ -467,16 +467,25 @@ fn a_recorded_policy_refuses_what_would_make_its_evaluation_dishonest() {
     assert_eq!(manual.rule(), ThresholdRule::Manual);
     assert!(manual.calibrated_on().is_empty());
     assert_eq!(manual.held_out(&calibration).len(), 40);
-    assert!(matches!(
-        PolicyRecord::from_parts(
-            "v",
-            AutoThreshold::Never,
-            0.1,
-            ThresholdRule::Manual,
-            vec![BranchId::from("c1")]
-        ),
-        Err(ArbiterError::InvalidRule { rule: "manual", .. })
-    ));
+    let named = PolicyRecord::from_parts(
+        "v",
+        AutoThreshold::Never,
+        0.1,
+        ThresholdRule::Manual,
+        vec![BranchId::from("c1")],
+    )
+    .unwrap_err();
+    assert_eq!(
+        named,
+        ArbiterError::InvalidRule {
+            rule: "manual",
+            message: "a manual threshold must not name calibration branches",
+        }
+    );
+    assert_eq!(
+        named.to_string(),
+        "rule manual: a manual threshold must not name calibration branches"
+    );
     assert_eq!(
         PolicyRecord::from_parts("v", AutoThreshold::Never, 0.1, crc, vec![]).unwrap_err(),
         ArbiterError::EmptyCalibration
