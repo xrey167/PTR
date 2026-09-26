@@ -26,7 +26,9 @@ pub enum TriageDecision {
 pub enum AutoThreshold {
     /// Nothing is auto-proposed.
     Never,
-    /// Branches scoring at least this are auto-proposed.
+    /// Branches scoring at least this are auto-proposed. A policy holds only
+    /// a finite threshold in `[0, 1]`, the range of a score:
+    /// [`TriagePolicy::new`] refuses any other.
     AtLeast(f32),
 }
 
@@ -78,17 +80,31 @@ pub struct CalibrationSample {
 
 impl TriagePolicy {
     /// Create a policy with a fraction `calibration_rate` of eligible branches
-    /// reserved for human calibration. Zero disables that slice; the threshold
-    /// is stored without validation.
+    /// reserved for human calibration. Zero disables that slice.
+    ///
+    /// Every way a policy is built — [`PolicyRecord::manual`],
+    /// [`PolicyRecord::calibrate`] and [`PolicyRecord::from_parts`], which
+    /// storage rebuilds records with — goes through here, so no policy holds
+    /// a threshold outside `[0, 1]`.
     ///
     /// # Errors
     /// Returns `ArbiterError::InvalidExploration` unless the rate is finite
-    /// and in `[0, 1)`.
+    /// and in `[0, 1)`, and `ArbiterError::InvalidThreshold` for an
+    /// `AtLeast` threshold that is NaN, infinite or outside `[0, 1]`: a NaN
+    /// admits no score and a negative threshold every score, so either would
+    /// silently turn the policy into "never" or "always" auto-propose, and
+    /// one above one is as unreachable as NaN while claiming otherwise.
     pub fn new(threshold: AutoThreshold, calibration_rate: f64) -> Result<Self, ArbiterError> {
         if !(calibration_rate.is_finite() && (0.0..1.0).contains(&calibration_rate)) {
             return Err(ArbiterError::InvalidExploration {
                 rate: calibration_rate,
             });
+        }
+        if let AutoThreshold::AtLeast(value) = threshold {
+            // `contains` is false for NaN and both infinities.
+            if !(0.0..=1.0).contains(&value) {
+                return Err(ArbiterError::InvalidThreshold { value });
+            }
         }
         Ok(Self {
             threshold,
@@ -281,10 +297,11 @@ pub fn calibrate_threshold(
 /// and `k_t` of them be harmful. Grid thresholds are tested from high to low;
 /// each passes when the one-sided Clopper-Pearson upper bound
 /// `UCB(k_t, n_t; delta)` is at most `alpha`. Testing stops at the first
-/// failure and the lowest passing threshold is returned. Thresholds admitting
-/// fewer than `ceil(ln delta / ln(1 - alpha))` samples could not pass even
-/// with no harm, so the sequence starts below them; that start depends on the
-/// scores only, never on the harm labels under test. Then, with probability at
+/// failure and the lowest passing threshold is returned. Thresholds at which
+/// even no harm could not pass, `UCB(0, n_t; delta) > alpha`, are skipped, so
+/// the sequence starts at the first threshold admitting enough samples to
+/// pass; that start is decided by the same bound the test uses, on the scores
+/// only, never on the harm labels under test. Then, with probability at
 /// least `1 - delta` over the calibration sample, the harm rate *among
 /// auto-proposed branches* is at most `alpha`.
 ///
@@ -300,23 +317,29 @@ pub fn certify_threshold(
     if samples.is_empty() {
         return Err(ArbiterError::EmptyCalibration);
     }
-    let minimum_admitted = (delta.ln() / (1.0 - alpha).ln()).ceil() as u64;
+    let upper = |harmful, admitted| {
+        clopper_pearson_upper(harmful, admitted, delta).map_err(|_| ArbiterError::InvalidRisk {
+            field: "delta",
+            value: delta,
+        })
+    };
     let mut certified = AutoThreshold::Never;
+    // The admitted count only grows as the threshold falls, and the no-harm
+    // bound only falls as it grows, so the skipped thresholds are a prefix.
+    let mut started = false;
     for threshold in threshold_grid().rev() {
         let admitted = samples.iter().filter(|s| s.score >= threshold).count() as u64;
-        if admitted < minimum_admitted {
-            continue;
+        if !started {
+            if upper(0, admitted)? > alpha {
+                continue;
+            }
+            started = true;
         }
         let harmful = samples
             .iter()
             .filter(|s| s.harmful && s.score >= threshold)
             .count() as u64;
-        let bound = clopper_pearson_upper(harmful, admitted, delta).map_err(|_| {
-            ArbiterError::InvalidRisk {
-                field: "delta",
-                value: delta,
-            }
-        })?;
+        let bound = upper(harmful, admitted)?;
         if bound <= alpha {
             certified = AutoThreshold::AtLeast(threshold);
         } else {
@@ -630,9 +653,14 @@ pub fn evaluate_off_policy(
 /// corrected by importance-weighted residuals on the logged actions. Unbiased
 /// when either the propensities or the reward model are correct.
 ///
-/// Each record's term is divided by the log's length before the terms are
-/// added, so the estimate does not overflow merely because the sum of the
-/// terms would.
+/// The estimate is `D + 2 L R`, evaluated as `2 (D / 2 + L R)`: `D` averages
+/// the direct predictions, each divided by the log's length `n` before they
+/// are added, and `R` sums each record's weight divided by the largest, `L`,
+/// times its residual `reward / 2n - prediction / 2n`. Every term of `D` and
+/// `R` is then at most the largest reward or prediction over `n` in
+/// magnitude, and `L` multiplies back only once, so a large finite weight, a
+/// residual near the largest finite reward or a long log does not overflow an
+/// estimate that is itself finite (up to rounding at the limit of `f64`).
 ///
 /// # Errors
 /// Refuses the logs [`evaluate_off_policy`] refuses for their records, a
@@ -654,17 +682,22 @@ where
         TriageDecision::Discard,
     ];
     let n = log.len() as f64;
-    let estimate: f64 = log
-        .iter()
-        .zip(&weights)
-        .map(|(record, weight)| {
-            let direct: f64 = actions
-                .iter()
-                .map(|&action| target.probability(record, action) * reward_model(record, action))
-                .sum();
-            (direct + weight * (record.reward - reward_model(record, record.decision))) / n
-        })
-        .sum();
+    // Every weight is finite and nonnegative; when all are zero, dividing
+    // them by one keeps them zero.
+    let largest = weights.iter().copied().fold(0.0, f64::max);
+    let scale = if largest > 0.0 { largest } else { 1.0 };
+    let mut direct_mean = 0.0;
+    let mut residuals = 0.0;
+    for (record, weight) in log.iter().zip(&weights) {
+        let direct: f64 = actions
+            .iter()
+            .map(|&action| target.probability(record, action) * reward_model(record, action))
+            .sum();
+        direct_mean += direct / n;
+        let prediction = reward_model(record, record.decision);
+        residuals += weight / scale * (record.reward / (2.0 * n) - prediction / (2.0 * n));
+    }
+    let estimate = 2.0 * (direct_mean / 2.0 + scale * residuals);
     if !estimate.is_finite() {
         return Err(ArbiterError::NonFiniteEstimate {
             estimate: "doubly_robust",

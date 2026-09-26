@@ -647,3 +647,113 @@ fn a_recorded_policy_refuses_what_would_make_its_evaluation_dishonest() {
         ArbiterError::EmptyCalibration
     );
 }
+
+#[test]
+fn a_threshold_outside_the_unit_interval_is_refused_wherever_a_policy_is_built() {
+    // NaN admits no score and a negative threshold every score; above one is
+    // as unreachable as NaN. Each would silently make the policy "never" or
+    // "always" auto-propose.
+    for value in [f32::NAN, -0.5, f32::NEG_INFINITY, 1.5, f32::INFINITY] {
+        let refused = TriagePolicy::new(AutoThreshold::AtLeast(value), 0.0).unwrap_err();
+        assert!(
+            matches!(refused, ArbiterError::InvalidThreshold { value: got }
+                if got.to_bits() == value.to_bits()),
+            "{value}: {refused:?}"
+        );
+        assert_eq!(refused.code(), "PTR_ARBITER_INVALID_THRESHOLD");
+        // A stored record is rebuilt through from_parts, which refuses it too.
+        assert!(
+            matches!(
+                PolicyRecord::from_parts(
+                    "v1",
+                    AutoThreshold::AtLeast(value),
+                    0.0,
+                    ThresholdRule::Manual,
+                    vec![],
+                ),
+                Err(ArbiterError::InvalidThreshold { .. })
+            ),
+            "{value}"
+        );
+    }
+    // The endpoints are scores: zero admits every eligible branch, one only a
+    // perfect score.
+    let everything = TriagePolicy::new(AutoThreshold::AtLeast(0.0), 0.0).unwrap();
+    let perfect = TriagePolicy::new(AutoThreshold::AtLeast(1.0), 0.0).unwrap();
+    assert!(PolicyRecord::manual("v1", perfect).is_ok());
+    let decide = |policy: &TriagePolicy, value| {
+        policy
+            .triage(&passing(), score(value), 0.5)
+            .unwrap()
+            .decision
+    };
+    assert_eq!(decide(&everything, 0.0), TriageDecision::AutoPropose);
+    assert_eq!(decide(&perfect, 1.0), TriageDecision::AutoPropose);
+    assert_eq!(decide(&perfect, 0.999), TriageDecision::Escalate);
+}
+
+#[test]
+fn learn_then_test_starts_where_its_own_bound_can_first_pass() {
+    // At these levels the closed-form start ceil(ln delta / ln(1 - alpha))
+    // is one sample short of what the Clopper-Pearson test itself passes
+    // with no harm (4 rather than 3, and 3 rather than 2), so starting there
+    // failed the first test and certified nothing.
+    let logging = TriagePolicy::new(AutoThreshold::Never, 0.999).unwrap();
+    let samples: Vec<CalibrationSample> = (0..400)
+        .map(|i| {
+            logging
+                .triage(&passing(), score(i as f32 / 400.0), 0.0)
+                .unwrap()
+                .adjudicate(false)
+                .expect("calibration slice")
+        })
+        .collect();
+    for (alpha, delta) in [(0.5, 0.125), (0.3, 0.49), (0.5, 0.0625)] {
+        assert_eq!(
+            certify_threshold(&samples, alpha, delta).unwrap(),
+            AutoThreshold::AtLeast(0.0),
+            "alpha {alpha} delta {delta}"
+        );
+    }
+}
+
+#[test]
+fn doubly_robust_scales_before_it_multiplies_so_a_finite_estimate_is_returned() {
+    // One auto-proposed record with a weight of 1e300 and a reward of 1e10
+    // among 999 ineligible ones: weight * reward overflows, the estimate
+    // (1e307, the IPS with a zero reward model) does not.
+    let policy = TriagePolicy::new(AutoThreshold::AtLeast(0.0), 0.0).unwrap();
+    let mut log = vec![LoggedTriage {
+        eligible: true,
+        score: 0.9,
+        decision: TriageDecision::AutoPropose,
+        auto_propensity: 1e-300,
+        reward: 1e10,
+    }];
+    log.extend(
+        [LoggedTriage {
+            eligible: false,
+            score: 0.1,
+            decision: TriageDecision::Escalate,
+            auto_propensity: 0.0,
+            reward: 0.0,
+        }; 999],
+    );
+    let ips = evaluate_off_policy(&log, &policy).unwrap().ips;
+    let dr = doubly_robust(&log, &policy, |_, _| 0.0).unwrap();
+    assert!((dr - ips).abs() <= 1e-12 * ips, "{dr} {ips}");
+    assert!((dr - 1e307).abs() <= 1e-12 * 1e307, "{dr}");
+
+    // A single record whose residual, the largest reward minus the smallest
+    // prediction, overflows although the weighted estimate does not.
+    let policy = TriagePolicy::new(AutoThreshold::AtLeast(0.5), 0.3).unwrap();
+    let log = [eligible(TriageDecision::Escalate, 0.3, f64::MAX)];
+    let model = |_: &LoggedTriage, action| match action {
+        TriageDecision::Escalate => -f64::MAX,
+        TriageDecision::AutoPropose | TriageDecision::Discard => 0.0,
+    };
+    // -0.3 * MAX + (0.3 / 0.7) * 2 * MAX, about 0.557 * MAX.
+    let expected = 2.0 * (-0.15 * f64::MAX + (0.3 / 0.7) * f64::MAX);
+    let dr = doubly_robust(&log, &policy, model).unwrap();
+    assert!((dr - expected).abs() <= 1e-12 * expected, "{dr} {expected}");
+}

@@ -1,11 +1,14 @@
 use crate::error::StatsError;
 
+/// Why an update that would count more than `u64::MAX` values is refused.
+const COUNT_OVERFLOW: &str = "would count more values than a u64 holds";
+
 /// Streaming mean and variance by Welford's algorithm: one pass, numerically
 /// stable, mergeable across shards with Chan's update.
 ///
-/// The mean and the sum of squared deviations are always finite: an update
-/// that would make either nonfinite is refused and leaves the summary as it
-/// was.
+/// The mean and the sum of squared deviations are always finite and the count
+/// is exact: an update that would make either nonfinite, or take the count
+/// past `u64::MAX`, is refused and leaves the summary as it was.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct RunningMoments {
     count: u64,
@@ -17,11 +20,18 @@ impl RunningMoments {
     /// Include one observation in the count, mean, and variance.
     ///
     /// # Errors
-    /// Returns `StatsError::InvalidParameter` for a nonfinite value, or a
+    /// Returns `StatsError::InvalidParameter` for a nonfinite value, a
     /// finite one whose squared deviation overflows the sum of squares (for
-    /// example `f64::MAX` after `-f64::MAX`); the summary is unchanged.
+    /// example `f64::MAX` after `-f64::MAX`), or any value once the summary
+    /// already counts `u64::MAX` values; the summary is unchanged.
     pub fn push(&mut self, value: f64) -> Result<(), StatsError> {
-        let count = self.count + 1;
+        let count = self
+            .count
+            .checked_add(1)
+            .ok_or(StatsError::InvalidParameter {
+                field: "value",
+                message: COUNT_OVERFLOW,
+            })?;
         let delta = value - self.mean;
         let mean = self.mean + delta / count as f64;
         let m2 = self.m2 + delta * (value - mean);
@@ -38,8 +48,9 @@ impl RunningMoments {
     /// intermediate overflows unless the term itself does.
     ///
     /// # Errors
-    /// Returns `StatsError::InvalidParameter` when the combined mean or sum
-    /// of squared deviations would not be finite.
+    /// Returns `StatsError::InvalidParameter` when the combined count would
+    /// exceed `u64::MAX`, or the combined mean or sum of squared deviations
+    /// would not be finite.
     pub fn merge(&self, other: &Self) -> Result<Self, StatsError> {
         if self.count == 0 {
             return Ok(*other);
@@ -47,7 +58,13 @@ impl RunningMoments {
         if other.count == 0 {
             return Ok(*self);
         }
-        let count = self.count + other.count;
+        let count = self
+            .count
+            .checked_add(other.count)
+            .ok_or(StatsError::InvalidParameter {
+                field: "summary",
+                message: COUNT_OVERFLOW,
+            })?;
         let delta = other.mean - self.mean;
         let mean = self.mean + delta * other.count as f64 / count as f64;
         let factor = self.count as f64 * (other.count as f64 / count as f64);

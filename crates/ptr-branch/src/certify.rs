@@ -92,9 +92,10 @@ impl Certification {
 /// prefix it scanned must contain exactly the same keys and values (range
 /// digests), every key it touches must declare the same input set it declared
 /// at the base (input-set digests; a touched key with no recorded input set
-/// is a conflict too), and every lifecycle target it relied on must still be
-/// live at that generation according to `validity` (answered by the lifecycle
-/// authority, for example `PtrRuntime::generation_validity`). The input-set
+/// or base value is a conflict too), and every lifecycle target it relied on
+/// must still be live at that generation according to `validity` (answered
+/// by the lifecycle authority, for example
+/// `PtrRuntime::generation_validity`). The input-set
 /// check matters because a merge publishes a touched key's value but keeps
 /// the target's dependency set for it: a concurrent delta that rewires a
 /// derived key to other inputs while recomputing it to the same value would
@@ -104,6 +105,16 @@ impl Certification {
 /// only repair, because only the agent knows what else its reasoning used.
 /// Reads the agent did not declare are invisible here — the guarantee is as
 /// complete as the declaration.
+///
+/// A [`SealedBranch`] has public fields and is rebuilt from storage, so what
+/// [`Branch`](crate::Branch) guarantees about the declaration is checked
+/// again rather than trusted: a `Put` or `Remove` of a key the branch did not
+/// read is refused as [`BranchError::UnreadTarget`], as staging it would have
+/// been, since merging it would overwrite a concurrent change unseen; a key
+/// an operation touches with no recorded base value (which decides
+/// `Rebased` over `Clean`) is a conflict; and so is an input of such a key
+/// that the branch did not read, since staging the operation reads every
+/// input of its key.
 pub fn certify<V>(
     branch: &SealedBranch,
     target: &SemanticSnapshot,
@@ -112,6 +123,15 @@ pub fn certify<V>(
 where
     V: Fn(&str, Generation) -> Option<Validity>,
 {
+    if let Some(op) = branch
+        .ops
+        .iter()
+        .find(|op| !op.commutes() && !branch.reads.contains_key(op.key()))
+    {
+        return Err(BranchError::UnreadTarget {
+            key: op.key().to_owned(),
+        });
+    }
     if target.revision < branch.base_revision {
         return Err(BranchError::SnapshotBehindBase {
             base: branch.base_revision,
@@ -147,15 +167,30 @@ where
             conflicts.insert(format!("{prefix}*"));
         }
     }
-    let touched: BTreeSet<&str> = branch
-        .ops
+    let operated: BTreeSet<&str> = branch.ops.iter().map(BranchOp::key).collect();
+    let touched: BTreeSet<&str> = operated
         .iter()
-        .map(BranchOp::key)
+        .copied()
         .chain(branch.touched_inputs.keys().map(String::as_str))
         .collect();
     for key in touched {
         if branch.touched_inputs.get(key) != Some(&InputsDigest::of(key, target.inputs(key))) {
             conflicts.insert(key.to_owned());
+        } else if operated.contains(key) {
+            // The input set is the base's, so these are the inputs staging
+            // the operation read; one the branch did not read is a
+            // dependency it never declared.
+            conflicts.extend(
+                target
+                    .inputs(key)
+                    .filter(|input| !branch.reads.contains_key(*input))
+                    .map(str::to_owned),
+            );
+        }
+    }
+    for key in &operated {
+        if !branch.touched_base.contains_key(*key) {
+            conflicts.insert((*key).to_owned());
         }
     }
     if !conflicts.is_empty() {

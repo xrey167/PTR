@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
-use ptr_types::Revision;
+use ptr_types::{Generation, Revision};
 
 /// Refusals from building, sealing or certifying a branch.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -52,6 +52,14 @@ pub enum BranchError {
     LifecycleChanged {
         targets: BTreeSet<String>,
     },
+    /// The branch already relied on another generation of this target. At
+    /// most one generation of a target is live at a time, so a branch whose
+    /// conclusions rest on two could never be certified.
+    ConflictingReliance {
+        target: String,
+        relied: Generation,
+        declared: Generation,
+    },
 }
 
 impl BranchError {
@@ -67,6 +75,7 @@ impl BranchError {
             Self::SnapshotBehindBase { .. } => "PTR_BRANCH_SNAPSHOT_BEHIND_BASE",
             Self::Conflict { .. } => "PTR_BRANCH_CONFLICT",
             Self::LifecycleChanged { .. } => "PTR_BRANCH_LIFECYCLE_CHANGED",
+            Self::ConflictingReliance { .. } => "PTR_BRANCH_CONFLICTING_RELIANCE",
         }
     }
 }
@@ -104,6 +113,15 @@ impl fmt::Display for BranchError {
                     "relied-on generations no longer live: {targets:?}"
                 )
             }
+            Self::ConflictingReliance {
+                target,
+                relied,
+                declared,
+            } => write!(
+                formatter,
+                "{target:?} was relied on at generation {} and then at {}",
+                relied.0, declared.0
+            ),
         }
     }
 }
@@ -119,6 +137,10 @@ pub enum ArbiterError {
     EmptyCalibration,
     /// A calibration rate outside `[0, 1)`.
     InvalidExploration { rate: f64 },
+    /// An auto-propose threshold that is not a finite score in `[0, 1]`. A
+    /// NaN would admit nothing and a negative one everything eligible, so
+    /// either would silently make a policy "never" or "always" auto-propose.
+    InvalidThreshold { value: f32 },
     /// A calibration draw that is not a finite number in `[0, 1)`.
     InvalidDraw { draw: f64 },
     /// A logged propensity outside `[0, 1]`, a logged action the logging
@@ -154,6 +176,7 @@ impl ArbiterError {
             Self::InvalidRisk { .. } => "PTR_ARBITER_INVALID_RISK",
             Self::EmptyCalibration => "PTR_ARBITER_EMPTY_CALIBRATION",
             Self::InvalidExploration { .. } => "PTR_ARBITER_INVALID_EXPLORATION",
+            Self::InvalidThreshold { .. } => "PTR_ARBITER_INVALID_THRESHOLD",
             Self::InvalidDraw { .. } => "PTR_ARBITER_INVALID_DRAW",
             Self::InvalidPropensity { .. } => "PTR_ARBITER_INVALID_PROPENSITY",
             Self::InvalidReward { .. } => "PTR_ARBITER_INVALID_REWARD",
@@ -176,6 +199,12 @@ impl fmt::Display for ArbiterError {
             Self::EmptyCalibration => write!(formatter, "no calibration samples"),
             Self::InvalidExploration { rate } => {
                 write!(formatter, "calibration rate {rate} is outside [0, 1)")
+            }
+            Self::InvalidThreshold { value } => {
+                write!(
+                    formatter,
+                    "auto-propose threshold {value} is outside [0, 1]"
+                )
             }
             Self::InvalidDraw { draw } => {
                 write!(formatter, "calibration draw {draw} is outside [0, 1)")

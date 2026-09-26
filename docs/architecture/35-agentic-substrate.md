@@ -234,9 +234,18 @@ its conclusions depend on: a **value digest** of every key it read (the canonica
 journal bytes `ptr_semdb::canonical_input_bytes`, the same bytes neural-state
 admission digests), a **range digest** of every prefix it scanned, an **input-set
 digest** of every key it touches (which keys its dependency entry names, the empty
-set included), and every **lifecycle generation** it relied on. `Put` and `Remove`
-are accepted only for keys the branch read; counter additions and set insertions and
-removals commute and are rebased onto whatever the key holds at merge time.
+set included), and every **lifecycle generation** it relied on — one per target:
+relying on a second generation of a target is refused when declared, since two are
+never live together and keeping only the later one would certify conclusions drawn
+from a superseded one
+(`a_second_generation_of_a_relied_on_target_is_refused_when_declared`). `Put` and
+`Remove` are accepted only for keys the branch read; counter additions and set
+insertions and removals commute and are rebased onto whatever the key holds at merge
+time. An operation is checked before anything is recorded, so a refused one leaves no
+read of its key's inputs behind to refuse the branch later
+(`a_refused_commutative_operation_leaves_no_read_of_its_inputs_behind`), and a set
+the journal cannot carry is refused rather than encoded with truncated lengths
+(`a_set_the_journal_cannot_carry_is_refused_rather_than_truncated`).
 `request:` and `pod-output:` are reserved to ingress.
 
 Certification against a newer snapshot refuses a changed read
@@ -246,9 +255,15 @@ a touched key whose input set changed even though every value it read is unchang
 (`a_touched_key_whose_input_set_changed_conflicts_even_when_every_value_it_read_is_unchanged`):
 a merge keeps the target's dependency set, so a value must not stand under inputs it
 was not computed from; and a revoked or superseded relied-on generation
-(`a_revoked_or_superseded_relied_on_generation_refuses_certification`). Otherwise it
-returns `Clean` or `Rebased` with one `MergePlan`: an ordinary `SemanticDelta` and the
-revision it was certified against. Concurrent counter additions both survive
+(`a_revoked_or_superseded_relied_on_generation_refuses_certification`). A
+`SealedBranch` has public fields and is rebuilt from storage, so certification
+rechecks what staging guarantees rather than trusting it: a `Put` or `Remove` of a
+key the branch did not read, which would merge as a blind overwrite, a touched key
+with no recorded base value, which could not tell `Rebased` from `Clean`, and an
+unread input of a touched key are refused
+(`a_sealed_branch_that_breaks_what_staging_guarantees_is_refused_at_certification`).
+Otherwise it returns `Clean` or `Rebased` with one `MergePlan`: an ordinary
+`SemanticDelta` and the revision it was certified against. Concurrent counter additions both survive
 (`two_concurrent_counter_additions_both_survive`).
 
 A plan is committed through `Runtime::apply_verified_semantic_delta`, which
@@ -291,18 +306,28 @@ verification:
   Clopper-Pearson bounds, which bounds the harm rate among auto-proposed branches with
   probability `1 − δ` (`learn_then_test_certifies_the_clean_region_and_bounds_the_harm_rate`,
   `a_certified_threshold_bounds_the_harm_rate_among_what_the_next_policy_proposes`).
+  The sequence starts at the first threshold its own bound can pass with no harm,
+  a choice made on the scores alone
+  (`learn_then_test_starts_where_its_own_bound_can_first_pass`).
+- A threshold is a finite score in `[0, 1]` in every policy, one rebuilt from storage
+  included: NaN would never auto-propose and a negative threshold always would, so
+  either is refused
+  (`a_threshold_outside_the_unit_interval_is_refused_wherever_a_policy_is_built`).
 - Logged propensities make IPS, SNIPS and doubly robust **off-policy evaluation** of
   a new threshold possible; a threshold below anything the log explored is refused as
   a positivity violation, a log with a nonfinite reward or a propensity so small that
   its importance weight is infinite is refused rather than estimated, and an estimate
   is never returned unless it is finite: SNIPS and the effective sample size are
-  computed on weights divided by the largest, so large finite weights do not overflow
-  them, and whatever still overflows is refused
+  computed on weights divided by the largest, and the doubly robust estimate on
+  weights divided by the largest and residuals halved and divided by the log's
+  length before they are multiplied, so large finite weights do not overflow them,
+  and whatever still overflows is refused
   (`a_lower_threshold_than_the_log_ever_explored_is_refused_as_a_positivity_violation`,
   `evaluating_the_logging_policy_on_its_own_log_returns_its_mean_reward`,
   `a_nonfinite_logged_reward_is_refused_by_every_off_policy_estimate`,
   `off_policy_estimates_of_extreme_but_valid_logs_are_finite`,
-  `an_infinite_importance_weight_or_a_nonfinite_estimate_is_refused`).
+  `an_infinite_importance_weight_or_a_nonfinite_estimate_is_refused`,
+  `doubly_robust_scales_before_it_multiplies_so_a_finite_estimate_is_returned`).
 - The slice's harm rate is estimated with a self-normalised Horvitz-Thompson rate and
   a Wilson interval on the Kish effective sample size
   (`a_calibration_slice_reweighted_by_its_rate_estimates_the_population_rate`).

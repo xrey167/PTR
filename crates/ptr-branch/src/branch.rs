@@ -128,17 +128,41 @@ impl Branch {
 
     /// Declare that the branch's conclusions depend on `target` being live at
     /// `generation`. Certification refuses the branch once it is not.
-    pub fn rely_on(&mut self, target: &str, generation: Generation) {
-        self.relied.insert(target.to_owned(), generation);
+    /// Declaring the same generation again changes nothing.
+    ///
+    /// # Errors
+    /// Returns `BranchError::ConflictingReliance` when the branch already
+    /// relied on another generation of `target`, and keeps the first: at most
+    /// one generation of a target is live at a time, so conclusions resting on
+    /// both could never be certified, and keeping only the later one would
+    /// certify the branch although what it concluded from the earlier one is
+    /// superseded.
+    pub fn rely_on(&mut self, target: &str, generation: Generation) -> Result<(), BranchError> {
+        match self.relied.get(target) {
+            Some(&relied) if relied != generation => Err(BranchError::ConflictingReliance {
+                target: target.to_owned(),
+                relied,
+                declared: generation,
+            }),
+            Some(_) => Ok(()),
+            None => {
+                self.relied.insert(target.to_owned(), generation);
+                Ok(())
+            }
+        }
     }
 
     /// Overwrite a key the branch has read. If the key is derived, its declared
     /// inputs are read too: an upsert of a derived value is only sound while
     /// the inputs it was computed from are unchanged.
+    ///
+    /// A refused operation records nothing: neither the operation nor the
+    /// reads of its inputs.
     pub fn put(&mut self, key: &str, value: SemanticValue) -> Result<(), BranchError> {
         self.check_writable(key)?;
         self.require_read(key)?;
-        self.read_inputs_of(key)?;
+        let inputs = self.unread_inputs_of(key)?;
+        self.reads.extend(inputs);
         self.ops.push(BranchOp::Put {
             key: key.to_owned(),
             value,
@@ -146,11 +170,12 @@ impl Branch {
         Ok(())
     }
 
-    /// Remove a key the branch has read.
+    /// Remove a key the branch has read. A refused removal records nothing.
     pub fn remove(&mut self, key: &str) -> Result<(), BranchError> {
         self.check_writable(key)?;
         self.require_read(key)?;
-        self.read_inputs_of(key)?;
+        let inputs = self.unread_inputs_of(key)?;
+        self.reads.extend(inputs);
         self.ops.push(BranchOp::Remove {
             key: key.to_owned(),
         });
@@ -159,6 +184,12 @@ impl Branch {
 
     /// Stage a commutative operation. It is checked against the branch's own
     /// view now, and applied to whatever the key holds at merge time later.
+    ///
+    /// The operation is checked before anything is recorded, so a refused one
+    /// (for example an addition to a key that is not a counter) leaves no
+    /// read of the key's inputs behind: such a read would be a dependency of
+    /// nothing the branch does, and a later change to it would refuse the
+    /// branch for no reason.
     pub fn stage_commutative(&mut self, op: BranchOp) -> Result<(), BranchError> {
         self.check_writable(op.key())?;
         if !op.commutes() {
@@ -166,8 +197,9 @@ impl Branch {
                 key: op.key().to_owned(),
             });
         }
-        self.read_inputs_of(op.key())?;
         op.apply(self.overlay(op.key())?)?;
+        let inputs = self.unread_inputs_of(op.key())?;
+        self.reads.extend(inputs);
         self.ops.push(op);
         Ok(())
     }
@@ -208,12 +240,19 @@ impl Branch {
         Ok(())
     }
 
-    fn read_inputs_of(&mut self, key: &str) -> Result<(), BranchError> {
-        let inputs: Vec<String> = self.base.inputs(key).map(str::to_owned).collect();
-        for input in inputs {
-            self.record_read(&input)?;
-        }
-        Ok(())
+    /// Base digests of the declared inputs of `key` the branch has not read
+    /// yet, computed without recording them, so a caller records all or none.
+    fn unread_inputs_of(&self, key: &str) -> Result<Vec<(String, ValueDigest)>, BranchError> {
+        self.base
+            .inputs(key)
+            .filter(|input| !self.reads.contains_key(*input))
+            .map(|input| {
+                Ok((
+                    input.to_owned(),
+                    ValueDigest::of(input, self.base.value(input))?,
+                ))
+            })
+            .collect()
     }
 
     fn check_writable(&self, key: &str) -> Result<(), BranchError> {

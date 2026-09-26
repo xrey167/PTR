@@ -209,11 +209,14 @@ fn the_clopper_pearson_bound_holds_for_a_confidence_below_one_half() {
     // delta = 0.9 is sqrt(0.1), below the observed rate of 0.5.
     let bound = clopper_pearson_upper(1, 2, 0.9).unwrap();
     assert!((bound - 0.1_f64.sqrt()).abs() < 1e-9, "{bound}");
-    assert!((binomial_cdf(1, 2, bound) - 0.9).abs() < 1e-9);
+    assert!((binomial_cdf(1, 2, bound).unwrap() - 0.9).abs() < 1e-9);
     // Every accepted delta yields the root, above and below the observed rate.
     for delta in [0.01, 0.25, 0.5, 0.75, 0.99] {
         let bound = clopper_pearson_upper(3, 10, delta).unwrap();
-        assert!((binomial_cdf(3, 10, bound) - delta).abs() < 1e-9, "{delta}");
+        assert!(
+            (binomial_cdf(3, 10, bound).unwrap() - delta).abs() < 1e-9,
+            "{delta}"
+        );
     }
 }
 
@@ -373,4 +376,83 @@ fn merging_summaries_is_refused_only_when_the_merged_summary_itself_would_overfl
             );
         }
     }
+}
+
+#[test]
+fn a_moment_summary_refuses_to_count_past_u64_max_and_stays_unchanged() {
+    // Doubling one value 63 times counts 2^63 values; adding every smaller
+    // power of two on the way counts u64::MAX.
+    let mut one = RunningMoments::default();
+    one.push(1.0).unwrap();
+    let (mut power, mut full) = (one, one);
+    for _ in 0..63 {
+        power = power.merge(&power).unwrap();
+        full = full.merge(&power).unwrap();
+    }
+    assert_eq!(power.count(), 1 << 63);
+    assert_eq!(full.count(), u64::MAX);
+    let overflow = |field| StatsError::InvalidParameter {
+        field,
+        message: "would count more values than a u64 holds",
+    };
+    assert_eq!(power.merge(&power), Err(overflow("summary")));
+    assert_eq!(full.merge(&one), Err(overflow("summary")));
+    assert_eq!(one.merge(&full), Err(overflow("summary")));
+    let before = full;
+    assert_eq!(full.push(1.0), Err(overflow("value")));
+    assert_eq!(full, before);
+    assert_eq!(overflow("value").code(), "PTR_STATS_INVALID_PARAMETER");
+    // The full summary is still exact and still merges with an empty one.
+    assert_eq!(full.mean(), Some(1.0));
+    assert_eq!(full.sample_variance(), Some(0.0));
+    assert_eq!(full.merge(&RunningMoments::default()), Ok(full));
+}
+
+#[test]
+fn the_binomial_cdf_refuses_a_p_that_is_not_a_probability() {
+    // Clamped to an endpoint, each of these would answer a confident 0 or 1.
+    for p in [f64::NAN, -0.5, 1.5, f64::NEG_INFINITY, f64::INFINITY] {
+        for k in [0, 3, 10] {
+            assert_eq!(
+                binomial_cdf(k, 10, p),
+                Err(StatsError::InvalidParameter {
+                    field: "p",
+                    message: "must lie in [0, 1]",
+                }),
+                "{p} {k}"
+            );
+        }
+    }
+    // The endpoints are probabilities.
+    assert_eq!(binomial_cdf(3, 10, 0.0), Ok(1.0));
+    assert_eq!(binomial_cdf(3, 10, 1.0), Ok(0.0));
+    assert_eq!(binomial_cdf(10, 10, 1.0), Ok(1.0));
+}
+
+#[test]
+fn a_bin_count_beyond_memory_is_computed_on_the_occupied_bins_alone() {
+    let predictions = [vec![0.75, 0.25], vec![0.0, 1.0], vec![0.6, 0.4]];
+    let truth = [0, 0, 1];
+    // Each prediction in a bin of its own: gaps 0.6, 0.25 and 1 by confidence.
+    let singletons =
+        expected_calibration_error(&predictions, &truth, Binning::EqualMass(3)).unwrap();
+    assert!((singletons - 1.85 / 3.0).abs() < 1e-12, "{singletons}");
+    for count in [4, 1 << 60, usize::MAX] {
+        assert_eq!(
+            expected_calibration_error(&predictions, &truth, Binning::EqualMass(count)),
+            Ok(singletons),
+            "{count}"
+        );
+    }
+    for count in [1 << 60, usize::MAX] {
+        assert_eq!(
+            expected_calibration_error(&predictions, &truth, Binning::EqualWidth(count)),
+            Ok(singletons),
+            "{count}"
+        );
+    }
+    assert_eq!(
+        expected_calibration_error(&[vec![1.0, 0.0]], &[0], Binning::EqualWidth(usize::MAX)),
+        Ok(0.0)
+    );
 }

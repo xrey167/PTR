@@ -74,7 +74,7 @@ fn reading_a_counter_prevents_rebasing_an_addition_over_a_changed_value() {
 #[test]
 fn concurrent_set_insertions_preserve_both_members_in_either_commit_order() {
     for reverse in [false, true] {
-        let mut host = host_with(&[("tags", set_value(&BTreeSet::from(["base".into()])))]);
+        let mut host = host_with(&[("tags", set_value(&BTreeSet::from(["base".into()])).unwrap())]);
         let sealed: Vec<_> = ["red", "blue"]
             .into_iter()
             .map(|member| {
@@ -259,7 +259,7 @@ fn a_change_outside_every_declared_dependency_does_not_conflict() {
 fn a_revoked_or_superseded_relied_on_generation_refuses_certification() {
     let host = host_with(&[("a", text("1"))]);
     let mut work = branch(&host, "b1");
-    work.rely_on("capsule:policy", Generation(3));
+    work.rely_on("capsule:policy", Generation(3)).unwrap();
     work.read("a").unwrap();
     work.put("a", text("2")).unwrap();
     let sealed = work.seal().unwrap();
@@ -565,4 +565,190 @@ fn the_plan_digest_binds_the_branch_so_an_approval_cannot_be_replayed_for_anothe
     assert_eq!(first.delta, second.delta);
     assert_eq!(first.dependencies, second.dependencies);
     assert_ne!(first.digest().unwrap(), second.digest().unwrap());
+}
+
+/// A host where `derived` holds `value` and depends on `input:i`.
+fn derived_host(value: SemanticValue) -> SemanticHost {
+    let mut host = SemanticHost::default();
+    let mut setup = SemanticDelta::default();
+    setup.upserts.insert("input:i".into(), text("1"));
+    setup.upserts.insert("derived".into(), value);
+    setup
+        .dependencies
+        .insert("derived".into(), BTreeSet::from(["input:i".to_owned()]));
+    host.apply_delta(setup).unwrap();
+    host
+}
+
+#[test]
+fn a_refused_commutative_operation_leaves_no_read_of_its_inputs_behind() {
+    let oversized = "m".repeat(ptr_semdb::MAX_DELTA_BYTES);
+    for (value, op, refused) in [
+        (
+            text("not a counter"),
+            BranchOp::Add {
+                key: "derived".into(),
+                amount: 1,
+            },
+            BranchError::NotACounter {
+                key: "derived".into(),
+            },
+        ),
+        (
+            counter_value(i64::MAX),
+            BranchOp::Add {
+                key: "derived".into(),
+                amount: 1,
+            },
+            BranchError::CounterOverflow {
+                key: "derived".into(),
+            },
+        ),
+        (
+            set_value(&BTreeSet::new()).unwrap(),
+            BranchOp::SetInsert {
+                key: "derived".into(),
+                member: oversized.clone(),
+            },
+            BranchError::InvalidValue {
+                key: "derived".into(),
+            },
+        ),
+    ] {
+        let mut host = derived_host(value);
+        let mut work = branch(&host, "b1");
+        assert_eq!(work.stage_commutative(op), Err(refused.clone()));
+        let sealed = work.seal().unwrap();
+        assert!(sealed.ops.is_empty(), "{refused:?}");
+        assert!(sealed.reads.is_empty(), "{refused:?}: {:?}", sealed.reads);
+        // A change to the input the refused operation would have depended on
+        // does not refuse a branch that does nothing with it.
+        change(&mut host, "input:i", text("2"));
+        let certification = certify(&sealed, &host.snapshot(), no_lifecycle).unwrap();
+        assert!(certification.plan().is_noop(), "{refused:?}");
+    }
+}
+
+#[test]
+fn a_second_generation_of_a_relied_on_target_is_refused_when_declared() {
+    let host = host_with(&[("a", text("1"))]);
+    let mut work = branch(&host, "b1");
+    work.rely_on("capsule:x", Generation(1)).unwrap();
+    // The same declaration again changes nothing.
+    work.rely_on("capsule:x", Generation(1)).unwrap();
+    let refused = work.rely_on("capsule:x", Generation(2)).unwrap_err();
+    assert_eq!(
+        refused,
+        BranchError::ConflictingReliance {
+            target: "capsule:x".into(),
+            relied: Generation(1),
+            declared: Generation(2),
+        }
+    );
+    assert_eq!(refused.code(), "PTR_BRANCH_CONFLICTING_RELIANCE");
+    let sealed = work.seal().unwrap();
+    assert_eq!(
+        sealed.relied,
+        [("capsule:x".to_owned(), Generation(1))]
+            .into_iter()
+            .collect()
+    );
+    // What the branch concluded from generation 1 is not certified merely
+    // because generation 2 is live.
+    let upgraded = |_: &str, generation: Generation| {
+        Some(if generation == Generation(2) {
+            Validity::Live
+        } else {
+            Validity::Superseded
+        })
+    };
+    assert_eq!(
+        certify(&sealed, &host.snapshot(), upgraded).unwrap_err(),
+        BranchError::LifecycleChanged {
+            targets: BTreeSet::from(["capsule:x".to_owned()])
+        }
+    );
+}
+
+#[test]
+fn a_sealed_branch_that_breaks_what_staging_guarantees_is_refused_at_certification() {
+    // A Put of a key the branch no longer records as read would merge as a
+    // blind overwrite of a concurrent change.
+    let mut host = host_with(&[("k", text("a"))]);
+    let mut work = branch(&host, "b1");
+    work.read("k").unwrap();
+    work.put("k", text("mine")).unwrap();
+    let mut sealed = work.seal().unwrap();
+    sealed.reads.clear();
+    change(&mut host, "k", text("theirs"));
+    assert_eq!(
+        certify(&sealed, &host.snapshot(), no_lifecycle).unwrap_err(),
+        BranchError::UnreadTarget { key: "k".into() }
+    );
+
+    // Without the base value of a key it adds to, the branch cannot tell a
+    // rebase from a clean merge.
+    let mut host = host_with(&[("c", counter_value(10))]);
+    let mut work = branch(&host, "b2");
+    work.stage_commutative(BranchOp::Add {
+        key: "c".into(),
+        amount: 1,
+    })
+    .unwrap();
+    let mut sealed = work.seal().unwrap();
+    change(&mut host, "c", counter_value(20));
+    assert!(matches!(
+        certify(&sealed, &host.snapshot(), no_lifecycle),
+        Ok(Certification::Rebased(plan)) if plan.rebased == BTreeSet::from(["c".to_owned()])
+    ));
+    sealed.touched_base.clear();
+    assert_eq!(
+        certify(&sealed, &host.snapshot(), no_lifecycle).unwrap_err(),
+        BranchError::Conflict {
+            keys: BTreeSet::from(["c".into()])
+        }
+    );
+
+    // Staging reads every input of the key an operation touches; a branch
+    // without that read never declared the dependency.
+    let host = derived_host(text("2"));
+    let mut work = branch(&host, "b3");
+    work.read("derived").unwrap();
+    work.put("derived", text("3")).unwrap();
+    let mut sealed = work.seal().unwrap();
+    assert!(certify(&sealed, &host.snapshot(), no_lifecycle).is_ok());
+    sealed.reads.remove("input:i");
+    assert_eq!(
+        certify(&sealed, &host.snapshot(), no_lifecycle).unwrap_err(),
+        BranchError::Conflict {
+            keys: BTreeSet::from(["input:i".into()])
+        }
+    );
+}
+
+#[test]
+fn a_set_the_journal_cannot_carry_is_refused_rather_than_truncated() {
+    // A member as long as a whole delta may be: the set's encoding, with its
+    // count and length fields, is longer than any delta the journal accepts.
+    let oversized = "m".repeat(ptr_semdb::MAX_DELTA_BYTES);
+    assert_eq!(set_value(&BTreeSet::from([oversized.clone()])), None);
+    // An empty member has no canonical encoding either.
+    assert_eq!(set_value(&BTreeSet::from([String::new()])), None);
+    // Whatever set_value encodes reads back exactly.
+    let members = BTreeSet::from(["a".to_owned(), "b\nc".to_owned()]);
+    assert_eq!(
+        read_set_value(&set_value(&members).unwrap()),
+        Some(members.clone())
+    );
+
+    let host = host_with(&[("tags", set_value(&members).unwrap())]);
+    let mut work = branch(&host, "b1");
+    assert_eq!(
+        work.stage_commutative(BranchOp::SetInsert {
+            key: "tags".into(),
+            member: oversized,
+        }),
+        Err(BranchError::InvalidValue { key: "tags".into() })
+    );
+    assert!(work.seal().unwrap().ops.is_empty());
 }

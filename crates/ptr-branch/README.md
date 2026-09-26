@@ -10,21 +10,23 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-26  
-**Code footprint:** 7 Rust source files · 1871 nonblank source lines · 3 integration-test files · 61 `#[test]` markers
+**Code footprint:** 7 Rust source files · 2028 nonblank source lines · 3 integration-test files · 68 `#[test]` markers
 
 ### Implemented now
 
 - Branch overlay on one SemanticSnapshot recording value digests of every read, range digests of every scanned prefix, input-set digests of every touched key and every relied-on lifecycle generation
 - Value digests hash the canonical journal bytes neural-state admission digests, so a branch and an admitted neural state never disagree about whether an input changed
-- Put and Remove only on keys the branch read; commutative counter additions and set insertions/removals rebase onto the target value at merge time
+- Put and Remove only on keys the branch read; commutative counter additions and set insertions/removals rebase onto the target value at merge time; a refused operation records nothing, not even the reads of its key's inputs; a set whose encoding is longer than the journal's MAX_DELTA_BYTES is refused (InvalidValue, set_value returns None) rather than encoded with truncated lengths
+- A branch relies on at most one generation of a lifecycle target: declaring another is refused (ConflictingReliance) and keeps the first, since two generations are never live together
 - Reserved request: and pod-output: namespaces cannot be written by a branch
-- Certification refuses a changed read, a phantom under a scanned prefix, a touched key whose input set changed or was not recorded (a merge keeps the target's dependency set, so a value never stands under inputs it was not computed from), a revoked or superseded relied-on generation, or a snapshot older than the base; otherwise it yields one SemanticDelta plus the revision it was certified against, and MergePlan::digest binds the branch id and every declared dependency including touched keys' input sets, so an approval cannot be replayed for another branch
+- Certification refuses a changed read, a phantom under a scanned prefix, a touched key whose input set changed or was not recorded (a merge keeps the target's dependency set, so a value never stands under inputs it was not computed from), a revoked or superseded relied-on generation, or a snapshot older than the base; it rechecks what staging guarantees of a SealedBranch rebuilt from its public fields, refusing a Put or Remove of an unread key (UnreadTarget), an operated key with no recorded base value, and an unread input of an operated key (Conflict); otherwise it yields one SemanticDelta plus the revision it was certified against, and MergePlan::digest binds the branch id and every declared dependency including touched keys' input sets, so an approval cannot be replayed for another branch
 - End-to-end test commits a certified plan through Runtime::apply_verified_semantic_delta and shows a plan certified before another commit is refused; using that path is the caller's obligation, because MergePlan exposes its delta and PtrRuntime::apply_semantic_delta is public and unverified
 - Verifier-bounded triage: only a Pass at full-semantic or deterministic level with no hard finding is eligible for auto-proposal
 - Uniform calibration slice of eligible branches with a deterministic per-branch draw, logged auto-propose propensities and adjudication samples; a draw outside [0, 1) is refused
-- Threshold selection on a fixed grid by conformal risk control or by Learn-then-Test with Clopper-Pearson bounds
+- Threshold selection on a fixed grid by conformal risk control or by Learn-then-Test with Clopper-Pearson bounds; Learn-then-Test skips exactly the thresholds its own bound cannot pass with no harm, so it never certifies nothing because a closed-form start fell one sample short
+- Every policy, including one rebuilt from storage by PolicyRecord::from_parts, holds a threshold that is a finite score in [0, 1]; NaN, infinite or out-of-range thresholds are refused (InvalidThreshold) rather than silently never or always auto-proposing
 - PolicyRecord names a policy's version, threshold rule and levels and exactly which adjudicated calibration-slice branches chose its threshold; held_out returns the adjudications it was not calibrated on, the only ones its harm rate may be estimated from
-- Off-policy evaluation by IPS, SNIPS and doubly robust estimates with a positivity check; a log with a propensity outside [0, 1], a propensity so small that its importance weight is infinite, or a nonfinite reward is refused rather than estimated; SNIPS and the effective sample size are computed on weights divided by the largest, and an estimate that is still not finite is refused (NonFiniteEstimate) rather than returned
+- Off-policy evaluation by IPS, SNIPS and doubly robust estimates with a positivity check; a log with a propensity outside [0, 1], a propensity so small that its importance weight is infinite, or a nonfinite reward is refused rather than estimated; SNIPS and the effective sample size are computed on weights divided by the largest, the doubly robust estimate on weights divided by the largest and residuals divided by twice the log's length before any product, so no intermediate overflows an estimate that is itself finite, and an estimate that is still not finite is refused (NonFiniteEstimate) rather than returned
 
 ### Missing for the target architecture
 

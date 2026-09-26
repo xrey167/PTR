@@ -42,7 +42,7 @@ fn a_certified_and_verified_branch_reaches_semantic_state_only_through_the_runti
         PrincipalId::from("pricing-agent"),
         runtime.snapshot(),
     );
-    work.rely_on("pricing-policy", Generation(1));
+    work.rely_on("pricing-policy", Generation(1)).unwrap();
     work.read("price:sku-1").unwrap();
     work.put("price:sku-1", "11".into()).unwrap();
     let sealed = work.seal().unwrap();
@@ -85,7 +85,7 @@ fn a_revocation_between_sealing_and_merging_stops_the_branch() {
         PrincipalId::from("pricing-agent"),
         runtime.snapshot(),
     );
-    work.rely_on("pricing-policy", Generation(1));
+    work.rely_on("pricing-policy", Generation(1)).unwrap();
     work.read("price:sku-1").unwrap();
     work.put("price:sku-1", "11".into()).unwrap();
     let sealed = work.seal().unwrap();

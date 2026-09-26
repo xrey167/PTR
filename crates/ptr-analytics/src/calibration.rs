@@ -1,12 +1,20 @@
+use std::collections::BTreeMap;
+
 use crate::error::StatsError;
 
 /// How predictions are grouped for calibration error.
+///
+/// Any positive bin count is accepted. Only bins that hold a prediction are
+/// ever materialised, so memory grows with the number of predictions, never
+/// with the count.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Binning {
     /// `n` equal-width confidence intervals over `[0, 1]`.
     EqualWidth(usize),
     /// `n` bins holding (as nearly as possible) the same number of predictions,
     /// ordered by confidence. Less sensitive to where predictions cluster.
+    /// With at least as many bins as predictions, each prediction is a bin of
+    /// its own.
     EqualMass(usize),
 }
 
@@ -54,36 +62,64 @@ pub fn expected_calibration_error(
             (top, class == t)
         })
         .collect();
-    let bins: Vec<Vec<(f64, bool)>> = match binning {
+    let bins: Vec<Bin> = match binning {
         Binning::EqualWidth(count) => {
             check_bins(count)?;
-            let mut bins = vec![Vec::new(); count];
+            let mut bins: BTreeMap<usize, Bin> = BTreeMap::new();
             for (confidence, correct) in scored {
                 let bin = ((confidence * count as f64) as usize).min(count - 1);
-                bins[bin].push((confidence, correct));
+                bins.entry(bin).or_default().add(confidence, correct);
             }
-            bins
+            bins.into_values().collect()
         }
         Binning::EqualMass(count) => {
             check_bins(count)?;
             scored.sort_by(|a, b| a.0.total_cmp(&b.0));
+            // Bin `b` of `count` holds sorted items `b * n / count` up to
+            // `(b + 1) * n / count`. With `count >= n` each holds at most one
+            // item, so `n` bins give exactly the non-empty ones; the bounds
+            // are computed in u128, where `b * n` cannot overflow.
             let n = scored.len();
+            let count = count.min(n);
+            let bound = |b: usize| (b as u128 * n as u128 / count as u128) as usize;
             (0..count)
-                .map(|b| scored[b * n / count..(b + 1) * n / count].to_vec())
+                .map(|b| {
+                    let mut bin = Bin::default();
+                    for &(confidence, correct) in &scored[bound(b)..bound(b + 1)] {
+                        bin.add(confidence, correct);
+                    }
+                    bin
+                })
                 .collect()
         }
     };
     let n = truth.len() as f64;
     Ok(bins
         .iter()
-        .filter(|bin| !bin.is_empty())
+        .filter(|bin| bin.size > 0)
         .map(|bin| {
-            let size = bin.len() as f64;
-            let confidence: f64 = bin.iter().map(|(c, _)| c).sum::<f64>() / size;
-            let accuracy = bin.iter().filter(|(_, correct)| *correct).count() as f64 / size;
+            let size = bin.size as f64;
+            let confidence = bin.confidence / size;
+            let accuracy = bin.correct as f64 / size;
             (size / n) * (accuracy - confidence).abs()
         })
         .sum())
+}
+
+/// The predictions that fell into one calibration bin, as running totals.
+#[derive(Clone, Copy, Debug, Default)]
+struct Bin {
+    size: usize,
+    confidence: f64,
+    correct: usize,
+}
+
+impl Bin {
+    fn add(&mut self, confidence: f64, correct: bool) {
+        self.size += 1;
+        self.confidence += confidence;
+        self.correct += usize::from(correct);
+    }
 }
 
 fn check_bins(count: usize) -> Result<(), StatsError> {

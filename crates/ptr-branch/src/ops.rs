@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use ptr_semdb::{SemanticPayload, SemanticValue};
+use ptr_semdb::{SemanticPayload, SemanticValue, MAX_DELTA_BYTES};
 use ptr_types::TypeId;
 
 use crate::error::BranchError;
@@ -87,13 +87,13 @@ impl BranchOp {
                 check_member(key, member)?;
                 let mut set = read_set(key, current.as_ref())?;
                 set.insert(member.clone());
-                Ok(Some(set_value(&set)))
+                encode_set(key, &set).map(Some)
             }
             Self::SetRemove { key, member } => {
                 check_member(key, member)?;
                 let mut set = read_set(key, current.as_ref())?;
                 set.remove(member);
-                Ok(Some(set_value(&set)))
+                encode_set(key, &set).map(Some)
             }
         }
     }
@@ -108,19 +108,33 @@ pub fn counter_value(count: i64) -> SemanticValue {
     })
 }
 
-/// A set value in canonical form.
-pub fn set_value(members: &BTreeSet<String>) -> SemanticValue {
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(&(members.len() as u32).to_le_bytes());
+/// A set value in canonical form, or `None` for members that have none: an
+/// empty member, or members whose encoding is longer than
+/// [`MAX_DELTA_BYTES`], which no journal delta can carry. The bound also
+/// keeps the member count and every member length within the format's
+/// `u32` fields, so no length is ever truncated: whenever this returns a
+/// value, [`read_set_value`] reads back exactly `members`.
+pub fn set_value(members: &BTreeSet<String>) -> Option<SemanticValue> {
+    if members.iter().any(String::is_empty) {
+        return None;
+    }
+    let size = members.iter().try_fold(4usize, |size, member| {
+        size.checked_add(4)?.checked_add(member.len())
+    })?;
+    if size > MAX_DELTA_BYTES {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(size);
+    bytes.extend_from_slice(&u32::try_from(members.len()).ok()?.to_le_bytes());
     for member in members {
-        bytes.extend_from_slice(&(member.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&u32::try_from(member.len()).ok()?.to_le_bytes());
         bytes.extend_from_slice(member.as_bytes());
     }
-    SemanticValue::Payload(SemanticPayload {
+    Some(SemanticValue::Payload(SemanticPayload {
         type_id: TypeId::from(SET_TYPE),
         source: OP_SOURCE.to_owned(),
         bytes,
-    })
+    }))
 }
 
 /// Read a counter value; `None` for anything that is not one.
@@ -175,6 +189,14 @@ fn read_set(key: &str, value: Option<&SemanticValue>) -> Result<BTreeSet<String>
             key: key.to_owned(),
         }),
     }
+}
+
+/// The set a set operation leaves at `key`, refused as
+/// `BranchError::InvalidValue` when [`set_value`] cannot encode it.
+fn encode_set(key: &str, members: &BTreeSet<String>) -> Result<SemanticValue, BranchError> {
+    set_value(members).ok_or_else(|| BranchError::InvalidValue {
+        key: key.to_owned(),
+    })
 }
 
 fn check_member(key: &str, member: &str) -> Result<(), BranchError> {
@@ -258,7 +280,7 @@ mod tests {
 
     #[test]
     fn a_malformed_set_payload_is_refused_rather_than_repaired() {
-        let mut bytes = set_value(&BTreeSet::from(["a".to_owned()]));
+        let mut bytes = set_value(&BTreeSet::from(["a".to_owned()])).unwrap();
         if let SemanticValue::Payload(payload) = &mut bytes {
             payload.bytes.push(0);
         }

@@ -87,7 +87,7 @@ pub fn clopper_pearson_upper(successes: u64, trials: u64, delta: f64) -> Result<
     let (mut low, mut high) = (0.0, 1.0);
     for _ in 0..100 {
         let mid = 0.5 * (low + high);
-        if binomial_cdf(successes, trials, mid) > delta {
+        if cdf(successes, trials, mid) > delta {
             low = mid;
         } else {
             high = mid;
@@ -98,7 +98,24 @@ pub fn clopper_pearson_upper(successes: u64, trials: u64, delta: f64) -> Result<
 
 /// `P(X <= k)` for `X ~ Binomial(n, p)`, accumulating probabilities from
 /// log-space terms. Very small probabilities can still underflow to zero.
-pub fn binomial_cdf(k: u64, n: u64, p: f64) -> f64 {
+///
+/// # Errors
+/// Returns `StatsError::InvalidParameter` unless `p` is a probability in
+/// `[0, 1]`. A NaN, infinite or out-of-range `p` has no binomial
+/// distribution; answering for the nearest endpoint instead would report a
+/// confident `0` or `1` for it.
+pub fn binomial_cdf(k: u64, n: u64, p: f64) -> Result<f64, StatsError> {
+    if !(0.0..=1.0).contains(&p) {
+        return Err(StatsError::InvalidParameter {
+            field: "p",
+            message: "must lie in [0, 1]",
+        });
+    }
+    Ok(cdf(k, n, p))
+}
+
+/// [`binomial_cdf`] for a `p` already known to lie in `[0, 1]`.
+fn cdf(k: u64, n: u64, p: f64) -> f64 {
     if p <= 0.0 {
         return 1.0;
     }
@@ -113,7 +130,9 @@ pub fn binomial_cdf(k: u64, n: u64, p: f64) -> f64 {
         log_pmf += ((n - i) as f64).ln() - ((i + 1) as f64).ln() + log_p - log_q;
         total += log_pmf.exp();
     }
-    total.min(1.0)
+    // Only rounding takes the sum above one; a clamp, unlike `min`, would
+    // still pass a NaN through rather than turn it into a certainty.
+    total.clamp(0.0, 1.0)
 }
 
 fn check_delta(delta: f64) -> Result<(), StatsError> {
@@ -167,8 +186,8 @@ mod tests {
 
     #[test]
     fn the_binomial_cdf_sums_to_one() {
-        assert!((binomial_cdf(20, 20, 0.3) - 1.0).abs() < 1e-12);
-        assert!((binomial_cdf(0, 3, 0.5) - 0.125).abs() < 1e-12);
+        assert!((binomial_cdf(20, 20, 0.3).unwrap() - 1.0).abs() < 1e-12);
+        assert!((binomial_cdf(0, 3, 0.5).unwrap() - 0.125).abs() < 1e-12);
     }
 
     #[test]
