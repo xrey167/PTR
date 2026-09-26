@@ -1,7 +1,7 @@
 use ptr_branch::{
     calibrate_threshold, calibration_draw, certify_threshold, doubly_robust, evaluate_off_policy,
-    ArbiterError, AutoThreshold, BranchId, CalibrationSample, LoggedTriage, PolicyRecord,
-    ThresholdRule, TriageDecision, TriagePolicy,
+    ArbiterError, AutoThreshold, BranchId, CalibrationSample, LoggedTriage, OffPolicyEstimate,
+    PolicyRecord, ThresholdRule, TriageDecision, TriagePolicy,
 };
 use ptr_types::{Probability, VerificationLevel};
 use ptr_verifier::{Finding, VerificationReport, VerificationStatus};
@@ -348,6 +348,98 @@ fn a_nonfinite_logged_reward_is_refused_by_every_off_policy_estimate() {
     log[1].reward = -1e300;
     assert!(evaluate_off_policy(&log, &logging).is_ok());
     assert!(doubly_robust(&log, &logging, model).is_ok());
+}
+
+/// An eligible record scoring above a 0.5 threshold, logged with any
+/// propensity and reward the log's checks accept.
+fn eligible(decision: TriageDecision, auto_propensity: f64, reward: f64) -> LoggedTriage {
+    LoggedTriage {
+        eligible: true,
+        score: 0.8,
+        decision,
+        auto_propensity,
+        reward,
+    }
+}
+
+#[test]
+fn off_policy_estimates_of_extreme_but_valid_logs_are_finite() {
+    let policy = TriagePolicy::new(AutoThreshold::AtLeast(0.5), 0.3).unwrap();
+    // Unit weights and the largest finite reward: the sum of the weighted
+    // rewards overflows, but none of the estimates does.
+    let log = [eligible(TriageDecision::AutoPropose, 0.7, f64::MAX); 2];
+    assert_eq!(
+        evaluate_off_policy(&log, &policy),
+        Ok(OffPolicyEstimate {
+            ips: f64::MAX,
+            snips: f64::MAX,
+            effective_sample_size: 2.0,
+        })
+    );
+    assert_eq!(doubly_robust(&log, &policy, |_, _| 0.0), Ok(f64::MAX));
+    // A propensity of 1e-300 gives a weight near 1e300, whose square
+    // overflows; the effective sample size, SNIPS and IPS do not.
+    let log = [
+        eligible(TriageDecision::AutoPropose, 1e-300, 0.0),
+        eligible(TriageDecision::Escalate, 1e-300, 1.0),
+    ];
+    let estimate = evaluate_off_policy(&log, &policy).unwrap();
+    assert!(
+        (estimate.effective_sample_size - 1.0).abs() < 1e-12,
+        "{estimate:?}"
+    );
+    assert!((estimate.ips - 0.15).abs() < 1e-12, "{estimate:?}");
+    let snips = 0.3 / (0.7 / 1e-300 + 0.3);
+    assert!(
+        (estimate.snips - snips).abs() <= 1e-12 * snips,
+        "{estimate:?}"
+    );
+    let dr = doubly_robust(&log, &policy, |_, _| 0.0).unwrap();
+    assert!((dr - 0.15).abs() < 1e-12, "{dr}");
+}
+
+#[test]
+fn an_infinite_importance_weight_or_a_nonfinite_estimate_is_refused() {
+    let policy = TriagePolicy::new(AutoThreshold::AtLeast(0.5), 0.3).unwrap();
+    let model = |_: &LoggedTriage, _: TriageDecision| 0.0;
+    // A positive propensity so small that 0.7 / propensity is infinite.
+    let log = [
+        eligible(TriageDecision::Escalate, 0.5, 1.0),
+        eligible(TriageDecision::AutoPropose, 5e-324, 0.0),
+    ];
+    let refused = evaluate_off_policy(&log, &policy).unwrap_err();
+    assert_eq!(
+        refused,
+        ArbiterError::InvalidPropensity {
+            index: 1,
+            value: 5e-324,
+        }
+    );
+    assert_eq!(refused.code(), "PTR_ARBITER_INVALID_PROPENSITY");
+    assert_eq!(doubly_robust(&log, &policy, model), Err(refused));
+    // Finite weights and rewards whose IPS and doubly robust estimates are
+    // beyond f64: 0.7e300 * 1e300 / 2.
+    let log = [
+        eligible(TriageDecision::AutoPropose, 1e-300, 1e300),
+        eligible(TriageDecision::Escalate, 1e-300, 1.0),
+    ];
+    let refused = evaluate_off_policy(&log, &policy).unwrap_err();
+    assert_eq!(refused, ArbiterError::NonFiniteEstimate { estimate: "ips" });
+    assert_eq!(refused.code(), "PTR_ARBITER_NONFINITE_ESTIMATE");
+    assert_eq!(
+        doubly_robust(&log, &policy, model),
+        Err(ArbiterError::NonFiniteEstimate {
+            estimate: "doubly_robust"
+        })
+    );
+    // A reward model that predicts NaN makes the doubly robust estimate NaN.
+    let log = log_under(&policy, &[0.2, 0.6, 0.8]);
+    assert_eq!(
+        doubly_robust(&log, &policy, |_, _| f64::NAN),
+        Err(ArbiterError::NonFiniteEstimate {
+            estimate: "doubly_robust"
+        })
+    );
 }
 
 /// Forty adjudicated calibration-slice branches, keyed by branch, scoring

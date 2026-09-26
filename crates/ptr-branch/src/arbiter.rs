@@ -572,42 +572,73 @@ pub struct OffPolicyEstimate {
 /// estimate that ignored this would silently report the escalation reward
 /// instead.
 ///
+/// SNIPS and the effective sample size do not change when every weight is
+/// multiplied by one factor, so both are computed on the weights divided by
+/// the largest: SNIPS as a convex combination of the rewards, at most the
+/// largest reward's magnitude up to rounding, and the effective sample size
+/// from sums between one and the log's length. IPS is SNIPS times the mean
+/// weight. No estimate overflows merely because a sum of weighted rewards or
+/// of squared weights would, and one that is still not finite is refused.
+///
 /// # Errors
-/// Refuses an empty log, a propensity outside `[0, 1]` or a logged action the
-/// logging policy gave zero probability (`InvalidPropensity`), a reward that
-/// is not finite (`InvalidReward`), and a positivity violation, at the first
-/// record that shows one.
+/// Refuses an empty log, a propensity outside `[0, 1]`, a logged action the
+/// logging policy gave zero probability or one it gave so small a probability
+/// that the importance weight is not finite (`InvalidPropensity`), a reward
+/// that is not finite (`InvalidReward`), and a positivity violation, at the
+/// first record that shows one; then an estimate that is not finite
+/// (`NonFiniteEstimate`). Nothing nonfinite is ever returned as an estimate.
 pub fn evaluate_off_policy(
     log: &[LoggedTriage],
     target: &TriagePolicy,
 ) -> Result<OffPolicyEstimate, ArbiterError> {
     let weights = importance_weights(log, target)?;
-    let n = log.len() as f64;
-    let weighted: f64 = weights
+    let largest = weights.iter().copied().fold(0.0, f64::max);
+    if largest == 0.0 {
+        // The target takes none of the logged actions: every weight is zero.
+        return Ok(OffPolicyEstimate {
+            ips: 0.0,
+            snips: 0.0,
+            effective_sample_size: 0.0,
+        });
+    }
+    let scaled: Vec<f64> = weights.iter().map(|weight| weight / largest).collect();
+    let total: f64 = scaled.iter().sum();
+    let squares: f64 = scaled.iter().map(|weight| weight * weight).sum();
+    let snips: f64 = scaled
         .iter()
         .zip(log)
-        .map(|(weight, record)| weight * record.reward)
+        .map(|(weight, record)| weight / total * record.reward)
         .sum();
-    let total: f64 = weights.iter().sum();
-    let squares: f64 = weights.iter().map(|weight| weight * weight).sum();
-    Ok(OffPolicyEstimate {
-        ips: weighted / n,
-        snips: if total > 0.0 { weighted / total } else { 0.0 },
-        effective_sample_size: if squares > 0.0 {
-            total * total / squares
-        } else {
-            0.0
-        },
-    })
+    let estimate = OffPolicyEstimate {
+        ips: snips * (largest * (total / log.len() as f64)),
+        snips,
+        effective_sample_size: total * total / squares,
+    };
+    for (name, value) in [
+        ("ips", estimate.ips),
+        ("snips", estimate.snips),
+        ("effective_sample_size", estimate.effective_sample_size),
+    ] {
+        if !value.is_finite() {
+            return Err(ArbiterError::NonFiniteEstimate { estimate: name });
+        }
+    }
+    Ok(estimate)
 }
 
 /// Doubly robust estimate: a reward model's prediction for the target policy,
 /// corrected by importance-weighted residuals on the logged actions. Unbiased
 /// when either the propensities or the reward model are correct.
 ///
+/// Each record's term is divided by the log's length before the terms are
+/// added, so the estimate does not overflow merely because the sum of the
+/// terms would.
+///
 /// # Errors
-/// Refuses the logs [`evaluate_off_policy`] refuses, a nonfinite logged
-/// reward included.
+/// Refuses the logs [`evaluate_off_policy`] refuses for their records, a
+/// nonfinite logged reward or an infinite importance weight included, and an
+/// estimate that is not finite (`NonFiniteEstimate`), as a reward model's
+/// nonfinite prediction makes it.
 pub fn doubly_robust<M>(
     log: &[LoggedTriage],
     target: &TriagePolicy,
@@ -622,7 +653,8 @@ where
         TriageDecision::Escalate,
         TriageDecision::Discard,
     ];
-    let total: f64 = log
+    let n = log.len() as f64;
+    let estimate: f64 = log
         .iter()
         .zip(&weights)
         .map(|(record, weight)| {
@@ -630,10 +662,15 @@ where
                 .iter()
                 .map(|&action| target.probability(record, action) * reward_model(record, action))
                 .sum();
-            direct + weight * (record.reward - reward_model(record, record.decision))
+            (direct + weight * (record.reward - reward_model(record, record.decision))) / n
         })
         .sum();
-    Ok(total / log.len() as f64)
+    if !estimate.is_finite() {
+        return Err(ArbiterError::NonFiniteEstimate {
+            estimate: "doubly_robust",
+        });
+    }
+    Ok(estimate)
 }
 
 fn importance_weights(
@@ -669,13 +706,16 @@ fn importance_weights(
             }
         }
         let logged = record.logging_probability(record.decision);
-        if logged <= 0.0 {
+        let weight = target.probability(record, record.decision) / logged;
+        // A zero probability, or a positive one so small that the weight
+        // overflows: either way the record cannot be reweighted.
+        if logged <= 0.0 || !weight.is_finite() {
             return Err(ArbiterError::InvalidPropensity {
                 index,
                 value: logged,
             });
         }
-        weights.push(target.probability(record, record.decision) / logged);
+        weights.push(weight);
     }
     Ok(weights)
 }

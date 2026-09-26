@@ -277,11 +277,16 @@ verification:
   `a_certified_threshold_bounds_the_harm_rate_among_what_the_next_policy_proposes`).
 - Logged propensities make IPS, SNIPS and doubly robust **off-policy evaluation** of
   a new threshold possible; a threshold below anything the log explored is refused as
-  a positivity violation, and a log with a nonfinite reward is refused rather than
-  estimated
+  a positivity violation, a log with a nonfinite reward or a propensity so small that
+  its importance weight is infinite is refused rather than estimated, and an estimate
+  is never returned unless it is finite: SNIPS and the effective sample size are
+  computed on weights divided by the largest, so large finite weights do not overflow
+  them, and whatever still overflows is refused
   (`a_lower_threshold_than_the_log_ever_explored_is_refused_as_a_positivity_violation`,
   `evaluating_the_logging_policy_on_its_own_log_returns_its_mean_reward`,
-  `a_nonfinite_logged_reward_is_refused_by_every_off_policy_estimate`).
+  `a_nonfinite_logged_reward_is_refused_by_every_off_policy_estimate`,
+  `off_policy_estimates_of_extreme_but_valid_logs_are_finite`,
+  `an_infinite_importance_weight_or_a_nonfinite_estimate_is_refused`).
 - The slice's harm rate is estimated with a self-normalised Horvitz-Thompson rate and
   a Wilson interval on the Kish effective sample size
   (`a_calibration_slice_reweighted_by_its_rate_estimates_the_population_rate`).

@@ -121,8 +121,9 @@ pub enum ArbiterError {
     InvalidExploration { rate: f64 },
     /// A calibration draw that is not a finite number in `[0, 1)`.
     InvalidDraw { draw: f64 },
-    /// A logged propensity outside `[0, 1]`, or a logged action the logging
-    /// policy gave zero probability.
+    /// A logged propensity outside `[0, 1]`, a logged action the logging
+    /// policy gave zero probability, or one it gave a probability so small
+    /// that the record's importance weight is not finite.
     InvalidPropensity { index: usize, value: f64 },
     /// A logged reward that is not a finite number: any estimate that
     /// averaged it would be NaN or infinite rather than a refusal.
@@ -130,6 +131,10 @@ pub enum ArbiterError {
     /// The evaluated policy takes an action the logging policy never took for
     /// this record, so no reweighting can estimate its value.
     PositivityViolation { index: usize },
+    /// An off-policy estimate (`ips`, `snips`, `effective_sample_size` or
+    /// `doubly_robust`) of a log that passed every other check does not come
+    /// out as a finite number, so it is refused rather than returned.
+    NonFiniteEstimate { estimate: &'static str },
     /// No logged decisions were supplied.
     EmptyLog,
     /// A recorded policy needs a version to be cited by.
@@ -153,6 +158,7 @@ impl ArbiterError {
             Self::InvalidPropensity { .. } => "PTR_ARBITER_INVALID_PROPENSITY",
             Self::InvalidReward { .. } => "PTR_ARBITER_INVALID_REWARD",
             Self::PositivityViolation { .. } => "PTR_ARBITER_POSITIVITY_VIOLATION",
+            Self::NonFiniteEstimate { .. } => "PTR_ARBITER_NONFINITE_ESTIMATE",
             Self::EmptyLog => "PTR_ARBITER_EMPTY_LOG",
             Self::EmptyVersion => "PTR_ARBITER_EMPTY_VERSION",
             Self::InvalidRule { .. } => "PTR_ARBITER_INVALID_RULE",
@@ -184,6 +190,12 @@ impl fmt::Display for ArbiterError {
                 formatter,
                 "record {index}: the evaluated policy takes an action the logging policy never took"
             ),
+            Self::NonFiniteEstimate { estimate } => {
+                write!(
+                    formatter,
+                    "the {estimate} estimate of the log is not finite"
+                )
+            }
             Self::EmptyLog => write!(formatter, "no logged decisions"),
             Self::EmptyVersion => write!(formatter, "a recorded policy has no version"),
             Self::InvalidRule { rule, message } => write!(formatter, "rule {rule}: {message}"),
