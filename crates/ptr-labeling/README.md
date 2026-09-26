@@ -10,11 +10,12 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-26  
-**Code footprint:** 6 Rust source files · 1108 nonblank source lines · 1 integration-test files · 29 `#[test]` markers
+**Code footprint:** 6 Rust source files · 1225 nonblank source lines · 1 integration-test files · 31 `#[test]` markers
 
 ### Implemented now
 
-- Label schemas, labeling functions by kind (verifier, heuristic, model, agent) and a vote matrix with abstention
+- Label schemas, labeling functions by kind (verifier, heuristic, model, agent) and a vote matrix with abstention; function names are non-empty and distinct (DuplicateFunction), so no function's votes count twice
+- A fitted LabelModel is bound to its vote matrix by VoteMatrix::digest (SHA-256 of schema, functions and votes, set only by fit_label_model); resolve refuses any other matrix, even one of the same shape, with MatrixMismatch
 - Verifier-backed functions cast vetoes only; a verifier class vote is refused
 - Dawid-Skene EM label model with configurable iterations and a tolerance in [0, 1) (refused outside it, so a vacuous tolerance cannot hide non-convergence) and identifiability warnings for fewer than three modelled functions; smoothing too small for every smoothed probability to stay a positive normal number is refused, larger smoothing up to f64::MAX is normalized without overflow, and every fitted probability is finite
 - Resolution to Determined (every other class vetoed), Estimated at or above a required probability, Unknown (also when the classes left carry no posterior mass), or Disputed when every class is vetoed; a posterior that is not a probability distribution over the schema is refused before any item is resolved
@@ -51,6 +52,7 @@
 ### Current automated checks
 
 - tests/label_model.rs recovery, veto, dispute and identifiability cases, and gold-set, gold-class, z, tolerance, smoothing, posterior and annotation-alignment refusals
+- tests/label_model.rs: empty and duplicate function names are refused; a model is refused with any matrix but the one it was fitted on (other votes, functions or schema of the same shape) and accepted with an equal rebuilt one
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->

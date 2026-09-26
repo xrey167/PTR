@@ -28,6 +28,11 @@ pub enum LabelingError {
     Empty { field: &'static str },
     /// A function that is not a model names an adapter, or names an empty one.
     AdapterAttribution { function: String },
+    /// Two labeling functions of one vote matrix share a name.
+    DuplicateFunction { function: String },
+    /// A label model is used with a vote matrix other than the one it was
+    /// fitted on: the schema, the functions or the votes differ.
+    MatrixMismatch,
     /// An evaluation set already holds a gold label for this item.
     DuplicateGoldItem { item: usize },
     /// The posterior of an item is not a probability distribution: it is
@@ -49,6 +54,8 @@ impl LabelingError {
             Self::InvalidParameter { .. } => "PTR_LABELING_INVALID_PARAMETER",
             Self::Empty { .. } => "PTR_LABELING_EMPTY",
             Self::AdapterAttribution { .. } => "PTR_LABELING_ADAPTER_ATTRIBUTION",
+            Self::DuplicateFunction { .. } => "PTR_LABELING_DUPLICATE_FUNCTION",
+            Self::MatrixMismatch => "PTR_LABELING_MATRIX_MISMATCH",
             Self::DuplicateGoldItem { .. } => "PTR_LABELING_DUPLICATE_GOLD_ITEM",
             Self::InvalidPosterior { .. } => "PTR_LABELING_INVALID_POSTERIOR",
         }
@@ -83,6 +90,13 @@ impl fmt::Display for LabelingError {
             Self::AdapterAttribution { function } => write!(
                 formatter,
                 "{function:?} names an adapter but is not a model, or names an empty one"
+            ),
+            Self::DuplicateFunction { function } => {
+                write!(formatter, "two labeling functions are named {function:?}")
+            }
+            Self::MatrixMismatch => write!(
+                formatter,
+                "the label model was fitted on a different vote matrix"
             ),
             Self::DuplicateGoldItem { item } => {
                 write!(

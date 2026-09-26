@@ -172,10 +172,27 @@ Retrieval runs in one read-only repeatable-read snapshot:
   that is zero once rounded to half precision is refused, since it has no cosine
   distance. Registering a different definition under an existing space is refused
   (`SpaceConflict`).
-- **Liveness:** every hit is joined to the lifecycle catalog of the same snapshot.
+- **Liveness:** every hit is joined to the lifecycle catalog of the same snapshot and
+  kept only if its generation is live **and** not tombstoned, so a revoked generation
+  is never returned although a revocation leaves it the capsule's live generation
+  (`a_document_of_a_revoked_generation_is_never_returned_although_it_is_still_live`).
+  In process, `retain_live` asks the lifecycle for each hit's validity, as
+  `generation_validity` answers it, rather than for the capsule's live generation, and
+  keeps only `Live`
+  (`a_revoked_generation_is_dropped_although_it_is_still_the_live_one`,
+  `search_hits_filtered_by_generation_validity_drop_a_revoked_live_generation`).
 - **Fusion:** weighted reciprocal rank fusion keyed by capsule **and** generation, so
   a stale generation can never borrow the live one's rank
-  (`two_generations_of_one_capsule_are_never_merged`).
+  (`two_generations_of_one_capsule_are_never_merged`). Every fused score is finite:
+  weights must be finite, nonnegative and sum to at most `f32::MAX`, the rank constant
+  finite and nonnegative, and a list may name a capsule generation once, so no hit
+  gains more than the total weight; scores are accumulated and min-max normalised in
+  `f64`, where the range of any two finite scores is finite
+  (`weights_whose_total_could_overflow_a_fused_score_are_refused`,
+  `a_list_naming_one_capsule_generation_twice_is_refused`,
+  `scores_spanning_the_whole_f32_range_normalise_into_zero_to_one`). The hybrid query
+  refuses such parameters before any SQL runs
+  (`invalid_search_parameters_are_refused_before_sql`).
 
 `hybrid_search_returns_live_candidates_fused_by_capsule_and_generation` checks that
 both modes return candidates at the lowest evidence stage and that a revocation
@@ -604,7 +621,10 @@ binding, no registry row decides which adapter serves.
 
 Labeling functions vote a class or abstain. Verifier-backed functions only veto: they
 rule classes out and are never outvoted, and a verifier class vote is refused
-(`a_verifier_casting_a_class_vote_is_refused`). A Dawid-Skene model estimates each
+(`a_verifier_casting_a_class_vote_is_refused`). Function names are non-empty and
+distinct, since a function listed twice would have its votes counted twice as
+independent evidence (`labeling_function_names_must_be_non_empty_and_distinct`). A
+Dawid-Skene model estimates each
 modelled function's confusion matrix by expectation maximisation
 (`the_label_model_recovers_function_accuracies_and_beats_majority_vote`) and warns
 when fewer than three functions make it unidentifiable
@@ -617,6 +637,11 @@ overflow, so every fitted probability is finite
 resolves to `Determined` (every other class vetoed), `Estimated` at or above the
 required probability, `Unknown`, or `Disputed` when every class is vetoed
 (`a_verifier_veto_overrides_a_confident_model_and_vetoing_everything_is_a_dispute`).
+A fitted model is bound to the vote matrix it was fitted on by the SHA-256 digest of
+the matrix's schema, functions and votes, and resolving it against any other matrix,
+even one of the same shape, is refused (`MatrixMismatch`) rather than combining that
+matrix's vetoes and votes with posteriors of other items
+(`a_model_is_refused_with_any_matrix_but_the_one_it_was_fitted_on`).
 A posterior that is not a probability distribution over the schema is refused before
 anything is resolved or scored
 (`resolution_refuses_a_posterior_that_is_not_a_distribution_over_the_schema`,

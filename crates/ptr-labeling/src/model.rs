@@ -52,6 +52,11 @@ pub enum ModelWarning {
 /// A fitted label model: class priors and one confusion matrix per
 /// probabilistic function (`confusion[j][true][voted]`). Verifier functions
 /// have none; they are not modelled as noisy voters.
+///
+/// A model is bound to the vote matrix it was fitted on by that matrix's
+/// [`VoteMatrix::digest`], which only [`fit_label_model`] sets: its
+/// posteriors and confusion matrices describe those items and functions and
+/// no others, and [`resolve`] refuses any other matrix.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LabelModel {
     pub priors: Vec<f64>,
@@ -61,6 +66,14 @@ pub struct LabelModel {
     /// Posterior class distribution of every item. An item no probabilistic
     /// function voted on keeps the prior here, and is never resolved from it.
     pub posteriors: Vec<Vec<f64>>,
+    matrix: [u8; 32],
+}
+
+impl LabelModel {
+    /// The digest of the vote matrix this model was fitted on.
+    pub fn matrix_digest(&self) -> [u8; 32] {
+        self.matrix
+    }
 }
 
 /// Fit a Dawid-Skene model by expectation-maximisation.
@@ -223,6 +236,7 @@ pub fn fit_label_model(
         iterations,
         warnings,
         posteriors,
+        matrix: matrix.digest(),
     })
 }
 
@@ -255,8 +269,12 @@ pub enum LabelOutcome {
 /// class reaches the required probability and the item is `Unknown`.
 ///
 /// # Errors
-/// Returns an error if `min_probability` is not finite and in `(0, 1]`, if
-/// the number of posteriors differs from the number of items, and
+/// Returns an error if `min_probability` is not finite and in `(0, 1]`,
+/// `LabelingError::MatrixMismatch` if `model` was fitted on a matrix other
+/// than `matrix` (with another schema, other functions or other votes, even of
+/// the same shape: its posteriors would be combined with this matrix's vetoes
+/// and votes), an error if the number of posteriors differs from the number of
+/// items, and
 /// `LabelingError::InvalidPosterior` for the first posterior that is not a
 /// probability distribution over the schema's classes, before any item is
 /// resolved: a negative or out-of-range entry would resolve to a
@@ -272,6 +290,9 @@ pub fn resolve(
             field: "min_probability",
             message: "must lie in (0, 1]",
         });
+    }
+    if model.matrix != matrix.digest() {
+        return Err(LabelingError::MatrixMismatch);
     }
     if model.posteriors.len() != matrix.items() {
         return Err(LabelingError::LengthMismatch {

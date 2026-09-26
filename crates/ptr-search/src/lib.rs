@@ -2,7 +2,10 @@ mod fusion;
 
 use ptr_types::{CapsuleId, Generation};
 
-pub use fusion::{convex_score_fusion, retain_live, weighted_rank_fusion, FusedHit, WeightedList};
+pub use fusion::{
+    check_rank_fusion, convex_score_fusion, retain_live, weighted_rank_fusion, FusedHit,
+    FusionError, WeightedList, MAX_TOTAL_WEIGHT,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EvidenceStage {
@@ -100,13 +103,22 @@ pub trait SearchIndex {
 /// stay two entries and a stale generation never adds to the live one's score;
 /// a capsule may therefore appear twice. Prefer [`weighted_rank_fusion`],
 /// which also keeps the generation and the contributing backends.
-pub fn reciprocal_rank_fusion(lists: &[Vec<SearchHit>], k: f32) -> Vec<(CapsuleId, f32)> {
+///
+/// # Errors
+/// Refuses what [`weighted_rank_fusion`] refuses with every weight one: a
+/// rank constant that is negative or not finite, a list that names a capsule
+/// generation twice, and so many lists that their unit weights sum beyond
+/// [`MAX_TOTAL_WEIGHT`].
+pub fn reciprocal_rank_fusion(
+    lists: &[Vec<SearchHit>],
+    k: f32,
+) -> Result<Vec<(CapsuleId, f32)>, FusionError> {
     let weighted: Vec<WeightedList<'_>> = lists
         .iter()
         .map(|hits| WeightedList { weight: 1.0, hits })
         .collect();
-    weighted_rank_fusion(&weighted, k)
+    Ok(weighted_rank_fusion(&weighted, k)?
         .into_iter()
         .map(|fused| (fused.capsule, fused.score))
-        .collect()
+        .collect())
 }

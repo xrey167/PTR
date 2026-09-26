@@ -1,5 +1,7 @@
 use std::collections::BTreeSet;
 
+use sha2::{Digest, Sha256};
+
 use crate::error::LabelingError;
 
 /// The closed set of classes a labeling task decides between.
@@ -117,16 +119,24 @@ pub struct VoteMatrix {
     schema: LabelSchema,
     functions: Vec<LabelingFunction>,
     votes: Vec<Vec<Vote>>,
+    digest: [u8; 32],
 }
 
 impl VoteMatrix {
     /// Validate votes arranged as `votes[item][function]`. An empty item list
     /// is allowed; each row must contain one vote per function.
     ///
+    /// Functions are identified by name, so every name is non-empty and
+    /// distinct: a function listed twice would have its votes counted twice
+    /// as independent evidence by the label model.
+    ///
     /// # Errors
-    /// Rejects an empty function list, an adapter named by a function that is
-    /// not a model or an empty adapter id, ragged rows, out-of-range class
-    /// indices, class votes from verifiers, and vetoes from nonverifiers.
+    /// Rejects an empty function list, a function with an empty name
+    /// ([`LabelingError::Empty`]) or a name an earlier function has
+    /// ([`LabelingError::DuplicateFunction`]), an adapter named by a function
+    /// that is not a model or an empty adapter id, ragged rows, out-of-range
+    /// class indices, class votes from verifiers, and vetoes from
+    /// nonverifiers.
     pub fn new(
         schema: LabelSchema,
         functions: Vec<LabelingFunction>,
@@ -136,6 +146,19 @@ impl VoteMatrix {
             return Err(LabelingError::Empty {
                 field: "labeling functions",
             });
+        }
+        let mut names = BTreeSet::new();
+        for function in &functions {
+            if function.name.is_empty() {
+                return Err(LabelingError::Empty {
+                    field: "labeling function name",
+                });
+            }
+            if !names.insert(function.name.as_str()) {
+                return Err(LabelingError::DuplicateFunction {
+                    function: function.name.clone(),
+                });
+            }
         }
         for function in &functions {
             let attributed = match &function.adapter {
@@ -183,11 +206,22 @@ impl VoteMatrix {
                 }
             }
         }
+        let digest = matrix_digest(&schema, &functions, &votes);
         Ok(Self {
             schema,
             functions,
             votes,
+            digest,
         })
+    }
+
+    /// SHA-256 of the schema's class names, every function's name, kind and
+    /// adapter, and every vote, in order, under an unambiguous length-prefixed
+    /// encoding. Two matrices have equal digests exactly when they are equal
+    /// (up to a SHA-256 collision); a fitted [`crate::LabelModel`] carries the
+    /// digest of the matrix it was fitted on.
+    pub fn digest(&self) -> [u8; 32] {
+        self.digest
     }
 
     pub fn schema(&self) -> &LabelSchema {
@@ -222,4 +256,56 @@ impl VoteMatrix {
             .count();
         covered as f64 / self.votes.len() as f64
     }
+}
+
+/// The encoding behind [`VoteMatrix::digest`]. Every string is prefixed with
+/// its length and every list with its count; rows need none, since each holds
+/// exactly one vote per function.
+fn matrix_digest(
+    schema: &LabelSchema,
+    functions: &[LabelingFunction],
+    votes: &[Vec<Vote>],
+) -> [u8; 32] {
+    fn text(hasher: &mut Sha256, value: &str) {
+        hasher.update((value.len() as u64).to_le_bytes());
+        hasher.update(value.as_bytes());
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(b"ptr-labeling/vote-matrix/v1");
+    hasher.update((schema.classes.len() as u64).to_le_bytes());
+    for class in &schema.classes {
+        text(&mut hasher, class);
+    }
+    hasher.update((functions.len() as u64).to_le_bytes());
+    for function in functions {
+        text(&mut hasher, &function.name);
+        hasher.update([match function.kind {
+            FunctionKind::Verifier => 0,
+            FunctionKind::Heuristic => 1,
+            FunctionKind::Model => 2,
+            FunctionKind::Agent => 3,
+        }]);
+        match &function.adapter {
+            None => hasher.update([0]),
+            Some(adapter) => {
+                hasher.update([1]);
+                text(&mut hasher, adapter);
+            }
+        }
+    }
+    hasher.update((votes.len() as u64).to_le_bytes());
+    for vote in votes.iter().flatten() {
+        match vote {
+            Vote::Abstain => hasher.update([0]),
+            Vote::Class(class) => {
+                hasher.update([1]);
+                hasher.update((*class as u64).to_le_bytes());
+            }
+            Vote::Veto(class) => {
+                hasher.update([2]);
+                hasher.update((*class as u64).to_le_bytes());
+            }
+        }
+    }
+    hasher.finalize().into()
 }

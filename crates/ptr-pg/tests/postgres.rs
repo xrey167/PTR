@@ -1143,6 +1143,72 @@ async fn hybrid_search_returns_live_candidates_fused_by_capsule_and_generation()
     substrate.drop_all().await.unwrap();
 }
 
+#[tokio::test]
+async fn a_document_of_a_revoked_generation_is_never_returned_although_it_is_still_live() {
+    let mut substrate = substrate().await;
+    substrate.register_space(&space()).await.unwrap();
+    let log = [capsule(1, "c1", 1), capsule(2, "c2", 1), revoke(3, "c2", 1)];
+    substrate.replay(&log[..2]).await.unwrap();
+    let revoked = document("c2", 1, "revocation notes", &[0.0, 1.0, 0.0, 0.0]);
+    for doc in [
+        document("c1", 1, "revocation handbook", &[1.0, 0.0, 0.0, 0.0]),
+        revoked.clone(),
+    ] {
+        substrate.upsert_document(&doc).await.unwrap();
+    }
+    substrate
+        .apply_committed(&log[2], anchors(&log)[2])
+        .await
+        .unwrap();
+    // The revocation leaves generation 1 the live one and adds a tombstone.
+    assert_eq!(
+        substrate
+            .live_generation("c2", CommitIndex(3))
+            .await
+            .unwrap(),
+        Some(Generation(1))
+    );
+    // A cache row that outlived the revocation's delete: the snapshot's
+    // tombstone, not the projector's delete, keeps it out of every mode.
+    let derived = substrate.schemas().derived.clone();
+    raw_client()
+        .await
+        .execute(
+            &format!(
+                "INSERT INTO {derived}.search_document \
+                 (capsule, generation, project, content_digest, body, space, embedding, \
+                  indexed_at_commit) \
+                 VALUES ('c2', 1, 'atlas', $1, $2, 'toy4', \
+                         ARRAY[0, 1, 0, 0]::real[]::halfvec(4), 2)"
+            ),
+            &[&revoked.content_digest.to_vec(), &revoked.body],
+        )
+        .await
+        .unwrap();
+    let results = substrate
+        .search(&HybridQuery {
+            project: None,
+            text: Some("revocation".into()),
+            embedding: Some((space().id, vec![0.0, 1.0, 0.0, 0.0])),
+            limit: 10,
+            lexical_weight: 1.0,
+            vector_weight: 1.0,
+            rank_constant: 60.0,
+        })
+        .await
+        .unwrap();
+    for hits in [&results.lexical, &results.vector] {
+        assert_eq!(
+            hits.iter()
+                .map(|hit| hit.capsule.0.as_str())
+                .collect::<Vec<_>>(),
+            vec!["c1"]
+        );
+    }
+    assert_eq!(results.fused.len(), 1);
+    substrate.drop_all().await.unwrap();
+}
+
 fn memory_config() -> FastMemoryConfig {
     FastMemoryConfig {
         heads: 1,
@@ -1498,6 +1564,18 @@ async fn invalid_search_parameters_are_refused_before_sql() {
             );
         }
     }
+    // Finite weights whose total exceeds f32::MAX: with k = 0 a document
+    // first in both modes fused to an infinite score and outranked every
+    // finite one.
+    let mut invalid = query.clone();
+    invalid.lexical_weight = f32::MAX;
+    invalid.vector_weight = f32::MAX;
+    assert_eq!(
+        substrate.search(&invalid).await.unwrap_err(),
+        PgError::OutOfRange {
+            field: "query.weights"
+        }
+    );
 }
 
 #[tokio::test]

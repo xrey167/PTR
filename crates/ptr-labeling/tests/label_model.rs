@@ -935,3 +935,146 @@ fn evaluation_refuses_a_posterior_that_is_not_a_distribution_whatever_the_sampli
         }
     }
 }
+
+#[test]
+fn labeling_function_names_must_be_non_empty_and_distinct() {
+    let schema = LabelSchema::new(["yes", "no"]).unwrap();
+    // Accepted, the second "rule" counted the same function's votes twice as
+    // independent evidence in the label model.
+    assert_eq!(
+        VoteMatrix::new(
+            schema.clone(),
+            vec![
+                function("rule", FunctionKind::Heuristic),
+                function("model", FunctionKind::Model),
+                function("rule", FunctionKind::Agent),
+            ],
+            vec![vec![Vote::Class(0), Vote::Class(1), Vote::Class(0)]],
+        )
+        .unwrap_err(),
+        LabelingError::DuplicateFunction {
+            function: "rule".into()
+        }
+    );
+    assert_eq!(
+        VoteMatrix::new(
+            schema.clone(),
+            vec![
+                function("rule", FunctionKind::Heuristic),
+                function("", FunctionKind::Heuristic),
+            ],
+            vec![],
+        )
+        .unwrap_err(),
+        LabelingError::Empty {
+            field: "labeling function name"
+        }
+    );
+    assert_eq!(
+        LabelingError::DuplicateFunction {
+            function: "rule".into()
+        }
+        .code(),
+        "PTR_LABELING_DUPLICATE_FUNCTION"
+    );
+    assert!(VoteMatrix::new(
+        schema,
+        vec![
+            function("rule", FunctionKind::Heuristic),
+            function("Rule", FunctionKind::Heuristic),
+        ],
+        vec![],
+    )
+    .is_ok());
+}
+
+#[test]
+fn a_model_is_refused_with_any_matrix_but_the_one_it_was_fitted_on() {
+    let functions = || {
+        vec![
+            function("rule", FunctionKind::Heuristic),
+            function("model", FunctionKind::Model),
+            function("agent", FunctionKind::Agent),
+            function("check", FunctionKind::Verifier),
+        ]
+    };
+    let schema = || LabelSchema::new(["yes", "no"]).unwrap();
+    let fitted = VoteMatrix::new(
+        schema(),
+        functions(),
+        vec![
+            vec![
+                Vote::Class(0),
+                Vote::Class(0),
+                Vote::Class(0),
+                Vote::Abstain,
+            ],
+            vec![
+                Vote::Class(1),
+                Vote::Class(1),
+                Vote::Class(1),
+                Vote::Abstain,
+            ],
+        ],
+    )
+    .unwrap();
+    let model = fit_label_model(&fitted, DawidSkeneParams::default()).unwrap();
+    assert_eq!(model.matrix_digest(), fitted.digest());
+    let rows = || -> Vec<Vec<Vote>> {
+        (0..fitted.items())
+            .map(|item| fitted.row(item).to_vec())
+            .collect()
+    };
+    // An equal matrix built again is the same matrix.
+    let rebuilt = VoteMatrix::new(schema(), functions(), rows()).unwrap();
+    assert_eq!(rebuilt.digest(), fitted.digest());
+    assert_eq!(
+        resolve(&rebuilt, &model, 0.5).unwrap(),
+        resolve(&fitted, &model, 0.5).unwrap()
+    );
+
+    // Same shape, different votes: this resolved, combining the other
+    // matrix's veto and votes with this model's posteriors.
+    let other_votes = VoteMatrix::new(
+        schema(),
+        functions(),
+        vec![
+            vec![Vote::Abstain, Vote::Abstain, Vote::Abstain, Vote::Veto(1)],
+            vec![
+                Vote::Class(0),
+                Vote::Class(0),
+                Vote::Class(0),
+                Vote::Abstain,
+            ],
+        ],
+    )
+    .unwrap();
+    let other_functions = VoteMatrix::new(
+        schema(),
+        vec![
+            function("rule", FunctionKind::Heuristic),
+            function("model", FunctionKind::Model),
+            function("other", FunctionKind::Agent),
+            function("check", FunctionKind::Verifier),
+        ],
+        rows(),
+    )
+    .unwrap();
+    let other_schema = VoteMatrix::new(
+        LabelSchema::new(["spam", "ham"]).unwrap(),
+        functions(),
+        rows(),
+    )
+    .unwrap();
+    for other in [&other_votes, &other_functions, &other_schema] {
+        assert_ne!(other.digest(), fitted.digest());
+        assert_eq!(
+            resolve(other, &model, 0.5),
+            Err(LabelingError::MatrixMismatch)
+        );
+    }
+    assert_eq!(
+        LabelingError::MatrixMismatch.code(),
+        "PTR_LABELING_MATRIX_MISMATCH"
+    );
+}

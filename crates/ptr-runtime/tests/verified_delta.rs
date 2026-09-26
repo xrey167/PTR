@@ -2,6 +2,7 @@ use ptr_config::PtrConfig;
 use ptr_ledger::LedgerEvent;
 use ptr_runtime::execution::RequiredVerification;
 use ptr_runtime::{PtrRuntime, RuntimeError};
+use ptr_search::{retain_live, SearchHit};
 use ptr_semdb::{SemanticDelta, SemanticError};
 use ptr_types::{CapsuleId, Generation, Probability, ProjectId, Validity, VerificationLevel};
 use ptr_verifier::{Finding, VerificationReport, VerificationStatus};
@@ -204,6 +205,41 @@ fn a_revoked_generation_is_revoked_although_it_is_still_the_live_generation() {
     assert_eq!(
         runtime.generation_validity("fact:a", Generation(1)),
         Some(Validity::Revoked)
+    );
+}
+
+#[test]
+fn search_hits_filtered_by_generation_validity_drop_a_revoked_live_generation() {
+    let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+    for capsule in ["fact:a", "fact:b"] {
+        runtime
+            .commit(LedgerEvent::CapsuleCommitted {
+                project: ProjectId::from("p"),
+                capsule: CapsuleId::from(capsule),
+                generation: Generation(1),
+            })
+            .unwrap();
+    }
+    runtime
+        .commit(LedgerEvent::Revoked {
+            subject: "fact:a".into(),
+            generation: Generation(1),
+        })
+        .unwrap();
+    let hits = vec![
+        SearchHit::new(CapsuleId::from("fact:a"), Generation(1), 9.0, "dense"),
+        SearchHit::new(CapsuleId::from("fact:b"), Generation(1), 1.0, "dense"),
+    ];
+    // Filtered by equality with the live generation, the revoked hit stayed:
+    // the revocation leaves generation 1 live there.
+    let kept = retain_live(hits, |capsule, generation| {
+        runtime.generation_validity(&capsule.0, generation)
+    });
+    assert_eq!(
+        kept.iter()
+            .map(|hit| hit.capsule.0.as_str())
+            .collect::<Vec<_>>(),
+        vec!["fact:b"]
     );
 }
 

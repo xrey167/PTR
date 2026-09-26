@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-25  
-**Code footprint:** 2 Rust source files · 333 nonblank source lines · 3 integration-test files · 12 `#[test]` markers
+**Last reviewed:** 2026-09-26  
+**Code footprint:** 2 Rust source files · 526 nonblank source lines · 3 integration-test files · 19 `#[test]` markers
 
 ### Implemented now
 
@@ -19,13 +19,14 @@
 - SearchIndex contract
 - Reciprocal-rank fusion implementation
 - weighted_rank_fusion and convex_score_fusion keyed by capsule and generation, so a stale generation never borrows the live one's rank, with deterministic tie-breaking and per-hit backend attribution
-- retain_live filters hits against a live-generation lookup; reciprocal_rank_fusion delegates to the weighted form
+- retain_live keeps a hit only when the lifecycle answers Validity::Live for its capsule and generation (as generation_validity does), so a revoked generation that is still the capsule's live one is dropped; reciprocal_rank_fusion delegates to the weighted form
+- Every fused score is finite and at most the total weight: fusion refuses (FusionError, stable codes) negative or nonfinite weights, weights summing beyond MAX_TOTAL_WEIGHT (f32::MAX), a negative or nonfinite rank constant, a list naming a capsule generation twice and, for score fusion, a nonfinite score, before accumulating anything; scores are accumulated and min-max normalised in f64, so scores spanning the whole f32 range normalise into [0, 1]; check_rank_fusion applies the parameter check on its own
 
 ### Missing for the target architecture
 
 - Typed query/search planner
 - Tantivy/Zvec/cuVS/LanceDB/Havenask/GritQL adapters
-- Score normalization and backend-specific metadata
+- Backend-specific score metadata
 - Backend-specific exact source resolver
 - Verifier-report typed integration instead of boolean verification result
 
@@ -60,7 +61,9 @@
 
 - evidence promotion integration test blocks direct Known and stale generation
 - workspace fmt/check/test/clippy
-- fusion unit tests: two generations of one capsule are never merged, agreement across backends outranks a single first place, a zero-weight list contributes nothing, convex fusion normalises each list, stale and unknown generations are dropped
+- fusion unit tests: two generations of one capsule are never merged, agreement across backends outranks a single first place, a zero-weight list contributes nothing, convex fusion normalises each list, stale, revoked and unknown generations are dropped
+- tests/fusion.rs: a revoked generation is dropped although it is still the live one; weights whose total could overflow a fused score, invalid weights and rank constants, a repeated capsule generation and a nonfinite score are refused; scores spanning the whole f32 range normalise into [0, 1]; every refusal has a stable code
+- ptr-runtime tests/verified_delta.rs: search hits filtered by generation_validity drop a revoked live generation
 - ptr-pg postgres test fuses full-text and halfvec hits over live generations only
 
 <!-- PTR:STATUS:END -->

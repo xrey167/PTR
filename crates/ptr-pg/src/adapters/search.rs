@@ -2,7 +2,9 @@
 //! full-text lexemes and half-precision embeddings, and hybrid retrieval that
 //! returns search candidates, never evidence.
 
-use ptr_search::{weighted_rank_fusion, FusedHit, SearchHit, WeightedList};
+use ptr_search::{
+    check_rank_fusion, weighted_rank_fusion, FusedHit, FusionError, SearchHit, WeightedList,
+};
 use ptr_types::{CapsuleId, Generation, ProjectId};
 use tokio_postgres::IsolationLevel;
 
@@ -55,9 +57,13 @@ pub struct HybridQuery {
     pub embedding: Option<(Identifier, Vec<f32>)>,
     /// Candidates per mode before fusion.
     pub limit: u32,
+    /// Finite and nonnegative; with `vector_weight`, summing to at most
+    /// [`ptr_search::MAX_TOTAL_WEIGHT`], so no fused score overflows.
     pub lexical_weight: f32,
+    /// Finite and nonnegative.
     pub vector_weight: f32,
-    /// The `k` of reciprocal rank fusion; 60 is the customary default.
+    /// The `k` of reciprocal rank fusion, finite and nonnegative; 60 is the
+    /// customary default.
     pub rank_constant: f32,
 }
 
@@ -67,7 +73,7 @@ pub struct SearchResults {
     pub lexical: Vec<SearchHit>,
     pub vector: Vec<SearchHit>,
     /// Weighted reciprocal rank fusion of both lists, keyed by capsule and
-    /// generation.
+    /// generation. Every fused score is finite.
     pub fused: Vec<FusedHit>,
     /// The projection watermark of the snapshot the query read.
     pub watermark: u64,
@@ -230,24 +236,39 @@ impl PgSubstrate {
     /// Run a hybrid query in one read-only repeatable-read snapshot.
     ///
     /// Every hit is joined to the lifecycle catalog of the same snapshot, so
-    /// only generations that are live and unrevoked there are returned. They
-    /// are still [`SearchHit`]s at the search-candidate stage: using one as
-    /// evidence requires observing it against the lifecycle authority.
+    /// only generations that are live *and* unrevoked there are returned: the
+    /// rule `PtrRuntime::generation_validity` applies, under which a revoked
+    /// generation is not live although it is still the capsule's live
+    /// generation. They are still [`SearchHit`]s at the search-candidate stage:
+    /// using one as evidence requires observing it against the lifecycle
+    /// authority.
+    ///
+    /// # Errors
+    /// Refuses, before any SQL runs, a zero `limit` and the fusion parameters
+    /// [`check_rank_fusion`] refuses, each as [`PgError::OutOfRange`] naming the
+    /// field: `query.rank_constant`, `query.lexical_weight`,
+    /// `query.vector_weight`, or `query.weights` for weights whose total
+    /// could fuse to an infinite score.
     pub async fn search(&mut self, query: &HybridQuery) -> Result<SearchResults, PgError> {
         if query.limit == 0 {
             return Err(PgError::OutOfRange {
                 field: "query.limit",
             });
         }
-        for (field, value) in [
-            ("query.rank_constant", query.rank_constant),
-            ("query.lexical_weight", query.lexical_weight),
-            ("query.vector_weight", query.vector_weight),
-        ] {
-            if !value.is_finite() || value < 0.0 {
-                return Err(PgError::OutOfRange { field });
-            }
-        }
+        check_rank_fusion(
+            [query.lexical_weight, query.vector_weight],
+            query.rank_constant,
+        )
+        .map_err(|error| PgError::OutOfRange {
+            field: match error {
+                FusionError::InvalidRankConstant => "query.rank_constant",
+                FusionError::InvalidWeight { list: 0 } => "query.lexical_weight",
+                FusionError::InvalidWeight { .. } => "query.vector_weight",
+                FusionError::WeightTotal
+                | FusionError::DuplicateHit { .. }
+                | FusionError::InvalidScore { .. } => "query.weights",
+            },
+        })?;
         if let Some(text) = &query.text {
             check_text("query.text", text)?;
         }
@@ -361,7 +382,13 @@ impl PgSubstrate {
                 },
             ],
             query.rank_constant,
-        );
+        )
+        // The parameters passed the same check above, and each list is keyed
+        // by the table's primary key, so a refusal here is a corrupt read.
+        .map_err(|error| PgError::CorruptRow {
+            table: "search_document",
+            reason: error.to_string(),
+        })?;
         Ok(SearchResults {
             lexical,
             vector,
