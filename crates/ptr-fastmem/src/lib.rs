@@ -7,12 +7,12 @@
 //! identifier codes of the facts actually written — into ordinary search
 //! candidates, or into `Unknown` when no fact leads clearly. Every write names
 //! the semantic input, generation and input digest it came from; a read is
-//! admitted only while every one of them is still admissible, and revoking an
-//! input removes its writes and refolds the matrices from the last earlier
-//! checkpoint. Because the fold is deterministic `f32` arithmetic, the refolded
-//! state is bit-identical to one that never saw the revoked writes. That is
-//! exact revocation, not erasure: copies held by storage are the storage's to
-//! erase.
+//! admitted only if every one of them is admissible according to the caller's
+//! lifecycle view when the read is made, and revoking an input removes its
+//! writes and refolds the matrices from the last earlier checkpoint. Because
+//! the fold is deterministic `f32` arithmetic, the refolded state is
+//! bit-identical to one that never saw the revoked writes. That is exact
+//! revocation, not erasure: copies held by storage are the storage's to erase.
 
 mod codec;
 mod config;

@@ -28,7 +28,8 @@ pub const MAX_WRITES: u32 = 65_536;
 ///
 /// Admission checks it per write, independently of the state, so that no fold
 /// of admitted writes can leave `f32`'s range. A write grows a head's Frobenius
-/// norm by at most `beta * ||v||` (the rest of the update is a contraction), and
+/// norm by at most `beta * ||v||` (the rest of the update is a contraction,
+/// because admission normalises every key head to unit length at any scale), and
 /// a head's value slice of at most [`MAX_HEAD_DIM`] cells has `||v|| <= 2^5 *
 /// 2^24`, so [`MAX_WRITES`] writes keep every head below `2^16 * 2^29 = 2^45`
 /// in exact arithmetic; `f32` rounding over the longest journal multiplies that
@@ -59,20 +60,28 @@ pub struct FastMemoryConfig {
     pub max_writes: u32,
 }
 
+/// The lengths below are total: the fields are public, so they can be asked
+/// of a shape [`check_config`] refuses. A product beyond `usize` saturates at
+/// `usize::MAX`, a length no vector reaches and a cell count `check_config`
+/// refuses, instead of panicking or wrapping to a small, plausible length.
+/// Every shape `check_config` accepts has exact lengths, at most
+/// [`MAX_STATE_CELLS`] cells.
 impl FastMemoryConfig {
     /// Number of `f32` cells in the whole state.
     pub fn state_cells(&self) -> usize {
-        self.heads * self.key_dim * self.value_dim
+        self.heads
+            .saturating_mul(self.key_dim)
+            .saturating_mul(self.value_dim)
     }
 
     /// Length of a key or query vector: one unit key per head, concatenated.
     pub fn key_len(&self) -> usize {
-        self.heads * self.key_dim
+        self.heads.saturating_mul(self.key_dim)
     }
 
     /// Length of a value or readout vector: one value per head, concatenated.
     pub fn value_len(&self) -> usize {
-        self.heads * self.value_dim
+        self.heads.saturating_mul(self.value_dim)
     }
 }
 
@@ -177,6 +186,41 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn the_lengths_of_a_shape_beyond_usize_saturate_rather_than_overflow() {
+        // The fields are public, so a shape check_config refuses can still be
+        // asked for its lengths; these products used to panic in debug builds
+        // and wrap in release builds.
+        let huge = FastMemoryConfig {
+            heads: usize::MAX,
+            key_dim: 2,
+            value_dim: 2,
+            checkpoint_interval: 1,
+            max_writes: 1,
+        };
+        assert_eq!(
+            (huge.state_cells(), huge.key_len(), huge.value_len()),
+            (usize::MAX, usize::MAX, usize::MAX)
+        );
+        let cells_only = FastMemoryConfig {
+            heads: 1 << (usize::BITS / 2),
+            key_dim: 1 << (usize::BITS / 2 - 1),
+            value_dim: 2,
+            checkpoint_interval: 1,
+            max_writes: 1,
+        };
+        assert_eq!(cells_only.key_len(), 1 << (usize::BITS - 1));
+        assert_eq!(cells_only.value_len(), 1 << (usize::BITS / 2 + 1));
+        assert_eq!(cells_only.state_cells(), usize::MAX);
+        for config in [huge, cells_only] {
+            assert!(matches!(
+                check_config(&config),
+                Err(FastMemoryError::InvalidConfig { field: "heads", .. })
+            ));
+        }
+        assert_eq!(config().state_cells(), 4 * 16 * 16);
     }
 
     #[test]

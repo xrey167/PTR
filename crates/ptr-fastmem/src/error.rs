@@ -23,7 +23,8 @@ pub enum FastMemoryError {
     InvalidBeta { value: f32 },
     /// A decay factor must lie in `(0, 1]`.
     InvalidDecay { index: usize, value: f32 },
-    /// A head's key has zero length and cannot be normalised.
+    /// A head's key is all zero: it has no direction to normalise. Any other
+    /// finite head is normalised, whatever its scale.
     ZeroKey { head: usize },
     /// A value is NaN or infinite.
     NonFinite { field: &'static str, index: usize },
@@ -94,7 +95,7 @@ impl fmt::Display for FastMemoryError {
             Self::InvalidDecay { index, value } => {
                 write!(formatter, "decay[{index}]={value} is outside (0, 1]")
             }
-            Self::ZeroKey { head } => write!(formatter, "key for head {head} has zero length"),
+            Self::ZeroKey { head } => write!(formatter, "key for head {head} is all zero"),
             Self::NonFinite { field, index } => {
                 write!(formatter, "{field}[{index}] is not finite")
             }

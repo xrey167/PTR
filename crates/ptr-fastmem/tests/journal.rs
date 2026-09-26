@@ -2,9 +2,10 @@ mod common;
 
 use common::{config, write_about};
 use ptr_fastmem::{
-    decode_state, encode_state, Decay, FastMemory, FastMemoryError, FastWeightState, WriteSeq,
-    MAX_VALUE_MAGNITUDE,
+    decode_state, encode_state, Decay, FastMemory, FastMemoryConfig, FastMemoryError,
+    FastWeightState, Query, SourceRef, WriteRequest, WriteSeq, MAX_VALUE_MAGNITUDE,
 };
+use ptr_types::Generation;
 
 #[test]
 fn a_restored_journal_folds_to_the_same_state_as_the_live_memory() {
@@ -273,6 +274,55 @@ fn writes_at_the_value_bound_fold_to_finite_decodable_state_in_every_refold() {
     .unwrap();
     assert!(finite(memory.state()));
     assert_eq!(memory.state(), never.state());
+    assert_eq!(memory.state(), &memory.refold_from_journal());
+    assert_eq!(
+        decode_state(&encode_state(memory.state())).unwrap(),
+        *memory.state()
+    );
+}
+
+#[test]
+fn keys_whose_squares_underflow_fold_to_a_finite_decodable_state_in_every_refold() {
+    // Every entry is finite and nonzero, but every square is below f32's
+    // smallest subnormal. The head used to be divided by a norm computed from
+    // those squares, stored with norm 2.4 instead of 1, and 58 writes at full
+    // strength drove the state to -inf; a restore of 60 of them was all NaN.
+    let config = FastMemoryConfig {
+        heads: 1,
+        key_dim: 10,
+        value_dim: 1,
+        checkpoint_interval: 1000,
+        max_writes: 65_536,
+    };
+    let mut key = vec![2.6e-23_f32; 10];
+    key[0] = 4.5e-23;
+    let request = WriteRequest {
+        source: SourceRef {
+            key: "a".into(),
+            generation: Generation(1),
+            input_digest: [1; 32],
+        },
+        key: key.clone(),
+        value: vec![1.0],
+        beta: 1.0,
+        decay: Decay::None,
+    };
+    let mut memory = FastMemory::new(config).unwrap();
+    for _ in 0..60 {
+        assert!(memory.write(request.clone()).unwrap().surprise.is_finite());
+    }
+    let norm = |values: &[f32]| values.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let stored = norm(memory.writes()[0].key());
+    assert!((stored - 1.0).abs() < 1e-6, "{stored}");
+    assert!(memory.state().cells().iter().all(|cell| cell.is_finite()));
+    let query = Query::new(&config, key).unwrap();
+    assert!((norm(query.key()) - 1.0).abs() < 1e-6);
+    let readout = memory.read_admitted(&query, |_| true).unwrap();
+    assert!((readout.values[0] - 1.0).abs() < 1e-5, "{readout:?}");
+
+    let restored =
+        FastMemory::restore(config, (1..=60).map(|seq| (WriteSeq(seq), request.clone()))).unwrap();
+    assert_eq!(restored.state(), memory.state());
     assert_eq!(memory.state(), &memory.refold_from_journal());
     assert_eq!(
         decode_state(&encode_state(memory.state())).unwrap(),

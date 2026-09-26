@@ -90,6 +90,20 @@ impl SeededProjection {
     }
 
     /// Project one embedding.
+    ///
+    /// Each coordinate is summed in `f64`, in a fixed order, and rounded to
+    /// `f32` once. The product of two `f32` is exact in `f64` and a sum of at
+    /// most [`MAX_EMBEDDING_DIM`] of them cannot overflow it, so a coordinate
+    /// is returned whenever its value is within `f32`'s range, even when an
+    /// `f32` running sum would have passed `f32::MAX` on the way; every
+    /// platform derives the same bits.
+    ///
+    /// # Errors
+    /// Refuses an embedding of the wrong width (`DimensionMismatch`), a
+    /// nonfinite embedding cell (`NonFinite` naming `embedding`), and a
+    /// finite embedding whose projection has a coordinate beyond `f32`'s
+    /// range (`NonFinite` naming `projection` and the first such coordinate),
+    /// rather than returning infinite coordinates.
     pub fn project(&self, embedding: &[f32]) -> Result<Vec<f32>, FastMemoryError> {
         if embedding.len() != self.input_dim {
             return Err(FastMemoryError::DimensionMismatch {
@@ -104,11 +118,26 @@ impl SeededProjection {
                 index,
             });
         }
-        Ok(self
-            .rows
+        self.rows
             .chunks(self.input_dim)
-            .map(|row| row.iter().zip(embedding).map(|(r, e)| r * e).sum())
-            .collect())
+            .enumerate()
+            .map(|(index, row)| {
+                let sum: f64 = row
+                    .iter()
+                    .zip(embedding)
+                    .map(|(&r, &e)| f64::from(r) * f64::from(e))
+                    .sum();
+                let coordinate = sum as f32;
+                if coordinate.is_finite() {
+                    Ok(coordinate)
+                } else {
+                    Err(FastMemoryError::NonFinite {
+                        field: "projection",
+                        index,
+                    })
+                }
+            })
+            .collect()
     }
 }
 
@@ -466,6 +495,45 @@ mod tests {
         let a = SeededProjection::new(spec(7)).unwrap();
         assert_eq!(a.digest(), SeededProjection::new(spec(7)).unwrap().digest());
         assert_ne!(a.digest(), SeededProjection::new(spec(8)).unwrap().digest());
+    }
+
+    #[test]
+    fn a_projection_beyond_f32_is_refused_and_one_whose_partial_sums_overflow_is_not() {
+        // Every embedding cell is finite but coordinate 4 is beyond f32: this
+        // used to return Ok with infinite coordinates 1 and 4, although
+        // coordinate 1 is within range and only its f32 running sum was not.
+        let projection = SeededProjection::new(spec(7)).unwrap();
+        assert_eq!(
+            projection.project(&[f32::MAX; 12]).unwrap_err(),
+            FastMemoryError::NonFinite {
+                field: "projection",
+                index: 4
+            }
+        );
+        // One row of eight cells of equal magnitude, weighted so that four
+        // terms of +|r| f32::MAX precede four of -|r| f32::MAX. The projection
+        // is exactly zero, but an f32 running sum passes f32::MAX at the third
+        // term and never comes back.
+        let one_row = SeededProjection::new(ProjectionSpec {
+            input_dim: 8,
+            heads: 1,
+            head_dim: 1,
+            seed: 7,
+        })
+        .unwrap();
+        let embedding: Vec<f32> = one_row
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(index, row)| {
+                if (index < 4) == (*row > 0.0) {
+                    f32::MAX
+                } else {
+                    -f32::MAX
+                }
+            })
+            .collect();
+        assert_eq!(one_row.project(&embedding).unwrap(), vec![0.0]);
     }
 
     #[test]

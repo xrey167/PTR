@@ -1323,11 +1323,19 @@ async fn malformed_writes_never_enter_the_journal() {
     let mut request = valid.clone();
     request.value.pop();
     invalid.push(request);
-    for value in [0.0, f32::NAN, f32::INFINITY, f32::MAX] {
+    for value in [0.0, f32::NAN, f32::INFINITY] {
         let mut request = valid.clone();
         request.key.fill(value);
         invalid.push(request);
     }
+    // A finite key has a direction at any scale, even where its squares
+    // overflow f32; only an all-zero or nonfinite key is malformed.
+    let mut largest_key = valid.clone();
+    largest_key.key.fill(f32::MAX);
+    assert_eq!(
+        ptr_fastmem::validate_write(&memory_config(), &largest_key),
+        Ok(())
+    );
     for value in [f32::NAN, f32::INFINITY] {
         let mut request = valid.clone();
         request.value[0] = value;

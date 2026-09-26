@@ -5,7 +5,7 @@
 
 **Component count:** 33  
 **Maturity distribution:** `foundation`: 1, `prototype`: 20, `research-scaffold`: 1, `scaffold`: 11  
-**Rust footprint:** 132 source files · 30727 nonblank source lines · 101 integration-test files · 771 `#[test]` markers
+**Rust footprint:** 132 source files · 30903 nonblank source lines · 101 integration-test files · 775 `#[test]` markers
 
 | Component | Maturity | Rust files | LOC | Test files | Tests | Implemented items | Missing items | Experiments | Evaluations |
 |---|---:|---:|---:|---:|---:|---:|---:|---|---|
@@ -17,7 +17,7 @@
 | [ptr-events](../../crates/ptr-events/README.md) | `scaffold` | 2 | 242 | 2 | 8 | 4 | 4 | E001:planned, F001:planned | event-streaming:open |
 | [ptr-exec](../../crates/ptr-exec/README.md) | `prototype` | 1 | 46 | 1 | 1 | 4 | 5 | R001:planned, E001:planned, E003:planned | execution-runtime:open |
 | [ptr-execwire](../../crates/ptr-execwire/README.md) | `prototype` | 3 | 1447 | 1 | 14 | 16 | 8 | — | — |
-| [ptr-fastmem](../../crates/ptr-fastmem/README.md) | `prototype` | 9 | 2194 | 4 | 66 | 9 | 3 | M008:planned, L003:completed | fast-weight-memory:open |
+| [ptr-fastmem](../../crates/ptr-fastmem/README.md) | `prototype` | 9 | 2370 | 4 | 70 | 9 | 3 | M008:planned, L003:completed | fast-weight-memory:open |
 | [ptr-feedback](../../crates/ptr-feedback/README.md) | `scaffold` | 1 | 44 | 2 | 2 | 3 | 4 | F001:planned, E001:planned | — |
 | [ptr-ingress](../../crates/ptr-ingress/README.md) | `scaffold` | 1 | 45 | 1 | 1 | 4 | 4 | E001:planned, E004:planned | ingress-classifier:open |
 | [ptr-inspect](../../crates/ptr-inspect/README.md) | `scaffold` | 1 | 23 | 1 | 1 | 3 | 5 | E001:planned | introspection:open |

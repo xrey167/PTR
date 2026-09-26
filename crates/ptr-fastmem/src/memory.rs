@@ -124,7 +124,7 @@ impl FastMemory {
     /// `u64::MAX` (it has no successor, so its journal could not be restored),
     /// invalid vector lengths, nonfinite vector entries, value cells beyond
     /// [`crate::MAX_VALUE_MAGNITUDE`] (the bound that keeps every fold of
-    /// admitted writes finite), zero or nonfinite head norms, or
+    /// admitted writes finite), all-zero key heads, or
     /// strength/decay factors outside `(0, 1]`. Validation errors leave the
     /// journal, state, and next sequence unchanged.
     pub fn write(&mut self, request: WriteRequest) -> Result<WriteReceipt, FastMemoryError> {
@@ -139,13 +139,16 @@ impl FastMemory {
 
     /// Read the memory, deciding admission at this use.
     ///
-    /// Every write the state depends on is checked with `admissible` (answered
-    /// by the lifecycle authority and the current input digests). If any is
-    /// no longer admissible the read is refused: the state must first be
-    /// refolded without those writes ([`Self::revoke`]). Between a revocation
-    /// commit and the refold the memory therefore answers nothing rather than
-    /// something stale. The readout is a derived value, never evidence; it
-    /// enters reasoning only through decoding into search candidates.
+    /// Every write the state depends on is checked with `admissible`, which
+    /// the caller answers from its lifecycle view and the current input
+    /// digests. If any is not admissible the read is refused: the state must
+    /// first be refolded without those writes ([`Self::revoke`]). The decision
+    /// is only as current as the answers `admissible` gives: a revocation that
+    /// commits after the caller's lifecycle view was taken (always possible for
+    /// an external authority, which a synchronous predicate can only consult
+    /// beforehand) is not seen, so decoded candidates must still pass the
+    /// lifecycle check at use. The readout is a derived value, never evidence;
+    /// it enters reasoning only through decoding into search candidates.
     ///
     /// # Errors
     /// First refuses a query normalised for another head shape

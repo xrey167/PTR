@@ -362,18 +362,32 @@ ablation — random projections give channels no meaning) or absent. Gates are
 journaled and must be pure functions of the write, never of the state, so a refold
 without a revoked write replays exactly the gates that still apply.
 
+A key head is divided by its largest magnitude before its norm is taken, so no square
+underflows or overflows `f32` at any scale: every head that is not all zero is stored
+with unit norm, and an all-zero head is refused
+(`a_head_normalises_to_the_same_unit_key_at_every_power_of_two_scale`). With value
+cells bounded by `MAX_VALUE_MAGNITUDE` at admission, every fold of admitted writes
+stays finite and decodable
+(`keys_whose_squares_underflow_fold_to_a_finite_decodable_state_in_every_refold`).
+
 Keys come from a frozen embedding through a seeded projection whose rows are
 orthonormalised with modified Gram-Schmidt in `f64` (bit-identical on every
-platform); values are seeded, nearly orthogonal identifier codes of the facts
-written. A readout is decoded against the codes of the facts actually written into
-named capsules at the lowest evidence stage, or into `Unknown` when no fact reaches
-the minimum score or the best does not lead the runner-up by the minimum margin
+platform); each coordinate is summed in `f64` and rounded once, and one beyond `f32`'s
+range is refused rather than returned infinite
+(`a_projection_beyond_f32_is_refused_and_one_whose_partial_sums_overflow_is_not`).
+Values are seeded, nearly orthogonal identifier codes of the facts written. A readout
+is decoded against the codes of the facts actually written into named capsules at the
+lowest evidence stage, or into `Unknown` when no fact reaches the minimum score or the
+best does not lead the runner-up by the minimum margin
 (`an_unrelated_cue_is_unknown_rather_than_a_guess`,
 `an_update_under_the_same_cue_recalls_the_newer_fact`).
 
 Every write names its semantic input, generation and input digest. A read is admitted
-only while every source is admissible
-(`a_read_is_denied_while_the_state_still_depends_on_a_revoked_input`). Revoking a
+only if every source is admissible according to the caller's lifecycle view when the
+read is made (`a_read_is_denied_while_the_state_still_depends_on_a_revoked_input`).
+The decision is only as current as that view: a revocation that commits after it was
+taken is not seen (an external authority can only be consulted before a synchronous
+read), so decoded candidates must still pass the lifecycle check at use. Revoking a
 source removes its writes and refolds from the last checkpoint before the first
 removed write (`the_refold_restarts_from_the_last_checkpoint_before_the_revoked_write`);
 because the fold is deterministic `f32` arithmetic, the result is bit-identical to a

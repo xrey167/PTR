@@ -206,7 +206,7 @@ status = "prototype"
 purpose = "A gated delta-rule associative working memory that is a derived, exactly revocable projection of lifecycle-managed inputs."
 implemented = ["FastMemoryConfig", "FastMemory", "FastWeightState", "MemoryWrite", "WriteRequest", "WriteSeq", "SourceRef", "Decay", "Query", "Readout", "WriteReceipt", "RevocationReport", "SeededProjection", "IdentifierCodebook", "FactCode", "DecodePolicy", "Recall", "FastMemoryError"]
 open = ["learned key/value projections", "chunked parallel fold", "sharded journal windows"]
-invariants = ["every write names its source generation and input digest", "a read is admitted only while every source is admissible", "revocation refolds bit-identically to a memory that never saw the revoked writes"]
+invariants = ["every write names its source generation and input digest", "a read is admitted only if every source is admissible according to the caller's lifecycle view when the read is made", "revocation refolds bit-identically to a memory that never saw the revoked writes"]
 
 [[family]]
 id = "weak-supervision"
