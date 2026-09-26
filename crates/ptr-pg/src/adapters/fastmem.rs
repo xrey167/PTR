@@ -7,8 +7,8 @@
 //! here in the projector's transaction; see `projection.rs`.
 
 use ptr_fastmem::{
-    binding_digest_of, decode_state, encode_state, validate_write, Decay, FastMemoryConfig,
-    FastWeightState, SourceRef, WriteRequest, WriteSeq,
+    binding_digest_of, check_config, decode_state, encode_state, validate_write, Decay,
+    FastMemoryConfig, FastWeightState, SourceRef, WriteRequest, WriteSeq,
 };
 use ptr_types::{Generation, PrincipalId};
 use tokio_postgres::Transaction;
@@ -42,12 +42,23 @@ pub struct FastMemoryCheckpoint {
 
 impl PgSubstrate {
     /// Register a memory. One memory per principal and thread.
+    ///
+    /// The configuration must pass [`check_config`], the check
+    /// [`ptr_fastmem::FastMemory`] and [`validate_write`] apply, or
+    /// `PgError::InvalidMemory` is returned before anything is written. The
+    /// table bounds each dimension but not their product, so without this a
+    /// memory whose state exceeds `MAX_STATE_CELLS` would register and then
+    /// refuse every write.
     pub async fn create_memory(&self, record: &FastMemoryRecord) -> Result<(), PgError> {
         check_text("fastmem_memory.id", &record.id)?;
         check_text("fastmem_memory.principal", &record.principal.0)?;
         check_text("fastmem_memory.thread", &record.thread)?;
         let work = &self.schemas.work;
         let config = &record.config;
+        check_config(config).map_err(|_| PgError::InvalidMemory {
+            memory: record.id.clone(),
+            reason: "the configuration is outside the supported ranges",
+        })?;
         self.client
             .execute(
                 &format!(

@@ -52,6 +52,13 @@ pub enum PgError {
     /// revision or dimension. A space's vectors are comparable only with each
     /// other, so a space is never redefined in place.
     SpaceConflict { space: String },
+    /// A fast-memory registration was refused: its configuration is outside
+    /// the ranges `ptr_fastmem::check_config` supports, so no write could
+    /// ever be appended to it.
+    InvalidMemory {
+        memory: String,
+        reason: &'static str,
+    },
     /// A fast-memory journal append was refused: the sequence number does not
     /// follow the journal, the journal is full, the memory does not exist, or
     /// the request fails the memory configuration and admission rules.
@@ -94,6 +101,7 @@ impl PgError {
             Self::DimensionMismatch { .. } => "PTR_PG_DIMENSION_MISMATCH",
             Self::InvalidEmbedding { .. } => "PTR_PG_INVALID_EMBEDDING",
             Self::SpaceConflict { .. } => "PTR_PG_SPACE_CONFLICT",
+            Self::InvalidMemory { .. } => "PTR_PG_INVALID_MEMORY",
             Self::InvalidWrite { .. } => "PTR_PG_INVALID_WRITE",
             Self::InvalidCheckpoint { .. } => "PTR_PG_INVALID_CHECKPOINT",
             Self::InvalidText { .. } => "PTR_PG_INVALID_TEXT",
@@ -155,6 +163,9 @@ impl fmt::Display for PgError {
                 formatter,
                 "embedding space {space:?} is registered with a different model, revision or dimension"
             ),
+            Self::InvalidMemory { memory, reason } => {
+                write!(formatter, "fast-memory registration of {memory:?} refused: {reason}")
+            }
             Self::InvalidWrite { memory, reason } => {
                 write!(formatter, "fast-memory write to {memory:?} refused: {reason}")
             }

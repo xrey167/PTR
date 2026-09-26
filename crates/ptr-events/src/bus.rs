@@ -45,7 +45,9 @@ pub enum BusError {
     Full { capacity: usize },
     /// The consumer is not registered.
     UnknownConsumer { consumer: String },
-    /// A consumer tried to commit past the last record.
+    /// A consumer tried to commit, or register, past the last record. A
+    /// registration offset is the consumer's commit position, so it obeys the
+    /// same bound.
     CommitBeyondEnd { requested: Offset, end: Offset },
 }
 
@@ -120,8 +122,22 @@ impl InMemoryBus {
     ///
     /// Registering an existing consumer replaces its offset, including when
     /// `from` moves backward; already trimmed records cannot be recovered.
-    pub fn register(&mut self, consumer: &str, from: Offset) {
+    ///
+    /// # Errors
+    /// Returns `BusError::CommitBeyondEnd` if `from` is past the last offset,
+    /// exactly as [`EventConsumer::commit`] would, and changes nothing: a
+    /// future offset would let retention trim, and the consumer skip, records
+    /// it has never seen.
+    pub fn register(&mut self, consumer: &str, from: Offset) -> Result<(), BusError> {
+        let end = self.end();
+        if from > end {
+            return Err(BusError::CommitBeyondEnd {
+                requested: from,
+                end,
+            });
+        }
         self.committed.insert(consumer.to_owned(), from);
+        Ok(())
     }
 
     /// Records currently retained.

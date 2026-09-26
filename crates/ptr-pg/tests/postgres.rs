@@ -928,6 +928,64 @@ async fn malformed_writes_never_enter_the_journal() {
 }
 
 #[tokio::test]
+async fn a_memory_whose_shape_fast_memory_refuses_is_never_registered() {
+    let substrate = substrate().await;
+    let record = |id: &str, config: FastMemoryConfig| FastMemoryRecord {
+        id: id.into(),
+        principal: PrincipalId::from("agent"),
+        thread: id.into(),
+        config,
+        projection_digest: [3; 32],
+        codebook_seed: 11,
+    };
+    // Each dimension is within its column's bounds; only their product,
+    // 64 Mi cells, exceeds the state bound.
+    let oversized = FastMemoryConfig {
+        heads: 64,
+        key_dim: 1024,
+        value_dim: 1024,
+        ..memory_config()
+    };
+    let no_heads = FastMemoryConfig {
+        heads: 0,
+        ..memory_config()
+    };
+    for (id, config) in [("oversized", oversized), ("no-heads", no_heads)] {
+        assert!(ptr_fastmem::check_config(&config).is_err());
+        assert_eq!(
+            substrate.create_memory(&record(id, config)).await,
+            Err(PgError::InvalidMemory {
+                memory: id.into(),
+                reason: "the configuration is outside the supported ranges",
+            })
+        );
+        assert_eq!(substrate.load_memory(id).await.unwrap(), None);
+    }
+    // A state of exactly `MAX_STATE_CELLS` is supported and registers.
+    let largest = FastMemoryConfig {
+        heads: 16,
+        key_dim: 1024,
+        value_dim: 1024,
+        ..memory_config()
+    };
+    assert_eq!(largest.state_cells(), ptr_fastmem::MAX_STATE_CELLS);
+    substrate
+        .create_memory(&record("largest", largest))
+        .await
+        .unwrap();
+    assert_eq!(
+        substrate
+            .load_memory("largest")
+            .await
+            .unwrap()
+            .unwrap()
+            .config,
+        largest
+    );
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
 async fn invalid_search_parameters_are_refused_before_sql() {
     let substrate = substrate().await;
     let schemas = substrate.schemas().clone();
