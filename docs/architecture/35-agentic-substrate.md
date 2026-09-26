@@ -172,7 +172,10 @@ its calibration set are never rewritten and the set is complete when the policy
 commits (a sample appended later is refused), a branch one was calibrated on cannot
 be deleted, only a model labeling function names an adapter, and an adapter has at
 most one interference report, which is complete when it commits, stays within
-`[0, 1]` and is never rewritten.
+`[0, 1]` and is never rewritten. The size of a calibration set and of an
+interference report is checked by counting it once, at commit for its header row
+and at the end of each statement that adds to it, so recording a set of N rows in
+one statement reads O(N) rows rather than a count per row.
 A touched key's input-set digest is a whole digest; a branch stored
 before input sets were recorded has none, and loading it is refused because it cannot
 be certified and must be re-run.
@@ -182,6 +185,7 @@ Covered by `a_sealed_branch_round_trips_with_every_dependency_and_op`,
 `working_state_constraints_hold_in_the_database`,
 `triage_policies_record_their_calibration_and_hold_out_everything_else`,
 `a_calibration_set_is_complete_when_its_policy_commits_and_never_grows`,
+`a_calibration_set_and_an_interference_report_are_counted_once_not_once_per_row`,
 `policy_rows_that_break_a_rule_level_or_size_constraint_are_refused`,
 `a_work_schema_holding_triage_rows_upgrades_and_keeps_their_unrecorded_policies`,
 `a_labeling_function_names_an_adapter_only_as_a_model`,

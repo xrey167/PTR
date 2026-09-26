@@ -40,23 +40,27 @@ CREATE TRIGGER adapter_interference_append_only
     BEFORE UPDATE OR DELETE ON {{work}}.adapter_interference
     FOR EACH ROW EXECUTE FUNCTION {{work}}.refuse_rewrite();
 
--- At commit, a report written or given a layer in the transaction must have
--- exactly layer_count layer rows. A report therefore commits with all its
--- layers, and since layer rows are never deleted, a layer appended by any
--- later transaction is refused: a stored report never grows.
+-- A report commits with exactly layer_count layer rows, and never grows. As
+-- for calibration sets (work migration 5), each check counts a report once
+-- rather than once per layer:
+--   * at commit, a report header written in the transaction must have exactly
+--     layer_count layers, counted once for the header row;
+--   * at the end of every statement that adds layer rows, no report it adds
+--     to may have more layers than its layer_count, counted once per report
+--     the statement names.
+-- Layer rows are never deleted and a committed report already has its count,
+-- so a layer appended by any later transaction is refused by the second
+-- check: a stored report never grows.
 CREATE FUNCTION {{work}}.check_interference_layer_count() RETURNS trigger
     LANGUAGE plpgsql AS $$
 DECLARE
-    recorded integer;
     stored bigint;
 BEGIN
-    SELECT layer_count INTO recorded
-        FROM {{work}}.adapter_interference_report WHERE adapter = NEW.adapter;
     SELECT count(*) INTO stored
         FROM {{work}}.adapter_interference WHERE adapter = NEW.adapter;
-    IF recorded IS DISTINCT FROM stored THEN
+    IF stored <> NEW.layer_count THEN
         RAISE EXCEPTION 'interference report of % has % layers but was recorded with %',
-            NEW.adapter, stored, recorded
+            NEW.adapter, stored, NEW.layer_count
             USING ERRCODE = 'integrity_constraint_violation';
     END IF;
     RETURN NULL;
@@ -68,7 +72,30 @@ CREATE CONSTRAINT TRIGGER adapter_interference_report_layer_count
     DEFERRABLE INITIALLY DEFERRED
     FOR EACH ROW EXECUTE FUNCTION {{work}}.check_interference_layer_count();
 
-CREATE CONSTRAINT TRIGGER adapter_interference_layer_count
+CREATE FUNCTION {{work}}.check_interference_growth() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+DECLARE
+    report text;
+    recorded integer;
+    stored bigint;
+BEGIN
+    FOR report, recorded IN
+        SELECT adapter, layer_count FROM {{work}}.adapter_interference_report
+            WHERE adapter IN (SELECT adapter FROM added)
+    LOOP
+        SELECT count(*) INTO stored
+            FROM {{work}}.adapter_interference WHERE adapter = report;
+        IF stored > recorded THEN
+            RAISE EXCEPTION 'interference report of % has % layers but was recorded with %',
+                report, stored, recorded
+                USING ERRCODE = 'integrity_constraint_violation';
+        END IF;
+    END LOOP;
+    RETURN NULL;
+END;
+$$;
+
+CREATE TRIGGER adapter_interference_layer_count
     AFTER INSERT ON {{work}}.adapter_interference
-    DEFERRABLE INITIALLY DEFERRED
-    FOR EACH ROW EXECUTE FUNCTION {{work}}.check_interference_layer_count();
+    REFERENCING NEW TABLE AS added
+    FOR EACH STATEMENT EXECUTE FUNCTION {{work}}.check_interference_growth();

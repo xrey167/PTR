@@ -2693,8 +2693,8 @@ async fn a_calibration_set_is_complete_when_its_policy_commits_and_never_grows()
     let record = PolicyRecord::calibrate("policy-2", rule, 0.05, &samples[..10]).unwrap();
     substrate.record_policy(&record).await.unwrap();
 
-    // A sample appended in a later transaction is refused when it commits,
-    // for a calibrated and for a manual policy alike.
+    // A sample appended in a later transaction is refused, for a calibrated
+    // and for a manual policy alike.
     let raw = raw_client().await;
     let work = substrate.schemas().work.clone();
     for (policy, branch) in [("policy-2", "c10"), ("bootstrap", "c11")] {
@@ -2720,7 +2720,8 @@ async fn a_calibration_set_is_complete_when_its_policy_commits_and_never_grows()
     );
 
     // A policy whose sample rows fall short of or exceed its calibration size
-    // cannot commit.
+    // cannot commit: a shortfall is refused at COMMIT, an excess by the
+    // statement that adds it, which leaves the transaction to roll back.
     for (size, branches) in [(2, &["c10"][..]), (1, &["c10", "c11"][..])] {
         let samples: String = branches
             .iter()
@@ -2747,6 +2748,7 @@ async fn a_calibration_set_is_complete_when_its_policy_commits_and_never_grows()
             "23000",
             "size {size}"
         );
+        raw.batch_execute("ROLLBACK").await.unwrap();
         assert_eq!(substrate.load_policy("sized").await.unwrap(), None);
     }
 
@@ -2817,6 +2819,90 @@ async fn policy_rows_that_break_a_rule_level_or_size_constraint_are_refused() {
             "23514",
             "{values}"
         );
+    }
+    substrate.drop_all().await.unwrap();
+}
+
+/// Rows of `table` the current transaction's scans have read so far, whatever
+/// plan read them: sequential-scan tuples plus index-scan heap fetches.
+async fn rows_read_in_transaction(raw: &tokio_postgres::Client, table: &str) -> i64 {
+    raw.query_one(
+        &format!(
+            "SELECT seq_tup_read + idx_tup_fetch FROM pg_stat_xact_user_tables \
+             WHERE relid = '{table}'::regclass"
+        ),
+        &[],
+    )
+    .await
+    .unwrap()
+    .get(0)
+}
+
+#[tokio::test]
+async fn a_calibration_set_and_an_interference_report_are_counted_once_not_once_per_row() {
+    const ROWS: i64 = 2000;
+    let substrate = substrate().await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    raw.execute(
+        &format!(
+            "INSERT INTO {work}.branch (id, author, base_revision) \
+             SELECT 'cal' || g, 'agent-a', 0 FROM generate_series(1, {ROWS}) AS g"
+        ),
+        &[],
+    )
+    .await
+    .unwrap();
+    insert_adapter(&raw, &work, "wide").await;
+    // Each set is written in one statement, as record_policy and
+    // record_interference write theirs, and SET CONSTRAINTS runs the checks
+    // deferred to commit inside the transaction, where its scans are counted.
+    // One count per set reads each row a bounded number of times; a count
+    // per row, as the checks used to make, reads ROWS * (ROWS + 1) rows.
+    for (header, rows, table) in [
+        (
+            format!(
+                "INSERT INTO {work}.triage_policy \
+                 (version, rule, calibration_rate, alpha, calibration_size) \
+                 VALUES ('large', 'conformal_risk_control', 0.05, 0.3, {ROWS})"
+            ),
+            format!(
+                "INSERT INTO {work}.triage_policy_sample (policy_version, branch) \
+                 SELECT 'large', 'cal' || g FROM generate_series(1, {ROWS}) AS g"
+            ),
+            format!("{work}.triage_policy_sample"),
+        ),
+        (
+            format!(
+                "INSERT INTO {work}.adapter_interference_report (adapter, layer_count) \
+                 VALUES ('wide', {ROWS})"
+            ),
+            format!(
+                "INSERT INTO {work}.adapter_interference \
+                 (adapter, layer, output_overlap, input_overlap, output_chance, input_chance) \
+                 SELECT 'wide', 'layer' || g, 0.1, 0.1, 0.1, 0.1 \
+                 FROM generate_series(1, {ROWS}) AS g"
+            ),
+            format!("{work}.adapter_interference"),
+        ),
+    ] {
+        raw.batch_execute(&format!(
+            "BEGIN; {header}; {rows}; SET CONSTRAINTS ALL IMMEDIATE;"
+        ))
+        .await
+        .unwrap();
+        let read = rows_read_in_transaction(&raw, &table).await;
+        raw.batch_execute("COMMIT").await.unwrap();
+        assert!(
+            read <= 4 * ROWS,
+            "{table}: {read} rows read to check {ROWS}"
+        );
+        let stored: i64 = raw
+            .query_one(&format!("SELECT count(*) FROM {table}"), &[])
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(stored, ROWS, "{table}");
     }
     substrate.drop_all().await.unwrap();
 }
@@ -2980,9 +3066,9 @@ async fn interference_reports_are_stored_once_as_measured() {
             Err(PgError::Database { ref sqlstate, .. }) if sqlstate == code
         ));
     }
-    // A layer appended to a stored report in a later transaction is refused
-    // when it commits, and a report whose layer rows do not match its layer
-    // count cannot commit.
+    // A layer appended to a stored report in a later transaction is refused,
+    // and a report whose layer rows do not match its layer count cannot
+    // commit.
     let error = raw
         .execute(
             &format!(

@@ -41,30 +41,27 @@ CREATE TRIGGER triage_policy_sample_append_only
     BEFORE UPDATE OR DELETE ON {{work}}.triage_policy_sample
     FOR EACH ROW EXECUTE FUNCTION {{work}}.refuse_rewrite();
 
--- At commit, a policy recorded or given a calibration sample in the
--- transaction must have exactly calibration_size sample rows. A policy
--- therefore commits with its whole calibration set, and since sample rows are
--- never deleted, a sample appended by any later transaction is refused: the
--- set a policy was recorded with never grows.
+-- A policy commits with exactly calibration_size sample rows, and its set
+-- never grows. Two checks together guarantee it, and each counts a set once
+-- rather than once per sample, so recording a set of N branches in one
+-- statement reads O(N) sample rows, not O(N^2):
+--   * at commit, a policy recorded in the transaction must have exactly
+--     calibration_size samples, counted once for the policy row;
+--   * at the end of every statement that adds sample rows, no policy it adds
+--     to may have more samples than its calibration_size, counted once per
+--     policy the statement names.
+-- Sample rows are never deleted and a committed set already has its size, so
+-- a sample appended by any later transaction is refused by the second check.
 CREATE FUNCTION {{work}}.check_calibration_size() RETURNS trigger
     LANGUAGE plpgsql AS $$
 DECLARE
-    policy text;
-    recorded integer;
     stored bigint;
 BEGIN
-    IF TG_TABLE_NAME = 'triage_policy' THEN
-        policy := NEW.version;
-    ELSE
-        policy := NEW.policy_version;
-    END IF;
-    SELECT calibration_size INTO recorded
-        FROM {{work}}.triage_policy WHERE version = policy;
     SELECT count(*) INTO stored
-        FROM {{work}}.triage_policy_sample WHERE policy_version = policy;
-    IF recorded IS DISTINCT FROM stored THEN
+        FROM {{work}}.triage_policy_sample WHERE policy_version = NEW.version;
+    IF stored <> NEW.calibration_size THEN
         RAISE EXCEPTION 'triage policy % has % calibration samples but was recorded with %',
-            policy, stored, recorded
+            NEW.version, stored, NEW.calibration_size
             USING ERRCODE = 'integrity_constraint_violation';
     END IF;
     RETURN NULL;
@@ -76,10 +73,33 @@ CREATE CONSTRAINT TRIGGER triage_policy_calibration_size
     DEFERRABLE INITIALLY DEFERRED
     FOR EACH ROW EXECUTE FUNCTION {{work}}.check_calibration_size();
 
-CREATE CONSTRAINT TRIGGER triage_policy_sample_calibration_size
+CREATE FUNCTION {{work}}.check_calibration_growth() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+DECLARE
+    policy text;
+    recorded integer;
+    stored bigint;
+BEGIN
+    FOR policy, recorded IN
+        SELECT version, calibration_size FROM {{work}}.triage_policy
+            WHERE version IN (SELECT policy_version FROM added)
+    LOOP
+        SELECT count(*) INTO stored
+            FROM {{work}}.triage_policy_sample WHERE policy_version = policy;
+        IF stored > recorded THEN
+            RAISE EXCEPTION 'triage policy % has % calibration samples but was recorded with %',
+                policy, stored, recorded
+                USING ERRCODE = 'integrity_constraint_violation';
+        END IF;
+    END LOOP;
+    RETURN NULL;
+END;
+$$;
+
+CREATE TRIGGER triage_policy_sample_calibration_size
     AFTER INSERT ON {{work}}.triage_policy_sample
-    DEFERRABLE INITIALLY DEFERRED
-    FOR EACH ROW EXECUTE FUNCTION {{work}}.check_calibration_size();
+    REFERENCING NEW TABLE AS added
+    FOR EACH STATEMENT EXECUTE FUNCTION {{work}}.check_calibration_growth();
 
 -- A triage row logged from this version on names a recorded policy. The key
 -- checks only that the version exists, not that the row's decision and
