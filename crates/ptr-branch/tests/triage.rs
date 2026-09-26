@@ -406,6 +406,12 @@ fn a_recorded_policy_names_its_calibration_branches_and_holds_out_the_rest() {
         &calibration,
     )
     .unwrap();
+    // Learn-then-Test at these levels, not conformal risk control at the same
+    // alpha and not Learn-then-Test with the levels swapped.
+    let ltt = certify_threshold(&scored, 0.2, 0.1).unwrap();
+    assert_eq!(certified.policy().threshold(), ltt);
+    assert_ne!(ltt, calibrate_threshold(&scored, 0.2).unwrap());
+    assert_ne!(ltt, certify_threshold(&scored, 0.1, 0.2).unwrap());
     let mut reversed = certified.calibrated_on().to_vec();
     reversed.reverse();
     assert_eq!(
@@ -419,6 +425,64 @@ fn a_recorded_policy_names_its_calibration_branches_and_holds_out_the_rest() {
         .unwrap(),
         certified
     );
+}
+
+#[test]
+fn a_record_rebuilt_from_parts_refuses_a_risk_level_or_confidence_outside_the_unit_interval() {
+    // Nothing else is wrong with these records, so only the rule's own level
+    // check can refuse them: from_parts is how a stored policy is read back,
+    // and no threshold computation runs there to catch a corrupt level.
+    let rebuild = |rule| {
+        PolicyRecord::from_parts(
+            "v",
+            AutoThreshold::AtLeast(0.5),
+            0.1,
+            rule,
+            vec![BranchId::from("c1")],
+        )
+    };
+    for (rule, field) in [
+        (
+            ThresholdRule::ConformalRiskControl { alpha: f64::NAN },
+            "alpha",
+        ),
+        (ThresholdRule::ConformalRiskControl { alpha: 0.0 }, "alpha"),
+        (
+            ThresholdRule::LearnThenTest {
+                alpha: 1.0,
+                delta: 0.1,
+            },
+            "alpha",
+        ),
+        (
+            ThresholdRule::LearnThenTest {
+                alpha: 0.1,
+                delta: 1.5,
+            },
+            "delta",
+        ),
+        (
+            ThresholdRule::LearnThenTest {
+                alpha: 0.1,
+                delta: f64::NAN,
+            },
+            "delta",
+        ),
+    ] {
+        let refused = rebuild(rule).unwrap_err();
+        assert!(
+            matches!(
+                refused,
+                ArbiterError::InvalidRisk { field: refused_field, .. } if refused_field == field
+            ),
+            "{rule:?}: {refused:?}"
+        );
+    }
+    assert!(rebuild(ThresholdRule::LearnThenTest {
+        alpha: 0.1,
+        delta: 0.1
+    })
+    .is_ok());
 }
 
 #[test]
