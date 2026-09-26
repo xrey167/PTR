@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-26  
-**Code footprint:** 7 Rust source files · 2334 nonblank source lines · 4 integration-test files · 79 `#[test]` markers
+**Code footprint:** 7 Rust source files · 2336 nonblank source lines · 4 integration-test files · 79 `#[test]` markers
 
 ### Implemented now
 
