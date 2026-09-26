@@ -22,14 +22,23 @@ pub enum Metric {
     /// of eligible branches, this is an unbiased estimate of the harm rate the
     /// arbiter's threshold is calibrated against.
     AdjudicatedHarmRate,
+    /// Merged branches that were later reverted, over merged branches. A
+    /// descriptive operational signal, not a harm rate: only auto-proposed and
+    /// human-approved plans merge, reverts are decided by people who noticed
+    /// something, and a revert is recorded only once someone makes it, so this
+    /// share is neither an unbiased nor a calibrated estimate of harm. The
+    /// harm rate the arbiter is calibrated against is
+    /// [`Metric::AdjudicatedHarmRate`].
+    RevertShare,
 }
 
 impl Metric {
-    pub const ALL: [Metric; 4] = [
+    pub const ALL: [Metric; 5] = [
         Metric::AutoProposeShare,
         Metric::EscalationShare,
         Metric::ConflictRate,
         Metric::AdjudicatedHarmRate,
+        Metric::RevertShare,
     ];
 
     /// Stable machine name.
@@ -39,6 +48,7 @@ impl Metric {
             Self::EscalationShare => "escalation_share",
             Self::ConflictRate => "conflict_rate",
             Self::AdjudicatedHarmRate => "adjudicated_harm_rate",
+            Self::RevertShare => "revert_share",
         }
     }
 }
@@ -53,11 +63,32 @@ pub enum Grouping {
     ByPolicyVersion,
 }
 
+/// Which records a metric counts, by when they were recorded.
+///
+/// Each metric is windowed on the record that puts a branch into its
+/// denominator: the triage for [`Metric::AutoProposeShare`] and
+/// [`Metric::EscalationShare`], the recorded outcome for
+/// [`Metric::ConflictRate`], the adjudication for
+/// [`Metric::AdjudicatedHarmRate`], and the merge for [`Metric::RevertShare`],
+/// whose numerator then counts those merges reverted by the time of the query.
+/// A window is measured back from when the query runs, on the clock of the
+/// store that answers it; it is an operational view, never evidence about
+/// semantic state.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum Window {
+    /// Every record.
+    #[default]
+    All,
+    /// Records from the last so many days. Zero days counts nothing.
+    LastDays(u16),
+}
+
 /// A metric request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MetricSpec {
     pub metric: Metric,
     pub grouping: Grouping,
+    pub window: Window,
 }
 
 /// One result row: a group label (empty for [`Grouping::Overall`]) and the two

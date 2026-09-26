@@ -23,7 +23,7 @@ mod ops;
 pub use arbiter::{
     calibrate_threshold, calibration_draw, certify_threshold, doubly_robust, evaluate_off_policy,
     threshold_grid, AutoThreshold, CalibrationSample, LoggedTriage, OffPolicyEstimate,
-    TriageDecision, TriageOutcome, TriagePolicy, THRESHOLD_GRID_STEPS,
+    PolicyRecord, ThresholdRule, TriageDecision, TriageOutcome, TriagePolicy, THRESHOLD_GRID_STEPS,
 };
 pub use branch::{Branch, BranchId, SealedBranch, RESERVED_PREFIXES};
 pub use certify::{certify, Certification, MergePlan};

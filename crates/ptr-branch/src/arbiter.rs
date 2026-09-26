@@ -100,6 +100,11 @@ impl TriagePolicy {
         self.threshold
     }
 
+    /// The fraction of eligible branches reserved for human calibration.
+    pub fn calibration_rate(&self) -> f64 {
+        self.calibration_rate
+    }
+
     /// Decide one branch. `draw` is a uniform number in `[0, 1)` that the caller
     /// derives reproducibly, for example with [`calibration_draw`].
     ///
@@ -319,6 +324,181 @@ pub fn certify_threshold(
         }
     }
     Ok(certified)
+}
+
+/// How a recorded policy's threshold was chosen.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ThresholdRule {
+    /// Set by a person without calibration, for example
+    /// [`AutoThreshold::Never`] before any adjudication exists.
+    Manual,
+    /// [`calibrate_threshold`] at risk level `alpha`.
+    ConformalRiskControl { alpha: f64 },
+    /// [`certify_threshold`] at risk level `alpha` and confidence `1 - delta`.
+    LearnThenTest { alpha: f64, delta: f64 },
+}
+
+impl ThresholdRule {
+    /// Stable machine name.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::ConformalRiskControl { .. } => "conformal_risk_control",
+            Self::LearnThenTest { .. } => "learn_then_test",
+        }
+    }
+
+    fn check(self) -> Result<(), ArbiterError> {
+        match self {
+            Self::Manual => Ok(()),
+            Self::ConformalRiskControl { alpha } => check_level("alpha", alpha),
+            Self::LearnThenTest { alpha, delta } => {
+                check_level("alpha", alpha)?;
+                check_level("delta", delta)
+            }
+        }
+    }
+}
+
+/// A triage policy as it is recorded and cited by triage logs: its version,
+/// the policy, the rule that chose its threshold, and exactly which
+/// adjudicated calibration-slice branches that rule saw.
+///
+/// Naming the calibration branches is what keeps a later evaluation honest:
+/// a policy's harm rate may only be estimated on adjudications it was not
+/// calibrated on ([`PolicyRecord::held_out`]), which F003 requires. The unit
+/// is the branch, so a branch appears at most once.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PolicyRecord {
+    version: String,
+    policy: TriagePolicy,
+    rule: ThresholdRule,
+    calibrated_on: Vec<BranchId>,
+}
+
+impl PolicyRecord {
+    /// A policy whose threshold a person set, calibrated on nothing.
+    ///
+    /// # Errors
+    /// Refuses an empty version.
+    pub fn manual(version: impl Into<String>, policy: TriagePolicy) -> Result<Self, ArbiterError> {
+        Self::from_parts(
+            version,
+            policy.threshold(),
+            policy.calibration_rate,
+            ThresholdRule::Manual,
+            Vec::new(),
+        )
+    }
+
+    /// Choose a threshold with `rule` from adjudicated calibration-slice
+    /// samples, keyed by their branch, and record which branches it used.
+    ///
+    /// # Errors
+    /// Refuses an empty version, a manual rule (use [`PolicyRecord::manual`]),
+    /// an invalid calibration rate or risk level, no samples, and a branch
+    /// that appears twice.
+    pub fn calibrate(
+        version: impl Into<String>,
+        rule: ThresholdRule,
+        calibration_rate: f64,
+        samples: &[(BranchId, CalibrationSample)],
+    ) -> Result<Self, ArbiterError> {
+        let scored: Vec<CalibrationSample> = samples.iter().map(|(_, sample)| *sample).collect();
+        let threshold = match rule {
+            ThresholdRule::Manual => {
+                return Err(ArbiterError::InvalidRule {
+                    rule: rule.name(),
+                    message: "a manual threshold is recorded with PolicyRecord::manual",
+                })
+            }
+            ThresholdRule::ConformalRiskControl { alpha } => calibrate_threshold(&scored, alpha)?,
+            ThresholdRule::LearnThenTest { alpha, delta } => {
+                certify_threshold(&scored, alpha, delta)?
+            }
+        };
+        Self::from_parts(
+            version,
+            threshold,
+            calibration_rate,
+            rule,
+            samples.iter().map(|(branch, _)| branch.clone()).collect(),
+        )
+    }
+
+    /// Rebuild a record, for example one read back from storage. The
+    /// calibration branches are kept in branch order.
+    ///
+    /// # Errors
+    /// Refuses an empty version, an invalid calibration rate or risk level, a
+    /// manual rule that names calibration branches, a calibrated rule that
+    /// names none, and a branch that appears twice.
+    pub fn from_parts(
+        version: impl Into<String>,
+        threshold: AutoThreshold,
+        calibration_rate: f64,
+        rule: ThresholdRule,
+        mut calibrated_on: Vec<BranchId>,
+    ) -> Result<Self, ArbiterError> {
+        let version = version.into();
+        if version.is_empty() {
+            return Err(ArbiterError::EmptyVersion);
+        }
+        rule.check()?;
+        let policy = TriagePolicy::new(threshold, calibration_rate)?;
+        match (rule, calibrated_on.is_empty()) {
+            (ThresholdRule::Manual, false) => {
+                return Err(ArbiterError::InvalidRule {
+                    rule: rule.name(),
+                    message: "a manual threshold was calibrated on nothing",
+                })
+            }
+            (ThresholdRule::Manual, true) => {}
+            (_, true) => return Err(ArbiterError::EmptyCalibration),
+            (_, false) => {}
+        }
+        calibrated_on.sort();
+        if let Some(pair) = calibrated_on.windows(2).find(|pair| pair[0] == pair[1]) {
+            return Err(ArbiterError::DuplicateCalibrationBranch {
+                branch: pair[0].0.clone(),
+            });
+        }
+        Ok(Self {
+            version,
+            policy,
+            rule,
+            calibrated_on,
+        })
+    }
+
+    pub fn version(&self) -> &str {
+        &self.version
+    }
+
+    pub fn policy(&self) -> TriagePolicy {
+        self.policy
+    }
+
+    pub fn rule(&self) -> ThresholdRule {
+        self.rule
+    }
+
+    /// The branches the threshold was calibrated on, in branch order.
+    pub fn calibrated_on(&self) -> &[BranchId] {
+        &self.calibrated_on
+    }
+
+    /// The adjudicated samples this policy was not calibrated on: the only
+    /// ones its harm rate may be estimated from.
+    pub fn held_out<'a>(
+        &self,
+        adjudicated: &'a [(BranchId, CalibrationSample)],
+    ) -> Vec<&'a (BranchId, CalibrationSample)> {
+        adjudicated
+            .iter()
+            .filter(|(branch, _)| self.calibrated_on.binary_search(branch).is_err())
+            .collect()
+    }
 }
 
 fn check_level(field: &'static str, value: f64) -> Result<(), ArbiterError> {

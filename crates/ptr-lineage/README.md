@@ -27,7 +27,7 @@
 
 - Adapter promotion and revocation as committed ledger events
 - Serving admission through checkpoint binding
-- A lineage adapter in ptr-pg over the existing work schema
+- A lineage adapter in ptr-pg over the rest of the work schema (ptr-pg stores interference reports only)
 
 ### Next milestones
 

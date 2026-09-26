@@ -5,7 +5,9 @@
 mod branch;
 mod events;
 mod fastmem;
+mod lineage;
 mod metrics;
+mod policy;
 mod projection;
 mod search;
 

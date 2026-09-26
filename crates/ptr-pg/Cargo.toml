@@ -22,6 +22,8 @@ ptr-semdb = { workspace = true }
 ptr-search = { workspace = true }
 ptr-branch = { workspace = true }
 ptr-fastmem = { workspace = true }
+# Interference reports of adapter candidates are stored as ptr-lineage measures them.
+ptr-lineage = { workspace = true }
 # Metrics are defined there; this crate only compiles them to SQL.
 ptr-analytics = { workspace = true }
 # The same pin every other digest in the workspace uses.

@@ -28,7 +28,7 @@
 - Annotator agreement over multi-annotator gold (ptr_analytics::krippendorff_alpha_nominal exists; this crate does not call it yet)
 - A dependency-aware model for correlated labeling functions
 - Annotator reliability modelling
-- Label snapshot registration through ptr-pg
+- Label snapshot registration and a labeling adapter through ptr-pg (the work schema already carries the model-to-adapter link)
 
 ### Next milestones
 

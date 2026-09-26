@@ -74,6 +74,21 @@ pub const WORK_MIGRATIONS: &[Migration] = &[
         name: "labeling",
         sql: include_str!("../migrations/work/0004_labeling.sql"),
     },
+    Migration {
+        version: 5,
+        name: "triage_policy",
+        sql: include_str!("../migrations/work/0005_triage_policy.sql"),
+    },
+    Migration {
+        version: 6,
+        name: "labeling_adapter",
+        sql: include_str!("../migrations/work/0006_labeling_adapter.sql"),
+    },
+    Migration {
+        version: 7,
+        name: "adapter_interference",
+        sql: include_str!("../migrations/work/0007_adapter_interference.sql"),
+    },
 ];
 
 impl Migration {

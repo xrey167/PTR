@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-26  
-**Code footprint:** 14 Rust source files · 3534 nonblank source lines · 2 integration-test files · 23 `#[test]` markers
+**Code footprint:** 16 Rust source files · 3899 nonblank source lines · 2 integration-test files · 23 `#[test]` markers
 
 ### Implemented now
 
@@ -29,7 +29,10 @@
 - Logged triage rows and outcomes are never updated or deleted on their own (only with their branch), and a branch is adjudicated once
 - Every vector query uses iterative strict-order scans and an ef_search of at least its limit (pgvector 0.8 required), so results are not truncated at the default candidate list; queries refuse zero limits and nonfinite or negative fusion parameters
 - Migrations bound DDL with SET LOCAL lock_timeout in driver-managed transactions that roll back on failure; a rebuild drops and recreates under the migration lock
-- Platform metrics compiled from ptr-analytics definitions to SQL over the work schema only
+- Platform metrics compiled from ptr-analytics definitions to SQL over the work schema only, including revert share and a trailing window of days on the record that puts a branch into the denominator
+- Recorded triage policies with their rule, levels and calibration set (record_policy, load_policy, adjudicated_samples); triage rows cite a recorded policy by foreign key, a policy calibrated on a branch nobody adjudicated is refused, and policies, calibration sets and calibrated-on branches are never rewritten or deleted
+- Interference reports of adapter candidates stored once per adapter and layer, as ptr-lineage measured them (record_interference, load_interference)
+- A model labeling function may name its adapter in the catalog; any other kind is refused by a column constraint
 - Capability probe that never creates an extension; refusal of every non-loopback host and hostaddr because the build links no TLS connector
 - Rebuild drops projection and derived schemas and replays; working state survives
 
@@ -37,7 +40,7 @@
 
 - TLS connector, role separation and row-level security
 - Connection pooling and a logical-replication change feed
-- Adapters for the lineage and labeling tables
+- Adapters for the rest of the lineage catalog and for the labeling tables (interference reports and triage policies have them)
 - Effect applier for business tables through the effect boundary
 
 ### Next milestones

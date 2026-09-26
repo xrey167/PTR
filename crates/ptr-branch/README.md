@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-26  
-**Code footprint:** 7 Rust source files · 1507 nonblank source lines · 3 integration-test files · 50 `#[test]` markers
+**Code footprint:** 7 Rust source files · 1692 nonblank source lines · 3 integration-test files · 52 `#[test]` markers
 
 ### Implemented now
 
@@ -23,6 +23,7 @@
 - Verifier-bounded triage: only a Pass at full-semantic or deterministic level with no hard finding is eligible for auto-proposal
 - Uniform calibration slice of eligible branches with a deterministic per-branch draw, logged auto-propose propensities and adjudication samples; a draw outside [0, 1) is refused
 - Threshold selection on a fixed grid by conformal risk control or by Learn-then-Test with Clopper-Pearson bounds
+- PolicyRecord names a policy's version, threshold rule and levels and exactly which adjudicated calibration-slice branches chose its threshold; held_out returns the adjudications it was not calibrated on, the only ones its harm rate may be estimated from
 - Off-policy evaluation by IPS, SNIPS and doubly robust estimates with a positivity check
 
 ### Missing for the target architecture

@@ -7,13 +7,15 @@
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use ptr_analytics::{Grouping, Metric, MetricRow, MetricSpec};
+use ptr_analytics::{Grouping, Metric, MetricRow, MetricSpec, Window};
 use ptr_branch::{
-    BranchId, BranchOp, RangeDigest, SealedBranch, TriageDecision, TriageOutcome, ValueDigest,
+    AutoThreshold, BranchId, BranchOp, PolicyRecord, RangeDigest, SealedBranch, ThresholdRule,
+    TriageDecision, TriageOutcome, TriagePolicy, ValueDigest,
 };
 use ptr_fastmem::{Decay, FastMemory, FastMemoryConfig, SourceRef, WriteRequest};
 use ptr_ledger::integrity::{chain_anchors, LogAnchor};
 use ptr_ledger::{CommittedEvent, LedgerEvent};
+use ptr_lineage::{AdapterId, InterferenceReport, LayerInterference};
 use ptr_pg::{
     BranchOutcome, EmbeddingSpace, FastMemoryRecord, HybridQuery, Identifier, PgError, PgSubstrate,
     SchemaSet, SearchDocument, LEXICAL_BACKEND, VECTOR_BACKEND,
@@ -1148,9 +1150,19 @@ fn triage(decision: TriageDecision, eligible: bool, calibration_slice: bool) -> 
     }
 }
 
+/// Record the manual policy a test's triage rows cite.
+async fn record_manual_policy(substrate: &mut PgSubstrate, version: &str) {
+    let policy = TriagePolicy::new(AutoThreshold::Never, 0.1).unwrap();
+    substrate
+        .record_policy(&PolicyRecord::manual(version, policy).unwrap())
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn triage_logs_and_outcomes_feed_the_platform_metrics() {
     let mut substrate = substrate().await;
+    record_manual_policy(&mut substrate, "policy-1").await;
     let plan = [
         (
             "b1",
@@ -1203,6 +1215,7 @@ async fn triage_logs_and_outcomes_feed_the_platform_metrics() {
     let overall = |metric| MetricSpec {
         metric,
         grouping: Grouping::Overall,
+        window: Window::All,
     };
     let row = |numerator, denominator| MetricRow {
         group: String::new(),
@@ -1241,6 +1254,7 @@ async fn triage_logs_and_outcomes_feed_the_platform_metrics() {
         .metric(MetricSpec {
             metric: Metric::EscalationShare,
             grouping: Grouping::ByPrincipal,
+            window: Window::All,
         })
         .await
         .unwrap();
@@ -1784,5 +1798,410 @@ async fn strings_postgresql_text_cannot_hold_are_refused_before_anything_is_writ
         Err(PgError::InvalidRecord { index: 1, .. })
     ));
     assert_eq!(substrate.watermark().await.unwrap(), LogAnchor::empty());
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn revert_share_counts_merged_branches_later_reverted_within_a_window() {
+    let mut substrate = substrate().await;
+    record_manual_policy(&mut substrate, "policy-r").await;
+    for (id, author) in [("r1", "agent-a"), ("r2", "agent-a"), ("r3", "agent-b")] {
+        substrate
+            .store_branch(&sealed_branch(id, author))
+            .await
+            .unwrap();
+        substrate
+            .record_triage(
+                &BranchId::from(id),
+                &triage(TriageDecision::AutoPropose, true, false),
+                "policy-r",
+            )
+            .await
+            .unwrap();
+    }
+    for (id, outcome) in [
+        ("r1", BranchOutcome::Merged(CommitIndex(10))),
+        ("r1", BranchOutcome::Reverted(CommitIndex(12))),
+        ("r2", BranchOutcome::Merged(CommitIndex(11))),
+    ] {
+        substrate
+            .record_outcome(&BranchId::from(id), outcome)
+            .await
+            .unwrap();
+    }
+    // A merge and a triage from a month ago, as the store's clock recorded them.
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    raw.execute(
+        &format!(
+            "INSERT INTO {work}.branch_outcome (branch, outcome, commit_index, observed_at) \
+             VALUES ('r3', 'merged', 5, now() - interval '30 days')"
+        ),
+        &[],
+    )
+    .await
+    .unwrap();
+    substrate
+        .store_branch(&sealed_branch("r4", "agent-b"))
+        .await
+        .unwrap();
+    raw.execute(
+        &format!(
+            "INSERT INTO {work}.branch_triage (branch, decision, eligible, calibration_slice, \
+             score, auto_propensity, policy_version, decided_at) \
+             VALUES ('r4', 'escalate', true, false, 0.2, 0.9, 'policy-r', \
+                     now() - interval '30 days')"
+        ),
+        &[],
+    )
+    .await
+    .unwrap();
+
+    let spec = |metric, grouping, window| MetricSpec {
+        metric,
+        grouping,
+        window,
+    };
+    let row = |group: &str, numerator, denominator| MetricRow {
+        group: group.into(),
+        numerator,
+        denominator,
+    };
+    let revert = |grouping, window| spec(Metric::RevertShare, grouping, window);
+    assert_eq!(
+        substrate
+            .metric(revert(Grouping::Overall, Window::All))
+            .await
+            .unwrap(),
+        vec![row("", 1, 3)]
+    );
+    // Only merges within the window enter the denominator.
+    assert_eq!(
+        substrate
+            .metric(revert(Grouping::Overall, Window::LastDays(7)))
+            .await
+            .unwrap(),
+        vec![row("", 1, 2)]
+    );
+    assert_eq!(
+        substrate
+            .metric(revert(Grouping::ByPrincipal, Window::All))
+            .await
+            .unwrap(),
+        vec![row("agent-a", 1, 2), row("agent-b", 0, 1)]
+    );
+    assert_eq!(
+        substrate
+            .metric(revert(Grouping::ByPolicyVersion, Window::LastDays(7)))
+            .await
+            .unwrap(),
+        vec![row("policy-r", 1, 2)]
+    );
+    // A triage-based metric is windowed on the triage.
+    let auto = |window| spec(Metric::AutoProposeShare, Grouping::Overall, window);
+    assert_eq!(
+        substrate.metric(auto(Window::All)).await.unwrap(),
+        vec![row("", 3, 4)]
+    );
+    assert_eq!(
+        substrate.metric(auto(Window::LastDays(7))).await.unwrap(),
+        vec![row("", 3, 3)]
+    );
+    // A zero-day window counts nothing.
+    assert_eq!(
+        substrate
+            .metric(revert(Grouping::Overall, Window::LastDays(0)))
+            .await
+            .unwrap(),
+        vec![]
+    );
+    substrate.drop_all().await.unwrap();
+}
+
+/// Store a branch, log it as a calibration-slice escalation under `policy`
+/// with `score`, and optionally adjudicate it.
+async fn calibration_branch(
+    substrate: &mut PgSubstrate,
+    id: &str,
+    score: f32,
+    policy: &str,
+    harmful: Option<bool>,
+) {
+    substrate
+        .store_branch(&sealed_branch(id, "agent-c"))
+        .await
+        .unwrap();
+    let outcome = TriageOutcome {
+        decision: TriageDecision::Escalate,
+        eligible: true,
+        calibration_slice: true,
+        score,
+        auto_propensity: 0.0,
+    };
+    substrate
+        .record_triage(&BranchId::from(id), &outcome, policy)
+        .await
+        .unwrap();
+    if let Some(harmful) = harmful {
+        let verdict = if harmful {
+            BranchOutcome::AdjudicatedHarmful
+        } else {
+            BranchOutcome::AdjudicatedHarmless
+        };
+        substrate
+            .record_outcome(&BranchId::from(id), verdict)
+            .await
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn triage_policies_record_their_calibration_and_hold_out_everything_else() {
+    let mut substrate = substrate().await;
+    // A triage row may only cite a recorded policy.
+    substrate
+        .store_branch(&sealed_branch("x", "agent-c"))
+        .await
+        .unwrap();
+    assert!(matches!(
+        substrate
+            .record_triage(
+                &BranchId::from("x"),
+                &triage(TriageDecision::Discard, false, false),
+                "unrecorded"
+            )
+            .await,
+        Err(PgError::Database { ref sqlstate, .. }) if sqlstate == "23503"
+    ));
+
+    let bootstrap = PolicyRecord::manual(
+        "bootstrap",
+        TriagePolicy::new(AutoThreshold::Never, 0.999).unwrap(),
+    )
+    .unwrap();
+    substrate.record_policy(&bootstrap).await.unwrap();
+    assert_eq!(
+        substrate.load_policy("bootstrap").await.unwrap(),
+        Some(bootstrap)
+    );
+    assert_eq!(substrate.load_policy("none").await.unwrap(), None);
+
+    // Forty adjudicated calibration-slice branches under the bootstrap policy.
+    for i in 0..40 {
+        let score = i as f32 / 40.0;
+        calibration_branch(
+            &mut substrate,
+            &format!("c{i:02}"),
+            score,
+            "bootstrap",
+            Some(score < 0.3),
+        )
+        .await;
+    }
+    let samples = substrate.adjudicated_samples().await.unwrap();
+    assert_eq!(samples.len(), 40);
+    let rule = ThresholdRule::LearnThenTest {
+        alpha: 0.2,
+        delta: 0.1,
+    };
+    let calibrated = PolicyRecord::calibrate("policy-2", rule, 0.05, &samples).unwrap();
+    substrate.record_policy(&calibrated).await.unwrap();
+    assert_eq!(
+        substrate.load_policy("policy-2").await.unwrap(),
+        Some(calibrated.clone())
+    );
+
+    // Adjudications after the calibration are the policy's held-out set.
+    for i in 0..5 {
+        calibration_branch(
+            &mut substrate,
+            &format!("h{i}"),
+            0.9,
+            "policy-2",
+            Some(false),
+        )
+        .await;
+    }
+    let everything = substrate.adjudicated_samples().await.unwrap();
+    assert_eq!(everything.len(), 45);
+    let held_out = calibrated.held_out(&everything);
+    assert_eq!(held_out.len(), 5);
+    assert!(held_out.iter().all(|(branch, _)| branch.0.starts_with('h')));
+
+    // A policy calibrated on a branch nobody adjudicated is refused whole.
+    calibration_branch(&mut substrate, "pending", 0.5, "policy-2", None).await;
+    let mut with_pending = samples.clone();
+    let pending_sample = with_pending[0].1;
+    with_pending.push((BranchId::from("pending"), pending_sample));
+    let dishonest = PolicyRecord::calibrate("policy-3", rule, 0.05, &with_pending).unwrap();
+    assert!(matches!(
+        substrate.record_policy(&dishonest).await,
+        Err(PgError::InvalidPolicy { ref version, .. }) if version == "policy-3"
+    ));
+    assert_eq!(substrate.load_policy("policy-3").await.unwrap(), None);
+
+    // A recorded policy and its calibration set are never rewritten, and a
+    // branch a policy was calibrated on cannot be deleted.
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    for statement in [
+        format!(
+            "UPDATE {work}.triage_policy SET calibration_rate = 0.5 WHERE version = 'policy-2'"
+        ),
+        format!("DELETE FROM {work}.triage_policy_sample WHERE branch = 'c00'"),
+    ] {
+        let error = raw.execute(&statement, &[]).await.unwrap_err();
+        assert_eq!(
+            error.as_db_error().unwrap().code().code(),
+            "23000",
+            "{statement}"
+        );
+    }
+    let error = raw
+        .execute(&format!("DELETE FROM {work}.branch WHERE id = 'c00'"), &[])
+        .await
+        .unwrap_err();
+    assert_eq!(error.as_db_error().unwrap().code().code(), "23503");
+    substrate.drop_all().await.unwrap();
+}
+
+/// Insert a trained adapter into the lineage catalog.
+async fn insert_adapter(raw: &tokio_postgres::Client, work: &Identifier, id: &str) {
+    raw.execute(
+        &format!(
+            "INSERT INTO {work}.adapter (id, domain, base_model, base_revision, origin, rank, \
+             artifact, artifact_sha256, data_fingerprint, status) \
+             VALUES ($1, 'support', 'base', 'r1', 'trained', 8, $2, $3, $3, 'candidate')"
+        ),
+        &[&id, &format!("s3://adapters/{id}"), &vec![7u8; 32]],
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn a_labeling_function_names_an_adapter_only_as_a_model() {
+    let substrate = substrate().await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    insert_adapter(&raw, &work, "ranker-v2").await;
+    raw.execute(
+        &format!(
+            "INSERT INTO {work}.labeling_function (name, kind, adapter) \
+             VALUES ('ranker', 'model', 'ranker-v2'), ('rule', 'heuristic', NULL)"
+        ),
+        &[],
+    )
+    .await
+    .unwrap();
+    for (statement, code) in [
+        (
+            format!(
+                "INSERT INTO {work}.labeling_function (name, kind, adapter) \
+                 VALUES ('keyword', 'heuristic', 'ranker-v2')"
+            ),
+            "23514",
+        ),
+        (
+            format!(
+                "INSERT INTO {work}.labeling_function (name, kind, adapter) \
+                 VALUES ('ghost', 'model', 'no-such-adapter')"
+            ),
+            "23503",
+        ),
+    ] {
+        let error = raw.execute(&statement, &[]).await.unwrap_err();
+        assert_eq!(
+            error.as_db_error().unwrap().code().code(),
+            code,
+            "{statement}"
+        );
+    }
+    substrate.drop_all().await.unwrap();
+}
+
+fn layer(name: &str, overlap: f64, worst: Option<&str>) -> LayerInterference {
+    LayerInterference {
+        layer: name.into(),
+        output_overlap: overlap,
+        input_overlap: overlap / 2.0,
+        output_chance: 0.0625,
+        input_chance: 0.03125,
+        worst: worst.map(AdapterId::from),
+    }
+}
+
+#[tokio::test]
+async fn interference_reports_are_stored_once_as_measured() {
+    let mut substrate = substrate().await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    for id in ["a1", "a2", "a3"] {
+        insert_adapter(&raw, &work, id).await;
+    }
+    // Layers come back in name order, exactly as measured.
+    let report = InterferenceReport {
+        layers: vec![layer("k", 0.1, None), layer("q", 0.4, Some("a1"))],
+    };
+    let adapter = AdapterId::from("a2");
+    substrate
+        .record_interference(&adapter, &report)
+        .await
+        .unwrap();
+    assert_eq!(
+        substrate.load_interference(&adapter).await.unwrap(),
+        Some(report.clone())
+    );
+    assert_eq!(
+        substrate
+            .load_interference(&AdapterId::from("a1"))
+            .await
+            .unwrap(),
+        None
+    );
+    // Stored once: a second report for the adapter is refused.
+    assert!(matches!(
+        substrate.record_interference(&adapter, &report).await,
+        Err(PgError::Database { ref sqlstate, .. }) if sqlstate == "23505"
+    ));
+    // An overlap outside [0, 1] refuses the whole report.
+    let impossible = InterferenceReport {
+        layers: vec![layer("k", 0.2, None), layer("v", 1.5, None)],
+    };
+    assert!(matches!(
+        substrate
+            .record_interference(&AdapterId::from("a3"), &impossible)
+            .await,
+        Err(PgError::Database { ref sqlstate, .. }) if sqlstate == "23514"
+    ));
+    assert_eq!(
+        substrate
+            .load_interference(&AdapterId::from("a3"))
+            .await
+            .unwrap(),
+        None
+    );
+    // The worst overlap names another catalogued adapter.
+    for (worst, code) in [("a3", "23514"), ("no-such-adapter", "23503")] {
+        let naming = InterferenceReport {
+            layers: vec![layer("q", 0.3, Some(worst))],
+        };
+        assert!(matches!(
+            substrate
+                .record_interference(&AdapterId::from("a3"), &naming)
+                .await,
+            Err(PgError::Database { ref sqlstate, .. }) if sqlstate == code
+        ));
+    }
+    let error = raw
+        .execute(
+            &format!(
+                "UPDATE {work}.adapter_interference SET output_overlap = 0 WHERE adapter = 'a2'"
+            ),
+            &[],
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.as_db_error().unwrap().code().code(), "23000");
     substrate.drop_all().await.unwrap();
 }

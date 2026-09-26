@@ -1,6 +1,7 @@
 use ptr_branch::{
     calibrate_threshold, calibration_draw, certify_threshold, doubly_robust, evaluate_off_policy,
-    ArbiterError, AutoThreshold, BranchId, LoggedTriage, TriageDecision, TriagePolicy,
+    ArbiterError, AutoThreshold, BranchId, CalibrationSample, LoggedTriage, PolicyRecord,
+    ThresholdRule, TriageDecision, TriagePolicy,
 };
 use ptr_types::{Probability, VerificationLevel};
 use ptr_verifier::{Finding, VerificationReport, VerificationStatus};
@@ -315,4 +316,137 @@ fn a_higher_threshold_is_estimable_and_doubly_robust_agrees_with_a_perfect_model
     let dr = doubly_robust(&log, &cautious, perfect).unwrap();
     assert!((dr - truth).abs() < 1e-9, "dr {dr} truth {truth}");
     assert!(evaluate_off_policy(&log, &cautious).is_ok());
+}
+
+/// Forty adjudicated calibration-slice branches, keyed by branch, scoring
+/// i/40 and harmful below 0.3.
+fn adjudicated(prefix: &str) -> Vec<(BranchId, CalibrationSample)> {
+    let logging = TriagePolicy::new(AutoThreshold::Never, 0.999).unwrap();
+    (0..40)
+        .map(|i| {
+            let branch = BranchId(format!("{prefix}{i}"));
+            let score_value = i as f32 / 40.0;
+            let sample = logging
+                .triage(&passing(), score(score_value), 0.0)
+                .unwrap()
+                .adjudicate(score_value < 0.3)
+                .expect("calibration slice");
+            (branch, sample)
+        })
+        .collect()
+}
+
+#[test]
+fn a_recorded_policy_names_its_calibration_branches_and_holds_out_the_rest() {
+    let calibration = adjudicated("c");
+    let rule = ThresholdRule::ConformalRiskControl { alpha: 0.1 };
+    let record = PolicyRecord::calibrate("policy-2", rule, 0.05, &calibration).unwrap();
+    // The same threshold as calibrating the bare samples.
+    let scored: Vec<CalibrationSample> = calibration.iter().map(|(_, s)| *s).collect();
+    assert_eq!(
+        record.policy().threshold(),
+        calibrate_threshold(&scored, 0.1).unwrap()
+    );
+    assert_eq!(record.policy().calibration_rate(), 0.05);
+    assert_eq!(record.rule(), rule);
+    assert_eq!(record.version(), "policy-2");
+    assert_eq!(record.calibrated_on().len(), 40);
+    assert!(record
+        .calibrated_on()
+        .windows(2)
+        .all(|pair| pair[0] < pair[1]));
+
+    // Only adjudications the policy did not see are held out for evaluating it.
+    let mut later = calibration.clone();
+    later.extend(adjudicated("h"));
+    let held_out = record.held_out(&later);
+    assert_eq!(held_out.len(), 40);
+    assert!(held_out.iter().all(|(branch, _)| branch.0.starts_with('h')));
+
+    // A certified rule records its confidence too, and round-trips through parts.
+    let certified = PolicyRecord::calibrate(
+        "policy-3",
+        ThresholdRule::LearnThenTest {
+            alpha: 0.2,
+            delta: 0.1,
+        },
+        0.05,
+        &calibration,
+    )
+    .unwrap();
+    let mut reversed = certified.calibrated_on().to_vec();
+    reversed.reverse();
+    assert_eq!(
+        PolicyRecord::from_parts(
+            "policy-3",
+            certified.policy().threshold(),
+            0.05,
+            certified.rule(),
+            reversed
+        )
+        .unwrap(),
+        certified
+    );
+}
+
+#[test]
+fn a_recorded_policy_refuses_what_would_make_its_evaluation_dishonest() {
+    let calibration = adjudicated("c");
+    let crc = ThresholdRule::ConformalRiskControl { alpha: 0.1 };
+    let mut twice = calibration.clone();
+    twice.push(calibration[3].clone());
+    assert_eq!(
+        PolicyRecord::calibrate("v", crc, 0.05, &twice).unwrap_err(),
+        ArbiterError::DuplicateCalibrationBranch {
+            branch: "c3".into()
+        }
+    );
+    assert_eq!(
+        PolicyRecord::calibrate("", crc, 0.05, &calibration).unwrap_err(),
+        ArbiterError::EmptyVersion
+    );
+    assert_eq!(
+        PolicyRecord::calibrate("v", crc, 0.05, &[]).unwrap_err(),
+        ArbiterError::EmptyCalibration
+    );
+    assert!(matches!(
+        PolicyRecord::calibrate("v", ThresholdRule::Manual, 0.05, &calibration),
+        Err(ArbiterError::InvalidRule { rule: "manual", .. })
+    ));
+    assert!(matches!(
+        PolicyRecord::calibrate(
+            "v",
+            ThresholdRule::ConformalRiskControl { alpha: f64::NAN },
+            0.05,
+            &calibration
+        ),
+        Err(ArbiterError::InvalidRisk { field: "alpha", .. })
+    ));
+    assert!(matches!(
+        PolicyRecord::calibrate("v", crc, 1.0, &calibration),
+        Err(ArbiterError::InvalidExploration { .. })
+    ));
+    // A manual policy is calibrated on nothing, and a calibrated one on something.
+    let manual = PolicyRecord::manual(
+        "bootstrap",
+        TriagePolicy::new(AutoThreshold::Never, 0.1).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(manual.rule(), ThresholdRule::Manual);
+    assert!(manual.calibrated_on().is_empty());
+    assert_eq!(manual.held_out(&calibration).len(), 40);
+    assert!(matches!(
+        PolicyRecord::from_parts(
+            "v",
+            AutoThreshold::Never,
+            0.1,
+            ThresholdRule::Manual,
+            vec![BranchId::from("c1")]
+        ),
+        Err(ArbiterError::InvalidRule { rule: "manual", .. })
+    ));
+    assert_eq!(
+        PolicyRecord::from_parts("v", AutoThreshold::Never, 0.1, crc, vec![]).unwrap_err(),
+        ArbiterError::EmptyCalibration
+    );
 }

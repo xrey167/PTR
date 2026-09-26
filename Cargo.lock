@@ -3635,6 +3635,7 @@ dependencies = [
  "ptr-branch",
  "ptr-fastmem",
  "ptr-ledger",
+ "ptr-lineage",
  "ptr-search",
  "ptr-semdb",
  "ptr-state",

@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-25  
-**Code footprint:** 8 Rust source files · 714 nonblank source lines · 1 integration-test files · 30 `#[test]` markers
+**Last reviewed:** 2026-09-26  
+**Code footprint:** 8 Rust source files · 744 nonblank source lines · 1 integration-test files · 30 `#[test]` markers
 
 ### Implemented now
 
@@ -19,7 +19,7 @@
 - Brier score and expected calibration error with equal-width or equal-mass binning
 - Krippendorff's alpha for nominal data with missing values and direct single-category refusal
 - Welford running moments with an exact parallel merge
-- Metric vocabulary (auto-propose share, escalation share, conflict rate, adjudicated harm rate) with grouping, compiled to SQL by ptr-pg and to intervals here
+- Metric vocabulary (auto-propose share, escalation share, conflict rate, adjudicated harm rate, revert share) with grouping and an optional trailing window of days, compiled to SQL by ptr-pg and to intervals here; revert share is documented as a descriptive operational signal, not a harm rate
 - Every estimator refuses empty, non-finite or out-of-range input with a typed StatsError code
 
 ### Missing for the target architecture

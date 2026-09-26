@@ -126,6 +126,15 @@ pub enum ArbiterError {
     PositivityViolation { index: usize },
     /// No logged decisions were supplied.
     EmptyLog,
+    /// A recorded policy needs a version to be cited by.
+    EmptyVersion,
+    /// A threshold rule that does not fit how the policy was made.
+    InvalidRule {
+        rule: &'static str,
+        message: &'static str,
+    },
+    /// A calibration set names one branch twice; the unit is the branch.
+    DuplicateCalibrationBranch { branch: String },
 }
 
 impl ArbiterError {
@@ -138,6 +147,9 @@ impl ArbiterError {
             Self::InvalidPropensity { .. } => "PTR_ARBITER_INVALID_PROPENSITY",
             Self::PositivityViolation { .. } => "PTR_ARBITER_POSITIVITY_VIOLATION",
             Self::EmptyLog => "PTR_ARBITER_EMPTY_LOG",
+            Self::EmptyVersion => "PTR_ARBITER_EMPTY_VERSION",
+            Self::InvalidRule { .. } => "PTR_ARBITER_INVALID_RULE",
+            Self::DuplicateCalibrationBranch { .. } => "PTR_ARBITER_DUPLICATE_CALIBRATION_BRANCH",
         }
     }
 }
@@ -163,6 +175,12 @@ impl fmt::Display for ArbiterError {
                 "record {index}: the evaluated policy takes an action the logging policy never took"
             ),
             Self::EmptyLog => write!(formatter, "no logged decisions"),
+            Self::EmptyVersion => write!(formatter, "a recorded policy has no version"),
+            Self::InvalidRule { rule, message } => write!(formatter, "rule {rule}: {message}"),
+            Self::DuplicateCalibrationBranch { branch } => write!(
+                formatter,
+                "branch {branch:?} appears twice in one calibration set"
+            ),
         }
     }
 }

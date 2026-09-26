@@ -159,10 +159,17 @@ an escalated eligible branch, an ineligible branch has propensity zero, a logged
 triage or an outcome is never updated or deleted on its own (it goes only when its
 whole branch is erased), a branch is adjudicated once, a held-out sample cannot enter
 the replay pool, a consolidated
-adapter has sources rather than a parent, a label schema has at least two classes.
+adapter has sources rather than a parent, a label schema has at least two classes, a
+triage row cites a recorded policy, a policy and its calibration set are never
+rewritten and a branch one was calibrated on cannot be deleted, only a model labeling
+function names an adapter, and interference evidence stays within `[0, 1]` and is
+never rewritten.
 Covered by `a_sealed_branch_round_trips_with_every_dependency_and_op`,
-`triage_logs_and_outcomes_feed_the_platform_metrics` and
-`working_state_constraints_hold_in_the_database`.
+`triage_logs_and_outcomes_feed_the_platform_metrics`,
+`working_state_constraints_hold_in_the_database`,
+`triage_policies_record_their_calibration_and_hold_out_everything_else`,
+`a_labeling_function_names_an_adapter_only_as_a_model` and
+`interference_reports_are_stored_once_as_measured`.
 
 ### Boundary rules
 
@@ -254,6 +261,14 @@ verification:
 - The slice's harm rate is estimated with a self-normalised Horvitz-Thompson rate and
   a Wilson interval on the Kish effective sample size
   (`a_calibration_slice_reweighted_by_its_rate_estimates_the_population_rate`).
+- Every policy is **recorded** with its version, its rule and levels, and exactly
+  which adjudicated calibration-slice branches chose its threshold; triage rows cite
+  it by a foreign key. A policy's harm rate may only be estimated on adjudications it
+  was not calibrated on (`PolicyRecord::held_out`), the disjointness F003 needs, and a
+  policy calibrated on a branch nobody adjudicated is refused
+  (`a_recorded_policy_names_its_calibration_branches_and_holds_out_the_rest`,
+  `a_recorded_policy_refuses_what_would_make_its_evaluation_dishonest`,
+  `triage_policies_record_their_calibration_and_hold_out_everything_else`).
 
 ## 3. Fast-weight working memory (`ptr-fastmem`)
 
@@ -339,7 +354,10 @@ rank-deficient factors and can understate overlap
 `sharing_an_output_direction_is_full_output_overlap_and_names_the_culprit`). When a
 lineage grows too deep or too entangled, the next step is a TIES merge of the full
 updates into one consolidated adapter
-(`consolidation_resets_depth_and_is_due_past_the_policy_limits`).
+(`consolidation_resets_depth_and_is_due_past_the_policy_limits`). The report is stored
+with the candidate, one row per layer, so a promotion or consolidation decision can be
+audited against the evidence it was made on
+(`interference_reports_are_stored_once_as_measured`).
 
 Replay samples carry an FSRS-4.5 memory state updated from probe losses on the
 training clock, not wall time; priority grows with forgetting and difficulty, and
@@ -368,15 +386,26 @@ actively. Only uniform gold estimates population accuracy and calibration; on ac
 gold the evaluation reports accuracy on the sampled items only and withholds
 calibration. Calibration (Brier, ECE) comes from `ptr-analytics`, which also provides
 Krippendorff's α for multi-annotator gold; the labeling crate does not compute
-agreement yet.
+agreement yet. A model labeling function can name the adapter that produced its votes
+(refused on any other kind, in Rust and by a column constraint), and each function's
+class votes are scored against uniform gold with a Wilson interval, so labeling
+quality is measured per adapter
+(`only_a_model_function_may_be_attributed_to_an_adapter`,
+`per_function_accuracy_is_attributed_to_the_adapter_and_brackets_the_truth`).
 
 ## 6. Metrics and change distribution
 
 `ptr-analytics` defines each platform metric once, as a proportion over working
 records, and computes its interval
 (`a_metric_row_turns_into_an_interval_that_contains_its_point`); `ptr-pg` compiles
-the definition to SQL over the work schema only. A columnar mirror (`pg_duckdb`, an
-Iceberg mirror, DataFusion) is an evaluation slot and never feeds back into state.
+the definition to SQL over the work schema only. `RevertShare` counts merged branches
+later reverted; it is a descriptive operational signal, not a harm rate (reverts are
+decided by people who noticed something), and the calibrated harm rate remains
+`AdjudicatedHarmRate`. Any metric can be restricted to the last so many days, measured
+on the record that puts a branch into its denominator
+(`revert_share_counts_merged_branches_later_reverted_within_a_window`). A columnar
+mirror (`pg_duckdb`, an Iceberg mirror, DataFusion) is an evaluation slot and never
+feeds back into state.
 
 The projection event log is the substrate's change feed: written in the transaction
 that advances the watermark, read in commit order up to the watermark, with
