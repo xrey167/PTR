@@ -9,7 +9,8 @@ pub enum LineageError {
         expected: usize,
         actual: usize,
     },
-    /// A matrix or vector holds NaN or infinity.
+    /// A matrix, vector or scalar input holds NaN or infinity, or an update
+    /// would store one.
     NonFinite { field: &'static str },
     /// A matrix has no rows or no columns.
     Empty { field: &'static str },

@@ -10,7 +10,7 @@ implemented = [
   "Revoking a training input names every adapter, descendant and consolidation that depends on it",
   "Principal-angle overlap of the column and row spaces of delta_W = B A per layer, computed from the factors without forming the product, against its chance level, plus activation interference; matrix shapes whose size overflows are refused",
   "TIES merge of full updates for consolidation, due when depth or overlap exceeds the policy",
-  "FSRS-4.5 forgetting model on the training clock, lapse tracking with label-audit withholding, and stratified Gumbel-top-k sampling without replacement; model times must be finite and never precede a sample's last probe",
+  "FSRS-4.5 forgetting model on the training clock, lapse tracking with label-audit withholding, and stratified Gumbel-top-k sampling without replacement; model times must be finite and never precede a sample's last probe, and a probe whose update would store a nonfinite stability or difficulty is refused with the sample unchanged",
   "Held-out samples cannot enter the replay pool",
 ]
 

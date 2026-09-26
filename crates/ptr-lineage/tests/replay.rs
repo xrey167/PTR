@@ -216,3 +216,31 @@ fn a_nonfinite_model_time_is_refused_and_changes_nothing() {
     // The sample is still drawable once the clock moves on.
     assert_eq!(pool.sample(1, ModelTime(1e9), 1), vec!["a"]);
 }
+
+#[test]
+fn a_probe_whose_update_would_overflow_the_stability_is_refused_and_changes_nothing() {
+    // Finite parameters and model times: one stability interval after
+    // insertion, a successful probe multiplies the stability by about seven.
+    let huge = ReplayParams {
+        initial_stability: f64::MAX / 2.0,
+        growth: 100.0,
+        ..params()
+    };
+    let mut pool = ReplayPool::new(huge).unwrap();
+    pool.insert(sample("a", "task"), ModelTime(0.0)).unwrap();
+    let before = pool.get("a").unwrap().clone();
+    let now = ModelTime(huge.initial_stability);
+    assert_eq!(
+        pool.record_probe("a", 0.1, now),
+        Err(LineageError::NonFinite { field: "stability" })
+    );
+    assert_eq!(pool.get("a"), Some(&before));
+    // The sample keeps a positive priority instead of looking retained forever.
+    assert!(pool.priority(pool.get("a").unwrap(), now) > 0.0);
+    assert_eq!(pool.sample(1, now, 1), vec!["a"]);
+    // A lapse only shrinks the stability, so it is still recorded.
+    pool.record_probe("a", 3.0, now).unwrap();
+    let lapsed = pool.get("a").unwrap().memory;
+    assert!(lapsed.stability.is_finite() && lapsed.stability < before.memory.stability);
+    assert_eq!(lapsed.lapses, 1);
+}

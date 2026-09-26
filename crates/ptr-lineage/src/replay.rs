@@ -185,11 +185,16 @@ impl ReplayPool {
     /// difficulty rises.
     ///
     /// # Errors
-    /// Returns `LineageError::NonFinite` for a nonfinite loss or `now`,
+    /// Returns `LineageError::NonFinite` for a nonfinite loss or `now`, or
+    /// when the updated stability or difficulty would not be finite (finite
+    /// parameters and model times can still multiply a large stability past
+    /// `f64::MAX`, and an infinite stability would make the sample look
+    /// retained forever and its priority zero forever),
     /// `LineageError::UnknownSample` for an id not in the pool, and
     /// `LineageError::InvalidParameter` when `now` precedes the sample's last
     /// probe: the clock is monotone, and moving the last probe backward would
-    /// make the sample look more forgotten than it is. A refused probe leaves
+    /// make the sample look more forgotten than it is. The new memory state is
+    /// computed in full before anything is stored, so a refused probe leaves
     /// the sample's memory unchanged.
     pub fn record_probe(
         &mut self,
@@ -212,7 +217,7 @@ impl ReplayPool {
             .samples
             .get_mut(id)
             .ok_or_else(|| LineageError::UnknownSample { id: id.to_owned() })?;
-        let memory = &mut sample.memory;
+        let memory = sample.memory;
         if now.0 < memory.last_probe.0 {
             return Err(LineageError::InvalidParameter {
                 field: "model time",
@@ -221,16 +226,31 @@ impl ReplayPool {
         }
         let elapsed = now.0 - memory.last_probe.0;
         let recall = retrievability(elapsed, memory.stability);
-        if loss > params.lapse_loss {
-            memory.stability = (memory.stability * params.lapse_factor).max(params.min_stability);
-            memory.difficulty = (memory.difficulty + params.difficulty_step).min(10.0);
-            memory.lapses = memory.lapses.saturating_add(1);
+        let updated = if loss > params.lapse_loss {
+            MemoryState {
+                stability: (memory.stability * params.lapse_factor).max(params.min_stability),
+                difficulty: (memory.difficulty + params.difficulty_step).min(10.0),
+                last_probe: now,
+                lapses: memory.lapses.saturating_add(1),
+            }
         } else {
             let ease = (11.0 - memory.difficulty) / 10.0;
-            memory.stability *= 1.0 + params.growth * ease * (1.0 - recall);
-            memory.difficulty = (memory.difficulty - params.difficulty_step).max(1.0);
+            MemoryState {
+                stability: memory.stability * (1.0 + params.growth * ease * (1.0 - recall)),
+                difficulty: (memory.difficulty - params.difficulty_step).max(1.0),
+                last_probe: now,
+                lapses: memory.lapses,
+            }
+        };
+        for (field, value) in [
+            ("stability", updated.stability),
+            ("difficulty", updated.difficulty),
+        ] {
+            if !value.is_finite() {
+                return Err(LineageError::NonFinite { field });
+            }
         }
-        memory.last_probe = now;
+        sample.memory = updated;
         Ok(())
     }
 
