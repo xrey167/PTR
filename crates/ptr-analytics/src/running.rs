@@ -1,5 +1,11 @@
+use crate::error::StatsError;
+
 /// Streaming mean and variance by Welford's algorithm: one pass, numerically
 /// stable, mergeable across shards with Chan's update.
+///
+/// The mean and the sum of squared deviations are always finite: an update
+/// that would make either nonfinite is refused and leaves the summary as it
+/// was.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct RunningMoments {
     count: u64,
@@ -9,23 +15,32 @@ pub struct RunningMoments {
 
 impl RunningMoments {
     /// Include one observation in the count, mean, and variance.
-    /// Nonfinite values are included without validation and can make the
-    /// summary nonfinite.
-    pub fn push(&mut self, value: f64) {
-        self.count += 1;
+    ///
+    /// # Errors
+    /// Returns `StatsError::InvalidParameter` for a nonfinite value, or a
+    /// finite one whose squared deviation overflows the sum of squares (for
+    /// example `f64::MAX` after `-f64::MAX`); the summary is unchanged.
+    pub fn push(&mut self, value: f64) -> Result<(), StatsError> {
+        let count = self.count + 1;
         let delta = value - self.mean;
-        self.mean += delta / self.count as f64;
-        self.m2 += delta * (value - self.mean);
+        let mean = self.mean + delta / count as f64;
+        let m2 = self.m2 + delta * (value - mean);
+        *self = Self::checked(count, mean, m2, "value")?;
+        Ok(())
     }
 
     /// Combine two independent summaries as if every value had been pushed
     /// into one.
-    pub fn merge(&self, other: &Self) -> Self {
+    ///
+    /// # Errors
+    /// Returns `StatsError::InvalidParameter` when the combined mean or sum
+    /// of squared deviations would not be finite.
+    pub fn merge(&self, other: &Self) -> Result<Self, StatsError> {
         if self.count == 0 {
-            return *other;
+            return Ok(*other);
         }
         if other.count == 0 {
-            return *self;
+            return Ok(*self);
         }
         let count = self.count + other.count;
         let delta = other.mean - self.mean;
@@ -33,7 +48,17 @@ impl RunningMoments {
         let m2 = self.m2
             + other.m2
             + delta * delta * self.count as f64 * other.count as f64 / count as f64;
-        Self { count, mean, m2 }
+        Self::checked(count, mean, m2, "summary")
+    }
+
+    fn checked(count: u64, mean: f64, m2: f64, field: &'static str) -> Result<Self, StatsError> {
+        if !(mean.is_finite() && m2.is_finite()) {
+            return Err(StatsError::InvalidParameter {
+                field,
+                message: "would make the mean or the sum of squared deviations non-finite",
+            });
+        }
+        Ok(Self { count, mean, m2 })
     }
 
     pub fn count(&self) -> u64 {
@@ -59,7 +84,9 @@ mod tests {
     fn moments_match_the_two_pass_definition() {
         let values = [2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0];
         let mut moments = RunningMoments::default();
-        values.iter().for_each(|v| moments.push(*v));
+        for value in values {
+            moments.push(value).unwrap();
+        }
         assert_eq!(moments.mean(), Some(5.0));
         assert!((moments.sample_variance().unwrap() - 32.0 / 7.0).abs() < 1e-12);
     }
@@ -71,14 +98,14 @@ mod tests {
         let mut left = RunningMoments::default();
         let mut right = RunningMoments::default();
         for (i, v) in values.iter().enumerate() {
-            all.push(*v);
+            all.push(*v).unwrap();
             if i < 2 {
-                left.push(*v);
+                left.push(*v).unwrap();
             } else {
-                right.push(*v);
+                right.push(*v).unwrap();
             }
         }
-        let merged = left.merge(&right);
+        let merged = left.merge(&right).unwrap();
         assert_eq!(merged.count(), all.count());
         assert!((merged.mean().unwrap() - all.mean().unwrap()).abs() < 1e-12);
         assert!((merged.sample_variance().unwrap() - all.sample_variance().unwrap()).abs() < 1e-9);

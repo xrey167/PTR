@@ -25,6 +25,18 @@ pub struct WeightedRate {
 /// The interval uses `n_eff = (sum w)^2 / sum w^2`, which shrinks towards the
 /// number of heavily weighted units; a Wilson interval on the raw count would
 /// be far too narrow when a few audited units stand in for many.
+///
+/// The estimate and `n_eff` do not change when every weight is multiplied by
+/// the same factor, so both are computed on the weights divided by the
+/// largest one: any finite positive weights, however large or small, give the
+/// rate of a moderate copy instead of overflowing `sum w` or `w^2`.
+///
+/// # Errors
+/// Returns `StatsError::Empty` for no observations and
+/// `StatsError::InvalidParameter` for a weight that is not finite and
+/// positive, a `z` that is not finite and positive or is too large for a
+/// finite interval, or an estimate or effective sample size that would not be
+/// finite; nothing nonfinite is ever returned as a rate.
 pub fn weighted_rate(observations: &[WeightedOutcome], z: f64) -> Result<WeightedRate, StatsError> {
     if observations.is_empty() {
         return Err(StatsError::Empty {
@@ -46,16 +58,20 @@ pub fn weighted_rate(observations: &[WeightedOutcome], z: f64) -> Result<Weighte
             message: "every weight must be finite and positive",
         });
     }
-    let total: f64 = observations.iter().map(|o| o.weight).sum();
-    let squares: f64 = observations.iter().map(|o| o.weight * o.weight).sum();
-    let successes: f64 = observations
-        .iter()
-        .filter(|o| o.success)
-        .map(|o| o.weight)
-        .sum();
+    let largest = observations.iter().map(|o| o.weight).fold(0.0, f64::max);
+    let scaled = |o: &WeightedOutcome| o.weight / largest;
+    let total: f64 = observations.iter().map(scaled).sum();
+    let squares: f64 = observations.iter().map(|o| scaled(o) * scaled(o)).sum();
+    let successes: f64 = observations.iter().filter(|o| o.success).map(scaled).sum();
     let estimate = successes / total;
     let effective_n = total * total / squares;
-    let (low, high) = wilson_bounds(estimate, effective_n, z);
+    if !(estimate.is_finite() && effective_n.is_finite()) {
+        return Err(StatsError::InvalidParameter {
+            field: "weight",
+            message: "the weights give a non-finite estimate or effective sample size",
+        });
+    }
+    let (low, high) = wilson_bounds(estimate, effective_n, z)?;
     Ok(WeightedRate {
         estimate,
         effective_n,

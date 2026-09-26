@@ -19,7 +19,8 @@ pub struct RateEstimate {
 ///
 /// # Errors
 /// Returns an error for zero trials, successes exceeding trials, or a
-/// nonfinite or nonpositive `z`.
+/// nonfinite or nonpositive `z`, or one too large for a finite interval
+/// (its square overflows).
 pub fn wilson_interval(successes: u64, trials: u64, z: f64) -> Result<RateEstimate, StatsError> {
     if successes > trials {
         return Err(StatsError::InvalidCount { successes, trials });
@@ -35,7 +36,7 @@ pub fn wilson_interval(successes: u64, trials: u64, z: f64) -> Result<RateEstima
     }
     let n = trials as f64;
     let p = successes as f64 / n;
-    let (low, high) = wilson_bounds(p, n, z);
+    let (low, high) = wilson_bounds(p, n, z)?;
     Ok(RateEstimate {
         successes,
         trials,
@@ -45,12 +46,24 @@ pub fn wilson_interval(successes: u64, trials: u64, z: f64) -> Result<RateEstima
     })
 }
 
-pub(crate) fn wilson_bounds(p: f64, n: f64, z: f64) -> (f64, f64) {
+/// Wilson bounds for a finite proportion `p` on a finite positive `n`.
+///
+/// Refuses the interval unless its centre and half-width are finite: the
+/// clamps to `[0, 1]` would otherwise turn a NaN into the vacuous interval
+/// and hide it. With `p` and `n` finite, only a `z` whose square overflows
+/// gets there.
+pub(crate) fn wilson_bounds(p: f64, n: f64, z: f64) -> Result<(f64, f64), StatsError> {
     let z2 = z * z;
     let denominator = 1.0 + z2 / n;
     let centre = (p + z2 / (2.0 * n)) / denominator;
     let half = z * ((p * (1.0 - p) / n) + z2 / (4.0 * n * n)).sqrt() / denominator;
-    ((centre - half).max(0.0), (centre + half).min(1.0))
+    if !(centre.is_finite() && half.is_finite()) {
+        return Err(StatsError::InvalidParameter {
+            field: "z",
+            message: "is too large for a finite interval",
+        });
+    }
+    Ok(((centre - half).max(0.0), (centre + half).min(1.0)))
 }
 
 /// One-sided Clopper-Pearson upper bound: the `p` at which observing at most

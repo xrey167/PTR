@@ -38,7 +38,12 @@ fn scaling_all_importance_weights_preserves_the_estimate_and_interval() {
     });
     assert_eq!(weighted_rate(&scaled, 1.96).unwrap(), base);
     assert_eq!(base.estimate, 0.75);
-    assert_eq!(base.effective_n, 1.6);
+    // Dividing by the largest weight rounds the others once.
+    assert!(
+        (base.effective_n - 1.6).abs() < 1e-12,
+        "{}",
+        base.effective_n
+    );
 }
 
 #[test]
@@ -164,13 +169,13 @@ fn calibration_reports_the_invalid_item_and_alignment_errors() {
 fn empty_moment_summaries_are_merge_identities_and_one_sample_has_no_variance() {
     let empty = RunningMoments::default();
     let mut one = empty;
-    one.push(17.0);
+    one.push(17.0).unwrap();
     assert_eq!(one.count(), 1);
     assert_eq!(one.mean(), Some(17.0));
     assert_eq!(one.sample_variance(), None);
-    assert_eq!(empty.merge(&one), one);
-    assert_eq!(one.merge(&empty), one);
-    let two = one.merge(&one);
+    assert_eq!(empty.merge(&one), Ok(one));
+    assert_eq!(one.merge(&empty), Ok(one));
+    let two = one.merge(&one).unwrap();
     assert_eq!(two.count(), 2);
     assert_eq!(two.mean(), Some(17.0));
     assert_eq!(two.sample_variance(), Some(0.0));
@@ -225,4 +230,106 @@ fn a_calibration_slice_reweighted_by_its_rate_estimates_the_population_rate() {
     let rate = weighted_rate(&audited, 1.96).unwrap();
     assert!((rate.estimate - 0.1).abs() < 1e-12);
     assert!((rate.effective_n - 20.0).abs() < 1e-9);
+}
+
+#[test]
+fn importance_weights_at_either_end_of_the_float_range_give_the_rate_of_a_moderate_copy() {
+    let moderate = [
+        WeightedOutcome {
+            weight: 1.0,
+            success: false,
+        },
+        WeightedOutcome {
+            weight: 3.0,
+            success: true,
+        },
+    ];
+    let expected = weighted_rate(&moderate, 1.96).unwrap();
+    // Exact power-of-two copies: the sum of the huge pair overflows, the
+    // squares of the tiny pair underflow to zero.
+    let tiny = f64::MIN_POSITIVE * 0.5_f64.powi(48);
+    for factor in [2.0_f64.powi(1022), tiny] {
+        let copy = moderate.map(|o| WeightedOutcome {
+            weight: o.weight * factor,
+            ..o
+        });
+        assert_eq!(weighted_rate(&copy, 1.96), Ok(expected), "{factor:e}");
+    }
+    // One maximal weight is one effective observation, like any single weight.
+    let single = |weight| {
+        weighted_rate(
+            &[WeightedOutcome {
+                weight,
+                success: true,
+            }],
+            1.96,
+        )
+    };
+    let maximal = single(f64::MAX).unwrap();
+    assert_eq!(maximal, single(1.0).unwrap());
+    assert_eq!((maximal.estimate, maximal.effective_n), (1.0, 1.0));
+    assert!(maximal.low > 0.0 && maximal.high == 1.0);
+}
+
+#[test]
+fn a_quantile_too_large_for_a_finite_interval_is_refused() {
+    // The square of this z overflows; the clamps to [0, 1] used to turn the
+    // resulting NaN into a vacuous interval.
+    let refused = Err(StatsError::InvalidParameter {
+        field: "z",
+        message: "is too large for a finite interval",
+    });
+    assert_eq!(wilson_interval(8, 10, 1e200).map(|_| ()), refused);
+    assert_eq!(
+        weighted_rate(
+            &[WeightedOutcome {
+                weight: 1.0,
+                success: true
+            }],
+            1e200
+        )
+        .map(|_| ()),
+        refused
+    );
+    // A large z whose square is finite still gives an interval.
+    let wide = wilson_interval(8, 10, 1e150).unwrap();
+    assert!(wide.low <= wide.point && wide.point <= wide.high);
+}
+
+#[test]
+fn a_moment_summary_refuses_what_would_overflow_it_and_stays_unchanged() {
+    let mut moments = RunningMoments::default();
+    moments.push(f64::MAX).unwrap();
+    let before = moments;
+    // The deviation of -MAX from MAX is not finite; nor is a NaN or infinity.
+    for value in [-f64::MAX, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        assert_eq!(
+            moments.push(value),
+            Err(StatsError::InvalidParameter {
+                field: "value",
+                message: "would make the mean or the sum of squared deviations non-finite",
+            }),
+            "{value}"
+        );
+        assert_eq!(moments, before);
+    }
+    // Finite values whose squared deviations overflow the sum of squares.
+    let mut high = RunningMoments::default();
+    high.push(1e200).unwrap();
+    let mut low = RunningMoments::default();
+    low.push(-1e200).unwrap();
+    assert_eq!(
+        high.merge(&low),
+        Err(StatsError::InvalidParameter {
+            field: "summary",
+            message: "would make the mean or the sum of squared deviations non-finite",
+        })
+    );
+    let unchanged = high;
+    assert!(high.push(-1e200).is_err());
+    assert_eq!(high, unchanged);
+    // Values within range are still summarised.
+    moments.push(f64::MAX).unwrap();
+    assert_eq!(moments.mean(), Some(f64::MAX));
+    assert_eq!(moments.sample_variance(), Some(0.0));
 }
