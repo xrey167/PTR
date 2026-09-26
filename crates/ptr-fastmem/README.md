@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-26  
-**Code footprint:** 9 Rust source files · 2105 nonblank source lines · 4 integration-test files · 64 `#[test]` markers
+**Code footprint:** 9 Rust source files · 2194 nonblank source lines · 4 integration-test files · 66 `#[test]` markers
 
 ### Implemented now
 
@@ -19,7 +19,7 @@
 - In-process journal of admitted writes (keys normalised per head) plus checkpoints every C writes; revocation refolds from the last checkpoint before the first revoked write. restore takes the writes as composed (WriteRequest), which the storage keeps: ptr-pg stores each request as f32 bit patterns
 - Deterministic f32 fold: the refolded state is bit-identical to a memory that never saw the revoked writes
 - binding_digest_of names the ordered folded writes by sequence, source key, generation and input digest (not by key and value bits); ptr-pg recomputes it from the stored journal prefix, refuses to store a checkpoint that does not match and never returns one that no longer does
-- Seeded orthogonal key projection (its heads * head_dim * input_dim row cells checked and bounded by MAX_STATE_CELLS before allocating) and identifier codebook (codes no longer than MAX_HEADS * MAX_HEAD_DIM, the longest value vector); readouts decode to named capsules or to Unknown below a margin; constraint and procedure sources shape the state but are never decode candidates, and a decode policy that would fail open (zero limit, NaN or negative threshold) or a nonfinite score is refused
+- Seeded orthogonal key projection (at most MAX_HEADS * MAX_HEAD_DIM rows, the row count computed with checked arithmetic, from an embedding at most MAX_EMBEDDING_DIM = 8,192 wide, refused before allocating; every configuration check_config admits has a key and a value projection from every such width that is at least its head width) and identifier codebook (codes no longer than MAX_HEADS * MAX_HEAD_DIM, the longest value vector); readouts decode to named capsules or to Unknown below a margin; constraint and procedure sources shape the state but are never decode candidates, and a decode policy that would fail open (zero limit, NaN or negative threshold) or a nonfinite score is refused
 - PTRFW001 state codec with full f32 cells and a SHA-256 trailer
 - Bounded shapes, journal length, checkpoint interval and sequence numbers (a journal ends below u64::MAX, so its next write can always be numbered) with typed refusals; public validate_write shares restore admission rules
 - Value cells are bounded by MAX_VALUE_MAGNITUDE (2^24) at admission, independently of the state, so every fold of admitted writes stays finite whatever their order or subset and refolds after revocation admit exactly the same writes

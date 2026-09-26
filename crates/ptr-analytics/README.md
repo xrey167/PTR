@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-26  
-**Code footprint:** 8 Rust source files · 812 nonblank source lines · 1 integration-test files · 33 `#[test]` markers
+**Code footprint:** 8 Rust source files · 816 nonblank source lines · 1 integration-test files · 34 `#[test]` markers
 
 ### Implemented now
 
@@ -18,7 +18,7 @@
 - Self-normalised Horvitz-Thompson rate with a Wilson interval on the Kish effective sample size, for calibration slices audited at a known rate; computed on the weights divided by the largest, so finite positive weights of any magnitude neither overflow nor underflow it
 - Brier score and expected calibration error with equal-width or equal-mass binning
 - Krippendorff's alpha for nominal data with missing values and direct single-category refusal
-- Welford running moments with an exact parallel merge; a value or merge that would make the mean or the sum of squared deviations nonfinite is refused and leaves the summary unchanged
+- Welford running moments with an exact parallel merge whose cross term is evaluated so that no intermediate overflows unless the merged sum of squared deviations does; a value or merge that would make the mean or the sum of squared deviations nonfinite is refused and leaves the summary unchanged
 - Metric vocabulary (auto-propose share, escalation share, conflict rate, adjudicated harm rate, revert share) with grouping and an optional trailing window of days, compiled to SQL by ptr-pg and to intervals here; revert share is documented as a descriptive operational signal, not a harm rate
 - Every estimator refuses empty, non-finite or out-of-range input, including a quantile whose square overflows, with a typed StatsError code; no interval is built from a nonfinite intermediate
 

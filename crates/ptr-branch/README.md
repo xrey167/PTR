@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-26  
-**Code footprint:** 7 Rust source files · 1819 nonblank source lines · 3 integration-test files · 59 `#[test]` markers
+**Code footprint:** 7 Rust source files · 1871 nonblank source lines · 3 integration-test files · 61 `#[test]` markers
 
 ### Implemented now
 
@@ -24,7 +24,7 @@
 - Uniform calibration slice of eligible branches with a deterministic per-branch draw, logged auto-propose propensities and adjudication samples; a draw outside [0, 1) is refused
 - Threshold selection on a fixed grid by conformal risk control or by Learn-then-Test with Clopper-Pearson bounds
 - PolicyRecord names a policy's version, threshold rule and levels and exactly which adjudicated calibration-slice branches chose its threshold; held_out returns the adjudications it was not calibrated on, the only ones its harm rate may be estimated from
-- Off-policy evaluation by IPS, SNIPS and doubly robust estimates with a positivity check; a log with a propensity outside [0, 1] or a nonfinite reward is refused rather than estimated
+- Off-policy evaluation by IPS, SNIPS and doubly robust estimates with a positivity check; a log with a propensity outside [0, 1], a propensity so small that its importance weight is infinite, or a nonfinite reward is refused rather than estimated; SNIPS and the effective sample size are computed on weights divided by the largest, and an estimate that is still not finite is refused (NonFiniteEstimate) rather than returned
 
 ### Missing for the target architecture
 
