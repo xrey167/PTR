@@ -110,7 +110,8 @@ impl FastWeightState {
     }
 
     /// `o_h = S_h^T q_h` for every head. Crate-internal: callers read through
-    /// [`crate::FastMemory::read_admitted`], which checks every input first.
+    /// [`crate::FastMemory::read_admitted`], which checks the query's head
+    /// shape against this configuration and every input first.
     pub(crate) fn read(&self, query: &Query) -> Readout {
         let key_dim = self.config.key_dim;
         let value_dim = self.config.value_dim;

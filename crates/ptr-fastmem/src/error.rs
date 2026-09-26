@@ -11,7 +11,8 @@ pub enum FastMemoryError {
         value: u64,
         message: &'static str,
     },
-    /// A vector's length does not match the configured shape.
+    /// A vector's length, or a query's head count or head width, does not
+    /// match the configured shape.
     DimensionMismatch {
         field: &'static str,
         expected: usize,

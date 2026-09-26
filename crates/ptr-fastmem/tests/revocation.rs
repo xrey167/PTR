@@ -1,7 +1,7 @@
 mod common;
 
 use common::{config, write_about};
-use ptr_fastmem::{FastMemory, Query, SourceRef, WriteSeq};
+use ptr_fastmem::{FastMemory, FastMemoryConfig, FastMemoryError, Query, SourceRef, WriteSeq};
 use ptr_types::Generation;
 
 const SOURCES: [&str; 9] = ["a", "b", "c", "d", "e", "f", "g", "h", "i"];
@@ -111,6 +111,63 @@ fn a_read_is_denied_while_the_state_still_depends_on_a_revoked_input() {
     );
     memory.revoke(|source| source.key == "e");
     assert!(memory.read_admitted(&query, admissible).is_ok());
+}
+
+#[test]
+fn a_query_normalised_for_another_head_shape_is_refused() {
+    // The memory has two heads of eight.
+    let memory = memory_with(4, &SOURCES);
+    let key = write_about("a", 0).key;
+    // Four heads of four have the same flattened length; the read used to
+    // split them into heads they were not normalised for.
+    let regrouped = FastMemoryConfig {
+        heads: 4,
+        key_dim: 4,
+        ..config(4)
+    };
+    // One head of eight: the read used to leave the second head unread.
+    let fewer = FastMemoryConfig {
+        heads: 1,
+        ..config(4)
+    };
+    let narrower = FastMemoryConfig {
+        key_dim: 4,
+        ..config(4)
+    };
+    for (shape, raw, field, expected, actual) in [
+        (regrouped, key.clone(), "query_heads", 2, 4),
+        (fewer, key[..8].to_vec(), "query_heads", 2, 1),
+        (narrower, key[..8].to_vec(), "query_key_dim", 8, 4),
+    ] {
+        let query = Query::new(&shape, raw).unwrap();
+        assert_eq!(
+            (query.heads(), query.key_dim()),
+            (shape.heads, shape.key_dim)
+        );
+        let mismatch = FastMemoryError::DimensionMismatch {
+            field,
+            expected,
+            actual,
+        };
+        assert_eq!(
+            memory.read_admitted(&query, |_| true).unwrap_err(),
+            mismatch
+        );
+        // The shape is refused before admission is decided.
+        assert_eq!(
+            memory.read_admitted(&query, |_| false).unwrap_err(),
+            mismatch
+        );
+    }
+    // Value width, checkpoint interval and journal bound do not shape a query.
+    let other_values = FastMemoryConfig {
+        value_dim: 3,
+        checkpoint_interval: 1,
+        max_writes: 1,
+        ..config(4)
+    };
+    let query = Query::new(&other_values, key).unwrap();
+    assert!(memory.read_admitted(&query, |_| true).is_ok());
 }
 
 #[test]

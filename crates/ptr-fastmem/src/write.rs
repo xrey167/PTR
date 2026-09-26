@@ -96,21 +96,56 @@ impl MemoryWrite {
     }
 }
 
-/// A validated query: one unit vector per head.
+/// A validated query: one unit vector per head, and the head shape it was
+/// normalised for.
+///
+/// The flattened key alone does not say where one head ends and the next
+/// begins, so the query keeps `heads` and `key_dim`; a memory reads it only
+/// when both equal its own configuration.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Query {
+    heads: usize,
+    key_dim: usize,
     key: Vec<f32>,
 }
 
 impl Query {
     /// Normalise a raw query against `config`.
+    ///
+    /// # Errors
+    /// Rejects a configuration outside the supported ranges, a raw query whose
+    /// length is not `heads * key_dim`, nonfinite entries, and heads of zero or
+    /// nonfinite norm.
     pub fn new(config: &FastMemoryConfig, raw: Vec<f32>) -> Result<Self, FastMemoryError> {
+        crate::config::check_config(config)?;
         let key = normalized_heads(config, "query", raw)?;
-        Ok(Self { key })
+        Ok(Self {
+            heads: config.heads,
+            key_dim: config.key_dim,
+            key,
+        })
+    }
+
+    /// The number of heads the query was normalised for.
+    pub fn heads(&self) -> usize {
+        self.heads
+    }
+
+    /// The per-head width the query was normalised for.
+    pub fn key_dim(&self) -> usize {
+        self.key_dim
     }
 
     pub fn key(&self) -> &[f32] {
         &self.key
+    }
+
+    /// Refuse a query normalised for another head shape than `config`'s. Only
+    /// `heads` and `key_dim` shape a query, so memories that differ only in
+    /// value width, checkpoint interval or journal bound share queries.
+    pub(crate) fn check_shape(&self, config: &FastMemoryConfig) -> Result<(), FastMemoryError> {
+        check_len("query_heads", config.heads, self.heads)?;
+        check_len("query_key_dim", config.key_dim, self.key_dim)
     }
 }
 
@@ -257,6 +292,27 @@ mod tests {
     fn every_head_key_is_normalised_independently() {
         let write = admit_write(&config(), WriteSeq(1), request()).unwrap();
         assert_eq!(write.key(), &[0.6, 0.0, 0.8, 0.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn a_query_carries_its_head_shape_and_refuses_an_unsupported_configuration() {
+        let query = Query::new(&config(), vec![3.0, 0.0, 4.0, 0.0, 2.0, 0.0]).unwrap();
+        assert_eq!((query.heads(), query.key_dim()), (2, 3));
+        assert_eq!(query.key(), &[0.6, 0.0, 0.8, 0.0, 1.0, 0.0]);
+        // A zero key width used to reach `chunks_mut(0)` and panic.
+        assert!(matches!(
+            Query::new(
+                &FastMemoryConfig {
+                    key_dim: 0,
+                    ..config()
+                },
+                Vec::new()
+            ),
+            Err(FastMemoryError::InvalidConfig {
+                field: "key_dim",
+                ..
+            })
+        ));
     }
 
     #[test]

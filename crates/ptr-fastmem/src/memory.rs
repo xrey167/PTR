@@ -146,10 +146,18 @@ impl FastMemory {
     /// commit and the refold the memory therefore answers nothing rather than
     /// something stale. The readout is a derived value, never evidence; it
     /// enters reasoning only through decoding into search candidates.
+    ///
+    /// # Errors
+    /// First refuses a query normalised for another head shape
+    /// (`DimensionMismatch` naming `query_heads` or `query_key_dim`): its
+    /// components would be split into heads it was not normalised for, and the
+    /// readout would be plausible but wrong. Then refuses a state that depends
+    /// on an inadmissible source (`Denied`).
     pub fn read_admitted<F>(&self, query: &Query, admissible: F) -> Result<Readout, FastMemoryError>
     where
         F: Fn(&SourceRef) -> bool,
     {
+        query.check_shape(&self.config)?;
         let denied = self
             .writes
             .iter()
