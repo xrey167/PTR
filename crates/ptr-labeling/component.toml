@@ -1,7 +1,7 @@
 version = 1
 id = "ptr-labeling"
 maturity = "prototype"
-last_reviewed = "2026-09-25"
+last_reviewed = "2026-09-26"
 
 implemented = [
   "Label schemas, labeling functions by kind (verifier, heuristic, model, agent) and a vote matrix with abstention",
@@ -10,6 +10,7 @@ implemented = [
   "Resolution to Determined (every other class vetoed), Estimated at or above a required probability, Unknown, or Disputed when every class is vetoed",
   "Gold labels record source (oracle or human with annotator) and sampling (uniform or active); only uniform gold estimates population accuracy and calibration, while active gold reports accuracy on the sampled items and no calibration",
   "Evaluation with Brier score and expected calibration error from ptr-analytics",
+  "A model labeling function may name the adapter that produced its votes (refused on any other kind); function_accuracy scores each function's class votes against uniform gold with a Wilson interval, so labeling quality is measured per adapter",
   "Acquisition ranking by posterior entropy or margin that never proposes an item verifiers already determined",
 ]
 

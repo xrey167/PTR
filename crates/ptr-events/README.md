@@ -9,15 +9,15 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `scaffold`  
-**Last reviewed:** 2026-09-25  
-**Code footprint:** 2 Rust source files · 226 nonblank source lines · 2 integration-test files · 7 `#[test]` markers
+**Last reviewed:** 2026-09-26  
+**Code footprint:** 2 Rust source files · 242 nonblank source lines · 2 integration-test files · 8 `#[test]` markers
 
 ### Implemented now
 
 - RuntimeEvent taxonomy for request/snapshot/candidate/Pod/verifier/commit lifecycle
 - EventEnvelope with sequence number
 - EventProducer/EventConsumer contract with at-least-once delivery, monotone commits bounded by the end, and event classes separating projections from telemetry
-- InMemoryBus reference implementation: bounded, refusing a publish rather than dropping a record some registered consumer has not committed
+- InMemoryBus reference implementation: bounded, refusing a publish rather than dropping a record some registered consumer has not committed, and refusing a registration beyond the end, which would let the next publish trim records the consumer never polled
 
 ### Missing for the target architecture
 

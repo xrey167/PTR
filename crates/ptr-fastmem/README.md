@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-26  
-**Code footprint:** 9 Rust source files · 1709 nonblank source lines · 4 integration-test files · 51 `#[test]` markers
+**Code footprint:** 9 Rust source files · 1925 nonblank source lines · 4 integration-test files · 58 `#[test]` markers
 
 ### Implemented now
 
@@ -19,9 +19,10 @@
 - In-process journal of admitted writes (keys normalised per head) plus checkpoints every C writes; revocation refolds from the last checkpoint before the first revoked write. restore takes the writes as composed (WriteRequest), which the storage keeps: ptr-pg stores each request as f32 bit patterns
 - Deterministic f32 fold: the refolded state is bit-identical to a memory that never saw the revoked writes
 - binding_digest_of names the ordered folded writes by sequence, source key, generation and input digest (not by key and value bits); ptr-pg recomputes it from the stored journal prefix, refuses to store a checkpoint that does not match and never returns one that no longer does
-- Seeded orthogonal key projection and identifier codebook; readouts decode to named capsules or to Unknown below a margin
+- Seeded orthogonal key projection and identifier codebook; readouts decode to named capsules or to Unknown below a margin; constraint and procedure sources shape the state but are never decode candidates, and a decode policy that would fail open (zero limit, NaN or negative threshold) or a nonfinite score is refused
 - PTRFW001 state codec with full f32 cells and a SHA-256 trailer
 - Bounded shapes, journal length and checkpoint interval with typed refusals; public validate_write shares restore admission rules
+- Value cells are bounded by MAX_VALUE_MAGNITUDE (2^24) at admission, independently of the state, so every fold of admitted writes stays finite whatever their order or subset and refolds after revocation admit exactly the same writes
 
 ### Missing for the target architecture
 

@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-25  
-**Code footprint:** 6 Rust source files · 813 nonblank source lines · 1 integration-test files · 13 `#[test]` markers
+**Last reviewed:** 2026-09-26  
+**Code footprint:** 6 Rust source files · 934 nonblank source lines · 1 integration-test files · 16 `#[test]` markers
 
 ### Implemented now
 
@@ -20,6 +20,7 @@
 - Resolution to Determined (every other class vetoed), Estimated at or above a required probability, Unknown, or Disputed when every class is vetoed
 - Gold labels record source (oracle or human with annotator) and sampling (uniform or active); only uniform gold estimates population accuracy and calibration, while active gold reports accuracy on the sampled items and no calibration
 - Evaluation with Brier score and expected calibration error from ptr-analytics
+- A model labeling function may name the adapter that produced its votes (refused on any other kind); function_accuracy scores each function's class votes against uniform gold with a Wilson interval, so labeling quality is measured per adapter
 - Acquisition ranking by posterior entropy or margin that never proposes an item verifiers already determined
 
 ### Missing for the target architecture

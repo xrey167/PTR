@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-25  
-**Code footprint:** 7 Rust source files · 1481 nonblank source lines · 3 integration-test files · 48 `#[test]` markers
+**Last reviewed:** 2026-09-26  
+**Code footprint:** 7 Rust source files · 1507 nonblank source lines · 3 integration-test files · 50 `#[test]` markers
 
 ### Implemented now
 
@@ -18,10 +18,10 @@
 - Value digests hash the canonical journal bytes neural-state admission digests, so a branch and an admitted neural state never disagree about whether an input changed
 - Put and Remove only on keys the branch read; commutative counter additions and set insertions/removals rebase onto the target value at merge time
 - Reserved request: and pod-output: namespaces cannot be written by a branch
-- Certification refuses a changed read, a phantom under a scanned prefix, a revoked or superseded relied-on generation, or a snapshot older than the base; otherwise it yields one SemanticDelta plus the revision it was certified against
+- Certification refuses a changed read, a phantom under a scanned prefix, a revoked or superseded relied-on generation, or a snapshot older than the base; otherwise it yields one SemanticDelta plus the revision it was certified against, and MergePlan::digest binds the branch id, so an approval cannot be replayed for another branch
 - End-to-end test commits a certified plan through Runtime::apply_verified_semantic_delta and shows a plan certified before another commit is refused; using that path is the caller's obligation, because MergePlan exposes its delta and PtrRuntime::apply_semantic_delta is public and unverified
 - Verifier-bounded triage: only a Pass at full-semantic or deterministic level with no hard finding is eligible for auto-proposal
-- Uniform calibration slice of eligible branches with a deterministic per-branch draw, logged auto-propose propensities and adjudication samples
+- Uniform calibration slice of eligible branches with a deterministic per-branch draw, logged auto-propose propensities and adjudication samples; a draw outside [0, 1) is refused
 - Threshold selection on a fixed grid by conformal risk control or by Learn-then-Test with Clopper-Pearson bounds
 - Off-policy evaluation by IPS, SNIPS and doubly robust estimates with a positivity check
 
