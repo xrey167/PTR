@@ -9,7 +9,7 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-25  
+**Last reviewed:** 2026-09-26  
 **Code footprint:** 9 Rust source files · 1709 nonblank source lines · 4 integration-test files · 51 `#[test]` markers
 
 ### Implemented now
@@ -32,12 +32,12 @@
 ### Next milestones
 
 - Run M008 against a recency buffer and hybrid retrieval
-- Run L003 with crash and restore injection through the ptr-pg journal
+- Restore from the newest checkpoint plus the journal suffix, and extend L003 to it
 
 ### Linked experiments
 
 - [M008](../../experiments/model/M008-fast-weight-memory/README.md) — `planned`
-- [L003](../../experiments/lifecycle/L003-fastmem-revocation/README.md) — `running`
+- [L003](../../experiments/lifecycle/L003-fastmem-revocation/README.md) — `completed`
 
 ### Technology evaluations
 
@@ -54,6 +54,7 @@
 - tests/journal.rs restore and checkpoint codec
 - tests/recall.rs decode, update and Unknown
 - ptr-pg postgres test for journal revocation cascade
+- L003 revocation exactness through the ptr-pg journal (ptr-bench fastmem-revocation): five seeds on PostgreSQL 18, 16 of 16 planted defects detected
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->

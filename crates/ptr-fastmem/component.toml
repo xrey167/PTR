@@ -1,7 +1,7 @@
 version = 1
 id = "ptr-fastmem"
 maturity = "prototype"
-last_reviewed = "2026-09-25"
+last_reviewed = "2026-09-26"
 
 implemented = [
   "Multi-head matrix state updated by the gated delta rule in its Kimi Delta Attention form, with scalar, per-channel or no decay, read by o = S^T q",
@@ -22,7 +22,7 @@ missing = [
 
 next = [
   "Run M008 against a recency buffer and hybrid retrieval",
-  "Run L003 with crash and restore injection through the ptr-pg journal",
+  "Restore from the newest checkpoint plus the journal suffix, and extend L003 to it",
 ]
 
 experiments = [
@@ -44,5 +44,6 @@ checks = [
   "tests/journal.rs restore and checkpoint codec",
   "tests/recall.rs decode, update and Unknown",
   "ptr-pg postgres test for journal revocation cascade",
+  "L003 revocation exactness through the ptr-pg journal (ptr-bench fastmem-revocation): five seeds on PostgreSQL 18, 16 of 16 planted defects detected",
   "workspace fmt/check/test/clippy",
 ]

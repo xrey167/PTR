@@ -1,6 +1,6 @@
 version = 1
 id = "L003"
-status = "running"
+status = "completed"
 hypothesis = "Can a revoked input ever influence a fast-memory readout after revocation, replay, restore or crash?"
 metrics = "bit-identity failures; resurrected reads; writes replayed per revocation"
 baseline = "memory rebuilt from scratch without the revoked writes"

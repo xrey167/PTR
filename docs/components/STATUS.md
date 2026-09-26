@@ -17,7 +17,7 @@
 | [ptr-events](../../crates/ptr-events/README.md) | `scaffold` | 2 | 226 | 2 | 7 | 4 | 4 | E001:planned, F001:planned | event-streaming:open |
 | [ptr-exec](../../crates/ptr-exec/README.md) | `prototype` | 1 | 46 | 1 | 1 | 4 | 5 | R001:planned, E001:planned, E003:planned | execution-runtime:open |
 | [ptr-execwire](../../crates/ptr-execwire/README.md) | `prototype` | 3 | 1447 | 1 | 14 | 16 | 8 | — | — |
-| [ptr-fastmem](../../crates/ptr-fastmem/README.md) | `prototype` | 9 | 1709 | 4 | 51 | 8 | 3 | M008:planned, L003:running | fast-weight-memory:open |
+| [ptr-fastmem](../../crates/ptr-fastmem/README.md) | `prototype` | 9 | 1709 | 4 | 51 | 8 | 3 | M008:planned, L003:completed | fast-weight-memory:open |
 | [ptr-feedback](../../crates/ptr-feedback/README.md) | `scaffold` | 1 | 44 | 2 | 2 | 3 | 4 | F001:planned, E001:planned | — |
 | [ptr-ingress](../../crates/ptr-ingress/README.md) | `scaffold` | 1 | 45 | 1 | 1 | 4 | 4 | E001:planned, E004:planned | ingress-classifier:open |
 | [ptr-inspect](../../crates/ptr-inspect/README.md) | `scaffold` | 1 | 23 | 1 | 1 | 3 | 5 | E001:planned | introspection:open |
@@ -28,7 +28,7 @@
 | [ptr-model-api](../../crates/ptr-model-api/README.md) | `scaffold` | 4 | 83 | 2 | 3 | 5 | 5 | M007:planned, E001:planned, E003:planned | inference-serving:open |
 | [ptr-net](../../crates/ptr-net/README.md) | `prototype` | 2 | 305 | 3 | 1 | 13 | 6 | L002:planned, E001:planned | network:open |
 | [ptr-observe](../../crates/ptr-observe/README.md) | `scaffold` | 7 | 351 | 5 | 12 | 9 | 5 | F001:planned, E003:planned | observability:open |
-| [ptr-pg](../../crates/ptr-pg/README.md) | `prototype` | 14 | 3512 | 2 | 23 | 18 | 4 | L004:running, Q003:planned | relational-substrate:open, materialized-state:open, lexical-search:open, local-vector-search:open, event-streaming:open |
+| [ptr-pg](../../crates/ptr-pg/README.md) | `prototype` | 14 | 3512 | 2 | 23 | 18 | 4 | L004:completed, Q003:planned | relational-substrate:open, materialized-state:open, lexical-search:open, local-vector-search:open, event-streaming:open |
 | [ptr-pods](../../crates/ptr-pods/README.md) | `prototype` | 1 | 144 | 3 | 6 | 8 | 4 | R002:planned, E001:planned | environment-runtime:open |
 | [ptr-podwire](../../crates/ptr-podwire/README.md) | `prototype` | 4 | 1486 | 2 | 24 | 20 | 8 | — | — |
 | [ptr-protocol](../../crates/ptr-protocol/README.md) | `scaffold` | 2 | 121 | 2 | 2 | 6 | 4 | R002:planned, E001:planned | network-codec:open, local-serialization:open |

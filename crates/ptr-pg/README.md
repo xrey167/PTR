@@ -42,13 +42,13 @@
 
 ### Next milestones
 
-- Archive L004 results for the declared seeds (the harness, its mutation list and a CI smoke run exist)
+- Run L004 against PostgreSQL 16 and 17 and with readers concurrent with the projector
 - Run Q003 against the reference retrieval baselines
 - Add TLS and separate projector, reader and migrator roles
 
 ### Linked experiments
 
-- [L004](../../experiments/lifecycle/L004-projection-equivalence/README.md) — `running`
+- [L004](../../experiments/lifecycle/L004-projection-equivalence/README.md) — `completed`
 - [Q003](../../experiments/retrieval/Q003-postgres-hybrid/README.md) — `planned`
 
 ### Technology evaluations
@@ -70,6 +70,7 @@
 
 - unit tests for identifiers, catalogs, capability parsing, lifecycle mapping and metric SQL
 - tests/postgres.rs against a real server behind postgres-backend (CI job state-postgres)
+- L004 projection equivalence (ptr-bench projection-equivalence): five seeds on PostgreSQL 18, 17 of 17 planted defects detected
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->

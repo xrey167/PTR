@@ -422,6 +422,11 @@ with Apache Iggy, NATS and Kafka as candidates behind it.
 | [F002](../../experiments/feedback/F002-weak-supervision/README.md) | Is the verifier-precedence label model better calibrated than majority vote? | any label contradicting a verifier veto |
 | [E005](../../experiments/system/E005-agent-memory-benchmark/README.md) | Does the combined stack beat current agent-memory systems on LongMemEval and LoCoMo? | no category improvement at equal budget |
 
+L004 and L003 are completed for PostgreSQL 18 (2026-09-26): over five seeds each, with crashes, commits the
+server failed and races, no projection diverged from the reference, no foreign history was accepted, no
+refold differed by a bit and no revoked input was read; every planted defect of their mutation lists was
+detected. Results and limitations are in each experiment's `results/`.
+
 Evaluations: [relational-substrate](../../evaluations/components/relational-substrate/README.md),
 [fast-weight-memory](../../evaluations/components/fast-weight-memory/README.md),
 [label-model](../../evaluations/components/label-model/README.md),

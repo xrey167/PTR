@@ -1,6 +1,6 @@
 version = 1
 id = "L004"
-status = "running"
+status = "completed"
 hypothesis = "Is a PostgreSQL projection rebuilt by replay always equal to the reference projection, and does it refuse every foreign or rolled-back history?"
 metrics = "state and lifecycle divergence count; foreign histories accepted; rebuild time per 100k commits"
 baseline = "ptr-state MaterializedState reference and the Turso backend"

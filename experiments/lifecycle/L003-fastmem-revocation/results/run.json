@@ -1,0 +1,53 @@
+{
+  "experiment_id": "L003",
+  "status": "completed",
+  "scope": "fast memories with PostgreSQL journals and checkpoints, fed from lifecycle targets a ledger commits, supersedes and revokes through the projector, with crashes mid-append, mid-revocation and between operations, appends whose commit the server fails, appends and checkpoints racing revocations and stale checkpoints planted in storage, compared bit for bit with the never-saw-it fold the runtime replay admits",
+  "git_sha": "ad2f8d1a50b875f62f7899a8c0eb60dac000639f",
+  "recorded_at": "2026-09-26T10:10:02.582140+00:00",
+  "entrypoint": "cargo run --release --locked -p ptr-bench --features postgres-experiments -- fastmem-revocation <iterations> <seed>",
+  "seeds": [
+    {
+      "seed": 17,
+      "record": "run-20260926T092742.361656Z-seed-17.json",
+      "exit_code": 0
+    },
+    {
+      "seed": 29,
+      "record": "run-20260926T092854.611801Z-seed-29.json",
+      "exit_code": 0
+    },
+    {
+      "seed": 43,
+      "record": "run-20260926T092958.190682Z-seed-43.json",
+      "exit_code": 0
+    },
+    {
+      "seed": 71,
+      "record": "run-20260926T093102.635092Z-seed-71.json",
+      "exit_code": 0
+    },
+    {
+      "seed": 101,
+      "record": "run-20260926T093205.769723Z-seed-101.json",
+      "exit_code": 0
+    }
+  ],
+  "hard_pass": true,
+  "probe_coverage_ok": true,
+  "mutation_checks": {
+    "killed": 16,
+    "total": 16,
+    "git_sha": "ad2f8d1a50b875f62f7899a8c0eb60dac000639f"
+  },
+  "limitations": [
+    "one PostgreSQL 18 server on loopback; one process per memory, as the design has it",
+    "the server's durability settings are part of each seed's server string; a session kill or a dropped client cannot lose a committed transaction whatever they are",
+    "memory shapes up to 4 heads of 12x12 and journals up to a few hundred writes",
+    "an input's digest is fixed per generation: an input edit at an unchanged generation is the consumer's to exclude and is not exercised",
+    "exact revocation only: copies in dead tuples, WAL and backups are storage erasure, audited separately",
+    "the never-saw-it fold uses ptr-fastmem's own delta-rule arithmetic; that arithmetic is checked by the crate's unit tests, not here",
+    "a restore always folds the whole journal; restoring from a checkpoint plus the journal suffix has no API and is not exercised",
+    "the process is handed each committed record; reading the projection event log to drive the refold is not exercised",
+    "the seed fixes every choice; crash and race outcomes depend on timing"
+  ]
+}

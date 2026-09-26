@@ -113,12 +113,12 @@ status = "planned"
 [[experiment]]
 id = "L003"
 path = "lifecycle/L003-fastmem-revocation"
-status = "running"
+status = "completed"
 
 [[experiment]]
 id = "L004"
 path = "lifecycle/L004-projection-equivalence"
-status = "running"
+status = "completed"
 
 [[experiment]]
 id = "S003"
