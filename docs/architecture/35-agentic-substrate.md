@@ -418,7 +418,9 @@ required probability, `Unknown`, or `Disputed` when every class is vetoed
 (`a_verifier_veto_overrides_a_confident_model_and_vetoing_everything_is_a_dispute`).
 Gold labels record their source and whether they were sampled uniformly or
 actively. An evaluation set holds one resolved gold label per item
-(`an_evaluation_set_holds_one_gold_label_per_item`).
+(`an_evaluation_set_holds_one_gold_label_per_item`), and a gold class outside the
+schema is refused before anything is scored
+(`a_gold_class_outside_the_schema_is_refused_before_any_vote_is_scored`).
 Only uniform gold estimates population accuracy and calibration; on active
 gold the evaluation reports accuracy on the sampled items only and withholds
 calibration. Calibration (Brier, ECE) comes from `ptr-analytics`, which also provides

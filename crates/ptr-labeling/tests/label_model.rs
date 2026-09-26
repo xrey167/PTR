@@ -475,6 +475,40 @@ fn an_evaluation_set_holds_one_gold_label_per_item() {
 }
 
 #[test]
+fn a_gold_class_outside_the_schema_is_refused_before_any_vote_is_scored() {
+    let matrix = VoteMatrix::new(
+        LabelSchema::new(["a", "b"]).unwrap(),
+        vec![LabelingFunction::model("ranker", "adapter-1")],
+        vec![vec![Vote::Class(0)], vec![Vote::Class(1)]],
+    )
+    .unwrap();
+    let posteriors = vec![vec![0.9, 0.1], vec![0.2, 0.8]];
+    for sampling in [GoldSampling::Uniform, GoldSampling::Active] {
+        let mut set = EvaluationSet::new(sampling);
+        for (item, class) in [(0, 0), (1, 2)] {
+            set.push(GoldLabel {
+                item,
+                class,
+                source: GoldSource::Oracle,
+            })
+            .unwrap();
+        }
+        let unknown = LabelingError::UnknownClass {
+            class: 2,
+            classes: 2,
+        };
+        assert_eq!(
+            evaluate(&posteriors, &set, 1).unwrap_err(),
+            unknown,
+            "{sampling:?}"
+        );
+        if sampling == GoldSampling::Uniform {
+            assert_eq!(function_accuracy(&matrix, &set, 1.96).unwrap_err(), unknown);
+        }
+    }
+}
+
+#[test]
 fn an_em_tolerance_outside_zero_to_one_is_refused_and_zero_waits_for_a_fixed_point() {
     let (matrix, _) = synthetic();
     for tolerance in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1e-12, 1.0, 5.0] {

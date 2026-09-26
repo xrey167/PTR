@@ -142,8 +142,9 @@ pub struct FunctionAccuracy {
 /// sampled set over-represents the items the model found hardest.
 ///
 /// # Errors
-/// Refuses an empty or actively sampled gold set, a gold item beyond the vote
-/// matrix, and a `z` that is not finite and positive.
+/// Refuses an empty or actively sampled gold set, and a gold item beyond the
+/// vote matrix or a gold class outside its schema, before any vote is scored.
+/// Also refuses a `z` that is not finite and positive.
 pub fn function_accuracy(
     matrix: &VoteMatrix,
     gold: &EvaluationSet,
@@ -160,7 +161,7 @@ pub fn function_accuracy(
             message: "per-function accuracy needs a uniformly sampled gold set",
         });
     }
-    let mut counts = vec![(0u64, 0u64); matrix.functions().len()];
+    let classes = matrix.schema().len();
     for label in &gold.labels {
         if label.item >= matrix.items() {
             return Err(LabelingError::LengthMismatch {
@@ -168,6 +169,15 @@ pub fn function_accuracy(
                 actual: matrix.items(),
             });
         }
+        if label.class >= classes {
+            return Err(LabelingError::UnknownClass {
+                class: label.class,
+                classes,
+            });
+        }
+    }
+    let mut counts = vec![(0u64, 0u64); matrix.functions().len()];
+    for label in &gold.labels {
         for (count, vote) in counts.iter_mut().zip(matrix.row(label.item)) {
             if let Vote::Class(class) = vote {
                 count.1 += 1;
@@ -203,9 +213,10 @@ pub fn function_accuracy(
 /// ignored for an active set.
 ///
 /// # Errors
-/// Rejects an empty gold set or a gold item without a posterior. For uniform
-/// sets, also propagates statistics errors for invalid distributions, invalid
-/// truth indices, or zero bins; active sets do not perform those checks.
+/// Rejects an empty gold set, a gold item without a posterior, and a gold class
+/// outside its item's posterior, whatever the sampling. For uniform sets, also
+/// propagates statistics errors for invalid distributions or zero bins; active
+/// sets do not perform those checks.
 pub fn evaluate(
     posteriors: &[Vec<f64>],
     gold: &EvaluationSet,
@@ -225,6 +236,12 @@ pub fn evaluate(
                 expected: label.item + 1,
                 actual: posteriors.len(),
             })?;
+        if label.class >= posterior.len() {
+            return Err(LabelingError::UnknownClass {
+                class: label.class,
+                classes: posterior.len(),
+            });
+        }
         predicted.push(posterior.clone());
         truth.push(label.class);
     }
