@@ -1,6 +1,8 @@
 import contextlib
 import importlib.util
 import io
+import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -139,12 +141,15 @@ class MutationCheckTests(unittest.TestCase):
             "mutation": [{"name": "drop-row-lock", "expect": ["lost"]}],
         }
         ran = []
+        real_run = subprocess.run
 
-        def run_mutation(_plan, mutation, _timeout):
+        def run_mutation(_plan, mutation, _timeout, _watch=None):
             ran.append(mutation["name"])
             return {"name": mutation["name"], "result": "killed", "counters": {"lost": 1}}
 
-        def rebuild(command, **_kwargs):
+        def rebuild(command, **kwargs):
+            if command[0] == "git":
+                return real_run(command, **kwargs)
             return subprocess.CompletedProcess(command, rebuild_exit, "", "error: disk full")
 
         argv = ["mutation_check.py", "L003"] + ([] if only is None else ["--only", *only])
@@ -188,6 +193,140 @@ class MutationCheckTests(unittest.TestCase):
         for spec in ("*.rs", "scripts/mutation_check.py", f"{experiment}/tests/mutations.toml", experiment):
             self.assertIn(spec, specs)
         self.assertIn(f":(exclude){experiment}/results", specs)
+
+
+def git(root: Path, *args: str) -> str:
+    command = [
+        "git",
+        "-c", "user.name=PTR tests",
+        "-c", "user.email=tests@example.invalid",
+        "-c", "commit.gpgsign=false",
+        "-c", "init.defaultBranch=main",
+        *args,
+    ]
+    return subprocess.run(command, cwd=root, check=True, capture_output=True, text=True).stdout.strip()
+
+
+class RecordedRunWatchTests(unittest.TestCase):
+    """`mutations.json` names the commit the mutation run started from, so the
+    run's sources must stay that commit's, apart from the defects the checker
+    plants and removes itself, until the record is written."""
+
+    PLANTED = "pub fn f() -> u8 { 1 }\n"
+    OTHER = "pub fn g() {}\n"
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.directory.name)
+        self.experiment = self.root / "experiments/x/L900-x"
+        files = {
+            ".gitignore": "__pycache__/\n",
+            "Cargo.lock": "# lock\n",
+            "README.md": "readme\n",
+            "src/lib.rs": self.PLANTED,
+            "src/other.rs": self.OTHER,
+            "experiments/registry.toml": '[[experiment]]\nid = "L900"\npath = "x/L900-x"\nstatus = "running"\n',
+            "experiments/x/L900-x/experiment.toml": 'id = "L900"\nstatus = "running"\n',
+            "experiments/x/L900-x/results/.gitkeep": "",
+            "experiments/x/L900-x/tests/mutations.toml": (
+                'package = "ptr-bench"\nfeatures = "postgres-experiments"\nsubcommand = "bench"\n'
+                'cases = 1\nseed = 17\nhard_counters = ["wrong"]\n\n'
+                '[[mutation]]\nname = "return-two"\nfile = "src/lib.rs"\n'
+                'find = "{ 1 }"\nreplace = "{ 2 }"\nexpect = ["wrong"]\n'
+            ),
+        }
+        for relative, text in files.items():
+            path = self.root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+        git(self.root, "init", "-q")
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-q", "--no-verify", "-m", "code")
+        self.head = git(self.root, "rev-parse", "HEAD")
+        # Sources last written long ago, so rewriting one with the same text
+        # during a run changes its stamp whatever the clock's resolution.
+        for relative in ("src/lib.rs", "src/other.rs"):
+            os.utime(self.root / relative, ns=(10**18, 10**18))
+        self.record = self.experiment / "results/mutations.json"
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    def write(self, relative: str, text: str) -> None:
+        (self.root / relative).write_text(text, encoding="utf-8")
+
+    def run_check(self, during_build=None):
+        """`main` over the one-mutation plan in the temporary repository, with
+        cargo and the harness faked (the mutated harness is killed) and
+        `during_build` called while the mutated harness builds; returns the
+        exit status and what `main` printed."""
+        real_run = subprocess.run
+        builds = []
+
+        def run(command, **kwargs):
+            if command[0] == "git":
+                return real_run(command, **kwargs)
+            if command[0] == "cargo":
+                builds.append((self.root / "src/lib.rs").read_text(encoding="utf-8"))
+                if len(builds) == 1 and during_build is not None:
+                    during_build()
+                return subprocess.CompletedProcess(command, 0, "", "")
+            return subprocess.CompletedProcess(command, 1, json.dumps({"hard_failures": 1, "wrong": 1}) + "\n", "")
+
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(sys, "argv", ["mutation_check.py", "L900"]),
+            mock.patch.object(mod, "ROOT", self.root),
+            mock.patch.object(mod, "REGISTRY", self.root / "experiments/registry.toml"),
+            mock.patch.object(mod, "anchor_errors", return_value=[]),
+            mock.patch.object(mod.subprocess, "run", side_effect=run),
+            contextlib.redirect_stdout(stdout),
+        ):
+            status = mod.main()
+        # The mutated harness was built from the defect, and the checker put
+        # the source back.
+        self.assertEqual(builds[0], "pub fn f() -> u8 { 2 }\n")
+        self.assertEqual((self.root / "src/lib.rs").read_text(encoding="utf-8"), self.PLANTED)
+        return status, stdout.getvalue()
+
+    def test_a_mutation_run_whose_tree_stays_at_head_is_recorded_at_the_commit_it_started_from(self):
+        status, _ = self.run_check()
+        self.assertEqual(status, 0)
+        record = json.loads(self.record.read_text(encoding="utf-8"))
+        self.assertEqual((record["git_sha"], record["killed"], record["total"]), (self.head, 1, 1))
+
+    def test_a_mutation_run_whose_source_is_edited_and_restored_while_it_runs_is_not_recorded(self):
+        def edit_and_restore():
+            self.write("src/other.rs", "pub fn g() { panic!() }\n")
+            self.write("src/other.rs", self.OTHER)
+
+        status, stdout = self.run_check(edit_and_restore)
+        self.assertEqual(status, 2)
+        self.assertFalse(self.record.exists())
+        self.assertIn("not recording", stdout)
+        self.assertIn("src/other.rs", stdout)
+
+    def test_an_edit_to_a_planted_file_during_its_run_is_seen_though_the_checker_undoes_it(self):
+        # The checker restores the planted file from its own copy, which
+        # erases the edit the mutated build may have compiled.
+        status, stdout = self.run_check(lambda: self.write("src/lib.rs", "pub fn f() -> u8 { 3 + 4 }\n"))
+        self.assertEqual(status, 2)
+        self.assertFalse(self.record.exists())
+        self.assertIn("src/lib.rs", stdout)
+
+    def test_a_mutation_run_whose_sources_are_left_edited_is_not_recorded(self):
+        status, stdout = self.run_check(lambda: self.write("src/other.rs", "pub fn g() { panic!() }\n"))
+        self.assertEqual(status, 2)
+        self.assertFalse(self.record.exists())
+        self.assertIn("src/other.rs", stdout)
+
+    def test_a_mutation_run_during_which_head_moves_is_not_recorded(self):
+        status, stdout = self.run_check(
+            lambda: git(self.root, "commit", "-q", "--no-verify", "--allow-empty", "-m", "moved")
+        )
+        self.assertEqual(status, 2)
+        self.assertFalse(self.record.exists())
+        self.assertIn(f"HEAD moved from {self.head}", stdout)
 
 
 if __name__ == "__main__":

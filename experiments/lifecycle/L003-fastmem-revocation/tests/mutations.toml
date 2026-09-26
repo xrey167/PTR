@@ -51,10 +51,10 @@ description = "A supersession deletes only the new generation's writes, which do
 expect = ["journal_mismatches", "removed_count_mismatches", "stale_checkpoint_rows"]
 file = "crates/ptr-pg/src/adapters/projection.rs"
 find = '''
-        Removal::OtherThan => "<>",
+        Removal::Older => "<",
 '''
 replace = '''
-        Removal::OtherThan => "=",
+        Removal::Older => "=",
 '''
 
 [[mutation]]

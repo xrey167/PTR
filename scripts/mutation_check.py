@@ -14,12 +14,16 @@ broken something unrelated first (a query that no longer binds, say), which
 shows nothing about whether the harness sees the defect itself. Exiting any
 other way (a panic, a build failure, a timeout) or passing is recorded as it
 is. The record goes to the experiment's `results/mutations.json`, stamped with
-HEAD, so a run that writes it refuses to start from a working tree with
-uncommitted or untracked provenance files (`scripts/experiment_records.py`);
-the aggregators accept it only while its commit has the checkout's code,
-checker and mutation plan. Every name given to `--only` must be one the plan
-lists. Afterwards the unmutated harness is rebuilt, and the run fails if that
-rebuild does.
+the commit HEAD was at when the run started, so a run that writes it refuses
+to start from a working tree with uncommitted or untracked provenance files,
+and writes no record, exiting 2, when HEAD moved or a provenance file was
+written, created or removed while it ran, apart from the checker's own edits
+of the files it plants defects in (`ProvenanceWatch` in
+`scripts/experiment_records.py`); the aggregators accept it only while its
+commit has the checkout's code, checker and mutation plan. Every name given to
+`--only` must be one the plan lists; a run with `--only` writes no record and
+so checks no tree. Afterwards the unmutated harness is rebuilt, and the run
+fails if that rebuild does.
 
     python scripts/mutation_check.py L004
     python scripts/mutation_check.py L003 --only append-without-row-lock
@@ -32,6 +36,7 @@ the PostgreSQL experiments `PTR_PG_EXPERIMENT_DSN`); nothing here stores it.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as dt
 import json
 import subprocess
@@ -164,7 +169,19 @@ def classify(returncode: int, metrics: dict, plan: dict, mutation: dict) -> tupl
     return "crashed", fired
 
 
-def run_mutation(plan: dict, mutation: dict, timeout: int) -> dict:
+def own_writes(watch: experiment_records.ProvenanceWatch | None, files):
+    """The checker's own rewrite of `files`, which `watch` (when a record is
+    to be written) accepts as no change of the tree."""
+    return watch.rewriting(files) if watch is not None else contextlib.nullcontext()
+
+
+def run_mutation(
+    plan: dict, mutation: dict, timeout: int, watch: experiment_records.ProvenanceWatch | None = None
+) -> dict:
+    """Plant `mutation`, build and run the harness, and restore the edited
+    files whatever happens. With a `watch`, the checker's own writes of the
+    edited files are accepted and any other write to them is left for
+    `watch.changes` to report."""
     cases = int(mutation.get("cases", plan["cases"]))
     seed = int(mutation.get("seed", plan["seed"]))
     build, run = binary_command(plan, cases, seed)
@@ -175,8 +192,9 @@ def run_mutation(plan: dict, mutation: dict, timeout: int) -> dict:
         mutated = dict(originals)
         for file, find, replace in planned:
             mutated[file] = mutated[file].replace(find, replace, 1)
-        for file, text in mutated.items():
-            (ROOT / file).write_text(text, encoding="utf-8")
+        with own_writes(watch, mutated):
+            for file, text in mutated.items():
+                (ROOT / file).write_text(text, encoding="utf-8")
         built = subprocess.run(build, cwd=ROOT, capture_output=True, text=True, check=False)
         if built.returncode != 0:
             outcome.update(result="build-failed", detail=built.stderr[-2000:])
@@ -189,8 +207,9 @@ def run_mutation(plan: dict, mutation: dict, timeout: int) -> dict:
             outcome.update(result="timeout")
             return outcome
     finally:
-        for file, text in originals.items():
-            (ROOT / file).write_text(text, encoding="utf-8")
+        with own_writes(watch, originals):
+            for file, text in originals.items():
+                (ROOT / file).write_text(text, encoding="utf-8")
     metrics = last_json_line(ran.stdout)
     result, fired = classify(ran.returncode, metrics, plan, mutation)
     outcome.update(
@@ -219,13 +238,6 @@ def select(plan: dict, only: list[str]) -> tuple[list[dict], list[str]]:
     return selected, errors
 
 
-def git_sha() -> str:
-    try:
-        return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
-    except Exception:
-        return "unknown"
-
-
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("id")
@@ -248,11 +260,12 @@ def main() -> int:
     if errors:
         print("\n".join("ERROR: " + error for error in errors))
         return 2
+    watch = None
     if not args.only:
         # The record names HEAD as the code it mutated, so HEAD must hold
         # every file that decides it: refuse before planting anything.
         try:
-            dirty = experiment_records.uncommitted_files(
+            watch = experiment_records.ProvenanceWatch(
                 ROOT,
                 experiment_records.tree_pathspecs(
                     exp_root,
@@ -264,15 +277,15 @@ def main() -> int:
         except experiment_records.ProvenanceError as error:
             print(f"ERROR: {error}")
             return 2
-        if dirty:
+        if watch.uncommitted:
             print(
                 "ERROR: refusing to record mutations from a working tree whose sources HEAD does not "
-                f"hold; commit or remove {experiment_records.listed(dirty)}"
+                f"hold; commit or remove {experiment_records.listed(watch.uncommitted)}"
             )
             return 2
     outcomes = []
     for mutation in selected:
-        outcome = run_mutation(plan, mutation, args.timeout)
+        outcome = run_mutation(plan, mutation, args.timeout, watch)
         outcomes.append(outcome)
         print(f"{outcome['name']}: {outcome['result']} {outcome.get('counters', {})}", flush=True)
 
@@ -288,10 +301,24 @@ def main() -> int:
             + rebuilt.stderr[-2000:]
         )
 
-    if not args.only:
+    killed = all(outcome["result"] == "killed" for outcome in outcomes)
+    if watch is not None:
+        # Every mutated build read the tree while it ran: the record may name
+        # HEAD only if the tree stayed so, apart from the checker's own edits.
+        try:
+            changes = watch.changes()
+        except experiment_records.ProvenanceError as error:
+            changes = [str(error)]
+        if changes:
+            print(
+                "ERROR: not recording the mutations: their sources changed while they ran, so "
+                f"{watch.head} may not be the code they mutated; {'; '.join(changes)}; "
+                "rerun from a working tree that stays at HEAD"
+            )
+            return 2
         record = {
             "experiment_id": args.id,
-            "git_sha": git_sha(),
+            "git_sha": watch.head,
             "recorded_at": dt.datetime.now(dt.timezone.utc).isoformat(),
             "subcommand": plan["subcommand"],
             "killed": sum(outcome["result"] == "killed" for outcome in outcomes),
@@ -301,7 +328,6 @@ def main() -> int:
         out = exp_root / "results/mutations.json"
         out.write_text(json.dumps(record, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         print(out.relative_to(ROOT))
-    killed = all(outcome["result"] == "killed" for outcome in outcomes)
     return 0 if restored and killed else 1
 
 

@@ -30,3 +30,5 @@ python scripts/run_experiment.py run L001 --entrypoint process_entrypoint --seed
 ```
 
 The runner never invokes a shell. It tokenizes the versioned `entrypoint`, rejects undeclared seeds and unresolved placeholders, and writes a unique immutable JSON record containing the Git revision, manifest/lock hashes, exact argv, duration, exit status, stdout/stderr and launch errors. Failed executions remain evidence rather than being overwritten.
+
+The Git revision is the commit HEAD was at when the run started. The runner refuses to start from a working tree whose provenance files (the Rust and SQL sources, the Cargo and toolchain files, the recording scripts, the experiment's own files apart from its results) HEAD does not hold, and writes no record, exiting 2, when HEAD moved or one of those files was written, created or removed while the command ran, even if it was put back (`ProvenanceWatch` in `scripts/experiment_records.py`).

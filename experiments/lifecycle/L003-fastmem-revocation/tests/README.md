@@ -25,7 +25,8 @@ CI lints the harness and runs it for two cases against the `pgvector/pgvector:pg
 service; archived results come only from the seeds in `experiment.toml`.
 
 Seed runs and a mutation run that writes `results/mutations.json` start only from a
-working tree whose sources HEAD holds, and `aggregate.py` refuses records or mutation
+working tree whose sources HEAD holds, and write no record when HEAD moved or a source
+was written while they ran, even if it was put back. `aggregate.py` refuses records or mutation
 evidence whose commit differs from the checkout in code, recording scripts, the
 aggregator or, for mutation evidence, the mutation plan ([`scripts/experiment_records.py`](../../../../scripts/experiment_records.py)).
 A hard pass needs every seed to exit 0 with no hard failure and to reach every probe.

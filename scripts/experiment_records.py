@@ -31,10 +31,15 @@ checkout's code, mutation checker, aggregator and mutation plan
 never carries mutation counts of other code.
 
 `run_experiment.py` and `mutation_check.py` refuse to record from a working
-tree with uncommitted or untracked provenance files (`uncommitted_files`), so
-a record's `git_sha` is the code it ran. Records made by an older recorder
-cannot slip past this: the recorder is itself a provenance file, so a record
-aggregates only while the recorder is the one that ran it.
+tree with uncommitted or untracked provenance files (`uncommitted_files`), and
+a record names the commit HEAD was at when its run started. A run reads its
+sources while it runs (a `cargo run` entrypoint compiles them), so after the
+run they look at the tree again (`ProvenanceWatch`) and write no record when
+HEAD moved or a provenance file was written, created or removed meanwhile,
+even if its content was put back; `ProvenanceWatch.changes` names what that
+second look cannot see. Records made by an older recorder cannot slip past
+this: the recorder is itself a provenance file, so a record aggregates only
+while the recorder is the one that ran it.
 
 Archived results of a completed experiment must describe HEAD's code, or carry
 a `results/STALE.toml` marker saying since when they do not
@@ -53,6 +58,7 @@ import json
 import re
 import subprocess
 import tomllib
+from contextlib import contextmanager
 from pathlib import Path
 
 # The files that decide what an experiment binary does, as git pathspecs. A
@@ -186,6 +192,111 @@ def uncommitted_files(root: Path, pathspecs: list[str]) -> list[str]:
     if status.returncode != 0:
         raise ProvenanceError(f"cannot list the working tree: {status.stderr.strip()}")
     return [entry[3:] for entry in status.stdout.split("\0") if entry]
+
+
+def head_commit(root: Path) -> str:
+    """The full name of the commit HEAD is at in `root`. Raises
+    `ProvenanceError` when git cannot name one (no repository, no commit)."""
+    parsed = git(root, "rev-parse", "--verify", "--quiet", "HEAD^{commit}")
+    name = parsed.stdout.strip()
+    if parsed.returncode != 0 or not COMMIT.fullmatch(name):
+        raise ProvenanceError(f"cannot name the commit HEAD is at: {parsed.stderr.strip() or 'no commit'}")
+    return name
+
+
+# A file's inode, size, modification time and status-change time (ns).
+Stamp = tuple[int, int, int, int]
+
+
+def file_stamp(path: Path) -> Stamp | None:
+    """The stamp of `path`, or None when there is no such file."""
+    try:
+        status = path.lstat()
+    except FileNotFoundError:
+        return None
+    return (status.st_ino, status.st_size, status.st_mtime_ns, status.st_ctime_ns)
+
+
+def file_stamps(root: Path, pathspecs: list[str]) -> dict[str, Stamp | None]:
+    """The stamp of every file under `pathspecs` that git tracks or lists as
+    untracked (files it ignores excepted), by path relative to `root`; None
+    for a tracked file that is missing. On POSIX filesystems every write
+    moves a file's status-change time, which ordinary tools cannot set back,
+    so an edit that is undone still changes the stamp, unless it keeps the
+    file's inode and size and lands within the filesystem's timestamp
+    resolution of the stamp before it. Raises `ProvenanceError` when git
+    cannot list the files."""
+    files = git(root, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", *pathspecs)
+    if files.returncode != 0:
+        raise ProvenanceError(f"cannot list the working tree: {files.stderr.strip()}")
+    return {name: file_stamp(root / name) for name in files.stdout.split("\0") if name}
+
+
+class ProvenanceWatch:
+    """The provenance tree of a run (the files under `pathspecs` in `root`)
+    as it was when the run was about to start, to tell whether it stayed
+    that way until the run's record is written.
+
+    A record names one commit as the code it ran, but a run reads its sources
+    while it runs (a `cargo run` entrypoint compiles them first), so that
+    commit must be HEAD, with every provenance file as HEAD holds it, from
+    before the run starts until the record is written. Creating a watch
+    looks once: `head` is the commit HEAD is at and `uncommitted` lists the
+    files HEAD does not hold (`uncommitted_files`), which the caller refuses
+    before it runs anything. `changes` looks again and says what differs.
+    Raises `ProvenanceError` when git cannot tell."""
+
+    def __init__(self, root: Path, pathspecs: list[str]):
+        self.root = root
+        self.pathspecs = list(pathspecs)
+        self.head = head_commit(root)
+        self.stamps = file_stamps(root, self.pathspecs)
+        self.uncommitted = uncommitted_files(root, self.pathspecs)
+        self.foreign: set[str] = set()
+
+    @contextmanager
+    def rewriting(self, files):
+        """Let the run itself rewrite the watched `files` inside this block,
+        as the mutation checker does when it plants a defect and removes it
+        again. A write by anything else to one of them since the watch last
+        stamped it is still a change; what the block writes is stamped
+        afresh. Files the watch does not cover are ignored."""
+        watched = [name for name in files if name in self.stamps]
+        for name in watched:
+            if file_stamp(self.root / name) != self.stamps[name]:
+                self.foreign.add(name)
+        try:
+            yield
+        finally:
+            for name in watched:
+                self.stamps[name] = file_stamp(self.root / name)
+
+    def changes(self) -> list[str]:
+        """Why the tree may no longer be the code `head` names; empty when
+        the watch sees nothing that differs. It sees HEAD at another commit,
+        a file under the pathspecs that HEAD does not hold, and a file
+        written, replaced, created or removed since the watch looked (other
+        than inside `rewriting`), even when its content was put back.
+
+        It does not see a file created and removed again between its two
+        looks, a write that keeps a file's inode and size and lands within
+        the filesystem's timestamp resolution of the stamp before it, or
+        anything outside the pathspecs. Raises `ProvenanceError` when git
+        cannot tell."""
+        problems = []
+        head = head_commit(self.root)
+        if head != self.head:
+            problems.append(f"HEAD moved from {self.head} to {head}")
+        now = file_stamps(self.root, self.pathspecs)
+        written = self.foreign | {
+            name for name in self.stamps.keys() | now.keys() if self.stamps.get(name) != now.get(name)
+        }
+        if written:
+            problems.append(f"{listed(sorted(written))} changed on disk")
+        uncommitted = uncommitted_files(self.root, self.pathspecs)
+        if uncommitted:
+            problems.append(f"HEAD does not hold {listed(uncommitted)}")
+        return problems
 
 
 def resolve_commit(value: str, root: Path) -> str | None:

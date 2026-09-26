@@ -2,6 +2,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -242,8 +243,9 @@ class RevisionTests(unittest.TestCase):
         self.assertNotIn("experiments/L900-x/tests/mutations.toml", seeds)
 
 
-class SourceTreeTests(unittest.TestCase):
-    """`uncommitted_files` finds what a run would execute but HEAD does not hold."""
+class GitTree:
+    """A repository holding one experiment and the provenance pathspecs of
+    its seed records, committed."""
 
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -276,6 +278,10 @@ class SourceTreeTests(unittest.TestCase):
         path = self.root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
+
+
+class SourceTreeTests(GitTree, unittest.TestCase):
+    """`uncommitted_files` finds what a run would execute but HEAD does not hold."""
 
     def test_a_clean_tree_has_no_uncommitted_sources(self):
         self.assertEqual(mod.uncommitted_files(self.root, self.pathspecs), [])
@@ -311,6 +317,71 @@ class SourceTreeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaisesRegex(mod.ProvenanceError, "cannot list"):
                 mod.uncommitted_files(Path(directory), self.pathspecs)
+
+
+class ProvenanceWatchTests(GitTree, unittest.TestCase):
+    """`ProvenanceWatch` tells whether a run's tree stayed the commit its
+    record names from before the run until the record is written."""
+
+    def setUp(self):
+        super().setUp()
+        # A source last written long ago, so rewriting it with the same text
+        # changes its stamp whatever the clock's resolution.
+        os.utime(self.root / "src/lib.rs", ns=(10**18, 10**18))
+        self.watch = mod.ProvenanceWatch(self.root, self.pathspecs)
+
+    def test_a_tree_nothing_touched_has_no_changes(self):
+        self.assertEqual(self.watch.head, git(self.root, "rev-parse", "HEAD"))
+        self.assertEqual(self.watch.uncommitted, [])
+        self.write("experiments/L900-x/results/run-1-seed-1.json", "{}\n")
+        self.write("README.md")
+        self.assertEqual(self.watch.changes(), [])
+
+    def test_an_edit_undone_before_the_second_look_is_a_change(self):
+        # The run may have compiled the edit though HEAD holds the tree again.
+        self.write("src/lib.rs", "pub fn f() { g() }\n")
+        self.write("src/lib.rs", "pub fn f() {}\n")
+        self.assertEqual(mod.uncommitted_files(self.root, self.pathspecs), [])
+        self.assertEqual(self.watch.changes(), ["src/lib.rs changed on disk"])
+
+    def test_an_added_or_removed_source_is_a_change(self):
+        self.write("crates/new/src/lib.rs")
+        (self.root / "Cargo.toml").unlink()
+        self.assertEqual(
+            self.watch.changes(),
+            [
+                "Cargo.toml, crates/new/src/lib.rs changed on disk",
+                "HEAD does not hold Cargo.toml, crates/new/src/lib.rs",
+            ],
+        )
+
+    def test_head_moving_is_a_change_though_the_tree_is_clean(self):
+        before = self.watch.head
+        git(self.root, "commit", "-q", "--no-verify", "--allow-empty", "-m", "moved")
+        after = git(self.root, "rev-parse", "HEAD")
+        self.assertEqual(self.watch.changes(), [f"HEAD moved from {before} to {after}"])
+
+    def test_the_runs_own_rewrites_are_no_change_but_a_write_between_them_is(self):
+        with self.watch.rewriting(["src/lib.rs", "README.md"]):
+            self.write("src/lib.rs", "pub fn f() { g() }\n")
+            self.write("README.md")
+        with self.watch.rewriting(["src/lib.rs"]):
+            self.write("src/lib.rs", "pub fn f() {}\n")
+        self.assertEqual(self.watch.changes(), [])
+
+        with self.watch.rewriting(["src/lib.rs"]):
+            self.write("src/lib.rs", "pub fn f() { g() }\n")
+        # Something else writes the planted file; the run's restore then
+        # erases the edit its build may have compiled.
+        self.write("src/lib.rs", "pub fn f() { h(); g() }\n")
+        with self.watch.rewriting(["src/lib.rs"]):
+            self.write("src/lib.rs", "pub fn f() {}\n")
+        self.assertEqual(self.watch.changes(), ["src/lib.rs changed on disk"])
+
+    def test_a_tree_git_cannot_name_a_commit_of_is_an_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(mod.ProvenanceError, "cannot name the commit HEAD is at"):
+                mod.ProvenanceWatch(Path(directory), self.pathspecs)
 
 
 class StalenessTests(unittest.TestCase):

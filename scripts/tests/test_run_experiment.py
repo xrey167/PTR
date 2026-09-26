@@ -1,7 +1,11 @@
 import contextlib
 import importlib.util
 import io
+import json
+import os
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -109,6 +113,123 @@ class ExperimentRunnerTests(unittest.TestCase):
         self.assertEqual(status, 0)
         execute.assert_called_once()
         self.assertEqual(write.call_args.args[1]["seed"], 17)
+
+
+def git(root: Path, *args: str) -> str:
+    command = [
+        "git",
+        "-c", "user.name=PTR tests",
+        "-c", "user.email=tests@example.invalid",
+        "-c", "commit.gpgsign=false",
+        "-c", "init.defaultBranch=main",
+        *args,
+    ]
+    return subprocess.run(command, cwd=root, check=True, capture_output=True, text=True).stdout.strip()
+
+
+class RunWatchTests(unittest.TestCase):
+    """A seed record names the commit its run started from, so its sources must
+    stay that commit's from before the run until the record is written: a
+    `cargo run` entrypoint compiles whatever the tree holds while it runs."""
+
+    ORIGINAL = "pub fn f() {}\n"
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.directory.name)
+        files = {
+            ".gitignore": "__pycache__/\n",
+            "Cargo.lock": "# lock\n",
+            "README.md": "readme\n",
+            "src/lib.rs": self.ORIGINAL,
+            "experiments/registry.toml": '[[experiment]]\nid = "L900"\npath = "x/L900-x"\nstatus = "running"\n',
+            "experiments/x/L900-x/experiment.toml": (
+                'id = "L900"\nstatus = "running"\nseeds = [17]\nentrypoint = "bench <seed>"\n'
+            ),
+            "experiments/x/L900-x/results/.gitkeep": "",
+        }
+        for relative, text in files.items():
+            path = self.root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+        git(self.root, "init", "-q")
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-q", "--no-verify", "-m", "code")
+        self.head = git(self.root, "rev-parse", "HEAD")
+        # A source last written long ago, so rewriting it with the same text
+        # during a run changes its stamp whatever the clock's resolution.
+        os.utime(self.root / "src/lib.rs", ns=(10**18, 10**18))
+        self.results = self.root / "experiments/x/L900-x/results"
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    def run_seed(self, during=None):
+        """Run seed 17 of L900 in the temporary repository, calling `during`
+        while the command "runs"; returns the exit status, the records written
+        and what was printed to stderr."""
+
+        def execute(_command):
+            if during is not None:
+                during()
+            return {"exit_code": 0, "stdout": "", "stderr": "", "launch_error": None, "duration_ns": 1}
+
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(mod, "ROOT", self.root),
+            mock.patch.object(mod, "REGISTRY", self.root / "experiments/registry.toml"),
+            mock.patch.object(mod, "execute_command", side_effect=execute),
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(stderr),
+        ):
+            status = mod.run_experiment("L900", entrypoint="entrypoint", seed=17)
+        records = [json.loads(path.read_text(encoding="utf-8")) for path in sorted(self.results.glob("run-*.json"))]
+        return status, records, stderr.getvalue()
+
+    def write(self, relative: str, text: str) -> None:
+        (self.root / relative).write_text(text, encoding="utf-8")
+
+    def test_a_seed_run_whose_tree_stays_at_head_is_recorded_at_the_commit_it_started_from(self):
+        status, records, stderr = self.run_seed()
+        self.assertEqual((status, stderr), (0, ""))
+        self.assertEqual([record["git_sha"] for record in records], [self.head])
+
+    def test_a_seed_run_whose_source_is_edited_and_restored_while_it_runs_is_not_recorded(self):
+        # The build may have compiled the edit; the tree looks clean again
+        # when the run ends.
+        def edit_and_restore():
+            self.write("src/lib.rs", "pub fn f() { panic!() }\n")
+            self.write("src/lib.rs", self.ORIGINAL)
+
+        status, records, stderr = self.run_seed(edit_and_restore)
+        self.assertEqual((status, records), (2, []))
+        self.assertIn("not recording", stderr)
+        self.assertIn("src/lib.rs", stderr)
+        self.assertEqual(git(self.root, "status", "--porcelain"), "")
+
+    def test_a_seed_run_whose_sources_are_left_edited_or_added_to_is_not_recorded(self):
+        for relative in ("src/lib.rs", "src/new.rs", "experiments/x/L900-x/config.toml"):
+            with self.subTest(file=relative):
+                try:
+                    status, records, stderr = self.run_seed(lambda: self.write(relative, "changed\n"))
+                    self.assertEqual((status, records), (2, []))
+                    self.assertIn(relative, stderr)
+                finally:
+                    git(self.root, "checkout", "-q", "--", ".")
+                    git(self.root, "clean", "-qfd")
+
+    def test_a_seed_run_during_which_head_moves_is_not_recorded(self):
+        status, records, stderr = self.run_seed(
+            lambda: git(self.root, "commit", "-q", "--no-verify", "--allow-empty", "-m", "moved")
+        )
+        self.assertEqual((status, records), (2, []))
+        self.assertIn(f"HEAD moved from {self.head}", stderr)
+
+    def test_a_record_the_results_hold_is_no_change_of_the_sources(self):
+        # Records accumulate in results/, which the run writes into itself.
+        status, records, _ = self.run_seed(lambda: self.write("experiments/x/L900-x/results/other.json", "{}\n"))
+        self.assertEqual(status, 0)
+        self.assertEqual(len(records), 1)
 
 
 if __name__ == "__main__":
