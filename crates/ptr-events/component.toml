@@ -20,7 +20,7 @@ missing = [
 next = [
   "Bridge the ptr-pg projection event log to the EventConsumer contract",
   "Implement Iggy adapter behind it",
-  "Connect trajectory/training consumer",
+  "Connect trajectory/training consumer: read semantic.delta_committed by consumer offset, read each delta from the ledger at its commit, admit it only if its branch merged and was neither reverted nor adjudicated harmful, and key examples by commit index, so a redelivery or a rebuild admits none twice",
 ]
 
 experiments = [

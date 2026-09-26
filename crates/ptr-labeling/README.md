@@ -29,6 +29,7 @@
 - A dependency-aware model for correlated labeling functions
 - Annotator reliability modelling
 - Label snapshot registration and a labeling adapter through ptr-pg (the work schema already carries the model-to-adapter link)
+- A labeling-function runner outside this crate that records the adapter of each model function, the admitted principal behind each agent function and the input generation of each item (which component owns it is open)
 
 ### Next milestones
 
@@ -86,7 +87,7 @@ PTR keeps this responsibility in its own crate so the semantics remain stable ev
 
 ## Explicit non-responsibilities
 
-- running labeling functions
+- running labeling functions (a runner in another component will record each model function's adapter, the admitted principal behind each agent function and each item's input generation)
 - storing datasets
 - training models
 
@@ -94,8 +95,8 @@ PTR keeps this responsibility in its own crate so the semantics remain stable ev
 
 | Direction | Contract |
 |---|---|
-| Input | LabelSchema, labeling functions, VoteMatrix, gold labels |
-| Output | LabelModel, LabelOutcome per item, EvaluationReport, annotation ranking |
+| Input | LabelSchema, labeling functions (a model function may name the adapter that produced its votes), VoteMatrix, gold labels |
+| Output | LabelModel, LabelOutcome per item, EvaluationReport, FunctionAccuracy per function and adapter on uniform gold, annotation ranking |
 | Failure | Explicit typed error / rejected state; no silent fallback that changes semantics |
 | Observability | Standard PTR tracing fields and a stable component span |
 

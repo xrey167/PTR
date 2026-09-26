@@ -19,6 +19,7 @@ missing = [
   "A dependency-aware model for correlated labeling functions",
   "Annotator reliability modelling",
   "Label snapshot registration and a labeling adapter through ptr-pg (the work schema already carries the model-to-adapter link)",
+  "A labeling-function runner outside this crate that records the adapter of each model function, the admitted principal behind each agent function and the input generation of each item (which component owns it is open)",
 ]
 
 next = [

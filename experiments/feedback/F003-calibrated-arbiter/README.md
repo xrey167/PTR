@@ -15,5 +15,7 @@ An upper confidence bound above alpha on held-out adjudications, or any auto-pro
 ## Design
 Mechanism and threat model: [35 — Agentic substrate](../../../docs/architecture/35-agentic-substrate.md).
 
+Held-out adjudications are those outside the recorded calibration set of the policy under test (`PolicyRecord::held_out`), and the rule that picks each calibration set, for example every adjudication observed before the policy was recorded, is fixed before the run. Also fixed before the first adjudication: whether adjudicators see a branch's stated intent, and the key namespaces by which the adjudicated harm rate is reported as a descriptive breakdown next to the global rate.
+
 ## Rule
 Record matched baselines, hardware, seeds and negative results. Do not change success criteria after observing results.

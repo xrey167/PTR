@@ -18,6 +18,9 @@ missing = [
   "Adapter promotion and revocation as committed ledger events",
   "Serving admission through checkpoint binding",
   "A lineage adapter in ptr-pg over the rest of the work schema (ptr-pg stores interference reports only)",
+  "A training-run record per adapter run once an adapter is actually trained: training chain, adapter produced, run-manifest input fingerprint and adapter data fingerprint (different digests), trigger event, replay and new sample counts, wall-clock and model times, gate result",
+  "Replay samples and probes keyed by the training chain whose weights and clock they were measured on, not by base model and revision, so concurrent chains on one base model keep separate clocks",
+  "An adapter's function_accuracy on uniform gold absent from its data manifest recorded as a metric of its evaluation run and usable as a task score of the forgetting gate",
 ]
 
 next = [

@@ -215,7 +215,7 @@ id = "ptr-labeling"
 ports = ["LabelModel", "AcquisitionRanker", "GoldEvaluator"]
 type_families = ["weak-supervision", "statistics-metrics"]
 backend_slots = ["label-model"]
-open_decisions = ["correlated functions", "annotator reliability", "snapshot registration"]
+open_decisions = ["correlated functions", "annotator reliability", "snapshot registration", "which component runs labeling functions and records their adapters, principals and input generations"]
 
 [[component]]
 id = "ptr-lineage"

@@ -178,7 +178,7 @@ owner = "training"
 status = "scaffold"
 purpose = "Reproducible datasets, runs, checkpoints, metrics and evaluation evidence."
 implemented = ["training run manifest v2 preparation", "experiment/evaluation manifest schemas"]
-open = ["DatasetRef", "DatasetSplitRef", "CheckpointRef", "TrainingRunId", "MetricRecord", "EvaluationRun", "BaselineRef", "AblationRef", "HardwareFingerprint"]
+open = ["DatasetRef", "DatasetSplitRef", "CheckpointRef", "TrainingRunId", "TrainingChainId", "MetricRecord", "EvaluationRun", "BaselineRef", "AblationRef", "HardwareFingerprint"]
 invariants = ["training inputs are hash-addressable", "failed/negative results remain evidence"]
 
 [[family]]
@@ -186,7 +186,7 @@ id = "statistics-metrics"
 owner = "ptr-analytics"
 status = "prototype"
 purpose = "One statistics kernel and one metric vocabulary for every rate, interval, calibration score and agreement coefficient the platform reports."
-implemented = ["RateEstimate", "WeightedOutcome", "WeightedRate", "Binning", "RunningMoments", "Metric", "MetricSpec", "Grouping", "MetricRow", "StatsError"]
+implemented = ["RateEstimate", "WeightedOutcome", "WeightedRate", "Binning", "RunningMoments", "Metric", "MetricSpec", "Grouping", "Window", "MetricRow", "StatsError"]
 open = ["MetricCatalogVersion", "Stratum", "SequentialTest"]
 invariants = ["intervals are computed once, here", "metrics are defined in PTR terms and compiled per backend", "no metric is evidence about semantic state"]
 
@@ -195,7 +195,7 @@ id = "branch-speculation"
 owner = "ptr-branch"
 status = "prototype"
 purpose = "Speculative agent branches over immutable snapshots, certified against declared dependencies and triaged by a verifier-bounded calibrated policy."
-implemented = ["BranchId", "Branch", "SealedBranch", "BranchOp", "ValueDigest", "RangeDigest", "InputsDigest", "Certification", "MergePlan", "TriagePolicy", "TriageDecision", "TriageOutcome", "AutoThreshold", "CalibrationSample", "LoggedTriage", "OffPolicyEstimate", "BranchError", "ArbiterError"]
+implemented = ["BranchId", "Branch", "SealedBranch", "BranchOp", "ValueDigest", "RangeDigest", "InputsDigest", "Certification", "MergePlan", "TriagePolicy", "TriageDecision", "TriageOutcome", "AutoThreshold", "CalibrationSample", "ThresholdRule", "PolicyRecord", "LoggedTriage", "OffPolicyEstimate", "BranchError", "ArbiterError"]
 open = ["BranchLease", "TypedMergeOperator registry", "PredicateDigest beyond prefixes"]
 invariants = ["a branch never writes semantic state", "a plan is committed through verified delta publication (a caller obligation until enforced by type)", "triage never moves a branch past verification"]
 
@@ -213,7 +213,7 @@ id = "weak-supervision"
 owner = "ptr-labeling"
 status = "prototype"
 purpose = "Labeling-function votes, a Dawid-Skene label model with verifier precedence, acquisition ranking and gold labels that cannot be confused with predictions."
-implemented = ["LabelSchema", "LabelingFunction", "FunctionKind", "Vote", "VoteMatrix", "LabelModel", "DawidSkeneParams", "LabelOutcome", "ModelWarning", "GoldLabel", "GoldSource", "GoldSampling", "EvaluationSet", "EvaluationReport", "Calibration", "Acquisition", "LabelingError"]
+implemented = ["LabelSchema", "LabelingFunction", "FunctionKind", "Vote", "VoteMatrix", "LabelModel", "DawidSkeneParams", "LabelOutcome", "ModelWarning", "GoldLabel", "GoldSource", "GoldSampling", "EvaluationSet", "EvaluationReport", "Calibration", "FunctionAccuracy", "Acquisition", "LabelingError"]
 open = ["dependency-aware label model", "annotator reliability model", "label snapshot card schema"]
 invariants = ["a verifier veto is never outvoted", "Unknown and Disputed are valid outcomes", "only uniformly sampled gold estimates accuracy"]
 

@@ -45,6 +45,7 @@
 - Connection pooling and a logical-replication change feed
 - Adapters for the rest of the lineage catalog and for the labeling tables (interference reports and triage policies have them)
 - Effect applier for business tables through the effect boundary
+- Replay sample and probe rows keyed by the training chain whose clock they were measured on, added with the replay-table adapter before it reads or writes a replay row
 
 ### Next milestones
 

@@ -161,7 +161,7 @@ status = "deferred"
 contract = "Scale-out derived retrieval without becoming semantic authority."
 evaluation = "distributed-search"
 candidates = ["Havenask", "Quickwit", "OpenSearch"]
-open_questions = ["scale threshold for introduction", "index generation validation", "partition consistency"]
+open_questions = ["scale threshold for introduction", "index generation validation", "partition consistency", "an object-storage-first or tiered index once one PostgreSQL instance is measured not to be enough"]
 
 [[slot]]
 id = "structural-code-search"
@@ -179,7 +179,7 @@ status = "scaffold"
 contract = "Content-addressed immutable/raw artifact storage independent of physical backend."
 evaluation = "object-storage"
 candidates = ["local filesystem", "OpenDAL", "S3-compatible", "Azure/GCS via adapter"]
-open_questions = ["BLAKE3 vs SHA family identity", "streaming API", "private artifact policy", "verify-on-read"]
+open_questions = ["BLAKE3 vs SHA family identity", "streaming API", "private artifact policy", "verify-on-read", "a columnar dataset format (Lance) once a dataset outgrows a zip bundle of JSONL, keeping its SHA-256 identity and card"]
 
 [[slot]]
 id = "event-streaming"
@@ -251,7 +251,7 @@ status = "open"
 contract = "Reproducible SFT/RL/continued-pretraining orchestration consuming PTR run manifests."
 evaluation = ""
 candidates = ["NeMo RL", "Unsloth", "custom PyTorch/Burn pipeline"]
-open_questions = ["authoritative backend", "checkpoint format", "distributed launch", "resume determinism"]
+open_questions = ["authoritative backend", "checkpoint format", "distributed launch", "resume determinism", "adapter runs started by recorded events (revoked input, newly admitted examples, measured drift, manual request), never by a calendar"]
 
 [[slot]]
 id = "outer-loop-optimization"
@@ -356,7 +356,7 @@ open_questions = ["checkpoint binding for adapters", "adapter routing", "hot swa
 id = "analytics-mirror"
 owner = "ptr-analytics"
 status = "open"
-contract = "Metrics defined once in PTR terms, compiled per backend, optionally mirrored to a columnar engine that never feeds back into state."
+contract = "Metrics defined once in PTR terms, compiled per backend, optionally mirrored to a columnar engine that never feeds back into state; no backend is chosen by data volume."
 evaluation = "analytics-mirror"
 candidates = ["ptr-analytics metric SQL on PostgreSQL", "pg_duckdb", "Iceberg mirror", "DataFusion"]
-open_questions = ["mirror freshness contract", "metric catalog versioning", "retention of working records"]
+open_questions = ["mirror freshness contract", "metric catalog versioning", "retention of working records", "unmeasured load of metric queries on the projector and branch writers", "whether an archive tier is needed, and one that follows branch erasure as well as the ledger retention floor"]

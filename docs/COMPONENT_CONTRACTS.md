@@ -34,8 +34,9 @@ The axes must not be collapsed into one enum: semantic role, epistemic state, un
 | SealedBranch | branch | pg branch store/certifier | base revision, value/range digests, touched keys' base values and input-set digests, relied generations, typed ops |
 | MergePlan | branch | runtime (verified delta) | certified revision, one SemanticDelta, plan digest |
 | TriageOutcome | branch | pg/analytics | decision, eligibility, calibration slice, score, propensity, policy version |
+| PolicyRecord | branch | pg policy store, F003 | version, threshold rule and levels, threshold, calibration rate, calibration branches (held out: every other adjudication) |
 | WriteRequest/SourceRef | fastmem | pg journal | source key, generation, input digest, raw key/value cells, gates |
-| MetricSpec/MetricRow | analytics | pg (compiled SQL) | metric, grouping, numerator, denominator |
+| MetricSpec/MetricRow | analytics | pg (compiled SQL) | metric, grouping, window of days, numerator, denominator |
 
 ## Compatibility
 
