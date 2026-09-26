@@ -30,7 +30,9 @@ pub use search::{
     EmbeddingSpace, HybridQuery, SearchDocument, SearchResults, LEXICAL_BACKEND, VECTOR_BACKEND,
 };
 
-/// A connection to one substrate instance (one [`SchemaSet`]).
+/// A connection to one substrate instance (one [`SchemaSet`], the three
+/// schemas of one prefix: [`connect_with`](Self::connect_with) refuses any
+/// other set).
 pub struct PgSubstrate {
     client: Client,
     schemas: SchemaSet,
@@ -57,12 +59,20 @@ impl PgSubstrate {
 
     /// Connect with an explicit connection string.
     ///
+    /// `schemas` must be [`SchemaSet::with_prefix`] of some prefix, or
+    /// [`PgError::InvalidSchemaSet`] is returned before anything is parsed
+    /// or opened ([`SchemaSet::check`]). Every schema this substrate
+    /// migrates, rebuilds, drops or writes is therefore its own: no other
+    /// instance shares one, and the migration lock, keyed by the projection
+    /// schema's name, is the lock of all three.
+    ///
     /// This build links no TLS connector, so it refuses any target that is not
     /// a loopback address or a Unix socket rather than send credentials in the
     /// clear. When `hostaddr` is given the driver connects to it and uses
     /// `host` only as a name, so every `hostaddr` must be a loopback address
     /// as well. Must be called inside a Tokio runtime.
     pub async fn connect_with(dsn: &str, schemas: SchemaSet) -> Result<Self, PgError> {
+        schemas.check()?;
         let config: Config =
             dsn.parse()
                 .map_err(|error: tokio_postgres::Error| PgError::Connection {
@@ -107,8 +117,11 @@ impl PgSubstrate {
 
     /// Create the three schemas if needed and apply every pending migration.
     ///
-    /// Runs under a session advisory lock keyed by the schema prefix, so two
-    /// processes migrating one instance serialize. The lock is held by a
+    /// Runs under a session advisory lock keyed by the projection schema's
+    /// name, `<prefix>_projection`. Since the set is one prefix's, that name
+    /// determines all three schemas, so two processes migrating one instance
+    /// serialize and no other instance's migration touches these schemas.
+    /// The lock is held by a
     /// session of its own, opened to the same checked target: a migration
     /// whose future is cancelled or unwinds releases it when that session
     /// closes, while this substrate's session stays open, and a retry takes it
@@ -135,7 +148,10 @@ impl PgSubstrate {
     }
 
     /// Drop the projection and the derived caches and recreate them empty.
-    /// Working state is untouched. The caller replays the ledger afterwards.
+    /// Working state is untouched: the two schemas dropped are this
+    /// instance's own, which no other instance shares (see
+    /// [`connect_with`](Self::connect_with)). The caller replays the ledger
+    /// afterwards.
     ///
     /// The drop and the recreation run under the migration lock, so another
     /// migrator cannot interleave, and a lock wait that fails leaves the
@@ -158,6 +174,11 @@ impl PgSubstrate {
 
     /// Drop all three schemas. For tests and decommissioning only: working
     /// state is not recoverable from the ledger.
+    ///
+    /// Takes no migration lock, so it must not run while any other session
+    /// migrates, rebuilds or uses this instance; the caller serializes it.
+    /// It drops exactly this instance's three schemas, which no other
+    /// instance shares (see [`connect_with`](Self::connect_with)).
     pub async fn drop_all(self) -> Result<(), PgError> {
         let SchemaSet {
             projection,
@@ -312,8 +333,10 @@ const LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(100);
 /// unwinds after taking the lock releases it as soon as the session closes,
 /// never leaving it with the substrate's session. Every acquisition opens a
 /// fresh session, so a retry never re-enters a lock an earlier attempt still
-/// holds, and one unlock always releases it. The key is the one earlier
-/// builds took on the substrate's session, so they serialize with this one.
+/// holds, and one unlock always releases it. The key is `ptr-pg:` and the
+/// projection schema's name, the one earlier builds took on the substrate's
+/// session, so they serialize with this one; since a substrate's schemas are
+/// one prefix's, the key covers all three.
 ///
 /// The session runs nothing while the schema change does, so it is kept
 /// from ending for being idle, and the change confirms on it that the lock is

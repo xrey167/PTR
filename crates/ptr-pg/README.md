@@ -10,10 +10,12 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-26  
-**Code footprint:** 16 Rust source files · 4255 nonblank source lines · 2 integration-test files · 23 `#[test]` markers
+**Code footprint:** 16 Rust source files · 4560 nonblank source lines · 2 integration-test files · 25 `#[test]` markers
 
 ### Implemented now
 
+- An instance is the three schemas SchemaSet::with_prefix makes of one prefix; connect_with refuses any other set (InvalidSchemaSet) before it connects, so the names are distinct and no two instances share a schema, and a rebuild, a migration or the projector never touches another instance's
+- Identifiers are [a-z][a-z0-9_]{0,39} and never a keyword PostgreSQL 16 to 18 reserves (pg_get_keywords categories R and T), so every schema and space name interpolates into DDL unquoted
 - Three schema classes per instance (projection, derived, work) with separate checksummed migration catalogs, per-schema migration tables, an advisory lock held by a session of its own that a cancelled or unwinding migration or rebuild releases when that session closes, taken with retried pg_try_advisory_lock so a migration cancelled while waiting leaves no session queued on it, kept from idle_session_timeout and confirmed held before every migration and rebuild drop commits (a lost lock rolls the change back with MigrationLockLost), drift and newer-build refusal, and LF-normalised checksums
 - Projector applies one commit per transaction behind a watermark row lock, deciding the next index with ptr-state classify_next and projecting exactly ptr-state projection_entries
 - Every record's anchor is recomputed with ptr-ledger chain_anchors from the stored one and compared with the ledger's; a foreign, rolled-back or re-delivered-but-different record is refused, and a redelivered index counts as a duplicate only when the record itself recomputes to the stored anchor from the one before it
@@ -24,7 +26,7 @@
 - Work schema for sealed branches, triage logs and append-only outcomes; fast-memory journals and checkpoints; adapter lineage and replay pool; weak-supervision store
 - A sealed branch is stored with the base value and base input-set digest of every touched key; a branch stored before input sets were recorded is refused on load (BranchWithoutInputSets) because it cannot be certified and must be re-run, and a branch whose touched keys and input-set digests disagree is refused before any row is written
 - Tombstones delete the revoked generation's fast-memory writes, and supersessions every other generation's, with the checkpoints that folded them, in the projector's transaction; appends validate requests against the locked memory configuration and are refused for inadmissible sources and read the journal only after taking the memory row lock; a memory is registered only if ptr-fastmem accepts its configuration
-- A checkpoint is stored only when its binding digest matches the one recomputed from the journal prefix it folds, and latest_checkpoint skips any that no longer match
+- A checkpoint is stored only when its binding digest matches the one recomputed from the stored journal prefix up to its applied write, and latest_checkpoint skips any whose binding no longer matches; the state cells are the writer's and are never refolded, so the writer stores FastMemory::state with FastMemory::binding_digest of the same memory
 - The projector, cache writers, journal appends and checkpoint stores run at an explicit READ COMMITTED whatever the session default, which the lock ordering needs
 - Strings PostgreSQL text cannot hold (NUL) are refused with a typed error before anything is written; the projector refuses such a record and stops there
 - Logged triage rows and outcomes are never updated or deleted on their own (only with their branch), and a branch is adjudicated once
@@ -32,10 +34,10 @@
 - Migrations bound DDL with SET LOCAL lock_timeout in driver-managed transactions that roll back on failure; a rebuild drops and recreates under the migration lock
 - Platform metrics compiled from ptr-analytics definitions to SQL over the work schema only, including revert share and a trailing window of days; each metric counts a branch once, windowed on the one record that puts it into the denominator (the conflict rate on its first outcome)
 - Recorded triage policies with their rule, levels and calibration set (record_policy, load_policy, adjudicated_samples); triage rows logged from work version 5 on cite a recorded policy by a foreign key added NOT VALID, so a schema holding older rows still upgrades; a policy is refused unless every calibration branch is an adjudicated calibration-slice branch and its rule, rerun on their stored adjudications, chooses its threshold; policies and calibration sets are never rewritten or deleted, a calibration set is complete when its policy commits and never grows (its size is checked by counting it once at commit and once per statement that adds to it, so recording N samples in one statement reads O(N) rows), and a branch a policy was calibrated on cannot be deleted
-- Interference reports of adapter candidates stored once per adapter under a header row, complete when they commit (the layer count checked by counting the report once at commit and once per statement that adds layers), and never rewritten, as ptr-lineage measured them; a second report (identical, overlapping or disjoint) and an empty one are refused (record_interference, load_interference)
+- Interference reports of adapter candidates stored once per adapter under a header row, complete when they commit (the layer count checked by counting the report once at commit and once per statement that adds layers), and never rewritten, as ptr-lineage measured them; a report measured for another adapter, a second report (identical, overlapping or disjoint) and an empty one are refused (record_interference, load_interference)
 - A model labeling function may name its adapter in the catalog; any other kind is refused by a column constraint
 - Capability probe that never creates an extension; refusal of every non-loopback host and hostaddr because the build links no TLS connector
-- Rebuild drops projection and derived schemas and replays; working state survives
+- Rebuild drops the instance's own projection and derived schemas and replays; working state survives. drop_all, for tests and decommissioning, drops all three without the migration lock, which its caller must serialize
 
 ### Missing for the target architecture
 

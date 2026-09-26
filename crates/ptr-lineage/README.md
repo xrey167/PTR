@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-26  
-**Code footprint:** 8 Rust source files · 2243 nonblank source lines · 4 integration-test files · 70 `#[test]` markers
+**Code footprint:** 8 Rust source files · 2252 nonblank source lines · 4 integration-test files · 71 `#[test]` markers
 
 ### Implemented now
 
@@ -18,7 +18,7 @@
 - Registration always starts as a candidate; only a passing forgetting gate report bound to that adapter lets it serve
 - Forgetting gate with thresholds on average and per-task forgetting, backward transfer and public-suite regression, computed from an accuracy matrix whose summaries never overflow for finite scores (infinite only when the exact value exceeds f64::MAX, never NaN); a nonfinite threshold or public-suite score is refused before anything is evaluated
 - Revoking a training input names every adapter, descendant and consolidation that depends on it
-- Principal-angle overlap of the column and row spaces of delta_W = B A per layer, computed from the factors without forming the product, against its chance level, plus activation interference; bases, norms, products and interference ratios are computed at a power-of-two scale, so finite factors of any magnitude are measured and only a product entry or ratio beyond f64::MAX is refused; matrix shapes whose size overflows and subspaces of different dimensions are refused, an entry index outside a matrix panics instead of reading another row, and a layer update can only be built with aligned factors
+- Principal-angle overlap of the column and row spaces of delta_W = B A per layer, computed from the factors without forming the product, against its chance level, plus activation interference; a report names the candidate adapter it was measured for, so it cannot be recorded as another's evidence; bases, norms, products and interference ratios are computed at a power-of-two scale, so finite factors of any magnitude are measured and only a product entry or ratio beyond f64::MAX is refused; matrix shapes whose size overflows and subspaces of different dimensions are refused, an entry index outside a matrix panics instead of reading another row, and a layer update can only be built with aligned factors
 - TIES merge of full updates for consolidation, finite for any finite updates (the sign election and the mean cannot overflow), due when depth or overlap exceeds the policy or when an overlap cannot be compared with it; a report with a NaN overlap is within no limit
 - FSRS-4.5 forgetting model on the training clock, lapse tracking with label-audit withholding, and stratified Gumbel-top-k sampling without replacement; model times must be finite (probes, draws and priorities alike) and never precede a sample's last probe, a lapse limit of zero is refused, a draw reserves memory only for the samples it can return, and a probe whose update would store a nonfinite stability or difficulty is refused with the sample unchanged
 - Held-out samples cannot enter the replay pool

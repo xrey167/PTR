@@ -13,6 +13,11 @@ impl PgSubstrate {
     /// stored once and never rewritten; the adapter and every adapter a layer
     /// names as its worst overlap must already be in the catalog.
     ///
+    /// The report must have been measured for `adapter`: one whose
+    /// `candidate` names another adapter is refused with
+    /// `PgError::InvalidInterference` before anything is written, so evidence
+    /// measured for one adapter is never recorded as another's.
+    ///
     /// The report's header row, keyed by the adapter, is written before its
     /// layers, so any second report for the adapter, whether it repeats,
     /// overlaps or avoids the stored layers and whether or not it runs
@@ -44,6 +49,9 @@ impl PgSubstrate {
             adapter: adapter.0.clone(),
             reason,
         };
+        if report.candidate != *adapter {
+            return Err(refuse("the report was measured for another adapter"));
+        }
         if report.layers.is_empty() {
             return Err(refuse("a report needs at least one layer"));
         }
@@ -86,10 +94,10 @@ impl PgSubstrate {
         transaction.commit().await.map_err(database)
     }
 
-    /// The interference report stored for an adapter, layers in name order,
-    /// or `None` when none was stored. A report whose stored layers are not
-    /// the number it was recorded with is refused as a corrupt row rather
-    /// than returned.
+    /// The interference report stored for an adapter, naming it as the
+    /// candidate, layers in name order, or `None` when none was stored. A
+    /// report whose stored layers are not the number it was recorded with is
+    /// refused as a corrupt row rather than returned.
     pub async fn load_interference(
         &self,
         adapter: &AdapterId,
@@ -140,6 +148,9 @@ impl PgSubstrate {
                 worst: row.get::<_, Option<String>>(5).map(AdapterId),
             })
             .collect();
-        Ok(Some(InterferenceReport { layers }))
+        Ok(Some(InterferenceReport {
+            candidate: adapter.clone(),
+            layers,
+        }))
     }
 }

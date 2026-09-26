@@ -562,6 +562,10 @@ pub struct LayerInterference {
 /// Per-layer interference of a candidate with an existing lineage.
 #[derive(Clone, Debug, PartialEq)]
 pub struct InterferenceReport {
+    /// The adapter whose updates were measured. [`measure_interference`]
+    /// sets it, and a store records the report as this adapter's evidence
+    /// only (`ptr-pg` refuses it under any other).
+    pub candidate: AdapterId,
     pub layers: Vec<LayerInterference>,
 }
 
@@ -591,8 +595,9 @@ impl InterferenceReport {
     }
 }
 
-/// Measure how much a candidate adapter's update subspaces overlap those of
-/// earlier adapters, layer by layer.
+/// Measure how much the update subspaces of adapter `candidate` overlap those
+/// of earlier adapters, layer by layer. The report names `candidate`, so it
+/// cannot be taken for another adapter's evidence.
 ///
 /// This is the quantity orthogonal-subspace continual-learning methods
 /// (O-LoRA, InfLoRA) drive towards zero. It is measured between subspaces, not
@@ -600,11 +605,12 @@ impl InterferenceReport {
 /// not the intersection of the individual null spaces, so an update inside it
 /// can still overlap every earlier adapter.
 pub fn measure_interference(
-    candidate: &[LayerUpdate],
+    candidate: &AdapterId,
+    updates: &[LayerUpdate],
     earlier: &[(AdapterId, Vec<LayerUpdate>)],
 ) -> Result<InterferenceReport, LineageError> {
-    let mut layers = Vec::with_capacity(candidate.len());
-    for update in candidate {
+    let mut layers = Vec::with_capacity(updates.len());
+    for update in updates {
         let output = update.output_basis();
         let input = update.input_basis();
         let mut worst: Option<AdapterId> = None;
@@ -636,7 +642,10 @@ pub fn measure_interference(
             worst,
         });
     }
-    Ok(InterferenceReport { layers })
+    Ok(InterferenceReport {
+        candidate: candidate.clone(),
+        layers,
+    })
 }
 
 fn dot(left: &[f64], right: &[f64]) -> f64 {

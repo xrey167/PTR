@@ -52,7 +52,14 @@ flowchart LR
 ## 1. PostgreSQL in three schema classes (`ptr-pg`)
 
 A substrate instance is three schemas derived from one prefix (`<prefix>_projection`,
-`<prefix>_derived`, `<prefix>_work`). Each class has its own checksummed migration
+`<prefix>_derived`, `<prefix>_work`). `connect_with` refuses any other set of names
+(`InvalidSchemaSet`), so the three are distinct and two instances either are one or
+share no schema: a rebuild never drops, and a projector never writes, another
+instance's schema, and the migration lock, keyed by the projection schema's name,
+covers all three (`a_schema_set_is_accepted_only_as_the_three_schemas_of_one_prefix`,
+`a_schema_set_not_made_from_one_prefix_is_refused_before_it_connects`). `drop_all`,
+for tests and decommissioning, drops the three schemas without taking the lock, so
+its caller keeps every other session of the instance away. Each class has its own checksummed migration
 catalog, its own `schema_migration` table and its own contract. Migrations run under
 an advisory lock; an applied migration whose checksum changed (`MigrationDrift`) or
 that this build does not know (`UnknownMigration`) is refused. Checksums are taken
@@ -223,8 +230,10 @@ Covered by `a_sealed_branch_round_trips_with_every_dependency_and_op`,
 - Migrations bound their DDL with `SET LOCAL lock_timeout`, so the timeout never
   leaks into the session the projector uses; a rebuild drops and recreates under the
   migration lock, so a failed lock wait never leaves the schemas dropped.
-- Schema and space names are `Identifier`s (`[a-z][a-z0-9_]{0,39}`), so everything
-  interpolated into DDL needs no quoting.
+- Schema and space names are `Identifier`s (`[a-z][a-z0-9_]{0,39}`, never a keyword
+  PostgreSQL 16 to 18 reserves), so everything interpolated into DDL needs no quoting
+  (`keywords_postgresql_reserves_are_refused_as_identifiers`,
+  `every_keyword_the_server_reserves_is_refused_as_an_identifier`).
 - The substrate never creates an extension: installing one is an operator's decision.
 
 ## 2. Certified agent branches (`ptr-branch`)
@@ -414,13 +423,17 @@ the memory row and reads the journal in a statement after that lock, so two
 concurrent appends cannot both pass the sequence and capacity checks
 (`an_append_that_waited_for_another_sees_its_write`).
 
-A checkpoint is bound to `binding_digest_of` its folded writes — their sequence
-numbers, source keys, generations and input digests; the digest binds which writes
-were folded, not their key and value bits. `put_checkpoint` recomputes it from the
-stored journal prefix, holding those rows `FOR SHARE`, and refuses a mismatch;
-`latest_checkpoint` recomputes it again and skips any checkpoint that no longer folds
-the stored prefix, so a fold of a revoked input is never handed out
-(`a_checkpoint_that_does_not_fold_the_stored_journal_is_refused_or_skipped`).
+A checkpoint is bound to `binding_digest_of` the writes it claims to fold — their
+sequence numbers, source keys, generations and input digests; the digest binds which
+writes were folded, not their key and value bits. `put_checkpoint` recomputes it from
+the stored journal prefix, holding those rows `FOR SHARE`, and refuses a mismatch;
+`latest_checkpoint` recomputes it again and skips any checkpoint whose binding no longer
+matches the stored prefix, so a checkpoint whose binding names a revoked write is never
+handed out (`a_checkpoint_that_does_not_fold_the_stored_journal_is_refused_or_skipped`).
+Neither refolds the journal to check the state cells: that they are the fold of the
+bound writes is the writer's obligation, met by storing `FastMemory::state` with
+`FastMemory::binding_digest` of the same memory. A digest recomputed from the stored
+journal beside a state folded before a revocation would pass both checks.
 
 This is **exact revocation, not erasure**: copies of a deleted write may survive in
 dead tuples, WAL and backups until the storage's own erasure obligations
@@ -461,13 +474,16 @@ overlap is within no limit
 `a_report_with_a_nan_overlap_is_not_within_any_limit`). A merge of finite updates is
 finite: the sign election and the mean are computed without an overflowing running
 sum (`ties_merges_entries_near_the_largest_finite_value_without_overflow`,
-`the_elected_sign_is_that_of_the_true_sum_when_a_running_sum_would_overflow`). The report is stored
+`the_elected_sign_is_that_of_the_true_sum_when_a_running_sum_would_overflow`). A report
+names the candidate it was measured for
+(`a_report_names_the_candidate_it_was_measured_for`). It is stored
 with the candidate, one row per layer under one header row per adapter, so a promotion
-or consolidation decision can be audited against the evidence it was made on; a second
-report for the adapter is refused rather than merged into the first, and an empty one
-is refused before anything is written
-(`interference_reports_are_stored_once_as_measured`,
-`an_empty_interference_report_or_one_for_an_unknown_adapter_stores_nothing`).
+or consolidation decision can be audited against the evidence it was made on; a report
+measured for another adapter, a second report for the adapter (rather than merged into
+the first) and an empty one are refused, the first and the last before anything is
+written (`interference_reports_are_stored_once_as_measured`,
+`an_empty_interference_report_or_one_for_an_unknown_adapter_stores_nothing`,
+`an_interference_report_measured_for_another_adapter_is_refused_before_anything_is_written`).
 
 Replay samples carry an FSRS-4.5 memory state updated from probe losses on the
 training clock, not wall time; priority grows with forgetting and difficulty, and

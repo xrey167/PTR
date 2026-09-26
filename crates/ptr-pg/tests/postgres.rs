@@ -17,7 +17,9 @@ use ptr_branch::{
 use ptr_fastmem::{Decay, FastMemory, FastMemoryConfig, SourceRef, WriteRequest};
 use ptr_ledger::integrity::{chain_anchors, LogAnchor};
 use ptr_ledger::{CommittedEvent, LedgerEvent};
-use ptr_lineage::{AdapterId, InterferenceReport, LayerInterference};
+use ptr_lineage::{
+    measure_interference, AdapterId, InterferenceReport, LayerInterference, LayerUpdate, Matrix,
+};
 use ptr_pg::{
     BranchOutcome, EmbeddingSpace, FastMemoryRecord, HybridQuery, Identifier, PgError, PgSubstrate,
     SchemaSet, SearchDocument, LEXICAL_BACKEND, VECTOR_BACKEND, WORK_MIGRATIONS,
@@ -78,10 +80,21 @@ async fn substrate_at(dsn: &str) -> PgSubstrate {
     substrate
 }
 
+/// A schema prefix no other test uses.
+fn fresh_prefix() -> String {
+    format!(
+        "ptrt_{}_{}",
+        std::process::id(),
+        NEXT_PREFIX.fetch_add(1, Ordering::SeqCst)
+    )
+}
+
 /// A substrate in a fresh schema prefix with nothing migrated yet, on a
-/// server where pgvector is installed.
+/// server where pgvector is installed. The extension and the removal of
+/// stale schemas go to the database `dsn` names, which is the one the
+/// substrate uses.
 async fn unmigrated_substrate_at(dsn: &str) -> PgSubstrate {
-    let raw = raw_client().await;
+    let raw = raw_client_at(dsn).await;
     // Parallel tests race on CREATE EXTENSION; serialize it. The lock must be
     // held until the extension is committed, so it is a transaction lock: a
     // session lock released inside the batch's implicit transaction would let
@@ -94,11 +107,7 @@ async fn unmigrated_substrate_at(dsn: &str) -> PgSubstrate {
     )
     .await
     .expect("pgvector must be installed or installable");
-    let prefix = format!(
-        "ptrt_{}_{}",
-        std::process::id(),
-        NEXT_PREFIX.fetch_add(1, Ordering::SeqCst)
-    );
+    let prefix = fresh_prefix();
     let schemas = SchemaSet::with_prefix(&prefix).unwrap();
     let substrate = PgSubstrate::connect_with(dsn, schemas).await.unwrap();
     // A previous run with the same process id may have left schemas behind.
@@ -1931,6 +1940,108 @@ async fn rebuild_drops_projection_and_derived_caches_but_keeps_working_state() {
 }
 
 #[tokio::test]
+async fn a_schema_set_not_made_from_one_prefix_is_refused_before_it_connects() {
+    let theirs = substrate().await;
+    memory_with(&theirs, "m1", 64).await;
+    let shared = theirs.schemas().clone();
+    let mine = SchemaSet::with_prefix(&fresh_prefix()).unwrap();
+    for composed in [
+        // A rebuild of this set would drop the other instance's work schema.
+        SchemaSet {
+            derived: shared.work.clone(),
+            ..mine.clone()
+        },
+        // Its projector would delete the other instance's journal writes and
+        // search documents, and migrate its schemas under a lock that
+        // instance never takes.
+        SchemaSet {
+            work: shared.work.clone(),
+            ..mine.clone()
+        },
+        SchemaSet {
+            derived: shared.derived.clone(),
+            ..mine.clone()
+        },
+        // One schema in every role.
+        SchemaSet {
+            projection: mine.projection.clone(),
+            derived: mine.projection.clone(),
+            work: mine.projection.clone(),
+        },
+    ] {
+        let refused = PgSubstrate::connect_with(&dsn(), composed.clone())
+            .await
+            .err()
+            .map(|error| error.code());
+        assert_eq!(refused, Some("PTR_PG_INVALID_SCHEMA_SET"), "{composed:?}");
+    }
+    // Nothing of the other instance was touched, and a set of one prefix
+    // connects.
+    assert!(theirs.load_memory("m1").await.unwrap().is_some());
+    let own = PgSubstrate::connect_with(&dsn(), mine).await.unwrap();
+    own.drop_all().await.unwrap();
+    theirs.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn every_keyword_the_server_reserves_is_refused_as_an_identifier() {
+    let raw = raw_client().await;
+    let keywords = raw
+        .query("SELECT word, catcode::text FROM pg_get_keywords()", &[])
+        .await
+        .unwrap();
+    let mut reserved = 0;
+    for row in keywords {
+        let (word, category): (String, String) = (row.get(0), row.get(1));
+        match category.as_str() {
+            "R" | "T" => {
+                reserved += 1;
+                assert_eq!(
+                    Identifier::new(&word),
+                    Err(PgError::InvalidIdentifier {
+                        value: word.clone()
+                    }),
+                    "{word}"
+                );
+            }
+            // Unreserved and column-name keywords may name a schema unquoted.
+            _ => assert!(Identifier::new(&word).is_ok(), "{word} ({category})"),
+        }
+    }
+    assert_eq!(reserved, ptr_pg::RESERVED_KEYWORDS.len());
+    // Unquoted, a reserved keyword does not parse where a schema name goes.
+    let error = raw
+        .batch_execute("CREATE SCHEMA IF NOT EXISTS select")
+        .await
+        .unwrap_err();
+    assert_eq!(error.as_db_error().unwrap().code().code(), "42601");
+}
+
+#[tokio::test]
+async fn a_substrate_in_another_database_is_set_up_in_that_database() {
+    // A database of its own, without pgvector: the helpers must install the
+    // extension there, not in the database PTR_PG_TEST_DSN names.
+    let raw = raw_client().await;
+    let database = format!("{}_db", fresh_prefix());
+    raw.batch_execute(&format!("DROP DATABASE IF EXISTS {database} WITH (FORCE)"))
+        .await
+        .unwrap();
+    raw.batch_execute(&format!("CREATE DATABASE {database} TEMPLATE template0"))
+        .await
+        .unwrap();
+    let elsewhere = format!("{} dbname={database}", dsn());
+    let set_up = tokio::spawn(async move {
+        let substrate = substrate_at(&elsewhere).await;
+        substrate.capabilities().await.unwrap().check_supported()
+    })
+    .await;
+    raw.batch_execute(&format!("DROP DATABASE {database} WITH (FORCE)"))
+        .await
+        .unwrap();
+    assert_eq!(set_up.expect("set up the other database"), Ok(()));
+}
+
+#[tokio::test]
 async fn working_state_constraints_hold_in_the_database() {
     let substrate = substrate().await;
     let raw = raw_client().await;
@@ -3194,6 +3305,13 @@ async fn a_labeling_function_names_an_adapter_only_as_a_model() {
     substrate.drop_all().await.unwrap();
 }
 
+fn report_for(candidate: &str, layers: Vec<LayerInterference>) -> InterferenceReport {
+    InterferenceReport {
+        candidate: AdapterId::from(candidate),
+        layers,
+    }
+}
+
 fn layer(name: &str, overlap: f64, worst: Option<&str>) -> LayerInterference {
     LayerInterference {
         layer: name.into(),
@@ -3214,12 +3332,14 @@ async fn interference_reports_are_stored_once_as_measured() {
         insert_adapter(&raw, &work, id).await;
     }
     // Layers come back in name order, exactly as measured.
-    let report = InterferenceReport {
-        layers: vec![layer("q", 0.4, Some("a1")), layer("k", 0.1, None)],
-    };
-    let stored = InterferenceReport {
-        layers: vec![layer("k", 0.1, None), layer("q", 0.4, Some("a1"))],
-    };
+    let report = report_for(
+        "a2",
+        vec![layer("q", 0.4, Some("a1")), layer("k", 0.1, None)],
+    );
+    let stored = report_for(
+        "a2",
+        vec![layer("k", 0.1, None), layer("q", 0.4, Some("a1"))],
+    );
     let adapter = AdapterId::from("a2");
     substrate
         .record_interference(&adapter, &report)
@@ -3241,12 +3361,8 @@ async fn interference_reports_are_stored_once_as_measured() {
     // the first.
     for second in [
         report.clone(),
-        InterferenceReport {
-            layers: vec![layer("k", 0.2, None), layer("v", 0.3, None)],
-        },
-        InterferenceReport {
-            layers: vec![layer("v", 0.3, None)],
-        },
+        report_for("a2", vec![layer("k", 0.2, None), layer("v", 0.3, None)]),
+        report_for("a2", vec![layer("v", 0.3, None)]),
     ] {
         assert!(matches!(
             substrate.record_interference(&adapter, &second).await,
@@ -3262,9 +3378,7 @@ async fn interference_reports_are_stored_once_as_measured() {
     let outside = |edit: fn(&mut LayerInterference)| {
         let mut refused = layer("v", 0.2, None);
         edit(&mut refused);
-        InterferenceReport {
-            layers: vec![layer("k", 0.2, None), refused],
-        }
+        report_for("a3", vec![layer("k", 0.2, None), refused])
     };
     for impossible in [
         outside(|layer| layer.output_overlap = 1.5),
@@ -3288,9 +3402,7 @@ async fn interference_reports_are_stored_once_as_measured() {
     }
     // The worst overlap names another catalogued adapter.
     for (worst, code) in [("a3", "23514"), ("no-such-adapter", "23503")] {
-        let naming = InterferenceReport {
-            layers: vec![layer("q", 0.3, Some(worst))],
-        };
+        let naming = report_for("a3", vec![layer("q", 0.3, Some(worst))]);
         assert!(matches!(
             substrate
                 .record_interference(&AdapterId::from("a3"), &naming)
@@ -3383,7 +3495,7 @@ async fn an_empty_interference_report_or_one_for_an_unknown_adapter_stores_nothi
     // An empty report is refused before anything is written, so it neither
     // claims the adapter's one report nor loads back as evidence.
     let error = substrate
-        .record_interference(&adapter, &InterferenceReport { layers: vec![] })
+        .record_interference(&adapter, &report_for("a1", vec![]))
         .await
         .unwrap_err();
     assert!(matches!(
@@ -3401,9 +3513,7 @@ async fn an_empty_interference_report_or_one_for_an_unknown_adapter_stores_nothi
         .get(0);
     assert_eq!(headers, 0);
     assert_eq!(substrate.load_interference(&adapter).await.unwrap(), None);
-    let report = InterferenceReport {
-        layers: vec![layer("k", 0.1, None)],
-    };
+    let report = report_for("a1", vec![layer("k", 0.1, None)]);
     substrate
         .record_interference(&adapter, &report)
         .await
@@ -3415,9 +3525,61 @@ async fn an_empty_interference_report_or_one_for_an_unknown_adapter_stores_nothi
     // An adapter the catalog does not know gets no report.
     let ghost = AdapterId::from("ghost");
     assert!(matches!(
-        substrate.record_interference(&ghost, &report).await,
+        substrate
+            .record_interference(&ghost, &report_for("ghost", report.layers.clone()))
+            .await,
         Err(PgError::Database { ref sqlstate, .. }) if sqlstate == "23503"
     ));
     assert_eq!(substrate.load_interference(&ghost).await.unwrap(), None);
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn an_interference_report_measured_for_another_adapter_is_refused_before_anything_is_written()
+{
+    let mut substrate = substrate().await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    for id in ["a1", "a2", "earlier"] {
+        insert_adapter(&raw, &work, id).await;
+    }
+    let update = |out_axis: usize| {
+        let mut b = vec![0.0; 4];
+        b[out_axis] = 1.0;
+        LayerUpdate::new(
+            "q",
+            Matrix::new(4, 1, b).unwrap(),
+            Matrix::new(1, 4, vec![1.0, 0.0, 0.0, 0.0]).unwrap(),
+        )
+        .unwrap()
+    };
+    let earlier = [(AdapterId::from("earlier"), vec![update(0)])];
+    let (a1, a2) = (AdapterId::from("a1"), AdapterId::from("a2"));
+    let measured = measure_interference(&a1, &[update(0)], &earlier).unwrap();
+    let error = substrate
+        .record_interference(&a2, &measured)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        PgError::InvalidInterference { adapter: ref refused, .. } if refused == "a2"
+    ));
+    assert_eq!(error.code(), "PTR_PG_INVALID_INTERFERENCE");
+    let headers: i64 = raw
+        .query_one(
+            &format!("SELECT count(*) FROM {work}.adapter_interference_report"),
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(headers, 0);
+    assert_eq!(substrate.load_interference(&a2).await.unwrap(), None);
+    // Recorded for the adapter it was measured for, it loads back naming it.
+    substrate.record_interference(&a1, &measured).await.unwrap();
+    assert_eq!(
+        substrate.load_interference(&a1).await.unwrap(),
+        Some(measured)
+    );
     substrate.drop_all().await.unwrap();
 }

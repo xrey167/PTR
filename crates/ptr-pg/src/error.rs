@@ -4,8 +4,18 @@ use std::fmt;
 /// database error crosses this boundary as its SQLSTATE and message.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PgError {
-    /// A schema or embedding-space identifier is not a safe SQL identifier.
+    /// A schema or embedding-space identifier is not a safe SQL identifier:
+    /// not `[a-z][a-z0-9_]{0,39}`, or a keyword PostgreSQL reserves.
     InvalidIdentifier { value: String },
+    /// A schema set is not the three schemas `SchemaSet::with_prefix` makes of
+    /// one prefix. Its names could be another instance's, which a rebuild
+    /// would drop and the projector write under a lock that instance never
+    /// takes, so it is refused before any session opens.
+    InvalidSchemaSet {
+        projection: String,
+        derived: String,
+        work: String,
+    },
     /// The environment variable that should hold the connection string is
     /// unset or empty. The string itself is never part of a config file.
     MissingDsn { variable: String },
@@ -81,8 +91,10 @@ pub enum PgError {
         memory: String,
         reason: &'static str,
     },
-    /// A fast-memory checkpoint was refused: it does not fold exactly the
-    /// journal prefix it claims to, or its shape differs from the memory's.
+    /// A fast-memory checkpoint was refused: its binding digest does not
+    /// match the stored journal prefix up to its applied write, that write is
+    /// not journaled, or its shape differs from the memory's. Its state cells
+    /// are not refolded.
     InvalidCheckpoint {
         memory: String,
         reason: &'static str,
@@ -95,8 +107,9 @@ pub enum PgError {
         reason: &'static str,
     },
     /// An interference report was refused before any row was written: it
+    /// was measured for another adapter than the one it is recorded for, it
     /// has no layer (storing it would record no evidence while claiming the
-    /// adapter's one report) or more layers than the table can count.
+    /// adapter's one report), or more layers than the table can count.
     InvalidInterference {
         adapter: String,
         reason: &'static str,
@@ -119,6 +132,7 @@ impl PgError {
     pub fn code(&self) -> &'static str {
         match self {
             Self::InvalidIdentifier { .. } => "PTR_PG_INVALID_IDENTIFIER",
+            Self::InvalidSchemaSet { .. } => "PTR_PG_INVALID_SCHEMA_SET",
             Self::MissingDsn { .. } => "PTR_PG_MISSING_DSN",
             Self::UnsupportedServer { .. } => "PTR_PG_UNSUPPORTED_SERVER",
             Self::MissingExtension { .. } => "PTR_PG_MISSING_EXTENSION",
@@ -157,6 +171,15 @@ impl fmt::Display for PgError {
             Self::InvalidIdentifier { value } => {
                 write!(formatter, "{value:?} is not a valid identifier")
             }
+            Self::InvalidSchemaSet {
+                projection,
+                derived,
+                work,
+            } => write!(
+                formatter,
+                "schemas {projection:?}, {derived:?} and {work:?} are not the projection, \
+                 derived and work schemas of one prefix"
+            ),
             Self::MissingDsn { variable } => {
                 write!(formatter, "environment variable {variable} holds no connection string")
             }

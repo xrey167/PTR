@@ -31,8 +31,16 @@ pub struct FastMemoryRecord {
     pub codebook_seed: u64,
 }
 
-/// A stored checkpoint: a fold of the journal prefix up to `applied`, bound to
-/// the digest of the writes it folds.
+/// A stored checkpoint: a state its writer declared to be the fold of the
+/// journal prefix up to `applied`, bound to the digest of the writes it
+/// claims to fold.
+///
+/// The substrate checks the binding against the stored prefix when the
+/// checkpoint is stored and again when it is read; it never refolds the
+/// journal to check the state cells. That they are the fold of the bound
+/// writes is the writer's obligation, met by passing
+/// [`ptr_fastmem::FastMemory::state`] together with
+/// [`ptr_fastmem::FastMemory::binding_digest`] of one memory.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FastMemoryCheckpoint {
     pub applied: WriteSeq,
@@ -292,7 +300,13 @@ impl PgSubstrate {
     /// The state must match the registered configuration, its applied write
     /// must be journaled, and `binding_digest` must match the stored prefix
     /// according to [`binding_digest_of`]. The caller supplies the state cells;
-    /// this method does not refold the journal to verify them.
+    /// this method does not refold the journal to verify them, so a state
+    /// that folds other writes than `binding_digest` names (a revoked one,
+    /// say) is stored all the same and later handed out by
+    /// [`latest_checkpoint`](Self::latest_checkpoint). The caller must pass
+    /// the state and the binding digest of one
+    /// [`ptr_fastmem::FastMemory`], never a digest computed from the stored
+    /// journal beside a state folded from another.
     /// The memory row is locked, so no
     /// append interleaves, and the prefix rows are held `FOR SHARE`: a
     /// revocation that deletes one of them either commits first (and this
@@ -327,7 +341,9 @@ impl PgSubstrate {
         }
         let recomputed = binding_digest_of(prefix.iter().map(|(seq, source)| (*seq, source)));
         if recomputed != binding_digest {
-            return Err(refuse("the state does not fold the stored journal prefix"));
+            return Err(refuse(
+                "the binding does not match the stored journal prefix",
+            ));
         }
         transaction
             .execute(
@@ -349,7 +365,9 @@ impl PgSubstrate {
     /// and each one's binding is recomputed from the prefix; one that no longer
     /// matches (it names a write that has since been removed) is skipped.
     /// Returns `None` if no matching checkpoint exists. State cells are not
-    /// compared with a refold, and lifecycle admission is still required at use.
+    /// compared with a refold: they are the fold of the bound writes only if
+    /// the writer met [`put_checkpoint`](Self::put_checkpoint)'s obligation.
+    /// Lifecycle admission is still required at use.
     ///
     /// # Errors
     /// Propagates database errors and returns `PgError::CorruptRow` for

@@ -18,10 +18,14 @@ fn rank_one(layer: &str, out_axis: usize, in_axis: usize) -> LayerUpdate {
     .unwrap()
 }
 
+fn candidate() -> AdapterId {
+    AdapterId::from("candidate")
+}
+
 #[test]
 fn adapters_on_orthogonal_subspaces_do_not_interfere() {
     let earlier = vec![(AdapterId::from("a1"), vec![rank_one("q", 0, 0)])];
-    let report = measure_interference(&[rank_one("q", 1, 1)], &earlier).unwrap();
+    let report = measure_interference(&candidate(), &[rank_one("q", 1, 1)], &earlier).unwrap();
     assert!(report.max_overlap() < 1e-12);
     assert!(report.within(0.01));
 }
@@ -32,7 +36,7 @@ fn sharing_an_output_direction_is_full_output_overlap_and_names_the_culprit() {
         (AdapterId::from("a1"), vec![rank_one("q", 2, 0)]),
         (AdapterId::from("a2"), vec![rank_one("q", 1, 3)]),
     ];
-    let report = measure_interference(&[rank_one("q", 1, 1)], &earlier).unwrap();
+    let report = measure_interference(&candidate(), &[rank_one("q", 1, 1)], &earlier).unwrap();
     let layer = &report.layers[0];
     assert!((layer.output_overlap - 1.0).abs() < 1e-12);
     assert!(layer.input_overlap.abs() < 1e-12);
@@ -41,9 +45,20 @@ fn sharing_an_output_direction_is_full_output_overlap_and_names_the_culprit() {
 }
 
 #[test]
+fn a_report_names_the_candidate_it_was_measured_for() {
+    let earlier = vec![(AdapterId::from("a1"), vec![rank_one("q", 1, 1)])];
+    let updates = [rank_one("q", 1, 1)];
+    for id in ["c1", "c2"] {
+        let report = measure_interference(&AdapterId::from(id), &updates, &earlier).unwrap();
+        assert_eq!(report.candidate, AdapterId::from(id));
+        assert_eq!(report.layers[0].worst, Some(AdapterId::from("a1")));
+    }
+}
+
+#[test]
 fn different_layers_never_interfere() {
     let earlier = vec![(AdapterId::from("a1"), vec![rank_one("k", 1, 1)])];
-    let report = measure_interference(&[rank_one("q", 1, 1)], &earlier).unwrap();
+    let report = measure_interference(&candidate(), &[rank_one("q", 1, 1)], &earlier).unwrap();
     assert!(report.max_overlap() < 1e-12);
     assert_eq!(report.layers[0].worst, None);
 }
@@ -68,8 +83,12 @@ fn a_rank_deficient_update_is_measured_on_its_product_not_its_factors() {
     let earlier_b = Matrix::new(3, 2, vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0]).unwrap();
     let earlier_a = Matrix::new(2, 3, vec![1.0, 0.0, 0.0, 0.0, 0.0, 1.0]).unwrap();
     let earlier = LayerUpdate::new("q_proj", earlier_b, earlier_a).unwrap();
-    let report =
-        measure_interference(&[candidate], &[(AdapterId::from("earlier"), vec![earlier])]).unwrap();
+    let report = measure_interference(
+        &AdapterId::from("candidate"),
+        &[candidate],
+        &[(AdapterId::from("earlier"), vec![earlier])],
+    )
+    .unwrap();
     let layer = &report.layers[0];
     assert!((layer.input_overlap - 1.0).abs() < 1e-12, "{layer:?}");
     assert!(layer.output_overlap.abs() < 1e-12, "{layer:?}");
@@ -113,9 +132,12 @@ fn update_subspaces_are_measured_whatever_the_scale_of_the_factors() {
         let update = || {
             LayerUpdate::new("q", matrix(2, 1, &[scale, 0.0]), matrix(1, 2, &[1.0, 0.0])).unwrap()
         };
-        let report =
-            measure_interference(&[update()], &[(AdapterId::from("earlier"), vec![update()])])
-                .unwrap();
+        let report = measure_interference(
+            &candidate(),
+            &[update()],
+            &[(AdapterId::from("earlier"), vec![update()])],
+        )
+        .unwrap();
         assert!((report.max_overlap() - 1.0).abs() < 1e-12, "{report:?}");
         assert!(!report.within(0.1));
         for (b, a) in [(1.0, scale), (scale, scale)] {
@@ -194,12 +216,14 @@ fn a_report_with_a_nan_overlap_is_not_within_any_limit() {
     };
     // Folding with f64::max would drop the NaN and report no overlap.
     let report = InterferenceReport {
+        candidate: candidate(),
         layers: vec![layer(0.2), layer(f64::NAN), layer(0.1)],
     };
     assert!(report.max_overlap().is_nan());
     assert!(!report.within(0.1));
     assert!(!report.within(1.0));
     let measured = InterferenceReport {
+        candidate: candidate(),
         layers: vec![layer(0.2)],
     };
     assert_eq!(measured.max_overlap(), 0.2);

@@ -37,7 +37,7 @@ mod adapters;
 pub use capability::{
     parse_version, Capabilities, LexicalBackend, MINIMUM_PGVECTOR, MINIMUM_SERVER,
 };
-pub use config::{check_identifier, Identifier, PgConfig, SchemaSet};
+pub use config::{check_identifier, Identifier, PgConfig, SchemaSet, RESERVED_KEYWORDS};
 pub use error::PgError;
 pub use event::{event_payload, event_subject, event_topic, lifecycle_change, LifecycleChange};
 pub use metric::metric_sql;
