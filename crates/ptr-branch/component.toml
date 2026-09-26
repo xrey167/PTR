@@ -25,7 +25,7 @@ missing = [
   "Typed merge operators beyond counters and sets",
   "Predicate digests beyond key prefixes",
   "An optional intent per sealed branch, written by its agent and shown to whoever reviews an escalated or calibration-slice branch; certification, triage and verification never read it",
-  "The reason behind a verification-decided triage (status, level, hard-finding codes) and behind a certification refusal (conflicting keys, changed lifecycle targets), stored as structured fields with the triage row and the outcome rather than as free text",
+  "The reason behind a verification-decided triage (status, level, hard-finding codes) and behind a certification refusal (conflicting keys, changed lifecycle targets, an unread overwritten key), stored as structured fields with the triage row and the outcome rather than as free text",
 ]
 
 next = [
