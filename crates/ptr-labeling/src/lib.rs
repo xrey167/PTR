@@ -18,7 +18,8 @@ mod votes;
 pub use acquisition::{rank_for_annotation, Acquisition};
 pub use error::LabelingError;
 pub use gold::{
-    evaluate, Calibration, EvaluationReport, EvaluationSet, GoldLabel, GoldSampling, GoldSource,
+    evaluate, function_accuracy, Calibration, EvaluationReport, EvaluationSet, FunctionAccuracy,
+    GoldLabel, GoldSampling, GoldSource,
 };
 pub use model::{
     fit_label_model, resolve, DawidSkeneParams, LabelModel, LabelOutcome, ModelWarning,

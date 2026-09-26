@@ -26,6 +26,8 @@ pub enum LabelingError {
     },
     /// There is nothing to compute over.
     Empty { field: &'static str },
+    /// A function that is not a model names an adapter, or names an empty one.
+    AdapterAttribution { function: String },
 }
 
 impl LabelingError {
@@ -39,6 +41,7 @@ impl LabelingError {
             Self::LengthMismatch { .. } => "PTR_LABELING_LENGTH_MISMATCH",
             Self::InvalidParameter { .. } => "PTR_LABELING_INVALID_PARAMETER",
             Self::Empty { .. } => "PTR_LABELING_EMPTY",
+            Self::AdapterAttribution { .. } => "PTR_LABELING_ADAPTER_ATTRIBUTION",
         }
     }
 }
@@ -68,6 +71,10 @@ impl fmt::Display for LabelingError {
             }
             Self::InvalidParameter { field, message } => write!(formatter, "{field}: {message}"),
             Self::Empty { field } => write!(formatter, "{field} is empty"),
+            Self::AdapterAttribution { function } => write!(
+                formatter,
+                "{function:?} names an adapter but is not a model, or names an empty one"
+            ),
         }
     }
 }

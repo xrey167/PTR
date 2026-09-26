@@ -83,6 +83,32 @@ pub enum FunctionKind {
 pub struct LabelingFunction {
     pub name: String,
     pub kind: FunctionKind,
+    /// For a [`FunctionKind::Model`], the adapter that produced its votes, by
+    /// its id in the adapter lineage catalog, so labeling quality can be
+    /// attributed to an adapter ([`crate::function_accuracy`]). Only a model
+    /// function may name one; [`VoteMatrix::new`] refuses it on any other kind.
+    pub adapter: Option<String>,
+}
+
+impl LabelingFunction {
+    /// A function with no adapter attribution.
+    pub fn new(name: impl Into<String>, kind: FunctionKind) -> Self {
+        Self {
+            name: name.into(),
+            kind,
+            adapter: None,
+        }
+    }
+
+    /// A trained model's function, attributed to the adapter that produced
+    /// its votes.
+    pub fn model(name: impl Into<String>, adapter: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            kind: FunctionKind::Model,
+            adapter: Some(adapter.into()),
+        }
+    }
 }
 
 /// Votes of every function on every item: `votes[item][function]`.
@@ -98,8 +124,9 @@ impl VoteMatrix {
     /// is allowed; each row must contain one vote per function.
     ///
     /// # Errors
-    /// Rejects an empty function list, ragged rows, out-of-range class indices,
-    /// class votes from verifiers, and vetoes from nonverifiers.
+    /// Rejects an empty function list, an adapter named by a function that is
+    /// not a model or an empty adapter id, ragged rows, out-of-range class
+    /// indices, class votes from verifiers, and vetoes from nonverifiers.
     pub fn new(
         schema: LabelSchema,
         functions: Vec<LabelingFunction>,
@@ -109,6 +136,17 @@ impl VoteMatrix {
             return Err(LabelingError::Empty {
                 field: "labeling functions",
             });
+        }
+        for function in &functions {
+            let attributed = match &function.adapter {
+                None => true,
+                Some(adapter) => function.kind == FunctionKind::Model && !adapter.is_empty(),
+            };
+            if !attributed {
+                return Err(LabelingError::AdapterAttribution {
+                    function: function.name.clone(),
+                });
+            }
         }
         for (item, row) in votes.iter().enumerate() {
             if row.len() != functions.len() {

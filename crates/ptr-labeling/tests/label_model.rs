@@ -1,14 +1,11 @@
 use ptr_labeling::{
-    evaluate, fit_label_model, rank_for_annotation, resolve, Acquisition, DawidSkeneParams,
-    EvaluationSet, FunctionKind, GoldLabel, GoldSampling, GoldSource, LabelOutcome, LabelSchema,
-    LabelingError, LabelingFunction, ModelWarning, Vote, VoteMatrix,
+    evaluate, fit_label_model, function_accuracy, rank_for_annotation, resolve, Acquisition,
+    DawidSkeneParams, EvaluationSet, FunctionKind, GoldLabel, GoldSampling, GoldSource,
+    LabelOutcome, LabelSchema, LabelingError, LabelingFunction, ModelWarning, Vote, VoteMatrix,
 };
 
 fn function(name: &str, kind: FunctionKind) -> LabelingFunction {
-    LabelingFunction {
-        name: name.into(),
-        kind,
-    }
+    LabelingFunction::new(name, kind)
 }
 
 /// A deterministic pseudo-random stream for synthetic votes.
@@ -306,4 +303,129 @@ fn evaluation_scores_only_gold_items_and_reports_missing_predictions() {
             actual: 2
         }
     );
+}
+
+#[test]
+fn only_a_model_function_may_be_attributed_to_an_adapter() {
+    let schema = LabelSchema::new(["a", "b"]).unwrap();
+    let votes = vec![vec![Vote::Class(0)]];
+    let attributed = VoteMatrix::new(
+        schema.clone(),
+        vec![LabelingFunction::model("ranker", "adapter-7")],
+        votes.clone(),
+    )
+    .unwrap();
+    assert_eq!(
+        attributed.functions()[0].adapter.as_deref(),
+        Some("adapter-7")
+    );
+    for kind in [FunctionKind::Heuristic, FunctionKind::Agent] {
+        let mut function = LabelingFunction::new("rule", kind);
+        function.adapter = Some("adapter-7".into());
+        assert_eq!(
+            VoteMatrix::new(schema.clone(), vec![function], votes.clone()).unwrap_err(),
+            LabelingError::AdapterAttribution {
+                function: "rule".into()
+            },
+            "{kind:?}"
+        );
+    }
+    assert_eq!(
+        VoteMatrix::new(schema, vec![LabelingFunction::model("ranker", "")], votes).unwrap_err(),
+        LabelingError::AdapterAttribution {
+            function: "ranker".into()
+        }
+    );
+}
+
+#[test]
+fn per_function_accuracy_is_attributed_to_the_adapter_and_brackets_the_truth() {
+    let schema = LabelSchema::new(["refund", "no_refund"]).unwrap();
+    let accuracies = [0.9, 0.6];
+    let mut stream = Stream(0xadab7e4);
+    let mut truth = Vec::new();
+    let mut votes = Vec::new();
+    for item in 0..600 {
+        let label = item % 2;
+        truth.push(label);
+        let mut row: Vec<Vote> = accuracies
+            .iter()
+            .map(|&accuracy| {
+                if stream.next() < accuracy {
+                    Vote::Class(label)
+                } else {
+                    Vote::Class(1 - label)
+                }
+            })
+            .collect();
+        // A verifier rules out the wrong class on every item.
+        row.push(Vote::Veto(1 - label));
+        votes.push(row);
+    }
+    let functions = vec![
+        LabelingFunction::model("ranker-v2", "adapter-v2"),
+        LabelingFunction::model("ranker-v1", "adapter-v1"),
+        function("schema-check", FunctionKind::Verifier),
+    ];
+    let matrix = VoteMatrix::new(schema, functions, votes).unwrap();
+    let scores = function_accuracy(&matrix, &gold(&truth), 1.96).unwrap();
+    assert_eq!(scores.len(), 3);
+    for (score, (adapter, accuracy)) in scores
+        .iter()
+        .zip([("adapter-v2", 0.9), ("adapter-v1", 0.6)])
+    {
+        assert_eq!(score.adapter.as_deref(), Some(adapter));
+        let estimate = score.estimate.unwrap();
+        assert_eq!(estimate.trials, 600);
+        assert!(
+            estimate.low <= accuracy && accuracy <= estimate.high,
+            "{adapter}: {estimate:?}"
+        );
+    }
+    assert!(scores[0].estimate.unwrap().low > scores[1].estimate.unwrap().high);
+    // A verifier casts no class vote, so it has no accuracy to report.
+    assert_eq!(scores[2].adapter, None);
+    assert_eq!(scores[2].estimate, None);
+}
+
+#[test]
+fn per_function_accuracy_refuses_an_actively_sampled_or_misaligned_gold_set() {
+    let (matrix, truth) = synthetic();
+    let mut active = EvaluationSet::new(GoldSampling::Active);
+    active
+        .push(GoldLabel {
+            item: 0,
+            class: truth[0],
+            source: GoldSource::Oracle,
+        })
+        .unwrap();
+    assert!(matches!(
+        function_accuracy(&matrix, &active, 1.96),
+        Err(LabelingError::InvalidParameter { .. })
+    ));
+    assert_eq!(
+        function_accuracy(&matrix, &EvaluationSet::new(GoldSampling::Uniform), 1.96).unwrap_err(),
+        LabelingError::Empty {
+            field: "evaluation set"
+        }
+    );
+    let mut beyond = EvaluationSet::new(GoldSampling::Uniform);
+    beyond
+        .push(GoldLabel {
+            item: 400,
+            class: 0,
+            source: GoldSource::Oracle,
+        })
+        .unwrap();
+    assert_eq!(
+        function_accuracy(&matrix, &beyond, 1.96).unwrap_err(),
+        LabelingError::LengthMismatch {
+            expected: 401,
+            actual: 400
+        }
+    );
+    assert!(matches!(
+        function_accuracy(&matrix, &gold(&truth), 0.0),
+        Err(LabelingError::Statistics { .. })
+    ));
 }

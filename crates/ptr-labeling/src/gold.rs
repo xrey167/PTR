@@ -1,6 +1,9 @@
-use ptr_analytics::{brier_score, expected_calibration_error, Binning};
+use ptr_analytics::{
+    brier_score, expected_calibration_error, wilson_interval, Binning, RateEstimate,
+};
 
 use crate::error::LabelingError;
+use crate::votes::{Vote, VoteMatrix};
 
 /// Who asserted a gold label.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -96,6 +99,82 @@ pub struct Calibration {
     pub brier: f64,
     /// Expected calibration error over equal-mass bins.
     pub expected_calibration_error: f64,
+}
+
+/// How often one labeling function's class votes match uniform gold labels.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FunctionAccuracy {
+    pub function: String,
+    /// The adapter a model function is attributed to, if any.
+    pub adapter: Option<String>,
+    /// Correct class votes over class votes cast on gold items, with a Wilson
+    /// interval. `None` when the function cast no class vote on a gold item:
+    /// a verifier never does, and an abstaining function tells nothing.
+    pub estimate: Option<RateEstimate>,
+}
+
+/// Score each labeling function's class votes against gold labels: the share
+/// of its class votes on gold items that name the gold class, with a Wilson
+/// interval at normal quantile `z`. Abstentions and vetoes are not scored. A
+/// function attributed to an adapter reports it, which is how labeling quality
+/// is measured per adapter.
+///
+/// Only a uniformly sampled gold set gives an unbiased estimate: an actively
+/// sampled set over-represents the items the model found hardest.
+///
+/// # Errors
+/// Refuses an empty or actively sampled gold set, a gold item beyond the vote
+/// matrix, and a `z` that is not finite and positive.
+pub fn function_accuracy(
+    matrix: &VoteMatrix,
+    gold: &EvaluationSet,
+    z: f64,
+) -> Result<Vec<FunctionAccuracy>, LabelingError> {
+    if gold.is_empty() {
+        return Err(LabelingError::Empty {
+            field: "evaluation set",
+        });
+    }
+    if gold.sampling != GoldSampling::Uniform {
+        return Err(LabelingError::InvalidParameter {
+            field: "evaluation set",
+            message: "per-function accuracy needs a uniformly sampled gold set",
+        });
+    }
+    let mut counts = vec![(0u64, 0u64); matrix.functions().len()];
+    for label in &gold.labels {
+        if label.item >= matrix.items() {
+            return Err(LabelingError::LengthMismatch {
+                expected: label.item + 1,
+                actual: matrix.items(),
+            });
+        }
+        for (count, vote) in counts.iter_mut().zip(matrix.row(label.item)) {
+            if let Vote::Class(class) = vote {
+                count.1 += 1;
+                if *class == label.class {
+                    count.0 += 1;
+                }
+            }
+        }
+    }
+    matrix
+        .functions()
+        .iter()
+        .zip(counts)
+        .map(|(function, (correct, voted))| {
+            let estimate = if voted == 0 {
+                None
+            } else {
+                Some(wilson_interval(correct, voted, z)?)
+            };
+            Ok(FunctionAccuracy {
+                function: function.name.clone(),
+                adapter: function.adapter.clone(),
+                estimate,
+            })
+        })
+        .collect()
 }
 
 /// Score posteriors against gold labels. Items without a gold label are not
