@@ -206,6 +206,17 @@ rather than a count per row.
 A touched key's input-set digest is a whole digest; a branch stored
 before input sets were recorded has none, and loading it is refused because it cannot
 be certified and must be re-run.
+`store_branch` takes only a `SealedBranch`, which exists only once
+`SealedBranch::from_parts` has checked every sealing invariant (§2), and rechecks
+them before writing (`InvalidBranch`); `load_branch` rebuilds every stored branch
+through that constructor, so rows changed after they were stored, to write raw
+request text or a Pod output, to overwrite a key the branch did not read, or to
+break the bookkeeping of touched keys, come back as `CorruptBranch` naming the
+`BranchError`, never as a branch to certify
+(`a_branch_writing_a_reserved_namespace_is_never_stored_and_tampered_rows_never_load`).
+Rows relying on two generations of one target, which the primary key already
+refuses, are `CorruptBranch` (`ConflictingReliance`) rather than collapsed to either
+(`a_stored_branch_relying_on_two_generations_of_one_target_is_refused_on_load`).
 Covered by `a_sealed_branch_round_trips_with_every_dependency_and_op`,
 `touched_input_sets_survive_a_round_trip_and_a_branch_sealed_before_them_is_refused`,
 `triage_logs_and_outcomes_feed_the_platform_metrics`,
@@ -270,6 +281,27 @@ and when it is applied, never truncated and never committed
 (`a_merge_delta_the_journal_cannot_carry_is_refused_at_approval_and_commit_not_truncated`).
 `request:` and `pod-output:` are reserved to ingress.
 
+A `SealedBranch` has private fields and is built only by `Branch::seal` and
+`SealedBranch::from_parts`, the constructor storage rebuilds branches with; sealing
+goes through it too. It refuses parts that sealing an open branch could not have
+produced, however well their digests match the store: an operation on a
+reserved key (`a_hand_built_branch_that_writes_a_reserved_namespace_is_refused_by_the_constructor`),
+a `Put` or `Remove` of a key the branch did not read
+(`a_hand_built_put_or_remove_of_an_unread_key_is_refused_by_the_constructor`), a set
+operation with an empty member, a key an operation touches without its base value
+or input set
+(`an_operated_key_without_a_recorded_base_value_or_input_set_is_refused_by_the_constructor`),
+a base value or input set for a key no operation touches
+(`a_base_value_or_input_set_for_a_key_no_operation_touches_is_refused_by_the_constructor`),
+and a touched key whose base value differs from its read, since both digest the same
+base value
+(`a_touched_base_value_that_differs_from_the_read_of_the_same_key_is_refused_by_the_constructor`).
+A branch relies on one generation per target by type. Digests keep public
+constructors: a digest commits to data anyone who can read it can compute, so it
+authenticates nothing, and declaring the digest of a value one could read declares
+no more than reading it; what a sealed branch may write is bounded by these
+invariants and by certification, not by keeping a digest hard to make.
+
 Certification against a newer snapshot refuses a changed read
 (`a_value_the_branch_read_that_changed_is_a_conflict_and_nothing_merges`), a phantom
 under a scanned prefix (`a_key_inserted_under_a_scanned_prefix_refuses_certification`),
@@ -277,13 +309,18 @@ a touched key whose input set changed even though every value it read is unchang
 (`a_touched_key_whose_input_set_changed_conflicts_even_when_every_value_it_read_is_unchanged`):
 a merge keeps the target's dependency set, so a value must not stand under inputs it
 was not computed from; and a revoked or superseded relied-on generation
-(`a_revoked_or_superseded_relied_on_generation_refuses_certification`). A
-`SealedBranch` has public fields and is rebuilt from storage, so certification
-rechecks what staging guarantees rather than trusting it: a `Put` or `Remove` of a
-key the branch did not read, which would merge as a blind overwrite, a touched key
-with no recorded base value, which could not tell `Rebased` from `Clean`, and an
-unread input of a touched key are refused
-(`a_sealed_branch_that_breaks_what_staging_guarantees_is_refused_at_certification`).
+(`a_revoked_or_superseded_relied_on_generation_refuses_certification`).
+Certification rechecks every sealing invariant before it consults the target rather
+than trusting the constructor, so a branch that somehow skipped it is still refused:
+a write to a reserved key
+(`certification_refuses_a_reserved_write_even_from_a_branch_that_skipped_the_constructor`),
+a `Put` or `Remove` of an unread key, which would merge as a blind overwrite, and a
+touched key without its base value, which could not tell `Rebased` from `Clean`, or
+without its input set
+(`certification_refuses_every_other_broken_sealing_invariant_on_its_own`). An unread
+input of a touched key is a conflict: the input set hides behind its digest, so only
+the target, whose set matches it, can name the inputs
+(`a_sealed_branch_that_breaks_what_staging_guarantees_is_refused_when_rebuilt_or_certified`).
 Otherwise it returns `Clean` or `Rebased` with one `MergePlan`: an ordinary
 `SemanticDelta` and the revision it was certified against. Concurrent counter additions both survive
 (`two_concurrent_counter_additions_both_survive`).

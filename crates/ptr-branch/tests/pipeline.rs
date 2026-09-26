@@ -57,7 +57,7 @@ fn a_certified_and_verified_branch_reaches_semantic_state_only_through_the_runti
         .triage(
             &passing(),
             Probability::new(0.9).unwrap(),
-            calibration_draw(&sealed.id, 1),
+            calibration_draw(sealed.id(), 1),
         )
         .unwrap();
     assert_eq!(triage.decision, TriageDecision::AutoPropose);

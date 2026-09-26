@@ -26,7 +26,7 @@ pub use arbiter::{
     threshold_grid, AutoThreshold, CalibrationSample, LoggedTriage, OffPolicyEstimate,
     PolicyRecord, ThresholdRule, TriageDecision, TriageOutcome, TriagePolicy, THRESHOLD_GRID_STEPS,
 };
-pub use branch::{Branch, BranchId, SealedBranch, RESERVED_PREFIXES};
+pub use branch::{Branch, BranchId, SealedBranch, SealedBranchParts, RESERVED_PREFIXES};
 pub use certify::{certify, Certification, MergePlan};
 pub use digest::{InputsDigest, RangeDigest, ValueDigest};
 pub use error::{ArbiterError, BranchError};

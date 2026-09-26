@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use ptr_semdb::{SemanticSnapshot, SemanticValue};
@@ -9,7 +9,9 @@ use crate::error::BranchError;
 use crate::ops::BranchOp;
 
 /// Key prefixes only ingress writes: raw request text and Pod outputs. A branch
-/// may read them but never change them.
+/// may read them but never change them: staging refuses an operation on one,
+/// and so do [`SealedBranch::from_parts`] and certification, so no sealed
+/// branch however built writes one.
 pub const RESERVED_PREFIXES: [&str; 2] = ["request:", "pod-output:"];
 
 /// Identity of one speculative branch.
@@ -47,10 +49,16 @@ pub struct Branch {
     ops: Vec<BranchOp>,
 }
 
-/// A branch that accepts no further operations. It holds digests rather than
-/// the snapshot, so it can be stored and certified later against any snapshot.
+/// The parts of a sealed branch: what [`SealedBranch::into_parts`] returns
+/// and [`SealedBranch::from_parts`] validates, for example when storage
+/// rebuilds a branch from its rows.
+///
+/// Holding parts grants nothing. Only a [`SealedBranch`] can be certified or
+/// stored, and one exists only once its parts pass every sealing invariant,
+/// so parts edited by hand or read back from a tampered store are refused
+/// rather than certified.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SealedBranch {
+pub struct SealedBranchParts {
     pub id: BranchId,
     pub author: PrincipalId,
     pub base_revision: Revision,
@@ -59,7 +67,11 @@ pub struct SealedBranch {
     /// Digest of each prefix the branch scanned, as of its base.
     pub scans: BTreeMap<String, RangeDigest>,
     /// Lifecycle targets (capsules, `constraint:<key>`, `procedure:<id>`) and
-    /// the generation the branch relied on.
+    /// the generation the branch relied on. A map holds one generation per
+    /// target, so the rule [`Branch::rely_on`] enforces
+    /// ([`BranchError::ConflictingReliance`]) holds by type; a store that
+    /// finds two generations of one target must refuse them with that error
+    /// rather than keep either.
     pub relied: BTreeMap<String, Generation>,
     /// Digest of each key an operation touches, as of the base.
     pub touched_base: BTreeMap<String, ValueDigest>,
@@ -69,6 +81,201 @@ pub struct SealedBranch {
     /// certification requires it to be the set the branch computed against.
     pub touched_inputs: BTreeMap<String, InputsDigest>,
     pub ops: Vec<BranchOp>,
+}
+
+/// A branch that accepts no further operations. It holds digests rather than
+/// the snapshot, so it can be stored and certified later against any snapshot.
+///
+/// # Guarantees
+/// Its fields are private and it is built only by [`Branch::seal`] and
+/// [`SealedBranch::from_parts`], both of which check every sealing invariant
+/// ([`SealedBranch::from_parts`] lists them), so every `SealedBranch` in
+/// existence could have been sealed from an open branch: none writes a
+/// namespace reserved to ingress ([`RESERVED_PREFIXES`]), overwrites a key it
+/// did not read, or lacks the base value or input set certification checks
+/// for a key it touches. [`certify`](crate::certify) checks them once more.
+///
+/// No field can be reached to change a built branch:
+///
+/// ```compile_fail
+/// use ptr_branch::{BranchOp, SealedBranch};
+/// fn forge(mut branch: SealedBranch) -> SealedBranch {
+///     branch.ops.push(BranchOp::Remove { key: "request:r1:raw".into() });
+///     branch
+/// }
+/// ```
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SealedBranch {
+    parts: SealedBranchParts,
+}
+
+impl SealedBranch {
+    /// Build a sealed branch from its parts, for example ones storage read
+    /// back, refusing any that sealing an open branch could not have
+    /// produced. Checked, in this order, for each operation in turn and then
+    /// for the recorded digests:
+    ///
+    /// - no operation's key is in a namespace reserved to ingress
+    ///   ([`BranchError::ReservedNamespace`]);
+    /// - every `Put` and `Remove` names a key in `reads`
+    ///   ([`BranchError::UnreadTarget`]): merging an overwrite of an unread
+    ///   key would erase a concurrent change unseen;
+    /// - no set operation has an empty member ([`BranchError::InvalidMember`]);
+    /// - every key an operation touches has a base value in `touched_base`
+    ///   and an input set in `touched_inputs`, and neither map has an entry
+    ///   for a key no operation touches ([`BranchError::MalformedSeal`]);
+    /// - a touched key the branch also read has the same digest in
+    ///   `touched_base` as in `reads`, since both digest its base value
+    ///   ([`BranchError::MalformedSeal`]).
+    ///
+    /// `relied` holds one generation per target by type (see
+    /// [`SealedBranchParts::relied`]). Digests are fixed-size values and are
+    /// not recomputed here: that a read, scan or input set still matches is
+    /// what [`certify`](crate::certify) decides against a target snapshot.
+    ///
+    /// # Errors
+    /// The first refusal above; nothing is built.
+    pub fn from_parts(parts: SealedBranchParts) -> Result<Self, BranchError> {
+        check_sealed(&parts)?;
+        Ok(Self { parts })
+    }
+
+    /// Give up the sealed branch for its parts. Building one again goes
+    /// through [`SealedBranch::from_parts`].
+    pub fn into_parts(self) -> SealedBranchParts {
+        self.parts
+    }
+
+    /// Check every sealing invariant again. Every `SealedBranch` passed them
+    /// when it was built and none can be changed since, so this returns
+    /// `Ok(())`; certification and storage call it anyway, before anything is
+    /// planned or written, so a defect in how a branch was built is refused
+    /// at that boundary rather than trusted.
+    ///
+    /// # Errors
+    /// What [`SealedBranch::from_parts`] would refuse.
+    pub fn recheck(&self) -> Result<(), BranchError> {
+        check_sealed(&self.parts)
+    }
+
+    pub fn id(&self) -> &BranchId {
+        &self.parts.id
+    }
+
+    pub fn author(&self) -> &PrincipalId {
+        &self.parts.author
+    }
+
+    pub fn base_revision(&self) -> Revision {
+        self.parts.base_revision
+    }
+
+    /// Digest of each value the branch read, as of its base.
+    pub fn reads(&self) -> &BTreeMap<String, ValueDigest> {
+        &self.parts.reads
+    }
+
+    /// Digest of each prefix the branch scanned, as of its base.
+    pub fn scans(&self) -> &BTreeMap<String, RangeDigest> {
+        &self.parts.scans
+    }
+
+    /// Each lifecycle target the branch relied on and the one generation it
+    /// relied on.
+    pub fn relied(&self) -> &BTreeMap<String, Generation> {
+        &self.parts.relied
+    }
+
+    /// Digest of each key an operation touches, as of the base: exactly the
+    /// keys of [`SealedBranch::ops`].
+    pub fn touched_base(&self) -> &BTreeMap<String, ValueDigest> {
+        &self.parts.touched_base
+    }
+
+    /// Digest of the input set each key an operation touches declared at the
+    /// base: exactly the keys of [`SealedBranch::ops`].
+    pub fn touched_inputs(&self) -> &BTreeMap<String, InputsDigest> {
+        &self.parts.touched_inputs
+    }
+
+    /// The staged operations, in the order they were staged.
+    pub fn ops(&self) -> &[BranchOp] {
+        &self.parts.ops
+    }
+
+    /// A sealed branch built without any check, so tests can show that
+    /// certification refuses one on its own.
+    #[cfg(test)]
+    pub(crate) fn unchecked(parts: SealedBranchParts) -> Self {
+        Self { parts }
+    }
+}
+
+/// Whether `key` is in a namespace only ingress writes.
+pub(crate) fn is_reserved(key: &str) -> bool {
+    RESERVED_PREFIXES
+        .iter()
+        .any(|prefix| key.starts_with(prefix))
+}
+
+/// The sealing invariants [`SealedBranch::from_parts`] documents, in its
+/// order.
+pub(crate) fn check_sealed(parts: &SealedBranchParts) -> Result<(), BranchError> {
+    for op in &parts.ops {
+        let key = op.key();
+        if is_reserved(key) {
+            return Err(BranchError::ReservedNamespace {
+                key: key.to_owned(),
+            });
+        }
+        if !op.commutes() && !parts.reads.contains_key(key) {
+            return Err(BranchError::UnreadTarget {
+                key: key.to_owned(),
+            });
+        }
+        if let BranchOp::SetInsert { member, .. } | BranchOp::SetRemove { member, .. } = op {
+            if member.is_empty() {
+                return Err(BranchError::InvalidMember {
+                    key: key.to_owned(),
+                });
+            }
+        }
+        if !parts.touched_base.contains_key(key) {
+            return Err(BranchError::MalformedSeal {
+                key: key.to_owned(),
+                reason: "a key an operation touches has no recorded base value",
+            });
+        }
+        if !parts.touched_inputs.contains_key(key) {
+            return Err(BranchError::MalformedSeal {
+                key: key.to_owned(),
+                reason: "a key an operation touches has no recorded input set",
+            });
+        }
+    }
+    let operated: BTreeSet<&str> = parts.ops.iter().map(BranchOp::key).collect();
+    if let Some(key) = parts
+        .touched_base
+        .keys()
+        .chain(parts.touched_inputs.keys())
+        .find(|key| !operated.contains(key.as_str()))
+    {
+        return Err(BranchError::MalformedSeal {
+            key: key.clone(),
+            reason: "a base value or input set is recorded for a key no operation touches",
+        });
+    }
+    if let Some((key, _)) = parts
+        .touched_base
+        .iter()
+        .find(|(key, base)| parts.reads.get(*key).is_some_and(|read| read != *base))
+    {
+        return Err(BranchError::MalformedSeal {
+            key: key.clone(),
+            reason: "the base value recorded for a touched key differs from the value read",
+        });
+    }
+    Ok(())
 }
 
 impl Branch {
@@ -211,6 +418,12 @@ impl Branch {
     /// Consume the branch and retain its operations and dependency digests
     /// for later certification, including the base value and the base input
     /// set of every touched key.
+    ///
+    /// The result is built by [`SealedBranch::from_parts`], so it passes the
+    /// same invariants a branch rebuilt from storage must; staging already
+    /// keeps every one of them, so that check refuses nothing here.
+    ///
+    /// # Errors
     /// Returns `BranchError::InvalidValue` if a touched base value cannot be
     /// encoded for its digest; sealing does not certify or commit the branch.
     pub fn seal(self) -> Result<SealedBranch, BranchError> {
@@ -223,7 +436,7 @@ impl Branch {
                 touched_inputs.insert(key.to_owned(), InputsDigest::of(key, self.base.inputs(key)));
             }
         }
-        Ok(SealedBranch {
+        SealedBranch::from_parts(SealedBranchParts {
             id: self.id,
             author: self.author,
             base_revision: self.base.revision,
@@ -260,10 +473,7 @@ impl Branch {
     }
 
     fn check_writable(&self, key: &str) -> Result<(), BranchError> {
-        if RESERVED_PREFIXES
-            .iter()
-            .any(|prefix| key.starts_with(prefix))
-        {
+        if is_reserved(key) {
             return Err(BranchError::ReservedNamespace {
                 key: key.to_owned(),
             });

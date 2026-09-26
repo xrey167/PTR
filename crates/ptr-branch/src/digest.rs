@@ -13,6 +13,16 @@ use crate::error::BranchError;
 /// so a branch and an admitted neural state can never disagree about whether
 /// an input changed. A payload's `source` participates, as it does in the
 /// journal: a changed provenance is a changed input.
+///
+/// A digest commits to data; it authenticates nothing. Anyone who can read a
+/// value can compute its digest (the algorithm and the canonical bytes are
+/// public), so the digest types keep public constructors, which storage needs
+/// to rebuild them: a caller that supplies the digest of a value it could
+/// read declares no more than a branch that read it. What a sealed branch may
+/// do with its digests is bounded by [`SealedBranch::from_parts`] and by
+/// certification against the target, never by keeping a digest hard to make.
+///
+/// [`SealedBranch::from_parts`]: crate::SealedBranch::from_parts
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ValueDigest([u8; 32]);
 

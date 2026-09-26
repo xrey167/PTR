@@ -8,7 +8,6 @@ use ptr_types::{Generation, Revision, Validity};
 use crate::branch::{BranchId, SealedBranch};
 use crate::digest::{InputsDigest, RangeDigest, ValueDigest};
 use crate::error::BranchError;
-use crate::ops::BranchOp;
 
 /// A certified branch, ready to be proposed as one ordinary semantic delta.
 ///
@@ -91,8 +90,7 @@ impl Certification {
 /// dependencies: every value it read must be unchanged (value digests), every
 /// prefix it scanned must contain exactly the same keys and values (range
 /// digests), every key it touches must declare the same input set it declared
-/// at the base (input-set digests; a touched key with no recorded input set
-/// or base value is a conflict too), and every lifecycle target it relied on
+/// at the base (input-set digests), and every lifecycle target it relied on
 /// must still be live at that generation according to `validity` (answered
 /// by the lifecycle authority, for example
 /// `PtrRuntime::generation_validity`). The input-set
@@ -106,15 +104,18 @@ impl Certification {
 /// Reads the agent did not declare are invisible here — the guarantee is as
 /// complete as the declaration.
 ///
-/// A [`SealedBranch`] has public fields and is rebuilt from storage, so what
-/// [`Branch`](crate::Branch) guarantees about the declaration is checked
-/// again rather than trusted: a `Put` or `Remove` of a key the branch did not
-/// read is refused as [`BranchError::UnreadTarget`], as staging it would have
-/// been, since merging it would overwrite a concurrent change unseen; a key
-/// an operation touches with no recorded base value (which decides
-/// `Rebased` over `Clean`) is a conflict; and so is an input of such a key
-/// that the branch did not read, since staging the operation reads every
-/// input of its key.
+/// What sealing guarantees is checked once more rather than trusted
+/// ([`SealedBranch::recheck`], the invariants [`SealedBranch::from_parts`]
+/// lists): an operation on a key reserved to ingress is refused as
+/// [`BranchError::ReservedNamespace`], a `Put` or `Remove` of a key the
+/// branch did not read as [`BranchError::UnreadTarget`], since merging it
+/// would overwrite a concurrent change unseen, and a touched key without a
+/// recorded base value (which decides `Rebased` over `Clean`) or input set
+/// as [`BranchError::MalformedSeal`]; all of these before the target is
+/// consulted. An input of a touched key that the branch did not read is a
+/// conflict, since staging the operation reads every input of its key: the
+/// input set is hidden behind its digest, so only the target, whose set
+/// matches that digest, can name the inputs.
 pub fn certify<V>(
     branch: &SealedBranch,
     target: &SemanticSnapshot,
@@ -123,24 +124,16 @@ pub fn certify<V>(
 where
     V: Fn(&str, Generation) -> Option<Validity>,
 {
-    if let Some(op) = branch
-        .ops
-        .iter()
-        .find(|op| !op.commutes() && !branch.reads.contains_key(op.key()))
-    {
-        return Err(BranchError::UnreadTarget {
-            key: op.key().to_owned(),
-        });
-    }
-    if target.revision < branch.base_revision {
+    branch.recheck()?;
+    if target.revision < branch.base_revision() {
         return Err(BranchError::SnapshotBehindBase {
-            base: branch.base_revision,
+            base: branch.base_revision(),
             snapshot: target.revision,
         });
     }
 
     let stale: BTreeSet<String> = branch
-        .relied
+        .relied()
         .iter()
         .filter(|(target, generation)| validity(target, **generation) != Some(Validity::Live))
         .map(|(target, _)| target.clone())
@@ -150,12 +143,12 @@ where
     }
 
     let mut conflicts = BTreeSet::new();
-    for (key, digest) in &branch.reads {
+    for (key, digest) in branch.reads() {
         if ValueDigest::of(key, target.value(key))? != *digest {
             conflicts.insert(key.clone());
         }
     }
-    for (prefix, digest) in &branch.scans {
+    for (prefix, digest) in branch.scans() {
         let now = RangeDigest::of(
             prefix,
             target
@@ -167,30 +160,20 @@ where
             conflicts.insert(format!("{prefix}*"));
         }
     }
-    let operated: BTreeSet<&str> = branch.ops.iter().map(BranchOp::key).collect();
-    let touched: BTreeSet<&str> = operated
-        .iter()
-        .copied()
-        .chain(branch.touched_inputs.keys().map(String::as_str))
-        .collect();
-    for key in touched {
-        if branch.touched_inputs.get(key) != Some(&InputsDigest::of(key, target.inputs(key))) {
-            conflicts.insert(key.to_owned());
-        } else if operated.contains(key) {
+    // The recheck above made the touched keys exactly the operated ones.
+    for (key, inputs) in branch.touched_inputs() {
+        if *inputs != InputsDigest::of(key, target.inputs(key)) {
+            conflicts.insert(key.clone());
+        } else {
             // The input set is the base's, so these are the inputs staging
             // the operation read; one the branch did not read is a
             // dependency it never declared.
             conflicts.extend(
                 target
                     .inputs(key)
-                    .filter(|input| !branch.reads.contains_key(*input))
+                    .filter(|input| !branch.reads().contains_key(*input))
                     .map(str::to_owned),
             );
-        }
-    }
-    for key in &operated {
-        if !branch.touched_base.contains_key(*key) {
-            conflicts.insert((*key).to_owned());
         }
     }
     if !conflicts.is_empty() {
@@ -198,7 +181,7 @@ where
     }
 
     let mut finals: BTreeMap<&str, Option<SemanticValue>> = BTreeMap::new();
-    for op in &branch.ops {
+    for op in branch.ops() {
         let current = match finals.remove(op.key()) {
             Some(value) => value,
             None => target.value(op.key()).cloned(),
@@ -221,9 +204,9 @@ where
     }
 
     let mut rebased = BTreeSet::new();
-    for op in branch.ops.iter().filter(|op| op.commutes()) {
+    for op in branch.ops().iter().filter(|op| op.commutes()) {
         let key = op.key();
-        if let Some(base) = branch.touched_base.get(key) {
+        if let Some(base) = branch.touched_base().get(key) {
             if ValueDigest::of(key, target.value(key))? != *base {
                 rebased.insert(key.to_owned());
             }
@@ -231,7 +214,7 @@ where
     }
 
     let plan = MergePlan {
-        branch: branch.id.clone(),
+        branch: branch.id().clone(),
         expected: target.revision,
         delta,
         rebased,
@@ -247,29 +230,139 @@ where
 fn dependency_digest(branch: &SealedBranch) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(b"ptr-branch/dependencies/v2");
-    hasher.update(branch.base_revision.0.to_le_bytes());
-    for (key, digest) in &branch.reads {
+    hasher.update(branch.base_revision().0.to_le_bytes());
+    for (key, digest) in branch.reads() {
         hasher.update((key.len() as u64).to_le_bytes());
         hasher.update(key.as_bytes());
         hasher.update(digest.as_bytes());
     }
     hasher.update([0xff]);
-    for (prefix, digest) in &branch.scans {
+    for (prefix, digest) in branch.scans() {
         hasher.update((prefix.len() as u64).to_le_bytes());
         hasher.update(prefix.as_bytes());
         hasher.update(digest.as_bytes());
     }
     hasher.update([0xfe]);
-    for (target, generation) in &branch.relied {
+    for (target, generation) in branch.relied() {
         hasher.update((target.len() as u64).to_le_bytes());
         hasher.update(target.as_bytes());
         hasher.update(generation.0.to_le_bytes());
     }
     hasher.update([0xfd]);
-    for (key, digest) in &branch.touched_inputs {
+    for (key, digest) in branch.touched_inputs() {
         hasher.update((key.len() as u64).to_le_bytes());
         hasher.update(key.as_bytes());
         hasher.update(digest.as_bytes());
     }
     hasher.finalize().into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::branch::SealedBranchParts;
+    use crate::ops::BranchOp;
+    use ptr_semdb::SemanticHost;
+    use ptr_types::PrincipalId;
+
+    fn text(value: &str) -> SemanticValue {
+        SemanticValue::Text(value.into())
+    }
+
+    fn no_lifecycle(_: &str, _: Generation) -> Option<Validity> {
+        None
+    }
+
+    /// Parts for `op` with its key's current value and input set declared as
+    /// read and as touched, so every digest matches `target`.
+    fn matching_parts(target: &SemanticSnapshot, op: BranchOp) -> SealedBranchParts {
+        let key = op.key().to_owned();
+        let digest = ValueDigest::of(&key, target.value(&key)).unwrap();
+        SealedBranchParts {
+            id: BranchId::from("unchecked"),
+            author: PrincipalId::from("agent-1"),
+            base_revision: target.revision,
+            reads: BTreeMap::from([(key.clone(), digest)]),
+            scans: BTreeMap::new(),
+            relied: BTreeMap::new(),
+            touched_base: BTreeMap::from([(key.clone(), digest)]),
+            touched_inputs: BTreeMap::from([(
+                key.clone(),
+                InputsDigest::of(&key, target.inputs(&key)),
+            )]),
+            ops: vec![op],
+        }
+    }
+
+    fn target() -> SemanticSnapshot {
+        let mut host = SemanticHost::default();
+        let mut delta = SemanticDelta::default();
+        delta
+            .upserts
+            .insert("request:r1:raw".into(), text("original"));
+        delta.upserts.insert("k".into(), text("1"));
+        host.apply_delta(delta).unwrap();
+        host.snapshot()
+    }
+
+    #[test]
+    fn certification_refuses_a_reserved_write_even_from_a_branch_that_skipped_the_constructor() {
+        let target = target();
+        let parts = matching_parts(
+            &target,
+            BranchOp::Put {
+                key: "request:r1:raw".into(),
+                value: text("rewritten"),
+            },
+        );
+        let branch = SealedBranch::unchecked(parts);
+        assert_eq!(
+            certify(&branch, &target, no_lifecycle).unwrap_err(),
+            BranchError::ReservedNamespace {
+                key: "request:r1:raw".into()
+            }
+        );
+        assert_eq!(
+            branch.recheck(),
+            certify(&branch, &target, no_lifecycle).map(drop)
+        );
+    }
+
+    #[test]
+    fn certification_refuses_every_other_broken_sealing_invariant_on_its_own() {
+        let target = target();
+        let put = || BranchOp::Put {
+            key: "k".into(),
+            value: text("2"),
+        };
+        let mut unread = matching_parts(&target, put());
+        unread.reads.clear();
+        let mut without_base = matching_parts(&target, put());
+        without_base.touched_base.clear();
+        let mut without_inputs = matching_parts(&target, put());
+        without_inputs.touched_inputs.clear();
+        let mut stray = matching_parts(&target, put());
+        stray
+            .touched_inputs
+            .insert("other".into(), InputsDigest::of("other", []));
+        let mut forged_base = matching_parts(&target, put());
+        forged_base
+            .touched_base
+            .insert("k".into(), ValueDigest::of("k", None).unwrap());
+        for (parts, code) in [
+            (unread, "PTR_BRANCH_UNREAD_TARGET"),
+            (without_base, "PTR_BRANCH_MALFORMED_SEAL"),
+            (without_inputs, "PTR_BRANCH_MALFORMED_SEAL"),
+            (stray, "PTR_BRANCH_MALFORMED_SEAL"),
+            (forged_base, "PTR_BRANCH_MALFORMED_SEAL"),
+        ] {
+            let refused = SealedBranch::from_parts(parts.clone()).unwrap_err();
+            assert_eq!(refused.code(), code, "{refused:?}");
+            let branch = SealedBranch::unchecked(parts);
+            assert_eq!(certify(&branch, &target, no_lifecycle), Err(refused));
+        }
+        // The same branch with every invariant intact certifies.
+        let intact = SealedBranch::unchecked(matching_parts(&target, put()));
+        assert!(certify(&intact, &target, no_lifecycle).is_ok());
+    }
 }

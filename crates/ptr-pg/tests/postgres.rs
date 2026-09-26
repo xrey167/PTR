@@ -11,8 +11,9 @@ use std::time::Duration;
 
 use ptr_analytics::{Grouping, Metric, MetricRow, MetricSpec, Window};
 use ptr_branch::{
-    AutoThreshold, BranchId, BranchOp, CalibrationSample, InputsDigest, PolicyRecord, RangeDigest,
-    SealedBranch, ThresholdRule, TriageDecision, TriageOutcome, TriagePolicy, ValueDigest,
+    AutoThreshold, BranchError, BranchId, BranchOp, CalibrationSample, InputsDigest, PolicyRecord,
+    RangeDigest, SealedBranch, SealedBranchParts, ThresholdRule, TriageDecision, TriageOutcome,
+    TriagePolicy, ValueDigest,
 };
 use ptr_fastmem::{Decay, FastMemory, FastMemoryConfig, SourceRef, WriteRequest};
 use ptr_ledger::integrity::{chain_anchors, LogAnchor};
@@ -1509,25 +1510,29 @@ async fn ddl_failures_leave_the_connection_outside_a_failed_transaction() {
     substrate.drop_all().await.unwrap();
 }
 
+/// A sealed branch with every kind of dependency and op, built as sealing
+/// records one: every `Put` and `Remove` names a key the branch read, and every
+/// key an op touches has its base value (equal to its read, where it was read)
+/// and its input set.
 fn sealed_branch(id: &str, author: &str) -> SealedBranch {
     let payload = SemanticValue::Payload(SemanticPayload {
         type_id: TypeId::from("ptr.test.bytes"),
         source: "unit-test".into(),
         bytes: vec![0, 1, 2, 255],
     });
-    SealedBranch {
+    let open = SemanticValue::from("open");
+    let base = |key: &str, value: Option<&SemanticValue>| {
+        (key.to_owned(), ValueDigest::of(key, value).unwrap())
+    };
+    let no_inputs = |key: &str| (key.to_owned(), InputsDigest::of(key, []));
+    SealedBranch::from_parts(SealedBranchParts {
         id: BranchId::from(id),
         author: PrincipalId::from(author),
         base_revision: Revision(4),
         reads: [
-            (
-                "order:1".to_owned(),
-                ValueDigest::of("order:1", Some(&SemanticValue::from("open"))).unwrap(),
-            ),
-            (
-                "order:2".to_owned(),
-                ValueDigest::of("order:2", None).unwrap(),
-            ),
+            base("order:1", Some(&open)),
+            base("order:2", None),
+            base("order:blob", None),
         ]
         .into_iter()
         .collect(),
@@ -1538,14 +1543,11 @@ fn sealed_branch(id: &str, author: &str) -> SealedBranch {
             .into_iter()
             .collect(),
         touched_base: [
-            (
-                "order:1".to_owned(),
-                ValueDigest::of("order:1", Some(&SemanticValue::from("open"))).unwrap(),
-            ),
-            (
-                "stock:widget".to_owned(),
-                ValueDigest::of("stock:widget", None).unwrap(),
-            ),
+            base("order:1", Some(&open)),
+            base("order:2", None),
+            base("order:blob", None),
+            base("stock:widget", None),
+            base("tags:1", None),
         ]
         .into_iter()
         .collect(),
@@ -1554,10 +1556,10 @@ fn sealed_branch(id: &str, author: &str) -> SealedBranch {
                 "order:1".to_owned(),
                 InputsDigest::of("order:1", ["order:2"]),
             ),
-            (
-                "stock:widget".to_owned(),
-                InputsDigest::of("stock:widget", []),
-            ),
+            no_inputs("order:2"),
+            no_inputs("order:blob"),
+            no_inputs("stock:widget"),
+            no_inputs("tags:1"),
         ]
         .into_iter()
         .collect(),
@@ -1586,7 +1588,8 @@ fn sealed_branch(id: &str, author: &str) -> SealedBranch {
                 member: "draft".into(),
             },
         ],
-    }
+    })
+    .expect("the fixture is a branch sealing could produce")
 }
 
 #[tokio::test]
@@ -1595,7 +1598,7 @@ async fn a_sealed_branch_round_trips_with_every_dependency_and_op() {
     let branch = sealed_branch("b1", "agent-7");
     substrate.store_branch(&branch).await.unwrap();
     assert_eq!(
-        substrate.load_branch(&branch.id).await.unwrap(),
+        substrate.load_branch(branch.id()).await.unwrap(),
         Some(branch.clone())
     );
     assert_eq!(
@@ -1618,8 +1621,8 @@ async fn touched_input_sets_survive_a_round_trip_and_a_branch_sealed_before_them
     let mut substrate = substrate().await;
     let branch = sealed_branch("b1", "agent-7");
     substrate.store_branch(&branch).await.unwrap();
-    let loaded = substrate.load_branch(&branch.id).await.unwrap().unwrap();
-    assert_eq!(loaded.touched_inputs, branch.touched_inputs);
+    let loaded = substrate.load_branch(branch.id()).await.unwrap().unwrap();
+    assert_eq!(loaded.touched_inputs(), branch.touched_inputs());
     // Every touched row carries its digest, the empty input set's included.
     let raw = raw_client().await;
     let work = substrate.schemas().work.clone();
@@ -1637,28 +1640,29 @@ async fn touched_input_sets_survive_a_round_trip_and_a_branch_sealed_before_them
         .map(|row| (row.get(0), row.get(1)))
         .collect();
     let expected: Vec<(String, Vec<u8>)> = branch
-        .touched_inputs
+        .touched_inputs()
         .iter()
         .map(|(key, digest)| (key.clone(), digest.as_bytes().to_vec()))
         .collect();
     assert_eq!(stored, expected);
 
     // A touched key without an input-set digest, or an input-set digest for
-    // a key without a base digest, is refused before any row is written.
-    let mut partial = sealed_branch("b2", "agent-7");
+    // a key no operation touches, is not a sealed branch at all, so there is
+    // nothing to hand to store_branch and nothing is written.
+    let mut partial = sealed_branch("b2", "agent-7").into_parts();
     partial.touched_inputs.remove("stock:widget");
-    let mut extra = sealed_branch("b3", "agent-7");
+    let mut extra = sealed_branch("b3", "agent-7").into_parts();
     extra
         .touched_inputs
-        .insert("tags:1".into(), InputsDigest::of("tags:1", []));
+        .insert("tags:2".into(), InputsDigest::of("tags:2", []));
     for refused in [partial, extra] {
-        let error = substrate.store_branch(&refused).await.unwrap_err();
+        let id = refused.id.clone();
+        let error = SealedBranch::from_parts(refused).unwrap_err();
         assert!(
-            matches!(error, PgError::InvalidBranch { ref branch, .. } if *branch == refused.id.0),
+            matches!(error, BranchError::MalformedSeal { .. }),
             "{error:?}"
         );
-        assert_eq!(error.code(), "PTR_PG_INVALID_BRANCH");
-        assert_eq!(substrate.load_branch(&refused.id).await.unwrap(), None);
+        assert_eq!(substrate.load_branch(&id).await.unwrap(), None);
     }
 
     // A branch stored before input sets were recorded, as the earlier schema
@@ -1698,6 +1702,216 @@ async fn touched_input_sets_survive_a_round_trip_and_a_branch_sealed_before_them
         .await
         .unwrap_err();
     assert_eq!(error.as_db_error().unwrap().code().code(), "23514");
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_branch_writing_a_reserved_namespace_is_never_stored_and_tampered_rows_never_load() {
+    let mut substrate = substrate().await;
+    // A hand-built branch that overwrites raw request text, declaring every
+    // digest a submitter who read the key could supply, is refused before it
+    // is a branch: store_branch takes only a SealedBranch, so nothing is
+    // written.
+    let mut parts = sealed_branch("forged", "agent-7").into_parts();
+    let raw_key = "request:r1:raw".to_owned();
+    let current = ValueDigest::of(&raw_key, Some(&SemanticValue::from("original"))).unwrap();
+    parts.reads.insert(raw_key.clone(), current);
+    parts.touched_base.insert(raw_key.clone(), current);
+    parts
+        .touched_inputs
+        .insert(raw_key.clone(), InputsDigest::of(&raw_key, []));
+    parts.ops.push(BranchOp::Put {
+        key: raw_key.clone(),
+        value: SemanticValue::from("rewritten"),
+    });
+    assert_eq!(
+        SealedBranch::from_parts(parts).unwrap_err(),
+        BranchError::ReservedNamespace {
+            key: raw_key.clone()
+        }
+    );
+    assert_eq!(
+        substrate
+            .load_branch(&BranchId::from("forged"))
+            .await
+            .unwrap(),
+        None
+    );
+
+    // Rows changed after a valid branch was stored come back as an error
+    // naming the broken sealing invariant, never as a branch to certify.
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    let zeros = "decode(repeat('00', 32), 'hex')";
+    let cases = [
+        (
+            // The op, its read and its touched row all moved to raw request
+            // text: only the reserved namespace is wrong.
+            "t1",
+            "UPDATE {work}.branch_op SET key = 'request:r1:raw' \
+             WHERE branch = 't1' AND ordinal = 0; \
+             UPDATE {work}.branch_read SET key = 'request:r1:raw' \
+             WHERE branch = 't1' AND key = 'order:1'; \
+             UPDATE {work}.branch_touched SET key = 'request:r1:raw' \
+             WHERE branch = 't1' AND key = 'order:1';"
+                .to_owned(),
+            BranchError::ReservedNamespace {
+                key: "request:r1:raw".into(),
+            },
+        ),
+        (
+            "t2",
+            format!(
+                "INSERT INTO {{work}}.branch_op (branch, ordinal, kind, key, amount) \
+                 VALUES ('t2', 6, 'add', 'pod-output:p1', 1); \
+                 INSERT INTO {{work}}.branch_touched (branch, key, base_digest, inputs_digest) \
+                 VALUES ('t2', 'pod-output:p1', {zeros}, {zeros});"
+            ),
+            BranchError::ReservedNamespace {
+                key: "pod-output:p1".into(),
+            },
+        ),
+        (
+            // An extra overwrite of a key the branch touched but never read.
+            "t3",
+            "INSERT INTO {work}.branch_op (branch, ordinal, kind, key) \
+             VALUES ('t3', 6, 'remove', 'stock:widget');"
+                .to_owned(),
+            BranchError::UnreadTarget {
+                key: "stock:widget".into(),
+            },
+        ),
+        (
+            "t4",
+            "DELETE FROM {work}.branch_read WHERE branch = 't4' AND key = 'order:2';".to_owned(),
+            BranchError::UnreadTarget {
+                key: "order:2".into(),
+            },
+        ),
+        (
+            "t5",
+            "DELETE FROM {work}.branch_touched WHERE branch = 't5' AND key = 'tags:1';".to_owned(),
+            BranchError::MalformedSeal {
+                key: "tags:1".into(),
+                reason: "a key an operation touches has no recorded base value",
+            },
+        ),
+        (
+            "t6",
+            format!(
+                "INSERT INTO {{work}}.branch_touched (branch, key, base_digest, inputs_digest) \
+                 VALUES ('t6', 'order:3', {zeros}, {zeros});"
+            ),
+            BranchError::MalformedSeal {
+                key: "order:3".into(),
+                reason: "a base value or input set is recorded for a key no operation touches",
+            },
+        ),
+        (
+            "t7",
+            format!(
+                "UPDATE {{work}}.branch_touched SET base_digest = {zeros} \
+                 WHERE branch = 't7' AND key = 'order:1';"
+            ),
+            BranchError::MalformedSeal {
+                key: "order:1".into(),
+                reason: "the base value recorded for a touched key differs from the value read",
+            },
+        ),
+        (
+            "t8",
+            "UPDATE {work}.branch_op SET member = '' WHERE branch = 't8' AND kind = 'set_insert';"
+                .to_owned(),
+            BranchError::InvalidMember {
+                key: "tags:1".into(),
+            },
+        ),
+    ];
+    for (id, tamper, broken) in cases {
+        let branch = sealed_branch(id, "agent-7");
+        substrate.store_branch(&branch).await.unwrap();
+        assert_eq!(
+            substrate.load_branch(branch.id()).await.unwrap(),
+            Some(branch.clone())
+        );
+        raw.batch_execute(&tamper.replace("{work}", work.as_str()))
+            .await
+            .unwrap();
+        let error = substrate.load_branch(branch.id()).await.unwrap_err();
+        assert_eq!(
+            error,
+            PgError::CorruptBranch {
+                branch: id.into(),
+                error: broken,
+            },
+            "{id}"
+        );
+        assert_eq!(error.code(), "PTR_PG_CORRUPT_BRANCH");
+    }
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_stored_branch_relying_on_two_generations_of_one_target_is_refused_on_load() {
+    let mut substrate = substrate().await;
+    for id in ["b1", "b2", "b3"] {
+        substrate
+            .store_branch(&sealed_branch(id, "agent-7"))
+            .await
+            .unwrap();
+    }
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    // The primary key refuses a second generation of a target outright.
+    let error = raw
+        .execute(
+            &format!(
+                "INSERT INTO {work}.branch_relied (branch, target, generation) \
+                 VALUES ('b1', 'constraint:budget', 4)"
+            ),
+            &[],
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.as_db_error().unwrap().code().code(), "23505");
+    // Rows written once the keys are dropped are refused on load rather than
+    // collapsed to whichever row came last.
+    raw.batch_execute(&format!(
+        "ALTER TABLE {work}.branch_relied DROP CONSTRAINT branch_relied_pkey; \
+         ALTER TABLE {work}.branch_read DROP CONSTRAINT branch_read_pkey; \
+         INSERT INTO {work}.branch_relied (branch, target, generation) \
+         VALUES ('b1', 'constraint:budget', 4), ('b2', 'constraint:budget', 3); \
+         INSERT INTO {work}.branch_read (branch, key, digest) \
+         VALUES ('b3', 'order:1', decode(repeat('00', 32), 'hex'));"
+    ))
+    .await
+    .unwrap();
+    let error = substrate
+        .load_branch(&BranchId::from("b1"))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error,
+        PgError::CorruptBranch {
+            branch: "b1".into(),
+            error: BranchError::ConflictingReliance {
+                target: "constraint:budget".into(),
+                relied: Generation(3),
+                declared: Generation(4),
+            },
+        }
+    );
+    assert_eq!(error.code(), "PTR_PG_CORRUPT_BRANCH");
+    for (id, table) in [("b2", "branch_relied"), ("b3", "branch_read")] {
+        let error = substrate
+            .load_branch(&BranchId::from(id))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, PgError::CorruptRow { table: found, .. } if found == table),
+            "{id}: {error:?}"
+        );
+    }
     substrate.drop_all().await.unwrap();
 }
 
@@ -1921,7 +2135,7 @@ async fn rebuild_drops_projection_and_derived_caches_but_keeps_working_state() {
     assert_eq!(substrate.replay(&log).await.unwrap(), 2);
     assert_eq!(substrate.watermark().await.unwrap(), before);
     assert_eq!(
-        substrate.load_branch(&branch.id).await.unwrap(),
+        substrate.load_branch(branch.id()).await.unwrap(),
         Some(branch)
     );
     // Derived caches are recomputed, not restored: the space must be
@@ -2441,18 +2655,19 @@ async fn vector_search_is_not_truncated_at_the_default_candidate_list() {
 #[tokio::test]
 async fn strings_postgresql_text_cannot_hold_are_refused_before_anything_is_written() {
     let mut substrate = substrate().await;
-    let mut branch = sealed_branch("b1", "agent-7");
-    branch.ops.push(BranchOp::Put {
+    let mut parts = sealed_branch("b1", "agent-7").into_parts();
+    parts.ops.push(BranchOp::Put {
         key: "order:1".into(),
         value: SemanticValue::from("a\0b"),
     });
+    let branch = SealedBranch::from_parts(parts).unwrap();
     assert_eq!(
         substrate.store_branch(&branch).await.unwrap_err(),
         PgError::InvalidText {
             field: "branch_op.value_text"
         }
     );
-    assert_eq!(substrate.load_branch(&branch.id).await.unwrap(), None);
+    assert_eq!(substrate.load_branch(branch.id()).await.unwrap(), None);
 
     let record = capsule(1, "c\0", 1);
     let chain = anchors(std::slice::from_ref(&record));

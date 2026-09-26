@@ -3,7 +3,7 @@ use std::fmt;
 
 use ptr_types::{Generation, Revision};
 
-/// Refusals from building, sealing or certifying a branch.
+/// Refusals from building, sealing, rebuilding or certifying a branch.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum BranchError {
     /// `Put` and `Remove` overwrite a value, so the branch must have read the
@@ -60,6 +60,16 @@ pub enum BranchError {
         relied: Generation,
         declared: Generation,
     },
+    /// The parts of a sealed branch are not what sealing an open branch
+    /// records: a key an operation touches has no recorded base value or
+    /// input set, a base value or input set is recorded for a key no
+    /// operation touches, or the recorded base value of a touched key differs
+    /// from the value the branch read for it (both digest the same base
+    /// value). `reason` says which.
+    MalformedSeal {
+        key: String,
+        reason: &'static str,
+    },
 }
 
 impl BranchError {
@@ -76,6 +86,7 @@ impl BranchError {
             Self::Conflict { .. } => "PTR_BRANCH_CONFLICT",
             Self::LifecycleChanged { .. } => "PTR_BRANCH_LIFECYCLE_CHANGED",
             Self::ConflictingReliance { .. } => "PTR_BRANCH_CONFLICTING_RELIANCE",
+            Self::MalformedSeal { .. } => "PTR_BRANCH_MALFORMED_SEAL",
         }
     }
 }
@@ -122,6 +133,9 @@ impl fmt::Display for BranchError {
                 "{target:?} was relied on at generation {} and then at {}",
                 relied.0, declared.0
             ),
+            Self::MalformedSeal { key, reason } => {
+                write!(formatter, "sealed branch is malformed at {key:?}: {reason}")
+            }
         }
     }
 }

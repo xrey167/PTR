@@ -31,7 +31,7 @@ The axes must not be collapsed into one enum: semantic role, epistemic state, un
 | EvidenceCandidate | search | verifier | source ref, index generation, score, method |
 | FlowSignature | core/runtime | observe/verifier | selected operators and transitions |
 | CommittedEvent + LogAnchor | ledger | pg projector | commit index, anchor digest recomputed from the stored anchor |
-| SealedBranch | branch | pg branch store/certifier | base revision, value/range digests, touched keys' base values and input-set digests, relied generations, typed ops |
+| SealedBranch | branch | pg branch store/certifier | base revision, value/range digests, touched keys' base values and input-set digests, relied generations, typed ops; private, built only through `SealedBranch::from_parts`, which checks every sealing invariant |
 | MergePlan | branch | runtime (verified delta) | certified revision, one SemanticDelta, plan digest |
 | TriageOutcome | branch | pg/analytics | decision, eligibility, calibration slice, score, propensity, policy version |
 | PolicyRecord | branch | pg policy store, F003 | version, threshold rule and levels, threshold, calibration rate, calibration branches (held out: every other adjudication) |

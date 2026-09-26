@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use ptr_branch::{
     certify, counter_value, read_counter_value, read_set_value, set_value, Branch, BranchError,
-    BranchId, BranchOp, Certification,
+    BranchId, BranchOp, Certification, SealedBranch,
 };
 use ptr_semdb::{SemanticDelta, SemanticHost, SemanticValue};
 use ptr_types::{Generation, PrincipalId, Validity};
@@ -140,7 +140,7 @@ fn operations_that_cancel_produce_a_noop_plan_and_preserve_author_identity() {
         .unwrap();
     }
     let sealed = work.seal().unwrap();
-    assert_eq!(sealed.author, PrincipalId::from("agent-1"));
+    assert_eq!(sealed.author(), &PrincipalId::from("agent-1"));
     let certification = certify(&sealed, &host.snapshot(), no_lifecycle).unwrap();
     assert!(certification.plan().is_noop());
     assert_eq!(certification.plan().expected, host.revision());
@@ -358,7 +358,7 @@ fn writing_a_derived_key_reads_its_declared_inputs() {
     work.read("derived:tax").unwrap();
     work.put("derived:tax", text("20")).unwrap();
     let sealed = work.seal().unwrap();
-    assert!(sealed.reads.contains_key("input:rate"));
+    assert!(sealed.reads().contains_key("input:rate"));
 
     // The input changes after the branch computed its value; the stale
     // derivation must not merge.
@@ -402,7 +402,7 @@ fn a_touched_key_whose_input_set_changed_conflicts_even_when_every_value_it_read
             .insert("derived:d".into(), after.clone());
         host.apply_delta(rewire).unwrap();
         let target = host.snapshot();
-        assert!(target.revision > sealed.base_revision);
+        assert!(target.revision > sealed.base_revision());
         for (key, value) in [("input:a", "1"), ("input:b", "1"), ("derived:d", "2")] {
             assert_eq!(target.get(key), Some(value));
         }
@@ -418,22 +418,24 @@ fn a_touched_key_whose_input_set_changed_conflicts_even_when_every_value_it_read
 }
 
 #[test]
-fn a_touched_key_without_a_recorded_input_set_is_a_conflict() {
+fn a_touched_key_without_a_recorded_input_set_is_refused_before_certification() {
     // A sealed branch rebuilt from storage without the input set of a touched
-    // key cannot show that the key's dependencies are unchanged.
+    // key cannot show that the key's dependencies are unchanged, so it is
+    // never rebuilt at all.
     let host = host_with(&[("a", text("1"))]);
     let mut work = branch(&host, "b1");
     work.read("a").unwrap();
     work.put("a", text("2")).unwrap();
-    let mut sealed = work.seal().unwrap();
+    let sealed = work.seal().unwrap();
     assert!(certify(&sealed, &host.snapshot(), no_lifecycle).is_ok());
-    sealed.touched_inputs.clear();
-    assert_eq!(
-        certify(&sealed, &host.snapshot(), no_lifecycle).unwrap_err(),
-        BranchError::Conflict {
-            keys: BTreeSet::from(["a".into()])
-        }
+    let mut parts = sealed.into_parts();
+    parts.touched_inputs.clear();
+    let refused = SealedBranch::from_parts(parts).unwrap_err();
+    assert!(
+        matches!(refused, BranchError::MalformedSeal { ref key, .. } if key == "a"),
+        "{refused:?}"
     );
+    assert_eq!(refused.code(), "PTR_BRANCH_MALFORMED_SEAL");
 }
 
 #[test]
@@ -619,8 +621,12 @@ fn a_refused_commutative_operation_leaves_no_read_of_its_inputs_behind() {
         let mut work = branch(&host, "b1");
         assert_eq!(work.stage_commutative(op), Err(refused.clone()));
         let sealed = work.seal().unwrap();
-        assert!(sealed.ops.is_empty(), "{refused:?}");
-        assert!(sealed.reads.is_empty(), "{refused:?}: {:?}", sealed.reads);
+        assert!(sealed.ops().is_empty(), "{refused:?}");
+        assert!(
+            sealed.reads().is_empty(),
+            "{refused:?}: {:?}",
+            sealed.reads()
+        );
         // A change to the input the refused operation would have depended on
         // does not refuse a branch that does nothing with it.
         change(&mut host, "input:i", text("2"));
@@ -648,7 +654,7 @@ fn a_second_generation_of_a_relied_on_target_is_refused_when_declared() {
     assert_eq!(refused.code(), "PTR_BRANCH_CONFLICTING_RELIANCE");
     let sealed = work.seal().unwrap();
     assert_eq!(
-        sealed.relied,
+        *sealed.relied(),
         [("capsule:x".to_owned(), Generation(1))]
             .into_iter()
             .collect()
@@ -671,23 +677,22 @@ fn a_second_generation_of_a_relied_on_target_is_refused_when_declared() {
 }
 
 #[test]
-fn a_sealed_branch_that_breaks_what_staging_guarantees_is_refused_at_certification() {
+fn a_sealed_branch_that_breaks_what_staging_guarantees_is_refused_when_rebuilt_or_certified() {
     // A Put of a key the branch no longer records as read would merge as a
-    // blind overwrite of a concurrent change.
-    let mut host = host_with(&[("k", text("a"))]);
+    // blind overwrite of a concurrent change: no such branch is rebuilt.
+    let host = host_with(&[("k", text("a"))]);
     let mut work = branch(&host, "b1");
     work.read("k").unwrap();
     work.put("k", text("mine")).unwrap();
-    let mut sealed = work.seal().unwrap();
-    sealed.reads.clear();
-    change(&mut host, "k", text("theirs"));
+    let mut parts = work.seal().unwrap().into_parts();
+    parts.reads.clear();
     assert_eq!(
-        certify(&sealed, &host.snapshot(), no_lifecycle).unwrap_err(),
+        SealedBranch::from_parts(parts).unwrap_err(),
         BranchError::UnreadTarget { key: "k".into() }
     );
 
     // Without the base value of a key it adds to, the branch cannot tell a
-    // rebase from a clean merge.
+    // rebase from a clean merge: no such branch is rebuilt either.
     let mut host = host_with(&[("c", counter_value(10))]);
     let mut work = branch(&host, "b2");
     work.stage_commutative(BranchOp::Add {
@@ -695,29 +700,32 @@ fn a_sealed_branch_that_breaks_what_staging_guarantees_is_refused_at_certificati
         amount: 1,
     })
     .unwrap();
-    let mut sealed = work.seal().unwrap();
+    let sealed = work.seal().unwrap();
     change(&mut host, "c", counter_value(20));
     assert!(matches!(
         certify(&sealed, &host.snapshot(), no_lifecycle),
         Ok(Certification::Rebased(plan)) if plan.rebased == BTreeSet::from(["c".to_owned()])
     ));
-    sealed.touched_base.clear();
-    assert_eq!(
-        certify(&sealed, &host.snapshot(), no_lifecycle).unwrap_err(),
-        BranchError::Conflict {
-            keys: BTreeSet::from(["c".into()])
-        }
-    );
+    let mut parts = sealed.into_parts();
+    parts.touched_base.clear();
+    assert!(matches!(
+        SealedBranch::from_parts(parts),
+        Err(BranchError::MalformedSeal { key, .. }) if key == "c"
+    ));
 
     // Staging reads every input of the key an operation touches; a branch
-    // without that read never declared the dependency.
+    // without that read never declared the dependency. The input set hides
+    // behind its digest, so the branch is rebuilt, and certification, which
+    // knows the inputs from the target, refuses it.
     let host = derived_host(text("2"));
     let mut work = branch(&host, "b3");
     work.read("derived").unwrap();
     work.put("derived", text("3")).unwrap();
-    let mut sealed = work.seal().unwrap();
+    let sealed = work.seal().unwrap();
     assert!(certify(&sealed, &host.snapshot(), no_lifecycle).is_ok());
-    sealed.reads.remove("input:i");
+    let mut parts = sealed.into_parts();
+    parts.reads.remove("input:i");
+    let sealed = SealedBranch::from_parts(parts).unwrap();
     assert_eq!(
         certify(&sealed, &host.snapshot(), no_lifecycle).unwrap_err(),
         BranchError::Conflict {
@@ -750,7 +758,7 @@ fn a_set_the_journal_cannot_carry_is_refused_rather_than_truncated() {
         }),
         Err(BranchError::InvalidValue { key: "tags".into() })
     );
-    assert!(work.seal().unwrap().ops.is_empty());
+    assert!(work.seal().unwrap().ops().is_empty());
 }
 
 #[test]

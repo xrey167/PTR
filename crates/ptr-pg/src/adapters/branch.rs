@@ -4,8 +4,8 @@
 use std::collections::BTreeMap;
 
 use ptr_branch::{
-    BranchId, BranchOp, InputsDigest, RangeDigest, SealedBranch, TriageDecision, TriageOutcome,
-    ValueDigest,
+    BranchError, BranchId, BranchOp, InputsDigest, RangeDigest, SealedBranch, SealedBranchParts,
+    TriageDecision, TriageOutcome, ValueDigest,
 };
 use ptr_semdb::{SemanticPayload, SemanticValue};
 use ptr_types::{CommitIndex, Generation, PrincipalId, Revision, TypeId};
@@ -52,19 +52,24 @@ impl PgSubstrate {
     /// Store a sealed branch with every declared dependency and staged op,
     /// including the base value and the base input set of every touched key.
     /// A branch id is stored once; storing it again is refused by the
-    /// primary key. A branch whose touched keys and input-set digests name
-    /// different keys is refused as [`PgError::InvalidBranch`] before any row
-    /// is written.
+    /// primary key.
+    ///
+    /// Only a `SealedBranch` can be stored, and one exists only once
+    /// `SealedBranch::from_parts` (or sealing, which goes through it) has
+    /// checked every sealing invariant: no operation on a key reserved to
+    /// ingress, no `Put` or `Remove` of an unread key, a base value and an
+    /// input set for exactly the keys operations touch. They are rechecked
+    /// here before any row is written, and a branch that breaks one is
+    /// refused as [`PgError::InvalidBranch`], as is a string PostgreSQL
+    /// `text` cannot hold ([`PgError::InvalidText`]).
     pub async fn store_branch(&mut self, branch: &SealedBranch) -> Result<(), PgError> {
         let work = self.schemas.work.clone();
+        branch.recheck().map_err(|error| PgError::InvalidBranch {
+            branch: branch.id().0.clone(),
+            error,
+        })?;
         check_branch_text(branch)?;
-        if !branch.touched_base.keys().eq(branch.touched_inputs.keys()) {
-            return Err(PgError::InvalidBranch {
-                branch: branch.id.0.clone(),
-                reason: "every touched key needs exactly one base digest and one input-set digest",
-            });
-        }
-        let id = branch.id.0.as_str();
+        let id = branch.id().0.as_str();
         let transaction = self.client.transaction().await.map_err(database)?;
         transaction
             .execute(
@@ -73,13 +78,13 @@ impl PgSubstrate {
                 ),
                 &[
                     &id,
-                    &branch.author.0,
-                    &to_i64(branch.base_revision.0, "base_revision")?,
+                    &branch.author().0,
+                    &to_i64(branch.base_revision().0, "base_revision")?,
                 ],
             )
             .await
             .map_err(database)?;
-        for (key, digest) in &branch.reads {
+        for (key, digest) in branch.reads() {
             transaction
                 .execute(
                     &format!(
@@ -90,7 +95,7 @@ impl PgSubstrate {
                 .await
                 .map_err(database)?;
         }
-        for (prefix, digest) in &branch.scans {
+        for (prefix, digest) in branch.scans() {
             transaction
                 .execute(
                     &format!(
@@ -101,7 +106,7 @@ impl PgSubstrate {
                 .await
                 .map_err(database)?;
         }
-        for (target, generation) in &branch.relied {
+        for (target, generation) in branch.relied() {
             transaction
                 .execute(
                     &format!(
@@ -113,11 +118,12 @@ impl PgSubstrate {
                 .await
                 .map_err(database)?;
         }
-        // The key sets were checked equal above, so the maps zip key by key.
+        // A sealed branch records a base value and an input set for exactly
+        // the keys its operations touch, so the two maps zip key by key.
         for ((key, digest), inputs) in branch
-            .touched_base
+            .touched_base()
             .iter()
-            .zip(branch.touched_inputs.values())
+            .zip(branch.touched_inputs().values())
         {
             transaction
                 .execute(
@@ -135,7 +141,7 @@ impl PgSubstrate {
                 .await
                 .map_err(database)?;
         }
-        for (ordinal, op) in branch.ops.iter().enumerate() {
+        for (ordinal, op) in branch.ops().iter().enumerate() {
             let row = OpRow::from_op(op);
             let ordinal = i32::try_from(ordinal).map_err(|_| PgError::OutOfRange {
                 field: "branch_op.ordinal",
@@ -170,11 +176,21 @@ impl PgSubstrate {
 
     /// Load a stored branch exactly as it was sealed.
     ///
+    /// The rows are rebuilt through `SealedBranch::from_parts`, so what comes
+    /// back passes every sealing invariant a freshly sealed branch does; rows
+    /// changed after they were stored come back as an error, never as a
+    /// branch certification could plan from.
+    ///
     /// # Errors
     /// Refuses a branch stored before the input sets of touched keys were
     /// recorded as [`PgError::BranchWithoutInputSets`]: it cannot be
-    /// certified and must be re-run. A digest that is not 32 bytes is a
-    /// [`PgError::CorruptRow`].
+    /// certified and must be re-run. A digest that is not 32 bytes, or a
+    /// key, prefix or target stored twice, is a [`PgError::CorruptRow`]; two
+    /// generations relied on for one target, or rows that break a sealing
+    /// invariant (an operation on a reserved key, an overwrite of an unread
+    /// key, a touched key without its base value or input set, a base value
+    /// or input set no operation needs), are a [`PgError::CorruptBranch`]
+    /// naming the `BranchError`.
     pub async fn load_branch(&self, id: &BranchId) -> Result<Option<SealedBranch>, PgError> {
         let work = &self.schemas.work;
         let Some(header) = self
@@ -199,10 +215,11 @@ impl PgSubstrate {
             .await
             .map_err(database)?
         {
-            reads.insert(
-                row.get::<_, String>(0),
-                ValueDigest::from_bytes(digest_from(row.get(1), "branch_read")?),
-            );
+            let key: String = row.get(0);
+            let digest = ValueDigest::from_bytes(digest_from(row.get(1), "branch_read")?);
+            if reads.insert(key, digest).is_some() {
+                return Err(stored_twice("branch_read", "a key"));
+            }
         }
         let mut scans = BTreeMap::new();
         for row in self
@@ -214,25 +231,46 @@ impl PgSubstrate {
             .await
             .map_err(database)?
         {
-            scans.insert(
-                row.get::<_, String>(0),
-                RangeDigest::from_bytes(digest_from(row.get(1), "branch_scan")?),
-            );
+            let prefix: String = row.get(0);
+            let digest = RangeDigest::from_bytes(digest_from(row.get(1), "branch_scan")?);
+            if scans.insert(prefix, digest).is_some() {
+                return Err(stored_twice("branch_scan", "a prefix"));
+            }
         }
         let mut relied = BTreeMap::new();
         for row in self
             .client
             .query(
-                &format!("SELECT target, generation FROM {work}.branch_relied WHERE branch = $1"),
+                &format!(
+                    "SELECT target, generation FROM {work}.branch_relied WHERE branch = $1 \
+                     ORDER BY target, generation"
+                ),
                 &[&id.0],
             )
             .await
             .map_err(database)?
         {
-            relied.insert(
-                row.get::<_, String>(0),
-                Generation(to_u64(row.get(1), "branch_relied")?),
-            );
+            let target: String = row.get(0);
+            let declared = Generation(to_u64(row.get(1), "branch_relied")?);
+            match relied.insert(target.clone(), declared) {
+                None => {}
+                Some(earlier) if earlier == declared => {
+                    return Err(stored_twice("branch_relied", "a target"));
+                }
+                // A branch relies on at most one generation of a target, as
+                // `Branch::rely_on` enforces; rows naming two are refused
+                // rather than collapsed to either.
+                Some(earlier) => {
+                    return Err(PgError::CorruptBranch {
+                        branch: id.0.clone(),
+                        error: BranchError::ConflictingReliance {
+                            target,
+                            relied: earlier,
+                            declared,
+                        },
+                    });
+                }
+            }
         }
         let mut touched_base = BTreeMap::new();
         let mut touched_inputs = BTreeMap::new();
@@ -255,14 +293,13 @@ impl PgSubstrate {
                     key,
                 });
             };
-            touched_inputs.insert(
-                key.clone(),
-                InputsDigest::from_bytes(digest_from(inputs, "branch_touched")?),
-            );
-            touched_base.insert(
-                key,
-                ValueDigest::from_bytes(digest_from(row.get(1), "branch_touched")?),
-            );
+            let inputs = InputsDigest::from_bytes(digest_from(inputs, "branch_touched")?);
+            let base = ValueDigest::from_bytes(digest_from(row.get(1), "branch_touched")?);
+            if touched_inputs.insert(key.clone(), inputs).is_some()
+                || touched_base.insert(key, base).is_some()
+            {
+                return Err(stored_twice("branch_touched", "a key"));
+            }
         }
         let ops = self
             .client
@@ -293,7 +330,7 @@ impl PgSubstrate {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        Ok(Some(SealedBranch {
+        SealedBranch::from_parts(SealedBranchParts {
             id: id.clone(),
             author: PrincipalId(header.get(0)),
             base_revision: Revision(to_u64(header.get(1), "branch")?),
@@ -303,7 +340,12 @@ impl PgSubstrate {
             touched_base,
             touched_inputs,
             ops,
-        }))
+        })
+        .map(Some)
+        .map_err(|error| PgError::CorruptBranch {
+            branch: id.0.clone(),
+            error,
+        })
     }
 
     /// Log a branch's triage with what off-policy evaluation needs later: the
@@ -377,24 +419,32 @@ impl PgSubstrate {
     }
 }
 
+/// A row a primary key keeps unique was found twice for one branch.
+fn stored_twice(table: &'static str, what: &str) -> PgError {
+    PgError::CorruptRow {
+        table,
+        reason: format!("{what} is stored twice for one branch"),
+    }
+}
+
 /// Refuse a branch with a string PostgreSQL `text` cannot hold, before any row
 /// is written.
 fn check_branch_text(branch: &SealedBranch) -> Result<(), PgError> {
-    check_text("branch.id", &branch.id.0)?;
-    check_text("branch.author", &branch.author.0)?;
-    for key in branch.reads.keys() {
+    check_text("branch.id", &branch.id().0)?;
+    check_text("branch.author", &branch.author().0)?;
+    for key in branch.reads().keys() {
         check_text("branch_read.key", key)?;
     }
-    for prefix in branch.scans.keys() {
+    for prefix in branch.scans().keys() {
         check_text("branch_scan.prefix", prefix)?;
     }
-    for target in branch.relied.keys() {
+    for target in branch.relied().keys() {
         check_text("branch_relied.target", target)?;
     }
-    for key in branch.touched_base.keys() {
+    for key in branch.touched_base().keys() {
         check_text("branch_touched.key", key)?;
     }
-    for op in &branch.ops {
+    for op in branch.ops() {
         check_text("branch_op.key", op.key())?;
         match op {
             BranchOp::Put {

@@ -1,5 +1,7 @@
 use std::fmt;
 
+use ptr_branch::BranchError;
+
 /// Every refusal of the Postgres substrate, with no driver type in it: a
 /// database error crosses this boundary as its SQLSTATE and message.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -101,13 +103,21 @@ pub enum PgError {
         memory: String,
         reason: &'static str,
     },
-    /// A sealed branch was refused before any row was written: its touched
-    /// keys and the input-set digests recorded for them name different keys,
-    /// so a stored copy could not be loaded exactly as it was sealed.
-    InvalidBranch {
-        branch: String,
-        reason: &'static str,
-    },
+    /// A sealed branch was refused before any row was written because it
+    /// breaks the sealing invariant `error` names
+    /// (`ptr_branch::SealedBranch::from_parts` lists them). Every
+    /// `SealedBranch` passed them when it was built, so `store_branch`
+    /// rechecking them refuses only a defect in how one was built.
+    InvalidBranch { branch: String, error: BranchError },
+    /// A stored branch's rows are not a branch sealing could have produced,
+    /// so they were changed after they were stored: rebuilt through
+    /// `ptr_branch::SealedBranch::from_parts` they break the sealing
+    /// invariant `error` names (an operation on a key reserved to ingress, a
+    /// `Put` or `Remove` of a key the branch did not read, a touched key
+    /// without its base value or input set, ...), or they rely on two
+    /// generations of one target (`ConflictingReliance`). No branch is
+    /// returned, so nothing certifies a plan from the rows.
+    CorruptBranch { branch: String, error: BranchError },
     /// An interference report was refused before any row was written: it
     /// names another adapter than the one it is recorded for, it
     /// has no layer (storing it would record no evidence while claiming the
@@ -158,6 +168,7 @@ impl PgError {
             Self::InvalidWrite { .. } => "PTR_PG_INVALID_WRITE",
             Self::InvalidCheckpoint { .. } => "PTR_PG_INVALID_CHECKPOINT",
             Self::InvalidBranch { .. } => "PTR_PG_INVALID_BRANCH",
+            Self::CorruptBranch { .. } => "PTR_PG_CORRUPT_BRANCH",
             Self::InvalidInterference { .. } => "PTR_PG_INVALID_INTERFERENCE",
             Self::BranchWithoutInputSets { .. } => "PTR_PG_BRANCH_WITHOUT_INPUT_SETS",
             Self::InvalidText { .. } => "PTR_PG_INVALID_TEXT",
@@ -245,8 +256,11 @@ impl fmt::Display for PgError {
             Self::InvalidCheckpoint { memory, reason } => {
                 write!(formatter, "fast-memory checkpoint of {memory:?} refused: {reason}")
             }
-            Self::InvalidBranch { branch, reason } => {
-                write!(formatter, "branch {branch:?} refused: {reason}")
+            Self::InvalidBranch { branch, error } => {
+                write!(formatter, "branch {branch:?} refused: {error}")
+            }
+            Self::CorruptBranch { branch, error } => {
+                write!(formatter, "stored branch {branch:?} is corrupt: {error}")
             }
             Self::InvalidInterference { adapter, reason } => {
                 write!(formatter, "interference report for {adapter:?} refused: {reason}")
