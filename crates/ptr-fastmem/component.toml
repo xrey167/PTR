@@ -11,7 +11,7 @@ implemented = [
   "binding_digest_of names the ordered folded writes by sequence, source key, generation and input digest (not by key and value bits); ptr-pg recomputes it from the stored journal prefix, refuses to store a checkpoint that does not match and never returns one that no longer does",
   "Seeded orthogonal key projection and identifier codebook; readouts decode to named capsules or to Unknown below a margin; constraint and procedure sources shape the state but are never decode candidates, and a decode policy that would fail open (zero limit, NaN or negative threshold) or a nonfinite score is refused",
   "PTRFW001 state codec with full f32 cells and a SHA-256 trailer",
-  "Bounded shapes, journal length and checkpoint interval with typed refusals; public validate_write shares restore admission rules",
+  "Bounded shapes, journal length, checkpoint interval and sequence numbers (a journal ends below u64::MAX, so its next write can always be numbered) with typed refusals; public validate_write shares restore admission rules",
   "Value cells are bounded by MAX_VALUE_MAGNITUDE (2^24) at admission, independently of the state, so every fold of admitted writes stays finite whatever their order or subset and refolds after revocation admit exactly the same writes",
 ]
 

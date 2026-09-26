@@ -34,6 +34,10 @@ pub enum FastMemoryError {
     InvalidThreshold { field: &'static str, value: f32 },
     /// A write sequence number did not advance the journal by exactly one.
     OutOfOrderWrite { expected: u64, actual: u64 },
+    /// A write would be journaled at `u64::MAX`, the one sequence number
+    /// without a successor: no write could be numbered after it, so a journal
+    /// may not end there.
+    SequenceExhausted { seq: u64 },
     /// The journal holds its configured maximum of writes.
     JournalFull { limit: u32 },
     /// A read was refused because the state depends on inputs that are no
@@ -58,6 +62,7 @@ impl FastMemoryError {
             Self::ValueOutOfRange { .. } => "PTR_FASTMEM_VALUE_OUT_OF_RANGE",
             Self::InvalidThreshold { .. } => "PTR_FASTMEM_INVALID_THRESHOLD",
             Self::OutOfOrderWrite { .. } => "PTR_FASTMEM_OUT_OF_ORDER_WRITE",
+            Self::SequenceExhausted { .. } => "PTR_FASTMEM_SEQUENCE_EXHAUSTED",
             Self::JournalFull { .. } => "PTR_FASTMEM_JOURNAL_FULL",
             Self::Denied { .. } => "PTR_FASTMEM_DENIED",
             Self::CorruptState { .. } => "PTR_FASTMEM_CORRUPT_STATE",
@@ -104,6 +109,10 @@ impl fmt::Display for FastMemoryError {
             Self::OutOfOrderWrite { expected, actual } => write!(
                 formatter,
                 "write sequence {actual} does not follow the journal, expected {expected}"
+            ),
+            Self::SequenceExhausted { seq } => write!(
+                formatter,
+                "write sequence {seq} leaves no successor for a later write"
             ),
             Self::JournalFull { limit } => {
                 write!(formatter, "journal holds its limit of {limit} writes")
@@ -172,6 +181,7 @@ mod tests {
                 expected: 1,
                 actual: 3,
             },
+            FastMemoryError::SequenceExhausted { seq: u64::MAX },
             FastMemoryError::JournalFull { limit: 1 },
             FastMemoryError::Denied { sources: 1 },
             FastMemoryError::CorruptState { reason: "" },

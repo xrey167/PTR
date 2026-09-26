@@ -151,6 +151,49 @@ fn restoring_refuses_zero_sequence_and_journals_over_capacity() {
 }
 
 #[test]
+fn restoring_a_journal_whose_last_sequence_has_no_successor_is_refused() {
+    // Gaps are allowed, so one entry can jump to the end of the range; its
+    // successor used to overflow (a panic, or a wrap to the reserved zero).
+    for journal in [
+        vec![(WriteSeq(u64::MAX), write_about("a", 0))],
+        vec![
+            (WriteSeq(1), write_about("a", 0)),
+            (WriteSeq(u64::MAX), write_about("b", 1)),
+        ],
+    ] {
+        assert_eq!(
+            FastMemory::restore(config(1), journal).unwrap_err(),
+            FastMemoryError::SequenceExhausted { seq: u64::MAX }
+        );
+    }
+    let last =
+        FastMemory::restore(config(1), [(WriteSeq(u64::MAX - 1), write_about("a", 0))]).unwrap();
+    assert_eq!(last.state().applied(), WriteSeq(u64::MAX - 1));
+}
+
+#[test]
+fn a_write_that_would_take_the_last_sequence_number_is_refused_and_leaves_the_memory_unchanged() {
+    let mut memory =
+        FastMemory::restore(config(1), [(WriteSeq(u64::MAX - 1), write_about("a", 0))]).unwrap();
+    let state = memory.state().clone();
+    let binding = memory.binding_digest();
+    let writes = memory.writes().to_vec();
+    assert_eq!(
+        memory.write(write_about("b", 1)),
+        Err(FastMemoryError::SequenceExhausted { seq: u64::MAX })
+    );
+    assert_eq!(memory.state(), &state);
+    assert_eq!(memory.binding_digest(), binding);
+    assert_eq!(memory.writes(), writes);
+    // Revocation never hands a sequence number out again.
+    memory.revoke(|_| true);
+    assert_eq!(
+        memory.write(write_about("b", 1)),
+        Err(FastMemoryError::SequenceExhausted { seq: u64::MAX })
+    );
+}
+
+#[test]
 fn a_write_that_could_overflow_the_fold_is_refused_and_leaves_the_memory_unchanged() {
     // f32::MAX and then -f32::MAX under one unit key: the second write's error
     // `target - current` is -inf. Both writes used to be folded and journaled,

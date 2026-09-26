@@ -3,7 +3,9 @@ use ptr_types::Generation;
 use crate::config::{FastMemoryConfig, MAX_VALUE_MAGNITUDE};
 use crate::error::FastMemoryError;
 
-/// Position of a write in one memory's journal. The first write is `1`.
+/// Position of a write in one memory's journal. The first write is `1`; the
+/// last a journal may hold is `u64::MAX - 1`, so every journaled write has a
+/// successor to number the next one.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct WriteSeq(pub u64);
 

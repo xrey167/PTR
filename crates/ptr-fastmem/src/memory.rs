@@ -62,9 +62,11 @@ impl FastMemory {
     /// increase; gaps are expected where writes were revoked.
     ///
     /// Use original write requests, with sequence numbers starting at one or
-    /// higher. Every write is admitted by the same rules as [`Self::write`].
-    /// Returns configuration, journal-capacity, sequence-order, or
-    /// write-validation errors; no partially restored memory is returned.
+    /// higher and below `u64::MAX`, so the restored memory can number its next
+    /// write. Every write is admitted by the same rules as [`Self::write`].
+    /// Returns configuration, journal-capacity, sequence-order,
+    /// sequence-exhaustion, or write-validation errors; no partially restored
+    /// memory is returned.
     pub fn restore<I>(config: FastMemoryConfig, journal: I) -> Result<Self, FastMemoryError>
     where
         I: IntoIterator<Item = (WriteSeq, WriteRequest)>,
@@ -78,8 +80,9 @@ impl FastMemory {
                 });
             }
             memory.check_capacity()?;
+            let next_seq = successor(seq)?;
             let write = admit_write(&memory.config, seq, request)?;
-            memory.next_seq = seq.0 + 1;
+            memory.next_seq = next_seq;
             let _surprise = memory.fold(write);
         }
         Ok(memory)
@@ -117,16 +120,19 @@ impl FastMemory {
     /// The source's lifecycle and input digest are not checked here.
     ///
     /// # Errors
-    /// Rejects a full journal, invalid vector lengths, nonfinite vector entries,
-    /// value cells beyond [`crate::MAX_VALUE_MAGNITUDE`] (the bound that keeps
-    /// every fold of admitted writes finite), zero or nonfinite head norms, or
+    /// Rejects a full journal, a write that would take sequence number
+    /// `u64::MAX` (it has no successor, so its journal could not be restored),
+    /// invalid vector lengths, nonfinite vector entries, value cells beyond
+    /// [`crate::MAX_VALUE_MAGNITUDE`] (the bound that keeps every fold of
+    /// admitted writes finite), zero or nonfinite head norms, or
     /// strength/decay factors outside `(0, 1]`. Validation errors leave the
     /// journal, state, and next sequence unchanged.
     pub fn write(&mut self, request: WriteRequest) -> Result<WriteReceipt, FastMemoryError> {
         self.check_capacity()?;
         let seq = WriteSeq(self.next_seq);
+        let next_seq = successor(seq)?;
         let write = admit_write(&self.config, seq, request)?;
-        self.next_seq += 1;
+        self.next_seq = next_seq;
         let surprise = self.fold(write);
         Ok(WriteReceipt { seq, surprise })
     }
@@ -250,6 +256,16 @@ impl FastMemory {
         }
         surprise
     }
+}
+
+/// The sequence number after `seq`. A journaled write must leave a successor
+/// free, so `u64::MAX` is refused before anything changes: a write or restore
+/// that took it would leave no number for the next write, and a journal ending
+/// there could not be restored.
+fn successor(seq: WriteSeq) -> Result<u64, FastMemoryError> {
+    seq.0
+        .checked_add(1)
+        .ok_or(FastMemoryError::SequenceExhausted { seq: seq.0 })
 }
 
 /// Digest of an ordered set of folded writes: the sequence number, source
