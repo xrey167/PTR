@@ -230,6 +230,19 @@ keeps the rules every policy shares: verification alone never auto-proposes, an
 eligible branch is never discarded, outside the slice it is auto-proposed exactly when
 its propensity is positive, and a slice propensity is below one
 (`a_triage_row_keeps_the_rules_every_policy_shares`); a revert needs an earlier merge.
+Work migration 10 adds the rules of the policy a triage row cites
+(`TriagePolicy::explains` for that recorded, never rewritten policy, checked after the
+table's own checks and the policy's foreign key): an eligible row carries exactly the
+propensity the policy logs for its score, a slice row needs a positive rate, and
+outside the slice a row is auto-proposed exactly when the threshold admits its score.
+A raw row the cited policy cannot have produced, such as a slice row of a policy with
+no slice, used to reach the calibration samples and every triage metric; over a grid
+of rows under three policies the database now stores exactly those the policy
+explains (`a_raw_triage_row_is_stored_exactly_when_its_cited_policy_explains_it`). A
+policy's calibration rate is zero or lowers `1 − rate` below one, as
+`TriagePolicy::new` requires, and a policy stored before that check loads and is cited
+as `CorruptRow` rather than failing a row's CHECK
+(`a_calibration_rate_too_small_to_lower_the_propensity_is_refused_at_storage`).
 A fast memory's state fits `MAX_STATE_CELLS`, its registration and journal rows are
 never rewritten, and a write has the key, value and decay lengths its configuration
 admits (`fast_memory_rows_keep_the_shape_their_configuration_admits`). An adapter
@@ -271,9 +284,10 @@ policy cannot have produced (`TriagePolicy::explains`): for the row's eligibilit
 score, a decision, slice flag or propensity its threshold and calibration rate do not
 give, or a score that is not a probability
 (`a_policy_explains_every_triage_it_produces_and_nothing_else`,
-`a_triage_is_logged_only_under_a_policy_that_can_have_produced_it`). What it cannot
-see is the verification report and the calibration draw, so a row's eligibility and
-a slice branch's draw remain the caller's word. `record_outcome` writes a revert only
+`a_triage_is_logged_only_under_a_policy_that_can_have_produced_it`), and the database
+refuses such a row written around it (work migration 10). What neither can see is the
+verification report and the calibration draw, so a row's eligibility and a slice
+branch's draw remain the caller's word. `record_outcome` writes a revert only
 after the branch's merge and at a greater commit index, reading the merge and
 inserting the revert in one statement, and refuses any other as `InvalidOutcome`
 (`a_revert_is_recorded_and_counted_only_after_the_merge_it_reverts`).
@@ -435,6 +449,11 @@ verification:
   included: NaN would never auto-propose and a negative threshold always would, so
   either is refused
   (`a_threshold_outside_the_unit_interval_is_refused_wherever_a_policy_is_built`).
+  A calibration rate is zero or lowers the logged propensity `1 − rate` below one:
+  for a positive rate of at most `2^-54` it rounds to one, a slice triage would be
+  logged as if escalating it were impossible, and the policy, storage and off-policy
+  evaluation would disagree about it, so every policy refuses such a rate
+  (`a_calibration_rate_too_small_to_lower_the_propensity_is_refused_wherever_a_policy_is_built`).
 - Logged propensities make IPS, SNIPS and doubly robust **off-policy evaluation** of
   a new threshold possible; a threshold below anything the log explored is refused as
   a positivity violation, a log with a nonfinite reward, a score that is not a finite
@@ -462,7 +481,8 @@ verification:
   older rows: those keep the versions they named, which no table recorded
   (`a_work_schema_holding_triage_rows_upgrades_and_keeps_their_unrecorded_policies`).
   A row is logged only if the policy it cites can have produced it
-  (`TriagePolicy::explains`, checked by `record_triage`; §1).
+  (`TriagePolicy::explains`, checked by `record_triage` and by the database for a
+  row written around it; §1).
   A policy's harm rate may only be estimated on adjudications it was not calibrated on
   (`PolicyRecord::held_out`), the disjointness F003 needs. Disjointness is not
   sufficient: the calibration subset, rule and levels must be fixed before the
@@ -787,7 +807,7 @@ another by idea.
 | Index `branch_status_idx` | defer | Status is split into the immutable triage decision and append-only outcomes, both constrained in the database. `adjudicated_samples` and `RevertShare` already select branches by outcome, and windowed metrics filter on when the triage or outcome was recorded (§6); each reads every matching row, and no measurement yet shows that costing anything. | Branch leases, expiry and garbage collection are built (their listing query adds the index it needs), or a relational-substrate measurement at a stated volume shows `adjudicated_samples`, a windowed metric or the lease listing scanning. |
 | Semantic operation descriptor (`semantic_op`) | defer | An operation's kind is its merge semantics (`Put`, `Remove`, `Add`, `SetInsert`, `SetRemove`), a value's meaning is its payload type and source, and the verifier judges the post-state (§2). A descriptive kind that neither certification nor verification reads is not stored. A business operation with its own merge rule, such as repricing, becomes a typed merge operator if those are added (missing in `ptr-branch`); the free-text reason is the branch intent. | S003 shows `Put` conflicts on keys whose domain update commutes, which would justify a typed merge operator for that update. |
 | Agent-stated intent per delta | adopt-later | A sealed branch may carry one optional intent written by its agent, stored with the branch in the work schema (one per branch, since a branch merges as one delta). It is shown to whoever reviews an escalated or calibration-slice branch; certification, triage and verification never read it, so it cannot outweigh verification (INVARIANT 11). F003 fixes before its first adjudication whether adjudicators see it. | F003's adjudication protocol is written, or the first review surface for escalated branches is built. |
-| Merge rationale | adopt-later | As a structured reason, not free text. A triage logged since policies are recorded cites a `triage_policy` row and carries every input of that policy's rule except the calibration draw (eligibility, slice flag, score and propensity), so its decision and propensity can be recomputed from the two rows and compared. `record_triage` compares them when the row is logged and refuses a row the cited policy cannot have produced (`TriagePolicy::explains`, `a_triage_is_logged_only_under_a_policy_that_can_have_produced_it`); the verification report and the calibration draw are not stored, so eligibility and a slice branch's draw remain the caller's word. Still to be stored are the reason for a verification-decided triage (status, level, hard-finding codes) and for a certification refusal (the keys of `BranchError::Conflict`, the targets of `LifecycleChanged`, the key of `UnreadTarget`); `branch_outcome` keeps only a label. Readable text is rendered from these fields, so it cannot disagree with them. | The first review surface that shows why a branch was escalated or refused, or an F003 analysis that breaks escalations down by verification cause. |
+| Merge rationale | adopt-later | As a structured reason, not free text. A triage logged since policies are recorded cites a `triage_policy` row and carries every input of that policy's rule except the calibration draw (eligibility, slice flag, score and propensity), so its decision and propensity can be recomputed from the two rows and compared. `record_triage` compares them when the row is logged and refuses a row the cited policy cannot have produced (`TriagePolicy::explains`, `a_triage_is_logged_only_under_a_policy_that_can_have_produced_it`), and work migration 10 refuses one written around it (`a_raw_triage_row_is_stored_exactly_when_its_cited_policy_explains_it`); the verification report and the calibration draw are not stored, so eligibility and a slice branch's draw remain the caller's word. Still to be stored are the reason for a verification-decided triage (status, level, hard-finding codes) and for a certification refusal (the keys of `BranchError::Conflict`, the targets of `LifecycleChanged`, the key of `UnreadTarget`); `branch_outcome` keeps only a label. Readable text is rendered from these fields, so it cannot disagree with them. | The first review surface that shows why a branch was escalated or refused, or an F003 analysis that breaks escalations down by verification cause. |
 | Delta embeddings for similarity search | defer | Nothing uses precedent: triage reads the verification report, the score and a calibration draw, and precedent weights were replaced by calibration. Revocation does not reach branch operations in the work schema, so embeddings of them could return content from a revoked input. If a need appears, an embedding of a committed delta enters the derived schema only under its contract: it names the generations its merged branch relied on, the projector deletes it in the transaction that tombstones or supersedes any of them, a rebuild drops it, and a hit stays a candidate (ADR-0008, ADR-0016, INVARIANT 17). | A named consumer, and an ablation in F003 or S003 showing that retrieving similar committed changes improves adjudication accuracy or lowers the conflict rate. |
 | HNSW cosine index on delta embeddings | defer | Deferred with delta embeddings. The mechanism exists for search documents (§1): `halfvec` embeddings, one partial HNSW cosine index per registered space and iterative strict-order scans, in PostgreSQL with no separate vector store; a delta index would reuse it. | Delta embeddings are adopted. |
 | Index `delta_entity_idx` over `entity_table`/`entity_id` | reject | Branches and deltas do not address business tables, which only the effect boundary writes (ADR-0012, ADR-0016). Changes to a semantic key are in the ledger's committed deltas; the projection records revision positions, not payloads, and every backend projects exactly `ptr_state::projection_entries` (§1). | A consumer (audit or adjudication) needs every committed change to one key; `projection_entries` then gains (key, revision) positions, which the projector writes and a rebuild replays. |

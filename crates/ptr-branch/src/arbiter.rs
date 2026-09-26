@@ -87,15 +87,29 @@ impl TriagePolicy {
     /// storage rebuilds records with — goes through here, so no policy holds
     /// a threshold outside `[0, 1]`.
     ///
+    /// A positive rate is one for which `1 - calibration_rate`, the
+    /// propensity the policy logs for an admitted score, is below one: every
+    /// positive rate above `2^-54`. So a calibration-slice triage always has
+    /// propensity below one, the escalation it records has a positive
+    /// probability under the policy that made it, and [`Self::explains`],
+    /// storage and off-policy evaluation agree on every triage the policy
+    /// makes.
+    ///
     /// # Errors
     /// Returns `ArbiterError::InvalidExploration` unless the rate is finite
-    /// and in `[0, 1)`, and `ArbiterError::InvalidThreshold` for an
-    /// `AtLeast` threshold that is NaN, infinite or outside `[0, 1]`: a NaN
-    /// admits no score and a negative threshold every score, so either would
-    /// silently turn the policy into "never" or "always" auto-propose, and
-    /// one above one is as unreachable as NaN while claiming otherwise.
+    /// and in `[0, 1)`, or for a positive rate of at most `2^-54`, for which
+    /// `1 - rate` rounds to one: its slice triages would be logged with
+    /// auto-propose propensity one, as if escalating them were impossible.
+    /// Returns `ArbiterError::InvalidThreshold` for an `AtLeast` threshold
+    /// that is NaN, infinite or outside `[0, 1]`: a NaN admits no score and a
+    /// negative threshold every score, so either would silently turn the
+    /// policy into "never" or "always" auto-propose, and one above one is as
+    /// unreachable as NaN while claiming otherwise.
     pub fn new(threshold: AutoThreshold, calibration_rate: f64) -> Result<Self, ArbiterError> {
-        if !(calibration_rate.is_finite() && (0.0..1.0).contains(&calibration_rate)) {
+        // `contains` is false for NaN and both infinities.
+        if !(0.0..1.0).contains(&calibration_rate)
+            || (calibration_rate > 0.0 && 1.0 - calibration_rate == 1.0)
+        {
             return Err(ArbiterError::InvalidExploration {
                 rate: calibration_rate,
             });

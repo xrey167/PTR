@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-26  
-**Code footprint:** 7 Rust source files · 2450 nonblank source lines · 4 integration-test files · 81 `#[test]` markers
+**Code footprint:** 7 Rust source files · 2471 nonblank source lines · 4 integration-test files · 82 `#[test]` markers
 
 ### Implemented now
 
@@ -25,6 +25,7 @@
 - End-to-end test commits a certified plan through Runtime::apply_verified_semantic_delta and shows a plan certified before another commit is refused; using that path is the caller's obligation, because MergePlan exposes its delta and PtrRuntime::apply_semantic_delta is public and unverified
 - Verifier-bounded triage: only a Pass at full-semantic or deterministic level with no hard finding is eligible for auto-proposal
 - Uniform calibration slice of eligible branches with a deterministic per-branch draw, logged auto-propose propensities and adjudication samples; a draw outside [0, 1) is refused
+- A calibration rate is zero or lowers the logged propensity 1 - rate below one: TriagePolicy::new, and so every recorded or rebuilt policy, refuses a positive rate of at most 2^-54 (InvalidExploration), for which 1 - rate rounds to one and a slice triage would be logged as if escalating it were impossible, so explains, storage and off-policy evaluation agree on every triage a policy makes
 - Threshold selection on a fixed grid by conformal risk control or by Learn-then-Test with Clopper-Pearson bounds; Learn-then-Test skips exactly the thresholds its own bound cannot pass with no harm, so it never certifies nothing because a closed-form start fell one sample short
 - Every policy, including one rebuilt from storage by PolicyRecord::from_parts, holds a threshold that is a finite score in [0, 1]; NaN, infinite or out-of-range thresholds are refused (InvalidThreshold) rather than silently never or always auto-proposing
 - PolicyRecord names a policy's version, threshold rule and levels and exactly which adjudicated calibration-slice branches chose its threshold; held_out returns the adjudications it was not calibrated on, the only ones its harm rate may be estimated from
@@ -65,7 +66,7 @@
 - tests/certification.rs conflict, phantom, input-set and lifecycle cases
 - tests/sealing.rs and certify unit tests: every sealing invariant refused by the constructor and by certification on its own
 - tests/pipeline.rs end-to-end verified merge through ptr-runtime
-- tests/triage.rs eligibility, calibration, which triages a policy explains and off-policy evaluation
+- tests/triage.rs eligibility, calibration, which triages a policy explains, calibration rates too small to lower the propensity (a_calibration_rate_too_small_to_lower_the_propensity_is_refused_wherever_a_policy_is_built) and off-policy evaluation
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->

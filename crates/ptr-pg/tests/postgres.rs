@@ -73,12 +73,12 @@ async fn raw_client_at(dsn: &str) -> tokio_postgres::Client {
     client
 }
 
-/// Run `sql` as a writer from before work migration 9 could have: with the
-/// server's triggers off (`session_replication_role = replica`, which the test
-/// server's superuser may set) and with the NOT VALID `checks` migration 9
-/// added, which rows written before it never had to pass, dropped for the
-/// write and added back NOT VALID after it. All of it is one transaction, and
-/// the setting ends with it.
+/// Run `sql` as a writer from before work migration 9 (or 10) could have:
+/// with the server's triggers off (`session_replication_role = replica`,
+/// which the test server's superuser may set) and with the NOT VALID `checks`
+/// those migrations added, which rows written before them never had to pass,
+/// dropped for the write and added back NOT VALID after it. All of it is one
+/// transaction, and the setting ends with it.
 async fn write_before_invariants(
     raw: &tokio_postgres::Client,
     work: &impl std::fmt::Display,
@@ -2828,13 +2828,15 @@ async fn a_triage_row_keeps_the_rules_every_policy_shares() {
         let sql = triage(&branch, decision, eligible, slice, propensity);
         assert_eq!(refused_sqlstate(&raw, &sql).await, "23514", "{sql}");
     }
+    // What policy-t (auto-propose from 0.5, a tenth in the slice) logs for a
+    // score of 0.5; the rows it cannot log for that score are refused by the
+    // check against the cited policy
+    // (a_raw_triage_row_is_stored_exactly_when_its_cited_policy_explains_it).
     for (index, (decision, eligible, slice, propensity)) in [
         ("discard", false, false, 0.0),
         ("escalate", false, false, 0.0),
         ("auto_propose", true, false, 0.9),
-        ("escalate", true, false, 0.0),
         ("escalate", true, true, 0.9),
-        ("escalate", true, true, 0.0),
     ]
     .into_iter()
     .enumerate()
@@ -2848,6 +2850,241 @@ async fn a_triage_row_keeps_the_rules_every_policy_shares() {
             .await
             .unwrap();
     }
+    substrate.drop_all().await.unwrap();
+}
+
+/// Every triage of the grid of decisions, eligibility, slice flags, scores
+/// and the given propensities, whether or not any policy produces it.
+fn triage_grid(propensities: &[f64]) -> Vec<TriageOutcome> {
+    let mut grid = Vec::new();
+    for decision in [
+        TriageDecision::AutoPropose,
+        TriageDecision::Escalate,
+        TriageDecision::Discard,
+    ] {
+        for eligible in [false, true] {
+            for calibration_slice in [false, true] {
+                for score in [0.0, 0.2, 0.5, 0.9, 1.0] {
+                    for &auto_propensity in propensities {
+                        grid.push(TriageOutcome {
+                            decision,
+                            eligible,
+                            calibration_slice,
+                            score,
+                            auto_propensity,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    grid
+}
+
+#[tokio::test]
+async fn a_raw_triage_row_is_stored_exactly_when_its_cited_policy_explains_it() {
+    let mut substrate = substrate().await;
+    // Auto-propose from 0.5 with a tenth in the slice; from 0.5 with no slice;
+    // nothing, with a quarter in the slice.
+    let policies = [
+        (
+            "policy-t",
+            TriagePolicy::new(AutoThreshold::AtLeast(0.5), 0.1).unwrap(),
+        ),
+        (
+            "policy-0",
+            TriagePolicy::new(AutoThreshold::AtLeast(0.5), 0.0).unwrap(),
+        ),
+        (
+            "policy-never",
+            TriagePolicy::new(AutoThreshold::Never, 0.25).unwrap(),
+        ),
+    ];
+    let mut propensities = vec![0.0, 0.5, 1.0];
+    for (version, policy) in policies {
+        substrate
+            .record_policy(&PolicyRecord::manual(version, policy).unwrap())
+            .await
+            .unwrap();
+        propensities.push(1.0 - policy.calibration_rate());
+    }
+    substrate
+        .store_branch(&sealed_branch("g", "agent-g"))
+        .await
+        .unwrap();
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    let insert = format!(
+        "INSERT INTO {work}.branch_triage (branch, decision, eligible, calibration_slice, score, \
+         auto_propensity, policy_version) VALUES ('g', $1, $2, $3, $4, $5, $6)"
+    );
+    // Each row is written and rolled back in its own savepoint, so one branch
+    // serves the whole grid. Written around record_triage, a row its cited
+    // policy cannot have produced used to be stored whenever it kept the
+    // rules every policy shares: a slice row of a policy with no slice, whose
+    // adjudication became a calibration sample, or an admitted score
+    // escalated with propensity zero, counted under that policy's version.
+    raw.batch_execute("BEGIN").await.unwrap();
+    let mut stored = 0;
+    for (version, policy) in policies {
+        for row in triage_grid(&propensities) {
+            let decision = match row.decision {
+                TriageDecision::AutoPropose => "auto_propose",
+                TriageDecision::Escalate => "escalate",
+                TriageDecision::Discard => "discard",
+            };
+            raw.batch_execute("SAVEPOINT row").await.unwrap();
+            let written = raw
+                .execute(
+                    &insert,
+                    &[
+                        &decision,
+                        &row.eligible,
+                        &row.calibration_slice,
+                        &row.score,
+                        &row.auto_propensity,
+                        &version,
+                    ],
+                )
+                .await;
+            raw.batch_execute("ROLLBACK TO SAVEPOINT row")
+                .await
+                .unwrap();
+            match (policy.explains(&row), written) {
+                (Ok(()), Ok(_)) => stored += 1,
+                (Err(_), Err(error)) => {
+                    let code = error.as_db_error().unwrap().code().code().to_owned();
+                    assert!(
+                        code == "23514" || code == "23000",
+                        "{version} {row:?}: {error}"
+                    );
+                }
+                (explained, written) => {
+                    panic!(
+                        "{version} {row:?}: explains says {explained:?}, the database {written:?}"
+                    )
+                }
+            }
+        }
+    }
+    raw.batch_execute("ROLLBACK").await.unwrap();
+    // Every policy logs something at every eligibility.
+    assert!(stored >= 3 * 4, "{stored}");
+
+    // The rows the review found, one by one: a slice row of a policy with no
+    // slice, and an admitted score escalated with propensity zero.
+    for (branch, version, score, slice) in [
+        ("s0", "policy-0", 0.2, true),
+        ("e0", "policy-t", 0.5, false),
+        ("e1", "policy-t", 0.5, true),
+    ] {
+        substrate
+            .store_branch(&sealed_branch(branch, "agent-g"))
+            .await
+            .unwrap();
+        let sql = format!(
+            "INSERT INTO {work}.branch_triage (branch, decision, eligible, calibration_slice, \
+             score, auto_propensity, policy_version) \
+             VALUES ('{branch}', 'escalate', true, {slice}, {score}, 0.0, '{version}')"
+        );
+        assert_eq!(refused_sqlstate(&raw, &sql).await, "23000", "{sql}");
+        substrate
+            .record_outcome(&BranchId::from(branch), BranchOutcome::AdjudicatedHarmful)
+            .await
+            .unwrap();
+    }
+    // None of them became a calibration sample, and a version no policy is
+    // recorded under is still the foreign key's refusal.
+    assert_eq!(substrate.adjudicated_samples().await.unwrap(), vec![]);
+    let unrecorded = format!(
+        "INSERT INTO {work}.branch_triage (branch, decision, eligible, calibration_slice, \
+         score, auto_propensity, policy_version) \
+         VALUES ('s0', 'escalate', false, false, 0.2, 0.0, 'nobody')"
+    );
+    assert_eq!(refused_sqlstate(&raw, &unrecorded).await, "23503");
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_calibration_rate_too_small_to_lower_the_propensity_is_refused_at_storage() {
+    let mut substrate = substrate().await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    let insert = format!(
+        "INSERT INTO {work}.triage_policy \
+         (version, rule, threshold, calibration_rate, alpha, delta, calibration_size) \
+         VALUES ($1, 'manual', 0.5, $2, NULL, NULL, 0)"
+    );
+    // 1 - rate rounds to one for a positive rate of at most 2^-54, as it does
+    // in Rust: TriagePolicy::new refuses such a rate, and so does the table.
+    for rate in [1e-17, 2f64.powi(-54), f64::MIN_POSITIVE] {
+        let error = raw.execute(&insert, &[&"tiny", &rate]).await.unwrap_err();
+        assert_eq!(
+            error.as_db_error().unwrap().code().code(),
+            "23514",
+            "{rate}"
+        );
+    }
+    raw.execute(&insert, &[&"smallest", &2f64.powi(-53)])
+        .await
+        .unwrap();
+    // Its slice triages have propensity below one and are logged as the
+    // policy made them.
+    let smallest = substrate.load_policy("smallest").await.unwrap().unwrap();
+    assert_eq!(smallest.policy().calibration_rate(), 2f64.powi(-53));
+    let slice = TriageOutcome {
+        decision: TriageDecision::Escalate,
+        eligible: true,
+        calibration_slice: true,
+        score: 0.9,
+        auto_propensity: 1.0 - 2f64.powi(-53),
+    };
+    for id in ["b1", "b2"] {
+        substrate
+            .store_branch(&sealed_branch(id, "agent-s"))
+            .await
+            .unwrap();
+    }
+    substrate
+        .record_triage(&BranchId::from("b1"), &slice, "smallest")
+        .await
+        .unwrap();
+
+    // A policy a store from before the check could hold is refused as the
+    // corrupt row it is, by the loader and by record_triage, where its slice
+    // triage used to reach the table's CHECK and come back as a raw
+    // database error.
+    write_before_invariants(
+        &raw,
+        &work,
+        &[("triage_policy", "triage_policy_rate_lowers_propensity")],
+        &format!(
+            "INSERT INTO {work}.triage_policy \
+             (version, rule, threshold, calibration_rate, alpha, delta, calibration_size) \
+             VALUES ('legacy', 'manual', 0.5, 1e-17, NULL, NULL, 0)"
+        ),
+    )
+    .await;
+    assert!(matches!(
+        substrate.load_policy("legacy").await,
+        Err(PgError::CorruptRow {
+            table: "triage_policy",
+            ..
+        })
+    ));
+    let degenerate = TriageOutcome {
+        auto_propensity: 1.0,
+        ..slice
+    };
+    assert!(matches!(
+        substrate
+            .record_triage(&BranchId::from("b2"), &degenerate, "legacy")
+            .await,
+        Err(PgError::CorruptRow {
+            table: "triage_policy",
+            ..
+        })
+    ));
     substrate.drop_all().await.unwrap();
 }
 
@@ -3516,22 +3753,32 @@ async fn every_metric_windows_a_branch_once_on_the_record_that_enters_its_denomi
             .store_branch(&sealed_branch(id, "agent-w"))
             .await
             .unwrap();
-        // Outside the calibration slice every policy logs a positive
-        // propensity exactly for the eligible branches it auto-proposes, and
-        // the table requires it.
-        let propensity: f64 = if eligible && (slice || decision == "auto_propose") {
-            0.5
+        // As policy-w logs it: an eligible branch escalated outside the slice
+        // scored below its threshold of 0.5, every other one 0.8, and an
+        // eligible branch scoring 0.8 has propensity 1 - 0.1. The database
+        // refuses a row its cited policy cannot have produced.
+        let score: f32 = if eligible && decision == "escalate" && !slice {
+            0.2
         } else {
-            0.0
+            0.8
         };
+        let propensity: f64 = if eligible && score >= 0.5 { 0.9 } else { 0.0 };
         raw.execute(
             &format!(
                 "INSERT INTO {work}.branch_triage (branch, decision, eligible, \
                  calibration_slice, score, auto_propensity, policy_version, decided_at) \
-                 VALUES ($1, $2, $3, $4, 0.5, $5, 'policy-w', \
-                         now() - make_interval(days => $6))"
+                 VALUES ($1, $2, $3, $4, $5, $6, 'policy-w', \
+                         now() - make_interval(days => $7))"
             ),
-            &[&id, &decision, &eligible, &slice, &propensity, &days],
+            &[
+                &id,
+                &decision,
+                &eligible,
+                &slice,
+                &score,
+                &propensity,
+                &days,
+            ],
         )
         .await
         .unwrap();

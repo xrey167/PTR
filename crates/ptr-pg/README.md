@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-26  
-**Code footprint:** 16 Rust source files · 5058 nonblank source lines · 2 integration-test files · 25 `#[test]` markers
+**Code footprint:** 16 Rust source files · 5063 nonblank source lines · 2 integration-test files · 25 `#[test]` markers
 
 ### Implemented now
 
@@ -42,6 +42,7 @@
 - Interference reports of adapter candidates stored once per adapter under a header row, complete when they commit (the layer count checked by counting the report once at commit and once per statement that adds layers), and never rewritten, as ptr-lineage measured them; a report naming another adapter (InterferenceReport::candidate, whose public field proves no provenance), a second report (identical, overlapping or disjoint) and an empty one are refused (record_interference, load_interference)
 - A model labeling function may name its adapter in the catalog; any other kind is refused by a column constraint
 - Work migration 9 enforces in the database what the Rust constructors enforce: a stored branch is never rewritten and, at commit, keeps every sealing invariant (a Put or Remove names a read key, an operated key has its base value and input set, a base value is recorded only for an operated key and equals its read, no reserved namespace, non-empty set members, value columns of the operation's kind); triage rows keep the rules every policy shares and a revert needs an earlier merge; a fast memory's state fits MAX_STATE_CELLS, its registration and journal are never rewritten and a write has the lengths its configuration admits; an adapter registers as a candidate on its parent's base and changes only its status along its lifecycle, a consolidated adapter commits with a source, only a consolidated adapter has sources, each on its base, and sources and data manifests are never removed on their own; replay rows are finite and the training clock never runs back; a label schema has two or more distinct non-empty classes and is never rewritten, a labeling function has a non-empty name and is never rewritten, only a verifier vetoes, other kinds vote classes, and every vote and gold label names a class of its schema. Its checks are NOT VALID, so a schema holding older rows still upgrades and the loaders keep refusing them
+- Work migration 10 refuses a triage row its cited policy cannot have produced, applying TriagePolicy::explains for that recorded, immutable policy after the table's own checks and the policy's foreign key: an eligible row carries exactly the propensity the policy logs for its score (1 - calibration_rate when the threshold admits it, zero otherwise), a slice row needs a positive rate, and outside the slice a row is auto-proposed exactly when the threshold admits its score, so no raw row reaches calibration samples or a triage metric under a policy that never logs it; a policy's calibration rate is zero or lowers 1 - rate below one, as TriagePolicy::new requires, and a stored policy with a smaller positive rate loads and is cited as a CorruptRow rather than failing a CHECK. The rate check is NOT VALID and the trigger checks rows written from version 10 on
 - Capability probe that never creates an extension; refusal of every non-loopback host and hostaddr because the build links no TLS connector
 - Rebuild drops the instance's own projection and derived schemas and replays; working state survives. drop_all, for tests and decommissioning, drops all three without the migration lock, which its caller must serialize
 
@@ -52,7 +53,7 @@
 - Adapters for the rest of the lineage catalog and for the labeling tables (interference reports and triage policies have them)
 - Effect applier for business tables through the effect boundary
 - Replay sample and probe rows keyed by the training chain whose clock they were measured on, added with the replay-table adapter before it reads or writes a replay row
-- The verification report and calibration draw behind a logged triage, so storage could check eligibility and slice membership too; record_triage checks only what the row and its cited policy determine
+- The verification report and calibration draw behind a logged triage, so storage could check eligibility and slice membership too; record_triage and work migration 10 check only what the row and its cited policy determine
 - Fast memories registered only with the principal of the admitted execution session; FastMemoryRecord::principal, like a stored branch's author, is whatever PrincipalId the caller passes
 
 ### Next milestones
@@ -87,6 +88,7 @@
 - tests/postgres.rs against a real server behind postgres-backend (CI job state-postgres)
 - L004 projection equivalence (ptr-bench projection-equivalence): five seeds on PostgreSQL 18, 17 of 17 planted defects detected
 - tests/postgres.rs: a raw write breaking each work-schema invariant of migration 9 is refused (a_consolidated_adapter_has_sources_on_its_base_and_only_it_has_them, a_label_schema_needs_two_distinct_non_empty_classes_and_is_never_rewritten, only_a_verifier_vetoes_and_every_vote_names_a_class_of_its_schema, branch_rows_written_directly_keep_every_sealing_invariant, a_triage_row_keeps_the_rules_every_policy_shares, fast_memory_rows_keep_the_shape_their_configuration_admits, replay_rows_are_finite_and_the_training_clock_never_runs_back), and loaders still refuse the same rows written as a store from before it
+- tests/postgres.rs: a raw triage row is stored exactly when its cited policy explains it, over a grid of decisions, eligibility, slice flags, scores and propensities under three policies (a_raw_triage_row_is_stored_exactly_when_its_cited_policy_explains_it), and a calibration rate too small to lower the propensity is refused by the table and, stored before migration 10, loads as a corrupt row (a_calibration_rate_too_small_to_lower_the_propensity_is_refused_at_storage)
 - tests/postgres.rs: a document of a revoked generation that is still the live one is never returned, even from a stale cache row, and weights whose total could overflow a fused score are refused before SQL
 - workspace fmt/check/test/clippy
 

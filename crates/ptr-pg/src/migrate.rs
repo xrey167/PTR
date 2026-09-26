@@ -99,6 +99,11 @@ pub const WORK_MIGRATIONS: &[Migration] = &[
         name: "work_invariants",
         sql: include_str!("../migrations/work/0009_work_invariants.sql"),
     },
+    Migration {
+        version: 10,
+        name: "triage_policy_rules",
+        sql: include_str!("../migrations/work/0010_triage_policy_rules.sql"),
+    },
 ];
 
 impl Migration {

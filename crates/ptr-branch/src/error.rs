@@ -149,7 +149,10 @@ pub enum ArbiterError {
     InvalidRisk { field: &'static str, value: f64 },
     /// No calibration samples were supplied.
     EmptyCalibration,
-    /// A calibration rate outside `[0, 1)`.
+    /// A calibration rate outside `[0, 1)`, or a positive one so small (at
+    /// most `2^-54`) that `1 - rate` rounds to one: the policy would log its
+    /// calibration-slice triages with auto-propose propensity one, giving the
+    /// escalation they record probability zero.
     InvalidExploration { rate: f64 },
     /// An auto-propose threshold that is not a finite score in `[0, 1]`. A
     /// NaN would admit nothing and a negative one everything eligible, so
@@ -226,6 +229,10 @@ impl fmt::Display for ArbiterError {
                 write!(formatter, "{field} = {value} is outside (0, 1)")
             }
             Self::EmptyCalibration => write!(formatter, "no calibration samples"),
+            Self::InvalidExploration { rate } if *rate > 0.0 && *rate < 1.0 => write!(
+                formatter,
+                "calibration rate {rate} is so small that 1 - rate rounds to one"
+            ),
             Self::InvalidExploration { rate } => {
                 write!(formatter, "calibration rate {rate} is outside [0, 1)")
             }

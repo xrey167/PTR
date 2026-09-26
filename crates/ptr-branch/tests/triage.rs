@@ -928,3 +928,59 @@ fn a_policy_explains_every_triage_it_produces_and_nothing_else() {
         assert_eq!(unexplained(&scored), "the score is not a probability");
     }
 }
+
+#[test]
+fn a_calibration_rate_too_small_to_lower_the_propensity_is_refused_wherever_a_policy_is_built() {
+    // For a positive rate of at most 2^-54, `1 - rate` rounds to one: a
+    // calibration-slice triage was logged with auto-propose propensity one,
+    // so the escalation it records had probability zero under the policy
+    // that made it. `explains` accepted that triage, the table's CHECK
+    // refused it as a raw database error, and off-policy evaluation refused
+    // it as an invalid propensity.
+    let largest_degenerate = 2f64.powi(-54);
+    assert_eq!(1.0 - largest_degenerate, 1.0);
+    for rate in [1e-17, largest_degenerate, 1e-300, f64::MIN_POSITIVE, 5e-324] {
+        let refused = TriagePolicy::new(AutoThreshold::AtLeast(0.5), rate).unwrap_err();
+        assert!(
+            matches!(refused, ArbiterError::InvalidExploration { rate: got }
+                if got.to_bits() == rate.to_bits()),
+            "{rate}: {refused:?}"
+        );
+        assert_eq!(refused.code(), "PTR_ARBITER_INVALID_EXPLORATION");
+        assert_eq!(
+            refused.to_string(),
+            format!("calibration rate {rate} is so small that 1 - rate rounds to one")
+        );
+        // A stored record is rebuilt through from_parts, which refuses it too.
+        assert!(
+            matches!(
+                PolicyRecord::from_parts(
+                    "v1",
+                    AutoThreshold::AtLeast(0.5),
+                    rate,
+                    ThresholdRule::Manual,
+                    vec![],
+                ),
+                Err(ArbiterError::InvalidExploration { .. })
+            ),
+            "{rate}"
+        );
+    }
+    // Zero disables the slice, and the smallest rate that lowers the
+    // propensity is kept: its slice triages have propensity below one, the
+    // policy explains them, and its own log is reweighted by one.
+    let off = TriagePolicy::new(AutoThreshold::AtLeast(0.5), 0.0).unwrap();
+    assert!(
+        !off.triage(&passing(), score(0.9), 0.0)
+            .unwrap()
+            .calibration_slice
+    );
+    let smallest = TriagePolicy::new(AutoThreshold::AtLeast(0.5), 2f64.powi(-53)).unwrap();
+    let slice = smallest.triage(&passing(), score(0.9), 0.0).unwrap();
+    assert!(slice.calibration_slice);
+    assert_eq!(slice.decision, TriageDecision::Escalate);
+    assert!(slice.auto_propensity < 1.0, "{}", slice.auto_propensity);
+    assert_eq!(smallest.explains(&slice), Ok(()));
+    let estimate = evaluate_off_policy(&[LoggedTriage::from(&slice)], &smallest).unwrap();
+    assert_eq!(estimate.effective_sample_size, 1.0);
+}
