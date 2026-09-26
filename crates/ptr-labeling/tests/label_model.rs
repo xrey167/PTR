@@ -319,11 +319,17 @@ fn only_a_model_function_may_be_attributed_to_an_adapter() {
         attributed.functions()[0].adapter.as_deref(),
         Some("adapter-7")
     );
-    for kind in [FunctionKind::Heuristic, FunctionKind::Agent] {
+    // Every kind but a model is refused. The function abstains, which every
+    // kind may do, so only the attribution can be the reason.
+    for kind in [
+        FunctionKind::Verifier,
+        FunctionKind::Heuristic,
+        FunctionKind::Agent,
+    ] {
         let mut function = LabelingFunction::new("rule", kind);
         function.adapter = Some("adapter-7".into());
         assert_eq!(
-            VoteMatrix::new(schema.clone(), vec![function], votes.clone()).unwrap_err(),
+            VoteMatrix::new(schema.clone(), vec![function], vec![vec![Vote::Abstain]]).unwrap_err(),
             LabelingError::AdapterAttribution {
                 function: "rule".into()
             },
@@ -430,6 +436,69 @@ fn per_function_accuracy_refuses_an_actively_sampled_or_misaligned_gold_set() {
             field: "z",
             message: "must be finite and positive"
         }
+    );
+}
+
+#[test]
+fn per_function_accuracy_scores_only_class_votes_on_the_gold_items_it_names() {
+    let a = Vote::Abstain;
+    let class = Vote::Class;
+    let veto = Vote::Veto;
+    let matrix = VoteMatrix::new(
+        LabelSchema::new(["refund", "no_refund"]).unwrap(),
+        vec![
+            LabelingFunction::model("ranker", "adapter-3"),
+            function("rule", FunctionKind::Heuristic),
+            function("sparse", FunctionKind::Agent),
+            function("check", FunctionKind::Verifier),
+        ],
+        vec![
+            vec![class(1), a, class(0), a],
+            vec![class(1), a, a, veto(0)],
+            vec![class(0), class(1), class(1), a],
+            vec![a, class(0), a, a],
+            vec![class(1), a, a, veto(1)],
+            vec![class(0), class(1), class(0), a],
+        ],
+    )
+    .unwrap();
+    // A subset of the items, not in item order.
+    let mut gold = EvaluationSet::new(GoldSampling::Uniform);
+    for (item, class) in [(4, 0), (1, 1), (3, 0)] {
+        gold.push(GoldLabel {
+            item,
+            class,
+            source: GoldSource::Oracle,
+        })
+        .unwrap();
+    }
+    let scores = function_accuracy(&matrix, &gold, 1.96).unwrap();
+    let scored: Vec<_> = scores
+        .iter()
+        .map(|score| {
+            (
+                score.function.as_str(),
+                score.adapter.as_deref(),
+                score
+                    .estimate
+                    .map(|estimate| (estimate.successes, estimate.trials)),
+            )
+        })
+        .collect();
+    // The ranker is wrong on item 4, right on item 1 and abstains on item 3;
+    // the rule abstains on items 4 and 1 and is right on item 3. Scoring an
+    // abstention would add trials; reading the votes of the gold set's
+    // positions (items 0, 1 and 2) instead of its items would give 2 of 3 and
+    // 0 of 1. The agent votes only off the gold items, so it has no estimate,
+    // and a verifier's vetoes are never scored.
+    assert_eq!(
+        scored,
+        vec![
+            ("ranker", Some("adapter-3"), Some((1, 2))),
+            ("rule", None, Some((1, 1))),
+            ("sparse", None, None),
+            ("check", None, None),
+        ]
     );
 }
 

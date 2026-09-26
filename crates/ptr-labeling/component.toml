@@ -10,7 +10,7 @@ implemented = [
   "Resolution to Determined (every other class vetoed), Estimated at or above a required probability, Unknown, or Disputed when every class is vetoed",
   "Gold labels record source (oracle or human with annotator) and sampling (uniform or active); an evaluation set holds one resolved gold label per item and refuses a second; only uniform gold estimates population accuracy and calibration, while active gold reports accuracy on the sampled items and no calibration",
   "Evaluation with Brier score and expected calibration error from ptr-analytics; every scoring path refuses a gold class outside the scored classes before scoring",
-  "A model labeling function may name the adapter that produced its votes (refused on any other kind); function_accuracy scores each function's class votes against uniform gold with a Wilson interval and refuses an invalid z whatever the votes, so labeling quality is measured per adapter",
+  "A model labeling function may name the adapter that produced its votes (refused on any other kind); function_accuracy scores each function's class votes (never abstentions or vetoes) against uniform gold with a Wilson interval and refuses an invalid z whatever the votes, so labeling quality is measured per adapter",
   "Acquisition ranking by posterior entropy or margin that never proposes an item verifiers already determined",
 ]
 

@@ -427,10 +427,11 @@ calibration. Calibration (Brier, ECE) comes from `ptr-analytics`, which also pro
 Krippendorff's α for multi-annotator gold; the labeling crate does not compute
 agreement yet. A model labeling function can name the adapter that produced its votes
 (refused on any other kind, in Rust and by a column constraint), and each function's
-class votes are scored against uniform gold with a Wilson interval, so labeling
-quality is measured per adapter
+class votes, never its abstentions or vetoes, are scored against uniform gold with a
+Wilson interval, so labeling quality is measured per adapter
 (`only_a_model_function_may_be_attributed_to_an_adapter`,
-`per_function_accuracy_is_attributed_to_the_adapter_and_brackets_the_truth`).
+`per_function_accuracy_is_attributed_to_the_adapter_and_brackets_the_truth`,
+`per_function_accuracy_scores_only_class_votes_on_the_gold_items_it_names`).
 
 ## 6. Metrics and change distribution
 
