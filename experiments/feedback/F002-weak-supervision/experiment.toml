@@ -1,0 +1,13 @@
+version = 1
+id = "F002"
+status = "planned"
+hypothesis = "Does a verifier-precedence Dawid-Skene label model produce better calibrated and more accurate labels than majority vote at the same annotation budget?"
+metrics = "accuracy on uniform gold; Brier score; ECE; Unknown and Disputed rates; Krippendorff alpha"
+baseline = "majority vote; verifier-only labels"
+falsification = "No calibration gain on uniform gold, or any label that contradicts a verifier veto, rejects the model."
+hardware_profile = "hardware/default.toml"
+entrypoint = ""
+seeds = [17, 29, 43, 71, 101]
+results_dir = "results"
+required_artifacts = ["run.json", "metrics.json"]
+design = "../../../docs/architecture/35-agentic-substrate.md"

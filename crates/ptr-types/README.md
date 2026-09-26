@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `foundation`  
-**Last reviewed:** 2026-09-22  
-**Code footprint:** 6 Rust source files · 2146 nonblank source lines · 6 integration-test files · 68 `#[test]` markers
+**Last reviewed:** 2026-09-25  
+**Code footprint:** 6 Rust source files · 2150 nonblank source lines · 6 integration-test files · 68 `#[test]` markers
 
 ### Implemented now
 
@@ -44,6 +44,7 @@
 - ConfidenceTarget and ConfidenceEstimate with target-checked access and diagnostic ConfidenceTargetMismatch errors
 - Compile-fail documentation rejects implicit confidence-to-verification/effect conversion and unqualified estimate ordering
 - Cognitive contract fixtures cover independent axes, constraints, uncertain claims, conflicting sources and revoked generations
+- PrincipalId: the admitted principal a branch, fast memory or effect attempt is attributed to, so audit and attribution use one name
 
 ### Missing for the target architecture
 

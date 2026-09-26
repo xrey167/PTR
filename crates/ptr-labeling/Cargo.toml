@@ -1,0 +1,13 @@
+[package]
+name = "ptr-labeling"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+ptr-types = { workspace = true }
+# Calibration and agreement are computed by the shared statistics kernel.
+ptr-analytics = { workspace = true }
+# A fitted label model is bound to its vote matrix by the matrix's digest.
+sha2 = { version = "=0.11.0", default-features = false }

@@ -8,8 +8,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-22  
-**Code footprint:** 6 Rust source files · 4053 nonblank source lines · 18 integration-test files · 149 `#[test]` markers
+**Last reviewed:** 2026-09-26  
+**Code footprint:** 6 Rust source files · 4168 nonblank source lines · 19 integration-test files · 160 `#[test]` markers
 
 ### Implemented now
 
@@ -57,6 +57,9 @@
 - Reference InferenceBackend request loop runs against a revisioned ModelRequest and emits completion event
 - Typed model→PodRegistry→Pod→Verifier→SemDB observation loop for Pure/Read cognitive Pods
 - Bounded multi-step model resume loop after verified Pod observations advances semantic revision before continuation
+- apply_verified_semantic_delta prepares a delta, hands the verifier a view of the post-state's values and dependency sets and appends only on a Pass at the required level with no hard finding; a refusal writes nothing and names status, level and finding count
+- generation_validity combines the tombstone set with generation equality, so a revoked generation that is still the live one reads as Revoked rather than Live; ptr_search::retain_live takes it directly, so search hits are filtered by validity rather than by the live generation
+- Neural-state input digests are computed from ptr-semdb canonical_input_bytes, byte-identical to the previous encoding (committed fixtures unchanged)
 
 ### Missing for the target architecture
 
@@ -134,6 +137,7 @@
 - revocation replay/restart integration test
 - durable FileLedger runtime reopen preserves revocation and materialized commit position
 - workspace fmt/check/test/clippy
+- tests/verified_delta.rs: a verified delta commits the state its verifier saw; no failing score, shallow level or hard finding gets a delta past verification; a moved revision is refused before verification; revoked, superseded and unknown generations never read as Live; search hits filtered by generation_validity drop a revoked live generation
 
 <!-- PTR:STATUS:END -->
 

@@ -1,25 +1,26 @@
 version = 1
 id = "ptr-events"
 maturity = "scaffold"
-last_reviewed = "2026-09-18"
+last_reviewed = "2026-09-26"
 
 implemented = [
   "RuntimeEvent taxonomy for request/snapshot/candidate/Pod/verifier/commit lifecycle",
   "EventEnvelope with sequence number",
+  "EventProducer/EventConsumer contract with at-least-once delivery, monotone commits bounded by the end, and event classes separating projections from telemetry",
+  "InMemoryBus reference implementation: bounded, refusing a publish rather than dropping a record some registered consumer has not committed, and refusing a registration beyond the end, which would let the next publish trim records the consumer never polled",
 ]
 
 missing = [
-  "EventBus producer/consumer contract",
   "Apache Iggy adapter",
-  "Persistent consumer offsets/replay",
+  "Persistent consumer offsets/replay outside PostgreSQL (the ptr-pg projection event log keeps offsets per consumer)",
   "Separation metadata for authoritative projections vs telemetry events",
   "Backpressure and retention policy",
 ]
 
 next = [
-  "Define in-process reference EventBus",
+  "Bridge the ptr-pg projection event log to the EventConsumer contract",
   "Implement Iggy adapter behind it",
-  "Connect trajectory/training consumer",
+  "Connect trajectory/training consumer: read semantic.delta_committed by consumer offset, read each delta from the ledger at its commit, admit it only if its branch merged and was neither reverted nor adjudicated harmful, and key examples by commit index, so a redelivery or a rebuild admits none twice",
 ]
 
 experiments = [
@@ -38,4 +39,5 @@ decisions = [
 
 checks = [
   "workspace fmt/check/test/clippy",
+  "tests/bus.rs redelivery until commit, backpressure instead of loss, monotone bounded commits",
 ]

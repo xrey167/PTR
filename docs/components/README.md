@@ -30,6 +30,12 @@ Every runtime/model crate has a local README and a dedicated Mermaid source diag
 | [ptr-inspect](../../crates/ptr-inspect/README.md) | Allows generic inspection and rendering of typed Rust values without collapsing the runtime into untyped JSON. | [diagram](../diagrams/components/ptr-inspect.mmd) |
 | [ptr-security](../../crates/ptr-security/README.md) | Enforces the hard shell around uncertain reasoning: capabilities, permissions, trust levels, effects, secrets and sandbox requirements. | [diagram](../diagrams/components/ptr-security.mmd) |
 | [ptr-server](../../crates/ptr-server/README.md) | Exposes PTR to clients through stable APIs without leaking internal crate boundaries or provider-specific interfaces. | [diagram](../diagrams/components/ptr-server.mmd) |
+| [ptr-analytics](../../crates/ptr-analytics/README.md) | Computes every interval, calibration score and agreement coefficient the platform reports, and defines platform metrics in PTR terms for backends to compile. | [diagram](../diagrams/components/ptr-analytics.mmd) |
+| [ptr-branch](../../crates/ptr-branch/README.md) | Lets agents speculate on private overlays of an immutable semantic snapshot and merges their work only as certified, verified semantic deltas. | [diagram](../diagrams/components/ptr-branch.mmd) |
+| [ptr-fastmem](../../crates/ptr-fastmem/README.md) | A gated delta-rule associative working memory that is a derived, exactly revocable projection of lifecycle-managed semantic inputs. | [diagram](../diagrams/components/ptr-fastmem.mmd) |
+| [ptr-labeling](../../crates/ptr-labeling/README.md) | Turns labeling-function votes into calibrated probabilistic labels in which verifiers veto and are never outvoted. | [diagram](../diagrams/components/ptr-labeling.mmd) |
+| [ptr-lineage](../../crates/ptr-lineage/README.md) | Models adapter identity, gated lifecycle, subspace interference, forgetting-driven replay and consolidation for continual specialisation. | [diagram](../diagrams/components/ptr-lineage.mmd) |
+| [ptr-pg](../../crates/ptr-pg/README.md) | Hosts the anchor-verified ledger projection, live-only derived search caches and non-authoritative working state in one PostgreSQL database without creating a second authority. | [diagram](../diagrams/components/ptr-pg.mmd) |
 
 ## Documentation rule
 

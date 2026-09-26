@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "R004-adapter-lineage"
+path = "experiments/runtime/R004-adapter-lineage"
+tests_dir = "tests"

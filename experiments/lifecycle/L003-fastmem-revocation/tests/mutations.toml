@@ -1,0 +1,240 @@
+# Defects the L003 harness must detect; run with
+# `python scripts/mutation_check.py L003`. Each `find` must occur exactly once
+# in its file (checked in CI), so the list cannot drift from the code silently.
+# `expect` names the hard counters that show the defect: a run that fails only
+# on others (a query that no longer binds, say) does not count as detecting it.
+# The lock mutations need a race to land in a narrow window and run more cases.
+
+package = "ptr-bench"
+features = "postgres-experiments"
+subcommand = "fastmem-revocation"
+cases = 4
+seed = 17
+hard_counters = [
+    "invalid_logs",
+    "bit_identity_failures",
+    "readout_failures",
+    "resurrected_reads",
+    "false_denials",
+    "admission_divergences",
+    "journal_mismatches",
+    "removed_count_mismatches",
+    "inadmissible_appends_accepted",
+    "append_false_refusals",
+    "checkpoint_false_refusals",
+    "stale_checkpoints_accepted",
+    "checkpoint_violations",
+    "stale_checkpoint_rows",
+    "checkpoints_lost",
+    "atomicity_failures",
+    "crash_recovery_failures",
+    "commit_fault_failures",
+    "race_violations",
+    "read_failures",
+]
+
+[[mutation]]
+name = "tombstone-removes-other-generations"
+description = "A revocation deletes every other generation's journal writes instead of its own."
+expect = ["journal_mismatches", "removed_count_mismatches", "bit_identity_failures"]
+file = "crates/ptr-pg/src/adapters/projection.rs"
+find = '''
+        Removal::Exactly => "=",
+'''
+replace = '''
+        Removal::Exactly => "<>",
+'''
+
+[[mutation]]
+name = "supersession-removes-nothing"
+description = "A supersession deletes only the new generation's writes, which do not exist."
+expect = ["journal_mismatches", "removed_count_mismatches", "stale_checkpoint_rows"]
+file = "crates/ptr-pg/src/adapters/projection.rs"
+find = '''
+        Removal::OtherThan => "<>",
+'''
+replace = '''
+        Removal::OtherThan => "=",
+'''
+
+[[mutation]]
+name = "checkpoint-cascade-skipped"
+description = "Checkpoints that folded a removed write are kept."
+expect = ["stale_checkpoint_rows", "stale_checkpoints_accepted", "checkpoint_violations"]
+file = "crates/ptr-pg/src/adapters/projection.rs"
+find = '''
+                     WHERE memory = $1 AND applied_seq >= $2"
+'''
+replace = '''
+                     WHERE memory = $1 AND applied_seq >= $2 AND false"
+'''
+
+[[mutation]]
+name = "checkpoint-cascade-off-by-one"
+description = "The checkpoint taken at exactly the first removed write is kept."
+expect = ["stale_checkpoint_rows", "stale_checkpoints_accepted", "checkpoint_violations"]
+file = "crates/ptr-pg/src/adapters/projection.rs"
+find = '''
+                     WHERE memory = $1 AND applied_seq >= $2"
+'''
+replace = '''
+                     WHERE memory = $1 AND applied_seq > $2"
+'''
+
+[[mutation]]
+name = "append-ignores-tombstone"
+description = "An append from a revoked generation is accepted."
+expect = ["inadmissible_appends_accepted"]
+file = "crates/ptr-pg/src/adapters/fastmem.rs"
+find = '''
+        if live.map(|row| row.get::<_, i64>(0)) != Some(generation) || revoked {
+'''
+replace = '''
+        if live.map(|row| row.get::<_, i64>(0)) != Some(generation) || (revoked && false) {
+'''
+
+[[mutation]]
+name = "append-ignores-live-generation"
+description = "An append from a generation that is not live is accepted."
+expect = ["inadmissible_appends_accepted"]
+file = "crates/ptr-pg/src/adapters/fastmem.rs"
+find = '''
+        if live.map(|row| row.get::<_, i64>(0)) != Some(generation) || revoked {
+'''
+replace = '''
+        if (live.map(|row| row.get::<_, i64>(0)) != Some(generation) && false) || revoked {
+'''
+
+[[mutation]]
+name = "append-without-row-lock"
+description = "An append reads the live generation without holding its row, so a revocation can pass it."
+expect = ["race_violations"]
+file = "crates/ptr-pg/src/adapters/fastmem.rs"
+cases = 10
+find = '''
+                     WHERE target = $1 FOR SHARE"
+'''
+replace = '''
+                     WHERE target = $1"
+'''
+
+[[mutation]]
+name = "checkpoint-prefix-without-lock"
+description = "A checkpoint reads its journal prefix without holding the rows, so a revocation can pass it."
+expect = ["stale_checkpoint_rows", "race_violations"]
+file = "crates/ptr-pg/src/adapters/fastmem.rs"
+cases = 10
+find = '''
+        let prefix = journal_prefix(&transaction, work.as_str(), memory, applied, true).await?;
+'''
+replace = '''
+        let prefix = journal_prefix(&transaction, work.as_str(), memory, applied, false).await?;
+'''
+
+[[mutation]]
+name = "checkpoint-binding-unchecked"
+description = "A checkpoint is stored without recomputing its binding from the journal."
+expect = ["stale_checkpoints_accepted", "stale_checkpoint_rows"]
+file = "crates/ptr-pg/src/adapters/fastmem.rs"
+find = '''
+        if recomputed != binding_digest {
+'''
+replace = '''
+        if false && recomputed != binding_digest {
+'''
+
+[[mutation]]
+name = "latest-checkpoint-skips-nothing"
+description = "The newest checkpoint is handed out without checking that it still folds the journal."
+expect = ["checkpoint_violations"]
+file = "crates/ptr-pg/src/adapters/fastmem.rs"
+find = '''
+            if !current {
+'''
+replace = '''
+            if false && !current {
+'''
+
+[[mutation]]
+name = "journal-cells-lose-a-bit"
+description = "A journal read drops the lowest bit of each float's first byte."
+expect = ["journal_mismatches"]
+file = "crates/ptr-pg/src/adapters/fastmem.rs"
+find = '''
+        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+'''
+replace = '''
+        .map(|chunk| f32::from_le_bytes([chunk[0] & 0xFE, chunk[1], chunk[2], chunk[3]]))
+'''
+
+[[mutation]]
+name = "refold-keeps-straddling-checkpoint"
+description = "A refold restarts from the checkpoint taken at the first revoked write."
+expect = ["bit_identity_failures", "readout_failures"]
+file = "crates/ptr-fastmem/src/memory.rs"
+find = '''
+            .retain(|checkpoint| checkpoint.applied() < first_seq);
+'''
+replace = '''
+            .retain(|checkpoint| checkpoint.applied() <= first_seq);
+'''
+
+[[mutation]]
+name = "read-admission-skipped"
+description = "A read is admitted without checking its writes' sources."
+expect = ["resurrected_reads"]
+file = "crates/ptr-fastmem/src/memory.rs"
+find = '''
+        if denied > 0 {
+'''
+replace = '''
+        if false && denied > 0 {
+'''
+
+[[mutation]]
+name = "append-commit-error-ignored"
+description = "An append is reported done even when its commit failed."
+expect = ["commit_fault_failures"]
+file = "crates/ptr-pg/src/adapters/fastmem.rs"
+cases = 12
+find = '''
+                    &decay_cells,
+                ],
+            )
+            .await
+            .map_err(database)?;
+        transaction.commit().await.map_err(database)
+'''
+replace = '''
+                    &decay_cells,
+                ],
+            )
+            .await
+            .map_err(database)?;
+        let _ = transaction.commit().await;
+        Ok(())
+'''
+
+[[mutation]]
+name = "latest-checkpoint-oldest-first"
+description = "The oldest matching checkpoint is handed out instead of the newest."
+expect = ["checkpoint_violations"]
+file = "crates/ptr-pg/src/adapters/fastmem.rs"
+find = '''
+                     WHERE memory = $1 ORDER BY applied_seq DESC"
+'''
+replace = '''
+                     WHERE memory = $1 ORDER BY applied_seq ASC"
+'''
+
+[[mutation]]
+name = "checkpoint-cascade-deletes-all"
+description = "A revocation deletes every checkpoint of an affected memory, including ones that folded none of its writes."
+expect = ["checkpoints_lost"]
+file = "crates/ptr-pg/src/adapters/projection.rs"
+find = '''
+                     WHERE memory = $1 AND applied_seq >= $2"
+'''
+replace = '''
+                     WHERE memory = $1 AND (applied_seq >= $2 OR true)"
+'''

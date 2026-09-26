@@ -238,3 +238,51 @@ modules = ["error", "request", "runtime", "composition", "lifecycle", "model_loo
 public_groups = ["PtrRuntime", "RuntimeError", "ResumableRun", "typed runtime request/result", "composition handles"]
 function_groups = ["construct/open/replay", "ingest", "run model", "run/resume Pods", "authorize", "commit", "query state"]
 notes = ["highest-priority lib.rs split candidate", "private helpers stay private", "backend composition uses PTR-owned ports"]
+
+[[crate]]
+id = "ptr-analytics"
+current_shape = "modular"
+modules = ["binomial", "weighted", "calibration", "agreement", "running", "metric", "error"]
+public_groups = ["interval estimators", "weighted rates", "calibration scores", "agreement", "metric vocabulary"]
+function_groups = ["estimate", "score", "accumulate"]
+notes = ["no SQL and no backend dependency", "every estimator refuses invalid input with StatsError"]
+
+[[crate]]
+id = "ptr-branch"
+current_shape = "modular"
+modules = ["branch", "ops", "digest", "certify", "arbiter", "error"]
+public_groups = ["Branch/SealedBranch", "BranchOp", "digests", "Certification/MergePlan", "triage and off-policy evaluation"]
+function_groups = ["read/scan/stage/seal", "certify", "triage", "calibrate", "evaluate off-policy"]
+notes = ["callers must route merges through PtrRuntime::apply_verified_semantic_delta; this is not enforced because apply_semantic_delta and MergePlan's expected and delta fields are public"]
+
+[[crate]]
+id = "ptr-fastmem"
+current_shape = "modular"
+modules = ["config", "write", "state", "memory", "projection", "decode", "codec", "error"]
+public_groups = ["FastMemory", "writes and queries", "state and codec", "projection and codebook", "decode"]
+function_groups = ["write", "read_admitted", "revoke", "restore", "decode", "encode/decode state"]
+notes = ["deterministic f32 fold", "no storage dependency; the Postgres journal lives in ptr-pg"]
+
+[[crate]]
+id = "ptr-labeling"
+current_shape = "modular"
+modules = ["votes", "model", "gold", "acquisition", "error"]
+public_groups = ["schema and votes", "label model", "gold and evaluation", "acquisition"]
+function_groups = ["vote", "fit", "resolve", "evaluate", "rank"]
+notes = ["verifier votes are vetoes only"]
+
+[[crate]]
+id = "ptr-lineage"
+current_shape = "modular"
+modules = ["lineage", "subspace", "replay", "forgetting", "merge", "error"]
+public_groups = ["Lineage/AdapterRecord", "subspace interference", "replay pool", "forgetting gate", "TIES merge"]
+function_groups = ["register/gate/serve/retire", "measure interference", "draw replay", "consolidate"]
+notes = ["working model only; serving admission is out of scope until adapter promotion is a ledger event"]
+
+[[crate]]
+id = "ptr-pg"
+current_shape = "modular"
+modules = ["config", "migrate", "capability", "event", "metric", "error", "adapters (feature postgres-backend)"]
+public_groups = ["SchemaSet/Identifier/PgConfig", "migration catalogs", "Capabilities", "LifecycleChange", "PgSubstrate and adapter types", "PgError"]
+function_groups = ["connect/migrate/rebuild", "apply/replay/check", "fenced reads", "index/search", "branch/journal storage", "metrics"]
+notes = ["driver types never leave the adapters module", "without the feature the crate is pure and server-free"]

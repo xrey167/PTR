@@ -48,6 +48,7 @@
 - [32-execution-wire.md](32-execution-wire.md)
 - [33-pod-wire.md](33-pod-wire.md)
 - [34-address-authority.md](34-address-authority.md)
+- [35-agentic-substrate.md](35-agentic-substrate.md) — PostgreSQL projection substrate, certified agent branches, revocable fast-weight memory, adapter lineage and weak supervision
 - [Open architecture catalog](../../research/catalogs/README.md) — unresolved type families, backend slots and component contracts
 
 ## Component-level documentation

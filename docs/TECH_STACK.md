@@ -16,15 +16,21 @@ The table distinguishes **PTR semantics** from **current candidate technologies*
 | Local archive | `ptr-protocol` | rkyv | postcard/bincode/etc |
 | Consensus | `ptr-ledger` | tikv/raft-rs | OpenRaft/custom |
 | Durable log | `ptr-ledger` | tikv/raft-engine | RocksDB/redb/custom WAL |
-| Materialized state | `ptr-state` | Turso/libSQL | SQLite/Postgres/Redb |
-| Lexical retrieval | `ptr-search` | Tantivy | alternative FTS |
-| Local vector | `ptr-search` | Zvec | usearch/Lance/etc |
+| Materialized state | `ptr-state` | Turso/libSQL; PostgreSQL via `ptr-pg` | SQLite/Redb |
+| Relational substrate (projection, derived caches, working state) | `ptr-pg` | PostgreSQL 18 + pgvector 0.8 over tokio-postgres | PostgreSQL 16/17; Turso projection-only |
+| Lexical retrieval | `ptr-search` | Tantivy; PostgreSQL full text (baseline in `ptr-pg`) | pg_textsearch/ParadeDB BM25 |
+| Local vector | `ptr-search` | Zvec; pgvector halfvec HNSW (`ptr-pg`) | usearch/Lance/VectorChord/etc |
 | GPU vector | `ptr-search` | cuVS | FAISS GPU/etc |
 | Multimodal store | `ptr-search` | LanceDB | alternatives |
 | Distributed search | `ptr-search` | Havenask | Quickwit/OpenSearch/etc |
 | Code structure | `ptr-search` | GritQL | tree-sitter/custom |
 | Object store | `ptr-storage` | OpenDAL | native backend implementations |
-| Event streaming | `ptr-events` | Apache Iggy | Kafka/NATS/RocketMQ |
+| Event streaming | `ptr-events` | in-process reference bus; PostgreSQL projection event log; Apache Iggy | Kafka/NATS/RocketMQ |
+| Agent branches and triage | `ptr-branch` | PTR-owned certification and calibrated arbiter | serial execution baseline |
+| Working memory | `ptr-fastmem` | PTR-owned gated delta rule | recency buffer; retrieval only |
+| Weak supervision | `ptr-labeling` | PTR-owned Dawid-Skene with verifier vetoes | Snorkel label model |
+| Adapter lineage and serving | `ptr-lineage` | PTR-owned lineage; vLLM/SGLang multi-LoRA serving | LoRAX |
+| Statistics and metrics | `ptr-analytics` | PTR-owned kernel; metric SQL in `ptr-pg` | pg_duckdb/Iceberg/DataFusion mirror |
 | Observability | `ptr-observe` | tracing + OTel + NeMo Relay | alternatives |
 | Introspection | `ptr-inspect` | Valuable | custom reflection layer |
 | Ingress classification | `ptr-ingress` | GLiClass-rs | small classifier/custom head |

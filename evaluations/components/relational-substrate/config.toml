@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "relational-substrate"
+path = "evaluations/components/relational-substrate"
+tests_dir = "tests"

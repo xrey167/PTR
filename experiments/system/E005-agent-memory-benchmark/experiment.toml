@@ -1,0 +1,13 @@
+version = 1
+id = "E005"
+status = "planned"
+hypothesis = "Does the combined stack (projection, fast memory, certified branches, hybrid retrieval) answer long-horizon memory questions better than current agent-memory systems at an equal budget?"
+metrics = "LongMemEval and LoCoMo accuracy by category (knowledge update, temporal reasoning, abstention); tokens; latency"
+baseline = "full-context model; RAG baseline; published agent-memory systems re-run where their licences allow"
+falsification = "No category improvement over the strongest re-run baseline at an equal token budget rejects the claim."
+hardware_profile = "hardware/default.toml"
+entrypoint = ""
+seeds = [17, 29, 43, 71, 101]
+results_dir = "results"
+required_artifacts = ["run.json", "metrics.json"]
+design = "../../../docs/architecture/35-agentic-substrate.md"

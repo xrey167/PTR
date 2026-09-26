@@ -19,3 +19,8 @@ ptr-ledger = { workspace = true }
 ptr-state = { workspace = true }
 ptr-events = { workspace = true }
 ptr-security = { workspace = true }
+
+[dev-dependencies]
+# Search hits are filtered against this runtime's lifecycle answers; the test
+# composes the two public APIs the way a caller does.
+ptr-search = { workspace = true }

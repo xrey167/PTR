@@ -1,0 +1,51 @@
+{
+  "experiment_id": "L004",
+  "status": "completed",
+  "scope": "generated ledgers of every event kind replayed into a PostgreSQL projection on one local server, with client and server crashes, commits the server fails, redeliveries, gaps, dueling projectors, forked histories, a backup catch-up, rebuilds onto unrelated and true histories, compared with the runtime replay, the MaterializedState reference and Turso",
+  "git_sha": "ad2f8d1a50b875f62f7899a8c0eb60dac000639f",
+  "recorded_at": "2026-09-26T10:10:02.532031+00:00",
+  "entrypoint": "cargo +stable run --release --locked -p ptr-bench --features turso-oracle -- projection-equivalence <iterations> <seed>",
+  "seeds": [
+    {
+      "seed": 17,
+      "record": "run-20260926T093310.696207Z-seed-17.json",
+      "exit_code": 0
+    },
+    {
+      "seed": 29,
+      "record": "run-20260926T093455.421416Z-seed-29.json",
+      "exit_code": 0
+    },
+    {
+      "seed": 43,
+      "record": "run-20260926T093628.813066Z-seed-43.json",
+      "exit_code": 0
+    },
+    {
+      "seed": 71,
+      "record": "run-20260926T093759.398007Z-seed-71.json",
+      "exit_code": 0
+    },
+    {
+      "seed": 101,
+      "record": "run-20260926T093924.784791Z-seed-101.json",
+      "exit_code": 0
+    }
+  ],
+  "hard_pass": true,
+  "probe_coverage_ok": true,
+  "mutation_checks": {
+    "killed": 17,
+    "total": 17,
+    "git_sha": "ad2f8d1a50b875f62f7899a8c0eb60dac000639f"
+  },
+  "limitations": [
+    "one PostgreSQL 18 server with pgvector 0.8 on loopback; 16 and 17 are supported but not run here",
+    "timings come from one shared cloud container with the seeds run one after another; the server's durability settings are part of each seed's server string; not a capacity claim",
+    "logs of 40-160 records per case plus one long replay per seed; no multi-million-commit ledger",
+    "crashes are session terminations and dropped clients; no power loss, torn page or storage fault",
+    "readers are not run concurrently with the projector; the fence semantics are covered by the ptr-pg tests",
+    "the seed fixes every log and probe; only whether a crashed transaction had committed depends on timing",
+    "Turso exposes point reads only, so it is compared for every key the reference holds but extra Turso keys would not show"
+  ]
+}

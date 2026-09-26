@@ -22,7 +22,7 @@ use ptr_security::{
 };
 use ptr_semdb::{PreparedDelta, SemanticError, SemanticHost, SemanticSnapshot};
 use ptr_state::MaterializedState;
-use ptr_types::{CommitIndex, Generation, ProjectId, RequestId, Revision};
+use ptr_types::{CommitIndex, Generation, ProjectId, RequestId, Revision, Validity};
 use ptr_verifier::{VerificationStatus, Verifier};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -62,6 +62,13 @@ pub enum RuntimeError {
     Pod(String),
     PodVerificationFailed {
         pod: String,
+    },
+    /// A verified semantic delta was refused before append: its verification
+    /// did not pass at the required level, or reported a hard finding.
+    DeltaVerificationRejected {
+        status: ptr_verifier::VerificationStatus,
+        level: ptr_types::VerificationLevel,
+        hard_findings: usize,
     },
     ModelResumeLimit {
         max_rounds: usize,
@@ -248,6 +255,30 @@ impl PtrRuntime {
 
     pub fn live_generation(&self, target: &str) -> Option<Generation> {
         self.live_generations.get(target).copied()
+    }
+
+    /// Whether `target` at `generation` may be used now, as the lifecycle
+    /// authority sees it.
+    ///
+    /// [`Self::live_generation`] alone cannot answer this: a revocation adds a
+    /// tombstone and leaves the live generation in place, so a revoked
+    /// generation still reads as live there. This combines the tombstone set
+    /// with generation equality, the way neural-state admission does, and is
+    /// the check every derived hit (search, fast memory, projection row) must
+    /// pass before it is used. `None` means the authority knows no such
+    /// generation: the target is unknown or the generation is ahead of it.
+    pub fn generation_validity(&self, target: &str, generation: Generation) -> Option<Validity> {
+        if self
+            .revoked_generations
+            .contains(&(target.to_owned(), generation))
+        {
+            return Some(Validity::Revoked);
+        }
+        match self.live_generations.get(target) {
+            Some(live) if *live == generation => Some(Validity::Live),
+            Some(live) if *live > generation => Some(Validity::Superseded),
+            Some(_) | None => None,
+        }
     }
 
     pub fn run_model_once<B: InferenceBackend>(

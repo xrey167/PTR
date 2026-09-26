@@ -1,0 +1,5219 @@
+//! Integration tests against a real PostgreSQL server.
+//!
+//! `PTR_PG_TEST_DSN` must name a loopback PostgreSQL 16+ server where the
+//! connecting role may create schemas and where pgvector 0.8+ is installed or
+//! installable. Every test works in its own schema prefix and drops it at the
+//! end, so tests run in parallel against one database.
+
+use std::future::Future;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Duration;
+
+use ptr_analytics::{Grouping, Metric, MetricRow, MetricSpec, Window};
+use ptr_branch::{
+    AutoThreshold, BranchError, BranchId, BranchOp, CalibrationSample, InputsDigest, PolicyRecord,
+    RangeDigest, SealedBranch, SealedBranchParts, ThresholdRule, TriageDecision, TriageOutcome,
+    TriagePolicy, ValueDigest,
+};
+use ptr_fastmem::{
+    decode_readout, Decay, DecodePolicy, FastMemory, FastMemoryConfig, FastMemoryError,
+    IdentifierCodebook, Query, SourceRef, WriteRequest,
+};
+use ptr_ledger::integrity::{chain_anchors, LogAnchor};
+use ptr_ledger::{CommittedEvent, LedgerEvent};
+use ptr_lineage::{
+    measure_interference, AdapterId, InterferenceReport, LayerInterference, LayerUpdate, Matrix,
+};
+use ptr_pg::{
+    BranchOutcome, EmbeddingSpace, FastMemoryRecord, HybridQuery, Identifier, PgError, PgSubstrate,
+    SchemaSet, SearchDocument, LEXICAL_BACKEND, VECTOR_BACKEND, WORK_MIGRATIONS,
+};
+use ptr_search::EvidenceStage;
+use ptr_semdb::{SemanticPayload, SemanticValue};
+use ptr_state::{ApplyOutcome, MaterializedState};
+use ptr_types::{CapsuleId, CommitIndex, Generation, PrincipalId, ProjectId, Revision, TypeId};
+
+static NEXT_PREFIX: AtomicU32 = AtomicU32::new(0);
+
+fn dsn() -> String {
+    match std::env::var("PTR_PG_TEST_DSN") {
+        Ok(dsn) if !dsn.trim().is_empty() => dsn,
+        _ => panic!(
+            "PTR_PG_TEST_DSN is unset: the postgres test target needs a loopback PostgreSQL 16+ \
+             server with pgvector, e.g. PTR_PG_TEST_DSN=\"host=127.0.0.1 port=5432 user=postgres\""
+        ),
+    }
+}
+
+/// The test server, with every session defaulting to repeatable read. The
+/// substrate must pin the isolation its lock ordering needs rather than
+/// inherit an operator's default. The connection-string parser removes one
+/// level of backslashes and the server's option parser the next, which leaves
+/// the escaped space inside the option value.
+fn repeatable_read_dsn() -> String {
+    format!(
+        "{} options='-c default_transaction_isolation=repeatable\\\\ read'",
+        dsn()
+    )
+}
+
+/// A raw client for setup and for adversarial statements the substrate API
+/// deliberately does not offer.
+async fn raw_client() -> tokio_postgres::Client {
+    raw_client_at(&dsn()).await
+}
+
+async fn raw_client_at(dsn: &str) -> tokio_postgres::Client {
+    let (client, connection) = tokio_postgres::connect(dsn, tokio_postgres::NoTls)
+        .await
+        .expect("connect to PTR_PG_TEST_DSN");
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    client
+}
+
+/// Run `sql` as a writer from before work migration 9 (or 10) could have:
+/// with the server's triggers off (`session_replication_role = replica`,
+/// which the test server's superuser may set) and with the NOT VALID `checks`
+/// those migrations added, which rows written before them never had to pass,
+/// dropped for the write and added back NOT VALID after it. All of it is one
+/// transaction, and the setting ends with it.
+async fn write_before_invariants(
+    raw: &tokio_postgres::Client,
+    work: &impl std::fmt::Display,
+    checks: &[(&str, &str)],
+    sql: &str,
+) {
+    let mut drop = String::new();
+    let mut restore = String::new();
+    for (table, check) in checks {
+        let definition: String = raw
+            .query_one(
+                "SELECT pg_get_constraintdef(oid) FROM pg_constraint \
+                 WHERE conname = $1 AND conrelid = $2::text::regclass",
+                &[check, &format!("{work}.{table}")],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert!(definition.ends_with("NOT VALID"), "{definition}");
+        drop.push_str(&format!(
+            "ALTER TABLE {work}.{table} DROP CONSTRAINT {check}; "
+        ));
+        restore.push_str(&format!(
+            "ALTER TABLE {work}.{table} ADD CONSTRAINT {check} {definition}; "
+        ));
+    }
+    raw.batch_execute(&format!(
+        "BEGIN; SET LOCAL session_replication_role = replica; {drop}{sql}; {restore}COMMIT;"
+    ))
+    .await
+    .unwrap();
+}
+
+/// The SQLSTATE a statement the database refused carries.
+async fn refused_sqlstate(raw: &tokio_postgres::Client, sql: &str) -> String {
+    let error = match raw.batch_execute(sql).await {
+        Ok(()) => panic!("the database accepted {sql}"),
+        Err(error) => error,
+    };
+    error
+        .as_db_error()
+        .unwrap_or_else(|| panic!("{sql}: {error}"))
+        .code()
+        .code()
+        .to_owned()
+}
+
+/// A migrated substrate in a fresh schema prefix.
+async fn substrate() -> PgSubstrate {
+    substrate_at(&dsn()).await
+}
+
+async fn substrate_at(dsn: &str) -> PgSubstrate {
+    let mut substrate = unmigrated_substrate_at(dsn).await;
+    substrate.migrate().await.unwrap();
+    substrate
+}
+
+/// A schema prefix no other test uses.
+fn fresh_prefix() -> String {
+    format!(
+        "ptrt_{}_{}",
+        std::process::id(),
+        NEXT_PREFIX.fetch_add(1, Ordering::SeqCst)
+    )
+}
+
+/// A substrate in a fresh schema prefix with nothing migrated yet, on a
+/// server where pgvector is installed. The extension and the removal of
+/// stale schemas go to the database `dsn` names, which is the one the
+/// substrate uses.
+async fn unmigrated_substrate_at(dsn: &str) -> PgSubstrate {
+    let raw = raw_client_at(dsn).await;
+    // Parallel tests race on CREATE EXTENSION; serialize it. The lock must be
+    // held until the extension is committed, so it is a transaction lock: a
+    // session lock released inside the batch's implicit transaction would let
+    // the next test in before the extension is visible to it.
+    raw.batch_execute(
+        "BEGIN; \
+         SELECT pg_advisory_xact_lock(7402301); \
+         CREATE EXTENSION IF NOT EXISTS vector; \
+         COMMIT;",
+    )
+    .await
+    .expect("pgvector must be installed or installable");
+    let prefix = fresh_prefix();
+    let schemas = SchemaSet::with_prefix(&prefix).unwrap();
+    let substrate = PgSubstrate::connect_with(dsn, schemas).await.unwrap();
+    // A previous run with the same process id may have left schemas behind.
+    raw.batch_execute(&format!(
+        "DROP SCHEMA IF EXISTS {prefix}_derived CASCADE; \
+         DROP SCHEMA IF EXISTS {prefix}_projection CASCADE; \
+         DROP SCHEMA IF EXISTS {prefix}_work CASCADE;"
+    ))
+    .await
+    .unwrap();
+    substrate
+}
+
+fn committed(index: u64, event: LedgerEvent) -> CommittedEvent {
+    CommittedEvent {
+        index: CommitIndex(index),
+        event,
+    }
+}
+
+fn capsule(index: u64, id: &str, generation: u64) -> CommittedEvent {
+    committed(
+        index,
+        LedgerEvent::CapsuleCommitted {
+            project: ProjectId::from("atlas"),
+            capsule: CapsuleId::from(id),
+            generation: Generation(generation),
+        },
+    )
+}
+
+fn supersede(index: u64, id: &str, old: u64, new: u64) -> CommittedEvent {
+    committed(
+        index,
+        LedgerEvent::CapsuleSuperseded {
+            capsule: CapsuleId::from(id),
+            old: Generation(old),
+            new: Generation(new),
+        },
+    )
+}
+
+fn revoke(index: u64, subject: &str, generation: u64) -> CommittedEvent {
+    committed(
+        index,
+        LedgerEvent::Revoked {
+            subject: subject.into(),
+            generation: Generation(generation),
+        },
+    )
+}
+
+/// Anchors of `log` from the empty log, computed with the ledger's encoder.
+fn anchors(log: &[CommittedEvent]) -> Vec<LogAnchor> {
+    chain_anchors(log, LogAnchor::empty()).unwrap()
+}
+
+/// A log that exercises every lifecycle change.
+fn mixed_log() -> Vec<CommittedEvent> {
+    vec![
+        capsule(1, "c1", 1),
+        committed(
+            2,
+            LedgerEvent::HardConstraintCommitted {
+                key: "budget".into(),
+                generation: Generation(1),
+            },
+        ),
+        committed(
+            3,
+            LedgerEvent::SemanticDeltaCommitted {
+                base_revision: Revision(0),
+                revision: Revision(1),
+                encoded_delta: vec![1, 2, 3],
+            },
+        ),
+        supersede(4, "c1", 1, 2),
+        committed(
+            5,
+            LedgerEvent::ProcedurePromoted {
+                id: "deploy".into(),
+                generation: Generation(1),
+            },
+        ),
+        committed(
+            6,
+            LedgerEvent::ProcedureRevoked {
+                id: "deploy".into(),
+                generation: Generation(1),
+            },
+        ),
+        committed(
+            7,
+            LedgerEvent::VerifierAttested {
+                subject: "c1".into(),
+                passed: true,
+            },
+        ),
+        revoke(8, "c1", 2),
+    ]
+}
+
+#[tokio::test]
+async fn migrations_apply_once_and_record_their_checksums() {
+    let mut substrate = substrate().await;
+    let again = substrate.migrate().await.unwrap();
+    assert!(again.projection.is_empty() && again.derived.is_empty() && again.work.is_empty());
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    let count: i64 = raw
+        .query_one(
+            &format!("SELECT count(*) FROM {work}.schema_migration"),
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(count, ptr_pg::WORK_MIGRATIONS.len() as i64);
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn an_edited_migration_is_refused_as_drift() {
+    let mut substrate = substrate().await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    raw.execute(
+        &format!("UPDATE {work}.schema_migration SET checksum = $1 WHERE version = 2"),
+        &[&vec![0u8; 32]],
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        substrate.migrate().await.unwrap_err(),
+        PgError::MigrationDrift { version: 2 }
+    );
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_work_schema_holding_triage_rows_upgrades_and_keeps_their_unrecorded_policies() {
+    let mut substrate = unmigrated_substrate_at(&dsn()).await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    // A work schema as a build before recorded policies left it: migrations 1
+    // to 4 applied, and a triage row citing a policy no table recorded.
+    raw.batch_execute(&format!(
+        "CREATE SCHEMA {work}; \
+         CREATE TABLE {work}.schema_migration ( \
+             version integer PRIMARY KEY, \
+             name text NOT NULL, \
+             checksum bytea NOT NULL, \
+             applied_at timestamptz NOT NULL DEFAULT now())"
+    ))
+    .await
+    .unwrap();
+    for migration in &WORK_MIGRATIONS[..4] {
+        raw.batch_execute(&migration.render(substrate.schemas()))
+            .await
+            .unwrap();
+        raw.execute(
+            &format!(
+                "INSERT INTO {work}.schema_migration (version, name, checksum) \
+                 VALUES ($1, $2, $3)"
+            ),
+            &[
+                &(migration.version as i32),
+                &migration.name,
+                &migration.checksum().to_vec(),
+            ],
+        )
+        .await
+        .unwrap();
+    }
+    raw.batch_execute(&format!(
+        "INSERT INTO {work}.branch (id, author, base_revision) VALUES ('legacy', 'agent-a', 0); \
+         INSERT INTO {work}.branch_triage \
+             (branch, decision, eligible, calibration_slice, score, auto_propensity, \
+              policy_version) \
+         VALUES ('legacy', 'escalate', true, false, 0.5, 0.0, 'policy-0')"
+    ))
+    .await
+    .unwrap();
+
+    let report = substrate.migrate().await.unwrap();
+    assert_eq!(
+        report.work,
+        (5..=WORK_MIGRATIONS.len() as u32).collect::<Vec<_>>()
+    );
+    // The legacy row keeps citing the version it was logged under.
+    let cited: String = raw
+        .query_one(
+            &format!("SELECT policy_version FROM {work}.branch_triage WHERE branch = 'legacy'"),
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(cited, "policy-0");
+    // A triage logged from now on must cite a recorded policy.
+    substrate
+        .store_branch(&sealed_branch("new", "agent-a"))
+        .await
+        .unwrap();
+    assert_eq!(
+        substrate
+            .record_triage(
+                &BranchId::from("new"),
+                &triage(TriageDecision::Escalate, true, false),
+                "policy-0"
+            )
+            .await,
+        Err(PgError::InvalidTriage {
+            branch: "new".into(),
+            policy_version: "policy-0".into(),
+            reason: "the cited policy is not recorded",
+        })
+    );
+    substrate.drop_all().await.unwrap();
+}
+
+/// Whether any session of the test database holds the migration lock of
+/// `schemas`. `pg_locks` shows a bigint advisory key as its high half
+/// (`classid`) and its low half (`objid`), with `objsubid` 1.
+async fn migration_lock_held(raw: &tokio_postgres::Client, schemas: &SchemaSet) -> bool {
+    raw.query_one(
+        "SELECT EXISTS (SELECT 1 FROM pg_locks \
+         WHERE locktype = 'advisory' AND granted AND objsubid = 1 \
+           AND database = (SELECT oid FROM pg_database WHERE datname = current_database()) \
+           AND ((classid::bigint << 32) | objid::bigint) = hashtext($1)::bigint)",
+        &[&format!("ptr-pg:{}", schemas.projection)],
+    )
+    .await
+    .unwrap()
+    .get(0)
+}
+
+/// A third session holding the projection's migration table, so a schema
+/// change that has taken the migration lock blocks at its first statement on
+/// that table. `ROLLBACK` on the returned session releases it.
+async fn block_schema_changes(schemas: &SchemaSet) -> tokio_postgres::Client {
+    let blocker = raw_client().await;
+    blocker
+        .batch_execute(&format!(
+            "BEGIN; LOCK TABLE {}.schema_migration IN ACCESS EXCLUSIVE MODE",
+            schemas.projection
+        ))
+        .await
+        .unwrap();
+    blocker
+}
+
+/// Drive `change` until it holds the migration lock of `schemas` (it cannot
+/// finish while [`block_schema_changes`] holds the table), then drop it where
+/// it stands, as a caller's timeout or an aborted task does.
+async fn cancel_once_locked(
+    change: impl Future,
+    raw: &tokio_postgres::Client,
+    schemas: &SchemaSet,
+) {
+    let mut change = std::pin::pin!(change);
+    for _ in 0..500 {
+        let finished = tokio::time::timeout(Duration::from_millis(20), change.as_mut()).await;
+        assert!(finished.is_err(), "a blocked schema change finished");
+        if migration_lock_held(raw, schemas).await {
+            return;
+        }
+    }
+    panic!("the schema change never took the migration lock");
+}
+
+#[tokio::test]
+async fn a_migration_cancelled_while_holding_the_lock_does_not_block_the_next_migrator() {
+    let mut first = substrate().await;
+    let schemas = first.schemas().clone();
+    let raw = raw_client().await;
+    let blocker = block_schema_changes(&schemas).await;
+    cancel_once_locked(first.migrate(), &raw, &schemas).await;
+    blocker.batch_execute("ROLLBACK").await.unwrap();
+
+    // The first substrate's session stays open; the lock went with the
+    // cancelled migration's own session.
+    let mut second = PgSubstrate::connect_with(&dsn(), schemas.clone())
+        .await
+        .unwrap();
+    let report = tokio::time::timeout(Duration::from_secs(30), second.migrate())
+        .await
+        .expect("a cancelled migration must not keep the migration lock")
+        .unwrap();
+    assert!(report.projection.is_empty() && report.derived.is_empty() && report.work.is_empty());
+    assert!(!migration_lock_held(&raw, &schemas).await);
+    first.capabilities().await.unwrap();
+    drop(second);
+    first.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_migration_retried_after_a_cancellation_completes_and_leaves_no_lock_held() {
+    let mut substrate = substrate().await;
+    let schemas = substrate.schemas().clone();
+    let raw = raw_client().await;
+    let blocker = block_schema_changes(&schemas).await;
+    cancel_once_locked(substrate.migrate(), &raw, &schemas).await;
+    blocker.batch_execute("ROLLBACK").await.unwrap();
+
+    // Every attempt takes the lock afresh, so the retry never re-enters one
+    // the cancelled attempt still holds and one unlock releases it.
+    let report = tokio::time::timeout(Duration::from_secs(30), substrate.migrate())
+        .await
+        .expect("a retry must not wait for the cancelled attempt")
+        .unwrap();
+    assert!(report.projection.is_empty() && report.derived.is_empty() && report.work.is_empty());
+    assert!(!migration_lock_held(&raw, &schemas).await);
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_rebuild_cancelled_while_holding_the_lock_releases_it_and_keeps_the_schemas() {
+    let mut first = substrate().await;
+    let schemas = first.schemas().clone();
+    let raw = raw_client().await;
+    let blocker = block_schema_changes(&schemas).await;
+    cancel_once_locked(first.rebuild_projection(), &raw, &schemas).await;
+    blocker.batch_execute("ROLLBACK").await.unwrap();
+
+    // Another migrator gets the lock, and finds nothing to apply: the
+    // cancelled rebuild's drop was rolled back, not left half done.
+    let mut second = PgSubstrate::connect_with(&dsn(), schemas.clone())
+        .await
+        .unwrap();
+    let report = tokio::time::timeout(Duration::from_secs(30), second.migrate())
+        .await
+        .expect("a cancelled rebuild must not keep the migration lock")
+        .unwrap();
+    assert!(report.projection.is_empty() && report.derived.is_empty() && report.work.is_empty());
+    drop(second);
+
+    // A retry on the same substrate rebuilds and leaves no lock behind.
+    let report = tokio::time::timeout(Duration::from_secs(30), first.rebuild_projection())
+        .await
+        .expect("a retried rebuild must not wait for the cancelled attempt")
+        .unwrap();
+    assert_eq!(report.projection, vec![1]);
+    assert_eq!(report.derived, vec![1]);
+    assert!(!migration_lock_held(&raw, &schemas).await);
+    first.drop_all().await.unwrap();
+}
+
+/// Wait until `change` holds the migration lock of `schemas`; `change` must
+/// be blocked (by [`block_schema_changes`] or otherwise) once it has it.
+async fn wait_for_migration_lock(raw: &tokio_postgres::Client, schemas: &SchemaSet) {
+    for _ in 0..500 {
+        if migration_lock_held(raw, schemas).await {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("the schema change never took the migration lock");
+}
+
+/// Terminate the session holding the migration lock of `schemas`, as an
+/// operator reaping connections or a failed network path would end it, and
+/// wait until the server has released the lock.
+async fn terminate_migration_lock_session(raw: &tokio_postgres::Client, schemas: &SchemaSet) {
+    let terminated = raw
+        .query(
+            "SELECT pg_terminate_backend(pid) FROM pg_locks \
+             WHERE locktype = 'advisory' AND granted AND objsubid = 1 \
+               AND database = (SELECT oid FROM pg_database WHERE datname = current_database()) \
+               AND ((classid::bigint << 32) | objid::bigint) = hashtext($1)::bigint",
+            &[&format!("ptr-pg:{}", schemas.projection)],
+        )
+        .await
+        .unwrap();
+    assert_eq!(terminated.len(), 1);
+    for _ in 0..500 {
+        if !migration_lock_held(raw, schemas).await {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("the terminated session kept the migration lock");
+}
+
+/// How many server sessions carry `application_name`, once every one that is
+/// closing has gone, or after ten seconds.
+async fn settled_sessions(
+    raw: &tokio_postgres::Client,
+    application_name: &str,
+    expected: i64,
+) -> i64 {
+    let mut sessions = 0;
+    for _ in 0..500 {
+        sessions = raw
+            .query_one(
+                "SELECT count(*) FROM pg_stat_activity WHERE application_name = $1",
+                &[&application_name],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        if sessions == expected {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    sessions
+}
+
+#[tokio::test]
+async fn a_migration_cancelled_while_waiting_for_the_lock_leaves_no_session_behind() {
+    let application_name = format!("ptrt_lock_wait_{}", std::process::id());
+    let mut substrate =
+        substrate_at(&format!("{} application_name={application_name}", dsn())).await;
+    let schemas = substrate.schemas().clone();
+    let raw = raw_client().await;
+    // Another migrator holds the lock, as one stuck mid-migration would.
+    let holder = raw_client().await;
+    let key = format!("ptr-pg:{}", schemas.projection);
+    holder
+        .execute("SELECT pg_advisory_lock(hashtext($1))", &[&key])
+        .await
+        .unwrap();
+    // A supervisor retries the migration under a timeout while it waits.
+    for _ in 0..5 {
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), substrate.migrate())
+                .await
+                .is_err(),
+            "a migration finished while another session held the lock"
+        );
+    }
+    // Only the substrate's own session remains: no cancelled attempt left a
+    // session behind, queued on the lock or otherwise.
+    assert_eq!(settled_sessions(&raw, &application_name, 1).await, 1);
+
+    // Once the holder releases the lock, the next migration takes it.
+    holder
+        .execute("SELECT pg_advisory_unlock(hashtext($1))", &[&key])
+        .await
+        .unwrap();
+    let report = tokio::time::timeout(Duration::from_secs(30), substrate.migrate())
+        .await
+        .expect("the migration lock is free")
+        .unwrap();
+    assert!(report.projection.is_empty() && report.derived.is_empty() && report.work.is_empty());
+    assert!(!migration_lock_held(&raw, &schemas).await);
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn the_migration_lock_outlives_an_idle_session_timeout_while_a_migration_runs() {
+    // Every session of this substrate ends after one idle second, as a server
+    // configured with idle_session_timeout ends them.
+    let timed_out = format!("{} options='-c idle_session_timeout=1000'", dsn());
+    let mut substrate = substrate_at(&timed_out).await;
+    let schemas = substrate.schemas().clone();
+    let raw = raw_client().await;
+    let blocker = block_schema_changes(&schemas).await;
+    let migration = tokio::spawn(async move {
+        let report = substrate.migrate().await;
+        drop(substrate);
+        report
+    });
+    wait_for_migration_lock(&raw, &schemas).await;
+    // The lock's session is idle while the migration waits on the blocked
+    // table, well past the timeout; it still holds the lock.
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    assert!(
+        migration_lock_held(&raw, &schemas).await,
+        "the migration lock went with a session ended for being idle"
+    );
+    blocker.batch_execute("ROLLBACK").await.unwrap();
+    let report = migration.await.unwrap().unwrap();
+    assert!(report.projection.is_empty() && report.derived.is_empty() && report.work.is_empty());
+    assert!(!migration_lock_held(&raw, &schemas).await);
+    PgSubstrate::connect_with(&dsn(), schemas)
+        .await
+        .unwrap()
+        .drop_all()
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_migration_whose_lock_session_ends_rolls_back_instead_of_committing_unlocked() {
+    let mut substrate = unmigrated_substrate_at(&dsn()).await;
+    let schemas = substrate.schemas().clone();
+    let raw = raw_client().await;
+    // An uncreated projection schema whose name another transaction is
+    // creating: the migration's CREATE SCHEMA waits for that transaction.
+    let blocker = raw_client().await;
+    blocker
+        .batch_execute(&format!("BEGIN; CREATE SCHEMA {}", schemas.projection))
+        .await
+        .unwrap();
+    let migration = tokio::spawn(async move {
+        let report = substrate.migrate().await;
+        (substrate, report)
+    });
+    wait_for_migration_lock(&raw, &schemas).await;
+    terminate_migration_lock_session(&raw, &schemas).await;
+    blocker.batch_execute("ROLLBACK").await.unwrap();
+
+    // The first migration transaction must not commit once the lock is gone,
+    // and nothing after it runs.
+    let (mut substrate, report) = migration.await.unwrap();
+    let refused = report.unwrap_err();
+    assert_eq!(refused, PgError::MigrationLockLost);
+    assert_eq!(refused.code(), "PTR_PG_MIGRATION_LOCK_LOST");
+    // One round trip on the substrate's session: its rollback has run.
+    substrate.capabilities().await.unwrap();
+    let created: i64 = raw
+        .query_one(
+            "SELECT count(*) FROM pg_namespace WHERE nspname = ANY($1)",
+            &[&vec![
+                schemas.projection.to_string(),
+                schemas.derived.to_string(),
+                schemas.work.to_string(),
+            ]],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(created, 0);
+
+    // A retry takes the lock afresh and applies everything.
+    let report = substrate.migrate().await.unwrap();
+    assert_eq!(report.projection, vec![1]);
+    assert_eq!(report.work.len(), WORK_MIGRATIONS.len());
+    assert!(!migration_lock_held(&raw, &schemas).await);
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_rebuild_whose_lock_session_ends_keeps_the_schemas_it_was_dropping() {
+    let mut substrate = substrate().await;
+    let schemas = substrate.schemas().clone();
+    let raw = raw_client().await;
+    let projection_oid = || async {
+        raw.query_one(
+            "SELECT oid FROM pg_namespace WHERE nspname = $1",
+            &[&schemas.projection.to_string()],
+        )
+        .await
+        .unwrap()
+        .get::<_, u32>(0)
+    };
+    let before = projection_oid().await;
+    let blocker = block_schema_changes(&schemas).await;
+    let rebuild = tokio::spawn(async move {
+        let report = substrate.rebuild_projection().await;
+        (substrate, report)
+    });
+    wait_for_migration_lock(&raw, &schemas).await;
+    terminate_migration_lock_session(&raw, &schemas).await;
+    blocker.batch_execute("ROLLBACK").await.unwrap();
+
+    // The drop must not commit once the lock is gone.
+    let (mut substrate, report) = rebuild.await.unwrap();
+    assert_eq!(report, Err(PgError::MigrationLockLost));
+    substrate.capabilities().await.unwrap();
+    assert_eq!(projection_oid().await, before);
+
+    // A retry rebuilds and leaves no lock behind.
+    let report = substrate.rebuild_projection().await.unwrap();
+    assert_eq!(report.projection, vec![1]);
+    assert_ne!(projection_oid().await, before);
+    assert!(!migration_lock_held(&raw, &schemas).await);
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn replay_projects_state_and_lifecycle_exactly_as_the_reference_does() {
+    let mut substrate = substrate().await;
+    let log = mixed_log();
+    assert_eq!(substrate.replay(&log).await.unwrap(), log.len() as u64);
+
+    let mut reference = MaterializedState::default();
+    for record in &log {
+        assert_eq!(reference.try_apply(record), ApplyOutcome::Applied);
+    }
+    let fence = CommitIndex(log.len() as u64);
+    for (key, value) in &reference.values {
+        assert_eq!(
+            substrate.state_value(key, fence).await.unwrap().as_ref(),
+            Some(value),
+            "{key}"
+        );
+    }
+    // Every entry at once: no key the reference lacks, none missing.
+    assert_eq!(
+        substrate.state_entries(fence).await.unwrap(),
+        reference.values
+    );
+
+    // Superseding moves the live generation; revoking never does, it only
+    // makes the live generation inadmissible.
+    assert_eq!(
+        substrate.live_generation("c1", fence).await.unwrap(),
+        Some(Generation(2))
+    );
+    assert!(!substrate
+        .is_admissible("c1", Generation(2), fence)
+        .await
+        .unwrap());
+    assert!(!substrate
+        .is_admissible("c1", Generation(1), fence)
+        .await
+        .unwrap());
+    assert!(substrate
+        .is_admissible("constraint:budget", Generation(1), fence)
+        .await
+        .unwrap());
+    assert!(!substrate
+        .is_admissible("procedure:deploy", Generation(1), fence)
+        .await
+        .unwrap());
+    assert_eq!(
+        substrate.revision_commit(Revision(1)).await.unwrap(),
+        Some(CommitIndex(3))
+    );
+    assert_eq!(
+        substrate.watermark().await.unwrap(),
+        *anchors(&log).last().unwrap()
+    );
+
+    let events = substrate.events_after(CommitIndex(0), 100).await.unwrap();
+    let topics: Vec<&str> = events.iter().map(|event| event.topic.as_str()).collect();
+    assert_eq!(
+        topics,
+        [
+            "capsule.committed",
+            "constraint.committed",
+            "semantic.delta_committed",
+            "capsule.superseded",
+            "procedure.promoted",
+            "procedure.revoked",
+            "verifier.attested",
+            "lifecycle.revoked",
+        ]
+    );
+    assert_eq!(events[0].payload["entries"]["capsule:c1:project"], "atlas");
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_redelivered_record_is_a_duplicate_and_a_different_one_is_foreign_history() {
+    let mut substrate = substrate().await;
+    let log = vec![capsule(1, "c1", 1), capsule(2, "c2", 1)];
+    let chain = anchors(&log);
+    substrate.replay(&log).await.unwrap();
+
+    let again = substrate.apply_committed(&log[1], chain[1]).await.unwrap();
+    assert_eq!(again.outcome, ApplyOutcome::Duplicate);
+    let older = substrate.apply_committed(&log[0], chain[0]).await.unwrap();
+    assert_eq!(older.outcome, ApplyOutcome::OutOfOrder);
+
+    let other = vec![capsule(1, "c1", 1), capsule(2, "other", 1)];
+    let other_chain = anchors(&other);
+    assert_eq!(
+        substrate
+            .apply_committed(&other[1], other_chain[1])
+            .await
+            .unwrap_err(),
+        PgError::ForeignHistory { index: 2 }
+    );
+    // The true anchor does not make a different record a duplicate, at the
+    // head or behind it; the true record with a foreign anchor is refused too.
+    for (record, anchor) in [
+        (&other[1], chain[1]),
+        (&capsule(1, "other", 1), chain[0]),
+        (&log[1], other_chain[1]),
+    ] {
+        assert_eq!(
+            substrate.apply_committed(record, anchor).await.unwrap_err(),
+            PgError::ForeignHistory {
+                index: record.index.0
+            }
+        );
+    }
+    let gap = substrate
+        .apply_committed(
+            &capsule(9, "c9", 1),
+            LogAnchor {
+                index: CommitIndex(9),
+                digest: [0; 32],
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(gap.outcome, ApplyOutcome::Gap);
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_record_that_does_not_chain_from_the_stored_anchor_is_refused() {
+    let mut substrate = substrate().await;
+    let ours = vec![capsule(1, "c1", 1)];
+    substrate.replay(&ours).await.unwrap();
+    // The ledger's history differs at index 1, so its record 2 chains from an
+    // anchor this projection never stored.
+    let theirs = vec![capsule(1, "c1", 7), capsule(2, "c2", 1)];
+    let chain = anchors(&theirs);
+    assert_eq!(
+        substrate
+            .apply_committed(&theirs[1], chain[1])
+            .await
+            .unwrap_err(),
+        PgError::ForeignHistory { index: 2 }
+    );
+    // A record handed over with another index's anchor is malformed.
+    assert!(matches!(
+        substrate.apply_committed(&theirs[1], chain[0]).await,
+        Err(PgError::InvalidRecord { index: 2, .. })
+    ));
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_projection_ahead_of_or_beside_the_ledger_is_refused() {
+    let mut substrate = substrate().await;
+    let log = vec![
+        capsule(1, "c1", 1),
+        capsule(2, "c2", 1),
+        capsule(3, "c3", 1),
+    ];
+    let chain = anchors(&log);
+    substrate.replay(&log[..2]).await.unwrap();
+
+    assert_eq!(substrate.check_against_ledger(chain[2]).await.unwrap(), 1);
+    assert_eq!(substrate.check_against_ledger(chain[1]).await.unwrap(), 0);
+    assert_eq!(
+        substrate.check_against_ledger(chain[0]).await.unwrap_err(),
+        PgError::ProjectionAhead {
+            projection: 2,
+            ledger: 1
+        }
+    );
+    let beside = LogAnchor {
+        index: CommitIndex(2),
+        digest: [9; 32],
+    };
+    assert_eq!(
+        substrate.check_against_ledger(beside).await.unwrap_err(),
+        PgError::ForeignHistory { index: 2 }
+    );
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_read_fenced_beyond_the_watermark_is_refused() {
+    let mut substrate = substrate().await;
+    substrate.replay(&[capsule(1, "c1", 1)]).await.unwrap();
+    assert_eq!(
+        substrate
+            .state_value("capsule:c1:generation", CommitIndex(2))
+            .await
+            .unwrap_err(),
+        PgError::ProjectionBehind {
+            watermark: 1,
+            fence: 2
+        }
+    );
+    assert_eq!(
+        substrate
+            .state_value("capsule:c1:generation", CommitIndex(1))
+            .await
+            .unwrap(),
+        Some("1".into())
+    );
+    assert_eq!(
+        substrate.state_entries(CommitIndex(2)).await.unwrap_err(),
+        PgError::ProjectionBehind {
+            watermark: 1,
+            fence: 2
+        }
+    );
+    assert_eq!(
+        substrate
+            .state_entries(CommitIndex(1))
+            .await
+            .unwrap()
+            .get("capsule:c1:generation"),
+        Some(&"1".to_owned())
+    );
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn append_only_tables_refuse_rewrites() {
+    let mut substrate = substrate().await;
+    substrate
+        .replay(&[capsule(1, "c1", 1), revoke(2, "c1", 1)])
+        .await
+        .unwrap();
+    let raw = raw_client().await;
+    let projection = substrate.schemas().projection.clone();
+    for statement in [
+        format!("UPDATE {projection}.projection_event SET topic = 'x'"),
+        format!("DELETE FROM {projection}.applied_commit"),
+        format!("DELETE FROM {projection}.tombstone"),
+    ] {
+        let error = raw.execute(&statement, &[]).await.unwrap_err();
+        assert_eq!(
+            error.as_db_error().unwrap().code().code(),
+            "23000",
+            "{statement}"
+        );
+    }
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn consumer_offsets_only_move_forward_and_never_past_the_watermark() {
+    let mut substrate = substrate().await;
+    substrate
+        .replay(&[capsule(1, "c1", 1), capsule(2, "c2", 1)])
+        .await
+        .unwrap();
+    assert_eq!(
+        substrate.consumer_offset("indexer").await.unwrap(),
+        CommitIndex(0)
+    );
+    substrate
+        .commit_consumer("indexer", CommitIndex(2))
+        .await
+        .unwrap();
+    substrate
+        .commit_consumer("indexer", CommitIndex(1))
+        .await
+        .unwrap();
+    assert_eq!(
+        substrate.consumer_offset("indexer").await.unwrap(),
+        CommitIndex(2)
+    );
+    assert_eq!(
+        substrate
+            .commit_consumer("indexer", CommitIndex(3))
+            .await
+            .unwrap_err(),
+        PgError::ProjectionBehind {
+            watermark: 2,
+            fence: 3
+        }
+    );
+    let rest = substrate.events_after(CommitIndex(1), 10).await.unwrap();
+    assert_eq!(rest.len(), 1);
+    assert_eq!(rest[0].commit_index, CommitIndex(2));
+    substrate.drop_all().await.unwrap();
+}
+
+fn space() -> EmbeddingSpace {
+    EmbeddingSpace {
+        id: Identifier::new("toy4").unwrap(),
+        model: "toy-encoder".into(),
+        revision: "2026-09".into(),
+        dims: 4,
+    }
+}
+
+fn document(capsule: &str, generation: u64, body: &str, embedding: &[f32]) -> SearchDocument {
+    SearchDocument {
+        capsule: CapsuleId::from(capsule),
+        generation: Generation(generation),
+        content_digest: [generation as u8; 32],
+        body: body.into(),
+        embedding: Some((space().id, embedding.to_vec())),
+    }
+}
+
+#[tokio::test]
+async fn only_live_generations_are_indexed_and_superseding_drops_the_old_document() {
+    let mut substrate = substrate().await;
+    substrate.register_space(&space()).await.unwrap();
+    // Registering the same definition again is a no-op; a different one is not.
+    substrate.register_space(&space()).await.unwrap();
+    let mut changed = space();
+    changed.dims = 8;
+    assert_eq!(
+        substrate.register_space(&changed).await.unwrap_err(),
+        PgError::SpaceConflict {
+            space: "toy4".into()
+        }
+    );
+
+    let log = vec![capsule(1, "c1", 1), supersede(2, "c1", 1, 2)];
+    let chain = anchors(&log);
+    substrate.apply_committed(&log[0], chain[0]).await.unwrap();
+    substrate
+        .upsert_document(&document(
+            "c1",
+            1,
+            "first generation",
+            &[1.0, 0.0, 0.0, 0.0],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        substrate
+            .upsert_document(&document("c9", 1, "never committed", &[1.0, 0.0, 0.0, 0.0]))
+            .await
+            .unwrap_err(),
+        PgError::NotLive {
+            target: "c9".into(),
+            generation: 1
+        }
+    );
+    let report = substrate.apply_committed(&log[1], chain[1]).await.unwrap();
+    assert_eq!(report.dropped_documents, 1);
+    assert!(matches!(
+        substrate
+            .upsert_document(&document("c1", 1, "stale", &[1.0, 0.0, 0.0, 0.0]))
+            .await,
+        Err(PgError::NotLive { .. })
+    ));
+    assert_eq!(
+        substrate
+            .upsert_document(&document("c1", 2, "second", &[1.0, 0.0, 0.0]))
+            .await
+            .unwrap_err(),
+        PgError::DimensionMismatch {
+            expected: 4,
+            actual: 3
+        }
+    );
+    assert!(matches!(
+        substrate
+            .upsert_document(&document("c1", 2, "second", &[f32::NAN, 0.0, 0.0, 0.0]))
+            .await,
+        Err(PgError::InvalidEmbedding { .. })
+    ));
+    // Nonzero in f32 but zero once stored in half precision.
+    assert!(matches!(
+        substrate
+            .upsert_document(&document("c1", 2, "second", &[1e-8, 1e-8, 1e-8, 1e-8]))
+            .await,
+        Err(PgError::InvalidEmbedding { .. })
+    ));
+    substrate
+        .upsert_document(&document(
+            "c1",
+            2,
+            "second generation",
+            &[0.0, 1.0, 0.0, 0.0],
+        ))
+        .await
+        .unwrap();
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn hybrid_search_returns_live_candidates_fused_by_capsule_and_generation() {
+    let mut substrate = substrate().await;
+    substrate.register_space(&space()).await.unwrap();
+    substrate
+        .replay(&[
+            capsule(1, "c1", 1),
+            capsule(2, "c2", 1),
+            capsule(3, "c3", 1),
+        ])
+        .await
+        .unwrap();
+    for doc in [
+        document(
+            "c1",
+            1,
+            "projection watermark anchors",
+            &[1.0, 0.0, 0.0, 0.0],
+        ),
+        document(
+            "c2",
+            1,
+            "fast weight memory revocation",
+            &[0.0, 1.0, 0.0, 0.0],
+        ),
+        document("c3", 1, "revocation of adapters", &[0.0, 0.0, 1.0, 0.0]),
+    ] {
+        substrate.upsert_document(&doc).await.unwrap();
+    }
+    let query = HybridQuery {
+        project: Some(ProjectId::from("atlas")),
+        text: Some("revocation".into()),
+        embedding: Some((space().id, vec![0.1, 0.9, 0.0, 0.0])),
+        limit: 10,
+        lexical_weight: 1.0,
+        vector_weight: 1.0,
+        rank_constant: 60.0,
+    };
+    let results = substrate.search(&query).await.unwrap();
+    assert_eq!(results.watermark, 3);
+    let lexical: Vec<&str> = results
+        .lexical
+        .iter()
+        .map(|hit| hit.capsule.0.as_str())
+        .collect();
+    assert_eq!(lexical.len(), 2);
+    assert!(lexical.contains(&"c2") && lexical.contains(&"c3"));
+    assert_eq!(results.vector[0].capsule, CapsuleId::from("c2"));
+    assert_eq!(results.vector.len(), 3);
+    assert_eq!(results.fused[0].capsule, CapsuleId::from("c2"));
+    assert_eq!(
+        results.fused[0].backends,
+        vec![LEXICAL_BACKEND.to_owned(), VECTOR_BACKEND.to_owned()]
+    );
+    assert!(results
+        .lexical
+        .iter()
+        .chain(&results.vector)
+        .all(|hit| hit.stage() == EvidenceStage::SearchCandidate));
+
+    // A revoked generation disappears from both modes in the same commit.
+    let chain = anchors(&[
+        capsule(1, "c1", 1),
+        capsule(2, "c2", 1),
+        capsule(3, "c3", 1),
+        revoke(4, "c2", 1),
+    ]);
+    let report = substrate
+        .apply_committed(&revoke(4, "c2", 1), chain[3])
+        .await
+        .unwrap();
+    assert_eq!(report.dropped_documents, 1);
+    let after = substrate.search(&query).await.unwrap();
+    assert!(after
+        .fused
+        .iter()
+        .all(|hit| hit.capsule != CapsuleId::from("c2")));
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_document_of_a_revoked_generation_is_never_returned_although_it_is_still_live() {
+    let mut substrate = substrate().await;
+    substrate.register_space(&space()).await.unwrap();
+    let log = [capsule(1, "c1", 1), capsule(2, "c2", 1), revoke(3, "c2", 1)];
+    substrate.replay(&log[..2]).await.unwrap();
+    let revoked = document("c2", 1, "revocation notes", &[0.0, 1.0, 0.0, 0.0]);
+    for doc in [
+        document("c1", 1, "revocation handbook", &[1.0, 0.0, 0.0, 0.0]),
+        revoked.clone(),
+    ] {
+        substrate.upsert_document(&doc).await.unwrap();
+    }
+    substrate
+        .apply_committed(&log[2], anchors(&log)[2])
+        .await
+        .unwrap();
+    // The revocation leaves generation 1 the live one and adds a tombstone.
+    assert_eq!(
+        substrate
+            .live_generation("c2", CommitIndex(3))
+            .await
+            .unwrap(),
+        Some(Generation(1))
+    );
+    // A cache row that outlived the revocation's delete: the snapshot's
+    // tombstone, not the projector's delete, keeps it out of every mode.
+    let derived = substrate.schemas().derived.clone();
+    raw_client()
+        .await
+        .execute(
+            &format!(
+                "INSERT INTO {derived}.search_document \
+                 (capsule, generation, project, content_digest, body, space, embedding, \
+                  indexed_at_commit) \
+                 VALUES ('c2', 1, 'atlas', $1, $2, 'toy4', \
+                         ARRAY[0, 1, 0, 0]::real[]::halfvec(4), 2)"
+            ),
+            &[&revoked.content_digest.to_vec(), &revoked.body],
+        )
+        .await
+        .unwrap();
+    let results = substrate
+        .search(&HybridQuery {
+            project: None,
+            text: Some("revocation".into()),
+            embedding: Some((space().id, vec![0.0, 1.0, 0.0, 0.0])),
+            limit: 10,
+            lexical_weight: 1.0,
+            vector_weight: 1.0,
+            rank_constant: 60.0,
+        })
+        .await
+        .unwrap();
+    for hits in [&results.lexical, &results.vector] {
+        assert_eq!(
+            hits.iter()
+                .map(|hit| hit.capsule.0.as_str())
+                .collect::<Vec<_>>(),
+            vec!["c1"]
+        );
+    }
+    assert_eq!(results.fused.len(), 1);
+    substrate.drop_all().await.unwrap();
+}
+
+fn memory_config() -> FastMemoryConfig {
+    FastMemoryConfig {
+        heads: 1,
+        key_dim: 4,
+        value_dim: 4,
+        checkpoint_interval: 2,
+        max_writes: 64,
+    }
+}
+
+/// The identifier codebook of a test memory: seed 11, the seed every
+/// registration here records.
+fn codebook(config: &FastMemoryConfig) -> IdentifierCodebook {
+    IdentifierCodebook::new(11, config.value_len()).unwrap()
+}
+
+fn write_request(source: &str, key: [f32; 4], value: [f32; 4]) -> WriteRequest {
+    WriteRequest {
+        source: SourceRef {
+            key: source.into(),
+            generation: Generation(1),
+            input_digest: [source.len() as u8; 32],
+        },
+        key: key.to_vec(),
+        value: value.to_vec(),
+        beta: 0.75,
+        decay: Decay::Scalar(0.9),
+    }
+}
+
+fn bits(cells: &[f32]) -> Vec<u32> {
+    cells.iter().map(|cell| cell.to_bits()).collect()
+}
+
+#[tokio::test]
+async fn a_revocation_deletes_exactly_the_revoked_writes_and_the_checkpoints_that_folded_them() {
+    let mut substrate = substrate().await;
+    let log = vec![
+        capsule(1, "keep", 1),
+        capsule(2, "gone", 1),
+        revoke(3, "gone", 1),
+    ];
+    let chain = anchors(&log);
+    substrate.apply_committed(&log[0], chain[0]).await.unwrap();
+    substrate.apply_committed(&log[1], chain[1]).await.unwrap();
+
+    let config = memory_config();
+    substrate
+        .create_memory(&FastMemoryRecord {
+            id: "m1".into(),
+            principal: PrincipalId::from("agent-7"),
+            thread: "t1".into(),
+            config,
+            projection_digest: [3; 32],
+            codebook_seed: u64::MAX - 5,
+        })
+        .await
+        .unwrap();
+    let loaded = substrate.load_memory("m1").await.unwrap().unwrap();
+    assert_eq!(loaded.codebook_seed, u64::MAX - 5);
+    assert_eq!(loaded.config, config);
+
+    let requests = [
+        write_request("keep", [1.0, 0.0, 0.0, 0.0], [0.5, 0.1, 0.0, 0.0]),
+        write_request("keep", [0.0, 2.0, 0.0, 0.0], [0.0, 0.3, 0.2, 0.0]),
+        write_request("gone", [0.3, 0.3, 0.9, 0.0], [0.9, 0.9, 0.9, 0.9]),
+        write_request("keep", [0.1, 0.0, 0.0, 1.0], [0.0, 0.0, 0.4, 0.7]),
+    ];
+    let mut memory = FastMemory::new(config, codebook(&config)).unwrap();
+    for (position, request) in requests.iter().enumerate() {
+        let receipt = memory.write(request.clone()).unwrap();
+        substrate
+            .append_write("m1", receipt.seq, request)
+            .await
+            .unwrap();
+        if position % 2 == 1 {
+            substrate
+                .put_checkpoint("m1", memory.binding_digest(), memory.state())
+                .await
+                .unwrap();
+        }
+    }
+    // A stored journal refolds to the in-process state, bit for bit.
+    let journal = substrate.load_journal("m1").await.unwrap();
+    let restored = FastMemory::restore(config, codebook(&config), journal).unwrap();
+    assert_eq!(bits(restored.state().cells()), bits(memory.state().cells()));
+
+    let report = substrate.apply_committed(&log[2], chain[2]).await.unwrap();
+    assert_eq!(report.removed_writes, 1);
+    // Checkpoints at 2 and 4; only the one at 4 folded write 3.
+    assert_eq!(report.dropped_checkpoints, 1);
+
+    memory.revoke(|source| source.key == "gone");
+    let journal = substrate.load_journal("m1").await.unwrap();
+    assert_eq!(journal.len(), 3);
+    let refolded = FastMemory::restore(config, codebook(&config), journal).unwrap();
+    assert_eq!(bits(refolded.state().cells()), bits(memory.state().cells()));
+    // ...and equals a memory that never saw the revoked write.
+    let mut never = FastMemory::new(config, codebook(&config)).unwrap();
+    for request in requests
+        .iter()
+        .filter(|request| request.source.key == "keep")
+    {
+        never.write(request.clone()).unwrap();
+    }
+    assert_eq!(bits(refolded.state().cells()), bits(never.state().cells()));
+
+    let checkpoint = substrate.latest_checkpoint("m1").await.unwrap().unwrap();
+    assert_eq!(checkpoint.applied.0, 2);
+    let mut prefix = FastMemory::new(config, codebook(&config)).unwrap();
+    for request in &requests[..2] {
+        prefix.write(request.clone()).unwrap();
+    }
+    assert_eq!(checkpoint.binding_digest, prefix.binding_digest());
+    assert_eq!(bits(checkpoint.state.cells()), bits(prefix.state().cells()));
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_write_from_an_inadmissible_source_or_out_of_sequence_is_refused() {
+    let mut substrate = substrate().await;
+    substrate
+        .replay(&[
+            capsule(1, "live", 1),
+            capsule(2, "revoked", 1),
+            revoke(3, "revoked", 1),
+        ])
+        .await
+        .unwrap();
+    let config = memory_config();
+    substrate
+        .create_memory(&FastMemoryRecord {
+            id: "m1".into(),
+            principal: PrincipalId::from("agent-7"),
+            thread: "t1".into(),
+            config,
+            projection_digest: [3; 32],
+            codebook_seed: 11,
+        })
+        .await
+        .unwrap();
+    let revoked = write_request("revoked", [1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]);
+    assert_eq!(
+        substrate
+            .append_write("m1", ptr_fastmem::WriteSeq(1), &revoked)
+            .await
+            .unwrap_err(),
+        PgError::NotLive {
+            target: "revoked".into(),
+            generation: 1
+        }
+    );
+    let mut stale = write_request("live", [1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]);
+    stale.source.generation = Generation(0);
+    assert!(matches!(
+        substrate
+            .append_write("m1", ptr_fastmem::WriteSeq(1), &stale)
+            .await,
+        Err(PgError::NotLive { .. })
+    ));
+    let live = write_request("live", [1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]);
+    substrate
+        .append_write("m1", ptr_fastmem::WriteSeq(5), &live)
+        .await
+        .unwrap();
+    assert!(matches!(
+        substrate
+            .append_write("m1", ptr_fastmem::WriteSeq(5), &live)
+            .await,
+        Err(PgError::InvalidWrite { .. })
+    ));
+    assert!(matches!(
+        substrate
+            .append_write("nope", ptr_fastmem::WriteSeq(6), &live)
+            .await,
+        Err(PgError::InvalidWrite { .. })
+    ));
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn malformed_writes_never_enter_the_journal() {
+    let mut substrate = substrate().await;
+    substrate.replay(&[capsule(1, "live", 1)]).await.unwrap();
+    substrate
+        .create_memory(&FastMemoryRecord {
+            id: "m1".into(),
+            principal: PrincipalId::from("agent"),
+            thread: "thread".into(),
+            config: memory_config(),
+            projection_digest: [3; 32],
+            codebook_seed: 11,
+        })
+        .await
+        .unwrap();
+    let valid = write_request("live", [2.0, 0.0, 0.0, 0.0], [1.0; 4]);
+    let mut invalid = Vec::new();
+    let mut request = valid.clone();
+    request.key.pop();
+    invalid.push(request);
+    let mut request = valid.clone();
+    request.value.pop();
+    invalid.push(request);
+    for value in [0.0, f32::NAN, f32::INFINITY] {
+        let mut request = valid.clone();
+        request.key.fill(value);
+        invalid.push(request);
+    }
+    // A finite key has a direction at any scale, even where its squares
+    // overflow f32; only an all-zero or nonfinite key is malformed.
+    let mut largest_key = valid.clone();
+    largest_key.key.fill(f32::MAX);
+    assert_eq!(
+        ptr_fastmem::validate_write(&memory_config(), &largest_key),
+        Ok(())
+    );
+    for value in [f32::NAN, f32::INFINITY] {
+        let mut request = valid.clone();
+        request.value[0] = value;
+        invalid.push(request);
+    }
+    for value in [0.0, -0.1, 1.1, f32::NAN, f32::INFINITY] {
+        let mut request = valid.clone();
+        request.beta = value;
+        invalid.push(request);
+        let mut request = valid.clone();
+        request.decay = Decay::Scalar(value);
+        invalid.push(request);
+        let mut request = valid.clone();
+        request.decay = Decay::PerChannel(vec![value; 4]);
+        invalid.push(request);
+    }
+    let mut request = valid.clone();
+    request.decay = Decay::PerChannel(vec![1.0; 3]);
+    invalid.push(request);
+    for request in invalid {
+        assert!(ptr_fastmem::validate_write(&memory_config(), &request).is_err());
+        assert!(matches!(
+            substrate
+                .append_write("m1", ptr_fastmem::WriteSeq(1), &request)
+                .await,
+            Err(PgError::InvalidWrite { .. })
+        ));
+        assert!(substrate.load_journal("m1").await.unwrap().is_empty());
+    }
+    substrate
+        .append_write("m1", ptr_fastmem::WriteSeq(1), &valid)
+        .await
+        .unwrap();
+    let journal = substrate.load_journal("m1").await.unwrap();
+    assert_eq!(journal[0].1, valid);
+    FastMemory::restore(memory_config(), codebook(&memory_config()), journal).unwrap();
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_memory_whose_shape_fast_memory_refuses_is_never_registered() {
+    let substrate = substrate().await;
+    let record = |id: &str, config: FastMemoryConfig| FastMemoryRecord {
+        id: id.into(),
+        principal: PrincipalId::from("agent"),
+        thread: id.into(),
+        config,
+        projection_digest: [3; 32],
+        codebook_seed: 11,
+    };
+    // Each dimension is within its column's bounds; only their product,
+    // 64 Mi cells, exceeds the state bound.
+    let oversized = FastMemoryConfig {
+        heads: 64,
+        key_dim: 1024,
+        value_dim: 1024,
+        ..memory_config()
+    };
+    let no_heads = FastMemoryConfig {
+        heads: 0,
+        ..memory_config()
+    };
+    for (id, config) in [("oversized", oversized), ("no-heads", no_heads)] {
+        assert!(ptr_fastmem::check_config(&config).is_err());
+        assert_eq!(
+            substrate.create_memory(&record(id, config)).await,
+            Err(PgError::InvalidMemory {
+                memory: id.into(),
+                reason: "the configuration is outside the supported ranges",
+            })
+        );
+        assert_eq!(substrate.load_memory(id).await.unwrap(), None);
+    }
+    // A state of exactly `MAX_STATE_CELLS` is supported and registers.
+    let largest = FastMemoryConfig {
+        heads: 16,
+        key_dim: 1024,
+        value_dim: 1024,
+        ..memory_config()
+    };
+    assert_eq!(largest.state_cells(), ptr_fastmem::MAX_STATE_CELLS);
+    substrate
+        .create_memory(&record("largest", largest))
+        .await
+        .unwrap();
+    assert_eq!(
+        substrate
+            .load_memory("largest")
+            .await
+            .unwrap()
+            .unwrap()
+            .config,
+        largest
+    );
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn invalid_search_parameters_are_refused_before_sql() {
+    let substrate = substrate().await;
+    let schemas = substrate.schemas().clone();
+    substrate.drop_all().await.unwrap();
+    // Missing schemas ensure a valid query would fail if SQL were reached.
+    let mut substrate = PgSubstrate::connect_with(&dsn(), schemas).await.unwrap();
+    let query = HybridQuery {
+        project: None,
+        text: None,
+        embedding: None,
+        limit: 1,
+        rank_constant: 0.0,
+        lexical_weight: 0.0,
+        vector_weight: 0.0,
+    };
+    let mut invalid = query.clone();
+    invalid.limit = 0;
+    assert_eq!(
+        substrate.search(&invalid).await.unwrap_err(),
+        PgError::OutOfRange {
+            field: "query.limit"
+        }
+    );
+    for value in [-1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        for field in [
+            "query.rank_constant",
+            "query.lexical_weight",
+            "query.vector_weight",
+        ] {
+            let mut invalid = query.clone();
+            match field {
+                "query.rank_constant" => invalid.rank_constant = value,
+                "query.lexical_weight" => invalid.lexical_weight = value,
+                _ => invalid.vector_weight = value,
+            }
+            assert_eq!(
+                substrate.search(&invalid).await.unwrap_err(),
+                PgError::OutOfRange { field }
+            );
+        }
+    }
+    // Finite weights whose total exceeds f32::MAX: with k = 0 a document
+    // first in both modes fused to an infinite score and outranked every
+    // finite one.
+    let mut invalid = query.clone();
+    invalid.lexical_weight = f32::MAX;
+    invalid.vector_weight = f32::MAX;
+    assert_eq!(
+        substrate.search(&invalid).await.unwrap_err(),
+        PgError::OutOfRange {
+            field: "query.weights"
+        }
+    );
+}
+
+#[tokio::test]
+async fn ddl_failures_leave_the_connection_outside_a_failed_transaction() {
+    let substrate = substrate().await;
+    let schemas = substrate.schemas().clone();
+    let read_only = format!("{} options='-c default_transaction_read_only=on'", dsn());
+    let mut reader = PgSubstrate::connect_with(&read_only, schemas)
+        .await
+        .unwrap();
+    for _ in 0..2 {
+        for error in [
+            reader.migrate().await.unwrap_err(),
+            reader.rebuild_projection().await.unwrap_err(),
+        ] {
+            assert!(
+                matches!(error, PgError::Database { ref sqlstate, .. }
+                if sqlstate == "25006"),
+                "{error:?}"
+            );
+        }
+    }
+    substrate.drop_all().await.unwrap();
+}
+
+/// A sealed branch with every kind of dependency and op, built as sealing
+/// records one: every `Put` and `Remove` names a key the branch read, and every
+/// key an op touches has its base value (equal to its read, where it was read)
+/// and its input set.
+fn sealed_branch(id: &str, author: &str) -> SealedBranch {
+    let payload = SemanticValue::Payload(SemanticPayload {
+        type_id: TypeId::from("ptr.test.bytes"),
+        source: "unit-test".into(),
+        bytes: vec![0, 1, 2, 255],
+    });
+    let open = SemanticValue::from("open");
+    let base = |key: &str, value: Option<&SemanticValue>| {
+        (key.to_owned(), ValueDigest::of(key, value).unwrap())
+    };
+    let no_inputs = |key: &str| (key.to_owned(), InputsDigest::of(key, []));
+    SealedBranch::from_parts(SealedBranchParts {
+        id: BranchId::from(id),
+        author: PrincipalId::from(author),
+        base_revision: Revision(4),
+        reads: [
+            base("order:1", Some(&open)),
+            base("order:2", None),
+            base("order:blob", None),
+        ]
+        .into_iter()
+        .collect(),
+        scans: [("order:".to_owned(), RangeDigest::from_bytes([5; 32]))]
+            .into_iter()
+            .collect(),
+        relied: [("constraint:budget".to_owned(), Generation(3))]
+            .into_iter()
+            .collect(),
+        touched_base: [
+            base("order:1", Some(&open)),
+            base("order:2", None),
+            base("order:blob", None),
+            base("stock:widget", None),
+            base("tags:1", None),
+        ]
+        .into_iter()
+        .collect(),
+        touched_inputs: [
+            (
+                "order:1".to_owned(),
+                InputsDigest::of("order:1", ["order:2"]),
+            ),
+            no_inputs("order:2"),
+            no_inputs("order:blob"),
+            no_inputs("stock:widget"),
+            no_inputs("tags:1"),
+        ]
+        .into_iter()
+        .collect(),
+        ops: vec![
+            BranchOp::Put {
+                key: "order:1".into(),
+                value: SemanticValue::from("shipped"),
+            },
+            BranchOp::Put {
+                key: "order:blob".into(),
+                value: payload,
+            },
+            BranchOp::Remove {
+                key: "order:2".into(),
+            },
+            BranchOp::Add {
+                key: "stock:widget".into(),
+                amount: -3,
+            },
+            BranchOp::SetInsert {
+                key: "tags:1".into(),
+                member: "urgent".into(),
+            },
+            BranchOp::SetRemove {
+                key: "tags:1".into(),
+                member: "draft".into(),
+            },
+        ],
+    })
+    .expect("the fixture is a branch sealing could produce")
+}
+
+#[tokio::test]
+async fn a_sealed_branch_round_trips_with_every_dependency_and_op() {
+    let mut substrate = substrate().await;
+    let branch = sealed_branch("b1", "agent-7");
+    substrate.store_branch(&branch).await.unwrap();
+    assert_eq!(
+        substrate.load_branch(branch.id()).await.unwrap(),
+        Some(branch.clone())
+    );
+    assert_eq!(
+        substrate
+            .load_branch(&BranchId::from("none"))
+            .await
+            .unwrap(),
+        None
+    );
+    // A branch id is stored once.
+    assert!(matches!(
+        substrate.store_branch(&branch).await,
+        Err(PgError::Database { ref sqlstate, .. }) if sqlstate == "23505"
+    ));
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn touched_input_sets_survive_a_round_trip_and_a_branch_sealed_before_them_is_refused() {
+    let mut substrate = substrate().await;
+    let branch = sealed_branch("b1", "agent-7");
+    substrate.store_branch(&branch).await.unwrap();
+    let loaded = substrate.load_branch(branch.id()).await.unwrap().unwrap();
+    assert_eq!(loaded.touched_inputs(), branch.touched_inputs());
+    // Every touched row carries its digest, the empty input set's included.
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    let stored: Vec<(String, Vec<u8>)> = raw
+        .query(
+            &format!(
+                "SELECT key, inputs_digest FROM {work}.branch_touched \
+                 WHERE branch = 'b1' ORDER BY key"
+            ),
+            &[],
+        )
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| (row.get(0), row.get(1)))
+        .collect();
+    let expected: Vec<(String, Vec<u8>)> = branch
+        .touched_inputs()
+        .iter()
+        .map(|(key, digest)| (key.clone(), digest.as_bytes().to_vec()))
+        .collect();
+    assert_eq!(stored, expected);
+
+    // A touched key without an input-set digest, or an input-set digest for
+    // a key no operation touches, is not a sealed branch at all, so there is
+    // nothing to hand to store_branch and nothing is written.
+    let mut partial = sealed_branch("b2", "agent-7").into_parts();
+    partial.touched_inputs.remove("stock:widget");
+    let mut extra = sealed_branch("b3", "agent-7").into_parts();
+    extra
+        .touched_inputs
+        .insert("tags:2".into(), InputsDigest::of("tags:2", []));
+    for refused in [partial, extra] {
+        let id = refused.id.clone();
+        let error = SealedBranch::from_parts(refused).unwrap_err();
+        assert!(
+            matches!(error, BranchError::MalformedSeal { .. }),
+            "{error:?}"
+        );
+        assert_eq!(substrate.load_branch(&id).await.unwrap(), None);
+    }
+
+    // A branch stored before input sets were recorded, as the earlier schema
+    // wrote it, cannot be certified: loading it says so rather than returning
+    // a branch certification would have to trust.
+    let legacy = format!(
+        "INSERT INTO {work}.branch (id, author, base_revision) VALUES ('legacy', 'agent-7', 4); \
+         INSERT INTO {work}.branch_touched (branch, key, base_digest) \
+         VALUES ('legacy', 'order:1', decode(repeat('00', 32), 'hex'));"
+    );
+    // A base value with no operation and no input set is refused when it
+    // commits now; only a store from before work migration 9 holds one.
+    assert_eq!(refused_sqlstate(&raw, &legacy).await, "23000");
+    write_before_invariants(&raw, &work, &[], &legacy).await;
+    let error = substrate
+        .load_branch(&BranchId::from("legacy"))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error,
+        PgError::BranchWithoutInputSets {
+            branch: "legacy".into(),
+            key: "order:1".into(),
+        }
+    );
+    assert_eq!(error.code(), "PTR_PG_BRANCH_WITHOUT_INPUT_SETS");
+    assert!(error.to_string().contains("must be re-run"), "{error}");
+
+    // The column holds a whole digest or nothing.
+    let error = raw
+        .execute(
+            &format!(
+                "INSERT INTO {work}.branch_touched (branch, key, base_digest, inputs_digest) \
+                 VALUES ('legacy', 'order:2', decode(repeat('00', 32), 'hex'), \
+                         decode(repeat('00', 31), 'hex'))"
+            ),
+            &[],
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.as_db_error().unwrap().code().code(), "23514");
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_branch_writing_a_reserved_namespace_is_never_stored_and_tampered_rows_never_load() {
+    let mut substrate = substrate().await;
+    // A hand-built branch that overwrites raw request text, declaring every
+    // digest a submitter who read the key could supply, is refused before it
+    // is a branch: store_branch takes only a SealedBranch, so nothing is
+    // written.
+    let mut parts = sealed_branch("forged", "agent-7").into_parts();
+    let raw_key = "request:r1:raw".to_owned();
+    let current = ValueDigest::of(&raw_key, Some(&SemanticValue::from("original"))).unwrap();
+    parts.reads.insert(raw_key.clone(), current);
+    parts.touched_base.insert(raw_key.clone(), current);
+    parts
+        .touched_inputs
+        .insert(raw_key.clone(), InputsDigest::of(&raw_key, []));
+    parts.ops.push(BranchOp::Put {
+        key: raw_key.clone(),
+        value: SemanticValue::from("rewritten"),
+    });
+    assert_eq!(
+        SealedBranch::from_parts(parts).unwrap_err(),
+        BranchError::ReservedNamespace {
+            key: raw_key.clone()
+        }
+    );
+    assert_eq!(
+        substrate
+            .load_branch(&BranchId::from("forged"))
+            .await
+            .unwrap(),
+        None
+    );
+
+    // Rows changed after a valid branch was stored come back as an error
+    // naming the broken sealing invariant, never as a branch to certify.
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    let zeros = "decode(repeat('00', 32), 'hex')";
+    let cases = [
+        (
+            // The op, its read and its touched row all moved to raw request
+            // text: only the reserved namespace is wrong.
+            "t1",
+            "UPDATE {work}.branch_op SET key = 'request:r1:raw' \
+             WHERE branch = 't1' AND ordinal = 0; \
+             UPDATE {work}.branch_read SET key = 'request:r1:raw' \
+             WHERE branch = 't1' AND key = 'order:1'; \
+             UPDATE {work}.branch_touched SET key = 'request:r1:raw' \
+             WHERE branch = 't1' AND key = 'order:1';"
+                .to_owned(),
+            BranchError::ReservedNamespace {
+                key: "request:r1:raw".into(),
+            },
+        ),
+        (
+            "t2",
+            format!(
+                "INSERT INTO {{work}}.branch_op (branch, ordinal, kind, key, amount) \
+                 VALUES ('t2', 6, 'add', 'pod-output:p1', 1); \
+                 INSERT INTO {{work}}.branch_touched (branch, key, base_digest, inputs_digest) \
+                 VALUES ('t2', 'pod-output:p1', {zeros}, {zeros});"
+            ),
+            BranchError::ReservedNamespace {
+                key: "pod-output:p1".into(),
+            },
+        ),
+        (
+            // An extra overwrite of a key the branch touched but never read.
+            "t3",
+            "INSERT INTO {work}.branch_op (branch, ordinal, kind, key) \
+             VALUES ('t3', 6, 'remove', 'stock:widget');"
+                .to_owned(),
+            BranchError::UnreadTarget {
+                key: "stock:widget".into(),
+            },
+        ),
+        (
+            "t4",
+            "DELETE FROM {work}.branch_read WHERE branch = 't4' AND key = 'order:2';".to_owned(),
+            BranchError::UnreadTarget {
+                key: "order:2".into(),
+            },
+        ),
+        (
+            "t5",
+            "DELETE FROM {work}.branch_touched WHERE branch = 't5' AND key = 'tags:1';".to_owned(),
+            BranchError::MalformedSeal {
+                key: "tags:1".into(),
+                reason: "a key an operation touches has no recorded base value",
+            },
+        ),
+        (
+            "t6",
+            format!(
+                "INSERT INTO {{work}}.branch_touched (branch, key, base_digest, inputs_digest) \
+                 VALUES ('t6', 'order:3', {zeros}, {zeros});"
+            ),
+            BranchError::MalformedSeal {
+                key: "order:3".into(),
+                reason: "a base value or input set is recorded for a key no operation touches",
+            },
+        ),
+        (
+            "t7",
+            format!(
+                "UPDATE {{work}}.branch_touched SET base_digest = {zeros} \
+                 WHERE branch = 't7' AND key = 'order:1';"
+            ),
+            BranchError::MalformedSeal {
+                key: "order:1".into(),
+                reason: "the base value recorded for a touched key differs from the value read",
+            },
+        ),
+        (
+            "t8",
+            "UPDATE {work}.branch_op SET member = '' WHERE branch = 't8' AND kind = 'set_insert';"
+                .to_owned(),
+            BranchError::InvalidMember {
+                key: "tags:1".into(),
+            },
+        ),
+    ];
+    for (id, tamper, broken) in cases {
+        let branch = sealed_branch(id, "agent-7");
+        substrate.store_branch(&branch).await.unwrap();
+        assert_eq!(
+            substrate.load_branch(branch.id()).await.unwrap(),
+            Some(branch.clone())
+        );
+        let tamper = tamper.replace("{work}", work.as_str());
+        // The database refuses every one of these rows now: a check refuses
+        // the reserved key of t2, and triggers the rest (a rewrite, or a
+        // sealing invariant when the transaction commits).
+        let expected = if id == "t2" { "23514" } else { "23000" };
+        assert_eq!(refused_sqlstate(&raw, &tamper).await, expected, "{id}");
+        assert_eq!(
+            substrate.load_branch(branch.id()).await.unwrap(),
+            Some(branch.clone())
+        );
+        // Rows a store written before work migration 9 can hold.
+        write_before_invariants(
+            &raw,
+            &work,
+            &[
+                ("branch_op", "branch_op_key_not_reserved"),
+                ("branch_op", "branch_op_member_not_empty"),
+            ],
+            &tamper,
+        )
+        .await;
+        let error = substrate.load_branch(branch.id()).await.unwrap_err();
+        assert_eq!(
+            error,
+            PgError::CorruptBranch {
+                branch: id.into(),
+                error: broken,
+            },
+            "{id}"
+        );
+        assert_eq!(error.code(), "PTR_PG_CORRUPT_BRANCH");
+    }
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_stored_branch_relying_on_two_generations_of_one_target_is_refused_on_load() {
+    let mut substrate = substrate().await;
+    for id in ["b1", "b2", "b3"] {
+        substrate
+            .store_branch(&sealed_branch(id, "agent-7"))
+            .await
+            .unwrap();
+    }
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    // The primary key refuses a second generation of a target outright.
+    let error = raw
+        .execute(
+            &format!(
+                "INSERT INTO {work}.branch_relied (branch, target, generation) \
+                 VALUES ('b1', 'constraint:budget', 4)"
+            ),
+            &[],
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.as_db_error().unwrap().code().code(), "23505");
+    // Rows written once the keys are dropped, by a writer from before work
+    // migration 9, are refused on load rather than collapsed to whichever row
+    // came last.
+    write_before_invariants(
+        &raw,
+        &work,
+        &[],
+        &format!(
+            "ALTER TABLE {work}.branch_relied DROP CONSTRAINT branch_relied_pkey; \
+             ALTER TABLE {work}.branch_read DROP CONSTRAINT branch_read_pkey; \
+             INSERT INTO {work}.branch_relied (branch, target, generation) \
+             VALUES ('b1', 'constraint:budget', 4), ('b2', 'constraint:budget', 3); \
+             INSERT INTO {work}.branch_read (branch, key, digest) \
+             VALUES ('b3', 'order:1', decode(repeat('00', 32), 'hex'));"
+        ),
+    )
+    .await;
+    let error = substrate
+        .load_branch(&BranchId::from("b1"))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error,
+        PgError::CorruptBranch {
+            branch: "b1".into(),
+            error: BranchError::ConflictingReliance {
+                target: "constraint:budget".into(),
+                relied: Generation(3),
+                declared: Generation(4),
+            },
+        }
+    );
+    assert_eq!(error.code(), "PTR_PG_CORRUPT_BRANCH");
+    for (id, table) in [("b2", "branch_relied"), ("b3", "branch_read")] {
+        let error = substrate
+            .load_branch(&BranchId::from(id))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, PgError::CorruptRow { table: found, .. } if found == table),
+            "{id}: {error:?}"
+        );
+    }
+    substrate.drop_all().await.unwrap();
+}
+
+/// A triage with this decision, eligibility and slice flag as the policy
+/// [`record_manual_policy`] records logs it: an eligible branch escalated
+/// outside the slice scored below the threshold of 0.5, every other one 0.8,
+/// and an eligible branch scoring 0.8 has propensity `1 - 0.1`. A combination
+/// that policy never produces (an auto-proposed slice branch, say) keeps
+/// these fields and is refused by `record_triage`.
+fn triage(decision: TriageDecision, eligible: bool, calibration_slice: bool) -> TriageOutcome {
+    let score = if eligible && decision == TriageDecision::Escalate && !calibration_slice {
+        0.2
+    } else {
+        0.8
+    };
+    TriageOutcome {
+        decision,
+        eligible,
+        calibration_slice,
+        score,
+        auto_propensity: if eligible && score >= 0.5 { 0.9 } else { 0.0 },
+    }
+}
+
+/// The policy [`record_manual_policy`] records: auto-propose from 0.5, with a
+/// tenth of eligible branches in the calibration slice.
+fn manual_policy() -> TriagePolicy {
+    TriagePolicy::new(AutoThreshold::AtLeast(0.5), 0.1).unwrap()
+}
+
+/// Record the manual policy a test's triage rows cite.
+async fn record_manual_policy(substrate: &mut PgSubstrate, version: &str) {
+    let policy = manual_policy();
+    substrate
+        .record_policy(&PolicyRecord::manual(version, policy).unwrap())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn triage_logs_and_outcomes_feed_the_platform_metrics() {
+    let mut substrate = substrate().await;
+    record_manual_policy(&mut substrate, "policy-1").await;
+    let plan = [
+        (
+            "b1",
+            "agent-a",
+            triage(TriageDecision::AutoPropose, true, false),
+        ),
+        (
+            "b2",
+            "agent-a",
+            triage(TriageDecision::Escalate, true, true),
+        ),
+        (
+            "b3",
+            "agent-b",
+            triage(TriageDecision::Escalate, true, true),
+        ),
+        (
+            "b4",
+            "agent-b",
+            triage(TriageDecision::Discard, false, false),
+        ),
+    ];
+    for (id, author, outcome) in &plan {
+        substrate
+            .store_branch(&sealed_branch(id, author))
+            .await
+            .unwrap();
+        substrate
+            .record_triage(&BranchId::from(*id), outcome, "policy-1")
+            .await
+            .unwrap();
+    }
+    substrate
+        .record_outcome(&BranchId::from("b1"), BranchOutcome::Merged(CommitIndex(9)))
+        .await
+        .unwrap();
+    substrate
+        .record_outcome(&BranchId::from("b2"), BranchOutcome::AdjudicatedHarmful)
+        .await
+        .unwrap();
+    substrate
+        .record_outcome(&BranchId::from("b3"), BranchOutcome::AdjudicatedHarmless)
+        .await
+        .unwrap();
+    substrate
+        .record_outcome(&BranchId::from("b4"), BranchOutcome::Conflicted)
+        .await
+        .unwrap();
+
+    let overall = |metric| MetricSpec {
+        metric,
+        grouping: Grouping::Overall,
+        window: Window::All,
+    };
+    let row = |numerator, denominator| MetricRow {
+        group: String::new(),
+        numerator,
+        denominator,
+    };
+    assert_eq!(
+        substrate
+            .metric(overall(Metric::AutoProposeShare))
+            .await
+            .unwrap(),
+        vec![row(1, 3)]
+    );
+    assert_eq!(
+        substrate
+            .metric(overall(Metric::EscalationShare))
+            .await
+            .unwrap(),
+        vec![row(2, 4)]
+    );
+    assert_eq!(
+        substrate
+            .metric(overall(Metric::ConflictRate))
+            .await
+            .unwrap(),
+        vec![row(1, 4)]
+    );
+    assert_eq!(
+        substrate
+            .metric(overall(Metric::AdjudicatedHarmRate))
+            .await
+            .unwrap(),
+        vec![row(1, 2)]
+    );
+    let by_principal = substrate
+        .metric(MetricSpec {
+            metric: Metric::EscalationShare,
+            grouping: Grouping::ByPrincipal,
+            window: Window::All,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        by_principal,
+        vec![
+            MetricRow {
+                group: "agent-a".into(),
+                numerator: 1,
+                denominator: 2
+            },
+            MetricRow {
+                group: "agent-b".into(),
+                numerator: 1,
+                denominator: 2
+            },
+        ]
+    );
+
+    // A calibration-slice branch is by definition escalated, and an outcome
+    // is never rewritten.
+    substrate
+        .store_branch(&sealed_branch("b5", "agent-a"))
+        .await
+        .unwrap();
+    assert_eq!(
+        substrate
+            .record_triage(
+                &BranchId::from("b5"),
+                &triage(TriageDecision::AutoPropose, true, true),
+                "policy-1"
+            )
+            .await,
+        Err(PgError::InvalidTriage {
+            branch: "b5".into(),
+            policy_version: "policy-1".into(),
+            reason: "a calibration-slice branch is escalated",
+        })
+    );
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    let error = raw
+        .execute(
+            &format!("UPDATE {work}.branch_outcome SET outcome = 'discarded' WHERE branch = 'b4'"),
+            &[],
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.as_db_error().unwrap().code().code(), "23000");
+
+    // Neither is an outcome removed on its own, nor a logged triage changed,
+    // nor a branch adjudicated twice.
+    for statement in [
+        format!("DELETE FROM {work}.branch_outcome WHERE branch = 'b4'"),
+        format!("UPDATE {work}.branch_triage SET score = 0.1 WHERE branch = 'b1'"),
+        format!("DELETE FROM {work}.branch_triage WHERE branch = 'b1'"),
+    ] {
+        let error = raw.execute(&statement, &[]).await.unwrap_err();
+        assert_eq!(
+            error.as_db_error().unwrap().code().code(),
+            "23000",
+            "{statement}"
+        );
+    }
+    assert!(matches!(
+        substrate
+            .record_outcome(&BranchId::from("b2"), BranchOutcome::AdjudicatedHarmless)
+            .await,
+        Err(PgError::Database { ref sqlstate, .. }) if sqlstate == "23505"
+    ));
+    // Erasing a whole branch removes its triage and outcomes with it.
+    raw.execute(&format!("DELETE FROM {work}.branch WHERE id = 'b4'"), &[])
+        .await
+        .unwrap();
+    let left: i64 = raw
+        .query_one(
+            &format!("SELECT count(*) FROM {work}.branch_outcome WHERE branch = 'b4'"),
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(left, 0);
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn rebuild_drops_projection_and_derived_caches_but_keeps_working_state() {
+    let mut substrate = substrate().await;
+    substrate.register_space(&space()).await.unwrap();
+    let log = vec![capsule(1, "c1", 1), capsule(2, "c2", 1)];
+    substrate.replay(&log).await.unwrap();
+    substrate
+        .upsert_document(&document("c1", 1, "indexed", &[1.0, 0.0, 0.0, 0.0]))
+        .await
+        .unwrap();
+    let branch = sealed_branch("b1", "agent-7");
+    substrate.store_branch(&branch).await.unwrap();
+    let before = substrate.watermark().await.unwrap();
+
+    let report = substrate.rebuild_projection().await.unwrap();
+    assert_eq!(report.projection, vec![1]);
+    assert_eq!(report.derived, vec![1]);
+    assert!(report.work.is_empty());
+    assert_eq!(substrate.watermark().await.unwrap(), LogAnchor::empty());
+
+    assert_eq!(substrate.replay(&log).await.unwrap(), 2);
+    assert_eq!(substrate.watermark().await.unwrap(), before);
+    assert_eq!(
+        substrate.load_branch(branch.id()).await.unwrap(),
+        Some(branch)
+    );
+    // Derived caches are recomputed, not restored: the space must be
+    // registered again before anything is indexed.
+    let query = HybridQuery {
+        project: None,
+        text: Some("indexed".into()),
+        embedding: None,
+        limit: 10,
+        lexical_weight: 1.0,
+        vector_weight: 1.0,
+        rank_constant: 60.0,
+    };
+    assert!(substrate.search(&query).await.unwrap().lexical.is_empty());
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_schema_set_not_made_from_one_prefix_is_refused_before_it_connects() {
+    let theirs = substrate().await;
+    memory_with(&theirs, "m1", 64).await;
+    let shared = theirs.schemas().clone();
+    let mine = SchemaSet::with_prefix(&fresh_prefix()).unwrap();
+    for composed in [
+        // A rebuild of this set would drop the other instance's work schema.
+        SchemaSet {
+            derived: shared.work.clone(),
+            ..mine.clone()
+        },
+        // Its projector would delete the other instance's journal writes and
+        // search documents, and migrate its schemas under a lock that
+        // instance never takes.
+        SchemaSet {
+            work: shared.work.clone(),
+            ..mine.clone()
+        },
+        SchemaSet {
+            derived: shared.derived.clone(),
+            ..mine.clone()
+        },
+        // One schema in every role.
+        SchemaSet {
+            projection: mine.projection.clone(),
+            derived: mine.projection.clone(),
+            work: mine.projection.clone(),
+        },
+    ] {
+        let refused = PgSubstrate::connect_with(&dsn(), composed.clone())
+            .await
+            .err()
+            .map(|error| error.code());
+        assert_eq!(refused, Some("PTR_PG_INVALID_SCHEMA_SET"), "{composed:?}");
+    }
+    // Nothing of the other instance was touched, and a set of one prefix
+    // connects.
+    assert!(theirs.load_memory("m1").await.unwrap().is_some());
+    let own = PgSubstrate::connect_with(&dsn(), mine).await.unwrap();
+    own.drop_all().await.unwrap();
+    theirs.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn every_keyword_the_server_reserves_is_refused_as_an_identifier() {
+    let raw = raw_client().await;
+    let keywords = raw
+        .query("SELECT word, catcode::text FROM pg_get_keywords()", &[])
+        .await
+        .unwrap();
+    let mut reserved = 0;
+    for row in keywords {
+        let (word, category): (String, String) = (row.get(0), row.get(1));
+        match category.as_str() {
+            "R" | "T" => {
+                reserved += 1;
+                assert_eq!(
+                    Identifier::new(&word),
+                    Err(PgError::InvalidIdentifier {
+                        value: word.clone()
+                    }),
+                    "{word}"
+                );
+            }
+            // Unreserved and column-name keywords may name a schema unquoted.
+            _ => assert!(Identifier::new(&word).is_ok(), "{word} ({category})"),
+        }
+    }
+    assert_eq!(reserved, ptr_pg::RESERVED_KEYWORDS.len());
+    // Unquoted, a reserved keyword does not parse where a schema name goes.
+    let error = raw
+        .batch_execute("CREATE SCHEMA IF NOT EXISTS select")
+        .await
+        .unwrap_err();
+    assert_eq!(error.as_db_error().unwrap().code().code(), "42601");
+}
+
+#[tokio::test]
+async fn a_substrate_in_another_database_is_set_up_in_that_database() {
+    // A database of its own, without pgvector: the helpers must install the
+    // extension there, not in the database PTR_PG_TEST_DSN names.
+    let raw = raw_client().await;
+    let database = format!("{}_db", fresh_prefix());
+    raw.batch_execute(&format!("DROP DATABASE IF EXISTS {database} WITH (FORCE)"))
+        .await
+        .unwrap();
+    raw.batch_execute(&format!("CREATE DATABASE {database} TEMPLATE template0"))
+        .await
+        .unwrap();
+    let elsewhere = format!("{} dbname={database}", dsn());
+    let set_up = tokio::spawn(async move {
+        let substrate = substrate_at(&elsewhere).await;
+        substrate.capabilities().await.unwrap().check_supported()
+    })
+    .await;
+    raw.batch_execute(&format!("DROP DATABASE {database} WITH (FORCE)"))
+        .await
+        .unwrap();
+    assert_eq!(set_up.expect("set up the other database"), Ok(()));
+}
+
+#[tokio::test]
+async fn working_state_constraints_hold_in_the_database() {
+    let substrate = substrate().await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    for (statement, sqlstate) in [
+        // A held-out sample can never enter the replay pool.
+        (
+            format!(
+                "INSERT INTO {work}.replay_sample \
+                 (id, stratum, split, stability, difficulty, last_probe_model_time) \
+                 VALUES ('s1', 'x', 'heldout', 1, 5, 0)"
+            ),
+            "23514",
+        ),
+        // A consolidated adapter has sources, not a parent.
+        (
+            format!(
+                "INSERT INTO {work}.adapter \
+                 (id, domain, base_model, base_revision, origin, parent, rank, artifact, \
+                  artifact_sha256, data_fingerprint, status) \
+                 VALUES ('a1', 'd', 'm', 'r', 'consolidated', 'a0', 8, 'x', \
+                         decode(repeat('00', 32), 'hex'), decode(repeat('00', 32), 'hex'), \
+                         'candidate')"
+            ),
+            "23514",
+        ),
+        // A label schema needs at least two classes.
+        (
+            format!("INSERT INTO {work}.label_schema (id, classes) VALUES ('s', ARRAY['only'])"),
+            "23514",
+        ),
+    ] {
+        let error = raw.execute(&statement, &[]).await.unwrap_err();
+        assert_eq!(
+            error.as_db_error().unwrap().code().code(),
+            sqlstate,
+            "{statement}"
+        );
+    }
+    substrate.drop_all().await.unwrap();
+}
+
+/// An adapter row registered on base `model@r1`.
+fn adapter_row(
+    work: &impl std::fmt::Display,
+    id: &str,
+    model: &str,
+    origin: &str,
+    parent: Option<&str>,
+    status: &str,
+) -> String {
+    let parent = parent.map_or("NULL".to_owned(), |parent| format!("'{parent}'"));
+    format!(
+        "INSERT INTO {work}.adapter \
+         (id, domain, base_model, base_revision, origin, parent, rank, artifact, \
+          artifact_sha256, data_fingerprint, status) \
+         VALUES ('{id}', 'support', '{model}', 'r1', '{origin}', {parent}, 8, 'artifact', \
+                 decode(repeat('00', 32), 'hex'), decode(repeat('00', 32), 'hex'), '{status}'); "
+    )
+}
+
+#[tokio::test]
+async fn a_consolidated_adapter_has_sources_on_its_base_and_only_it_has_them() {
+    let substrate = substrate().await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    let adapter = |id: &str, model: &str, origin: &str, parent: Option<&str>| {
+        adapter_row(&work, id, model, origin, parent, "candidate")
+    };
+    raw.batch_execute(
+        &[
+            adapter("t1", "m", "trained", None),
+            adapter("t2", "m", "trained", Some("t1")),
+            adapter("other", "m2", "trained", None),
+        ]
+        .concat(),
+    )
+    .await
+    .unwrap();
+    let source = |consolidated: &str, source: &str| {
+        format!(
+            "INSERT INTO {work}.adapter_source (consolidated, source) \
+             VALUES ('{consolidated}', '{source}'); "
+        )
+    };
+    for (why, sql) in [
+        // Committed alone, it lost the edges erasure follows from its inputs.
+        (
+            "a consolidation naming no source",
+            adapter("c0", "m", "consolidated", None),
+        ),
+        ("a source of a trained adapter", source("t2", "t1")),
+        (
+            "a source on another base",
+            adapter("c1", "m", "consolidated", None) + &source("c1", "other"),
+        ),
+        (
+            "a parent on another base",
+            adapter("t3", "m2", "trained", Some("t1")),
+        ),
+        (
+            "a registration that is not a candidate",
+            adapter_row(&work, "t4", "m", "trained", None, "serving"),
+        ),
+    ] {
+        assert_eq!(refused_sqlstate(&raw, &sql).await, "23000", "{why}");
+    }
+    // A consolidation and its sources written in one transaction commit.
+    raw.batch_execute(&format!(
+        "BEGIN; {}{}{}COMMIT;",
+        adapter("c1", "m", "consolidated", None),
+        source("c1", "t1"),
+        source("c1", "t2")
+    ))
+    .await
+    .unwrap();
+    raw.batch_execute(&format!(
+        "INSERT INTO {work}.adapter_input (adapter, input) VALUES ('t1', 'doc-1')"
+    ))
+    .await
+    .unwrap();
+    // Sources, the data manifest and every field but the status are part of
+    // the registered record.
+    for sql in [
+        format!("DELETE FROM {work}.adapter_source WHERE consolidated = 'c1' AND source = 't1'"),
+        format!("UPDATE {work}.adapter_source SET source = 'other' WHERE consolidated = 'c1'"),
+        format!("DELETE FROM {work}.adapter_input WHERE adapter = 't1'"),
+        format!("UPDATE {work}.adapter SET origin = 'trained' WHERE id = 'c1'"),
+        format!("UPDATE {work}.adapter SET parent = NULL WHERE id = 't2'"),
+        format!("UPDATE {work}.adapter SET status = 'serving' WHERE id = 't1'"),
+    ] {
+        assert_eq!(refused_sqlstate(&raw, &sql).await, "23000", "{sql}");
+    }
+    for status in ["gated", "serving", "retired"] {
+        raw.batch_execute(&format!(
+            "UPDATE {work}.adapter SET status = '{status}' WHERE id = 't1'"
+        ))
+        .await
+        .unwrap();
+    }
+    assert_eq!(
+        refused_sqlstate(
+            &raw,
+            &format!("UPDATE {work}.adapter SET status = 'gated' WHERE id = 't1'")
+        )
+        .await,
+        "23000"
+    );
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_label_schema_needs_two_distinct_non_empty_classes_and_is_never_rewritten() {
+    let substrate = substrate().await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    for classes in [
+        "ARRAY['yes', 'yes']",
+        "ARRAY['yes', '']",
+        "ARRAY['yes', NULL]",
+        "ARRAY['only']",
+        "'{}'::text[]",
+        "'{{yes,no},{maybe,never}}'::text[]",
+        // Class 0 of a vote is element 1.
+        "'[0:1]={yes,no}'::text[]",
+    ] {
+        assert_eq!(
+            refused_sqlstate(
+                &raw,
+                &format!("INSERT INTO {work}.label_schema (id, classes) VALUES ('s', {classes})")
+            )
+            .await,
+            "23514",
+            "{classes}"
+        );
+    }
+    raw.batch_execute(&format!(
+        "INSERT INTO {work}.label_schema (id, classes) VALUES ('s', ARRAY['yes', 'no'])"
+    ))
+    .await
+    .unwrap();
+    assert_eq!(
+        refused_sqlstate(
+            &raw,
+            &format!("UPDATE {work}.label_schema SET classes = ARRAY['yes', 'no', 'maybe']")
+        )
+        .await,
+        "23000"
+    );
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn only_a_verifier_vetoes_and_every_vote_names_a_class_of_its_schema() {
+    let substrate = substrate().await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    raw.batch_execute(&format!(
+        "INSERT INTO {work}.label_schema (id, classes) VALUES ('s', ARRAY['yes', 'no']); \
+         INSERT INTO {work}.label_item (label_schema, item) VALUES ('s', 'i1'); \
+         INSERT INTO {work}.labeling_function (name, kind) \
+         VALUES ('check', 'verifier'), ('rule', 'heuristic'), ('model', 'model'), \
+                ('agent', 'agent')"
+    ))
+    .await
+    .unwrap();
+    let vote = |function: &str, kind: &str, class: i32| {
+        format!(
+            "INSERT INTO {work}.label_vote (label_schema, item, function, vote_kind, class) \
+             VALUES ('s', 'i1', '{function}', '{kind}', {class})"
+        )
+    };
+    for sql in [
+        vote("rule", "veto", 0),
+        vote("model", "veto", 0),
+        vote("agent", "veto", 0),
+        vote("check", "class", 0),
+        vote("rule", "class", 2),
+        vote("check", "veto", 2),
+        format!(
+            "INSERT INTO {work}.gold_label (label_schema, item, class, source, sampling) \
+             VALUES ('s', 'i1', 2, 'oracle', 'uniform')"
+        ),
+    ] {
+        assert_eq!(refused_sqlstate(&raw, &sql).await, "23000", "{sql}");
+    }
+    for sql in [
+        vote("check", "veto", 1),
+        vote("rule", "class", 0),
+        vote("model", "class", 0),
+        vote("agent", "class", 1),
+        format!(
+            "INSERT INTO {work}.gold_label (label_schema, item, class, source, sampling) \
+             VALUES ('s', 'i1', 0, 'oracle', 'uniform')"
+        ),
+    ] {
+        raw.batch_execute(&sql).await.unwrap();
+    }
+    // A stored vote keeps the kind its function may cast, and a function
+    // keeps the kind its votes were checked against.
+    for sql in [
+        format!("UPDATE {work}.label_vote SET vote_kind = 'veto' WHERE function = 'rule'"),
+        format!("UPDATE {work}.labeling_function SET kind = 'heuristic' WHERE name = 'check'"),
+    ] {
+        assert_eq!(refused_sqlstate(&raw, &sql).await, "23000", "{sql}");
+    }
+    // Names are non-empty, as VoteMatrix::new requires of them and of an
+    // adapter a model function names.
+    for sql in [
+        format!("INSERT INTO {work}.labeling_function (name, kind) VALUES ('', 'heuristic')"),
+        format!(
+            "INSERT INTO {work}.labeling_function (name, kind, adapter) VALUES ('m2', 'model', '')"
+        ),
+    ] {
+        assert_eq!(refused_sqlstate(&raw, &sql).await, "23514", "{sql}");
+    }
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn branch_rows_written_directly_keep_every_sealing_invariant() {
+    let mut substrate = substrate().await;
+    substrate
+        .store_branch(&sealed_branch("b1", "agent-7"))
+        .await
+        .unwrap();
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    let zeros = "decode(repeat('00', 32), 'hex')";
+    for (sql, sqlstate) in [
+        (
+            format!(
+                "INSERT INTO {work}.branch_op (branch, ordinal, kind, key, member) \
+                 VALUES ('b1', 9, 'set_insert', 'tags:1', '')"
+            ),
+            "23514",
+        ),
+        // A text value that also carries payload bytes.
+        (
+            format!(
+                "INSERT INTO {work}.branch_op \
+                 (branch, ordinal, kind, key, value_kind, value_text, value_bytes) \
+                 VALUES ('b1', 9, 'put', 'order:1', 'text', 'x', '\\x00')"
+            ),
+            "23514",
+        ),
+        // An operation on a key with no recorded base value or input set.
+        (
+            format!(
+                "INSERT INTO {work}.branch_op (branch, ordinal, kind, key, amount) \
+                 VALUES ('b1', 9, 'add', 'stock:gadget', 1)"
+            ),
+            "23000",
+        ),
+        // A read of a touched key whose digest is not its base value.
+        (
+            format!(
+                "INSERT INTO {work}.branch_read (branch, key, digest) \
+                 VALUES ('b1', 'stock:widget', {zeros})"
+            ),
+            "23000",
+        ),
+        (
+            format!("UPDATE {work}.branch SET author = 'agent-8' WHERE id = 'b1'"),
+            "23000",
+        ),
+        (
+            format!("DELETE FROM {work}.branch_scan WHERE branch = 'b1'"),
+            "23000",
+        ),
+        (
+            format!("UPDATE {work}.branch_relied SET generation = 4 WHERE branch = 'b1'"),
+            "23000",
+        ),
+    ] {
+        assert_eq!(refused_sqlstate(&raw, &sql).await, sqlstate, "{sql}");
+    }
+    // Rows written in one transaction are checked when it commits, whatever
+    // their order: the operation here precedes the rows it needs.
+    raw.batch_execute(&format!(
+        "BEGIN; \
+         INSERT INTO {work}.branch (id, author, base_revision) VALUES ('raw', 'agent-7', 4); \
+         INSERT INTO {work}.branch_op (branch, ordinal, kind, key) \
+         VALUES ('raw', 0, 'remove', 'order:7'); \
+         INSERT INTO {work}.branch_touched (branch, key, base_digest, inputs_digest) \
+         VALUES ('raw', 'order:7', {zeros}, {zeros}); \
+         INSERT INTO {work}.branch_read (branch, key, digest) VALUES ('raw', 'order:7', {zeros}); \
+         COMMIT;"
+    ))
+    .await
+    .unwrap();
+    assert!(substrate
+        .load_branch(&BranchId::from("raw"))
+        .await
+        .unwrap()
+        .is_some());
+    // A whole branch still goes, with every row describing it.
+    raw.batch_execute(&format!(
+        "DELETE FROM {work}.branch WHERE id IN ('b1', 'raw')"
+    ))
+    .await
+    .unwrap();
+    assert_eq!(substrate.load_branch(&BranchId::from("b1")).await, Ok(None));
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_triage_row_keeps_the_rules_every_policy_shares() {
+    let mut substrate = substrate().await;
+    record_manual_policy(&mut substrate, "policy-t").await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    let triage = |branch: &str, decision: &str, eligible: bool, slice: bool, propensity: f64| {
+        format!(
+            "INSERT INTO {work}.branch_triage (branch, decision, eligible, calibration_slice, \
+             score, auto_propensity, policy_version) \
+             VALUES ('{branch}', '{decision}', {eligible}, {slice}, 0.5, {propensity}, \
+                     'policy-t')"
+        )
+    };
+    for (index, (decision, eligible, slice, propensity)) in [
+        // Verification alone never auto-proposes.
+        ("auto_propose", false, false, 0.0),
+        // An eligible branch is never discarded.
+        ("discard", true, false, 0.0),
+        // Outside the slice, auto-proposed exactly when admitted.
+        ("auto_propose", true, false, 0.0),
+        ("escalate", true, false, 0.9),
+        // A slice needs a calibration rate above zero.
+        ("escalate", true, true, 1.0),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let branch = format!("r{index}");
+        substrate
+            .store_branch(&sealed_branch(&branch, "agent-7"))
+            .await
+            .unwrap();
+        let sql = triage(&branch, decision, eligible, slice, propensity);
+        assert_eq!(refused_sqlstate(&raw, &sql).await, "23514", "{sql}");
+    }
+    // What policy-t (auto-propose from 0.5, a tenth in the slice) logs for a
+    // score of 0.5; the rows it cannot log for that score are refused by the
+    // check against the cited policy
+    // (a_raw_triage_row_is_stored_exactly_when_its_cited_policy_explains_it).
+    for (index, (decision, eligible, slice, propensity)) in [
+        ("discard", false, false, 0.0),
+        ("escalate", false, false, 0.0),
+        ("auto_propose", true, false, 0.9),
+        ("escalate", true, true, 0.9),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let branch = format!("a{index}");
+        substrate
+            .store_branch(&sealed_branch(&branch, "agent-7"))
+            .await
+            .unwrap();
+        raw.batch_execute(&triage(&branch, decision, eligible, slice, propensity))
+            .await
+            .unwrap();
+    }
+    substrate.drop_all().await.unwrap();
+}
+
+/// Every triage of the grid of decisions, eligibility, slice flags, scores
+/// and the given propensities, whether or not any policy produces it.
+fn triage_grid(propensities: &[f64]) -> Vec<TriageOutcome> {
+    let mut grid = Vec::new();
+    for decision in [
+        TriageDecision::AutoPropose,
+        TriageDecision::Escalate,
+        TriageDecision::Discard,
+    ] {
+        for eligible in [false, true] {
+            for calibration_slice in [false, true] {
+                for score in [0.0, 0.2, 0.5, 0.9, 1.0] {
+                    for &auto_propensity in propensities {
+                        grid.push(TriageOutcome {
+                            decision,
+                            eligible,
+                            calibration_slice,
+                            score,
+                            auto_propensity,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    grid
+}
+
+#[tokio::test]
+async fn a_raw_triage_row_is_stored_exactly_when_its_cited_policy_explains_it() {
+    let mut substrate = substrate().await;
+    // Auto-propose from 0.5 with a tenth in the slice; from 0.5 with no slice;
+    // nothing, with a quarter in the slice.
+    let policies = [
+        (
+            "policy-t",
+            TriagePolicy::new(AutoThreshold::AtLeast(0.5), 0.1).unwrap(),
+        ),
+        (
+            "policy-0",
+            TriagePolicy::new(AutoThreshold::AtLeast(0.5), 0.0).unwrap(),
+        ),
+        (
+            "policy-never",
+            TriagePolicy::new(AutoThreshold::Never, 0.25).unwrap(),
+        ),
+    ];
+    let mut propensities = vec![0.0, 0.5, 1.0];
+    for (version, policy) in policies {
+        substrate
+            .record_policy(&PolicyRecord::manual(version, policy).unwrap())
+            .await
+            .unwrap();
+        propensities.push(1.0 - policy.calibration_rate());
+    }
+    substrate
+        .store_branch(&sealed_branch("g", "agent-g"))
+        .await
+        .unwrap();
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    let insert = format!(
+        "INSERT INTO {work}.branch_triage (branch, decision, eligible, calibration_slice, score, \
+         auto_propensity, policy_version) VALUES ('g', $1, $2, $3, $4, $5, $6)"
+    );
+    // Each row is written and rolled back in its own savepoint, so one branch
+    // serves the whole grid. Written around record_triage, a row its cited
+    // policy cannot have produced used to be stored whenever it kept the
+    // rules every policy shares: a slice row of a policy with no slice, whose
+    // adjudication became a calibration sample, or an admitted score
+    // escalated with propensity zero, counted under that policy's version.
+    raw.batch_execute("BEGIN").await.unwrap();
+    let mut stored = 0;
+    for (version, policy) in policies {
+        for row in triage_grid(&propensities) {
+            let decision = match row.decision {
+                TriageDecision::AutoPropose => "auto_propose",
+                TriageDecision::Escalate => "escalate",
+                TriageDecision::Discard => "discard",
+            };
+            raw.batch_execute("SAVEPOINT row").await.unwrap();
+            let written = raw
+                .execute(
+                    &insert,
+                    &[
+                        &decision,
+                        &row.eligible,
+                        &row.calibration_slice,
+                        &row.score,
+                        &row.auto_propensity,
+                        &version,
+                    ],
+                )
+                .await;
+            raw.batch_execute("ROLLBACK TO SAVEPOINT row")
+                .await
+                .unwrap();
+            match (policy.explains(&row), written) {
+                (Ok(()), Ok(_)) => stored += 1,
+                (Err(_), Err(error)) => {
+                    let code = error.as_db_error().unwrap().code().code().to_owned();
+                    assert!(
+                        code == "23514" || code == "23000",
+                        "{version} {row:?}: {error}"
+                    );
+                }
+                (explained, written) => {
+                    panic!(
+                        "{version} {row:?}: explains says {explained:?}, the database {written:?}"
+                    )
+                }
+            }
+        }
+    }
+    raw.batch_execute("ROLLBACK").await.unwrap();
+    // Every policy logs something at every eligibility.
+    assert!(stored >= 3 * 4, "{stored}");
+
+    // The rows the review found, one by one: a slice row of a policy with no
+    // slice, and an admitted score escalated with propensity zero.
+    for (branch, version, score, slice) in [
+        ("s0", "policy-0", 0.2, true),
+        ("e0", "policy-t", 0.5, false),
+        ("e1", "policy-t", 0.5, true),
+    ] {
+        substrate
+            .store_branch(&sealed_branch(branch, "agent-g"))
+            .await
+            .unwrap();
+        let sql = format!(
+            "INSERT INTO {work}.branch_triage (branch, decision, eligible, calibration_slice, \
+             score, auto_propensity, policy_version) \
+             VALUES ('{branch}', 'escalate', true, {slice}, {score}, 0.0, '{version}')"
+        );
+        assert_eq!(refused_sqlstate(&raw, &sql).await, "23000", "{sql}");
+        substrate
+            .record_outcome(&BranchId::from(branch), BranchOutcome::AdjudicatedHarmful)
+            .await
+            .unwrap();
+    }
+    // None of them became a calibration sample, and a version no policy is
+    // recorded under is still the foreign key's refusal.
+    assert_eq!(substrate.adjudicated_samples().await.unwrap(), vec![]);
+    let unrecorded = format!(
+        "INSERT INTO {work}.branch_triage (branch, decision, eligible, calibration_slice, \
+         score, auto_propensity, policy_version) \
+         VALUES ('s0', 'escalate', false, false, 0.2, 0.0, 'nobody')"
+    );
+    assert_eq!(refused_sqlstate(&raw, &unrecorded).await, "23503");
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_calibration_rate_too_small_to_lower_the_propensity_is_refused_at_storage() {
+    let mut substrate = substrate().await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    let insert = format!(
+        "INSERT INTO {work}.triage_policy \
+         (version, rule, threshold, calibration_rate, alpha, delta, calibration_size) \
+         VALUES ($1, 'manual', 0.5, $2, NULL, NULL, 0)"
+    );
+    // 1 - rate rounds to one for a positive rate of at most 2^-54, as it does
+    // in Rust: TriagePolicy::new refuses such a rate, and so does the table.
+    for rate in [1e-17, 2f64.powi(-54), f64::MIN_POSITIVE] {
+        let error = raw.execute(&insert, &[&"tiny", &rate]).await.unwrap_err();
+        assert_eq!(
+            error.as_db_error().unwrap().code().code(),
+            "23514",
+            "{rate}"
+        );
+    }
+    raw.execute(&insert, &[&"smallest", &2f64.powi(-53)])
+        .await
+        .unwrap();
+    // Its slice triages have propensity below one and are logged as the
+    // policy made them.
+    let smallest = substrate.load_policy("smallest").await.unwrap().unwrap();
+    assert_eq!(smallest.policy().calibration_rate(), 2f64.powi(-53));
+    let slice = TriageOutcome {
+        decision: TriageDecision::Escalate,
+        eligible: true,
+        calibration_slice: true,
+        score: 0.9,
+        auto_propensity: 1.0 - 2f64.powi(-53),
+    };
+    for id in ["b1", "b2"] {
+        substrate
+            .store_branch(&sealed_branch(id, "agent-s"))
+            .await
+            .unwrap();
+    }
+    substrate
+        .record_triage(&BranchId::from("b1"), &slice, "smallest")
+        .await
+        .unwrap();
+
+    // A policy a store from before the check could hold is refused as the
+    // corrupt row it is, by the loader and by record_triage, where its slice
+    // triage used to reach the table's CHECK and come back as a raw
+    // database error.
+    write_before_invariants(
+        &raw,
+        &work,
+        &[("triage_policy", "triage_policy_rate_lowers_propensity")],
+        &format!(
+            "INSERT INTO {work}.triage_policy \
+             (version, rule, threshold, calibration_rate, alpha, delta, calibration_size) \
+             VALUES ('legacy', 'manual', 0.5, 1e-17, NULL, NULL, 0)"
+        ),
+    )
+    .await;
+    assert!(matches!(
+        substrate.load_policy("legacy").await,
+        Err(PgError::CorruptRow {
+            table: "triage_policy",
+            ..
+        })
+    ));
+    let degenerate = TriageOutcome {
+        auto_propensity: 1.0,
+        ..slice
+    };
+    assert!(matches!(
+        substrate
+            .record_triage(&BranchId::from("b2"), &degenerate, "legacy")
+            .await,
+        Err(PgError::CorruptRow {
+            table: "triage_policy",
+            ..
+        })
+    ));
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn fast_memory_rows_keep_the_shape_their_configuration_admits() {
+    let substrate = substrate().await;
+    let config = memory_config();
+    substrate
+        .create_memory(&FastMemoryRecord {
+            id: "m1".into(),
+            principal: PrincipalId::from("agent-7"),
+            thread: "t1".into(),
+            config,
+            projection_digest: [3; 32],
+            codebook_seed: 11,
+        })
+        .await
+        .unwrap();
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    // One head of four key and four value cells: 16 bytes each.
+    let write = |seq: i64, key: usize, value: usize, decay: &str, decay_bytes: Option<usize>| {
+        let cells = |bytes: usize| format!("decode(repeat('00', {bytes}), 'hex')");
+        format!(
+            "INSERT INTO {work}.fastmem_write \
+             (memory, seq, source_key, source_generation, input_digest, key_cells, \
+              value_cells, beta, decay_kind, decay_cells) \
+             VALUES ('m1', {seq}, 'c1', 1, decode(repeat('00', 32), 'hex'), {}, {}, 0.5, \
+                     '{decay}', {})",
+            cells(key),
+            cells(value),
+            decay_bytes.map_or("NULL".to_owned(), cells)
+        )
+    };
+    for sql in [
+        write(1, 12, 16, "none", None),
+        write(1, 16, 20, "none", None),
+        write(1, 16, 16, "scalar", Some(8)),
+        write(1, 16, 16, "per_channel", Some(4)),
+    ] {
+        assert_eq!(refused_sqlstate(&raw, &sql).await, "23000", "{sql}");
+    }
+    for sql in [
+        write(1, 16, 16, "none", None),
+        write(2, 16, 16, "scalar", Some(4)),
+        write(3, 16, 16, "per_channel", Some(16)),
+    ] {
+        raw.batch_execute(&sql).await.unwrap();
+    }
+    // The registration its journal was written under, and the journal, are
+    // never rewritten.
+    for sql in [
+        format!("UPDATE {work}.fastmem_memory SET value_dim = 8 WHERE id = 'm1'"),
+        format!("UPDATE {work}.fastmem_write SET beta = 1 WHERE memory = 'm1'"),
+    ] {
+        assert_eq!(refused_sqlstate(&raw, &sql).await, "23000", "{sql}");
+    }
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn replay_rows_are_finite_and_the_training_clock_never_runs_back() {
+    let substrate = substrate().await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    let sample = |stability: &str, difficulty: &str, time: &str| {
+        format!(
+            "INSERT INTO {work}.replay_sample \
+             (id, stratum, split, stability, difficulty, last_probe_model_time) \
+             VALUES ('s1', 'x', 'train', {stability}, {difficulty}, {time})"
+        )
+    };
+    // `stability > 0` holds for NaN and Infinity in PostgreSQL.
+    for (stability, difficulty, time) in [
+        ("'NaN'", "5", "10"),
+        ("'Infinity'", "5", "10"),
+        ("1", "'NaN'", "10"),
+        ("1", "5", "'NaN'"),
+        ("1", "5", "'-Infinity'"),
+    ] {
+        let sql = sample(stability, difficulty, time);
+        assert_eq!(refused_sqlstate(&raw, &sql).await, "23514", "{sql}");
+    }
+    raw.batch_execute(&sample("1", "5", "10")).await.unwrap();
+    let probe = |time: &str, loss: &str| {
+        format!(
+            "INSERT INTO {work}.replay_probe (sample, model_time, loss) \
+             VALUES ('s1', {time}, {loss})"
+        )
+    };
+    for (sql, sqlstate) in [
+        (probe("'NaN'", "0.1"), "23514"),
+        (probe("11", "'Infinity'"), "23514"),
+        // Before the sample's last probe.
+        (probe("9", "0.1"), "23000"),
+    ] {
+        assert_eq!(refused_sqlstate(&raw, &sql).await, sqlstate, "{sql}");
+    }
+    raw.batch_execute(&probe("12", "0.1")).await.unwrap();
+    for sql in [
+        // Before a probe already recorded.
+        probe("11", "0.1"),
+        format!("UPDATE {work}.replay_sample SET last_probe_model_time = 5"),
+    ] {
+        assert_eq!(refused_sqlstate(&raw, &sql).await, "23000", "{sql}");
+    }
+    raw.batch_execute(&format!(
+        "UPDATE {work}.replay_sample SET last_probe_model_time = 12, lapses = 1"
+    ))
+    .await
+    .unwrap();
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_hostaddr_that_is_not_loopback_is_refused_whatever_the_host() {
+    // With hostaddr set the driver connects there and uses host only as a name.
+    for dsn in [
+        "hostaddr=192.0.2.2 user=ptr",
+        "host=localhost hostaddr=192.0.2.2 user=ptr",
+        "host=/var/run/postgresql hostaddr=192.0.2.2 user=ptr",
+    ] {
+        let schemas = SchemaSet::with_prefix("ptr_unused").unwrap();
+        let error = PgSubstrate::connect_with(dsn, schemas)
+            .await
+            .err()
+            .expect("a remote hostaddr must be refused");
+        assert_eq!(
+            error,
+            PgError::TlsRequired {
+                host: "192.0.2.2".into()
+            },
+            "{dsn}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_non_loopback_host_is_refused_without_a_tls_connector() {
+    let schemas = SchemaSet::with_prefix("ptr_unused").unwrap();
+    let error = PgSubstrate::connect_with("host=db.example.com user=ptr", schemas)
+        .await
+        .err()
+        .expect("a remote host must be refused");
+    assert_eq!(
+        error,
+        PgError::TlsRequired {
+            host: "db.example.com".into()
+        }
+    );
+}
+
+#[tokio::test]
+async fn a_derived_write_holding_the_lifecycle_row_is_ordered_before_the_supersede() {
+    supersede_waits_for_the_derived_writer(substrate().await).await;
+}
+
+#[tokio::test]
+async fn the_lock_ordering_holds_when_sessions_default_to_repeatable_read() {
+    let isolation: String = raw_client_at(&repeatable_read_dsn())
+        .await
+        .query_one("SHOW default_transaction_isolation", &[])
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(isolation, "repeatable read");
+    supersede_waits_for_the_derived_writer(substrate_at(&repeatable_read_dsn()).await).await;
+}
+
+async fn supersede_waits_for_the_derived_writer(mut substrate: PgSubstrate) {
+    let log = vec![capsule(1, "c1", 1), supersede(2, "c1", 1, 2)];
+    let chain = anchors(&log);
+    substrate.apply_committed(&log[0], chain[0]).await.unwrap();
+    let (projection, derived) = (
+        substrate.schemas().projection.clone(),
+        substrate.schemas().derived.clone(),
+    );
+
+    // A cache writer takes the row lock exactly as upsert_document does and
+    // indexes generation 1 while the supersede is in flight.
+    let mut writer = raw_client().await;
+    let transaction = writer.transaction().await.unwrap();
+    transaction
+        .query_one(
+            &format!(
+                "SELECT generation FROM {projection}.live_generation \
+                 WHERE target = 'c1' FOR SHARE"
+            ),
+            &[],
+        )
+        .await
+        .unwrap();
+    transaction
+        .execute(
+            &format!(
+                "INSERT INTO {derived}.search_document \
+                 (capsule, generation, project, content_digest, body, indexed_at_commit) \
+                 VALUES ('c1', 1, 'atlas', decode(repeat('00', 32), 'hex'), 'late', 1)"
+            ),
+            &[],
+        )
+        .await
+        .unwrap();
+
+    let supersede = log[1].clone();
+    let projector = tokio::spawn(async move {
+        let report = substrate
+            .apply_committed(&supersede, chain[1])
+            .await
+            .unwrap();
+        (substrate, report)
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert!(
+        !projector.is_finished(),
+        "the projector must wait for the row lock"
+    );
+    transaction.commit().await.unwrap();
+
+    let (substrate, report) = projector.await.unwrap();
+    assert_eq!(report.dropped_documents, 1);
+    let remaining: i64 = writer
+        .query_one(
+            &format!("SELECT count(*) FROM {derived}.search_document"),
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(remaining, 0);
+    substrate.drop_all().await.unwrap();
+}
+
+async fn memory_with(substrate: &PgSubstrate, id: &str, max_writes: u32) -> FastMemoryConfig {
+    let config = FastMemoryConfig {
+        max_writes,
+        ..memory_config()
+    };
+    substrate
+        .create_memory(&FastMemoryRecord {
+            id: id.into(),
+            principal: PrincipalId::from("agent-7"),
+            thread: id.into(),
+            config,
+            projection_digest: [3; 32],
+            codebook_seed: 11,
+        })
+        .await
+        .unwrap();
+    config
+}
+
+/// Journal a write from another connection while holding the memory row,
+/// the way a concurrent `append_write` does, and let `append` run meanwhile.
+async fn race_an_append(
+    mut substrate: PgSubstrate,
+    memory: &str,
+    held_seq: i64,
+    racing_seq: u64,
+) -> (PgSubstrate, Result<(), PgError>) {
+    let work = substrate.schemas().work.clone();
+    let mut holder = raw_client().await;
+    let transaction = holder.transaction().await.unwrap();
+    transaction
+        .query_one(
+            &format!("SELECT max_writes FROM {work}.fastmem_memory WHERE id = $1 FOR UPDATE"),
+            &[&memory],
+        )
+        .await
+        .unwrap();
+    transaction
+        .execute(
+            &format!(
+                "INSERT INTO {work}.fastmem_write \
+                 (memory, seq, source_key, source_generation, input_digest, key_cells, \
+                  value_cells, beta, decay_kind) \
+                 VALUES ($1, $2, 'live', 1, decode(repeat('04', 32), 'hex'), \
+                         decode(repeat('00', 16), 'hex'), decode(repeat('00', 16), 'hex'), \
+                         0.5, 'none')"
+            ),
+            &[&memory, &held_seq],
+        )
+        .await
+        .unwrap();
+    let request = write_request("live", [1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]);
+    let memory_id = memory.to_owned();
+    let appender = tokio::spawn(async move {
+        let result = substrate
+            .append_write(&memory_id, ptr_fastmem::WriteSeq(racing_seq), &request)
+            .await;
+        (substrate, result)
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert!(
+        !appender.is_finished(),
+        "the append must wait for the memory row"
+    );
+    transaction.commit().await.unwrap();
+    appender.await.unwrap()
+}
+
+#[tokio::test]
+async fn an_append_that_waited_for_another_sees_its_write() {
+    let mut substrate = substrate().await;
+    substrate.replay(&[capsule(1, "live", 1)]).await.unwrap();
+    // Out of order: seq 3 commits while seq 2 waits.
+    memory_with(&substrate, "ordered", 64).await;
+    let first = write_request("live", [1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]);
+    substrate
+        .append_write("ordered", ptr_fastmem::WriteSeq(1), &first)
+        .await
+        .unwrap();
+    let (mut substrate, result) = race_an_append(substrate, "ordered", 3, 2).await;
+    assert_eq!(
+        result,
+        Err(PgError::InvalidWrite {
+            memory: "ordered".into(),
+            reason: "the sequence number does not follow the journal"
+        })
+    );
+    // Over capacity: the journal fills while the append waits.
+    memory_with(&substrate, "bounded", 2).await;
+    substrate
+        .append_write("bounded", ptr_fastmem::WriteSeq(1), &first)
+        .await
+        .unwrap();
+    let (substrate, result) = race_an_append(substrate, "bounded", 2, 3).await;
+    assert_eq!(
+        result,
+        Err(PgError::InvalidWrite {
+            memory: "bounded".into(),
+            reason: "the journal is full"
+        })
+    );
+    assert_eq!(substrate.load_journal("bounded").await.unwrap().len(), 2);
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn superseding_a_source_removes_its_fast_memory_writes() {
+    let mut substrate = substrate().await;
+    let log = vec![capsule(1, "c1", 1), supersede(2, "c1", 1, 2)];
+    let chain = anchors(&log);
+    substrate.apply_committed(&log[0], chain[0]).await.unwrap();
+    let config = memory_with(&substrate, "m1", 64).await;
+    let request = write_request("c1", [1.0, 0.0, 0.0, 0.0], [0.5, 0.0, 0.0, 0.0]);
+    let mut memory = FastMemory::new(config, codebook(&config)).unwrap();
+    let receipt = memory.write(request.clone()).unwrap();
+    substrate
+        .append_write("m1", receipt.seq, &request)
+        .await
+        .unwrap();
+    substrate
+        .put_checkpoint("m1", memory.binding_digest(), memory.state())
+        .await
+        .unwrap();
+    let report = substrate.apply_committed(&log[1], chain[1]).await.unwrap();
+    assert_eq!(report.removed_writes, 1);
+    assert_eq!(report.dropped_checkpoints, 1);
+    assert!(substrate.load_journal("m1").await.unwrap().is_empty());
+    assert_eq!(substrate.latest_checkpoint("m1").await.unwrap(), None);
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_checkpoint_that_does_not_fold_the_stored_journal_is_refused_or_skipped() {
+    let mut substrate = substrate().await;
+    let log = vec![
+        capsule(1, "keep", 1),
+        capsule(2, "gone", 1),
+        revoke(3, "gone", 1),
+    ];
+    let chain = anchors(&log);
+    substrate.apply_committed(&log[0], chain[0]).await.unwrap();
+    substrate.apply_committed(&log[1], chain[1]).await.unwrap();
+    let config = memory_with(&substrate, "m1", 64).await;
+    let keep = write_request("keep", [1.0, 0.0, 0.0, 0.0], [0.5, 0.1, 0.0, 0.0]);
+    let gone = write_request("gone", [0.0, 1.0, 0.0, 0.0], [0.9, 0.9, 0.9, 0.9]);
+    let mut memory = FastMemory::new(config, codebook(&config)).unwrap();
+    for request in [&keep, &gone] {
+        let receipt = memory.write(request.clone()).unwrap();
+        substrate
+            .append_write("m1", receipt.seq, request)
+            .await
+            .unwrap();
+    }
+    // A checkpointer folded both writes; the revocation commits before it stores.
+    let stale_digest = memory.binding_digest();
+    let stale_state = memory.state().clone();
+    substrate.apply_committed(&log[2], chain[2]).await.unwrap();
+    assert!(matches!(
+        substrate
+            .put_checkpoint("m1", stale_digest, &stale_state)
+            .await,
+        Err(PgError::InvalidCheckpoint { .. })
+    ));
+
+    // A fold of the surviving prefix is accepted; a wrong binding is not.
+    let mut clean = FastMemory::new(config, codebook(&config)).unwrap();
+    clean.write(keep.clone()).unwrap();
+    assert!(matches!(
+        substrate.put_checkpoint("m1", [0; 32], clean.state()).await,
+        Err(PgError::InvalidCheckpoint { .. })
+    ));
+    substrate
+        .put_checkpoint("m1", clean.binding_digest(), clean.state())
+        .await
+        .unwrap();
+
+    // A stale row written behind the substrate's back is never handed out.
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    raw.execute(
+        &format!(
+            "INSERT INTO {work}.fastmem_checkpoint (memory, applied_seq, binding_digest, state) \
+             VALUES ('m1', 2, $1, $2)"
+        ),
+        &[
+            &stale_digest.to_vec(),
+            &ptr_fastmem::encode_state(&stale_state),
+        ],
+    )
+    .await
+    .unwrap();
+    let checkpoint = substrate.latest_checkpoint("m1").await.unwrap().unwrap();
+    assert_eq!(checkpoint.applied.0, 1);
+    assert_eq!(checkpoint.binding_digest, clean.binding_digest());
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn vector_search_is_not_truncated_at_the_default_candidate_list() {
+    let mut substrate = substrate().await;
+    substrate.register_space(&space()).await.unwrap();
+    let raw = raw_client().await;
+    let (projection, derived) = (
+        substrate.schemas().projection.clone(),
+        substrate.schemas().derived.clone(),
+    );
+    raw.batch_execute(&format!(
+        "INSERT INTO {projection}.live_generation (target, generation, project, commit_index) \
+             SELECT 'c' || i, 1, 'atlas', 1 FROM generate_series(1, 2000) i; \
+         INSERT INTO {derived}.search_document \
+             (capsule, generation, project, content_digest, body, space, embedding, \
+              indexed_at_commit) \
+             SELECT 'c' || i, 1, 'atlas', decode(repeat('00', 32), 'hex'), 'doc', 'toy4', \
+                    ARRAY[1 + random(), random(), random(), random()]::real[]::halfvec(4), 0 \
+             FROM generate_series(1, 2000) i; \
+         ANALYZE {derived}.search_document;"
+    ))
+    .await
+    .unwrap();
+    for project in [None, Some(ProjectId::from("atlas"))] {
+        let query = HybridQuery {
+            project,
+            text: None,
+            embedding: Some((space().id, vec![1.0, 0.5, 0.5, 0.5])),
+            limit: 100,
+            lexical_weight: 1.0,
+            vector_weight: 1.0,
+            rank_constant: 60.0,
+        };
+        let results = substrate.search(&query).await.unwrap();
+        assert_eq!(results.vector.len(), 100, "{:?}", query.project);
+    }
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn strings_postgresql_text_cannot_hold_are_refused_before_anything_is_written() {
+    let mut substrate = substrate().await;
+    let mut parts = sealed_branch("b1", "agent-7").into_parts();
+    parts.ops.push(BranchOp::Put {
+        key: "order:1".into(),
+        value: SemanticValue::from("a\0b"),
+    });
+    let branch = SealedBranch::from_parts(parts).unwrap();
+    assert_eq!(
+        substrate.store_branch(&branch).await.unwrap_err(),
+        PgError::InvalidText {
+            field: "branch_op.value_text"
+        }
+    );
+    assert_eq!(substrate.load_branch(branch.id()).await.unwrap(), None);
+
+    let record = capsule(1, "c\0", 1);
+    let chain = anchors(std::slice::from_ref(&record));
+    assert!(matches!(
+        substrate.apply_committed(&record, chain[0]).await,
+        Err(PgError::InvalidRecord { index: 1, .. })
+    ));
+    assert_eq!(substrate.watermark().await.unwrap(), LogAnchor::empty());
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn revert_share_counts_merged_branches_later_reverted_within_a_window() {
+    let mut substrate = substrate().await;
+    record_manual_policy(&mut substrate, "policy-r").await;
+    for (id, author) in [
+        ("r1", "agent-a"),
+        ("r2", "agent-a"),
+        ("r3", "agent-b"),
+        ("r5", "agent-b"),
+        ("r6", "agent-a"),
+    ] {
+        substrate
+            .store_branch(&sealed_branch(id, author))
+            .await
+            .unwrap();
+        substrate
+            .record_triage(
+                &BranchId::from(id),
+                &triage(TriageDecision::AutoPropose, true, false),
+                "policy-r",
+            )
+            .await
+            .unwrap();
+    }
+    for (id, outcome) in [
+        ("r1", BranchOutcome::Merged(CommitIndex(10))),
+        ("r1", BranchOutcome::Reverted(CommitIndex(12))),
+        ("r2", BranchOutcome::Merged(CommitIndex(11))),
+        ("r5", BranchOutcome::Merged(CommitIndex(14))),
+        ("r6", BranchOutcome::Merged(CommitIndex(15))),
+    ] {
+        substrate
+            .record_outcome(&BranchId::from(id), outcome)
+            .await
+            .unwrap();
+    }
+    // A merge and a triage from a month ago, as the store's clock recorded
+    // them; the month-old merge is reverted today.
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    raw.execute(
+        &format!(
+            "INSERT INTO {work}.branch_outcome (branch, outcome, commit_index, observed_at) \
+             VALUES ('r3', 'merged', 5, now() - interval '30 days')"
+        ),
+        &[],
+    )
+    .await
+    .unwrap();
+    substrate
+        .record_outcome(
+            &BranchId::from("r3"),
+            BranchOutcome::Reverted(CommitIndex(13)),
+        )
+        .await
+        .unwrap();
+    substrate
+        .store_branch(&sealed_branch("r4", "agent-b"))
+        .await
+        .unwrap();
+    raw.execute(
+        &format!(
+            "INSERT INTO {work}.branch_triage (branch, decision, eligible, calibration_slice, \
+             score, auto_propensity, policy_version, decided_at) \
+             VALUES ('r4', 'escalate', true, false, 0.2, 0.0, 'policy-r', \
+                     now() - interval '30 days')"
+        ),
+        &[],
+    )
+    .await
+    .unwrap();
+    // Merges inside the window whose reverts carry stamps outside it: nothing
+    // orders the stamps of two records, and a merge counts as reverted
+    // whenever its revert was stamped.
+    raw.execute(
+        &format!(
+            "INSERT INTO {work}.branch_outcome (branch, outcome, commit_index, observed_at) \
+             VALUES ('r5', 'reverted', 16, now() - interval '10 days'), \
+                    ('r6', 'reverted', 17, now() - interval '10 days')"
+        ),
+        &[],
+    )
+    .await
+    .unwrap();
+
+    let spec = |metric, grouping, window| MetricSpec {
+        metric,
+        grouping,
+        window,
+    };
+    let row = |group: &str, numerator, denominator| MetricRow {
+        group: group.into(),
+        numerator,
+        denominator,
+    };
+    let revert = |grouping, window| spec(Metric::RevertShare, grouping, window);
+    assert_eq!(
+        substrate
+            .metric(revert(Grouping::Overall, Window::All))
+            .await
+            .unwrap(),
+        vec![row("", 4, 5)]
+    );
+    // Only merges within the window enter the denominator, and each of them
+    // counts as reverted wherever its revert's stamp falls: the month-old
+    // merge reverted today is outside, the reverts stamped before the window
+    // of their merges count.
+    assert_eq!(
+        substrate
+            .metric(revert(Grouping::Overall, Window::LastDays(7)))
+            .await
+            .unwrap(),
+        vec![row("", 3, 4)]
+    );
+    assert_eq!(
+        substrate
+            .metric(revert(Grouping::ByPrincipal, Window::All))
+            .await
+            .unwrap(),
+        vec![row("agent-a", 2, 3), row("agent-b", 2, 2)]
+    );
+    assert_eq!(
+        substrate
+            .metric(revert(Grouping::ByPolicyVersion, Window::LastDays(7)))
+            .await
+            .unwrap(),
+        vec![row("policy-r", 3, 4)]
+    );
+    // A triage-based metric is windowed on the triage.
+    let auto = |window| spec(Metric::AutoProposeShare, Grouping::Overall, window);
+    assert_eq!(
+        substrate.metric(auto(Window::All)).await.unwrap(),
+        vec![row("", 5, 6)]
+    );
+    assert_eq!(
+        substrate.metric(auto(Window::LastDays(7))).await.unwrap(),
+        vec![row("", 5, 5)]
+    );
+    // A zero-day window counts nothing.
+    assert_eq!(
+        substrate
+            .metric(revert(Grouping::Overall, Window::LastDays(0)))
+            .await
+            .unwrap(),
+        vec![]
+    );
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn every_metric_windows_a_branch_once_on_the_record_that_enters_its_denominator() {
+    let mut substrate = substrate().await;
+    record_manual_policy(&mut substrate, "policy-w").await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    // (branch, decision, eligible, calibration slice, days since the triage)
+    let triages = [
+        ("m1", "auto_propose", true, false, 3),
+        ("m2", "auto_propose", true, false, 31),
+        ("m3", "auto_propose", true, false, 4),
+        ("m4", "auto_propose", true, false, 41),
+        ("c1", "escalate", true, false, 11),
+        ("c2", "discard", false, false, 2),
+        ("s1", "escalate", true, true, 30),
+        ("s2", "escalate", true, true, 30),
+        ("s3", "escalate", true, true, 3),
+        ("e1", "escalate", true, false, 2),
+    ];
+    for (id, decision, eligible, slice, days) in triages {
+        substrate
+            .store_branch(&sealed_branch(id, "agent-w"))
+            .await
+            .unwrap();
+        // As policy-w logs it: an eligible branch escalated outside the slice
+        // scored below its threshold of 0.5, every other one 0.8, and an
+        // eligible branch scoring 0.8 has propensity 1 - 0.1. The database
+        // refuses a row its cited policy cannot have produced.
+        let score: f32 = if eligible && decision == "escalate" && !slice {
+            0.2
+        } else {
+            0.8
+        };
+        let propensity: f64 = if eligible && score >= 0.5 { 0.9 } else { 0.0 };
+        raw.execute(
+            &format!(
+                "INSERT INTO {work}.branch_triage (branch, decision, eligible, \
+                 calibration_slice, score, auto_propensity, policy_version, decided_at) \
+                 VALUES ($1, $2, $3, $4, $5, $6, 'policy-w', \
+                         now() - make_interval(days => $7))"
+            ),
+            &[
+                &id,
+                &decision,
+                &eligible,
+                &slice,
+                &score,
+                &propensity,
+                &days,
+            ],
+        )
+        .await
+        .unwrap();
+    }
+    // (branch, outcome, commit index, days since it was observed)
+    let outcomes: [(&str, &str, Option<i64>, i32); 13] = [
+        // Merged in the window and reverted since.
+        ("m1", "merged", Some(1), 2),
+        ("m1", "reverted", Some(5), 1),
+        // Merged a month ago and reverted in the window.
+        ("m2", "merged", Some(2), 30),
+        ("m2", "reverted", Some(6), 1),
+        ("m3", "merged", Some(3), 3),
+        ("m4", "merged", Some(4), 40),
+        // Conflicted before the window and discarded in it: the branch
+        // entered the record before the window.
+        ("c1", "conflicted", None, 10),
+        ("c1", "discarded", None, 1),
+        ("c2", "conflicted", None, 1),
+        // Triaged a month ago and adjudicated in the window.
+        ("s1", "adjudicated_harmful", None, 1),
+        ("s2", "adjudicated_harmful", None, 20),
+        ("s3", "adjudicated_harmless", None, 1),
+        // Adjudicated in the window, but outside the calibration slice.
+        ("e1", "adjudicated_harmful", None, 1),
+    ];
+    for (id, outcome, commit, days) in outcomes {
+        raw.execute(
+            &format!(
+                "INSERT INTO {work}.branch_outcome (branch, outcome, commit_index, observed_at) \
+                 VALUES ($1, $2, $3, now() - make_interval(days => $4))"
+            ),
+            &[&id, &outcome, &commit, &days],
+        )
+        .await
+        .unwrap();
+    }
+
+    let counts = |metric: Metric, window: Window| {
+        let substrate = &substrate;
+        async move {
+            let rows = substrate
+                .metric(MetricSpec {
+                    metric,
+                    grouping: Grouping::Overall,
+                    window,
+                })
+                .await
+                .unwrap();
+            assert_eq!(rows.len(), 1, "{metric:?} {window:?}: {rows:?}");
+            (rows[0].numerator, rows[0].denominator)
+        }
+    };
+    let week = Window::LastDays(7);
+    // On the triage: auto-proposed m1..m4 over the eligible (all but c2),
+    // and within the week m1 and m3 over m1, m3, s3 and e1.
+    assert_eq!(counts(Metric::AutoProposeShare, Window::All).await, (4, 9));
+    assert_eq!(counts(Metric::AutoProposeShare, week).await, (2, 4));
+    // On the triage: escalated c1, s1, s2, s3 and e1 over all ten, and within
+    // the week s3 and e1 over m1, m3, c2, s3 and e1.
+    assert_eq!(counts(Metric::EscalationShare, Window::All).await, (5, 10));
+    assert_eq!(counts(Metric::EscalationShare, week).await, (2, 5));
+    // On the branch's first outcome, once per branch: c1 and c2 conflicted
+    // over all ten; within the week c2 over m1, m3, c2, s1, s3 and e1. c1
+    // and m2, whose first outcomes precede the week, are in neither count.
+    assert_eq!(counts(Metric::ConflictRate, Window::All).await, (2, 10));
+    assert_eq!(counts(Metric::ConflictRate, week).await, (1, 6));
+    // On the adjudication, over the calibration slice only: s1 and s2
+    // harmful over s1, s2 and s3; within the week s1 over s1 and s3.
+    assert_eq!(
+        counts(Metric::AdjudicatedHarmRate, Window::All).await,
+        (2, 3)
+    );
+    assert_eq!(counts(Metric::AdjudicatedHarmRate, week).await, (1, 2));
+    // On the merge: m1 and m2 reverted over the four merges; within the week
+    // m1 over m1 and m3, while m2's revert in the week does not bring back
+    // its month-old merge.
+    assert_eq!(counts(Metric::RevertShare, Window::All).await, (2, 4));
+    assert_eq!(counts(Metric::RevertShare, week).await, (1, 2));
+    substrate.drop_all().await.unwrap();
+}
+
+/// Store a branch, log it as a calibration-slice escalation under `policy`
+/// with `score`, and optionally adjudicate it.
+async fn calibration_branch(
+    substrate: &mut PgSubstrate,
+    id: &str,
+    score: f32,
+    policy: &str,
+    harmful: Option<bool>,
+) {
+    substrate
+        .store_branch(&sealed_branch(id, "agent-c"))
+        .await
+        .unwrap();
+    // The propensity the cited policy logs for this score, as its triage
+    // computes it.
+    let cited = substrate
+        .load_policy(policy)
+        .await
+        .unwrap()
+        .unwrap()
+        .policy();
+    let auto_propensity = match cited.threshold() {
+        AutoThreshold::AtLeast(threshold) if score >= threshold => 1.0 - cited.calibration_rate(),
+        _ => 0.0,
+    };
+    let outcome = TriageOutcome {
+        decision: TriageDecision::Escalate,
+        eligible: true,
+        calibration_slice: true,
+        score,
+        auto_propensity,
+    };
+    substrate
+        .record_triage(&BranchId::from(id), &outcome, policy)
+        .await
+        .unwrap();
+    if let Some(harmful) = harmful {
+        let verdict = if harmful {
+            BranchOutcome::AdjudicatedHarmful
+        } else {
+            BranchOutcome::AdjudicatedHarmless
+        };
+        substrate
+            .record_outcome(&BranchId::from(id), verdict)
+            .await
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn triage_policies_record_their_calibration_and_hold_out_everything_else() {
+    let mut substrate = substrate().await;
+    // A triage row may only cite a recorded policy.
+    substrate
+        .store_branch(&sealed_branch("x", "agent-c"))
+        .await
+        .unwrap();
+    assert_eq!(
+        substrate
+            .record_triage(
+                &BranchId::from("x"),
+                &triage(TriageDecision::Discard, false, false),
+                "unrecorded"
+            )
+            .await,
+        Err(PgError::InvalidTriage {
+            branch: "x".into(),
+            policy_version: "unrecorded".into(),
+            reason: "the cited policy is not recorded",
+        })
+    );
+
+    let bootstrap = PolicyRecord::manual(
+        "bootstrap",
+        TriagePolicy::new(AutoThreshold::Never, 0.999).unwrap(),
+    )
+    .unwrap();
+    substrate.record_policy(&bootstrap).await.unwrap();
+    assert_eq!(
+        substrate.load_policy("bootstrap").await.unwrap(),
+        Some(bootstrap)
+    );
+    assert_eq!(substrate.load_policy("none").await.unwrap(), None);
+
+    // Forty adjudicated calibration-slice branches under the bootstrap policy.
+    for i in 0..40 {
+        let score = i as f32 / 40.0;
+        calibration_branch(
+            &mut substrate,
+            &format!("c{i:02}"),
+            score,
+            "bootstrap",
+            Some(score < 0.3),
+        )
+        .await;
+    }
+    let samples = substrate.adjudicated_samples().await.unwrap();
+    assert_eq!(samples.len(), 40);
+    let rule = ThresholdRule::LearnThenTest {
+        alpha: 0.2,
+        delta: 0.1,
+    };
+    let calibrated = PolicyRecord::calibrate("policy-2", rule, 0.05, &samples).unwrap();
+    substrate.record_policy(&calibrated).await.unwrap();
+    assert_eq!(
+        substrate.load_policy("policy-2").await.unwrap(),
+        Some(calibrated.clone())
+    );
+
+    // Adjudications after the calibration are the policy's held-out set.
+    for i in 0..5 {
+        calibration_branch(
+            &mut substrate,
+            &format!("h{i}"),
+            0.9,
+            "policy-2",
+            Some(false),
+        )
+        .await;
+    }
+    let everything = substrate.adjudicated_samples().await.unwrap();
+    assert_eq!(everything.len(), 45);
+    let held_out = calibrated.held_out(&everything);
+    assert_eq!(held_out.len(), 5);
+    assert!(held_out.iter().all(|(branch, _)| branch.0.starts_with('h')));
+
+    // A policy calibrated on a branch nobody adjudicated is refused whole.
+    calibration_branch(&mut substrate, "pending", 0.5, "policy-2", None).await;
+    let mut with_pending = samples.clone();
+    let pending_sample = with_pending[0].1;
+    with_pending.push((BranchId::from("pending"), pending_sample));
+    let dishonest = PolicyRecord::calibrate("policy-3", rule, 0.05, &with_pending).unwrap();
+    assert!(matches!(
+        substrate.record_policy(&dishonest).await,
+        Err(PgError::InvalidPolicy { ref version, .. }) if version == "policy-3"
+    ));
+    assert_eq!(substrate.load_policy("policy-3").await.unwrap(), None);
+
+    // A recorded policy and its calibration set are never rewritten, not even
+    // a policy nothing cites, and a branch a policy was calibrated on cannot
+    // be deleted.
+    record_manual_policy(&mut substrate, "unused").await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    for statement in [
+        format!(
+            "UPDATE {work}.triage_policy SET calibration_rate = 0.5 WHERE version = 'policy-2'"
+        ),
+        format!("DELETE FROM {work}.triage_policy WHERE version = 'unused'"),
+        format!("UPDATE {work}.triage_policy_sample SET branch = 'h0' WHERE branch = 'c00'"),
+        format!("DELETE FROM {work}.triage_policy_sample WHERE branch = 'c00'"),
+    ] {
+        let error = raw.execute(&statement, &[]).await.unwrap_err();
+        assert_eq!(
+            error.as_db_error().unwrap().code().code(),
+            "23000",
+            "{statement}"
+        );
+    }
+    let error = raw
+        .execute(&format!("DELETE FROM {work}.branch WHERE id = 'c00'"), &[])
+        .await
+        .unwrap_err();
+    assert_eq!(error.as_db_error().unwrap().code().code(), "23503");
+    substrate.drop_all().await.unwrap();
+}
+
+/// The refusal of a calibration branch that is not an adjudicated
+/// calibration-slice branch.
+const NOT_ADJUDICATED: &str = "a calibration branch is not an adjudicated calibration-slice branch";
+
+/// The refusal of a record whose rule, rerun on the stored adjudications of
+/// its calibration branches, chooses another threshold.
+const NOT_REPRODUCED: &str =
+    "the rule on the stored adjudications of the calibration branches chooses another threshold";
+
+/// A calibration sample as the adjudication of an eligible triage at `score`.
+fn sample(score: f32, harmful: bool) -> CalibrationSample {
+    TriageOutcome {
+        decision: TriageDecision::Escalate,
+        eligible: true,
+        calibration_slice: true,
+        score,
+        auto_propensity: 0.0,
+    }
+    .adjudicate(harmful)
+    .unwrap()
+}
+
+#[tokio::test]
+async fn a_policy_is_recorded_only_when_its_rule_on_the_stored_adjudications_chooses_it() {
+    let mut substrate = substrate().await;
+    record_manual_policy(&mut substrate, "bootstrap").await;
+    for i in 0..40 {
+        let score = i as f32 / 40.0;
+        calibration_branch(
+            &mut substrate,
+            &format!("c{i:02}"),
+            score,
+            "bootstrap",
+            Some(score < 0.3),
+        )
+        .await;
+    }
+    let samples = substrate.adjudicated_samples().await.unwrap();
+    let rule = ThresholdRule::LearnThenTest {
+        alpha: 0.2,
+        delta: 0.1,
+    };
+    let honest = PolicyRecord::calibrate("honest", rule, 0.05, &samples).unwrap();
+
+    // A threshold nobody computed from these adjudications, the stored
+    // branches with their verdicts flipped, and one half's samples under the
+    // other half's branches each claim a guarantee the stored evidence does
+    // not give.
+    let invented = PolicyRecord::from_parts(
+        "invented",
+        AutoThreshold::AtLeast(0.0),
+        0.05,
+        rule,
+        honest.calibrated_on().to_vec(),
+    )
+    .unwrap();
+    let flipped: Vec<(BranchId, CalibrationSample)> = (0..40)
+        .map(|i| {
+            let score = i as f32 / 40.0;
+            (BranchId(format!("c{i:02}")), sample(score, score >= 0.3))
+        })
+        .collect();
+    let flipped = PolicyRecord::calibrate("flipped", rule, 0.05, &flipped).unwrap();
+    let misattributed: Vec<(BranchId, CalibrationSample)> = samples[..20]
+        .iter()
+        .zip(&samples[20..])
+        .map(|((branch, _), (_, other))| (branch.clone(), *other))
+        .collect();
+    let misattributed =
+        PolicyRecord::calibrate("misattributed", rule, 0.05, &misattributed).unwrap();
+    for forged in [&invented, &flipped, &misattributed] {
+        let stored: Vec<(BranchId, CalibrationSample)> = samples
+            .iter()
+            .filter(|(branch, _)| forged.calibrated_on().contains(branch))
+            .cloned()
+            .collect();
+        let chosen = PolicyRecord::calibrate(forged.version(), rule, 0.05, &stored).unwrap();
+        assert_ne!(forged.policy().threshold(), chosen.policy().threshold());
+        assert_eq!(
+            substrate.record_policy(forged).await,
+            Err(PgError::InvalidPolicy {
+                version: forged.version().to_owned(),
+                reason: NOT_REPRODUCED,
+            })
+        );
+        assert_eq!(substrate.load_policy(forged.version()).await.unwrap(), None);
+    }
+
+    // An adjudicated branch outside the calibration slice, and a slice branch
+    // whose only outcome is a merge, are no calibration evidence, even paired
+    // with the very sample their stored row would give.
+    substrate
+        .store_branch(&sealed_branch("outside", "agent-c"))
+        .await
+        .unwrap();
+    substrate
+        .record_triage(
+            &BranchId::from("outside"),
+            &triage(TriageDecision::Escalate, true, false),
+            "bootstrap",
+        )
+        .await
+        .unwrap();
+    substrate
+        .record_outcome(
+            &BranchId::from("outside"),
+            BranchOutcome::AdjudicatedHarmless,
+        )
+        .await
+        .unwrap();
+    calibration_branch(&mut substrate, "merged", 0.5, "bootstrap", None).await;
+    substrate
+        .record_outcome(
+            &BranchId::from("merged"),
+            BranchOutcome::Merged(CommitIndex(3)),
+        )
+        .await
+        .unwrap();
+    for (branch, score) in [("outside", 0.8), ("merged", 0.5)] {
+        let mut with_branch = samples.clone();
+        with_branch.push((BranchId::from(branch), sample(score, false)));
+        let version = format!("with-{branch}");
+        let record = PolicyRecord::calibrate(version.as_str(), rule, 0.05, &with_branch).unwrap();
+        assert_eq!(
+            substrate.record_policy(&record).await,
+            Err(PgError::InvalidPolicy {
+                version: version.clone(),
+                reason: NOT_ADJUDICATED,
+            })
+        );
+        assert_eq!(substrate.load_policy(&version).await.unwrap(), None);
+    }
+
+    substrate.record_policy(&honest).await.unwrap();
+    assert_eq!(substrate.load_policy("honest").await.unwrap(), Some(honest));
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_calibration_set_is_complete_when_its_policy_commits_and_never_grows() {
+    let mut substrate = substrate().await;
+    record_manual_policy(&mut substrate, "bootstrap").await;
+    for i in 0..12 {
+        calibration_branch(
+            &mut substrate,
+            &format!("c{i:02}"),
+            i as f32 / 12.0,
+            "bootstrap",
+            Some(i < 3),
+        )
+        .await;
+    }
+    let samples = substrate.adjudicated_samples().await.unwrap();
+    let rule = ThresholdRule::ConformalRiskControl { alpha: 0.3 };
+    let record = PolicyRecord::calibrate("policy-2", rule, 0.05, &samples[..10]).unwrap();
+    substrate.record_policy(&record).await.unwrap();
+
+    // A sample appended in a later transaction is refused, for a calibrated
+    // and for a manual policy alike.
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    for (policy, branch) in [("policy-2", "c10"), ("bootstrap", "c11")] {
+        let error = raw
+            .execute(
+                &format!(
+                    "INSERT INTO {work}.triage_policy_sample (policy_version, branch) \
+                     VALUES ($1, $2)"
+                ),
+                &[&policy, &branch],
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.as_db_error().unwrap().code().code(),
+            "23000",
+            "{policy}"
+        );
+    }
+    assert_eq!(
+        substrate.load_policy("policy-2").await.unwrap(),
+        Some(record.clone())
+    );
+
+    // A policy whose sample rows fall short of or exceed its calibration size
+    // cannot commit: a shortfall is refused at COMMIT, an excess by the
+    // statement that adds it, which leaves the transaction to roll back.
+    for (size, branches) in [(2, &["c10"][..]), (1, &["c10", "c11"][..])] {
+        let samples: String = branches
+            .iter()
+            .map(|branch| {
+                format!(
+                    "INSERT INTO {work}.triage_policy_sample (policy_version, branch) \
+                     VALUES ('sized', '{branch}');"
+                )
+            })
+            .collect();
+        let error = raw
+            .batch_execute(&format!(
+                "BEGIN; \
+                 INSERT INTO {work}.triage_policy \
+                     (version, rule, calibration_rate, alpha, calibration_size) \
+                 VALUES ('sized', 'conformal_risk_control', 0.05, 0.3, {size}); \
+                 {samples} \
+                 COMMIT;"
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.as_db_error().unwrap().code().code(),
+            "23000",
+            "size {size}"
+        );
+        raw.batch_execute("ROLLBACK").await.unwrap();
+        assert_eq!(substrate.load_policy("sized").await.unwrap(), None);
+    }
+
+    // A calibration set that no longer has its recorded size (here past a
+    // disabled check) is refused on load rather than returned.
+    raw.batch_execute(&format!(
+        "ALTER TABLE {work}.triage_policy_sample \
+             DISABLE TRIGGER triage_policy_sample_calibration_size; \
+         INSERT INTO {work}.triage_policy_sample (policy_version, branch) \
+             VALUES ('policy-2', 'c10'); \
+         ALTER TABLE {work}.triage_policy_sample \
+             ENABLE TRIGGER triage_policy_sample_calibration_size;"
+    ))
+    .await
+    .unwrap();
+    assert!(matches!(
+        substrate.load_policy("policy-2").await,
+        Err(PgError::CorruptRow {
+            table: "triage_policy",
+            ..
+        })
+    ));
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn policy_rows_that_break_a_rule_level_or_size_constraint_are_refused() {
+    let substrate = substrate().await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    for values in [
+        // An empty version and an unknown rule.
+        "('', 'manual', NULL, 0.1, NULL, NULL, 0)",
+        "('p', 'bayes', NULL, 0.1, 0.2, NULL, 3)",
+        // A manual threshold has no risk level; a calibrated one has one.
+        "('p', 'manual', NULL, 0.1, 0.2, NULL, 0)",
+        "('p', 'conformal_risk_control', NULL, 0.1, NULL, NULL, 3)",
+        // Only learn-then-test has a confidence level.
+        "('p', 'conformal_risk_control', NULL, 0.1, 0.2, 0.1, 3)",
+        "('p', 'learn_then_test', NULL, 0.1, 0.2, NULL, 3)",
+        // A threshold lies in [0, 1], a calibration rate in [0, 1), a risk or
+        // confidence level in (0, 1).
+        "('p', 'manual', 1.5, 0.1, NULL, NULL, 0)",
+        "('p', 'manual', -0.1, 0.1, NULL, NULL, 0)",
+        "('p', 'manual', NULL, 1.0, NULL, NULL, 0)",
+        "('p', 'conformal_risk_control', NULL, 0.1, 1.0, NULL, 3)",
+        "('p', 'learn_then_test', NULL, 0.1, 0.2, 0.0, 3)",
+        // A manual threshold was calibrated on nothing, a calibrated one on
+        // something, and no set has a negative size.
+        "('p', 'manual', NULL, 0.1, NULL, NULL, 2)",
+        "('p', 'conformal_risk_control', NULL, 0.1, 0.2, NULL, 0)",
+        "('p', 'conformal_risk_control', NULL, 0.1, 0.2, NULL, -1)",
+    ] {
+        let error = raw
+            .execute(
+                &format!(
+                    "INSERT INTO {work}.triage_policy \
+                     (version, rule, threshold, calibration_rate, alpha, delta, \
+                      calibration_size) \
+                     VALUES {values}"
+                ),
+                &[],
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.as_db_error().unwrap().code().code(),
+            "23514",
+            "{values}"
+        );
+    }
+    substrate.drop_all().await.unwrap();
+}
+
+/// Rows of `table` the current transaction's scans have read so far, whatever
+/// plan read them: sequential-scan tuples plus index-scan heap fetches.
+async fn rows_read_in_transaction(raw: &tokio_postgres::Client, table: &str) -> i64 {
+    raw.query_one(
+        &format!(
+            "SELECT seq_tup_read + idx_tup_fetch FROM pg_stat_xact_user_tables \
+             WHERE relid = '{table}'::regclass"
+        ),
+        &[],
+    )
+    .await
+    .unwrap()
+    .get(0)
+}
+
+#[tokio::test]
+async fn a_calibration_set_and_an_interference_report_are_counted_once_not_once_per_row() {
+    const ROWS: i64 = 2000;
+    let substrate = substrate().await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    raw.execute(
+        &format!(
+            "INSERT INTO {work}.branch (id, author, base_revision) \
+             SELECT 'cal' || g, 'agent-a', 0 FROM generate_series(1, {ROWS}) AS g"
+        ),
+        &[],
+    )
+    .await
+    .unwrap();
+    insert_adapter(&raw, &work, "wide").await;
+    // Each set is written in one statement, as record_policy and
+    // record_interference write theirs, and SET CONSTRAINTS runs the checks
+    // deferred to commit inside the transaction, where its scans are counted.
+    // One count per set reads each row a bounded number of times; a count
+    // per row, as the checks used to make, reads ROWS * (ROWS + 1) rows.
+    for (header, rows, table) in [
+        (
+            format!(
+                "INSERT INTO {work}.triage_policy \
+                 (version, rule, calibration_rate, alpha, calibration_size) \
+                 VALUES ('large', 'conformal_risk_control', 0.05, 0.3, {ROWS})"
+            ),
+            format!(
+                "INSERT INTO {work}.triage_policy_sample (policy_version, branch) \
+                 SELECT 'large', 'cal' || g FROM generate_series(1, {ROWS}) AS g"
+            ),
+            format!("{work}.triage_policy_sample"),
+        ),
+        (
+            format!(
+                "INSERT INTO {work}.adapter_interference_report (adapter, layer_count) \
+                 VALUES ('wide', {ROWS})"
+            ),
+            format!(
+                "INSERT INTO {work}.adapter_interference \
+                 (adapter, layer, output_overlap, input_overlap, output_chance, input_chance) \
+                 SELECT 'wide', 'layer' || g, 0.1, 0.1, 0.1, 0.1 \
+                 FROM generate_series(1, {ROWS}) AS g"
+            ),
+            format!("{work}.adapter_interference"),
+        ),
+    ] {
+        raw.batch_execute(&format!(
+            "BEGIN; {header}; {rows}; SET CONSTRAINTS ALL IMMEDIATE;"
+        ))
+        .await
+        .unwrap();
+        let read = rows_read_in_transaction(&raw, &table).await;
+        raw.batch_execute("COMMIT").await.unwrap();
+        assert!(
+            read <= 4 * ROWS,
+            "{table}: {read} rows read to check {ROWS}"
+        );
+        let stored: i64 = raw
+            .query_one(&format!("SELECT count(*) FROM {table}"), &[])
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(stored, ROWS, "{table}");
+    }
+    substrate.drop_all().await.unwrap();
+}
+
+/// Insert a trained adapter into the lineage catalog.
+async fn insert_adapter(raw: &tokio_postgres::Client, work: &Identifier, id: &str) {
+    raw.execute(
+        &format!(
+            "INSERT INTO {work}.adapter (id, domain, base_model, base_revision, origin, rank, \
+             artifact, artifact_sha256, data_fingerprint, status) \
+             VALUES ($1, 'support', 'base', 'r1', 'trained', 8, $2, $3, $3, 'candidate')"
+        ),
+        &[&id, &format!("s3://adapters/{id}"), &vec![7u8; 32]],
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn a_labeling_function_names_an_adapter_only_as_a_model() {
+    let substrate = substrate().await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    insert_adapter(&raw, &work, "ranker-v2").await;
+    raw.execute(
+        &format!(
+            "INSERT INTO {work}.labeling_function (name, kind, adapter) \
+             VALUES ('ranker', 'model', 'ranker-v2'), ('rule', 'heuristic', NULL)"
+        ),
+        &[],
+    )
+    .await
+    .unwrap();
+    for (statement, code) in [
+        (
+            format!(
+                "INSERT INTO {work}.labeling_function (name, kind, adapter) \
+                 VALUES ('keyword', 'heuristic', 'ranker-v2')"
+            ),
+            "23514",
+        ),
+        (
+            format!(
+                "INSERT INTO {work}.labeling_function (name, kind, adapter) \
+                 VALUES ('ghost', 'model', 'no-such-adapter')"
+            ),
+            "23503",
+        ),
+    ] {
+        let error = raw.execute(&statement, &[]).await.unwrap_err();
+        assert_eq!(
+            error.as_db_error().unwrap().code().code(),
+            code,
+            "{statement}"
+        );
+    }
+    substrate.drop_all().await.unwrap();
+}
+
+fn report_for(candidate: &str, layers: Vec<LayerInterference>) -> InterferenceReport {
+    InterferenceReport {
+        candidate: AdapterId::from(candidate),
+        layers,
+    }
+}
+
+fn layer(name: &str, overlap: f64, worst: Option<&str>) -> LayerInterference {
+    LayerInterference {
+        layer: name.into(),
+        output_overlap: overlap,
+        input_overlap: overlap / 2.0,
+        output_chance: 0.0625,
+        input_chance: 0.03125,
+        worst: worst.map(AdapterId::from),
+    }
+}
+
+#[tokio::test]
+async fn interference_reports_are_stored_once_as_measured() {
+    let mut substrate = substrate().await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    for id in ["a1", "a2", "a3"] {
+        insert_adapter(&raw, &work, id).await;
+    }
+    // Layers come back in name order, exactly as measured.
+    let report = report_for(
+        "a2",
+        vec![layer("q", 0.4, Some("a1")), layer("k", 0.1, None)],
+    );
+    let stored = report_for(
+        "a2",
+        vec![layer("k", 0.1, None), layer("q", 0.4, Some("a1"))],
+    );
+    let adapter = AdapterId::from("a2");
+    substrate
+        .record_interference(&adapter, &report)
+        .await
+        .unwrap();
+    assert_eq!(
+        substrate.load_interference(&adapter).await.unwrap(),
+        Some(stored.clone())
+    );
+    assert_eq!(
+        substrate
+            .load_interference(&AdapterId::from("a1"))
+            .await
+            .unwrap(),
+        None
+    );
+    // Stored once: a second report for the adapter is refused whether it
+    // repeats, overlaps or avoids the stored layers, and never merges into
+    // the first.
+    for second in [
+        report.clone(),
+        report_for("a2", vec![layer("k", 0.2, None), layer("v", 0.3, None)]),
+        report_for("a2", vec![layer("v", 0.3, None)]),
+    ] {
+        assert!(matches!(
+            substrate.record_interference(&adapter, &second).await,
+            Err(PgError::Database { ref sqlstate, .. }) if sqlstate == "23505"
+        ));
+        assert_eq!(
+            substrate.load_interference(&adapter).await.unwrap(),
+            Some(stored.clone())
+        );
+    }
+    // Every overlap and chance level lies in [0, 1]; one layer outside it
+    // refuses the whole report.
+    let outside = |edit: fn(&mut LayerInterference)| {
+        let mut refused = layer("v", 0.2, None);
+        edit(&mut refused);
+        report_for("a3", vec![layer("k", 0.2, None), refused])
+    };
+    for impossible in [
+        outside(|layer| layer.output_overlap = 1.5),
+        outside(|layer| layer.input_overlap = -0.25),
+        outside(|layer| layer.output_chance = f64::NAN),
+        outside(|layer| layer.input_chance = 1.5),
+    ] {
+        assert!(matches!(
+            substrate
+                .record_interference(&AdapterId::from("a3"), &impossible)
+                .await,
+            Err(PgError::Database { ref sqlstate, .. }) if sqlstate == "23514"
+        ));
+        assert_eq!(
+            substrate
+                .load_interference(&AdapterId::from("a3"))
+                .await
+                .unwrap(),
+            None
+        );
+    }
+    // The worst overlap names another catalogued adapter.
+    for (worst, code) in [("a3", "23514"), ("no-such-adapter", "23503")] {
+        let naming = report_for("a3", vec![layer("q", 0.3, Some(worst))]);
+        assert!(matches!(
+            substrate
+                .record_interference(&AdapterId::from("a3"), &naming)
+                .await,
+            Err(PgError::Database { ref sqlstate, .. }) if sqlstate == code
+        ));
+    }
+    // A layer appended to a stored report in a later transaction is refused,
+    // and a report whose layer rows do not match its layer count cannot
+    // commit.
+    let error = raw
+        .execute(
+            &format!(
+                "INSERT INTO {work}.adapter_interference \
+                 (adapter, layer, output_overlap, input_overlap, output_chance, input_chance) \
+                 VALUES ('a2', 'v', 0.1, 0.1, 0.1, 0.1)"
+            ),
+            &[],
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.as_db_error().unwrap().code().code(), "23000");
+    let error = raw
+        .batch_execute(&format!(
+            "BEGIN; \
+             INSERT INTO {work}.adapter_interference_report (adapter, layer_count) \
+             VALUES ('a3', 2); \
+             INSERT INTO {work}.adapter_interference \
+             (adapter, layer, output_overlap, input_overlap, output_chance, input_chance) \
+             VALUES ('a3', 'k', 0.1, 0.1, 0.1, 0.1); \
+             COMMIT;"
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(error.as_db_error().unwrap().code().code(), "23000");
+    assert_eq!(
+        substrate
+            .load_interference(&AdapterId::from("a3"))
+            .await
+            .unwrap(),
+        None
+    );
+    // Neither a report nor any of its layers is ever updated or deleted.
+    for statement in [
+        format!("UPDATE {work}.adapter_interference SET output_overlap = 0 WHERE adapter = 'a2'"),
+        format!("DELETE FROM {work}.adapter_interference WHERE adapter = 'a2'"),
+        format!(
+            "UPDATE {work}.adapter_interference_report SET recorded_at = now() \
+             WHERE adapter = 'a2'"
+        ),
+        format!("DELETE FROM {work}.adapter_interference_report WHERE adapter = 'a2'"),
+    ] {
+        let error = raw.execute(&statement, &[]).await.unwrap_err();
+        assert_eq!(
+            error.as_db_error().unwrap().code().code(),
+            "23000",
+            "{statement}"
+        );
+    }
+    // A report that no longer has its recorded layer count (here past a
+    // disabled check) is refused on load rather than returned.
+    raw.batch_execute(&format!(
+        "ALTER TABLE {work}.adapter_interference \
+             DISABLE TRIGGER adapter_interference_layer_count; \
+         INSERT INTO {work}.adapter_interference \
+             (adapter, layer, output_overlap, input_overlap, output_chance, input_chance) \
+             VALUES ('a2', 'v', 0.1, 0.1, 0.1, 0.1); \
+         ALTER TABLE {work}.adapter_interference \
+             ENABLE TRIGGER adapter_interference_layer_count;"
+    ))
+    .await
+    .unwrap();
+    assert!(matches!(
+        substrate.load_interference(&adapter).await,
+        Err(PgError::CorruptRow {
+            table: "adapter_interference",
+            ..
+        })
+    ));
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn an_empty_interference_report_or_one_for_an_unknown_adapter_stores_nothing() {
+    let mut substrate = substrate().await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    insert_adapter(&raw, &work, "a1").await;
+    let adapter = AdapterId::from("a1");
+    // An empty report is refused before anything is written, so it neither
+    // claims the adapter's one report nor loads back as evidence.
+    let error = substrate
+        .record_interference(&adapter, &report_for("a1", vec![]))
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        PgError::InvalidInterference { adapter: ref refused, .. } if refused == "a1"
+    ));
+    assert_eq!(error.code(), "PTR_PG_INVALID_INTERFERENCE");
+    let headers: i64 = raw
+        .query_one(
+            &format!("SELECT count(*) FROM {work}.adapter_interference_report"),
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(headers, 0);
+    assert_eq!(substrate.load_interference(&adapter).await.unwrap(), None);
+    let report = report_for("a1", vec![layer("k", 0.1, None)]);
+    substrate
+        .record_interference(&adapter, &report)
+        .await
+        .unwrap();
+    assert_eq!(
+        substrate.load_interference(&adapter).await.unwrap(),
+        Some(report.clone())
+    );
+    // An adapter the catalog does not know gets no report.
+    let ghost = AdapterId::from("ghost");
+    assert!(matches!(
+        substrate
+            .record_interference(&ghost, &report_for("ghost", report.layers.clone()))
+            .await,
+        Err(PgError::Database { ref sqlstate, .. }) if sqlstate == "23503"
+    ));
+    assert_eq!(substrate.load_interference(&ghost).await.unwrap(), None);
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn an_interference_report_measured_for_another_adapter_is_refused_before_anything_is_written()
+{
+    let mut substrate = substrate().await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    for id in ["a1", "a2", "earlier"] {
+        insert_adapter(&raw, &work, id).await;
+    }
+    let update = |out_axis: usize| {
+        let mut b = vec![0.0; 4];
+        b[out_axis] = 1.0;
+        LayerUpdate::new(
+            "q",
+            Matrix::new(4, 1, b).unwrap(),
+            Matrix::new(1, 4, vec![1.0, 0.0, 0.0, 0.0]).unwrap(),
+        )
+        .unwrap()
+    };
+    let earlier = [(AdapterId::from("earlier"), vec![update(0)])];
+    let (a1, a2) = (AdapterId::from("a1"), AdapterId::from("a2"));
+    let measured = measure_interference(&a1, &[update(0)], &earlier).unwrap();
+    let error = substrate
+        .record_interference(&a2, &measured)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        PgError::InvalidInterference { adapter: ref refused, .. } if refused == "a2"
+    ));
+    assert_eq!(error.code(), "PTR_PG_INVALID_INTERFERENCE");
+    let headers: i64 = raw
+        .query_one(
+            &format!("SELECT count(*) FROM {work}.adapter_interference_report"),
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(headers, 0);
+    assert_eq!(substrate.load_interference(&a2).await.unwrap(), None);
+    // Recorded for the adapter it was measured for, it loads back naming it.
+    substrate.record_interference(&a1, &measured).await.unwrap();
+    assert_eq!(
+        substrate.load_interference(&a1).await.unwrap(),
+        Some(measured)
+    );
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_triage_is_logged_only_under_a_policy_that_can_have_produced_it() {
+    let mut substrate = substrate().await;
+    let a = TriagePolicy::new(AutoThreshold::AtLeast(0.5), 0.1).unwrap();
+    let b = TriagePolicy::new(AutoThreshold::AtLeast(0.8), 0.3).unwrap();
+    for (version, policy) in [("policy-a", a), ("policy-b", b)] {
+        substrate
+            .record_policy(&PolicyRecord::manual(version, policy).unwrap())
+            .await
+            .unwrap();
+    }
+    for id in ["t1", "t2", "t3"] {
+        substrate
+            .store_branch(&sealed_branch(id, "agent-t"))
+            .await
+            .unwrap();
+    }
+    // A auto-proposes a score of 0.6 with propensity 1 - 0.1; B escalates it
+    // with propensity zero. Cited as B's, A's row used to be stored, and
+    // off-policy evaluation reweighted it by a propensity B never had.
+    let from_a = TriageOutcome {
+        decision: TriageDecision::AutoPropose,
+        eligible: true,
+        calibration_slice: false,
+        score: 0.6,
+        auto_propensity: 0.9,
+    };
+    let from_b = TriageOutcome {
+        decision: TriageDecision::Escalate,
+        auto_propensity: 0.0,
+        ..from_a.clone()
+    };
+    assert_eq!(a.explains(&from_a), Ok(()));
+    assert_eq!(b.explains(&from_b), Ok(()));
+    let unexplained = |branch: &str, version: &str, reason| {
+        Err(PgError::InvalidTriage {
+            branch: branch.into(),
+            policy_version: version.into(),
+            reason,
+        })
+    };
+    let wrong_propensity =
+        "the auto-propose propensity is not the one the policy logs for this score";
+    assert_eq!(
+        substrate
+            .record_triage(&BranchId::from("t1"), &from_a, "policy-b")
+            .await,
+        unexplained("t1", "policy-b", wrong_propensity)
+    );
+    assert_eq!(
+        substrate
+            .record_triage(&BranchId::from("t2"), &from_b, "policy-a")
+            .await,
+        unexplained("t2", "policy-a", wrong_propensity)
+    );
+    // A score that is not a probability is refused as the triage it cannot
+    // be, before the table's CHECK sees it.
+    let unscored = TriageOutcome {
+        decision: TriageDecision::Escalate,
+        eligible: false,
+        calibration_slice: false,
+        score: f32::NAN,
+        auto_propensity: 0.0,
+    };
+    assert_eq!(
+        substrate
+            .record_triage(&BranchId::from("t3"), &unscored, "policy-a")
+            .await,
+        unexplained("t3", "policy-a", "the score is not a probability")
+    );
+    // The refusals wrote nothing; each row is logged under the policy that
+    // made it.
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    let logged: i64 = raw
+        .query_one(&format!("SELECT count(*) FROM {work}.branch_triage"), &[])
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(logged, 0);
+    substrate
+        .record_triage(&BranchId::from("t1"), &from_a, "policy-a")
+        .await
+        .unwrap();
+    substrate
+        .record_triage(&BranchId::from("t2"), &from_b, "policy-b")
+        .await
+        .unwrap();
+    let cited: Vec<(String, String)> = raw
+        .query(
+            &format!("SELECT branch, policy_version FROM {work}.branch_triage ORDER BY branch"),
+            &[],
+        )
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| (row.get(0), row.get(1)))
+        .collect();
+    assert_eq!(
+        cited,
+        [
+            ("t1".to_owned(), "policy-a".to_owned()),
+            ("t2".to_owned(), "policy-b".to_owned())
+        ]
+    );
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_revert_is_recorded_and_counted_only_after_the_merge_it_reverts() {
+    let mut substrate = substrate().await;
+    record_manual_policy(&mut substrate, "policy-v").await;
+    for id in ["v1", "v2", "v3"] {
+        substrate
+            .store_branch(&sealed_branch(id, "agent-v"))
+            .await
+            .unwrap();
+        substrate
+            .record_triage(
+                &BranchId::from(id),
+                &triage(TriageDecision::AutoPropose, true, false),
+                "policy-v",
+            )
+            .await
+            .unwrap();
+    }
+    let refused = |branch: &str, reason| {
+        Err(PgError::InvalidOutcome {
+            branch: branch.into(),
+            reason,
+        })
+    };
+    let v1 = BranchId::from("v1");
+    // Nothing to revert yet.
+    assert_eq!(
+        substrate
+            .record_outcome(&v1, BranchOutcome::Reverted(CommitIndex(5)))
+            .await,
+        refused("v1", "a revert needs the branch's recorded merge")
+    );
+    substrate
+        .record_outcome(&v1, BranchOutcome::Merged(CommitIndex(9)))
+        .await
+        .unwrap();
+    // Before the merge, or at its own commit.
+    for index in [5, 9] {
+        assert_eq!(
+            substrate
+                .record_outcome(&v1, BranchOutcome::Reverted(CommitIndex(index)))
+                .await,
+            refused("v1", "a revert commits after the merge it reverts")
+        );
+    }
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    let reverts: i64 = raw
+        .query_one(
+            &format!("SELECT count(*) FROM {work}.branch_outcome WHERE outcome = 'reverted'"),
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(reverts, 0, "a refused revert writes nothing");
+    substrate
+        .record_outcome(&v1, BranchOutcome::Reverted(CommitIndex(10)))
+        .await
+        .unwrap();
+    substrate
+        .record_outcome(
+            &BranchId::from("v2"),
+            BranchOutcome::Merged(CommitIndex(11)),
+        )
+        .await
+        .unwrap();
+    // A revert stored ahead of its merge by a writer that went around
+    // `record_outcome`: the database refuses it now, and of one stored before
+    // work migration 9 the share counts only the revert that follows its
+    // merge, so v3's merge is not reported reverted.
+    let ahead = format!(
+        "INSERT INTO {work}.branch_outcome (branch, outcome, commit_index) \
+         VALUES ('v3', 'reverted', 5); \
+         INSERT INTO {work}.branch_outcome (branch, outcome, commit_index) \
+         VALUES ('v3', 'merged', 9)"
+    );
+    assert_eq!(refused_sqlstate(&raw, &ahead).await, "23000");
+    write_before_invariants(&raw, &work, &[], &ahead).await;
+    assert_eq!(
+        substrate
+            .metric(MetricSpec {
+                metric: Metric::RevertShare,
+                grouping: Grouping::Overall,
+                window: Window::All,
+            })
+            .await
+            .unwrap(),
+        vec![MetricRow {
+            group: String::new(),
+            numerator: 1,
+            denominator: 3,
+        }]
+    );
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_branch_deleted_while_it_loads_comes_back_whole_or_not_at_all() {
+    let mut substrate = substrate().await;
+    let work = substrate.schemas().work.clone();
+    let branch = sealed_branch("torn", "agent-l");
+    substrate.store_branch(&branch).await.unwrap();
+    // Hold `branch_read` so the load stops after reading the header, delete
+    // the branch (its cascade removes every child row) and let the load go
+    // on. Statements with a snapshot each used to read the header from before
+    // the delete and the children from after it, and returned a branch with
+    // no reads, digests or operations.
+    let mut holder = raw_client().await;
+    let transaction = holder.transaction().await.unwrap();
+    transaction
+        .batch_execute(&format!(
+            "LOCK TABLE {work}.branch_read IN ACCESS EXCLUSIVE MODE"
+        ))
+        .await
+        .unwrap();
+    let id = branch.id().clone();
+    let loader = tokio::spawn(async move {
+        let loaded = substrate.load_branch(&id).await;
+        (substrate, loaded)
+    });
+    let observer = raw_client().await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let waiting: bool = observer
+            .query_one(
+                "SELECT EXISTS (SELECT 1 FROM pg_locks l JOIN pg_class c ON c.oid = l.relation \
+                 WHERE NOT l.granted AND c.relname = 'branch_read' \
+                   AND c.relnamespace = $1::text::regnamespace)",
+                &[&work.as_str()],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        if waiting {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the load must wait for branch_read"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    transaction
+        .execute(&format!("DELETE FROM {work}.branch WHERE id = 'torn'"), &[])
+        .await
+        .unwrap();
+    transaction.commit().await.unwrap();
+    let (mut substrate, loaded) = loader.await.unwrap();
+    // The load's snapshot was taken with its first statement, before the
+    // delete committed, so it sees the whole branch.
+    assert_eq!(loaded, Ok(Some(branch)));
+    assert_eq!(
+        substrate.load_branch(&BranchId::from("torn")).await,
+        Ok(None)
+    );
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_stored_configuration_fast_memory_refuses_is_a_corrupt_row_in_every_loader() {
+    let mut substrate = substrate().await;
+    substrate.replay(&[capsule(1, "live", 1)]).await.unwrap();
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    // Each dimension within its column's bounds, their product 64 Mi cells:
+    // the table refuses it now, and a row registered before `create_memory`
+    // and the table checked the product still reaches every loader.
+    let huge = format!(
+        "INSERT INTO {work}.fastmem_memory (id, principal, thread, heads, key_dim, \
+         value_dim, checkpoint_interval, max_writes, projection_digest, codebook_seed) \
+         VALUES ('huge', 'agent-7', 'huge', 64, 1024, 1024, 2, 64, \
+                 decode(repeat('03', 32), 'hex'), 11)"
+    );
+    assert_eq!(refused_sqlstate(&raw, &huge).await, "23514");
+    write_before_invariants(
+        &raw,
+        &work,
+        &[("fastmem_memory", "fastmem_memory_state_cells")],
+        &huge,
+    )
+    .await;
+    let unsupported = |error: PgError| match error {
+        PgError::CorruptRow {
+            table: "fastmem_memory",
+            reason,
+        } => assert!(
+            reason.starts_with("the stored configuration is not supported"),
+            "{reason}"
+        ),
+        other => panic!("{other:?}"),
+    };
+    unsupported(substrate.load_memory("huge").await.unwrap_err());
+    unsupported(
+        substrate
+            .restore_memory("huge")
+            .await
+            .map(|_| ())
+            .unwrap_err(),
+    );
+    let request = write_request("live", [1.0, 0.0, 0.0, 0.0], [0.5, 0.0, 0.0, 0.0]);
+    unsupported(
+        substrate
+            .append_write("huge", ptr_fastmem::WriteSeq(1), &request)
+            .await
+            .unwrap_err(),
+    );
+    let config = memory_config();
+    let mut memory = FastMemory::new(config, codebook(&config)).unwrap();
+    memory.write(request).unwrap();
+    unsupported(
+        substrate
+            .put_checkpoint("huge", memory.binding_digest(), memory.state())
+            .await
+            .unwrap_err(),
+    );
+    assert!(substrate.load_journal("huge").await.unwrap().is_empty());
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_restored_memory_decodes_only_against_the_codebook_its_registration_records() {
+    let mut substrate = substrate().await;
+    substrate
+        .replay(&[capsule(1, "c1", 1), capsule(2, "c2", 1)])
+        .await
+        .unwrap();
+    let config = memory_config();
+    let register = |id: &str, codebook_seed| FastMemoryRecord {
+        id: id.into(),
+        principal: PrincipalId::from("agent-7"),
+        thread: id.into(),
+        config,
+        projection_digest: [3; 32],
+        codebook_seed,
+    };
+    let mut restored = Vec::new();
+    for (id, seed) in [("m11", 11), ("m12", 12)] {
+        substrate.create_memory(&register(id, seed)).await.unwrap();
+        let book = IdentifierCodebook::new(seed, config.value_len()).unwrap();
+        assert_eq!(
+            substrate.load_memory(id).await.unwrap().unwrap().codebook(),
+            Ok(book)
+        );
+        let mut live = FastMemory::new(config, book).unwrap();
+        for (source, key) in [("c1", [1.0, 0.0, 0.0, 0.0]), ("c2", [0.0, 1.0, 0.0, 0.0])] {
+            let request = WriteRequest {
+                value: book.code_for(&CapsuleId::from(source), Generation(1)),
+                ..write_request(source, key, [0.0; 4])
+            };
+            let receipt = live.write(request.clone()).unwrap();
+            substrate
+                .append_write(id, receipt.seq, &request)
+                .await
+                .unwrap();
+        }
+        let memory = substrate.restore_memory(id).await.unwrap().unwrap();
+        assert_eq!(memory.codebook(), book);
+        assert_eq!(bits(memory.state().cells()), bits(live.state().cells()));
+        restored.push(memory);
+    }
+    let query = Query::new(&config, vec![1.0, 0.0, 0.0, 0.0]).unwrap();
+    let policy = DecodePolicy {
+        limit: 2,
+        min_score: 0.0,
+        min_margin: 0.0,
+    };
+    let readout = restored[0].read_admitted(&query, |_| true).unwrap();
+    assert!(decode_readout(&readout, &restored[0].fact_codes(), policy).is_ok());
+    // The other memory has the same shape, so its codes have the same length;
+    // scored, they would be crosstalk.
+    assert_eq!(
+        decode_readout(&readout, &restored[1].fact_codes(), policy),
+        Err(FastMemoryError::CodebookMismatch {
+            index: 0,
+            expected: codebook(&config),
+            actual: IdentifierCodebook::new(12, config.value_len()).unwrap(),
+        })
+    );
+    assert!(substrate.restore_memory("absent").await.unwrap().is_none());
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_source_set_is_judged_from_one_snapshot_at_the_commit_it_names() {
+    let mut substrate = substrate().await;
+    let log = vec![capsule(1, "a", 1), capsule(2, "b", 1), revoke(3, "a", 1)];
+    let chain = anchors(&log);
+    substrate.apply_committed(&log[0], chain[0]).await.unwrap();
+    substrate.apply_committed(&log[1], chain[1]).await.unwrap();
+    let asked = [
+        ("a", Generation(1)),
+        ("b", Generation(1)),
+        ("b", Generation(2)),
+        ("never", Generation(1)),
+    ];
+    let admissible = |pairs: &[(&str, u64)]| {
+        pairs
+            .iter()
+            .map(|(target, generation)| ((*target).to_owned(), Generation(*generation)))
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    let before = substrate
+        .source_admission(asked, CommitIndex(2))
+        .await
+        .unwrap();
+    assert_eq!(before.as_of(), CommitIndex(2));
+    assert_eq!(before.admissible(), &admissible(&[("a", 1), ("b", 1)]));
+    // A source that was not asked is not admitted.
+    assert!(!before.admits("c", Generation(1)));
+
+    // A read decided with the answer is bound to commit 2.
+    let config = memory_config();
+    let mut memory = FastMemory::new(config, codebook(&config)).unwrap();
+    for (source, key) in [("a", [1.0, 0.0, 0.0, 0.0]), ("b", [0.0, 1.0, 0.0, 0.0])] {
+        memory
+            .write(write_request(source, key, [0.5, 0.0, 0.0, 0.0]))
+            .unwrap();
+    }
+    let query = Query::new(&config, vec![1.0, 0.0, 0.0, 0.0]).unwrap();
+    let decided = |admission: &ptr_pg::SourceAdmission| {
+        memory.read_admitted(&query, |source| {
+            admission.admits(&source.key, source.generation)
+        })
+    };
+    assert!(decided(&before).is_ok());
+
+    // Revoking a@1 at commit 3: the next answer names commit 3 and denies
+    // the read, and the earlier one says it was taken before the revocation.
+    substrate.apply_committed(&log[2], chain[2]).await.unwrap();
+    let after = substrate
+        .source_admission(asked, CommitIndex(2))
+        .await
+        .unwrap();
+    assert_eq!(after.as_of(), CommitIndex(3));
+    assert_eq!(after.admissible(), &admissible(&[("b", 1)]));
+    assert_eq!(
+        decided(&after).unwrap_err(),
+        FastMemoryError::Denied { sources: 1 }
+    );
+    assert!(before.as_of() < after.as_of());
+    // Each answer is the per-source rule's.
+    for (target, generation) in asked {
+        assert_eq!(
+            substrate
+                .is_admissible(target, generation, CommitIndex(3))
+                .await
+                .unwrap(),
+            after.admits(target, generation),
+            "{target}@{}",
+            generation.0
+        );
+    }
+    assert_eq!(
+        substrate.source_admission(asked, CommitIndex(4)).await,
+        Err(PgError::ProjectionBehind {
+            watermark: 3,
+            fence: 4
+        })
+    );
+    let nothing = substrate
+        .source_admission(std::iter::empty(), CommitIndex(3))
+        .await
+        .unwrap();
+    assert_eq!(nothing.as_of(), CommitIndex(3));
+    assert!(nothing.admissible().is_empty());
+    assert_eq!(
+        substrate
+            .source_admission([("a\0", Generation(1))], CommitIndex(3))
+            .await,
+        Err(PgError::InvalidText {
+            field: "source.target"
+        })
+    );
+    substrate.drop_all().await.unwrap();
+}

@@ -1,9 +1,24 @@
+"""Research execution gates, run by CI.
+
+A completed experiment must have its required artifacts, and its archived
+results must describe HEAD's code: `results/run.json` and
+`results/mutations.json` fail the gate once a provenance file (the Rust, SQL,
+Cargo and toolchain files, the recording scripts, the experiment's
+`aggregate.py` and mutation plan) differs from the one at their `git_sha`,
+unless `results/STALE.toml` names those results and the first commit that
+made them stale (`experiment_records.staleness_errors`). Experiments that
+need a pinned baseline may run only once it is pinned.
+"""
+
 from __future__ import annotations
 
+import sys
 import tomllib
 from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[1]
+sys.path.insert(0,str(Path(__file__).resolve().parent))
+import experiment_records  # noqa: E402
 
 def load(path: Path) -> dict:
     return tomllib.loads(path.read_text(encoding="utf-8"))
@@ -21,10 +36,12 @@ def main() -> int:
         experiments[item["id"]]=manifest
         status=manifest.get("status")
         if status=="completed":
-            results=ROOT/"experiments"/item["path"]/manifest.get("results_dir","results")
+            experiment=ROOT/"experiments"/item["path"]
+            results=experiment/manifest.get("results_dir","results")
             for artifact in manifest.get("required_artifacts",[]):
                 if not (results/artifact).exists():
                     errors.append(f'{item["id"]}: completed experiment missing {artifact}')
+            errors.extend(experiment_records.staleness_errors(item["id"],experiment,results,ROOT))
 
     plain=load(ROOT/"research/baselines/plain_model/config.toml")
     for exp_id in ["M001","M002","M003","M004","M005"]:
