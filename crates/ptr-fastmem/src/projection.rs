@@ -1,5 +1,6 @@
 use sha2::{Digest, Sha256};
 
+use crate::config::{MAX_HEADS, MAX_HEAD_DIM, MAX_STATE_CELLS};
 use crate::error::FastMemoryError;
 
 /// A fixed linear map from an embedding space into per-head key or value
@@ -33,6 +34,11 @@ pub struct ProjectionSpec {
 impl SeededProjection {
     /// Draw the projection. `head_dim` may not exceed `input_dim`, because more
     /// orthonormal rows than input dimensions do not exist.
+    ///
+    /// The rows are `heads * head_dim * input_dim` `f32` cells, at most
+    /// [`MAX_STATE_CELLS`]. The product is computed with checked arithmetic and
+    /// refused before anything is allocated, so no spec overflows, wraps or
+    /// requests an unbounded allocation.
     pub fn new(spec: ProjectionSpec) -> Result<Self, FastMemoryError> {
         if spec.input_dim == 0 || spec.heads == 0 || spec.head_dim == 0 {
             return Err(FastMemoryError::InvalidConfig {
@@ -48,8 +54,29 @@ impl SeededProjection {
                 message: "a head cannot have more orthonormal rows than input dimensions",
             });
         }
+        let cells = spec
+            .heads
+            .checked_mul(spec.head_dim)
+            .and_then(|rows| rows.checked_mul(spec.input_dim));
+        let cells = match cells {
+            Some(cells) if cells <= MAX_STATE_CELLS => cells,
+            Some(cells) => {
+                return Err(FastMemoryError::InvalidConfig {
+                    field: "projection_cells",
+                    value: cells as u64,
+                    message: "projection exceeds the 64 MiB bound on f32 cells",
+                })
+            }
+            None => {
+                return Err(FastMemoryError::InvalidConfig {
+                    field: "projection_cells",
+                    value: u64::MAX,
+                    message: "projection size overflows",
+                })
+            }
+        };
         let mut source = SplitMix64(spec.seed);
-        let mut rows = Vec::with_capacity(spec.heads * spec.head_dim * spec.input_dim);
+        let mut rows = Vec::with_capacity(cells);
         for _ in 0..spec.heads {
             let mut basis: Vec<Vec<f64>> = Vec::with_capacity(spec.head_dim);
             while basis.len() < spec.head_dim {
@@ -149,13 +176,23 @@ pub struct IdentifierCodebook {
 }
 
 impl IdentifierCodebook {
-    /// Codes of length `len` (the memory's `heads * value_dim`).
+    /// Codes of length `len` (the memory's `heads * value_dim`), at most
+    /// `MAX_HEADS * MAX_HEAD_DIM`: the longest value vector a configuration
+    /// admits. A longer code could never be compared with a readout, and every
+    /// [`Self::code`] would allocate it.
     pub fn new(seed: u64, len: usize) -> Result<Self, FastMemoryError> {
         if len == 0 {
             return Err(FastMemoryError::InvalidConfig {
                 field: "code_len",
                 value: 0,
                 message: "codes need at least one component",
+            });
+        }
+        if len > MAX_HEADS * MAX_HEAD_DIM {
+            return Err(FastMemoryError::InvalidConfig {
+                field: "code_len",
+                value: len as u64,
+                message: "codes cannot be longer than the longest value vector",
             });
         }
         Ok(Self { seed, len })
@@ -270,6 +307,61 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn a_projection_whose_cell_count_overflows_or_exceeds_the_bound_is_refused_before_allocating() {
+        // The capacity product used to be unchecked: this spec panicked on
+        // overflow in debug builds and wrapped in release builds.
+        assert_eq!(
+            SeededProjection::new(ProjectionSpec {
+                input_dim: 2,
+                heads: usize::MAX,
+                head_dim: 2,
+                seed: 1,
+            })
+            .unwrap_err(),
+            FastMemoryError::InvalidConfig {
+                field: "projection_cells",
+                value: u64::MAX,
+                message: "projection size overflows",
+            }
+        );
+        // Representable, but one cell beyond the bound.
+        assert_eq!(
+            SeededProjection::new(ProjectionSpec {
+                input_dim: MAX_STATE_CELLS + 1,
+                heads: 1,
+                head_dim: 1,
+                seed: 1,
+            })
+            .unwrap_err(),
+            FastMemoryError::InvalidConfig {
+                field: "projection_cells",
+                value: (MAX_STATE_CELLS + 1) as u64,
+                message: "projection exceeds the 64 MiB bound on f32 cells",
+            }
+        );
+    }
+
+    #[test]
+    fn an_identifier_code_longer_than_any_value_vector_is_refused() {
+        let longest = MAX_HEADS * MAX_HEAD_DIM;
+        assert_eq!(
+            IdentifierCodebook::new(9, longest + 1).unwrap_err(),
+            FastMemoryError::InvalidConfig {
+                field: "code_len",
+                value: (longest + 1) as u64,
+                message: "codes cannot be longer than the longest value vector",
+            }
+        );
+        assert_eq!(
+            IdentifierCodebook::new(9, longest)
+                .unwrap()
+                .code("fact:a")
+                .len(),
+            longest
+        );
     }
 
     #[test]

@@ -6,7 +6,8 @@ pub const MAX_HEADS: usize = 64;
 pub const MAX_HEAD_DIM: usize = 1024;
 /// Largest supported state, in `f32` cells. 16 Mi cells are 64 MiB, the same
 /// bound `ptr-runtime` places on an opaque neural-state payload, so a state this
-/// crate accepts is always one the admission layer can seal.
+/// crate accepts is always one the admission layer can seal. A
+/// [`crate::SeededProjection`]'s rows are held to the same number of cells.
 pub const MAX_STATE_CELLS: usize = 16 * 1024 * 1024;
 /// Largest supported distance between two checkpoints, in writes.
 pub const MAX_CHECKPOINT_INTERVAL: u32 = 1_000_000;
