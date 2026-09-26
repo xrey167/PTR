@@ -5,6 +5,7 @@ use ptr_analytics::{
 };
 
 use crate::error::LabelingError;
+use crate::model::check_posterior;
 use crate::votes::{Vote, VoteMatrix};
 
 /// Who asserted a gold label.
@@ -145,7 +146,9 @@ pub struct FunctionAccuracy {
 /// Refuses, whatever the votes, a `z` that is not finite and positive or whose
 /// square overflows. Refuses an empty or actively sampled gold set, and a gold
 /// item beyond the vote matrix or a gold class outside its schema, before any
-/// vote is scored.
+/// vote is scored. A gold item beyond the matrix is reported as
+/// `LengthMismatch` with `expected` one past the item, saturating at
+/// `usize::MAX` rather than overflowing.
 pub fn function_accuracy(
     matrix: &VoteMatrix,
     gold: &EvaluationSet,
@@ -181,7 +184,7 @@ pub fn function_accuracy(
     for label in &gold.labels {
         if label.item >= matrix.items() {
             return Err(LabelingError::LengthMismatch {
-                expected: label.item + 1,
+                expected: label.item.saturating_add(1),
                 actual: matrix.items(),
             });
         }
@@ -229,10 +232,14 @@ pub fn function_accuracy(
 /// ignored for an active set.
 ///
 /// # Errors
-/// Rejects an empty gold set, a gold item without a posterior, and a gold class
-/// outside its item's posterior, whatever the sampling. For uniform sets, also
-/// propagates statistics errors for invalid distributions or zero bins; active
-/// sets do not perform those checks.
+/// Rejects an empty gold set, a gold item without a posterior (reported as
+/// `LengthMismatch` with `expected` one past the item, saturating at
+/// `usize::MAX`), a gold class outside its item's posterior, and, with
+/// `LabelingError::InvalidPosterior`, a scored posterior that is not a
+/// probability distribution, whatever the sampling: a NaN entry would
+/// otherwise win the argmax and count as a correct prediction on an active
+/// set. For uniform sets, also propagates statistics errors for zero bins;
+/// active sets ignore `bins`.
 pub fn evaluate(
     posteriors: &[Vec<f64>],
     gold: &EvaluationSet,
@@ -249,7 +256,7 @@ pub fn evaluate(
         let posterior = posteriors
             .get(label.item)
             .ok_or(LabelingError::LengthMismatch {
-                expected: label.item + 1,
+                expected: label.item.saturating_add(1),
                 actual: posteriors.len(),
             })?;
         if label.class >= posterior.len() {
@@ -258,6 +265,7 @@ pub fn evaluate(
                 classes: posterior.len(),
             });
         }
+        check_posterior(label.item, posterior)?;
         predicted.push(posterior.clone());
         truth.push(label.class);
     }

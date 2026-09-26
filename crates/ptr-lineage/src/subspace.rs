@@ -1,5 +1,6 @@
 use crate::error::LineageError;
 use crate::lineage::AdapterId;
+use crate::scale;
 
 /// A dense row-major matrix of `f64`.
 #[derive(Clone, Debug, PartialEq)]
@@ -55,7 +56,18 @@ impl Matrix {
     }
 
     /// Entry at `(row, col)`.
+    ///
+    /// # Panics
+    /// Panics if `row` or `col` is outside the matrix. Both are checked: a
+    /// column index past the last would otherwise read an entry of the next
+    /// row.
     pub fn get(&self, row: usize, col: usize) -> f64 {
+        assert!(
+            row < self.rows && col < self.cols,
+            "entry ({row}, {col}) is outside a {}x{} matrix",
+            self.rows,
+            self.cols
+        );
         self.data[row * self.cols + col]
     }
 
@@ -65,6 +77,15 @@ impl Matrix {
     }
 
     /// `self * other`.
+    ///
+    /// # Errors
+    /// Returns `LineageError::ShapeMismatch` unless `self` has as many columns
+    /// as `other` has rows, and `LineageError::NonFinite` when an entry of the
+    /// product exceeds `f64::MAX`, so the result is a matrix
+    /// [`Matrix::new`] would accept. An entry that is finite although its
+    /// running sum overflows (`MAX + MAX - MAX`) is not refused: such entries
+    /// are recomputed from both factors divided by powers of two and scaled
+    /// back; every other entry is the direct sum of products.
     pub fn multiply(&self, other: &Matrix) -> Result<Matrix, LineageError> {
         if self.cols != other.rows {
             return Err(LineageError::ShapeMismatch {
@@ -73,6 +94,30 @@ impl Matrix {
                 actual: other.rows,
             });
         }
+        let mut product = self.product(other);
+        if product.data.iter().all(|cell| cell.is_finite()) {
+            return Ok(product);
+        }
+        let (left, left_exponent) = self.rescaled();
+        let (right, right_exponent) = other.rescaled();
+        // Entries below two in magnitude: no sum of products overflows.
+        let rescaled = left.product(&right);
+        for (cell, small) in product.data.iter_mut().zip(rescaled.data) {
+            if !cell.is_finite() {
+                *cell = scale::times_power_of_two(small, left_exponent + right_exponent);
+            }
+        }
+        if product.data.iter().any(|cell| !cell.is_finite()) {
+            return Err(LineageError::NonFinite {
+                field: "matrix product",
+            });
+        }
+        Ok(product)
+    }
+
+    /// The product of matrices of matching shapes, as floating-point sums of
+    /// products in order; an entry may overflow.
+    fn product(&self, other: &Matrix) -> Matrix {
         let mut data = vec![0.0; self.rows * other.cols];
         for i in 0..self.rows {
             for k in 0..self.cols {
@@ -89,16 +134,44 @@ impl Matrix {
                 }
             }
         }
-        Ok(Matrix {
+        Matrix {
             rows: self.rows,
             cols: other.cols,
             data,
-        })
+        }
     }
 
-    /// Frobenius norm.
+    /// Frobenius norm, computed on the matrix divided by a power of two so
+    /// that no square overflows or underflows: `[1e200]` has norm `1e200`
+    /// and `[1e-200]` norm `1e-200`. It is infinite only when the norm itself
+    /// exceeds `f64::MAX`.
     pub fn frobenius(&self) -> f64 {
-        self.data.iter().map(|x| x * x).sum::<f64>().sqrt()
+        let (scaled, exponent) = self.rescaled();
+        scale::times_power_of_two(scaled.sum_of_squares().sqrt(), exponent)
+    }
+
+    fn sum_of_squares(&self) -> f64 {
+        self.data.iter().map(|x| x * x).sum()
+    }
+
+    /// This matrix divided by the power of two at or below its largest
+    /// magnitude, and that power's exponent. Every entry of the result is
+    /// below two in magnitude; a zero matrix is returned unchanged with
+    /// exponent zero. A positive scale changes no span, basis or ratio of
+    /// norms, and the division is exact unless an entry underflows.
+    fn rescaled(&self) -> (Matrix, i32) {
+        let Some(exponent) = scale::exponent(self.data.iter().copied()) else {
+            return (self.clone(), 0);
+        };
+        let factor = scale::power_of_two(exponent);
+        (
+            Matrix {
+                rows: self.rows,
+                cols: self.cols,
+                data: self.data.iter().map(|x| x / factor).collect(),
+            },
+            exponent,
+        )
     }
 
     fn transpose(&self) -> Self {
@@ -141,7 +214,15 @@ const RANK_TOLERANCE: f64 = 1e-10;
 /// dropped, so the basis has the numerical rank of the matrix; a tolerance
 /// relative to each column's own norm would keep a column that is only
 /// rounding noise of the others.
+///
+/// The column space does not depend on the scale of the matrix, so the matrix
+/// is first divided by the power of two at or below its largest entry: finite
+/// entries of any magnitude (`1e200`, `1e-170`) then give the same basis as
+/// the same matrix near one, where squared norms would otherwise overflow or
+/// underflow and drop every column.
 pub fn column_basis(matrix: &Matrix) -> Basis {
+    let (matrix, _) = matrix.rescaled();
+    let matrix = &matrix;
     let scale = (0..matrix.cols)
         .map(|index| norm(&matrix.column(index)))
         .fold(0.0, f64::max);
@@ -230,20 +311,42 @@ pub fn subspace_overlap(left: &Basis, right: &Basis) -> Result<f64, LineageError
 /// the smaller rank, which is `max(rank_a, rank_b) / dim`. Overlaps near this
 /// level carry no evidence of interference; ranks that differ are only
 /// comparable after subtracting it.
-pub fn chance_overlap(left: &Basis, right: &Basis) -> f64 {
-    if left.rank() == 0 || right.rank() == 0 || left.dim == 0 {
-        return 0.0;
+///
+/// # Errors
+/// Returns `LineageError::ShapeMismatch` when the subspaces live in spaces
+/// of different dimensions, as [`principal_cosines`] does: they have no
+/// overlap, by chance or otherwise.
+pub fn chance_overlap(left: &Basis, right: &Basis) -> Result<f64, LineageError> {
+    if left.dim != right.dim {
+        return Err(LineageError::ShapeMismatch {
+            field: "subspace dimension",
+            expected: left.dim,
+            actual: right.dim,
+        });
     }
-    left.rank().max(right.rank()) as f64 / left.dim as f64
+    if left.rank() == 0 || right.rank() == 0 || left.dim == 0 {
+        return Ok(0.0);
+    }
+    Ok(left.rank().max(right.rank()) as f64 / left.dim as f64)
 }
 
 /// One layer of a low-rank update `delta_W = B A`, with `B` of shape
 /// `d_out x r` and `A` of shape `r x d_in`.
+///
+/// The fields are private so that [`LayerUpdate::new`], which checks that the
+/// factors' inner dimensions agree, is the only way to build one:
+///
+/// ```compile_fail
+/// use ptr_lineage::{LayerUpdate, Matrix};
+/// let b = Matrix::new(2, 2, vec![1.0; 4]).unwrap();
+/// let a = Matrix::new(3, 1, vec![1.0; 3]).unwrap();
+/// let misaligned = LayerUpdate { layer: "q".into(), b, a };
+/// ```
 #[derive(Clone, Debug, PartialEq)]
 pub struct LayerUpdate {
-    pub layer: String,
-    pub b: Matrix,
-    pub a: Matrix,
+    layer: String,
+    b: Matrix,
+    a: Matrix,
 }
 
 impl LayerUpdate {
@@ -263,6 +366,21 @@ impl LayerUpdate {
             b,
             a,
         })
+    }
+
+    /// The layer this update modifies.
+    pub fn layer(&self) -> &str {
+        &self.layer
+    }
+
+    /// The `d_out x r` factor `B`.
+    pub fn b(&self) -> &Matrix {
+        &self.b
+    }
+
+    /// The `r x d_in` factor `A`.
+    pub fn a(&self) -> &Matrix {
+        &self.a
     }
 
     /// Orthonormal basis of the column space of `delta_W = B A`: the outputs
@@ -288,23 +406,28 @@ impl LayerUpdate {
     /// direction, not the plane `row(A)`. Since the overlap is normalised by
     /// the smaller rank, a too-large subspace can understate overlap as well
     /// as overstate it.
+    ///
+    /// Both factors are first divided by powers of two, which changes neither
+    /// space, so `M` stays in range for factors of any finite magnitude.
     fn update_bases(&self) -> (Basis, Basis) {
-        let (d_out, d_in) = (self.b.rows, self.a.cols);
-        let q = column_basis(&self.b);
-        let rank = self.b.cols;
+        let (b, _) = self.b.rescaled();
+        let (a, _) = self.a.rescaled();
+        let (d_out, d_in) = (b.rows, a.cols);
+        let q = column_basis(&b);
+        let rank = b.cols;
         // M = (Q^T B) A, one row per basis vector of col(B).
         let m_rows: Vec<Vec<f64>> = q
             .vectors
             .iter()
             .map(|basis_vector| {
                 let r: Vec<f64> = (0..rank)
-                    .map(|column| dot(basis_vector, &self.b.column(column)))
+                    .map(|column| dot(basis_vector, &b.column(column)))
                     .collect();
                 (0..d_in)
                     .map(|input| {
                         r.iter()
                             .enumerate()
-                            .map(|(inner, coefficient)| coefficient * self.a.get(inner, input))
+                            .map(|(inner, coefficient)| coefficient * a.get(inner, input))
                             .sum()
                     })
                     .collect()
@@ -359,10 +482,13 @@ impl LayerUpdate {
     /// work on this product, never on the factors: `B A = (B G)(G^-1 A)` for
     /// every invertible `G`, so any operation on `A` and `B` separately
     /// depends on an arbitrary choice of basis.
-    pub fn delta_weight(&self) -> Matrix {
-        self.b
-            .multiply(&self.a)
-            .expect("rank checked at construction")
+    ///
+    /// # Errors
+    /// Returns `LineageError::NonFinite` when an entry of the product exceeds
+    /// `f64::MAX` (finite factors of `1e200` multiply to `1e400`), rather
+    /// than a matrix holding infinity; see [`Matrix::multiply`].
+    pub fn delta_weight(&self) -> Result<Matrix, LineageError> {
+        self.b.multiply(&self.a)
     }
 }
 
@@ -373,15 +499,50 @@ impl LayerUpdate {
 /// earlier task actually uses; this measures how much the new update moves the
 /// layer's output on exactly those inputs, relative to the change the earlier
 /// update made. `None` when the earlier update does not move them at all.
+///
+/// The ratio does not depend on the scale of either update or of the
+/// activations, and it is computed that way: every factor and both effects
+/// are divided by powers of two, whose exponents are added back to the ratio
+/// alone. Finite inputs whose effects would overflow or underflow (updates
+/// and inputs of `1e100`, or of `1e-100`) therefore still give their ratio.
+///
+/// # Errors
+/// Returns `LineageError::ShapeMismatch` when the activations do not have
+/// one row per input of both updates, and `LineageError::NonFinite` when the
+/// ratio itself exceeds `f64::MAX`.
 pub fn activation_interference(
     candidate: &LayerUpdate,
     earlier: &LayerUpdate,
     activations: &Matrix,
 ) -> Result<Option<f64>, LineageError> {
-    let new_effect = candidate.b.multiply(&candidate.a.multiply(activations)?)?;
-    let old_effect = earlier.b.multiply(&earlier.a.multiply(activations)?)?;
-    let old_norm = old_effect.frobenius();
-    Ok((old_norm > 0.0).then(|| new_effect.frobenius() / old_norm))
+    let (inputs, _) = activations.rescaled();
+    let (new_norm, new_exponent) = rescaled_effect_norm(candidate, &inputs)?;
+    let (old_norm, old_exponent) = rescaled_effect_norm(earlier, &inputs)?;
+    if old_norm == 0.0 {
+        return Ok(None);
+    }
+    let ratio = scale::times_power_of_two(new_norm / old_norm, new_exponent - old_exponent);
+    if !ratio.is_finite() {
+        return Err(LineageError::NonFinite {
+            field: "activation interference",
+        });
+    }
+    Ok(Some(ratio))
+}
+
+/// `||B A X||_F` as `(norm, exponent)`, the norm of the effect being
+/// `norm * 2^exponent` up to the scale of `X`. With `B`, `A` and the effect
+/// each divided by the power of two at or below its largest entry, the norm
+/// is zero or between `2^-52` and `2 sqrt(entries)`, so a ratio of two of
+/// them is finite and nonzero whatever the magnitudes.
+fn rescaled_effect_norm(update: &LayerUpdate, inputs: &Matrix) -> Result<(f64, i32), LineageError> {
+    let (b, b_exponent) = update.b.rescaled();
+    let (a, a_exponent) = update.a.rescaled();
+    let (effect, effect_exponent) = b.multiply(&a.multiply(inputs)?)?.rescaled();
+    Ok((
+        effect.sum_of_squares().sqrt(),
+        b_exponent + a_exponent + effect_exponent,
+    ))
 }
 
 /// Worst overlap of one layer of a candidate adapter with any earlier adapter.
@@ -405,15 +566,26 @@ pub struct InterferenceReport {
 }
 
 impl InterferenceReport {
-    /// The largest overlap on any layer, output or input side.
+    /// The largest overlap on any layer, output or input side, or NaN when
+    /// any overlap is NaN. [`measure_interference`] never reports one, but a
+    /// report built or loaded by hand can, and folding it away with
+    /// `f64::max` would let an unmeasured layer pass as no overlap at all.
     pub fn max_overlap(&self) -> f64 {
         self.layers
             .iter()
-            .map(|layer| layer.output_overlap.max(layer.input_overlap))
-            .fold(0.0, f64::max)
+            .flat_map(|layer| [layer.output_overlap, layer.input_overlap])
+            .fold(0.0, |worst, overlap| {
+                if overlap.is_nan() || overlap > worst {
+                    overlap
+                } else {
+                    worst
+                }
+            })
     }
 
-    /// Whether every layer stays within `max_overlap`.
+    /// Whether every layer stays within `max_overlap`. False when any
+    /// overlap, or `max_overlap` itself, is NaN: what cannot be compared is
+    /// not within the limit.
     pub fn within(&self, max_overlap: f64) -> bool {
         self.max_overlap() <= max_overlap
     }
@@ -446,8 +618,8 @@ pub fn measure_interference(
                 let previous_input = previous.input_basis();
                 let out = subspace_overlap(&output, &previous_output)?;
                 let inp = subspace_overlap(&input, &previous_input)?;
-                output_chance = output_chance.max(chance_overlap(&output, &previous_output));
-                input_chance = input_chance.max(chance_overlap(&input, &previous_input));
+                output_chance = output_chance.max(chance_overlap(&output, &previous_output)?);
+                input_chance = input_chance.max(chance_overlap(&input, &previous_input)?);
                 if out.max(inp) > output_overlap.max(input_overlap) {
                     worst = Some(id.clone());
                 }
@@ -561,7 +733,7 @@ mod tests {
     fn chance_overlap_is_the_larger_rank_over_the_dimension() {
         let line = column_basis(&matrix(4, 1, &[1.0, 0.0, 0.0, 0.0]));
         let plane = column_basis(&matrix(4, 2, &[1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0]));
-        assert_eq!(chance_overlap(&line, &plane), 0.5);
+        assert_eq!(chance_overlap(&line, &plane).unwrap(), 0.5);
     }
 
     #[test]
@@ -570,7 +742,7 @@ mod tests {
         let a = matrix(1, 3, &[3.0, 0.0, -1.0]);
         let update = LayerUpdate::new("q", b, a).unwrap();
         assert_eq!(
-            update.delta_weight().as_slice(),
+            update.delta_weight().unwrap().as_slice(),
             &[3.0, 0.0, -1.0, 6.0, 0.0, -2.0]
         );
     }
@@ -615,6 +787,13 @@ mod tests {
                 actual: 1,
             })
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "entry (0, 2) is outside a 2x2 matrix")]
+    fn a_column_past_the_last_panics_rather_than_reading_the_next_row() {
+        // Row-major, (0, 2) is the flat index of (1, 0).
+        let _ = matrix(2, 2, &[1.0, 2.0, 3.0, 4.0]).get(0, 2);
     }
 
     #[test]

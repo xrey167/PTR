@@ -50,8 +50,8 @@ fn a_lapsed_sample_outranks_a_retained_one_at_the_same_model_time() {
     pool.record_probe("kept", 0.1, ModelTime(50.0)).unwrap();
     pool.record_probe("lost", 2.0, ModelTime(50.0)).unwrap();
     let now = ModelTime(80.0);
-    let kept = pool.priority(pool.get("kept").unwrap(), now);
-    let lost = pool.priority(pool.get("lost").unwrap(), now);
+    let kept = pool.priority(pool.get("kept").unwrap(), now).unwrap();
+    let lost = pool.priority(pool.get("lost").unwrap(), now).unwrap();
     assert!(lost > kept, "lost {lost} kept {kept}");
     assert!(pool.get("lost").unwrap().memory.stability < params().initial_stability);
     assert!(pool.get("kept").unwrap().memory.stability > params().initial_stability);
@@ -60,7 +60,11 @@ fn a_lapsed_sample_outranks_a_retained_one_at_the_same_model_time() {
 #[test]
 fn nothing_is_forgotten_while_the_model_clock_stands_still() {
     let pool = pool(&[("a", "t")]);
-    assert_eq!(pool.priority(pool.get("a").unwrap(), ModelTime(0.0)), 0.0);
+    assert_eq!(
+        pool.priority(pool.get("a").unwrap(), ModelTime(0.0))
+            .unwrap(),
+        0.0
+    );
 }
 
 #[test]
@@ -71,11 +75,11 @@ fn a_draw_is_distinct_reproducible_and_covers_every_stratum() {
     let refs: Vec<(&str, &str)> = ids.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
     let pool = pool(&refs);
     let now = ModelTime(500.0);
-    let first = pool.sample(12, now, 42);
+    let first = pool.sample(12, now, 42).unwrap();
     assert_eq!(first.len(), 12);
     assert_eq!(first.iter().collect::<BTreeSet<_>>().len(), 12);
-    assert_eq!(first, pool.sample(12, now, 42));
-    assert_ne!(first, pool.sample(12, now, 43));
+    assert_eq!(first, pool.sample(12, now, 42).unwrap());
+    assert_ne!(first, pool.sample(12, now, 43).unwrap());
     let strata: BTreeSet<&str> = first
         .iter()
         .map(|id| pool.get(id).unwrap().stratum.as_str())
@@ -99,7 +103,7 @@ fn forgotten_samples_are_drawn_far_more_often_than_retained_ones() {
     let mut lapsed = 0;
     let mut retained = 0;
     for seed in 0..200 {
-        for id in pool.sample(5, now, seed) {
+        for id in pool.sample(5, now, seed).unwrap() {
             let index: usize = id[1..].parse().unwrap();
             if index % 2 == 0 {
                 lapsed += 1;
@@ -114,7 +118,7 @@ fn forgotten_samples_are_drawn_far_more_often_than_retained_ones() {
 #[test]
 fn asking_for_more_than_the_pool_returns_the_whole_pool_once() {
     let pool = pool(&[("a", "x"), ("b", "y")]);
-    let drawn = pool.sample(10, ModelTime(5.0), 1);
+    let drawn = pool.sample(10, ModelTime(5.0), 1).unwrap();
     assert_eq!(drawn.len(), 2);
 }
 
@@ -127,7 +131,7 @@ fn a_sample_that_keeps_lapsing_is_withheld_pending_a_label_audit() {
     }
     let audit: Vec<&str> = pool.needing_audit().map(|s| s.id.as_str()).collect();
     assert_eq!(audit, vec!["noisy"]);
-    let drawn = pool.sample(2, ModelTime(100.0), 7);
+    let drawn = pool.sample(2, ModelTime(100.0), 7).unwrap();
     assert_eq!(drawn, vec!["fine"]);
 }
 
@@ -135,7 +139,7 @@ fn a_sample_that_keeps_lapsing_is_withheld_pending_a_label_audit() {
 fn a_sample_probed_at_this_model_time_is_not_drawn() {
     let mut pool = pool(&[("a", "t"), ("b", "t")]);
     pool.record_probe("a", 0.0, ModelTime(40.0)).unwrap();
-    let drawn = pool.sample(2, ModelTime(40.0), 1);
+    let drawn = pool.sample(2, ModelTime(40.0), 1).unwrap();
     assert_eq!(drawn, vec!["b"]);
 }
 
@@ -158,11 +162,12 @@ fn nonfinite_probes_leave_the_sample_memory_unchanged() {
 #[test]
 fn replay_returns_nothing_for_zero_budget_or_an_entirely_ineligible_pool() {
     let pool = pool(&[("a", "task"), ("b", "task")]);
-    assert!(pool.sample(0, ModelTime(100.0), 7).is_empty());
-    assert!(pool.sample(10, ModelTime(0.0), 7).is_empty());
+    assert!(pool.sample(0, ModelTime(100.0), 7).unwrap().is_empty());
+    assert!(pool.sample(10, ModelTime(0.0), 7).unwrap().is_empty());
     assert!(ReplayPool::new(params())
         .unwrap()
         .sample(10, ModelTime(100.0), 7)
+        .unwrap()
         .is_empty());
 }
 
@@ -171,7 +176,7 @@ fn a_probe_earlier_than_the_last_one_is_refused_and_changes_nothing() {
     let mut pool = pool(&[("a", "task")]);
     pool.record_probe("a", 0.1, ModelTime(50.0)).unwrap();
     let before = pool.get("a").unwrap().clone();
-    let priority = pool.priority(&before, ModelTime(60.0));
+    let priority = pool.priority(&before, ModelTime(60.0)).unwrap();
     for loss in [0.1, 3.0] {
         assert_eq!(
             pool.record_probe("a", loss, ModelTime(10.0)),
@@ -182,7 +187,8 @@ fn a_probe_earlier_than_the_last_one_is_refused_and_changes_nothing() {
         );
         assert_eq!(pool.get("a"), Some(&before));
         assert_eq!(
-            pool.priority(pool.get("a").unwrap(), ModelTime(60.0)),
+            pool.priority(pool.get("a").unwrap(), ModelTime(60.0))
+                .unwrap(),
             priority
         );
     }
@@ -214,7 +220,7 @@ fn a_nonfinite_model_time_is_refused_and_changes_nothing() {
         assert!(pool.get("b").is_none());
     }
     // The sample is still drawable once the clock moves on.
-    assert_eq!(pool.sample(1, ModelTime(1e9), 1), vec!["a"]);
+    assert_eq!(pool.sample(1, ModelTime(1e9), 1).unwrap(), vec!["a"]);
 }
 
 #[test]
@@ -236,11 +242,76 @@ fn a_probe_whose_update_would_overflow_the_stability_is_refused_and_changes_noth
     );
     assert_eq!(pool.get("a"), Some(&before));
     // The sample keeps a positive priority instead of looking retained forever.
-    assert!(pool.priority(pool.get("a").unwrap(), now) > 0.0);
-    assert_eq!(pool.sample(1, now, 1), vec!["a"]);
+    assert!(pool.priority(pool.get("a").unwrap(), now).unwrap() > 0.0);
+    assert_eq!(pool.sample(1, now, 1).unwrap(), vec!["a"]);
     // A lapse only shrinks the stability, so it is still recorded.
     pool.record_probe("a", 3.0, now).unwrap();
     let lapsed = pool.get("a").unwrap().memory;
     assert!(lapsed.stability.is_finite() && lapsed.stability < before.memory.stability);
     assert_eq!(lapsed.lapses, 1);
+}
+
+#[test]
+fn a_draw_or_priority_at_a_nonfinite_model_time_is_refused() {
+    let pool = pool(&[("s0", "t"), ("s1", "t"), ("s2", "t")]);
+    assert_eq!(pool.sample(3, ModelTime(10.0), 1).unwrap().len(), 3);
+    let refused = LineageError::NonFinite {
+        field: "model time",
+    };
+    // A NaN or negative infinite clock would count as no time elapsed, give
+    // every sample priority zero and return an empty draw as if nothing had
+    // been forgotten.
+    for now in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        assert_eq!(
+            pool.sample(3, ModelTime(now), 1),
+            Err(refused.clone()),
+            "{now}"
+        );
+        assert_eq!(
+            pool.priority(pool.get("s0").unwrap(), ModelTime(now)),
+            Err(refused.clone()),
+            "{now}"
+        );
+        // Refused before anything is looked at, even with nothing to draw.
+        assert_eq!(
+            ReplayPool::new(params())
+                .unwrap()
+                .sample(3, ModelTime(now), 1),
+            Err(refused.clone()),
+            "{now}"
+        );
+    }
+}
+
+#[test]
+fn a_count_beyond_the_pool_reserves_memory_only_for_what_can_be_drawn() {
+    // One eligible sample: reserving room for the requested count itself
+    // would overflow the capacity or abort on allocation.
+    let pool = pool(&[("a", "t")]);
+    assert_eq!(
+        pool.sample(usize::MAX, ModelTime(10.0), 1).unwrap(),
+        vec!["a"]
+    );
+}
+
+#[test]
+fn a_lapse_limit_of_zero_is_refused() {
+    // Zero would withhold every sample, lapsed or not, and list each one as
+    // needing a label audit.
+    assert_eq!(
+        ReplayPool::new(ReplayParams {
+            max_lapses: 0,
+            ..params()
+        })
+        .unwrap_err(),
+        LineageError::InvalidParameter {
+            field: "max_lapses",
+            message: "must be at least one",
+        }
+    );
+    assert!(ReplayPool::new(ReplayParams {
+        max_lapses: 1,
+        ..params()
+    })
+    .is_ok());
 }

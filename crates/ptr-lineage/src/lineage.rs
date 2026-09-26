@@ -309,7 +309,15 @@ pub struct ConsolidationPolicy {
 impl ConsolidationPolicy {
     /// Whether extending an adapter at `depth` with a candidate whose worst
     /// overlap is `overlap` should instead trigger consolidation.
+    ///
+    /// An overlap that cannot be compared with the limit, because it or
+    /// `max_overlap` is NaN, makes consolidation due: an unmeasured candidate
+    /// is not evidence that the lineage may grow, and a NaN limit must not
+    /// switch the overlap check off.
     pub fn consolidation_due(&self, depth: usize, overlap: f64) -> bool {
-        depth >= self.max_depth || overlap > self.max_overlap
+        depth >= self.max_depth
+            || overlap.is_nan()
+            || self.max_overlap.is_nan()
+            || overlap > self.max_overlap
     }
 }

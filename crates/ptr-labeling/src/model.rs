@@ -15,7 +15,14 @@ pub struct DawidSkeneParams {
     /// `max_iterations` and warns that it did not converge.
     pub tolerance: f64,
     /// Additive (Dirichlet) smoothing of priors and confusion matrices, which
-    /// keeps every probability positive so one vote can never zero a class.
+    /// keeps every prior and confusion probability positive, so no vote
+    /// multiplies a class's posterior by zero. It must be finite and positive
+    /// and large enough that the smallest smoothed probability,
+    /// `smoothing / (classes * smoothing + items)`, is a normal positive
+    /// `f64`: below that, probabilities round to zero and the guarantee is
+    /// lost. Any larger value is accepted: totals it makes overflow are
+    /// normalized at a representable scale, and near `f64::MAX` every
+    /// smoothed probability is uniform.
     pub smoothing: f64,
 }
 
@@ -69,10 +76,15 @@ pub struct LabelModel {
 /// double-count evidence and make posteriors overconfident; the model cannot
 /// see that, the calibration report can.
 ///
+/// Every fitted prior, confusion probability and posterior is finite, and every
+/// prior and confusion probability is positive, whatever accepted smoothing
+/// is used.
+///
 /// # Errors
 /// Refuses zero `max_iterations`, a `tolerance` outside `[0, 1)` (including a
-/// nonfinite one), a `smoothing` that is not finite and positive, and a matrix
-/// without items.
+/// nonfinite one), a `smoothing` that is not finite and positive, a matrix
+/// without items, and a `smoothing` so small for the number of items that the
+/// smallest smoothed probability is not a normal positive number.
 pub fn fit_label_model(
     matrix: &VoteMatrix,
     params: DawidSkeneParams,
@@ -99,6 +111,15 @@ pub fn fit_label_model(
         return Err(LabelingError::Empty { field: "items" });
     }
     let classes = matrix.schema().len();
+    // The smallest smoothed probability, written so that neither a tiny nor a
+    // huge smoothing overflows on the way: 1 / (classes + items / smoothing).
+    let floor = 1.0 / (classes as f64 + matrix.items() as f64 / params.smoothing);
+    if floor < f64::MIN_POSITIVE {
+        return Err(LabelingError::InvalidParameter {
+            field: "smoothing",
+            message: "is too small for this many items to keep every smoothed probability positive",
+        });
+    }
     let modelled: Vec<bool> = matrix
         .functions()
         .iter()
@@ -230,14 +251,17 @@ pub enum LabelOutcome {
 /// without probabilistic votes. If multiple classes remain and no
 /// probabilistic function voted, the item is `Unknown`.
 ///
-/// `model` must have class distributions aligned with the matrix schema.
+/// When the model puts no probability on any class the verifiers left, no
+/// class reaches the required probability and the item is `Unknown`.
 ///
 /// # Errors
-/// Returns an error if `min_probability` is not finite and in `(0, 1]`, or
-/// if the number of posteriors differs from the number of items.
-///
-/// # Panics
-/// Panics if a posterior lacks a remaining class that must be scored.
+/// Returns an error if `min_probability` is not finite and in `(0, 1]`, if
+/// the number of posteriors differs from the number of items, and
+/// `LabelingError::InvalidPosterior` for the first posterior that is not a
+/// probability distribution over the schema's classes, before any item is
+/// resolved: a negative or out-of-range entry would resolve to a
+/// "probability" above one, and an entry beyond the schema would drop mass
+/// unseen.
 pub fn resolve(
     matrix: &VoteMatrix,
     model: &LabelModel,
@@ -256,6 +280,12 @@ pub fn resolve(
         });
     }
     let classes = matrix.schema().len();
+    for (item, posterior) in model.posteriors.iter().enumerate() {
+        if posterior.len() != classes {
+            return Err(LabelingError::InvalidPosterior { item });
+        }
+        check_posterior(item, posterior)?;
+    }
     Ok((0..matrix.items())
         .map(|item| {
             let row = matrix.row(item);
@@ -278,6 +308,9 @@ pub fn resolve(
             }
             let posterior = &model.posteriors[item];
             let mass: f64 = remaining.iter().map(|&c| posterior[c]).sum();
+            if mass <= 0.0 {
+                return LabelOutcome::Unknown;
+            }
             let (class, probability) = remaining
                 .iter()
                 .map(|&c| (c, posterior[c] / mass))
@@ -292,9 +325,40 @@ pub fn resolve(
         .collect())
 }
 
+/// Tolerance on the total of a posterior, the one the statistics kernel's
+/// calibration measures apply.
+const DISTRIBUTION_TOLERANCE: f64 = 1e-6;
+
+/// Refuse a posterior that is not a probability distribution: empty, with an
+/// entry that is negative or not finite, or not summing to one within
+/// [`DISTRIBUTION_TOLERANCE`].
+pub(crate) fn check_posterior(item: usize, posterior: &[f64]) -> Result<(), LabelingError> {
+    let total: f64 = posterior.iter().sum();
+    let valid = !posterior.is_empty()
+        && posterior.iter().all(|p| p.is_finite() && *p >= 0.0)
+        && (total - 1.0).abs() < DISTRIBUTION_TOLERANCE;
+    if valid {
+        Ok(())
+    } else {
+        Err(LabelingError::InvalidPosterior { item })
+    }
+}
+
+/// Divide positive finite values by their total. A total that overflows, as
+/// smoothing near `f64::MAX` makes it, is taken over the values divided by the
+/// largest instead, so every share stays finite; otherwise the direct total
+/// is used.
 fn normalize(values: Vec<f64>) -> Vec<f64> {
     let total: f64 = values.iter().sum();
-    values.into_iter().map(|value| value / total).collect()
+    if total.is_finite() {
+        return values.into_iter().map(|value| value / total).collect();
+    }
+    let largest = values.iter().copied().fold(0.0, f64::max);
+    let total: f64 = values.iter().map(|value| value / largest).sum();
+    values
+        .into_iter()
+        .map(|value| value / largest / total)
+        .collect()
 }
 
 fn softmax(logs: &[f64]) -> Vec<f64> {

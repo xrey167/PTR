@@ -30,6 +30,11 @@ pub enum LabelingError {
     AdapterAttribution { function: String },
     /// An evaluation set already holds a gold label for this item.
     DuplicateGoldItem { item: usize },
+    /// The posterior of an item is not a probability distribution: it is
+    /// empty, has an entry that is negative or not finite, does not sum to
+    /// one within `1e-6` (the tolerance of the statistics kernel), or does not
+    /// have one entry per class of the schema it is resolved against.
+    InvalidPosterior { item: usize },
 }
 
 impl LabelingError {
@@ -45,6 +50,7 @@ impl LabelingError {
             Self::Empty { .. } => "PTR_LABELING_EMPTY",
             Self::AdapterAttribution { .. } => "PTR_LABELING_ADAPTER_ATTRIBUTION",
             Self::DuplicateGoldItem { .. } => "PTR_LABELING_DUPLICATE_GOLD_ITEM",
+            Self::InvalidPosterior { .. } => "PTR_LABELING_INVALID_POSTERIOR",
         }
     }
 }
@@ -84,6 +90,10 @@ impl fmt::Display for LabelingError {
                     "item {item} already has a gold label in this set"
                 )
             }
+            Self::InvalidPosterior { item } => write!(
+                formatter,
+                "the posterior of item {item} is not a probability distribution over its classes"
+            ),
         }
     }
 }

@@ -1,4 +1,5 @@
 use crate::error::LineageError;
+use crate::scale;
 
 /// Merge task vectors (flattened full updates `delta_W = B A` of equal length,
 /// never LoRA factors — see [`crate::LayerUpdate::delta_weight`]) with TIES
@@ -6,6 +7,14 @@ use crate::error::LineageError;
 /// of largest-magnitude entries, elect a sign per coordinate from the summed
 /// trimmed values, and average only the entries that agree with the elected
 /// sign.
+///
+/// Finite vectors always merge to a finite vector, whatever their magnitudes:
+/// every merged entry lies between the smallest and the largest entry it
+/// averages. The election and the mean are the direct in-order sums wherever
+/// no partial sum overflows; a column whose running sum would overflow (two
+/// entries of `f64::MAX`, or `1e308, 1e308, -1e308, -1e308, -1e308`, whose
+/// true sum is negative) is summed again divided by a power of two, which
+/// changes no sign and cannot overflow.
 ///
 /// This is the consolidation step of a lineage: several adapters' deltas
 /// become one, so serving cost and chain depth stop growing. The merged update
@@ -44,16 +53,19 @@ pub fn ties_merge(vectors: &[Vec<f64>], density: f64) -> Result<Vec<f64>, Lineag
     let trimmed: Vec<Vec<f64>> = vectors.iter().map(|v| trim(v, density)).collect();
     Ok((0..len)
         .map(|index| {
-            let sum: f64 = trimmed.iter().map(|v| v[index]).sum();
+            let column: Vec<f64> = trimmed.iter().map(|v| v[index]).collect();
+            // Only the sign of the sum is used, and scaling by a power of two
+            // keeps it.
+            let (sum, _) = scale::sum(&column);
             if sum == 0.0 {
                 return 0.0;
             }
-            let agreeing: Vec<f64> = trimmed
-                .iter()
-                .map(|v| v[index])
+            // Not empty: a sum of one sign has a term of that sign.
+            let agreeing: Vec<f64> = column
+                .into_iter()
                 .filter(|value| *value != 0.0 && value.signum() == sum.signum())
                 .collect();
-            agreeing.iter().sum::<f64>() / agreeing.len() as f64
+            scale::mean(&agreeing)
         })
         .collect())
 }

@@ -245,3 +245,21 @@ fn a_consolidation_must_name_a_registered_source_other_than_itself() {
         BTreeSet::from([AdapterId::from("a1"), AdapterId::from("c1")])
     );
 }
+
+#[test]
+fn consolidation_is_due_when_an_overlap_or_its_limit_cannot_be_compared() {
+    let policy = ConsolidationPolicy {
+        max_depth: 10,
+        max_overlap: 0.5,
+    };
+    assert!(!policy.consolidation_due(0, 0.5));
+    // Every comparison with NaN is false: an unmeasured overlap would pass
+    // as within the limit, and a NaN limit would switch the check off.
+    assert!(policy.consolidation_due(0, f64::NAN));
+    let unlimited = ConsolidationPolicy {
+        max_depth: 10,
+        max_overlap: f64::NAN,
+    };
+    assert!(unlimited.consolidation_due(0, 0.0));
+    assert!(unlimited.consolidation_due(0, 1.0));
+}

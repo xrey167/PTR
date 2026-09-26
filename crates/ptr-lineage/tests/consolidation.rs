@@ -30,6 +30,95 @@ fn trimming_rounds_up_and_breaks_equal_magnitudes_by_position() {
 }
 
 #[test]
+fn ties_merges_entries_near_the_largest_finite_value_without_overflow() {
+    // Summing the agreeing entries before dividing would overflow to
+    // infinity; their mean is the entry itself.
+    assert_eq!(
+        ties_merge(&[vec![f64::MAX, 1.0], vec![f64::MAX, 1.0]], 1.0).unwrap(),
+        vec![f64::MAX, 1.0]
+    );
+    assert_eq!(
+        ties_merge(&[vec![1e308], vec![1e308]], 1.0).unwrap(),
+        vec![1e308]
+    );
+    assert_eq!(
+        ties_merge(&[vec![-f64::MAX], vec![-f64::MAX], vec![-f64::MAX]], 1.0).unwrap(),
+        vec![-f64::MAX]
+    );
+    // Every merged entry lies between the smallest and largest entry it
+    // averages, so a merge of finite vectors is finite.
+    let merged = ties_merge(&[vec![f64::MAX], vec![1e308], vec![f64::MAX / 3.0]], 1.0).unwrap();
+    assert!(merged[0].is_finite() && merged[0] >= f64::MAX / 3.0 && merged[0] <= f64::MAX);
+}
+
+#[test]
+fn the_elected_sign_is_that_of_the_true_sum_when_a_running_sum_would_overflow() {
+    // The running sum reaches +inf after two entries and stays there, although
+    // the column sums to -1e308: the sign is minus and the merged entry the
+    // mean of the three negative entries.
+    assert_eq!(
+        ties_merge(
+            &[
+                vec![1e308],
+                vec![1e308],
+                vec![-1e308],
+                vec![-1e308],
+                vec![-1e308]
+            ],
+            1.0
+        )
+        .unwrap(),
+        vec![-1e308]
+    );
+    // Equal magnitudes of both signs still cancel exactly.
+    assert_eq!(
+        ties_merge(
+            &[
+                vec![f64::MAX],
+                vec![f64::MAX],
+                vec![-f64::MAX],
+                vec![-f64::MAX]
+            ],
+            1.0
+        )
+        .unwrap(),
+        vec![0.0]
+    );
+}
+
+#[test]
+fn summaries_of_extreme_finite_scores_do_not_overflow() {
+    // The mean of two scores of 1e308 is 1e308, not their overflowing sum.
+    let matrix = AccuracyMatrix::new(vec![vec![1e308, 0.0], vec![1e308, 1e308]]).unwrap();
+    assert_eq!(matrix.average_accuracy(), 1e308);
+    // Changes of +2e308 and -2e308 overflow to +inf and -inf, whose sum is
+    // NaN; the exact backward transfer is (2e308 - 2e308 - 1) / 3.
+    let matrix = AccuracyMatrix::new(vec![
+        vec![-1e308, 0.0, 0.0, 0.0],
+        vec![0.0, 1e308, 0.0, 0.0],
+        vec![0.0, 0.0, 1.0, 0.0],
+        vec![1e308, -1e308, 0.0, 0.0],
+    ])
+    .unwrap();
+    assert!(
+        (matrix.backward_transfer() + 1.0 / 3.0).abs() < 1e-12,
+        "{}",
+        matrix.backward_transfer()
+    );
+    // Task 0 is forgotten by 2e308, beyond f64::MAX, and task 1 not at all:
+    // the average forgetting is 1e308 and the backward transfer -1e308.
+    let matrix = AccuracyMatrix::new(vec![
+        vec![1e308, 0.0, 0.0],
+        vec![0.0, 0.0, 0.0],
+        vec![-1e308, 0.0, 0.0],
+    ])
+    .unwrap();
+    assert_eq!(matrix.task_forgetting(), vec![f64::INFINITY, 0.0]);
+    assert_eq!(matrix.average_forgetting(), 1e308);
+    assert_eq!(matrix.backward_transfer(), -1e308);
+}
+
+#[test]
 fn merging_refuses_nonfinite_updates_and_invalid_densities() {
     assert_eq!(
         ties_merge(&[], 1.0),

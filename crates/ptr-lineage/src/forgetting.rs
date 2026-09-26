@@ -1,5 +1,6 @@
 use crate::error::LineageError;
 use crate::lineage::AdapterId;
+use crate::scale;
 
 /// `values[i][j]`: score on task `j` after training stage `i`, for `T` stages
 /// and `T` tasks (task `j` is the one introduced at stage `j`).
@@ -11,6 +12,13 @@ pub struct AccuracyMatrix {
 impl AccuracyMatrix {
     /// Build a square stage-by-task score matrix. Scores need only be finite;
     /// they are not restricted to probabilities.
+    ///
+    /// No summary overflows on the way to its value: means are computed
+    /// without an overflowing running sum and differences as differences of
+    /// halves, so the average accuracy is always finite, and backward
+    /// transfer and forgetting are infinite only when their exact value
+    /// exceeds `f64::MAX` (a score of `f64::MAX` forgotten down to
+    /// `-f64::MAX`), never NaN.
     ///
     /// # Errors
     /// Rejects an empty matrix, rows of the wrong length, or nonfinite scores.
@@ -44,7 +52,7 @@ impl AccuracyMatrix {
 
     /// Mean final score over all tasks.
     pub fn average_accuracy(&self) -> f64 {
-        self.last().iter().sum::<f64>() / self.values.len() as f64
+        scale::mean(self.last())
     }
 
     /// Backward transfer (Lopez-Paz and Ranzato): mean change on every earlier
@@ -56,15 +64,35 @@ impl AccuracyMatrix {
             return 0.0;
         }
         let last = self.last();
-        (0..tasks - 1)
-            .map(|j| last[j] - self.values[j][j])
-            .sum::<f64>()
-            / (tasks - 1) as f64
+        let halves: Vec<f64> = (0..tasks - 1)
+            .map(|j| last[j] / 2.0 - self.values[j][j] / 2.0)
+            .collect();
+        2.0 * scale::mean(&halves)
     }
 
     /// Forgetting of each earlier task (Chaudhry et al.): its best score at any
     /// earlier stage minus its final score. Never negative.
     pub fn task_forgetting(&self) -> Vec<f64> {
+        self.half_forgetting()
+            .into_iter()
+            .map(|half| 2.0 * half)
+            .collect()
+    }
+
+    /// Mean forgetting over earlier tasks, or zero for a single task.
+    pub fn average_forgetting(&self) -> f64 {
+        let halves = self.half_forgetting();
+        if halves.is_empty() {
+            0.0
+        } else {
+            2.0 * scale::mean(&halves)
+        }
+    }
+
+    /// Half of each earlier task's forgetting, `max(0, best / 2 - last / 2)`,
+    /// which is finite for any finite scores; halving is exact unless a score
+    /// is subnormal.
+    fn half_forgetting(&self) -> Vec<f64> {
         let tasks = self.values.len();
         let last = self.last();
         (0..tasks.saturating_sub(1))
@@ -72,19 +100,9 @@ impl AccuracyMatrix {
                 let best = (j..tasks - 1)
                     .map(|stage| self.values[stage][j])
                     .fold(f64::NEG_INFINITY, f64::max);
-                (best - last[j]).max(0.0)
+                (best / 2.0 - last[j] / 2.0).max(0.0)
             })
             .collect()
-    }
-
-    /// Mean forgetting over earlier tasks, or zero for a single task.
-    pub fn average_forgetting(&self) -> f64 {
-        let forgetting = self.task_forgetting();
-        if forgetting.is_empty() {
-            0.0
-        } else {
-            forgetting.iter().sum::<f64>() / forgetting.len() as f64
-        }
     }
 }
 

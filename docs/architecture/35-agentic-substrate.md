@@ -418,6 +418,9 @@ An adapter is a sealed, content-addressed checkpoint bound to one exact base mod
 and revision, with a data manifest. Registration always yields a candidate; only a
 passing forgetting gate — thresholds on average and per-task forgetting, backward
 transfer and public-suite regression — lets it serve (`only_a_passing_gate_lets_an_adapter_serve`).
+Those summaries never overflow for finite scores: each is infinite only when its
+exact value exceeds `f64::MAX`, never NaN
+(`summaries_of_extreme_finite_scores_do_not_overflow`).
 Revoking a training input names every adapter, descendant and consolidation that
 depends on it (`revoking_one_input_names_its_adapter_every_descendant_and_every_consolidation`).
 
@@ -429,10 +432,22 @@ and `M = QᵀB A`): taking `col(B)` and `row(A)` instead overstates the rank of
 rank-deficient factors and can understate overlap
 (`a_rank_deficient_update_is_measured_on_its_product_not_its_factors`,
 `adapters_on_orthogonal_subspaces_do_not_interfere`,
-`sharing_an_output_direction_is_full_output_overlap_and_names_the_culprit`). When a
+`sharing_an_output_direction_is_full_output_overlap_and_names_the_culprit`). Bases,
+norms and interference ratios do not depend on the scale of the factors, and are
+computed on factors divided by powers of two: finite updates of any magnitude are
+measured, and only a product entry or ratio that is itself beyond `f64::MAX` is
+refused (`update_subspaces_are_measured_whatever_the_scale_of_the_factors`,
+`activation_interference_does_not_depend_on_the_scale_of_updates_or_inputs`). When a
 lineage grows too deep or too entangled, the next step is a TIES merge of the full
 updates into one consolidated adapter
-(`consolidation_resets_depth_and_is_due_past_the_policy_limits`). The report is stored
+(`consolidation_resets_depth_and_is_due_past_the_policy_limits`); consolidation is
+also due when an overlap cannot be compared with the limit, and a report holding a NaN
+overlap is within no limit
+(`consolidation_is_due_when_an_overlap_or_its_limit_cannot_be_compared`,
+`a_report_with_a_nan_overlap_is_not_within_any_limit`). A merge of finite updates is
+finite: the sign election and the mean are computed without an overflowing running
+sum (`ties_merges_entries_near_the_largest_finite_value_without_overflow`,
+`the_elected_sign_is_that_of_the_true_sum_when_a_running_sum_would_overflow`). The report is stored
 with the candidate, one row per layer under one header row per adapter, so a promotion
 or consolidation decision can be audited against the evidence it was made on; a second
 report for the adapter is refused rather than merged into the first, and an empty one
@@ -443,7 +458,9 @@ is refused before anything is written
 Replay samples carry an FSRS-4.5 memory state updated from probe losses on the
 training clock, not wall time; priority grows with forgetting and difficulty, and
 draws are stratified and without replacement by Gumbel-top-k
-(`forgotten_samples_are_drawn_far_more_often_than_retained_ones`). A held-out sample
+(`forgotten_samples_are_drawn_far_more_often_than_retained_ones`). Probes, draws and
+priorities refuse a nonfinite model time, at which every sample would look retained
+(`a_draw_or_priority_at_a_nonfinite_model_time_is_refused`). A held-out sample
 can never be pooled (`a_held_out_sample_can_never_enter_the_pool`), in Rust and by a
 column constraint in PostgreSQL.
 
@@ -458,10 +475,23 @@ rule classes out and are never outvoted, and a verifier class vote is refused
 modelled function's confusion matrix by expectation maximisation
 (`the_label_model_recovers_function_accuracies_and_beats_majority_vote`) and warns
 when fewer than three functions make it unidentifiable
-(`fewer_than_three_modelled_functions_are_reported_as_unidentifiable`). An item
+(`fewer_than_three_modelled_functions_are_reported_as_unidentifiable`). Its smoothing
+keeps every prior and confusion probability positive: a smoothing too small for that
+at the number of items is refused, and one up to `f64::MAX` is normalized without
+overflow, so every fitted probability is finite
+(`a_smoothing_too_small_to_keep_every_probability_positive_is_refused`,
+`a_smoothing_near_the_largest_finite_value_fits_finite_uniform_probabilities`). An item
 resolves to `Determined` (every other class vetoed), `Estimated` at or above the
 required probability, `Unknown`, or `Disputed` when every class is vetoed
 (`a_verifier_veto_overrides_a_confident_model_and_vetoing_everything_is_a_dispute`).
+A posterior that is not a probability distribution over the schema is refused before
+anything is resolved or scored
+(`resolution_refuses_a_posterior_that_is_not_a_distribution_over_the_schema`,
+`evaluation_refuses_a_posterior_that_is_not_a_distribution_whatever_the_sampling`).
+Annotation ranking puts disputed items first and never proposes a determined one;
+posteriors and outcomes of different lengths are refused rather than paired up to the
+shorter list, which would drop items
+(`annotation_ranking_refuses_posteriors_and_outcomes_of_different_lengths`).
 Gold labels record their source and whether they were sampled uniformly or
 actively. An evaluation set holds one resolved gold label per item
 (`an_evaluation_set_holds_one_gold_label_per_item`), and a gold class outside the

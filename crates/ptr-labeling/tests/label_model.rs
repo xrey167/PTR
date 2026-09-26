@@ -151,7 +151,8 @@ fn a_verifier_veto_overrides_a_confident_model_and_vetoing_everything_is_a_dispu
     assert_eq!(outcomes[3], LabelOutcome::Unknown);
     assert_eq!(outcomes[4], LabelOutcome::Unknown);
     // The dispute is the first thing a person is asked about.
-    let ranked = rank_for_annotation(&model.posteriors, &outcomes, Acquisition::Entropy, 1);
+    let ranked =
+        rank_for_annotation(&model.posteriors, &outcomes, Acquisition::Entropy, 1).unwrap();
     assert_eq!(ranked, vec![1]);
 }
 
@@ -271,13 +272,16 @@ fn annotation_ties_are_stable_and_budget_zero_never_requests_work() {
     for strategy in [Acquisition::Entropy, Acquisition::Margin] {
         assert_eq!(
             rank_for_annotation(&posteriors, &outcomes, strategy, 2),
-            vec![0, 2]
+            Ok(vec![0, 2])
         );
         assert_eq!(
             rank_for_annotation(&posteriors, &outcomes, strategy, 9),
-            vec![0, 2, 1]
+            Ok(vec![0, 2, 1])
         );
-        assert!(rank_for_annotation(&posteriors, &outcomes, strategy, 0).is_empty());
+        assert_eq!(
+            rank_for_annotation(&posteriors, &outcomes, strategy, 0),
+            Ok(vec![])
+        );
     }
 }
 
@@ -663,4 +667,265 @@ fn an_em_tolerance_outside_zero_to_one_is_refused_and_zero_waits_for_a_fixed_poi
         .warnings
         .iter()
         .any(|warning| matches!(warning, ModelWarning::NotConverged { .. })));
+}
+
+#[test]
+fn annotation_ranking_refuses_posteriors_and_outcomes_of_different_lengths() {
+    let disputed = LabelOutcome::Disputed {
+        vetoed: std::collections::BTreeSet::from([0, 1]),
+    };
+    // Pairing them up to the shorter list would drop item 1, the dispute a
+    // person must always be asked about first.
+    let outcomes = vec![LabelOutcome::Unknown, disputed, LabelOutcome::Unknown];
+    for strategy in [Acquisition::Entropy, Acquisition::Margin] {
+        assert_eq!(
+            rank_for_annotation(&[vec![0.5, 0.5]], &outcomes, strategy, 10),
+            Err(LabelingError::LengthMismatch {
+                expected: 3,
+                actual: 1
+            })
+        );
+        assert_eq!(
+            rank_for_annotation(
+                &[vec![0.9, 0.1], vec![0.5, 0.5], vec![0.5, 0.5]],
+                &[LabelOutcome::Unknown],
+                strategy,
+                10
+            ),
+            Err(LabelingError::LengthMismatch {
+                expected: 1,
+                actual: 3
+            })
+        );
+    }
+}
+
+#[test]
+fn annotation_ranking_refuses_a_scored_posterior_that_is_not_a_distribution() {
+    let outcomes = vec![LabelOutcome::Unknown; 3];
+    let confident = vec![0.99, 0.01];
+    let even = vec![0.5, 0.5];
+    // An empty posterior has no margin, a NaN one ranked below a confident
+    // item, and one outside [0, 1] has a negative entropy.
+    for invalid in [
+        vec![],
+        vec![f64::NAN, f64::NAN],
+        vec![2.0, -1.0],
+        vec![0.5, 0.6],
+    ] {
+        for strategy in [Acquisition::Entropy, Acquisition::Margin] {
+            assert_eq!(
+                rank_for_annotation(
+                    &[confident.clone(), invalid.clone(), even.clone()],
+                    &outcomes,
+                    strategy,
+                    10
+                ),
+                Err(LabelingError::InvalidPosterior { item: 1 }),
+                "{invalid:?} {strategy:?}"
+            );
+        }
+    }
+    // Posteriors of items that are not ranked by them are not read.
+    let outcomes = vec![
+        LabelOutcome::Determined { class: 0 },
+        LabelOutcome::Disputed {
+            vetoed: std::collections::BTreeSet::from([0, 1]),
+        },
+        LabelOutcome::Unknown,
+    ];
+    assert_eq!(
+        rank_for_annotation(&[vec![], vec![], even], &outcomes, Acquisition::Margin, 10),
+        Ok(vec![1, 2])
+    );
+}
+
+fn two_heuristics_and_a_third(votes: Vec<Vec<Vote>>) -> VoteMatrix {
+    VoteMatrix::new(
+        LabelSchema::new(["a", "b"]).unwrap(),
+        vec![
+            function("f0", FunctionKind::Heuristic),
+            function("f1", FunctionKind::Heuristic),
+            function("f2", FunctionKind::Heuristic),
+        ],
+        votes,
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_smoothing_near_the_largest_finite_value_fits_finite_uniform_probabilities() {
+    let (c0, c1) = (Vote::Class(0), Vote::Class(1));
+    let matrix = two_heuristics_and_a_third(vec![vec![c0, c0, c1], vec![c1, c1, c1]]);
+    // Two smoothed counts of 1e308 overflow their total; normalizing by it
+    // gave zero priors and NaN posteriors, reported as a converged fit.
+    for smoothing in [f64::MAX, 1e308] {
+        let model = fit_label_model(
+            &matrix,
+            DawidSkeneParams {
+                smoothing,
+                ..DawidSkeneParams::default()
+            },
+        )
+        .unwrap();
+        // The votes are negligible against the smoothing: every probability
+        // is uniform.
+        let uniform = vec![0.5, 0.5];
+        assert_eq!(model.priors, uniform, "{smoothing}");
+        for table in model.confusion.iter().flatten() {
+            assert_eq!(
+                table,
+                &vec![uniform.clone(), uniform.clone()],
+                "{smoothing}"
+            );
+        }
+        assert_eq!(
+            model.posteriors,
+            vec![uniform.clone(), uniform.clone()],
+            "{smoothing}"
+        );
+        assert_eq!(
+            resolve(&matrix, &model, 0.9).unwrap(),
+            vec![LabelOutcome::Unknown, LabelOutcome::Unknown]
+        );
+    }
+}
+
+#[test]
+fn a_smoothing_too_small_to_keep_every_probability_positive_is_refused() {
+    let (c0, c1, a) = (Vote::Class(0), Vote::Class(1), Vote::Abstain);
+    let mut votes = vec![vec![c0, c0, c0]; 20];
+    votes.extend(vec![vec![c1, c1, c1]; 20]);
+    votes.push(vec![c0, a, a]);
+    let matrix = two_heuristics_and_a_third(votes);
+    let params = |smoothing| DawidSkeneParams {
+        smoothing,
+        ..DawidSkeneParams::default()
+    };
+    // With 41 items, 5e-324 / 41 is below the smallest positive f64: the
+    // confusion matrices held exact zeros and one vote zeroed a class.
+    for smoothing in [5e-324, f64::MIN_POSITIVE, 1e-307] {
+        assert_eq!(
+            fit_label_model(&matrix, params(smoothing)).unwrap_err(),
+            LabelingError::InvalidParameter {
+                field: "smoothing",
+                message:
+                    "is too small for this many items to keep every smoothed probability positive",
+            },
+            "{smoothing}"
+        );
+    }
+    // The smallest smoothed probability of 1e-300 is about 2.4e-302, a
+    // normal number: every prior and confusion probability stays positive,
+    // and so does the single-vote item's posterior of the other class.
+    let model = fit_label_model(&matrix, params(1e-300)).unwrap();
+    assert!(model.priors.iter().all(|p| *p > 0.0));
+    for table in model.confusion.iter().flatten() {
+        assert!(
+            table.iter().flatten().all(|p| p.is_finite() && *p > 0.0),
+            "{table:?}"
+        );
+    }
+    assert!(model.posteriors[40][1] > 0.0, "{:?}", model.posteriors[40]);
+}
+
+#[test]
+fn resolution_refuses_a_posterior_that_is_not_a_distribution_over_the_schema() {
+    let matrix = two_heuristics_and_a_third(vec![vec![Vote::Class(0); 3]]);
+    let mut model = fit_label_model(&matrix, DawidSkeneParams::default()).unwrap();
+    // Resolved as they stood, these gave a probability of 1.5, a class from
+    // negative mass, and a class of a two-class schema while 0.8 of the mass
+    // sat on a third entry.
+    for posterior in [
+        vec![1.5, -0.5],
+        vec![-1.0, -3.0],
+        vec![0.1, 0.1, 0.8],
+        vec![1.0],
+        vec![f64::NAN, 0.5],
+        vec![0.6, 0.6],
+    ] {
+        model.posteriors = vec![posterior.clone()];
+        assert_eq!(
+            resolve(&matrix, &model, 0.5),
+            Err(LabelingError::InvalidPosterior { item: 0 }),
+            "{posterior:?}"
+        );
+    }
+    model.posteriors = vec![vec![0.25, 0.75]];
+    assert_eq!(
+        resolve(&matrix, &model, 0.5).unwrap(),
+        vec![LabelOutcome::Estimated {
+            class: 1,
+            probability: 0.75
+        }]
+    );
+}
+
+#[test]
+fn a_model_with_no_mass_on_the_classes_left_resolves_to_unknown() {
+    let schema = LabelSchema::new(["a", "b", "c"]).unwrap();
+    let matrix = VoteMatrix::new(
+        schema,
+        vec![
+            function("rule", FunctionKind::Heuristic),
+            function("check", FunctionKind::Verifier),
+        ],
+        vec![vec![Vote::Class(0), Vote::Veto(0)]],
+    )
+    .unwrap();
+    let mut model = fit_label_model(&matrix, DawidSkeneParams::default()).unwrap();
+    model.posteriors = vec![vec![1.0, 0.0, 0.0]];
+    assert_eq!(
+        resolve(&matrix, &model, 0.5).unwrap(),
+        vec![LabelOutcome::Unknown]
+    );
+}
+
+#[test]
+fn a_gold_item_at_the_largest_index_is_reported_missing_rather_than_overflowing() {
+    let mut set = EvaluationSet::new(GoldSampling::Uniform);
+    set.push(GoldLabel {
+        item: usize::MAX,
+        class: 0,
+        source: GoldSource::Oracle,
+    })
+    .unwrap();
+    // `item + 1` panicked in debug builds and wrapped to 0 in release ones.
+    assert_eq!(
+        evaluate(&[vec![1.0, 0.0]], &set, 5).unwrap_err(),
+        LabelingError::LengthMismatch {
+            expected: usize::MAX,
+            actual: 1
+        }
+    );
+    let matrix = two_heuristics_and_a_third(vec![vec![Vote::Class(0); 3]]);
+    assert_eq!(
+        function_accuracy(&matrix, &set, 1.96).unwrap_err(),
+        LabelingError::LengthMismatch {
+            expected: usize::MAX,
+            actual: 1
+        }
+    );
+}
+
+#[test]
+fn evaluation_refuses_a_posterior_that_is_not_a_distribution_whatever_the_sampling() {
+    for sampling in [GoldSampling::Active, GoldSampling::Uniform] {
+        let mut set = EvaluationSet::new(sampling);
+        set.push(GoldLabel {
+            item: 0,
+            class: 0,
+            source: GoldSource::Oracle,
+        })
+        .unwrap();
+        // total_cmp orders NaN above every number, so a NaN posterior was
+        // the argmax of class 0 and counted as a correct prediction.
+        for posterior in [vec![f64::NAN, 0.1], vec![1.5, -0.5], vec![0.6, 0.6]] {
+            assert_eq!(
+                evaluate(std::slice::from_ref(&posterior), &set, 5),
+                Err(LabelingError::InvalidPosterior { item: 0 }),
+                "{sampling:?} {posterior:?}"
+            );
+        }
+    }
 }

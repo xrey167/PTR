@@ -65,7 +65,8 @@ pub struct ReplayParams {
     pub lapse_loss: f64,
     /// Lapses after which a sample is withheld from replay until its label is
     /// audited: a sample the model keeps forgetting is as likely mislabelled
-    /// as hard, and hard-example replay amplifies label noise.
+    /// as hard, and hard-example replay amplifies label noise. At least one:
+    /// zero would withhold every sample, lapsed or not.
     pub max_lapses: u32,
 }
 
@@ -97,16 +98,45 @@ impl ReplayParams {
                 message: "must be finite",
             });
         }
+        if self.max_lapses == 0 {
+            return Err(LineageError::InvalidParameter {
+                field: "max_lapses",
+                message: "must be at least one",
+            });
+        }
         Ok(())
     }
 }
 
 /// FSRS-4.5 power forgetting curve `R(t, S) = (1 + F t / S)^C` with
 /// `C = -0.5` and `F = 19/81`, so that `R(S, S) = 0.9`.
-pub fn retrievability(elapsed: f64, stability: f64) -> f64 {
+///
+/// The result lies in `[0, 1]`. An elapsed time below zero (a probe later
+/// than `now`) counts as zero, and an infinite one, which a difference of
+/// finite model times can overflow to, gives zero, the limit of the curve.
+///
+/// # Errors
+/// Returns `LineageError::InvalidParameter` for a NaN elapsed time, which
+/// would otherwise count as zero and report the sample perfectly retained,
+/// and for a stability that is not finite and positive: a negative one gives
+/// a retrievability above one or NaN, zero gives zero at once and an
+/// infinite one never forgets.
+pub fn retrievability(elapsed: f64, stability: f64) -> Result<f64, LineageError> {
     const DECAY: f64 = -0.5;
     const FACTOR: f64 = 19.0 / 81.0;
-    (1.0 + FACTOR * elapsed.max(0.0) / stability).powf(DECAY)
+    if elapsed.is_nan() {
+        return Err(LineageError::InvalidParameter {
+            field: "elapsed model time",
+            message: "must not be NaN",
+        });
+    }
+    if !(stability.is_finite() && stability > 0.0) {
+        return Err(LineageError::InvalidParameter {
+            field: "stability",
+            message: "must be finite and positive",
+        });
+    }
+    Ok((1.0 + FACTOR * elapsed.max(0.0) / stability).powf(DECAY))
 }
 
 /// A pool of replayable training samples scheduled by measured forgetting.
@@ -119,7 +149,8 @@ pub struct ReplayPool {
 impl ReplayPool {
     /// Create an empty replay pool. Returns `LineageError::InvalidParameter`
     /// for nonfinite or nonpositive stability, growth, or difficulty-step
-    /// parameters, a lapse factor outside `(0, 1)`, or nonfinite lapse loss.
+    /// parameters, a lapse factor outside `(0, 1)`, nonfinite lapse loss, or
+    /// a lapse limit of zero.
     pub fn new(params: ReplayParams) -> Result<Self, LineageError> {
         params.check()?;
         Ok(Self {
@@ -225,7 +256,7 @@ impl ReplayPool {
             });
         }
         let elapsed = now.0 - memory.last_probe.0;
-        let recall = retrievability(elapsed, memory.stability);
+        let recall = retrievability(elapsed, memory.stability)?;
         let updated = if loss > params.lapse_loss {
             MemoryState {
                 stability: (memory.stability * params.lapse_factor).max(params.min_stability),
@@ -256,9 +287,22 @@ impl ReplayPool {
 
     /// Replay priority: how forgotten the sample probably is, weighted up for
     /// difficult samples.
-    pub fn priority(&self, sample: &ReplaySample, now: ModelTime) -> f64 {
-        let recall = retrievability(now.0 - sample.memory.last_probe.0, sample.memory.stability);
-        (1.0 - recall) * (1.0 + sample.memory.difficulty / 10.0)
+    ///
+    /// # Errors
+    /// Returns `LineageError::NonFinite` for a nonfinite `now`, as
+    /// [`ReplayPool::insert`] and [`ReplayPool::record_probe`] do: a NaN or
+    /// negative infinite clock would count as no time elapsed and give every
+    /// sample priority zero. A sample built by hand with a NaN last probe or
+    /// a stability that is not finite and positive is refused by
+    /// [`retrievability`].
+    pub fn priority(&self, sample: &ReplaySample, now: ModelTime) -> Result<f64, LineageError> {
+        if !now.0.is_finite() {
+            return Err(LineageError::NonFinite {
+                field: "model time",
+            });
+        }
+        let recall = retrievability(now.0 - sample.memory.last_probe.0, sample.memory.stability)?;
+        Ok((1.0 - recall) * (1.0 + sample.memory.difficulty / 10.0))
     }
 
     /// Samples withheld from replay pending a label audit.
@@ -282,14 +326,31 @@ impl ReplayPool {
     /// A stratum assigned a zero quota contributes no samples. Within each
     /// selected stratum, sampling uses the positive priorities as weights.
     /// The same seed returns the same draw on the same platform (`ln` comes
-    /// from the platform's math library).
-    pub fn sample(&self, count: usize, now: ModelTime, seed: u64) -> Vec<&str> {
+    /// from the platform's math library). A `count` beyond the eligible
+    /// samples returns each of them once; memory is reserved for what can be
+    /// drawn, never for `count` itself.
+    ///
+    /// # Errors
+    /// Returns `LineageError::NonFinite` for a nonfinite `now` before anything
+    /// is drawn: at a NaN or negative infinite model time every priority
+    /// would be zero and the draw silently empty.
+    pub fn sample(
+        &self,
+        count: usize,
+        now: ModelTime,
+        seed: u64,
+    ) -> Result<Vec<&str>, LineageError> {
+        if !now.0.is_finite() {
+            return Err(LineageError::NonFinite {
+                field: "model time",
+            });
+        }
         let mut strata: BTreeMap<&str, Vec<(&ReplaySample, f64)>> = BTreeMap::new();
         for sample in self.samples.values() {
             if sample.memory.lapses >= self.params.max_lapses {
                 continue;
             }
-            let weight = self.priority(sample, now);
+            let weight = self.priority(sample, now)?;
             // A zero or undefined priority is never drawn.
             if weight.is_nan() || weight <= 0.0 {
                 continue;
@@ -304,9 +365,10 @@ impl ReplayPool {
             .map(|(name, members)| (*name, members.iter().map(|(_, w)| w).sum(), members.len()))
             .collect();
         let eligible: usize = masses.iter().map(|(_, _, size)| size).sum();
-        let quotas = allocate(count.min(eligible), &masses);
+        let drawable = count.min(eligible);
+        let quotas = allocate(drawable, &masses);
 
-        let mut drawn = Vec::with_capacity(count);
+        let mut drawn = Vec::with_capacity(drawable);
         for (name, quota) in quotas {
             let mut keyed: Vec<(f64, &str)> = strata[name]
                 .iter()
@@ -318,7 +380,7 @@ impl ReplayPool {
             keyed.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(b.1)));
             drawn.extend(keyed.into_iter().take(quota).map(|(_, id)| id));
         }
-        drawn
+        Ok(drawn)
     }
 }
 
@@ -387,9 +449,36 @@ mod tests {
 
     #[test]
     fn retrievability_is_point_nine_after_one_stability() {
-        assert!((retrievability(7.0, 7.0) - 0.9).abs() < 1e-12);
-        assert!((retrievability(0.0, 7.0) - 1.0).abs() < 1e-12);
-        assert!(retrievability(70.0, 7.0) < retrievability(7.0, 7.0));
+        let recall = |elapsed| retrievability(elapsed, 7.0).unwrap();
+        assert!((recall(7.0) - 0.9).abs() < 1e-12);
+        assert!((recall(0.0) - 1.0).abs() < 1e-12);
+        assert!(recall(70.0) < recall(7.0));
+    }
+
+    #[test]
+    fn retrievability_refuses_a_nan_elapsed_time_and_a_stability_that_is_not_finite_and_positive() {
+        assert_eq!(
+            retrievability(f64::NAN, 7.0),
+            Err(LineageError::InvalidParameter {
+                field: "elapsed model time",
+                message: "must not be NaN",
+            })
+        );
+        for stability in [-1.0, 0.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(
+                retrievability(1.0, stability),
+                Err(LineageError::InvalidParameter {
+                    field: "stability",
+                    message: "must be finite and positive",
+                }),
+                "{stability}"
+            );
+        }
+        // Infinite elapsed times are limits of the curve, not errors: a
+        // difference of finite model times can overflow to one.
+        assert_eq!(retrievability(f64::INFINITY, 7.0), Ok(0.0));
+        assert_eq!(retrievability(f64::NEG_INFINITY, 7.0), Ok(1.0));
+        assert_eq!(retrievability(-5.0, 7.0), Ok(1.0));
     }
 
     #[test]

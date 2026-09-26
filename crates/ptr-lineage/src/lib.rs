@@ -20,6 +20,7 @@ mod forgetting;
 mod lineage;
 mod merge;
 mod replay;
+mod scale;
 mod subspace;
 
 pub use error::LineageError;
