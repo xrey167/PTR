@@ -247,15 +247,16 @@ impl PgSubstrate {
                     .await
                     .map_err(database)?;
                 // A superseded generation is no longer admissible either, so
-                // fast-memory writes derived from any other generation go too.
-                (report.removed_writes, report.dropped_checkpoints) = remove_fastmem_writes(
-                    &transaction,
-                    work,
-                    &target,
-                    generation,
-                    Removal::OtherThan,
-                )
-                .await?;
+                // fast-memory writes derived from an older generation go too.
+                // Only older ones: activation never lowers a generation, so in
+                // forward operation no write of a later one exists, and when a
+                // rebuilt projection replays an earlier activation over working
+                // state that outlived the rebuild, a write of a later
+                // generation is left to the record that supersedes or revokes
+                // that generation.
+                (report.removed_writes, report.dropped_checkpoints) =
+                    remove_fastmem_writes(&transaction, work, &target, generation, Removal::Older)
+                        .await?;
             }
             LifecycleChange::Tombstone {
                 subject,
@@ -636,8 +637,8 @@ impl PgSubstrate {
 enum Removal {
     /// The revoked generation.
     Exactly,
-    /// Every generation except the new live one.
-    OtherThan,
+    /// Every generation older than the new live one.
+    Older,
 }
 
 /// Delete fast-memory journal writes of `key` at the chosen generations, then
@@ -658,7 +659,7 @@ async fn remove_fastmem_writes(
 ) -> Result<(u64, u64), PgError> {
     let comparison = match removal {
         Removal::Exactly => "=",
-        Removal::OtherThan => "<>",
+        Removal::Older => "<",
     };
     let removed = transaction
         .query(

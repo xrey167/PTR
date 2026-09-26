@@ -89,8 +89,9 @@ pub enum PgError {
         reason: &'static str,
     },
     /// A fast-memory journal append was refused: the sequence number does not
-    /// follow the journal, the journal is full, the memory does not exist, or
-    /// the request fails the memory configuration and admission rules.
+    /// follow the journal or is not below the journal's limit (`i64::MAX`),
+    /// the journal is full, the memory does not exist, or the request fails
+    /// the memory configuration and admission rules.
     InvalidWrite {
         memory: String,
         reason: &'static str,
@@ -115,7 +116,9 @@ pub enum PgError {
     /// invariant `error` names (an operation on a key reserved to ingress, a
     /// `Put` or `Remove` of a key the branch did not read, a touched key
     /// without its base value or input set, ...), or they rely on two
-    /// generations of one target (`ConflictingReliance`). No branch is
+    /// generations of one target (`ConflictingReliance`). A `Remove` of a
+    /// derived key (`DerivedRemoval`), which earlier sealing did produce, is
+    /// [`PgError::BranchWithDerivedRemoval`] instead. No branch is
     /// returned, so nothing certifies a plan from the rows.
     CorruptBranch { branch: String, error: BranchError },
     /// An interference report was refused before any row was written: it
@@ -132,6 +135,28 @@ pub enum PgError {
     /// to other inputs, so the branch cannot be certified and must be re-run
     /// on a current snapshot.
     BranchWithoutInputSets { branch: String, key: String },
+    /// A stored branch was sealed before set operations recorded whether
+    /// their member was in the set at the branch's base (its `branch_op` row
+    /// for a set operation on `key` has no `member_in_base`). Certification
+    /// needs that to refuse a set operation that would undo a concurrent
+    /// change of its member, and no value can be derived for the row, so the
+    /// branch cannot be certified and must be re-run on a current snapshot.
+    BranchWithoutSetBase { branch: String, key: String },
+    /// A stored branch removes `key`, whose recorded input set says it was
+    /// derived at the branch's base. Sealing refuses such a removal
+    /// (`ptr_branch::BranchError::DerivedRemoval`), since a merged removal
+    /// would drop the key's dependency entry, but a branch sealed before it
+    /// did can hold one legitimately, and nothing stored tells that branch
+    /// from rows written around `store_branch`. It is not reported as
+    /// [`PgError::CorruptBranch`], whose rows no sealing ever produced; it
+    /// cannot be certified and must be re-run on a current snapshot.
+    BranchWithDerivedRemoval { branch: String, key: String },
+    /// A search document was refused because its capsule generation is
+    /// already indexed from content with another digest. One generation has
+    /// one content, so a second digest is a stale or erroneous indexing job,
+    /// not a newer version; the stored document is kept. Indexing the same
+    /// digest again (a re-embedding) replaces the stored body and embedding.
+    DocumentConflict { capsule: String, generation: u64 },
     /// A triage row was refused before it was written: the policy version it
     /// cites is not recorded, or that policy cannot have produced it
     /// (`ptr_branch::TriagePolicy::explains` names why: a decision, slice
@@ -191,6 +216,9 @@ impl PgError {
             Self::CorruptBranch { .. } => "PTR_PG_CORRUPT_BRANCH",
             Self::InvalidInterference { .. } => "PTR_PG_INVALID_INTERFERENCE",
             Self::BranchWithoutInputSets { .. } => "PTR_PG_BRANCH_WITHOUT_INPUT_SETS",
+            Self::BranchWithoutSetBase { .. } => "PTR_PG_BRANCH_WITHOUT_SET_BASE",
+            Self::BranchWithDerivedRemoval { .. } => "PTR_PG_BRANCH_WITH_DERIVED_REMOVAL",
+            Self::DocumentConflict { .. } => "PTR_PG_DOCUMENT_CONFLICT",
             Self::InvalidTriage { .. } => "PTR_PG_INVALID_TRIAGE",
             Self::InvalidOutcome { .. } => "PTR_PG_INVALID_OUTCOME",
             Self::InvalidText { .. } => "PTR_PG_INVALID_TEXT",
@@ -291,6 +319,25 @@ impl fmt::Display for PgError {
                 formatter,
                 "branch {branch:?} was sealed before the input set of touched key {key:?} \
                  was recorded; it cannot be certified and must be re-run"
+            ),
+            Self::BranchWithoutSetBase { branch, key } => write!(
+                formatter,
+                "branch {branch:?} was sealed before its set operations on {key:?} recorded \
+                 their member's base presence; it cannot be certified and must be re-run"
+            ),
+            Self::BranchWithDerivedRemoval { branch, key } => write!(
+                formatter,
+                "branch {branch:?} removes {key:?}, which was derived at its base: it was sealed \
+                 before such removals were refused, or written around store_branch; it cannot be \
+                 certified and must be re-run"
+            ),
+            Self::DocumentConflict {
+                capsule,
+                generation,
+            } => write!(
+                formatter,
+                "{capsule:?} generation {generation} is already indexed from content with \
+                 another digest"
             ),
             Self::InvalidTriage {
                 branch,

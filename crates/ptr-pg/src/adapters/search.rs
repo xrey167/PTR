@@ -143,6 +143,16 @@ impl PgSubstrate {
     /// write either lands before the projector's delete or sees the new
     /// generation and is refused. A generation that is not live, is revoked,
     /// or is not a capsule is refused with [`PgError::NotLive`].
+    ///
+    /// A generation has one content. Indexing it again with the stored
+    /// `content_digest` replaces the body, embedding and space (a
+    /// re-embedding); indexing it with another digest is refused as
+    /// [`PgError::DocumentConflict`] and the stored document is kept, so a
+    /// stale or erroneous indexing job cannot replace the document of a live
+    /// generation. Two writers racing with different digests are ordered by
+    /// the table's key: whichever commits second is refused. That the stored
+    /// digest is the capsule's is the first writer's obligation; nothing here
+    /// reads the capsule.
     pub async fn upsert_document(&mut self, document: &SearchDocument) -> Result<(), PgError> {
         let schemas = self.schemas.clone();
         let (projection, derived) = (schemas.projection.as_str(), schemas.derived.as_str());
@@ -204,7 +214,9 @@ impl PgSubstrate {
             }
             None => (None, "$6::real[]::halfvec".to_owned(), None),
         };
-        transaction
+        // A conflicting row with another digest fails the DO UPDATE's WHERE,
+        // so the statement writes nothing; the same digest is a re-embedding.
+        let written = transaction
             .execute(
                 &format!(
                     "INSERT INTO {derived}.search_document \
@@ -212,10 +224,11 @@ impl PgSubstrate {
                       indexed_at_commit) \
                      VALUES ($1, $2, $3, $4, $5, $7, {embedding_sql}, $8) \
                      ON CONFLICT (capsule, generation) DO UPDATE \
-                     SET content_digest = EXCLUDED.content_digest, body = EXCLUDED.body, \
+                     SET body = EXCLUDED.body, \
                          space = EXCLUDED.space, embedding = EXCLUDED.embedding, \
                          indexed_at_commit = EXCLUDED.indexed_at_commit, \
-                         project = EXCLUDED.project"
+                         project = EXCLUDED.project \
+                     WHERE {derived}.search_document.content_digest = EXCLUDED.content_digest"
                 ),
                 &[
                     &capsule,
@@ -230,6 +243,12 @@ impl PgSubstrate {
             )
             .await
             .map_err(database)?;
+        if written == 0 {
+            return Err(PgError::DocumentConflict {
+                capsule: capsule.to_owned(),
+                generation: document.generation.0,
+            });
+        }
         transaction.commit().await.map_err(database)
     }
 
@@ -242,6 +261,18 @@ impl PgSubstrate {
     /// generation. They are still [`SearchHit`]s at the search-candidate stage:
     /// using one as evidence requires observing it against the lifecycle
     /// authority.
+    ///
+    /// Each mode applies the lifecycle rule and the project filter before its
+    /// `limit`, so a stale or revoked cache row never takes the place of a
+    /// live document. The lexical list is exact. The vector list is read from
+    /// the space's HNSW index with an iterative strict-order scan and
+    /// `hnsw.ef_search` set to the limit, at least 40 and at most 1,000: it
+    /// holds approximate nearest neighbours, not necessarily the nearest, and
+    /// it can hold fewer than `limit` hits although more documents match,
+    /// with nothing reporting it. pgvector ends an iterative scan after
+    /// `hnsw.max_scan_tuples` visited tuples (20,000 by default) or
+    /// `hnsw.scan_mem_multiplier` times `work_mem`, and a selective project
+    /// filter, many stale rows or a large limit can reach that bound first.
     ///
     /// # Errors
     /// Refuses, before any SQL runs, a zero `limit` and the fusion parameters
@@ -297,11 +328,13 @@ impl PgSubstrate {
             .map_err(database)?
             .get(0);
 
-        let live_filter = format!(
-            "JOIN {projection}.live_generation l \
-                 ON l.target = d.capsule AND l.generation = d.generation \
-             WHERE NOT EXISTS (SELECT 1 FROM {projection}.tombstone t \
-                               WHERE t.subject = d.capsule AND t.generation = d.generation)"
+        // The lifecycle rule, as a condition on a document `d`: its
+        // generation is the capsule's live one and is not revoked.
+        let live = format!(
+            "EXISTS (SELECT 1 FROM {projection}.live_generation l \
+                     WHERE l.target = d.capsule AND l.generation = d.generation) \
+             AND NOT EXISTS (SELECT 1 FROM {projection}.tombstone t \
+                             WHERE t.subject = d.capsule AND t.generation = d.generation)"
         );
 
         let mut lexical = Vec::new();
@@ -312,7 +345,7 @@ impl PgSubstrate {
                         "SELECT d.capsule, d.generation, ts_rank_cd(d.lexeme, q)::real AS score \
                          FROM {derived}.search_document d \
                          CROSS JOIN plainto_tsquery('simple'::regconfig, $1) q \
-                         {live_filter} \
+                         WHERE {live} \
                            AND d.lexeme @@ q AND ($2::text IS NULL OR d.project = $2) \
                          ORDER BY score DESC, d.capsule, d.generation LIMIT $3"
                     ),
@@ -329,10 +362,15 @@ impl PgSubstrate {
             check_embedding(embedding, dims)?;
             // An HNSW scan returns at most `hnsw.ef_search` rows unless it may
             // iterate, with or without a filter: without both settings a query
-            // for 100 hits silently stops near 40. Iterative scans (pgvector
-            // 0.8, required by the capability check) keep walking the graph in
-            // exact order until `limit` rows pass the filter. Both values are
-            // integers or keywords computed here, never caller text.
+            // for 100 hits silently stops near 40. An iterative scan (pgvector
+            // 0.8, required by the capability check) keeps reading the index
+            // in exact distance order, past ef_search, until `limit` rows
+            // pass every condition below, or until it has visited
+            // `hnsw.max_scan_tuples` tuples (pgvector's default is 20,000)
+            // or used `hnsw.scan_mem_multiplier` times `work_mem`, whichever
+            // comes first. ef_search is the limit, at least 40 and at most
+            // the 1,000 pgvector accepts. Both values are integers or
+            // keywords computed here, never caller text.
             let ef_search = query.limit.clamp(40, MAX_EF_SEARCH);
             transaction
                 .batch_execute(&format!(
@@ -342,25 +380,29 @@ impl PgSubstrate {
                 .await
                 .map_err(database)?;
             let id = space.as_str();
-            // The ORDER BY is the indexed expression alone, so the planner can
-            // use the space's HNSW index; liveness is filtered after it.
+            // The lifecycle rule is a condition of the limited scan itself,
+            // so a stale or revoked row the cache still holds is skipped and
+            // never takes the place of a live one within `limit`. The ORDER
+            // BY is the indexed expression alone, so the planner can read
+            // the space's HNSW index in order and test each row it yields
+            // against the conditions below the LIMIT (nested-loop semi and
+            // anti joins, on the servers this was checked against).
             let rows = transaction
                 .query(
                     &format!(
-                        "SELECT d.capsule, d.generation, (1 - v.distance)::real AS score \
+                        "SELECT v.capsule, v.generation, (1 - v.distance)::real AS score \
                          FROM ( \
-                             SELECT capsule, generation, \
-                                    embedding::halfvec({dims}) <=> $1::real[]::halfvec({dims}) \
-                                        AS distance \
-                             FROM {derived}.search_document \
-                             WHERE space = '{id}' AND ($2::text IS NULL OR project = $2) \
-                             ORDER BY embedding::halfvec({dims}) <=> $1::real[]::halfvec({dims}) \
+                             SELECT d.capsule, d.generation, \
+                                    d.embedding::halfvec({dims}) \
+                                        <=> $1::real[]::halfvec({dims}) AS distance \
+                             FROM {derived}.search_document d \
+                             WHERE d.space = '{id}' AND ($2::text IS NULL OR d.project = $2) \
+                               AND {live} \
+                             ORDER BY d.embedding::halfvec({dims}) \
+                                          <=> $1::real[]::halfvec({dims}) \
                              LIMIT $3 \
                          ) v \
-                         JOIN {derived}.search_document d \
-                             ON d.capsule = v.capsule AND d.generation = v.generation \
-                         {live_filter} \
-                         ORDER BY v.distance, d.capsule, d.generation"
+                         ORDER BY v.distance, v.capsule, v.generation"
                     ),
                     &[embedding, &project, &limit],
                 )

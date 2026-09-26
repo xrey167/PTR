@@ -17,6 +17,12 @@ use tokio_postgres::{IsolationLevel, Row, Transaction};
 use super::{check_text, database, digest_from, to_i64, to_u64, PgSubstrate};
 use crate::error::PgError;
 
+/// The first sequence number the journal never takes: `i64::MAX`, the
+/// largest the `bigint` column holds, which [`PgSubstrate::append_write`] and
+/// work migration 11 refuse. [`PgSubstrate::restore_memory`] restores every
+/// memory with this limit ([`FastMemory::with_sequence_limit`]).
+pub const JOURNAL_SEQ_LIMIT: WriteSeq = WriteSeq(i64::MAX as u64);
+
 /// A registered fast memory.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FastMemoryRecord {
@@ -138,17 +144,32 @@ impl PgSubstrate {
     ///
     /// The registration and the journal are read in one read-only
     /// repeatable-read snapshot, and the journal is restored with
-    /// [`FastMemory::restore`] under the configuration and the identifier
-    /// codebook the registration records ([`FastMemoryRecord::codebook`]).
-    /// The stored `codebook_seed` thus binds every memory loaded here: its
-    /// readouts carry that codebook, and `ptr_fastmem::decode_readout`
-    /// refuses fact codes from any other.
+    /// [`FastMemory::restore_with_projection`] under the configuration, the
+    /// identifier codebook ([`FastMemoryRecord::codebook`]) and the key
+    /// projection digest the registration records. Both bind every memory
+    /// loaded here: its readouts carry that codebook, and
+    /// `ptr_fastmem::decode_readout` refuses fact codes from any other; and
+    /// it reads only queries stating that projection
+    /// (`ptr_fastmem::Query::project` or `Query::with_projection` with
+    /// [`FastMemoryRecord::projection_digest`]), refusing any other query as
+    /// `FastMemoryError::ProjectionMismatch`.
+    ///
+    /// The memory is restored with the journal's sequence limit,
+    /// [`JOURNAL_SEQ_LIMIT`] ([`FastMemory::with_sequence_limit`]), so it
+    /// never takes a sequence number [`append_write`](Self::append_write)
+    /// refuses: once its journal ends at `i64::MAX - 1`, its next write is
+    /// refused as `FastMemoryError::SequenceExhausted` before it is folded,
+    /// whatever room the journal has left.
     ///
     /// # Errors
     /// Propagates database errors; a registration [`load_memory`](Self::load_memory)
-    /// refuses, or a journal row that is malformed or that
-    /// [`FastMemory::restore`] refuses (out of order, beyond the configured
-    /// journal, failing the write rules), is a `PgError::CorruptRow`.
+    /// refuses, or a journal row that is malformed (including one at
+    /// sequence number `i64::MAX`) or that
+    /// [`FastMemory::restore_with_projection`] refuses (out of order, beyond
+    /// the configured journal, failing the write rules), is a
+    /// `PgError::CorruptRow`. Work migration 11 refuses such rows when they
+    /// are written; only a journal written before it, or with its triggers
+    /// disabled, can hold one.
     pub async fn restore_memory(&mut self, id: &str) -> Result<Option<FastMemory>, PgError> {
         let work = self.schemas.work.clone();
         let transaction = self
@@ -178,9 +199,15 @@ impl PgSubstrate {
             .map(journal_entry)
             .collect::<Result<Vec<_>, _>>()?;
         transaction.commit().await.map_err(database)?;
-        FastMemory::restore(record.config, codebook, journal)
-            .map(Some)
-            .map_err(|error| corrupt(&format!("the stored journal does not restore: {error}")))
+        FastMemory::restore_with_projection(
+            record.config,
+            codebook,
+            record.projection_digest,
+            journal,
+        )
+        .and_then(|memory| memory.with_sequence_limit(JOURNAL_SEQ_LIMIT))
+        .map(Some)
+        .map_err(|error| corrupt(&format!("the stored journal does not restore: {error}")))
     }
 
     /// Append one write to a memory's journal.
@@ -193,6 +220,20 @@ impl PgSubstrate {
     /// read in a statement issued after that lock was granted, so they include
     /// every append committed before: the sequence number must exceed every
     /// journaled one, and the journal must have room.
+    ///
+    /// The sequence number must also be below [`JOURNAL_SEQ_LIMIT`]
+    /// (`i64::MAX`), as a [`FastMemory`] takes no number at or above its
+    /// limit (`u64::MAX` unless lowered). Numbers are the caller's to choose,
+    /// gaps included, so a journal can reach `i64::MAX - 1` before its
+    /// `max_writes` rows are used; [`restore_memory`](Self::restore_memory)
+    /// restores such a journal to a memory that refuses its next write
+    /// before folding it, and the registration takes no further write.
+    ///
+    /// The database refuses the rows these checks refuse from any writer
+    /// (work migrations 9 and 11): a write for an unregistered memory, of
+    /// another shape, with a cell `validate_write` refuses, beyond the
+    /// memory's `max_writes` rows, or at sequence number `i64::MAX`. It does
+    /// not check the source's lifecycle or the sequence order.
     pub async fn append_write(
         &mut self,
         memory: &str,
@@ -271,6 +312,11 @@ impl PgSubstrate {
         if seq_value <= last {
             return Err(refuse("the sequence number does not follow the journal"));
         }
+        if seq.0 >= JOURNAL_SEQ_LIMIT.0 {
+            return Err(refuse(
+                "the journal takes no sequence number at or above i64::MAX",
+            ));
+        }
         transaction
             .execute(
                 &format!(
@@ -298,7 +344,15 @@ impl PgSubstrate {
     }
 
     /// The journal in sequence order, ready for
-    /// [`ptr_fastmem::FastMemory::restore`].
+    /// [`ptr_fastmem::FastMemory::restore`]; restore it with
+    /// [`FastMemory::with_sequence_limit`] at [`JOURNAL_SEQ_LIMIT`], as
+    /// [`restore_memory`](Self::restore_memory) does, for a memory that
+    /// never takes a number [`append_write`](Self::append_write) refuses.
+    ///
+    /// # Errors
+    /// Propagates database errors; a malformed row, including one at
+    /// sequence number `i64::MAX` written before work migration 11, is a
+    /// `PgError::CorruptRow`.
     pub async fn load_journal(
         &self,
         memory: &str,
@@ -498,8 +552,14 @@ fn journal_entry(row: &Row) -> Result<(WriteSeq, WriteRequest), PgError> {
         ("per_channel", Some(bytes)) => Decay::PerChannel(floats(&bytes)?),
         _ => return Err(corrupt("decay kind and cells disagree")),
     };
+    let seq = WriteSeq(to_u64(row.get(0), "fastmem_write")?);
+    if seq >= JOURNAL_SEQ_LIMIT {
+        return Err(corrupt(
+            "a write takes sequence number i64::MAX, which the journal refuses",
+        ));
+    }
     Ok((
-        WriteSeq(to_u64(row.get(0), "fastmem_write")?),
+        seq,
         WriteRequest {
             source: SourceRef {
                 key: row.get(1),

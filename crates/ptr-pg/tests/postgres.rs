@@ -26,7 +26,8 @@ use ptr_lineage::{
 };
 use ptr_pg::{
     BranchOutcome, EmbeddingSpace, FastMemoryRecord, HybridQuery, Identifier, PgError, PgSubstrate,
-    SchemaSet, SearchDocument, LEXICAL_BACKEND, VECTOR_BACKEND, WORK_MIGRATIONS,
+    SchemaSet, SearchDocument, LEXICAL_BACKEND, PROJECTION_MIGRATIONS, VECTOR_BACKEND,
+    WORK_MIGRATIONS,
 };
 use ptr_search::EvidenceStage;
 use ptr_semdb::{SemanticPayload, SemanticValue};
@@ -110,6 +111,12 @@ async fn write_before_invariants(
     ))
     .await
     .unwrap();
+}
+
+/// The version of every migration in `catalog`, in order: what a migration
+/// of an empty schema applies.
+fn every_version(catalog: &[ptr_pg::Migration]) -> Vec<u32> {
+    catalog.iter().map(|migration| migration.version).collect()
 }
 
 /// The SQLSTATE a statement the database refused carries.
@@ -507,7 +514,7 @@ async fn a_rebuild_cancelled_while_holding_the_lock_releases_it_and_keeps_the_sc
         .await
         .expect("a retried rebuild must not wait for the cancelled attempt")
         .unwrap();
-    assert_eq!(report.projection, vec![1]);
+    assert_eq!(report.projection, every_version(PROJECTION_MIGRATIONS));
     assert_eq!(report.derived, vec![1]);
     assert!(!migration_lock_held(&raw, &schemas).await);
     first.drop_all().await.unwrap();
@@ -693,7 +700,7 @@ async fn a_migration_whose_lock_session_ends_rolls_back_instead_of_committing_un
 
     // A retry takes the lock afresh and applies everything.
     let report = substrate.migrate().await.unwrap();
-    assert_eq!(report.projection, vec![1]);
+    assert_eq!(report.projection, every_version(PROJECTION_MIGRATIONS));
     assert_eq!(report.work.len(), WORK_MIGRATIONS.len());
     assert!(!migration_lock_held(&raw, &schemas).await);
     substrate.drop_all().await.unwrap();
@@ -731,7 +738,7 @@ async fn a_rebuild_whose_lock_session_ends_keeps_the_schemas_it_was_dropping() {
 
     // A retry rebuilds and leaves no lock behind.
     let report = substrate.rebuild_projection().await.unwrap();
-    assert_eq!(report.projection, vec![1]);
+    assert_eq!(report.projection, every_version(PROJECTION_MIGRATIONS));
     assert_ne!(projection_oid().await, before);
     assert!(!migration_lock_held(&raw, &schemas).await);
     substrate.drop_all().await.unwrap();
@@ -1723,13 +1730,16 @@ fn sealed_branch(id: &str, author: &str) -> SealedBranch {
                 key: "stock:widget".into(),
                 amount: -3,
             },
+            // The base holds no set at tags:1, so neither member was in it.
             BranchOp::SetInsert {
                 key: "tags:1".into(),
                 member: "urgent".into(),
+                in_base: false,
             },
             BranchOp::SetRemove {
                 key: "tags:1".into(),
                 member: "draft".into(),
+                in_base: false,
             },
         ],
     })
@@ -2317,7 +2327,7 @@ async fn rebuild_drops_projection_and_derived_caches_but_keeps_working_state() {
     let before = substrate.watermark().await.unwrap();
 
     let report = substrate.rebuild_projection().await.unwrap();
-    assert_eq!(report.projection, vec![1]);
+    assert_eq!(report.projection, every_version(PROJECTION_MIGRATIONS));
     assert_eq!(report.derived, vec![1]);
     assert!(report.work.is_empty());
     assert_eq!(substrate.watermark().await.unwrap(), LogAnchor::empty());
@@ -2732,22 +2742,6 @@ async fn branch_rows_written_directly_keep_every_sealing_invariant() {
             ),
             "23514",
         ),
-        // An operation on a key with no recorded base value or input set.
-        (
-            format!(
-                "INSERT INTO {work}.branch_op (branch, ordinal, kind, key, amount) \
-                 VALUES ('b1', 9, 'add', 'stock:gadget', 1)"
-            ),
-            "23000",
-        ),
-        // A read of a touched key whose digest is not its base value.
-        (
-            format!(
-                "INSERT INTO {work}.branch_read (branch, key, digest) \
-                 VALUES ('b1', 'stock:widget', {zeros})"
-            ),
-            "23000",
-        ),
         (
             format!("UPDATE {work}.branch SET author = 'agent-8' WHERE id = 'b1'"),
             "23000",
@@ -2763,15 +2757,59 @@ async fn branch_rows_written_directly_keep_every_sealing_invariant() {
     ] {
         assert_eq!(refused_sqlstate(&raw, &sql).await, sqlstate, "{sql}");
     }
+    // A branch's rows are written in the transaction that writes its header
+    // and checked when it commits.
+    let fresh = |rows: &str| {
+        format!(
+            "BEGIN; \
+             INSERT INTO {work}.branch (id, author, base_revision) \
+             VALUES ('fresh', 'agent-7', 4); \
+             INSERT INTO {work}.branch_read (branch, key, digest) \
+             VALUES ('fresh', 'order:1', {zeros}); \
+             INSERT INTO {work}.branch_touched (branch, key, base_digest, inputs_digest) \
+             VALUES ('fresh', 'order:1', {zeros}, {zeros}); \
+             INSERT INTO {work}.branch_op (branch, ordinal, kind, key, value_kind, value_text) \
+             VALUES ('fresh', 0, 'put', 'order:1', 'text', 'x'); \
+             {rows} \
+             COMMIT;"
+        )
+    };
+    for rows in [
+        // An operation on a key with no recorded base value or input set.
+        format!(
+            "INSERT INTO {work}.branch_op (branch, ordinal, kind, key, amount) \
+             VALUES ('fresh', 1, 'add', 'stock:gadget', 1);"
+        ),
+        // A read of a touched key whose digest is not its base value.
+        format!(
+            "INSERT INTO {work}.branch_read (branch, key, digest) \
+             VALUES ('fresh', 'stock:widget', decode(repeat('01', 32), 'hex')); \
+             INSERT INTO {work}.branch_touched (branch, key, base_digest, inputs_digest) \
+             VALUES ('fresh', 'stock:widget', {zeros}, {zeros}); \
+             INSERT INTO {work}.branch_op (branch, ordinal, kind, key, amount) \
+             VALUES ('fresh', 1, 'add', 'stock:widget', 1);"
+        ),
+    ] {
+        let sql = fresh(&rows);
+        assert_eq!(refused_sqlstate(&raw, &sql).await, "23000", "{sql}");
+        raw.batch_execute("ROLLBACK").await.unwrap();
+    }
+    raw.batch_execute(&fresh("")).await.unwrap();
     // Rows written in one transaction are checked when it commits, whatever
-    // their order: the operation here precedes the rows it needs.
+    // their order: the operation here precedes the rows it needs. A Remove
+    // names a key whose recorded input set is empty.
+    let no_inputs: String = InputsDigest::of("order:7", [])
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
     raw.batch_execute(&format!(
         "BEGIN; \
          INSERT INTO {work}.branch (id, author, base_revision) VALUES ('raw', 'agent-7', 4); \
          INSERT INTO {work}.branch_op (branch, ordinal, kind, key) \
          VALUES ('raw', 0, 'remove', 'order:7'); \
          INSERT INTO {work}.branch_touched (branch, key, base_digest, inputs_digest) \
-         VALUES ('raw', 'order:7', {zeros}, {zeros}); \
+         VALUES ('raw', 'order:7', {zeros}, decode('{no_inputs}', 'hex')); \
          INSERT INTO {work}.branch_read (branch, key, digest) VALUES ('raw', 'order:7', {zeros}); \
          COMMIT;"
     ))
@@ -2784,7 +2822,7 @@ async fn branch_rows_written_directly_keep_every_sealing_invariant() {
         .is_some());
     // A whole branch still goes, with every row describing it.
     raw.batch_execute(&format!(
-        "DELETE FROM {work}.branch WHERE id IN ('b1', 'raw')"
+        "DELETE FROM {work}.branch WHERE id IN ('b1', 'raw', 'fresh')"
     ))
     .await
     .unwrap();
@@ -3105,18 +3143,21 @@ async fn fast_memory_rows_keep_the_shape_their_configuration_admits() {
         .unwrap();
     let raw = raw_client().await;
     let work = substrate.schemas().work.clone();
-    // One head of four key and four value cells: 16 bytes each.
+    // One head of four key and four value cells: 16 bytes each. Key cells
+    // and decay factors are 1.0 (a zero key head or decay factor is refused
+    // since work migration 11), value cells 0.0.
     let write = |seq: i64, key: usize, value: usize, decay: &str, decay_bytes: Option<usize>| {
-        let cells = |bytes: usize| format!("decode(repeat('00', {bytes}), 'hex')");
+        let ones = |bytes: usize| format!("decode(repeat('0000803f', {}), 'hex')", bytes / 4);
+        let zeros = |bytes: usize| format!("decode(repeat('00', {bytes}), 'hex')");
         format!(
             "INSERT INTO {work}.fastmem_write \
              (memory, seq, source_key, source_generation, input_digest, key_cells, \
               value_cells, beta, decay_kind, decay_cells) \
              VALUES ('m1', {seq}, 'c1', 1, decode(repeat('00', 32), 'hex'), {}, {}, 0.5, \
                      '{decay}', {})",
-            cells(key),
-            cells(value),
-            decay_bytes.map_or("NULL".to_owned(), cells)
+            ones(key),
+            zeros(value),
+            decay_bytes.map_or("NULL".to_owned(), ones)
         )
     };
     for sql in [
@@ -3362,7 +3403,7 @@ async fn race_an_append(
                  (memory, seq, source_key, source_generation, input_digest, key_cells, \
                   value_cells, beta, decay_kind) \
                  VALUES ($1, $2, 'live', 1, decode(repeat('04', 32), 'hex'), \
-                         decode(repeat('00', 16), 'hex'), decode(repeat('00', 16), 'hex'), \
+                         decode(repeat('0000803f', 4), 'hex'), decode(repeat('00', 16), 'hex'), \
                          0.5, 'none')"
             ),
             &[&memory, &held_seq],
@@ -5102,7 +5143,18 @@ async fn a_restored_memory_decodes_only_against_the_codebook_its_registration_re
         assert_eq!(bits(memory.state().cells()), bits(live.state().cells()));
         restored.push(memory);
     }
-    let query = Query::new(&config, vec![1.0, 0.0, 0.0, 0.0]).unwrap();
+    // Restored memories are bound to the key projection their registration
+    // records, so they read queries stating it and no other.
+    assert_eq!(restored[0].projection_digest(), Some([3; 32]));
+    let unbound = Query::new(&config, vec![1.0, 0.0, 0.0, 0.0]).unwrap();
+    assert_eq!(
+        restored[0].read_admitted(&unbound, |_| true).unwrap_err(),
+        FastMemoryError::ProjectionMismatch {
+            expected: [3; 32],
+            actual: None,
+        }
+    );
+    let query = Query::with_projection(&config, [3; 32], vec![1.0, 0.0, 0.0, 0.0]).unwrap();
     let policy = DecodePolicy {
         limit: 2,
         min_score: 0.0,
@@ -5215,5 +5267,1189 @@ async fn a_source_set_is_judged_from_one_snapshot_at_the_commit_it_names() {
             field: "source.target"
         })
     );
+    substrate.drop_all().await.unwrap();
+}
+
+/// Lowercase hex of `bytes`, for a `decode(..., 'hex')` literal.
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// The rows of a valid branch `id` whose header is already written: a read
+/// of `order:1` and a `Put` of it, with its base value and input set.
+fn branch_rows(work: &impl std::fmt::Display, id: &str) -> String {
+    let zeros = "decode(repeat('00', 32), 'hex')";
+    format!(
+        "INSERT INTO {work}.branch_read (branch, key, digest) VALUES ('{id}', 'order:1', {zeros}); \
+         INSERT INTO {work}.branch_touched (branch, key, base_digest, inputs_digest) \
+         VALUES ('{id}', 'order:1', {zeros}, {zeros}); \
+         INSERT INTO {work}.branch_op (branch, ordinal, kind, key, value_kind, value_text) \
+         VALUES ('{id}', 0, 'put', 'order:1', 'text', 'shipped'); "
+    )
+}
+
+fn branch_header(work: &impl std::fmt::Display, id: &str) -> String {
+    format!("INSERT INTO {work}.branch (id, author, base_revision) VALUES ('{id}', 'agent-7', 4); ")
+}
+
+#[tokio::test]
+async fn a_stored_branch_gains_no_row_in_a_later_transaction() {
+    let mut substrate = substrate().await;
+    let branch = sealed_branch("b1", "agent-7");
+    substrate.store_branch(&branch).await.unwrap();
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    let zeros = "decode(repeat('00', 32), 'hex')";
+    // A group of rows every deferred check accepts: a read of a new key, its
+    // base value and input set, and a Put of it. Appended, it would load as
+    // an operation the author never sealed.
+    let absent = hex(ValueDigest::of("admin:config", None).unwrap().as_bytes());
+    let no_inputs = hex(InputsDigest::of("admin:config", []).as_bytes());
+    let appended = [
+        format!(
+            "BEGIN; \
+             INSERT INTO {work}.branch_read (branch, key, digest) \
+             VALUES ('b1', 'admin:config', decode('{absent}', 'hex')); \
+             INSERT INTO {work}.branch_touched (branch, key, base_digest, inputs_digest) \
+             VALUES ('b1', 'admin:config', decode('{absent}', 'hex'), decode('{no_inputs}', 'hex')); \
+             INSERT INTO {work}.branch_op (branch, ordinal, kind, key, value_kind, value_text) \
+             VALUES ('b1', 6, 'put', 'admin:config', 'text', 'evil'); \
+             COMMIT;"
+        ),
+        // A commutative addition needs only the touched row b1 already has.
+        format!(
+            "INSERT INTO {work}.branch_op (branch, ordinal, kind, key, amount) \
+             VALUES ('b1', 6, 'add', 'stock:widget', 100)"
+        ),
+        format!(
+            "INSERT INTO {work}.branch_read (branch, key, digest) VALUES ('b1', 'order:9', {zeros})"
+        ),
+        format!(
+            "INSERT INTO {work}.branch_scan (branch, prefix, digest) VALUES ('b1', 'admin:', {zeros})"
+        ),
+        format!(
+            "INSERT INTO {work}.branch_relied (branch, target, generation) \
+             VALUES ('b1', 'procedure:deploy', 1)"
+        ),
+        format!(
+            "INSERT INTO {work}.branch_touched (branch, key, base_digest, inputs_digest) \
+             VALUES ('b1', 'order:9', {zeros}, {zeros})"
+        ),
+        // Writing another branch's header opens no stored branch.
+        format!(
+            "BEGIN; {} \
+             INSERT INTO {work}.branch_scan (branch, prefix, digest) VALUES ('b1', 'x:', {zeros}); \
+             COMMIT;",
+            branch_header(&work, "b2")
+        ),
+    ];
+    for sql in appended {
+        assert_eq!(refused_sqlstate(&raw, &sql).await, "23000", "{sql}");
+        raw.batch_execute("ROLLBACK").await.unwrap();
+    }
+    assert_eq!(
+        substrate.load_branch(branch.id()).await.unwrap(),
+        Some(branch.clone())
+    );
+
+    // A branch's rows may be written in any savepoint of the transaction
+    // that writes its header, released or still open, before or after it.
+    let (header, rows) = (
+        |id: &str| branch_header(&work, id),
+        |id: &str| branch_rows(&work, id),
+    );
+    for (id, sql) in [
+        (
+            "s1",
+            format!(
+                "BEGIN; SAVEPOINT a; {} RELEASE SAVEPOINT a; {} COMMIT;",
+                header("s1"),
+                rows("s1")
+            ),
+        ),
+        (
+            "s2",
+            format!(
+                "BEGIN; {} SAVEPOINT a; {} RELEASE SAVEPOINT a; COMMIT;",
+                header("s2"),
+                rows("s2")
+            ),
+        ),
+        (
+            "s3",
+            format!(
+                "BEGIN; SAVEPOINT a; {} SAVEPOINT b; {} RELEASE SAVEPOINT b; COMMIT;",
+                header("s3"),
+                rows("s3")
+            ),
+        ),
+        (
+            "s4",
+            format!(
+                "BEGIN; SAVEPOINT a; {} SAVEPOINT b; SAVEPOINT c; RELEASE SAVEPOINT c; \
+                 RELEASE SAVEPOINT b; RELEASE SAVEPOINT a; SAVEPOINT d; {} COMMIT;",
+                header("s4"),
+                rows("s4")
+            ),
+        ),
+        // Every row, the header last, in one statement.
+        (
+            "s5",
+            format!(
+                "WITH h AS (INSERT INTO {work}.branch (id, author, base_revision) \
+                            VALUES ('s5', 'agent-7', 4)), \
+                      r AS (INSERT INTO {work}.branch_read (branch, key, digest) \
+                            VALUES ('s5', 'order:1', {zeros})), \
+                      t AS (INSERT INTO {work}.branch_touched \
+                                (branch, key, base_digest, inputs_digest) \
+                            VALUES ('s5', 'order:1', {zeros}, {zeros})) \
+                 INSERT INTO {work}.branch_op (branch, ordinal, kind, key, value_kind, value_text) \
+                 VALUES ('s5', 0, 'put', 'order:1', 'text', 'shipped')"
+            ),
+        ),
+    ] {
+        raw.batch_execute(&sql).await.unwrap();
+        assert!(
+            substrate
+                .load_branch(&BranchId::from(id))
+                .await
+                .unwrap()
+                .is_some(),
+            "{id}"
+        );
+    }
+    // A header rolled back with its savepoint takes the branch with it.
+    let sql = format!(
+        "BEGIN; SAVEPOINT a; {} ROLLBACK TO SAVEPOINT a; {} COMMIT;",
+        header("s6"),
+        rows("s6")
+    );
+    assert_eq!(refused_sqlstate(&raw, &sql).await, "23503");
+    raw.batch_execute("ROLLBACK").await.unwrap();
+    assert_eq!(substrate.load_branch(&BranchId::from("s6")).await, Ok(None));
+
+    // What the database cannot tell apart: a whole branch deleted and
+    // written again under its id in one transaction is a new branch, and it
+    // loads like the sealed one it replaced.
+    raw.batch_execute(&format!(
+        "BEGIN; DELETE FROM {work}.branch WHERE id = 'b1'; {} {} COMMIT;",
+        header("b1"),
+        rows("b1")
+    ))
+    .await
+    .unwrap();
+    let replaced = substrate.load_branch(branch.id()).await.unwrap().unwrap();
+    assert_ne!(replaced, branch);
+    assert_eq!(replaced.ops().len(), 1);
+    substrate.drop_all().await.unwrap();
+}
+
+/// A branch whose set operations record base presences both ways: its base
+/// holds the set `{urgent}` at `tags:9` and no set at `tags:1`.
+fn branch_with_set_base(id: &str) -> SealedBranch {
+    let mut parts = sealed_branch(id, "agent-7").into_parts();
+    let base = ptr_branch::set_value(&["urgent".to_owned()].into_iter().collect()).unwrap();
+    parts.touched_base.insert(
+        "tags:9".into(),
+        ValueDigest::of("tags:9", Some(&base)).unwrap(),
+    );
+    parts
+        .touched_inputs
+        .insert("tags:9".into(), InputsDigest::of("tags:9", []));
+    for (member, insert, in_base) in [
+        ("urgent", false, true),
+        ("urgent", true, true),
+        ("new", true, false),
+    ] {
+        let (key, member) = ("tags:9".to_owned(), member.to_owned());
+        parts.ops.push(if insert {
+            BranchOp::SetInsert {
+                key,
+                member,
+                in_base,
+            }
+        } else {
+            BranchOp::SetRemove {
+                key,
+                member,
+                in_base,
+            }
+        });
+    }
+    SealedBranch::from_parts(parts).expect("sealing could produce this branch")
+}
+
+#[tokio::test]
+async fn set_operations_keep_their_members_base_presence_in_storage() {
+    let mut substrate = substrate().await;
+    let branch = branch_with_set_base("s1");
+    substrate.store_branch(&branch).await.unwrap();
+    assert_eq!(
+        substrate.load_branch(branch.id()).await.unwrap(),
+        Some(branch.clone())
+    );
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    let stored: Vec<Option<bool>> = raw
+        .query(
+            &format!(
+                "SELECT member_in_base FROM {work}.branch_op WHERE branch = 's1' ORDER BY ordinal"
+            ),
+            &[],
+        )
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| row.get(0))
+        .collect();
+    let none = None;
+    assert_eq!(
+        stored,
+        [
+            none,
+            none,
+            none,
+            none,
+            Some(false),
+            Some(false),
+            Some(true),
+            Some(true),
+            Some(false)
+        ]
+    );
+
+    // A set operation carries its base presence and no other one does, and
+    // the operations on one member agree on it, whoever writes the rows.
+    let zeros = "decode(repeat('00', 32), 'hex')";
+    let fresh = |ops: &str| {
+        format!(
+            "BEGIN; {} \
+             INSERT INTO {work}.branch_touched (branch, key, base_digest, inputs_digest) \
+             VALUES ('raw', 'tags:1', {zeros}, {zeros}); {ops} COMMIT;",
+            branch_header(&work, "raw")
+        )
+    };
+    let set_op = |ordinal: i32, kind: &str, member: &str, in_base: &str| {
+        format!(
+            "INSERT INTO {work}.branch_op (branch, ordinal, kind, key, member, member_in_base) \
+             VALUES ('raw', {ordinal}, '{kind}', 'tags:1', '{member}', {in_base}); "
+        )
+    };
+    for (ops, sqlstate) in [
+        (set_op(0, "set_insert", "a", "NULL"), "23514"),
+        (
+            format!(
+                "INSERT INTO {work}.branch_op (branch, ordinal, kind, key, amount, member_in_base) \
+                 VALUES ('raw', 0, 'add', 'tags:1', 1, false); "
+            ),
+            "23514",
+        ),
+        (
+            set_op(0, "set_insert", "a", "false") + &set_op(1, "set_remove", "a", "true"),
+            "23000",
+        ),
+    ] {
+        let sql = fresh(&ops);
+        assert_eq!(refused_sqlstate(&raw, &sql).await, sqlstate, "{sql}");
+        raw.batch_execute("ROLLBACK").await.unwrap();
+    }
+    raw.batch_execute(&fresh(
+        &(set_op(0, "set_insert", "a", "false")
+            + &set_op(1, "set_remove", "a", "false")
+            + &set_op(2, "set_remove", "b", "true")),
+    ))
+    .await
+    .unwrap();
+    assert!(substrate
+        .load_branch(&BranchId::from("raw"))
+        .await
+        .unwrap()
+        .is_some());
+
+    // A branch stored before set operations recorded it cannot be certified,
+    // and loading it says so rather than guessing.
+    write_before_invariants(
+        &raw,
+        &work,
+        &[("branch_op", "branch_op_member_in_base")],
+        &format!("UPDATE {work}.branch_op SET member_in_base = NULL WHERE key = 'tags:9'"),
+    )
+    .await;
+    let error = substrate.load_branch(branch.id()).await.unwrap_err();
+    assert_eq!(
+        error,
+        PgError::BranchWithoutSetBase {
+            branch: "s1".into(),
+            key: "tags:9".into(),
+        }
+    );
+    assert_eq!(error.code(), "PTR_PG_BRANCH_WITHOUT_SET_BASE");
+    assert!(error.to_string().contains("must be re-run"), "{error}");
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_branch_sealed_before_derived_removals_were_refused_loads_as_one_to_re_run() {
+    let mut substrate = substrate().await;
+    // Sealing once accepted a Remove of a derived key and recorded the key's
+    // non-empty input set: `order:2` is removed here, and a writer from
+    // before this version records it as derived from `order:0`, as that
+    // sealing did. Nothing in the schema refuses those rows.
+    let branch = sealed_branch("dr", "agent-7");
+    assert!(branch.ops().contains(&BranchOp::Remove {
+        key: "order:2".into()
+    }));
+    substrate.store_branch(&branch).await.unwrap();
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    let derived = InputsDigest::of("order:2", ["order:0"]);
+    write_before_invariants(
+        &raw,
+        &work,
+        &[],
+        &format!(
+            "UPDATE {work}.branch_touched SET inputs_digest = decode('{}', 'hex') \
+             WHERE branch = 'dr' AND key = 'order:2'",
+            hex(derived.as_bytes())
+        ),
+    )
+    .await;
+    // The branch is not certifiable, but it was sealed, not tampered with:
+    // loading it asks for a re-run rather than reporting corruption.
+    let error = substrate.load_branch(branch.id()).await.unwrap_err();
+    assert_eq!(
+        error,
+        PgError::BranchWithDerivedRemoval {
+            branch: "dr".into(),
+            key: "order:2".into(),
+        }
+    );
+    assert_eq!(error.code(), "PTR_PG_BRANCH_WITH_DERIVED_REMOVAL");
+    assert!(error.to_string().contains("must be re-run"), "{error}");
+    substrate.drop_all().await.unwrap();
+}
+
+/// A raw journal row of memory `memory`, from source `live` at generation 1,
+/// with unit key cells and zero values: one head of four cells.
+fn raw_write(work: &impl std::fmt::Display, memory: &str, seq: i64) -> String {
+    format!(
+        "INSERT INTO {work}.fastmem_write \
+         (memory, seq, source_key, source_generation, input_digest, key_cells, value_cells, \
+          beta, decay_kind) \
+         VALUES ('{memory}', {seq}, 'live', 1, decode(repeat('04', 32), 'hex'), \
+                 decode(repeat('0000803f', 4), 'hex'), decode(repeat('00', 16), 'hex'), \
+                 0.5, 'none')"
+    )
+}
+
+#[tokio::test]
+async fn a_journal_holds_at_most_its_memory_s_max_writes_rows_from_any_writer() {
+    let mut substrate = substrate().await;
+    substrate.replay(&[capsule(1, "live", 1)]).await.unwrap();
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+
+    // One writer: the third row of a two-write journal is refused, so the
+    // journal still restores.
+    memory_with(&substrate, "bounded", 2).await;
+    for seq in [1, 2] {
+        raw.batch_execute(&raw_write(&work, "bounded", seq))
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        refused_sqlstate(&raw, &raw_write(&work, "bounded", 3)).await,
+        "23000"
+    );
+    let restored = substrate.restore_memory("bounded").await.unwrap().unwrap();
+    assert_eq!(restored.writes().len(), 2);
+
+    // Two writers racing for the last row at READ COMMITTED: the second
+    // waits for the first and then counts its row.
+    memory_with(&substrate, "raced", 2).await;
+    raw.batch_execute(&raw_write(&work, "raced", 1))
+        .await
+        .unwrap();
+    let first = raw_client().await;
+    first
+        .batch_execute(&format!("BEGIN; {};", raw_write(&work, "raced", 2)))
+        .await
+        .unwrap();
+    let second = raw_client().await;
+    let racing = raw_write(&work, "raced", 3);
+    let waiting = tokio::spawn(async move { refused_sqlstate(&second, &racing).await });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(!waiting.is_finished(), "the second writer must wait");
+    first.batch_execute("COMMIT").await.unwrap();
+    assert_eq!(waiting.await.unwrap(), "23000");
+
+    // At REPEATABLE READ a writer whose snapshot predates a committed append
+    // cannot count it, so it fails with a serialization error instead.
+    memory_with(&substrate, "snapshot", 2).await;
+    raw.batch_execute(&raw_write(&work, "snapshot", 1))
+        .await
+        .unwrap();
+    let (early, late) = (
+        raw_client_at(&repeatable_read_dsn()).await,
+        raw_client_at(&repeatable_read_dsn()).await,
+    );
+    for session in [&early, &late] {
+        session
+            .batch_execute(&format!(
+                "BEGIN; SELECT count(*) FROM {work}.fastmem_write WHERE memory = 'snapshot';"
+            ))
+            .await
+            .unwrap();
+    }
+    early
+        .batch_execute(&format!("{}; COMMIT;", raw_write(&work, "snapshot", 2)))
+        .await
+        .unwrap();
+    assert_eq!(
+        refused_sqlstate(&late, &raw_write(&work, "snapshot", 3)).await,
+        "40001"
+    );
+    late.batch_execute("ROLLBACK").await.unwrap();
+    let journal: i64 = raw
+        .query_one(
+            &format!("SELECT count(*) FROM {work}.fastmem_write WHERE memory = 'snapshot'"),
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(journal, 2);
+
+    // Revoking the source deletes the writes, which frees the journal.
+    let log = [capsule(1, "live", 1), revoke(2, "live", 1)];
+    let chain = anchors(&log);
+    let report = substrate.apply_committed(&log[1], chain[1]).await.unwrap();
+    assert_eq!(report.removed_writes, 6);
+    raw.batch_execute(&raw_write(&work, "bounded", 3))
+        .await
+        .unwrap();
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn journal_cells_are_stored_exactly_when_validate_write_admits_them() {
+    let mut substrate = substrate().await;
+    // Two heads, so a zero head beside a nonzero one is a case of its own.
+    let config = FastMemoryConfig {
+        heads: 2,
+        key_dim: 2,
+        value_dim: 2,
+        checkpoint_interval: 2,
+        max_writes: 1024,
+    };
+    substrate
+        .create_memory(&FastMemoryRecord {
+            id: "cells".into(),
+            principal: PrincipalId::from("agent-7"),
+            thread: "cells".into(),
+            config,
+            projection_digest: [3; 32],
+            codebook_seed: 11,
+        })
+        .await
+        .unwrap();
+    let base = WriteRequest {
+        source: SourceRef {
+            key: "c1".into(),
+            generation: Generation(1),
+            input_digest: [2; 32],
+        },
+        key: vec![1.0, 0.0, 0.0, 1.0],
+        value: vec![0.5, -0.5, 1.0, 0.0],
+        beta: 0.5,
+        decay: Decay::None,
+    };
+    let key = |key: [f32; 4]| WriteRequest {
+        key: key.to_vec(),
+        ..base.clone()
+    };
+    let value = |value: [f32; 4]| WriteRequest {
+        value: value.to_vec(),
+        ..base.clone()
+    };
+    let decay = |decay: Decay| WriteRequest {
+        decay,
+        ..base.clone()
+    };
+    let beta = |beta: f32| WriteRequest {
+        beta,
+        ..base.clone()
+    };
+    let tiny = f32::from_bits(1);
+    let bound = ptr_fastmem::MAX_VALUE_MAGNITUDE;
+    let above = f32::from_bits(bound.to_bits() + 1);
+    let cases = [
+        ("the base write", base.clone()),
+        ("a NaN key cell", key([f32::NAN, 1.0, 0.0, 1.0])),
+        ("a negative NaN key cell", key([1.0, -f32::NAN, 0.0, 1.0])),
+        ("an infinite key cell", key([1.0, 0.0, f32::INFINITY, 1.0])),
+        (
+            "a negative infinite key cell",
+            key([1.0, 0.0, 1.0, f32::NEG_INFINITY]),
+        ),
+        ("an all-zero first head", key([0.0, -0.0, 1.0, 1.0])),
+        ("an all-zero second head", key([1.0, 1.0, -0.0, 0.0])),
+        ("a head of subnormal cells", key([tiny, -tiny, 1.0, 0.0])),
+        (
+            "a key at the largest finite magnitudes",
+            key([f32::MAX, f32::MIN, 0.0, 1.0]),
+        ),
+        ("a NaN value cell", value([f32::NAN, 0.0, 0.0, 0.0])),
+        (
+            "an infinite value cell",
+            value([0.0, f32::NEG_INFINITY, 0.0, 0.0]),
+        ),
+        (
+            "values at the magnitude bound",
+            value([bound, -bound, 0.0, -0.0]),
+        ),
+        (
+            "a value just above the bound",
+            value([0.0, 0.0, above, 0.0]),
+        ),
+        (
+            "a value just below minus the bound",
+            value([0.0, 0.0, 0.0, -above]),
+        ),
+        ("a subnormal value", value([tiny, 0.0, 0.0, 0.0])),
+        ("a scalar decay of one", decay(Decay::Scalar(1.0))),
+        ("a subnormal scalar decay", decay(Decay::Scalar(tiny))),
+        ("a zero scalar decay", decay(Decay::Scalar(0.0))),
+        ("a negative zero scalar decay", decay(Decay::Scalar(-0.0))),
+        (
+            "a scalar decay just above one",
+            decay(Decay::Scalar(1.000_000_1)),
+        ),
+        ("a negative scalar decay", decay(Decay::Scalar(-0.5))),
+        ("a NaN scalar decay", decay(Decay::Scalar(f32::NAN))),
+        (
+            "an infinite scalar decay",
+            decay(Decay::Scalar(f32::INFINITY)),
+        ),
+        (
+            "per-channel factors in range",
+            decay(Decay::PerChannel(vec![0.5, 1.0, tiny, 0.25])),
+        ),
+        (
+            "a zero per-channel factor",
+            decay(Decay::PerChannel(vec![0.5, 1.0, 0.0, 0.25])),
+        ),
+        (
+            "a per-channel factor above one",
+            decay(Decay::PerChannel(vec![0.5, 2.0, 0.5, 0.25])),
+        ),
+        (
+            "a NaN per-channel factor",
+            decay(Decay::PerChannel(vec![0.5, 0.5, 0.5, f32::NAN])),
+        ),
+        ("a strength of one", beta(1.0)),
+        ("a subnormal strength", beta(tiny)),
+        ("a zero strength", beta(0.0)),
+        ("a NaN strength", beta(f32::NAN)),
+        ("a strength above one", beta(1.5)),
+    ];
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    let cells = |values: &[f32]| -> Vec<u8> {
+        values
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect()
+    };
+    let (mut stored, mut refused) = (0, 0);
+    for (seq, (why, request)) in cases.into_iter().enumerate() {
+        let admitted = ptr_fastmem::validate_write(&config, &request).is_ok();
+        let (decay_kind, decay_cells) = match &request.decay {
+            Decay::None => ("none", None),
+            Decay::Scalar(factor) => ("scalar", Some(cells(&[*factor]))),
+            Decay::PerChannel(factors) => ("per_channel", Some(cells(factors))),
+        };
+        let result = raw
+            .execute(
+                &format!(
+                    "INSERT INTO {work}.fastmem_write \
+                     (memory, seq, source_key, source_generation, input_digest, key_cells, \
+                      value_cells, beta, decay_kind, decay_cells) \
+                     VALUES ('cells', $1, 'c1', 1, $2, $3, $4, $5, $6, $7)"
+                ),
+                &[
+                    &(seq as i64 + 1),
+                    &request.source.input_digest.to_vec(),
+                    &cells(&request.key),
+                    &cells(&request.value),
+                    &request.beta,
+                    &decay_kind,
+                    &decay_cells,
+                ],
+            )
+            .await;
+        match result {
+            Ok(_) => {
+                assert!(admitted, "{why}: stored, but validate_write refuses it");
+                stored += 1;
+            }
+            Err(error) => {
+                assert!(
+                    !admitted,
+                    "{why}: refused, but validate_write admits it: {error}"
+                );
+                // A strength out of range is the column's CHECK; the rest
+                // are the write's trigger.
+                let sqlstate = error.as_db_error().unwrap().code().code().to_owned();
+                assert!(["23000", "23514"].contains(&sqlstate.as_str()), "{why}");
+                refused += 1;
+            }
+        }
+    }
+    assert_eq!((stored, refused), (10, 22));
+    // Every stored row restores.
+    let restored = substrate.restore_memory("cells").await.unwrap().unwrap();
+    assert_eq!(restored.writes().len(), stored);
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_registered_adapter_is_retired_never_deleted() {
+    let substrate = substrate().await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    raw.batch_execute(&format!(
+        "{} INSERT INTO {work}.adapter_input (adapter, input) VALUES ('t1', 'doc-1');",
+        adapter_row(&work, "t1", "m", "trained", None, "candidate")
+    ))
+    .await
+    .unwrap();
+    let delete = format!("DELETE FROM {work}.adapter WHERE id = 't1'");
+    assert_eq!(refused_sqlstate(&raw, &delete).await, "23000");
+    for status in ["gated", "serving", "retired"] {
+        raw.batch_execute(&format!(
+            "UPDATE {work}.adapter SET status = '{status}' WHERE id = 't1'"
+        ))
+        .await
+        .unwrap();
+    }
+    // Retired, it keeps its data manifest, and its id stays its own.
+    assert_eq!(refused_sqlstate(&raw, &delete).await, "23000");
+    let inputs: i64 = raw
+        .query_one(
+            &format!("SELECT count(*) FROM {work}.adapter_input WHERE adapter = 't1'"),
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(inputs, 1);
+    assert_eq!(
+        refused_sqlstate(
+            &raw,
+            &adapter_row(&work, "t1", "m", "trained", None, "candidate")
+        )
+        .await,
+        "23505"
+    );
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn tables_whose_rows_are_never_removed_on_their_own_refuse_truncate() {
+    let substrate = substrate().await;
+    let raw = raw_client().await;
+    let (projection, work) = (
+        substrate.schemas().projection.clone(),
+        substrate.schemas().work.clone(),
+    );
+    let mut tables: Vec<String> = [
+        "branch_read",
+        "branch_scan",
+        "branch_relied",
+        "branch_touched",
+        "branch_op",
+        "branch_triage",
+        "branch_outcome",
+        "replay_probe",
+        "triage_policy",
+        "triage_policy_sample",
+        "adapter_interference_report",
+        "adapter_interference",
+        "adapter_source",
+        "adapter_input",
+        "adapter",
+    ]
+    .iter()
+    .map(|table| format!("{work}.{table}"))
+    .collect();
+    tables.extend(
+        ["tombstone", "applied_commit", "projection_event"]
+            .iter()
+            .map(|table| format!("{projection}.{table}")),
+    );
+    for table in tables {
+        // CASCADE, so a table others reference reaches its own trigger; that
+        // trigger fires first and names it.
+        let error = raw
+            .batch_execute(&format!("TRUNCATE {table} CASCADE"))
+            .await
+            .unwrap_err();
+        let error = error.as_db_error().unwrap();
+        assert_eq!(error.code().code(), "23000", "{table}");
+        assert!(
+            error.message().contains(&format!("{table} ")),
+            "{table}: {}",
+            error.message()
+        );
+    }
+    // Truncating a whole branch reaches its rows, which refuse it.
+    assert_eq!(
+        refused_sqlstate(&raw, &format!("TRUNCATE {work}.branch CASCADE")).await,
+        "23000"
+    );
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_row_checked_against_another_is_refused_when_that_row_comes_later_in_its_statement() {
+    let substrate = substrate().await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    raw.batch_execute(&format!(
+        "{} \
+         INSERT INTO {work}.labeling_function (name, kind) VALUES ('rule', 'heuristic'); \
+         INSERT INTO {work}.label_schema (id, classes) VALUES ('s1', ARRAY['a', 'b']); \
+         INSERT INTO {work}.label_item (label_schema, item) VALUES ('s1', 'x');",
+        adapter_row(&work, "other", "m2", "trained", None, "candidate")
+    ))
+    .await
+    .unwrap();
+    let adapters = |rows: &[(&str, &str, &str, Option<&str>)]| {
+        let values: Vec<String> = rows
+            .iter()
+            .map(|(id, model, origin, parent)| {
+                let parent = parent.map_or("NULL".to_owned(), |parent| format!("'{parent}'"));
+                format!(
+                    "('{id}', 'support', '{model}', 'r1', '{origin}', {parent}, 8, 'artifact', \
+                      decode(repeat('00', 32), 'hex'), decode(repeat('00', 32), 'hex'), \
+                      'candidate')"
+                )
+            })
+            .collect();
+        format!(
+            "INSERT INTO {work}.adapter \
+             (id, domain, base_model, base_revision, origin, parent, rank, artifact, \
+              artifact_sha256, data_fingerprint, status) VALUES {}",
+            values.join(", ")
+        )
+    };
+    let memory = format!(
+        "INSERT INTO {work}.fastmem_memory (id, principal, thread, heads, key_dim, value_dim, \
+                                          checkpoint_interval, max_writes, projection_digest, \
+                                          codebook_seed) \
+         VALUES ('m9', 'agent-7', 't9', 1, 4, 4, 2, 64, decode(repeat('03', 32), 'hex'), 11)"
+    );
+    for (why, sql) in [
+        (
+            "a parent on another base listed after its child",
+            adapters(&[
+                ("child", "m", "trained", Some("p")),
+                ("p", "m2", "trained", None),
+            ]),
+        ),
+        (
+            "two adapters continuing each other",
+            adapters(&[
+                ("a", "m", "trained", Some("b")),
+                ("b", "m", "trained", Some("a")),
+            ]),
+        ),
+        (
+            "a source of a consolidation written by the same statement",
+            format!(
+                "WITH c AS ({}) \
+                 INSERT INTO {work}.adapter_source (consolidated, source) VALUES ('c1', 'other')",
+                adapters(&[("c1", "m", "consolidated", None)])
+            ),
+        ),
+        (
+            "a class outside a schema written by the same statement",
+            format!(
+                "WITH s AS (INSERT INTO {work}.label_schema (id, classes) \
+                            VALUES ('s2', ARRAY['a', 'b'])), \
+                      i AS (INSERT INTO {work}.label_item (label_schema, item) \
+                            VALUES ('s2', 'x')) \
+                 INSERT INTO {work}.label_vote (label_schema, item, function, vote_kind, class) \
+                 VALUES ('s2', 'x', 'rule', 'class', 99)"
+            ),
+        ),
+        (
+            "a gold class outside a schema written by the same statement",
+            format!(
+                "WITH s AS (INSERT INTO {work}.label_schema (id, classes) \
+                            VALUES ('s3', ARRAY['a', 'b'])), \
+                      i AS (INSERT INTO {work}.label_item (label_schema, item) \
+                            VALUES ('s3', 'x')) \
+                 INSERT INTO {work}.gold_label (label_schema, item, class, source, sampling) \
+                 VALUES ('s3', 'x', 7, 'oracle', 'uniform')"
+            ),
+        ),
+        (
+            "a veto of a heuristic written by the same statement",
+            format!(
+                "WITH f AS (INSERT INTO {work}.labeling_function (name, kind) \
+                            VALUES ('guess', 'heuristic')) \
+                 INSERT INTO {work}.label_vote (label_schema, item, function, vote_kind, class) \
+                 VALUES ('s1', 'x', 'guess', 'veto', 0)"
+            ),
+        ),
+        (
+            "a one-byte key of a memory written by the same statement",
+            format!(
+                "WITH m AS ({memory}) \
+                 INSERT INTO {work}.fastmem_write \
+                 (memory, seq, source_key, source_generation, input_digest, key_cells, \
+                  value_cells, beta, decay_kind) \
+                 VALUES ('m9', 1, 'live', 1, decode(repeat('04', 32), 'hex'), '\\x00', \
+                         decode(repeat('00', 16), 'hex'), 0.5, 'none')"
+            ),
+        ),
+        (
+            "a probe before the last one of a sample written by the same statement",
+            format!(
+                "WITH s AS (INSERT INTO {work}.replay_sample \
+                                (id, stratum, split, stability, difficulty, \
+                                 last_probe_model_time) \
+                            VALUES ('s9', 'x', 'train', 1, 5, 100)) \
+                 INSERT INTO {work}.replay_probe (sample, model_time, loss) VALUES ('s9', 1, 0.1)"
+            ),
+        ),
+    ] {
+        assert_eq!(refused_sqlstate(&raw, &sql).await, "23503", "{why}");
+    }
+    // Written parent first, the same rows are checked, and kept.
+    raw.batch_execute(&adapters(&[
+        ("p2", "m", "trained", None),
+        ("c2", "m", "trained", Some("p2")),
+    ]))
+    .await
+    .unwrap();
+    assert_eq!(
+        refused_sqlstate(
+            &raw,
+            &adapters(&[
+                ("p3", "m2", "trained", None),
+                ("c3", "m", "trained", Some("p3")),
+            ])
+        )
+        .await,
+        "23000"
+    );
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_generation_is_indexed_from_one_content_and_re_embedded_only_with_it() {
+    let mut substrate = substrate().await;
+    substrate.register_space(&space()).await.unwrap();
+    substrate.replay(&[capsule(1, "c1", 1)]).await.unwrap();
+    let first = document("c1", 1, "first", &[1.0, 0.0, 0.0, 0.0]);
+    substrate.upsert_document(&first).await.unwrap();
+    // The same content, embedded again: replaced.
+    let re_embedded = document("c1", 1, "first", &[0.0, 1.0, 0.0, 0.0]);
+    substrate.upsert_document(&re_embedded).await.unwrap();
+    let query = HybridQuery {
+        project: None,
+        text: None,
+        embedding: Some((space().id, vec![0.0, 1.0, 0.0, 0.0])),
+        limit: 1,
+        lexical_weight: 1.0,
+        vector_weight: 1.0,
+        rank_constant: 60.0,
+    };
+    let hit = &substrate.search(&query).await.unwrap().vector[0];
+    assert!(hit.score > 0.99, "{}", hit.score);
+    // Other content for the same live generation: refused, and the stored
+    // document is kept.
+    let other = SearchDocument {
+        content_digest: [9; 32],
+        body: "other".into(),
+        ..first.clone()
+    };
+    let error = substrate.upsert_document(&other).await.unwrap_err();
+    assert_eq!(
+        error,
+        PgError::DocumentConflict {
+            capsule: "c1".into(),
+            generation: 1,
+        }
+    );
+    assert_eq!(error.code(), "PTR_PG_DOCUMENT_CONFLICT");
+    let raw = raw_client().await;
+    let derived = substrate.schemas().derived.clone();
+    let row = raw
+        .query_one(
+            &format!(
+                "SELECT content_digest, body FROM {derived}.search_document \
+                 WHERE capsule = 'c1' AND generation = 1"
+            ),
+            &[],
+        )
+        .await
+        .unwrap();
+    let (digest, body): (Vec<u8>, String) = (row.get(0), row.get(1));
+    assert_eq!((digest, body.as_str()), (vec![1; 32], "first"));
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_stale_cache_row_never_takes_a_live_document_s_place_within_the_vector_limit() {
+    let mut substrate = substrate().await;
+    substrate.register_space(&space()).await.unwrap();
+    substrate
+        .replay(&[
+            capsule(1, "live", 1),
+            capsule(2, "stale", 1),
+            supersede(3, "stale", 1, 2),
+            capsule(4, "revoked", 1),
+            revoke(5, "revoked", 1),
+        ])
+        .await
+        .unwrap();
+    substrate
+        .upsert_document(&document("live", 1, "live", &[0.0, 1.0, 0.0, 0.0]))
+        .await
+        .unwrap();
+    // Rows the cache still holds for a superseded generation and for a
+    // revoked one, both nearer the query than the live document.
+    let raw = raw_client().await;
+    let derived = substrate.schemas().derived.clone();
+    raw.batch_execute(&format!(
+        "INSERT INTO {derived}.search_document \
+         (capsule, generation, project, content_digest, body, space, embedding, \
+          indexed_at_commit) \
+         VALUES ('stale', 1, 'atlas', decode(repeat('01', 32), 'hex'), 'stale', 'toy4', \
+                 '[1,0,0,0]'::halfvec(4), 2), \
+                ('revoked', 1, 'atlas', decode(repeat('01', 32), 'hex'), 'revoked', 'toy4', \
+                 '[1,0.1,0,0]'::halfvec(4), 4)"
+    ))
+    .await
+    .unwrap();
+    for limit in [1, 3] {
+        let query = HybridQuery {
+            project: Some(ProjectId::from("atlas")),
+            text: None,
+            embedding: Some((space().id, vec![1.0, 0.0, 0.0, 0.0])),
+            limit,
+            lexical_weight: 1.0,
+            vector_weight: 1.0,
+            rank_constant: 60.0,
+        };
+        let hits: Vec<(String, u64)> = substrate
+            .search(&query)
+            .await
+            .unwrap()
+            .vector
+            .iter()
+            .map(|hit| (hit.capsule.0.clone(), hit.generation.0))
+            .collect();
+        assert_eq!(hits, [("live".to_owned(), 1)], "limit {limit}");
+    }
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn the_filtered_vector_query_reads_its_space_s_hnsw_index() {
+    // Plans that sort or scan the table instead are priced out, so the index
+    // is used whenever the query's form lets the planner use it.
+    let mut substrate = substrate_at(&format!(
+        "{} options='-c enable_seqscan=off -c enable_sort=off'",
+        dsn()
+    ))
+    .await;
+    substrate.register_space(&space()).await.unwrap();
+    let raw = raw_client().await;
+    let (projection, derived) = (
+        substrate.schemas().projection.clone(),
+        substrate.schemas().derived.clone(),
+    );
+    raw.batch_execute(&format!(
+        "INSERT INTO {projection}.live_generation (target, generation, project, commit_index) \
+             SELECT 'c' || i, 1, 'atlas', 1 FROM generate_series(1, 500) i; \
+         INSERT INTO {projection}.tombstone (subject, generation, commit_index) \
+             SELECT 'c' || i, 1, 1 FROM generate_series(1, 500, 7) i; \
+         INSERT INTO {derived}.search_document \
+             (capsule, generation, project, content_digest, body, space, embedding, \
+              indexed_at_commit) \
+             SELECT 'c' || i, 1, 'atlas', decode(repeat('00', 32), 'hex'), 'doc', 'toy4', \
+                    ARRAY[1 + random(), random(), random(), random()]::real[]::halfvec(4), 0 \
+             FROM generate_series(1, 500) i; \
+         ANALYZE {derived}.search_document; ANALYZE {projection}.tombstone;"
+    ))
+    .await
+    .unwrap();
+    let scans = || async {
+        raw.query_one(
+            "SELECT coalesce(sum(idx_scan), 0)::bigint FROM pg_stat_user_indexes \
+             WHERE schemaname = $1 AND indexrelname = 'sd_hnsw_toy4'",
+            &[&derived.to_string()],
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0)
+    };
+    let before = scans().await;
+    // A backend reports its index scans when it goes idle at least a second
+    // after its last report, and within ten seconds otherwise.
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    for project in [None, Some(ProjectId::from("atlas"))] {
+        let query = HybridQuery {
+            project,
+            text: None,
+            embedding: Some((space().id, vec![1.0, 0.5, 0.5, 0.5])),
+            limit: 10,
+            lexical_weight: 1.0,
+            vector_weight: 1.0,
+            rank_constant: 60.0,
+        };
+        assert_eq!(substrate.search(&query).await.unwrap().vector.len(), 10);
+    }
+    let mut after = scans().await;
+    for _ in 0..300 {
+        if after >= before + 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        after = scans().await;
+    }
+    assert!(after >= before + 2, "HNSW scans {before} -> {after}");
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_rebuild_replaying_an_earlier_activation_keeps_the_later_generation_s_journal() {
+    let mut substrate = substrate().await;
+    let log = vec![capsule(1, "c", 1), supersede(2, "c", 1, 2)];
+    substrate.replay(&log).await.unwrap();
+    let config = memory_with(&substrate, "m1", 64).await;
+    let mut memory = FastMemory::with_projection(config, codebook(&config), [3; 32]).unwrap();
+    let request = WriteRequest {
+        source: SourceRef {
+            key: "c".into(),
+            generation: Generation(2),
+            input_digest: [1; 32],
+        },
+        ..write_request("c", [1.0, 0.0, 0.0, 0.0], [0.5, 0.0, 0.0, 0.0])
+    };
+    let receipt = memory.write(request.clone()).unwrap();
+    substrate
+        .append_write("m1", receipt.seq, &request)
+        .await
+        .unwrap();
+    substrate
+        .put_checkpoint("m1", memory.binding_digest(), memory.state())
+        .await
+        .unwrap();
+
+    // Replaying the log from its start re-applies generation 1's activation
+    // over working state the rebuild kept; generation 2's write stays.
+    substrate.rebuild_projection().await.unwrap();
+    for (record, anchor) in log.iter().zip(anchors(&log)) {
+        let report = substrate.apply_committed(record, anchor).await.unwrap();
+        assert_eq!(
+            (report.removed_writes, report.dropped_checkpoints),
+            (0, 0),
+            "{}",
+            record.index.0
+        );
+    }
+    assert_eq!(
+        substrate.load_journal("m1").await.unwrap(),
+        vec![(receipt.seq, request.clone())]
+    );
+    let checkpoint = substrate.latest_checkpoint("m1").await.unwrap().unwrap();
+    assert_eq!(checkpoint.applied, receipt.seq);
+    let restored = substrate.restore_memory("m1").await.unwrap().unwrap();
+    assert_eq!(bits(restored.state().cells()), bits(memory.state().cells()));
+
+    // Superseding generation 2 still removes its write and its checkpoint.
+    let longer = [log.clone(), vec![supersede(3, "c", 2, 3)]].concat();
+    let chain = anchors(&longer);
+    let report = substrate
+        .apply_committed(&longer[2], chain[2])
+        .await
+        .unwrap();
+    assert_eq!((report.removed_writes, report.dropped_checkpoints), (1, 1));
+    assert!(substrate.load_journal("m1").await.unwrap().is_empty());
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_restored_memory_never_takes_a_sequence_number_its_journal_refuses() {
+    let mut substrate = substrate().await;
+    substrate.replay(&[capsule(1, "live", 1)]).await.unwrap();
+    memory_with(&substrate, "m", 64).await;
+    let request = write_request("live", [1.0, 0.0, 0.0, 0.0], [0.5, 0.0, 0.0, 0.0]);
+    let limit = ptr_fastmem::WriteSeq(i64::MAX as u64);
+    let refused = PgError::InvalidWrite {
+        memory: "m".into(),
+        reason: "the journal takes no sequence number at or above i64::MAX",
+    };
+    assert_eq!(
+        substrate.append_write("m", limit, &request).await,
+        Err(refused.clone())
+    );
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    assert_eq!(
+        refused_sqlstate(&raw, &raw_write(&work, "m", i64::MAX)).await,
+        "23514"
+    );
+    // A journal ending at the number before restores to a memory that
+    // refuses its next write before folding it, as a FastMemory refuses to
+    // take u64::MAX: the sequence space ends there, with 63 of the
+    // journal's 64 rows still free.
+    substrate
+        .append_write("m", ptr_fastmem::WriteSeq(limit.0 - 1), &request)
+        .await
+        .unwrap();
+    let mut restored = substrate.restore_memory("m").await.unwrap().unwrap();
+    let (state, binding) = (restored.state().clone(), restored.binding_digest());
+    assert_eq!(
+        restored.write(request.clone()),
+        Err(FastMemoryError::SequenceExhausted { seq: limit.0 })
+    );
+    assert_eq!(restored.state(), &state);
+    assert_eq!(restored.binding_digest(), binding);
+    assert_eq!(restored.writes().len(), 1);
+    assert_eq!(substrate.load_journal("m").await.unwrap().len(), 1);
+
+    // A row at i64::MAX written before the check existed is refused by both
+    // loaders, not handed out to restore a memory that would number its next
+    // write beyond the column.
+    memory_with(&substrate, "old", 64).await;
+    write_before_invariants(
+        &raw,
+        &work,
+        &[("fastmem_write", "fastmem_write_seq_below_limit")],
+        &raw_write(&work, "old", i64::MAX),
+    )
+    .await;
+    for error in [
+        substrate.restore_memory("old").await.map(drop).unwrap_err(),
+        substrate.load_journal("old").await.map(drop).unwrap_err(),
+    ] {
+        assert!(
+            matches!(
+                error,
+                PgError::CorruptRow {
+                    table: "fastmem_write",
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+    }
     substrate.drop_all().await.unwrap();
 }

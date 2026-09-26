@@ -3,8 +3,10 @@ use crate::error::PgError;
 /// Oldest server the substrate supports (`server_version_num`).
 pub const MINIMUM_SERVER: u32 = 160_000;
 /// pgvector 0.8: `halfvec` (0.7) and iterative index scans (0.8). Without
-/// iterative scans an HNSW query returns at most `hnsw.ef_search` rows, so a
-/// filtered or larger query would be silently incomplete.
+/// iterative scans an HNSW query returns at most `hnsw.ef_search` rows (at
+/// most 1,000), so a filtered or larger query would stop there. An iterative
+/// scan reads further, up to pgvector's own scan bounds
+/// (`hnsw.max_scan_tuples`, `hnsw.scan_mem_multiplier`).
 pub const MINIMUM_PGVECTOR: (u32, u32, u32) = (0, 8, 0);
 
 /// Lexical ranking the substrate can use.
@@ -71,7 +73,8 @@ impl Capabilities {
     }
 
     /// Whether pgvector supports iterative index scans (0.8.0 and later),
-    /// which filtered approximate search needs to return complete results.
+    /// which let a filtered approximate search read past `hnsw.ef_search`
+    /// candidates, up to pgvector's scan bounds.
     pub fn iterative_scans(&self) -> bool {
         self.pgvector.is_some_and(|version| version >= (0, 8, 0))
     }

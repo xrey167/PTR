@@ -24,7 +24,7 @@ use crate::migrate::{plan_migrations, SchemaClass};
 
 pub use branch::BranchOutcome;
 pub use events::ProjectionEventRow;
-pub use fastmem::{FastMemoryCheckpoint, FastMemoryRecord};
+pub use fastmem::{FastMemoryCheckpoint, FastMemoryRecord, JOURNAL_SEQ_LIMIT};
 pub use projection::{ProjectionApply, SourceAdmission};
 pub use search::{
     EmbeddingSpace, HybridQuery, SearchDocument, SearchResults, LEXICAL_BACKEND, VECTOR_BACKEND,

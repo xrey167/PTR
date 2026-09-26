@@ -46,7 +46,7 @@ flowchart LR
     L["ptr-ledger\n(authority)"] -->|"CommittedEvent + LogAnchor"| P["projection schema\nwatermark, anchors, state,\nlifecycle, event log"]
     P -->|"live generations"| D["derived schema\nsearch documents,\nhalfvec embeddings"]
     P -. "tombstones cascade" .-> W["work schema\nbranches, fast-memory journals,\nlineage, labels"]
-    B["ptr-branch\ncertify + triage"] -->|"MergePlan"| R["ptr-runtime\napply_verified_semantic_delta"]
+    B["ptr-branch\ncertify + triage"] -->|"MergePlan"| R["ptr-runtime\napply_certified_semantic_delta"]
     R -->|"append"| L
     W -. "never read as authority" .-> B
     D -->|"search candidates"| A["agents"]
@@ -129,7 +129,9 @@ is admissible only when it is live **and** not tombstoned, as in the runtime.
 - `a_read_fenced_beyond_the_watermark_is_refused`: reads name a commit fence and are
   refused, not served stale, when the projection is behind.
 - `append_only_tables_refuse_rewrites`: the event log, the anchors and the tombstone
-  set refuse `UPDATE` and `DELETE` in the database itself.
+  set refuse `UPDATE` and `DELETE` in the database itself, and `TRUNCATE` too
+  (projection migration 2,
+  `tables_whose_rows_are_never_removed_on_their_own_refuse_truncate`).
 - `consumer_offsets_only_move_forward_and_never_past_the_watermark`.
 - `rebuild_drops_projection_and_derived_caches_but_keeps_working_state`: rebuild is
   drop-and-replay and reaches the same anchor.
@@ -145,7 +147,12 @@ interleave: the write lands before the delete or sees the new generation and is
 refused as `NotLive`. `a_derived_write_holding_the_lifecycle_row_is_ordered_before_the_supersede`
 holds the lock from a second connection and shows the projector waiting and then
 deleting the late row; `only_live_generations_are_indexed_and_superseding_drops_the_old_document`
-covers the refusals.
+covers the refusals. A generation has one content: indexing it again with the stored
+`content_digest` re-embeds it, and another digest is refused as `DocumentConflict`
+with the stored document kept, so a stale or erroneous indexing job cannot replace a
+live generation's document
+(`a_generation_is_indexed_from_one_content_and_re_embedded_only_with_it`). That the
+first digest is the capsule's is its writer's obligation.
 
 The ordering needs every statement to take a fresh snapshot after the locks it waited
 for were released, which is read committed. The projector, the cache writer, journal
@@ -165,17 +172,28 @@ Retrieval runs in one read-only repeatable-read snapshot:
   bytes and stays inline). Each registered embedding space gets a partial HNSW index
   over the column cast to its fixed dimension, `WHERE space = '<id>'`, so one table
   holds any number of spaces. The query orders by the indexed expression alone, so
-  the planner uses the index. An HNSW scan otherwise stops at `hnsw.ef_search` rows
-  (40 by default) whatever the limit, so every query sets iterative scans in strict
-  order and an `ef_search` of at least its limit; pgvector 0.8 is therefore the
-  minimum (`vector_search_is_not_truncated_at_the_default_candidate_list`). A vector
+  the planner can read the index in order
+  (`the_filtered_vector_query_reads_its_space_s_hnsw_index`). An HNSW scan otherwise
+  stops at `hnsw.ef_search` rows (40 by default) whatever the limit, so every query
+  sets iterative scans in strict order and an `ef_search` of its limit, at least 40 and
+  at most the 1,000 pgvector accepts; pgvector 0.8 is therefore the minimum
+  (`vector_search_is_not_truncated_at_the_default_candidate_list`). An iterative scan
+  reads on in distance order until `limit` rows pass every condition, or until it has
+  visited `hnsw.max_scan_tuples` tuples (20,000 by default) or used
+  `hnsw.scan_mem_multiplier` times `work_mem`; past that bound a selective project
+  filter, many stale rows or a large limit return fewer hits than match, and nothing
+  reports it. The hits are approximate nearest neighbours, not necessarily the
+  nearest. A vector
   that is zero once rounded to half precision is refused, since it has no cosine
   distance. Registering a different definition under an existing space is refused
   (`SpaceConflict`).
-- **Liveness:** every hit is joined to the lifecycle catalog of the same snapshot and
-  kept only if its generation is live **and** not tombstoned, so a revoked generation
-  is never returned although a revocation leaves it the capsule's live generation
+- **Liveness:** each mode keeps a document only if, in the same snapshot, its
+  generation is live **and** not tombstoned, so a revoked generation is never
+  returned although a revocation leaves it the capsule's live generation
   (`a_document_of_a_revoked_generation_is_never_returned_although_it_is_still_live`).
+  The condition is part of the limited scan, before `limit` applies, so a stale or
+  revoked row the cache still holds never takes a live document's place
+  (`a_stale_cache_row_never_takes_a_live_document_s_place_within_the_vector_limit`).
   In process, `retain_live` asks the lifecycle for each hit's validity, as
   `generation_validity` answers it, rather than for the capsule's live generation, and
   keeps only `Live`
@@ -243,6 +261,53 @@ policy's calibration rate is zero or lowers `1 − rate` below one, as
 `TriagePolicy::new` requires, and a policy stored before that check loads and is cited
 as `CorruptRow` rather than failing a row's CHECK
 (`a_calibration_rate_too_small_to_lower_the_propensity_is_refused_at_storage`).
+Work migration 11 adds what migration 9 left to the loaders or checked only when the
+rows it compares with happened to come first. A stored branch never grows: its reads,
+scans, reliances, touched keys and operations are accepted only in the transaction
+that writes its header, released and open savepoints included, so a group of rows
+every deferred check accepts is refused when appended later
+(`a_stored_branch_gains_no_row_in_a_later_transaction`). This binds a branch's rows
+to one transaction, not to its author: a writer with the work schema's privileges can
+still delete a whole branch and write other rows under its id in one transaction, as
+`store_branch` writes a branch, and nothing stored tells them from sealed ones; the
+keyed seal tag planned next is what would. A set operation's `in_base` is stored in
+`branch_op.member_in_base`, present exactly for set operations, and the operations on
+one member agree on it; a branch stored before has none, can no longer be certified
+and loads as `BranchWithoutSetBase`
+(`set_operations_keep_their_members_base_presence_in_storage`). The two sealing rules
+that compare a digest with the digest of absence or of the empty set (no member present
+in a base without its key; a `Remove` only of a key with no inputs) are left to
+`load_branch`. Sealing once accepted a `Remove` of a derived key, so rows recording one
+load as `BranchWithDerivedRemoval`, a branch to re-run, not as `CorruptBranch`, which
+names rows no sealing produced
+(`a_branch_sealed_before_derived_removals_were_refused_loads_as_one_to_re_run`). A
+journal row satisfies `validate_write` for its memory's configuration, decoded from its
+little-endian `f32` cells (finite key cells and no all-zero head, finite values within
+`MAX_VALUE_MAGNITUDE`, decay factors in `(0, 1]`), over a set of cells exactly where
+the Rust check draws the line
+(`journal_cells_are_stored_exactly_when_validate_write_admits_them`); a journal holds
+at most its memory's `max_writes` rows, counted after a no-change update of the
+memory row that orders appends at every isolation level (a writer at repeatable read
+that could not see a concurrent append fails with a serialization error)
+(`a_journal_holds_at_most_its_memory_s_max_writes_rows_from_any_writer`); and no write
+takes a sequence number at or above `i64::MAX`, the journal's limit (`JOURNAL_SEQ_LIMIT`).
+`restore_memory` restores every memory with that limit (`FastMemory::with_sequence_limit`),
+as a `FastMemory` takes no number at or above `u64::MAX`, so a journal ending at
+`i64::MAX - 1` restores to a memory that refuses its next write as `SequenceExhausted`
+before folding it, rather than one that folds a write no row can hold; sequence numbers
+are the caller's, gaps included, so such a registration takes no further write however
+few rows it holds. Both journal loaders refuse a row at `i64::MAX` written before the
+check as a corrupt row
+(`a_restored_memory_never_takes_a_sequence_number_its_journal_refuses`). A
+registered adapter is retired, never deleted, so its data manifest and its id stay
+(`a_registered_adapter_is_retired_never_deleted`). Every table whose rows are never
+removed on their own refuses `TRUNCATE`, which fires no row trigger
+(`tables_whose_rows_are_never_removed_on_their_own_refuse_truncate`). A check made when
+a row is written against another row (an adapter's parent or source, a write's memory,
+a probe's sample, a vote's function and schema, a gold label's schema) refuses the row
+when that row is missing instead of leaving it to the foreign key, which is checked at
+the end of the statement and so accepted a parent written later in the same statement
+(`a_row_checked_against_another_is_refused_when_that_row_comes_later_in_its_statement`).
 A fast memory's state fits `MAX_STATE_CELLS`, its registration and journal rows are
 never rewritten, and a write has the key, value and decay lengths its configuration
 admits (`fast_memory_rows_keep_the_shape_their_configuration_admits`). An adapter
@@ -273,6 +338,9 @@ request text or a Pod output, to overwrite a key the branch did not read, or to
 break the bookkeeping of touched keys, come back as `CorruptBranch` naming the
 `BranchError`, never as a branch to certify
 (`a_branch_writing_a_reserved_namespace_is_never_stored_and_tampered_rows_never_load`).
+Rows that keep every sealing invariant load as a branch whoever wrote them: a
+branch deleted and written again whole, or rows written with the triggers disabled,
+load like sealed ones (work migration 11 above).
 It reads the header and every child table in one read-only repeatable-read
 snapshot, so a branch deleted while it loads, whose cascade removes its reads,
 digests and operations, comes back whole or as `None`, never assembled from rows
@@ -344,9 +412,25 @@ relying on a second generation of a target is refused when declared, since two a
 never live together and keeping only the later one would certify conclusions drawn
 from a superseded one
 (`a_second_generation_of_a_relied_on_target_is_refused_when_declared`). `Put` and
-`Remove` are accepted only for keys the branch read; counter additions and set
-insertions and removals commute and are rebased onto whatever the key holds at merge
-time. An operation is checked before anything is recorded, so a refused one leaves no
+`Remove` are accepted only for keys the branch read, and `Remove` only of a key that
+is not derived: a merged removal drops the key's dependency entry with its value, and
+a branch changes values, not the dependency graph
+(`a_derived_key_cannot_be_removed_so_a_merge_never_drops_its_dependency_set`).
+Counter additions and set insertions and removals are rebased onto whatever the key
+holds at merge time. Set operations on one member do not commute with each other, so
+each records whether its member was in the base's set (`in_base`, which staging sets;
+`staging_records_whether_a_set_member_was_in_the_base_whatever_the_operation_carried`).
+A branch reads what merging it onto its unchanged base would leave: a derived key it
+does not write is absent once it changes one of the key's inputs, directly or
+transitively, because the merge evicts it
+(`a_branch_read_shows_a_derived_key_its_own_write_to_an_input_evicts`). A counter
+addition or set operation never builds on such a value: staging refuses one on a key
+the branch reads as evicted, whatever the key holds, and, in the other order, a write
+that would change an input of a key the branch has changed only commutatively
+(`EvictedOperand`, recording nothing); a `Put` of the recomputed value is what the
+branch stages instead, and operations after it apply to it
+(`a_commutative_operation_never_builds_on_a_derived_value_the_branch_s_own_change_evicts`).
+An operation is checked before anything is recorded, so a refused one leaves no
 read of its key's inputs behind to refuse the branch later
 (`a_refused_commutative_operation_leaves_no_read_of_its_inputs_behind`), and a set
 whose encoding is longer than the journal's `MAX_DELTA_BYTES` is refused rather than
@@ -370,9 +454,16 @@ or input set
 (`an_operated_key_without_a_recorded_base_value_or_input_set_is_refused_by_the_constructor`),
 a base value or input set for a key no operation touches
 (`a_base_value_or_input_set_for_a_key_no_operation_touches_is_refused_by_the_constructor`),
-and a touched key whose base value differs from its read, since both digest the same
+a touched key whose base value differs from its read, since both digest the same
 base value
-(`a_touched_base_value_that_differs_from_the_read_of_the_same_key_is_refused_by_the_constructor`).
+(`a_touched_base_value_that_differs_from_the_read_of_the_same_key_is_refused_by_the_constructor`),
+a `Remove` whose recorded input set is not empty
+(`a_hand_built_remove_of_a_derived_key_is_refused_by_the_constructor`), and set
+operations on one member that record different base presences, or one that records
+its member present where the key was absent
+(`hand_built_set_operations_that_misstate_their_member_at_the_base_are_refused_by_the_constructor`);
+any other base presence is taken as declared, since the base value hides behind its
+digest.
 A branch relies on one generation per target by type. Digests keep public
 constructors: a digest commits to data anyone who can read it can compute, so it
 authenticates nothing, and declaring the digest of a value one could read declares
@@ -385,8 +476,16 @@ under a scanned prefix (`a_key_inserted_under_a_scanned_prefix_refuses_certifica
 a touched key whose input set changed even though every value it read is unchanged
 (`a_touched_key_whose_input_set_changed_conflicts_even_when_every_value_it_read_is_unchanged`):
 a merge keeps the target's dependency set, so a value must not stand under inputs it
-was not computed from; and a revoked or superseded relied-on generation
-(`a_revoked_or_superseded_relied_on_generation_refuses_certification`).
+was not computed from; a revoked or superseded relied-on generation
+(`a_revoked_or_superseded_relied_on_generation_refuses_certification`); and set
+operations that would undo a concurrent change of their member: when a branch's last
+operation on a member leaves it as the base had it and the target has it the other
+way, merging would delete a concurrent insert or resurrect a concurrent removal, so
+it is a conflict on the set's key
+(`a_set_operation_that_would_undo_a_concurrent_change_of_its_member_is_a_conflict`).
+Operations that move a member away from its base presence rebase, and a concurrent
+change in the same direction is kept
+(`concurrent_set_operations_that_move_a_member_the_same_way_both_merge`).
 Certification rechecks every sealing invariant before it consults the target rather
 than trusting the constructor, so a branch that somehow skipped it is still refused:
 a write to a reserved key
@@ -399,25 +498,49 @@ input of a touched key is a conflict: the input set hides behind its digest, so 
 the target, whose set matches it, can name the inputs
 (`a_sealed_branch_that_breaks_what_staging_guarantees_is_refused_when_rebuilt_or_certified`).
 Otherwise it returns `Clean` or `Rebased` with one `MergePlan`: an ordinary
-`SemanticDelta` and the revision it was certified against. Concurrent counter additions both survive
-(`two_concurrent_counter_additions_both_survive`).
+`SemanticDelta`, the revision it was certified against and the generations the branch
+relied on. Concurrent counter additions both survive
+(`two_concurrent_counter_additions_both_survive`). The delta writes a touched key
+whose value does not change when it changes a key that one is derived from, since a
+commit evicts a derived key whose inputs change unless it writes it
+(`an_unchanged_write_of_a_derived_key_whose_input_the_plan_changes_is_published_not_evicted`).
+A touched key whose operations all commute is refused as `EvictedOperand` when the plan
+changes a key it is derived from in the target's dependency graph, since its operations
+were applied to a value that change evicts; staging never produces such a branch, so
+this catches one rebuilt from parts, or a target whose graph links the keys where the
+base's did not
+(`certification_refuses_a_commutative_operation_on_a_key_its_own_plan_evicts`).
+A `MergePlan` has private fields with read accessors, so nothing can change it after
+certification, and `MergePlan::digest`, what a person approves, covers the branch id,
+the expected revision, the delta, the dependency digest (reads, scans, relied
+generations, input sets and set operations' base presences) and the ordered rebased
+keys (`the_plan_digest_changes_with_which_keys_were_rebased`).
 
-A plan is committed through `Runtime::apply_verified_semantic_delta`, which
-prepares the delta, hands the verifier a view of the post-state, its values and its
+A plan is committed through `Runtime::apply_certified_semantic_delta` with exactly
+the `expected`, `delta` and `relied` that `MergePlan::into_parts` yields. It prepares
+the delta, hands the verifier a view of the post-state, its values and its
 dependency sets (`a_verifier_sees_and_can_refuse_the_dependency_set_a_delta_would_install`),
 and appends only on a `Pass` at the required level with no hard finding
 (`a_certified_and_verified_branch_reaches_semantic_state_only_through_the_runtime`,
 `no_score_or_shallow_level_or_hard_finding_gets_a_delta_past_verification`). A plan
 certified before another commit is refused by the runtime's revision check
 (`a_plan_certified_before_another_commit_is_refused_by_the_runtime`,
-`a_verified_delta_against_a_moved_revision_is_refused_before_verification`).
+`a_verified_delta_against_a_moved_revision_is_refused_before_verification`). A
+revocation or supersession does not move the semantic revision, so immediately
+before it appends, in the same call, the runtime asks `generation_validity` about
+every relied generation again and refuses one that is not live as `StaleReliance`
+(`PTR_RUNTIME_STALE_RELIANCE`), a no-op included, with nothing appended
+(`a_revocation_or_supersession_after_certification_refuses_the_commit_and_appends_nothing`,
+`a_certified_delta_is_refused_while_a_generation_it_relied_on_is_not_live_and_appends_nothing`).
 `Runtime::generation_validity` reads a revoked generation as `Revoked` even while it
 is still the live one (`a_revoked_generation_is_revoked_although_it_is_still_the_live_generation`).
 
-Using that path is the caller's obligation, not a type-level guarantee: a `MergePlan`
-exposes its delta, and the runtime's unverified `apply_semantic_delta` is public, so
-nothing stops a caller from committing a plan without verification. Closing that gap
-(a plan consumable only by a verifying entry point) is listed in §7.
+Using that path is the caller's obligation, not a type-level guarantee: the runtime
+does not depend on `ptr-branch`, `MergePlan::into_parts` yields the delta, and
+the runtime's `apply_verified_semantic_delta` (which checks no generation) and
+unverified `apply_semantic_delta` are public, so nothing stops a caller from
+committing a plan without verification or without its relied generations. Closing
+that gap (a plan consumable only by a verifying entry point) is listed in §7.
 
 ### The arbiter: verification first, calibration second
 
@@ -534,6 +657,26 @@ from it, and a fact code from any other codebook, whose scores would be crosstal
 the right length, is refused (`CodebookMismatch`) rather than scored
 (`a_fact_code_from_another_codebook_is_refused_before_scoring`,
 `a_readout_decodes_only_against_the_codebook_its_memory_was_written_with`).
+A decoded hit names a capsule, so `IdentifierCodebook::fact` refuses a `constraint:`
+or `procedure:` target (`ReservedTarget`) by the same test `fact_codes` filters sources
+with, and `decode_readout` refuses a fact naming one: the runtime reports such a
+target's generation as live, so a lifecycle check at use would not catch it
+(`a_constraint_or_procedure_target_is_refused_as_an_explicit_fact_candidate`). A memory
+created or restored with the digest of its key projection (`FastMemory::with_projection`,
+`FastMemory::restore_with_projection`) reads only queries that state that digest
+(`Query::project`, or `Query::with_projection` for a raw projected vector) and refuses
+a query of the right shape from another projection, or one stating none, as
+`ProjectionMismatch` rather than reading crosstalk
+(`a_memory_bound_to_a_key_projection_reads_only_queries_that_state_it`). A memory from
+`FastMemory::new` or `FastMemory::restore` states no projection and reads a query of
+its head shape from any projection. `PgSubstrate::restore_memory` restores a memory
+bound to the `projection_digest` its registration records
+(`a_restored_memory_decodes_only_against_the_codebook_its_registration_records`).
+A memory takes no sequence number at or above its limit, `u64::MAX` unless
+`FastMemory::with_sequence_limit` lowered it, and refuses the write that would take
+one before folding it, so a store whose column holds fewer numbers restores with its
+own limit and the memory never folds a write the store cannot journal
+(`a_memory_with_a_sequence_limit_refuses_the_write_that_would_reach_it_before_folding`).
 
 Every write names its semantic input, generation and input digest. A read is admitted
 only if every source is admissible according to the caller's lifecycle view when the
@@ -561,8 +704,13 @@ requests themselves).
 
 In PostgreSQL the journal stores each `WriteRequest` as `f32` bit patterns, so a
 restore re-admits the same bits. A tombstone deletes the revoked generation's writes,
-and a supersession every other generation's, together with every checkpoint that
-folded one of them, in the projector's transaction; an append from an inadmissible
+and a supersession every older generation's, together with every checkpoint that
+folded one of them, in the projector's transaction. Only older ones: activation never
+lowers a generation, and a rebuilt projection replaying an earlier activation over
+working state that outlived the rebuild leaves a later generation's writes to the
+record that supersedes or revokes it
+(`a_rebuild_replaying_an_earlier_activation_keeps_the_later_generation_s_journal`). An
+append from an inadmissible
 source is refused under the same row lock as a search document
 (`a_revocation_deletes_exactly_the_revoked_writes_and_the_checkpoints_that_folded_them`
 restores from the stored journal and compares bits,
@@ -576,8 +724,9 @@ read by an append or a checkpoint included, refuses a stored configuration outsi
 their product
 (`a_stored_configuration_fast_memory_refuses_is_a_corrupt_row_in_every_loader`).
 `restore_memory` reads the registration and the journal in one snapshot and restores
-the memory bound to the codebook whose seed the registration records, so a memory
-loaded from PostgreSQL decodes against no other codebook
+the memory bound to the codebook whose seed the registration records and to its key
+projection digest, so a memory loaded from PostgreSQL decodes against no other
+codebook and reads no query stating another projection
 (`a_restored_memory_decodes_only_against_the_codebook_its_registration_records`).
 
 A checkpoint is bound to `binding_digest_of` the writes it claims to fold — their
@@ -610,20 +759,42 @@ depends on it (`revoking_one_input_names_its_adapter_every_descendant_and_every_
 
 Interference is the principal-angle overlap `‖Q_iᵀ Q_j‖²_F / min(r_i, r_j)` of the
 column and row spaces of `ΔW = B A`, layer by layer, reported against the overlap two
-random subspaces of those ranks would have. The bases are those of the product,
-computed from the factors without forming it (`B A = Q M` with `Q` a basis of `col(B)`
-and `M = QᵀB A`): taking `col(B)` and `row(A)` instead overstates the rank of
-rank-deficient factors and can understate overlap
+random subspaces of those ranks would have; each side of a layer reports the chance
+level of the comparison that produced its overlap, not the largest over all earlier
+adapters, so the two can be compared
+(`a_layer_reports_the_chance_level_of_the_comparison_that_produced_each_overlap`).
+The bases are those of the product, never `col(B)` and `row(A)`, which overstate the
+rank of rank-deficient factors and can understate overlap
 (`a_rank_deficient_update_is_measured_on_its_product_not_its_factors`,
 `adapters_on_orthogonal_subspaces_do_not_interfere`,
-`sharing_an_output_direction_is_full_output_overlap_and_names_the_culprit`). Bases,
-norms and interference ratios do not depend on the scale of the factors. Bases and
-norms are computed on factors divided by powers of two; interference effects, and a
-product entry whose running sum overflows, are computed with an exponent range `f64`
-does not bound, rounding every step as `f64` does, so an entry far below the largest
-of its matrix keeps its effect and large terms that cancel leave the small one that
-decides the entry. Finite updates of any magnitude are measured, and only a product
-entry or ratio that is itself beyond `f64::MAX` is refused
+`sharing_an_output_direction_is_full_output_overlap_and_names_the_culprit`). Both come
+from one Gram-Schmidt over the product's columns and rows, with the rank tolerance
+relative to the largest of them. Where the factors are smaller than the product
+(`(d_out + d_in) r < d_out d_in`), it runs on the coordinates of those columns and rows
+in orthonormal bases of `col(B)` and `row(A)`, in `O((d_out + d_in) r²)` time and
+`O((d_out + d_in) r)` memory, provided no factor entry is more than `2^400` below the
+largest of its factor and the product's largest column and row are at most `2^8` below
+the size their terms would give them without cancellation; the bases then agree with
+those of the formed product up to rounding, not bit for bit
+(`bases_from_the_factors_are_those_of_the_formed_product_whatever_the_shape_or_rank`,
+`bases_come_from_the_factors_only_where_the_factors_are_smaller_than_the_product`), and
+measuring a 2048 × 3072 rank-4 layer peaks below a sixteenth of the product's size
+(`the_bases_of_a_large_layer_are_computed_without_forming_its_product`). Otherwise the
+product is formed (`O(d_out d_in r)`, as `delta_weight` does), and factorizations whose
+products are computed as the same matrix give the same bases. That is where factors
+cancel: `B = [MAX, MAX; MIN_POSITIVE, 0]` and `A = [1; -1]` multiply to
+`MIN_POSITIVE e2`, which a factor rescaled or rank-truncated on its own scale loses,
+and fail both checks
+(`update_bases_keep_a_component_that_cancellation_makes_the_whole_product_depend_on`,
+`factors_that_cancel_or_spread_too_far_are_measured_on_their_formed_product`).
+Bases, norms and interference ratios do not depend on the scale of the factors. Bases
+and norms are computed on matrices divided by powers of two; interference effects, the
+products bases are taken from, and a product entry whose running sum overflows, are
+computed with an exponent range `f64` does not bound, rounding every step as `f64`
+does, so an entry far below the largest of its matrix keeps its effect and large terms
+that cancel leave the small one that decides the entry. Finite updates of any
+magnitude are measured, and only a product entry or ratio that is itself beyond
+`f64::MAX` is refused
 (`update_subspaces_are_measured_whatever_the_scale_of_the_factors`,
 `activation_interference_does_not_depend_on_the_scale_of_updates_or_inputs`,
 `activation_interference_keeps_an_input_or_factor_entry_far_below_the_largest_of_its_matrix`,
@@ -660,7 +831,18 @@ training clock, not wall time; priority grows with forgetting and difficulty, an
 draws are stratified and without replacement by Gumbel-top-k
 (`forgotten_samples_are_drawn_far_more_often_than_retained_ones`). Probes, draws and
 priorities refuse a nonfinite model time, at which every sample would look retained
-(`a_draw_or_priority_at_a_nonfinite_model_time_is_refused`). A held-out sample
+(`a_draw_or_priority_at_a_nonfinite_model_time_is_refused`), and one before a sample's
+last probe. A second probe at the model time of a recorded one is refused as a repeat
+of the same measurement, as the store's key on sample and model time refuses it
+(`a_second_probe_at_the_model_time_of_the_last_one_is_refused_and_changes_nothing`). A
+priority refuses a hand-built memory state with a nonfinite or out-of-range
+difficulty, a stability that is not finite and positive or a nonfinite last probe,
+rather than returning a NaN, infinite or negative priority
+(`a_priority_of_a_hand_built_state_the_pool_could_not_hold_is_refused`), and a
+minimum stability above the initial one is refused, so a lapse never raises a
+sample's stability
+(`a_minimum_stability_above_the_initial_one_is_refused_so_a_lapse_never_raises_stability`).
+A held-out sample
 can never be pooled (`a_held_out_sample_can_never_enter_the_pool`), in Rust and by a
 column constraint in PostgreSQL.
 
@@ -695,7 +877,14 @@ matrix's vetoes and votes with posteriors of other items
 A posterior that is not a probability distribution over the schema is refused before
 anything is resolved or scored
 (`resolution_refuses_a_posterior_that_is_not_a_distribution_over_the_schema`,
-`evaluation_refuses_a_posterior_that_is_not_a_distribution_whatever_the_sampling`).
+`evaluation_refuses_a_posterior_that_is_not_a_distribution_whatever_the_sampling`);
+every entry must lie in `[0, 1]` on its own, whatever the `1e-6` tolerance on the total
+(`a_posterior_entry_above_one_is_refused_whatever_the_tolerance_on_the_total`). Shares
+over the classes the verifiers left are computed only from posterior mass of at least
+`f64::MIN_POSITIVE`: below it, posteriors stored as subnormals have lost their ratio to
+underflow, and the item is `Unknown` even where the model's exact posterior would
+reach the required probability
+(`posterior_mass_left_below_the_smallest_normal_f64_resolves_to_unknown`).
 Annotation ranking puts disputed items first and never proposes a determined one;
 posteriors and outcomes of different lengths are refused rather than paired up to the
 shorter list, which would drop items
@@ -707,8 +896,11 @@ schema is refused before anything is scored
 (`a_gold_class_outside_the_schema_is_refused_before_any_vote_is_scored`).
 Only uniform gold estimates population accuracy and calibration; on active
 gold the evaluation reports accuracy on the sampled items only and withholds
-calibration. Calibration (Brier, ECE) comes from `ptr-analytics`, which also provides
-Krippendorff's α for multi-annotator gold; the labeling crate does not compute
+calibration. Calibration (Brier, ECE) comes from `ptr-analytics`, which applies the
+same check to every caller's predicted distributions, each entry in `[0, 1]` on its own
+whatever the `1e-6` tolerance on the total
+(`an_entry_above_one_is_refused_although_the_total_is_within_tolerance`), and also
+provides Krippendorff's α for multi-annotator gold; the labeling crate does not compute
 agreement yet. A model labeling function can name the adapter that produced its votes
 (refused on any other kind, in Rust and by a column constraint), and each function's
 class votes, never its abstentions or vetoes, are scored against uniform gold with a
@@ -760,8 +952,9 @@ with Apache Iggy, NATS and Kafka as candidates behind it.
 - **TLS, separate projector/reader/migrator roles, row-level security, pooling and a
   logical-replication consumer.** Until TLS exists the substrate refuses remote hosts.
 - **A merge plan that can only be committed through verification.** Today it is the
-  caller's obligation (§2): `MergePlan` exposes its delta and the runtime's unverified
-  `apply_semantic_delta` is public.
+  caller's obligation (§2): `MergePlan::into_parts` yields its delta, and the
+  runtime's `apply_verified_semantic_delta`, which checks no relied generation, and
+  its unverified `apply_semantic_delta` are public.
 - **Strings containing NUL in the PostgreSQL substrate.** PostgreSQL `text` cannot
   hold them; they are refused with a typed error, and the PostgreSQL projection stops
   at a ledger record carrying one.

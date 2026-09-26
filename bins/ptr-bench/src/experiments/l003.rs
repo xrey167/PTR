@@ -649,6 +649,10 @@ struct Tracked {
     /// The codebook the registration records; every fold of the journal is
     /// bound to it, as the store's own restore binds it.
     codebook: IdentifierCodebook,
+    /// The key projection digest the registration records. The live memory
+    /// is bound to it, as `PgSubstrate::restore_memory` binds a restored
+    /// one, so it reads only queries stating it.
+    projection: [u8; 32],
     memory: FastMemory,
     acknowledged: Vec<(WriteSeq, WriteRequest)>,
     /// Checkpoints the store accepted, by applied sequence number, with the
@@ -778,7 +782,9 @@ impl Case<'_> {
             id: record.id,
             config,
             codebook,
-            memory: FastMemory::new(config, codebook).expect("a supported shape"),
+            projection: record.projection_digest,
+            memory: FastMemory::with_projection(config, codebook, record.projection_digest)
+                .expect("a supported shape"),
             acknowledged: Vec::new(),
             stored: BTreeMap::new(),
         });
@@ -903,9 +909,7 @@ impl Case<'_> {
                 self.metrics.max_replayed = self.metrics.max_replayed.max(report.replayed as u64);
             }
             self.check_fold(index, expected, rng).await;
-            if rng.chance(0.25) {
-                self.check_latest_checkpoint(index, expected).await;
-            }
+            self.check_latest_checkpoint(index, expected).await;
         }
     }
 
@@ -1102,7 +1106,11 @@ impl Case<'_> {
             .writes()
             .iter()
             .any(|write| !admissible_in(&self.ledger.oracle, write.source()));
-        let Some(query) = random_query(rng, &self.memories[index].config) else {
+        let Some(query) = random_query(
+            rng,
+            &self.memories[index].config,
+            self.memories[index].projection,
+        ) else {
             return;
         };
         self.metrics.window_reads += 1;
@@ -1242,7 +1250,7 @@ impl Case<'_> {
                 ),
             );
         }
-        let Some(query) = random_query(rng, &config) else {
+        let Some(query) = random_query(rng, &config, self.memories[index].projection) else {
             return;
         };
         let sources: BTreeSet<SourceRef> = self.memories[index]
@@ -1349,23 +1357,26 @@ impl Case<'_> {
         let id = self.memories[index].id.clone();
         let config = self.memories[index].config;
         let codebook = self.memories[index].codebook;
+        let projection = self.memories[index].projection;
         match self.sessions.writer().load_journal(&id).await {
-            Ok(journal) => match FastMemory::restore(config, codebook, journal) {
-                Ok(memory) => {
-                    self.memories[index].memory = memory;
-                    self.metrics.restores += 1;
+            Ok(journal) => {
+                match FastMemory::restore_with_projection(config, codebook, projection, journal) {
+                    Ok(memory) => {
+                        self.memories[index].memory = memory;
+                        self.metrics.restores += 1;
+                    }
+                    Err(error) => {
+                        diverged(
+                            &mut self.metrics.journal_mismatches,
+                            format!(
+                                "{}: the journal of {id:?} does not restore: {error}",
+                                self.label
+                            ),
+                        );
+                        self.broken = true;
+                    }
                 }
-                Err(error) => {
-                    diverged(
-                        &mut self.metrics.journal_mismatches,
-                        format!(
-                            "{}: the journal of {id:?} does not restore: {error}",
-                            self.label
-                        ),
-                    );
-                    self.broken = true;
-                }
-            },
+            }
             Err(error) => {
                 diverged(
                     &mut self.metrics.read_failures,
@@ -2056,11 +2067,12 @@ fn awkward(rng: &mut Rng) -> f32 {
     }
 }
 
-fn random_query(rng: &mut Rng, config: &FastMemoryConfig) -> Option<Query> {
+/// A random query stating the memory's key projection `projection`.
+fn random_query(rng: &mut Rng, config: &FastMemoryConfig, projection: [u8; 32]) -> Option<Query> {
     let raw = (0..config.key_len())
         .map(|_| rng.f32_between(-1.0, 1.0))
         .collect();
-    Query::new(config, raw).ok()
+    Query::with_projection(config, projection, raw).ok()
 }
 
 fn same_bits(left: &[f32], right: &[f32]) -> bool {

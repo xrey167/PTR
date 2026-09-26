@@ -65,6 +65,16 @@ impl PgSubstrate {
     /// here before any row is written, and a branch that breaks one is
     /// refused as [`PgError::InvalidBranch`], as is a string PostgreSQL
     /// `text` cannot hold ([`PgError::InvalidText`]).
+    ///
+    /// Every row is written in one transaction, and the database accepts a
+    /// branch's reads, scans, reliances, touched keys and operations only in
+    /// the transaction that writes its header (work migration 11): a stored
+    /// branch is never changed, never loses a row on its own and never gains
+    /// one. That binds the rows to one transaction, not to the author who
+    /// sealed them: a writer with the work schema's privileges can delete a
+    /// whole branch and write other rows under its id in one transaction,
+    /// exactly as this method does, and nothing stored tells those rows from
+    /// sealed ones.
     pub async fn store_branch(&mut self, branch: &SealedBranch) -> Result<(), PgError> {
         let work = self.schemas.work.clone();
         branch.recheck().map_err(|error| PgError::InvalidBranch {
@@ -154,8 +164,8 @@ impl PgSubstrate {
                     &format!(
                         "INSERT INTO {work}.branch_op \
                          (branch, ordinal, kind, key, value_kind, value_text, value_type, \
-                          value_source, value_bytes, amount, member) \
-                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"
+                          value_source, value_bytes, amount, member, member_in_base) \
+                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)"
                     ),
                     &[
                         &id,
@@ -169,6 +179,7 @@ impl PgSubstrate {
                         &row.value_bytes,
                         &row.amount,
                         &row.member,
+                        &row.member_in_base,
                     ],
                 )
                 .await
@@ -187,20 +198,33 @@ impl PgSubstrate {
     /// read before the delete and the absence of those read after it.
     ///
     /// The rows are rebuilt through `SealedBranch::from_parts`, so what comes
-    /// back passes every sealing invariant a freshly sealed branch does; rows
-    /// changed after they were stored come back as an error, never as a
-    /// branch certification could plan from.
+    /// back passes every sealing invariant a freshly sealed branch does, and
+    /// rows that break one come back as an error, never as a branch
+    /// certification could plan from. Rows that keep every invariant come
+    /// back as a branch whoever wrote them: the database refuses changing,
+    /// removing or appending rows of a stored branch (see
+    /// [`store_branch`](Self::store_branch)), but a branch deleted and
+    /// written again whole, or rows written with its triggers disabled, load
+    /// like sealed ones.
     ///
     /// # Errors
     /// Refuses a branch stored before the input sets of touched keys were
-    /// recorded as [`PgError::BranchWithoutInputSets`]: it cannot be
-    /// certified and must be re-run. A digest that is not 32 bytes, or a
-    /// key, prefix or target stored twice, is a [`PgError::CorruptRow`]; two
-    /// generations relied on for one target, or rows that break a sealing
-    /// invariant (an operation on a reserved key, an overwrite of an unread
-    /// key, a touched key without its base value or input set, a base value
-    /// or input set no operation needs), are a [`PgError::CorruptBranch`]
-    /// naming the `BranchError`.
+    /// recorded as [`PgError::BranchWithoutInputSets`], one stored
+    /// before set operations recorded their member's base presence as
+    /// [`PgError::BranchWithoutSetBase`], and one whose rows remove a key
+    /// with a non-empty recorded input set, which sealing produced before it
+    /// refused such removals, as [`PgError::BranchWithDerivedRemoval`]: none
+    /// can be certified, and each must be re-run. A digest that is not 32
+    /// bytes, or a key, prefix or target stored twice, is a
+    /// [`PgError::CorruptRow`]; two generations relied on for one target, or
+    /// rows that break any other sealing invariant (an operation on a
+    /// reserved key, an overwrite of an unread key, a touched key without
+    /// its base value or input set, a base value or input set no operation
+    /// needs, set operations recording two base presences for one member or
+    /// a member present in a base without its key), are a
+    /// [`PgError::CorruptBranch`] naming the `BranchError`. The invariants
+    /// are checked operation by operation in `SealedBranch::from_parts`'s
+    /// order, so rows that break more than one are refused for the first.
     pub async fn load_branch(&mut self, id: &BranchId) -> Result<Option<SealedBranch>, PgError> {
         let work = self.schemas.work.clone();
         let transaction = self
@@ -318,7 +342,7 @@ impl PgSubstrate {
             .query(
                 &format!(
                     "SELECT kind, key, value_kind, value_text, value_type, value_source, \
-                            value_bytes, amount, member \
+                            value_bytes, amount, member, member_in_base \
                      FROM {work}.branch_op WHERE branch = $1 ORDER BY ordinal"
                 ),
                 &[&id.0],
@@ -337,8 +361,9 @@ impl PgSubstrate {
                     value_bytes: row.get(6),
                     amount: row.get(7),
                     member: row.get(8),
+                    member_in_base: row.get(9),
                 }
-                .into_op()
+                .into_op(&id.0)
             })
             .collect::<Result<Vec<_>, _>>()?;
         transaction.commit().await.map_err(database)?;
@@ -355,9 +380,17 @@ impl PgSubstrate {
             ops,
         })
         .map(Some)
-        .map_err(|error| PgError::CorruptBranch {
-            branch: id.0.clone(),
-            error,
+        .map_err(|error| match error {
+            // Sealing has not always refused this, so a branch sealed
+            // before it did can hold one without anyone tampering.
+            BranchError::DerivedRemoval { key } => PgError::BranchWithDerivedRemoval {
+                branch: id.0.clone(),
+                key,
+            },
+            error => PgError::CorruptBranch {
+                branch: id.0.clone(),
+                error,
+            },
         })
     }
 
@@ -586,6 +619,8 @@ struct OpRow {
     value_bytes: Option<Vec<u8>>,
     amount: Option<i64>,
     member: Option<String>,
+    /// `in_base` of a set operation, `None` for every other kind.
+    member_in_base: Option<bool>,
 }
 
 impl OpRow {
@@ -600,6 +635,7 @@ impl OpRow {
             value_bytes: None,
             amount: None,
             member: None,
+            member_in_base: None,
         }
     }
 
@@ -627,25 +663,45 @@ impl OpRow {
                 row.amount = Some(*amount);
                 row
             }
-            BranchOp::SetInsert { key, member } => {
+            BranchOp::SetInsert {
+                key,
+                member,
+                in_base,
+            } => {
                 let mut row = Self::empty("set_insert", key);
                 row.member = Some(member.clone());
+                row.member_in_base = Some(*in_base);
                 row
             }
-            BranchOp::SetRemove { key, member } => {
+            BranchOp::SetRemove {
+                key,
+                member,
+                in_base,
+            } => {
                 let mut row = Self::empty("set_remove", key);
                 row.member = Some(member.clone());
+                row.member_in_base = Some(*in_base);
                 row
             }
         }
     }
 
-    fn into_op(self) -> Result<BranchOp, PgError> {
+    /// The operation this row stores for `branch`. A set operation stored
+    /// before its base presence was recorded is refused as
+    /// [`PgError::BranchWithoutSetBase`]: none can be derived for it.
+    fn into_op(self, branch: &str) -> Result<BranchOp, PgError> {
         let corrupt = |reason: &str| PgError::CorruptRow {
             table: "branch_op",
             reason: reason.to_owned(),
         };
         let key = self.key;
+        let in_base = |key: &str| {
+            self.member_in_base
+                .ok_or_else(|| PgError::BranchWithoutSetBase {
+                    branch: branch.to_owned(),
+                    key: key.to_owned(),
+                })
+        };
         match self.kind.as_str() {
             "put" => {
                 let value = match self.value_kind.as_deref() {
@@ -675,16 +731,18 @@ impl OpRow {
                 amount: self.amount.ok_or_else(|| corrupt("add without amount"))?,
             }),
             "set_insert" => Ok(BranchOp::SetInsert {
-                key,
                 member: self
                     .member
                     .ok_or_else(|| corrupt("set insert without member"))?,
+                in_base: in_base(&key)?,
+                key,
             }),
             "set_remove" => Ok(BranchOp::SetRemove {
-                key,
                 member: self
                     .member
                     .ok_or_else(|| corrupt("set remove without member"))?,
+                in_base: in_base(&key)?,
+                key,
             }),
             other => Err(corrupt(&format!("unknown op kind {other:?}"))),
         }

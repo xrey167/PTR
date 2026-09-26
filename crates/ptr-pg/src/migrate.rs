@@ -41,11 +41,18 @@ pub struct Migration {
     pub sql: &'static str,
 }
 
-pub const PROJECTION_MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "projection",
-    sql: include_str!("../migrations/projection/0001_projection.sql"),
-}];
+pub const PROJECTION_MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "projection",
+        sql: include_str!("../migrations/projection/0001_projection.sql"),
+    },
+    Migration {
+        version: 2,
+        name: "projection_no_truncate",
+        sql: include_str!("../migrations/projection/0002_projection_no_truncate.sql"),
+    },
+];
 
 pub const DERIVED_MIGRATIONS: &[Migration] = &[Migration {
     version: 1,
@@ -103,6 +110,11 @@ pub const WORK_MIGRATIONS: &[Migration] = &[
         version: 10,
         name: "triage_policy_rules",
         sql: include_str!("../migrations/work/0010_triage_policy_rules.sql"),
+    },
+    Migration {
+        version: 11,
+        name: "work_integrity",
+        sql: include_str!("../migrations/work/0011_work_integrity.sql"),
     },
 ];
 
