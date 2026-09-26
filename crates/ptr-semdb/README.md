@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-25  
-**Code footprint:** 2 Rust source files · 666 nonblank source lines · 3 integration-test files · 26 `#[test]` markers
+**Last reviewed:** 2026-09-26  
+**Code footprint:** 2 Rust source files · 687 nonblank source lines · 3 integration-test files · 27 `#[test]` markers
 
 ### Implemented now
 
@@ -29,7 +29,7 @@
 - ProjectSkeleton scaffold
 - Integration regression preserving local dependency closure semantics
 - canonical_input_bytes: the canonical journal encoding of one key and value, shared by neural-state input digests and branch value digests so the two can never disagree about whether an input changed
-- PreparedView over a prepared delta's post-state, so verification can inspect exactly what would be published before anything is appended
+- PreparedView over a prepared delta's post-state, its values and dependency sets (inputs, derived_keys), so verification can inspect exactly what would be published, dependency graph included, before anything is appended
 
 ### Missing for the target architecture
 
@@ -68,6 +68,7 @@
 - a committed value encodes byte-for-byte as the model-side tests encode the same type and bytes, which is the strongest link available across a workspace split that no caller can cross
 - exported state restores values, dangling dependency declarations and the exact revision through the canonical codec; restore refuses removals, missing dependencies and cycles; a restore at the revision ceiling stays exhausted
 - Compacted-snapshot round trip through export_state/restore reproduces ground values, payload bytes, dependency sets and revision exactly
+- two prepared deltas publishing the same values under different dependency graphs are told apart through the view, which also lists a derivation an input change evicted
 - local_change_invalidates_only_dependency_closure integration test
 - workspace fmt/check/test/clippy
 

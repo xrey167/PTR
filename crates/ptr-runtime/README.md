@@ -8,8 +8,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-25  
-**Code footprint:** 6 Rust source files · 4166 nonblank source lines · 19 integration-test files · 158 `#[test]` markers
+**Last reviewed:** 2026-09-26  
+**Code footprint:** 6 Rust source files · 4168 nonblank source lines · 19 integration-test files · 159 `#[test]` markers
 
 ### Implemented now
 
@@ -57,7 +57,7 @@
 - Reference InferenceBackend request loop runs against a revisioned ModelRequest and emits completion event
 - Typed model→PodRegistry→Pod→Verifier→SemDB observation loop for Pure/Read cognitive Pods
 - Bounded multi-step model resume loop after verified Pod observations advances semantic revision before continuation
-- apply_verified_semantic_delta prepares a delta, hands the verifier a view of the post-state and appends only on a Pass at the required level with no hard finding; a refusal writes nothing and names status, level and finding count
+- apply_verified_semantic_delta prepares a delta, hands the verifier a view of the post-state's values and dependency sets and appends only on a Pass at the required level with no hard finding; a refusal writes nothing and names status, level and finding count
 - generation_validity combines the tombstone set with generation equality, so a revoked generation that is still the live one reads as Revoked rather than Live
 - Neural-state input digests are computed from ptr-semdb canonical_input_bytes, byte-identical to the previous encoding (committed fixtures unchanged)
 

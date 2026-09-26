@@ -10,17 +10,17 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-26  
-**Code footprint:** 7 Rust source files · 1800 nonblank source lines · 4 integration-test files · 50 `#[test]` markers
+**Code footprint:** 7 Rust source files · 1839 nonblank source lines · 4 integration-test files · 52 `#[test]` markers
 
 ### Implemented now
 
-- Content-addressed adapter records bound to one exact base model and revision, with origin, parent or consolidation sources and a data manifest
+- Content-addressed adapter records bound to one exact base model and revision, with origin, parent or consolidation sources and a data manifest; a consolidation must name at least one registered source
 - Registration always starts as a candidate; only a passing forgetting gate report bound to that adapter lets it serve
 - Forgetting gate with thresholds on average and per-task forgetting, backward transfer and public-suite regression, computed from an accuracy matrix; a nonfinite threshold or public-suite score is refused before anything is evaluated
 - Revoking a training input names every adapter, descendant and consolidation that depends on it
 - Principal-angle overlap of the column and row spaces of delta_W = B A per layer, computed from the factors without forming the product, against its chance level, plus activation interference; matrix shapes whose size overflows are refused
 - TIES merge of full updates for consolidation, due when depth or overlap exceeds the policy
-- FSRS-4.5 forgetting model on the training clock, lapse tracking with label-audit withholding, and stratified Gumbel-top-k sampling without replacement; model times must be finite and never precede a sample's last probe
+- FSRS-4.5 forgetting model on the training clock, lapse tracking with label-audit withholding, and stratified Gumbel-top-k sampling without replacement; model times must be finite and never precede a sample's last probe, and a probe whose update would store a nonfinite stability or difficulty is refused with the sample unchanged
 - Held-out samples cannot enter the replay pool
 
 ### Missing for the target architecture

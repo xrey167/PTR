@@ -10,11 +10,11 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-26  
-**Code footprint:** 16 Rust source files · 3899 nonblank source lines · 2 integration-test files · 23 `#[test]` markers
+**Code footprint:** 16 Rust source files · 4168 nonblank source lines · 2 integration-test files · 23 `#[test]` markers
 
 ### Implemented now
 
-- Three schema classes per instance (projection, derived, work) with separate checksummed migration catalogs, per-schema migration tables, an advisory lock, drift and newer-build refusal, and LF-normalised checksums
+- Three schema classes per instance (projection, derived, work) with separate checksummed migration catalogs, per-schema migration tables, an advisory lock held by a session of its own that a cancelled or unwinding migration or rebuild releases when that session closes, drift and newer-build refusal, and LF-normalised checksums
 - Projector applies one commit per transaction behind a watermark row lock, deciding the next index with ptr-state classify_next and projecting exactly ptr-state projection_entries
 - Every record's anchor is recomputed with ptr-ledger chain_anchors from the stored one and compared with the ledger's; a foreign, rolled-back or re-delivered-but-different record is refused, and a redelivered index counts as a duplicate only when the record itself recomputes to the stored anchor from the one before it
 - Lifecycle catalog keyed exactly as the runtime keys it: live generations, an append-only tombstone set, the revision map and an append-only projection event log with consumer offsets and NOTIFY on commit
@@ -22,6 +22,7 @@
 - Derived search documents only for live capsule generations; writers hold the lifecycle row FOR SHARE, and the projector deletes superseded or revoked generations in the same transaction
 - Hybrid retrieval in one repeatable-read snapshot: built-in full text plus halfvec cosine search over per-space partial HNSW expression indexes with iterative scans, joined to the lifecycle catalog and fused by capsule and generation
 - Work schema for sealed branches, triage logs and append-only outcomes; fast-memory journals and checkpoints; adapter lineage and replay pool; weak-supervision store
+- A sealed branch is stored with the base value and base input-set digest of every touched key; a branch stored before input sets were recorded is refused on load (BranchWithoutInputSets) because it cannot be certified and must be re-run, and a branch whose touched keys and input-set digests disagree is refused before any row is written
 - Tombstones delete the revoked generation's fast-memory writes, and supersessions every other generation's, with the checkpoints that folded them, in the projector's transaction; appends validate requests against the locked memory configuration and are refused for inadmissible sources and read the journal only after taking the memory row lock; a memory is registered only if ptr-fastmem accepts its configuration
 - A checkpoint is stored only when its binding digest matches the one recomputed from the journal prefix it folds, and latest_checkpoint skips any that no longer match
 - The projector, cache writers, journal appends and checkpoint stores run at an explicit READ COMMITTED whatever the session default, which the lock ordering needs
@@ -29,9 +30,9 @@
 - Logged triage rows and outcomes are never updated or deleted on their own (only with their branch), and a branch is adjudicated once
 - Every vector query uses iterative strict-order scans and an ef_search of at least its limit (pgvector 0.8 required), so results are not truncated at the default candidate list; queries refuse zero limits and nonfinite or negative fusion parameters
 - Migrations bound DDL with SET LOCAL lock_timeout in driver-managed transactions that roll back on failure; a rebuild drops and recreates under the migration lock
-- Platform metrics compiled from ptr-analytics definitions to SQL over the work schema only, including revert share and a trailing window of days on the record that puts a branch into the denominator
-- Recorded triage policies with their rule, levels and calibration set (record_policy, load_policy, adjudicated_samples); triage rows cite a recorded policy by foreign key, a policy calibrated on a branch nobody adjudicated is refused, and policies, calibration sets and calibrated-on branches are never rewritten or deleted
-- Interference reports of adapter candidates stored once per adapter and layer, as ptr-lineage measured them (record_interference, load_interference)
+- Platform metrics compiled from ptr-analytics definitions to SQL over the work schema only, including revert share and a trailing window of days; each metric counts a branch once, windowed on the one record that puts it into the denominator (the conflict rate on its first outcome)
+- Recorded triage policies with their rule, levels and calibration set (record_policy, load_policy, adjudicated_samples); triage rows logged from work version 5 on cite a recorded policy by a foreign key added NOT VALID, so a schema holding older rows still upgrades; a policy is refused unless every calibration branch is an adjudicated calibration-slice branch and its rule, rerun on their stored adjudications, chooses its threshold; policies and calibration sets are never rewritten or deleted, a calibration set is complete when its policy commits and never grows, and a branch a policy was calibrated on cannot be deleted
+- Interference reports of adapter candidates stored once per adapter under a header row, complete when they commit, and never rewritten, as ptr-lineage measured them; a second report (identical, overlapping or disjoint) and an empty one are refused (record_interference, load_interference)
 - A model labeling function may name its adapter in the catalog; any other kind is refused by a column constraint
 - Capability probe that never creates an extension; refusal of every non-loopback host and hostaddr because the build links no TLS connector
 - Rebuild drops projection and derived schemas and replays; working state survives

@@ -10,17 +10,17 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-26  
-**Code footprint:** 6 Rust source files · 934 nonblank source lines · 1 integration-test files · 16 `#[test]` markers
+**Code footprint:** 6 Rust source files · 1010 nonblank source lines · 1 integration-test files · 21 `#[test]` markers
 
 ### Implemented now
 
 - Label schemas, labeling functions by kind (verifier, heuristic, model, agent) and a vote matrix with abstention
 - Verifier-backed functions cast vetoes only; a verifier class vote is refused
-- Dawid-Skene EM label model with configurable iterations and tolerance and identifiability warnings for fewer than three modelled functions
+- Dawid-Skene EM label model with configurable iterations and a tolerance in [0, 1) (refused outside it, so a vacuous tolerance cannot hide non-convergence) and identifiability warnings for fewer than three modelled functions
 - Resolution to Determined (every other class vetoed), Estimated at or above a required probability, Unknown, or Disputed when every class is vetoed
-- Gold labels record source (oracle or human with annotator) and sampling (uniform or active); only uniform gold estimates population accuracy and calibration, while active gold reports accuracy on the sampled items and no calibration
-- Evaluation with Brier score and expected calibration error from ptr-analytics
-- A model labeling function may name the adapter that produced its votes (refused on any other kind); function_accuracy scores each function's class votes against uniform gold with a Wilson interval, so labeling quality is measured per adapter
+- Gold labels record source (oracle or human with annotator) and sampling (uniform or active); an evaluation set holds one resolved gold label per item and refuses a second; only uniform gold estimates population accuracy and calibration, while active gold reports accuracy on the sampled items and no calibration
+- Evaluation with Brier score and expected calibration error from ptr-analytics; every scoring path refuses a gold class outside the scored classes before scoring
+- A model labeling function may name the adapter that produced its votes (refused on any other kind); function_accuracy scores each function's class votes (never abstentions or vetoes) against uniform gold with a Wilson interval and refuses an invalid z whatever the votes, so labeling quality is measured per adapter
 - Acquisition ranking by posterior entropy or margin that never proposes an item verifiers already determined
 
 ### Missing for the target architecture
@@ -49,7 +49,7 @@
 
 ### Current automated checks
 
-- tests/label_model.rs recovery, veto, dispute and identifiability cases
+- tests/label_model.rs recovery, veto, dispute and identifiability cases, and gold-set, gold-class, z and tolerance refusals
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->

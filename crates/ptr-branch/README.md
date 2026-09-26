@@ -10,21 +10,21 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-26  
-**Code footprint:** 7 Rust source files · 1692 nonblank source lines · 3 integration-test files · 52 `#[test]` markers
+**Code footprint:** 7 Rust source files · 1819 nonblank source lines · 3 integration-test files · 59 `#[test]` markers
 
 ### Implemented now
 
-- Branch overlay on one SemanticSnapshot recording value digests of every read, range digests of every scanned prefix and every relied-on lifecycle generation
+- Branch overlay on one SemanticSnapshot recording value digests of every read, range digests of every scanned prefix, input-set digests of every touched key and every relied-on lifecycle generation
 - Value digests hash the canonical journal bytes neural-state admission digests, so a branch and an admitted neural state never disagree about whether an input changed
 - Put and Remove only on keys the branch read; commutative counter additions and set insertions/removals rebase onto the target value at merge time
 - Reserved request: and pod-output: namespaces cannot be written by a branch
-- Certification refuses a changed read, a phantom under a scanned prefix, a revoked or superseded relied-on generation, or a snapshot older than the base; otherwise it yields one SemanticDelta plus the revision it was certified against, and MergePlan::digest binds the branch id, so an approval cannot be replayed for another branch
+- Certification refuses a changed read, a phantom under a scanned prefix, a touched key whose input set changed or was not recorded (a merge keeps the target's dependency set, so a value never stands under inputs it was not computed from), a revoked or superseded relied-on generation, or a snapshot older than the base; otherwise it yields one SemanticDelta plus the revision it was certified against, and MergePlan::digest binds the branch id and every declared dependency including touched keys' input sets, so an approval cannot be replayed for another branch
 - End-to-end test commits a certified plan through Runtime::apply_verified_semantic_delta and shows a plan certified before another commit is refused; using that path is the caller's obligation, because MergePlan exposes its delta and PtrRuntime::apply_semantic_delta is public and unverified
 - Verifier-bounded triage: only a Pass at full-semantic or deterministic level with no hard finding is eligible for auto-proposal
 - Uniform calibration slice of eligible branches with a deterministic per-branch draw, logged auto-propose propensities and adjudication samples; a draw outside [0, 1) is refused
 - Threshold selection on a fixed grid by conformal risk control or by Learn-then-Test with Clopper-Pearson bounds
 - PolicyRecord names a policy's version, threshold rule and levels and exactly which adjudicated calibration-slice branches chose its threshold; held_out returns the adjudications it was not calibrated on, the only ones its harm rate may be estimated from
-- Off-policy evaluation by IPS, SNIPS and doubly robust estimates with a positivity check
+- Off-policy evaluation by IPS, SNIPS and doubly robust estimates with a positivity check; a log with a propensity outside [0, 1] or a nonfinite reward is refused rather than estimated
 
 ### Missing for the target architecture
 
@@ -54,7 +54,7 @@
 
 ### Current automated checks
 
-- tests/certification.rs conflict, phantom and lifecycle cases
+- tests/certification.rs conflict, phantom, input-set and lifecycle cases
 - tests/pipeline.rs end-to-end verified merge through ptr-runtime
 - tests/triage.rs eligibility, calibration and off-policy evaluation
 - workspace fmt/check/test/clippy
