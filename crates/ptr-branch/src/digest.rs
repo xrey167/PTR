@@ -35,24 +35,29 @@ impl ValueDigest {
     /// Returns `BranchError::InvalidValue` if a present value cannot be
     /// encoded by the semantic journal.
     pub fn of(key: &str, value: Option<&SemanticValue>) -> Result<Self, BranchError> {
+        let Some(value) = value else {
+            return Ok(Self::absent(key));
+        };
+        let canonical =
+            canonical_input_bytes(key, value).map_err(|_| BranchError::InvalidValue {
+                key: key.to_owned(),
+            })?;
         let mut hasher = Sha256::new();
         hasher.update(DOMAIN);
-        match value {
-            None => {
-                hasher.update([0u8]);
-                hasher.update((key.len() as u64).to_le_bytes());
-                hasher.update(key.as_bytes());
-            }
-            Some(value) => {
-                let canonical =
-                    canonical_input_bytes(key, value).map_err(|_| BranchError::InvalidValue {
-                        key: key.to_owned(),
-                    })?;
-                hasher.update([1u8]);
-                hasher.update(&canonical);
-            }
-        }
+        hasher.update([1u8]);
+        hasher.update(&canonical);
         Ok(Self(hasher.finalize().into()))
+    }
+
+    /// The digest of `key`'s absence: `ValueDigest::of(key, None)`, which
+    /// never fails.
+    pub(crate) fn absent(key: &str) -> Self {
+        let mut hasher = Sha256::new();
+        hasher.update(DOMAIN);
+        hasher.update([0u8]);
+        hasher.update((key.len() as u64).to_le_bytes());
+        hasher.update(key.as_bytes());
+        Self(hasher.finalize().into())
     }
 
     pub fn as_bytes(&self) -> &[u8; 32] {
@@ -102,8 +107,9 @@ impl RangeDigest {
 /// touched it: which keys it is derived from, not what they hold.
 ///
 /// A merge publishes a touched key's value but keeps whatever dependency set
-/// the target declares for it, so a value computed against one set must not
-/// be merged under another. Value digests of the inputs cannot tell: a
+/// the target declares for it (a branch may not remove a derived key, whose
+/// removal would drop that set: [`BranchError::DerivedRemoval`]), so a value
+/// computed against one set must not be merged under another. Value digests of the inputs cannot tell: a
 /// concurrent delta may rewire a derived key to other inputs while recomputing
 /// it to the same value. The digest is domain-tagged and length-delimited over
 /// the key, the number of inputs and each input name in ascending order, so a

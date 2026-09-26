@@ -984,3 +984,32 @@ fn a_calibration_rate_too_small_to_lower_the_propensity_is_refused_wherever_a_po
     let estimate = evaluate_off_policy(&[LoggedTriage::from(&slice)], &smallest).unwrap();
     assert_eq!(estimate.effective_sample_size, 1.0);
 }
+
+#[test]
+fn a_log_on_which_the_target_takes_no_logged_action_is_refused_rather_than_scored_zero() {
+    // Every logged branch was auto-proposed at propensity 0.5 and cost 1.
+    // A policy that never auto-proposes passes positivity (the log also
+    // escalated with probability 0.5) but gives every logged action
+    // probability zero: SNIPS is 0 / 0, and the log says nothing about what
+    // the policy earns, so no estimate is returned that could rank it above
+    // the policy that was logged.
+    let log = [eligible(TriageDecision::AutoPropose, 0.5, -1.0); 50];
+    let never = TriagePolicy::new(AutoThreshold::Never, 0.0).unwrap();
+    let refused = evaluate_off_policy(&log, &never).unwrap_err();
+    assert_eq!(
+        refused,
+        ArbiterError::NonFiniteEstimate { estimate: "snips" }
+    );
+    assert_eq!(refused.code(), "PTR_ARBITER_NONFINITE_ESTIMATE");
+    // The logged policy itself is estimated from the same log.
+    let logged = TriagePolicy::new(AutoThreshold::AtLeast(0.5), 0.5).unwrap();
+    let estimate = evaluate_off_policy(&log, &logged).unwrap();
+    assert!((estimate.snips + 1.0).abs() < 1e-12, "{estimate:?}");
+    assert!(
+        (estimate.effective_sample_size - 50.0).abs() < 1e-9,
+        "{estimate:?}"
+    );
+    // The doubly robust estimate still has the reward model to go on.
+    let dr = doubly_robust(&log, &never, |_, _| -0.5).unwrap();
+    assert!((dr + 0.5).abs() < 1e-12, "{dr}");
+}

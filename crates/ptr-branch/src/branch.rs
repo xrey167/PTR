@@ -6,7 +6,7 @@ use ptr_types::{Generation, PrincipalId, Revision};
 
 use crate::digest::{InputsDigest, RangeDigest, ValueDigest};
 use crate::error::BranchError;
-use crate::ops::BranchOp;
+use crate::ops::{holds_member, BranchOp};
 
 /// Key prefixes only ingress writes: raw request text and Pod outputs. A branch
 /// may read them but never change them: staging refuses an operation on one,
@@ -80,6 +80,9 @@ pub struct SealedBranchParts {
     /// A merge keeps the target's dependency set for a touched key, so
     /// certification requires it to be the set the branch computed against.
     pub touched_inputs: BTreeMap<String, InputsDigest>,
+    /// The staged operations in staging order. A set operation carries
+    /// whether its member was in the base's set (`in_base`), which
+    /// certification compares with the target's.
     pub ops: Vec<BranchOp>,
 }
 
@@ -92,8 +95,10 @@ pub struct SealedBranchParts {
 /// ([`SealedBranch::from_parts`] lists them), so every `SealedBranch` in
 /// existence could have been sealed from an open branch: none writes a
 /// namespace reserved to ingress ([`RESERVED_PREFIXES`]), overwrites a key it
-/// did not read, or lacks the base value or input set certification checks
-/// for a key it touches. [`certify`](crate::certify) checks them once more.
+/// did not read, removes a key whose recorded input set is not empty, lacks
+/// the base value or input set certification checks for a key it touches, or
+/// records two base presences for one set member.
+/// [`certify`](crate::certify) checks them once more.
 ///
 /// No field can be reached to change a built branch:
 ///
@@ -122,8 +127,16 @@ impl SealedBranch {
     ///   key would erase a concurrent change unseen;
     /// - no set operation has an empty member ([`BranchError::InvalidMember`]);
     /// - every key an operation touches has a base value in `touched_base`
-    ///   and an input set in `touched_inputs`, and neither map has an entry
-    ///   for a key no operation touches ([`BranchError::MalformedSeal`]);
+    ///   and an input set in `touched_inputs` ([`BranchError::MalformedSeal`]);
+    /// - no `Remove` names a key whose recorded input set is not the empty
+    ///   set ([`BranchError::DerivedRemoval`]): the merged removal would drop
+    ///   the key's dependency entry;
+    /// - every set operation on a member records the same `in_base` as the
+    ///   earlier ones on that member, since all describe one base, and none
+    ///   records its member present where the key's recorded base value is
+    ///   the digest of absence ([`BranchError::MalformedSeal`]);
+    /// - neither `touched_base` nor `touched_inputs` has an entry for a key
+    ///   no operation touches ([`BranchError::MalformedSeal`]);
     /// - a touched key the branch also read has the same digest in
     ///   `touched_base` as in `reads`, since both digest its base value
     ///   ([`BranchError::MalformedSeal`]).
@@ -132,6 +145,9 @@ impl SealedBranch {
     /// [`SealedBranchParts::relied`]). Digests are fixed-size values and are
     /// not recomputed here: that a read, scan or input set still matches is
     /// what [`certify`](crate::certify) decides against a target snapshot.
+    /// Likewise an `in_base` that passes these checks is taken as declared:
+    /// whether a member was in a base set that was present is hidden behind
+    /// the base value's digest.
     ///
     /// # Errors
     /// The first refusal above; nothing is built.
@@ -221,6 +237,7 @@ pub(crate) fn is_reserved(key: &str) -> bool {
 /// The sealing invariants [`SealedBranch::from_parts`] documents, in its
 /// order.
 pub(crate) fn check_sealed(parts: &SealedBranchParts) -> Result<(), BranchError> {
+    let mut members: BTreeMap<(&str, &str), bool> = BTreeMap::new();
     for op in &parts.ops {
         let key = op.key();
         if is_reserved(key) {
@@ -246,11 +263,33 @@ pub(crate) fn check_sealed(parts: &SealedBranchParts) -> Result<(), BranchError>
                 reason: "a key an operation touches has no recorded base value",
             });
         }
-        if !parts.touched_inputs.contains_key(key) {
+        let Some(inputs) = parts.touched_inputs.get(key) else {
             return Err(BranchError::MalformedSeal {
                 key: key.to_owned(),
                 reason: "a key an operation touches has no recorded input set",
             });
+        };
+        if matches!(op, BranchOp::Remove { .. }) && *inputs != InputsDigest::of(key, []) {
+            return Err(BranchError::DerivedRemoval {
+                key: key.to_owned(),
+            });
+        }
+        if let Some((member, _, in_base)) = op.set_member() {
+            if members
+                .insert((key, member), in_base)
+                .is_some_and(|earlier| earlier != in_base)
+            {
+                return Err(BranchError::MalformedSeal {
+                    key: key.to_owned(),
+                    reason: "two set operations on one member record different base presences",
+                });
+            }
+            if in_base && parts.touched_base.get(key) == Some(&ValueDigest::absent(key)) {
+                return Err(BranchError::MalformedSeal {
+                    key: key.to_owned(),
+                    reason: "a set operation records its member present in a base without its key",
+                });
+            }
         }
     }
     let operated: BTreeSet<&str> = parts.ops.iter().map(BranchOp::key).collect();
@@ -305,11 +344,31 @@ impl Branch {
         self.base.revision
     }
 
-    /// Read a key through the branch: the base value with this branch's own
-    /// staged operations applied. The first read records the digest of the
-    /// base value; that digest is what certification checks.
+    /// Read a key through the branch: what merging this branch onto its
+    /// unchanged base would leave at `key`. That is the base value with the
+    /// branch's own operations on `key` applied, except that a key with no
+    /// operation of its own is absent once the branch changes a key it is
+    /// derived from, directly or through other derived keys in the base's
+    /// dependency graph: the merge evicts it, as every commit evicts a
+    /// derived value whose inputs change and that it does not write. A key
+    /// the branch writes keeps the written value, which the merge publishes
+    /// even when it equals the base value; if the branch also removes a key
+    /// that one needs, the runtime refuses the merge (`MissingDependency`)
+    /// rather than publish it. A key the branch changes only commutatively
+    /// is never one the branch evicts: staging refuses such an operation on
+    /// a key that reads as absent, and a change to an input of a key that
+    /// has one ([`BranchError::EvictedOperand`]), so its value here is its
+    /// base value with those operations applied.
+    ///
+    /// The first read records the digest of the base value, whatever this
+    /// returns; that digest is what certification checks. Against a target
+    /// that moved since the base, what the merge leaves is decided there,
+    /// not here.
     pub fn read(&mut self, key: &str) -> Result<Option<SemanticValue>, BranchError> {
         self.record_read(key)?;
+        if !self.operates_on(key) && self.changed_input_of(key)?.is_some() {
+            return Ok(None);
+        }
         self.overlay(key)
     }
 
@@ -369,38 +428,79 @@ impl Branch {
     ///
     /// A refused operation records nothing: neither the operation nor the
     /// reads of its inputs.
+    ///
+    /// # Errors
+    /// Returns `BranchError::ReservedNamespace` for a key reserved to
+    /// ingress, `BranchError::UnreadTarget` for a key the branch has not
+    /// read, and `BranchError::EvictedOperand` when the new value would
+    /// change an input, direct or transitive, of a key the branch has
+    /// changed only commutatively: those operations would then build on a
+    /// value the merge evicts. Putting that key's recomputed value first
+    /// lifts the refusal.
     pub fn put(&mut self, key: &str, value: SemanticValue) -> Result<(), BranchError> {
         self.check_writable(key)?;
         self.require_read(key)?;
         let inputs = self.unread_inputs_of(key)?;
-        self.reads.extend(inputs);
-        self.ops.push(BranchOp::Put {
+        self.record_op(BranchOp::Put {
             key: key.to_owned(),
             value,
-        });
+        })?;
+        self.reads.extend(inputs);
         Ok(())
     }
 
     /// Remove a key the branch has read. A refused removal records nothing.
+    ///
+    /// # Errors
+    /// Returns `BranchError::ReservedNamespace` for a key reserved to
+    /// ingress, `BranchError::UnreadTarget` for a key the branch has not
+    /// read, and `BranchError::DerivedRemoval` for a key that is derived in
+    /// the base (its input set is not empty): a merged removal drops the
+    /// key's dependency entry with its value, and a branch may change values
+    /// but not the dependency graph. Returns `BranchError::EvictedOperand`
+    /// when the removal would change an input of a key the branch has
+    /// changed only commutatively, as [`Branch::put`] does.
     pub fn remove(&mut self, key: &str) -> Result<(), BranchError> {
         self.check_writable(key)?;
         self.require_read(key)?;
-        let inputs = self.unread_inputs_of(key)?;
-        self.reads.extend(inputs);
-        self.ops.push(BranchOp::Remove {
+        if self.base.inputs(key).next().is_some() {
+            return Err(BranchError::DerivedRemoval {
+                key: key.to_owned(),
+            });
+        }
+        self.record_op(BranchOp::Remove {
             key: key.to_owned(),
-        });
-        Ok(())
+        })
     }
 
     /// Stage a commutative operation. It is checked against the branch's own
-    /// view now, and applied to whatever the key holds at merge time later.
+    /// view of the key's value now, and applied to whatever the key holds at
+    /// merge time later.
+    ///
+    /// A set operation is recorded with `in_base` set to whether its member
+    /// is in the base's set at the key, replacing whatever the operation
+    /// carried: certification compares it with the target's.
     ///
     /// The operation is checked before anything is recorded, so a refused one
     /// (for example an addition to a key that is not a counter) leaves no
     /// read of the key's inputs behind: such a read would be a dependency of
     /// nothing the branch does, and a later change to it would refuse the
     /// branch for no reason.
+    ///
+    /// # Errors
+    /// Returns `BranchError::ReservedNamespace` for a key reserved to
+    /// ingress and `BranchError::UnreadTarget` for a `Put` or `Remove`.
+    /// Returns `BranchError::EvictedOperand` for an operation on a key the
+    /// branch has not put or removed and that is derived, directly or
+    /// transitively, from a key the branch changes: [`Branch::read`] shows
+    /// such a key absent, since the merge evicts it, and the operation would
+    /// be merged onto the value the change invalidates. That refusal comes
+    /// before the value's type is checked. Returns it too when the
+    /// operation would change an input of another key the branch has
+    /// changed only commutatively. Otherwise returns what applying the
+    /// operation to the key's value in the branch's view refuses
+    /// (`NotACounter`, `NotASet`, `InvalidMember`, `CounterOverflow`,
+    /// `InvalidValue`).
     pub fn stage_commutative(&mut self, op: BranchOp) -> Result<(), BranchError> {
         self.check_writable(op.key())?;
         if !op.commutes() {
@@ -408,10 +508,19 @@ impl Branch {
                 key: op.key().to_owned(),
             });
         }
+        let op = self.with_base_membership(op);
+        if !self.overwrites(op.key()) {
+            if let Some(input) = self.changed_input_of(op.key())? {
+                return Err(BranchError::EvictedOperand {
+                    key: op.key().to_owned(),
+                    input: input.to_owned(),
+                });
+            }
+        }
         op.apply(self.overlay(op.key())?)?;
         let inputs = self.unread_inputs_of(op.key())?;
+        self.record_op(op)?;
         self.reads.extend(inputs);
-        self.ops.push(op);
         Ok(())
     }
 
@@ -491,6 +600,90 @@ impl Branch {
         }
     }
 
+    /// `op` with a set operation's `in_base` taken from the base.
+    fn with_base_membership(&self, op: BranchOp) -> BranchOp {
+        match op {
+            BranchOp::SetInsert { key, member, .. } => BranchOp::SetInsert {
+                in_base: holds_member(self.base.value(&key), &member),
+                key,
+                member,
+            },
+            BranchOp::SetRemove { key, member, .. } => BranchOp::SetRemove {
+                in_base: holds_member(self.base.value(&key), &member),
+                key,
+                member,
+            },
+            op @ (BranchOp::Put { .. } | BranchOp::Remove { .. } | BranchOp::Add { .. }) => op,
+        }
+    }
+
+    fn operates_on(&self, key: &str) -> bool {
+        self.ops.iter().any(|op| op.key() == key)
+    }
+
+    /// Whether the branch puts or removes `key`. The value of a key it
+    /// operates on but does not overwrite is its base value with commutative
+    /// operations applied.
+    fn overwrites(&self, key: &str) -> bool {
+        self.ops.iter().any(|op| op.key() == key && !op.commutes())
+    }
+
+    /// Append `op`, unless it would leave a key the branch changes only
+    /// commutatively derived from a key the branch changes
+    /// ([`BranchError::EvictedOperand`]); a refused operation is not kept.
+    /// Every staging method records through here, so no staged branch holds
+    /// such a key.
+    fn record_op(&mut self, op: BranchOp) -> Result<(), BranchError> {
+        self.ops.push(op);
+        match self.evicted_operand() {
+            Ok(None) => Ok(()),
+            Ok(Some(refusal)) | Err(refusal) => {
+                self.ops.pop();
+                Err(refusal)
+            }
+        }
+    }
+
+    /// The first key, in key order, that the branch changes only
+    /// commutatively and that is derived from a key the branch changes, as
+    /// the refusal naming both.
+    fn evicted_operand(&self) -> Result<Option<BranchError>, BranchError> {
+        let operated: BTreeSet<&str> = self.ops.iter().map(BranchOp::key).collect();
+        for key in operated {
+            if self.overwrites(key) {
+                continue;
+            }
+            if let Some(input) = self.changed_input_of(key)? {
+                return Ok(Some(BranchError::EvictedOperand {
+                    key: key.to_owned(),
+                    input: input.to_owned(),
+                }));
+            }
+        }
+        Ok(None)
+    }
+
+    /// A key the branch's own operations change the value of and that `key`
+    /// is derived from, directly or transitively, in the base's dependency
+    /// graph (which is acyclic), or `None`. A key whose operations leave its
+    /// base value in place changes nothing, as a commit that writes the
+    /// value a key already holds changes nothing.
+    fn changed_input_of(&self, key: &str) -> Result<Option<&str>, BranchError> {
+        let mut pending: Vec<&str> = self.base.inputs(key).collect();
+        let mut seen = BTreeSet::new();
+        while let Some(input) = pending.pop() {
+            if !seen.insert(input) {
+                continue;
+            }
+            if self.operates_on(input) && self.overlay(input)?.as_ref() != self.base.value(input) {
+                return Ok(Some(input));
+            }
+            pending.extend(self.base.inputs(input));
+        }
+        Ok(None)
+    }
+
+    /// The base value of `key` with the branch's operations on `key` applied.
     fn overlay(&self, key: &str) -> Result<Option<SemanticValue>, BranchError> {
         self.ops
             .iter()

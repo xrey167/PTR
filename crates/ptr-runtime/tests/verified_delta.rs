@@ -1,6 +1,9 @@
+use std::collections::BTreeMap;
+
 use ptr_config::PtrConfig;
 use ptr_ledger::LedgerEvent;
 use ptr_runtime::execution::RequiredVerification;
+use ptr_runtime::semantic::{StaleReliance, StaleTarget};
 use ptr_runtime::{PtrRuntime, RuntimeError};
 use ptr_search::{retain_live, SearchHit};
 use ptr_semdb::{SemanticDelta, SemanticError};
@@ -428,4 +431,138 @@ fn a_verified_delta_against_a_moved_revision_is_refused_before_verification() {
     );
     assert!(matches!(result, Err(RuntimeError::Semantic(_))));
     assert!(!verified);
+}
+
+/// A runtime where capsule `fact:a` is live at generation 1.
+fn runtime_with_fact() -> PtrRuntime {
+    let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+    runtime
+        .commit(LedgerEvent::CapsuleCommitted {
+            project: ProjectId::from("p"),
+            capsule: CapsuleId::from("fact:a"),
+            generation: Generation(1),
+        })
+        .unwrap();
+    runtime
+}
+
+fn passing() -> VerificationReport {
+    report(
+        VerificationStatus::Pass,
+        VerificationLevel::Deterministic,
+        false,
+    )
+}
+
+#[test]
+fn a_certified_delta_is_refused_while_a_generation_it_relied_on_is_not_live_and_appends_nothing() {
+    let revoke = LedgerEvent::Revoked {
+        subject: "fact:a".into(),
+        generation: Generation(1),
+    };
+    let supersede = LedgerEvent::CapsuleSuperseded {
+        capsule: CapsuleId::from("fact:a"),
+        old: Generation(1),
+        new: Generation(2),
+    };
+    // Relied at generation 1 after a revocation or a supersession, and at a
+    // generation the authority never published.
+    for (change, relied, validity) in [
+        (Some(revoke), Generation(1), Some(Validity::Revoked)),
+        (Some(supersede), Generation(1), Some(Validity::Superseded)),
+        (None, Generation(7), None),
+    ] {
+        let mut runtime = runtime_with_fact();
+        if let Some(change) = change {
+            runtime.commit(change).unwrap();
+        }
+        let revision = runtime.revision();
+        let events = runtime.committed_events().len();
+        let relied = BTreeMap::from([("fact:a".to_owned(), relied)]);
+        let refused = runtime
+            .apply_certified_semantic_delta(
+                revision,
+                delta("price", "12"),
+                &relied,
+                RequiredVerification::Deterministic,
+                |_| passing(),
+            )
+            .unwrap_err();
+        let RuntimeError::StaleReliance(stale) = refused else {
+            panic!("{refused:?}");
+        };
+        assert_eq!(
+            stale,
+            StaleReliance {
+                targets: BTreeMap::from([(
+                    "fact:a".to_owned(),
+                    StaleTarget {
+                        relied: relied["fact:a"],
+                        validity,
+                    },
+                )]),
+            }
+        );
+        assert_eq!(stale.code(), "PTR_RUNTIME_STALE_RELIANCE");
+        assert_eq!(runtime.revision(), revision);
+        assert_eq!(runtime.committed_events().len(), events);
+        assert_eq!(runtime.snapshot().get("price"), None);
+        // A plan that would change nothing is refused too.
+        assert!(matches!(
+            runtime.apply_certified_semantic_delta(
+                revision,
+                SemanticDelta::default(),
+                &relied,
+                RequiredVerification::Deterministic,
+                |_| passing(),
+            ),
+            Err(RuntimeError::StaleReliance(_))
+        ));
+        assert_eq!(runtime.committed_events().len(), events);
+    }
+
+    // A live reliance commits, and only the targets that are not live are
+    // named.
+    let mut runtime = runtime_with_fact();
+    runtime
+        .commit(LedgerEvent::CapsuleCommitted {
+            project: ProjectId::from("p"),
+            capsule: CapsuleId::from("fact:b"),
+            generation: Generation(1),
+        })
+        .unwrap();
+    let revision = runtime.revision();
+    let both = BTreeMap::from([
+        ("fact:a".to_owned(), Generation(1)),
+        ("fact:b".to_owned(), Generation(1)),
+    ]);
+    runtime
+        .commit(LedgerEvent::Revoked {
+            subject: "fact:b".into(),
+            generation: Generation(1),
+        })
+        .unwrap();
+    assert!(matches!(
+        runtime.apply_certified_semantic_delta(
+            revision,
+            delta("price", "12"),
+            &both,
+            RequiredVerification::Deterministic,
+            |_| passing(),
+        ),
+        Err(RuntimeError::StaleReliance(StaleReliance { ref targets }))
+            if targets.keys().collect::<Vec<_>>() == ["fact:b"]
+    ));
+    let live = BTreeMap::from([("fact:a".to_owned(), Generation(1))]);
+    let commit = runtime
+        .apply_certified_semantic_delta(
+            revision,
+            delta("price", "12"),
+            &live,
+            RequiredVerification::Deterministic,
+            |_| passing(),
+        )
+        .unwrap();
+    assert!(commit.commit_index.is_some());
+    assert_eq!(runtime.snapshot().get("price"), Some("12"));
 }

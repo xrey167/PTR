@@ -8,60 +8,127 @@ use ptr_types::{Generation, Revision, Validity};
 use crate::branch::{BranchId, SealedBranch};
 use crate::digest::{InputsDigest, RangeDigest, ValueDigest};
 use crate::error::BranchError;
+use crate::ops::holds_member;
 
 /// A certified branch, ready to be proposed as one ordinary semantic delta.
 ///
-/// A plan is not a commit. It carries the revision it was certified against;
-/// the runtime's `apply_verified_semantic_delta(expected, delta, required,
-/// verify)` refuses it if anything has been committed since and appends it only
-/// after verification of the exact state it would publish.
+/// A plan is not a commit. It carries the revision it was certified against
+/// and the lifecycle generations the branch relied on, and it must be
+/// committed with both: [`MergePlan::into_parts`] yields exactly the
+/// `expected`, `delta` and `relied` arguments of the runtime's
+/// `apply_certified_semantic_delta(expected, delta, relied, required,
+/// verify)`, which refuses the plan if anything has been committed since,
+/// refuses it if any relied-on generation is no longer live when it would
+/// append, and appends it only after verification of the exact state it
+/// would publish. Nothing enforces that path by type: the runtime does not
+/// depend on this crate, so a caller that drops `relied` or calls another
+/// commit path is not stopped here.
+///
+/// Its fields are private and only [`certify`] builds one, so nothing
+/// [`MergePlan::digest`] covers can change between certification and
+/// approval:
+///
+/// ```compile_fail
+/// fn widen(mut plan: ptr_branch::MergePlan) -> ptr_branch::MergePlan {
+///     plan.rebased.clear();
+///     plan
+/// }
+/// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MergePlan {
-    pub branch: BranchId,
-    pub expected: Revision,
-    pub delta: SemanticDelta,
-    /// Keys whose commutative operations were applied on top of a value that
-    /// changed after the branch base.
-    pub rebased: BTreeSet<String>,
-    /// Digest of the branch's declared dependencies (reads, scans, relied
-    /// generations) and of the input set of every key it touches. Part of
-    /// [`MergePlan::digest`].
-    pub dependencies: [u8; 32],
+    branch: BranchId,
+    expected: Revision,
+    delta: SemanticDelta,
+    rebased: BTreeSet<String>,
+    relied: BTreeMap<String, Generation>,
+    dependencies: [u8; 32],
 }
 
 impl MergePlan {
+    /// The branch this plan merges.
+    pub fn branch(&self) -> &BranchId {
+        &self.branch
+    }
+
+    /// The revision the plan was certified against; the runtime refuses it
+    /// at any other.
+    pub fn expected(&self) -> Revision {
+        self.expected
+    }
+
+    /// The delta the plan would commit.
+    pub fn delta(&self) -> &SemanticDelta {
+        &self.delta
+    }
+
+    /// Keys whose commutative operations were applied on top of a value that
+    /// changed after the branch base.
+    pub fn rebased(&self) -> &BTreeSet<String> {
+        &self.rebased
+    }
+
+    /// Each lifecycle target the branch relied on and the generation it
+    /// relied on, all live when the plan was certified. The runtime must
+    /// check them again when it commits the plan.
+    pub fn relied(&self) -> &BTreeMap<String, Generation> {
+        &self.relied
+    }
+
+    /// Digest of the branch's declared dependencies (base revision, reads,
+    /// scans, relied generations, the input set of every key it touches and
+    /// the base presence its set operations record). Part of
+    /// [`MergePlan::digest`].
+    pub fn dependencies(&self) -> &[u8; 32] {
+        &self.dependencies
+    }
+
     /// Whether merging would change nothing.
     pub fn is_noop(&self) -> bool {
         self.delta.upserts.is_empty() && self.delta.removals.is_empty()
     }
 
-    /// Digest of what a person approves: the branch id (length-delimited),
-    /// the expected revision, the canonical delta encoding and the dependency
-    /// digest. An approval bound to this digest stands for exactly this plan
-    /// of exactly this branch: a re-certification that changes the delta or
-    /// the dependencies yields a different digest and voids it, and another
-    /// branch proposing the same delta against the same revision with the same
-    /// dependencies yields a different digest, so the approval cannot be
-    /// replayed for it.
+    /// Digest of what a person approves: the branch id, the expected
+    /// revision, the canonical delta encoding, the dependency digest and the
+    /// rebased keys in ascending order, under a domain tag, with every
+    /// variable-length part length-delimited and the rebased keys counted.
+    /// An approval bound to this digest stands for exactly this plan of
+    /// exactly this branch: a re-certification that changes the delta, the
+    /// dependencies or which keys were rebased yields a different digest and
+    /// voids it, and another branch proposing the same delta against the
+    /// same revision with the same dependencies yields a different digest, so
+    /// the approval cannot be replayed for it.
+    ///
+    /// # Errors
+    /// `BranchError::InvalidValue` (key `<merge delta>`) when the delta has
+    /// no journal encoding, for example because it is longer than the
+    /// journal accepts; such a plan could not be committed either.
     pub fn digest(&self) -> Result<[u8; 32], BranchError> {
         let encoded = self.delta.encode().map_err(|_| BranchError::InvalidValue {
             key: "<merge delta>".into(),
         })?;
         let mut hasher = Sha256::new();
-        hasher.update(b"ptr-branch/merge-plan/v2");
+        hasher.update(b"ptr-branch/merge-plan/v3");
         hasher.update((self.branch.0.len() as u64).to_le_bytes());
         hasher.update(self.branch.0.as_bytes());
         hasher.update(self.expected.0.to_le_bytes());
         hasher.update((encoded.len() as u64).to_le_bytes());
         hasher.update(&encoded);
         hasher.update(self.dependencies);
+        hasher.update((self.rebased.len() as u64).to_le_bytes());
+        for key in &self.rebased {
+            hasher.update((key.len() as u64).to_le_bytes());
+            hasher.update(key.as_bytes());
+        }
         Ok(hasher.finalize().into())
     }
 
-    /// Consume the plan into its expected revision and proposed delta.
-    /// The caller must still submit these through runtime verification.
-    pub fn into_parts(self) -> (Revision, SemanticDelta) {
-        (self.expected, self.delta)
+    /// Consume the plan into the expected revision, the delta and the relied
+    /// generations: the `expected`, `delta` and `relied` arguments of the
+    /// runtime's `apply_certified_semantic_delta`, which checks every relied
+    /// generation again immediately before it appends. Committing the delta
+    /// any other way skips that check.
+    pub fn into_parts(self) -> (Revision, SemanticDelta, BTreeMap<String, Generation>) {
+        (self.expected, self.delta, self.relied)
     }
 }
 
@@ -95,7 +162,8 @@ impl Certification {
 /// by the lifecycle authority, for example
 /// `PtrRuntime::generation_validity`). The input-set
 /// check matters because a merge publishes a touched key's value but keeps
-/// the target's dependency set for it: a concurrent delta that rewires a
+/// the target's dependency set for it (a branch cannot remove a derived key,
+/// [`BranchError::DerivedRemoval`]): a concurrent delta that rewires a
 /// derived key to other inputs while recomputing it to the same value would
 /// otherwise leave the branch's value standing under inputs it was never
 /// computed from. Anything else is
@@ -104,12 +172,47 @@ impl Certification {
 /// Reads the agent did not declare are invisible here — the guarantee is as
 /// complete as the declaration.
 ///
+/// Set operations are rebased member by member. The last one on a member
+/// decides whether it is in the set after the merge; when that is how the
+/// branch's base had it (`in_base`), the branch's operations change nothing
+/// about the member in its own view, and a target that has the member the
+/// other way got there through a concurrent insert or removal, which merging
+/// would undo. That is a [`BranchError::Conflict`] on the set's key. When
+/// the last operation moves the member away from its base presence, the
+/// merge leaves it there whatever the target holds: a concurrent change of
+/// the member in the same direction is kept, not duplicated. (A key the
+/// branch also puts or removes was read, so a target that certifies holds
+/// its base value and nothing about it is rebased.) Counter additions always
+/// rebase.
+///
+/// The plan's delta upserts every touched key whose value changes, and also
+/// a touched key whose value does not change when the plan changes a key it
+/// is derived from, directly or transitively in the target's dependency
+/// graph: a commit evicts a derived key whose inputs change unless it writes
+/// the key, so omitting it would publish the key absent rather than as the
+/// branch wrote it. If the plan removes one of those inputs, the runtime
+/// refuses the delta (`MissingDependency`) rather than publishing the key
+/// without it. A touched key whose operations all commute is refused as
+/// [`BranchError::EvictedOperand`] when the plan changes a key it is derived
+/// from, directly or transitively in the target's dependency graph: its
+/// operations were applied to the target's value, which that change evicts,
+/// and publishing the result would build on an invalidated value. Staging
+/// refuses such an operation in either order
+/// ([`Branch::stage_commutative`](crate::Branch::stage_commutative),
+/// [`Branch::put`](crate::Branch::put)), so a branch meets this refusal only
+/// when it was rebuilt from parts staging would not produce, or when the
+/// target's dependency graph links the two keys where the base's did not.
+/// The plan carries the relied-on generations, and the runtime
+/// must check them again when it commits (see [`MergePlan`]); a generation
+/// revoked or superseded after this call is not seen here.
+///
 /// What sealing guarantees is checked once more rather than trusted
 /// ([`SealedBranch::recheck`], the invariants [`SealedBranch::from_parts`]
 /// lists): an operation on a key reserved to ingress is refused as
 /// [`BranchError::ReservedNamespace`], a `Put` or `Remove` of a key the
 /// branch did not read as [`BranchError::UnreadTarget`], since merging it
-/// would overwrite a concurrent change unseen, and a touched key without a
+/// would overwrite a concurrent change unseen, a `Remove` of a derived key as
+/// [`BranchError::DerivedRemoval`], and a touched key without a
 /// recorded base value (which decides `Rebased` over `Clean`) or input set
 /// as [`BranchError::MalformedSeal`]; all of these before the target is
 /// consulted. An input of a touched key that the branch did not read is a
@@ -176,6 +279,19 @@ where
             );
         }
     }
+    // The last set operation on each member, and the base presence the
+    // recheck made every operation on that member agree on.
+    let mut members: BTreeMap<(&str, &str), (bool, bool)> = BTreeMap::new();
+    for op in branch.ops() {
+        if let Some((member, after, in_base)) = op.set_member() {
+            members.insert((op.key(), member), (after, in_base));
+        }
+    }
+    for ((key, member), (after, in_base)) in members {
+        if after == in_base && holds_member(target.value(key), member) != in_base {
+            conflicts.insert(key.to_owned());
+        }
+    }
     if !conflicts.is_empty() {
         return Err(BranchError::Conflict { keys: conflicts });
     }
@@ -189,10 +305,33 @@ where
         finals.insert(op.key(), op.apply(current)?);
     }
 
+    let changed: BTreeSet<&str> = finals
+        .iter()
+        .filter(|(key, value)| value.as_ref() != target.value(key))
+        .map(|(key, _)| *key)
+        .collect();
+    // A key whose operations all commute was computed from the target's value;
+    // if the plan changes a key it is derived from, that value is one the
+    // commit evicts, and the plan would publish the operations onto it.
+    for key in finals.keys() {
+        let commutative = branch
+            .ops()
+            .iter()
+            .all(|op| op.key() != *key || op.commutes());
+        if commutative {
+            if let Some(input) = changed_input_of(target, key, &changed) {
+                return Err(BranchError::EvictedOperand {
+                    key: (*key).to_owned(),
+                    input: input.to_owned(),
+                });
+            }
+        }
+    }
     let mut delta = SemanticDelta::default();
     for (key, value) in finals {
         match (value, target.value(key)) {
-            (Some(next), Some(current)) if &next == current => {}
+            (Some(next), Some(current))
+                if &next == current && changed_input_of(target, key, &changed).is_none() => {}
             (Some(next), _) => {
                 delta.upserts.insert(key.to_owned(), next);
             }
@@ -218,6 +357,7 @@ where
         expected: target.revision,
         delta,
         rebased,
+        relied: branch.relied().clone(),
         dependencies: dependency_digest(branch),
     };
     if plan.rebased.is_empty() {
@@ -227,32 +367,73 @@ where
     }
 }
 
+/// A key in `changed` that `key` is derived from, directly or transitively
+/// in `target`'s dependency graph (which is acyclic), or `None`: a commit
+/// that changes it evicts `key` unless it writes `key`.
+fn changed_input_of<'a>(
+    target: &'a SemanticSnapshot,
+    key: &str,
+    changed: &BTreeSet<&str>,
+) -> Option<&'a str> {
+    let mut pending: Vec<&str> = target.inputs(key).collect();
+    let mut seen = BTreeSet::new();
+    while let Some(input) = pending.pop() {
+        if changed.contains(input) {
+            return Some(input);
+        }
+        if seen.insert(input) {
+            pending.extend(target.inputs(input));
+        }
+    }
+    None
+}
+
+/// Every section is counted and every variable-length item length-delimited,
+/// so no two declarations share an encoding.
 fn dependency_digest(branch: &SealedBranch) -> [u8; 32] {
     let mut hasher = Sha256::new();
-    hasher.update(b"ptr-branch/dependencies/v2");
+    hasher.update(b"ptr-branch/dependencies/v3");
     hasher.update(branch.base_revision().0.to_le_bytes());
+    hasher.update((branch.reads().len() as u64).to_le_bytes());
     for (key, digest) in branch.reads() {
         hasher.update((key.len() as u64).to_le_bytes());
         hasher.update(key.as_bytes());
         hasher.update(digest.as_bytes());
     }
-    hasher.update([0xff]);
+    hasher.update((branch.scans().len() as u64).to_le_bytes());
     for (prefix, digest) in branch.scans() {
         hasher.update((prefix.len() as u64).to_le_bytes());
         hasher.update(prefix.as_bytes());
         hasher.update(digest.as_bytes());
     }
-    hasher.update([0xfe]);
+    hasher.update((branch.relied().len() as u64).to_le_bytes());
     for (target, generation) in branch.relied() {
         hasher.update((target.len() as u64).to_le_bytes());
         hasher.update(target.as_bytes());
         hasher.update(generation.0.to_le_bytes());
     }
-    hasher.update([0xfd]);
+    hasher.update((branch.touched_inputs().len() as u64).to_le_bytes());
     for (key, digest) in branch.touched_inputs() {
         hasher.update((key.len() as u64).to_le_bytes());
         hasher.update(key.as_bytes());
         hasher.update(digest.as_bytes());
+    }
+    // One base presence per member: the recheck refuses two.
+    let members: BTreeMap<(&str, &str), bool> = branch
+        .ops()
+        .iter()
+        .filter_map(|op| {
+            op.set_member()
+                .map(|(member, _, in_base)| ((op.key(), member), in_base))
+        })
+        .collect();
+    hasher.update((members.len() as u64).to_le_bytes());
+    for ((key, member), in_base) in members {
+        hasher.update((key.len() as u64).to_le_bytes());
+        hasher.update(key.as_bytes());
+        hasher.update((member.len() as u64).to_le_bytes());
+        hasher.update(member.as_bytes());
+        hasher.update([u8::from(in_base)]);
     }
     hasher.finalize().into()
 }
@@ -349,12 +530,41 @@ mod tests {
         forged_base
             .touched_base
             .insert("k".into(), ValueDigest::of("k", None).unwrap());
+        let mut derived_removal = matching_parts(&target, BranchOp::Remove { key: "k".into() });
+        derived_removal
+            .touched_inputs
+            .insert("k".into(), InputsDigest::of("k", ["input"]));
+        let set_op = |insert: bool, in_base: bool| {
+            if insert {
+                BranchOp::SetInsert {
+                    key: "k".into(),
+                    member: "m".into(),
+                    in_base,
+                }
+            } else {
+                BranchOp::SetRemove {
+                    key: "k".into(),
+                    member: "m".into(),
+                    in_base,
+                }
+            }
+        };
+        let mut two_presences = matching_parts(&target, set_op(true, false));
+        two_presences.ops.push(set_op(false, true));
+        let mut present_without_key = matching_parts(&target, set_op(false, true));
+        present_without_key
+            .touched_base
+            .insert("k".into(), ValueDigest::of("k", None).unwrap());
+        present_without_key.reads.clear();
         for (parts, code) in [
             (unread, "PTR_BRANCH_UNREAD_TARGET"),
             (without_base, "PTR_BRANCH_MALFORMED_SEAL"),
             (without_inputs, "PTR_BRANCH_MALFORMED_SEAL"),
             (stray, "PTR_BRANCH_MALFORMED_SEAL"),
             (forged_base, "PTR_BRANCH_MALFORMED_SEAL"),
+            (derived_removal, "PTR_BRANCH_DERIVED_REMOVAL"),
+            (two_presences, "PTR_BRANCH_MALFORMED_SEAL"),
+            (present_without_key, "PTR_BRANCH_MALFORMED_SEAL"),
         ] {
             let refused = SealedBranch::from_parts(parts.clone()).unwrap_err();
             assert_eq!(refused.code(), code, "{refused:?}");

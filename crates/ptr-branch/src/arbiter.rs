@@ -705,7 +705,12 @@ pub struct OffPolicyEstimate {
 /// target probability is computed from it), a reward that is not finite
 /// (`InvalidReward`), and a positivity violation, at the first record that
 /// shows one; then an estimate that is not finite (`NonFiniteEstimate`).
-/// Nothing nonfinite is ever returned as an estimate.
+/// That includes a log on which `target` gives every logged action
+/// probability zero: every weight is zero, so SNIPS is `0 / 0` and the
+/// effective sample size is undefined, and the log says nothing about what
+/// `target` would earn (`NonFiniteEstimate { estimate: "snips" }`, rather
+/// than a reward of zero). Nothing nonfinite is ever returned as an
+/// estimate.
 pub fn evaluate_off_policy(
     log: &[LoggedTriage],
     target: &TriagePolicy,
@@ -713,12 +718,9 @@ pub fn evaluate_off_policy(
     let weights = importance_weights(log, target)?;
     let largest = weights.iter().copied().fold(0.0, f64::max);
     if largest == 0.0 {
-        // The target takes none of the logged actions: every weight is zero.
-        return Ok(OffPolicyEstimate {
-            ips: 0.0,
-            snips: 0.0,
-            effective_sample_size: 0.0,
-        });
+        // The target takes none of the logged actions: every weight is zero
+        // and SNIPS is 0 / 0.
+        return Err(ArbiterError::NonFiniteEstimate { estimate: "snips" });
     }
     let scaled: Vec<f64> = weights.iter().map(|weight| weight / largest).collect();
     let total: f64 = scaled.iter().sum();

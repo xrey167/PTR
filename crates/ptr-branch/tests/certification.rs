@@ -1,8 +1,8 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ptr_branch::{
     certify, counter_value, read_counter_value, read_set_value, set_value, Branch, BranchError,
-    BranchId, BranchOp, Certification, SealedBranch,
+    BranchId, BranchOp, Certification, InputsDigest, SealedBranch, SealedBranchParts, ValueDigest,
 };
 use ptr_semdb::{SemanticDelta, SemanticHost, SemanticValue};
 use ptr_types::{Generation, PrincipalId, Validity};
@@ -82,6 +82,7 @@ fn concurrent_set_insertions_preserve_both_members_in_either_commit_order() {
                 work.stage_commutative(BranchOp::SetInsert {
                     key: "tags".into(),
                     member: member.into(),
+                    in_base: false,
                 })
                 .unwrap();
                 work.seal().unwrap()
@@ -143,7 +144,7 @@ fn operations_that_cancel_produce_a_noop_plan_and_preserve_author_identity() {
     assert_eq!(sealed.author(), &PrincipalId::from("agent-1"));
     let certification = certify(&sealed, &host.snapshot(), no_lifecycle).unwrap();
     assert!(certification.plan().is_noop());
-    assert_eq!(certification.plan().expected, host.revision());
+    assert_eq!(certification.plan().expected(), host.revision());
 }
 
 fn host_with(entries: &[(&str, SemanticValue)]) -> SemanticHost {
@@ -169,8 +170,11 @@ fn no_lifecycle(_: &str, _: Generation) -> Option<Validity> {
     None
 }
 
+/// Commit a plan to a bare host, which has no lifecycle authority: only for
+/// plans whose branch relied on no generation.
 fn commit(host: &mut SemanticHost, certification: Certification) {
-    let (expected, delta) = certification.plan().clone().into_parts();
+    let (expected, delta, relied) = certification.plan().clone().into_parts();
+    assert!(relied.is_empty());
     assert_eq!(expected, host.revision());
     host.apply_delta(delta).unwrap();
 }
@@ -300,7 +304,7 @@ fn two_concurrent_counter_additions_both_survive() {
 
     let certification = certify(&second, &host.snapshot(), no_lifecycle).unwrap();
     match &certification {
-        Certification::Rebased(plan) => assert!(plan.rebased.contains("reserved:sku-1")),
+        Certification::Rebased(plan) => assert!(plan.rebased().contains("reserved:sku-1")),
         Certification::Clean(_) => panic!("the second branch must report its rebase"),
     }
     commit(&mut host, certification);
@@ -538,9 +542,9 @@ fn the_plan_digest_changes_when_a_touched_key_was_computed_against_another_input
     };
     let from_a = plan_for("input:a");
     let from_b = plan_for("input:b");
-    assert_eq!(from_a.expected, from_b.expected);
-    assert_eq!(from_a.delta, from_b.delta);
-    assert_ne!(from_a.dependencies, from_b.dependencies);
+    assert_eq!(from_a.expected(), from_b.expected());
+    assert_eq!(from_a.delta(), from_b.delta());
+    assert_ne!(from_a.dependencies(), from_b.dependencies());
     assert_ne!(from_a.digest().unwrap(), from_b.digest().unwrap());
     assert_eq!(
         from_a.digest().unwrap(),
@@ -563,9 +567,9 @@ fn the_plan_digest_binds_the_branch_so_an_approval_cannot_be_replayed_for_anothe
     let first = plan_for("b1");
     let second = plan_for("b2");
     // Everything but the branch identity is the same.
-    assert_eq!(first.expected, second.expected);
-    assert_eq!(first.delta, second.delta);
-    assert_eq!(first.dependencies, second.dependencies);
+    assert_eq!(first.expected(), second.expected());
+    assert_eq!(first.delta(), second.delta());
+    assert_eq!(first.dependencies(), second.dependencies());
     assert_ne!(first.digest().unwrap(), second.digest().unwrap());
 }
 
@@ -611,6 +615,7 @@ fn a_refused_commutative_operation_leaves_no_read_of_its_inputs_behind() {
             BranchOp::SetInsert {
                 key: "derived".into(),
                 member: oversized.clone(),
+                in_base: false,
             },
             BranchError::InvalidValue {
                 key: "derived".into(),
@@ -704,7 +709,7 @@ fn a_sealed_branch_that_breaks_what_staging_guarantees_is_refused_when_rebuilt_o
     change(&mut host, "c", counter_value(20));
     assert!(matches!(
         certify(&sealed, &host.snapshot(), no_lifecycle),
-        Ok(Certification::Rebased(plan)) if plan.rebased == BTreeSet::from(["c".to_owned()])
+        Ok(Certification::Rebased(plan)) if *plan.rebased() == BTreeSet::from(["c".to_owned()])
     ));
     let mut parts = sealed.into_parts();
     parts.touched_base.clear();
@@ -755,6 +760,7 @@ fn a_set_the_journal_cannot_carry_is_refused_rather_than_truncated() {
         work.stage_commutative(BranchOp::SetInsert {
             key: "tags".into(),
             member: oversized,
+            in_base: false,
         }),
         Err(BranchError::InvalidValue { key: "tags".into() })
     );
@@ -775,6 +781,7 @@ fn a_merge_delta_the_journal_cannot_carry_is_refused_at_approval_and_commit_not_
     work.stage_commutative(BranchOp::SetInsert {
         key: "tags".into(),
         member: "m".repeat(ptr_semdb::MAX_DELTA_BYTES - 13),
+        in_base: false,
     })
     .unwrap();
     let certification = certify(&work.seal().unwrap(), &host.snapshot(), no_lifecycle).unwrap();
@@ -788,8 +795,531 @@ fn a_merge_delta_the_journal_cannot_carry_is_refused_at_approval_and_commit_not_
     let mut host = host;
     let before = host.revision();
     assert_eq!(
-        host.apply_delta(plan.delta.clone()),
+        host.apply_delta(plan.delta().clone()),
         Err(ptr_semdb::SemanticError::LimitExceeded)
     );
     assert_eq!(host.revision(), before);
+}
+
+/// A host whose `tags` set holds `members`.
+fn tags_host(members: &[&str]) -> SemanticHost {
+    let members: BTreeSet<String> = members.iter().map(|m| (*m).to_owned()).collect();
+    host_with(&[("tags", set_value(&members).unwrap())])
+}
+
+fn tags(host: &SemanticHost) -> BTreeSet<String> {
+    read_set_value(host.snapshot().value("tags").unwrap()).unwrap()
+}
+
+/// A branch over `host` that stages `ops` on `tags` alone.
+fn set_branch(host: &SemanticHost, id: &str, ops: Vec<BranchOp>) -> SealedBranch {
+    let mut work = branch(host, id);
+    for op in ops {
+        work.stage_commutative(op).unwrap();
+    }
+    work.seal().unwrap()
+}
+
+fn insert(member: &str) -> BranchOp {
+    BranchOp::SetInsert {
+        key: "tags".into(),
+        member: member.into(),
+        in_base: false,
+    }
+}
+
+fn remove(member: &str) -> BranchOp {
+    BranchOp::SetRemove {
+        key: "tags".into(),
+        member: member.into(),
+        in_base: false,
+    }
+}
+
+#[test]
+fn staging_records_whether_a_set_member_was_in_the_base_whatever_the_operation_carried() {
+    let host = tags_host(&["a"]);
+    let mut work = branch(&host, "b1");
+    for (member, carried) in [("a", false), ("x", true)] {
+        work.stage_commutative(BranchOp::SetRemove {
+            key: "tags".into(),
+            member: member.into(),
+            in_base: carried,
+        })
+        .unwrap();
+    }
+    assert_eq!(
+        work.seal().unwrap().ops(),
+        [
+            BranchOp::SetRemove {
+                key: "tags".into(),
+                member: "a".into(),
+                in_base: true,
+            },
+            BranchOp::SetRemove {
+                key: "tags".into(),
+                member: "x".into(),
+                in_base: false,
+            },
+        ]
+    );
+}
+
+#[test]
+fn a_set_operation_that_would_undo_a_concurrent_change_of_its_member_is_a_conflict() {
+    // Each case: the base's members, the branch that commits first, and the
+    // branch certified after it. The second leaves `x` as its base had it,
+    // so merging it would undo the first: a removal would delete the
+    // concurrent insert, and an insert would resurrect the concurrent
+    // removal. Staging an insert and then a removal nets to the base too.
+    for (base, first, second) in [
+        (vec![], vec![insert("x")], vec![remove("x")]),
+        (vec!["x"], vec![remove("x")], vec![insert("x")]),
+        (vec![], vec![insert("x")], vec![insert("x"), remove("x")]),
+    ] {
+        let mut host = tags_host(&base);
+        let first = set_branch(&host, "first", first);
+        let second = set_branch(&host, "second", second);
+        let certification = certify(&first, &host.snapshot(), no_lifecycle).unwrap();
+        commit(&mut host, certification);
+        let after_first = tags(&host);
+        let revision = host.revision();
+        assert_eq!(
+            certify(&second, &host.snapshot(), no_lifecycle).unwrap_err(),
+            BranchError::Conflict {
+                keys: BTreeSet::from(["tags".into()])
+            },
+            "base {base:?}"
+        );
+        assert_eq!(host.revision(), revision);
+        assert_eq!(tags(&host), after_first);
+    }
+}
+
+#[test]
+fn concurrent_set_operations_that_move_a_member_the_same_way_both_merge() {
+    // Two inserts of a member the base lacked, and two removals of one it
+    // held: the second merges as a rebase and the member ends where both
+    // branches moved it. A member the target holds as the base did merges
+    // as staged.
+    for (base, op, expected) in [
+        (vec!["a"], insert as fn(&str) -> BranchOp, vec!["a", "x"]),
+        (vec!["a", "x"], remove, vec!["a"]),
+    ] {
+        let mut host = tags_host(&base);
+        let first = set_branch(&host, "first", vec![op("x")]);
+        let second = set_branch(&host, "second", vec![op("x"), insert("y")]);
+        let certification = certify(&first, &host.snapshot(), no_lifecycle).unwrap();
+        commit(&mut host, certification);
+        let certification = certify(&second, &host.snapshot(), no_lifecycle).unwrap();
+        assert!(matches!(certification, Certification::Rebased(_)));
+        commit(&mut host, certification);
+        let mut expected: BTreeSet<String> = expected.iter().map(|m| (*m).to_owned()).collect();
+        expected.insert("y".into());
+        assert_eq!(tags(&host), expected);
+    }
+}
+
+#[test]
+fn an_unchanged_write_of_a_derived_key_whose_input_the_plan_changes_is_published_not_evicted() {
+    // A commit evicts a derived key whose input it changes unless it writes
+    // the key. The branch recomputed `d` from the new `a` and got the value
+    // it already had, so the plan must still write it.
+    let host_for = || {
+        let mut host = SemanticHost::default();
+        let mut setup = SemanticDelta::default();
+        setup.upserts.insert("a".into(), text("1"));
+        setup.upserts.insert("d".into(), text("x"));
+        setup.upserts.insert(
+            "s".into(),
+            set_value(&BTreeSet::from(["m".to_owned()])).unwrap(),
+        );
+        setup
+            .dependencies
+            .insert("d".into(), BTreeSet::from(["a".to_owned()]));
+        setup
+            .dependencies
+            .insert("s".into(), BTreeSet::from(["d".to_owned()]));
+        host.apply_delta(setup).unwrap();
+        host
+    };
+    let mut host = host_for();
+    let mut work = branch(&host, "b1");
+    work.read("a").unwrap();
+    work.read("d").unwrap();
+    work.put("a", text("2")).unwrap();
+    work.put("d", text("x")).unwrap();
+    // `s` is derived from `d`, so from `a` transitively, and the commit
+    // evicts it even though `d` keeps its value. A set operation would build
+    // on the evicted value and is refused; the branch writes the value it
+    // recomputed instead, which is the value `s` already holds.
+    assert_eq!(
+        work.stage_commutative(BranchOp::SetInsert {
+            key: "s".into(),
+            member: "m".into(),
+            in_base: true,
+        }),
+        Err(BranchError::EvictedOperand {
+            key: "s".into(),
+            input: "a".into(),
+        })
+    );
+    assert_eq!(work.read("s").unwrap(), None);
+    work.put("s", set_value(&BTreeSet::from(["m".to_owned()])).unwrap())
+        .unwrap();
+    let certification = certify(&work.seal().unwrap(), &host.snapshot(), no_lifecycle).unwrap();
+    let delta = certification.plan().delta();
+    assert_eq!(delta.upserts.get("d"), Some(&text("x")));
+    assert!(delta.upserts.contains_key("s"));
+    commit(&mut host, certification);
+    let snapshot = host.snapshot();
+    assert_eq!(snapshot.get("a"), Some("2"));
+    assert_eq!(snapshot.get("d"), Some("x"));
+    assert_eq!(
+        read_set_value(snapshot.value("s").unwrap()),
+        Some(BTreeSet::from(["m".to_owned()]))
+    );
+
+    // Where nothing the key derives from changes, an unchanged write is
+    // left out and the plan stays a no-op.
+    let host = host_for();
+    let mut work = branch(&host, "b2");
+    work.read("d").unwrap();
+    work.put("d", text("x")).unwrap();
+    let certification = certify(&work.seal().unwrap(), &host.snapshot(), no_lifecycle).unwrap();
+    assert!(certification.plan().is_noop());
+}
+
+#[test]
+fn a_branch_read_shows_a_derived_key_its_own_write_to_an_input_evicts() {
+    // `total` is derived from `tax`, which is derived from `rate`.
+    let mut host = SemanticHost::default();
+    let mut setup = SemanticDelta::default();
+    setup.upserts.insert("input:rate".into(), text("0.19"));
+    setup.upserts.insert("derived:tax".into(), text("19"));
+    setup.upserts.insert("derived:total".into(), text("119"));
+    setup.dependencies.insert(
+        "derived:tax".into(),
+        BTreeSet::from(["input:rate".to_owned()]),
+    );
+    setup.dependencies.insert(
+        "derived:total".into(),
+        BTreeSet::from(["derived:tax".to_owned()]),
+    );
+    host.apply_delta(setup).unwrap();
+
+    // Writing the value an input already holds changes nothing.
+    let mut work = branch(&host, "b1");
+    work.read("input:rate").unwrap();
+    work.put("input:rate", text("0.19")).unwrap();
+    assert_eq!(work.read("derived:tax").unwrap(), Some(text("19")));
+
+    // A changed input evicts every key derived from it, directly or not.
+    work.put("input:rate", text("0.07")).unwrap();
+    assert_eq!(work.read("derived:tax").unwrap(), None);
+    assert_eq!(work.read("derived:total").unwrap(), None);
+    // A derived key the branch writes shows what it wrote.
+    work.put("derived:tax", text("7")).unwrap();
+    assert_eq!(work.read("derived:tax").unwrap(), Some(text("7")));
+    assert_eq!(work.read("derived:total").unwrap(), None);
+    let sealed = work.seal().unwrap();
+    // The recorded reads are of the base values, whatever was shown.
+    assert_eq!(
+        sealed.reads().get("derived:total"),
+        Some(&ValueDigest::of("derived:total", Some(&text("119"))).unwrap())
+    );
+
+    // What the branch read is what the merge publishes.
+    let certification = certify(&sealed, &host.snapshot(), no_lifecycle).unwrap();
+    commit(&mut host, certification);
+    let snapshot = host.snapshot();
+    assert_eq!(snapshot.get("input:rate"), Some("0.07"));
+    assert_eq!(snapshot.get("derived:tax"), Some("7"));
+    assert_eq!(snapshot.get("derived:total"), None);
+}
+
+/// A host where `derived:d` holds `value` and is derived from `input:rate`,
+/// and `derived:total` holds a counter derived from `derived:d`.
+fn rate_host(value: SemanticValue) -> SemanticHost {
+    let mut host = SemanticHost::default();
+    let mut setup = SemanticDelta::default();
+    setup.upserts.insert("input:rate".into(), text("0.19"));
+    setup.upserts.insert("derived:d".into(), value);
+    setup
+        .upserts
+        .insert("derived:total".into(), counter_value(1));
+    setup.dependencies.insert(
+        "derived:d".into(),
+        BTreeSet::from(["input:rate".to_owned()]),
+    );
+    setup.dependencies.insert(
+        "derived:total".into(),
+        BTreeSet::from(["derived:d".to_owned()]),
+    );
+    host.apply_delta(setup).unwrap();
+    host
+}
+
+fn evicted(key: &str, input: &str) -> BranchError {
+    BranchError::EvictedOperand {
+        key: key.into(),
+        input: input.into(),
+    }
+}
+
+#[test]
+fn a_commutative_operation_never_builds_on_a_derived_value_the_branch_s_own_change_evicts() {
+    let add = |key: &str| BranchOp::Add {
+        key: key.into(),
+        amount: 5,
+    };
+    let insert_m = |key: &str| BranchOp::SetInsert {
+        key: key.into(),
+        member: "m".into(),
+        in_base: false,
+    };
+    // The branch changes the input first. The keys derived from it read as
+    // absent, since the merge evicts them, and an operation that would build
+    // on the value one held is refused, whatever that value is: a counter, a
+    // set, text a set operation could not apply to, or a key derived from
+    // the input through another derived key.
+    let ab = BTreeSet::from(["a".to_owned(), "b".to_owned()]);
+    for (value, op) in [
+        (counter_value(100), add("derived:d")),
+        (set_value(&ab).unwrap(), insert_m("derived:d")),
+        (text("not a set"), insert_m("derived:d")),
+        (counter_value(100), add("derived:total")),
+    ] {
+        let mut host = rate_host(value);
+        let mut work = branch(&host, "b1");
+        work.read("input:rate").unwrap();
+        work.put("input:rate", text("0.07")).unwrap();
+        let key = op.key().to_owned();
+        assert_eq!(work.read(&key).unwrap(), None, "{op:?}");
+        let refused = work.stage_commutative(op.clone()).unwrap_err();
+        assert_eq!(refused, evicted(&key, "input:rate"), "{op:?}");
+        assert_eq!(refused.code(), "PTR_BRANCH_EVICTED_OPERAND");
+        // Nothing was recorded, not even a read of the key's inputs, and the
+        // key still reads as the merge leaves it.
+        assert_eq!(work.read(&key).unwrap(), None, "{op:?}");
+        let sealed = work.seal().unwrap();
+        assert_eq!(sealed.ops().len(), 1, "{op:?}");
+        assert_eq!(
+            sealed.reads().keys().collect::<Vec<_>>(),
+            [&key, "input:rate"],
+            "{op:?}"
+        );
+        let certification = certify(&sealed, &host.snapshot(), no_lifecycle).unwrap();
+        commit(&mut host, certification);
+        assert_eq!(host.snapshot().value(&key), None, "{op:?}");
+    }
+
+    // The operation first: a change to the input it builds on is refused,
+    // and neither key moves.
+    let mut host = rate_host(counter_value(100));
+    let mut work = branch(&host, "b2");
+    work.stage_commutative(add("derived:d")).unwrap();
+    work.read("input:rate").unwrap();
+    assert_eq!(
+        work.put("input:rate", text("0.07")),
+        Err(evicted("derived:d", "input:rate"))
+    );
+    assert_eq!(work.read("input:rate").unwrap(), Some(text("0.19")));
+    assert_eq!(work.read("derived:d").unwrap(), Some(counter_value(105)));
+    // Writing the value the input already holds changes nothing.
+    work.put("input:rate", text("0.19")).unwrap();
+    // A Put of the value recomputed from the new input is what the branch
+    // stages instead: operations after it apply to it, and the input change
+    // is accepted. A key derived from that changed value is evicted in turn.
+    work.put("derived:d", counter_value(7)).unwrap();
+    work.put("input:rate", text("0.07")).unwrap();
+    work.stage_commutative(add("derived:d")).unwrap();
+    assert_eq!(work.read("derived:d").unwrap(), Some(counter_value(12)));
+    assert_eq!(
+        work.stage_commutative(add("derived:total")),
+        Err(evicted("derived:total", "derived:d"))
+    );
+    assert_eq!(work.read("derived:total").unwrap(), None);
+
+    // What the branch read is what the merge publishes.
+    let certification = certify(&work.seal().unwrap(), &host.snapshot(), no_lifecycle).unwrap();
+    commit(&mut host, certification);
+    let snapshot = host.snapshot();
+    assert_eq!(snapshot.get("input:rate"), Some("0.07"));
+    assert_eq!(snapshot.value("derived:d"), Some(&counter_value(12)));
+    assert_eq!(snapshot.value("derived:total"), None);
+}
+
+#[test]
+fn certification_refuses_a_commutative_operation_on_a_key_its_own_plan_evicts() {
+    // A branch that adds to `derived:d` and changes `input:rate`, which
+    // staging refuses in either order, rebuilt from parts (by hand, or from
+    // a store written before staging refused it). Every digest matches, so
+    // only the dependency graph shows that the addition would be published
+    // onto the value the plan's own change evicts.
+    let host = rate_host(counter_value(100));
+    let target = host.snapshot();
+    let digest = |key: &str| ValueDigest::of(key, target.value(key)).unwrap();
+    let inputs = |key: &str| InputsDigest::of(key, target.inputs(key));
+    let parts = SealedBranchParts {
+        id: BranchId::from("b1"),
+        author: PrincipalId::from("agent-1"),
+        base_revision: target.revision,
+        reads: BTreeMap::from([("input:rate".to_owned(), digest("input:rate"))]),
+        scans: BTreeMap::new(),
+        relied: BTreeMap::new(),
+        touched_base: BTreeMap::from([
+            ("derived:d".to_owned(), digest("derived:d")),
+            ("input:rate".to_owned(), digest("input:rate")),
+        ]),
+        touched_inputs: BTreeMap::from([
+            ("derived:d".to_owned(), inputs("derived:d")),
+            ("input:rate".to_owned(), inputs("input:rate")),
+        ]),
+        ops: vec![
+            BranchOp::Add {
+                key: "derived:d".into(),
+                amount: 5,
+            },
+            BranchOp::Put {
+                key: "input:rate".into(),
+                value: text("0.07"),
+            },
+        ],
+    };
+    let sealed = SealedBranch::from_parts(parts.clone()).unwrap();
+    assert_eq!(
+        certify(&sealed, &target, no_lifecycle).unwrap_err(),
+        evicted("derived:d", "input:rate")
+    );
+    // The same parts with the input written back to its value certify: the
+    // addition then builds on a value nothing evicts.
+    let mut unchanged = parts;
+    unchanged.ops[1] = BranchOp::Put {
+        key: "input:rate".into(),
+        value: text("0.19"),
+    };
+    let certification = certify(
+        &SealedBranch::from_parts(unchanged).unwrap(),
+        &target,
+        no_lifecycle,
+    )
+    .unwrap();
+    assert_eq!(
+        certification.plan().delta().upserts.get("derived:d"),
+        Some(&counter_value(105))
+    );
+}
+
+#[test]
+fn a_derived_key_cannot_be_removed_so_a_merge_never_drops_its_dependency_set() {
+    let mut host = SemanticHost::default();
+    let mut setup = SemanticDelta::default();
+    setup.upserts.insert("input:rate".into(), text("0.19"));
+    setup.upserts.insert("derived:tax".into(), text("19"));
+    setup.dependencies.insert(
+        "derived:tax".into(),
+        BTreeSet::from(["input:rate".to_owned()]),
+    );
+    host.apply_delta(setup).unwrap();
+
+    let mut work = branch(&host, "b1");
+    work.read("derived:tax").unwrap();
+    let refused = work.remove("derived:tax").unwrap_err();
+    assert_eq!(
+        refused,
+        BranchError::DerivedRemoval {
+            key: "derived:tax".into()
+        }
+    );
+    assert_eq!(refused.code(), "PTR_BRANCH_DERIVED_REMOVAL");
+    // A refused removal records nothing, not even a read of the inputs.
+    let sealed = work.seal().unwrap();
+    assert!(sealed.ops().is_empty());
+    assert!(!sealed.reads().contains_key("input:rate"));
+
+    // A key with no inputs is still removed, and the derivation stands: a
+    // change to the input evicts the derived key.
+    let mut work = branch(&host, "b2");
+    work.read("input:rate").unwrap();
+    work.remove("input:rate").unwrap();
+    let certification = certify(&work.seal().unwrap(), &host.snapshot(), no_lifecycle).unwrap();
+    commit(&mut host, certification);
+    let snapshot = host.snapshot();
+    assert_eq!(snapshot.get("derived:tax"), None);
+    assert_eq!(
+        snapshot.inputs("derived:tax").collect::<Vec<_>>(),
+        ["input:rate"]
+    );
+}
+
+#[test]
+fn the_plan_digest_changes_with_which_keys_were_rebased() {
+    // Two branches with the same id, base, reads, operation and input sets
+    // that differ only in the base value recorded for the counter they add
+    // to: certified against one target they plan the same delta with the
+    // same dependency digest, one clean and one rebased.
+    let host = host_with(&[("c", counter_value(5))]);
+    let target = host.snapshot();
+    let parts = |base: i64| SealedBranchParts {
+        id: BranchId::from("b1"),
+        author: PrincipalId::from("agent-1"),
+        base_revision: target.revision,
+        reads: BTreeMap::new(),
+        scans: BTreeMap::new(),
+        relied: BTreeMap::new(),
+        touched_base: BTreeMap::from([(
+            "c".to_owned(),
+            ValueDigest::of("c", Some(&counter_value(base))).unwrap(),
+        )]),
+        touched_inputs: BTreeMap::from([("c".to_owned(), InputsDigest::of("c", []))]),
+        ops: vec![BranchOp::Add {
+            key: "c".into(),
+            amount: 1,
+        }],
+    };
+    let clean = certify(
+        &SealedBranch::from_parts(parts(5)).unwrap(),
+        &target,
+        no_lifecycle,
+    )
+    .unwrap();
+    let rebased = certify(
+        &SealedBranch::from_parts(parts(3)).unwrap(),
+        &target,
+        no_lifecycle,
+    )
+    .unwrap();
+    assert!(matches!(clean, Certification::Clean(_)));
+    assert!(matches!(rebased, Certification::Rebased(_)));
+    let (clean, rebased) = (clean.plan(), rebased.plan());
+    assert_eq!(clean.branch(), rebased.branch());
+    assert_eq!(clean.expected(), rebased.expected());
+    assert_eq!(clean.delta(), rebased.delta());
+    assert_eq!(clean.dependencies(), rebased.dependencies());
+    assert_ne!(clean.rebased(), rebased.rebased());
+    assert_ne!(clean.digest().unwrap(), rebased.digest().unwrap());
+}
+
+#[test]
+fn a_plan_carries_the_generations_its_branch_relied_on() {
+    let host = host_with(&[("a", text("1"))]);
+    let mut work = branch(&host, "b1");
+    work.rely_on("capsule:policy", Generation(3)).unwrap();
+    work.read("a").unwrap();
+    work.put("a", text("2")).unwrap();
+    let sealed = work.seal().unwrap();
+    let live = |_: &str, _: Generation| Some(Validity::Live);
+    let plan = certify(&sealed, &host.snapshot(), live)
+        .unwrap()
+        .plan()
+        .clone();
+    assert_eq!(plan.relied(), sealed.relied());
+    let (expected, delta, relied) = plan.clone().into_parts();
+    assert_eq!(expected, plan.expected());
+    assert_eq!(&delta, plan.delta());
+    assert_eq!(
+        relied,
+        BTreeMap::from([("capsule:policy".to_owned(), Generation(3))])
+    );
 }

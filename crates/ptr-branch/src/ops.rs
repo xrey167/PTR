@@ -23,6 +23,14 @@ pub const OP_SOURCE: &str = "ptr-branch/op";
 /// to a counter both keep their additions. A domain invariant such as "stock
 /// never below zero" is not preserved by such a rebase; the verification that
 /// every merge passes has to check it on the rebased state.
+///
+/// Set operations on one member do not commute with each other: an insert
+/// and a remove of the same member leave it as whichever came last. Each
+/// therefore carries `in_base`, whether its member was in the set at the
+/// branch's base, and certification refuses to rebase a branch whose
+/// operations leave a member as the base had it while the target has it the
+/// other way: applying them would undo a concurrent insert or removal of that
+/// member (see [`certify`](crate::certify)).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum BranchOp {
     Put {
@@ -41,10 +49,22 @@ pub enum BranchOp {
     SetInsert {
         key: String,
         member: String,
+        /// Whether `member` was in the set at `key` in the branch's base: a
+        /// base that holds no set at `key`, or none at all, has no members.
+        /// Staging records it ([`Branch::stage_commutative`] replaces what
+        /// the operation carried with the base's answer), so it is a
+        /// declaration like a read digest, not an input.
+        ///
+        /// [`Branch::stage_commutative`]: crate::Branch::stage_commutative
+        in_base: bool,
     },
+    /// Remove a member from a set; an absent set is empty.
     SetRemove {
         key: String,
         member: String,
+        /// Whether `member` was in the set at `key` in the branch's base, as
+        /// for [`BranchOp::SetInsert`].
+        in_base: bool,
     },
 }
 
@@ -68,6 +88,20 @@ impl BranchOp {
         }
     }
 
+    /// For a set operation: its member, whether the member is in the set
+    /// after it (`true` for `SetInsert`), and its recorded `in_base`.
+    pub(crate) fn set_member(&self) -> Option<(&str, bool, bool)> {
+        match self {
+            Self::SetInsert {
+                member, in_base, ..
+            } => Some((member, true, *in_base)),
+            Self::SetRemove {
+                member, in_base, ..
+            } => Some((member, false, *in_base)),
+            Self::Put { .. } | Self::Remove { .. } | Self::Add { .. } => None,
+        }
+    }
+
     /// The value `current` becomes under this op. `None` is an absent key.
     pub(crate) fn apply(
         &self,
@@ -83,13 +117,13 @@ impl BranchOp {
                     .ok_or_else(|| BranchError::CounterOverflow { key: key.clone() })?;
                 Ok(Some(counter_value(next)))
             }
-            Self::SetInsert { key, member } => {
+            Self::SetInsert { key, member, .. } => {
                 check_member(key, member)?;
                 let mut set = read_set(key, current.as_ref())?;
                 set.insert(member.clone());
                 encode_set(key, &set).map(Some)
             }
-            Self::SetRemove { key, member } => {
+            Self::SetRemove { key, member, .. } => {
                 check_member(key, member)?;
                 let mut set = read_set(key, current.as_ref())?;
                 set.remove(member);
@@ -146,6 +180,14 @@ pub fn read_counter_value(value: &SemanticValue) -> Option<i64> {
         }
         SemanticValue::Payload(_) | SemanticValue::Text(_) => None,
     }
+}
+
+/// Whether `member` is in the set `value` holds: `false` for an absent value
+/// and for one that is not a canonical set, which has no members.
+pub(crate) fn holds_member(value: Option<&SemanticValue>, member: &str) -> bool {
+    value
+        .and_then(read_set_value)
+        .is_some_and(|members| members.contains(member))
 }
 
 /// Read a set value; `None` for anything that is not a canonical set.
@@ -234,6 +276,7 @@ mod tests {
         let insert = |member: &str| BranchOp::SetInsert {
             key: "s".into(),
             member: member.into(),
+            in_base: false,
         };
         let value = insert("b").apply(None).unwrap();
         let value = insert("a\nnewline").apply(value).unwrap();
@@ -259,6 +302,7 @@ mod tests {
         let insert = BranchOp::SetInsert {
             key: "c".into(),
             member: "m".into(),
+            in_base: false,
         };
         assert_eq!(
             insert.apply(text).unwrap_err(),

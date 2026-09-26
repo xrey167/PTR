@@ -9,8 +9,11 @@
 //! operations it would apply.
 //! Certification against a newer snapshot either refuses (a dependency
 //! changed) or yields a [`MergePlan`]: one ordinary semantic delta plus the
-//! revision it was certified against, committed only through the runtime's
-//! verified-delta path. Triage decides whether a plan is proposed
+//! revision it was certified against and the lifecycle generations the branch
+//! relied on, to be committed through the runtime's certified-delta path,
+//! which checks those generations again before it appends and verifies the
+//! state it would publish. That path is the caller's obligation: nothing here
+//! can enforce it. Triage decides whether a plan is proposed
 //! automatically, sent to a person or dropped; it can move a branch towards
 //! more human review but never past verification.
 

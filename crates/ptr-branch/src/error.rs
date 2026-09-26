@@ -42,8 +42,11 @@ pub enum BranchError {
         snapshot: Revision,
     },
     /// A value read, a prefix scanned, or the input set of a touched key
-    /// changed between the branch base and the target. Keys under a changed
-    /// prefix are reported as `prefix*`.
+    /// changed between the branch base and the target, a touched key has an
+    /// input the branch did not read, or the branch's set operations would
+    /// leave a member as the base had it although the target has it the
+    /// other way, undoing a concurrent insert or removal (reported by the
+    /// set's key). Keys under a changed prefix are reported as `prefix*`.
     Conflict {
         keys: BTreeSet<String>,
     },
@@ -63,12 +66,38 @@ pub enum BranchError {
     /// The parts of a sealed branch are not what sealing an open branch
     /// records: a key an operation touches has no recorded base value or
     /// input set, a base value or input set is recorded for a key no
-    /// operation touches, or the recorded base value of a touched key differs
+    /// operation touches, the recorded base value of a touched key differs
     /// from the value the branch read for it (both digest the same base
-    /// value). `reason` says which.
+    /// value), two set operations on one member record different base
+    /// presences, or a set operation records its member present in a base
+    /// where its key was absent. `reason` says which.
     MalformedSeal {
         key: String,
         reason: &'static str,
+    },
+    /// A `Remove` of a key that is derived (its input set is not empty). A
+    /// merged removal drops the key's dependency entry with its value, and a
+    /// branch has no authority over the dependency graph: a later branch
+    /// could then publish the key as a plain value that no change to its
+    /// former inputs evicts.
+    DerivedRemoval {
+        key: String,
+    },
+    /// A commutative operation on `key` would build on a value the branch's
+    /// own change to `input` evicts. `key` is derived from `input`, directly
+    /// or through other derived keys, and a commit that changes `input`
+    /// evicts `key` unless it writes it, so an addition or set operation
+    /// merged onto the value `key` held would publish it under an input it
+    /// was not computed from. Staging refuses both orders: such an operation
+    /// on a key the branch already reads as absent, and a change to an input
+    /// of a key the branch has only changed commutatively. Certification
+    /// refuses a sealed branch that holds one anyway, judged by the target's
+    /// dependency graph. A `Put` of the value recomputed from the changed
+    /// input is what the branch stages instead; operations staged after it
+    /// apply to it.
+    EvictedOperand {
+        key: String,
+        input: String,
     },
 }
 
@@ -87,6 +116,8 @@ impl BranchError {
             Self::LifecycleChanged { .. } => "PTR_BRANCH_LIFECYCLE_CHANGED",
             Self::ConflictingReliance { .. } => "PTR_BRANCH_CONFLICTING_RELIANCE",
             Self::MalformedSeal { .. } => "PTR_BRANCH_MALFORMED_SEAL",
+            Self::DerivedRemoval { .. } => "PTR_BRANCH_DERIVED_REMOVAL",
+            Self::EvictedOperand { .. } => "PTR_BRANCH_EVICTED_OPERAND",
         }
     }
 }
@@ -136,6 +167,15 @@ impl fmt::Display for BranchError {
             Self::MalformedSeal { key, reason } => {
                 write!(formatter, "sealed branch is malformed at {key:?}: {reason}")
             }
+            Self::DerivedRemoval { key } => write!(
+                formatter,
+                "{key:?} is derived, and a branch may not remove its dependency entry"
+            ),
+            Self::EvictedOperand { key, input } => write!(
+                formatter,
+                "{key:?} is derived from {input:?}, which the branch changes, so a commutative \
+                 operation on it would build on an evicted value; put its recomputed value instead"
+            ),
         }
     }
 }
@@ -178,7 +218,10 @@ pub enum ArbiterError {
     PositivityViolation { index: usize },
     /// An off-policy estimate (`ips`, `snips`, `effective_sample_size` or
     /// `doubly_robust`) of a log that passed every other check does not come
-    /// out as a finite number, so it is refused rather than returned.
+    /// out as a finite number, so it is refused rather than returned. SNIPS
+    /// is one when the evaluated policy gives every logged action probability
+    /// zero: it is then `0 / 0`, since no record says anything about that
+    /// policy.
     NonFiniteEstimate { estimate: &'static str },
     /// No logged decisions were supplied.
     EmptyLog,

@@ -70,6 +70,9 @@ pub enum RuntimeError {
         level: ptr_types::VerificationLevel,
         hard_findings: usize,
     },
+    /// A certified semantic delta was refused before append because a
+    /// lifecycle generation it relied on is no longer live.
+    StaleReliance(semantic::StaleReliance),
     ModelResumeLimit {
         max_rounds: usize,
     },

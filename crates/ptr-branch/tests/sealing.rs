@@ -6,8 +6,8 @@
 use std::collections::BTreeMap;
 
 use ptr_branch::{
-    certify, counter_value, Branch, BranchError, BranchId, BranchOp, InputsDigest, SealedBranch,
-    SealedBranchParts, ValueDigest, RESERVED_PREFIXES,
+    certify, counter_value, set_value, Branch, BranchError, BranchId, BranchOp, InputsDigest,
+    SealedBranch, SealedBranchParts, ValueDigest, RESERVED_PREFIXES,
 };
 use ptr_semdb::{SemanticDelta, SemanticHost, SemanticSnapshot, SemanticValue};
 use ptr_types::{Generation, PrincipalId, Validity};
@@ -106,10 +106,12 @@ fn a_hand_built_branch_that_writes_a_reserved_namespace_is_refused_by_the_constr
         BranchOp::SetInsert {
             key: "pod-output:tags".into(),
             member: "m".into(),
+            in_base: false,
         },
         BranchOp::SetRemove {
             key: "request:r2:raw".into(),
             member: "m".into(),
+            in_base: false,
         },
     ] {
         let key = op.key().to_owned();
@@ -168,10 +170,12 @@ fn a_hand_built_set_operation_with_an_empty_member_is_refused_by_the_constructor
         BranchOp::SetInsert {
             key: "tags".into(),
             member: String::new(),
+            in_base: false,
         },
         BranchOp::SetRemove {
             key: "tags".into(),
             member: String::new(),
+            in_base: false,
         },
     ] {
         assert_eq!(
@@ -302,4 +306,70 @@ fn a_constructor_refusal_names_the_first_broken_invariant_in_operation_order() {
         SealedBranch::from_parts(parts).unwrap_err(),
         BranchError::UnreadTarget { key: "k".into() }
     );
+}
+
+#[test]
+fn a_hand_built_remove_of_a_derived_key_is_refused_by_the_constructor() {
+    // Staging refuses the removal (DerivedRemoval); parts that record it
+    // with the key's non-empty input set are refused the same way.
+    let snapshot = snapshot_with(&[("k", text("1"))]);
+    let mut parts = parts_for(&snapshot, vec![BranchOp::Remove { key: "k".into() }]);
+    parts
+        .touched_inputs
+        .insert("k".into(), InputsDigest::of("k", ["input"]));
+    let refused = SealedBranch::from_parts(parts.clone()).unwrap_err();
+    assert_eq!(refused, BranchError::DerivedRemoval { key: "k".into() });
+    assert_eq!(refused.code(), "PTR_BRANCH_DERIVED_REMOVAL");
+    // With the empty input set it is recorded with, the removal is rebuilt.
+    parts
+        .touched_inputs
+        .insert("k".into(), InputsDigest::of("k", []));
+    assert!(SealedBranch::from_parts(parts).is_ok());
+}
+
+#[test]
+fn hand_built_set_operations_that_misstate_their_member_at_the_base_are_refused_by_the_constructor()
+{
+    let op = |insert: bool, in_base: bool| {
+        if insert {
+            BranchOp::SetInsert {
+                key: "tags".into(),
+                member: "m".into(),
+                in_base,
+            }
+        } else {
+            BranchOp::SetRemove {
+                key: "tags".into(),
+                member: "m".into(),
+                in_base,
+            }
+        }
+    };
+    let with_set = snapshot_with(&[("tags", set_value(&["m".to_owned()].into()).unwrap())]);
+    // Two operations on one member describe one base.
+    let refused =
+        SealedBranch::from_parts(parts_for(&with_set, vec![op(true, true), op(false, false)]))
+            .unwrap_err();
+    assert_eq!(
+        refused,
+        BranchError::MalformedSeal {
+            key: "tags".into(),
+            reason: "two set operations on one member record different base presences",
+        }
+    );
+    // A base without the key holds no member.
+    let without = snapshot_with(&[]);
+    assert_eq!(
+        SealedBranch::from_parts(parts_for(&without, vec![op(false, true)])).unwrap_err(),
+        BranchError::MalformedSeal {
+            key: "tags".into(),
+            reason: "a set operation records its member present in a base without its key",
+        }
+    );
+    // What staging records is rebuilt.
+    assert!(
+        SealedBranch::from_parts(parts_for(&with_set, vec![op(true, true), op(false, true)]))
+            .is_ok()
+    );
+    assert!(SealedBranch::from_parts(parts_for(&without, vec![op(true, false)])).is_ok());
 }
