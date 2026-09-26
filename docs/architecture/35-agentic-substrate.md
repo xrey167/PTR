@@ -263,9 +263,11 @@ verification:
   `a_certified_threshold_bounds_the_harm_rate_among_what_the_next_policy_proposes`).
 - Logged propensities make IPS, SNIPS and doubly robust **off-policy evaluation** of
   a new threshold possible; a threshold below anything the log explored is refused as
-  a positivity violation
+  a positivity violation, and a log with a nonfinite reward is refused rather than
+  estimated
   (`a_lower_threshold_than_the_log_ever_explored_is_refused_as_a_positivity_violation`,
-  `evaluating_the_logging_policy_on_its_own_log_returns_its_mean_reward`).
+  `evaluating_the_logging_policy_on_its_own_log_returns_its_mean_reward`,
+  `a_nonfinite_logged_reward_is_refused_by_every_off_policy_estimate`).
 - The slice's harm rate is estimated with a self-normalised Horvitz-Thompson rate and
   a Wilson interval on the Kish effective sample size
   (`a_calibration_slice_reweighted_by_its_rate_estimates_the_population_rate`).

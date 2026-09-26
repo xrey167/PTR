@@ -564,6 +564,12 @@ pub struct OffPolicyEstimate {
 /// produced can say what auto-proposing there would have earned, and an
 /// estimate that ignored this would silently report the escalation reward
 /// instead.
+///
+/// # Errors
+/// Refuses an empty log, a propensity outside `[0, 1]` or a logged action the
+/// logging policy gave zero probability (`InvalidPropensity`), a reward that
+/// is not finite (`InvalidReward`), and a positivity violation, at the first
+/// record that shows one.
 pub fn evaluate_off_policy(
     log: &[LoggedTriage],
     target: &TriagePolicy,
@@ -591,6 +597,10 @@ pub fn evaluate_off_policy(
 /// Doubly robust estimate: a reward model's prediction for the target policy,
 /// corrected by importance-weighted residuals on the logged actions. Unbiased
 /// when either the propensities or the reward model are correct.
+///
+/// # Errors
+/// Refuses the logs [`evaluate_off_policy`] refuses, a nonfinite logged
+/// reward included.
 pub fn doubly_robust<M>(
     log: &[LoggedTriage],
     target: &TriagePolicy,
@@ -637,6 +647,12 @@ fn importance_weights(
             return Err(ArbiterError::InvalidPropensity {
                 index,
                 value: record.auto_propensity,
+            });
+        }
+        if !record.reward.is_finite() {
+            return Err(ArbiterError::InvalidReward {
+                index,
+                value: record.reward,
             });
         }
         for action in actions {

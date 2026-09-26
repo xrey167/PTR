@@ -124,6 +124,9 @@ pub enum ArbiterError {
     /// A logged propensity outside `[0, 1]`, or a logged action the logging
     /// policy gave zero probability.
     InvalidPropensity { index: usize, value: f64 },
+    /// A logged reward that is not a finite number: any estimate that
+    /// averaged it would be NaN or infinite rather than a refusal.
+    InvalidReward { index: usize, value: f64 },
     /// The evaluated policy takes an action the logging policy never took for
     /// this record, so no reweighting can estimate its value.
     PositivityViolation { index: usize },
@@ -148,6 +151,7 @@ impl ArbiterError {
             Self::InvalidExploration { .. } => "PTR_ARBITER_INVALID_EXPLORATION",
             Self::InvalidDraw { .. } => "PTR_ARBITER_INVALID_DRAW",
             Self::InvalidPropensity { .. } => "PTR_ARBITER_INVALID_PROPENSITY",
+            Self::InvalidReward { .. } => "PTR_ARBITER_INVALID_REWARD",
             Self::PositivityViolation { .. } => "PTR_ARBITER_POSITIVITY_VIOLATION",
             Self::EmptyLog => "PTR_ARBITER_EMPTY_LOG",
             Self::EmptyVersion => "PTR_ARBITER_EMPTY_VERSION",
@@ -172,6 +176,9 @@ impl fmt::Display for ArbiterError {
             }
             Self::InvalidPropensity { index, value } => {
                 write!(formatter, "record {index} has invalid propensity {value}")
+            }
+            Self::InvalidReward { index, value } => {
+                write!(formatter, "record {index} has nonfinite reward {value}")
             }
             Self::PositivityViolation { index } => write!(
                 formatter,

@@ -318,6 +318,38 @@ fn a_higher_threshold_is_estimable_and_doubly_robust_agrees_with_a_perfect_model
     assert!(evaluate_off_policy(&log, &cautious).is_ok());
 }
 
+#[test]
+fn a_nonfinite_logged_reward_is_refused_by_every_off_policy_estimate() {
+    let logging = TriagePolicy::new(AutoThreshold::AtLeast(0.5), 0.3).unwrap();
+    let cautious = TriagePolicy::new(AutoThreshold::AtLeast(0.7), 0.3).unwrap();
+    let model = |_: &LoggedTriage, _: TriageDecision| 0.5;
+    for reward in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let mut log = log_under(&logging, &[0.2, 0.6, 0.8]);
+        log[1].reward = reward;
+        for target in [&logging, &cautious] {
+            let refused = evaluate_off_policy(&log, target).unwrap_err();
+            assert!(
+                matches!(refused, ArbiterError::InvalidReward { index: 1, value }
+                    if value.to_bits() == reward.to_bits()),
+                "{reward}: {refused:?}"
+            );
+            assert_eq!(refused.code(), "PTR_ARBITER_INVALID_REWARD");
+            assert!(
+                matches!(
+                    doubly_robust(&log, target, model),
+                    Err(ArbiterError::InvalidReward { index: 1, .. })
+                ),
+                "{reward}"
+            );
+        }
+    }
+    // A finite reward is not refused.
+    let mut log = log_under(&logging, &[0.2, 0.6, 0.8]);
+    log[1].reward = -1e300;
+    assert!(evaluate_off_policy(&log, &logging).is_ok());
+    assert!(doubly_robust(&log, &logging, model).is_ok());
+}
+
 /// Forty adjudicated calibration-slice branches, keyed by branch, scoring
 /// i/40 and harmful below 0.3.
 fn adjudicated(prefix: &str) -> Vec<(BranchId, CalibrationSample)> {
