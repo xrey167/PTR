@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "F003-calibrated-arbiter"
+path = "experiments/feedback/F003-calibrated-arbiter"
+tests_dir = "tests"

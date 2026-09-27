@@ -17,6 +17,9 @@ ROOT = Path(__file__).resolve().parents[1]
 REGISTRY = ROOT / "experiments/registry.toml"
 PLACEHOLDER = re.compile(r"<([A-Za-z][A-Za-z0-9_-]*)>")
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import experiment_records  # noqa: E402
+
 
 def load(path: Path):
     return tomllib.loads(path.read_text(encoding="utf-8"))
@@ -52,10 +55,11 @@ def utc_stamp() -> str:
 
 
 def write_json_exclusive(path: Path, record: dict) -> None:
+    """Write `record` to the new file `path`, whole or not at all: a write
+    that fails leaves no partial record for an aggregator to select. Raises
+    `FileExistsError` when `path` exists; a record never replaces another."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("x", encoding="utf-8") as handle:
-        json.dump(record, handle, indent=2)
-        handle.write("\n")
+    experiment_records.write_exclusively(path, json.dumps(record, indent=2) + "\n")
 
 
 def validate():
@@ -201,6 +205,18 @@ def run_experiment(
     seed: int,
     params: dict[str, str] | None = None,
 ) -> int:
+    """Run one seed of `exp_id` through `entrypoint` and write its record to
+    the experiment's results, stamped with the commit HEAD was at when the
+    run started. Refuses with status 2, before anything runs or is written,
+    an undeclared seed, an unresolved command, and a working tree with
+    uncommitted or untracked provenance files or experiment files
+    (`experiment_records.uncommitted_files`). After the command ends it looks
+    at the same tree again (`experiment_records.ProvenanceWatch`) and writes
+    no record, returning 2, when HEAD moved or a provenance or experiment
+    file was written, created or removed while the command ran, even if its
+    content was put back, so the record's `git_sha` is the code that ran as
+    far as that watch can see (its `changes` names what it cannot). The
+    record is written whole or not at all (`write_json_exclusive`)."""
     _, root, data = resolve(exp_id)
     try:
         command = build_command(
@@ -211,10 +227,31 @@ def run_experiment(
         return 2
 
     results = root / data.get("results_dir", "results")
+    # The record names HEAD as the code it ran, so HEAD must hold every file
+    # that decides the run: refuse before anything runs or is written.
+    try:
+        watch = experiment_records.ProvenanceWatch(
+            ROOT,
+            experiment_records.tree_pathspecs(
+                root, results, ROOT, experiment_records.seed_record_paths(root, ROOT)
+            ),
+        )
+    except experiment_records.ProvenanceError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 2
+    if watch.uncommitted:
+        print(
+            "ERROR: refusing to run from a working tree whose sources HEAD does not hold; "
+            f"commit or remove {experiment_records.listed(watch.uncommitted)}",
+            file=sys.stderr,
+        )
+        return 2
+
     timestamp = utc_stamp()
     record = base_record(exp_id, data, root)
     record.update(
         {
+            "git_sha": watch.head,
             "status": "running",
             "started_at": timestamp,
             "entrypoint": entrypoint,
@@ -226,6 +263,20 @@ def run_experiment(
 
     execution = execute_command(command)
     exit_code = execution["exit_code"]
+    # The command read the tree while it ran (a `cargo run` entrypoint
+    # compiles it first): the record may name HEAD only if the tree stayed so.
+    try:
+        changes = watch.changes()
+    except experiment_records.ProvenanceError as error:
+        changes = [str(error)]
+    if changes:
+        print(
+            f"ERROR: not recording the run (exit status {exit_code}): its sources changed while it ran, "
+            f"so {watch.head} may not be the code it ran; {'; '.join(changes)}; "
+            "rerun from a working tree that stays at HEAD",
+            file=sys.stderr,
+        )
+        return 2
     record.update(
         {
             "status": (

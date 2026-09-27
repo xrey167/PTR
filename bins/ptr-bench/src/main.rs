@@ -11,6 +11,9 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Instant;
 
+#[cfg(feature = "postgres-experiments")]
+mod experiments;
+
 fn main() {
     let args = std::env::args().collect::<Vec<_>>();
     let command = args.get(1).map(String::as_str).unwrap_or("all");
@@ -35,14 +38,30 @@ fn main() {
             bench_semdb(iterations);
             bench_mailbox(iterations);
         }
+        #[cfg(feature = "postgres-experiments")]
+        "fastmem-revocation" => {
+            experiments::l003::run(parse_usize(&args, 2, 20), parse_u64(&args, 3, 17))
+        }
+        #[cfg(feature = "postgres-experiments")]
+        "projection-equivalence" => {
+            experiments::l004::run(parse_usize(&args, 2, 20), parse_u64(&args, 3, 17))
+        }
         _ => {
             eprintln!(
-                "usage: ptr-bench [all|semdb|mailbox|ledger-recovery|ledger-process-crash] [iterations] [seed]"
+                "usage: ptr-bench [all|semdb|mailbox|ledger-recovery|ledger-process-crash{}] [iterations] [seed]",
+                EXPERIMENT_COMMANDS
             );
             std::process::exit(2);
         }
     }
 }
+
+/// The PostgreSQL experiment subcommands, listed in the usage line only when
+/// they are compiled in.
+#[cfg(feature = "postgres-experiments")]
+const EXPERIMENT_COMMANDS: &str = "|fastmem-revocation|projection-equivalence";
+#[cfg(not(feature = "postgres-experiments"))]
+const EXPERIMENT_COMMANDS: &str = "";
 
 fn parse_usize(args: &[String], index: usize, default: usize) -> usize {
     args.get(index)

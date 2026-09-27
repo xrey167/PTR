@@ -1,0 +1,6 @@
+flowchart LR
+    A["Observed counts and scores"] --> B["ptr-analytics\nStatistics Kernel and Metric Vocabulary"]
+    B --> C["Intervals, calibration and agreement"]
+    C --> D["ptr-pg (metric SQL)"]
+    B -. "contracts" .-> T["ptr-types"]
+    L["ptr-ledger (authority)"] -. "never replaced" .-> B

@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "analytics-mirror"
+path = "evaluations/components/analytics-mirror"
+tests_dir = "tests"

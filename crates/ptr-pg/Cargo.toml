@@ -1,0 +1,42 @@
+[package]
+name = "ptr-pg"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[features]
+default = []
+# The whole database composition is this feature. Without it the crate is the
+# schema, the migration catalog, capability parsing and the event mapping, all
+# testable with no server, so tokio-postgres stays out of every other build.
+postgres-backend = ["dep:tokio-postgres", "dep:tokio"]
+
+[dependencies]
+ptr-types = { workspace = true }
+ptr-ledger = { workspace = true }
+# The projection applies exactly the entries ptr-state defines for an event;
+# a second mapping here could disagree with the reference and Turso backends.
+ptr-state = { workspace = true }
+ptr-semdb = { workspace = true }
+ptr-search = { workspace = true }
+ptr-branch = { workspace = true }
+ptr-fastmem = { workspace = true }
+# Interference reports of adapter candidates are stored as ptr-lineage measures them.
+ptr-lineage = { workspace = true }
+# Metrics are defined there; this crate only compiles them to SQL.
+ptr-analytics = { workspace = true }
+# The same pin every other digest in the workspace uses.
+sha2 = { version = "=0.11.0", default-features = false }
+serde_json = { workspace = true }
+tokio-postgres = { version = "=0.7.18", default-features = false, features = ["runtime"], optional = true }
+# Timers for the migration lock's retry interval.
+tokio = { workspace = true, optional = true, features = ["time"] }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[[test]]
+name = "postgres"
+path = "tests/postgres.rs"
+required-features = ["postgres-backend"]

@@ -1,0 +1,10 @@
+[package]
+name = "ptr-analytics"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+# No dependencies, not even ptr-types: this crate is arithmetic over counts and
+# probabilities, and every other crate that reports a statistic depends on it.
+[dependencies]

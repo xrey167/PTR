@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "E005-agent-memory-benchmark"
+path = "experiments/system/E005-agent-memory-benchmark"
+tests_dir = "tests"

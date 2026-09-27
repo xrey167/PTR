@@ -5,6 +5,24 @@ edition.workspace = true
 rust-version.workspace = true
 publish = false
 
+[features]
+default = []
+# The PostgreSQL experiment harnesses (L003 fast-memory revocation, L004
+# projection equivalence). They need a loopback server named by
+# PTR_PG_EXPERIMENT_DSN and stay out of every default build, so the default
+# binary keeps its dependencies and its MSRV.
+postgres-experiments = [
+    "dep:ptr-pg",
+    "ptr-pg/postgres-backend",
+    "dep:ptr-state",
+    "dep:ptr-fastmem",
+    "dep:tokio",
+    "dep:tokio-postgres",
+]
+# Adds the Turso projection as a third L004 oracle. Turso needs the stable
+# toolchain, as its own CI job does.
+turso-oracle = ["postgres-experiments", "ptr-state/turso-backend"]
+
 [dependencies]
 ptr-types = { workspace = true }
 ptr-config = { workspace = true }
@@ -13,3 +31,10 @@ ptr-semdb = { workspace = true }
 ptr-exec = { workspace = true }
 ptr-ledger = { workspace = true }
 ptr-runtime = { workspace = true }
+ptr-pg = { workspace = true, optional = true }
+ptr-state = { workspace = true, optional = true }
+ptr-fastmem = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+# A raw session for the harnesses' crash injection (terminating the
+# substrate's backend) and cleanup; the same pin ptr-pg uses.
+tokio-postgres = { version = "=0.7.18", default-features = false, features = ["runtime"], optional = true }

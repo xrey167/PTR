@@ -284,6 +284,75 @@ impl SemanticSnapshot {
     }
 }
 
+/// The canonical bytes of one semantic input: the journal encoding of a delta
+/// holding exactly `key = value`.
+///
+/// Every digest PTR takes over a semantic value — neural-state admission,
+/// branch read sets, projection digests — hashes these bytes under its own
+/// domain tag, so no two components can disagree about what "the same value"
+/// means. The payload `source` participates, as it does in the journal.
+///
+/// # Errors
+/// Propagates `SemanticError::InvalidKey` for an invalid key, payload type
+/// identifier, or payload source, and `SemanticError::LimitExceeded` when
+/// the encoded input exceeds the journal encoding bounds.
+pub fn canonical_input_bytes(key: &str, value: &SemanticValue) -> Result<Vec<u8>, SemanticError> {
+    let mut delta = SemanticDelta::default();
+    delta.upserts.insert(key.to_owned(), value.clone());
+    delta.encode()
+}
+
+/// A read-only view of a prepared, unpublished state.
+///
+/// Deliberately not a [`SemanticSnapshot`]: it carries no host identity and no
+/// revision, so it cannot be mistaken for published state or checked as
+/// current. It exists so a verifier can judge the exact state a commit would
+/// publish: its values and the dependency sets that decide what a later change
+/// invalidates, so two deltas that publish the same values under different
+/// dependency graphs are told apart.
+#[derive(Clone, Copy, Debug)]
+pub struct PreparedView<'a> {
+    state: &'a SemanticState,
+}
+
+impl<'a> PreparedView<'a> {
+    /// Text at `key` in the prepared state, or `None` for a missing key or a
+    /// payload value.
+    pub fn get(&self, key: &str) -> Option<&'a str> {
+        match self.value(key)? {
+            SemanticValue::Text(text) => Some(text),
+            SemanticValue::Payload(_) => None,
+        }
+    }
+    /// Value at `key` in the prepared state, including payloads; `None` if absent.
+    pub fn value(&self, key: &str) -> Option<&'a SemanticValue> {
+        self.state.ground.get(key)
+    }
+    /// Iterate prepared-state keys in ascending order, including payload keys.
+    pub fn keys(&self) -> impl Iterator<Item = &'a str> {
+        self.state.ground.keys().map(String::as_str)
+    }
+    /// The keys `key` is derived from in the prepared state, in ascending
+    /// order; empty for a key with no inputs. Mirrors
+    /// [`SemanticSnapshot::inputs`].
+    pub fn inputs(&self, key: &str) -> impl Iterator<Item = &'a str> {
+        self.state
+            .dependencies
+            .inputs
+            .get(key)
+            .into_iter()
+            .flatten()
+            .map(String::as_str)
+    }
+    /// Every key with a non-empty input set in the prepared state, in
+    /// ascending order. A derived key whose value is absent is included: an
+    /// evicted derivation keeps its dependency entry, so a later upsert must
+    /// still supply its inputs.
+    pub fn derived_keys(&self) -> impl Iterator<Item = &'a str> {
+        self.state.dependencies.inputs.keys().map(String::as_str)
+    }
+}
+
 /// A validated but unpublished change. It is bound to one host and base revision.
 #[derive(Debug)]
 pub struct PreparedDelta {
@@ -295,6 +364,10 @@ pub struct PreparedDelta {
 impl PreparedDelta {
     pub fn revision(&self) -> Revision {
         self.next.revision
+    }
+    /// The state this delta would publish, for verification before commit.
+    pub fn view(&self) -> PreparedView<'_> {
+        PreparedView { state: &self.next }
     }
     pub fn affected(&self) -> &BTreeSet<String> {
         &self.affected

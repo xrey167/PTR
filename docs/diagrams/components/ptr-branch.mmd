@@ -1,0 +1,6 @@
+flowchart LR
+    A["Snapshot and agent work"] --> B["ptr-branch\nCertified Agent Branches and Calibrated Triage"]
+    B --> C["MergePlan (one SemanticDelta)"]
+    C --> D["ptr-runtime verified delta"]
+    B -. "contracts" .-> T["ptr-types"]
+    L["ptr-ledger (authority)"] -. "never replaced" .-> B

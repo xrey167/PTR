@@ -112,7 +112,10 @@ pub enum RequiredVerification {
 }
 
 impl RequiredVerification {
-    fn accepts(self, level: VerificationLevel) -> bool {
+    /// Whether `level` satisfies this requirement: deterministic verification
+    /// satisfies either requirement; full semantic verification satisfies only
+    /// `FullSemantic`.
+    pub(crate) fn accepts(self, level: VerificationLevel) -> bool {
         matches!(
             (self, level),
             (_, VerificationLevel::Deterministic)

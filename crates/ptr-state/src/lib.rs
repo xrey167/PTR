@@ -15,20 +15,34 @@ pub struct MaterializedState {
     pub last_applied: u64,
 }
 
+/// Classify an incoming commit index against the last applied one.
+///
+/// `None` means `incoming` is exactly the next index and may be applied. Every
+/// backend (the in-memory reference, Turso, the Postgres substrate) decides
+/// with this one function, so they cannot disagree about which index is next.
+pub fn classify_next(last_applied: u64, incoming: u64) -> Option<ApplyOutcome> {
+    if incoming == last_applied {
+        Some(ApplyOutcome::Duplicate)
+    } else if incoming < last_applied {
+        Some(ApplyOutcome::OutOfOrder)
+    } else if incoming != last_applied.saturating_add(1) {
+        Some(ApplyOutcome::Gap)
+    } else {
+        None
+    }
+}
+
 impl MaterializedState {
+    /// Apply the next commit's projection entries and advance `last_applied`.
+    /// Duplicate, older, or skipped indices return the corresponding
+    /// `ApplyOutcome` without changing state.
     pub fn try_apply(&mut self, committed: &CommittedEvent) -> ApplyOutcome {
         let index = committed.index.0;
-        if index == self.last_applied {
-            return ApplyOutcome::Duplicate;
-        }
-        if index < self.last_applied {
-            return ApplyOutcome::OutOfOrder;
-        }
-        if index != self.last_applied.saturating_add(1) {
-            return ApplyOutcome::Gap;
+        if let Some(refusal) = classify_next(self.last_applied, index) {
+            return refusal;
         }
 
-        for (key, value) in materialized_entries(committed) {
+        for (key, value) in projection_entries(committed) {
             self.values.insert(key, value);
         }
         self.last_applied = index;
@@ -40,7 +54,13 @@ impl MaterializedState {
     }
 }
 
-fn materialized_entries(committed: &CommittedEvent) -> Vec<(String, String)> {
+/// The key/value entries one committed event projects to.
+///
+/// This is the single definition of what an event means as current state; the
+/// in-memory reference, the Turso adapter and any other backend (the Postgres
+/// substrate in `ptr-pg`) apply exactly these entries, so two backends cannot
+/// disagree about the projection of the same history.
+pub fn projection_entries(committed: &CommittedEvent) -> Vec<(String, String)> {
     let index = committed.index.0;
     match &committed.event {
         // Lifecycle materialization records the position, not a second copy of
@@ -106,6 +126,24 @@ fn materialized_entries(committed: &CommittedEvent) -> Vec<(String, String)> {
             ),
             (format!("effect:{}:applied", attempt.0), applied.to_string()),
         ],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_exact_next_index_is_applicable() {
+        assert_eq!(classify_next(4, 5), None);
+        assert_eq!(classify_next(4, 4), Some(ApplyOutcome::Duplicate));
+        assert_eq!(classify_next(4, 2), Some(ApplyOutcome::OutOfOrder));
+        assert_eq!(classify_next(4, 7), Some(ApplyOutcome::Gap));
+        assert_eq!(classify_next(0, 1), None);
+        assert_eq!(
+            classify_next(u64::MAX, u64::MAX),
+            Some(ApplyOutcome::Duplicate)
+        );
     }
 }
 
@@ -181,16 +219,17 @@ impl TursoMaterializedState {
         }
     }
 
+    /// Persist the next commit's projection entries and watermark in one
+    /// transaction, then advance the local watermark. Duplicate, older, or
+    /// skipped indices return an outcome without writing.
+    ///
+    /// # Errors
+    /// Returns database transaction, statement, or commit errors as strings;
+    /// the local watermark advances only after a successful commit.
     pub async fn try_apply(&mut self, committed: &CommittedEvent) -> Result<ApplyOutcome, String> {
         let index = committed.index.0;
-        if index == self.last_applied {
-            return Ok(ApplyOutcome::Duplicate);
-        }
-        if index < self.last_applied {
-            return Ok(ApplyOutcome::OutOfOrder);
-        }
-        if index != self.last_applied.saturating_add(1) {
-            return Ok(ApplyOutcome::Gap);
+        if let Some(refusal) = classify_next(self.last_applied, index) {
+            return Ok(refusal);
         }
 
         let tx = self
@@ -199,7 +238,7 @@ impl TursoMaterializedState {
             .await
             .map_err(|error| error.to_string())?;
 
-        for (key, value) in materialized_entries(committed) {
+        for (key, value) in projection_entries(committed) {
             tx.execute(
                 "
                 INSERT INTO ptr_state(key, value, commit_index)

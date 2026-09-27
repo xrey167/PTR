@@ -1,0 +1,52 @@
+version = 1
+id = "ptr-labeling"
+maturity = "prototype"
+last_reviewed = "2026-09-27"
+
+implemented = [
+  "Label schemas, labeling functions by kind (verifier, heuristic, model, agent) and a vote matrix with abstention; function names are non-empty and distinct (DuplicateFunction), so no function's votes count twice",
+  "A fitted LabelModel is bound to its vote matrix by VoteMatrix::digest (SHA-256 of schema, functions and votes, set only by fit_label_model); resolve refuses any other matrix, even one of the same shape, with MatrixMismatch",
+  "Everything a LabelModel holds (priors, confusion matrices, posteriors, iteration count, warnings) is private, set only by fit_label_model and read through accessors that lend it out immutably, so the posteriors resolve reads are the ones the fit computed for the matrix the digest names and cannot be replaced by another fit's or any other distributions; resolve still checks them as a guard against a defect in the fit",
+  "Verifier-backed functions cast vetoes only; a verifier class vote is refused",
+  "Dawid-Skene EM label model with configurable iterations and a tolerance in [0, 1) (refused outside it, so a vacuous tolerance cannot hide non-convergence) and identifiability warnings for fewer than three modelled functions; smoothing too small for every smoothed probability to stay a positive normal number is refused, larger smoothing up to f64::MAX is normalized without overflow, and every fitted probability is finite",
+  "Resolution to Determined (every other class vetoed), Estimated at or above a required probability, Unknown (also when the classes left carry less posterior mass than f64::MIN_POSITIVE, none included: stored subnormal posteriors have lost their ratio to underflow, so no share is computed from them), or Disputed when every class is vetoed; a posterior that is not a probability distribution over the schema (an entry outside [0, 1], checked on its own whatever the 1e-6 tolerance on the total) is refused before any item is resolved",
+  "Gold labels record source (oracle or human with annotator) and sampling (uniform or active); an evaluation set holds one resolved gold label per item and refuses a second; only uniform gold estimates population accuracy and calibration, while active gold reports accuracy on the sampled items and no calibration",
+  "Evaluation with Brier score and expected calibration error from ptr-analytics; every scoring path refuses a gold class outside the scored classes, and evaluation a scored posterior that is not a probability distribution, before scoring and whatever the sampling; a gold item at usize::MAX is reported missing without overflow",
+  "A model labeling function may name the adapter that produced its votes (refused on any other kind); function_accuracy scores each function's class votes (never abstentions or vetoes) against uniform gold with a Wilson interval and refuses an invalid z whatever the votes, so labeling quality is measured per adapter",
+  "resolve returns a Resolution (private fields, made only by resolve) that pairs each item's outcome with the posterior it was resolved from: the model's posterior renormalized over the classes no verifier vetoed, uniform over them where no share is computed, a point mass for Determined and none for Disputed",
+  "Public-field records are plain data: no function takes back an EvaluationReport, Calibration, FunctionAccuracy or LabelOutcome (annotation ranking reads outcomes only from a Resolution), and their docs state what evaluate, function_accuracy and resolve guarantee rather than what every value holds; no function builds a GoldLabel from a prediction, and what scoring relies on in a gold label is checked where it is used (EvaluationSet::push, evaluate, function_accuracy)",
+  "Acquisition ranking by posterior entropy or margin over one Resolution only, so outcomes and posteriors cannot be mispaired, reordered, truncated or replaced; each item is ranked on the posterior its outcome was resolved from, never on the model's raw posterior, so mass on a vetoed class neither hides an unresolved item nor promotes a resolved one; it never proposes an item verifiers already determined and always proposes disputed items first",
+]
+
+missing = [
+  "Annotator agreement over multi-annotator gold (ptr_analytics::krippendorff_alpha_nominal exists; this crate does not call it yet)",
+  "A dependency-aware model for correlated labeling functions",
+  "Annotator reliability modelling",
+  "Label snapshot registration and a labeling adapter through ptr-pg (the work schema already carries the model-to-adapter link)",
+  "A labeling-function runner outside this crate that records the adapter of each model function, the admitted principal behind each agent function and the input generation of each item (which component owns it is open)",
+]
+
+next = [
+  "Run F002 against majority vote on uniform gold",
+  "Add a labeling adapter to ptr-pg over the existing work schema",
+]
+
+experiments = [
+  "F002",
+]
+
+evaluations = [
+  "label-model",
+]
+
+decisions = [
+  "ADR-0019-adapter-lineage-and-weak-supervision.md",
+]
+
+checks = [
+  "tests/label_model.rs recovery, veto, dispute and identifiability cases, and gold-set, gold-class, z, tolerance, smoothing and evaluated-posterior refusals",
+  "src/model.rs unit tests, which set a model's posteriors directly as only the crate can: resolve refuses a posterior that is not a distribution over the schema (including an entry above one within the total's tolerance) and a posterior missing or added, resolves posterior mass left below f64::MIN_POSITIVE by vetoes to Unknown (whether a fit leaves it or the test sets it), pairs every outcome with the posterior it was resolved from, and hands annotation ranking outcomes and posteriors only from one resolution, so a posterior that is not a distribution never reaches ranking",
+  "tests/label_model.rs: an item is ranked on its posterior after vetoes and not on the model's, and a model lends out one posterior per item and one confusion entry per function (None for a verifier); compile_fail doctests show that no field of a LabelModel (posteriors, confusion, priors, warnings, iterations) can be assigned, that its posteriors cannot be changed through posteriors(), and that a Resolution cannot be built outside resolve",
+  "tests/label_model.rs: empty and duplicate function names are refused; a model is refused with any matrix but the one it was fitted on (other votes, functions or schema of the same shape) and accepted with an equal rebuilt one",
+  "workspace fmt/check/test/clippy",
+]

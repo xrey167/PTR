@@ -1,0 +1,308 @@
+{
+  "experiment_id": "L003",
+  "git_sha": "7b60216b9b1cabca7faa94327a52d9207f3a453d",
+  "recorded_at": "2026-09-27T16:19:13.035521+00:00",
+  "subcommand": "fastmem-revocation",
+  "killed": 16,
+  "total": 16,
+  "mutations": [
+    {
+      "name": "tombstone-removes-other-generations",
+      "file": "crates/ptr-pg/src/adapters/projection.rs",
+      "cases": 4,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 122,
+      "expected": [
+        "journal_mismatches",
+        "removed_count_mismatches",
+        "bit_identity_failures"
+      ],
+      "counters": {
+        "bit_identity_failures": 18,
+        "false_denials": 18,
+        "journal_mismatches": 27,
+        "removed_count_mismatches": 5,
+        "checkpoint_false_refusals": 1,
+        "stale_checkpoints_accepted": 2,
+        "checkpoint_violations": 32,
+        "stale_checkpoint_rows": 15,
+        "atomicity_failures": 1,
+        "race_violations": 2,
+        "read_failures": 1
+      }
+    },
+    {
+      "name": "supersession-removes-nothing",
+      "file": "crates/ptr-pg/src/adapters/projection.rs",
+      "cases": 4,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 60,
+      "expected": [
+        "journal_mismatches",
+        "removed_count_mismatches",
+        "stale_checkpoint_rows"
+      ],
+      "counters": {
+        "journal_mismatches": 22,
+        "removed_count_mismatches": 6,
+        "checkpoint_false_refusals": 1,
+        "checkpoint_violations": 20,
+        "stale_checkpoint_rows": 7,
+        "race_violations": 4
+      }
+    },
+    {
+      "name": "checkpoint-cascade-skipped",
+      "file": "crates/ptr-pg/src/adapters/projection.rs",
+      "cases": 4,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 2551,
+      "expected": [
+        "stale_checkpoint_rows",
+        "stale_checkpoints_accepted",
+        "checkpoint_violations"
+      ],
+      "counters": {
+        "stale_checkpoint_rows": 2551
+      }
+    },
+    {
+      "name": "checkpoint-cascade-off-by-one",
+      "file": "crates/ptr-pg/src/adapters/projection.rs",
+      "cases": 4,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 154,
+      "expected": [
+        "stale_checkpoint_rows",
+        "stale_checkpoints_accepted",
+        "checkpoint_violations"
+      ],
+      "counters": {
+        "stale_checkpoint_rows": 154
+      }
+    },
+    {
+      "name": "append-ignores-tombstone",
+      "file": "crates/ptr-pg/src/adapters/fastmem.rs",
+      "cases": 4,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 55,
+      "expected": [
+        "inadmissible_appends_accepted"
+      ],
+      "counters": {
+        "bit_identity_failures": 11,
+        "false_denials": 11,
+        "journal_mismatches": 12,
+        "removed_count_mismatches": 1,
+        "inadmissible_appends_accepted": 2,
+        "checkpoint_false_refusals": 1,
+        "stale_checkpoints_accepted": 1,
+        "checkpoint_violations": 9,
+        "stale_checkpoint_rows": 6,
+        "race_violations": 1
+      }
+    },
+    {
+      "name": "append-ignores-live-generation",
+      "file": "crates/ptr-pg/src/adapters/fastmem.rs",
+      "cases": 4,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 35,
+      "expected": [
+        "inadmissible_appends_accepted"
+      ],
+      "counters": {
+        "journal_mismatches": 22,
+        "removed_count_mismatches": 4,
+        "inadmissible_appends_accepted": 6,
+        "checkpoint_false_refusals": 1,
+        "race_violations": 2
+      }
+    },
+    {
+      "name": "append-without-row-lock",
+      "file": "crates/ptr-pg/src/adapters/fastmem.rs",
+      "cases": 10,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 140,
+      "expected": [
+        "race_violations"
+      ],
+      "counters": {
+        "bit_identity_failures": 17,
+        "false_denials": 17,
+        "journal_mismatches": 48,
+        "removed_count_mismatches": 14,
+        "checkpoint_false_refusals": 1,
+        "stale_checkpoints_accepted": 2,
+        "checkpoint_violations": 18,
+        "stale_checkpoint_rows": 10,
+        "race_violations": 13
+      }
+    },
+    {
+      "name": "checkpoint-prefix-without-lock",
+      "file": "crates/ptr-pg/src/adapters/fastmem.rs",
+      "cases": 10,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 275,
+      "expected": [
+        "stale_checkpoint_rows",
+        "race_violations"
+      ],
+      "counters": {
+        "stale_checkpoint_rows": 275
+      }
+    },
+    {
+      "name": "checkpoint-binding-unchecked",
+      "file": "crates/ptr-pg/src/adapters/fastmem.rs",
+      "cases": 4,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 62,
+      "expected": [
+        "stale_checkpoints_accepted",
+        "stale_checkpoint_rows"
+      ],
+      "counters": {
+        "stale_checkpoints_accepted": 18,
+        "stale_checkpoint_rows": 44
+      }
+    },
+    {
+      "name": "latest-checkpoint-skips-nothing",
+      "file": "crates/ptr-pg/src/adapters/fastmem.rs",
+      "cases": 4,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 68,
+      "expected": [
+        "checkpoint_violations"
+      ],
+      "counters": {
+        "checkpoint_violations": 68
+      }
+    },
+    {
+      "name": "journal-cells-lose-a-bit",
+      "file": "crates/ptr-pg/src/adapters/fastmem.rs",
+      "cases": 4,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 67,
+      "expected": [
+        "journal_mismatches"
+      ],
+      "counters": {
+        "bit_identity_failures": 22,
+        "readout_failures": 18,
+        "journal_mismatches": 22,
+        "checkpoint_violations": 5
+      }
+    },
+    {
+      "name": "refold-keeps-straddling-checkpoint",
+      "file": "crates/ptr-fastmem/src/memory.rs",
+      "cases": 4,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 278,
+      "expected": [
+        "bit_identity_failures",
+        "readout_failures"
+      ],
+      "counters": {
+        "bit_identity_failures": 124,
+        "readout_failures": 124,
+        "checkpoint_false_refusals": 5,
+        "checkpoint_violations": 25
+      }
+    },
+    {
+      "name": "read-admission-skipped",
+      "file": "crates/ptr-fastmem/src/memory.rs",
+      "cases": 4,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 142,
+      "expected": [
+        "resurrected_reads"
+      ],
+      "counters": {
+        "resurrected_reads": 142
+      }
+    },
+    {
+      "name": "append-commit-error-ignored",
+      "file": "crates/ptr-pg/src/adapters/fastmem.rs",
+      "cases": 12,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 484,
+      "expected": [
+        "commit_fault_failures"
+      ],
+      "counters": {
+        "resurrected_reads": 432,
+        "commit_fault_failures": 52
+      }
+    },
+    {
+      "name": "latest-checkpoint-oldest-first",
+      "file": "crates/ptr-pg/src/adapters/fastmem.rs",
+      "cases": 4,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 178,
+      "expected": [
+        "checkpoint_violations"
+      ],
+      "counters": {
+        "resurrected_reads": 143,
+        "checkpoint_violations": 35
+      }
+    },
+    {
+      "name": "checkpoint-cascade-deletes-all",
+      "file": "crates/ptr-pg/src/adapters/projection.rs",
+      "cases": 4,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 234,
+      "expected": [
+        "checkpoints_lost"
+      ],
+      "counters": {
+        "resurrected_reads": 134,
+        "checkpoint_violations": 47,
+        "checkpoints_lost": 53
+      }
+    }
+  ]
+}
