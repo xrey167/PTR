@@ -355,8 +355,62 @@ A spent key is carried by every later snapshot, so a principal outside the bound
 would make every export after its first keyed effect fail; `register_execution_session`
 and `AdmissionPolicy::admit` therefore refuse a principal longer than
 `MAX_PRINCIPAL_BYTES` (the same 4096) with `InvalidSession` before it can spend
-one. A key, or a capsule's project, outside the bound is still refused only at
-export. A `PTRCS002` snapshot, or a
+one.
+
+That bounded the principals admission hands out, not the ones a record names.
+`PtrRuntime::commit` and replay checked only that a key was an identifier, so a
+keyed attempt committed directly with an empty principal, or one past the bound,
+was accepted, and once it was settled or reconciled as applied every export
+failed although its fence had cleared. A key past the bound did the same
+whatever the outcome, and through admission as well, and an empty or over-long
+project did it once applied, since `ProjectId` checks nothing. Now validation
+refuses a keyed `EffectAttempted` before anything is appended unless its key is
+an identifier of at most `MAX_KEY_BYTES`, its principal is 1 to
+`MAX_PRINCIPAL_BYTES` bytes and its project is 1 to `MAX_PROJECT_BYTES` bytes,
+all 4096. Validation runs on `commit` and on every record a runtime is rebuilt
+from: `PtrRuntime::replay`, and through it `restore_recovery_snapshot`,
+`read_recovery_snapshot`, `restore_durable_snapshot` and `migrate_legacy_log`;
+`open_durable` and `open_durable_at`; and the records `restore_compacted` replays
+above a floor. The principal and the project are held to the length a snapshot
+carries and nothing more, because that is all the snapshot needs: a principal
+with surrounding whitespace or a control character, which no session can be
+registered as, is recorded as given, as it was before, and a key spent under it
+answers no session's retry. The refusals are `InvalidEffectKey`,
+`InvalidEffectPrincipal` and `InvalidEffectProject`, typed `RuntimeError`
+variants that render by name like every other. `prepare_execution_once` refuses
+a key past the bound with `InvalidKey` before anything else is checked, so
+admission never spends one. An over-long project reaches admission only as a
+committed capsule's project, whose own lifecycle entry already makes every export
+fail (an empty one never does, since a grant's project must be an identifier); a
+keyed attempt under it is refused at its commit, which admission reports as
+`Audit(InvalidEffectProject { .. })` with nothing attempted and no fence left. An
+unkeyed attempt enters no settled key, so its principal and project are recorded
+as given.
+
+This refuses histories that used to open, in a log and in a recovery snapshot
+alike. A history holding a keyed `EffectAttempted` whose key, principal or
+project is outside these bounds is now refused, naming the field, on every
+rebuild path above, whatever became of the key. Where the key was settled or
+reconciled as applied, or, for a key past the bound, settled or reconciled either
+way, the history used to open and every export fail once the fence had cleared. But where an empty or
+over-long principal or project belonged to an attempt reconciled as not applied,
+it used to open and export without error, since a key that did not apply carries
+only itself into a snapshot; and where the attempt was still unsettled at the end
+of the history, it used to open fenced, as any unsettled attempt does. Those are
+refused too, because validation judges an attempt when it is appended, before
+anything settles it: a commit cannot know whether the attempt will apply, and
+replay applies the validation a commit does. Only a direct commit could have
+written such a record, or, before these bounds existed, an admission with a
+principal or key past 4096 bytes or under a capsule whose project was. A compacted
+snapshot never holds a key, principal or project outside 1 to 4096 bytes, since
+its codec neither writes nor reads one, so `restore_compacted` holds what a
+settled key carries to the same lengths by decoding it, and validation holds the
+records above the floor to them. A key reconciled as not applied carries neither
+its attempt's principal nor its project, so a compacted snapshot exported before
+these bounds from a history holding such an attempt below its floor still
+restores, although the history itself is now refused.
+
+A `PTRCS002` snapshot, or a
 `PTREX001` section, is refused with `PTR_COMPACTED_VERSION` rather than read: a
 key restored from it has no attempt and no identity, so this build could only
 answer any action under it — the defect — or invent a binding.
@@ -394,6 +448,33 @@ the code before the fix:
   `register_execution_session` and by `AdmissionPolicy::admit`, and the longest
   one allowed spends a key and still exports, restores and is answered
   (`a_principal_longer_than_a_snapshot_carries_is_refused_before_it_can_spend_a_key`);
+- a keyed attempt whose principal is empty or past `MAX_PRINCIPAL_BYTES` is
+  refused with `InvalidEffectPrincipal` at commit, appending nothing, and a
+  history holding it, with its key reconciled as applied, reconciled as not
+  applied or left unsettled, is refused the same way by `PtrRuntime::replay`,
+  `open_durable`, `open_durable_at` and `restore_recovery_snapshot`; an unkeyed
+  attempt naming the same principal is recorded, reconciled, exported and opened
+  on each of those paths; the longest principal allowed, and ones with
+  surrounding whitespace or a control character that no session can be
+  registered as, committed directly under a key and reconciled as applied, are
+  opened on each of those paths, export and restore, and each key stays bound to
+  its principal, refusing a session's retry
+  (`a_keyed_attempt_whose_principal_no_snapshot_carries_is_refused_at_commit_and_at_replay`);
+- a key past `MAX_KEY_BYTES` is refused by `prepare_execution_once` with
+  `InvalidKey` and at commit with `InvalidEffectKey`, reaching no executor, and a
+  history holding it is refused with `InvalidEffectKey` on the same four paths
+  however its key ended; the longest key allowed is opened on each of them, and
+  is spent, exported, restored and answered
+  (`a_key_longer_than_a_snapshot_carries_is_refused_at_preparation_at_commit_and_at_replay`);
+- a keyed attempt under an empty project or one past `MAX_PROJECT_BYTES` is
+  refused with `InvalidEffectProject` at commit, and a history holding it on the
+  same four paths however its key ended, while an unkeyed one is recorded,
+  exported and opened on each; through admission, under a capsule committed with
+  such a project, it is refused as `Audit(InvalidEffectProject { .. })` before it
+  is recorded, reaching no executor and leaving no fence; the longest project
+  allowed is opened on each path, and spends a key through admission and still
+  exports, restores and is answered
+  (`a_keyed_attempt_whose_project_no_snapshot_carries_is_refused_at_commit_at_replay_and_at_admission`);
 - a detached retry names its own key's attempt when another key settled equal bytes,
   and after a compacted round trip; a refusal names the attempt that settled the
   key, not the first attempt under it
@@ -445,6 +526,28 @@ the code before the fix:
   replayed, and the key then holds what that later attempt's settlement
   established — no binding at all if it is reconciled as not applied. No path
   through admission writes such a record.
+- **An attempt's target and operation are not bounded.** The materialized
+  projection records them as `effect:{index}:target` and
+  `effect:{index}:operation`, and the lifecycle section writes every materialized
+  value as a string of 1 to 4096 bytes, so an attempt, keyed or not, whose target
+  or operation is empty or longer leaves every later export failing, as it did
+  before the bounds above. Admission requires both to be identifiers and the
+  target to be a committed capsule, but bounds neither's length, so a grant with
+  an operation past 4096 bytes reaches it. The bounds above cover each string a
+  settled key carries into the execution section and nothing else; strings other
+  records materialize are no more bounded by validation than these two.
+- **The settled keys are not bounded in total.** `ExecutionObligations::encode`
+  writes every settled key into the one execution section, which holds at most
+  `MAX_SECTION_BYTES` (8 MiB) and `MAX_SECTION_ITEMS` (65,536) entries, and an
+  applied key carries its retained response of up to `MAX_RETAINED_RESPONSE`
+  (1 MiB). Nothing removes a settled key: settling only adds one, and a restart or
+  a compacted round trip rebuilds them all. So eight keyed effects each settled
+  with a full-size response, or 65,537 distinct settled keys, make every later
+  `export_compacted_snapshot` fail with `PTR_COMPACTED_SECTION_LIMIT` for the rest
+  of the runtime's life although the fence has cleared and no string is out of
+  bounds, through admission alone. This predates the bounds above, which do not
+  reach it; closing it needs a retention rule for settled keys or a layout that
+  does not put them all in one section.
 - **A key is bound to the principal its attempt recorded**, which for a peer is the
   admission policy's principal at the time. A policy that renames a peer's
   principal therefore makes that peer's earlier keys refuse its retries.

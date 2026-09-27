@@ -99,9 +99,30 @@ pub enum RuntimeError {
         covers: CommitIndex,
         last_applied: CommitIndex,
     },
-    /// An at-most-once key is not a well-formed identifier.
+    /// An at-most-once key is not a well-formed identifier, or is longer than
+    /// [`execution::MAX_KEY_BYTES`], the most a compacted snapshot carries.
     InvalidEffectKey {
         key: String,
+    },
+    /// A keyed attempt names a principal that is empty or longer than
+    /// [`execution::MAX_PRINCIPAL_BYTES`].
+    ///
+    /// A key settled or reconciled as applied carries its attempt's principal
+    /// into every later compacted snapshot, so a principal no snapshot can carry
+    /// would leave the runtime unable to export once the attempt's fence had
+    /// cleared. Only the length is checked, because that is all a snapshot
+    /// needs, so a principal no session could be registered as is recorded as
+    /// given. An unkeyed attempt never enters a settled key, so its principal
+    /// is recorded as given whatever its length.
+    InvalidEffectPrincipal {
+        principal: String,
+    },
+    /// A keyed attempt names a project that is empty or longer than
+    /// [`execution::MAX_PROJECT_BYTES`], for the reason
+    /// [`RuntimeError::InvalidEffectPrincipal`] gives. An unkeyed attempt's
+    /// project is recorded as given.
+    InvalidEffectProject {
+        project: ProjectId,
     },
     /// A second attempt under a key whose first attempt is still unsettled. Two
     /// live attempts would make the key meaningless, and a settlement could not
@@ -677,10 +698,33 @@ impl PtrRuntime {
                     last_applied: CommitIndex(self.state.last_applied),
                 })
             }
-            LedgerEvent::EffectAttempted { key, .. } => {
+            LedgerEvent::EffectAttempted {
+                key,
+                project,
+                principal,
+                ..
+            } => {
+                // An unkeyed attempt never enters a settled key, so what it
+                // names is recorded as given.
                 let Some(key) = key else { return Ok(()) };
-                if !execution::valid_identifier(key) {
+                // A settled key carries itself, and once applied its attempt's
+                // project and principal, into every later compacted snapshot.
+                // Refused here, before append and again during replay, rather
+                // than at an export that would then fail for good. The project
+                // and principal are held to the length a snapshot carries and
+                // no more; the key is also an identifier, as at preparation.
+                if !execution::valid_key(key) {
                     return Err(RuntimeError::InvalidEffectKey { key: key.clone() });
+                }
+                if !execution::valid_recorded_principal(principal) {
+                    return Err(RuntimeError::InvalidEffectPrincipal {
+                        principal: principal.clone(),
+                    });
+                }
+                if !execution::valid_project(project) {
+                    return Err(RuntimeError::InvalidEffectProject {
+                        project: project.clone(),
+                    });
                 }
                 if self.execution.key_in_flight(key) {
                     return Err(RuntimeError::EffectKeyInFlight { key: key.clone() });

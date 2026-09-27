@@ -42,8 +42,23 @@ const LIFECYCLE_MAGIC: &[u8; 8] = b"PTRLC001";
 const HEADER: usize = 80;
 const DIGEST_BYTES: usize = 32;
 const MAX_SECTION_ITEMS: usize = 65_536;
-/// Also the bound on a principal, which the execution section carries for every
-/// spent key: [`MAX_PRINCIPAL_BYTES`](crate::execution::MAX_PRINCIPAL_BYTES).
+/// Also the bound on what the execution section carries for every settled key:
+/// the key itself ([`MAX_KEY_BYTES`](crate::execution::MAX_KEY_BYTES)) and, for
+/// one that applied, its attempt's project
+/// ([`MAX_PROJECT_BYTES`](crate::execution::MAX_PROJECT_BYTES)) and principal
+/// ([`MAX_PRINCIPAL_BYTES`](crate::execution::MAX_PRINCIPAL_BYTES)). A keyed
+/// attempt whose key, project or principal is empty or longer is refused at
+/// commit and replay, and decoding refuses the same, so no string in the
+/// settled half of the section is outside this bound.
+///
+/// That bounds each string, not the section. Every settled key, with an
+/// applied one's retained response of up to
+/// [`MAX_RETAINED_RESPONSE`](ptr_ledger::MAX_RETAINED_RESPONSE), is written
+/// into the one execution section, which [`MAX_SECTION_BYTES`] and
+/// `MAX_SECTION_ITEMS` bound, and nothing removes a settled key. So eight keys
+/// each retaining a full-size response, or more than `MAX_SECTION_ITEMS`
+/// settled keys, make every later export fail with
+/// [`CompactedError::SectionLimit`] although no string is out of bounds.
 pub(crate) const MAX_STRING_BYTES: usize = 4096;
 /// Bound on one encoded section, checked before any allocation driven by a count.
 pub const MAX_SECTION_BYTES: usize = 8 * 1024 * 1024;

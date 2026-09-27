@@ -14,8 +14,11 @@
 //! The request is the action without the position it was issued at. Admission
 //! requires a retry to carry the current revision and generation, so the retry
 //! is compared at the ones its attempt recorded; compared as recorded, no retry
-//! could be answered once either had moved. And a principal too long for a
-//! snapshot to carry is refused before it can spend a key.
+//! could be answered once either had moved. And whatever a settled key carries
+//! into a snapshot is refused before it can be spent when no snapshot could
+//! carry it: a key at preparation, a principal where a session is created, and
+//! a keyed attempt's key, principal and project wherever a record is validated,
+//! which is at commit and wherever stored history is rebuilt alike.
 //!
 //! Every property is checked where the entry is built: live, after an ordinary
 //! restart that replays the log, and after a compacted round trip.
@@ -25,12 +28,13 @@ mod common;
 use common::{fixture, scope, TTL};
 use ptr_config::PtrConfig;
 use ptr_core::action_head::ActionIr;
-use ptr_ledger::{integrity, FileLedger, LedgerEvent};
+use ptr_ledger::{integrity, CommittedEvent, FileLedger, LedgerEvent};
 use ptr_runtime::compacted::{CompactedAnchor, CompactedError};
+use ptr_runtime::persistence::SnapshotAnchor;
 use ptr_runtime::{execution::*, PtrRuntime, RuntimeError};
 use ptr_types::{
     CapabilityId, CapsuleId, CommitIndex, Effect, Generation, NodeId, Probability, ProjectId,
-    RequestId, TypeId, VerificationLevel,
+    RequestId, Revision, TypeId, VerificationLevel,
 };
 use ptr_verifier::{VerificationReport, VerificationStatus, Verifier};
 use std::path::PathBuf;
@@ -766,6 +770,355 @@ fn a_principal_longer_than_a_snapshot_carries_is_refused_before_it_can_spend_a_k
     let permit = once(&restored, &session, &action, "invoice-7");
     assert_eq!(
         restored.execute_prepared(&session, permit).unwrap(),
+        b"applied verified payload"
+    );
+    assert_eq!(echo.calls(), 1);
+}
+
+/// An attempt record for `action` as a host commits it directly, or a log
+/// replays it, rather than as admission builds it: under `key`, naming
+/// `project` and `principal`.
+fn recorded(action: &ActionIr, key: Option<&str>, project: &str, principal: &str) -> LedgerEvent {
+    LedgerEvent::EffectAttempted {
+        key: key.map(str::to_owned),
+        project: ProjectId::from(project),
+        principal: principal.to_owned(),
+        target: action.target.clone(),
+        operation: action.operation.clone(),
+        capability: action.capability.clone(),
+        effect: action.effect,
+        generation: action.generation,
+        revision: action.revision,
+        verification: VerificationLevel::Deterministic,
+        action_digest: action_digest(action),
+    }
+}
+
+/// A recovery snapshot of `history`, framed as `export_recovery_snapshot`
+/// frames one, with the anchor a host would retain for it. A runtime that
+/// refuses a history cannot export one of it, so it is framed here; the
+/// history holds effect records only, and those move no revision.
+fn recovery_snapshot(history: &[CommittedEvent]) -> (Vec<u8>, SnapshotAnchor) {
+    let log = integrity::encode_log(history).unwrap();
+    let anchor = integrity::decode_log(&log).unwrap().anchor();
+    let mut bytes = b"PTRSN001".to_vec();
+    bytes.extend_from_slice(&0_u64.to_le_bytes());
+    bytes.extend_from_slice(&anchor.index.0.to_le_bytes());
+    bytes.extend_from_slice(&(log.len() as u64).to_le_bytes());
+    bytes.extend_from_slice(&anchor.digest);
+    bytes.extend_from_slice(&log);
+    let digest = integrity::sha256(&bytes);
+    bytes.extend_from_slice(&digest);
+    let trusted = SnapshotAnchor {
+        revision: Revision(0),
+        log: anchor,
+        digest,
+    };
+    (bytes, trusted)
+}
+
+/// Rebuild a runtime from a history holding `attempt` at index 1, reconciled
+/// as `applied` when that is given and left unsettled otherwise, on every path
+/// that rebuilds one from stored history, and assert that each refuses it with
+/// `expected` or, for `None`, opens it. The paths are `PtrRuntime::replay`,
+/// `open_durable` and `open_durable_at` over a log holding the history, and
+/// `restore_recovery_snapshot` over a recovery snapshot of it, through which
+/// `read_recovery_snapshot` and `restore_durable_snapshot` restore too.
+fn assert_rebuilt(attempt: &LedgerEvent, applied: Option<bool>, expected: Option<RuntimeError>) {
+    let mut events = vec![attempt.clone()];
+    if let Some(applied) = applied {
+        events.push(LedgerEvent::EffectReconciled {
+            attempt: CommitIndex(1),
+            applied,
+            evidence: "operator".into(),
+        });
+    }
+    let history: Vec<CommittedEvent> = events
+        .into_iter()
+        .enumerate()
+        .map(|(offset, event)| CommittedEvent {
+            index: CommitIndex(offset as u64 + 1),
+            event,
+        })
+        .collect();
+
+    let temp = Temp::new();
+    let anchor = {
+        let mut log = FileLedger::open(temp.log()).unwrap();
+        for committed in &history {
+            let index = log.append_durable(committed.event.clone()).unwrap();
+            assert_eq!(index, committed.index);
+        }
+        log.anchor().unwrap()
+    };
+    let (snapshot, trusted) = recovery_snapshot(&history);
+    let rebuilt = [
+        (
+            "replay",
+            PtrRuntime::replay(PtrConfig::default(), &history).err(),
+        ),
+        (
+            "open_durable",
+            PtrRuntime::open_durable(PtrConfig::default(), temp.log()).err(),
+        ),
+        (
+            "open_durable_at",
+            PtrRuntime::open_durable_at(PtrConfig::default(), temp.log(), anchor).err(),
+        ),
+        (
+            "restore_recovery_snapshot",
+            PtrRuntime::restore_recovery_snapshot(PtrConfig::default(), &snapshot, trusted).err(),
+        ),
+    ];
+    for (path, outcome) in rebuilt {
+        assert_eq!(
+            outcome, expected,
+            "{path}, reconciled as applied: {applied:?}"
+        );
+    }
+}
+
+/// Commit an unkeyed attempt, reconcile it as applied and export, and rebuild
+/// a history of it on every path: an attempt without a key enters no settled
+/// key, so whatever it names, the runtime opens it and exports once its fence
+/// has cleared.
+fn commit_unkeyed_and_export(runtime: &mut PtrRuntime, unkeyed: LedgerEvent) {
+    let attempt = runtime.commit(unkeyed.clone()).unwrap();
+    runtime.reconcile_effect(attempt, true, "operator").unwrap();
+    runtime.export_compacted_snapshot().unwrap();
+    assert_rebuilt(&unkeyed, Some(true), None);
+}
+
+/// A synchronous session for `principal` whose one grant is `action` in
+/// `project`.
+fn synchronous_in(
+    runtime: &mut PtrRuntime,
+    principal: &str,
+    project: &ProjectId,
+    action: &ActionIr,
+    echo: &Echo,
+) -> ExecutionSession {
+    let grant = ExecutionGrant::new(
+        ActionScope {
+            project: project.clone(),
+            ..scope(action)
+        },
+        RequiredVerification::Deterministic,
+        echo.clone(),
+        echo.clone(),
+    );
+    runtime
+        .register_execution_session(principal, vec![grant], TTL)
+        .unwrap()
+}
+
+#[test]
+fn a_keyed_attempt_whose_principal_no_snapshot_carries_is_refused_at_commit_and_at_replay() {
+    let (mut runtime, action) = fixture();
+    let longer = "a".repeat(MAX_PRINCIPAL_BYTES + 1);
+
+    // A key settled or reconciled as applied carries its attempt's principal
+    // into every later snapshot, as 1 to MAX_PRINCIPAL_BYTES bytes. `commit`
+    // and replay took any principal, so an attempt committed under a key with
+    // an empty one or a longer one was accepted and, once settled or reconciled
+    // as applied, every export failed with PTR_COMPACTED_SECTION_LIMIT although
+    // the fence had cleared. It is refused before anything is appended, and a
+    // history holding it is refused wherever it is rebuilt however its key
+    // ended, reconciled as not applied or left unsettled included, because a
+    // commit cannot know how its attempt will end.
+    for principal in ["", longer.as_str()] {
+        let keyed = recorded(&action, Some("invoice-7"), "p", principal);
+        let refused = RuntimeError::InvalidEffectPrincipal {
+            principal: principal.to_owned(),
+        };
+        let before = runtime.committed_events().len();
+        assert_eq!(
+            runtime.commit(keyed.clone()).err(),
+            Some(refused.clone()),
+            "{principal:?}"
+        );
+        assert_eq!(runtime.committed_events().len(), before);
+        for applied in [Some(true), Some(false), None] {
+            assert_rebuilt(&keyed, applied, Some(refused.clone()));
+        }
+
+        // Without a key the same principal is recorded as given.
+        commit_unkeyed_and_export(&mut runtime, recorded(&action, None, "p", principal));
+    }
+
+    // The control: the check is the length a snapshot carries and nothing
+    // more, so the longest principal allowed and ones no session could be
+    // registered as, with surrounding whitespace or a control character, are
+    // recorded as given. Each, committed directly under a key and reconciled
+    // as applied, is rebuilt on every path, exports and restores, and the key
+    // stays bound to it, so a session's retry under it is refused.
+    let longest = "a".repeat(MAX_PRINCIPAL_BYTES);
+    let mut spent = Vec::new();
+    for (key, principal) in [
+        ("invoice-7", longest.as_str()),
+        ("invoice-8", " alice"),
+        ("invoice-9", "bell\u{7}"),
+    ] {
+        let keyed = recorded(&action, Some(key), "p", principal);
+        assert_rebuilt(&keyed, Some(true), None);
+        let attempt = runtime.commit(keyed).unwrap();
+        runtime.reconcile_effect(attempt, true, "operator").unwrap();
+        spent.push((key, attempt));
+    }
+    let mut restored = round_trip(&runtime, &action);
+    let echo = Echo::default();
+    let alice = synchronous(&mut restored, "alice", &action, &echo);
+    for (key, attempt) in spent {
+        let permit = once(&restored, &alice, &action, key);
+        assert_eq!(
+            restored.execute_prepared(&alice, permit),
+            Err(ExecutionError::KeyBoundToAnotherAction { attempt }),
+            "{key}"
+        );
+    }
+    assert_eq!(echo.calls(), 0);
+}
+
+#[test]
+fn a_key_longer_than_a_snapshot_carries_is_refused_at_preparation_at_commit_and_at_replay() {
+    let (mut runtime, action) = fixture();
+    let echo = Echo::default();
+    let alice = synchronous(&mut runtime, "alice", &action, &echo);
+    let longer = "k".repeat(MAX_KEY_BYTES + 1);
+
+    // A snapshot carries every settled key, whatever its outcome, so a key this
+    // long made every export after its attempt settled fail. Preparation,
+    // commit and replay each accepted it; each refuses it now, before it is
+    // spent, and a history holding it is refused wherever it is rebuilt
+    // however its key ended.
+    assert_eq!(
+        runtime
+            .prepare_execution_once(&alice, &ProjectId::from("p"), &action, TTL, longer.as_str())
+            .err(),
+        Some(ExecutionError::InvalidKey)
+    );
+    let keyed = recorded(&action, Some(&longer), "p", "alice");
+    let refused = RuntimeError::InvalidEffectKey { key: longer };
+    assert_eq!(runtime.commit(keyed.clone()).err(), Some(refused.clone()));
+    for applied in [Some(true), Some(false), None] {
+        assert_rebuilt(&keyed, applied, Some(refused.clone()));
+    }
+    assert!(attempts(&runtime).is_empty());
+    assert_eq!(echo.calls(), 0);
+
+    // The control: the longest key allowed is rebuilt on every path from a
+    // history that holds it, and through admission it is spent, and the
+    // runtime still exports, restores and answers its retry from history.
+    let longest = "k".repeat(MAX_KEY_BYTES);
+    assert_rebuilt(
+        &recorded(&action, Some(&longest), "p", "alice"),
+        Some(true),
+        None,
+    );
+    let permit = once(&runtime, &alice, &action, &longest);
+    runtime.execute_prepared(&alice, permit).unwrap();
+    let mut restored = round_trip(&runtime, &action);
+    let alice = synchronous(&mut restored, "alice", &action, &echo);
+    let permit = once(&restored, &alice, &action, &longest);
+    assert_eq!(
+        restored.execute_prepared(&alice, permit).unwrap(),
+        b"applied verified payload"
+    );
+    assert_eq!(echo.calls(), 1);
+}
+
+#[test]
+fn a_keyed_attempt_whose_project_no_snapshot_carries_is_refused_at_commit_at_replay_and_at_admission(
+) {
+    let (mut runtime, action) = fixture();
+    let longer = ProjectId("p".repeat(MAX_PROJECT_BYTES + 1));
+
+    // A settled key carries its attempt's project too, and `ProjectId` checks
+    // nothing: a keyed attempt under an empty project or one this long was
+    // committed and replayed, and every export after it was settled or
+    // reconciled as applied failed. A history holding one is refused wherever
+    // it is rebuilt however its key ended.
+    for project in ["", longer.0.as_str()] {
+        let keyed = recorded(&action, Some("invoice-7"), project, "alice");
+        let refused = RuntimeError::InvalidEffectProject {
+            project: ProjectId::from(project),
+        };
+        let before = runtime.committed_events().len();
+        assert_eq!(runtime.commit(keyed.clone()).err(), Some(refused.clone()));
+        assert_eq!(runtime.committed_events().len(), before);
+        for applied in [Some(true), Some(false), None] {
+            assert_rebuilt(&keyed, applied, Some(refused.clone()));
+        }
+
+        // Without a key the same project is recorded as given.
+        commit_unkeyed_and_export(&mut runtime, recorded(&action, None, project, "alice"));
+    }
+
+    // Admission reaches the same check. A capsule committed under a project
+    // that long (which its own lifecycle entry already keeps out of every
+    // snapshot) can be granted and prepared under a key, and the attempt is
+    // refused before it is recorded: nothing is attempted, nothing executes and
+    // no fence is left.
+    let echo = Echo::default();
+    runtime
+        .commit(LedgerEvent::CapsuleCommitted {
+            project: longer.clone(),
+            capsule: CapsuleId::from("capsule:far"),
+            generation: Generation(1),
+        })
+        .unwrap();
+    let far = ActionIr {
+        target: "capsule:far".into(),
+        ..action.clone()
+    };
+    let alice = synchronous_in(&mut runtime, "alice", &longer, &far, &echo);
+    let permit = runtime
+        .prepare_execution_once(&alice, &longer, &far, TTL, "invoice-9")
+        .unwrap();
+    let before = attempts(&runtime);
+    assert_eq!(
+        runtime.execute_prepared(&alice, permit),
+        Err(ExecutionError::Audit(Box::new(
+            RuntimeError::InvalidEffectProject { project: longer }
+        )))
+    );
+    assert_eq!(attempts(&runtime), before);
+    assert!(runtime.unsettled_effects().is_empty());
+    assert_eq!(echo.calls(), 0);
+
+    // The control: the longest project allowed is rebuilt on every path from a
+    // history that holds it under a key, and through admission it spends a
+    // key, and the runtime still exports, restores and answers its retry.
+    let (mut runtime, action) = fixture();
+    let longest = ProjectId("p".repeat(MAX_PROJECT_BYTES));
+    assert_rebuilt(
+        &recorded(&action, Some("invoice-7"), &longest.0, "alice"),
+        Some(true),
+        None,
+    );
+    runtime
+        .commit(LedgerEvent::CapsuleCommitted {
+            project: longest.clone(),
+            capsule: CapsuleId::from("capsule:far"),
+            generation: Generation(1),
+        })
+        .unwrap();
+    let far = ActionIr {
+        target: "capsule:far".into(),
+        ..action
+    };
+    let alice = synchronous_in(&mut runtime, "alice", &longest, &far, &echo);
+    let permit = runtime
+        .prepare_execution_once(&alice, &longest, &far, TTL, "invoice-7")
+        .unwrap();
+    runtime.execute_prepared(&alice, permit).unwrap();
+    let mut restored = round_trip(&runtime, &far);
+    let alice = synchronous_in(&mut restored, "alice", &longest, &far, &echo);
+    let permit = restored
+        .prepare_execution_once(&alice, &longest, &far, TTL, "invoice-7")
+        .unwrap();
+    assert_eq!(
+        restored.execute_prepared(&alice, permit).unwrap(),
         b"applied verified payload"
     );
     assert_eq!(echo.calls(), 1);

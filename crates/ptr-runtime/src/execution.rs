@@ -22,14 +22,43 @@ const MAX_GRANTS: usize = 64;
 const ACTION_DOMAIN: &[u8] = b"PTREXEC01-ACTION";
 
 /// The longest principal, in bytes, that a session may be registered or a peer
-/// admitted as.
+/// admitted as, and that a keyed attempt record may name.
 ///
 /// Every attempt records its principal, and a compacted snapshot carries it for
-/// each spent key as a string of at most this many bytes. A spent key is carried
-/// by every later snapshot, so a longer principal would make every export after
-/// its first keyed effect fail. It is refused with
-/// [`ExecutionError::InvalidSession`] before it can spend one.
+/// each key settled or reconciled as applied as a string of 1 to this many
+/// bytes. A spent key is carried by every later snapshot, so a longer principal
+/// would make every export after its first keyed effect fail. It is refused
+/// with [`ExecutionError::InvalidSession`] before it can spend one, and a keyed
+/// `EffectAttempted` whose principal is empty or longer is refused at commit
+/// and replay with [`RuntimeError::InvalidEffectPrincipal`]. That check is the
+/// length alone, the only thing a snapshot needs, so a keyed attempt may name a
+/// principal no session could be registered as, one with surrounding
+/// whitespace or a control character; a key it spends is refused to every
+/// session's retry, since none can match that principal. An unkeyed attempt
+/// never enters a settled key, so its principal is recorded as given.
 pub const MAX_PRINCIPAL_BYTES: usize = super::compacted::MAX_STRING_BYTES;
+
+/// The longest at-most-once key, in bytes.
+///
+/// A compacted snapshot carries every settled key, whatever its outcome, as a
+/// string of 1 to this many bytes, and every later snapshot carries it again,
+/// so a longer key would make every export after its attempt settled fail.
+/// [`PtrRuntime::prepare_execution_once`] refuses one with
+/// [`ExecutionError::InvalidKey`] before it can be spent, and a keyed
+/// `EffectAttempted` that names one is refused at commit and replay with
+/// [`RuntimeError::InvalidEffectKey`].
+pub const MAX_KEY_BYTES: usize = super::compacted::MAX_STRING_BYTES;
+
+/// The longest project, in bytes, that a keyed attempt record may name.
+///
+/// A key settled or reconciled as applied carries its attempt's project into
+/// every later compacted snapshot as a string of 1 to this many bytes.
+/// [`ProjectId`] checks nothing, so a keyed `EffectAttempted` whose project is
+/// empty or longer is refused at commit and replay with
+/// [`RuntimeError::InvalidEffectProject`]; through admission that refusal
+/// reaches the caller as [`ExecutionError::Audit`], with nothing attempted. An
+/// unkeyed attempt's project is recorded as given.
+pub const MAX_PROJECT_BYTES: usize = super::compacted::MAX_STRING_BYTES;
 
 /// The exact action an audit record commits to, domain-separated so a digest of
 /// these bytes cannot collide with a digest taken elsewhere in the system.
@@ -527,6 +556,8 @@ pub enum ExecutionError {
     UnknownAttempt {
         attempt: CommitIndex,
     },
+    /// An at-most-once key that is not a well-formed identifier or is longer
+    /// than [`MAX_KEY_BYTES`]. Refused at preparation, before it can be spent.
     InvalidKey,
     InvalidEvidence,
     /// No admission policy entry for this peer. A peer the host never bound is
@@ -943,6 +974,11 @@ impl PtrRuntime {
     /// The guarantee holds for as long as the attempt's record is retained. A
     /// floor that rises past it discards the memory, which is a retention
     /// obligation rather than something this layer can enforce.
+    ///
+    /// A key that is not a well-formed identifier, or is longer than
+    /// [`MAX_KEY_BYTES`], is refused with [`ExecutionError::InvalidKey`] before
+    /// anything else is checked: every later compacted snapshot carries a
+    /// settled key, so one no snapshot can carry must not be spent.
     pub fn prepare_execution_once(
         &self,
         session: &ExecutionSession,
@@ -952,7 +988,7 @@ impl PtrRuntime {
         key: impl Into<String>,
     ) -> Result<ExecutionPermit, ExecutionError> {
         let key = key.into();
-        if !valid_identifier(&key) {
+        if !valid_key(&key) {
             return Err(ExecutionError::InvalidKey);
         }
         self.prepare(session, project, action, ttl, Some(key))
@@ -1316,6 +1352,31 @@ pub(super) fn valid_identifier(value: &str) -> bool {
 /// An identifier short enough for a compacted snapshot to carry.
 fn valid_principal(value: &str) -> bool {
     valid_identifier(value) && value.len() <= MAX_PRINCIPAL_BYTES
+}
+
+/// A principal a compacted snapshot can carry for a keyed attempt: 1 to
+/// [`MAX_PRINCIPAL_BYTES`] bytes.
+///
+/// Only the length is checked, because only the length is what a snapshot
+/// needs; a session's principal is also an identifier (`valid_principal`), so
+/// every attempt admission records meets this.
+pub(super) fn valid_recorded_principal(value: &str) -> bool {
+    !value.is_empty() && value.len() <= MAX_PRINCIPAL_BYTES
+}
+
+/// An at-most-once key: an identifier short enough for a compacted snapshot to
+/// carry.
+pub(super) fn valid_key(value: &str) -> bool {
+    valid_identifier(value) && value.len() <= MAX_KEY_BYTES
+}
+
+/// A project a compacted snapshot can carry: 1 to [`MAX_PROJECT_BYTES`] bytes.
+///
+/// Only the length is checked, because only the length is what a snapshot
+/// needs; an admitted grant's project is also an identifier
+/// (`ActionScope::valid`).
+pub(super) fn valid_project(project: &ProjectId) -> bool {
+    !project.0.is_empty() && project.0.len() <= MAX_PROJECT_BYTES
 }
 
 fn deadline(ttl: Duration) -> Result<Instant, ExecutionError> {
