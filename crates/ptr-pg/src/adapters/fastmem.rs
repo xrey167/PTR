@@ -58,7 +58,8 @@ impl FastMemoryRecord {
 /// journal prefix up to `applied`, bound to the digest of the writes it
 /// claims to fold.
 ///
-/// The substrate checks the binding against the stored prefix when the
+/// The substrate checks the binding against the stored prefix, and the
+/// state's configuration against the memory's registration, when the
 /// checkpoint is stored and again when it is read; it never refolds the
 /// journal to check the state cells. That they are the fold of the bound
 /// writes is the writer's obligation, met by passing
@@ -458,9 +459,14 @@ impl PgSubstrate {
     /// The newest checkpoint whose binding matches the stored journal prefix,
     /// decoded and integrity-checked within the read snapshot.
     ///
-    /// Checkpoints are read with their prefix in one repeatable-read snapshot
-    /// and each one's binding is recomputed from the prefix; one that no longer
-    /// matches (it names a write that has since been removed) is skipped.
+    /// Checkpoints are read with their prefix and the memory's registration
+    /// in one repeatable-read snapshot, and each one's binding is recomputed
+    /// from the prefix; one that no longer matches (it names a write that has
+    /// since been removed) is skipped. The matching checkpoint is rechecked
+    /// against every rule [`put_checkpoint`](Self::put_checkpoint) applies
+    /// that the stored rows determine: its decoded state has the registered
+    /// configuration and folds exactly its applied write, so a row written
+    /// around `put_checkpoint` is refused rather than handed out.
     /// Returns `None` if no matching checkpoint exists. State cells are not
     /// compared with a refold: they are the fold of the bound writes only if
     /// the writer met [`put_checkpoint`](Self::put_checkpoint)'s obligation.
@@ -469,8 +475,11 @@ impl PgSubstrate {
     /// # Errors
     /// Propagates database errors and returns `PgError::CorruptRow` for
     /// malformed bindings, invalid state encodings in a matching checkpoint,
-    /// or a decoded sequence number that disagrees with its row. These errors
-    /// are not skipped in favor of an older checkpoint.
+    /// a decoded sequence number that disagrees with its row, or a decoded
+    /// state whose configuration differs from the memory's registration;
+    /// a registration outside [`check_config`]'s ranges is refused as for
+    /// [`load_memory`](Self::load_memory). These errors are not skipped in
+    /// favor of an older checkpoint.
     pub async fn latest_checkpoint(
         &mut self,
         memory: &str,
@@ -518,6 +527,16 @@ impl PgSubstrate {
             if state.applied() != applied {
                 return Err(corrupt_checkpoint(
                     "the state's applied sequence differs from the row",
+                ));
+            }
+            // The row's foreign key cascades from the registration, so in one
+            // snapshot a checkpoint has its memory.
+            let config = load_config(&transaction, work.as_str(), memory, false)
+                .await?
+                .ok_or_else(|| corrupt_checkpoint("the checkpoint's memory is not registered"))?;
+            if *state.config() != config {
+                return Err(corrupt_checkpoint(
+                    "the state's shape differs from the memory's",
                 ));
             }
             transaction.commit().await.map_err(database)?;

@@ -80,25 +80,39 @@ pub struct SearchResults {
 }
 
 impl PgSubstrate {
-    /// Register an embedding space and build its HNSW index.
+    /// Register an embedding space and build its HNSW index, in one
+    /// transaction.
     ///
     /// Idempotent for an identical definition; a different definition under
     /// an existing id is refused. The index is partial (`WHERE space = id`) over
     /// the column cast to the space's fixed dimension, so one table holds any
     /// number of spaces and each gets an index of its own shape.
-    pub async fn register_space(&self, space: &EmbeddingSpace) -> Result<(), PgError> {
+    ///
+    /// The catalog row, the check against a stored definition and the index
+    /// (a plain `CREATE INDEX`, which runs inside a transaction and holds a
+    /// `SHARE` lock on the documents table while it builds, so writes of
+    /// documents wait for it) commit together or not at all: when the index
+    /// cannot be built (a lock timeout, missing privileges, resources), the
+    /// error is returned and a space that was not registered before stays
+    /// unregistered, so no document is indexed under a space that lacks its
+    /// index. Registering an identical definition again builds the index if
+    /// it is missing. The index is looked up by name only: a relation already
+    /// holding that name in the derived schema is taken for it.
+    pub async fn register_space(&mut self, space: &EmbeddingSpace) -> Result<(), PgError> {
         if space.dims == 0 || space.dims > 4000 {
             return Err(PgError::DimensionMismatch {
                 expected: 4000,
                 actual: usize::from(space.dims),
             });
         }
-        let derived = &self.schemas.derived;
+        let derived = self.schemas.derived.clone();
         check_text("embedding_space.model", &space.model)?;
         check_text("embedding_space.revision", &space.revision)?;
         let id = space.id.as_str();
         let dims = i32::from(space.dims);
-        self.client
+        // Dropped on any early return, which rolls the registration back.
+        let transaction = self.read_committed().await?;
+        transaction
             .execute(
                 &format!(
                     "INSERT INTO {derived}.embedding_space (id, model, revision, dims, metric) \
@@ -108,8 +122,9 @@ impl PgSubstrate {
             )
             .await
             .map_err(database)?;
-        let row = self
-            .client
+        // A separate statement, so under READ COMMITTED it sees a definition
+        // another registration committed while this one's insert waited.
+        let row = transaction
             .query_one(
                 &format!(
                     "SELECT model, revision, dims FROM {derived}.embedding_space WHERE id = $1"
@@ -125,14 +140,15 @@ impl PgSubstrate {
             });
         }
         // `id` is an Identifier and `dims` an integer: nothing here needs quoting.
-        self.client
+        transaction
             .batch_execute(&format!(
                 "CREATE INDEX IF NOT EXISTS sd_hnsw_{id} ON {derived}.search_document \
                  USING hnsw ((embedding::halfvec({dims})) halfvec_cosine_ops) \
                  WHERE space = '{id}'"
             ))
             .await
-            .map_err(database)
+            .map_err(database)?;
+        transaction.commit().await.map_err(database)
     }
 
     /// Index a document for a live capsule generation.

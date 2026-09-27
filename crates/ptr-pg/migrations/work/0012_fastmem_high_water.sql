@@ -18,6 +18,12 @@
 -- numbers of writes revoked before this version were not kept, so a
 -- journal whose last writes were revoked before it can take those numbers
 -- once more.
+--
+-- A registration whose state exceeds MAX_STATE_CELLS, which migration 9's
+-- NOT VALID check leaves in place and every loader refuses as corrupt, keeps
+-- mark 0: rewriting its row would check that constraint and fail the
+-- upgrade. So does a memory with no journal, whose mark is 0 anyway. No
+-- write or restore reads the mark of a registration the loaders refuse.
 ALTER TABLE {{work}}.fastmem_memory
     ADD COLUMN last_seq bigint NOT NULL DEFAULT 0,
     ADD CONSTRAINT fastmem_memory_last_seq_below_limit
@@ -48,11 +54,16 @@ CREATE TRIGGER fastmem_memory_never_changed
     BEFORE UPDATE ON {{work}}.fastmem_memory
     FOR EACH ROW EXECUTE FUNCTION {{work}}.check_fastmem_memory_change();
 
+-- PostgreSQL checks every CHECK constraint of a row an UPDATE writes, NOT
+-- VALID ones included, so only rows that constraint admits are rewritten.
 UPDATE {{work}}.fastmem_memory AS memory
     SET last_seq = least(
-        coalesce((SELECT max(seq) FROM {{work}}.fastmem_write AS write
-                  WHERE write.memory = memory.id), 0),
-        9223372036854775806);
+        (SELECT max(seq) FROM {{work}}.fastmem_write AS write
+         WHERE write.memory = memory.id),
+        9223372036854775806)
+    WHERE memory.heads::bigint * memory.key_dim * memory.value_dim <= 16777216
+      AND EXISTS (SELECT 1 FROM {{work}}.fastmem_write AS write
+                  WHERE write.memory = memory.id);
 
 -- A write's sequence number exceeds its memory's high-water mark, which then
 -- becomes that number. The mark is read by the no-change update that orders

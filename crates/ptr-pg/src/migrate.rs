@@ -121,6 +121,11 @@ pub const WORK_MIGRATIONS: &[Migration] = &[
         name: "fastmem_high_water",
         sql: include_str!("../migrations/work/0012_fastmem_high_water.sql"),
     },
+    Migration {
+        version: 13,
+        name: "replay_clock_and_cascades",
+        sql: include_str!("../migrations/work/0013_replay_clock_and_cascades.sql"),
+    },
 ];
 
 impl Migration {

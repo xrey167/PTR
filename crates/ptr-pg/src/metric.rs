@@ -21,8 +21,13 @@ pub fn metric_sql(spec: MetricSpec, schemas: &SchemaSet) -> String {
     };
     let triaged = format!("{work}.branch_triage t JOIN {work}.branch b ON b.id = t.branch");
     let (numerator, denominator, from, mut conditions, stamp) = match spec.metric {
+        // Both counts are of eligible branches. Verification alone never
+        // auto-proposes, but the check work migration 9 added for it is NOT
+        // VALID: an ineligible auto-proposal stored before it (record_triage
+        // stored any triage then) is in neither count, so the numerator
+        // never counts a branch the denominator leaves out.
         Metric::AutoProposeShare => (
-            "count(*) FILTER (WHERE t.decision = 'auto_propose')",
+            "count(*) FILTER (WHERE t.eligible AND t.decision = 'auto_propose')",
             "count(*) FILTER (WHERE t.eligible)",
             triaged,
             Vec::new(),
@@ -137,6 +142,13 @@ mod tests {
                     assert_eq!(
                         sql.contains("r.commit_index > o.commit_index"),
                         metric == Metric::RevertShare,
+                        "{sql}"
+                    );
+                    // The auto-propose share counts eligible branches on
+                    // both sides of the fraction.
+                    assert_eq!(
+                        sql.contains("FILTER (WHERE t.eligible AND t.decision = 'auto_propose')"),
+                        metric == Metric::AutoProposeShare,
                         "{sql}"
                     );
                 }

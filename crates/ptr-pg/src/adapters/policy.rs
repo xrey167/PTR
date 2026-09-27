@@ -3,7 +3,7 @@
 
 use ptr_branch::{
     AutoThreshold, BranchId, CalibrationSample, PolicyRecord, ThresholdRule, TriageDecision,
-    TriageOutcome,
+    TriageOutcome, TriagePolicy,
 };
 
 use tokio_postgres::Row;
@@ -30,6 +30,28 @@ impl PgSubstrate {
     /// computed from samples paired with the wrong branches, would claim the
     /// same false guarantee. Either way the policy is refused with
     /// `PgError::InvalidPolicy` and nothing is written.
+    ///
+    /// The statement that reads the calibration branches, their triage rows
+    /// and their verdicts holds those rows `FOR SHARE` until the transaction
+    /// ends, so no other transaction deletes or rewrites what the rule was
+    /// rerun on before the policy commits, and once it commits its sample
+    /// rows keep every calibration branch from being deleted: their foreign
+    /// key is `ON DELETE RESTRICT`, which, unlike a `NO ACTION` key, refuses
+    /// the delete even in a statement that writes the branch again under its
+    /// id before it ends. So the triage row and verdict the rule was rerun on,
+    /// which go only with their branch, stay. A branch
+    /// erased by a transaction that commits while this one waits for its row
+    /// is not read at all, rewritten under its id or not, and the policy is
+    /// refused as naming a branch that is not an adjudicated calibration-slice
+    /// branch. A concurrent erasure can also end in a deadlock that
+    /// PostgreSQL resolves by failing one of the two transactions; this one
+    /// then returns `PgError::Database` and writes nothing.
+    ///
+    /// # Errors
+    /// Besides `PgError::InvalidPolicy`, refuses as `PgError::CorruptRow` a
+    /// calibration branch whose stored triage row its cited policy cannot
+    /// have produced, as [`adjudicated_samples`](Self::adjudicated_samples)
+    /// does, writing nothing.
     pub async fn record_policy(&mut self, record: &PolicyRecord) -> Result<(), PgError> {
         check_text("triage_policy.version", record.version())?;
         for branch in record.calibrated_on() {
@@ -61,9 +83,15 @@ impl PgSubstrate {
         // A manual record names no calibration branch (PolicyRecord refuses
         // one that does), so there is nothing to rerun.
         if record.rule() != ThresholdRule::Manual {
+            // Locked by the statement that reads them: a row erased after
+            // its snapshot is skipped once its eraser commits, never read
+            // unlocked from a later snapshot.
             let samples = transaction
                 .query(
-                    &format!("{} AND t.branch = ANY($1)", adjudicated_query(&work)),
+                    &format!(
+                        "{} AND t.branch = ANY($1) FOR SHARE OF b, t, o",
+                        adjudicated_query(&work)
+                    ),
                     &[&branches],
                 )
                 .await
@@ -194,6 +222,21 @@ impl PgSubstrate {
     /// branch order. A recorded policy's
     /// [`held_out`](PolicyRecord::held_out) of these are the adjudications
     /// its harm rate may be estimated from.
+    ///
+    /// Each row is rechecked against the policy it cites
+    /// ([`TriagePolicy::explains`]), as `record_triage` and work migration 10
+    /// check a row when it is written: rows stored before that check, or
+    /// around it, can hold a slice row no policy logs (one under a policy
+    /// with calibration rate zero, or with propensity one) or cite a version
+    /// no table recorded.
+    ///
+    /// # Errors
+    /// Refuses the whole read as `PgError::CorruptRow` rather than serve or
+    /// silently skip such a row: naming `branch_triage` for a row citing an
+    /// unrecorded policy or one its policy cannot have produced, and
+    /// `triage_policy` for a cited policy `TriagePolicy::new` refuses. The
+    /// calibration draw is not stored, so that a slice row was drawn into
+    /// the slice remains its writer's word.
     pub async fn adjudicated_samples(&self) -> Result<Vec<(BranchId, CalibrationSample)>, PgError> {
         let work = &self.schemas.work;
         self.client
@@ -209,35 +252,39 @@ impl PgSubstrate {
     }
 }
 
-/// Every adjudicated calibration-slice branch with its logged triage and
-/// verdict, as [`adjudicated_sample`] reads a row; callers append further
-/// conditions and the order. A branch is adjudicated at most once, so there is
-/// one row per branch.
+/// Every adjudicated calibration-slice branch with its logged triage, its
+/// verdict and the policy the triage cites, as [`adjudicated_sample`] reads a
+/// row; callers append further conditions, the order and any locking clause
+/// (the tables are `b`, `t` and `o`; the policy, `p`, is outer-joined and
+/// cannot be locked). A branch is adjudicated at most once, so there is one
+/// row per branch.
 fn adjudicated_query(work: &Identifier) -> String {
     format!(
         "SELECT t.branch, t.decision, t.eligible, t.calibration_slice, t.score, \
-                t.auto_propensity, o.outcome = 'adjudicated_harmful' \
+                t.auto_propensity, o.outcome = 'adjudicated_harmful', t.policy_version, \
+                p.threshold, p.calibration_rate \
          FROM {work}.branch_triage t \
+         JOIN {work}.branch b ON b.id = t.branch \
          JOIN {work}.branch_outcome o ON o.branch = t.branch \
          AND o.outcome IN ('adjudicated_harmful', 'adjudicated_harmless') \
+         LEFT JOIN {work}.triage_policy p ON p.version = t.policy_version \
          WHERE t.calibration_slice"
     )
 }
 
 /// One row of [`adjudicated_query`] as a calibration sample keyed by its
-/// branch.
+/// branch, once the policy it cites is shown to explain it.
 fn adjudicated_sample(row: &Row) -> Result<(BranchId, CalibrationSample), PgError> {
     let branch: String = row.get(0);
+    let corrupt = |reason: String| PgError::CorruptRow {
+        table: "branch_triage",
+        reason,
+    };
     let decision = match row.get::<_, &str>(1) {
         "auto_propose" => TriageDecision::AutoPropose,
         "escalate" => TriageDecision::Escalate,
         "discard" => TriageDecision::Discard,
-        other => {
-            return Err(PgError::CorruptRow {
-                table: "branch_triage",
-                reason: format!("decision {other:?}"),
-            })
-        }
+        other => return Err(corrupt(format!("decision {other:?}"))),
     };
     let triage = TriageOutcome {
         decision,
@@ -246,11 +293,29 @@ fn adjudicated_sample(row: &Row) -> Result<(BranchId, CalibrationSample), PgErro
         score: row.get(4),
         auto_propensity: row.get(5),
     };
+    let version: String = row.get(7);
+    // calibration_rate is NOT NULL, so a NULL is a version with no row.
+    let Some(rate) = row.get::<_, Option<f64>>(9) else {
+        return Err(corrupt(format!(
+            "calibration row {branch:?} cites policy {version:?}, which is not recorded"
+        )));
+    };
+    let threshold = match row.get::<_, Option<f32>>(8) {
+        None => AutoThreshold::Never,
+        Some(threshold) => AutoThreshold::AtLeast(threshold),
+    };
+    let policy = TriagePolicy::new(threshold, rate).map_err(|error| PgError::CorruptRow {
+        table: "triage_policy",
+        reason: format!("policy {version:?}: {error}"),
+    })?;
+    policy.explains(&triage).map_err(|error| {
+        corrupt(format!(
+            "calibration row {branch:?} is not one policy {version:?} can have produced: {error}"
+        ))
+    })?;
+    // explains admits a slice row only if it is eligible, so this holds.
     let sample = triage
         .adjudicate(row.get(6))
-        .ok_or_else(|| PgError::CorruptRow {
-            table: "branch_triage",
-            reason: format!("calibration row {branch:?} is not eligible"),
-        })?;
+        .ok_or_else(|| corrupt(format!("calibration row {branch:?} is not eligible")))?;
     Ok((BranchId(branch), sample))
 }

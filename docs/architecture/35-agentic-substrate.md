@@ -171,7 +171,11 @@ Retrieval runs in one read-only repeatable-read snapshot:
 - **Dense:** embeddings are stored as `halfvec` (a 768-dimensional vector is 1,544
   bytes and stays inline). Each registered embedding space gets a partial HNSW index
   over the column cast to its fixed dimension, `WHERE space = '<id>'`, so one table
-  holds any number of spaces. The query orders by the indexed expression alone, so
+  holds any number of spaces. `register_space` writes the catalog row and builds the
+  index in one transaction, so an index that cannot be built leaves a new space
+  unregistered rather than registered without it
+  (`a_space_whose_index_cannot_be_built_is_left_unregistered`). The query orders by
+  the indexed expression alone, so
   the planner can read the index in order
   (`the_filtered_vector_query_reads_its_space_s_hnsw_index`). An HNSW scan otherwise
   stops at `hnsw.ef_search` rows (40 by default) whatever the limit, so every query
@@ -199,6 +203,18 @@ Retrieval runs in one read-only repeatable-read snapshot:
   keeps only `Live`
   (`a_revoked_generation_is_dropped_although_it_is_still_the_live_one`,
   `search_hits_filtered_by_generation_validity_drop_a_revoked_live_generation`).
+  Promotion asks the same question again: `SearchHit::observe` takes the lifecycle's
+  validity answer for the hit's own capsule and generation and moves the hit to
+  `Observed` only on `Live`, so a revoked generation that is still the live one is
+  refused at use as well
+  (`a_revoked_generation_is_never_observed_although_it_is_still_the_live_one`).
+  A hit's capsule and generation are private, fixed by `SearchHit::new` and read
+  through accessors, so the generation `promote_verified` promotes is the one
+  `observe` asked about: a hit observed live can no longer be renamed to a revoked
+  generation and then promoted
+  (`a_hit_is_promoted_as_the_capsule_and_generation_the_lifecycle_answered_live_for`,
+  and `compile_fail` examples on `SearchHit`). `promote_verified` does not ask the
+  lifecycle again, so a revocation committed after `observe` answered is not seen.
 - **Fusion:** weighted reciprocal rank fusion keyed by capsule **and** generation, so
   a stale generation can never borrow the live one's rank
   (`two_generations_of_one_capsule_are_never_merged`). Every fused score is finite:
@@ -230,7 +246,8 @@ the replay pool, a consolidated
 adapter has sources rather than a parent, a label schema has at least two classes, a
 triage row logged since policies are recorded cites a recorded policy, a policy and its calibration set are
 never rewritten and the set is complete when the policy commits (a sample appended
-later is refused), a branch one was calibrated on cannot be deleted, only a model
+later is refused), a branch one was calibrated on cannot be deleted, not even by a
+statement that writes it again under its id (the key is `ON DELETE RESTRICT`), only a model
 labeling function names an adapter, and an adapter has at most one interference
 report, which is complete when it commits, stays within `[0, 1]` and is never
 rewritten. The size of a calibration set and of an interference report is checked
@@ -256,7 +273,13 @@ outside the slice a row is auto-proposed exactly when the threshold admits its s
 A raw row the cited policy cannot have produced, such as a slice row of a policy with
 no slice, used to reach the calibration samples and every triage metric; over a grid
 of rows under three policies the database now stores exactly those the policy
-explains (`a_raw_triage_row_is_stored_exactly_when_its_cited_policy_explains_it`). A
+explains (`a_raw_triage_row_is_stored_exactly_when_its_cited_policy_explains_it`).
+The trigger sees only rows written from version 10 on, so `adjudicated_samples` and
+`record_policy` recheck every calibration row against the policy it cites when they
+read it, and refuse as `CorruptRow`, rather than serve as a calibration sample, an
+older slice row that policy cannot have produced or one citing a version no table
+recorded (`a_calibration_row_its_cited_policy_cannot_have_produced_is_refused_by_every_reader`);
+the triage metrics still count such older rows. A
 policy's calibration rate is zero or lowers `1 − rate` below one, as
 `TriagePolicy::new` requires, and a policy stored before that check loads and is cited
 as `CorruptRow` rather than failing a row's CHECK
@@ -321,6 +344,11 @@ registered before the migration starts from its journal's last number, `i64::MAX
 for a journal holding a row at `i64::MAX`; the numbers of writes revoked before it were
 not kept
 (`a_journal_written_before_its_high_water_mark_was_kept_keeps_the_numbers_it_held`).
+A registration whose state exceeds `MAX_STATE_CELLS`, which migration 9's NOT VALID
+check leaves in place and every loader refuses, keeps mark zero: PostgreSQL checks
+NOT VALID constraints on every row an UPDATE writes, so rewriting it failed the
+upgrade, and migration 12 was corrected before release to skip it
+(`a_work_schema_holding_a_registration_beyond_the_state_bound_still_upgrades`).
 `load_journal` returns the rows alone, and a memory restored from them numbers its next
 write after the last. A
 registered adapter is retired, never deleted, so its data manifest and its id stay
@@ -332,6 +360,58 @@ a probe's sample, a vote's function and schema, a gold label's schema) refuses t
 when that row is missing instead of leaving it to the foreign key, which is checked at
 the end of the statement and so accepted a parent written later in the same statement
 (`a_row_checked_against_another_is_refused_when_that_row_comes_later_in_its_statement`).
+Work migration 13 closes three rules that held only for writers that did not race or
+nest their writes or undo them within one statement. An update that changes a replay sample leaves its last probe at or after
+every probe stored for it, where it was compared only with the row it replaced, and
+a probe locks its sample's row before it is checked and updates the row without
+change at the end of its statement, so a probe and a sample update of one sample, or
+two probes of it, wait for each other at read committed and fail with a
+serialization error at repeatable read instead of each checking against what the
+other has not committed
+(`a_sample_s_last_probe_never_falls_behind_a_probe_stored_for_it`). The lock alone
+would not do at repeatable read, where a row a committed transaction only locked is
+locked and updated again without error. The update comes after the statement's own writes, so a
+statement that records a probe and then updates its sample is stored, each write
+checked as it would be in a statement of its own; an update from the probe's
+`BEFORE` trigger would leave the row changed by the current command, and PostgreSQL
+refuses such a statement with SQLSTATE 27000
+(`a_statement_that_records_a_probe_may_then_update_its_sample`). And an
+append-only row used to be deletable by any DELETE issued below another trigger
+(`pg_trigger_depth() > 1`, meant for the cascade from its branch or sample), so a
+trigger the writer created removed a policy's calibration row or an adjudication that
+could then be written again with the opposite verdict; now a row of a branch or
+sample is deleted only once its parent row is gone, and policies, calibration sets,
+interference reports, adapter sources and data manifests are never deleted
+(`a_row_that_goes_only_with_its_parent_is_never_deleted_by_a_trigger`). A branch's
+rows going with it left one path to an adjudication of a calibration branch: the
+calibration row's foreign key was `NO ACTION`, checked at the end of the statement,
+so one statement that deleted the branch, then each of its rows, and wrote the
+branch again under its id passed, and the opposite verdict could then be written
+under the policy. The key is now `ON DELETE RESTRICT`, which refuses the delete
+whatever the statement writes after it
+(`a_calibration_branch_deleted_and_written_again_in_one_statement_is_refused`). The
+keys naming a label schema (from items and snapshots) and a labeling function (from
+votes) were `NO ACTION` too, and schemas and functions refused only `UPDATE`, so one
+statement could delete a schema and write it again with its classes cut or
+reordered, or a function as a verifier: the stored votes and gold labels then named
+other classes, and a verifier held class votes. Those keys are `ON DELETE RESTRICT`
+as well; a parent nothing names, or one deleted together with every row naming it,
+still goes
+(`a_label_schema_or_function_a_row_names_is_never_deleted_and_written_again`). The same
+migration fixes the search path of every function in the work schema to
+`pg_catalog, pg_temp`. No function fixed its own before, and a PL/pgSQL body, or a
+SQL body that is not `BEGIN ATOMIC`, is parsed under the search path of the session
+that fires it, so a writer with an operator of its own earlier on its path could
+have that operator decide a trigger's comparison or an `is_finite` CHECK: a text
+`=` that never holds let an adjudication of a calibration branch be deleted and
+written again, float `<` and `>` let a sample's clock run back and a probe precede
+a stored one, and a float `<>` that always holds let a NaN loss through
+`replay_probe_finite`. A writer that is no superuser, owns a schema and creates
+those operators there is now refused each time
+(`operators_a_writer_puts_first_on_its_search_path_decide_no_work_check`). The
+setting belongs to each function; a later `CREATE OR REPLACE FUNCTION` that omits
+it drops it, which the test catches
+(`every_work_function_resolves_names_under_a_fixed_search_path_whatever_the_caller_s`).
 A fast memory's state fits `MAX_STATE_CELLS`, its registration and journal rows are
 never rewritten, and a write has the key, value and decay lengths its configuration
 admits (`fast_memory_rows_keep_the_shape_their_configuration_admits`). An adapter
@@ -343,9 +423,10 @@ only with their adapter, so the edges erasure follows cannot be lost
 are finite, where `stability > 0` alone admitted NaN and infinity, and the training
 clock never runs back (`replay_rows_are_finite_and_the_training_clock_never_runs_back`).
 A label schema has at least two distinct, non-empty, non-NULL classes indexed from
-one and is never rewritten
+one and is never updated
 (`a_label_schema_needs_two_distinct_non_empty_classes_and_is_never_rewritten`); a
-labeling function has a non-empty name and is never rewritten, only a verifier vetoes
+labeling function has a non-empty name and is never updated (since migration 13
+neither is deleted while a row names it, above), only a verifier vetoes
 and only other kinds vote a class, and every vote and gold label names a class of its
 schema (`only_a_verifier_vetoes_and_every_vote_names_a_class_of_its_schema`). The
 checks are added NOT VALID, so a schema holding older rows still upgrades and the
@@ -568,15 +649,27 @@ dependency sets (`a_verifier_sees_and_can_refuse_the_dependency_set_a_delta_woul
 and appends only on a `Pass` at the required level with no hard finding
 (`a_certified_and_verified_branch_reaches_semantic_state_only_through_the_runtime`,
 `no_score_or_shallow_level_or_hard_finding_gets_a_delta_past_verification`). A plan
-certified before another commit is refused by the runtime's revision check
+certified before another semantic commit, a committed delta that changes semantic
+state, is refused by the runtime's revision check
 (`a_plan_certified_before_another_commit_is_refused_by_the_runtime`,
-`a_verified_delta_against_a_moved_revision_is_refused_before_verification`). A
-revocation or supersession does not move the semantic revision, so immediately
-before it appends, in the same call, the runtime asks `generation_validity` about
-every relied generation again and refuses one that is not live as `StaleReliance`
-(`PTR_RUNTIME_STALE_RELIANCE`), a no-op included, with nothing appended
+`a_verified_delta_against_a_moved_revision_is_refused_before_verification`).
+Nothing else moves the semantic revision: lifecycle, verifier, snapshot and effect
+records leave it where it is. So immediately before it appends, in the same call,
+the runtime asks `generation_validity` about every relied generation again and
+refuses one that is not live as `StaleReliance` (`PTR_RUNTIME_STALE_RELIANCE`), a
+no-op included, with nothing appended
 (`a_revocation_or_supersession_after_certification_refuses_the_commit_and_appends_nothing`,
 `a_certified_delta_is_refused_while_a_generation_it_relied_on_is_not_live_and_appends_nothing`).
+The revision and the relied generations are the plan's only freshness fences: a new
+hard constraint, a capsule the branch did not rely on or a verifier attestation
+committed after certification refuses nothing, and only the caller's verifier can
+take it into account at commit time
+(`a_commit_that_moves_neither_the_revision_nor_a_relied_generation_does_not_refuse_the_plan`).
+An effect record is no freshness check either, but while an effect attempt is
+neither settled nor reconciled the runtime refuses every commit, a plan's included,
+with `ExecutionFenced`; the gate is runtime-wide, not about the plan, and once the
+attempt is reconciled the same plan commits
+(`an_unsettled_effect_attempt_fences_the_plan_until_it_is_reconciled`).
 `Runtime::generation_validity` reads a revoked generation as `Revoked` even while it
 is still the live one (`a_revoked_generation_is_revoked_although_it_is_still_the_live_generation`).
 
@@ -584,7 +677,8 @@ Using that path is the caller's obligation, not a type-level guarantee: the runt
 does not depend on `ptr-branch`, `MergePlan::into_parts` yields the delta, and
 the runtime's `apply_verified_semantic_delta` (which checks no generation) and
 unverified `apply_semantic_delta` are public, so nothing stops a caller from
-committing a plan without verification or without its relied generations. Closing
+committing a plan without verification or without its relied generations
+(`a_plan_committed_without_its_relied_generations_is_not_stopped_by_the_runtime`). Closing
 that gap (a plan consumable only by a verifying entry point) is listed in §7.
 
 ### The arbiter: verification first, calibration second
@@ -610,6 +704,11 @@ verification:
   Clopper-Pearson bounds, which bounds the harm rate among auto-proposed branches with
   probability `1 − δ` (`learn_then_test_certifies_the_clean_region_and_bounds_the_harm_rate`,
   `a_certified_threshold_bounds_the_harm_rate_among_what_the_next_policy_proposes`).
+  Each bound bisects the binomial tail, summed on its shorter side from a saddle-point
+  probability, so its cost grows with the spread `√(n p (1 − p))` of the admitted count,
+  not with the count
+  (`a_clopper_pearson_bound_on_millions_of_trials_with_one_failure_solves_the_closed_form`,
+  `binomial_tails_of_millions_of_trials_match_references_computed_at_fifty_digits`).
   The sequence starts at the first threshold its own bound can pass with no harm,
   a choice made on the scores alone
   (`learn_then_test_starts_where_its_own_bound_can_first_pass`).
@@ -625,7 +724,12 @@ verification:
 - Logged propensities make IPS, SNIPS and doubly robust **off-policy evaluation** of
   a new threshold possible; a threshold below anything the log explored is refused as
   a positivity violation, a log with a nonfinite reward, a score that is not a finite
-  number in `[0, 1]` (checked before any target probability is computed from it) or a
+  number in `[0, 1]` (checked before any target probability is computed from it), a
+  record no policy can produce (`ImpossibleTriage`: an ineligible record that is
+  auto-proposed or has a nonzero propensity, which was reweighted by one, or an
+  eligible one that is discarded, auto-proposed with propensity zero or escalated with
+  propensity one; `LoggedTriage` names no policy, so whether its propensity is the one
+  its policy logs is `explains`'s to check at write time) or a
   propensity so small that its importance weight is infinite is refused rather than
   estimated, and an estimate
   is never returned unless it is finite: SNIPS and the effective sample size are
@@ -637,12 +741,16 @@ verification:
   `evaluating_the_logging_policy_on_its_own_log_returns_its_mean_reward`,
   `a_nonfinite_logged_reward_is_refused_by_every_off_policy_estimate`,
   `a_logged_score_that_is_not_a_probability_is_refused_before_any_reweighting`,
+  `a_logged_triage_no_policy_can_produce_is_refused_before_any_reweighting`,
+  `every_triage_a_policy_produces_is_accepted_by_both_off_policy_estimates`,
   `off_policy_estimates_of_extreme_but_valid_logs_are_finite`,
   `an_infinite_importance_weight_or_a_nonfinite_estimate_is_refused`,
   `doubly_robust_scales_before_it_multiplies_so_a_finite_estimate_is_returned`).
 - The slice's harm rate is estimated with a self-normalised Horvitz-Thompson rate and
-  a Wilson interval on the Kish effective sample size
-  (`a_calibration_slice_reweighted_by_its_rate_estimates_the_population_rate`).
+  a Wilson interval on the Kish effective sample size, which contains the estimate even
+  when no or every audited branch was harmful
+  (`a_calibration_slice_reweighted_by_its_rate_estimates_the_population_rate`,
+  `a_weighted_rate_with_no_successes_or_only_successes_contains_its_estimate`).
 - Every policy is **recorded** with its version, its rule and levels, and exactly
   which adjudicated calibration-slice branches chose its threshold; triage rows logged
   from work version 5 on cite it by a foreign key, which is not validated against
@@ -662,6 +770,16 @@ verification:
   `a_recorded_policy_refuses_what_would_make_its_evaluation_dishonest`,
   `triage_policies_record_their_calibration_and_hold_out_everything_else`,
   `a_policy_is_recorded_only_when_its_rule_on_the_stored_adjudications_chooses_it`).
+  `record_policy` reads the calibration branches, their triage rows and verdicts in
+  one statement that holds them `FOR SHARE` until the policy commits, so no branch
+  is erased and written again with another verdict between the rerun and the
+  commit; a branch erased while that statement waits for it is not read, and the
+  policy is refused
+  (`record_policy_holds_the_rows_it_reruns_its_rule_on_until_it_commits`,
+  `a_calibration_branch_rewritten_while_its_policy_is_recorded_refuses_the_policy`).
+  Every calibration row it and `adjudicated_samples` read is rechecked against the
+  policy it cites, so a row stored before work migration 10 that its policy cannot
+  have produced is refused as `CorruptRow`, never used as a sample (§1).
 
 ## 3. Fast-weight working memory (`ptr-fastmem`)
 
@@ -697,9 +815,10 @@ best does not lead the runner-up by the minimum margin
 (`an_unrelated_cue_is_unknown_rather_than_a_guess`,
 `an_update_under_the_same_cue_recalls_the_newer_fact`). A memory is bound to the
 `IdentifierCodebook` (seed and code length) its values are codes of when it is
-created or restored, its readouts carry that codebook, `fact_codes` derives candidates
-from it, and a fact code from any other codebook, whose scores would be crosstalk of
-the right length, is refused (`CodebookMismatch`) rather than scored
+created or restored, its readouts carry that codebook and expose their values only
+read-only, `fact_codes` derives candidates from it, and a fact code from any other
+codebook, whose scores would be crosstalk of the right length, is refused
+(`CodebookMismatch`) rather than scored
 (`a_fact_code_from_another_codebook_is_refused_before_scoring`,
 `a_readout_decodes_only_against_the_codebook_its_memory_was_written_with`).
 A decoded hit names a capsule, so `IdentifierCodebook::fact` refuses a `constraint:`
@@ -787,6 +906,10 @@ the stored journal prefix, holding those rows `FOR SHARE`, and refuses a mismatc
 `latest_checkpoint` recomputes it again and skips any checkpoint whose binding no longer
 matches the stored prefix, so a checkpoint whose binding names a revoked write is never
 handed out (`a_checkpoint_that_does_not_fold_the_stored_journal_is_refused_or_skipped`).
+It also rechecks what `put_checkpoint` checked against the registration: a matching
+checkpoint whose decoded state has another configuration than the memory's, written
+around `put_checkpoint`, is refused as `CorruptRow`, not handed out
+(`a_checkpoint_whose_state_has_another_shape_than_its_memory_is_a_corrupt_row`).
 Neither refolds the journal to check the state cells: that they are the fold of the
 bound writes is the writer's obligation, met by storing `FastMemory::state` with
 `FastMemory::binding_digest` of the same memory. A digest recomputed from the stored
@@ -936,10 +1059,17 @@ over the classes the verifiers left are computed only from posterior mass of at 
 underflow, and the item is `Unknown` even where the model's exact posterior would
 reach the required probability
 (`posterior_mass_left_below_the_smallest_normal_f64_resolves_to_unknown`).
-Annotation ranking puts disputed items first and never proposes a determined one;
-posteriors and outcomes of different lengths are refused rather than paired up to the
-shorter list, which would drop items
-(`annotation_ranking_refuses_posteriors_and_outcomes_of_different_lengths`).
+`resolve` returns a `Resolution` that pairs each item's outcome with the posterior it
+was resolved from: the model's posterior renormalized over the classes no verifier
+vetoed, or uniform over them where no share is computed
+(`a_resolution_pairs_every_outcome_with_the_posterior_it_was_resolved_from`).
+Annotation ranking takes only a `Resolution`, so outcomes and posteriors cannot be
+mispaired, reordered or truncated
+(`annotation_ranking_takes_outcomes_and_posteriors_only_from_one_resolution`). It puts
+disputed items first, never proposes a determined one, and ranks every other item on
+its posterior after vetoes, never on the model's raw posterior, so the model's mass on
+a vetoed class neither hides an unresolved item nor spends the budget on a resolved one
+(`annotation_ranks_an_item_on_its_posterior_after_vetoes_not_on_the_model_s`).
 Gold labels record their source and whether they were sampled uniformly or
 actively. An evaluation set holds one resolved gold label per item
 (`an_evaluation_set_holds_one_gold_label_per_item`), and a gold class outside the
@@ -963,8 +1093,9 @@ Wilson interval, so labeling quality is measured per adapter
 ## 6. Metrics and change distribution
 
 `ptr-analytics` defines each platform metric once, as a proportion over working
-records, and computes its interval
-(`a_metric_row_turns_into_an_interval_that_contains_its_point`); `ptr-pg` compiles
+records, and computes its interval, which contains its point even at no or all
+successes (`a_metric_row_turns_into_an_interval_that_contains_its_point`,
+`a_wilson_interval_contains_its_point_with_no_successes_or_only_successes`); `ptr-pg` compiles
 the definition to SQL over the work schema only. `RevertShare` counts merged branches
 later reverted; it is a descriptive operational signal, not a harm rate (reverts are
 decided by people who noticed something), and the calibrated harm rate remains
@@ -981,9 +1112,13 @@ was stamped
 `revert_share_counts_merged_branches_later_reverted_within_a_window`). A revert
 counts only at a commit index after its merge's: `record_outcome` refuses any other,
 and a row written around it is not counted as reverting a merge it precedes
-(`a_revert_is_recorded_and_counted_only_after_the_merge_it_reverts`). A columnar
-mirror (`pg_duckdb`, an Iceberg mirror, DataFusion) is an evaluation slot and never
-feeds back into state.
+(`a_revert_is_recorded_and_counted_only_after_the_merge_it_reverts`). Likewise the
+numerator of `AutoProposeShare` counts eligible branches only, as its denominator
+does, so an ineligible auto-proposal stored before work migration 9's NOT VALID check
+is in neither count and the share never exceeds one
+(`an_ineligible_auto_proposal_stored_before_its_check_is_in_neither_count_of_its_share`).
+A columnar mirror (`pg_duckdb`, an Iceberg mirror, DataFusion) is an evaluation slot
+and never feeds back into state.
 
 The projection event log is the substrate's change feed: written in the transaction
 that advances the watermark, read in commit order up to the watermark, with
@@ -1044,7 +1179,7 @@ another by idea.
 | Lance files on object storage for ML datasets | defer | Datasets are zip bundles of JSONL records (the two imported bundles are under 1 MB), registered by SHA-256 and described by dataset cards; adapter weights are content-addressed `ptr-storage` artifacts, and `ptr-storage` is a scaffold with no OpenDAL backend or verify-on-read. LanceDB is a candidate of the local-vector-search and multimodal-search-store slots only. Any later format keeps the SHA-256 identity and the card. | A dataset outgrows a bundle or training needs streamed columnar reads, once `ptr-storage` has a production backend with verify-on-read; or the local-vector-search evaluation selects LanceDB, or the multimodal slot does once it has an evaluation. |
 | "The Turbopuffer principles are covered" | defer | The text that defined them is not available; the proposal only names them. Dense retrieval is pgvector `halfvec` HNSW in PostgreSQL, one partial index per embedding space over live generations only (§1); object storage is a `ptr-storage` scaffold for artifacts; scale-out search is the deferred distributed-search slot. | The definition is recovered. An object-storage-first or tiered index is then evaluated in the distributed-search slot once Q003 or a measured corpus shows that one PostgreSQL instance is not enough. |
 | **Agents, branches and deltas (L4)** | | | |
-| An `agent` table | replaced | Replaced by `PrincipalId`: an agent is the principal its execution session admitted, from a peer the transport authenticated (`AdmissionPolicy`, doc 29). Effect attempts take it from the admitted session (`VerifiedDispatch`). Branches (`branch.author`) and fast memories (`fastmem_memory.principal`) record the `PrincipalId` their caller passes: `Branch::open` and `FastMemoryRecord` accept any, so recording the admitted principal is the caller's obligation until they are opened only through an entry point that takes it from the session (missing in `ptr-branch` and `ptr-pg`). `Grouping::ByPrincipal` groups metrics by what they record. A table of names would add identity the host never admitted. There is no `lora_chain_id`: an adapter belongs to a domain, not to an agent (ADR-0019), and no registry row decides which adapter serves (§4). | Durable principal records are defined by the `auth-identity` slot or the open principal/session identity decision of `ptr-types`. An agent-specific adapter would also need R004 or E005 evidence that per-agent adapters beat per-domain ones, and promotion as a ledger event. |
+| An `agent` table | replaced | Replaced by `PrincipalId`: an agent is the principal its execution session admitted, from a peer the transport authenticated (`AdmissionPolicy`, doc 29). An effect attempt made through an admitted session takes the session's principal, which the runtime validated when it created the session, as a string rather than a `PrincipalId` (`LedgerEvent::EffectAttempted.principal`, `VerifiedDispatch`); `PtrRuntime::commit` and replay check an attempt's key but not its principal, so an attempt written through them records any string, the empty one included (`only_an_attempt_made_through_an_admitted_session_records_a_validated_principal`). Nothing ties a `PrincipalId` to either. Branches (`branch.author`) and fast memories (`fastmem_memory.principal`) record the `PrincipalId` their caller passes: `Branch::open` and `FastMemoryRecord` accept any, so recording the admitted principal is the caller's obligation until they are opened only through an entry point that takes it from the session (missing in `ptr-branch` and `ptr-pg`). `Grouping::ByPrincipal` groups metrics by what they record. A table of names would add identity the host never admitted. There is no `lora_chain_id`: an adapter belongs to a domain, not to an agent (ADR-0019), and no registry row decides which adapter serves (§4). | Durable principal records are defined by the `auth-identity` slot or the open principal/session identity decision of `ptr-types`. An agent-specific adapter would also need R004 or E005 evidence that per-agent adapters beat per-domain ones, and promotion as a ledger event. |
 | Role-specialised agents (`agent.role`) | replaced | Replaced by grants and typed capabilities. What a principal may do is its host-installed `ExecutionGrant`s over exact `ActionScope`s; specialised functions such as OCR are Pods addressed by typed capability (ADR-0011), and adapters are specialised by `domain`. No role label is stored, since no admission, certification or triage check would read one. | A check has to depend on an agent's function and its grants cannot express it; or F003, broken down by principal, shows harm rates whose intervals do not overlap with each principal past the Learn-then-Test minimum, and policies are then stratified per principal first, under the conditions of the per-entity-type policies row. |
 | Branch hierarchy (`parent_id`) | reject | A branch is a private overlay on one committed snapshot, and nothing it stages is visible to another branch, so no branch forks from another: certification checks its digests against committed snapshots only (§2). Its ancestry is `base_revision` on the ledger's revision chain. Work that builds on another branch waits for it to merge or re-runs on the new snapshot. | A certification rule for dependencies on uncommitted operations exists and S003 shows that waiting for a parent branch to merge costs throughput. |
 | Index `branch_parent_idx` | reject | Rejected with the branch hierarchy: there is no parent column. A branch is loaded by id (`load_branch`), and its ancestry is `base_revision`. | The branch hierarchy is reopened. |

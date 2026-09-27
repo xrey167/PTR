@@ -253,7 +253,7 @@ current_shape = "modular"
 modules = ["branch", "ops", "digest", "certify", "arbiter", "error"]
 public_groups = ["Branch/SealedBranch", "BranchOp", "digests", "Certification/MergePlan", "triage and off-policy evaluation"]
 function_groups = ["read/scan/stage/seal", "certify", "triage", "calibrate", "evaluate off-policy"]
-notes = ["callers must route merges through PtrRuntime::apply_verified_semantic_delta; this is not enforced because apply_semantic_delta and MergePlan's expected and delta fields are public"]
+notes = ["callers must route merges through PtrRuntime::apply_certified_semantic_delta with the expected, delta and relied that MergePlan::into_parts returns; it refuses a moved semantic revision, which only a committed semantic delta moves, and a relied generation that is no longer live, and nothing else that changed since certification; this is not enforced because MergePlan has private fields but into_parts yields the delta, and apply_semantic_delta (unverified) and apply_verified_semantic_delta (no relied-generation check) are public"]
 
 [[crate]]
 id = "ptr-fastmem"

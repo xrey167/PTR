@@ -3,7 +3,10 @@
 //! `PTR_PG_TEST_DSN` must name a loopback PostgreSQL 16+ server where the
 //! connecting role may create schemas and where pgvector 0.8+ is installed or
 //! installable. Every test works in its own schema prefix and drops it at the
-//! end, so tests run in parallel against one database.
+//! end, so tests run in parallel against one database. Some tests need more
+//! than that, which the server's superuser has: writing rows as a writer from
+//! before a migration sets `session_replication_role`, and one test creates
+//! and drops a role of its own, named after its schema prefix.
 
 use std::future::Future;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -4061,11 +4064,14 @@ async fn triage_policies_record_their_calibration_and_hold_out_everything_else()
             "{statement}"
         );
     }
+    // Refused by the calibration row's RESTRICT key (restrict_violation),
+    // which, unlike the NO ACTION key it replaced (23503), no statement can
+    // satisfy by writing the branch again before it ends.
     let error = raw
         .execute(&format!("DELETE FROM {work}.branch WHERE id = 'c00'"), &[])
         .await
         .unwrap_err();
-    assert_eq!(error.as_db_error().unwrap().code().code(), "23503");
+    assert_eq!(error.as_db_error().unwrap().code().code(), "23001");
     substrate.drop_all().await.unwrap();
 }
 
@@ -6698,7 +6704,10 @@ async fn a_journal_written_before_its_high_water_mark_was_kept_keeps_the_numbers
     )
     .await;
     let report = substrate.migrate().await.unwrap();
-    assert_eq!(report.work, [WORK_MIGRATIONS.len() as u32]);
+    assert_eq!(
+        report.work,
+        (12..=WORK_MIGRATIONS.len() as u32).collect::<Vec<_>>()
+    );
     substrate.replay(&[capsule(1, "live", 1)]).await.unwrap();
 
     // Write 5 is deleted, as a revocation deletes it: its number stays
@@ -6741,4 +6750,1342 @@ async fn a_journal_written_before_its_high_water_mark_was_kept_keeps_the_numbers
         "23000"
     );
     substrate.drop_all().await.unwrap();
+}
+
+/// Create the work schema of `substrate`'s instance as a build that stopped
+/// at work version `version` left it: its first `version` migrations applied
+/// and recorded as `migrate` records them. The other two schemas are left
+/// for `migrate` to create.
+async fn work_schema_at(raw: &tokio_postgres::Client, substrate: &PgSubstrate, version: usize) {
+    let work = substrate.schemas().work.clone();
+    raw.batch_execute(&format!(
+        "CREATE SCHEMA {work}; \
+         CREATE TABLE {work}.schema_migration ( \
+             version integer PRIMARY KEY, \
+             name text NOT NULL, \
+             checksum bytea NOT NULL, \
+             applied_at timestamptz NOT NULL DEFAULT now())"
+    ))
+    .await
+    .unwrap();
+    for migration in &WORK_MIGRATIONS[..version] {
+        raw.batch_execute(&migration.render(substrate.schemas()))
+            .await
+            .unwrap();
+        raw.execute(
+            &format!(
+                "INSERT INTO {work}.schema_migration (version, name, checksum) \
+                 VALUES ($1, $2, $3)"
+            ),
+            &[
+                &(migration.version as i32),
+                &migration.name,
+                &migration.checksum().to_vec(),
+            ],
+        )
+        .await
+        .unwrap();
+    }
+}
+
+/// The server process of a raw session.
+async fn backend_pid(session: &tokio_postgres::Client) -> i32 {
+    session
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await
+        .unwrap()
+        .get(0)
+}
+
+/// Wait until some session waits for a lock that the server process
+/// `holder` holds.
+async fn wait_until_blocked_by(raw: &tokio_postgres::Client, holder: i32) {
+    for _ in 0..400 {
+        let blocked: i64 = raw
+            .query_one(
+                "SELECT count(*) FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))",
+                &[&holder],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        if blocked > 0 {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("no session waited for a lock of backend {holder}");
+}
+
+/// The SQLSTATE of a statement a session ran and the database refused.
+fn sqlstate_of(result: Result<(), tokio_postgres::Error>) -> String {
+    let error = result.expect_err("the database accepted the statement");
+    error
+        .code()
+        .unwrap_or_else(|| panic!("{error}"))
+        .code()
+        .to_owned()
+}
+
+#[tokio::test]
+async fn a_sample_s_last_probe_never_falls_behind_a_probe_stored_for_it() {
+    let substrate = substrate().await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    let sample = |id: &str| {
+        format!(
+            "INSERT INTO {work}.replay_sample \
+             (id, stratum, split, stability, difficulty, last_probe_model_time) \
+             VALUES ('{id}', 'x', 'train', 1, 5, 10)"
+        )
+    };
+    let probe = |id: &str, time: u32| {
+        format!(
+            "INSERT INTO {work}.replay_probe (sample, model_time, loss) \
+             VALUES ('{id}', {time}, 0.1)"
+        )
+    };
+    let clock = |id: &str, time: u32| {
+        format!("UPDATE {work}.replay_sample SET last_probe_model_time = {time} WHERE id = '{id}'")
+    };
+    let last_probe = |id: &str| {
+        let raw = &raw;
+        let sql =
+            format!("SELECT last_probe_model_time FROM {work}.replay_sample WHERE id = '{id}'");
+        async move { raw.query_one(&sql, &[]).await.unwrap().get::<_, f64>(0) }
+    };
+
+    // A probe at 12 is stored while the row still says 10: an update of the
+    // row catches up with it or is refused, whether or not it moves the
+    // clock.
+    raw.batch_execute(&format!("{}; {}", sample("s1"), probe("s1", 12)))
+        .await
+        .unwrap();
+    for sql in [
+        clock("s1", 11),
+        format!("UPDATE {work}.replay_sample SET lapses = 1 WHERE id = 's1'"),
+    ] {
+        assert_eq!(refused_sqlstate(&raw, &sql).await, "23000", "{sql}");
+    }
+    raw.batch_execute(&format!(
+        "UPDATE {work}.replay_sample SET last_probe_model_time = 12, lapses = 1 WHERE id = 's1'"
+    ))
+    .await
+    .unwrap();
+
+    // A probe in flight holds its sample: an update of the sample waits for
+    // it and is then checked against it.
+    raw.batch_execute(&sample("s2")).await.unwrap();
+    let prober = raw_client().await;
+    let prober_pid = backend_pid(&prober).await;
+    prober
+        .batch_execute(&format!("BEGIN; {}", probe("s2", 20)))
+        .await
+        .unwrap();
+    let updater = raw_client().await;
+    let update = clock("s2", 15);
+    let waiting = tokio::spawn(async move { updater.batch_execute(&update).await });
+    wait_until_blocked_by(&raw, prober_pid).await;
+    prober.batch_execute("COMMIT").await.unwrap();
+    assert_eq!(sqlstate_of(waiting.await.unwrap()), "23000");
+    assert_eq!(last_probe("s2").await, 10.0);
+
+    // An update in flight holds the sample: a probe waits for it and is then
+    // checked against the clock it committed.
+    raw.batch_execute(&sample("s3")).await.unwrap();
+    let updater = raw_client().await;
+    let updater_pid = backend_pid(&updater).await;
+    updater
+        .batch_execute(&format!("BEGIN; {}", clock("s3", 30)))
+        .await
+        .unwrap();
+    let prober = raw_client().await;
+    let insert = probe("s3", 25);
+    let waiting = tokio::spawn(async move { prober.batch_execute(&insert).await });
+    wait_until_blocked_by(&raw, updater_pid).await;
+    updater.batch_execute("COMMIT").await.unwrap();
+    assert_eq!(sqlstate_of(waiting.await.unwrap()), "23000");
+
+    // A probe in flight holds its sample against another probe too: the
+    // second waits and is then checked against the first.
+    raw.batch_execute(&sample("s6")).await.unwrap();
+    let first = raw_client().await;
+    let first_pid = backend_pid(&first).await;
+    first
+        .batch_execute(&format!("BEGIN; {}", probe("s6", 20)))
+        .await
+        .unwrap();
+    let second = raw_client().await;
+    let insert = probe("s6", 15);
+    let waiting = tokio::spawn(async move { second.batch_execute(&insert).await });
+    wait_until_blocked_by(&raw, first_pid).await;
+    first.batch_execute("COMMIT").await.unwrap();
+    assert_eq!(sqlstate_of(waiting.await.unwrap()), "23000");
+
+    // At repeatable read, a writer whose snapshot predates a probe or an
+    // update committed meanwhile fails with a serialization error rather
+    // than check against rows it cannot see. Locking the sample would not be
+    // enough against a probe: a row a committed transaction only locked is
+    // locked or updated again at repeatable read without error, which is
+    // why every probe also updates its sample's row.
+    raw.batch_execute(&format!(
+        "{}; {}; {}",
+        sample("s4"),
+        sample("s5"),
+        sample("s7")
+    ))
+    .await
+    .unwrap();
+    let late = raw_client().await;
+    for (concurrent, write) in [
+        (probe("s4", 40), clock("s4", 35)),
+        (clock("s5", 40), probe("s5", 35)),
+        (probe("s7", 40), probe("s7", 35)),
+    ] {
+        late.batch_execute("BEGIN ISOLATION LEVEL REPEATABLE READ")
+            .await
+            .unwrap();
+        late.query_one(&format!("SELECT count(*) FROM {work}.replay_sample"), &[])
+            .await
+            .unwrap();
+        raw.batch_execute(&concurrent).await.unwrap();
+        assert_eq!(
+            sqlstate_of(late.batch_execute(&write).await),
+            "40001",
+            "{write}"
+        );
+        late.batch_execute("ROLLBACK").await.unwrap();
+    }
+    assert_eq!(last_probe("s4").await, 10.0);
+    let probes = |id: &str| {
+        let raw = &raw;
+        let sql =
+            format!("SELECT model_time FROM {work}.replay_probe WHERE sample = '{id}' ORDER BY 1");
+        async move {
+            raw.query(&sql, &[])
+                .await
+                .unwrap()
+                .iter()
+                .map(|row| row.get::<_, f64>(0))
+                .collect::<Vec<_>>()
+        }
+    };
+    assert_eq!(probes("s5").await, Vec::<f64>::new());
+    assert_eq!(probes("s6").await, [20.0]);
+    assert_eq!(probes("s7").await, [40.0]);
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_statement_that_records_a_probe_may_then_update_its_sample() {
+    // Every probe updates its sample's row without change, which is what
+    // orders probes and sample updates. Made from the probe's BEFORE INSERT
+    // trigger, that update left the row changed by a trigger of the current
+    // command, and a statement that went on to update the row (here a
+    // data-modifying WITH) was refused with SQLSTATE 27000, where work
+    // version 12 stored it.
+    let substrate = substrate().await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    raw.batch_execute(&format!(
+        "INSERT INTO {work}.replay_sample \
+             (id, stratum, split, stability, difficulty, last_probe_model_time) \
+         VALUES ('s1', 'x', 'train', 1, 5, 10), ('s2', 'x', 'train', 1, 5, 10)"
+    ))
+    .await
+    .unwrap();
+    let probe_then_clock = |id: &str, probe: u32, clock: u32| {
+        format!(
+            "WITH p AS (INSERT INTO {work}.replay_probe (sample, model_time, loss) \
+                        VALUES ('{id}', {probe}, 0.1) RETURNING sample) \
+             UPDATE {work}.replay_sample \
+             SET last_probe_model_time = {clock}, lapses = lapses + 1 \
+             WHERE id IN (SELECT sample FROM p)"
+        )
+    };
+    let clock_then_probe = |id: &str, clock: u32, probe: u32| {
+        format!(
+            "WITH u AS (UPDATE {work}.replay_sample SET last_probe_model_time = {clock} \
+                        WHERE id = '{id}' RETURNING id) \
+             INSERT INTO {work}.replay_probe (sample, model_time, loss) \
+             SELECT id, {probe}, 0.1 FROM u"
+        )
+    };
+    let state = |id: &str| {
+        let raw = &raw;
+        let sample = format!(
+            "SELECT last_probe_model_time, lapses FROM {work}.replay_sample WHERE id = '{id}'"
+        );
+        let probes =
+            format!("SELECT model_time FROM {work}.replay_probe WHERE sample = '{id}' ORDER BY 1");
+        async move {
+            let row = raw.query_one(&sample, &[]).await.unwrap();
+            let probes: Vec<f64> = raw
+                .query(&probes, &[])
+                .await
+                .unwrap()
+                .iter()
+                .map(|row| row.get(0))
+                .collect();
+            (row.get::<_, f64>(0), row.get::<_, i32>(1), probes)
+        }
+    };
+
+    raw.batch_execute(&probe_then_clock("s1", 20, 20))
+        .await
+        .unwrap();
+    assert_eq!(state("s1").await, (20.0, 1, vec![20.0]));
+    raw.batch_execute(&clock_then_probe("s1", 30, 30))
+        .await
+        .unwrap();
+    assert_eq!(state("s1").await, (30.0, 1, vec![20.0, 30.0]));
+
+    // Each write is still checked as it would be in a statement of its own,
+    // in the order the statement makes them: the probe against the row it
+    // finds, the update against every probe stored, the statement's own
+    // included.
+    for (why, sql) in [
+        (
+            "a clock put before the probe the statement records",
+            probe_then_clock("s1", 40, 35),
+        ),
+        (
+            "a probe before the last one",
+            probe_then_clock("s1", 25, 40),
+        ),
+        (
+            "a probe before the clock the statement set",
+            clock_then_probe("s1", 50, 45),
+        ),
+    ] {
+        assert_eq!(refused_sqlstate(&raw, &sql).await, "23000", "{why}");
+    }
+    assert_eq!(state("s1").await, (30.0, 1, vec![20.0, 30.0]));
+
+    // A statement that records a probe and then deletes its sample is refused
+    // by the probe's foreign key, as it was before version 13.
+    assert_eq!(
+        refused_sqlstate(
+            &raw,
+            &format!(
+                "WITH p AS (INSERT INTO {work}.replay_probe (sample, model_time, loss) \
+                            VALUES ('s2', 20, 0.1) RETURNING sample) \
+                 DELETE FROM {work}.replay_sample WHERE id IN (SELECT sample FROM p)"
+            )
+        )
+        .await,
+        "23503"
+    );
+    assert_eq!(state("s2").await, (10.0, 0, vec![]));
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_space_whose_index_cannot_be_built_is_left_unregistered() {
+    let substrate = substrate().await;
+    let schemas = substrate.schemas().clone();
+    let derived = schemas.derived.clone();
+    // A session that gives up waiting for a lock after 200 ms, so its index
+    // build fails while another session writes the documents table.
+    let mut impatient =
+        PgSubstrate::connect_with(&format!("{} options='-c lock_timeout=200'", dsn()), schemas)
+            .await
+            .unwrap();
+    let writer = raw_client().await;
+    writer
+        .batch_execute(&format!(
+            "BEGIN; LOCK TABLE {derived}.search_document IN ROW EXCLUSIVE MODE"
+        ))
+        .await
+        .unwrap();
+    let raw = raw_client().await;
+    let registered = || {
+        let raw = &raw;
+        let sql = format!(
+            "SELECT (SELECT count(*) FROM {derived}.embedding_space WHERE id = 'toy4'), \
+                    to_regclass('{derived}.sd_hnsw_toy4') IS NOT NULL"
+        );
+        async move {
+            let row = raw.query_one(&sql, &[]).await.unwrap();
+            (row.get::<_, i64>(0), row.get::<_, bool>(1))
+        }
+    };
+    assert!(matches!(
+        impatient.register_space(&space()).await,
+        Err(PgError::Database { ref sqlstate, .. }) if sqlstate == "55P03"
+    ));
+    // Neither the catalog row nor the index: the space is not registered.
+    assert_eq!(registered().await, (0, false));
+    writer.batch_execute("COMMIT").await.unwrap();
+    impatient.register_space(&space()).await.unwrap();
+    assert_eq!(registered().await, (1, true));
+    drop(impatient);
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_calibration_row_its_cited_policy_cannot_have_produced_is_refused_by_every_reader() {
+    let mut substrate = substrate().await;
+    record_manual_policy(&mut substrate, "bootstrap").await;
+    for i in 0..12 {
+        calibration_branch(
+            &mut substrate,
+            &format!("c{i:02}"),
+            i as f32 / 12.0,
+            "bootstrap",
+            Some(i < 3),
+        )
+        .await;
+    }
+    let honest = substrate.adjudicated_samples().await.unwrap();
+    substrate
+        .record_policy(
+            &PolicyRecord::manual(
+                "no-slice",
+                TriagePolicy::new(AutoThreshold::AtLeast(0.5), 0.0).unwrap(),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    let rule = ThresholdRule::ConformalRiskControl { alpha: 0.3 };
+    let slice_row = |branch: &str, score: f32, propensity: f64, version: &str| {
+        format!(
+            "INSERT INTO {work}.branch_triage (branch, decision, eligible, calibration_slice, \
+             score, auto_propensity, policy_version) \
+             VALUES ('{branch}', 'escalate', true, true, {score}, {propensity}, '{version}')"
+        )
+    };
+    // Adjudicated slice rows a store from before work migration 10, or 5,
+    // can hold: one of a policy with calibration rate zero, which has no
+    // slice; one with propensity one under a policy whose rate is too small
+    // to lower it; one citing a version no table recorded.
+    let tiny = format!(
+        "INSERT INTO {work}.triage_policy \
+         (version, rule, threshold, calibration_rate, alpha, delta, calibration_size) \
+         VALUES ('tiny', 'manual', 0.5, 1e-17, NULL, NULL, 0); {}",
+        slice_row("under-tiny", 0.9, 1.0, "tiny")
+    );
+    let cases = [
+        (
+            "under-no-slice",
+            0.2,
+            slice_row("under-no-slice", 0.2, 0.0, "no-slice"),
+            &[][..],
+            "branch_triage",
+        ),
+        (
+            "under-tiny",
+            0.9,
+            tiny,
+            &[
+                ("triage_policy", "triage_policy_rate_lowers_propensity"),
+                ("branch_triage", "branch_triage_slice_propensity"),
+            ][..],
+            "triage_policy",
+        ),
+        (
+            "under-nobody",
+            0.9,
+            slice_row("under-nobody", 0.9, 0.0, "nobody"),
+            &[][..],
+            "branch_triage",
+        ),
+    ];
+    for (branch, score, sql, checks, table) in cases {
+        substrate
+            .store_branch(&sealed_branch(branch, "agent-c"))
+            .await
+            .unwrap();
+        write_before_invariants(&raw, &work, checks, &sql).await;
+        substrate
+            .record_outcome(&BranchId::from(branch), BranchOutcome::AdjudicatedHarmless)
+            .await
+            .unwrap();
+        // It is no calibration sample: every reader refuses it as the
+        // corrupt row it is, rather than serve it or skip it silently.
+        assert!(
+            matches!(
+                substrate.adjudicated_samples().await,
+                Err(PgError::CorruptRow { table: refused, .. }) if refused == table
+            ),
+            "{branch}"
+        );
+        let mut with_branch = honest[..10].to_vec();
+        with_branch.push((BranchId::from(branch), sample(score, false)));
+        let version = format!("with-{branch}");
+        let record = PolicyRecord::calibrate(version.as_str(), rule, 0.05, &with_branch).unwrap();
+        assert!(
+            matches!(
+                substrate.record_policy(&record).await,
+                Err(PgError::CorruptRow { table: refused, .. }) if refused == table
+            ),
+            "{branch}"
+        );
+        assert_eq!(substrate.load_policy(&version).await.unwrap(), None);
+        // A policy calibrated only on rows its cited policies explain is
+        // recorded beside it, and erasing the branch clears the refusal.
+        raw.batch_execute(&format!("DELETE FROM {work}.branch WHERE id = '{branch}'"))
+            .await
+            .unwrap();
+        assert_eq!(substrate.adjudicated_samples().await.unwrap(), honest);
+    }
+    let record = PolicyRecord::calibrate("policy-2", rule, 0.05, &honest[..10]).unwrap();
+    substrate.record_policy(&record).await.unwrap();
+    substrate.drop_all().await.unwrap();
+}
+
+/// A store holding twelve adjudicated slice branches `c00` to `c11` under
+/// the manual policy `bootstrap`, and a conformal-risk-control record
+/// calibrated on the first ten, not yet recorded.
+async fn store_with_a_calibration_to_record() -> (PgSubstrate, PolicyRecord) {
+    let mut substrate = substrate().await;
+    record_manual_policy(&mut substrate, "bootstrap").await;
+    for i in 0..12 {
+        calibration_branch(
+            &mut substrate,
+            &format!("c{i:02}"),
+            i as f32 / 12.0,
+            "bootstrap",
+            Some(i < 3),
+        )
+        .await;
+    }
+    let samples = substrate.adjudicated_samples().await.unwrap();
+    let rule = ThresholdRule::ConformalRiskControl { alpha: 0.3 };
+    let record = PolicyRecord::calibrate("policy-2", rule, 0.05, &samples[..10]).unwrap();
+    (substrate, record)
+}
+
+/// Branch `c00` written again, header, triage and verdict, as a writer with
+/// the work schema's privileges may write any branch: a slice branch of
+/// `bootstrap` scoring 0.95, adjudicated harmless.
+fn rewritten_c00(work: &impl std::fmt::Display) -> String {
+    format!(
+        "INSERT INTO {work}.branch (id, author, base_revision) VALUES ('c00', 'agent-c', 4); \
+         INSERT INTO {work}.branch_triage (branch, decision, eligible, calibration_slice, \
+             score, auto_propensity, policy_version) \
+         VALUES ('c00', 'escalate', true, true, 0.95, 0.9, 'bootstrap'); \
+         INSERT INTO {work}.branch_outcome (branch, outcome) \
+         VALUES ('c00', 'adjudicated_harmless');"
+    )
+}
+
+#[tokio::test]
+async fn record_policy_holds_the_rows_it_reruns_its_rule_on_until_it_commits() {
+    let (substrate, record) = store_with_a_calibration_to_record().await;
+    let work = substrate.schemas().work.clone();
+    // The recorder is held between reading the calibration rows and writing
+    // the policy by a session holding the policy table.
+    let holder = raw_client().await;
+    let holder_pid = backend_pid(&holder).await;
+    holder
+        .batch_execute(&format!(
+            "BEGIN; LOCK TABLE {work}.triage_policy IN SHARE MODE"
+        ))
+        .await
+        .unwrap();
+    let recording = record.clone();
+    let mut substrate = substrate;
+    let recorder = tokio::spawn(async move {
+        let result = substrate.record_policy(&recording).await;
+        (substrate, result)
+    });
+    let raw = raw_client().await;
+    wait_until_blocked_by(&raw, holder_pid).await;
+    // Meanwhile a writer erases calibration branch c00 and writes it again
+    // with another score and verdict. It used to commit, and the policy then
+    // stored a threshold its stored adjudications no longer chose; now it
+    // waits for the recorder, and gives up.
+    let rewriter = raw_client().await;
+    let rewrite = format!(
+        "SET lock_timeout = '500ms'; BEGIN; DELETE FROM {work}.branch WHERE id = 'c00'; {} COMMIT;",
+        rewritten_c00(&work)
+    );
+    assert_eq!(sqlstate_of(rewriter.batch_execute(&rewrite).await), "55P03");
+    rewriter.batch_execute("ROLLBACK").await.unwrap();
+    holder.batch_execute("COMMIT").await.unwrap();
+    let (substrate, result) = recorder.await.unwrap();
+    assert_eq!(result, Ok(()));
+    // The rule on the stored adjudications of the calibration branches still
+    // chooses the recorded policy.
+    let stored: Vec<(BranchId, CalibrationSample)> = substrate
+        .adjudicated_samples()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|(branch, _)| record.calibrated_on().contains(branch))
+        .collect();
+    let rerun = PolicyRecord::calibrate(record.version(), record.rule(), 0.05, &stored).unwrap();
+    assert_eq!(rerun, record);
+    assert_eq!(
+        substrate.load_policy("policy-2").await.unwrap(),
+        Some(record)
+    );
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_calibration_branch_rewritten_while_its_policy_is_recorded_refuses_the_policy() {
+    let (mut substrate, record) = store_with_a_calibration_to_record().await;
+    let work = substrate.schemas().work.clone();
+    // A writer has erased calibration branch c00 and not yet committed.
+    let rewriter = raw_client().await;
+    let rewriter_pid = backend_pid(&rewriter).await;
+    rewriter
+        .batch_execute(&format!(
+            "BEGIN; DELETE FROM {work}.branch WHERE id = 'c00'"
+        ))
+        .await
+        .unwrap();
+    let recording = record.clone();
+    let recorder = tokio::spawn(async move {
+        let result = substrate.record_policy(&recording).await;
+        (substrate, result)
+    });
+    let raw = raw_client().await;
+    wait_until_blocked_by(&raw, rewriter_pid).await;
+    // It writes the branch again under its id and commits: the rows the
+    // recorder waited for are gone, and the rewritten ones are not what it
+    // read.
+    rewriter
+        .batch_execute(&format!("{} COMMIT;", rewritten_c00(&work)))
+        .await
+        .unwrap();
+    let (substrate, result) = recorder.await.unwrap();
+    assert_eq!(
+        result,
+        Err(PgError::InvalidPolicy {
+            version: "policy-2".into(),
+            reason: NOT_ADJUDICATED,
+        })
+    );
+    assert_eq!(substrate.load_policy("policy-2").await.unwrap(), None);
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_checkpoint_whose_state_has_another_shape_than_its_memory_is_a_corrupt_row() {
+    let mut substrate = substrate().await;
+    substrate.replay(&[capsule(1, "keep", 1)]).await.unwrap();
+    let config = memory_with(&substrate, "m1", 64).await;
+    let request = write_request("keep", [1.0, 0.0, 0.0, 0.0], [0.5, 0.0, 0.0, 0.0]);
+    let mut memory = FastMemory::new(config, codebook(&config)).unwrap();
+    let receipt = memory.write(request.clone()).unwrap();
+    substrate
+        .append_write("m1", receipt.seq, &request)
+        .await
+        .unwrap();
+    // The same write folded by a memory of one head of two key and two
+    // value cells: the binding and the applied write are m1's, the shape is
+    // not.
+    let narrow = FastMemoryConfig {
+        key_dim: 2,
+        value_dim: 2,
+        ..config
+    };
+    let mut other = FastMemory::new(narrow, codebook(&narrow)).unwrap();
+    other
+        .write(WriteRequest {
+            key: vec![1.0, 0.0],
+            value: vec![0.5, 0.0],
+            ..request.clone()
+        })
+        .unwrap();
+    assert_eq!(other.binding_digest(), memory.binding_digest());
+    assert_eq!(other.state().applied(), memory.state().applied());
+    assert!(matches!(
+        substrate
+            .put_checkpoint("m1", other.binding_digest(), other.state())
+            .await,
+        Err(PgError::InvalidCheckpoint { .. })
+    ));
+    // Written behind the substrate's back, it is never handed out as m1's.
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    raw.execute(
+        &format!(
+            "INSERT INTO {work}.fastmem_checkpoint (memory, applied_seq, binding_digest, state) \
+             VALUES ('m1', 1, $1, $2)"
+        ),
+        &[
+            &other.binding_digest().to_vec(),
+            &ptr_fastmem::encode_state(other.state()),
+        ],
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        substrate.latest_checkpoint("m1").await,
+        Err(PgError::CorruptRow {
+            table: "fastmem_checkpoint",
+            reason: "the state's shape differs from the memory's".into(),
+        })
+    );
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn an_ineligible_auto_proposal_stored_before_its_check_is_in_neither_count_of_its_share() {
+    let mut substrate = substrate().await;
+    record_manual_policy(&mut substrate, "policy-1").await;
+    record_manual_policy(&mut substrate, "policy-2").await;
+    for id in ["e1", "e2"] {
+        substrate
+            .store_branch(&sealed_branch(id, "agent-a"))
+            .await
+            .unwrap();
+        substrate
+            .record_triage(
+                &BranchId::from(id),
+                &triage(TriageDecision::Escalate, true, false),
+                "policy-1",
+            )
+            .await
+            .unwrap();
+    }
+    // An auto-proposal of a branch verification decided, as record_triage
+    // stored any triage before work migration 9: one beside the eligible
+    // branches of policy-1, one alone under policy-2.
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    for (id, version) in [("old", "policy-1"), ("lone", "policy-2")] {
+        substrate
+            .store_branch(&sealed_branch(id, "agent-a"))
+            .await
+            .unwrap();
+        write_before_invariants(
+            &raw,
+            &work,
+            &[(
+                "branch_triage",
+                "branch_triage_verification_never_auto_proposes",
+            )],
+            &format!(
+                "INSERT INTO {work}.branch_triage (branch, decision, eligible, \
+                 calibration_slice, score, auto_propensity, policy_version) \
+                 VALUES ('{id}', 'auto_propose', false, false, 0.8, 0.0, '{version}')"
+            ),
+        )
+        .await;
+    }
+    let share = |grouping| MetricSpec {
+        metric: Metric::AutoProposeShare,
+        grouping,
+        window: Window::All,
+    };
+    let row = |group: &str, numerator, denominator| MetricRow {
+        group: group.into(),
+        numerator,
+        denominator,
+    };
+    // The share is of eligible branches, above and below the line.
+    assert_eq!(
+        substrate.metric(share(Grouping::Overall)).await.unwrap(),
+        vec![row("", 0, 2)]
+    );
+    assert_eq!(
+        substrate
+            .metric(share(Grouping::ByPolicyVersion))
+            .await
+            .unwrap(),
+        vec![row("policy-1", 0, 2), row("policy-2", 0, 0)]
+    );
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_row_that_goes_only_with_its_parent_is_never_deleted_by_a_trigger() {
+    let (mut substrate, record) = store_with_a_calibration_to_record().await;
+    substrate.record_policy(&record).await.unwrap();
+    record_manual_policy(&mut substrate, "unused").await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    raw.batch_execute(&format!(
+        "{} BEGIN; {} INSERT INTO {work}.adapter_source (consolidated, source) \
+         VALUES ('c1', 't1'); COMMIT; \
+         INSERT INTO {work}.adapter_input (adapter, input) VALUES ('t1', 'doc-1'); \
+         BEGIN; \
+         INSERT INTO {work}.adapter_interference_report (adapter, layer_count) \
+         VALUES ('t1', 1); \
+         INSERT INTO {work}.adapter_interference \
+             (adapter, layer, output_overlap, input_overlap, output_chance, input_chance) \
+         VALUES ('t1', 'l0', 0.1, 0.1, 0.1, 0.1); \
+         COMMIT; \
+         INSERT INTO {work}.replay_sample \
+             (id, stratum, split, stability, difficulty, last_probe_model_time) \
+         VALUES ('r1', 'x', 'train', 1, 5, 10); \
+         INSERT INTO {work}.replay_probe (sample, model_time, loss) VALUES ('r1', 12, 0.1);",
+        adapter_row(&work, "t1", "m", "trained", None, "candidate"),
+        adapter_row(&work, "c1", "m", "consolidated", None, "candidate"),
+    ))
+    .await
+    .unwrap();
+
+    // A trigger function of the writer's own, on a temporary table, issues
+    // each delete. Every one used to pass: it ran below another trigger,
+    // which was taken for a cascade from the row's parent.
+    let attacker = raw_client().await;
+    attacker
+        .batch_execute(
+            "CREATE TEMP TABLE poke (x integer); \
+             CREATE FUNCTION pg_temp.poke() RETURNS trigger LANGUAGE plpgsql \
+                 AS $$ BEGIN RETURN NULL; END $$; \
+             CREATE TRIGGER poke AFTER INSERT ON pg_temp.poke \
+                 FOR EACH ROW EXECUTE FUNCTION pg_temp.poke()",
+        )
+        .await
+        .unwrap();
+    let issue = |delete: String| {
+        format!(
+            "CREATE OR REPLACE FUNCTION pg_temp.poke() RETURNS trigger LANGUAGE plpgsql \
+             AS $$ BEGIN {delete}; RETURN NULL; END $$"
+        )
+    };
+    for (table, condition) in [
+        ("branch_outcome", "branch = 'c00'"),
+        ("branch_triage", "branch = 'c00'"),
+        ("branch_read", "branch = 'c11'"),
+        ("branch_scan", "branch = 'c11'"),
+        ("branch_relied", "branch = 'c11'"),
+        ("branch_touched", "branch = 'c11'"),
+        ("branch_op", "branch = 'c11'"),
+        ("triage_policy", "version = 'unused'"),
+        (
+            "triage_policy_sample",
+            "policy_version = 'policy-2' AND branch = 'c00'",
+        ),
+        ("adapter_source", "consolidated = 'c1'"),
+        ("adapter_input", "adapter = 't1'"),
+        ("adapter_interference", "adapter = 't1'"),
+        ("adapter_interference_report", "adapter = 't1'"),
+        ("replay_probe", "sample = 'r1'"),
+    ] {
+        attacker
+            .batch_execute(&issue(format!(
+                "DELETE FROM {work}.{table} WHERE {condition}"
+            )))
+            .await
+            .unwrap();
+        assert_eq!(
+            refused_sqlstate(&attacker, "INSERT INTO poke VALUES (1)").await,
+            "23000",
+            "{table}"
+        );
+        let left: i64 = raw
+            .query_one(
+                &format!("SELECT count(*) FROM {work}.{table} WHERE {condition}"),
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert!(left > 0, "{table}");
+    }
+
+    // Erasing a whole branch or sample still removes its rows with it, from
+    // a trigger as from a statement.
+    attacker
+        .batch_execute(&issue(format!(
+            "DELETE FROM {work}.branch WHERE id = 'c11'"
+        )))
+        .await
+        .unwrap();
+    attacker
+        .batch_execute("INSERT INTO poke VALUES (1)")
+        .await
+        .unwrap();
+    raw.batch_execute(&format!("DELETE FROM {work}.replay_sample WHERE id = 'r1'"))
+        .await
+        .unwrap();
+    for (table, condition) in [
+        ("branch_outcome", "branch = 'c11'"),
+        ("branch_triage", "branch = 'c11'"),
+        ("branch_read", "branch = 'c11'"),
+        ("branch_op", "branch = 'c11'"),
+        ("replay_probe", "sample = 'r1'"),
+    ] {
+        let left: i64 = raw
+            .query_one(
+                &format!("SELECT count(*) FROM {work}.{table} WHERE {condition}"),
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(left, 0, "{table}");
+    }
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_calibration_branch_deleted_and_written_again_in_one_statement_is_refused() {
+    let (mut substrate, record) = store_with_a_calibration_to_record().await;
+    substrate.record_policy(&record).await.unwrap();
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    let calibration = |samples: Vec<(BranchId, CalibrationSample)>| -> Vec<_> {
+        samples
+            .into_iter()
+            .filter(|(branch, _)| record.calibrated_on().contains(branch))
+            .collect()
+    };
+    let before = calibration(substrate.adjudicated_samples().await.unwrap());
+    assert!(before.iter().any(|(branch, sample)| {
+        *branch == BranchId::from("c00") && *sample == self::sample(0.0, true)
+    }));
+
+    // One statement deletes calibration branch c00, then each of its rows,
+    // and writes the branch again under its id. The row deletes run after
+    // the branch's, so the removal triggers find it gone; the cascades at
+    // the end of the statement find nothing left. The calibration row's
+    // foreign key was NO ACTION, checked at the end of the statement too,
+    // where it found c00 stored again and passed: the adjudication was gone,
+    // and the opposite verdict could be written under the recorded policy.
+    let children = [
+        "branch_read",
+        "branch_scan",
+        "branch_relied",
+        "branch_touched",
+        "branch_op",
+        "branch_triage",
+        "branch_outcome",
+    ];
+    let deletes: Vec<String> = children
+        .iter()
+        .enumerate()
+        .map(|(i, table)| {
+            format!(
+                "r{i} AS (DELETE FROM {work}.{table} \
+                          WHERE branch IN (SELECT id FROM d) RETURNING 1)"
+            )
+        })
+        .collect();
+    let counts: Vec<String> = (0..children.len())
+        .map(|i| format!("(SELECT count(*) FROM r{i})"))
+        .collect();
+    let rewrite = format!(
+        "WITH d AS (DELETE FROM {work}.branch WHERE id = 'c00' RETURNING *), {} \
+         INSERT INTO {work}.branch (id, author, base_revision) \
+         SELECT id, author, base_revision FROM d WHERE {} >= 0",
+        deletes.join(", "),
+        counts.join(" + ")
+    );
+    assert_eq!(refused_sqlstate(&raw, &rewrite).await, "23001");
+    // The verdict written again, reversed, finds the stored one in its way.
+    assert_eq!(
+        refused_sqlstate(
+            &raw,
+            &format!(
+                "INSERT INTO {work}.branch_outcome (branch, outcome) \
+                 VALUES ('c00', 'adjudicated_harmless')"
+            )
+        )
+        .await,
+        "23505"
+    );
+
+    // Nothing changed: every calibration branch keeps its triage and verdict,
+    // and the rule on them still chooses the recorded policy.
+    let after = calibration(substrate.adjudicated_samples().await.unwrap());
+    assert_eq!(after, before);
+    let rerun = PolicyRecord::calibrate(record.version(), record.rule(), 0.05, &after).unwrap();
+    assert_eq!(rerun, record);
+    assert_eq!(
+        substrate.load_policy("policy-2").await.unwrap(),
+        Some(record.clone())
+    );
+    // A branch no policy was calibrated on is still deleted with its rows,
+    // and may then be written again.
+    raw.batch_execute(&format!(
+        "DELETE FROM {work}.branch WHERE id = 'c11'; \
+         INSERT INTO {work}.branch (id, author, base_revision) VALUES ('c11', 'agent-c', 4);"
+    ))
+    .await
+    .unwrap();
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_label_schema_or_function_a_row_names_is_never_deleted_and_written_again() {
+    // Items and snapshots named their schema, and votes their function,
+    // through NO ACTION keys, which PostgreSQL checks at the end of the
+    // statement and which pass when a row with the old key is stored again
+    // by then. One statement could delete a schema and write it again with
+    // other classes, or a function with another kind: the stored vote and
+    // gold label then named class 2 of a two-class schema, a reordered
+    // schema gave every stored class index another meaning, and a verifier
+    // held a class vote.
+    let substrate = substrate().await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    raw.batch_execute(&format!(
+        "INSERT INTO {work}.label_schema (id, classes) \
+         VALUES ('s', ARRAY['yes', 'no', 'maybe']), ('t', ARRAY['yes', 'no']), \
+                ('unused', ARRAY['yes', 'no']); \
+         INSERT INTO {work}.label_item (label_schema, item) VALUES ('s', 'i1'); \
+         INSERT INTO {work}.labeling_function (name, kind) \
+         VALUES ('h1', 'heuristic'), ('idle', 'heuristic'); \
+         INSERT INTO {work}.label_vote (label_schema, item, function, vote_kind, class) \
+         VALUES ('s', 'i1', 'h1', 'class', 2); \
+         INSERT INTO {work}.gold_label (label_schema, item, class, source, sampling) \
+         VALUES ('s', 'i1', 2, 'oracle', 'uniform'); \
+         INSERT INTO {work}.label_snapshot (id, label_schema, dataset_sha256, card) \
+         VALUES ('snap', 't', decode(repeat('00', 32), 'hex'), 'card')"
+    ))
+    .await
+    .unwrap();
+    let rewrite_schema = |id: &str, classes: &str| {
+        format!(
+            "WITH d AS (DELETE FROM {work}.label_schema WHERE id = '{id}' RETURNING id) \
+             INSERT INTO {work}.label_schema (id, classes) SELECT id, {classes} FROM d"
+        )
+    };
+    let rewrite_function = |name: &str, kind: &str| {
+        format!(
+            "WITH d AS (DELETE FROM {work}.labeling_function WHERE name = '{name}' \
+                        RETURNING name) \
+             INSERT INTO {work}.labeling_function (name, kind) SELECT name, '{kind}' FROM d"
+        )
+    };
+    for (why, sql) in [
+        (
+            "a schema an item names, written again with fewer classes",
+            rewrite_schema("s", "ARRAY['maybe', 'no']"),
+        ),
+        (
+            "a schema an item names, written again with its classes reordered",
+            rewrite_schema("s", "ARRAY['maybe', 'no', 'yes']"),
+        ),
+        (
+            "a schema a snapshot names",
+            rewrite_schema("t", "ARRAY['no', 'yes']"),
+        ),
+        (
+            "a function a vote names, written again as a verifier",
+            rewrite_function("h1", "verifier"),
+        ),
+        (
+            "a schema whose item is deleted and written again with it",
+            format!(
+                "WITH i AS (DELETE FROM {work}.label_item WHERE label_schema = 's' \
+                            RETURNING item), \
+                      d AS (DELETE FROM {work}.label_schema \
+                            WHERE id = 's' AND (SELECT count(*) FROM i) > 0 RETURNING id), \
+                      s AS (INSERT INTO {work}.label_schema (id, classes) \
+                            SELECT id, ARRAY['maybe', 'no', 'yes'] FROM d RETURNING id) \
+                 INSERT INTO {work}.label_item (label_schema, item) SELECT id, 'i1' FROM s"
+            ),
+        ),
+    ] {
+        assert_eq!(refused_sqlstate(&raw, &sql).await, "23001", "{why}");
+    }
+
+    // Nothing changed: the schemas keep their classes, the function its
+    // kind, and the vote and gold label their class.
+    let classes: Vec<(String, Vec<String>)> = raw
+        .query(
+            &format!("SELECT id, classes FROM {work}.label_schema ORDER BY id"),
+            &[],
+        )
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| (row.get(0), row.get(1)))
+        .collect();
+    let owned = |classes: &[&str]| classes.iter().map(|c| c.to_string()).collect::<Vec<_>>();
+    assert_eq!(
+        classes,
+        [
+            ("s".to_owned(), owned(&["yes", "no", "maybe"])),
+            ("t".to_owned(), owned(&["yes", "no"])),
+            ("unused".to_owned(), owned(&["yes", "no"])),
+        ]
+    );
+    let kind: String = raw
+        .query_one(
+            &format!("SELECT kind FROM {work}.labeling_function WHERE name = 'h1'"),
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(kind, "heuristic");
+    let labels = raw
+        .query_one(
+            &format!(
+                "SELECT v.class, g.class FROM {work}.label_vote v \
+                 JOIN {work}.gold_label g USING (label_schema, item) \
+                 WHERE v.function = 'h1'"
+            ),
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!((labels.get::<_, i32>(0), labels.get::<_, i32>(1)), (2, 2));
+
+    // A schema no item or snapshot names, and a function no vote names, are
+    // still deleted, and written again, as before.
+    raw.batch_execute(&format!(
+        "{}; {}",
+        rewrite_schema("unused", "ARRAY['no', 'yes']"),
+        rewrite_function("idle", "verifier")
+    ))
+    .await
+    .unwrap();
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_work_schema_holding_a_registration_beyond_the_state_bound_still_upgrades() {
+    // A work schema at version 11 registering, beside an ordinary memory,
+    // 64 heads of 1024 x 1024 cells (64 Mi, over MAX_STATE_CELLS), which
+    // create_memory accepted before it checked the configuration and which
+    // migration 9's NOT VALID check leaves in place.
+    let mut substrate = unmigrated_substrate_at(&dsn()).await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    work_schema_at(&raw, &substrate, 11).await;
+    let register = |id: &str, heads: i32, dim: i32| {
+        format!(
+            "INSERT INTO {work}.fastmem_memory (id, principal, thread, heads, key_dim, \
+                                              value_dim, checkpoint_interval, max_writes, \
+                                              projection_digest, codebook_seed) \
+             VALUES ('{id}', 'agent-7', '{id}', {heads}, {dim}, {dim}, 2, 64, \
+                     decode(repeat('03', 32), 'hex'), 11)"
+        )
+    };
+    raw.batch_execute(&format!(
+        "{}; {}; {}",
+        register("kept", 1, 4),
+        raw_write(&work, "kept", 1),
+        raw_write(&work, "kept", 5)
+    ))
+    .await
+    .unwrap();
+    write_before_invariants(
+        &raw,
+        &work,
+        &[("fastmem_memory", "fastmem_memory_state_cells")],
+        &register("huge", 64, 1024),
+    )
+    .await;
+
+    let report = substrate.migrate().await.unwrap();
+    assert_eq!(
+        report.work,
+        (12..=WORK_MIGRATIONS.len() as u32).collect::<Vec<_>>()
+    );
+    // The ordinary memory starts from its journal's last number; the one no
+    // loader accepts keeps mark zero, which no write or restore reads.
+    let marks: Vec<(String, i64)> = raw
+        .query(
+            &format!("SELECT id, last_seq FROM {work}.fastmem_memory ORDER BY id"),
+            &[],
+        )
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| (row.get(0), row.get(1)))
+        .collect();
+    assert_eq!(marks, [("huge".to_owned(), 0), ("kept".to_owned(), 5)]);
+    assert!(matches!(
+        substrate.load_memory("huge").await,
+        Err(PgError::CorruptRow {
+            table: "fastmem_memory",
+            ..
+        })
+    ));
+    assert!(substrate.load_memory("kept").await.unwrap().is_some());
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn every_work_function_resolves_names_under_a_fixed_search_path_whatever_the_caller_s() {
+    // A PL/pgSQL body, and a SQL-language body that is not BEGIN ATOMIC, is
+    // parsed when it runs, under the search_path in force at that moment. A
+    // function that does not fix its own path resolves its operators and
+    // functions through the path of whichever session fired it, so every
+    // function of the work schema, trigger functions and the helpers CHECKs
+    // call alike, carries its own.
+    let substrate = substrate().await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    let functions: Vec<(String, Option<Vec<String>>)> = raw
+        .query(
+            "SELECT p.proname::text, p.proconfig FROM pg_catalog.pg_proc p \
+             WHERE p.pronamespace = $1::text::regnamespace ORDER BY 1",
+            &[&work.to_string()],
+        )
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| (row.get(0), row.get(1)))
+        .collect();
+    let names: Vec<&str> = functions.iter().map(|(name, _)| name.as_str()).collect();
+    for expected in [
+        "check_replay_clock",
+        "check_replay_probe",
+        "is_finite",
+        "refuse_removal_from_stored_branch",
+        "refuse_removal_from_stored_sample",
+        "refuse_rewrite",
+        "renew_replay_sample",
+    ] {
+        assert!(names.contains(&expected), "{expected} in {names:?}");
+    }
+    for (name, config) in &functions {
+        assert_eq!(
+            config.as_deref(),
+            Some(&["search_path=pg_catalog, pg_temp".to_owned()][..]),
+            "{name}"
+        );
+    }
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn operators_a_writer_puts_first_on_its_search_path_decide_no_work_check() {
+    // A writer that is no superuser and owns neither the work schema nor its
+    // tables, with the privileges a writer of it has, and a schema of its
+    // own in which it may create operators. (Creating the role needs a test
+    // server role that may create roles.) Every operator below is one the
+    // work functions compare with, and each used to decide that function's
+    // check once the writer put its schema before pg_catalog: a PL/pgSQL
+    // body, or a SQL body that is not BEGIN ATOMIC, is parsed under the
+    // search_path of the session that fires it.
+    let (mut substrate, record) = store_with_a_calibration_to_record().await;
+    substrate.record_policy(&record).await.unwrap();
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    let (role, own) = (format!("{work}_writer"), format!("{work}_own"));
+    raw.batch_execute(&format!(
+        "INSERT INTO {work}.replay_sample \
+             (id, stratum, split, stability, difficulty, last_probe_model_time) \
+         VALUES ('r1', 'x', 'train', 1, 5, 10); \
+         INSERT INTO {work}.replay_probe (sample, model_time, loss) \
+         VALUES ('r1', 10, 0.1), ('r1', 12, 0.1); \
+         UPDATE {work}.replay_sample SET last_probe_model_time = 12 WHERE id = 'r1'; \
+         DROP SCHEMA IF EXISTS {own} CASCADE; \
+         DROP ROLE IF EXISTS {role}; \
+         CREATE ROLE {role} NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE; \
+         GRANT USAGE ON SCHEMA {work} TO {role}; \
+         GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA {work} TO {role}; \
+         CREATE SCHEMA {own} AUTHORIZATION {role};"
+    ))
+    .await
+    .unwrap();
+    let writer = raw_client().await;
+    writer
+        .batch_execute(&format!(
+            "SET ROLE {role}; \
+             CREATE FUNCTION {own}.never(text, text) RETURNS boolean \
+                 LANGUAGE sql IMMUTABLE AS 'SELECT false'; \
+             CREATE FUNCTION {own}.never(double precision, double precision) \
+                 RETURNS boolean LANGUAGE sql IMMUTABLE AS 'SELECT false'; \
+             CREATE FUNCTION {own}.always(double precision, double precision) \
+                 RETURNS boolean LANGUAGE sql IMMUTABLE AS 'SELECT true'; \
+             SET search_path = {own}, pg_catalog"
+        ))
+        .await
+        .unwrap();
+    let operator = |name: &str, argument: &str, function: &str| {
+        format!(
+            "CREATE OPERATOR {own}.{name} (LEFTARG = {argument}, RIGHTARG = {argument}, \
+                                          FUNCTION = {own}.{function})"
+        )
+    };
+
+    // Text equality that never holds: the removal triggers found no stored
+    // branch or sample, and let a row of one that stayed stored go, here an
+    // adjudication of a branch in a recorded policy's calibration set.
+    writer
+        .batch_execute(&operator("=", "text", "never"))
+        .await
+        .unwrap();
+    for sql in [
+        format!("DELETE FROM {work}.branch_outcome WHERE branch OPERATOR(pg_catalog.=) 'c00'"),
+        format!("DELETE FROM {work}.replay_probe WHERE sample OPERATOR(pg_catalog.=) 'r1'"),
+    ] {
+        assert_eq!(refused_sqlstate(&writer, &sql).await, "23000", "{sql}");
+    }
+
+    // Float comparisons that never hold: the clock checks saw no probe after
+    // the one checked, and let the sample's last probe move back from 12 to
+    // 5 and a probe at model time 1 follow the one at 12.
+    writer
+        .batch_execute(&format!(
+            "DROP OPERATOR {own}.= (text, text); {}; {}",
+            operator("<", "double precision", "never"),
+            operator(">", "double precision", "never")
+        ))
+        .await
+        .unwrap();
+    for sql in [
+        format!("UPDATE {work}.replay_sample SET last_probe_model_time = 5 WHERE id = 'r1'"),
+        format!("INSERT INTO {work}.replay_probe (sample, model_time, loss) VALUES ('r1', 1, 0.1)"),
+    ] {
+        assert_eq!(refused_sqlstate(&writer, &sql).await, "23000", "{sql}");
+    }
+
+    // Float inequality that always holds: is_finite took NaN for a finite
+    // number, and replay_probe_finite stored a probe with a NaN loss.
+    writer
+        .batch_execute(&format!(
+            "DROP OPERATOR {own}.< (double precision, double precision); \
+             DROP OPERATOR {own}.> (double precision, double precision); {}",
+            operator("<>", "double precision", "always")
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        refused_sqlstate(
+            &writer,
+            &format!(
+                "INSERT INTO {work}.replay_probe (sample, model_time, loss) \
+                 VALUES ('r1', 20, 'NaN')"
+            )
+        )
+        .await,
+        "23514"
+    );
+
+    // Nothing the writer tried changed a row.
+    let outcomes: i64 = raw
+        .query_one(
+            &format!("SELECT count(*) FROM {work}.branch_outcome WHERE branch = 'c00'"),
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(outcomes, 1);
+    let last_probe: f64 = raw
+        .query_one(
+            &format!("SELECT last_probe_model_time FROM {work}.replay_sample WHERE id = 'r1'"),
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(last_probe, 12.0);
+    let probes: Vec<f64> = raw
+        .query(
+            &format!("SELECT model_time FROM {work}.replay_probe WHERE sample = 'r1' ORDER BY 1"),
+            &[],
+        )
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| row.get(0))
+        .collect();
+    assert_eq!(probes, [10.0, 12.0]);
+
+    writer.batch_execute("RESET ROLE").await.unwrap();
+    substrate.drop_all().await.unwrap();
+    raw.batch_execute(&format!("DROP SCHEMA {own} CASCADE; DROP ROLE {role};"))
+        .await
+        .unwrap();
 }
