@@ -1448,7 +1448,20 @@ provenance files HEAD does not hold, untracked ones included
 (`test_a_checkout_holding_provenance_files_head_does_not_is_not_aggregated`), a crate linked or cloned into
 `crates/` among them (`test_an_untracked_crate_git_does_not_look_into_in_the_checkout_is_refused`); a mutation
 run whose rebuild of the unmutated harness fails writes no record
-(`test_a_mutation_run_whose_clean_rebuild_fails_writes_no_record`).
+(`test_a_mutation_run_whose_clean_rebuild_fails_writes_no_record`). The checker stamps each file it restores
+as modified after the build of the defect (`test_a_restored_source_is_stamped_newer_than_its_mutated_build`),
+and fails the run if it cannot (`test_a_restored_source_whose_stamp_cannot_be_moved_fails_the_run`). It
+restores by a rename, which brought back the original's older modification time, and cargo rebuilds a crate
+only when a source is newer than its last build. So a crate stayed built with its defect until one of its
+own sources changed again: a mutation of another crate ran with the previous defect still linked, and the
+closing rebuild of the unmutated harness rebuilt nothing. In the L003 plan that meant the three `ptr-pg`
+mutations after the fast-memory ones (`append-commit-error-ignored`, `latest-checkpoint-oldest-first`,
+`checkpoint-cascade-deletes-all`) ran with `read-admission-skipped` still in the harness: the archived L003
+mutation records at dcfbb3e, 7b60216 and ed52931 list that defect's resurrected reads among their counters,
+beside the counter each of the three expects, which fired too. The record at ad2f8d1 does not, and there each
+was detected by its own counter alone. The defect was found when the next seed run, from a harness the
+closing rebuild had left mutated, admitted every read in the revocation window; that run named a commit
+whose code it did not run, so it is not archived.
 
 Evaluations: [relational-substrate](../../evaluations/components/relational-substrate/README.md),
 [fast-weight-memory](../../evaluations/components/fast-weight-memory/README.md),

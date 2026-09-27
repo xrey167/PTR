@@ -404,6 +404,64 @@ class RecordedRunWatchTests(unittest.TestCase):
         self.assertIn("src/lib.rs still holds the mutation return-two", stdout.getvalue())
         self.assertIn(f"src/{next(iter(kept))}", stdout.getvalue())
 
+    def killed_run(self, planted_at=None):
+        """A fake `subprocess.run` for `run_mutation`: cargo succeeds, noting in
+        `planted_at` the modification time the planted file had when it was
+        built, and the harness fails on the mutation's expected counter."""
+
+        def run(command, **_kwargs):
+            if command[0] == "cargo":
+                if planted_at is not None:
+                    planted_at.append((self.root / "src/lib.rs").stat().st_mtime_ns)
+                return subprocess.CompletedProcess(command, 0, "", "")
+            return subprocess.CompletedProcess(command, 1, json.dumps({"hard_failures": 1, "wrong": 1}) + "\n", "")
+
+        return run
+
+    def test_a_restored_source_is_stamped_newer_than_its_mutated_build(self):
+        # Cargo rebuilds a crate only when one of its sources is newer than its
+        # last build. Putting the original back by a rename brought back its
+        # old modification time, so the crate stayed built with the defect: the
+        # next mutation in another crate ran with both defects, and the
+        # unmutated rebuild left the harness mutated for the next seed run.
+        plan = mod.load_toml(self.experiment / "tests/mutations.toml")
+        planted_at = []
+        with (
+            mock.patch.object(mod, "ROOT", self.root),
+            mock.patch.object(mod.subprocess, "run", side_effect=self.killed_run(planted_at)),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            outcome = mod.run_mutation(plan, plan["mutation"][0], 60)
+        self.assertEqual(outcome["result"], "killed")
+        restored = (self.root / "src/lib.rs").stat()
+        self.assertEqual((self.root / "src/lib.rs").read_text(encoding="utf-8"), self.PLANTED)
+        self.assertGreater(restored.st_mtime_ns, planted_at[0], "newer than the build of the defect")
+        self.assertGreater(restored.st_mtime_ns, 10**18, "and not the original's old stamp")
+        self.assertEqual((self.root / "src/other.rs").stat().st_mtime_ns, 10**18, "an unplanted file is untouched")
+
+    def test_a_restored_source_whose_stamp_cannot_be_moved_fails_the_run(self):
+        # The content is back, but cargo may still link the defect, so the
+        # run must not go on as though the tree were clean.
+        plan = mod.load_toml(self.experiment / "tests/mutations.toml")
+
+        def utime(*_args, **_kwargs):
+            raise OSError(errno.EPERM, os.strerror(errno.EPERM))
+
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(mod, "ROOT", self.root),
+            mock.patch.object(mod.subprocess, "run", side_effect=self.killed_run()),
+            mock.patch.object(mod.os, "utime", side_effect=utime),
+            contextlib.redirect_stdout(stdout),
+            self.assertRaises(OSError),
+        ):
+            mod.run_mutation(plan, plan["mutation"][0], 60)
+        self.assertEqual((self.root / "src/lib.rs").read_text(encoding="utf-8"), self.PLANTED)
+        self.assertIn(
+            "could not stamp them as newer than the build of the mutation return-two", stdout.getvalue()
+        )
+        self.assertIn("src/lib.rs", stdout.getvalue())
+
     def test_a_mutation_run_whose_plan_changes_as_it_is_read_is_not_recorded(self):
         # HEAD moves, a checkout in another terminal say, just after the plan
         # is read: the record would name a commit whose plan it did not run.

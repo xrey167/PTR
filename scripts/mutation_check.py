@@ -11,7 +11,12 @@ restores the file whatever happens: each edit replaces the file in one step, so
 a write that fails never leaves it truncated, and restoring renames the
 original, kept under a second name beside it before the defect is planted,
 back into place, which needs no free space; should even that fail, the script
-names each file that still holds the defect and where its original is. A
+names each file that still holds the defect and where its original is. The
+rename brings back the original's modification time, which is older than the
+mutated build, and cargo rebuilds a crate only when a source is newer than its
+last build, so each restored file is then stamped after both: otherwise the
+next mutation of another crate, and the unmutated rebuild, would still link
+the defect. A
 mutation is *killed* when the harness exits with status 1 and one of its
 expected counters fired. A run that fails only on other counters is recorded as
 `failed-elsewhere`: the defect may have broken something unrelated first (a
@@ -50,6 +55,7 @@ import secrets
 import stat
 import subprocess
 import sys
+import time
 import tomllib
 from pathlib import Path
 
@@ -199,19 +205,39 @@ def keep_original(path: Path) -> Path:
 
 def restore_originals(name: str, kept: dict[str, Path]) -> None:
     """Put each file of `kept` (file -> the second name `keep_original` gave
-    its original) back by renaming the original over it. A restore that
-    fails names every file that still holds the mutation `name` and where
-    its original is, and raises."""
+    its original) back by renaming the original over it, then stamp it as
+    modified after the planted file it replaces. A restore that fails names
+    every file that still holds the mutation `name` and where its original
+    is, and raises; so does a restored file whose stamp cannot be moved.
+
+    The rename brings back the original's modification time, which is older
+    than the build of the mutation, and cargo rebuilds a crate only when one
+    of its sources is newer than that crate's last build. Left so, the
+    restored crate stays built with the defect: the next mutation, when it is
+    in another crate, runs with both defects, and the unmutated rebuild
+    rebuilds nothing, leaving the harness mutated for whatever runs next."""
     unrestored = []
+    unstamped = []
     for file, original in kept.items():
+        target = ROOT / file
         try:
-            os.replace(original, ROOT / file)
+            planted = target.stat().st_mtime_ns
+        except OSError:
+            planted = 0
+        try:
+            os.replace(original, target)
             # A rename between two names of one file, as when the plant never
             # replaced it, leaves both names.
             original.unlink(missing_ok=True)
         except OSError as error:
             unrestored.append((file, original, error))
-        experiment_records.sync_directory((ROOT / file).parent)
+        else:
+            fresh = max(time.time_ns(), planted + 1)
+            try:
+                os.utime(target, ns=(fresh, fresh))
+            except OSError as error:
+                unstamped.append((file, error))
+        experiment_records.sync_directory(target.parent)
     if unrestored:
         print(
             "ERROR: restoring the planted files failed; "
@@ -223,6 +249,14 @@ def restore_originals(name: str, kept: dict[str, Path]) -> None:
             flush=True,
         )
         raise unrestored[0][2]
+    if unstamped:
+        print(
+            "ERROR: restored the planted files, but could not stamp them as newer than the "
+            f"build of the mutation {name}, so cargo may keep building it; "
+            + "; ".join(f"{file} ({error})" for file, error in unstamped),
+            flush=True,
+        )
+        raise unstamped[0][1]
 
 
 def run_mutation(
