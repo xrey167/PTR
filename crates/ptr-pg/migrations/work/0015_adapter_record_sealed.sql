@@ -59,8 +59,11 @@
 -- was registered by an earlier transaction, so it gains no source or
 -- manifest entry, and a cycle or a row appended before it stays.
 --
--- The other parents and children of the work schema, one entry per parent
--- (every foreign key but the two above), and why each is as it is:
+-- The work schema's other foreign keys, every one but the two this migration
+-- seals (adapter_source.consolidated and adapter_input.adapter), and why each
+-- is as it is. An entry names a parent and the children whose keys to it it
+-- covers, a child followed by its key's columns wherever it has another key
+-- to the same parent:
 --   * branch -> branch_read, branch_scan, branch_relied, branch_touched,
 --     branch_op: sealed in the transaction of the header (migration 11),
 --     whose xmin stays that transaction's, since a header is never updated.
@@ -85,6 +88,12 @@
 --     whatever its status: appended once, after the adapter, by design.
 --   * adapter_interference_report -> adapter_interference: counted, exactly
 --     layer_count rows when the report commits and never more (migration 7).
+--   * adapter -> adapter_source (source): a consolidation registered later
+--     may name a registered adapter, whatever its status, as a source, so
+--     the adapter gains a row here in any later transaction; the row is
+--     sealed with its consolidation (above) and never rewritten, and erasure
+--     propagation follows it from the source to the consolidation
+--     (Lineage::affected_by): appendable by design.
 --   * adapter -> adapter (parent), adapter_interference (worst),
 --     labeling_function (adapter): a column of the child's own row, which
 --     never changes and names only an adapter registered before it

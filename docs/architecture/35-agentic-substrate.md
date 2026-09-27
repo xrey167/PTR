@@ -462,15 +462,16 @@ cycle either
 (`an_adapter_s_sources_and_data_manifest_are_written_only_in_the_transaction_that_registers_it`).
 An adapter registered before the migration carries no stamp and gains no row
 (`an_adapter_registered_before_work_version_15_gains_no_source_or_input`). The
-migration records, for every other parent and child of the work schema (every other
-foreign key, one entry per parent), whether its rows are sealed (a branch's), counted
-(a calibration set, an interference report's layers), appendable by design (triage
-rows of a branch or citing a policy, outcomes, a branch's calibration rows,
-interference reports of an adapter of any status, fast-memory journals and
-checkpoints, replay probes, the weak-supervision store) or a column of a row never
-rewritten (an adapter's parent, a layer's worst overlap, a model labeling function's
-adapter)
-(`work_migration_15_gives_a_reason_for_every_other_parent_and_child_of_the_work_schema`). Replay rows
+migration records, for every other foreign key of the work schema (two between the
+same tables told apart by their columns), whether its rows are sealed (a branch's),
+counted (a calibration set, an interference report's layers), appendable by design
+(triage rows of a branch or citing a policy, outcomes, a branch's calibration rows,
+interference reports of an adapter of any status, a later consolidation's sources
+naming a registered adapter, fast-memory journals and checkpoints, replay probes, the
+weak-supervision store) or a column of a row never rewritten (an adapter's parent, a
+layer's worst overlap, a model labeling function's adapter), and a test holds that
+list to the schema's foreign keys one by one, columns included
+(`work_migration_15_gives_a_reason_for_every_other_foreign_key_of_the_work_schema`). Replay rows
 are finite, where `stability > 0` alone admitted NaN and infinity, and the training
 clock never runs back (`replay_rows_are_finite_and_the_training_clock_never_runs_back`).
 A label schema has at least two distinct, non-empty, non-NULL classes indexed from

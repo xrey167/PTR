@@ -9179,10 +9179,26 @@ async fn an_adapter_stored_with_another_cluster_s_stamp_gains_no_row_in_the_tran
     substrate.drop_all().await.unwrap();
 }
 
-/// The (parent, child) table pairs a migration's audit names: the entries
+/// A foreign key of the work schema: its parent table, its child table and
+/// the child's columns in the key, in key order.
+type ForeignKey = (String, String, Vec<String>);
+
+fn foreign_key(parent: &str, child: &str, columns: &[&str]) -> ForeignKey {
+    (
+        parent.to_owned(),
+        child.to_owned(),
+        columns.iter().map(|column| (*column).to_owned()).collect(),
+    )
+}
+
+/// The foreign keys among `keys` that a migration's audit names: the entries
 /// that follow the comment line beginning `heading`, each `parent -> child,
-/// child (column): why`, over as many comment lines as it takes.
-fn audited_pairs(sql: &str, heading: &str) -> Vec<(String, String)> {
+/// child (column, column): why`, over as many comment lines as it takes. A
+/// child followed by columns names its key to the parent on exactly those
+/// columns, a child alone its one key to the parent; either is refused when
+/// `keys` holds no such key, and a child alone when the child has more than
+/// one key to the parent.
+fn audited_keys(sql: &str, heading: &str, keys: &[ForeignKey]) -> Result<Vec<ForeignKey>, String> {
     let mut entries: Vec<String> = Vec::new();
     let mut lines = sql
         .lines()
@@ -9200,62 +9216,134 @@ fn audited_pairs(sql: &str, heading: &str) -> Vec<(String, String)> {
             break;
         }
     }
-    assert!(!entries.is_empty(), "no entry follows {heading:?}");
-    let mut pairs = Vec::new();
+    if entries.is_empty() {
+        return Err(format!("no entry follows {heading:?}"));
+    }
+    let mut named = Vec::new();
     for entry in &entries {
         let head = entry.split(':').next().unwrap();
-        let (parent, children) = head.split_once(" -> ").unwrap_or_else(|| panic!("{entry}"));
-        for child in children.split(", ") {
-            let table = child.split(" (").next().unwrap().trim();
-            pairs.push((parent.trim().to_owned(), table.to_owned()));
+        let (parent, children) = head
+            .split_once(" -> ")
+            .ok_or_else(|| format!("no parent in {entry:?}"))?;
+        let parent = parent.trim();
+        // The children, split at the commas outside a child's columns.
+        let mut depth = 0_usize;
+        let mut start = 0;
+        let mut listed = Vec::new();
+        for (at, character) in children.char_indices() {
+            match character {
+                '(' => depth += 1,
+                ')' => depth = depth.saturating_sub(1),
+                ',' if depth == 0 => {
+                    listed.push(&children[start..at]);
+                    start = at + 1;
+                }
+                _ => {}
+            }
+        }
+        listed.push(&children[start..]);
+        for child in listed {
+            let child = child.trim();
+            let (table, columns) = match child.split_once(" (") {
+                Some((table, columns)) => {
+                    let columns = columns
+                        .strip_suffix(')')
+                        .ok_or_else(|| format!("unclosed columns in {child:?}"))?;
+                    let columns: Vec<String> =
+                        columns.split(',').map(|c| c.trim().to_owned()).collect();
+                    (table, Some(columns))
+                }
+                None => (child, None),
+            };
+            let matching: Vec<&ForeignKey> = keys
+                .iter()
+                .filter(|(p, c, key_columns)| {
+                    p == parent
+                        && c == table
+                        && columns
+                            .as_ref()
+                            .is_none_or(|columns| columns == key_columns)
+                })
+                .collect();
+            match matching.as_slice() {
+                [key] => named.push((*key).clone()),
+                _ => {
+                    return Err(format!(
+                        "{parent} -> {child} names {} foreign keys",
+                        matching.len()
+                    ))
+                }
+            }
         }
     }
-    pairs
+    Ok(named)
 }
 
 #[tokio::test]
-async fn work_migration_15_gives_a_reason_for_every_other_parent_and_child_of_the_work_schema() {
+async fn work_migration_15_gives_a_reason_for_every_other_foreign_key_of_the_work_schema() {
     let mut substrate = unmigrated_substrate_at(&dsn()).await;
     let raw = raw_client().await;
     let work = substrate.schemas().work.clone();
     work_schema_at(&raw, &substrate, 15).await;
-    // Every parent and child of the work schema at version 15: the tables
-    // each foreign key joins.
-    let keys: Vec<(String, String)> = raw
+    // Every foreign key of the work schema at version 15, two between the
+    // same tables included: its parent, its child and the child's columns in
+    // it.
+    let mut keys: Vec<ForeignKey> = raw
         .query(
-            "SELECT DISTINCT parent.relname::text, child.relname::text \
+            "SELECT parent.relname::text, child.relname::text, \
+                    ARRAY(SELECT a.attname::text \
+                          FROM unnest(k.conkey) WITH ORDINALITY AS c (attnum, ordinal) \
+                          JOIN pg_attribute a ON a.attrelid = k.conrelid AND a.attnum = c.attnum \
+                          ORDER BY c.ordinal) \
              FROM pg_constraint k \
              JOIN pg_class child ON child.oid = k.conrelid \
              JOIN pg_class parent ON parent.oid = k.confrelid \
-             WHERE k.contype = 'f' AND k.connamespace = $1::text::regnamespace \
-             ORDER BY 1, 2",
+             WHERE k.contype = 'f' AND k.connamespace = $1::text::regnamespace",
             &[&work.as_str()],
         )
         .await
         .unwrap()
         .iter()
-        .map(|row| (row.get(0), row.get(1)))
+        .map(|row| (row.get(0), row.get(1), row.get(2)))
         .collect();
+    keys.sort();
     // The migration's subject, and the others it gives a reason for, once
     // each.
     let migration = WORK_MIGRATIONS
         .iter()
         .find(|migration| migration.version == 15)
         .unwrap();
-    let mut named = audited_pairs(
-        migration.sql,
-        "-- The other parents and children of the work schema",
-    );
+    let heading = "-- The work schema's other foreign keys";
+    let mut named = audited_keys(migration.sql, heading, &keys).unwrap();
     let entries = named.len();
     named.sort();
     named.dedup();
-    assert_eq!(named.len(), entries, "a pair named twice: {named:?}");
-    named.extend(owned_pairs(&[
-        ("adapter", "adapter_input"),
-        ("adapter", "adapter_source"),
-    ]));
+    assert_eq!(named.len(), entries, "a foreign key named twice: {named:?}");
+    named.extend([
+        foreign_key("adapter", "adapter_input", &["adapter"]),
+        foreign_key("adapter", "adapter_source", &["consolidated"]),
+    ]);
     named.sort();
     assert_eq!(named, keys);
+    // An entry names keys, not pairs of tables: a column the key does not
+    // have names none, nor does a child alone that has two keys to its
+    // parent, and a key on two columns is named by both.
+    let audit =
+        |entry: &str| audited_keys(&format!("{heading}\n--   * {entry}: why\n"), heading, &keys);
+    assert!(audit("triage_policy -> branch_triage (decided_at)").is_err());
+    assert!(audit("adapter -> adapter_source").is_err());
+    assert!(audit("label_item -> label_vote (label_schema)").is_err());
+    assert_eq!(
+        audit("adapter -> adapter_source (source)"),
+        Ok(vec![foreign_key("adapter", "adapter_source", &["source"])])
+    );
+    assert_eq!(
+        audit("label_item -> label_vote (label_schema, item), gold_label"),
+        Ok(vec![
+            foreign_key("label_item", "label_vote", &["label_schema", "item"]),
+            foreign_key("label_item", "gold_label", &["label_schema", "item"]),
+        ])
+    );
     substrate.migrate().await.unwrap();
     substrate.drop_all().await.unwrap();
 }
