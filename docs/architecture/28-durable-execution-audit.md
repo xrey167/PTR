@@ -71,6 +71,63 @@ wrong answer rather than a missing one. So a retained response that is longer th
 the bound, or that disagrees with the digest beside it, is refused during
 validation — before append and again during replay.
 
+### A settlement that fails is not a refusal
+
+The attempt is committed before the executor is called and the settlement after it
+returns, so the second append can fail after the effect applied: the ledger has no
+index left, or a durable write fails. `execute_prepared` and `settle_detached`
+return `SettlementNotRecorded { attempt, error }` for that, never `Audit`. `Audit`
+is what a failed attempt record returns, and what a failed reconciliation returns,
+which leaves the attempt awaiting one. For the attempt record nothing was
+attempted and no unsettled attempt is left to fence on, so the execution wire
+reports it as `Refused`; if the ledger's own append failed, the runtime is still
+fenced by the ambiguity of that append until it is reopened, and only a record
+refused by validation before the append leaves it unfenced. Earlier builds
+returned `Audit` for a failed settlement too, so a requester was told that nothing
+had been attempted for an effect that had applied, and a retry under a fresh key
+would have applied it a second time.
+
+Nothing about the failure clears the fence. The failed append leaves this process's
+own last append ambiguous and the attempt unsettled, so no permit is prepared, no
+journal anchor is produced and detached work stays outstanding. Neither a second
+settlement nor a reconciliation can be committed in this process, because
+ambiguity about the runtime's own last append blocks every settlement (below): a
+second `settle_detached` of the same answer returns `SettlementNotRecorded` again,
+with `ExecutionFenced` as its error, and `reconcile_effect` returns
+`Audit(ExecutionFenced)`. The response is not handed on, since the runtime could
+not record it, and the wire reports the effect as `AppliedWithoutResponse`
+(`32-execution-wire.md`).
+
+Reopening clears that ambiguity and replays what the ledger holds. After a failed
+durable write that is the way forward: a torn tail is first repaired against the
+retained anchor with `FileLedger::recover_unacknowledged_tail`, because a plain
+open refuses an incomplete frame (`23-persistence-integrity.md`), and an attempt
+still unsettled after the reopen is what reconciliation is for. When the failure
+was the ledger running out of room, it is not: the reopened runtime replays the
+attempt and no settlement, so it is fenced until the attempt is reconciled, and a
+reconciliation is an append of its own, which the full ledger refuses the same way
+(`PTR_LEDGER_INDEX_EXHAUSTED`, or `PTR_LOG_RECORD_LIMIT` once a durable log holds
+`MAX_RECORDS`). A fenced runtime also produces no journal anchor and no compacted
+snapshot, so compaction cannot make room. The fence is then permanent in band,
+which is the safe direction and is listed under "What this does not close".
+
+Asserted with a ledger one index below its ceiling, so the attempt takes the last
+index and the settlement finds none: for a synchronous effect
+(`an_effect_whose_settlement_cannot_be_recorded_is_reported_as_applied_and_fences_the_runtime`
+in `crates/ptr-runtime/tests/execution_audit.rs`), for an adapter's answer
+(`an_adapter_answer_that_cannot_be_recorded_is_reported_as_applied_and_the_window_stays_open`
+in `crates/ptr-runtime/tests/detached_effects.rs`) and over the wire
+(`an_effect_whose_settlement_the_host_cannot_record_is_reported_applied_not_refused`
+in `crates/ptr-execwire/tests/wire.rs`). Each fails with the settlement mapped
+back onto `Audit`, as it was before the fix. The same runtime restored with the
+attempt it wrote is still fenced and cannot reconcile
+(`a_settlement_lost_to_an_exhausted_ledger_fences_even_after_a_reopen`). The other
+side of the boundary is asserted with no index left at all: the attempt record
+fails, the executor and the adapter are never called, the runtime returns `Audit`
+and the wire reports `Refused`
+(`an_attempt_the_ledger_cannot_record_is_an_audit_failure_and_reaches_no_executor`,
+`an_attempt_the_host_cannot_record_is_refused_and_reaches_no_adapter`).
+
 ### Reconciliation records, it does not infer
 
 `reconcile_effect(attempt, applied, evidence)` commits what an operator
@@ -227,6 +284,16 @@ says an effect was attempted, not how it was dispatched, and it is not rebuilt a
 never handed out would be inventing that distinction. After a restart the fence
 stands and reconciliation is the way forward — the same answer a crash inside a
 synchronous effect gets.
+
+Either answer closes the window, and the first one recorded is the one that holds. A
+detached attempt a person reconciles is no longer outstanding, and an adapter answer
+that arrives afterwards is refused with `NotDetached` before anything is appended,
+whichever way the reconciliation went
+(`a_reconciled_detached_attempt_is_no_longer_outstanding_and_a_late_answer_is_refused`).
+Before this was enforced the attempt stayed listed as outstanding after
+reconciliation, and a late answer reached the ledger, which refused it as naming no
+live attempt; since settlement failures are reported as `SettlementNotRecorded`,
+that would have claimed an applied effect and a fence that neither existed.
 
 ### What detached work does not change
 
@@ -495,6 +562,14 @@ the code before the fix:
   obligation now travels in the snapshot (below); what remains is the ordinary
   anchor-retention obligation of `24-protected-anchors.md` — a host that loses
   the snapshot or its anchor has lost the memory, and no format prevents that.
+- **A settlement lost to a full ledger fences for good.** When the settlement of
+  an applied effect fails because the ledger has no index or record left, the
+  attempt stays unsettled across a reopen, and reconciling it needs another
+  append, which the ledger refuses the same way; the runtime produces no journal
+  anchor or compacted snapshot while fenced, so nothing in band frees room. The
+  runtime keeps refusing rather than forgetting that an effect applied, which is
+  the safe direction, but lifting that fence needs a ledger with room, which is
+  outside the runtime.
 - **At-most-once, not exactly-once.** An ambiguous outcome stays ambiguous until
   someone supplies evidence. Nothing here makes an applied effect reversible or
   an unknown one knowable.

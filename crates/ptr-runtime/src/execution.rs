@@ -568,9 +568,33 @@ pub enum ExecutionError {
     NotDetached {
         attempt: CommitIndex,
     },
-    /// The audit record itself could not be committed. Nothing was attempted
-    /// when this is returned from the attempt, so it denies rather than fences.
+    /// The audit record itself could not be committed.
+    ///
+    /// For the attempt record, nothing was attempted and no unsettled attempt is
+    /// left to fence on, so it is a refusal. A failure in the ledger's own append
+    /// still leaves this runtime's last append ambiguous, and so the runtime
+    /// fenced until it is reopened; a record refused by validation before the
+    /// append leaves it unfenced. For a reconciliation, the attempt is left
+    /// awaiting one. A settlement that could not be committed after the effect
+    /// applied is [`ExecutionError::SettlementNotRecorded`] instead.
     Audit(Box<RuntimeError>),
+    /// The effect applied, as the executor or the detached adapter reported,
+    /// but its settlement record could not be committed. `error` says why.
+    ///
+    /// This is not a refusal: the effect applied, and answering "nothing was
+    /// attempted" would invite a retry that applies it twice. The runtime stays
+    /// fenced: the failed append leaves its own last append ambiguous and the
+    /// attempt unsettled, so settling or reconciling it again in this process is
+    /// refused too. A reopened runtime replays what was written, and an attempt
+    /// still unsettled there fences it until reconciliation records the outcome.
+    /// Reconciling is an append of its own, so while the ledger has no index or
+    /// record left the fence cannot be lifted in band. The response is not
+    /// handed on, since the runtime could not record it; the execution wire
+    /// reports this as `AppliedWithoutResponse`.
+    SettlementNotRecorded {
+        attempt: CommitIndex,
+        error: Box<RuntimeError>,
+    },
     AuthorizationDenied(AuthorizationDenial),
     VerificationRejected {
         status: VerificationStatus,
@@ -1023,6 +1047,10 @@ impl PtrRuntime {
     /// It records what an operator established. It never infers the outcome and
     /// never retries the effect: a runtime that could work out what happened
     /// would not have been fenced.
+    ///
+    /// A detached attempt it closes is no longer outstanding, as after
+    /// [`PtrRuntime::settle_detached`], so an adapter answer that arrives later is
+    /// refused with [`ExecutionError::NotDetached`].
     pub fn reconcile_effect(
         &mut self,
         attempt: CommitIndex,
@@ -1036,12 +1064,15 @@ impl PtrRuntime {
         if !self.execution.is_unsettled(attempt) {
             return Err(ExecutionError::UnknownAttempt { attempt });
         }
-        self.commit_settlement(LedgerEvent::EffectReconciled {
-            attempt,
-            applied,
-            evidence,
-        })
-        .map_err(audit)
+        let reconciled = self
+            .commit_settlement(LedgerEvent::EffectReconciled {
+                attempt,
+                applied,
+                evidence,
+            })
+            .map_err(audit)?;
+        self.execution.detached.remove(&attempt);
+        Ok(reconciled)
     }
 
     /// Consumes the permit even on rejection, verification failure or panic.
@@ -1072,7 +1103,11 @@ impl PtrRuntime {
             Err(error) => return Err(ExecutionError::Executor(error)),
         };
 
-        self.record_settlement(attempted.attempt, output.clone())?;
+        self.record_settlement(attempted.attempt, output.clone())
+            .map_err(|error| ExecutionError::SettlementNotRecorded {
+                attempt: attempted.attempt,
+                error: Box::new(error),
+            })?;
         Ok(output)
     }
 
@@ -1133,15 +1168,26 @@ impl PtrRuntime {
     /// it is only available for an attempt *this* runtime dispatched: after a restart
     /// the runtime cannot tell which unsettled attempts were detached, so it does not
     /// pretend to — the fence stands and reconciliation is the way forward.
+    ///
+    /// An attempt that is not outstanding, because it was never handed out here or
+    /// has already been settled or reconciled, is refused with
+    /// [`ExecutionError::NotDetached`] before anything is appended. Only an attempt
+    /// still awaiting its answer reaches the ledger, so a failure there is an
+    /// applied effect whose settlement was not recorded.
     pub fn settle_detached(
         &mut self,
         attempt: CommitIndex,
         response: Vec<u8>,
     ) -> Result<CommitIndex, ExecutionError> {
-        if !self.execution.detached.contains(&attempt) {
+        if !self.execution.detached.contains(&attempt) || !self.execution.is_unsettled(attempt) {
             return Err(ExecutionError::NotDetached { attempt });
         }
-        let settled = self.record_settlement(attempt, response)?;
+        let settled = self.record_settlement(attempt, response).map_err(|error| {
+            ExecutionError::SettlementNotRecorded {
+                attempt,
+                error: Box::new(error),
+            }
+        })?;
         self.execution.detached.remove(&attempt);
         Ok(settled)
     }
@@ -1157,11 +1203,15 @@ impl PtrRuntime {
     ///
     /// The digest is unconditional: "we did not keep the response" must never become
     /// "we do not know what happened".
+    ///
+    /// The effect has applied by the time this runs, so a failure is returned as
+    /// the ledger's error for the caller to report as
+    /// [`ExecutionError::SettlementNotRecorded`], never as a refusal.
     fn record_settlement(
         &mut self,
         attempt: CommitIndex,
         output: Vec<u8>,
-    ) -> Result<CommitIndex, ExecutionError> {
+    ) -> Result<CommitIndex, RuntimeError> {
         let response_digest = integrity::sha256(&output);
         let response = (output.len() <= MAX_RETAINED_RESPONSE).then_some(output);
         self.commit_settlement(LedgerEvent::EffectSettled {
@@ -1169,7 +1219,6 @@ impl PtrRuntime {
             response,
             response_digest,
         })
-        .map_err(audit)
     }
 
     /// Every check that must hold before an effect is attempted, and the attempt

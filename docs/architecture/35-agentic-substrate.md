@@ -1418,12 +1418,13 @@ another by idea.
 | [F002](../../experiments/feedback/F002-weak-supervision/README.md) | Is the verifier-precedence label model better calibrated than majority vote? | any label contradicting a verifier veto |
 | [E005](../../experiments/system/E005-agent-memory-benchmark/README.md) | Does the combined stack beat current agent-memory systems on LongMemEval and LoCoMo? | no category improvement at equal budget |
 
-L004 and L003 are completed for PostgreSQL 18 (2026-09-27, at ed52931): over five seeds each, with crashes,
+L004 and L003 are completed for PostgreSQL 18 (2026-09-27, at 5f71d84): over five seeds each, with crashes,
 commits the server failed and races, no projection diverged from the reference, no foreign history was
 accepted, no refold differed by a bit and no revoked input was read; every planted defect of their mutation
 lists was detected (17 of 17 and 16 of 16). Their seed records, mutation checks and aggregates all ran at
-that commit, and earlier runs at ad2f8d1, dcfbb3e and 7b60216 also passed. Results and limitations are in each
-experiment's `results/`. `scripts/check_research_gates.py` fails CI on a completed experiment whose archived `run.json`
+that commit, and earlier runs at ad2f8d1, dcfbb3e, 7b60216, ed52931 and ff96ce0 also passed. Results and limitations
+are in each experiment's `results/`. `scripts/check_research_gates.py` fails CI on a completed experiment whose archived
+`run.json`
 or `mutations.json` ran at code, aggregation scripts or mutation plan HEAD has changed without a
 `results/STALE.toml` marker naming them and the first change (`test_results_of_other_code_fail_without_a_marker`,
 `test_a_dishonest_or_incomplete_marker_is_refused`), and on a marker beside current results. A marker names
@@ -1446,7 +1447,25 @@ provenance files HEAD does not hold, untracked ones included
 (`test_a_checkout_holding_provenance_files_head_does_not_is_not_aggregated`), a crate linked or cloned into
 `crates/` among them (`test_an_untracked_crate_git_does_not_look_into_in_the_checkout_is_refused`); a mutation
 run whose rebuild of the unmutated harness fails writes no record
-(`test_a_mutation_run_whose_clean_rebuild_fails_writes_no_record`).
+(`test_a_mutation_run_whose_clean_rebuild_fails_writes_no_record`). The checker stamps each file it restores
+as modified after the planted file it replaces (`test_a_restored_source_is_stamped_newer_than_its_mutated_build`)
+and after the harness binary that build linked, which cargo writes after every crate's build stamp, so the
+source is newer than those stamps whatever the clock did
+(`test_a_restored_source_is_stamped_newer_than_the_harness_its_build_linked`). It reads the stored time back
+and steps on past a filesystem that keeps whole seconds
+(`test_a_restored_source_is_stepped_past_a_filesystem_that_keeps_whole_seconds`), and fails the run when the
+stamp cannot be set or stays no later (`test_a_restored_source_whose_stamp_cannot_be_moved_fails_the_run`,
+`test_a_restored_source_that_stays_stored_as_old_fails_the_run`). It restores by a rename, which brought back the original's older modification time, and cargo rebuilds a crate
+only when a source is newer than its last build. So a crate stayed built with its defect until one of its
+own sources changed again: a mutation of another crate ran with the previous defect still linked, and the
+closing rebuild of the unmutated harness rebuilt nothing. In the L003 plan that meant the three `ptr-pg`
+mutations after the fast-memory ones (`append-commit-error-ignored`, `latest-checkpoint-oldest-first`,
+`checkpoint-cascade-deletes-all`) ran with `read-admission-skipped` still in the harness: the archived L003
+mutation records at dcfbb3e, 7b60216 and ed52931 list that defect's resurrected reads among their counters,
+beside the counter each of the three expects, which fired too. The record at ad2f8d1 does not, and there each
+was detected by its own counter alone. The defect was found when the next seed run, from a harness the
+closing rebuild had left mutated, admitted every read in the revocation window; that run named a commit
+whose code it did not run, so it is not archived.
 
 Evaluations: [relational-substrate](../../evaluations/components/relational-substrate/README.md),
 [fast-weight-memory](../../evaluations/components/fast-weight-memory/README.md),

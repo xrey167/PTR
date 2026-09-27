@@ -15,16 +15,18 @@ use ptr_execwire::{
     decode_request, encode_receipt, encode_request, request_digest, ExecutionClient, ExecutionHost,
     RefusalCode, WireError, WireOutcome, WireReceipt, WireRequest,
 };
+use ptr_ledger::integrity::{self, LogAnchor};
 use ptr_ledger::LedgerEvent;
 use ptr_net::{EndpointAddr, IrohTransport, NodeIdentity, PeerAddress, PeerBook, ALPN_EXEC};
+use ptr_runtime::compacted::CompactedAnchor;
 use ptr_runtime::execution::{
     ActionExecutor, ActionScope, AdmissionPolicy, DetachedExecutor, ExecutionGrant,
     RequiredVerification, VerifiedDispatch,
 };
 use ptr_runtime::PtrRuntime;
 use ptr_types::{
-    CapabilityId, CapsuleId, Effect, Generation, NodeId, Probability, ProjectId, RequestId, TypeId,
-    VerificationLevel,
+    CapabilityId, CapsuleId, CommitIndex, Effect, Generation, NodeId, Probability, ProjectId,
+    RequestId, TypeId, VerificationLevel,
 };
 use ptr_verifier::{VerificationReport, VerificationStatus, Verifier};
 use std::sync::{Arc, Mutex};
@@ -155,13 +157,16 @@ fn scope(action: &ActionIr) -> ActionScope {
 /// appear in an audit record.
 const POLICY_PRINCIPAL: &str = "principal-from-host-policy";
 
-/// A runtime that admits `peer` with one grant for `action`.
-fn runtime_admitting(peer: &NodeIdentity, mode: Mode) -> (PtrRuntime, ActionIr, Probe) {
-    let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
-    let action = action(&mut runtime);
-    let probe = Probe::default();
+/// A policy that admits `peer` with one grant for `action`, whose adapter
+/// reports to `probe`.
+fn policy_admitting(
+    peer: &NodeIdentity,
+    action: &ActionIr,
+    probe: &Probe,
+    mode: Mode,
+) -> AdmissionPolicy {
     let mut policy = AdmissionPolicy::new();
-    let scope = scope(&action);
+    let scope = scope(action);
     let grant_probe = probe.clone();
     policy
         .admit(
@@ -181,7 +186,15 @@ fn runtime_admitting(peer: &NodeIdentity, mode: Mode) -> (PtrRuntime, ActionIr, 
             },
         )
         .unwrap();
-    runtime.install_admission_policy(policy);
+    policy
+}
+
+/// A runtime that admits `peer` with one grant for `action`.
+fn runtime_admitting(peer: &NodeIdentity, mode: Mode) -> (PtrRuntime, ActionIr, Probe) {
+    let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+    let action = action(&mut runtime);
+    let probe = Probe::default();
+    runtime.install_admission_policy(policy_admitting(peer, &action, &probe, mode));
     (runtime, action, probe)
 }
 
@@ -866,6 +879,112 @@ async fn an_uncertain_outcome_is_not_a_refusal_and_the_fence_reaches_the_next_re
         ))
     ));
     assert_eq!(probe.executions(), 1, "and nothing else was dispatched");
+}
+
+/// A host admitting `peer`, whose runtime is the ordinary one restored from its
+/// compacted snapshot with the floor moved to `floor`, so the ledger can hand out
+/// only the indices above it. Permissions and the admission policy belong to the
+/// process, not to the snapshot, so they are installed again.
+async fn host_restored_at_floor(
+    peer: &NodeIdentity,
+    floor: CommitIndex,
+) -> (Arc<ExecutionHost>, ActionIr, Probe) {
+    let (runtime, action, probe) = runtime_admitting(peer, Mode::Success);
+    let snapshot = runtime.export_compacted_snapshot().unwrap();
+    let floor = LogAnchor {
+        index: floor,
+        digest: snapshot.anchor().floor.digest,
+    };
+    let mut bytes = snapshot.bytes().to_vec();
+    bytes[16..24].copy_from_slice(&floor.index.0.to_le_bytes());
+    let end = bytes.len() - 32;
+    let digest = integrity::sha256(&bytes[..end]);
+    bytes[end..].copy_from_slice(&digest);
+    let trusted = CompactedAnchor {
+        revision: snapshot.anchor().revision,
+        floor,
+        digest,
+    };
+    let mut runtime =
+        PtrRuntime::restore_compacted(PtrConfig::default(), &bytes, trusted, &[]).unwrap();
+    runtime
+        .permissions_mut()
+        .capabilities
+        .insert(action.capability.clone());
+    runtime.permissions_mut().allow_mutation = true;
+    runtime.install_admission_policy(policy_admitting(peer, &action, &probe, Mode::Success));
+    let host = Arc::new(ExecutionHost::bind(runtime).await.unwrap());
+    (host, action, probe)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_effect_whose_settlement_the_host_cannot_record_is_reported_applied_not_refused() {
+    // The host's ledger has one index left. The attempt takes it, the adapter
+    // applies the effect, and the settlement finds none. Reporting that as a
+    // refusal would tell the requester nothing was attempted, when its effect
+    // applied, and invite a retry that applies it again.
+    let client = ExecutionClient::bind().await.unwrap();
+    let (host, action, probe) =
+        host_restored_at_floor(&client.identity(), CommitIndex(u64::MAX - 1)).await;
+
+    let serving = Arc::clone(&host);
+    let asked = request(&host, &action, 1);
+    let (answer, served) = tokio::join!(
+        client.request(located(host.address()), &asked),
+        serving.serve_once()
+    );
+    assert_eq!(
+        answer.unwrap().outcome,
+        WireOutcome::AppliedWithoutResponse,
+        "the requester is told its effect applied"
+    );
+    assert!(matches!(
+        served.unwrap().refused,
+        Some(WireError::Runtime(
+            ptr_runtime::execution::ExecutionError::SettlementNotRecorded { .. }
+        ))
+    ));
+    assert_eq!(probe.executions(), 1, "the adapter was reached once");
+    assert_eq!(
+        host.runtime().unsettled_effects().len(),
+        1,
+        "the attempt still fences the host until its outcome is recorded"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_attempt_the_host_cannot_record_is_refused_and_reaches_no_adapter() {
+    // The other side of the boundary above. The host's ledger has no index left,
+    // so the attempt record itself cannot be committed and the adapter is never
+    // called: nothing was attempted, and the requester is told so.
+    let client = ExecutionClient::bind().await.unwrap();
+    let (host, action, probe) =
+        host_restored_at_floor(&client.identity(), CommitIndex(u64::MAX)).await;
+
+    let serving = Arc::clone(&host);
+    let asked = request(&host, &action, 1);
+    let (answer, served) = tokio::join!(
+        client.request(located(host.address()), &asked),
+        serving.serve_once()
+    );
+    assert_eq!(
+        answer.unwrap().outcome,
+        WireOutcome::Refused {
+            code: RefusalCode::Runtime
+        },
+        "the requester is told nothing was attempted"
+    );
+    assert!(matches!(
+        served.unwrap().refused,
+        Some(WireError::Runtime(
+            ptr_runtime::execution::ExecutionError::Audit(_)
+        ))
+    ));
+    assert_eq!(probe.executions(), 0, "the adapter was never reached");
+    assert!(
+        host.runtime().unsettled_effects().is_empty(),
+        "and no attempt was recorded"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

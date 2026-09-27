@@ -419,6 +419,11 @@ fn refused_by_runtime(error: &ExecutionError) -> WireOutcome {
         ExecutionError::Executor(_) => WireOutcome::Uncertain,
         // It applied under this key and the response is gone.
         ExecutionError::ResponseNotRetained { .. } => WireOutcome::AppliedWithoutResponse,
+        // The executor reported the effect applied, and the host could not record
+        // the settlement. It applied, so a refusal would invite a retry that
+        // applies it again; the response is not handed on because the host could
+        // not record it. The host stays fenced until the outcome is recorded.
+        ExecutionError::SettlementNotRecorded { .. } => WireOutcome::AppliedWithoutResponse,
         // The key was spent on another action, project or principal. What applied
         // under it was a different request, and nothing was attempted for this one,
         // so it is a refusal: reporting the other request's outcome here would tell
