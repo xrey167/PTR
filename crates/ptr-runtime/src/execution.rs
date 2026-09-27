@@ -30,12 +30,18 @@ const ACTION_DOMAIN: &[u8] = b"PTREXEC01-ACTION";
 /// would make every export after its first keyed effect fail. It is refused
 /// with [`ExecutionError::InvalidSession`] before it can spend one, and a keyed
 /// `EffectAttempted` whose principal is empty or longer is refused at commit
-/// and replay with [`RuntimeError::InvalidEffectPrincipal`]. That check is the
-/// length alone, the only thing a snapshot needs, so a keyed attempt may name a
+/// with [`RuntimeError::InvalidEffectPrincipal`]. That check is the length
+/// alone, the only thing a snapshot needs, so a keyed attempt may name a
 /// principal no session could be registered as, one with surrounding
 /// whitespace or a control character; a key it spends is refused to every
 /// session's retry, since none can match that principal. An unkeyed attempt
 /// never enters a settled key, so its principal is recorded as given.
+///
+/// Replay takes the principal a log holds as it is. Before this bound a
+/// session's principal had no length limit, so a log may hold a keyed attempt
+/// whose principal is longer, and it opens as it did then: its key stays
+/// bound, refusing every session's retry, and once the key has applied every
+/// export fails with `PTR_COMPACTED_SECTION_LIMIT`, also as it did then.
 pub const MAX_PRINCIPAL_BYTES: usize = super::compacted::MAX_STRING_BYTES;
 
 /// The longest at-most-once key, in bytes.
@@ -45,8 +51,16 @@ pub const MAX_PRINCIPAL_BYTES: usize = super::compacted::MAX_STRING_BYTES;
 /// so a longer key would make every export after its attempt settled fail.
 /// [`PtrRuntime::prepare_execution_once`] refuses one with
 /// [`ExecutionError::InvalidKey`] before it can be spent, and a keyed
-/// `EffectAttempted` that names one is refused at commit and replay with
+/// `EffectAttempted` that names one is refused at commit with
 /// [`RuntimeError::InvalidEffectKey`].
+///
+/// Replay takes the key a log holds as it is, if it is an identifier. Before
+/// this bound, admission spent any identifier the execution wire carried, up to
+/// its 64 KiB field, so a log may hold a longer key, and it opens as it did
+/// then. The key stays bound, and a retry under it is refused by preparation
+/// with [`ExecutionError::InvalidKey`] before anything runs, so the effect is
+/// not applied twice. Once its attempt has settled, every export fails with
+/// `PTR_COMPACTED_SECTION_LIMIT`, also as it did then.
 pub const MAX_KEY_BYTES: usize = super::compacted::MAX_STRING_BYTES;
 
 /// The longest project, in bytes, that a keyed attempt record may name.
@@ -54,10 +68,15 @@ pub const MAX_KEY_BYTES: usize = super::compacted::MAX_STRING_BYTES;
 /// A key settled or reconciled as applied carries its attempt's project into
 /// every later compacted snapshot as a string of 1 to this many bytes.
 /// [`ProjectId`] checks nothing, so a keyed `EffectAttempted` whose project is
-/// empty or longer is refused at commit and replay with
+/// empty or longer is refused at commit with
 /// [`RuntimeError::InvalidEffectProject`]; through admission that refusal
 /// reaches the caller as [`ExecutionError::Audit`], with nothing attempted. An
 /// unkeyed attempt's project is recorded as given.
+///
+/// Replay takes the project a log holds as it is, for the reason
+/// [`MAX_PRINCIPAL_BYTES`] gives: a log written before this bound opens as it
+/// did then, and once such a key has applied every export fails with
+/// `PTR_COMPACTED_SECTION_LIMIT`.
 pub const MAX_PROJECT_BYTES: usize = super::compacted::MAX_STRING_BYTES;
 
 /// The exact action an audit record commits to, domain-separated so a digest of
@@ -1350,6 +1369,10 @@ pub(super) fn valid_identifier(value: &str) -> bool {
 }
 
 /// An identifier short enough for a compacted snapshot to carry.
+///
+/// A session's principal is checked with this. A keyed attempt being committed
+/// is checked with `valid_recorded_principal`, and an attempt replayed from a
+/// log is not checked.
 fn valid_principal(value: &str) -> bool {
     valid_identifier(value) && value.len() <= MAX_PRINCIPAL_BYTES
 }

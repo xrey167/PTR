@@ -808,10 +808,11 @@ fn only_an_attempt_made_through_an_admitted_session_records_a_validated_principa
     // An unkeyed attempt never enters a settled key, so `commit` and replay
     // check nothing it names: an EffectAttempted without a key written through
     // them records its principal as given, one no session admitted and one a
-    // session would refuse included. A keyed attempt's key, principal and
-    // project are checked, the principal and project for length alone, because
-    // a settled key carries all three into every later snapshot
-    // (a_keyed_attempt_whose_principal_no_snapshot_carries_is_refused_at_commit_and_at_replay).
+    // session would refuse included. `commit` checks a keyed attempt's key,
+    // principal and project, the principal and project for length alone,
+    // because a settled key carries all three into every later snapshot; replay
+    // takes what a log holds
+    // (a_keyed_attempt_whose_principal_no_snapshot_carries_is_refused_at_commit_and_a_logged_one_still_opens).
     for given in ["", " alice", "bell\u{7}", "mallory"] {
         let mut attempt = attempt_with(None);
         let LedgerEvent::EffectAttempted { principal, .. } = &mut attempt else {

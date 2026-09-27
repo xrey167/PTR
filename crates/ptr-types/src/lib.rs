@@ -79,12 +79,14 @@ string_id!(
     /// attempt made through an admitted execution session records that
     /// session's principal, which the runtime validated when it created the
     /// session (not empty, no surrounding whitespace, no control characters).
-    /// `PtrRuntime::commit` and replay refuse a keyed `EffectAttempted` whose
-    /// principal is empty or longer than the runtime's `MAX_PRINCIPAL_BYTES`,
-    /// because a settled key carries it into every later snapshot, and
-    /// otherwise record an attempt's principal as given: a keyed one with
-    /// surrounding whitespace or a control character, and an unkeyed one of
-    /// any length, the empty one included, naming no admitted session. That a
+    /// `PtrRuntime::commit` refuses a keyed `EffectAttempted` whose principal
+    /// is empty or longer than the runtime's `MAX_PRINCIPAL_BYTES`, because a
+    /// settled key carries it into every later snapshot, and otherwise records
+    /// an attempt's principal as given: a keyed one with surrounding
+    /// whitespace or a control character, and an unkeyed one of any length,
+    /// the empty one included, naming no admitted session. Replay records the
+    /// principal a log holds as given, keyed or not, so a log written before
+    /// that bound still opens. That a
     /// `PrincipalId` names the principal the caller's execution session
     /// admitted, the same string that session's effect attempts record, is
     /// the caller's obligation until branches and fast memories are opened

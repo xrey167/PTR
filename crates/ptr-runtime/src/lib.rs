@@ -99,13 +99,15 @@ pub enum RuntimeError {
         covers: CommitIndex,
         last_applied: CommitIndex,
     },
-    /// An at-most-once key is not a well-formed identifier, or is longer than
-    /// [`execution::MAX_KEY_BYTES`], the most a compacted snapshot carries.
+    /// An at-most-once key is not a well-formed identifier, or, in an attempt
+    /// being committed, is longer than [`execution::MAX_KEY_BYTES`], the most a
+    /// compacted snapshot carries. An attempt a log already holds is replayed
+    /// with a key of any length, as [`execution::MAX_KEY_BYTES`] explains.
     InvalidEffectKey {
         key: String,
     },
-    /// A keyed attempt names a principal that is empty or longer than
-    /// [`execution::MAX_PRINCIPAL_BYTES`].
+    /// A keyed attempt being committed names a principal that is empty or
+    /// longer than [`execution::MAX_PRINCIPAL_BYTES`].
     ///
     /// A key settled or reconciled as applied carries its attempt's principal
     /// into every later compacted snapshot, so a principal no snapshot can carry
@@ -113,14 +115,17 @@ pub enum RuntimeError {
     /// cleared. Only the length is checked, because that is all a snapshot
     /// needs, so a principal no session could be registered as is recorded as
     /// given. An unkeyed attempt never enters a settled key, so its principal
-    /// is recorded as given whatever its length.
+    /// is recorded as given whatever its length. An attempt a log already
+    /// holds is replayed whatever its principal, as
+    /// [`execution::MAX_PRINCIPAL_BYTES`] explains.
     InvalidEffectPrincipal {
         principal: String,
     },
-    /// A keyed attempt names a project that is empty or longer than
-    /// [`execution::MAX_PROJECT_BYTES`], for the reason
+    /// A keyed attempt being committed names a project that is empty or longer
+    /// than [`execution::MAX_PROJECT_BYTES`], for the reason
     /// [`RuntimeError::InvalidEffectPrincipal`] gives. An unkeyed attempt's
-    /// project is recorded as given.
+    /// project, and a project in an attempt a log already holds, are recorded
+    /// as given.
     InvalidEffectProject {
         project: ProjectId,
     },
@@ -582,6 +587,7 @@ impl PtrRuntime {
         if self.execution.is_fenced() {
             return Err(RuntimeError::ExecutionFenced);
         }
+        validate_new_record(&event)?;
         self.validate_lifecycle_event(&event)?;
         let semantic = self.prepare_semantic_event(&event)?;
         self.append_prepared(event, semantic)
@@ -698,33 +704,13 @@ impl PtrRuntime {
                     last_applied: CommitIndex(self.state.last_applied),
                 })
             }
-            LedgerEvent::EffectAttempted {
-                key,
-                project,
-                principal,
-                ..
-            } => {
-                // An unkeyed attempt never enters a settled key, so what it
-                // names is recorded as given.
+            LedgerEvent::EffectAttempted { key, .. } => {
                 let Some(key) = key else { return Ok(()) };
-                // A settled key carries itself, and once applied its attempt's
-                // project and principal, into every later compacted snapshot.
-                // Refused here, before append and again during replay, rather
-                // than at an export that would then fail for good. The project
-                // and principal are held to the length a snapshot carries and
-                // no more; the key is also an identifier, as at preparation.
-                if !execution::valid_key(key) {
+                // Every build has held a key to this, so a log never holds one
+                // that is not an identifier. What a snapshot can carry is a
+                // bound on new records only (`validate_new_record`).
+                if !execution::valid_identifier(key) {
                     return Err(RuntimeError::InvalidEffectKey { key: key.clone() });
-                }
-                if !execution::valid_recorded_principal(principal) {
-                    return Err(RuntimeError::InvalidEffectPrincipal {
-                        principal: principal.clone(),
-                    });
-                }
-                if !execution::valid_project(project) {
-                    return Err(RuntimeError::InvalidEffectProject {
-                        project: project.clone(),
-                    });
                 }
                 if self.execution.key_in_flight(key) {
                     return Err(RuntimeError::EffectKeyInFlight { key: key.clone() });
@@ -870,4 +856,46 @@ impl PtrRuntime {
         });
         self.next_event_sequence = self.next_event_sequence.saturating_add(1);
     }
+}
+
+/// What a record must meet to be committed now, beyond the validation every
+/// record is replayed with: a keyed attempt names a key, principal and project
+/// a compacted snapshot can carry.
+///
+/// A settled key carries itself, and once applied its attempt's project and
+/// principal, into every later compacted snapshot, so an attempt outside these
+/// bounds would leave every export failing once it settled. It is refused
+/// before anything is appended. The project and principal are held to the
+/// length a snapshot carries and no more; the key is also an identifier, as at
+/// preparation. An unkeyed attempt never enters a settled key, so what it names
+/// is recorded as given.
+///
+/// Replay does not apply this. Earlier builds committed keys up to the
+/// execution wire's 64 KiB field, and principals and projects of any length,
+/// and a log holding one opened and failed only at export. Refusing it at
+/// replay would turn that into a runtime that cannot open after an upgrade.
+fn validate_new_record(event: &LedgerEvent) -> Result<(), RuntimeError> {
+    let LedgerEvent::EffectAttempted {
+        key: Some(key),
+        project,
+        principal,
+        ..
+    } = event
+    else {
+        return Ok(());
+    };
+    if !execution::valid_key(key) {
+        return Err(RuntimeError::InvalidEffectKey { key: key.clone() });
+    }
+    if !execution::valid_recorded_principal(principal) {
+        return Err(RuntimeError::InvalidEffectPrincipal {
+            principal: principal.clone(),
+        });
+    }
+    if !execution::valid_project(project) {
+        return Err(RuntimeError::InvalidEffectProject {
+            project: project.clone(),
+        });
+    }
+    Ok(())
 }
