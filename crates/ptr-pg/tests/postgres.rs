@@ -14,9 +14,9 @@ use std::time::Duration;
 
 use ptr_analytics::{Grouping, Metric, MetricRow, MetricSpec, Window};
 use ptr_branch::{
-    AutoThreshold, BranchError, BranchId, BranchOp, CalibrationSample, InputsDigest, PolicyRecord,
-    RangeDigest, SealedBranch, SealedBranchParts, ThresholdRule, TriageDecision, TriageOutcome,
-    TriagePolicy, ValueDigest,
+    ArbiterError, AutoThreshold, BranchError, BranchId, BranchOp, CalibrationSample, InputsDigest,
+    PolicyRecord, RangeDigest, SealedBranch, SealedBranchParts, ThresholdRule, TriageDecision,
+    TriageOutcome, TriageOutcomeParts, TriagePolicy, ValueDigest,
 };
 use ptr_fastmem::{
     decode_readout, Decay, DecodePolicy, FastMemory, FastMemoryConfig, FastMemoryError,
@@ -2098,18 +2098,29 @@ async fn a_stored_branch_relying_on_two_generations_of_one_target_is_refused_on_
 }
 
 /// A triage with this decision, eligibility and slice flag as the policy
-/// [`record_manual_policy`] records logs it: an eligible branch escalated
-/// outside the slice scored below the threshold of 0.5, every other one 0.8,
-/// and an eligible branch scoring 0.8 has propensity `1 - 0.1`. A combination
-/// that policy never produces (an auto-proposed slice branch, say) keeps
-/// these fields and is refused by `record_triage`.
+/// [`record_manual_policy`] records logs it (see [`triage_parts`]).
 fn triage(decision: TriageDecision, eligible: bool, calibration_slice: bool) -> TriageOutcome {
+    TriageOutcome::from_parts(triage_parts(decision, eligible, calibration_slice)).unwrap()
+}
+
+/// The parts of a triage with this decision, eligibility and slice flag as
+/// the policy [`record_manual_policy`] records logs it: an eligible branch
+/// escalated outside the slice scored below the threshold of 0.5, every other
+/// one 0.8, and an eligible branch scoring 0.8 has propensity `1 - 0.1`. A
+/// combination no policy produces (an auto-proposed slice branch, say) keeps
+/// these fields and is refused by `TriageOutcome::from_parts`, so it never
+/// reaches `record_triage`.
+fn triage_parts(
+    decision: TriageDecision,
+    eligible: bool,
+    calibration_slice: bool,
+) -> TriageOutcomeParts {
     let score = if eligible && decision == TriageDecision::Escalate && !calibration_slice {
         0.2
     } else {
         0.8
     };
-    TriageOutcome {
+    TriageOutcomeParts {
         decision,
         eligible,
         calibration_slice,
@@ -2248,23 +2259,14 @@ async fn triage_logs_and_outcomes_feed_the_platform_metrics() {
         ]
     );
 
-    // A calibration-slice branch is by definition escalated, and an outcome
-    // is never rewritten.
-    substrate
-        .store_branch(&sealed_branch("b5", "agent-a"))
-        .await
-        .unwrap();
+    // A calibration-slice branch is by definition escalated, so an
+    // auto-proposed one is no triage at all and cannot be built to be logged
+    // (written in raw SQL, the table refuses it:
+    // a_raw_triage_row_is_stored_exactly_when_its_cited_policy_explains_it),
+    // and an outcome is never rewritten.
     assert_eq!(
-        substrate
-            .record_triage(
-                &BranchId::from("b5"),
-                &triage(TriageDecision::AutoPropose, true, true),
-                "policy-1"
-            )
-            .await,
-        Err(PgError::InvalidTriage {
-            branch: "b5".into(),
-            policy_version: "policy-1".into(),
+        TriageOutcome::from_parts(triage_parts(TriageDecision::AutoPropose, true, true)),
+        Err(ArbiterError::ImpossibleOutcome {
             reason: "a calibration-slice branch is escalated",
         })
     );
@@ -2894,9 +2896,10 @@ async fn a_triage_row_keeps_the_rules_every_policy_shares() {
     substrate.drop_all().await.unwrap();
 }
 
-/// Every triage of the grid of decisions, eligibility, slice flags, scores
-/// and the given propensities, whether or not any policy produces it.
-fn triage_grid(propensities: &[f64]) -> Vec<TriageOutcome> {
+/// The parts of every triage of the grid of decisions, eligibility, slice
+/// flags, scores and the given propensities, whether or not any policy
+/// produces it.
+fn triage_grid(propensities: &[f64]) -> Vec<TriageOutcomeParts> {
     let mut grid = Vec::new();
     for decision in [
         TriageDecision::AutoPropose,
@@ -2907,7 +2910,7 @@ fn triage_grid(propensities: &[f64]) -> Vec<TriageOutcome> {
             for calibration_slice in [false, true] {
                 for score in [0.0, 0.2, 0.5, 0.9, 1.0] {
                     for &auto_propensity in propensities {
-                        grid.push(TriageOutcome {
+                        grid.push(TriageOutcomeParts {
                             decision,
                             eligible,
                             calibration_slice,
@@ -2991,7 +2994,12 @@ async fn a_raw_triage_row_is_stored_exactly_when_its_cited_policy_explains_it() 
             raw.batch_execute("ROLLBACK TO SAVEPOINT row")
                 .await
                 .unwrap();
-            match (policy.explains(&row), written) {
+            // Parts no policy produces cannot be built into a triage
+            // (TriageOutcome::from_parts), so no policy explains them; the
+            // table must refuse them all the same.
+            let explained =
+                TriageOutcome::from_parts(row).and_then(|triage| policy.explains(&triage));
+            match (explained, written) {
                 (Ok(()), Ok(_)) => stored += 1,
                 (Err(_), Err(error)) => {
                     let code = error.as_db_error().unwrap().code().code().to_owned();
@@ -3073,13 +3081,14 @@ async fn a_calibration_rate_too_small_to_lower_the_propensity_is_refused_at_stor
     // policy made them.
     let smallest = substrate.load_policy("smallest").await.unwrap().unwrap();
     assert_eq!(smallest.policy().calibration_rate(), 2f64.powi(-53));
-    let slice = TriageOutcome {
+    let slice = TriageOutcome::from_parts(TriageOutcomeParts {
         decision: TriageDecision::Escalate,
         eligible: true,
         calibration_slice: true,
         score: 0.9,
         auto_propensity: 1.0 - 2f64.powi(-53),
-    };
+    })
+    .unwrap();
     for id in ["b1", "b2"] {
         substrate
             .store_branch(&sealed_branch(id, "agent-s"))
@@ -3092,9 +3101,12 @@ async fn a_calibration_rate_too_small_to_lower_the_propensity_is_refused_at_stor
         .unwrap();
 
     // A policy a store from before the check could hold is refused as the
-    // corrupt row it is, by the loader and by record_triage, where its slice
-    // triage used to reach the table's CHECK and come back as a raw
-    // database error.
+    // corrupt row it is, by the loader and by record_triage, where a slice
+    // triage citing it used to reach the table's CHECK and come back as a raw
+    // database error. The slice triage such a policy would log, with
+    // propensity 1 - 1e-17 = 1, is no triage any policy produces, and cannot
+    // be built (TriageOutcome::from_parts); the policy is refused before any
+    // triage is checked against it.
     write_before_invariants(
         &raw,
         &work,
@@ -3113,13 +3125,18 @@ async fn a_calibration_rate_too_small_to_lower_the_propensity_is_refused_at_stor
             ..
         })
     ));
-    let degenerate = TriageOutcome {
-        auto_propensity: 1.0,
-        ..slice
-    };
+    assert_eq!(
+        TriageOutcome::from_parts(TriageOutcomeParts {
+            auto_propensity: 1.0,
+            ..slice.clone().into_parts()
+        }),
+        Err(ArbiterError::ImpossibleOutcome {
+            reason: "a calibration-slice branch has auto-propose propensity below one",
+        })
+    );
     assert!(matches!(
         substrate
-            .record_triage(&BranchId::from("b2"), &degenerate, "legacy")
+            .record_triage(&BranchId::from("b2"), &slice, "legacy")
             .await,
         Err(PgError::CorruptRow {
             table: "triage_policy",
@@ -3930,13 +3947,14 @@ async fn calibration_branch(
         AutoThreshold::AtLeast(threshold) if score >= threshold => 1.0 - cited.calibration_rate(),
         _ => 0.0,
     };
-    let outcome = TriageOutcome {
+    let outcome = TriageOutcome::from_parts(TriageOutcomeParts {
         decision: TriageDecision::Escalate,
         eligible: true,
         calibration_slice: true,
         score,
         auto_propensity,
-    };
+    })
+    .unwrap();
     substrate
         .record_triage(&BranchId::from(id), &outcome, policy)
         .await
@@ -4086,13 +4104,14 @@ const NOT_REPRODUCED: &str =
 
 /// A calibration sample as the adjudication of an eligible triage at `score`.
 fn sample(score: f32, harmful: bool) -> CalibrationSample {
-    TriageOutcome {
+    TriageOutcome::from_parts(TriageOutcomeParts {
         decision: TriageDecision::Escalate,
         eligible: true,
         calibration_slice: true,
         score,
         auto_propensity: 0.0,
-    }
+    })
+    .unwrap()
     .adjudicate(harmful)
     .unwrap()
 }
@@ -4791,7 +4810,7 @@ async fn a_triage_is_logged_only_under_a_policy_that_can_have_produced_it() {
             .await
             .unwrap();
     }
-    for id in ["t1", "t2", "t3"] {
+    for id in ["t1", "t2"] {
         substrate
             .store_branch(&sealed_branch(id, "agent-t"))
             .await
@@ -4800,18 +4819,20 @@ async fn a_triage_is_logged_only_under_a_policy_that_can_have_produced_it() {
     // A auto-proposes a score of 0.6 with propensity 1 - 0.1; B escalates it
     // with propensity zero. Cited as B's, A's row used to be stored, and
     // off-policy evaluation reweighted it by a propensity B never had.
-    let from_a = TriageOutcome {
+    let parts_a = TriageOutcomeParts {
         decision: TriageDecision::AutoPropose,
         eligible: true,
         calibration_slice: false,
         score: 0.6,
         auto_propensity: 0.9,
     };
-    let from_b = TriageOutcome {
+    let from_a = TriageOutcome::from_parts(parts_a).unwrap();
+    let from_b = TriageOutcome::from_parts(TriageOutcomeParts {
         decision: TriageDecision::Escalate,
         auto_propensity: 0.0,
-        ..from_a.clone()
-    };
+        ..parts_a
+    })
+    .unwrap();
     assert_eq!(a.explains(&from_a), Ok(()));
     assert_eq!(b.explains(&from_b), Ok(()));
     let unexplained = |branch: &str, version: &str, reason| {
@@ -4835,20 +4856,20 @@ async fn a_triage_is_logged_only_under_a_policy_that_can_have_produced_it() {
             .await,
         unexplained("t2", "policy-a", wrong_propensity)
     );
-    // A score that is not a probability is refused as the triage it cannot
-    // be, before the table's CHECK sees it.
-    let unscored = TriageOutcome {
-        decision: TriageDecision::Escalate,
-        eligible: false,
-        calibration_slice: false,
-        score: f32::NAN,
-        auto_propensity: 0.0,
-    };
+    // A score that is not a probability is no triage at all: it cannot be
+    // built to be logged, so it never reaches record_triage or the table's
+    // CHECK.
     assert_eq!(
-        substrate
-            .record_triage(&BranchId::from("t3"), &unscored, "policy-a")
-            .await,
-        unexplained("t3", "policy-a", "the score is not a probability")
+        TriageOutcome::from_parts(TriageOutcomeParts {
+            decision: TriageDecision::Escalate,
+            eligible: false,
+            calibration_slice: false,
+            score: f32::NAN,
+            auto_propensity: 0.0,
+        }),
+        Err(ArbiterError::ImpossibleOutcome {
+            reason: "the score is not a probability",
+        })
     );
     // The refusals wrote nothing; each row is logged under the policy that
     // made it.

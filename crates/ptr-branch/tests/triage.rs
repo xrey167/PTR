@@ -1,7 +1,7 @@
 use ptr_branch::{
     calibrate_threshold, calibration_draw, certify_threshold, doubly_robust, evaluate_off_policy,
     ArbiterError, AutoThreshold, BranchId, CalibrationSample, LoggedTriage, OffPolicyEstimate,
-    PolicyRecord, ThresholdRule, TriageDecision, TriageOutcome, TriagePolicy,
+    PolicyRecord, ThresholdRule, TriageDecision, TriageOutcome, TriageOutcomeParts, TriagePolicy,
 };
 use ptr_types::{Probability, VerificationLevel};
 use ptr_verifier::{Finding, VerificationReport, VerificationStatus};
@@ -27,16 +27,16 @@ fn score(value: f32) -> Probability {
 fn threshold_equality_is_admitted_and_calibration_equality_is_not_sampled() {
     let policy = TriagePolicy::new(AutoThreshold::AtLeast(0.5), 0.25).unwrap();
     let boundary = policy.triage(&passing(), score(0.5), 0.25).unwrap();
-    assert_eq!(boundary.decision, TriageDecision::AutoPropose);
-    assert!(boundary.eligible);
-    assert!(!boundary.calibration_slice);
-    assert_eq!(boundary.auto_propensity, 0.75);
+    assert_eq!(boundary.decision(), TriageDecision::AutoPropose);
+    assert!(boundary.eligible());
+    assert!(!boundary.calibration_slice());
+    assert_eq!(boundary.auto_propensity(), 0.75);
     let sampled = policy.triage(&passing(), score(0.5), 0.0).unwrap();
-    assert_eq!(sampled.decision, TriageDecision::Escalate);
-    assert!(sampled.adjudicate(false).is_some());
+    assert_eq!(sampled.decision(), TriageDecision::Escalate);
+    assert!(sampled.adjudicate(false).is_ok());
     let below = policy.triage(&passing(), score(0.49), 0.25).unwrap();
-    assert_eq!(below.decision, TriageDecision::Escalate);
-    assert_eq!(below.auto_propensity, 0.0);
+    assert_eq!(below.decision(), TriageDecision::Escalate);
+    assert_eq!(below.auto_propensity(), 0.0);
 }
 
 #[test]
@@ -86,11 +86,14 @@ fn a_hard_finding_excludes_a_passing_report_from_proposals_and_calibration() {
         hard: true,
     });
     let outcome = policy.triage(&verified, score(1.0), 0.0).unwrap();
-    assert_eq!(outcome.decision, TriageDecision::Escalate);
-    assert!(!outcome.eligible);
-    assert!(!outcome.calibration_slice);
-    assert_eq!(outcome.auto_propensity, 0.0);
-    assert_eq!(outcome.adjudicate(false), None);
+    assert_eq!(outcome.decision(), TriageDecision::Escalate);
+    assert!(!outcome.eligible());
+    assert!(!outcome.calibration_slice());
+    assert_eq!(outcome.auto_propensity(), 0.0);
+    assert_eq!(
+        outcome.adjudicate(false),
+        Err(ArbiterError::NotCalibrationSlice)
+    );
 }
 
 #[test]
@@ -118,8 +121,8 @@ fn a_failed_verification_discards_whatever_the_score() {
             0.5,
         )
         .unwrap();
-    assert_eq!(outcome.decision, TriageDecision::Discard);
-    assert!(!outcome.eligible);
+    assert_eq!(outcome.decision(), TriageDecision::Discard);
+    assert!(!outcome.eligible());
 }
 
 #[test]
@@ -137,8 +140,8 @@ fn disputed_unknown_or_shallow_verification_escalates_whatever_the_score() {
         report(VerificationStatus::Pass, VerificationLevel::SampleVerified),
     ] {
         let outcome = policy.triage(&report, score(1.0), 0.9).unwrap();
-        assert_eq!(outcome.decision, TriageDecision::Escalate);
-        assert!(!outcome.eligible);
+        assert_eq!(outcome.decision(), TriageDecision::Escalate);
+        assert!(!outcome.eligible());
     }
 }
 
@@ -146,18 +149,21 @@ fn disputed_unknown_or_shallow_verification_escalates_whatever_the_score() {
 fn the_calibration_slice_escalates_high_scores_and_only_it_can_be_adjudicated() {
     let policy = TriagePolicy::new(AutoThreshold::AtLeast(0.5), 0.2).unwrap();
     let sliced = policy.triage(&passing(), score(0.9), 0.1).unwrap();
-    assert_eq!(sliced.decision, TriageDecision::Escalate);
-    assert!(sliced.calibration_slice);
-    assert!(sliced.adjudicate(false).is_some());
+    assert_eq!(sliced.decision(), TriageDecision::Escalate);
+    assert!(sliced.calibration_slice());
+    let sample = sliced.adjudicate(false).unwrap();
+    assert_eq!((sample.score(), sample.harmful()), (0.9, false));
 
     let auto = policy.triage(&passing(), score(0.9), 0.7).unwrap();
-    assert_eq!(auto.decision, TriageDecision::AutoPropose);
-    assert!((auto.auto_propensity - 0.8).abs() < 1e-12);
-    assert!(auto.adjudicate(false).is_none());
+    assert_eq!(auto.decision(), TriageDecision::AutoPropose);
+    assert!((auto.auto_propensity() - 0.8).abs() < 1e-12);
+    let refused = auto.adjudicate(false).unwrap_err();
+    assert_eq!(refused, ArbiterError::NotCalibrationSlice);
+    assert_eq!(refused.code(), "PTR_ARBITER_NOT_CALIBRATION_SLICE");
 
     let low = policy.triage(&passing(), score(0.2), 0.7).unwrap();
-    assert_eq!(low.decision, TriageDecision::Escalate);
-    assert!(low.adjudicate(true).is_none());
+    assert_eq!(low.decision(), TriageDecision::Escalate);
+    assert_eq!(low.adjudicate(true), Err(ArbiterError::NotCalibrationSlice));
 }
 
 #[test]
@@ -191,11 +197,11 @@ fn a_threshold_calibrated_from_adjudicated_slices_is_used_by_the_next_policy() {
     // escalates the rest.
     let next = TriagePolicy::new(threshold, 0.0).unwrap();
     assert_eq!(
-        next.triage(&passing(), score(0.5), 0.5).unwrap().decision,
+        next.triage(&passing(), score(0.5), 0.5).unwrap().decision(),
         TriageDecision::AutoPropose
     );
     assert_eq!(
-        next.triage(&passing(), score(0.1), 0.5).unwrap().decision,
+        next.triage(&passing(), score(0.1), 0.5).unwrap().decision(),
         TriageDecision::Escalate
     );
 }
@@ -233,11 +239,11 @@ fn a_certified_threshold_bounds_the_harm_rate_among_what_the_next_policy_propose
 
     let next = TriagePolicy::new(threshold, 0.05).unwrap();
     assert_eq!(
-        next.triage(&passing(), score(0.9), 0.5).unwrap().decision,
+        next.triage(&passing(), score(0.9), 0.5).unwrap().decision(),
         TriageDecision::AutoPropose
     );
     assert_eq!(
-        next.triage(&passing(), score(0.1), 0.5).unwrap().decision,
+        next.triage(&passing(), score(0.1), 0.5).unwrap().decision(),
         TriageDecision::Escalate
     );
 }
@@ -264,7 +270,7 @@ fn log_under(policy: &TriagePolicy, scores: &[f32]) -> Vec<LoggedTriage> {
                 )
                 .unwrap();
             let mut logged = LoggedTriage::from(&outcome);
-            logged.reward = match outcome.decision {
+            logged.reward = match outcome.decision() {
                 TriageDecision::AutoPropose => 1.0,
                 TriageDecision::Escalate => 0.2,
                 TriageDecision::Discard => 0.0,
@@ -685,7 +691,7 @@ fn a_threshold_outside_the_unit_interval_is_refused_wherever_a_policy_is_built()
         policy
             .triage(&passing(), score(value), 0.5)
             .unwrap()
-            .decision
+            .decision()
     };
     assert_eq!(decide(&everything, 0.0), TriageDecision::AutoPropose);
     assert_eq!(decide(&perfect, 1.0), TriageDecision::AutoPropose);
@@ -1012,55 +1018,43 @@ fn a_policy_explains_every_triage_it_produces_and_nothing_else() {
     // decision for this score, is not one this policy logs.
     let other = TriagePolicy::new(AutoThreshold::AtLeast(0.8), 0.1).unwrap();
     let theirs = other.triage(&passing(), score(0.85), 0.5).unwrap();
-    assert_eq!(theirs.decision, TriageDecision::AutoPropose);
+    assert_eq!(theirs.decision(), TriageDecision::AutoPropose);
     assert_eq!(
         unexplained(&theirs),
         "the auto-propose propensity is not the one the policy logs for this score"
     );
     let below_theirs = other.triage(&passing(), score(0.6), 0.5).unwrap();
-    assert_eq!(below_theirs.decision, TriageDecision::Escalate);
+    assert_eq!(below_theirs.decision(), TriageDecision::Escalate);
     assert_eq!(
         unexplained(&below_theirs),
         "the auto-propose propensity is not the one the policy logs for this score"
     );
-    // The right propensity with a decision the threshold does not make.
-    let mut escalated_above = policy.triage(&passing(), score(0.9), 0.5).unwrap();
-    escalated_above.decision = TriageDecision::Escalate;
-    assert_eq!(
-        unexplained(&escalated_above),
-        "outside the calibration slice the policy auto-proposes exactly the scores its \
-         threshold admits"
-    );
-    let mut proposed_below = policy.triage(&passing(), score(0.2), 0.5).unwrap();
-    proposed_below.decision = TriageDecision::AutoPropose;
-    assert_eq!(
-        unexplained(&proposed_below),
-        "outside the calibration slice the policy auto-proposes exactly the scores its \
-         threshold admits"
-    );
-    // Eligible rows the policy never writes.
-    let mut discarded = policy.triage(&passing(), score(0.2), 0.5).unwrap();
-    discarded.decision = TriageDecision::Discard;
-    assert_eq!(
-        unexplained(&discarded),
-        "an eligible branch is never discarded"
-    );
-    let mut sliced = policy.triage(&passing(), score(0.9), 0.1).unwrap();
-    sliced.decision = TriageDecision::AutoPropose;
-    assert_eq!(
-        unexplained(&sliced),
-        "a calibration-slice branch is escalated"
-    );
+    // A slice triage cited as the triage of a policy that has no slice.
     let never_sliced = TriagePolicy::new(AutoThreshold::AtLeast(0.5), 0.0).unwrap();
     let slice = policy.triage(&passing(), score(0.2), 0.1).unwrap();
-    assert!(slice.calibration_slice);
+    assert!(slice.calibration_slice());
     assert_eq!(
         never_sliced.explains(&slice),
         Err(ArbiterError::UnexplainedTriage {
             reason: "a policy with calibration rate zero has no calibration slice",
         })
     );
-    // Rows verification decided, but not the way verification decides.
+    // Every other rule explains checks is one that no policy breaks, so a
+    // triage breaking it can no longer be built: from_parts refuses its
+    // parts, naming the rule, where a triage with public fields used to be
+    // built and reach explains. (Explains still checks those rules; the
+    // arbiter unit tests show it on a triage built around the constructor.)
+    let edited = |triage: TriageOutcome, edit: fn(&mut TriageOutcomeParts)| {
+        let mut parts = triage.into_parts();
+        edit(&mut parts);
+        match TriageOutcome::from_parts(parts) {
+            Err(ArbiterError::ImpossibleOutcome { reason }) => reason,
+            other => panic!("{parts:?} was built: {other:?}"),
+        }
+    };
+    let auto = policy.triage(&passing(), score(0.9), 0.5).unwrap();
+    let below = policy.triage(&passing(), score(0.2), 0.5).unwrap();
+    let sliced = policy.triage(&passing(), score(0.9), 0.1).unwrap();
     let failed = policy
         .triage(
             &report(VerificationStatus::Fail, VerificationLevel::Deterministic),
@@ -1068,31 +1062,62 @@ fn a_policy_explains_every_triage_it_produces_and_nothing_else() {
             0.5,
         )
         .unwrap();
-    let mut forced_auto = failed.clone();
-    forced_auto.decision = TriageDecision::AutoPropose;
-    assert_eq!(
-        unexplained(&forced_auto),
-        "verification alone never auto-proposes"
-    );
-    let mut forced_slice = failed.clone();
-    forced_slice.calibration_slice = true;
-    assert_eq!(
-        unexplained(&forced_slice),
-        "a calibration-slice branch is eligible"
-    );
-    let mut forced_propensity = failed;
-    forced_propensity.auto_propensity = 0.75;
-    assert_eq!(
-        unexplained(&forced_propensity),
-        "a branch verification decided has auto-propose propensity zero"
-    );
+    let outside = "outside the calibration slice an eligible branch is auto-proposed exactly \
+                   when its auto-propose propensity is positive";
+    for (triage, edit, reason) in [
+        // The right propensity with a decision the threshold does not make.
+        (
+            auto.clone(),
+            (|parts| parts.decision = TriageDecision::Escalate) as fn(&mut TriageOutcomeParts),
+            outside,
+        ),
+        (
+            below.clone(),
+            |parts| parts.decision = TriageDecision::AutoPropose,
+            outside,
+        ),
+        // Eligible rows the policy never writes.
+        (
+            below,
+            |parts| parts.decision = TriageDecision::Discard,
+            "an eligible branch is never discarded",
+        ),
+        (
+            sliced,
+            |parts| parts.decision = TriageDecision::AutoPropose,
+            "a calibration-slice branch is escalated",
+        ),
+        // Rows verification decided, but not the way verification decides.
+        (
+            failed.clone(),
+            |parts| parts.decision = TriageDecision::AutoPropose,
+            "verification alone never auto-proposes",
+        ),
+        (
+            failed.clone(),
+            |parts| parts.calibration_slice = true,
+            "a calibration-slice branch is eligible",
+        ),
+        (
+            failed,
+            |parts| parts.auto_propensity = 0.75,
+            "a branch verification decided has auto-propose propensity zero",
+        ),
+    ] {
+        assert_eq!(edited(triage, edit), reason);
+    }
     // A score no triage sees.
     for value in [f32::NAN, -0.1, 1.5, f32::INFINITY] {
-        let mut scored = policy.triage(&passing(), score(0.2), 0.5).unwrap();
-        scored.score = value;
-        let refused = policy.explains(&scored).unwrap_err();
-        assert_eq!(refused.code(), "PTR_ARBITER_UNEXPLAINED_TRIAGE");
-        assert_eq!(unexplained(&scored), "the score is not a probability");
+        let mut parts = auto.clone().into_parts();
+        parts.score = value;
+        let refused = TriageOutcome::from_parts(parts).unwrap_err();
+        assert_eq!(refused.code(), "PTR_ARBITER_IMPOSSIBLE_OUTCOME");
+        assert_eq!(
+            refused,
+            ArbiterError::ImpossibleOutcome {
+                reason: "the score is not a probability"
+            }
+        );
     }
 }
 
@@ -1137,16 +1162,15 @@ fn a_calibration_rate_too_small_to_lower_the_propensity_is_refused_wherever_a_po
     // propensity is kept: its slice triages have propensity below one, the
     // policy explains them, and its own log is reweighted by one.
     let off = TriagePolicy::new(AutoThreshold::AtLeast(0.5), 0.0).unwrap();
-    assert!(
-        !off.triage(&passing(), score(0.9), 0.0)
-            .unwrap()
-            .calibration_slice
-    );
+    assert!(!off
+        .triage(&passing(), score(0.9), 0.0)
+        .unwrap()
+        .calibration_slice());
     let smallest = TriagePolicy::new(AutoThreshold::AtLeast(0.5), 2f64.powi(-53)).unwrap();
     let slice = smallest.triage(&passing(), score(0.9), 0.0).unwrap();
-    assert!(slice.calibration_slice);
-    assert_eq!(slice.decision, TriageDecision::Escalate);
-    assert!(slice.auto_propensity < 1.0, "{}", slice.auto_propensity);
+    assert!(slice.calibration_slice());
+    assert_eq!(slice.decision(), TriageDecision::Escalate);
+    assert!(slice.auto_propensity() < 1.0, "{}", slice.auto_propensity());
     assert_eq!(smallest.explains(&slice), Ok(()));
     let estimate = evaluate_off_policy(&[LoggedTriage::from(&slice)], &smallest).unwrap();
     assert_eq!(estimate.effective_sample_size, 1.0);
@@ -1179,4 +1203,347 @@ fn a_log_on_which_the_target_takes_no_logged_action_is_refused_rather_than_score
     // The doubly robust estimate still has the reward model to go on.
     let dr = doubly_robust(&log, &never, |_, _| -0.5).unwrap();
     assert!((dr + 0.5).abs() < 1e-12, "{dr}");
+}
+
+/// Whether some policy, verification report and draw make `triage` return
+/// exactly `parts`: the witnesses `TriageOutcome::from_parts` documents (for
+/// a positive propensity `p`, rate `1 - p` and the score as threshold), and
+/// a few more.
+fn some_policy_produces(parts: TriageOutcomeParts) -> bool {
+    let Some(value) = Probability::new(parts.score) else {
+        return false;
+    };
+    let mut rates = vec![0.0, 0.5];
+    if parts.auto_propensity > 0.0 && parts.auto_propensity <= 1.0 {
+        rates.push(1.0 - parts.auto_propensity);
+    }
+    let mut thresholds = vec![
+        AutoThreshold::Never,
+        AutoThreshold::AtLeast(0.0),
+        AutoThreshold::AtLeast(1.0),
+    ];
+    if (0.0..=1.0).contains(&parts.score) {
+        thresholds.push(AutoThreshold::AtLeast(parts.score));
+    }
+    let reports = [
+        passing(),
+        report(VerificationStatus::Fail, VerificationLevel::Deterministic),
+        report(
+            VerificationStatus::Disputed,
+            VerificationLevel::Deterministic,
+        ),
+    ];
+    rates.iter().any(|&rate| {
+        thresholds.iter().any(|&threshold| {
+            let Ok(policy) = TriagePolicy::new(threshold, rate) else {
+                return false;
+            };
+            reports.iter().any(|verified| {
+                [0.0, 0.5, rate].iter().any(|&draw| {
+                    policy
+                        .triage(verified, value, draw)
+                        .is_ok_and(|triage| triage.into_parts() == parts)
+                })
+            })
+        })
+    })
+}
+
+#[test]
+fn a_triage_is_rebuilt_from_parts_exactly_when_some_policy_produces_it() {
+    // The fields of a triage were public, so a caller could build or edit
+    // one no policy produces (a NaN score, an auto-proposed slice branch)
+    // and adjudicate it into a calibration sample. Now parts are rebuilt
+    // only if some policy returns exactly them, and every such parts are.
+    let scores = [0.0, 0.2, 0.5, 0.9, 1.0, f32::NAN, -0.1, 1.5, f32::INFINITY];
+    let propensities = [
+        0.0,
+        2f64.powi(-53),
+        0.25,
+        0.5,
+        0.75,
+        0.9,
+        1.0 - 2f64.powi(-53),
+        1.0,
+        // Positive, but 1 - r for no calibration rate r.
+        0.1,
+        1e-300,
+        f64::NAN,
+        -0.5,
+        1.5,
+        f64::INFINITY,
+    ];
+    let (mut built, mut refused) = (0, 0);
+    for decision in [
+        TriageDecision::AutoPropose,
+        TriageDecision::Escalate,
+        TriageDecision::Discard,
+    ] {
+        for eligible in [false, true] {
+            for calibration_slice in [false, true] {
+                for score in scores {
+                    for auto_propensity in propensities {
+                        let parts = TriageOutcomeParts {
+                            decision,
+                            eligible,
+                            calibration_slice,
+                            score,
+                            auto_propensity,
+                        };
+                        let produced = some_policy_produces(parts);
+                        match TriageOutcome::from_parts(parts) {
+                            Ok(triage) => {
+                                assert!(produced, "{parts:?} was built");
+                                assert_eq!(triage.into_parts(), parts);
+                                built += 1;
+                            }
+                            Err(error) => {
+                                assert!(!produced, "{parts:?} was refused: {error:?}");
+                                assert!(
+                                    matches!(error, ArbiterError::ImpossibleOutcome { .. }),
+                                    "{error:?}"
+                                );
+                                assert_eq!(error.code(), "PTR_ARBITER_IMPOSSIBLE_OUTCOME");
+                                refused += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(built > 0 && refused > 0, "{built} built, {refused} refused");
+}
+
+#[test]
+fn triage_parts_no_policy_produces_are_refused_naming_the_rule_they_break() {
+    let parts =
+        |decision, eligible, calibration_slice, score, auto_propensity| TriageOutcomeParts {
+            decision,
+            eligible,
+            calibration_slice,
+            score,
+            auto_propensity,
+        };
+    use TriageDecision::{AutoPropose, Discard, Escalate};
+    for (parts, reason) in [
+        (
+            parts(Escalate, true, true, f32::NAN, 0.0),
+            "the score is not a probability",
+        ),
+        (
+            parts(Escalate, false, false, 0.5, f64::NAN),
+            "the auto-propose propensity is not a probability",
+        ),
+        (
+            parts(AutoPropose, true, false, 0.5, 1.5),
+            "the auto-propose propensity is not a probability",
+        ),
+        (
+            parts(AutoPropose, true, false, 0.5, 0.1),
+            "a positive auto-propose propensity is 1 - r for a calibration rate r",
+        ),
+        (
+            parts(AutoPropose, false, false, 0.5, 0.0),
+            "verification alone never auto-proposes",
+        ),
+        (
+            parts(Escalate, false, true, 0.5, 0.0),
+            "a calibration-slice branch is eligible",
+        ),
+        (
+            parts(Discard, false, false, 0.5, 0.5),
+            "a branch verification decided has auto-propose propensity zero",
+        ),
+        (
+            parts(Discard, true, false, 0.5, 0.0),
+            "an eligible branch is never discarded",
+        ),
+        (
+            parts(AutoPropose, true, true, 0.9, 0.8),
+            "a calibration-slice branch is escalated",
+        ),
+        (
+            parts(Escalate, true, true, 0.9, 1.0),
+            "a calibration-slice branch has auto-propose propensity below one",
+        ),
+        (
+            parts(AutoPropose, true, false, 0.9, 0.0),
+            "outside the calibration slice an eligible branch is auto-proposed exactly when \
+             its auto-propose propensity is positive",
+        ),
+        (
+            parts(Escalate, true, false, 0.9, 0.75),
+            "outside the calibration slice an eligible branch is auto-proposed exactly when \
+             its auto-propose propensity is positive",
+        ),
+    ] {
+        let refused = TriageOutcome::from_parts(parts).unwrap_err();
+        assert_eq!(
+            refused,
+            ArbiterError::ImpossibleOutcome { reason },
+            "{parts:?}"
+        );
+        assert_eq!(
+            refused.to_string(),
+            format!("no triage policy produces this triage: {reason}")
+        );
+    }
+    // The shapes next to them are triages, and a slice triage among them
+    // is adjudicated.
+    for parts in [
+        parts(Escalate, true, true, 0.9, 0.8),
+        parts(Escalate, true, true, 0.2, 0.0),
+        parts(AutoPropose, true, false, 0.9, 1.0),
+        parts(AutoPropose, true, false, 0.9, 2f64.powi(-53)),
+        parts(Escalate, true, false, 0.2, 0.0),
+        parts(Discard, false, false, 0.9, 0.0),
+        parts(Escalate, false, false, 0.9, 0.0),
+    ] {
+        let triage = TriageOutcome::from_parts(parts).unwrap();
+        assert_eq!(
+            triage.adjudicate(true).is_ok(),
+            parts.calibration_slice,
+            "{parts:?}"
+        );
+    }
+}
+
+#[test]
+fn no_calibration_sample_hides_harm_behind_a_score_no_triage_sees() {
+    // Twenty clean calibration branches at 0.9 and twenty harmful ones. With
+    // the harmful ones' score NaN, no grid threshold admitted them, and
+    // Learn-then-Test certified a threshold of zero for a slice that was
+    // half harmful. Such a triage can no longer be built, so the samples
+    // carry their scores and the harm is seen.
+    let slice = |score| TriageOutcomeParts {
+        decision: TriageDecision::Escalate,
+        eligible: true,
+        calibration_slice: true,
+        score,
+        auto_propensity: 0.0,
+    };
+    assert_eq!(
+        TriageOutcome::from_parts(slice(f32::NAN)),
+        Err(ArbiterError::ImpossibleOutcome {
+            reason: "the score is not a probability"
+        })
+    );
+    let adjudicate = |score, harmful| {
+        TriageOutcome::from_parts(slice(score))
+            .unwrap()
+            .adjudicate(harmful)
+            .unwrap()
+    };
+    let mut samples: Vec<CalibrationSample> = (0..20).map(|_| adjudicate(0.9, false)).collect();
+    samples.extend((0..20).map(|_| adjudicate(0.9, true)));
+    assert_eq!(
+        certify_threshold(&samples, 0.2, 0.1).unwrap(),
+        AutoThreshold::Never
+    );
+    // Nor is an auto-proposed triage, whose outcome was never adjudicated as
+    // part of the slice, turned into a sample however it is flagged.
+    let mut auto = slice(0.9);
+    auto.decision = TriageDecision::AutoPropose;
+    auto.auto_propensity = 0.8;
+    assert_eq!(
+        TriageOutcome::from_parts(auto),
+        Err(ArbiterError::ImpossibleOutcome {
+            reason: "a calibration-slice branch is escalated"
+        })
+    );
+    auto.calibration_slice = false;
+    assert_eq!(
+        TriageOutcome::from_parts(auto).unwrap().adjudicate(true),
+        Err(ArbiterError::NotCalibrationSlice)
+    );
+}
+
+#[test]
+fn doubly_robust_consults_the_reward_model_once_per_record_and_action_and_reuses_the_logged_prediction(
+) {
+    // A stateful model answers each call differently, as a sampled or re-run
+    // inference can. The logged action used to be predicted twice, once for
+    // the direct term and once for its residual, so the two did not cancel
+    // and the estimate depended on the order of the calls.
+    let logging = TriagePolicy::new(AutoThreshold::AtLeast(0.5), 0.3).unwrap();
+    let target = TriagePolicy::new(AutoThreshold::AtLeast(0.7), 0.3).unwrap();
+    let log = log_under(&logging, &[0.2, 0.6, 0.8, 0.9]);
+    let mut calls: Vec<(f32, TriageDecision, f64)> = Vec::new();
+    let model = |record: &LoggedTriage, action| {
+        let prediction = 0.125 * calls.len() as f64;
+        calls.push((record.score, action, prediction));
+        prediction
+    };
+    let dr = doubly_robust(&log, &target, model).unwrap();
+
+    // Once per record and action, in log order and in the documented order
+    // of the actions.
+    let actions = [
+        TriageDecision::AutoPropose,
+        TriageDecision::Escalate,
+        TriageDecision::Discard,
+    ];
+    let expected: Vec<(f32, TriageDecision)> = log
+        .iter()
+        .flat_map(|record| actions.map(|action| (record.score, action)))
+        .collect();
+    let seen: Vec<(f32, TriageDecision)> = calls
+        .iter()
+        .map(|&(score, action, _)| (score, action))
+        .collect();
+    assert_eq!(seen, expected);
+
+    // The estimate is the doubly robust formula on exactly those
+    // predictions: every record is eligible, the target auto-proposes from
+    // 0.7 with probability 0.7, and the logging policy's probability of the
+    // logged action is its propensity or one minus it.
+    let n = log.len() as f64;
+    let formula: f64 = log
+        .iter()
+        .zip(calls.chunks(3))
+        .map(|(record, predictions)| {
+            let [auto, escalate, discard] = [predictions[0].2, predictions[1].2, predictions[2].2];
+            let target_auto = if record.score >= 0.7 { 0.7 } else { 0.0 };
+            let direct = target_auto * auto + (1.0 - target_auto) * escalate + 0.0 * discard;
+            let (target_logged, logged, prediction) = match record.decision {
+                TriageDecision::AutoPropose => (target_auto, record.auto_propensity, auto),
+                TriageDecision::Escalate => {
+                    (1.0 - target_auto, 1.0 - record.auto_propensity, escalate)
+                }
+                TriageDecision::Discard => unreachable!("an eligible record is never discarded"),
+            };
+            direct + target_logged / logged * (record.reward - prediction)
+        })
+        .sum::<f64>()
+        / n;
+    assert!((dr - formula).abs() < 1e-12, "dr {dr} formula {formula}");
+}
+
+#[test]
+fn a_record_rebuilt_from_parts_names_its_calibration_branches_without_proving_them() {
+    // `from_parts` has no adjudications to rerun the rule on, so it takes a
+    // threshold and a calibration set as given; only rerunning the rule on
+    // the named branches' adjudications, as `calibrate` does and storage
+    // does when a record is written, tells an invented threshold apart.
+    let calibration = adjudicated("c");
+    let rule = ThresholdRule::LearnThenTest {
+        alpha: 0.2,
+        delta: 0.1,
+    };
+    let honest = PolicyRecord::calibrate("v", rule, 0.05, &calibration).unwrap();
+    let invented = PolicyRecord::from_parts(
+        "v",
+        AutoThreshold::AtLeast(0.0),
+        0.05,
+        rule,
+        honest.calibrated_on().to_vec(),
+    )
+    .unwrap();
+    assert_ne!(invented.policy().threshold(), honest.policy().threshold());
+    assert_eq!(invented.calibrated_on(), honest.calibrated_on());
+    let rerun =
+        PolicyRecord::calibrate(invented.version(), invented.rule(), 0.05, &calibration).unwrap();
+    assert_eq!(rerun, honest);
+    assert_ne!(rerun, invented);
 }

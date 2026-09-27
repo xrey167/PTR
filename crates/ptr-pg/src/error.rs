@@ -167,8 +167,10 @@ pub enum PgError {
     /// cites is not recorded, or that policy cannot have produced it
     /// (`ptr_branch::TriagePolicy::explains` names why: a decision, slice
     /// flag or auto-propose propensity its threshold and calibration rate do
-    /// not give for the row's eligibility and score, or a score that is not
-    /// a probability). Calibration and off-policy evaluation would otherwise
+    /// not give for the row's eligibility and score). A triage no policy
+    /// produces at all, such as one whose score is not a probability, cannot
+    /// be built to be recorded (`ptr_branch::TriageOutcome::from_parts`
+    /// refuses it). Calibration and off-policy evaluation would otherwise
     /// attribute the decision to a logging policy that never made it.
     InvalidTriage {
         branch: String,

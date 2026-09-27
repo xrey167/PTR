@@ -314,6 +314,39 @@ fn two_concurrent_counter_additions_both_survive() {
 }
 
 #[test]
+fn certify_labels_a_plan_clean_exactly_when_it_rebased_nothing_and_the_plan_keeps_the_record() {
+    let mut host = host_with(&[("reserved:sku-1", counter_value(3))]);
+    let add = |amount| BranchOp::Add {
+        key: "reserved:sku-1".into(),
+        amount,
+    };
+    let mut first = branch(&host, "b1");
+    first.stage_commutative(add(2)).unwrap();
+    let mut second = branch(&host, "b2");
+    second.stage_commutative(add(5)).unwrap();
+    let (first, second) = (first.seal().unwrap(), second.seal().unwrap());
+
+    let clean = certify(&first, &host.snapshot(), no_lifecycle).unwrap();
+    assert!(matches!(&clean, Certification::Clean(plan) if plan.rebased().is_empty()));
+    commit(&mut host, clean);
+    let Certification::Rebased(plan) = certify(&second, &host.snapshot(), no_lifecycle).unwrap()
+    else {
+        panic!("the second branch rebased onto the first one's addition");
+    };
+    assert_eq!(
+        plan.rebased(),
+        &BTreeSet::from(["reserved:sku-1".to_owned()])
+    );
+    // The variants are public, so a certification built elsewhere can call
+    // the plan clean. The label is all that changes: the plan's rebased keys,
+    // which only certify sets, and the digest an approval binds are the
+    // same.
+    let relabelled = Certification::Clean(plan.clone());
+    assert_eq!(relabelled.plan().rebased(), plan.rebased());
+    assert_eq!(relabelled.plan().digest(), plan.digest());
+}
+
+#[test]
 fn overwriting_a_key_that_was_never_read_is_refused_when_staged() {
     let host = host_with(&[("a", text("1"))]);
     let mut work = branch(&host, "b1");

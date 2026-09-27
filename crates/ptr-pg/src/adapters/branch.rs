@@ -422,7 +422,10 @@ impl PgSubstrate {
     /// (the policy computes the propensity as `1 - calibration_rate`, and
     /// both columns keep their values bit for bit). Calibration and
     /// off-policy evaluation reweight by the logged propensity under the
-    /// cited policy, so a row another policy made would bias both.
+    /// cited policy, so a row another policy made would bias both. A triage
+    /// no policy produces at all (a score that is not a probability, a slice
+    /// triage with propensity one) never gets here: it cannot be built
+    /// ([`TriageOutcome::from_parts`] refuses it).
     ///
     /// What the check cannot see is the verification report and the
     /// calibration draw: that a branch was eligible, and that a slice
@@ -447,7 +450,7 @@ impl PgSubstrate {
             reason,
         };
         let work = self.schemas.work.clone();
-        let decision = match triage.decision {
+        let decision = match triage.decision() {
             TriageDecision::AutoPropose => "auto_propose",
             TriageDecision::Escalate => "escalate",
             TriageDecision::Discard => "discard",
@@ -492,10 +495,10 @@ impl PgSubstrate {
                 &[
                     &branch.0,
                     &decision,
-                    &triage.eligible,
-                    &triage.calibration_slice,
-                    &triage.score,
-                    &triage.auto_propensity,
+                    &triage.eligible(),
+                    &triage.calibration_slice(),
+                    &triage.score(),
+                    &triage.auto_propensity(),
                     &policy_version,
                 ],
             )

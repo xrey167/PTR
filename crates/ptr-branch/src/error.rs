@@ -269,6 +269,21 @@ pub enum ArbiterError {
     /// with propensity one. Off-policy estimates would otherwise reweight it
     /// as a decision some logging policy made.
     ImpossibleTriage { index: usize, reason: &'static str },
+    /// Triage parts no policy produces for any verification report, score
+    /// and calibration draw: a score or auto-propose propensity that is not a
+    /// probability, a positive propensity no calibration rate yields, an
+    /// ineligible triage that is auto-proposed, in the calibration slice or
+    /// has a nonzero propensity, an eligible one that is discarded, a slice
+    /// triage that is not escalated or has propensity one, or an eligible
+    /// one outside the slice auto-proposed with propensity zero or escalated
+    /// with a positive one. `reason` names the rule. A calibration sample or
+    /// a logged triage built from it would be attributed to a policy
+    /// decision that never happened.
+    ImpossibleOutcome { reason: &'static str },
+    /// Only an eligible calibration-slice triage is adjudicated into a
+    /// calibration sample: the outcome of any other is not an exchangeable
+    /// sample of the eligible branches a threshold decides about.
+    NotCalibrationSlice,
 }
 
 impl ArbiterError {
@@ -290,6 +305,8 @@ impl ArbiterError {
             Self::DuplicateCalibrationBranch { .. } => "PTR_ARBITER_DUPLICATE_CALIBRATION_BRANCH",
             Self::UnexplainedTriage { .. } => "PTR_ARBITER_UNEXPLAINED_TRIAGE",
             Self::ImpossibleTriage { .. } => "PTR_ARBITER_IMPOSSIBLE_TRIAGE",
+            Self::ImpossibleOutcome { .. } => "PTR_ARBITER_IMPOSSIBLE_OUTCOME",
+            Self::NotCalibrationSlice => "PTR_ARBITER_NOT_CALIBRATION_SLICE",
         }
     }
 }
@@ -352,6 +369,13 @@ impl fmt::Display for ArbiterError {
             Self::ImpossibleTriage { index, reason } => write!(
                 formatter,
                 "record {index} is not a triage any policy produces: {reason}"
+            ),
+            Self::ImpossibleOutcome { reason } => {
+                write!(formatter, "no triage policy produces this triage: {reason}")
+            }
+            Self::NotCalibrationSlice => write!(
+                formatter,
+                "only an eligible calibration-slice triage is adjudicated into a calibration sample"
             ),
         }
     }

@@ -163,14 +163,25 @@ impl MergePlan {
     }
 }
 
-/// How a branch relates to the snapshot it was certified against.
+/// How a branch relates to the snapshot it was certified against, as
+/// [`certify`] labels it: `Clean` exactly when the plan's
+/// [`MergePlan::rebased`] is empty, `Rebased` otherwise.
+///
+/// The label is a convenience, not a record. The variants are public, so a
+/// `Certification` built anywhere but [`certify`] can wrap any plan under
+/// either one, and [`MergePlan::digest`] does not cover it. Which keys were
+/// rebased is [`MergePlan::rebased`], which only [`certify`] sets and the
+/// digest covers: whatever must know, such as what shows a plan for
+/// approval, reads it there.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Certification {
-    /// Nothing the branch depended on or touched has changed since its base.
+    /// As [`certify`] returns it: nothing the branch depended on or touched
+    /// has changed since its base.
     Clean(MergePlan),
-    /// Nothing the branch depended on has changed, but keys it changes
-    /// commutatively have; its operations were applied to their current
-    /// values and the plan publishes the resulting absolute values.
+    /// As [`certify`] returns it: nothing the branch depended on has changed,
+    /// but keys it changes commutatively have; its operations were applied to
+    /// their current values and the plan publishes the resulting absolute
+    /// values.
     Rebased(MergePlan),
 }
 

@@ -3,7 +3,7 @@
 
 use ptr_branch::{
     AutoThreshold, BranchId, CalibrationSample, PolicyRecord, ThresholdRule, TriageDecision,
-    TriageOutcome, TriagePolicy,
+    TriageOutcome, TriageOutcomeParts, TriagePolicy,
 };
 
 use tokio_postgres::Row;
@@ -223,18 +223,21 @@ impl PgSubstrate {
     /// [`held_out`](PolicyRecord::held_out) of these are the adjudications
     /// its harm rate may be estimated from.
     ///
-    /// Each row is rechecked against the policy it cites
-    /// ([`TriagePolicy::explains`]), as `record_triage` and work migration 10
-    /// check a row when it is written: rows stored before that check, or
-    /// around it, can hold a slice row no policy logs (one under a policy
-    /// with calibration rate zero, or with propensity one) or cite a version
-    /// no table recorded.
+    /// Each row is rebuilt through [`TriageOutcome::from_parts`], which
+    /// refuses a row no policy produces (a score that is not a probability,
+    /// a slice row with propensity one), and rechecked against the policy it
+    /// cites ([`TriagePolicy::explains`]), as `record_triage` and work
+    /// migration 10 check a row when it is written: rows stored before that
+    /// check, or around it, can hold such a row, a slice row the cited policy
+    /// does not log (one under a policy with calibration rate zero), or cite
+    /// a version no table recorded.
     ///
     /// # Errors
     /// Refuses the whole read as `PgError::CorruptRow` rather than serve or
     /// silently skip such a row: naming `branch_triage` for a row citing an
-    /// unrecorded policy or one its policy cannot have produced, and
-    /// `triage_policy` for a cited policy `TriagePolicy::new` refuses. The
+    /// unrecorded policy, one `from_parts` refuses, or one its policy cannot
+    /// have produced, and `triage_policy` for a cited policy
+    /// `TriagePolicy::new` refuses (checked before the row itself). The
     /// calibration draw is not stored, so that a slice row was drawn into
     /// the slice remains its writer's word.
     pub async fn adjudicated_samples(&self) -> Result<Vec<(BranchId, CalibrationSample)>, PgError> {
@@ -286,13 +289,6 @@ fn adjudicated_sample(row: &Row) -> Result<(BranchId, CalibrationSample), PgErro
         "discard" => TriageDecision::Discard,
         other => return Err(corrupt(format!("decision {other:?}"))),
     };
-    let triage = TriageOutcome {
-        decision,
-        eligible: row.get(2),
-        calibration_slice: row.get(3),
-        score: row.get(4),
-        auto_propensity: row.get(5),
-    };
     let version: String = row.get(7);
     // calibration_rate is NOT NULL, so a NULL is a version with no row.
     let Some(rate) = row.get::<_, Option<f64>>(9) else {
@@ -308,14 +304,26 @@ fn adjudicated_sample(row: &Row) -> Result<(BranchId, CalibrationSample), PgErro
         table: "triage_policy",
         reason: format!("policy {version:?}: {error}"),
     })?;
+    // A row no policy produces for any report, score and draw (a score that
+    // is not a probability, a slice row with propensity one) is no triage at
+    // all, and is refused before the cited policy is asked to explain it.
+    let triage = TriageOutcome::from_parts(TriageOutcomeParts {
+        decision,
+        eligible: row.get(2),
+        calibration_slice: row.get(3),
+        score: row.get(4),
+        auto_propensity: row.get(5),
+    })
+    .map_err(|error| corrupt(format!("calibration row {branch:?}: {error}")))?;
     policy.explains(&triage).map_err(|error| {
         corrupt(format!(
             "calibration row {branch:?} is not one policy {version:?} can have produced: {error}"
         ))
     })?;
-    // explains admits a slice row only if it is eligible, so this holds.
+    // The query reads slice rows only, and from_parts admits a slice row only
+    // if it is eligible, so this holds.
     let sample = triage
         .adjudicate(row.get(6))
-        .ok_or_else(|| corrupt(format!("calibration row {branch:?} is not eligible")))?;
+        .map_err(|error| corrupt(format!("calibration row {branch:?}: {error}")))?;
     Ok((BranchId(branch), sample))
 }

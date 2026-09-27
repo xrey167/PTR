@@ -67,7 +67,7 @@ fn a_certified_and_verified_branch_reaches_semantic_state_only_through_the_runti
             calibration_draw(sealed.id(), 1),
         )
         .unwrap();
-    assert_eq!(triage.decision, TriageDecision::AutoPropose);
+    assert_eq!(triage.decision(), TriageDecision::AutoPropose);
 
     let (expected, delta, relied) = certification.plan().clone().into_parts();
     runtime

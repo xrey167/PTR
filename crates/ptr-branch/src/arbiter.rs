@@ -56,8 +56,63 @@ pub struct TriagePolicy {
 }
 
 /// One triage, with what is needed to learn from it later.
+///
+/// # Guarantees
+/// Its fields are private, and it is built only by [`TriagePolicy::triage`]
+/// and by [`TriageOutcome::from_parts`], which storage rebuilds a logged
+/// triage with and which refuses parts no policy produces. So every
+/// `TriageOutcome` equals (`==`) what [`TriagePolicy::triage`] returns for
+/// some policy, verification report, score and calibration draw: its score is
+/// a finite number in `[0, 1]`; a triage verification decided is discarded or
+/// escalated, outside the calibration slice, with auto-propose propensity
+/// zero; an eligible one is never discarded, is escalated in the slice with a
+/// propensity below one, and outside it is auto-proposed exactly when its
+/// propensity is positive. [`TriageOutcome::adjudicate`], and so every
+/// [`CalibrationSample`], rests on that, and checks it again.
+///
+/// Which policy made a triage is not part of it, so nothing here says that
+/// the policy a log cites for it made it: [`TriagePolicy::explains`] checks
+/// that against the cited policy.
+///
+/// No field can be reached to change a built triage:
+///
+/// ```compile_fail
+/// fn forge(mut triage: ptr_branch::TriageOutcome) -> ptr_branch::TriageOutcome {
+///     triage.score = f32::NAN;
+///     triage
+/// }
+/// ```
+///
+/// nor to build one around the constructor:
+///
+/// ```compile_fail
+/// use ptr_branch::{TriageDecision, TriageOutcome};
+/// let forged = TriageOutcome {
+///     decision: TriageDecision::AutoPropose,
+///     eligible: true,
+///     calibration_slice: true,
+///     score: 0.9,
+///     auto_propensity: 0.8,
+/// };
+/// ```
 #[derive(Clone, Debug, PartialEq)]
 pub struct TriageOutcome {
+    decision: TriageDecision,
+    eligible: bool,
+    calibration_slice: bool,
+    score: f32,
+    auto_propensity: f64,
+}
+
+/// The parts of a triage: what [`TriageOutcome::into_parts`] returns and
+/// [`TriageOutcome::from_parts`] validates, for example when storage rebuilds
+/// a logged triage from its row.
+///
+/// Holding parts grants nothing: only a [`TriageOutcome`] is adjudicated into
+/// a [`CalibrationSample`], and one exists only once its parts are a triage
+/// some policy produces.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TriageOutcomeParts {
     pub decision: TriageDecision,
     /// Whether the rules left the decision to the policy at all. Ineligible
     /// branches are decided by verification alone.
@@ -72,10 +127,29 @@ pub struct TriageOutcome {
 
 /// A human adjudication of a calibration-slice branch: would auto-proposing it
 /// have been harmful?
+///
+/// Its fields are private and only [`TriageOutcome::adjudicate`] builds one,
+/// from an eligible calibration-slice triage, so its score is a finite number
+/// in `[0, 1]`: [`calibrate_threshold`] and [`certify_threshold`] compare it
+/// with every grid threshold, and a NaN would keep a harmful sample out of
+/// every admitted set.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CalibrationSample {
     score: f32,
     harmful: bool,
+}
+
+impl CalibrationSample {
+    /// The score of the adjudicated triage: a finite number in `[0, 1]`.
+    pub fn score(&self) -> f32 {
+        self.score
+    }
+
+    /// Whether the person judged that auto-proposing the branch would have
+    /// been harmful.
+    pub fn harmful(&self) -> bool {
+        self.harmful
+    }
 }
 
 impl TriagePolicy {
@@ -228,6 +302,13 @@ impl TriagePolicy {
     /// escalated, and outside it auto-proposed exactly when the threshold
     /// admits its score.
     ///
+    /// Every [`TriageOutcome`] is one some policy produces
+    /// ([`TriageOutcome::from_parts`]), so what this decides for one built
+    /// through this crate is whether this policy is among them: whether its
+    /// propensity is the one this policy logs for its score, and whether a
+    /// slice triage cites a policy with a positive rate. The other rules
+    /// are checked again rather than trusted.
+    ///
     /// # Errors
     /// Returns `ArbiterError::UnexplainedTriage` naming the first rule the
     /// triage breaks, the first being a score that is not a finite number in
@@ -310,14 +391,166 @@ impl TriagePolicy {
 }
 
 impl TriageOutcome {
+    /// Rebuild a triage from its parts, for example ones storage read back,
+    /// refusing any that no policy produces for any verification report,
+    /// score and calibration draw. Checked in this order:
+    ///
+    /// - the score is a finite number in `[0, 1]`: every triage sees a
+    ///   [`Probability`];
+    /// - the auto-propose propensity `p` is a finite number in `[0, 1]`, and
+    ///   a positive one is `1 - r` for some calibration rate `r` a policy can
+    ///   hold, the propensity a policy logs for a score its threshold admits
+    ///   (checked as `1 - (1 - p) == p`, which holds for every `p` in
+    ///   `[1/2, 1]` and, below that, for the multiples of `2^-53`);
+    /// - a triage verification decided (`eligible` false) is not
+    ///   auto-proposed, not in the calibration slice, and has propensity zero;
+    /// - an eligible triage is not discarded;
+    /// - an eligible triage in the calibration slice is escalated and has
+    ///   propensity below one: only a positive rate has a slice, and it logs
+    ///   `1 - rate` or zero;
+    /// - outside the slice, an eligible triage is auto-proposed exactly when
+    ///   its propensity is positive: a policy auto-proposes there exactly the
+    ///   scores its threshold admits, and logs a positive propensity for
+    ///   exactly those.
+    ///
+    /// The rules are also sufficient: parts that pass equal what
+    /// [`TriagePolicy::triage`] returns for some policy, report, score and
+    /// draw (for a positive propensity `p`, the policy with rate `1 - p` and
+    /// the score as its threshold). Whether the policy a log cites is one of
+    /// them is what [`TriagePolicy::explains`] checks.
+    ///
+    /// # Errors
+    /// `ArbiterError::ImpossibleOutcome` naming the first rule the parts
+    /// break; nothing is built.
+    pub fn from_parts(parts: TriageOutcomeParts) -> Result<Self, ArbiterError> {
+        let triage = Self {
+            decision: parts.decision,
+            eligible: parts.eligible,
+            calibration_slice: parts.calibration_slice,
+            score: parts.score,
+            auto_propensity: parts.auto_propensity,
+        };
+        match triage.contradiction() {
+            Some(reason) => Err(ArbiterError::ImpossibleOutcome { reason }),
+            None => Ok(triage),
+        }
+    }
+
+    /// Give up the triage for its parts. Building one again goes through
+    /// [`TriageOutcome::from_parts`].
+    pub fn into_parts(self) -> TriageOutcomeParts {
+        TriageOutcomeParts {
+            decision: self.decision,
+            eligible: self.eligible,
+            calibration_slice: self.calibration_slice,
+            score: self.score,
+            auto_propensity: self.auto_propensity,
+        }
+    }
+
+    pub fn decision(&self) -> TriageDecision {
+        self.decision
+    }
+
+    /// Whether the rules left the decision to the policy at all. Ineligible
+    /// branches are decided by verification alone.
+    pub fn eligible(&self) -> bool {
+        self.eligible
+    }
+
+    /// Whether this branch was escalated as part of the calibration slice.
+    pub fn calibration_slice(&self) -> bool {
+        self.calibration_slice
+    }
+
+    /// The score the policy saw: a finite number in `[0, 1]`.
+    pub fn score(&self) -> f32 {
+        self.score
+    }
+
+    /// Probability the logging policy assigned to auto-proposing this branch.
+    pub fn auto_propensity(&self) -> f64 {
+        self.auto_propensity
+    }
+
     /// Turn a calibration-slice triage into a calibration sample once a person
-    /// has adjudicated it. Any other triage is refused: its outcome is not an
-    /// exchangeable sample of eligible branches.
-    pub fn adjudicate(&self, harmful: bool) -> Option<CalibrationSample> {
-        (self.eligible && self.calibration_slice).then_some(CalibrationSample {
+    /// has adjudicated it, `harmful` saying whether auto-proposing it would
+    /// have been harmful.
+    ///
+    /// The triage is checked against every rule [`TriageOutcome::from_parts`]
+    /// checks before anything is built, although every `TriageOutcome` passed
+    /// them when it was built: a sample's score is compared with every grid
+    /// threshold by [`calibrate_threshold`] and [`certify_threshold`], so a
+    /// score that is not a probability, or a sample of a triage no policy
+    /// placed in the slice, would bias the threshold chosen from it rather
+    /// than be refused there.
+    ///
+    /// # Errors
+    /// `ArbiterError::ImpossibleOutcome` for a triage no policy produces, as
+    /// [`TriageOutcome::from_parts`] names it; then
+    /// `ArbiterError::NotCalibrationSlice` for any triage outside the
+    /// calibration slice (auto-proposed, escalated below the threshold, or
+    /// decided by verification): its outcome is not an exchangeable sample of
+    /// eligible branches.
+    pub fn adjudicate(&self, harmful: bool) -> Result<CalibrationSample, ArbiterError> {
+        if let Some(reason) = self.contradiction() {
+            return Err(ArbiterError::ImpossibleOutcome { reason });
+        }
+        // The rules above admit a slice triage only if it is eligible.
+        if !self.calibration_slice {
+            return Err(ArbiterError::NotCalibrationSlice);
+        }
+        Ok(CalibrationSample {
             score: self.score,
             harmful,
         })
+    }
+
+    /// The first rule of [`TriageOutcome::from_parts`] this triage breaks,
+    /// if any.
+    fn contradiction(&self) -> Option<&'static str> {
+        // `contains` is false for NaN and both infinities.
+        if !(0.0..=1.0).contains(&self.score) {
+            return Some("the score is not a probability");
+        }
+        let propensity = self.auto_propensity;
+        if !(0.0..=1.0).contains(&propensity) {
+            return Some("the auto-propose propensity is not a probability");
+        }
+        if propensity > 0.0 && 1.0 - (1.0 - propensity) != propensity {
+            return Some("a positive auto-propose propensity is 1 - r for a calibration rate r");
+        }
+        if !self.eligible {
+            if self.decision == TriageDecision::AutoPropose {
+                return Some("verification alone never auto-proposes");
+            }
+            if self.calibration_slice {
+                return Some("a calibration-slice branch is eligible");
+            }
+            if propensity != 0.0 {
+                return Some("a branch verification decided has auto-propose propensity zero");
+            }
+            return None;
+        }
+        if self.decision == TriageDecision::Discard {
+            return Some("an eligible branch is never discarded");
+        }
+        if self.calibration_slice {
+            if self.decision != TriageDecision::Escalate {
+                return Some("a calibration-slice branch is escalated");
+            }
+            if propensity == 1.0 {
+                return Some("a calibration-slice branch has auto-propose propensity below one");
+            }
+            return None;
+        }
+        if (self.decision == TriageDecision::AutoPropose) != (propensity > 0.0) {
+            return Some(
+                "outside the calibration slice an eligible branch is auto-proposed exactly when \
+                 its auto-propose propensity is positive",
+            );
+        }
+        None
     }
 }
 
@@ -478,13 +711,23 @@ impl ThresholdRule {
 }
 
 /// A triage policy as it is recorded and cited by triage logs: its version,
-/// the policy, the rule that chose its threshold, and exactly which
-/// adjudicated calibration-slice branches that rule saw.
+/// the policy, the rule its threshold is attributed to, and the adjudicated
+/// calibration-slice branches it names as the ones that rule saw.
 ///
 /// Naming the calibration branches is what keeps a later evaluation honest:
 /// a policy's harm rate may only be estimated on adjudications it was not
 /// calibrated on ([`PolicyRecord::held_out`]), which F003 requires. The unit
 /// is the branch, so a branch appears at most once.
+///
+/// The attribution holds by construction only for a record
+/// [`PolicyRecord::calibrate`] builds: it runs the rule on the samples it is
+/// given and names their branches. [`PolicyRecord::from_parts`], which
+/// storage rebuilds records with, has no adjudications to rerun the rule on
+/// and takes the threshold and the calibration branches as given, so a
+/// record it builds may name branches the rule, run on their adjudications,
+/// would not choose its threshold from. Whoever records a policy checks that
+/// against the stored adjudications (ptr-pg's `record_policy` reruns the rule
+/// in the transaction that writes the record).
 #[derive(Clone, Debug, PartialEq)]
 pub struct PolicyRecord {
     version: String,
@@ -545,6 +788,11 @@ impl PolicyRecord {
 
     /// Rebuild a record, for example one read back from storage. The
     /// calibration branches are kept in branch order.
+    ///
+    /// The threshold and the calibration branches are taken as given:
+    /// nothing here reruns the rule, so the record names the branches its
+    /// threshold is attributed to without showing that the rule chose it
+    /// from them (see [`PolicyRecord`]).
     ///
     /// # Errors
     /// Refuses an empty version, an invalid calibration rate or risk level, a
@@ -822,6 +1070,14 @@ pub fn evaluate_off_policy(
 /// residual near the largest finite reward or a long log does not overflow an
 /// estimate that is itself finite (up to rounding at the limit of `f64`).
 ///
+/// `reward_model` is called exactly once for each record and each of the
+/// three actions: in log order, and for each record for `AutoPropose`,
+/// `Escalate` and `Discard` in that order. The logged action's prediction is
+/// the one used both in `D` and in the record's residual, so the two
+/// cancel as the estimator requires even when the model is stochastic,
+/// stateful or an inference call whose answer can change, and the estimate
+/// rests on one prediction per record and action.
+///
 /// # Errors
 /// Refuses the logs [`evaluate_off_policy`] refuses for their records, with
 /// the same error and before `reward_model` is called: an empty log, a
@@ -832,17 +1088,12 @@ pub fn evaluate_off_policy(
 pub fn doubly_robust<M>(
     log: &[LoggedTriage],
     target: &TriagePolicy,
-    reward_model: M,
+    mut reward_model: M,
 ) -> Result<f64, ArbiterError>
 where
-    M: Fn(&LoggedTriage, TriageDecision) -> f64,
+    M: FnMut(&LoggedTriage, TriageDecision) -> f64,
 {
     let weights = importance_weights(log, target)?;
-    let actions = [
-        TriageDecision::AutoPropose,
-        TriageDecision::Escalate,
-        TriageDecision::Discard,
-    ];
     let n = log.len() as f64;
     // Every weight is finite and nonnegative; when all are zero, dividing
     // them by one keeps them zero.
@@ -851,12 +1102,21 @@ where
     let mut direct_mean = 0.0;
     let mut residuals = 0.0;
     for (record, weight) in log.iter().zip(&weights) {
-        let direct: f64 = actions
-            .iter()
-            .map(|&action| target.probability(record, action) * reward_model(record, action))
-            .sum();
+        let [auto, escalate, discard] = [
+            TriageDecision::AutoPropose,
+            TriageDecision::Escalate,
+            TriageDecision::Discard,
+        ]
+        .map(|action| reward_model(record, action));
+        let direct = target.probability(record, TriageDecision::AutoPropose) * auto
+            + target.probability(record, TriageDecision::Escalate) * escalate
+            + target.probability(record, TriageDecision::Discard) * discard;
         direct_mean += direct / n;
-        let prediction = reward_model(record, record.decision);
+        let prediction = match record.decision {
+            TriageDecision::AutoPropose => auto,
+            TriageDecision::Escalate => escalate,
+            TriageDecision::Discard => discard,
+        };
         residuals += weight / scale * (record.reward / (2.0 * n) - prediction / (2.0 * n));
     }
     let estimate = 2.0 * (direct_mean / 2.0 + scale * residuals);
@@ -1006,6 +1266,102 @@ mod tests {
         assert_eq!(grid.len(), THRESHOLD_GRID_STEPS as usize + 1);
         assert_eq!(grid[0], 0.0);
         assert_eq!(*grid.last().unwrap(), 1.0);
+    }
+
+    /// A triage built without [`TriageOutcome::from_parts`], as no caller
+    /// outside this module can build one.
+    fn unchecked(
+        decision: TriageDecision,
+        eligible: bool,
+        calibration_slice: bool,
+        score: f32,
+        auto_propensity: f64,
+    ) -> TriageOutcome {
+        TriageOutcome {
+            decision,
+            eligible,
+            calibration_slice,
+            score,
+            auto_propensity,
+        }
+    }
+
+    #[test]
+    fn adjudication_checks_the_triage_again_rather_than_trusting_its_constructor() {
+        for (forged, reason) in [
+            (
+                unchecked(TriageDecision::Escalate, true, true, f32::NAN, 0.0),
+                "the score is not a probability",
+            ),
+            (
+                unchecked(TriageDecision::AutoPropose, true, true, 0.9, 0.8),
+                "a calibration-slice branch is escalated",
+            ),
+            (
+                unchecked(TriageDecision::Escalate, true, true, 0.9, 1.0),
+                "a calibration-slice branch has auto-propose propensity below one",
+            ),
+            (
+                unchecked(TriageDecision::Escalate, false, true, 0.9, 0.0),
+                "a calibration-slice branch is eligible",
+            ),
+        ] {
+            assert_eq!(
+                forged.adjudicate(true),
+                Err(ArbiterError::ImpossibleOutcome { reason }),
+                "{forged:?}"
+            );
+        }
+        let slice = unchecked(TriageDecision::Escalate, true, true, 0.9, 0.8);
+        assert_eq!(slice.adjudicate(true), Ok(sample(0.9, true)));
+    }
+
+    #[test]
+    fn explains_checks_again_every_rule_the_constructor_enforces() {
+        let policy = TriagePolicy::new(AutoThreshold::AtLeast(0.5), 0.25).unwrap();
+        let outside = "outside the calibration slice the policy auto-proposes exactly the \
+                       scores its threshold admits";
+        for (forged, reason) in [
+            (
+                unchecked(TriageDecision::Escalate, true, false, f32::NAN, 0.0),
+                "the score is not a probability",
+            ),
+            (
+                unchecked(TriageDecision::Escalate, true, false, 0.9, 0.75),
+                outside,
+            ),
+            (
+                unchecked(TriageDecision::AutoPropose, true, false, 0.2, 0.0),
+                outside,
+            ),
+            (
+                unchecked(TriageDecision::Discard, true, false, 0.2, 0.0),
+                "an eligible branch is never discarded",
+            ),
+            (
+                unchecked(TriageDecision::AutoPropose, true, true, 0.9, 0.75),
+                "a calibration-slice branch is escalated",
+            ),
+            (
+                unchecked(TriageDecision::AutoPropose, false, false, 0.9, 0.0),
+                "verification alone never auto-proposes",
+            ),
+            (
+                unchecked(TriageDecision::Discard, false, true, 0.9, 0.0),
+                "a calibration-slice branch is eligible",
+            ),
+            (
+                unchecked(TriageDecision::Discard, false, false, 0.9, 0.75),
+                "a branch verification decided has auto-propose propensity zero",
+            ),
+        ] {
+            assert!(forged.contradiction().is_some(), "{forged:?}");
+            assert_eq!(
+                policy.explains(&forged),
+                Err(ArbiterError::UnexplainedTriage { reason }),
+                "{forged:?}"
+            );
+        }
     }
 
     #[test]
