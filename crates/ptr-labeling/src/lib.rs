@@ -1,6 +1,7 @@
 //! Weak supervision with verifier precedence: labeling-function votes, a
-//! Dawid-Skene label model, active-learning acquisition and gold labels that
-//! cannot be confused with predictions.
+//! Dawid-Skene label model, active-learning acquisition and gold labels of a
+//! type of their own, which no function of this crate builds from a
+//! prediction.
 //!
 //! Verifier-backed functions are asymmetric, as verifier precedence is: they
 //! can rule a class out and are never outvoted, but they do not assert a class

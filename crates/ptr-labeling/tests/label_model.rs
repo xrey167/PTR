@@ -79,14 +79,14 @@ fn the_label_model_recovers_function_accuracies_and_beats_majority_vote() {
     // asymmetry, so individual cells are only weakly identified at this sample
     // size; the ranking of the functions is what must come out right.
     let accuracy = |j: usize| {
-        let table = model.confusion[j].as_ref().unwrap();
+        let table = model.confusion()[j].as_ref().unwrap();
         (table[0][0] + table[1][1]) / 2.0
     };
     assert!(accuracy(0) > accuracy(1) && accuracy(1) > accuracy(2));
     assert!(accuracy(0) > 0.75, "{}", accuracy(0));
     assert!((accuracy(2) - 0.55).abs() < 0.1, "{}", accuracy(2));
 
-    let report = evaluate(&model.posteriors, &gold(&truth), 10).unwrap();
+    let report = evaluate(model.posteriors(), &gold(&truth), 10).unwrap();
     assert!(report.calibration.is_some());
     let majority_correct = (0..matrix.items())
         .filter(|&item| {
@@ -181,7 +181,7 @@ fn fewer_than_three_modelled_functions_are_reported_as_unidentifiable() {
     .unwrap();
     let model = fit_label_model(&matrix, DawidSkeneParams::default()).unwrap();
     assert!(model
-        .warnings
+        .warnings()
         .contains(&ModelWarning::FewerThanThreeFunctions { count: 2 }));
 }
 
@@ -209,9 +209,9 @@ fn abstentions_do_not_become_labels_even_with_a_low_resolution_threshold() {
     .unwrap();
     assert_eq!(matrix.coverage(), 0.0);
     let model = fit_label_model(&matrix, DawidSkeneParams::default()).unwrap();
-    assert_eq!(model.priors, vec![0.5, 0.5]);
-    assert!(model.confusion[1].is_none());
-    assert!(model.warnings.contains(&ModelWarning::NoOverlap {
+    assert_eq!(model.priors(), vec![0.5, 0.5]);
+    assert!(model.confusion()[1].is_none());
+    assert!(model.warnings().contains(&ModelWarning::NoOverlap {
         function: "model".into()
     }));
     assert_eq!(
@@ -235,9 +235,9 @@ fn verifiers_alone_can_determine_a_class_only_by_eliminating_every_alternative()
     )
     .unwrap();
     let model = fit_label_model(&matrix, DawidSkeneParams::default()).unwrap();
-    assert_eq!(model.confusion, vec![None, None]);
+    assert_eq!(model.confusion(), vec![None, None]);
     assert!(model
-        .warnings
+        .warnings()
         .contains(&ModelWarning::FewerThanThreeFunctions { count: 0 }));
     assert_eq!(
         resolve(&matrix, &model, 1.0).unwrap().into_outcomes(),
@@ -675,173 +675,11 @@ fn an_em_tolerance_outside_zero_to_one_is_refused_and_zero_waits_for_a_fixed_poi
         ..DawidSkeneParams::default()
     };
     let model = fit_label_model(&silent, exact).unwrap();
-    assert_eq!(model.iterations, 1);
+    assert_eq!(model.iterations(), 1);
     assert!(!model
-        .warnings
+        .warnings()
         .iter()
         .any(|warning| matches!(warning, ModelWarning::NotConverged { .. })));
-}
-
-#[test]
-fn annotation_ranking_takes_outcomes_and_posteriors_only_from_one_resolution() {
-    let (c0, c1, c2, a) = (
-        Vote::Class(0),
-        Vote::Class(1),
-        Vote::Class(2),
-        Vote::Abstain,
-    );
-    let mut votes = vec![
-        // Uncertain: the heuristics split three ways.
-        vec![c0, c1, c2, a, a, a],
-        // Settled by agreement.
-        vec![c1, c1, c1, a, a, a],
-        // Determined by elimination.
-        vec![c2, a, a, Vote::Veto(0), Vote::Veto(1), a],
-        // Every class ruled out.
-        vec![c0, a, a, Vote::Veto(0), Vote::Veto(1), Vote::Veto(2)],
-        // Nothing probabilistic voted.
-        vec![a, a, a, Vote::Veto(2), a, a],
-    ];
-    votes.extend(agreeing(3, 3, 3, 5));
-    let matrix = VoteMatrix::new(
-        LabelSchema::new(["a", "b", "c"]).unwrap(),
-        vec![
-            function("h1", FunctionKind::Heuristic),
-            function("h2", FunctionKind::Heuristic),
-            function("h3", FunctionKind::Heuristic),
-            function("v1", FunctionKind::Verifier),
-            function("v2", FunctionKind::Verifier),
-            function("v3", FunctionKind::Verifier),
-        ],
-        votes,
-    )
-    .unwrap();
-    let mut model = fit_label_model(&matrix, DawidSkeneParams::default()).unwrap();
-    let resolution = resolve(&matrix, &model, 0.9).unwrap();
-    assert_eq!(resolution.len(), matrix.items());
-    assert_eq!(resolution.matrix_digest(), matrix.digest());
-    // Ranking read outcomes and posteriors as two slices that only had to be
-    // equally long: an uncertain item paired with another item's Determined
-    // outcome was never proposed, and a settled one paired with a Disputed
-    // outcome was proposed first. Each item's pair now comes from resolve.
-    let outcomes = resolution.outcomes();
-    assert_eq!(outcomes[0], LabelOutcome::Unknown);
-    assert!(matches!(
-        outcomes[1],
-        LabelOutcome::Estimated { class: 1, .. }
-    ));
-    assert_eq!(outcomes[2], LabelOutcome::Determined { class: 2 });
-    assert!(matches!(outcomes[3], LabelOutcome::Disputed { .. }));
-    assert_eq!(outcomes[4], LabelOutcome::Unknown);
-    for strategy in [Acquisition::Entropy, Acquisition::Margin] {
-        let ranked = rank_for_annotation(&resolution, strategy, 99);
-        // The dispute first, the determined item never, and the settled item
-        // after both unresolved ones.
-        assert_eq!(ranked[0], 3, "{strategy:?}");
-        assert_eq!(ranked.len(), matrix.items() - 1, "{strategy:?}");
-        assert!(!ranked.contains(&2), "{strategy:?}");
-        let at = |item| ranked.iter().position(|ranked| *ranked == item).unwrap();
-        assert!(at(1) > at(0) && at(1) > at(4), "{strategy:?} {ranked:?}");
-    }
-    // A model with a posterior missing or added never resolves, so no
-    // shorter or longer list of either kind reaches ranking.
-    let items = matrix.items();
-    let fitted = model.posteriors.clone();
-    model.posteriors.pop();
-    assert_eq!(
-        resolve(&matrix, &model, 0.9),
-        Err(LabelingError::LengthMismatch {
-            expected: items,
-            actual: items - 1
-        })
-    );
-    model.posteriors = fitted.clone();
-    model.posteriors.push(fitted[0].clone());
-    assert_eq!(
-        resolve(&matrix, &model, 0.9),
-        Err(LabelingError::LengthMismatch {
-            expected: items,
-            actual: items + 1
-        })
-    );
-}
-
-#[test]
-fn a_resolution_pairs_every_outcome_with_the_posterior_it_was_resolved_from() {
-    let (c0, c1, a) = (Vote::Class(0), Vote::Class(1), Vote::Abstain);
-    let mut votes = vec![
-        vec![c0, c1, Vote::Veto(2), a],
-        vec![c1, c1, a, a],
-        vec![c0, a, Vote::Veto(0), Vote::Veto(1)],
-        vec![c0, a, Vote::Veto(0), a],
-        vec![a, a, Vote::Veto(0), a],
-    ];
-    votes.extend(agreeing(3, 2, 2, 5));
-    let matrix = VoteMatrix::new(
-        LabelSchema::new(["a", "b", "c"]).unwrap(),
-        vec![
-            function("h1", FunctionKind::Heuristic),
-            function("h2", FunctionKind::Heuristic),
-            function("v1", FunctionKind::Verifier),
-            function("v2", FunctionKind::Verifier),
-        ],
-        votes,
-    )
-    .unwrap();
-    let mut model = fit_label_model(&matrix, DawidSkeneParams::default()).unwrap();
-    // Item 3's classes left carry less mass than the smallest normal f64.
-    let unit = f64::from_bits(1);
-    model.posteriors[3] = vec![1.0, unit, 0.0];
-    let dispute = VoteMatrix::new(
-        LabelSchema::new(["a", "b"]).unwrap(),
-        vec![
-            function("h", FunctionKind::Heuristic),
-            function("v1", FunctionKind::Verifier),
-            function("v2", FunctionKind::Verifier),
-        ],
-        vec![vec![c0, Vote::Veto(0), Vote::Veto(1)]],
-    )
-    .unwrap();
-    let resolution = resolve(&matrix, &model, 0.5).unwrap();
-    let posterior = |item: usize| resolution.posterior(item).unwrap().to_vec();
-
-    // Vetoed classes have probability zero and the model's posterior is
-    // renormalized over the rest.
-    let raw = &model.posteriors[0];
-    let left = posterior(0);
-    assert_eq!(left[2], 0.0);
-    assert_eq!(left[0], raw[0] / (raw[0] + raw[1]));
-    assert_eq!(left[1], raw[1] / (raw[0] + raw[1]));
-    // An estimate states exactly the probability its posterior gives it.
-    match resolution.outcomes()[1] {
-        LabelOutcome::Estimated { class, probability } => {
-            assert_eq!(posterior(1)[class], probability)
-        }
-        ref other => panic!("{other:?}"),
-    }
-    // Determined by elimination: the one class left is certain.
-    assert_eq!(
-        resolution.outcomes()[2],
-        LabelOutcome::Determined { class: 2 }
-    );
-    assert_eq!(posterior(2), vec![0.0, 0.0, 1.0]);
-    // No share is computed from mass below f64::MIN_POSITIVE, nor for an
-    // item no probabilistic function voted on: the classes left are uniform.
-    assert!(unit < f64::MIN_POSITIVE);
-    for item in [3, 4] {
-        assert_eq!(resolution.outcomes()[item], LabelOutcome::Unknown, "{item}");
-    }
-    assert_eq!(posterior(3), vec![0.0, 0.5, 0.5]);
-    assert_eq!(posterior(4), vec![0.0, 0.5, 0.5]);
-    assert_eq!(resolution.posterior(matrix.items()), None);
-    // A disputed item has no class left, so no posterior.
-    let model = fit_label_model(&dispute, DawidSkeneParams::default()).unwrap();
-    let resolution = resolve(&dispute, &model, 0.5).unwrap();
-    assert!(matches!(
-        resolution.outcomes()[0],
-        LabelOutcome::Disputed { .. }
-    ));
-    assert_eq!(resolution.posterior(0), None);
 }
 
 #[test]
@@ -877,7 +715,11 @@ fn annotation_ranks_an_item_on_its_posterior_after_vetoes_not_on_the_model_s() {
     // the one annotation went to item 1, which is already labelled.
     let confident_in_vetoed = matrix(vec![c0, c0, c0, Vote::Veto(0)], vec![c1, c1, c2, a]);
     let model = fit_label_model(&confident_in_vetoed, DawidSkeneParams::default()).unwrap();
-    assert!(model.posteriors[0][0] > 0.99, "{:?}", model.posteriors[0]);
+    assert!(
+        model.posteriors()[0][0] > 0.99,
+        "{:?}",
+        model.posteriors()[0]
+    );
     let resolution = resolve(&confident_in_vetoed, &model, 0.9).unwrap();
     assert_eq!(resolution.outcomes()[0], LabelOutcome::Unknown);
     assert!(matches!(
@@ -897,7 +739,7 @@ fn annotation_ranks_an_item_on_its_posterior_after_vetoes_not_on_the_model_s() {
     // Unknown. The model's even split ranked item 0 ahead by margin.
     let split_with_vetoed = matrix(vec![c0, c1, a, Vote::Veto(0)], vec![c0, c1, c2, a]);
     let model = fit_label_model(&split_with_vetoed, DawidSkeneParams::default()).unwrap();
-    let raw = &model.posteriors[0];
+    let raw = &model.posteriors()[0];
     assert!((raw[0] - raw[1]).abs() < 1e-9, "{raw:?}");
     let resolution = resolve(&split_with_vetoed, &model, 0.8).unwrap();
     assert!(matches!(
@@ -910,30 +752,6 @@ fn annotation_ranks_an_item_on_its_posterior_after_vetoes_not_on_the_model_s() {
             rank_for_annotation(&resolution, strategy, 2),
             vec![1, 0],
             "{strategy:?}"
-        );
-    }
-}
-
-#[test]
-fn a_posterior_that_is_not_a_distribution_never_reaches_annotation_ranking() {
-    let matrix = two_heuristics_and_a_third(vec![vec![Vote::Class(0); 3]; 3]);
-    let mut model = fit_label_model(&matrix, DawidSkeneParams::default()).unwrap();
-    let confident = vec![0.99, 0.01];
-    let even = vec![0.5, 0.5];
-    // An empty posterior has no margin, a NaN one ranked below a confident
-    // item, and one outside [0, 1] has a negative entropy. Ranking takes
-    // only a resolution, and resolve refuses every one of them.
-    for invalid in [
-        vec![],
-        vec![f64::NAN, f64::NAN],
-        vec![2.0, -1.0],
-        vec![0.5, 0.6],
-    ] {
-        model.posteriors = vec![confident.clone(), invalid.clone(), even.clone()];
-        assert_eq!(
-            resolve(&matrix, &model, 0.5),
-            Err(LabelingError::InvalidPosterior { item: 1 }),
-            "{invalid:?}"
         );
     }
 }
@@ -988,8 +806,8 @@ fn a_smoothing_near_the_largest_finite_value_fits_finite_uniform_probabilities()
         // The votes are negligible against the smoothing: every probability
         // is uniform.
         let uniform = vec![0.5, 0.5];
-        assert_eq!(model.priors, uniform, "{smoothing}");
-        for table in model.confusion.iter().flatten() {
+        assert_eq!(model.priors(), uniform, "{smoothing}");
+        for table in model.confusion().iter().flatten() {
             assert_eq!(
                 table,
                 &vec![uniform.clone(), uniform.clone()],
@@ -997,7 +815,7 @@ fn a_smoothing_near_the_largest_finite_value_fits_finite_uniform_probabilities()
             );
         }
         assert_eq!(
-            model.posteriors,
+            model.posteriors(),
             vec![uniform.clone(), uniform.clone()],
             "{smoothing}"
         );
@@ -1036,223 +854,18 @@ fn a_smoothing_too_small_to_keep_every_probability_positive_is_refused() {
     // normal number: every prior and confusion probability stays positive,
     // and so does the single-vote item's posterior of the other class.
     let model = fit_label_model(&matrix, params(1e-300)).unwrap();
-    assert!(model.priors.iter().all(|p| *p > 0.0));
-    for table in model.confusion.iter().flatten() {
+    assert!(model.priors().iter().all(|p| *p > 0.0));
+    for table in model.confusion().iter().flatten() {
         assert!(
             table.iter().flatten().all(|p| p.is_finite() && *p > 0.0),
             "{table:?}"
         );
     }
-    assert!(model.posteriors[40][1] > 0.0, "{:?}", model.posteriors[40]);
-}
-
-#[test]
-fn resolution_refuses_a_posterior_that_is_not_a_distribution_over_the_schema() {
-    let matrix = two_heuristics_and_a_third(vec![vec![Vote::Class(0); 3]]);
-    let mut model = fit_label_model(&matrix, DawidSkeneParams::default()).unwrap();
-    // Resolved as they stood, these gave a probability of 1.5, a class from
-    // negative mass, and a class of a two-class schema while 0.8 of the mass
-    // sat on a third entry.
-    for posterior in [
-        vec![1.5, -0.5],
-        vec![-1.0, -3.0],
-        vec![0.1, 0.1, 0.8],
-        vec![1.0],
-        vec![f64::NAN, 0.5],
-        vec![0.6, 0.6],
-    ] {
-        model.posteriors = vec![posterior.clone()];
-        assert_eq!(
-            resolve(&matrix, &model, 0.5),
-            Err(LabelingError::InvalidPosterior { item: 0 }),
-            "{posterior:?}"
-        );
-    }
-    model.posteriors = vec![vec![0.25, 0.75]];
-    assert_eq!(
-        resolve(&matrix, &model, 0.5).unwrap().into_outcomes(),
-        vec![LabelOutcome::Estimated {
-            class: 1,
-            probability: 0.75
-        }]
-    );
-}
-
-#[test]
-fn a_model_with_no_mass_on_the_classes_left_resolves_to_unknown() {
-    let schema = LabelSchema::new(["a", "b", "c"]).unwrap();
-    let matrix = VoteMatrix::new(
-        schema,
-        vec![
-            function("rule", FunctionKind::Heuristic),
-            function("check", FunctionKind::Verifier),
-        ],
-        vec![vec![Vote::Class(0), Vote::Veto(0)]],
-    )
-    .unwrap();
-    let mut model = fit_label_model(&matrix, DawidSkeneParams::default()).unwrap();
-    // Every share of the classes left is 0 / 0, which reaches no required
-    // probability however small, whatever the sign of the zeros.
-    for posterior in [vec![1.0, 0.0, 0.0], vec![1.0, -0.0, 0.0]] {
-        model.posteriors = vec![posterior];
-        for min_probability in [f64::MIN_POSITIVE, 0.5, 1.0] {
-            assert_eq!(
-                resolve(&matrix, &model, min_probability)
-                    .unwrap()
-                    .into_outcomes(),
-                vec![LabelOutcome::Unknown]
-            );
-        }
-    }
-}
-
-#[test]
-fn a_posterior_entry_above_one_is_refused_whatever_the_tolerance_on_the_total() {
-    let matrix = two_heuristics_and_a_third(vec![vec![Vote::Class(0); 3]]);
-    let mut model = fit_label_model(&matrix, DawidSkeneParams::default()).unwrap();
-    let mut uniform = EvaluationSet::new(GoldSampling::Uniform);
-    let mut active = EvaluationSet::new(GoldSampling::Active);
-    for set in [&mut uniform, &mut active] {
-        set.push(GoldLabel {
-            item: 0,
-            class: 0,
-            source: GoldSource::Oracle,
-        })
-        .unwrap();
-    }
-    // Each sums to one within the 1e-6 tolerance, and every entry is finite
-    // and non-negative: they were accepted, ranked by a negative entropy and
-    // scored as probabilities.
-    for posterior in [vec![1.0000005, 0.0], vec![1.0 + f64::EPSILON, -0.0]] {
-        model.posteriors = vec![posterior.clone()];
-        assert_eq!(
-            resolve(&matrix, &model, 0.5),
-            Err(LabelingError::InvalidPosterior { item: 0 }),
-            "{posterior:?}"
-        );
-        // Ranking takes only a resolution, so the refusal above keeps the
-        // posterior from being ranked too.
-        for set in [&uniform, &active] {
-            assert_eq!(
-                evaluate(std::slice::from_ref(&posterior), set, 5),
-                Err(LabelingError::InvalidPosterior { item: 0 }),
-                "{posterior:?}"
-            );
-        }
-    }
-    // One is a probability, and so is a zero of either sign.
-    for posterior in [vec![1.0, 0.0], vec![1.0, -0.0]] {
-        model.posteriors = vec![posterior.clone()];
-        assert_eq!(
-            resolve(&matrix, &model, 0.5).unwrap().into_outcomes(),
-            vec![LabelOutcome::Estimated {
-                class: 0,
-                probability: 1.0
-            }],
-            "{posterior:?}"
-        );
-        assert!(evaluate(std::slice::from_ref(&posterior), &uniform, 5).is_ok());
-    }
-}
-
-#[test]
-fn posterior_mass_left_below_the_smallest_normal_f64_resolves_to_unknown() {
-    let (c0, c1, c2, a) = (
-        Vote::Class(0),
-        Vote::Class(1),
-        Vote::Class(2),
-        Vote::Abstain,
-    );
-    let mut votes = vec![vec![c0, c0, a]; 10];
-    votes.extend(vec![vec![c1, c1, a]; 10]);
-    votes.extend(vec![vec![c2, c2, a]; 30]);
-    votes.push(vec![c0, c0, Vote::Veto(0)]);
-    let matrix = VoteMatrix::new(
-        LabelSchema::new(["a", "b", "c"]).unwrap(),
-        vec![
-            function("h1", FunctionKind::Heuristic),
-            function("h2", FunctionKind::Heuristic),
-            function("v", FunctionKind::Verifier),
-        ],
-        votes,
-    )
-    .unwrap();
-    // The smallest smoothed probability, about 7.8e-164, is a normal number,
-    // so this smoothing is accepted.
-    let model = fit_label_model(
-        &matrix,
-        DawidSkeneParams {
-            smoothing: 3.98e-162,
-            ..DawidSkeneParams::default()
-        },
-    )
-    .unwrap();
-    // Class 0 leads the last item by about 744 nats over class 1 and 745
-    // over class 2, so the model gives class 1 about 0.75 of what the veto
-    // leaves. Stored as probabilities, class 1 is one subnormal unit and
-    // class 2 zero, and dividing by that residue estimated class 1 at
-    // probability one.
-    let posterior = &model.posteriors[50];
-    assert_eq!(posterior[0], 1.0, "{posterior:?}");
-    assert!(posterior[1] > 0.0, "{posterior:?}");
     assert!(
-        posterior[1] + posterior[2] < f64::MIN_POSITIVE,
-        "{posterior:?}"
+        model.posteriors()[40][1] > 0.0,
+        "{:?}",
+        model.posteriors()[40]
     );
-    for min_probability in [f64::MIN_POSITIVE, 0.5, 0.9, 1.0] {
-        assert_eq!(
-            resolve(&matrix, &model, min_probability)
-                .unwrap()
-                .outcomes()[50],
-            LabelOutcome::Unknown,
-            "{min_probability}"
-        );
-    }
-    // The items no verifier touched keep their estimates.
-    let outcomes = resolve(&matrix, &model, 0.9).unwrap().into_outcomes();
-    for (item, class) in [(0, 0), (10, 1), (20, 2)] {
-        assert!(
-            matches!(outcomes[item], LabelOutcome::Estimated { class: estimated, .. } if estimated == class),
-            "{item}: {:?}",
-            outcomes[item]
-        );
-    }
-
-    // At the boundary: two subnormals summing to exactly the smallest normal
-    // f64 are resolved from their exact ratio, one unit less is not.
-    let matrix = VoteMatrix::new(
-        LabelSchema::new(["a", "b", "c"]).unwrap(),
-        vec![
-            function("rule", FunctionKind::Heuristic),
-            function("check", FunctionKind::Verifier),
-        ],
-        vec![vec![Vote::Class(0), Vote::Veto(0)]],
-    )
-    .unwrap();
-    let mut model = fit_label_model(&matrix, DawidSkeneParams::default()).unwrap();
-    let quarter = f64::MIN_POSITIVE / 4.0;
-    model.posteriors = vec![vec![1.0, 3.0 * quarter, quarter]];
-    assert_eq!(
-        resolve(&matrix, &model, 0.7).unwrap().into_outcomes(),
-        vec![LabelOutcome::Estimated {
-            class: 1,
-            probability: 0.75
-        }]
-    );
-    let unit = f64::from_bits(1);
-    for posterior in [
-        vec![1.0, 3.0 * quarter, quarter - unit],
-        vec![1.0, unit, 0.0],
-    ] {
-        model.posteriors = vec![posterior.clone()];
-        assert_eq!(
-            resolve(&matrix, &model, f64::MIN_POSITIVE)
-                .unwrap()
-                .into_outcomes(),
-            vec![LabelOutcome::Unknown],
-            "{posterior:?}"
-        );
-    }
 }
 
 #[test]
@@ -1445,4 +1058,45 @@ fn a_model_is_refused_with_any_matrix_but_the_one_it_was_fitted_on() {
         LabelingError::MatrixMismatch.code(),
         "PTR_LABELING_MATRIX_MISMATCH"
     );
+}
+
+#[test]
+fn a_label_model_lends_out_one_posterior_per_item_and_one_confusion_entry_per_function() {
+    let (c0, c1, a) = (Vote::Class(0), Vote::Class(1), Vote::Abstain);
+    let matrix = VoteMatrix::new(
+        LabelSchema::new(["a", "b", "c"]).unwrap(),
+        vec![
+            function("rule", FunctionKind::Heuristic),
+            function("check", FunctionKind::Verifier),
+            function("model", FunctionKind::Model),
+            function("agent", FunctionKind::Agent),
+        ],
+        vec![
+            vec![c0, a, c0, c0],
+            vec![c1, Vote::Veto(0), c1, a],
+            vec![a, a, a, a],
+        ],
+    )
+    .unwrap();
+    let model = fit_label_model(&matrix, DawidSkeneParams::default()).unwrap();
+    // The fitted content is lent out read only; the compile_fail doctests on
+    // LabelModel show that none of it can be assigned. These are its shapes.
+    assert_eq!(model.priors().len(), 3);
+    assert_eq!(model.posteriors().len(), matrix.items());
+    assert!(model
+        .posteriors()
+        .iter()
+        .all(|posterior| posterior.len() == 3));
+    let modelled: Vec<bool> = model.confusion().iter().map(Option::is_some).collect();
+    assert_eq!(modelled, vec![true, false, true, true]);
+    for table in model.confusion().iter().flatten() {
+        assert_eq!(table.len(), 3);
+        assert!(table.iter().all(|row| row.len() == 3));
+    }
+    assert!(model.iterations() >= 1);
+    assert!(model.warnings().is_empty(), "{:?}", model.warnings());
+    // An item no probabilistic function voted on keeps the prior.
+    for (posterior, prior) in model.posteriors()[2].iter().zip(model.priors()) {
+        assert!((posterior - prior).abs() < 1e-12, "{posterior} {prior}");
+    }
 }

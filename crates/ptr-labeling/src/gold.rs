@@ -30,9 +30,16 @@ pub enum GoldSampling {
     Active,
 }
 
-/// A label that may serve as ground truth. There is deliberately no way to
-/// build one from a model posterior: predicted labels can be evaluated against
-/// gold, never become it.
+/// A label that may serve as ground truth, with the source that asserts it.
+///
+/// No function of this crate builds one from a posterior, an outcome or a
+/// resolution: predictions are evaluated against gold and never read back as
+/// it. The fields are public, so a caller that writes a predicted class into
+/// one asserts it as gold under the source it names; this crate cannot tell.
+/// What scoring relies on is checked where a label is used:
+/// [`EvaluationSet::push`] refuses a second label for an item and a source of
+/// the other kind, and [`evaluate`] and [`function_accuracy`] refuse an item
+/// or class outside what they score.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GoldLabel {
     pub item: usize,
@@ -105,15 +112,18 @@ impl EvaluationSet {
     }
 }
 
-/// How a label model's posteriors score against an evaluation set.
+/// How posteriors score against an evaluation set, as [`evaluate`] computes
+/// it. The fields are plain data: a report built or changed by hand carries
+/// none of what they state, and no function of this crate takes one.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EvaluationReport {
     pub accuracy: f64,
-    /// Present only for a uniformly sampled set.
+    /// [`evaluate`] sets it only for a uniformly sampled set.
     pub calibration: Option<Calibration>,
 }
 
-/// Calibration of posteriors on a uniform gold sample.
+/// Calibration of posteriors on a uniform gold sample, as [`evaluate`]
+/// computes it; plain data, like [`EvaluationReport`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Calibration {
     pub brier: f64,
@@ -121,7 +131,10 @@ pub struct Calibration {
     pub expected_calibration_error: f64,
 }
 
-/// How often one labeling function's class votes match uniform gold labels.
+/// How often one labeling function's class votes match uniform gold labels,
+/// as [`function_accuracy`] computes it. The fields are plain data: one built
+/// or changed by hand carries none of what they state, and no function of
+/// this crate takes one.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FunctionAccuracy {
     pub function: String,

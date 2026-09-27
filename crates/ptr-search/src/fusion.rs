@@ -86,12 +86,20 @@ pub struct WeightedList<'a> {
     pub hits: &'a [SearchHit],
 }
 
-/// A fused result, keyed by capsule *and* generation.
+/// A fused result, keyed by capsule *and* generation: a search candidate,
+/// never evidence.
+///
+/// The fields are plain data, as [`weighted_rank_fusion`] and
+/// [`convex_score_fusion`] compute them. A fused hit built or changed by hand
+/// carries none of what they state, and no function of this crate takes one:
+/// a candidate enters evidence promotion only as a [`SearchHit`], which
+/// starts at [`crate::EvidenceStage::SearchCandidate`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct FusedHit {
     pub capsule: CapsuleId,
     pub generation: Generation,
-    /// Finite, nonnegative and at most the total list weight.
+    /// As the fusions compute it: finite, nonnegative and at most the total
+    /// list weight.
     pub score: f32,
     /// Backends that returned this capsule generation, in first-seen order.
     pub backends: Vec<String>,

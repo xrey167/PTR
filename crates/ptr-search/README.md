@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-27  
-**Code footprint:** 2 Rust source files · 642 nonblank source lines · 3 integration-test files · 23 `#[test]` markers
+**Code footprint:** 2 Rust source files · 650 nonblank source lines · 3 integration-test files · 23 `#[test]` markers
 
 ### Implemented now
 
@@ -19,6 +19,7 @@
 - SearchIndex contract
 - Reciprocal-rank fusion implementation
 - weighted_rank_fusion and convex_score_fusion keyed by capsule and generation, so a stale generation never borrows the live one's rank, with deterministic tie-breaking and per-hit backend attribution
+- FusedHit is plain data, a search candidate that no function of the crate takes back: the bounds on its score are what the fusions compute, not what every value holds, and a candidate enters evidence promotion only as a SearchHit, which starts at SearchCandidate; WeightedList is validated by every fusion
 - retain_live keeps a hit only when the lifecycle answers Validity::Live for its capsule and generation (as generation_validity does), so a revoked generation that is still the capsule's live one is dropped; reciprocal_rank_fusion delegates to the weighted form
 - Every fused score is finite and at most the total weight: fusion refuses (FusionError, stable codes) negative or nonfinite weights, weights summing beyond MAX_TOTAL_WEIGHT (f32::MAX), a negative or nonfinite rank constant, a list naming a capsule generation twice and, for score fusion, a nonfinite score, before accumulating anything; scores are accumulated and min-max normalised in f64, so scores spanning the whole f32 range normalise into [0, 1]; check_rank_fusion applies the parameter check on its own
 

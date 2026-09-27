@@ -61,6 +61,10 @@ pub struct Readout {
 /// What a [`Readout`] lets a caller read: its values and the last write they
 /// reflect, reached through the readout (`readout.values`, `readout.as_of`)
 /// but never changed through it.
+///
+/// Its fields are public so that they can be read through the readout. A view
+/// built by hand is only data: it carries no codebook, and no function of
+/// this crate takes one ([`crate::decode_readout`] takes a [`Readout`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ReadoutView {
     /// `heads * value_dim` values, head by head.

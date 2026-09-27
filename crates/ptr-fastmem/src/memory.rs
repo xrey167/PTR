@@ -49,7 +49,9 @@ pub struct FastMemory {
     seq_limit: u64,
 }
 
-/// What one write did.
+/// What one write did, as [`FastMemory::write`] reports it. The fields are
+/// plain data: a receipt built or changed by hand describes no write, and no
+/// function of this crate takes one.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WriteReceipt {
     pub seq: WriteSeq,
@@ -59,7 +61,10 @@ pub struct WriteReceipt {
     pub surprise: f32,
 }
 
-/// What one revocation removed and what it cost to refold.
+/// What one revocation removed and what it cost to refold, as
+/// [`FastMemory::revoke`] reports it. The fields are plain data: a report
+/// built or changed by hand describes no revocation, and no function of this
+/// crate takes one.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RevocationReport {
     /// Writes removed from the journal.

@@ -152,7 +152,10 @@ pub struct DecodePolicy {
     pub min_margin: f32,
 }
 
-/// The result of decoding a readout.
+/// The result of decoding a readout, as [`decode_readout`] returns it. The
+/// variants state what `decode_readout` guarantees; a value built by hand is
+/// only data (its hits need not be decoded, ordered or at the lowest stage),
+/// and no function of this crate takes one.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Recall {
     /// Named facts, best first, each at the lowest evidence stage.
