@@ -14,6 +14,7 @@
 
 ### Implemented now
 
+- RESERVED_PREFIXES is ptr_semdb::INGRESS_PREFIXES re-exported, so the branch checks (staging, SealedBranch::from_parts, certification) and the runtime share one list of keys reserved to ingress
 - Branch overlay on one SemanticSnapshot recording value digests of every read, range digests of every scanned prefix, input-set digests of every touched key and every relied-on lifecycle generation
 - Value digests hash the canonical journal bytes neural-state admission digests, so a branch and an admitted neural state never disagree about whether an input changed
 - Put and Remove only on keys the branch read, and Remove only of a key that is not derived (DerivedRemoval), since a merged removal would drop the key's dependency entry; commutative counter additions and set insertions/removals rebase onto the target value at merge time; a refused operation records nothing, not even the reads of its key's inputs; a set whose encoding is longer than the journal's MAX_DELTA_BYTES is refused (InvalidValue, set_value returns None) rather than encoded with truncated lengths; staging checks the set alone, and a merge delta longer than that limit with its keys and framing is refused by MergePlan::digest and at commit, never truncated

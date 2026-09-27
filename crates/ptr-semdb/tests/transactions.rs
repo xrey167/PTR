@@ -1,6 +1,6 @@
 use ptr_semdb::{
-    canonical_input_bytes, SemanticDelta, SemanticError, SemanticHost, SemanticPayload,
-    SemanticValue, MAX_DELTA_BYTES,
+    canonical_input_bytes, is_ingress_key, SemanticDelta, SemanticError, SemanticHost,
+    SemanticPayload, SemanticValue, INGRESS_PREFIXES, MAX_DELTA_BYTES,
 };
 use ptr_types::{Revision, TypeId};
 use std::collections::BTreeSet;
@@ -186,6 +186,66 @@ fn prepared_change_is_unpublished_and_cannot_cross_hosts_or_revisions() {
     ));
     assert!(host.is_stale(&view));
     assert!(host.snapshot().value("source").is_none());
+}
+
+#[test]
+fn base_view_refuses_a_foreign_or_stale_preparation() {
+    let mut host = SemanticHost::default();
+    host.apply_delta(delta("price", "3")).unwrap();
+    let prepared = host.prepare_delta(delta("price", "4")).unwrap();
+
+    // The base view is the published state the change would replace, next to
+    // the state it would publish.
+    let before = host.base_view(&prepared).unwrap();
+    assert_eq!(before.get("price"), Some("3"));
+    assert_eq!(prepared.view().get("price"), Some("4"));
+
+    // Another host's preparation is refused, even at the same revision.
+    let mut other = SemanticHost::default();
+    other.apply_delta(delta("price", "3")).unwrap();
+    assert!(matches!(
+        other.base_view(&prepared),
+        Err(SemanticError::StalePreparation)
+    ));
+
+    // So is this host's once its revision has moved: the view would no longer
+    // be the state the change replaces.
+    host.apply_delta(delta("another", "intervening")).unwrap();
+    assert!(matches!(
+        host.base_view(&prepared),
+        Err(SemanticError::StalePreparation)
+    ));
+}
+
+#[test]
+fn a_prepared_delta_keeps_the_delta_it_was_prepared_from() {
+    let host = SemanticHost::default();
+    let original = chain();
+    let prepared = host.prepare_delta(original.clone()).unwrap();
+    assert_eq!(prepared.delta(), &original);
+    assert_eq!(
+        prepared.delta().encode().unwrap(),
+        original.encode().unwrap(),
+        "what a verifier sees is what is encoded"
+    );
+}
+
+#[test]
+fn ingress_keys_are_exactly_the_two_prefixes() {
+    assert_eq!(INGRESS_PREFIXES, ["request:", "pod-output:"]);
+    for key in ["request:r1:raw", "request:", "pod-output:r1:pod:a"] {
+        assert!(is_ingress_key(key), "{key} is an ingress key");
+    }
+    for key in [
+        "requests:r1",
+        "Request:r1",
+        "pod:a",
+        "price",
+        "",
+        " request:r1",
+    ] {
+        assert!(!is_ingress_key(key), "{key:?} is not an ingress key");
+    }
 }
 
 #[test]

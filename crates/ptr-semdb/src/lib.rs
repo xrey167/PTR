@@ -9,6 +9,24 @@ use std::sync::Arc;
 
 pub use codec::{MAX_DELTA_BYTES, MAX_DELTA_ITEMS, MAX_KEY_BYTES};
 
+/// Key prefixes that only ingress writes: the raw text of a request, and the
+/// verified output a Pod produced for one.
+///
+/// This is the single list. ptr-branch re-exports it as `RESERVED_PREFIXES`
+/// for its constructor and certification checks, and the runtime refuses a
+/// merge or host write, and replay refuses a record, that writes under one of
+/// these prefixes. A branch, a merge or a host write that could write here
+/// could forge a request or a Pod's verified output.
+pub const INGRESS_PREFIXES: [&str; 2] = ["request:", "pod-output:"];
+
+/// Whether `key` lies in the namespace only ingress writes
+/// ([`INGRESS_PREFIXES`]).
+pub fn is_ingress_key(key: &str) -> bool {
+    INGRESS_PREFIXES
+        .iter()
+        .any(|prefix| key.starts_with(prefix))
+}
+
 /// Source identity and exact typed bytes; not a verifier proof or a capability.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SemanticPayload {
@@ -302,14 +320,16 @@ pub fn canonical_input_bytes(key: &str, value: &SemanticValue) -> Result<Vec<u8>
     delta.encode()
 }
 
-/// A read-only view of a prepared, unpublished state.
+/// A read-only view of one side of a prepared change: the state it would
+/// publish ([`PreparedDelta::view`]) or the published state it was prepared on
+/// ([`SemanticHost::base_view`]).
 ///
 /// Deliberately not a [`SemanticSnapshot`]: it carries no host identity and no
 /// revision, so it cannot be mistaken for published state or checked as
 /// current. It exists so a verifier can judge the exact state a commit would
-/// publish: its values and the dependency sets that decide what a later change
-/// invalidates, so two deltas that publish the same values under different
-/// dependency graphs are told apart.
+/// publish, against the state it would replace: its values and the dependency
+/// sets that decide what a later change invalidates, so two deltas that
+/// publish the same values under different dependency graphs are told apart.
 #[derive(Clone, Copy, Debug)]
 pub struct PreparedView<'a> {
     state: &'a SemanticState,
@@ -358,6 +378,7 @@ impl<'a> PreparedView<'a> {
 pub struct PreparedDelta {
     owner: Arc<()>,
     base: Revision,
+    delta: SemanticDelta,
     next: SemanticState,
     affected: BTreeSet<String>,
 }
@@ -372,6 +393,13 @@ impl PreparedDelta {
     pub fn affected(&self) -> &BTreeSet<String> {
         &self.affected
     }
+    /// The delta this preparation was made from, exactly as it will be
+    /// encoded: a verifier judges what is recorded, not a copy that could
+    /// differ from it. [`SemanticHost::prepare_delta`] takes the delta by
+    /// value, so keeping it costs no clone.
+    pub fn delta(&self) -> &SemanticDelta {
+        &self.delta
+    }
 }
 
 #[derive(Debug, Default)]
@@ -382,6 +410,18 @@ pub struct SemanticHost {
 impl SemanticHost {
     pub fn revision(&self) -> Revision {
         self.state.revision
+    }
+
+    /// The published state `prepared` was prepared on, for a verifier to judge
+    /// the change against. It is refused as [`SemanticError::StalePreparation`]
+    /// unless `prepared` came from this host at its current revision, the same
+    /// test [`Self::apply_prepared`] makes, so the view is always the state the
+    /// change would replace.
+    pub fn base_view(&self, prepared: &PreparedDelta) -> Result<PreparedView<'_>, SemanticError> {
+        if !Arc::ptr_eq(&self.owner, &prepared.owner) || self.revision() != prepared.base {
+            return Err(SemanticError::StalePreparation);
+        }
+        Ok(PreparedView { state: &self.state })
     }
 
     /// Validate and stage without publishing. The reference implementation clones
@@ -451,6 +491,7 @@ impl SemanticHost {
         Ok(PreparedDelta {
             owner: self.owner.clone(),
             base: self.revision(),
+            delta,
             next,
             affected,
         })

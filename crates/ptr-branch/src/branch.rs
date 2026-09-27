@@ -11,8 +11,10 @@ use crate::ops::{holds_member, BranchOp};
 /// Key prefixes only ingress writes: raw request text and Pod outputs. A branch
 /// may read them but never change them: staging refuses an operation on one,
 /// and so do [`SealedBranch::from_parts`] and certification, so no sealed
-/// branch however built writes one.
-pub const RESERVED_PREFIXES: [&str; 2] = ["request:", "pod-output:"];
+/// branch however built writes one. This is `ptr_semdb::INGRESS_PREFIXES`
+/// itself, so the branch checks and the runtime's cannot disagree about which
+/// keys are reserved.
+pub use ptr_semdb::INGRESS_PREFIXES as RESERVED_PREFIXES;
 
 /// Identity of one speculative branch.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -234,9 +236,7 @@ impl SealedBranch {
 
 /// Whether `key` is in a namespace only ingress writes.
 pub(crate) fn is_reserved(key: &str) -> bool {
-    RESERVED_PREFIXES
-        .iter()
-        .any(|prefix| key.starts_with(prefix))
+    ptr_semdb::is_ingress_key(key)
 }
 
 /// The sealing invariants [`SealedBranch::from_parts`] documents, in its

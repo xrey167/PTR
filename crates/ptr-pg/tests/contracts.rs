@@ -172,3 +172,30 @@ fn verifier_attestations_publish_results_without_changing_lifecycle_admission() 
         );
     }
 }
+
+#[test]
+fn the_reserved_key_check_of_work_migration_9_is_exactly_the_ingress_prefixes() {
+    // Work migration 9 twins SealedBranch::from_parts in the database: no stored
+    // operation may write a namespace reserved to ingress. Migrations are
+    // checksummed, so its SQL cannot follow ptr_semdb::INGRESS_PREFIXES; this
+    // pins the two lists together instead, so a prefix added in Rust is not
+    // silently left writable in PostgreSQL.
+    let migration = WORK_MIGRATIONS
+        .iter()
+        .find(|migration| migration.version == 9)
+        .expect("work migration 9 exists");
+    let check = migration
+        .sql
+        .split("ADD CONSTRAINT branch_op_key_not_reserved")
+        .nth(1)
+        .expect("migration 9 adds branch_op_key_not_reserved")
+        .split("NOT VALID")
+        .next()
+        .expect("the constraint is added NOT VALID");
+    let prefixes: Vec<&str> = check
+        .split("starts_with(key, '")
+        .skip(1)
+        .map(|rest| rest.split('\'').next().expect("a quoted prefix"))
+        .collect();
+    assert_eq!(prefixes, ptr_semdb::INGRESS_PREFIXES);
+}
