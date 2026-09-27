@@ -14,13 +14,14 @@
 //! The request is the action without the position it was issued at. Admission
 //! requires a retry to carry the current revision and generation, so the retry
 //! is compared at the ones its attempt recorded; compared as recorded, no retry
-//! could be answered once either had moved. And whatever a settled key carries
-//! into a snapshot is refused before it can be spent when no snapshot could
-//! carry it: a key at preparation, a principal where a session is created, and
-//! a keyed attempt's key, principal and project at commit. A log an earlier
-//! build wrote may hold one past these bounds, and it still opens wherever
+//! could be answered once either had moved. A snapshot carries whatever a
+//! settled key needs: the project and principal at any length, since no build
+//! has bounded them, and the key as it always has, which is why a key too long
+//! for it is refused at preparation and at commit before it can be spent. A
+//! log an earlier build wrote may hold a longer key; it still opens wherever
 //! stored history is rebuilt, because refusing it would keep the runtime from
-//! starting after an upgrade.
+//! starting after an upgrade, and the request that spent the key is still
+//! answered from history.
 //!
 //! Every property is checked where the entry is built: live, after an ordinary
 //! restart that replays the log, and after a compacted round trip.
@@ -734,45 +735,38 @@ fn a_retry_is_answered_after_the_revision_and_generation_move_and_another_reques
 }
 
 #[test]
-fn a_principal_longer_than_a_snapshot_carries_is_refused_before_it_can_spend_a_key() {
+fn a_principal_of_any_length_spends_a_key_and_a_snapshot_carries_it() {
     let (mut runtime, action) = fixture();
     let echo = Echo::default();
-    let longer = "a".repeat(MAX_PRINCIPAL_BYTES + 1);
+    let long = "a".repeat(64 * 1024);
 
-    // A spent key's principal travels in every later snapshot, so one this long
-    // would make every export after its first keyed effect fail. It is refused
-    // where it enters: from the host and from the admission policy.
-    let grant = ExecutionGrant::new(
-        scope(&action),
-        RequiredVerification::Deterministic,
-        echo.clone(),
-        echo.clone(),
-    );
-    assert_eq!(
-        runtime
-            .register_execution_session(longer.as_str(), vec![grant], TTL)
-            .err(),
-        Some(ExecutionError::InvalidSession)
-    );
+    // A spent key's principal travels in every later snapshot. No build has
+    // bounded a principal, so the snapshot writes it at any length: a session
+    // or a peer admitted under one this long spends a key, and the runtime
+    // still exports, restores and answers the retry, while another principal
+    // is refused under the key.
     let mut policy = AdmissionPolicy::new();
-    assert_eq!(
-        policy.admit(NodeId::from("peer"), longer, TTL, Vec::new),
-        Err(ExecutionError::InvalidSession)
-    );
-    assert!(!policy.admits(&NodeId::from("peer")));
+    policy
+        .admit(NodeId::from("peer"), long.as_str(), TTL, Vec::new)
+        .unwrap();
+    assert!(policy.admits(&NodeId::from("peer")));
 
-    // The control: the longest principal allowed spends a key, and the runtime
-    // still exports, restores and answers its retry.
-    let longest = "a".repeat(MAX_PRINCIPAL_BYTES);
-    let session = synchronous(&mut runtime, &longest, &action, &echo);
+    let session = synchronous(&mut runtime, &long, &action, &echo);
     let permit = once(&runtime, &session, &action, "invoice-7");
     runtime.execute_prepared(&session, permit).unwrap();
+    let attempt = attempts(&runtime)[0];
     let mut restored = round_trip(&runtime, &action);
-    let session = synchronous(&mut restored, &longest, &action, &echo);
+    let session = synchronous(&mut restored, &long, &action, &echo);
     let permit = once(&restored, &session, &action, "invoice-7");
     assert_eq!(
         restored.execute_prepared(&session, permit).unwrap(),
         b"applied verified payload"
+    );
+    let alice = synchronous(&mut restored, "alice", &action, &echo);
+    let permit = once(&restored, &alice, &action, "invoice-7");
+    assert_eq!(
+        restored.execute_prepared(&alice, permit),
+        Err(ExecutionError::KeyBoundToAnotherAction { attempt })
     );
     assert_eq!(echo.calls(), 1);
 }
@@ -822,12 +816,12 @@ fn recovery_snapshot(history: &[CommittedEvent]) -> (Vec<u8>, SnapshotAnchor) {
 
 /// Rebuild a runtime from a history holding `attempt` at index 1, reconciled
 /// as `applied` when that is given and left unsettled otherwise, on every path
-/// that rebuilds one from stored history, and assert that each refuses it with
-/// `expected` or, for `None`, opens it. The paths are `PtrRuntime::replay`,
-/// `open_durable` and `open_durable_at` over a log holding the history, and
-/// `restore_recovery_snapshot` over a recovery snapshot of it, through which
-/// `read_recovery_snapshot` and `restore_durable_snapshot` restore too.
-fn assert_rebuilt(attempt: &LedgerEvent, applied: Option<bool>, expected: Option<RuntimeError>) {
+/// that rebuilds one from stored history, and assert that each opens it. The
+/// paths are `PtrRuntime::replay`, `open_durable` and `open_durable_at` over a
+/// log holding the history, and `restore_recovery_snapshot` over a recovery
+/// snapshot of it, through which `read_recovery_snapshot` and
+/// `restore_durable_snapshot` restore too.
+fn assert_opens_on_every_rebuild_path(attempt: &LedgerEvent, applied: Option<bool>) {
     let mut events = vec![attempt.clone()];
     if let Some(applied) = applied {
         events.push(LedgerEvent::EffectReconciled {
@@ -874,45 +868,8 @@ fn assert_rebuilt(attempt: &LedgerEvent, applied: Option<bool>, expected: Option
         ),
     ];
     for (path, outcome) in rebuilt {
-        assert_eq!(
-            outcome, expected,
-            "{path}, reconciled as applied: {applied:?}"
-        );
+        assert_eq!(outcome, None, "{path}, reconciled as applied: {applied:?}");
     }
-}
-
-/// Commit an unkeyed attempt, reconcile it as applied and export, and rebuild
-/// a history of it on every path: an attempt without a key enters no settled
-/// key, so whatever it names, the runtime opens it and exports once its fence
-/// has cleared.
-fn commit_unkeyed_and_export(runtime: &mut PtrRuntime, unkeyed: LedgerEvent) {
-    let attempt = runtime.commit(unkeyed.clone()).unwrap();
-    runtime.reconcile_effect(attempt, true, "operator").unwrap();
-    runtime.export_compacted_snapshot().unwrap();
-    assert_rebuilt(&unkeyed, Some(true), None);
-}
-
-/// A synchronous session for `principal` whose one grant is `action` in
-/// `project`.
-fn synchronous_in(
-    runtime: &mut PtrRuntime,
-    principal: &str,
-    project: &ProjectId,
-    action: &ActionIr,
-    echo: &Echo,
-) -> ExecutionSession {
-    let grant = ExecutionGrant::new(
-        ActionScope {
-            project: project.clone(),
-            ..scope(action)
-        },
-        RequiredVerification::Deterministic,
-        echo.clone(),
-        echo.clone(),
-    );
-    runtime
-        .register_execution_session(principal, vec![grant], TTL)
-        .unwrap()
 }
 
 /// How a log ends the attempt it holds.
@@ -923,61 +880,85 @@ enum Ending {
     Unsettled,
 }
 
-/// A log an earlier build could have written, opened by this one as after an
-/// upgrade: the durable fixture's ground state, then an attempt on the fixture's
-/// action under `key`, recorded for `project` and `principal`, exactly one of
-/// the three outside the bounds this build commits, ended every way an attempt
-/// ends. Each log opens, as it did before the bounds. The key stays bound:
-/// alice's request in project p under it runs nothing, refused by preparation
-/// for a key past the bound and, once the key has applied, as bound to another
-/// request otherwise. Export fails as it did before the bounds once the key has
-/// applied, or, for a key past the bound, once it has settled either way; an
-/// attempt left unsettled fences the runtime, as any does. A settled log still
-/// executes under a key nobody spent.
-fn assert_opens_after_an_upgrade(key: &str, project: &str, principal: &str) {
+/// A log an earlier build could have written, reopened by this one as after an
+/// upgrade: the durable fixture's ground state, then an attempt on the
+/// fixture's action under `key`, recorded for `project` and `principal`, ended
+/// as `ending`. Returns the log's directory, which has to outlive the runtime,
+/// the runtime, the action and the attempt's index.
+fn logged_by_an_earlier_build(
+    key: &str,
+    project: &str,
+    principal: &str,
+    ending: Ending,
+) -> (Temp, PtrRuntime, ActionIr, CommitIndex) {
+    let temp = Temp::new();
+    let (runtime, action) = durable_fixture(&temp.log());
+    drop(runtime);
+    let attempt = {
+        let mut log = FileLedger::open(temp.log()).unwrap();
+        let attempt = log
+            .append_durable(recorded(&action, Some(key), project, principal))
+            .unwrap();
+        let response = b"applied verified payload".to_vec();
+        match ending {
+            Ending::Settled => {
+                log.append_durable(LedgerEvent::EffectSettled {
+                    attempt,
+                    response_digest: integrity::sha256(&response),
+                    response: Some(response),
+                })
+                .unwrap();
+            }
+            Ending::Reconciled(applied) => {
+                log.append_durable(LedgerEvent::EffectReconciled {
+                    attempt,
+                    applied,
+                    evidence: "operator".into(),
+                })
+                .unwrap();
+            }
+            Ending::Unsettled => {}
+        }
+        attempt
+    };
+    let reopened = reopen(&temp.log(), &action);
+    (temp, reopened, action, attempt)
+}
+
+/// A log an earlier build could have written, holding an attempt under `key`
+/// for `project` and `principal`, where the key is longer than
+/// `MAX_KEY_BYTES` or the project or principal is one no build has bounded,
+/// reopens however the attempt ended, and does next what the previous build
+/// did, except that the key is bound to the request that spent it:
+/// - export fails with PTR_COMPACTED_SECTION_LIMIT once a key past the bound
+///   has settled either way, as it did before, and succeeds otherwise; an
+///   attempt left unsettled fences the runtime, as any does;
+/// - once the key has applied, alice's request in project p under it is
+///   answered from history where the attempt was hers, with its response when
+///   that was retained and `ResponseNotRetained` otherwise, and is refused as
+///   bound to another request where it was another principal's or project's;
+///   either way nothing runs;
+/// - once it was reconciled as not applied, the key binds nothing: alice's
+///   request under it executes, unless the key is past the bound, in which
+///   case its attempt is refused at commit with nothing attempted;
+/// - a runtime whose attempt was settled still executes under a key nobody
+///   spent.
+fn assert_a_log_from_an_earlier_build_opens(key: &str, project: &str, principal: &str) {
     let over_long_key = key.len() > MAX_KEY_BYTES;
+    let hers = project == "p" && principal == "alice";
     for ending in [
         Ending::Settled,
         Ending::Reconciled(true),
         Ending::Reconciled(false),
         Ending::Unsettled,
     ] {
-        let temp = Temp::new();
-        let (runtime, action) = durable_fixture(&temp.log());
-        drop(runtime);
-        let attempt = {
-            let mut log = FileLedger::open(temp.log()).unwrap();
-            let attempt = log
-                .append_durable(recorded(&action, Some(key), project, principal))
-                .unwrap();
-            let response = b"applied verified payload".to_vec();
-            match ending {
-                Ending::Settled => {
-                    log.append_durable(LedgerEvent::EffectSettled {
-                        attempt,
-                        response_digest: integrity::sha256(&response),
-                        response: Some(response),
-                    })
-                    .unwrap();
-                }
-                Ending::Reconciled(applied) => {
-                    log.append_durable(LedgerEvent::EffectReconciled {
-                        attempt,
-                        applied,
-                        evidence: "operator".into(),
-                    })
-                    .unwrap();
-                }
-                Ending::Unsettled => {}
-            }
-            attempt
-        };
-        let mut reopened = reopen(&temp.log(), &action);
+        let (_temp, mut reopened, action, attempt) =
+            logged_by_an_earlier_build(key, project, principal, ending);
 
         let exported = match ending {
             Ending::Unsettled => Some(RuntimeError::ExecutionFenced),
-            Ending::Reconciled(false) if !over_long_key => None,
-            _ => Some(RuntimeError::Compacted(CompactedError::SectionLimit)),
+            _ if over_long_key => Some(RuntimeError::Compacted(CompactedError::SectionLimit)),
+            _ => None,
         };
         assert_eq!(
             reopened.export_compacted_snapshot().err(),
@@ -998,24 +979,52 @@ fn assert_opens_after_an_upgrade(key: &str, project: &str, principal: &str) {
 
         let echo = Echo::default();
         let alice = synchronous(&mut reopened, "alice", &action, &echo);
-        if over_long_key {
-            assert_eq!(
-                reopened
-                    .prepare_execution_once(&alice, &ProjectId::from("p"), &action, TTL, key)
-                    .err(),
-                Some(ExecutionError::InvalidKey),
-                "{ending:?}"
-            );
-        } else if !matches!(ending, Ending::Reconciled(false)) {
-            let permit = once(&reopened, &alice, &action, key);
-            assert_eq!(
-                reopened.execute_prepared(&alice, permit),
-                Err(ExecutionError::KeyBoundToAnotherAction { attempt }),
-                "{ending:?}"
-            );
-        }
-        assert_eq!(attempts(&reopened), vec![attempt], "{ending:?}");
-        assert_eq!(echo.calls(), 0, "{ending:?}");
+        let permit = once(&reopened, &alice, &action, key);
+        let outcome = reopened.execute_prepared(&alice, permit);
+        let executed = match ending {
+            Ending::Settled if hers => {
+                assert_eq!(outcome.unwrap(), b"applied verified payload");
+                false
+            }
+            Ending::Reconciled(true) if hers => {
+                assert_eq!(
+                    outcome,
+                    Err(ExecutionError::ResponseNotRetained { attempt })
+                );
+                false
+            }
+            Ending::Settled | Ending::Reconciled(true) => {
+                assert_eq!(
+                    outcome,
+                    Err(ExecutionError::KeyBoundToAnotherAction { attempt }),
+                    "{ending:?}"
+                );
+                false
+            }
+            Ending::Reconciled(false) if over_long_key => {
+                assert_eq!(
+                    outcome,
+                    Err(ExecutionError::Audit(Box::new(
+                        RuntimeError::InvalidEffectKey {
+                            key: key.to_owned()
+                        }
+                    )))
+                );
+                assert!(reopened.unsettled_effects().is_empty());
+                false
+            }
+            Ending::Reconciled(false) => {
+                outcome.unwrap();
+                true
+            }
+            Ending::Unsettled => unreachable!("an unsettled attempt fences the runtime"),
+        };
+        assert_eq!(
+            attempts(&reopened).len(),
+            if executed { 2 } else { 1 },
+            "{ending:?}"
+        );
+        assert_eq!(echo.calls(), usize::from(executed), "{ending:?}");
 
         if matches!(ending, Ending::Settled) {
             let permit = once(&reopened, &alice, &action, "invoice-8");
@@ -1026,58 +1035,29 @@ fn assert_opens_after_an_upgrade(key: &str, project: &str, principal: &str) {
 }
 
 #[test]
-fn a_keyed_attempt_whose_principal_no_snapshot_carries_is_refused_at_commit_and_a_logged_one_still_opens(
-) {
+fn a_keyed_attempt_under_any_principal_is_committed_and_a_snapshot_carries_it() {
     let (mut runtime, action) = fixture();
-    let longer = "a".repeat(MAX_PRINCIPAL_BYTES + 1);
+    let long = "a".repeat(64 * 1024);
 
     // A key settled or reconciled as applied carries its attempt's principal
-    // into every later snapshot, as 1 to MAX_PRINCIPAL_BYTES bytes. `commit`
-    // took any principal, so an attempt committed under a key with an empty
-    // one or a longer one was accepted and, once settled or reconciled as
-    // applied, every export failed with PTR_COMPACTED_SECTION_LIMIT although
-    // the fence had cleared. It is refused before anything is appended.
-    for principal in ["", longer.as_str()] {
-        let keyed = recorded(&action, Some("invoice-7"), "p", principal);
-        let before = runtime.committed_events().len();
-        assert_eq!(
-            runtime.commit(keyed.clone()).err(),
-            Some(RuntimeError::InvalidEffectPrincipal {
-                principal: principal.to_owned(),
-            }),
-            "{principal:?}"
-        );
-        assert_eq!(runtime.committed_events().len(), before);
-
-        // A log an earlier build wrote may hold one: a direct commit could write
-        // one, and admission one past the bound, since a session's principal
-        // had no length limit. It opens on every rebuild path however its key
-        // ended, as it did then, because refusing it would keep the runtime
-        // from starting after an upgrade.
-        for applied in [Some(true), Some(false), None] {
-            assert_rebuilt(&keyed, applied, None);
-        }
-        assert_opens_after_an_upgrade("invoice-7", "p", principal);
-
-        // Without a key the same principal is recorded as given.
-        commit_unkeyed_and_export(&mut runtime, recorded(&action, None, "p", principal));
-    }
-
-    // The control: the check is the length a snapshot carries and nothing
-    // more, so the longest principal allowed and ones no session could be
-    // registered as, with surrounding whitespace or a control character, are
-    // recorded as given. Each, committed directly under a key and reconciled
-    // as applied, is rebuilt on every path, exports and restores, and the key
-    // stays bound to it, so a session's retry under it is refused.
-    let longest = "a".repeat(MAX_PRINCIPAL_BYTES);
+    // into every later snapshot. The layout before carried no principal, and
+    // no build has bounded one, so the snapshot writes it at any length, the
+    // empty one included. An attempt committed directly under a key with such
+    // a principal, or with one no session could be registered as, is recorded
+    // as given, opens on every rebuild path however its key ended, and once
+    // applied still exports and restores, with the key bound to it: a
+    // session's request under the key is refused.
     let mut spent = Vec::new();
     for (key, principal) in [
-        ("invoice-7", longest.as_str()),
-        ("invoice-8", " alice"),
-        ("invoice-9", "bell\u{7}"),
+        ("invoice-1", ""),
+        ("invoice-2", long.as_str()),
+        ("invoice-3", " alice"),
+        ("invoice-4", "bell\u{7}"),
     ] {
         let keyed = recorded(&action, Some(key), "p", principal);
-        assert_rebuilt(&keyed, Some(true), None);
+        for applied in [Some(true), Some(false), None] {
+            assert_opens_on_every_rebuild_path(&keyed, applied);
+        }
         let attempt = runtime.commit(keyed).unwrap();
         runtime.reconcile_effect(attempt, true, "operator").unwrap();
         spent.push((key, attempt));
@@ -1094,19 +1074,26 @@ fn a_keyed_attempt_whose_principal_no_snapshot_carries_is_refused_at_commit_and_
         );
     }
     assert_eq!(echo.calls(), 0);
+
+    // A log an earlier build wrote with such a principal reopens and compacts,
+    // as it did before this layout carried the principal.
+    for principal in ["", long.as_str()] {
+        assert_a_log_from_an_earlier_build_opens("invoice-7", "p", principal);
+    }
 }
 
 #[test]
-fn a_key_longer_than_a_snapshot_carries_is_refused_at_preparation_and_at_commit_and_a_logged_one_still_opens(
+fn a_key_longer_than_a_snapshot_carries_is_refused_before_it_is_spent_and_a_logged_one_is_still_answered(
 ) {
     let (mut runtime, action) = fixture();
     let echo = Echo::default();
     let alice = synchronous(&mut runtime, "alice", &action, &echo);
 
-    // A snapshot carries every settled key, whatever its outcome, so a key this
-    // long made every export after its attempt settled fail. Preparation and
-    // commit each accepted it; each refuses it now, before it is spent. The
-    // longest is the execution wire's 64 KiB field, the most a peer could send.
+    // A snapshot carries every settled key, whatever its outcome, as 1 to
+    // MAX_KEY_BYTES bytes, as the layout before it did, so a key this long
+    // made every export after its attempt settled fail. Preparation and commit
+    // each accepted it; each refuses it now, before it is spent. The longest is
+    // the execution wire's 64 KiB field, the most a peer could send.
     for longer in ["k".repeat(MAX_KEY_BYTES + 1), "k".repeat(64 * 1024)] {
         assert_eq!(
             runtime
@@ -1129,14 +1116,15 @@ fn a_key_longer_than_a_snapshot_carries_is_refused_at_preparation_and_at_commit_
         );
 
         // A log an earlier build wrote may hold one, since admission spent any
-        // identifier the wire carried. It opens on every rebuild path however
-        // its key ended, as it did then, because refusing it would keep the
-        // runtime from starting after an upgrade; a retry under the key cannot
-        // be prepared, so the effect is not applied twice.
+        // identifier. It opens on every rebuild path however its key ended,
+        // because refusing it would keep the runtime from starting after an
+        // upgrade, and preparation lets the key through because the runtime
+        // holds it, so the request that spent it is answered from history
+        // rather than told nothing was attempted. It is never spent again.
         for applied in [Some(true), Some(false), None] {
-            assert_rebuilt(&keyed, applied, None);
+            assert_opens_on_every_rebuild_path(&keyed, applied);
         }
-        assert_opens_after_an_upgrade(&longer, "p", "alice");
+        assert_a_log_from_an_earlier_build_opens(&longer, "p", "alice");
     }
     assert!(attempts(&runtime).is_empty());
     assert_eq!(echo.calls(), 0);
@@ -1145,10 +1133,9 @@ fn a_key_longer_than_a_snapshot_carries_is_refused_at_preparation_and_at_commit_
     // history that holds it, and through admission it is spent, and the
     // runtime still exports, restores and answers its retry from history.
     let longest = "k".repeat(MAX_KEY_BYTES);
-    assert_rebuilt(
+    assert_opens_on_every_rebuild_path(
         &recorded(&action, Some(&longest), "p", "alice"),
         Some(true),
-        None,
     );
     let permit = once(&runtime, &alice, &action, &longest);
     runtime.execute_prepared(&alice, permit).unwrap();
@@ -1163,104 +1150,44 @@ fn a_key_longer_than_a_snapshot_carries_is_refused_at_preparation_and_at_commit_
 }
 
 #[test]
-fn a_keyed_attempt_whose_project_no_snapshot_carries_is_refused_at_commit_and_at_admission_and_a_logged_one_still_opens(
-) {
+fn a_keyed_attempt_under_any_project_is_committed_and_a_snapshot_carries_it() {
     let (mut runtime, action) = fixture();
-    let longer = ProjectId("p".repeat(MAX_PROJECT_BYTES + 1));
+    let long = "p".repeat(64 * 1024);
 
     // A settled key carries its attempt's project too, and `ProjectId` checks
-    // nothing: a keyed attempt under an empty project or one this long was
-    // committed, and every export after it was settled or reconciled as
-    // applied failed. It is refused before anything is appended. A log an
-    // earlier build wrote may hold one, and it opens on every rebuild path
-    // however its key ended, as it did then.
-    for project in ["", longer.0.as_str()] {
-        let keyed = recorded(&action, Some("invoice-7"), project, "alice");
-        let before = runtime.committed_events().len();
-        assert_eq!(
-            runtime.commit(keyed.clone()).err(),
-            Some(RuntimeError::InvalidEffectProject {
-                project: ProjectId::from(project),
-            })
-        );
-        assert_eq!(runtime.committed_events().len(), before);
+    // nothing. The layout before carried no project, so the snapshot writes it
+    // at any length, the empty one included: an attempt committed directly
+    // under a key with such a project opens on every rebuild path however its
+    // key ended, and once applied still exports and restores with the key
+    // bound to it, so alice's request in project p under the key is refused.
+    let mut spent = Vec::new();
+    for (key, project) in [("invoice-1", ""), ("invoice-2", long.as_str())] {
+        let keyed = recorded(&action, Some(key), project, "alice");
         for applied in [Some(true), Some(false), None] {
-            assert_rebuilt(&keyed, applied, None);
+            assert_opens_on_every_rebuild_path(&keyed, applied);
         }
-        assert_opens_after_an_upgrade("invoice-7", project, "alice");
-
-        // Without a key the same project is recorded as given.
-        commit_unkeyed_and_export(&mut runtime, recorded(&action, None, project, "alice"));
+        let attempt = runtime.commit(keyed).unwrap();
+        runtime.reconcile_effect(attempt, true, "operator").unwrap();
+        spent.push((key, attempt));
     }
-
-    // Admission reaches the same check. A capsule committed under a project
-    // that long (which its own lifecycle entry already keeps out of every
-    // snapshot) can be granted and prepared under a key, and the attempt is
-    // refused before it is recorded: nothing is attempted, nothing executes and
-    // no fence is left.
+    let mut restored = round_trip(&runtime, &action);
     let echo = Echo::default();
-    runtime
-        .commit(LedgerEvent::CapsuleCommitted {
-            project: longer.clone(),
-            capsule: CapsuleId::from("capsule:far"),
-            generation: Generation(1),
-        })
-        .unwrap();
-    let far = ActionIr {
-        target: "capsule:far".into(),
-        ..action.clone()
-    };
-    let alice = synchronous_in(&mut runtime, "alice", &longer, &far, &echo);
-    let permit = runtime
-        .prepare_execution_once(&alice, &longer, &far, TTL, "invoice-9")
-        .unwrap();
-    let before = attempts(&runtime);
-    assert_eq!(
-        runtime.execute_prepared(&alice, permit),
-        Err(ExecutionError::Audit(Box::new(
-            RuntimeError::InvalidEffectProject { project: longer }
-        )))
-    );
-    assert_eq!(attempts(&runtime), before);
-    assert!(runtime.unsettled_effects().is_empty());
+    let alice = synchronous(&mut restored, "alice", &action, &echo);
+    for (key, attempt) in spent {
+        let permit = once(&restored, &alice, &action, key);
+        assert_eq!(
+            restored.execute_prepared(&alice, permit),
+            Err(ExecutionError::KeyBoundToAnotherAction { attempt }),
+            "{key}"
+        );
+    }
     assert_eq!(echo.calls(), 0);
 
-    // The control: the longest project allowed is rebuilt on every path from a
-    // history that holds it under a key, and through admission it spends a
-    // key, and the runtime still exports, restores and answers its retry.
-    let (mut runtime, action) = fixture();
-    let longest = ProjectId("p".repeat(MAX_PROJECT_BYTES));
-    assert_rebuilt(
-        &recorded(&action, Some("invoice-7"), &longest.0, "alice"),
-        Some(true),
-        None,
-    );
-    runtime
-        .commit(LedgerEvent::CapsuleCommitted {
-            project: longest.clone(),
-            capsule: CapsuleId::from("capsule:far"),
-            generation: Generation(1),
-        })
-        .unwrap();
-    let far = ActionIr {
-        target: "capsule:far".into(),
-        ..action
-    };
-    let alice = synchronous_in(&mut runtime, "alice", &longest, &far, &echo);
-    let permit = runtime
-        .prepare_execution_once(&alice, &longest, &far, TTL, "invoice-7")
-        .unwrap();
-    runtime.execute_prepared(&alice, permit).unwrap();
-    let mut restored = round_trip(&runtime, &far);
-    let alice = synchronous_in(&mut restored, "alice", &longest, &far, &echo);
-    let permit = restored
-        .prepare_execution_once(&alice, &longest, &far, TTL, "invoice-7")
-        .unwrap();
-    assert_eq!(
-        restored.execute_prepared(&alice, permit).unwrap(),
-        b"applied verified payload"
-    );
-    assert_eq!(echo.calls(), 1);
+    // A log an earlier build wrote with such a project reopens and compacts,
+    // as it did before this layout carried the project.
+    for project in ["", long.as_str()] {
+        assert_a_log_from_an_earlier_build_opens("invoice-7", project, "alice");
+    }
 }
 
 /// Where the execution section starts: after the header and the semantic and

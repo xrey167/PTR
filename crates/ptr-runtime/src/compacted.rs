@@ -42,17 +42,17 @@ const LIFECYCLE_MAGIC: &[u8; 8] = b"PTRLC001";
 const HEADER: usize = 80;
 const DIGEST_BYTES: usize = 32;
 const MAX_SECTION_ITEMS: usize = 65_536;
-/// Also the bound on what the execution section carries for every settled key:
-/// the key itself ([`MAX_KEY_BYTES`](crate::execution::MAX_KEY_BYTES)) and, for
-/// one that applied, its attempt's project
-/// ([`MAX_PROJECT_BYTES`](crate::execution::MAX_PROJECT_BYTES)) and principal
-/// ([`MAX_PRINCIPAL_BYTES`](crate::execution::MAX_PRINCIPAL_BYTES)). A keyed
-/// attempt whose key, project or principal is empty or longer is refused at
-/// commit and replay, and decoding refuses the same, so no string in the
-/// settled half of the section is outside this bound.
+/// The bound on each string the lifecycle section writes and on each
+/// at-most-once key the execution section writes: 1 to this many bytes, as in
+/// every earlier layout. A key in an attempt being committed is held to it
+/// ([`MAX_KEY_BYTES`](crate::execution::MAX_KEY_BYTES)). A longer key, which a
+/// log written by an earlier build may hold, is replayed, and export then fails
+/// with [`CompactedError::SectionLimit`] once it has settled, as it did before.
+/// The project and principal an attempt recorded are written at any length, the
+/// empty string included, since no build has bounded them.
 ///
 /// That bounds each string, not the section. Every settled key, with an
-/// applied one's retained response of up to
+/// applied one's project, principal and retained response of up to
 /// [`MAX_RETAINED_RESPONSE`](ptr_ledger::MAX_RETAINED_RESPONSE), is written
 /// into the one execution section, which [`MAX_SECTION_BYTES`] and
 /// `MAX_SECTION_ITEMS` bound, and nothing removes a settled key. So eight keys
@@ -212,11 +212,24 @@ impl Writer {
         self.raw(&value.to_le_bytes())
     }
 
+    /// Encode one UTF-8 string of any length the section has room for, the
+    /// empty one included.
+    ///
+    /// For what an attempt recorded, which no build has bounded: a snapshot has
+    /// to carry whatever a log it compacts could hold, or a history that
+    /// compacted before an upgrade could not compact after it.
+    fn field(&mut self, value: &str) -> Result<(), RuntimeError> {
+        let length =
+            u32::try_from(value.len()).map_err(|_| invalid(CompactedError::SectionLimit))?;
+        self.raw(&length.to_le_bytes())?;
+        self.raw(value.as_bytes())
+    }
+
     /// Encode what an attempt recorded: project, principal, revision,
     /// generation, then the fixed-width action digest.
     fn identity(&mut self, identity: &ActionIdentity) -> Result<(), RuntimeError> {
-        self.text(&identity.project.0)?;
-        self.text(&identity.principal)?;
+        self.field(&identity.project.0)?;
+        self.field(&identity.principal)?;
         self.number(identity.revision.0)?;
         self.number(identity.generation.0)?;
         self.raw(&identity.action_digest)
@@ -276,11 +289,19 @@ impl<'a> Reader<'a> {
         ))
     }
 
+    /// Decode one string `Writer::field` wrote. Its length is checked against
+    /// the bytes that remain before anything is allocated for it.
+    fn field(&mut self) -> Result<String, RuntimeError> {
+        let length = u32::from_le_bytes(self.take(4)?.try_into().expect("fixed length")) as usize;
+        String::from_utf8(self.take(length)?.to_vec())
+            .map_err(|_| invalid(CompactedError::NoncanonicalSection))
+    }
+
     /// Decode what an attempt recorded, in the order the writer put it.
     fn identity(&mut self) -> Result<ActionIdentity, RuntimeError> {
         Ok(ActionIdentity {
-            project: ProjectId(self.text()?),
-            principal: self.text()?,
+            project: ProjectId(self.field()?),
+            principal: self.field()?,
             revision: Revision(self.number()?),
             generation: Generation(self.number()?),
             action_digest: self.take(DIGEST_BYTES)?.try_into().expect("fixed digest"),
@@ -623,9 +644,11 @@ impl PtrRuntime {
     /// `above_floor` must be the records a checked log holds above `trusted.floor`
     /// — in practice
     /// [`AcknowledgedLedger::events`](ptr_ledger::AcknowledgedLedger::events) for a
-    /// log whose anchor carries that same floor. Each one goes through the ordinary
-    /// lifecycle and semantic validation path, so a restored runtime cannot reach a
-    /// state a live run would have refused.
+    /// log whose anchor carries that same floor. Each one goes through the
+    /// validation replay applies, the ordinary lifecycle and semantic path, so a
+    /// restored runtime cannot reach a state a replay of the whole log would have
+    /// refused. That is every check a live commit makes except the bound on a
+    /// new attempt's key, which a log written by an earlier build may exceed.
     pub fn restore_compacted(
         config: PtrConfig,
         bytes: &[u8],
@@ -683,12 +706,12 @@ impl PtrRuntime {
     }
 }
 
-/// Validate framing, bounds, digest and trusted identity, then hand back the two
-/// sections. Nothing is decoded before the whole artifact is accounted for.
 /// The three body sections of a verified snapshot: semantic, lifecycle and
 /// execution, in the order they are written.
 type CompactedSections<'a> = (&'a [u8], &'a [u8], &'a [u8]);
 
+/// Validate framing, bounds, digest and trusted identity, then hand back the
+/// sections. Nothing is decoded before the whole artifact is accounted for.
 fn compacted_sections(
     bytes: &[u8],
     trusted: CompactedAnchor,

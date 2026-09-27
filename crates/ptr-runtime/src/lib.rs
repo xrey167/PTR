@@ -106,29 +106,6 @@ pub enum RuntimeError {
     InvalidEffectKey {
         key: String,
     },
-    /// A keyed attempt being committed names a principal that is empty or
-    /// longer than [`execution::MAX_PRINCIPAL_BYTES`].
-    ///
-    /// A key settled or reconciled as applied carries its attempt's principal
-    /// into every later compacted snapshot, so a principal no snapshot can carry
-    /// would leave the runtime unable to export once the attempt's fence had
-    /// cleared. Only the length is checked, because that is all a snapshot
-    /// needs, so a principal no session could be registered as is recorded as
-    /// given. An unkeyed attempt never enters a settled key, so its principal
-    /// is recorded as given whatever its length. An attempt a log already
-    /// holds is replayed whatever its principal, as
-    /// [`execution::MAX_PRINCIPAL_BYTES`] explains.
-    InvalidEffectPrincipal {
-        principal: String,
-    },
-    /// A keyed attempt being committed names a project that is empty or longer
-    /// than [`execution::MAX_PROJECT_BYTES`], for the reason
-    /// [`RuntimeError::InvalidEffectPrincipal`] gives. An unkeyed attempt's
-    /// project, and a project in an attempt a log already holds, are recorded
-    /// as given.
-    InvalidEffectProject {
-        project: ProjectId,
-    },
     /// A second attempt under a key whose first attempt is still unsettled. Two
     /// live attempts would make the key meaningless, and a settlement could not
     /// say which of them it ends.
@@ -859,43 +836,24 @@ impl PtrRuntime {
 }
 
 /// What a record must meet to be committed now, beyond the validation every
-/// record is replayed with: a keyed attempt names a key, principal and project
-/// a compacted snapshot can carry.
+/// record is replayed with: a keyed attempt names a key a compacted snapshot can
+/// carry.
 ///
-/// A settled key carries itself, and once applied its attempt's project and
-/// principal, into every later compacted snapshot, so an attempt outside these
-/// bounds would leave every export failing once it settled. It is refused
-/// before anything is appended. The project and principal are held to the
-/// length a snapshot carries and no more; the key is also an identifier, as at
-/// preparation. An unkeyed attempt never enters a settled key, so what it names
-/// is recorded as given.
+/// A snapshot carries every settled key, whatever its outcome, as a string of 1
+/// to [`execution::MAX_KEY_BYTES`] bytes, so an attempt under a longer key would
+/// leave every export failing once it settled. It is refused before anything is
+/// appended. The project and principal an applied key carries are written at
+/// any length, so they are recorded as given.
 ///
-/// Replay does not apply this. Earlier builds committed keys up to the
-/// execution wire's 64 KiB field, and principals and projects of any length,
-/// and a log holding one opened and failed only at export. Refusing it at
-/// replay would turn that into a runtime that cannot open after an upgrade.
+/// Replay does not apply this. Earlier builds held a key only to being an
+/// identifier, of any length, and a log holding a longer one opened and failed
+/// only at export. Refusing it at replay would turn that into a runtime that
+/// cannot open after an upgrade.
 fn validate_new_record(event: &LedgerEvent) -> Result<(), RuntimeError> {
-    let LedgerEvent::EffectAttempted {
-        key: Some(key),
-        project,
-        principal,
-        ..
-    } = event
-    else {
-        return Ok(());
-    };
-    if !execution::valid_key(key) {
-        return Err(RuntimeError::InvalidEffectKey { key: key.clone() });
-    }
-    if !execution::valid_recorded_principal(principal) {
-        return Err(RuntimeError::InvalidEffectPrincipal {
-            principal: principal.clone(),
-        });
-    }
-    if !execution::valid_project(project) {
-        return Err(RuntimeError::InvalidEffectProject {
-            project: project.clone(),
-        });
+    if let LedgerEvent::EffectAttempted { key: Some(key), .. } = event {
+        if !execution::valid_key(key) {
+            return Err(RuntimeError::InvalidEffectKey { key: key.clone() });
+        }
     }
     Ok(())
 }

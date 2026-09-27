@@ -309,8 +309,11 @@ two descriptions of the same records that could disagree, and this layer keeps
 exactly one authority for any fact. `restore_compacted` therefore takes the
 retained records as a separate argument and replays them through the ordinary
 lifecycle and semantic validation path, so a restored runtime cannot reach a state
-a live run would have refused. They keep the indices they were committed at; a
-ledger that renumbered them from 1 would contradict the floor.
+a replay of the whole log would have refused. That is every check a live commit
+makes except the bound on a new attempt's at-most-once key, which a log written by
+an earlier build may exceed (`28-durable-execution-audit.md`). They keep the
+indices they were committed at; a ledger that renumbered them from 1 would
+contradict the floor.
 
 **The semantic section reuses the journal's own encoding.** `export_state` emits
 the published state as one canonical `SemanticDelta` and `restore` rebuilds a host
