@@ -384,9 +384,11 @@ fn a_record_above_the_bound_is_refused_before_framing() {
         let mut ledger = FileLedger::create_from_log(tmp.path(), &bytes, trusted).unwrap();
         let error = ledger.append_durable(refused.clone()).unwrap_err();
         assert_eq!(error.to_string(), code);
-        // Refused before anything was written: the ledger still appends.
+        // Refused before anything was written: the ledger still appends. The
+        // bytes are read through the open ledger, because Windows refuses an
+        // independent read of a file whose writer holds its lock.
         assert_eq!(ledger.anchor().unwrap(), trusted);
-        assert_eq!(std::fs::read(tmp.path()).unwrap(), bytes);
+        assert_eq!(ledger.retained_bytes().unwrap(), bytes);
         assert_eq!(
             ledger.append_durable(event(2).event).unwrap(),
             CommitIndex(2)
