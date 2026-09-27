@@ -2,42 +2,50 @@
   "experiment_id": "L004",
   "status": "completed",
   "scope": "generated ledgers of every event kind replayed into a PostgreSQL projection on one local server, with client and server crashes, commits the server fails, redeliveries, gaps, dueling projectors, forked histories, a backup catch-up, rebuilds onto unrelated and true histories, compared with the runtime replay, the MaterializedState reference and Turso",
-  "git_sha": "ad2f8d1a50b875f62f7899a8c0eb60dac000639f",
-  "recorded_at": "2026-09-26T10:10:02.532031+00:00",
+  "git_sha": "dcfbb3ea0da08bf9043e4ad79111a95d7924069f",
+  "aggregated_at_git_sha": "dcfbb3ea0da08bf9043e4ad79111a95d7924069f",
+  "recorded_at": "2026-09-27T15:01:45.794645+00:00",
   "entrypoint": "cargo +stable run --release --locked -p ptr-bench --features turso-oracle -- projection-equivalence <iterations> <seed>",
   "seeds": [
     {
       "seed": 17,
-      "record": "run-20260926T093310.696207Z-seed-17.json",
+      "record": "run-20260927T143735.148426Z-seed-17.json",
+      "git_sha": "dcfbb3ea0da08bf9043e4ad79111a95d7924069f",
       "exit_code": 0
     },
     {
       "seed": 29,
-      "record": "run-20260926T093455.421416Z-seed-29.json",
+      "record": "run-20260927T143947.525949Z-seed-29.json",
+      "git_sha": "dcfbb3ea0da08bf9043e4ad79111a95d7924069f",
       "exit_code": 0
     },
     {
       "seed": 43,
-      "record": "run-20260926T093628.813066Z-seed-43.json",
+      "record": "run-20260927T144136.320513Z-seed-43.json",
+      "git_sha": "dcfbb3ea0da08bf9043e4ad79111a95d7924069f",
       "exit_code": 0
     },
     {
       "seed": 71,
-      "record": "run-20260926T093759.398007Z-seed-71.json",
+      "record": "run-20260927T144319.498860Z-seed-71.json",
+      "git_sha": "dcfbb3ea0da08bf9043e4ad79111a95d7924069f",
       "exit_code": 0
     },
     {
       "seed": 101,
-      "record": "run-20260926T093924.784791Z-seed-101.json",
+      "record": "run-20260927T144507.943540Z-seed-101.json",
+      "git_sha": "dcfbb3ea0da08bf9043e4ad79111a95d7924069f",
       "exit_code": 0
     }
   ],
+  "verdict": "hard-pass",
   "hard_pass": true,
   "probe_coverage_ok": true,
+  "turso_oracle": true,
   "mutation_checks": {
     "killed": 17,
     "total": 17,
-    "git_sha": "ad2f8d1a50b875f62f7899a8c0eb60dac000639f"
+    "git_sha": "dcfbb3ea0da08bf9043e4ad79111a95d7924069f"
   },
   "limitations": [
     "one PostgreSQL 18 server with pgvector 0.8 on loopback; 16 and 17 are supported but not run here",
@@ -47,5 +55,6 @@
     "readers are not run concurrently with the projector; the fence semantics are covered by the ptr-pg tests",
     "the seed fixes every log and probe; only whether a crashed transaction had committed depends on timing",
     "Turso exposes point reads only, so it is compared for every key the reference holds but extra Turso keys would not show"
-  ]
+  ],
+  "metrics_sha256": "3592a234788105618872efb2606ffc194df81b5ef42c13dc92b7b38b423a3c5e"
 }

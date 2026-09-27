@@ -1,7 +1,7 @@
 {
   "experiment_id": "L003",
-  "git_sha": "ad2f8d1a50b875f62f7899a8c0eb60dac000639f",
-  "recorded_at": "2026-09-26T10:09:49.932851+00:00",
+  "git_sha": "dcfbb3ea0da08bf9043e4ad79111a95d7924069f",
+  "recorded_at": "2026-09-27T14:53:50.840489+00:00",
   "subcommand": "fastmem-revocation",
   "killed": 16,
   "total": 16,
@@ -13,22 +13,23 @@
       "seed": 17,
       "result": "killed",
       "exit_code": 1,
-      "hard_failures": 48,
+      "hard_failures": 135,
       "expected": [
         "journal_mismatches",
         "removed_count_mismatches",
         "bit_identity_failures"
       ],
       "counters": {
-        "bit_identity_failures": 5,
-        "false_denials": 5,
-        "journal_mismatches": 19,
-        "removed_count_mismatches": 6,
+        "bit_identity_failures": 18,
+        "false_denials": 18,
+        "journal_mismatches": 26,
+        "removed_count_mismatches": 5,
         "checkpoint_false_refusals": 2,
-        "checkpoint_violations": 6,
-        "stale_checkpoint_rows": 2,
-        "atomicity_failures": 1,
-        "race_violations": 2
+        "stale_checkpoints_accepted": 4,
+        "checkpoint_violations": 38,
+        "stale_checkpoint_rows": 20,
+        "race_violations": 3,
+        "read_failures": 1
       }
     },
     {
@@ -38,21 +39,19 @@
       "seed": 17,
       "result": "killed",
       "exit_code": 1,
-      "hard_failures": 116,
+      "hard_failures": 60,
       "expected": [
         "journal_mismatches",
         "removed_count_mismatches",
         "stale_checkpoint_rows"
       ],
       "counters": {
-        "journal_mismatches": 35,
-        "removed_count_mismatches": 10,
-        "checkpoint_false_refusals": 6,
-        "stale_checkpoints_accepted": 2,
-        "checkpoint_violations": 22,
-        "stale_checkpoint_rows": 36,
-        "race_violations": 4,
-        "read_failures": 1
+        "journal_mismatches": 22,
+        "removed_count_mismatches": 6,
+        "checkpoint_false_refusals": 1,
+        "checkpoint_violations": 20,
+        "stale_checkpoint_rows": 7,
+        "race_violations": 4
       }
     },
     {
@@ -62,14 +61,14 @@
       "seed": 17,
       "result": "killed",
       "exit_code": 1,
-      "hard_failures": 2606,
+      "hard_failures": 2388,
       "expected": [
         "stale_checkpoint_rows",
         "stale_checkpoints_accepted",
         "checkpoint_violations"
       ],
       "counters": {
-        "stale_checkpoint_rows": 2606
+        "stale_checkpoint_rows": 2388
       }
     },
     {
@@ -79,14 +78,14 @@
       "seed": 17,
       "result": "killed",
       "exit_code": 1,
-      "hard_failures": 373,
+      "hard_failures": 176,
       "expected": [
         "stale_checkpoint_rows",
         "stale_checkpoints_accepted",
         "checkpoint_violations"
       ],
       "counters": {
-        "stale_checkpoint_rows": 373
+        "stale_checkpoint_rows": 176
       }
     },
     {
@@ -96,20 +95,21 @@
       "seed": 17,
       "result": "killed",
       "exit_code": 1,
-      "hard_failures": 53,
+      "hard_failures": 55,
       "expected": [
         "inadmissible_appends_accepted"
       ],
       "counters": {
-        "bit_identity_failures": 7,
-        "false_denials": 7,
-        "journal_mismatches": 23,
-        "removed_count_mismatches": 4,
-        "inadmissible_appends_accepted": 1,
+        "bit_identity_failures": 11,
+        "false_denials": 11,
+        "journal_mismatches": 12,
+        "removed_count_mismatches": 1,
+        "inadmissible_appends_accepted": 2,
+        "checkpoint_false_refusals": 1,
         "stale_checkpoints_accepted": 1,
-        "checkpoint_violations": 4,
-        "stale_checkpoint_rows": 2,
-        "race_violations": 4
+        "checkpoint_violations": 9,
+        "stale_checkpoint_rows": 6,
+        "race_violations": 1
       }
     },
     {
@@ -119,18 +119,15 @@
       "seed": 17,
       "result": "killed",
       "exit_code": 1,
-      "hard_failures": 44,
+      "hard_failures": 35,
       "expected": [
         "inadmissible_appends_accepted"
       ],
       "counters": {
-        "bit_identity_failures": 5,
-        "false_denials": 5,
-        "journal_mismatches": 15,
+        "journal_mismatches": 22,
         "removed_count_mismatches": 4,
-        "inadmissible_appends_accepted": 5,
-        "checkpoint_false_refusals": 6,
-        "checkpoint_violations": 2,
+        "inadmissible_appends_accepted": 6,
+        "checkpoint_false_refusals": 1,
         "race_violations": 2
       }
     },
@@ -141,21 +138,20 @@
       "seed": 17,
       "result": "killed",
       "exit_code": 1,
-      "hard_failures": 235,
+      "hard_failures": 139,
       "expected": [
         "race_violations"
       ],
       "counters": {
-        "bit_identity_failures": 35,
-        "false_denials": 35,
-        "journal_mismatches": 78,
-        "removed_count_mismatches": 22,
-        "checkpoint_false_refusals": 14,
-        "stale_checkpoints_accepted": 3,
-        "checkpoint_violations": 14,
-        "stale_checkpoint_rows": 13,
-        "race_violations": 20,
-        "read_failures": 1
+        "bit_identity_failures": 11,
+        "false_denials": 11,
+        "journal_mismatches": 60,
+        "removed_count_mismatches": 14,
+        "checkpoint_false_refusals": 1,
+        "stale_checkpoints_accepted": 1,
+        "checkpoint_violations": 21,
+        "stale_checkpoint_rows": 6,
+        "race_violations": 14
       }
     },
     {
@@ -165,13 +161,13 @@
       "seed": 17,
       "result": "killed",
       "exit_code": 1,
-      "hard_failures": 233,
+      "hard_failures": 289,
       "expected": [
         "stale_checkpoint_rows",
         "race_violations"
       ],
       "counters": {
-        "stale_checkpoint_rows": 233
+        "stale_checkpoint_rows": 289
       }
     },
     {
@@ -181,15 +177,14 @@
       "seed": 17,
       "result": "killed",
       "exit_code": 1,
-      "hard_failures": 48,
+      "hard_failures": 58,
       "expected": [
         "stale_checkpoints_accepted",
         "stale_checkpoint_rows"
       ],
       "counters": {
-        "stale_checkpoints_accepted": 11,
-        "stale_checkpoint_rows": 36,
-        "read_failures": 1
+        "stale_checkpoints_accepted": 17,
+        "stale_checkpoint_rows": 41
       }
     },
     {
@@ -199,12 +194,12 @@
       "seed": 17,
       "result": "killed",
       "exit_code": 1,
-      "hard_failures": 82,
+      "hard_failures": 64,
       "expected": [
         "checkpoint_violations"
       ],
       "counters": {
-        "checkpoint_violations": 82
+        "checkpoint_violations": 64
       }
     },
     {
@@ -214,12 +209,15 @@
       "seed": 17,
       "result": "killed",
       "exit_code": 1,
-      "hard_failures": 19,
+      "hard_failures": 67,
       "expected": [
         "journal_mismatches"
       ],
       "counters": {
-        "journal_mismatches": 19
+        "bit_identity_failures": 22,
+        "readout_failures": 18,
+        "journal_mismatches": 22,
+        "checkpoint_violations": 5
       }
     },
     {
@@ -229,16 +227,16 @@
       "seed": 17,
       "result": "killed",
       "exit_code": 1,
-      "hard_failures": 299,
+      "hard_failures": 323,
       "expected": [
         "bit_identity_failures",
         "readout_failures"
       ],
       "counters": {
-        "bit_identity_failures": 122,
-        "readout_failures": 121,
-        "checkpoint_false_refusals": 5,
-        "checkpoint_violations": 51
+        "bit_identity_failures": 141,
+        "readout_failures": 139,
+        "checkpoint_false_refusals": 3,
+        "checkpoint_violations": 40
       }
     },
     {
@@ -248,12 +246,12 @@
       "seed": 17,
       "result": "killed",
       "exit_code": 1,
-      "hard_failures": 161,
+      "hard_failures": 133,
       "expected": [
         "resurrected_reads"
       ],
       "counters": {
-        "resurrected_reads": 161
+        "resurrected_reads": 133
       }
     },
     {
@@ -263,12 +261,14 @@
       "seed": 17,
       "result": "killed",
       "exit_code": 1,
-      "hard_failures": 59,
+      "hard_failures": 492,
       "expected": [
         "commit_fault_failures"
       ],
       "counters": {
-        "commit_fault_failures": 59
+        "resurrected_reads": 440,
+        "atomicity_failures": 1,
+        "commit_fault_failures": 51
       }
     },
     {
@@ -278,12 +278,13 @@
       "seed": 17,
       "result": "killed",
       "exit_code": 1,
-      "hard_failures": 20,
+      "hard_failures": 187,
       "expected": [
         "checkpoint_violations"
       ],
       "counters": {
-        "checkpoint_violations": 20
+        "resurrected_reads": 139,
+        "checkpoint_violations": 48
       }
     },
     {
@@ -293,13 +294,14 @@
       "seed": 17,
       "result": "killed",
       "exit_code": 1,
-      "hard_failures": 103,
+      "hard_failures": 257,
       "expected": [
         "checkpoints_lost"
       ],
       "counters": {
-        "checkpoint_violations": 23,
-        "checkpoints_lost": 80
+        "resurrected_reads": 132,
+        "checkpoint_violations": 50,
+        "checkpoints_lost": 75
       }
     }
   ]

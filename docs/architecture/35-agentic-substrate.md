@@ -1396,14 +1396,14 @@ another by idea.
 | [F002](../../experiments/feedback/F002-weak-supervision/README.md) | Is the verifier-precedence label model better calibrated than majority vote? | any label contradicting a verifier veto |
 | [E005](../../experiments/system/E005-agent-memory-benchmark/README.md) | Does the combined stack beat current agent-memory systems on LongMemEval and LoCoMo? | no category improvement at equal budget |
 
-L004 and L003 are completed for PostgreSQL 18 (2026-09-26): over five seeds each, with crashes, commits the
-server failed and races, no projection diverged from the reference, no foreign history was accepted, no
-refold differed by a bit and no revoked input was read; every planted defect of their mutation lists was
-detected. Results and limitations are in each experiment's `results/`. Those results ran at ad2f8d1 and are
-stale since fd25359, as each experiment's `results/STALE.toml` records until both are rerun at the commit
-integrating this revision: `scripts/check_research_gates.py` fails CI on a completed experiment whose
-archived `run.json` or `mutations.json` ran at code, aggregation scripts or mutation plan HEAD has changed
-without such a marker naming them and the first change (`test_results_of_other_code_fail_without_a_marker`,
+L004 and L003 are completed for PostgreSQL 18 (2026-09-27, at dcfbb3e): over five seeds each, with crashes,
+commits the server failed and races, no projection diverged from the reference, no foreign history was
+accepted, no refold differed by a bit and no revoked input was read; every planted defect of their mutation
+lists was detected (17 of 17 and 16 of 16). Their seed records, mutation checks and aggregates all ran at
+that commit, and an earlier run at ad2f8d1 also passed. Results and limitations are in each experiment's
+`results/`. `scripts/check_research_gates.py` fails CI on a completed experiment whose archived `run.json`
+or `mutations.json` ran at code, aggregation scripts or mutation plan HEAD has changed without a
+`results/STALE.toml` marker naming them and the first change (`test_results_of_other_code_fail_without_a_marker`,
 `test_a_dishonest_or_incomplete_marker_is_refused`), and on a marker beside current results. A marker names
 a commit at which every stale file has the code it ran, so seed records and a mutation check run at
 different commits with the same code are covered by one marker
@@ -1430,9 +1430,9 @@ Evaluations: [relational-substrate](../../evaluations/components/relational-subs
 [fast-weight-memory](../../evaluations/components/fast-weight-memory/README.md),
 [label-model](../../evaluations/components/label-model/README.md),
 [adapter-serving](../../evaluations/components/adapter-serving/README.md),
-[analytics-mirror](../../evaluations/components/analytics-mirror/README.md), and
-PostgreSQL candidates added to materialized-state, lexical-search,
-local-vector-search and event-streaming.
+[analytics-mirror](../../evaluations/components/analytics-mirror/README.md). Lexical-search,
+local-vector-search and event-streaming gain PostgreSQL candidates, and materialized-state's existing
+PostgreSQL candidate is now evaluated against the PostgreSQL suite.
 
 ## 9. Toolchain
 
