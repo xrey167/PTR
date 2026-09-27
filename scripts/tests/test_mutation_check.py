@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -404,19 +405,45 @@ class RecordedRunWatchTests(unittest.TestCase):
         self.assertIn("src/lib.rs still holds the mutation return-two", stdout.getvalue())
         self.assertIn(f"src/{next(iter(kept))}", stdout.getvalue())
 
-    def killed_run(self, planted_at=None):
+    def killed_run(self, planted_at=None, linked_at=None):
         """A fake `subprocess.run` for `run_mutation`: cargo succeeds, noting in
         `planted_at` the modification time the planted file had when it was
-        built, and the harness fails on the mutation's expected counter."""
+        built and, given `linked_at` (nanoseconds), linking the harness binary
+        with that modification time; the harness fails on the mutation's
+        expected counter."""
 
         def run(command, **_kwargs):
             if command[0] == "cargo":
                 if planted_at is not None:
                     planted_at.append((self.root / "src/lib.rs").stat().st_mtime_ns)
+                if linked_at is not None:
+                    self.binary.parent.mkdir(parents=True, exist_ok=True)
+                    self.binary.write_bytes(b"harness")
+                    os.utime(self.binary, ns=(linked_at, linked_at))
                 return subprocess.CompletedProcess(command, 0, "", "")
             return subprocess.CompletedProcess(command, 1, json.dumps({"hard_failures": 1, "wrong": 1}) + "\n", "")
 
         return run
+
+    @property
+    def binary(self) -> Path:
+        """Where `run_mutation` runs the harness of the plan in `setUp` from."""
+        return self.root / "target/release/ptr-bench"
+
+    def run_one(self, run, *patches):
+        """`run_mutation` over the plan's one mutation, with `run` as
+        `subprocess.run` and any further `patches` in force; returns its
+        outcome and what it printed."""
+        plan = mod.load_toml(self.experiment / "tests/mutations.toml")
+        stdout = io.StringIO()
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(mod, "ROOT", self.root))
+            stack.enter_context(mock.patch.object(mod.subprocess, "run", side_effect=run))
+            for patch in patches:
+                stack.enter_context(patch)
+            stack.enter_context(contextlib.redirect_stdout(stdout))
+            outcome = mod.run_mutation(plan, plan["mutation"][0], 60)
+        return outcome, stdout.getvalue()
 
     def test_a_restored_source_is_stamped_newer_than_its_mutated_build(self):
         # Cargo rebuilds a crate only when one of its sources is newer than its
@@ -438,6 +465,45 @@ class RecordedRunWatchTests(unittest.TestCase):
         self.assertGreater(restored.st_mtime_ns, planted_at[0], "newer than the build of the defect")
         self.assertGreater(restored.st_mtime_ns, 10**18, "and not the original's old stamp")
         self.assertEqual((self.root / "src/other.rs").stat().st_mtime_ns, 10**18, "an unplanted file is untouched")
+
+    def test_a_restored_source_is_stamped_newer_than_the_harness_its_build_linked(self):
+        # Cargo stamps each crate when it builds it and links the harness after
+        # all of them, so a source newer than the binary is newer than every
+        # stamp of that build. Newer than the planted file alone is not enough:
+        # a clock stepped back since the build, as here, left the source older
+        # than the stamps and the crate built with the defect.
+        linked_at = time.time_ns() + 30 * 10**9
+        outcome, _ = self.run_one(self.killed_run(linked_at=linked_at))
+        self.assertEqual(outcome["result"], "killed")
+        self.assertEqual(self.binary.stat().st_mtime_ns, linked_at)
+        self.assertGreater((self.root / "src/lib.rs").stat().st_mtime_ns, linked_at)
+
+    def test_a_restored_source_is_stepped_past_a_filesystem_that_keeps_whole_seconds(self):
+        # A nanosecond past the binary is stored as the binary's own second on
+        # such a filesystem, which cargo takes as not newer; the checker reads
+        # the stored time back and steps on until it is later.
+        real_utime = os.utime
+
+        def whole_seconds(path, *args, ns=None, **kwargs):
+            if ns is not None:
+                ns = tuple(value - value % 10**9 for value in ns)
+            return real_utime(path, *args, ns=ns, **kwargs)
+
+        linked_at = (time.time_ns() // 10**9 + 30) * 10**9
+        outcome, _ = self.run_one(
+            self.killed_run(linked_at=linked_at), mock.patch.object(mod.os, "utime", side_effect=whole_seconds)
+        )
+        self.assertEqual(outcome["result"], "killed")
+        restored = (self.root / "src/lib.rs").stat().st_mtime_ns
+        self.assertGreater(restored, linked_at)
+        self.assertEqual(restored % 10**9, 0, "stored as the filesystem keeps it")
+
+    def test_a_restored_source_that_stays_stored_as_old_fails_the_run(self):
+        # A filesystem that ignores the new time leaves cargo linking the
+        # defect; the run must stop rather than go on as though it were clean.
+        with self.assertRaises(OSError):
+            self.run_one(self.killed_run(), mock.patch.object(mod.os, "utime", side_effect=lambda *a, **k: None))
+        self.assertEqual((self.root / "src/lib.rs").read_text(encoding="utf-8"), self.PLANTED)
 
     def test_a_restored_source_whose_stamp_cannot_be_moved_fails_the_run(self):
         # The content is back, but cargo may still link the defect, so the
