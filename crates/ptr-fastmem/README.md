@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-26  
-**Code footprint:** 9 Rust source files · 2892 nonblank source lines · 4 integration-test files · 77 `#[test]` markers
+**Last reviewed:** 2026-09-27  
+**Code footprint:** 9 Rust source files · 2921 nonblank source lines · 4 integration-test files · 78 `#[test]` markers
 
 ### Implemented now
 
@@ -23,7 +23,7 @@
 - binding_digest_of names the ordered folded writes by sequence, source key, generation and input digest (not by key and value bits); ptr-pg recomputes it from the stored journal prefix, refuses to store a checkpoint that does not match and never returns one that no longer does
 - Seeded orthogonal key projection (at most MAX_HEADS * MAX_HEAD_DIM rows, the row count computed with checked arithmetic, from an embedding at most MAX_EMBEDDING_DIM = 8,192 wide, refused before allocating; every configuration check_config admits has a key and a value projection from every such width that is at least its head width; each coordinate is summed in f64 and rounded once, and one beyond f32's range is refused as NonFinite rather than returned infinite) and identifier codebook (codes no longer than MAX_HEADS * MAX_HEAD_DIM, the longest value vector); readouts decode to named capsules or to Unknown below a margin; constraint and procedure sources shape the state but are never decode candidates (IdentifierCodebook::fact refuses a constraint: or procedure: target with ReservedTarget, by the one test fact_codes filters sources with, and decode_readout refuses a fact naming one), and a decode policy that would fail open (zero limit, NaN or negative threshold) or a nonfinite score is refused
 - PTRFW001 state codec with full f32 cells and a SHA-256 trailer
-- Bounded shapes, journal length, checkpoint interval and sequence numbers (a memory takes no number at or above its limit, u64::MAX unless FastMemory::with_sequence_limit lowered it, and refuses the write that would take one before folding it, so a journal ends below the limit; ptr-pg restores every memory with its journal's limit, i64::MAX) with typed refusals; a shape's lengths saturate at usize::MAX instead of overflowing, so a shape check_config refuses never wraps to a plausible length; public validate_write shares restore admission rules
+- Bounded shapes, journal length, checkpoint interval and sequence numbers (a memory takes no number at or above its limit, u64::MAX unless FastMemory::with_sequence_limit lowered it, and refuses the write that would take one before folding it, so a journal ends below the limit; ptr-pg restores every memory with its journal's limit, i64::MAX; a memory never takes a number twice, revoke keeping its next number, and FastMemory::with_sequence_high_water numbers a restored memory's next write above the largest number its store ever journaled for it, revoked writes included, as the live memory numbers it; ptr-pg restores every memory with the mark its registration keeps) with typed refusals; a shape's lengths saturate at usize::MAX instead of overflowing, so a shape check_config refuses never wraps to a plausible length; public validate_write shares restore admission rules
 - Value cells are bounded by MAX_VALUE_MAGNITUDE (2^24) at admission, independently of the state, and every key head that is not all zero is normalised to unit length at any scale (divided by its largest magnitude before its norm is taken, so no square underflows or overflows), so every fold of admitted writes stays finite whatever their order or subset and refolds after revocation admit exactly the same writes
 
 ### Missing for the target architecture
@@ -54,7 +54,7 @@
 ### Current automated checks
 
 - tests/revocation.rs bit-identical refold and admission denial
-- tests/journal.rs restore and checkpoint codec, and the sequence limit a store restores a memory with (a_memory_with_a_sequence_limit_refuses_the_write_that_would_reach_it_before_folding)
+- tests/journal.rs restore and checkpoint codec, and the sequence limit and high-water mark a store restores a memory with (a_memory_with_a_sequence_limit_refuses_the_write_that_would_reach_it_before_folding, a_memory_restored_below_its_store_s_high_water_mark_numbers_its_next_write_above_it)
 - tests/recall.rs decode, update, Unknown, the codebook a readout decodes against, constraint and procedure targets refused as explicit fact candidates, and the key projection a bound memory reads queries from
 - ptr-pg postgres test for journal revocation cascade
 - L003 revocation exactness through the ptr-pg journal (ptr-bench fastmem-revocation): five seeds on PostgreSQL 18, 16 of 16 planted defects detected

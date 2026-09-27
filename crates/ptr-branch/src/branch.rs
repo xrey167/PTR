@@ -128,9 +128,6 @@ impl SealedBranch {
     /// - no set operation has an empty member ([`BranchError::InvalidMember`]);
     /// - every key an operation touches has a base value in `touched_base`
     ///   and an input set in `touched_inputs` ([`BranchError::MalformedSeal`]);
-    /// - no `Remove` names a key whose recorded input set is not the empty
-    ///   set ([`BranchError::DerivedRemoval`]): the merged removal would drop
-    ///   the key's dependency entry;
     /// - every set operation on a member records the same `in_base` as the
     ///   earlier ones on that member, since all describe one base, and none
     ///   records its member present where the key's recorded base value is
@@ -139,7 +136,15 @@ impl SealedBranch {
     ///   no operation touches ([`BranchError::MalformedSeal`]);
     /// - a touched key the branch also read has the same digest in
     ///   `touched_base` as in `reads`, since both digest its base value
-    ///   ([`BranchError::MalformedSeal`]).
+    ///   ([`BranchError::MalformedSeal`]);
+    /// - last, once every rule above holds: no `Remove` names a key whose
+    ///   recorded input set is not the empty set
+    ///   ([`BranchError::DerivedRemoval`], naming the first such key in
+    ///   operation order): the merged removal would drop the key's
+    ///   dependency entry. Sealing produced such removals before it refused
+    ///   them, and broke no other rule, so reporting this one only when it
+    ///   is the only one broken lets a store tell such a branch, to be
+    ///   re-run, from parts no sealing produced.
     ///
     /// `relied` holds one generation per target by type (see
     /// [`SealedBranchParts::relied`]). Digests are fixed-size values and are
@@ -238,6 +243,8 @@ pub(crate) fn is_reserved(key: &str) -> bool {
 /// order.
 pub(crate) fn check_sealed(parts: &SealedBranchParts) -> Result<(), BranchError> {
     let mut members: BTreeMap<(&str, &str), bool> = BTreeMap::new();
+    // Reported only once every other invariant holds.
+    let mut derived_removal: Option<&str> = None;
     for op in &parts.ops {
         let key = op.key();
         if is_reserved(key) {
@@ -270,9 +277,7 @@ pub(crate) fn check_sealed(parts: &SealedBranchParts) -> Result<(), BranchError>
             });
         };
         if matches!(op, BranchOp::Remove { .. }) && *inputs != InputsDigest::of(key, []) {
-            return Err(BranchError::DerivedRemoval {
-                key: key.to_owned(),
-            });
+            derived_removal.get_or_insert(key);
         }
         if let Some((member, _, in_base)) = op.set_member() {
             if members
@@ -312,6 +317,11 @@ pub(crate) fn check_sealed(parts: &SealedBranchParts) -> Result<(), BranchError>
         return Err(BranchError::MalformedSeal {
             key: key.clone(),
             reason: "the base value recorded for a touched key differs from the value read",
+        });
+    }
+    if let Some(key) = derived_removal {
+        return Err(BranchError::DerivedRemoval {
+            key: key.to_owned(),
         });
     }
     Ok(())
@@ -355,8 +365,9 @@ impl Branch {
     /// even when it equals the base value; if the branch also removes a key
     /// that one needs, the runtime refuses the merge (`MissingDependency`)
     /// rather than publish it. A key the branch changes only commutatively
-    /// is never one the branch evicts: staging refuses such an operation on
-    /// a key that reads as absent, and a change to an input of a key that
+    /// is never a derived key that reads as absent: staging refuses such an
+    /// operation on one, whether the branch's own change evicts it or the
+    /// base holds no value for it, and a change to an input of a key that
     /// has one ([`BranchError::EvictedOperand`]), so its value here is its
     /// base value with those operations applied.
     ///
@@ -492,9 +503,15 @@ impl Branch {
     /// ingress and `BranchError::UnreadTarget` for a `Put` or `Remove`.
     /// Returns `BranchError::EvictedOperand` for an operation on a key the
     /// branch has not put or removed and that is derived, directly or
-    /// transitively, from a key the branch changes: [`Branch::read`] shows
-    /// such a key absent, since the merge evicts it, and the operation would
-    /// be merged onto the value the change invalidates. That refusal comes
+    /// transitively, from a key the branch changes, naming that key as
+    /// `input`: [`Branch::read`] shows such a key absent, since the merge
+    /// evicts it, and the operation would be merged onto the value the
+    /// change invalidates. Returns it with no `input` for an operation on a
+    /// key the branch has not put or removed that is derived (its input set
+    /// in the base is not empty) and holds no value in the base: an earlier
+    /// change to its inputs evicted it, or it was never computed, so the
+    /// operation would start from zero or the empty set and the merge would
+    /// publish the result as the key's derived value. Both refusals come
     /// before the value's type is checked. Returns it too when the
     /// operation would change an input of another key the branch has
     /// changed only commutatively. Otherwise returns what applying the
@@ -513,7 +530,13 @@ impl Branch {
             if let Some(input) = self.changed_input_of(op.key())? {
                 return Err(BranchError::EvictedOperand {
                     key: op.key().to_owned(),
-                    input: input.to_owned(),
+                    input: Some(input.to_owned()),
+                });
+            }
+            if self.base.value(op.key()).is_none() && self.base.inputs(op.key()).next().is_some() {
+                return Err(BranchError::EvictedOperand {
+                    key: op.key().to_owned(),
+                    input: None,
                 });
             }
         }
@@ -656,7 +679,7 @@ impl Branch {
             if let Some(input) = self.changed_input_of(key)? {
                 return Ok(Some(BranchError::EvictedOperand {
                     key: key.to_owned(),
-                    input: input.to_owned(),
+                    input: Some(input.to_owned()),
                 }));
             }
         }

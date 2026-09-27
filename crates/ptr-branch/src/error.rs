@@ -83,21 +83,33 @@ pub enum BranchError {
     DerivedRemoval {
         key: String,
     },
-    /// A commutative operation on `key` would build on a value the branch's
-    /// own change to `input` evicts. `key` is derived from `input`, directly
-    /// or through other derived keys, and a commit that changes `input`
-    /// evicts `key` unless it writes it, so an addition or set operation
-    /// merged onto the value `key` held would publish it under an input it
-    /// was not computed from. Staging refuses both orders: such an operation
-    /// on a key the branch already reads as absent, and a change to an input
-    /// of a key the branch has only changed commutatively. Certification
-    /// refuses a sealed branch that holds one anyway, judged by the target's
-    /// dependency graph. A `Put` of the value recomputed from the changed
-    /// input is what the branch stages instead; operations staged after it
-    /// apply to it.
+    /// A commutative operation on `key` would build on an evicted value.
+    ///
+    /// With `input`, the branch's own change to `input` evicts it: `key` is
+    /// derived from `input`, directly or through other derived keys, and a
+    /// commit that changes `input` evicts `key` unless it writes it, so an
+    /// addition or set operation merged onto the value `key` held would
+    /// publish it under an input it was not computed from. Staging refuses
+    /// both orders: such an operation on a key the branch already reads as
+    /// absent, and a change to an input of a key the branch has only changed
+    /// commutatively. Certification refuses a sealed branch that holds one
+    /// anyway, judged by the target's dependency graph.
+    ///
+    /// Without `input`, `key` is derived (its input set is not empty) and
+    /// holds no value in the snapshot the operation is checked against, the
+    /// branch's base when it is staged and the target when it is certified:
+    /// a change to its inputs the branch did not make evicted it, before
+    /// the base or concurrently, or it was never computed. An operation
+    /// defined on an absent value would start from zero or the empty set,
+    /// and the merge would publish the result as derived from inputs it was
+    /// never computed from.
+    ///
+    /// Either way, a `Put` of the value recomputed from the key's inputs is
+    /// what the branch stages instead; operations staged after it apply to
+    /// it.
     EvictedOperand {
         key: String,
-        input: String,
+        input: Option<String>,
     },
 }
 
@@ -171,10 +183,18 @@ impl fmt::Display for BranchError {
                 formatter,
                 "{key:?} is derived, and a branch may not remove its dependency entry"
             ),
-            Self::EvictedOperand { key, input } => write!(
+            Self::EvictedOperand {
+                key,
+                input: Some(input),
+            } => write!(
                 formatter,
                 "{key:?} is derived from {input:?}, which the branch changes, so a commutative \
                  operation on it would build on an evicted value; put its recomputed value instead"
+            ),
+            Self::EvictedOperand { key, input: None } => write!(
+                formatter,
+                "{key:?} is derived and holds no value, so a commutative operation on it would \
+                 build on an evicted value; put its recomputed value instead"
             ),
         }
     }

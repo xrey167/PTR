@@ -1351,31 +1351,36 @@ impl Case<'_> {
         }
     }
 
-    /// Replace the live memory with one restored from the stored journal, as
-    /// a restarted process does.
+    /// Replace the live memory with one restored from the store, as a
+    /// restarted process does: `PgSubstrate::restore_memory` folds the
+    /// journal under the registration's codebook and key projection and
+    /// numbers the next write above the registration's sequence high-water
+    /// mark, so a revoked write's number is not taken again. A memory
+    /// restored from `load_journal` alone would take it, and the store
+    /// would refuse that append.
     async fn restore_memory(&mut self, index: usize) {
         let id = self.memories[index].id.clone();
-        let config = self.memories[index].config;
-        let codebook = self.memories[index].codebook;
-        let projection = self.memories[index].projection;
-        match self.sessions.writer().load_journal(&id).await {
-            Ok(journal) => {
-                match FastMemory::restore_with_projection(config, codebook, projection, journal) {
-                    Ok(memory) => {
-                        self.memories[index].memory = memory;
-                        self.metrics.restores += 1;
-                    }
-                    Err(error) => {
-                        diverged(
-                            &mut self.metrics.journal_mismatches,
-                            format!(
-                                "{}: the journal of {id:?} does not restore: {error}",
-                                self.label
-                            ),
-                        );
-                        self.broken = true;
-                    }
-                }
+        match self.sessions.writer().restore_memory(&id).await {
+            Ok(Some(memory)) => {
+                self.memories[index].memory = memory;
+                self.metrics.restores += 1;
+            }
+            Ok(None) => {
+                diverged(
+                    &mut self.metrics.read_failures,
+                    format!("{}: {id:?} is not registered", self.label),
+                );
+                self.broken = true;
+            }
+            Err(error @ PgError::CorruptRow { .. }) => {
+                diverged(
+                    &mut self.metrics.journal_mismatches,
+                    format!(
+                        "{}: the journal of {id:?} does not restore: {error}",
+                        self.label
+                    ),
+                );
+                self.broken = true;
             }
             Err(error) => {
                 diverged(

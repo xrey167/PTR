@@ -206,15 +206,43 @@ impl FastMemory {
     ///
     /// # Errors
     /// `SequenceExhausted` naming the largest sequence number the memory has
-    /// taken, restored or since revoked, when that is at or above `limit`:
-    /// the memory already holds, or has handed out, a number the limit
-    /// excludes.
+    /// taken (restored, since revoked, or at or below a mark
+    /// [`Self::with_sequence_high_water`] set) when that is at or above
+    /// `limit`: the memory already holds, or has handed out, a number the
+    /// limit excludes.
     pub fn with_sequence_limit(mut self, limit: WriteSeq) -> Result<Self, FastMemoryError> {
         let taken = self.next_seq - 1;
         if taken > 0 && taken >= limit.0 {
             return Err(FastMemoryError::SequenceExhausted { seq: taken });
         }
         self.seq_limit = self.seq_limit.min(limit.0);
+        Ok(self)
+    }
+
+    /// This memory, numbering its next write above `high_water`: the
+    /// largest sequence number its store ever journaled for it, including
+    /// the numbers of writes revoked since, which the store no longer holds.
+    ///
+    /// A memory keeps every number it took ([`Self::revoke`] leaves its next
+    /// number where it was), but [`Self::restore`] can only number the next
+    /// write after the last one its journal holds. Restored from a journal
+    /// whose last writes were revoked, it would hand their numbers out
+    /// again, although the live memory never takes them again. A store that
+    /// keeps its journal's high-water mark restores with it (`ptr-pg` does),
+    /// so a restored memory numbers its next write as the live one does. A
+    /// mark only ever raises: one at or below a number the memory already
+    /// took changes nothing.
+    ///
+    /// # Errors
+    /// `SequenceExhausted` naming `high_water` when it is at or above the
+    /// memory's limit ([`Self::sequence_limit`]): the memory never takes
+    /// that number, so no store journaled it for this memory.
+    pub fn with_sequence_high_water(
+        mut self,
+        high_water: WriteSeq,
+    ) -> Result<Self, FastMemoryError> {
+        let next_seq = self.successor(high_water)?;
+        self.next_seq = self.next_seq.max(next_seq);
         Ok(self)
     }
 

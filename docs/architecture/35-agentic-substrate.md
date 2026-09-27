@@ -279,8 +279,12 @@ that compare a digest with the digest of absence or of the empty set (no member 
 in a base without its key; a `Remove` only of a key with no inputs) are left to
 `load_branch`. Sealing once accepted a `Remove` of a derived key, so rows recording one
 load as `BranchWithDerivedRemoval`, a branch to re-run, not as `CorruptBranch`, which
-names rows no sealing produced
-(`a_branch_sealed_before_derived_removals_were_refused_loads_as_one_to_re_run`). A
+names rows no sealing produced, but only when the removal is the only sealing rule they
+break (`SealedBranch::from_parts` reports a derived removal last) and no set operation
+records its member's base presence, which that sealing never recorded
+(`a_branch_sealed_before_derived_removals_were_refused_loads_as_one_to_re_run`); beside
+either, the rows are `CorruptBranch`, whichever operation comes first
+(`a_derived_removal_beside_rows_no_sealing_produced_loads_as_a_corrupt_branch`). A
 journal row satisfies `validate_write` for its memory's configuration, decoded from its
 little-endian `f32` cells (finite key cells and no all-zero head, finite values within
 `MAX_VALUE_MAGNITUDE`, decay factors in `(0, 1]`), over a set of cells exactly where
@@ -298,7 +302,27 @@ before folding it, rather than one that folds a write no row can hold; sequence 
 are the caller's, gaps included, so such a registration takes no further write however
 few rows it holds. Both journal loaders refuse a row at `i64::MAX` written before the
 check as a corrupt row
-(`a_restored_memory_never_takes_a_sequence_number_its_journal_refuses`). A
+(`a_restored_memory_never_takes_a_sequence_number_its_journal_refuses`). Work
+migration 12 keeps that true across revocation. A `FastMemory` keeps every number it
+took (`FastMemory::revoke` leaves its next number where it was), but revocation
+deletes journal rows, so an append checked against the journal's last row, or a
+memory restored from it, took a revoked write's number again, and a journal ending at
+`i64::MAX - 1` took further writes once its last write was revoked. Each memory now
+keeps a sequence high-water mark (`fastmem_memory.last_seq`), the largest number ever
+journaled for it: a journal row's number must exceed it and becomes it, read under the
+no-change update that orders appends, and the mark never falls, the only column of a
+registration that changes. `append_write` refuses a number at or below it, and
+`restore_memory` numbers the next write above it
+(`FastMemory::with_sequence_high_water`), as the live memory does, so a revoked write's
+number is never journaled or handed out again, and a registration whose journal
+reached `i64::MAX - 1` takes no further write whatever is revoked since
+(`a_revoked_write_s_sequence_number_is_never_journaled_or_handed_out_again`). A memory
+registered before the migration starts from its journal's last number, `i64::MAX - 1`
+for a journal holding a row at `i64::MAX`; the numbers of writes revoked before it were
+not kept
+(`a_journal_written_before_its_high_water_mark_was_kept_keeps_the_numbers_it_held`).
+`load_journal` returns the rows alone, and a memory restored from them numbers its next
+write after the last. A
 registered adapter is retired, never deleted, so its data manifest and its id stay
 (`a_registered_adapter_is_retired_never_deleted`). Every table whose rows are never
 removed on their own refuses `TRUNCATE`, which fires no row trigger
@@ -430,6 +454,12 @@ that would change an input of a key the branch has changed only commutatively
 (`EvictedOperand`, recording nothing); a `Put` of the recomputed value is what the
 branch stages instead, and operations after it apply to it
 (`a_commutative_operation_never_builds_on_a_derived_value_the_branch_s_own_change_evicts`).
+Nor does one build on a derived key the base holds no value for, evicted by an earlier
+change to its inputs or never computed: it reads as absent, as a key never written
+does, but an addition would start from zero and the merge would publish the result as
+derived from inputs it was not computed from, so staging refuses it too
+(`EvictedOperand` naming no input) and a `Put` of the recomputed value is again the way
+through (`a_commutative_operation_on_a_derived_key_evicted_before_the_base_is_refused`).
 An operation is checked before anything is recorded, so a refused one leaves no
 read of its key's inputs behind to refuse the branch later
 (`a_refused_commutative_operation_leaves_no_read_of_its_inputs_behind`), and a set
@@ -463,7 +493,11 @@ operations on one member that record different base presences, or one that recor
 its member present where the key was absent
 (`hand_built_set_operations_that_misstate_their_member_at_the_base_are_refused_by_the_constructor`);
 any other base presence is taken as declared, since the base value hides behind its
-digest.
+digest. Refusals name the first broken invariant in operation order, except that a
+derived removal is reported only when no other invariant is broken: sealing once
+produced such removals and broke nothing else, so a store can tell that branch from
+parts no sealing produced
+(`a_derived_removal_is_reported_only_when_the_parts_break_no_other_invariant`).
 A branch relies on one generation per target by type. Digests keep public
 constructors: a digest commits to data anyone who can read it can compute, so it
 authenticates nothing, and declaring the digest of a value one could read declares
@@ -506,10 +540,21 @@ commit evicts a derived key whose inputs change unless it writes it
 (`an_unchanged_write_of_a_derived_key_whose_input_the_plan_changes_is_published_not_evicted`).
 A touched key whose operations all commute is refused as `EvictedOperand` when the plan
 changes a key it is derived from in the target's dependency graph, since its operations
-were applied to a value that change evicts; staging never produces such a branch, so
-this catches one rebuilt from parts, or a target whose graph links the keys where the
-base's did not
-(`certification_refuses_a_commutative_operation_on_a_key_its_own_plan_evicts`).
+were applied to a value that change evicts
+(`certification_refuses_a_commutative_operation_on_a_key_its_own_plan_evicts`), and,
+naming no input, when the target holds no value for it although its input set there is
+not empty: a commit evicted it, after the base or before it, and its operations would
+start from absence. That holds when every value the branch read and every input set
+are as the base had them, as after an input changed and changed back, or after an
+input of an input changed while the input was recomputed to its value
+(`a_commutative_operation_never_builds_on_a_derived_value_a_concurrent_commit_evicts`).
+Staging judges by the base, so a branch it accepted still meets these refusals after
+such a concurrent eviction, when the target's graph links two keys where the base's did
+not, or when its commutative operations leave an input as the base holds it but change
+the target's, for example when the target holds the same count under another payload
+source, which the merged value replaces with `OP_SOURCE`
+(`certification_refuses_a_staged_operation_whose_input_changes_only_against_the_target`);
+a branch rebuilt from parts staging would not produce meets them too.
 A `MergePlan` has private fields with read accessors, so nothing can change it after
 certification, and `MergePlan::digest`, what a person approves, covers the branch id,
 the expected revision, the delta, the dependency digest (reads, scans, relied
@@ -677,6 +722,12 @@ A memory takes no sequence number at or above its limit, `u64::MAX` unless
 one before folding it, so a store whose column holds fewer numbers restores with its
 own limit and the memory never folds a write the store cannot journal
 (`a_memory_with_a_sequence_limit_refuses_the_write_that_would_reach_it_before_folding`).
+A memory never takes a number twice, revoked or not, and one restored from a journal
+whose last writes were revoked would number its next write after the last row it
+holds, so `FastMemory::with_sequence_high_water` numbers it above the largest number
+its store ever journaled for it, as the live memory numbers it; `PgSubstrate::restore_memory`
+restores with the mark its registration keeps
+(`a_memory_restored_below_its_store_s_high_water_mark_numbers_its_next_write_above_it`).
 
 Every write names its semantic input, generation and input digest. A read is admitted
 only if every source is admissible according to the caller's lifecycle view when the

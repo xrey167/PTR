@@ -192,16 +192,37 @@ impl Certification {
 /// the key, so omitting it would publish the key absent rather than as the
 /// branch wrote it. If the plan removes one of those inputs, the runtime
 /// refuses the delta (`MissingDependency`) rather than publishing the key
-/// without it. A touched key whose operations all commute is refused as
-/// [`BranchError::EvictedOperand`] when the plan changes a key it is derived
-/// from, directly or transitively in the target's dependency graph: its
-/// operations were applied to the target's value, which that change evicts,
-/// and publishing the result would build on an invalidated value. Staging
-/// refuses such an operation in either order
+/// without it.
+///
+/// A touched key whose operations all commute is refused as
+/// [`BranchError::EvictedOperand`] with no `input` when the target holds no
+/// value for it although its input set there is not empty: a change to its
+/// inputs evicted it, after the branch's base or before it, or it was never
+/// computed, so its operations would start from zero or the empty set and
+/// the plan would publish the result as derived from inputs it was never
+/// computed from. That holds even when every value the branch read, and the
+/// key's input set, are as the base had them, as after an input changed and
+/// changed back, or after an input of an input changed while the input was
+/// recomputed to its value. It is refused naming the input when the plan
+/// changes a key it is derived from, directly or transitively in the
+/// target's dependency graph: its operations were applied to the target's
+/// value, which that change evicts, and publishing the result would build on
+/// an invalidated value. Staging refuses an operation on a derived key its
+/// base holds no value for, and one that would build on a value the
+/// branch's own change evicts, in either order
 /// ([`Branch::stage_commutative`](crate::Branch::stage_commutative),
-/// [`Branch::put`](crate::Branch::put)), so a branch meets this refusal only
-/// when it was rebuilt from parts staging would not produce, or when the
-/// target's dependency graph links the two keys where the base's did not.
+/// [`Branch::put`](crate::Branch::put)), but it judges by the base, and
+/// decides whether the branch changes an input by comparing its value with
+/// the base's. So a branch staging accepted still meets these refusals when
+/// a commit after its base evicted the key; when the target's dependency
+/// graph links two keys where the base's did not; or when its commutative
+/// operations leave an input as the base holds it but change the target's,
+/// for example when the target holds the same count or members under
+/// another payload source, which the merged value replaces with
+/// [`OP_SOURCE`](crate::OP_SOURCE). A branch rebuilt from parts staging
+/// would not produce meets them too. A `Put` of the value recomputed from
+/// the key's inputs, staged by a branch over the target, is the way through.
+///
 /// The plan carries the relied-on generations, and the runtime
 /// must check them again when it commits (see [`MergePlan`]); a generation
 /// revoked or superseded after this call is not seen here.
@@ -296,6 +317,21 @@ where
         return Err(BranchError::Conflict { keys: conflicts });
     }
 
+    // A key whose operations all commute is computed from the target's
+    // value. A derived key the target holds no value for was evicted, or
+    // never computed: the operations would start from absence, and the plan
+    // would publish the result as derived from its inputs.
+    if let Some(key) = branch.touched_inputs().keys().find(|key| {
+        only_commutes(branch, key)
+            && target.value(key).is_none()
+            && target.inputs(key).next().is_some()
+    }) {
+        return Err(BranchError::EvictedOperand {
+            key: key.clone(),
+            input: None,
+        });
+    }
+
     let mut finals: BTreeMap<&str, Option<SemanticValue>> = BTreeMap::new();
     for op in branch.ops() {
         let current = match finals.remove(op.key()) {
@@ -314,15 +350,11 @@ where
     // if the plan changes a key it is derived from, that value is one the
     // commit evicts, and the plan would publish the operations onto it.
     for key in finals.keys() {
-        let commutative = branch
-            .ops()
-            .iter()
-            .all(|op| op.key() != *key || op.commutes());
-        if commutative {
+        if only_commutes(branch, key) {
             if let Some(input) = changed_input_of(target, key, &changed) {
                 return Err(BranchError::EvictedOperand {
                     key: (*key).to_owned(),
-                    input: input.to_owned(),
+                    input: Some(input.to_owned()),
                 });
             }
         }
@@ -365,6 +397,15 @@ where
     } else {
         Ok(Certification::Rebased(plan))
     }
+}
+
+/// Whether every operation of `branch` on `key` commutes: the value it
+/// publishes there is computed from the target's.
+fn only_commutes(branch: &SealedBranch, key: &str) -> bool {
+    branch
+        .ops()
+        .iter()
+        .all(|op| op.key() != key || op.commutes())
 }
 
 /// A key in `changed` that `key` is derived from, directly or transitively

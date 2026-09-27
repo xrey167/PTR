@@ -224,7 +224,12 @@ impl PgSubstrate {
     /// a member present in a base without its key), are a
     /// [`PgError::CorruptBranch`] naming the `BranchError`. The invariants
     /// are checked operation by operation in `SealedBranch::from_parts`'s
-    /// order, so rows that break more than one are refused for the first.
+    /// order, so rows that break more than one are refused for the first,
+    /// except that a derived removal is reported only when the rows break
+    /// no other invariant: sealing that accepted one broke none. Such a
+    /// removal is a [`PgError::CorruptBranch`] too when a set operation of
+    /// the branch records its member's base presence, which no sealing that
+    /// accepted derived removals recorded.
     pub async fn load_branch(&mut self, id: &BranchId) -> Result<Option<SealedBranch>, PgError> {
         let work = self.schemas.work.clone();
         let transaction = self
@@ -368,6 +373,12 @@ impl PgSubstrate {
             .collect::<Result<Vec<_>, _>>()?;
         transaction.commit().await.map_err(database)?;
 
+        // Every set operation here recorded its member's base presence (a
+        // row without one was refused above), which only sealing that
+        // refuses derived removals records.
+        let records_set_base = ops
+            .iter()
+            .any(|op| matches!(op, BranchOp::SetInsert { .. } | BranchOp::SetRemove { .. }));
         SealedBranch::from_parts(SealedBranchParts {
             id: id.clone(),
             author: PrincipalId(header.get(0)),
@@ -382,11 +393,15 @@ impl PgSubstrate {
         .map(Some)
         .map_err(|error| match error {
             // Sealing has not always refused this, so a branch sealed
-            // before it did can hold one without anyone tampering.
-            BranchError::DerivedRemoval { key } => PgError::BranchWithDerivedRemoval {
-                branch: id.0.clone(),
-                key,
-            },
+            // before it did can hold one without anyone tampering: then it
+            // is the only rule the rows break (from_parts reports it only
+            // then) and no set operation records a base presence.
+            BranchError::DerivedRemoval { key } if !records_set_base => {
+                PgError::BranchWithDerivedRemoval {
+                    branch: id.0.clone(),
+                    key,
+                }
+            }
             error => PgError::CorruptBranch {
                 branch: id.0.clone(),
                 error,

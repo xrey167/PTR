@@ -3,9 +3,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use ptr_branch::{
     certify, counter_value, read_counter_value, read_set_value, set_value, Branch, BranchError,
     BranchId, BranchOp, Certification, InputsDigest, SealedBranch, SealedBranchParts, ValueDigest,
+    COUNTER_TYPE,
 };
-use ptr_semdb::{SemanticDelta, SemanticHost, SemanticValue};
-use ptr_types::{Generation, PrincipalId, Validity};
+use ptr_semdb::{SemanticDelta, SemanticHost, SemanticPayload, SemanticValue};
+use ptr_types::{Generation, PrincipalId, TypeId, Validity};
 
 fn text(value: &str) -> SemanticValue {
     SemanticValue::Text(value.into())
@@ -961,7 +962,7 @@ fn an_unchanged_write_of_a_derived_key_whose_input_the_plan_changes_is_published
         }),
         Err(BranchError::EvictedOperand {
             key: "s".into(),
-            input: "a".into(),
+            input: Some("a".into()),
         })
     );
     assert_eq!(work.read("s").unwrap(), None);
@@ -1063,7 +1064,7 @@ fn rate_host(value: SemanticValue) -> SemanticHost {
 fn evicted(key: &str, input: &str) -> BranchError {
     BranchError::EvictedOperand {
         key: key.into(),
-        input: input.into(),
+        input: Some(input.into()),
     }
 }
 
@@ -1321,5 +1322,256 @@ fn a_plan_carries_the_generations_its_branch_relied_on() {
     assert_eq!(
         relied,
         BTreeMap::from([("capsule:policy".to_owned(), Generation(3))])
+    );
+}
+
+/// The refusal of a commutative operation on `key`, which is derived and
+/// holds no value in the snapshot the operation is checked against: an
+/// earlier change to its inputs evicted it, or it was never computed.
+fn absent_operand(key: &str) -> BranchError {
+    BranchError::EvictedOperand {
+        key: key.into(),
+        input: None,
+    }
+}
+
+/// A host where the counter `d` and the set `s` are derived from `m`, which
+/// is derived from `n`.
+fn chain_host() -> SemanticHost {
+    let mut host = SemanticHost::default();
+    let mut setup = SemanticDelta::default();
+    setup.upserts.insert("n".into(), text("a"));
+    setup.upserts.insert("m".into(), text("1"));
+    setup.upserts.insert("d".into(), counter_value(10));
+    setup.upserts.insert(
+        "s".into(),
+        set_value(&BTreeSet::from(["x".to_owned()])).unwrap(),
+    );
+    setup
+        .dependencies
+        .insert("m".into(), BTreeSet::from(["n".to_owned()]));
+    for key in ["d", "s"] {
+        setup
+            .dependencies
+            .insert(key.into(), BTreeSet::from(["m".to_owned()]));
+    }
+    host.apply_delta(setup).unwrap();
+    host
+}
+
+#[test]
+fn a_commutative_operation_never_builds_on_a_derived_value_a_concurrent_commit_evicts() {
+    let add = BranchOp::Add {
+        key: "d".into(),
+        amount: 5,
+    };
+    let insert = BranchOp::SetInsert {
+        key: "s".into(),
+        member: "y".into(),
+        in_base: false,
+    };
+    // Concurrent commits that evict `d` and `s` and leave every value the
+    // branch read and every input set as the base had them: `m` changes and
+    // changes back, or `n` changes and `m` is recomputed to the value it had.
+    let changed_and_back = |host: &mut SemanticHost| {
+        change(host, "m", text("2"));
+        change(host, "m", text("1"));
+    };
+    let upstream = |host: &mut SemanticHost| {
+        let mut delta = SemanticDelta::default();
+        delta.upserts.insert("n".into(), text("b"));
+        delta.upserts.insert("m".into(), text("1"));
+        host.apply_delta(delta).unwrap();
+    };
+    for (concurrent, why) in [
+        (
+            changed_and_back as fn(&mut SemanticHost),
+            "m changed and back",
+        ),
+        (upstream, "n changed and m recomputed to its value"),
+    ] {
+        for op in [add.clone(), insert.clone()] {
+            let mut host = chain_host();
+            let mut work = branch(&host, "b1");
+            work.stage_commutative(op.clone()).unwrap();
+            let sealed = work.seal().unwrap();
+            // Staging read the key's input, as it always does.
+            assert_eq!(sealed.reads().keys().collect::<Vec<_>>(), ["m"], "{why}");
+            concurrent(&mut host);
+            let target = host.snapshot();
+            let key = op.key();
+            assert_eq!(target.value(key), None, "{why}: {op:?}");
+            assert_eq!(target.inputs(key).collect::<Vec<_>>(), ["m"], "{why}");
+            assert_eq!(target.get("m"), Some("1"), "{why}");
+            // Applied to the evicted key, the operation would publish 5, or
+            // {y}, as derived from `m`: a value never computed from it.
+            assert_eq!(
+                certify(&sealed, &target, no_lifecycle),
+                Err(absent_operand(key)),
+                "{why}: {op:?}"
+            );
+        }
+    }
+
+    // A Put of the value recomputed from the inputs is the way through, and
+    // an operation after it applies to it.
+    let mut host = chain_host();
+    changed_and_back(&mut host);
+    let mut work = branch(&host, "b2");
+    assert_eq!(work.read("d").unwrap(), None);
+    assert_eq!(
+        work.stage_commutative(add.clone()),
+        Err(absent_operand("d"))
+    );
+    work.put("d", counter_value(10)).unwrap();
+    work.stage_commutative(add).unwrap();
+    assert_eq!(work.read("d").unwrap(), Some(counter_value(15)));
+    let certification = certify(&work.seal().unwrap(), &host.snapshot(), no_lifecycle).unwrap();
+    commit(&mut host, certification);
+    let snapshot = host.snapshot();
+    assert_eq!(snapshot.value("d"), Some(&counter_value(15)));
+    assert_eq!(snapshot.inputs("d").collect::<Vec<_>>(), ["m"]);
+}
+
+#[test]
+fn a_commutative_operation_on_a_derived_key_evicted_before_the_base_is_refused() {
+    // `m` changed before the branch opened, evicting `d` and `s`: each reads
+    // as absent, as a key never written does, but a value computed from
+    // absence would be published as derived from `m`.
+    let mut host = chain_host();
+    change(&mut host, "m", text("2"));
+    let base = host.snapshot();
+    for op in [
+        BranchOp::Add {
+            key: "d".into(),
+            amount: 5,
+        },
+        BranchOp::SetInsert {
+            key: "s".into(),
+            member: "y".into(),
+            in_base: false,
+        },
+    ] {
+        let key = op.key().to_owned();
+        assert_eq!(base.value(&key), None);
+        let mut work = branch(&host, "b1");
+        assert_eq!(work.read(&key).unwrap(), None, "{op:?}");
+        let refused = work.stage_commutative(op.clone()).unwrap_err();
+        assert_eq!(refused, absent_operand(&key), "{op:?}");
+        assert_eq!(refused.code(), "PTR_BRANCH_EVICTED_OPERAND");
+        assert!(refused.to_string().contains("holds no value"), "{refused}");
+        // Nothing was recorded, not even a read of `m`.
+        let sealed = work.seal().unwrap();
+        assert!(sealed.ops().is_empty(), "{op:?}");
+        assert_eq!(sealed.reads().keys().collect::<Vec<_>>(), [&key], "{op:?}");
+
+        // Parts that hold the operation anyway are rebuilt, since no sealing
+        // invariant covers the base's values, and certification refuses
+        // them against a target that holds no value for the key.
+        let mut parts = sealed.into_parts();
+        parts
+            .reads
+            .insert("m".into(), ValueDigest::of("m", base.value("m")).unwrap());
+        parts
+            .touched_base
+            .insert(key.clone(), ValueDigest::of(&key, None).unwrap());
+        parts
+            .touched_inputs
+            .insert(key.clone(), InputsDigest::of(&key, base.inputs(&key)));
+        parts.ops.push(op.clone());
+        let rebuilt = SealedBranch::from_parts(parts).unwrap();
+        assert_eq!(
+            certify(&rebuilt, &base, no_lifecycle),
+            Err(absent_operand(&key)),
+            "{op:?}"
+        );
+    }
+
+    // A key with no value and no inputs is a counter or set not yet
+    // written: an operation on it is staged and merged from zero.
+    let mut work = branch(&host, "b2");
+    work.stage_commutative(BranchOp::Add {
+        key: "fresh".into(),
+        amount: 5,
+    })
+    .unwrap();
+    // A Put of the value recomputed from `m` is the way through, and an
+    // operation after it applies to it.
+    work.read("d").unwrap();
+    work.put("d", counter_value(20)).unwrap();
+    work.stage_commutative(BranchOp::Add {
+        key: "d".into(),
+        amount: 5,
+    })
+    .unwrap();
+    assert_eq!(work.read("d").unwrap(), Some(counter_value(25)));
+    let certification = certify(&work.seal().unwrap(), &host.snapshot(), no_lifecycle).unwrap();
+    assert!(matches!(certification, Certification::Clean(_)));
+    commit(&mut host, certification);
+    let snapshot = host.snapshot();
+    assert_eq!(snapshot.value("d"), Some(&counter_value(25)));
+    assert_eq!(snapshot.value("fresh"), Some(&counter_value(5)));
+}
+
+#[test]
+fn certification_refuses_a_staged_operation_whose_input_changes_only_against_the_target() {
+    // `d` is derived from `m`, which is derived from the counter `n`. The
+    // branch adds one to `n` and takes it away again, which leaves `n` as
+    // its base had it, so staging accepts an addition to `d`.
+    let mut host = SemanticHost::default();
+    let mut setup = SemanticDelta::default();
+    setup.upserts.insert("n".into(), counter_value(5));
+    setup.upserts.insert("m".into(), counter_value(10));
+    setup.upserts.insert("d".into(), counter_value(20));
+    setup
+        .dependencies
+        .insert("m".into(), BTreeSet::from(["n".to_owned()]));
+    setup
+        .dependencies
+        .insert("d".into(), BTreeSet::from(["m".to_owned()]));
+    host.apply_delta(setup).unwrap();
+    let mut work = branch(&host, "b1");
+    for amount in [1, -1] {
+        work.stage_commutative(BranchOp::Add {
+            key: "n".into(),
+            amount,
+        })
+        .unwrap();
+    }
+    work.stage_commutative(BranchOp::Add {
+        key: "d".into(),
+        amount: 5,
+    })
+    .unwrap();
+    assert_eq!(work.read("d").unwrap(), Some(counter_value(25)));
+    let sealed = work.seal().unwrap();
+    assert!(matches!(
+        certify(&sealed, &host.snapshot(), no_lifecycle),
+        Ok(Certification::Clean(_))
+    ));
+
+    // A concurrent commit writes the same count to `n` under another source
+    // and recomputes `m` and `d` to the values they had: no value the branch
+    // read, no input set and no link of the graph changed.
+    let ingress = SemanticValue::Payload(SemanticPayload {
+        type_id: TypeId::from(COUNTER_TYPE),
+        source: "ingress".into(),
+        bytes: 5i64.to_le_bytes().to_vec(),
+    });
+    let mut delta = SemanticDelta::default();
+    delta.upserts.insert("n".into(), ingress);
+    delta.upserts.insert("m".into(), counter_value(10));
+    delta.upserts.insert("d".into(), counter_value(20));
+    host.apply_delta(delta).unwrap();
+    let target = host.snapshot();
+    assert_eq!(target.value("d"), Some(&counter_value(20)));
+    assert_eq!(target.inputs("d").collect::<Vec<_>>(), ["m"]);
+    assert_eq!(target.inputs("m").collect::<Vec<_>>(), ["n"]);
+    // Applied to the target's `n`, the branch's additions keep the count
+    // but give it the merge's source, which changes `n`: the plan would
+    // evict `d`, so the addition staging accepted is refused.
+    assert_eq!(
+        certify(&sealed, &target, no_lifecycle),
+        Err(evicted("d", "n"))
     );
 }

@@ -373,3 +373,62 @@ fn hand_built_set_operations_that_misstate_their_member_at_the_base_are_refused_
     );
     assert!(SealedBranch::from_parts(parts_for(&without, vec![op(true, false)])).is_ok());
 }
+
+#[test]
+fn a_derived_removal_is_reported_only_when_the_parts_break_no_other_invariant() {
+    // Sealing once produced a Remove of a derived key and broke nothing else,
+    // so a store tells such a branch, to be re-run, from parts no sealing
+    // produced by whether the removal is the only refusal: it is reported
+    // only once every other invariant holds.
+    let snapshot = snapshot_with(&[("j", text("1")), ("k", text("2"))]);
+    let remove = |key: &str| BranchOp::Remove { key: key.into() };
+    let derived = |parts: &mut SealedBranchParts, key: &str| {
+        parts
+            .touched_inputs
+            .insert(key.into(), InputsDigest::of(key, ["input"]));
+    };
+    // A set operation recording its member present in a base without its
+    // key is refused whichever operation comes first.
+    let present_without_key = BranchOp::SetRemove {
+        key: "s".into(),
+        member: "m".into(),
+        in_base: true,
+    };
+    for ops in [
+        vec![remove("k"), present_without_key.clone()],
+        vec![present_without_key.clone(), remove("k")],
+    ] {
+        let mut parts = parts_for(&snapshot, ops.clone());
+        derived(&mut parts, "k");
+        assert_eq!(
+            SealedBranch::from_parts(parts).unwrap_err(),
+            BranchError::MalformedSeal {
+                key: "s".into(),
+                reason: "a set operation records its member present in a base without its key",
+            },
+            "{ops:?}"
+        );
+    }
+    // So is a digest checked after every operation.
+    let mut parts = parts_for(&snapshot, vec![remove("k")]);
+    derived(&mut parts, "k");
+    parts
+        .touched_inputs
+        .insert("stray".into(), InputsDigest::of("stray", []));
+    assert_eq!(
+        SealedBranch::from_parts(parts).unwrap_err(),
+        BranchError::MalformedSeal {
+            key: "stray".into(),
+            reason: "a base value or input set is recorded for a key no operation touches",
+        }
+    );
+    // With nothing else broken, the first derived removal in operation
+    // order is reported.
+    let mut parts = parts_for(&snapshot, vec![remove("k"), remove("j")]);
+    derived(&mut parts, "j");
+    derived(&mut parts, "k");
+    assert_eq!(
+        SealedBranch::from_parts(parts).unwrap_err(),
+        BranchError::DerivedRemoval { key: "k".into() }
+    );
+}

@@ -285,6 +285,86 @@ fn a_memory_with_a_sequence_limit_refuses_the_write_that_would_reach_it_before_f
 }
 
 #[test]
+fn a_memory_restored_below_its_store_s_high_water_mark_numbers_its_next_write_above_it() {
+    // A memory keeps every number it took: after its last write is revoked,
+    // its next write takes the number after the revoked one.
+    let mut live = FastMemory::new(config(1), codebook(&config(1))).unwrap();
+    for (salt, source) in ["a", "b", "c"].iter().enumerate() {
+        live.write(write_about(source, salt as u32)).unwrap();
+    }
+    live.revoke(|source| source.key == "c");
+    let journal = vec![
+        (WriteSeq(1), write_about("a", 0)),
+        (WriteSeq(2), write_about("b", 1)),
+    ];
+    let restore = || FastMemory::restore(config(1), codebook(&config(1)), journal.clone()).unwrap();
+    // Restored from the journal that is left alone, a memory would hand out
+    // the revoked number again.
+    assert_eq!(
+        restore().write(write_about("d", 3)).unwrap().seq,
+        WriteSeq(3)
+    );
+    // Restored with the high-water mark its store kept, it numbers its next
+    // write as the live memory does.
+    let mut restored = restore().with_sequence_high_water(WriteSeq(3)).unwrap();
+    assert_eq!(restored.state().cells(), live.state().cells());
+    assert_eq!(restored.writes(), live.writes());
+    assert_eq!(
+        restored.write(write_about("d", 3)).unwrap().seq,
+        WriteSeq(4)
+    );
+    assert_eq!(live.write(write_about("d", 3)).unwrap().seq, WriteSeq(4));
+    // A mark only raises: one at or below a number the memory took changes
+    // nothing.
+    assert_eq!(
+        restore()
+            .with_sequence_high_water(WriteSeq(1))
+            .unwrap()
+            .write(write_about("d", 3))
+            .unwrap()
+            .seq,
+        WriteSeq(3)
+    );
+
+    // A mark just below the memory's limit leaves it refusing its next
+    // write before folding it; a mark at or above the limit names a number
+    // the memory never takes, and is refused naming it.
+    let limited = FastMemory::new(config(1), codebook(&config(1)))
+        .unwrap()
+        .with_sequence_limit(WriteSeq(10))
+        .unwrap();
+    let mut exhausted = limited
+        .clone()
+        .with_sequence_high_water(WriteSeq(9))
+        .unwrap();
+    assert_eq!(
+        exhausted.write(write_about("a", 0)),
+        Err(FastMemoryError::SequenceExhausted { seq: 10 })
+    );
+    assert!(exhausted.writes().is_empty());
+    assert_eq!(
+        limited.with_sequence_high_water(WriteSeq(10)).unwrap_err(),
+        FastMemoryError::SequenceExhausted { seq: 10 }
+    );
+    let fresh = || FastMemory::new(config(1), codebook(&config(1))).unwrap();
+    assert_eq!(
+        fresh()
+            .with_sequence_high_water(WriteSeq(u64::MAX))
+            .unwrap_err(),
+        FastMemoryError::SequenceExhausted { seq: u64::MAX }
+    );
+    // A limit set after a mark counts the numbers below the mark as taken.
+    assert_eq!(
+        fresh()
+            .with_sequence_high_water(WriteSeq(10))
+            .unwrap()
+            .with_sequence_limit(WriteSeq(10))
+            .unwrap_err(),
+        FastMemoryError::SequenceExhausted { seq: 10 }
+    );
+}
+
+#[test]
 fn a_write_that_could_overflow_the_fold_is_refused_and_leaves_the_memory_unchanged() {
     // f32::MAX and then -f32::MAX under one unit key: the second write's error
     // `target - current` is -inf. Both writes used to be folded and journaled,

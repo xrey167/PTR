@@ -5594,29 +5594,40 @@ async fn a_branch_sealed_before_derived_removals_were_refused_loads_as_one_to_re
     // Sealing once accepted a Remove of a derived key and recorded the key's
     // non-empty input set: `order:2` is removed here, and a writer from
     // before this version records it as derived from `order:0`, as that
-    // sealing did. Nothing in the schema refuses those rows.
-    let branch = sealed_branch("dr", "agent-7");
-    assert!(branch.ops().contains(&BranchOp::Remove {
+    // sealing did. Nothing in the schema refuses those rows. That sealing
+    // recorded no set operation's base presence, so the branch has none.
+    let mut parts = sealed_branch("dr", "agent-7").into_parts();
+    parts.ops.retain(|op| op.key() != "tags:1");
+    parts.touched_base.remove("tags:1");
+    parts.touched_inputs.remove("tags:1");
+    let legacy = SealedBranch::from_parts(parts).unwrap();
+    assert!(legacy.ops().contains(&BranchOp::Remove {
         key: "order:2".into()
     }));
-    substrate.store_branch(&branch).await.unwrap();
+    // The same removal beside set operations that record their member's
+    // base presence, which only sealing that refuses derived removals did.
+    let with_set_base = sealed_branch("ds", "agent-7");
     let raw = raw_client().await;
     let work = substrate.schemas().work.clone();
     let derived = InputsDigest::of("order:2", ["order:0"]);
-    write_before_invariants(
-        &raw,
-        &work,
-        &[],
-        &format!(
-            "UPDATE {work}.branch_touched SET inputs_digest = decode('{}', 'hex') \
-             WHERE branch = 'dr' AND key = 'order:2'",
-            hex(derived.as_bytes())
-        ),
-    )
-    .await;
-    // The branch is not certifiable, but it was sealed, not tampered with:
-    // loading it asks for a re-run rather than reporting corruption.
-    let error = substrate.load_branch(branch.id()).await.unwrap_err();
+    for branch in [&legacy, &with_set_base] {
+        substrate.store_branch(branch).await.unwrap();
+        write_before_invariants(
+            &raw,
+            &work,
+            &[],
+            &format!(
+                "UPDATE {work}.branch_touched SET inputs_digest = decode('{}', 'hex') \
+                 WHERE branch = '{}' AND key = 'order:2'",
+                hex(derived.as_bytes()),
+                branch.id()
+            ),
+        )
+        .await;
+    }
+    // The legacy branch is not certifiable, but it was sealed, not tampered
+    // with: loading it asks for a re-run rather than reporting corruption.
+    let error = substrate.load_branch(legacy.id()).await.unwrap_err();
     assert_eq!(
         error,
         PgError::BranchWithDerivedRemoval {
@@ -5626,6 +5637,85 @@ async fn a_branch_sealed_before_derived_removals_were_refused_loads_as_one_to_re
     );
     assert_eq!(error.code(), "PTR_PG_BRANCH_WITH_DERIVED_REMOVAL");
     assert!(error.to_string().contains("must be re-run"), "{error}");
+    // No sealing produced the other.
+    assert_eq!(
+        substrate.load_branch(with_set_base.id()).await,
+        Err(PgError::CorruptBranch {
+            branch: "ds".into(),
+            error: BranchError::DerivedRemoval {
+                key: "order:2".into()
+            },
+        })
+    );
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_derived_removal_beside_rows_no_sealing_produced_loads_as_a_corrupt_branch() {
+    let mut substrate = substrate().await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    let literal = |bytes: &[u8]| format!("decode('{}', 'hex')", hex(bytes));
+    let read = ValueDigest::of("k", Some(&SemanticValue::from("1"))).unwrap();
+    // A branch that removes `k`, recorded as derived from `i`, and inserts
+    // `m` into the set `s`, recorded as present in the base's set. Every
+    // trigger is enabled: the database does not recompute the digests these
+    // rules compare, so it accepts the rows.
+    let rows = |id: &str, remove: i32, insert: i32, s_base: &ValueDigest| {
+        format!(
+            "BEGIN; {} \
+             INSERT INTO {work}.branch_read (branch, key, digest) VALUES ('{id}', 'k', {read}); \
+             INSERT INTO {work}.branch_touched (branch, key, base_digest, inputs_digest) \
+             VALUES ('{id}', 'k', {read}, {derived}), ('{id}', 's', {s_base}, {no_inputs}); \
+             INSERT INTO {work}.branch_op (branch, ordinal, kind, key) \
+             VALUES ('{id}', {remove}, 'remove', 'k'); \
+             INSERT INTO {work}.branch_op (branch, ordinal, kind, key, member, member_in_base) \
+             VALUES ('{id}', {insert}, 'set_insert', 's', 'm', true); COMMIT;",
+            branch_header(&work, id),
+            read = literal(read.as_bytes()),
+            derived = literal(InputsDigest::of("k", ["i"]).as_bytes()),
+            s_base = literal(s_base.as_bytes()),
+            no_inputs = literal(InputsDigest::of("s", []).as_bytes()),
+        )
+    };
+    // `s` recorded absent from the base, where its member is recorded
+    // present: no sealing produced that, and the removal does not hide it,
+    // whichever operation comes first.
+    let absent = ValueDigest::of("s", None).unwrap();
+    for (id, remove, insert) in [("t1", 0, 1), ("t2", 1, 0)] {
+        raw.batch_execute(&rows(id, remove, insert, &absent))
+            .await
+            .unwrap();
+        assert_eq!(
+            substrate.load_branch(&BranchId::from(id)).await,
+            Err(PgError::CorruptBranch {
+                branch: id.into(),
+                error: BranchError::MalformedSeal {
+                    key: "s".into(),
+                    reason: "a set operation records its member present in a base without its key",
+                },
+            }),
+            "{id}"
+        );
+    }
+    // With `s` present at the base the removal is the only sealing rule
+    // broken, but a set operation records its member's base presence, which
+    // no sealing that accepted a derived removal did.
+    let present = ValueDigest::of(
+        "s",
+        Some(&ptr_branch::set_value(&["m".to_owned()].into_iter().collect()).unwrap()),
+    )
+    .unwrap();
+    raw.batch_execute(&rows("t3", 0, 1, &present))
+        .await
+        .unwrap();
+    assert_eq!(
+        substrate.load_branch(&BranchId::from("t3")).await,
+        Err(PgError::CorruptBranch {
+            branch: "t3".into(),
+            error: BranchError::DerivedRemoval { key: "k".into() },
+        })
+    );
     substrate.drop_all().await.unwrap();
 }
 
@@ -6451,5 +6541,204 @@ async fn a_restored_memory_never_takes_a_sequence_number_its_journal_refuses() {
             "{error:?}"
         );
     }
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_revoked_write_s_sequence_number_is_never_journaled_or_handed_out_again() {
+    let mut substrate = substrate().await;
+    let log = [
+        capsule(1, "live", 1),
+        capsule(2, "other", 1),
+        revoke(3, "other", 1),
+    ];
+    substrate.replay(&log[..2]).await.unwrap();
+    let from = |source: &str| write_request(source, [1.0, 0.0, 0.0, 0.0], [0.5, 0.0, 0.0, 0.0]);
+    let refused = |memory: &str| {
+        Err(PgError::InvalidWrite {
+            memory: memory.into(),
+            reason: "the sequence number does not follow the journal",
+        })
+    };
+    // `m`'s journal ends the sequence space with a write from `other`, so
+    // the memory restored from it refuses its next write.
+    memory_with(&substrate, "m", 64).await;
+    let last = ptr_fastmem::WriteSeq(i64::MAX as u64 - 1);
+    let exhausted = Err(FastMemoryError::SequenceExhausted {
+        seq: i64::MAX as u64,
+    });
+    substrate
+        .append_write("m", ptr_fastmem::WriteSeq(1), &from("live"))
+        .await
+        .unwrap();
+    substrate
+        .append_write("m", last, &from("other"))
+        .await
+        .unwrap();
+    let mut exhausted_live = substrate.restore_memory("m").await.unwrap().unwrap();
+    assert_eq!(exhausted_live.write(from("live")), exhausted);
+    // `n` journals a write from each source, as a live memory numbers them.
+    let config = memory_with(&substrate, "n", 64).await;
+    let mut live = FastMemory::with_projection(config, codebook(&config), [3; 32]).unwrap();
+    for source in ["live", "other"] {
+        let receipt = live.write(from(source)).unwrap();
+        substrate
+            .append_write("n", receipt.seq, &from(source))
+            .await
+            .unwrap();
+    }
+
+    // Revoking `other` deletes its writes, the last of each journal, and
+    // the live memories drop them. A memory keeps every number it took, so
+    // `m`'s still refuses its next write and `n`'s numbers its next one 3.
+    let chain = anchors(&log);
+    let report = substrate.apply_committed(&log[2], chain[2]).await.unwrap();
+    assert_eq!(report.removed_writes, 2);
+    for memory in [&mut exhausted_live, &mut live] {
+        assert_eq!(memory.revoke(|source| source.key == "other").removed, 1);
+    }
+    assert_eq!(exhausted_live.write(from("live")), exhausted);
+
+    // The store agrees: a revoked number is journaled again by no writer,
+    // and a memory restored from the journal numbers its next write as the
+    // live one does.
+    assert_eq!(
+        substrate.append_write("m", last, &from("live")).await,
+        refused("m")
+    );
+    assert_eq!(
+        substrate
+            .append_write("n", ptr_fastmem::WriteSeq(2), &from("live"))
+            .await,
+        refused("n")
+    );
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    for (memory, seq) in [("m", i64::MAX - 1), ("n", 2)] {
+        assert_eq!(
+            refused_sqlstate(&raw, &raw_write(&work, memory, seq)).await,
+            "23000",
+            "{memory}"
+        );
+    }
+    let mut restored = substrate.restore_memory("m").await.unwrap().unwrap();
+    assert_eq!(restored.writes().len(), 1);
+    assert_eq!(restored.write(from("live")), exhausted);
+    let mut restored = substrate.restore_memory("n").await.unwrap().unwrap();
+    assert_eq!(bits(restored.state().cells()), bits(live.state().cells()));
+    let next = restored.write(from("live")).unwrap().seq;
+    assert_eq!(next, ptr_fastmem::WriteSeq(3));
+    assert_eq!(live.write(from("live")).unwrap().seq, next);
+    substrate
+        .append_write("n", next, &from("live"))
+        .await
+        .unwrap();
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_journal_written_before_its_high_water_mark_was_kept_keeps_the_numbers_it_held() {
+    // A work schema at version 11 holding journals, then upgraded.
+    let mut substrate = unmigrated_substrate_at(&dsn()).await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    raw.batch_execute(&format!(
+        "CREATE SCHEMA {work}; \
+         CREATE TABLE {work}.schema_migration ( \
+             version integer PRIMARY KEY, \
+             name text NOT NULL, \
+             checksum bytea NOT NULL, \
+             applied_at timestamptz NOT NULL DEFAULT now())"
+    ))
+    .await
+    .unwrap();
+    for migration in &WORK_MIGRATIONS[..11] {
+        raw.batch_execute(&migration.render(substrate.schemas()))
+            .await
+            .unwrap();
+        raw.execute(
+            &format!(
+                "INSERT INTO {work}.schema_migration (version, name, checksum) \
+                 VALUES ($1, $2, $3)"
+            ),
+            &[
+                &(migration.version as i32),
+                &migration.name,
+                &migration.checksum().to_vec(),
+            ],
+        )
+        .await
+        .unwrap();
+    }
+    let register = |id: &str| {
+        format!(
+            "INSERT INTO {work}.fastmem_memory (id, principal, thread, heads, key_dim, \
+                                              value_dim, checkpoint_interval, max_writes, \
+                                              projection_digest, codebook_seed) \
+             VALUES ('{id}', 'agent-7', '{id}', 1, 4, 4, 2, 64, \
+                     decode(repeat('03', 32), 'hex'), 11); "
+        )
+    };
+    // `kept` journals 1 and 5; `old` holds a row at i64::MAX, which version
+    // 11 refuses and an older writer could store.
+    raw.batch_execute(&format!(
+        "{} {}; {}; {}",
+        register("kept"),
+        raw_write(&work, "kept", 1),
+        raw_write(&work, "kept", 5),
+        register("old")
+    ))
+    .await
+    .unwrap();
+    write_before_invariants(
+        &raw,
+        &work,
+        &[("fastmem_write", "fastmem_write_seq_below_limit")],
+        &raw_write(&work, "old", i64::MAX),
+    )
+    .await;
+    let report = substrate.migrate().await.unwrap();
+    assert_eq!(report.work, [WORK_MIGRATIONS.len() as u32]);
+    substrate.replay(&[capsule(1, "live", 1)]).await.unwrap();
+
+    // Write 5 is deleted, as a revocation deletes it: its number stays
+    // taken, and the restored memory numbers its next write after it.
+    raw.batch_execute(&format!(
+        "DELETE FROM {work}.fastmem_write WHERE memory = 'kept' AND seq = 5"
+    ))
+    .await
+    .unwrap();
+    let request = write_request("live", [1.0, 0.0, 0.0, 0.0], [0.5, 0.0, 0.0, 0.0]);
+    assert_eq!(
+        substrate
+            .append_write("kept", ptr_fastmem::WriteSeq(5), &request)
+            .await,
+        Err(PgError::InvalidWrite {
+            memory: "kept".into(),
+            reason: "the sequence number does not follow the journal",
+        })
+    );
+    let mut restored = substrate.restore_memory("kept").await.unwrap().unwrap();
+    assert_eq!(restored.writes().len(), 1);
+    let next = restored.write(request.clone()).unwrap().seq;
+    assert_eq!(next, ptr_fastmem::WriteSeq(6));
+    substrate
+        .append_write("kept", next, &request)
+        .await
+        .unwrap();
+    // The row at i64::MAX upgraded with the rest and is still refused by the
+    // loaders, and the registration takes no further write: its mark is
+    // i64::MAX - 1, the largest there is.
+    assert!(matches!(
+        substrate.restore_memory("old").await,
+        Err(PgError::CorruptRow {
+            table: "fastmem_write",
+            ..
+        })
+    ));
+    assert_eq!(
+        refused_sqlstate(&raw, &raw_write(&work, "old", i64::MAX - 1)).await,
+        "23000"
+    );
     substrate.drop_all().await.unwrap();
 }

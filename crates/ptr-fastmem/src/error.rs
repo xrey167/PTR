@@ -41,8 +41,10 @@ pub enum FastMemoryError {
     /// A write would be journaled at `u64::MAX`, the one sequence number
     /// without a successor: no write could be numbered after it, so a journal
     /// may not end there. Likewise a write at or above the lower limit
-    /// `FastMemory::with_sequence_limit` set, or a limit set below a number
-    /// the memory already took (`seq` is that number).
+    /// `FastMemory::with_sequence_limit` set, a limit set below a number the
+    /// memory already took (`seq` is that number), or a high-water mark
+    /// `FastMemory::with_sequence_high_water` was given at or above the
+    /// memory's limit (`seq` is the mark).
     SequenceExhausted { seq: u64 },
     /// The journal holds its configured maximum of writes.
     JournalFull { limit: u32 },

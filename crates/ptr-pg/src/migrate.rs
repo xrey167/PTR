@@ -116,6 +116,11 @@ pub const WORK_MIGRATIONS: &[Migration] = &[
         name: "work_integrity",
         sql: include_str!("../migrations/work/0011_work_integrity.sql"),
     },
+    Migration {
+        version: 12,
+        name: "fastmem_high_water",
+        sql: include_str!("../migrations/work/0012_fastmem_high_water.sql"),
+    },
 ];
 
 impl Migration {

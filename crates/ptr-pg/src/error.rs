@@ -118,8 +118,11 @@ pub enum PgError {
     /// without its base value or input set, ...), or they rely on two
     /// generations of one target (`ConflictingReliance`). A `Remove` of a
     /// derived key (`DerivedRemoval`), which earlier sealing did produce, is
-    /// [`PgError::BranchWithDerivedRemoval`] instead. No branch is
-    /// returned, so nothing certifies a plan from the rows.
+    /// [`PgError::BranchWithDerivedRemoval`] instead when it is the only
+    /// invariant the rows break and no set operation of the branch records
+    /// its member's base presence (earlier sealing recorded none); beside
+    /// either, it is reported here. No branch is returned, so nothing
+    /// certifies a plan from the rows.
     CorruptBranch { branch: String, error: BranchError },
     /// An interference report was refused before any row was written: it
     /// names another adapter than the one it is recorded for, it
@@ -146,9 +149,12 @@ pub enum PgError {
     /// derived at the branch's base. Sealing refuses such a removal
     /// (`ptr_branch::BranchError::DerivedRemoval`), since a merged removal
     /// would drop the key's dependency entry, but a branch sealed before it
-    /// did can hold one legitimately, and nothing stored tells that branch
-    /// from rows written around `store_branch`. It is not reported as
-    /// [`PgError::CorruptBranch`], whose rows no sealing ever produced; it
+    /// did can hold one legitimately. Reported only for rows that could be
+    /// such a branch: the removal is the only sealing invariant they break,
+    /// and no set operation records its member's base presence, which that
+    /// sealing never recorded; other rows with a derived removal are
+    /// [`PgError::CorruptBranch`]. Nothing stored tells such a branch from
+    /// rows written around `store_branch` that break only this rule. It
     /// cannot be certified and must be re-run on a current snapshot.
     BranchWithDerivedRemoval { branch: String, key: String },
     /// A search document was refused because its capsule generation is

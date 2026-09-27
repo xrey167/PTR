@@ -155,11 +155,17 @@ impl PgSubstrate {
     /// `FastMemoryError::ProjectionMismatch`.
     ///
     /// The memory is restored with the journal's sequence limit,
-    /// [`JOURNAL_SEQ_LIMIT`] ([`FastMemory::with_sequence_limit`]), so it
-    /// never takes a sequence number [`append_write`](Self::append_write)
-    /// refuses: once its journal ends at `i64::MAX - 1`, its next write is
-    /// refused as `FastMemoryError::SequenceExhausted` before it is folded,
-    /// whatever room the journal has left.
+    /// [`JOURNAL_SEQ_LIMIT`] ([`FastMemory::with_sequence_limit`]), and with
+    /// the registration's sequence high-water mark
+    /// ([`FastMemory::with_sequence_high_water`]): the largest number ever
+    /// journaled for the memory, including those of writes revoked since
+    /// (work migration 12). Its next write is numbered above the mark, as
+    /// the live memory's is, so it never takes a number
+    /// [`append_write`](Self::append_write) refuses: a revoked write's
+    /// number is not handed out again, and once the journal has
+    /// reached `i64::MAX - 1` the memory refuses its next write as
+    /// `FastMemoryError::SequenceExhausted` before it is folded, whatever
+    /// room the journal has left and whatever was revoked since.
     ///
     /// # Errors
     /// Propagates database errors; a registration [`load_memory`](Self::load_memory)
@@ -188,6 +194,7 @@ impl PgSubstrate {
             return Ok(None);
         };
         let record = memory_record(id, &row)?;
+        let high_water = WriteSeq(to_u64(row.get(9), "fastmem_memory")?);
         let codebook = record.codebook().map_err(|error| {
             corrupt_memory(&format!("the stored codebook is not supported: {error}"))
         })?;
@@ -206,8 +213,14 @@ impl PgSubstrate {
             journal,
         )
         .and_then(|memory| memory.with_sequence_limit(JOURNAL_SEQ_LIMIT))
+        .map_err(|error| corrupt(&format!("the stored journal does not restore: {error}")))?
+        .with_sequence_high_water(high_water)
         .map(Some)
-        .map_err(|error| corrupt(&format!("the stored journal does not restore: {error}")))
+        .map_err(|error| {
+            corrupt_memory(&format!(
+                "the stored sequence high-water mark is out of range: {error}"
+            ))
+        })
     }
 
     /// Append one write to a memory's journal.
@@ -216,24 +229,32 @@ impl PgSubstrate {
     /// live-generation row is held `FOR SHARE` for the transaction, so a
     /// revocation either commits first (and the append is refused) or waits
     /// for the append and then deletes it. The memory row is then locked
-    /// `FOR UPDATE`, and the journal's length and last sequence number are
-    /// read in a statement issued after that lock was granted, so they include
-    /// every append committed before: the sequence number must exceed every
-    /// journaled one, and the journal must have room.
+    /// `FOR UPDATE`, and the journal's length and the memory's sequence
+    /// high-water mark are read in a statement issued after that lock was
+    /// granted, so they include every append committed before: the journal
+    /// must have room, and the sequence number must exceed the mark, the
+    /// largest number ever journaled for the memory (or the journal's last
+    /// number, if a writer around the database's checks stored a larger
+    /// one). Revocation deletes writes but never lowers the mark, so a
+    /// revoked write's number is never journaled again, as a [`FastMemory`]
+    /// never takes a number again once it has taken it.
     ///
     /// The sequence number must also be below [`JOURNAL_SEQ_LIMIT`]
     /// (`i64::MAX`), as a [`FastMemory`] takes no number at or above its
     /// limit (`u64::MAX` unless lowered). Numbers are the caller's to choose,
     /// gaps included, so a journal can reach `i64::MAX - 1` before its
-    /// `max_writes` rows are used; [`restore_memory`](Self::restore_memory)
-    /// restores such a journal to a memory that refuses its next write
-    /// before folding it, and the registration takes no further write.
+    /// `max_writes` rows are used; the registration then takes no further
+    /// write, even once that write is revoked, and
+    /// [`restore_memory`](Self::restore_memory) restores a memory that
+    /// refuses its next write before folding it.
     ///
     /// The database refuses the rows these checks refuse from any writer
-    /// (work migrations 9 and 11): a write for an unregistered memory, of
-    /// another shape, with a cell `validate_write` refuses, beyond the
-    /// memory's `max_writes` rows, or at sequence number `i64::MAX`. It does
-    /// not check the source's lifecycle or the sequence order.
+    /// (work migrations 9, 11 and 12): a write for an unregistered memory,
+    /// of another shape, with a cell `validate_write` refuses, beyond the
+    /// memory's `max_writes` rows, at a sequence number at or below the
+    /// memory's high-water mark, or at `i64::MAX`. It does not check the
+    /// source's lifecycle. A registration deleted and registered again under
+    /// its id starts a new sequence space with its new, empty journal.
     pub async fn append_write(
         &mut self,
         memory: &str,
@@ -297,8 +318,9 @@ impl PgSubstrate {
         let journal = transaction
             .query_one(
                 &format!(
-                    "SELECT count(*), coalesce(max(seq), 0) FROM {work}.fastmem_write \
-                     WHERE memory = $1"
+                    "SELECT count(*), greatest(coalesce(max(seq), 0), \
+                            (SELECT last_seq FROM {work}.fastmem_memory WHERE id = $1)) \
+                     FROM {work}.fastmem_write WHERE memory = $1"
                 ),
                 &[&memory],
             )
@@ -344,10 +366,14 @@ impl PgSubstrate {
     }
 
     /// The journal in sequence order, ready for
-    /// [`ptr_fastmem::FastMemory::restore`]; restore it with
-    /// [`FastMemory::with_sequence_limit`] at [`JOURNAL_SEQ_LIMIT`], as
-    /// [`restore_memory`](Self::restore_memory) does, for a memory that
-    /// never takes a number [`append_write`](Self::append_write) refuses.
+    /// [`ptr_fastmem::FastMemory::restore`]. A memory restored from it alone
+    /// numbers its next write after the last write it holds, which once
+    /// that journal's last writes were revoked is a number
+    /// [`append_write`](Self::append_write) refuses. For a memory that never
+    /// takes such a number, use [`restore_memory`](Self::restore_memory),
+    /// which also restores the registration's sequence high-water mark
+    /// ([`FastMemory::with_sequence_high_water`]) and the journal's limit
+    /// ([`FastMemory::with_sequence_limit`] at [`JOURNAL_SEQ_LIMIT`]).
     ///
     /// # Errors
     /// Propagates database errors; a malformed row, including one at
@@ -506,11 +532,12 @@ impl PgSubstrate {
     }
 }
 
-/// The registration of one memory, `$1`, as [`memory_record`] reads it.
+/// The registration of one memory, `$1`, as [`memory_record`] reads it,
+/// then its sequence high-water mark.
 fn memory_query(work: &str) -> String {
     format!(
         "SELECT principal, thread, heads, key_dim, value_dim, checkpoint_interval, \
-                max_writes, projection_digest, codebook_seed \
+                max_writes, projection_digest, codebook_seed, last_seq \
          FROM {work}.fastmem_memory WHERE id = $1"
     )
 }
