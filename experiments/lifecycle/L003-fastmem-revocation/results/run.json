@@ -2,39 +2,39 @@
   "experiment_id": "L003",
   "status": "completed",
   "scope": "fast memories with PostgreSQL journals and checkpoints, fed from lifecycle targets a ledger commits, supersedes and revokes through the projector, with crashes mid-append, mid-revocation and between operations, appends whose commit the server fails, appends and checkpoints racing revocations and stale checkpoints planted in storage, compared bit for bit with the never-saw-it fold the runtime replay admits",
-  "git_sha": "ff96ce0d2c6b3d30a614542f91efec913a1c491e",
-  "aggregated_at_git_sha": "ff96ce0d2c6b3d30a614542f91efec913a1c491e",
-  "recorded_at": "2026-09-27T21:26:32.565043+00:00",
+  "git_sha": "5f71d84747c3e624ca468fce683e03306197a8b0",
+  "aggregated_at_git_sha": "5f71d84747c3e624ca468fce683e03306197a8b0",
+  "recorded_at": "2026-09-27T22:07:00.428084+00:00",
   "entrypoint": "cargo run --release --locked -p ptr-bench --features postgres-experiments -- fastmem-revocation <iterations> <seed>",
   "seeds": [
     {
       "seed": 17,
-      "record": "run-20260927T205436.348089Z-seed-17.json",
-      "git_sha": "ff96ce0d2c6b3d30a614542f91efec913a1c491e",
+      "record": "run-20260927T213630.676828Z-seed-17.json",
+      "git_sha": "5f71d84747c3e624ca468fce683e03306197a8b0",
       "exit_code": 0
     },
     {
       "seed": 29,
-      "record": "run-20260927T205617.839073Z-seed-29.json",
-      "git_sha": "ff96ce0d2c6b3d30a614542f91efec913a1c491e",
+      "record": "run-20260927T213803.139464Z-seed-29.json",
+      "git_sha": "5f71d84747c3e624ca468fce683e03306197a8b0",
       "exit_code": 0
     },
     {
       "seed": 43,
-      "record": "run-20260927T205747.427278Z-seed-43.json",
-      "git_sha": "ff96ce0d2c6b3d30a614542f91efec913a1c491e",
+      "record": "run-20260927T213923.710127Z-seed-43.json",
+      "git_sha": "5f71d84747c3e624ca468fce683e03306197a8b0",
       "exit_code": 0
     },
     {
       "seed": 71,
-      "record": "run-20260927T205916.321369Z-seed-71.json",
-      "git_sha": "ff96ce0d2c6b3d30a614542f91efec913a1c491e",
+      "record": "run-20260927T214045.974255Z-seed-71.json",
+      "git_sha": "5f71d84747c3e624ca468fce683e03306197a8b0",
       "exit_code": 0
     },
     {
       "seed": 101,
-      "record": "run-20260927T210032.978758Z-seed-101.json",
-      "git_sha": "ff96ce0d2c6b3d30a614542f91efec913a1c491e",
+      "record": "run-20260927T214202.107988Z-seed-101.json",
+      "git_sha": "5f71d84747c3e624ca468fce683e03306197a8b0",
       "exit_code": 0
     }
   ],
@@ -44,7 +44,7 @@
   "mutation_checks": {
     "killed": 16,
     "total": 16,
-    "git_sha": "ff96ce0d2c6b3d30a614542f91efec913a1c491e"
+    "git_sha": "5f71d84747c3e624ca468fce683e03306197a8b0"
   },
   "limitations": [
     "one PostgreSQL 18 server on loopback; one process per memory, as the design has it",
@@ -57,5 +57,5 @@
     "the process is handed each committed record; reading the projection event log to drive the refold is not exercised",
     "the seed fixes every choice; crash and race outcomes depend on timing"
   ],
-  "metrics_sha256": "3662b0100cc1cf05bdb4efe1a12cf06ed1c1335d4dca8506c69cec7f49d26bbd"
+  "metrics_sha256": "5cccfb6e44b9d17a5f56174869de5df22148cd8de7b0cb98f25f9e5606cd5332"
 }
