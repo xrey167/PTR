@@ -8,8 +8,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-26  
-**Code footprint:** 6 Rust source files · 4269 nonblank source lines · 19 integration-test files · 162 `#[test]` markers
+**Last reviewed:** 2026-09-27  
+**Code footprint:** 6 Rust source files · 4470 nonblank source lines · 20 integration-test files · 176 `#[test]` markers
 
 ### Implemented now
 
@@ -21,6 +21,7 @@
 - The fence is that record: an attempt with no settlement fences execution and commits, is rebuilt on every open, and therefore survives a crash or panic inside the effect window
 - reconcile_effect commits what an operator established from the receiving system; it never infers an outcome and never retries a possibly-applied effect
 - prepare_execution_once adds an at-most-once key: a retry is answered from history without dispatching again, across restarts, while an attempt reconciled as not applied leaves the key free
+- An applied key is bound to the project, principal, revision, generation and action digest its attempt recorded and to that attempt's index, set when the attempt is settled or reconciled: a permit under it is a retry when its project and principal match and its action digest, taken at the recorded revision and generation, matches the recorded one, so a retry carrying the current revision and generation is answered after either has moved, and any other permit is refused with KeyBoundToAnotherAction before anything is recorded, and a detached retry or a ResponseNotRetained refusal names the attempt that settled its own key rather than one inferred from response bytes or from the first attempt record under the key; a key reconciled as not applied binds nothing
 - A response is retained up to MAX_RETAINED_RESPONSE and its digest unconditionally, so a retry whose response was not kept is refused rather than re-executed or answered with something else
 - A denied preparation writes no effect record, and a fenced runtime yields no journal anchor, so no compaction floor can discard a record saying an effect may have applied
 - Rustdoc covers the compacted-snapshot and neural-state APIs plus their canonical framing helpers and admission diagnostics
@@ -32,9 +33,10 @@
 - Admission is decided at every use rather than at insertion; a payload is reachable only through an admission decision, and a cache exposes no accessor that bypasses one
 - Revocation, supersession, edited or removed inputs, foreign history with identical counters, unverifiable positions, changed codebook assignment and a fenced runtime each deny with their own stable code; failure to verify is a denial rather than an error
 - bind_state derives every field from committed state and validates its own output through the same admission rules a later use applies
-- PTRCS002 compacted materialized snapshot: committed state at a floor with canonical ascending-key sections, checked framing and an externally retained trusted anchor
+- PTRCS003 compacted materialized snapshot: committed state at a floor with canonical ascending-key sections, checked framing and an externally retained trusted anchor
+- register_execution_session and AdmissionPolicy::admit refuse a principal longer than MAX_PRINCIPAL_BYTES, the compacted section's 4096-byte string bound, with InvalidSession, because a spent key's principal travels in every later snapshot and a longer one would make every export after its first keyed effect fail
 - install_admission_policy re-derives every policy-admitted session's grants and principal from the new table, so a replacement that narrows a peer narrows its live session instead of leaving the wider set in force until the TTL; a session whose peer is no longer admitted is kept so the refusal can still name PeerNotAdmitted, and the expiry is never extended
-- A compacted snapshot carries the execution obligations a raised floor would otherwise discard (PTREX001): spent at-most-once keys with their outcomes (encoded by byte length, so a retained response up to MAX_RETAINED_RESPONSE round-trips rather than only one under the item bound), and unsettled attempts, so a restored runtime does not execute a spent key a second time. A PTRCS001 snapshot is refused by version rather than read as an empty obligation set
+- A compacted snapshot carries the execution obligations a raised floor would otherwise discard (PTREX002): spent at-most-once keys with their outcomes, each applied one with the attempt that settled it and the project, principal, revision, generation and action digest that attempt recorded (a retained response encoded by byte length, so one up to MAX_RETAINED_RESPONSE round-trips rather than only one under the item bound), and unsettled attempts with the same five, so a restored runtime neither executes a spent key a second time nor answers another action under it. A PTRCS001 snapshot is refused by version rather than read as an empty obligation set, and a PTRCS002 snapshot or PTREX001 section rather than read as keys bound to no action
 - restore_compacted installs floor state then replays the retained journal through the ordinary lifecycle/semantic validation path, keeping committed indices
 - CompactedSnapshot::covers reports only the position it holds, so a compaction barrier cannot claim coverage the snapshot lacks
 - Versioned replay-backed recovery snapshots bind complete journal, semantic revision, commit index and independently trusted SHA-256 anchor
@@ -72,6 +74,8 @@
 - An unforgeable peer identity: the NodeId passed to admit_peer is still taken on the caller's word here, and making it constructible only from an authenticated connection would require this crate to depend on ptr-net, which is an open decision; the execution wire itself now exists in ptr-execwire, where the forged-receipt and cross-runtime cases are tested over a real connection
 - The admission policy is in memory: it is not journaled, so it does not survive a restart and a replayed history does not describe who was admitted when
 - At-most-once memory is bounded by retention: a floor rising past a settled attempt discards its key, and reconciliation is a privileged host API whose caller this crate does not authenticate
+- At-most-once keys scoped per principal or project: the memory is addressed by the key alone, so a refusal under a key tells a principal that another spent it and a principal that spends a key first makes it refused to every other; a caller has to choose keys nobody else can guess
+- A spent key is refused at admission, not at validation: an EffectAttempted record a host commits directly under a spent key is accepted and replayed, and the key then holds what that attempt's settlement established
 - Router-driven operator selection around the implemented bounded Pod-resume loop
 - Async isolate scheduler integration
 - Configured raft-engine/raft-rs/Turso backend composition for production runtime modes
@@ -138,6 +142,7 @@
 - revocation replay/restart integration test
 - durable FileLedger runtime reopen preserves revocation and materialized commit position
 - workspace fmt/check/test/clippy
+- tests/at_most_once_keys.rs: another payload and another principal under a spent key are refused with KeyBoundToAnotherAction, reach no executor and write no record, while the request that spent the key is still answered, and a detached dispatch under a spent key hands nothing out; a key reconciled as applied is bound to its attempt's action and one reconciled as not applied binds nothing; the binding holds for payload and principal after a restart and after a compacted round trip, and for the project, from an attempt written into the log directly, after a restart and after a compacted round trip; a detached retry names the attempt that settled its own key when another key settled equal bytes and after compaction, and a ResponseNotRetained refusal names it when the key was attempted twice and after compaction; a retry carrying the current revision and generation is answered after an unrelated delta moved the revision and after the capsule's generation was superseded, live, after a restart and after a compacted round trip, while another payload and another principal are still refused; a principal longer than MAX_PRINCIPAL_BYTES is refused by register_execution_session and AdmissionPolicy::admit, and the longest one allowed still exports and restores after spending a key; a PTRCS002 snapshot and a PTREX001 section are refused by version after resealing (a_spent_key_is_refused_for_another_principal_rather_than_answered_with_its_receipt, a_retry_is_answered_after_the_revision_and_generation_move_and_another_request_is_still_refused, a_principal_longer_than_a_snapshot_carries_is_refused_before_it_can_spend_a_key)
 - tests/verified_delta.rs: a verified delta commits the state its verifier saw; no failing score, shallow level or hard finding gets a delta past verification; a moved revision is refused before verification; revoked, superseded and unknown generations never read as Live; search hits filtered by generation_validity drop a revoked live generation; a certified delta is refused while a generation it relied on is revoked, superseded or unknown, a no-op included, and appends nothing (a_certified_delta_is_refused_while_a_generation_it_relied_on_is_not_live_and_appends_nothing)
 
 <!-- PTR:STATUS:END -->

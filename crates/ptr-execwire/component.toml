@@ -1,7 +1,7 @@
 version = 1
 id = "ptr-execwire"
 maturity = "prototype"
-last_reviewed = "2026-09-22"
+last_reviewed = "2026-09-27"
 
 implemented = [
   "ExecutionHost and ExecutionClient carry one execution request and its receipt over ALPN_EXEC, composing ptr-runtime's execution authority with ptr-net's transport so neither of them has to know about the other",
@@ -9,7 +9,7 @@ implemented = [
   "A request names the endpoint it is for, so a request that was legitimate at one runtime is refused when relayed to another rather than being indistinguishable from one composed for it",
   "A receipt names its own author and is bound to a digest of the exact bytes that arrived; a requester checks the author against the peer the connection authenticated before reading anything else, then the request id, then the digest",
   "Four outcomes rather than two: applied, applied without a response, uncertain, refused — because a wire that reported an unknown outcome as a refusal would invite a retry of an effect that had already applied and throw the runtime's fence away at the last step",
-  "The mapping from runtime refusals onto wire outcomes is an exhaustive match, so a refusal a later build adds breaks the build rather than being reported as nothing having happened",
+  "The mapping from runtime refusals onto wire outcomes is an exhaustive match, so a refusal a later build adds breaks the build rather than being reported as nothing having happened; a request under an at-most-once key spent on another action, project or principal (KeyBoundToAnotherAction) is reported as refused with the Runtime code, since nothing was attempted for it; the action is compared at the revision and generation its attempt recorded, so a retry carrying the host's current ones is answered rather than refused",
   "Every refusal of authority crosses the wire as one code, so a requester cannot tell a peer it never admitted from an action outside its grant; the full reason stays on the host for an operator",
   "A bounded per-peer replay window refuses a frame sent twice before the runtime is asked anything, spent only after the peer is admitted so an admitted peer's request is treated the same way whatever the runtime then decides",
   "The window and the at-most-once key are separate and neither stands in for the other: retrying an intent means a new request id with the same key, which is the only combination that says this one again rather than do it once more",
@@ -26,6 +26,7 @@ missing = [
   "Signed receipts, and therefore any third-party evidence: inside one exchange the connection vouches for a receipt's author and outside it nothing does, so this crate offers no way to verify one rather than producing an artifact that looks like evidence and is not",
   "A peer identity that is unforgeable at the type level, constructible only from an authenticated connection the way VerifiedDispatch is constructible only inside the runtime; that needs a ptr-runtime dependency on ptr-net and is recorded as an open decision",
   "Detached work over the wire: a detached grant is audited by an attempt that stays unsettled until the adapter reports back, and there is no channel here for that report, so it is refused before the attempt is committed",
+  "At-most-once keys scoped per principal or project: they are one namespace per host runtime, so a peer refused under a key it sent learns that another principal spent that key, and a principal that spends a key first makes it refused to every other; a requester has to choose keys nobody else can guess",
   "Reconciliation: an uncertain outcome is reported and then belongs to the host's operator, because a remote peer must not be able to declare what happened to an effect",
   "An accept loop a deployment would run, including backpressure toward a peer that asks faster than the runtime can answer",
   "Session reuse: every request opens a connection, which is correct and wasteful",
@@ -50,6 +51,7 @@ checks = [
   "a peer that was never admitted is refused identically to an admitted peer asking outside its grant, on the first request and on a replay",
   "the same frame sent twice is refused by the window and the effect applies once",
   "a retry under a new request id with the same at-most-once key is answered from the record rather than executed again",
+  "a key spent by one peer is refused to another peer admitted as another principal, with the same action under the same key, rather than answered with the first peer's receipt; nothing is executed or recorded for it, and the peer that spent the key is still answered on a retry",
   "a damaged frame arriving on a real connection is refused before it reaches the runtime, writes no record, and is still answered with a receipt bound to the bytes that arrived",
   "a detached grant is refused over the wire, before the adapter is reached, and leaves the runtime unfenced",
   "an adapter that cannot say whether it applied yields an uncertain outcome rather than a refusal, the fence stands, and the next request is refused rather than reported as a second uncertainty",

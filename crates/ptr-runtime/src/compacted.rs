@@ -17,23 +17,34 @@
 //! Like every other artifact here it restores committed state only: no
 //! permissions, sessions, permits, registrations, external-effect outcomes or
 //! neural/KV state. Those are not history and cannot be replayed.
-use super::execution::{SettledOutcome, UnsettledEffect};
+use super::execution::{ActionIdentity, SettledOutcome, UnsettledEffect};
 use super::{PtrRuntime, RuntimeError, RuntimeLedger};
 use ptr_config::PtrConfig;
 use ptr_ledger::integrity::{self, LogAnchor};
 use ptr_ledger::{CommittedEvent, InMemoryLedger, MAX_RETAINED_RESPONSE};
 use ptr_semdb::{SemanticDelta, SemanticHost};
 use ptr_state::MaterializedState;
-use ptr_types::{CommitIndex, Effect, Generation, Revision};
+use ptr_types::{CommitIndex, Effect, Generation, ProjectId, Revision};
 use std::collections::{BTreeMap, BTreeSet};
 
-const MAGIC: &[u8; 8] = b"PTRCS002";
-const EXECUTION_MAGIC: &[u8; 8] = b"PTREX001";
+/// PTRCS003 is the first layout whose execution section is PTREX002. A PTRCS002
+/// or PTRCS001 snapshot is refused by version rather than read with the weaker
+/// meaning its older section had.
+const MAGIC: &[u8; 8] = b"PTRCS003";
+/// PTREX002 binds every applied key to the attempt that settled it and to the
+/// project, principal, revision, generation and action digest that attempt
+/// recorded, and carries the same five for every unsettled attempt. PTREX001
+/// carried none of them, so a key restored from it could be neither held to its
+/// action nor named by its attempt, and a section in that layout is refused by
+/// version.
+const EXECUTION_MAGIC: &[u8; 8] = b"PTREX002";
 const LIFECYCLE_MAGIC: &[u8; 8] = b"PTRLC001";
 const HEADER: usize = 80;
 const DIGEST_BYTES: usize = 32;
 const MAX_SECTION_ITEMS: usize = 65_536;
-const MAX_STRING_BYTES: usize = 4096;
+/// Also the bound on a principal, which the execution section carries for every
+/// spent key: [`MAX_PRINCIPAL_BYTES`](crate::execution::MAX_PRINCIPAL_BYTES).
+pub(crate) const MAX_STRING_BYTES: usize = 4096;
 /// Bound on one encoded section, checked before any allocation driven by a count.
 pub const MAX_SECTION_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_COMPACTED_BYTES: usize = HEADER + 3 * MAX_SECTION_BYTES + DIGEST_BYTES;
@@ -185,6 +196,16 @@ impl Writer {
     fn number(&mut self, value: u64) -> Result<(), RuntimeError> {
         self.raw(&value.to_le_bytes())
     }
+
+    /// Encode what an attempt recorded: project, principal, revision,
+    /// generation, then the fixed-width action digest.
+    fn identity(&mut self, identity: &ActionIdentity) -> Result<(), RuntimeError> {
+        self.text(&identity.project.0)?;
+        self.text(&identity.principal)?;
+        self.number(identity.revision.0)?;
+        self.number(identity.generation.0)?;
+        self.raw(&identity.action_digest)
+    }
 }
 
 struct Reader<'a> {
@@ -238,6 +259,17 @@ impl<'a> Reader<'a> {
         Ok(u64::from_le_bytes(
             self.take(8)?.try_into().expect("fixed number"),
         ))
+    }
+
+    /// Decode what an attempt recorded, in the order the writer put it.
+    fn identity(&mut self) -> Result<ActionIdentity, RuntimeError> {
+        Ok(ActionIdentity {
+            project: ProjectId(self.text()?),
+            principal: self.text()?,
+            revision: Revision(self.number()?),
+            generation: Generation(self.number()?),
+            action_digest: self.take(DIGEST_BYTES)?.try_into().expect("fixed digest"),
+        })
     }
     /// Whether the section has no trailing bytes.
     fn finished(&self) -> bool {
@@ -340,6 +372,11 @@ fn check_ascending(previous: &mut Option<String>, key: &str) -> Result<(), Runti
 /// there, so it came back with an empty fence and no memory of which
 /// at-most-once keys had been spent — and a retry under a spent key executed the
 /// effect a second time. That is the whole reason the section exists.
+///
+/// A spent key travels with the attempt that settled it and with what that
+/// attempt recorded, because the records that held both are below the floor: a
+/// restored runtime still refuses another action under the key, and still names
+/// the settling attempt when it answers or refuses a retry.
 #[derive(Debug, Default, Eq, PartialEq)]
 struct ExecutionObligations {
     unsettled: BTreeMap<CommitIndex, UnsettledEffect>,
@@ -391,16 +428,30 @@ impl ExecutionObligations {
             out.text(&effect.target)?;
             out.text(&effect.operation)?;
             out.number(effect_tag(effect.effect))?;
+            out.identity(&effect.identity)?;
         }
         out.count(self.settled.len())?;
         for (key, outcome) in &self.settled {
             out.text(key)?;
+            // The tag comes first because it decides which fields follow: an
+            // outcome that applied names its attempt and what it recorded, and
+            // one that did not binds nothing, so it carries nothing.
             match outcome {
-                SettledOutcome::Applied { response } => {
+                SettledOutcome::Applied {
+                    attempt,
+                    identity,
+                    response,
+                } => {
                     out.number(0)?;
+                    out.number(attempt.0)?;
+                    out.identity(identity)?;
                     out.blob(response)?;
                 }
-                SettledOutcome::AppliedWithoutResponse => out.number(1)?,
+                SettledOutcome::AppliedWithoutResponse { attempt, identity } => {
+                    out.number(1)?;
+                    out.number(attempt.0)?;
+                    out.identity(identity)?;
+                }
                 SettledOutcome::NotApplied => out.number(2)?,
             }
         }
@@ -438,6 +489,7 @@ impl ExecutionObligations {
             let target = reader.text()?;
             let operation = reader.text()?;
             let effect = effect_from_tag(reader.number()?)?;
+            let identity = reader.identity()?;
             state.unsettled.insert(
                 CommitIndex(attempt),
                 UnsettledEffect {
@@ -446,6 +498,7 @@ impl ExecutionObligations {
                     target,
                     operation,
                     effect,
+                    identity,
                 },
             );
         }
@@ -459,9 +512,14 @@ impl ExecutionObligations {
             previous = Some(key.clone());
             let outcome = match reader.number()? {
                 0 => SettledOutcome::Applied {
+                    attempt: CommitIndex(reader.number()?),
+                    identity: reader.identity()?,
                     response: reader.blob()?,
                 },
-                1 => SettledOutcome::AppliedWithoutResponse,
+                1 => SettledOutcome::AppliedWithoutResponse {
+                    attempt: CommitIndex(reader.number()?),
+                    identity: reader.identity()?,
+                },
                 2 => SettledOutcome::NotApplied,
                 _ => return Err(invalid(CompactedError::UnknownTag)),
             };
@@ -635,9 +693,10 @@ fn compacted_sections(
     };
     let semantic_len = u64::from_le_bytes(bytes[56..64].try_into().expect("semantic length"));
     let lifecycle_len = u64::from_le_bytes(bytes[64..72].try_into().expect("lifecycle length"));
-    // What was a reserved field in PTRCS001 is the execution section's length in
-    // PTRCS002. An older build reading a newer snapshot stops at the magic above
-    // rather than here, which is why the magic moved rather than the field alone.
+    // What was a reserved field in PTRCS001 is the execution section's length
+    // from PTRCS002 on. An older build reading a newer snapshot stops at the magic
+    // above rather than here, which is why the magic moved rather than the field
+    // alone.
     let execution_len = u64::from_le_bytes(bytes[72..80].try_into().expect("execution length"));
     if semantic_len > MAX_SECTION_BYTES as u64
         || lifecycle_len > MAX_SECTION_BYTES as u64

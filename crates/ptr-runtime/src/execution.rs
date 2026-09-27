@@ -7,7 +7,10 @@ use super::{PtrRuntime, RuntimeError};
 use ptr_core::action_head::ActionIr;
 use ptr_ledger::{effect_code, integrity, LedgerEvent, MAX_RETAINED_RESPONSE};
 use ptr_security::{ActionAuthorization, AuthorizationDecision, AuthorizationDenial};
-use ptr_types::{CapabilityId, CommitIndex, Effect, NodeId, ProjectId, TypeId, VerificationLevel};
+use ptr_types::{
+    CapabilityId, CommitIndex, Effect, Generation, NodeId, ProjectId, Revision, TypeId,
+    VerificationLevel,
+};
 use ptr_verifier::{VerificationStatus, Verifier};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -18,9 +21,25 @@ const MAX_SESSIONS: usize = 1024;
 const MAX_GRANTS: usize = 64;
 const ACTION_DOMAIN: &[u8] = b"PTREXEC01-ACTION";
 
+/// The longest principal, in bytes, that a session may be registered or a peer
+/// admitted as.
+///
+/// Every attempt records its principal, and a compacted snapshot carries it for
+/// each spent key as a string of at most this many bytes. A spent key is carried
+/// by every later snapshot, so a longer principal would make every export after
+/// its first keyed effect fail. It is refused with
+/// [`ExecutionError::InvalidSession`] before it can spend one.
+pub const MAX_PRINCIPAL_BYTES: usize = super::compacted::MAX_STRING_BYTES;
+
 /// The exact action an audit record commits to, domain-separated so a digest of
 /// these bytes cannot collide with a digest taken elsewhere in the system.
 pub fn action_digest(action: &ActionIr) -> [u8; 32] {
+    digest_at(action, action.revision, action.generation)
+}
+
+/// [`action_digest`] of `action` as it would read at `revision` and
+/// `generation`: every other field, payload included, is the action's own.
+fn digest_at(action: &ActionIr, revision: Revision, generation: Generation) -> [u8; 32] {
     let mut material = Vec::from(ACTION_DOMAIN);
     for field in [
         action.target.as_str(),
@@ -33,10 +52,53 @@ pub fn action_digest(action: &ActionIr) -> [u8; 32] {
     }
     material.extend_from_slice(&(action.payload.len() as u64).to_le_bytes());
     material.extend_from_slice(&action.payload);
-    material.extend_from_slice(&action.revision.0.to_le_bytes());
-    material.extend_from_slice(&action.generation.0.to_le_bytes());
+    material.extend_from_slice(&revision.0.to_le_bytes());
+    material.extend_from_slice(&generation.0.to_le_bytes());
     material.push(effect_code(action.effect));
     integrity::sha256(&material)
+}
+
+/// Which action an attempt record committed to, and for whom: the fields a
+/// permit under an at-most-once key has to repeat to be a retry of the attempt
+/// that spent the key.
+///
+/// [`action_digest`] covers the action, payload included, but not the project
+/// or the principal, which the record names beside it. All three are compared,
+/// because any one of them left out makes a different request look like a
+/// retry: another payload from the same principal, or the same action asked
+/// for by another principal.
+///
+/// The digest also covers the revision and generation the action carried, and
+/// those say where the runtime stood rather than what was asked for. Admission
+/// requires a permit to carry the current ones, so a digest compared as
+/// recorded would refuse every retry once an unrelated semantic delta committed
+/// or the target's generation was superseded. A retry is therefore digested at
+/// the revision and generation its attempt recorded, which is why both are kept
+/// here.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ActionIdentity {
+    /// The project of the grant that admitted the attempt.
+    pub project: ProjectId,
+    /// The principal the attempt's session was admitted as.
+    pub principal: String,
+    /// The revision the attempt's action carried.
+    pub revision: Revision,
+    /// The generation the attempt's action carried.
+    pub generation: Generation,
+    /// [`action_digest`] of the action the attempt dispatched.
+    pub action_digest: [u8; 32],
+}
+
+impl ActionIdentity {
+    /// Whether a permit for `action` in `project` from `principal` repeats the
+    /// request this identity recorded: the same project and principal, and the
+    /// same digest once `action` is read at the recorded revision and
+    /// generation.
+    fn is_retry(&self, project: &ProjectId, principal: &str, action: &ActionIr) -> bool {
+        self.project == *project
+            && self.principal == principal
+            && self.action_digest == digest_at(action, self.revision, self.generation)
+    }
 }
 
 /// An attempt whose outcome this runtime does not know.
@@ -51,22 +113,50 @@ pub struct UnsettledEffect {
     pub target: String,
     pub operation: String,
     pub effect: Effect,
+    /// What the attempt record committed to. A settlement that finds the
+    /// effect applied binds the attempt's key to it.
+    pub identity: ActionIdentity,
 }
 
 /// What a settled or reconciled attempt established, addressed by its
 /// at-most-once key.
+///
+/// An outcome in which the effect applied names the attempt that settled the
+/// key and what that attempt recorded, so a retry is answered or refused from
+/// the key's own entry rather than from anything inferred about it later.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SettledOutcome {
-    /// The effect applied and its response is still retained, so a retry under
-    /// the same key is answered from history.
-    Applied { response: Vec<u8> },
+    /// The effect applied and its response is still retained, so a retry of
+    /// the same action under the same key is answered from history.
+    Applied {
+        /// The attempt record that was settled.
+        attempt: CommitIndex,
+        /// What that attempt recorded; no other action is answered under the
+        /// key.
+        identity: ActionIdentity,
+        response: Vec<u8>,
+    },
     /// The effect applied, but this runtime cannot reproduce the response: it
     /// either exceeded [`MAX_RETAINED_RESPONSE`] or was established by
     /// reconciliation rather than observed. A retry is refused rather than
     /// answered with something else.
-    AppliedWithoutResponse,
+    AppliedWithoutResponse {
+        /// The attempt record that was settled or reconciled.
+        attempt: CommitIndex,
+        /// What that attempt recorded.
+        identity: ActionIdentity,
+    },
     /// Reconciliation established that nothing applied, so the at-most-once
-    /// budget was never spent and a later attempt may proceed.
+    /// budget was never spent. The key binds no action, and a later attempt
+    /// under it may proceed for any action.
+    NotApplied,
+}
+
+/// What a settlement or reconciliation record established, before
+/// [`ExecutionState::settle`] binds it to the attempt it closes.
+pub(super) enum Settlement {
+    /// The effect applied; the response, when the record retained one.
+    Applied(Option<Vec<u8>>),
     NotApplied,
 }
 
@@ -204,7 +294,9 @@ impl AdmissionPolicy {
     ///
     /// A second entry for the same peer is refused rather than replacing the
     /// first: a silent replacement is how a later, weaker entry widens an
-    /// earlier one without anyone deciding to.
+    /// earlier one without anyone deciding to. A principal longer than
+    /// [`MAX_PRINCIPAL_BYTES`] is refused with
+    /// [`ExecutionError::InvalidSession`].
     pub fn admit(
         &mut self,
         peer: NodeId,
@@ -213,7 +305,7 @@ impl AdmissionPolicy {
         grants: impl Fn() -> Vec<ExecutionGrant> + Send + Sync + 'static,
     ) -> Result<(), ExecutionError> {
         let principal = principal.into();
-        if !valid_identifier(&principal) || !valid_identifier(&peer.0) {
+        if !valid_principal(&principal) || !valid_identifier(&peer.0) {
             return Err(ExecutionError::InvalidSession);
         }
         if self.entries.contains_key(&peer) {
@@ -312,14 +404,18 @@ pub struct DetachedEffect {
     /// must name.
     pub attempt: CommitIndex,
     /// Set when an at-most-once key had already been applied, so nothing was handed
-    /// out this time. The attempt names the earlier one.
+    /// out this time. The attempt names the one that settled the key.
     pub already_applied: bool,
 }
 
 /// What admission decided: either the key's earlier outcome, or a fresh attempt.
 enum Admission {
-    /// An at-most-once key whose outcome is already recorded.
-    Replayed(Vec<u8>),
+    /// An at-most-once key already applied for this action: the attempt that
+    /// settled it, and its retained response.
+    Replayed {
+        attempt: CommitIndex,
+        response: Vec<u8>,
+    },
     /// A committed attempt, awaiting dispatch.
     Attempted(Attempted),
 }
@@ -413,6 +509,18 @@ pub enum ExecutionError {
     /// no longer holds. Refusing is the only honest answer: re-executing would
     /// apply the effect twice, and inventing a response would be worse.
     ResponseNotRetained {
+        attempt: CommitIndex,
+    },
+    /// A permit under an at-most-once key that `attempt` spent on another
+    /// action: its project, its principal, or its action digest taken at the
+    /// revision and generation that attempt recorded differs from what that
+    /// attempt recorded. It is not a retry of that request, so it is neither
+    /// answered with that request's outcome nor attempted under a spent key,
+    /// and nothing is recorded.
+    ///
+    /// Keys are one namespace per runtime, shared by every principal and
+    /// project, so the attempt may be another principal's.
+    KeyBoundToAnotherAction {
         attempt: CommitIndex,
     },
     /// Reconciliation named an attempt that is not awaiting one.
@@ -576,9 +684,24 @@ impl ExecutionState {
 
     /// Validation rejects a settlement for an attempt that is not awaiting one,
     /// before append and again during replay, so the miss is unreachable here.
-    pub(super) fn settle(&mut self, attempt: CommitIndex, outcome: SettledOutcome) {
+    ///
+    /// An applied outcome is bound here to the attempt it closes and to what
+    /// that attempt recorded, because this is the one place that holds both.
+    pub(super) fn settle(&mut self, attempt: CommitIndex, settlement: Settlement) {
         if let Some(effect) = self.unsettled.remove(&attempt) {
             if let Some(key) = effect.key {
+                let identity = effect.identity;
+                let outcome = match settlement {
+                    Settlement::Applied(Some(response)) => SettledOutcome::Applied {
+                        attempt,
+                        identity,
+                        response,
+                    },
+                    Settlement::Applied(None) => {
+                        SettledOutcome::AppliedWithoutResponse { attempt, identity }
+                    }
+                    Settlement::NotApplied => SettledOutcome::NotApplied,
+                };
                 self.settled.insert(key, outcome);
             }
         }
@@ -644,6 +767,9 @@ impl PtrRuntime {
     /// Privileged embedding API. The host must authenticate `principal` before
     /// calling; this is not a password/token authenticator or a network endpoint.
     /// Only trusted host code may install verifiers, executors and exact grants.
+    ///
+    /// A principal longer than [`MAX_PRINCIPAL_BYTES`] is refused with
+    /// [`ExecutionError::InvalidSession`].
     pub fn register_execution_session(
         &mut self,
         principal: impl Into<String>,
@@ -667,7 +793,7 @@ impl PtrRuntime {
             return Err(ExecutionError::AmbiguousOutcome { attempt });
         }
         let principal = principal.into();
-        if !valid_identifier(&principal) {
+        if !valid_principal(&principal) {
             return Err(ExecutionError::InvalidSession);
         }
         let expires_at = deadline(ttl)?;
@@ -800,6 +926,20 @@ impl PtrRuntime {
 
     /// Prepare an execution that must apply at most once under `key`.
     ///
+    /// The key names one request. Once an attempt under it has applied, a
+    /// permit under it for the same action, project and principal is answered
+    /// from that attempt's outcome, and a permit for any other is refused with
+    /// [`ExecutionError::KeyBoundToAnotherAction`]. The action is compared at
+    /// the revision and generation the attempt recorded, so a retry carrying
+    /// the current ones is still answered after either has moved. A key
+    /// reconciled as not applied binds nothing.
+    ///
+    /// Keys are one namespace per runtime, not one per principal or project. A
+    /// key one principal spent is refused to every other, so the refusal tells
+    /// a requester that somebody else spent that key, and whoever spends a key
+    /// first makes it unusable for everyone else. A caller should choose keys
+    /// that nobody else can guess.
+    ///
     /// The guarantee holds for as long as the attempt's record is retained. A
     /// floor that rises past it discards the memory, which is a retention
     /// obligation rather than something this layer can enforce.
@@ -886,7 +1026,7 @@ impl PtrRuntime {
         permit: ExecutionPermit,
     ) -> Result<Vec<u8>, ExecutionError> {
         let attempted = match self.admit_effect(session, permit, false)? {
-            Admission::Replayed(response) => return Ok(response),
+            Admission::Replayed { response, .. } => return Ok(response),
             Admission::Attempted(attempted) => attempted,
         };
         let Dispatcher::Synchronous(executor) = &attempted.grant.dispatch else {
@@ -929,9 +1069,9 @@ impl PtrRuntime {
         let attempted = match self.admit_effect(session, permit, true)? {
             // A key whose outcome is already known is answered from history, exactly
             // as on the synchronous path: a retry must not hand the work out twice.
-            Admission::Replayed(response) => {
+            Admission::Replayed { attempt, .. } => {
                 return Ok(DetachedEffect {
-                    attempt: self.settled_attempt_for(&response),
+                    attempt,
                     already_applied: true,
                 })
             }
@@ -1061,17 +1201,48 @@ impl PtrRuntime {
             return Err(ExecutionError::Expired);
         }
 
-        // A key that already carries an outcome is answered from history rather
-        // than by applying the effect a second time.
+        // What the attempt record would commit to. The record below is built
+        // from these same values, so a key's binding and its record cannot
+        // disagree.
+        let identity = ActionIdentity {
+            project: grant.scope.project.clone(),
+            principal: principal.clone(),
+            revision: permit.action.revision,
+            generation: permit.action.generation,
+            action_digest: action_digest(&permit.action),
+        };
+
+        // A key whose effect applied is answered from history rather than by
+        // applying the effect a second time, and only for the action it was
+        // spent on: a permit for another action, project or principal is not a
+        // retry, and answering it would report an effect that never ran for it.
+        // The permit passed the current-revision and live-generation checks
+        // above, so it is compared at the position its attempt recorded.
         if let Some(key) = permit.key.as_deref() {
             match self.execution.settled.get(key) {
-                Some(SettledOutcome::Applied { response }) => {
-                    return Ok(Admission::Replayed(response.clone()))
+                Some(
+                    SettledOutcome::Applied {
+                        attempt,
+                        identity: bound,
+                        ..
+                    }
+                    | SettledOutcome::AppliedWithoutResponse {
+                        attempt,
+                        identity: bound,
+                    },
+                ) if !bound.is_retry(&identity.project, &identity.principal, &permit.action) => {
+                    return Err(ExecutionError::KeyBoundToAnotherAction { attempt: *attempt })
                 }
-                Some(SettledOutcome::AppliedWithoutResponse) => {
-                    return Err(ExecutionError::ResponseNotRetained {
-                        attempt: self.settled_attempt(key),
+                Some(SettledOutcome::Applied {
+                    attempt, response, ..
+                }) => {
+                    return Ok(Admission::Replayed {
+                        attempt: *attempt,
+                        response: response.clone(),
                     })
+                }
+                Some(SettledOutcome::AppliedWithoutResponse { attempt, .. }) => {
+                    return Err(ExecutionError::ResponseNotRetained { attempt: *attempt })
                 }
                 Some(SettledOutcome::NotApplied) | None => {}
             }
@@ -1083,8 +1254,8 @@ impl PtrRuntime {
         let attempt = self
             .commit(LedgerEvent::EffectAttempted {
                 key: permit.key.clone(),
-                project: grant.scope.project.clone(),
-                principal: principal.clone(),
+                project: identity.project,
+                principal: identity.principal,
                 target: permit.action.target.clone(),
                 operation: permit.action.operation.clone(),
                 capability: permit.action.capability.clone(),
@@ -1092,7 +1263,7 @@ impl PtrRuntime {
                 generation: permit.action.generation,
                 revision: permit.action.revision,
                 verification: report.level,
-                action_digest: action_digest(&permit.action),
+                action_digest: identity.action_digest,
             })
             .map_err(audit)?;
 
@@ -1102,40 +1273,6 @@ impl PtrRuntime {
             principal,
             action: permit.action,
         }))
-    }
-
-    /// The attempt a replayed response came from, for a detached caller that needs
-    /// an index to correlate with.
-    fn settled_attempt_for(&self, response: &[u8]) -> CommitIndex {
-        let digest = integrity::sha256(response);
-        self.committed_events()
-            .iter()
-            .find(|committed| {
-                matches!(
-                    &committed.event,
-                    LedgerEvent::EffectSettled { response_digest, .. } if *response_digest == digest
-                )
-            })
-            .and_then(|committed| match &committed.event {
-                LedgerEvent::EffectSettled { attempt, .. } => Some(*attempt),
-                _ => None,
-            })
-            .unwrap_or_default()
-    }
-
-    /// The attempt a retained key was settled at, for a diagnostic that would
-    /// otherwise have to say "some earlier attempt".
-    fn settled_attempt(&self, key: &str) -> CommitIndex {
-        self.committed_events()
-            .iter()
-            .find(|committed| {
-                matches!(
-                    &committed.event,
-                    LedgerEvent::EffectAttempted { key: Some(recorded), .. } if recorded == key
-                )
-            })
-            .map(|committed| committed.index)
-            .unwrap_or_default()
     }
 
     fn check_execution_action(
@@ -1174,6 +1311,11 @@ fn audit(error: RuntimeError) -> ExecutionError {
 
 pub(super) fn valid_identifier(value: &str) -> bool {
     !value.is_empty() && value.trim() == value && !value.chars().any(char::is_control)
+}
+
+/// An identifier short enough for a compacted snapshot to carry.
+fn valid_principal(value: &str) -> bool {
+    valid_identifier(value) && value.len() <= MAX_PRINCIPAL_BYTES
 }
 
 fn deadline(ttl: Duration) -> Result<Instant, ExecutionError> {

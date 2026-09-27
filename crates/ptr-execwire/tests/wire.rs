@@ -631,6 +631,96 @@ async fn a_retry_is_a_new_request_id_with_the_same_key_and_still_applies_once() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_key_spent_by_one_peer_is_refused_to_another_rather_than_answered_with_its_receipt() {
+    // A key is answered from the record only for the request that spent it. A second
+    // peer admitted as another principal, sending the same action under the same key,
+    // is not retrying anything: nothing is attempted for it, so it is told "refused",
+    // not handed the first peer's receipt as though its own effect had applied.
+    let first = ExecutionClient::bind().await.unwrap();
+    let second = ExecutionClient::bind().await.unwrap();
+    let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+    let action = action(&mut runtime);
+    let probe = Probe::default();
+    let mut policy = AdmissionPolicy::new();
+    for (peer, principal) in [(&first, "principal-one"), (&second, "principal-two")] {
+        let scope = scope(&action);
+        let grant_probe = probe.clone();
+        policy
+            .admit(
+                NodeId(peer.identity().public_key),
+                principal,
+                TTL,
+                move || {
+                    vec![ExecutionGrant::new(
+                        scope.clone(),
+                        RequiredVerification::Deterministic,
+                        PassingVerifier,
+                        Adapter {
+                            probe: grant_probe.clone(),
+                            mode: Mode::Success,
+                        },
+                    )]
+                },
+            )
+            .unwrap();
+    }
+    runtime.install_admission_policy(policy);
+    let host = Arc::new(ExecutionHost::bind(runtime).await.unwrap());
+
+    let spent = WireRequest {
+        once_key: Some("k".to_owned()),
+        ..request(&host, &action, 1)
+    };
+    let serving = Arc::clone(&host);
+    let (answer, _) = tokio::join!(
+        first.request(located(host.address()), &spent),
+        serving.serve_once()
+    );
+    let applied = answer.unwrap().outcome;
+    assert_eq!(
+        applied,
+        WireOutcome::Applied {
+            response: b"executed".to_vec()
+        }
+    );
+    let before = committed(&host);
+
+    let serving = Arc::clone(&host);
+    let (answer, served) = tokio::join!(
+        second.request(located(host.address()), &spent),
+        serving.serve_once()
+    );
+    assert_eq!(
+        answer.unwrap().outcome,
+        WireOutcome::Refused {
+            code: RefusalCode::Runtime
+        },
+        "the other peer's receipt is not this one's"
+    );
+    assert!(matches!(
+        served.unwrap().refused,
+        Some(WireError::Runtime(
+            ptr_runtime::execution::ExecutionError::KeyBoundToAnotherAction { .. }
+        ))
+    ));
+    assert_eq!(probe.executions(), 1, "nothing was executed for it");
+    assert_eq!(committed(&host), before, "and nothing was recorded");
+
+    // The control: the peer that spent the key still gets its answer on a retry.
+    let retry = WireRequest {
+        request_id: 2,
+        ..spent.clone()
+    };
+    let serving = Arc::clone(&host);
+    let (answer, _) = tokio::join!(
+        first.request(located(host.address()), &retry),
+        serving.serve_once()
+    );
+    assert_eq!(answer.unwrap().outcome, applied);
+    assert_eq!(probe.executions(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_damaged_frame_is_refused_before_it_reaches_the_runtime() {
     let client = ExecutionClient::bind().await.unwrap();
     let (host, action, probe) = host_admitting(&client.identity(), Mode::Success).await;

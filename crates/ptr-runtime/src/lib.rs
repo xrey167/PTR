@@ -768,9 +768,14 @@ impl PtrRuntime {
             LedgerEvent::VerifierAttested { .. } | LedgerEvent::SnapshotCommitted { .. } => {}
             LedgerEvent::EffectAttempted {
                 key,
+                project,
+                principal,
                 target,
                 operation,
                 effect,
+                generation,
+                revision,
+                action_digest,
                 ..
             } => {
                 self.execution.record_attempt(execution::UnsettledEffect {
@@ -779,18 +784,20 @@ impl PtrRuntime {
                     target: target.clone(),
                     operation: operation.clone(),
                     effect: *effect,
+                    identity: execution::ActionIdentity {
+                        project: project.clone(),
+                        principal: principal.clone(),
+                        revision: *revision,
+                        generation: *generation,
+                        action_digest: *action_digest,
+                    },
                 });
             }
             LedgerEvent::EffectSettled {
                 attempt, response, ..
             } => {
-                let outcome = match response {
-                    Some(response) => execution::SettledOutcome::Applied {
-                        response: response.clone(),
-                    },
-                    None => execution::SettledOutcome::AppliedWithoutResponse,
-                };
-                self.execution.settle(*attempt, outcome);
+                self.execution
+                    .settle(*attempt, execution::Settlement::Applied(response.clone()));
             }
             LedgerEvent::EffectReconciled {
                 attempt, applied, ..
@@ -798,12 +805,12 @@ impl PtrRuntime {
                 // Reconciliation establishes whether the effect applied, never a
                 // response: the runtime that could have reproduced one would not
                 // have needed reconciling.
-                let outcome = if *applied {
-                    execution::SettledOutcome::AppliedWithoutResponse
+                let settlement = if *applied {
+                    execution::Settlement::Applied(None)
                 } else {
-                    execution::SettledOutcome::NotApplied
+                    execution::Settlement::NotApplied
                 };
-                self.execution.settle(*attempt, outcome);
+                self.execution.settle(*attempt, settlement);
             }
         }
 
