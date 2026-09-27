@@ -183,7 +183,9 @@ is refused (below).
 
 ## The records
 
-Tags 9, 10 and 11, added beside the existing 0–8 which are unchanged.
+Tags 9, 10 and 11, added beside the existing 0–8 which are unchanged. Tag 12, a
+semantic record with an attributed origin, came later
+(`22-durable-semantic-state.md`).
 
 | Record | Binds |
 |---|---|

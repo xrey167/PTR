@@ -85,6 +85,7 @@ pub(crate) fn encode_record(
     if index > MAX_RECORDS as u64 {
         return Err(invalid("PTR_LOG_RECORD_LIMIT"));
     }
+    crate::check_origin_bounds(event)?;
     let payload = encode_event(event);
     if payload.is_empty() || payload.len() > MAX_RECORD_BYTES {
         return Err(invalid("PTR_LOG_PAYLOAD_LIMIT"));

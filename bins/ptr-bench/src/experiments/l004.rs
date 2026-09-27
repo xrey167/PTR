@@ -1829,6 +1829,7 @@ impl Generator {
             base_revision: base,
             revision,
             encoded_delta: encoded,
+            origin: ptr_ledger::SemanticOrigin::Legacy,
         });
     }
 

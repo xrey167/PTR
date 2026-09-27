@@ -1,5 +1,5 @@
-use ptr_ledger::{LedgerEvent, RaftEngineLedger};
-use ptr_types::{CapsuleId, Generation, ProjectId};
+use ptr_ledger::{Attestation, LedgerEvent, RaftEngineLedger, SemanticOrigin};
+use ptr_types::{CapsuleId, Generation, ProjectId, Revision, VerificationLevel};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn dir() -> std::path::PathBuf {
@@ -46,5 +46,41 @@ fn durable_events_reopen_in_exact_commit_order() {
         assert_eq!(reopened.events()[1].index.0, 2);
     }
 
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+fn host_write(verifiers: &[&str]) -> LedgerEvent {
+    LedgerEvent::SemanticDeltaCommitted {
+        base_revision: Revision(0),
+        revision: Revision(1),
+        encoded_delta: vec![1, 2, 3],
+        origin: SemanticOrigin::Host {
+            principal: "operator".into(),
+            verification: Attestation {
+                required: VerificationLevel::FullSemantic,
+                level: VerificationLevel::FullSemantic,
+                verifiers: verifiers.iter().map(|name| (*name).to_owned()).collect(),
+                findings: Vec::new(),
+            },
+        },
+    }
+}
+
+#[test]
+fn an_origin_the_decoder_refuses_is_refused_before_the_engine_writes_it() {
+    let dir = dir();
+    {
+        let mut ledger = RaftEngineLedger::open(&dir).unwrap();
+        let error = ledger.append_durable(host_write(&[])).unwrap_err();
+        assert_eq!(error.to_string(), "PTR_LEDGER_ATTESTATION_LIMIT");
+        assert!(ledger.events().is_empty());
+        ledger.append_durable(host_write(&["schema"])).unwrap();
+        ledger.sync().unwrap();
+    }
+    let reopened = RaftEngineLedger::open(&dir).unwrap();
+    assert_eq!(reopened.events().len(), 1);
+    assert_eq!(reopened.events()[0].index.0, 1);
+    assert_eq!(reopened.events()[0].event, host_write(&["schema"]));
+    drop(reopened);
     std::fs::remove_dir_all(dir).unwrap();
 }

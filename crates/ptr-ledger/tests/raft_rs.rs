@@ -8,8 +8,8 @@
 //! committed entries can acknowledge a history it no longer has.
 
 use ptr_ledger::raft_storage::FileRaftStorage;
-use ptr_ledger::{LedgerEvent, SingleNodeRaftConsensus};
-use ptr_types::{CapsuleId, Generation, ProjectId};
+use ptr_ledger::{Attestation, LedgerEvent, SemanticOrigin, SingleNodeRaftConsensus};
+use ptr_types::{CapsuleId, Generation, ProjectId, Revision, VerificationLevel};
 use raft::prelude::{Entry, HardState};
 use raft::Storage;
 use std::path::PathBuf;
@@ -394,4 +394,42 @@ fn prost_codec_preserves_entry_wire_bytes_and_rejects_malformed_payloads() {
         let mut decoded = raft::eraftpb::Entry::default();
         assert!(decoded.merge_from_bytes(&malformed).is_err());
     }
+}
+
+fn host_write(verifiers: &[&str]) -> LedgerEvent {
+    LedgerEvent::SemanticDeltaCommitted {
+        base_revision: Revision(0),
+        revision: Revision(1),
+        encoded_delta: vec![1, 2, 3],
+        origin: SemanticOrigin::Host {
+            principal: "operator".into(),
+            verification: Attestation {
+                required: VerificationLevel::FullSemantic,
+                level: VerificationLevel::FullSemantic,
+                verifiers: verifiers.iter().map(|name| (*name).to_owned()).collect(),
+                findings: Vec::new(),
+            },
+        },
+    }
+}
+
+#[test]
+fn an_origin_the_decoder_refuses_is_never_proposed() {
+    // Proposed, it would be a committed entry no member can apply, on every
+    // member and after every restart.
+    let temp = Temp::new("origin-bound");
+    {
+        let mut consensus = SingleNodeRaftConsensus::open(&temp.dir(), 1).unwrap();
+        let error = consensus.propose(host_write(&[])).unwrap_err();
+        assert_eq!(error, "PTR_LEDGER_ATTESTATION_LIMIT");
+        assert!(consensus.committed_events().is_empty());
+        let receipt = consensus.propose(host_write(&["schema"])).unwrap();
+        assert_eq!(receipt.commit_index.0, 1);
+    }
+    let reopened = SingleNodeRaftConsensus::open(&temp.dir(), 1).unwrap();
+    assert_eq!(reopened.committed_events().len(), 1);
+    assert_eq!(
+        reopened.committed_events()[0].event,
+        host_write(&["schema"])
+    );
 }

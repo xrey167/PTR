@@ -121,6 +121,15 @@ pub enum RuntimeError {
     InconsistentEffectResponse {
         attempt: CommitIndex,
     },
+    /// A semantic record's origin is one this build does not accept, at the
+    /// index it was committed at, or at none when it was about to be written.
+    /// This build accepts only [`ptr_ledger::SemanticOrigin::Legacy`]: an
+    /// attributed origin decodes, but nothing here checks what it attests yet,
+    /// so it is refused rather than replayed unchecked.
+    InvalidSemanticOrigin {
+        index: Option<CommitIndex>,
+        reason: &'static str,
+    },
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -184,7 +193,8 @@ impl PtrRuntime {
         let mut runtime = Self::with_ledger(config, RuntimeLedger::File(ledger))?;
         for committed in &persisted {
             runtime.validate_lifecycle_event(&committed.event)?;
-            let semantic = runtime.prepare_semantic_event(&committed.event)?;
+            let semantic =
+                runtime.prepare_semantic_event(Some(committed.index), &committed.event)?;
             runtime.apply_committed(committed, semantic)?;
         }
         Ok(runtime)
@@ -211,7 +221,7 @@ impl PtrRuntime {
         let mut runtime = Self::new(config)?;
         for expected in events {
             runtime.validate_lifecycle_event(&expected.event)?;
-            let semantic = runtime.prepare_semantic_event(&expected.event)?;
+            let semantic = runtime.prepare_semantic_event(Some(expected.index), &expected.event)?;
             let actual = runtime.ledger.append(expected.event.clone())?;
             if actual != expected.index {
                 return Err(RuntimeError::ReplayIndexMismatch {
@@ -566,7 +576,7 @@ impl PtrRuntime {
         }
         validate_new_record(&event)?;
         self.validate_lifecycle_event(&event)?;
-        let semantic = self.prepare_semantic_event(&event)?;
+        let semantic = self.prepare_semantic_event(None, &event)?;
         self.append_prepared(event, semantic)
     }
 

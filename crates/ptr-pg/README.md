@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-27  
-**Code footprint:** 16 Rust source files · 5807 nonblank source lines · 2 integration-test files · 27 `#[test]` markers
+**Code footprint:** 16 Rust source files · 5816 nonblank source lines · 2 integration-test files · 27 `#[test]` markers
 
 ### Implemented now
 
@@ -18,6 +18,7 @@
 - Identifiers are a lowercase ASCII letter followed by at most 39 lowercase ASCII letters, digits or underscores, and never a keyword PostgreSQL 16 to 18 reserves (pg_get_keywords categories R and T), so every schema and space name interpolates into DDL unquoted
 - Three schema classes per instance (projection, derived, work) with separate checksummed migration catalogs, per-schema migration tables, an advisory lock held by a session of its own that a cancelled or unwinding migration or rebuild releases when that session closes, taken with retried pg_try_advisory_lock so a migration cancelled while waiting leaves no session queued on it, kept from idle_session_timeout and confirmed held before every migration and rebuild drop commits (a lost lock rolls the change back with MigrationLockLost), drift and newer-build refusal, and LF-normalised checksums
 - Projector applies one commit per transaction behind a watermark row lock, deciding the next index with ptr-state classify_next and projecting exactly ptr-state projection_entries
+- The projection event mapping reads only a semantic record's revisions: its origin changes neither the lifecycle change, the topic nor the subject
 - Every record's anchor is recomputed with ptr-ledger chain_anchors from the stored one and compared with the ledger's; a foreign, rolled-back or re-delivered-but-different record is refused, and a redelivered index counts as a duplicate only when the record itself recomputes to the stored anchor from the one before it
 - Lifecycle catalog keyed exactly as the runtime keys it: live generations, an append-only tombstone set, the revision map and an append-only projection event log with consumer offsets and NOTIFY on commit; the tombstone set, the applied anchors and the event log refuse UPDATE, DELETE and TRUNCATE (projection migration 2)
 - Fenced reads that refuse rather than serve a projection behind the requested commit, including every state entry at once in one repeatable-read snapshot

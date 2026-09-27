@@ -264,6 +264,7 @@ fn mixed_log() -> Vec<CommittedEvent> {
                 base_revision: Revision(0),
                 revision: Revision(1),
                 encoded_delta: vec![1, 2, 3],
+                origin: ptr_ledger::SemanticOrigin::Legacy,
             },
         ),
         supersede(4, "c1", 1, 2),

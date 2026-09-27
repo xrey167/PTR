@@ -1,5 +1,5 @@
 use ptr_config::PtrConfig;
-use ptr_ledger::{CommittedEvent, FileLedger, LedgerEvent};
+use ptr_ledger::{integrity, Attestation, CommittedEvent, FileLedger, LedgerEvent, SemanticOrigin};
 use ptr_model_api::{
     InferenceBackend, ModelError, ModelEvent, ModelRequest, ModelResumeRequest,
     ResumableInferenceBackend,
@@ -7,6 +7,7 @@ use ptr_model_api::{
 use ptr_pods::{DynPod, PodManifest, PodRegistry};
 use ptr_protocol::TypedPayload;
 use ptr_runtime::{
+    persistence::SnapshotAnchor,
     semantic::{pod_output_key, request_raw_key},
     PtrRuntime, RuntimeError,
 };
@@ -202,6 +203,7 @@ fn generic_commit_and_replay_reject_invalid_schema_base_result_revision_and_noop
             base_revision,
             revision,
             encoded_delta,
+            origin: ptr_ledger::SemanticOrigin::Legacy,
         };
         let mut r = PtrRuntime::new(PtrConfig::default()).unwrap();
         assert!(matches!(
@@ -228,6 +230,121 @@ fn generic_commit_and_replay_reject_invalid_schema_base_result_revision_and_noop
             PtrRuntime::open_durable(PtrConfig::default(), tmp.log()),
             Err(RuntimeError::Semantic(_))
         ));
+        assert_eq!(before, std::fs::read(tmp.log()).unwrap());
+    }
+}
+
+/// A recovery snapshot holding exactly `history`, sealed as the runtime seals one.
+fn recovery_snapshot(history: &[CommittedEvent]) -> (Vec<u8>, SnapshotAnchor) {
+    let log = integrity::encode_log(history).unwrap();
+    let anchor = integrity::decode_log(&log).unwrap().anchor();
+    let mut bytes = b"PTRSN001".to_vec();
+    bytes.extend_from_slice(&0_u64.to_le_bytes());
+    bytes.extend_from_slice(&anchor.index.0.to_le_bytes());
+    bytes.extend_from_slice(&(log.len() as u64).to_le_bytes());
+    bytes.extend_from_slice(&anchor.digest);
+    bytes.extend_from_slice(&log);
+    let digest = integrity::sha256(&bytes);
+    bytes.extend_from_slice(&digest);
+    let trusted = SnapshotAnchor {
+        revision: Revision(0),
+        log: anchor,
+        digest,
+    };
+    (bytes, trusted)
+}
+
+#[test]
+fn an_attributed_semantic_record_is_refused_until_its_origin_can_be_checked() {
+    let encoded = delta("source", "one").encode().unwrap();
+    let record = |origin| LedgerEvent::SemanticDeltaCommitted {
+        base_revision: Revision(0),
+        revision: Revision(1),
+        encoded_delta: encoded.clone(),
+        origin,
+    };
+    // The same record with a legacy origin is valid, so each refusal below is
+    // the origin's alone.
+    let mut legacy = PtrRuntime::new(PtrConfig::default()).unwrap();
+    assert_eq!(
+        legacy.commit(record(SemanticOrigin::Legacy)).unwrap(),
+        CommitIndex(1)
+    );
+    for origin in [
+        SemanticOrigin::Request {
+            request: "request-1".into(),
+        },
+        SemanticOrigin::Host {
+            principal: "operator".into(),
+            verification: Attestation {
+                required: VerificationLevel::FullSemantic,
+                level: VerificationLevel::Deterministic,
+                verifiers: vec!["schema".into()],
+                findings: Vec::new(),
+            },
+        },
+    ] {
+        let event = record(origin);
+        let refused = |index| {
+            Some(RuntimeError::InvalidSemanticOrigin {
+                index,
+                reason: "attributed semantic records need a build that checks their origin",
+            })
+        };
+
+        let mut r = PtrRuntime::new(PtrConfig::default()).unwrap();
+        assert_eq!(r.commit(event.clone()).err(), refused(None));
+        assert!(r.committed_events().is_empty());
+
+        let history = [CommittedEvent {
+            index: CommitIndex(1),
+            event: event.clone(),
+        }];
+        let tmp = Temp::new();
+        let anchor = {
+            let mut log = FileLedger::open(tmp.log()).unwrap();
+            log.append_durable(event.clone()).unwrap();
+            log.anchor().unwrap()
+        };
+        let before = std::fs::read(tmp.log()).unwrap();
+        let (snapshot, trusted) = recovery_snapshot(&history);
+        let empty = PtrRuntime::new(PtrConfig::default())
+            .unwrap()
+            .export_compacted_snapshot()
+            .unwrap();
+        let rebuilt = [
+            (
+                "replay",
+                PtrRuntime::replay(PtrConfig::default(), &history).err(),
+            ),
+            (
+                "open_durable",
+                PtrRuntime::open_durable(PtrConfig::default(), tmp.log()).err(),
+            ),
+            (
+                "open_durable_at",
+                PtrRuntime::open_durable_at(PtrConfig::default(), tmp.log(), anchor).err(),
+            ),
+            (
+                "restore_recovery_snapshot",
+                PtrRuntime::restore_recovery_snapshot(PtrConfig::default(), &snapshot, trusted)
+                    .err(),
+            ),
+            (
+                "restore_compacted",
+                PtrRuntime::restore_compacted(
+                    PtrConfig::default(),
+                    empty.bytes(),
+                    empty.anchor(),
+                    &history,
+                )
+                .err(),
+            ),
+        ];
+        for (path, outcome) in rebuilt {
+            assert_eq!(outcome, refused(Some(CommitIndex(1))), "{path}");
+        }
+        // Refusing to open never rewrites the log.
         assert_eq!(before, std::fs::read(tmp.log()).unwrap());
     }
 }
@@ -304,6 +421,7 @@ fn semantic_append_then_exit_child() {
             base_revision: Revision(1),
             revision: Revision(2),
             encoded_delta: delta("source", "child committed").encode().unwrap(),
+            origin: ptr_ledger::SemanticOrigin::Legacy,
         })
         .unwrap();
     std::process::exit(23);

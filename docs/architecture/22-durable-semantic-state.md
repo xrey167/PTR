@@ -85,7 +85,17 @@ versions/tags, conflicting operations, trailing bytes and truncation are rejecte
 Revisions use checked increment, never wraparound.
 
 `LedgerEvent::SemanticDeltaCommitted` uses new event tag 8; tags 0–7 retain their
-existing encoding. The ledger does not depend on the semantic crate: it preserves
+existing encoding. The record also carries a `SemanticOrigin`: why the write was
+allowed, recorded in the same append as the delta. `SemanticOrigin::Legacy` is
+tag 8 byte for byte, so every log and anchor written before origins existed keeps
+its exact encoding. Every attributed origin (a request's text, a Pod's output, a
+host write, a merge) is tag 12, with the origin after the delta. The ledger checks
+only the origin's shape and bounds (`check_encodable`). What an origin attests is
+the runtime's to check, and until the runtime can check it, every semantic writer
+records `Legacy` and replay refuses an attributed origin (`InvalidSemanticOrigin`)
+rather than applying it unchecked.
+
+The ledger does not depend on the semantic crate: it preserves
 opaque transaction bytes, while runtime replay validates their meaning. The
 materialized lifecycle store tracks `semdb:revision` and commit position; it does
 not duplicate semantic payload ownership. Existing Raft/storage adapters retain

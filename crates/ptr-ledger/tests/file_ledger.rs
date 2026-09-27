@@ -20,6 +20,7 @@ fn all_event_variants_roundtrip_across_reopen() {
             base_revision: Revision(2),
             revision: Revision(3),
             encoded_delta: vec![0, 1, 255],
+            origin: ptr_ledger::SemanticOrigin::Legacy,
         },
         LedgerEvent::CapsuleCommitted {
             project: ProjectId::from("p"),

@@ -694,7 +694,7 @@ impl PtrRuntime {
                 return Err(invalid(CompactedError::JournalNotAboveFloor));
             }
             runtime.validate_lifecycle_event(&expected.event)?;
-            let semantic = runtime.prepare_semantic_event(&expected.event)?;
+            let semantic = runtime.prepare_semantic_event(Some(expected.index), &expected.event)?;
             let actual = runtime.ledger.append(expected.event.clone())?;
             if actual != expected.index {
                 return Err(RuntimeError::ReplayIndexMismatch {

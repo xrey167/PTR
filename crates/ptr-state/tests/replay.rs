@@ -71,6 +71,7 @@ fn semantic_projection_contains_only_the_revision_and_never_payload_bytes() {
             base_revision: Revision(40),
             revision: Revision(41),
             encoded_delta: b"private payload".to_vec(),
+            origin: ptr_ledger::SemanticOrigin::Legacy,
         },
     };
     assert_eq!(

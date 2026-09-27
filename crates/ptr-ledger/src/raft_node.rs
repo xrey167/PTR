@@ -358,6 +358,7 @@ impl RaftNode {
     /// buffering it for a leadership it may never regain. A buffered proposal that
     /// is replayed later is a write the group never ordered.
     pub fn propose(&mut self, event: LedgerEvent) -> Result<Vec<Message>, String> {
+        crate::check_encodable(&event).map_err(|error| error.to_string())?;
         self.node
             .propose(Vec::new(), encode_event(&event))
             .map_err(|error| error.to_string())?;

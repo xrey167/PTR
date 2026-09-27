@@ -3,7 +3,7 @@
 //! append. This reconstructs semantic state, not neural or execution checkpoints.
 use super::{PtrRuntime, RuntimeError};
 use ptr_events::RuntimeEvent;
-use ptr_ledger::LedgerEvent;
+use ptr_ledger::{LedgerEvent, SemanticOrigin};
 use ptr_protocol::TypedPayload;
 use ptr_semdb::{
     PreparedDelta, PreparedView, SemanticDelta, SemanticError, SemanticPayload, SemanticSnapshot,
@@ -110,6 +110,7 @@ impl PtrRuntime {
             base_revision: expected,
             revision,
             encoded_delta,
+            origin: SemanticOrigin::Legacy,
         };
         let index = self.append_prepared(event, Some(prepared))?;
         Ok(SemanticCommit {
@@ -232,6 +233,7 @@ impl PtrRuntime {
             base_revision: expected,
             revision,
             encoded_delta,
+            origin: SemanticOrigin::Legacy,
         };
         let index = self.append_prepared(event, Some(prepared))?;
         Ok(SemanticCommit {
@@ -310,18 +312,29 @@ impl PtrRuntime {
             .map(|commit| commit.revision)
     }
 
+    /// Check a semantic record against the current state and prepare its
+    /// delta. `index` is where the record was committed, when it is being
+    /// replayed, and `None` when it is about to be written.
     pub(super) fn prepare_semantic_event(
         &self,
+        index: Option<CommitIndex>,
         event: &LedgerEvent,
     ) -> Result<Option<PreparedDelta>, RuntimeError> {
         let LedgerEvent::SemanticDeltaCommitted {
             base_revision,
             revision,
             encoded_delta,
+            origin,
         } = event
         else {
             return Ok(None);
         };
+        if *origin != SemanticOrigin::Legacy {
+            return Err(RuntimeError::InvalidSemanticOrigin {
+                index,
+                reason: "attributed semantic records need a build that checks their origin",
+            });
+        }
         if *base_revision != self.revision() {
             return Err(RuntimeError::Semantic(SemanticError::RevisionMismatch {
                 expected: self.revision(),
