@@ -495,3 +495,44 @@ fn an_adapter_answer_that_cannot_be_recorded_is_reported_as_applied_and_the_wind
     assert_eq!(runtime.outstanding_detached(), vec![dispatched.attempt]);
     assert_eq!(handoff.handoffs(), 1);
 }
+
+#[test]
+fn a_reconciled_detached_attempt_is_no_longer_outstanding_and_a_late_answer_is_refused() {
+    // Reconciliation closes the window as settlement does. An adapter answer that
+    // arrives afterwards names an attempt nobody awaits, so it is refused as not
+    // outstanding: reporting it as an applied effect whose settlement could not be
+    // recorded would claim a fence and an outcome that neither exist.
+    for applied in [false, true] {
+        let (mut runtime, action) = fixture();
+        let probe = Probe::default();
+        let handoff = Handoff::default();
+        let session = detached_session(&mut runtime, &action, &probe, &handoff);
+        let permit = runtime
+            .prepare_execution(&session, &ProjectId::from("p"), &action, TTL)
+            .unwrap();
+        let dispatched = runtime.dispatch_detached(&session, permit).unwrap();
+
+        runtime
+            .reconcile_effect(dispatched.attempt, applied, "queue-audit-established-it")
+            .unwrap();
+        assert!(
+            runtime.outstanding_detached().is_empty(),
+            "reconciled as applied={applied}, the attempt is not outstanding"
+        );
+        assert!(runtime.unsettled_effects().is_empty());
+        assert!(runtime.journal_anchor().is_ok());
+
+        assert_eq!(
+            runtime.settle_detached(dispatched.attempt, b"late answer".to_vec()),
+            Err(ExecutionError::NotDetached {
+                attempt: dispatched.attempt
+            })
+        );
+        assert!(settlements(&runtime).is_empty(), "nothing was recorded");
+        assert!(
+            runtime.journal_anchor().is_ok(),
+            "and the runtime is not fenced"
+        );
+        assert_eq!(handoff.handoffs(), 1);
+    }
+}

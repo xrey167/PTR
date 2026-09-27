@@ -1040,6 +1040,10 @@ impl PtrRuntime {
     /// It records what an operator established. It never infers the outcome and
     /// never retries the effect: a runtime that could work out what happened
     /// would not have been fenced.
+    ///
+    /// A detached attempt it closes is no longer outstanding, as after
+    /// [`PtrRuntime::settle_detached`], so an adapter answer that arrives later is
+    /// refused with [`ExecutionError::NotDetached`].
     pub fn reconcile_effect(
         &mut self,
         attempt: CommitIndex,
@@ -1053,12 +1057,15 @@ impl PtrRuntime {
         if !self.execution.is_unsettled(attempt) {
             return Err(ExecutionError::UnknownAttempt { attempt });
         }
-        self.commit_settlement(LedgerEvent::EffectReconciled {
-            attempt,
-            applied,
-            evidence,
-        })
-        .map_err(audit)
+        let reconciled = self
+            .commit_settlement(LedgerEvent::EffectReconciled {
+                attempt,
+                applied,
+                evidence,
+            })
+            .map_err(audit)?;
+        self.execution.detached.remove(&attempt);
+        Ok(reconciled)
     }
 
     /// Consumes the permit even on rejection, verification failure or panic.
@@ -1154,12 +1161,18 @@ impl PtrRuntime {
     /// it is only available for an attempt *this* runtime dispatched: after a restart
     /// the runtime cannot tell which unsettled attempts were detached, so it does not
     /// pretend to — the fence stands and reconciliation is the way forward.
+    ///
+    /// An attempt that is not outstanding, because it was never handed out here or
+    /// has already been settled or reconciled, is refused with
+    /// [`ExecutionError::NotDetached`] before anything is appended. Only an attempt
+    /// still awaiting its answer reaches the ledger, so a failure there is an
+    /// applied effect whose settlement was not recorded.
     pub fn settle_detached(
         &mut self,
         attempt: CommitIndex,
         response: Vec<u8>,
     ) -> Result<CommitIndex, ExecutionError> {
-        if !self.execution.detached.contains(&attempt) {
+        if !self.execution.detached.contains(&attempt) || !self.execution.is_unsettled(attempt) {
             return Err(ExecutionError::NotDetached { attempt });
         }
         let settled = self.record_settlement(attempt, response).map_err(|error| {

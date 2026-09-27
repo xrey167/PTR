@@ -262,6 +262,16 @@ never handed out would be inventing that distinction. After a restart the fence
 stands and reconciliation is the way forward — the same answer a crash inside a
 synchronous effect gets.
 
+Either answer closes the window, and the first one recorded is the one that holds. A
+detached attempt a person reconciles is no longer outstanding, and an adapter answer
+that arrives afterwards is refused with `NotDetached` before anything is appended,
+whichever way the reconciliation went
+(`a_reconciled_detached_attempt_is_no_longer_outstanding_and_a_late_answer_is_refused`).
+Before this was enforced the attempt stayed listed as outstanding after
+reconciliation, and a late answer reached the ledger, which refused it as naming no
+live attempt; since settlement failures are reported as `SettlementNotRecorded`,
+that would have claimed an applied effect and a fence that neither existed.
+
 ### What detached work does not change
 
 The retention boundary is unchanged: at-most-once holds while the attempt's record is

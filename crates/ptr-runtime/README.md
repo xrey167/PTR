@@ -9,7 +9,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-27  
-**Code footprint:** 6 Rust source files · 4599 nonblank source lines · 20 integration-test files · 182 `#[test]` markers
+**Code footprint:** 6 Rust source files · 4612 nonblank source lines · 20 integration-test files · 183 `#[test]` markers
 
 ### Implemented now
 
@@ -116,7 +116,7 @@
 - detached work fences the runtime until the adapter answers: the fence names the attempt, no permit can be prepared, no journal anchor or compacted snapshot is produced, and the settlement carries the response digest
 - an adapter that would not take the work still leaves the window open, because not accepted is not not-applied; a detached attempt survives a restart as a fence that only reconciliation moves, and the adapter's own answer is refused there
 - an effect whose settlement cannot be committed, on a ledger one index below its ceiling, is returned as SettlementNotRecorded naming the attempt after the executor ran once, and the attempt still fences the runtime: no permit is prepared, no journal anchor is produced and reconciliation is refused in that process; an adapter's answer that cannot be recorded leaves the detached attempt outstanding, and handing it over again is SettlementNotRecorded again rather than a refusal
-- each dispatch path refuses the other kind of grant with no record written and nothing verified; a settlement for an attempt this runtime did not hand out, and a second settlement of one it did, are refused
+- each dispatch path refuses the other kind of grant with no record written and nothing verified; a settlement for an attempt this runtime did not hand out, and a second settlement of one it did, are refused; so is an adapter answer for an attempt reconciled in the meantime, which is no longer outstanding, with nothing appended and the runtime left unfenced
 - an at-most-once key hands detached work out once: while the first is outstanding the fence refuses a retry by name, and after settlement a retry is answered from history without calling the adapter; an oversize answer keeps its digest without being retained and the next retry is refused rather than answered with something the effect never produced
 - withdrawing one peer or replacing the policy in the prepare-to-consume window refuses that permit before the verifier while another session keeps working; a generation superseded or revoked in that window is refused before the verifier; one session's successful effect refuses another's in-flight permit without reaching the executor
 - a real ptr-burn-a0 checkpoint binds to committed state, is admitted, seals and reopens with its weights unchanged, and is then refused once the generation it was bound under moves and once the semantic input it read is edited
