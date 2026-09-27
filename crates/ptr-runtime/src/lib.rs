@@ -99,7 +99,10 @@ pub enum RuntimeError {
         covers: CommitIndex,
         last_applied: CommitIndex,
     },
-    /// An at-most-once key is not a well-formed identifier.
+    /// An at-most-once key is not a well-formed identifier, or, in an attempt
+    /// being committed, is longer than [`execution::MAX_KEY_BYTES`], the most a
+    /// compacted snapshot carries. An attempt a log already holds is replayed
+    /// with a key of any length, as [`execution::MAX_KEY_BYTES`] explains.
     InvalidEffectKey {
         key: String,
     },
@@ -561,6 +564,7 @@ impl PtrRuntime {
         if self.execution.is_fenced() {
             return Err(RuntimeError::ExecutionFenced);
         }
+        validate_new_record(&event)?;
         self.validate_lifecycle_event(&event)?;
         let semantic = self.prepare_semantic_event(&event)?;
         self.append_prepared(event, semantic)
@@ -679,6 +683,9 @@ impl PtrRuntime {
             }
             LedgerEvent::EffectAttempted { key, .. } => {
                 let Some(key) = key else { return Ok(()) };
+                // Every build has held a key to this, so a log never holds one
+                // that is not an identifier. What a snapshot can carry is a
+                // bound on new records only (`validate_new_record`).
                 if !execution::valid_identifier(key) {
                     return Err(RuntimeError::InvalidEffectKey { key: key.clone() });
                 }
@@ -768,9 +775,14 @@ impl PtrRuntime {
             LedgerEvent::VerifierAttested { .. } | LedgerEvent::SnapshotCommitted { .. } => {}
             LedgerEvent::EffectAttempted {
                 key,
+                project,
+                principal,
                 target,
                 operation,
                 effect,
+                generation,
+                revision,
+                action_digest,
                 ..
             } => {
                 self.execution.record_attempt(execution::UnsettledEffect {
@@ -779,18 +791,20 @@ impl PtrRuntime {
                     target: target.clone(),
                     operation: operation.clone(),
                     effect: *effect,
+                    identity: execution::ActionIdentity {
+                        project: project.clone(),
+                        principal: principal.clone(),
+                        revision: *revision,
+                        generation: *generation,
+                        action_digest: *action_digest,
+                    },
                 });
             }
             LedgerEvent::EffectSettled {
                 attempt, response, ..
             } => {
-                let outcome = match response {
-                    Some(response) => execution::SettledOutcome::Applied {
-                        response: response.clone(),
-                    },
-                    None => execution::SettledOutcome::AppliedWithoutResponse,
-                };
-                self.execution.settle(*attempt, outcome);
+                self.execution
+                    .settle(*attempt, execution::Settlement::Applied(response.clone()));
             }
             LedgerEvent::EffectReconciled {
                 attempt, applied, ..
@@ -798,12 +812,12 @@ impl PtrRuntime {
                 // Reconciliation establishes whether the effect applied, never a
                 // response: the runtime that could have reproduced one would not
                 // have needed reconciling.
-                let outcome = if *applied {
-                    execution::SettledOutcome::AppliedWithoutResponse
+                let settlement = if *applied {
+                    execution::Settlement::Applied(None)
                 } else {
-                    execution::SettledOutcome::NotApplied
+                    execution::Settlement::NotApplied
                 };
-                self.execution.settle(*attempt, outcome);
+                self.execution.settle(*attempt, settlement);
             }
         }
 
@@ -819,4 +833,27 @@ impl PtrRuntime {
         });
         self.next_event_sequence = self.next_event_sequence.saturating_add(1);
     }
+}
+
+/// What a record must meet to be committed now, beyond the validation every
+/// record is replayed with: a keyed attempt names a key a compacted snapshot can
+/// carry.
+///
+/// A snapshot carries every settled key, whatever its outcome, as a string of 1
+/// to [`execution::MAX_KEY_BYTES`] bytes, so an attempt under a longer key would
+/// leave every export failing once it settled. It is refused before anything is
+/// appended. The project and principal an applied key carries are written at
+/// any length, so they are recorded as given.
+///
+/// Replay does not apply this. Earlier builds held a key only to being an
+/// identifier, of any length, and a log holding a longer one opened and failed
+/// only at export. Refusing it at replay would turn that into a runtime that
+/// cannot open after an upgrade.
+fn validate_new_record(event: &LedgerEvent) -> Result<(), RuntimeError> {
+    if let LedgerEvent::EffectAttempted { key: Some(key), .. } = event {
+        if !execution::valid_key(key) {
+            return Err(RuntimeError::InvalidEffectKey { key: key.clone() });
+        }
+    }
+    Ok(())
 }

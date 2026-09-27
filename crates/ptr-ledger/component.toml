@@ -1,7 +1,7 @@
 version = 1
 id = "ptr-ledger"
 maturity = "prototype"
-last_reviewed = "2026-09-21"
+last_reviewed = "2026-09-27"
 
 implemented = [
   "EffectAttempted/EffectSettled/EffectReconciled records (tags 9-11, beside the unchanged 0-8) carry an execution audit: the attempt is addressed by its own commit index, and a settled response keeps its digest unconditionally and its bytes up to MAX_RETAINED_RESPONSE",

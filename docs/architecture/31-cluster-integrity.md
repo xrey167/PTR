@@ -229,7 +229,7 @@ replay, because the entries it needs are gone. The leader sends its state instea
 The payload is **opaque to every layer that carries it**. `ptr-ledger` records
 bytes at a committed position and hands arriving bytes back; `ptr-cluster` frames
 them and checks who sent them. Neither has an opinion about what is inside, which
-is what lets a PTR deployment put a **PTRCS002 compacted snapshot** there rather
+is what lets a PTR deployment put a **PTRCS003 compacted snapshot** there rather
 than a second artifact invented for raft. The `ptr-cluster` test carries a real one:
 exported by a real runtime, recorded by the leader, delivered byte for byte to a
 restarted member, and then restored by a runtime from exactly those bytes.
@@ -250,7 +250,7 @@ it were empty would number the next event 1 and disagree with every other member
 about what that index means. The test asserts the refusal, and that the event after a
 snapshot continues the ledger's numbering.
 
-**The anchor can now be retained independently of the sender.** PTRCS002 is
+**The anchor can now be retained independently of the sender.** PTRCS003 is
 verified against a trusted anchor the host retains *outside* the artifact, for the
 reason `24-protected-anchors.md` gives: a digest read back out of the file it
 describes proves nothing. A snapshot arriving over this transport used to come with

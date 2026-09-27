@@ -344,7 +344,7 @@ fn framing_length_and_trusted_identity_are_all_required() {
     assert!(code(&extended, trusted).contains("Compacted"));
 
     // Bytes 72..80 were a reserved field in PTRCS001 and are the execution
-    // section's length in PTRCS002. Claiming a longer section than the body holds
+    // section's length from PTRCS002 on. Claiming a longer section than the body holds
     // is refused after resealing, so the field is a real constraint rather than
     // digest-protected padding — the same property the reserved check used to
     // give, now carried by a field that means something.
@@ -359,10 +359,10 @@ fn framing_length_and_trusted_identity_are_all_required() {
     let anchor = reseal(&mut lengths, trusted.floor, trusted.revision);
     assert!(code(&lengths, anchor).contains("LengthMismatch"));
 
-    // Wrong magic. PTRCS002 is this build's format, so the unknown version has to
+    // Wrong magic. PTRCS003 is this build's format, so the unknown version has to
     // be a different one — a later layout this build has no rules for.
     let mut magic = reference.clone();
-    magic[..8].copy_from_slice(b"PTRCS003");
+    magic[..8].copy_from_slice(b"PTRCS004");
     let anchor = reseal(&mut magic, trusted.floor, trusted.revision);
     assert!(code(&magic, anchor).contains("UnsupportedVersion"));
 
