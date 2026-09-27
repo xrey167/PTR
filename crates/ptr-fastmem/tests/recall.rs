@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use ptr_fastmem::{
     decode_readout, Decay, DecodePolicy, FastMemory, FastMemoryConfig, FastMemoryError,
     IdentifierCodebook, ProjectionSpec, Query, Recall, SeededProjection, SourceRef, WriteRequest,
@@ -283,6 +285,68 @@ fn a_constraint_or_procedure_target_is_refused_as_an_explicit_fact_candidate() {
     }
     assert!(memory.fact_codes().is_empty());
     assert_eq!(recall(&memory, &codec, "monthly budget"), Recall::Unknown);
+}
+
+#[test]
+fn a_fact_supplied_by_two_candidate_sources_is_decoded_once() {
+    // A caller that adds an explicit candidate to the memory's own supplies
+    // `pref-city` twice. The copy used to be scored as the runner-up with
+    // exactly the best score, so any positive margin turned the clear match
+    // into `Unknown`, and a zero margin named the fact twice.
+    let codec = Codec::new();
+    let mut memory = FastMemory::new(config(), codec.values).unwrap();
+    memory
+        .write(codec.write("home city", "pref-city", 1))
+        .unwrap();
+    memory
+        .write(codec.write("favourite colour", "pref-color", 1))
+        .unwrap();
+    let readout = memory
+        .read_admitted(&codec.query("home city"), |_| true)
+        .unwrap();
+    let derived = memory.fact_codes();
+    let explicit = codec
+        .values
+        .fact(CapsuleId::from("pref-city"), Generation(1))
+        .unwrap();
+    let alone = decode_readout(&readout, &derived, policy()).unwrap();
+    match &alone {
+        Recall::Hits(hits) => assert_eq!(hits[0].capsule(), &CapsuleId::from("pref-city")),
+        Recall::Unknown => panic!("the fact written under the cue is recalled"),
+    }
+    assert_eq!(
+        decode_readout(&readout, derived.iter().chain([&explicit]), policy()).unwrap(),
+        alone
+    );
+    assert_eq!(
+        decode_readout(&readout, derived.iter().chain(&derived), policy()).unwrap(),
+        alone
+    );
+
+    // Under a zero margin every fact that reaches the score is named, once.
+    let permissive = DecodePolicy {
+        limit: 4,
+        min_score: 0.0,
+        min_margin: 0.0,
+    };
+    let Recall::Hits(hits) = decode_readout(
+        &readout,
+        [&explicit].into_iter().chain(&derived).chain(&derived),
+        permissive,
+    )
+    .unwrap() else {
+        panic!("a zero margin names the clear match");
+    };
+    assert_eq!(hits[0].capsule(), &CapsuleId::from("pref-city"));
+    let named: BTreeSet<_> = hits
+        .iter()
+        .map(|hit| (hit.capsule().clone(), hit.generation()))
+        .collect();
+    assert_eq!(named.len(), hits.len(), "{hits:?}");
+    assert_eq!(
+        Recall::Hits(hits),
+        decode_readout(&readout, &derived, permissive).unwrap()
+    );
 }
 
 #[test]

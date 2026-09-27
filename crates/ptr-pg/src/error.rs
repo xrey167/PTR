@@ -61,9 +61,18 @@ pub enum PgError {
     NotLive { target: String, generation: u64 },
     /// A value does not fit the signed 64-bit column it is stored in.
     OutOfRange { field: &'static str },
-    /// The connection string names a non-loopback host; this build has no TLS
-    /// connector and refuses rather than sending credentials in the clear.
+    /// The connection string names a `host` that is not a Unix socket, a
+    /// loopback address or `localhost`, or a `hostaddr` that is not a
+    /// loopback address; this build has no TLS connector and refuses rather
+    /// than sending credentials in the clear.
     TlsRequired { host: String },
+    /// The connection string names more than one `host` or more than one
+    /// `hostaddr`. The driver tries several in turn, so a later session of
+    /// the substrate, such as the one holding the migration lock, could reach
+    /// another server than its first, where the lock would guard nothing. A
+    /// substrate connects to one server only, so this is refused before any
+    /// session opens.
+    MultipleHosts { hosts: usize, hostaddrs: usize },
     /// An embedding does not match its space's dimension.
     DimensionMismatch { expected: usize, actual: usize },
     /// An embedding value is not finite or does not fit half precision.
@@ -213,6 +222,7 @@ impl PgError {
             Self::NotLive { .. } => "PTR_PG_NOT_LIVE",
             Self::OutOfRange { .. } => "PTR_PG_OUT_OF_RANGE",
             Self::TlsRequired { .. } => "PTR_PG_TLS_REQUIRED",
+            Self::MultipleHosts { .. } => "PTR_PG_MULTIPLE_HOSTS",
             Self::DimensionMismatch { .. } => "PTR_PG_DIMENSION_MISMATCH",
             Self::InvalidEmbedding { .. } => "PTR_PG_INVALID_EMBEDDING",
             Self::SpaceConflict { .. } => "PTR_PG_SPACE_CONFLICT",
@@ -293,6 +303,11 @@ impl fmt::Display for PgError {
             Self::TlsRequired { host } => write!(
                 formatter,
                 "{host:?} is not a loopback host and this build has no TLS connector"
+            ),
+            Self::MultipleHosts { hosts, hostaddrs } => write!(
+                formatter,
+                "the connection string names {hosts} hosts and {hostaddrs} hostaddrs; \
+                 a substrate connects to one server only"
             ),
             Self::DimensionMismatch { expected, actual } => {
                 write!(formatter, "embedding has {actual} dimensions, space has {expected}")

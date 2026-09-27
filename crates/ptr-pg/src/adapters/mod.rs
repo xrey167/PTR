@@ -11,6 +11,7 @@ mod policy;
 mod projection;
 mod search;
 
+use std::net::{IpAddr, Ipv4Addr};
 use std::time::Duration;
 
 use tokio::task::JoinHandle;
@@ -37,8 +38,10 @@ pub struct PgSubstrate {
     client: Client,
     schemas: SchemaSet,
     connection: JoinHandle<()>,
-    /// The configuration `client` was opened with, already checked by
-    /// [`check_targets`]. Schema changes open their lock session from it.
+    /// The configuration `client` was opened with, as [`local_target`] made
+    /// it: one loopback address or Unix socket, with no name left to look up.
+    /// Schema changes open their lock session from it, which thus reaches the
+    /// address `client` did.
     config: Config,
 }
 
@@ -66,11 +69,20 @@ impl PgSubstrate {
     /// instance shares one, and the migration lock, keyed by the projection
     /// schema's name, is the lock of all three.
     ///
-    /// This build links no TLS connector, so it refuses any target that is not
-    /// a loopback address or a Unix socket rather than send credentials in the
-    /// clear. When `hostaddr` is given the driver connects to it and uses
-    /// `host` only as a name, so every `hostaddr` must be a loopback address
-    /// as well. Must be called inside a Tokio runtime.
+    /// The connection string must name one server: more than one `host` or
+    /// more than one `hostaddr` is refused with [`PgError::MultipleHosts`]
+    /// before anything is opened, since the driver would try them in turn and
+    /// the session holding the migration lock could reach another server than
+    /// this substrate's. This build links no TLS connector, so it refuses any
+    /// target that is not a loopback address or a Unix socket rather than
+    /// send credentials in the clear. When `hostaddr` is given the driver
+    /// connects to it and uses `host` only as a name, so the `hostaddr` must
+    /// be a loopback address as well. The name `localhost` is never looked
+    /// up, since a resolver may map it anywhere: without a `hostaddr` it is
+    /// connected at 127.0.0.1 (a server listening on `::1` only is reached
+    /// with `host=::1`). Every session of the substrate thus connects to one
+    /// loopback address or Unix socket. Must be called inside a Tokio
+    /// runtime.
     pub async fn connect_with(dsn: &str, schemas: SchemaSet) -> Result<Self, PgError> {
         schemas.check()?;
         let config: Config =
@@ -78,6 +90,7 @@ impl PgSubstrate {
                 .map_err(|error: tokio_postgres::Error| PgError::Connection {
                     message: error.to_string(),
                 })?;
+        let config = local_target(&config)?;
         let (client, connection) = open_session(&config).await?;
         Ok(Self {
             client,
@@ -122,7 +135,8 @@ impl PgSubstrate {
     /// determines all three schemas, so two processes migrating one instance
     /// serialize and no other instance's migration touches these schemas.
     /// The lock is held by a
-    /// session of its own, opened to the same checked target: a migration
+    /// session of its own, opened to the address this substrate's session
+    /// reached (see [`connect_with`](Self::connect_with)): a migration
     /// whose future is cancelled or unwinds releases it when that session
     /// closes, while this substrate's session stays open, and a retry takes it
     /// afresh. A migration cancelled while it waits for the lock leaves no
@@ -350,7 +364,10 @@ struct MigrationLock {
 impl MigrationLock {
     /// Open a session to the target of `config`, which [`open_session`]
     /// checks as it checks every other, and take the lock of `schemas` there.
-    /// The wait has no timeout: a second migrator waits for the first.
+    /// `config` is the substrate's own, whose one target the substrate's
+    /// session reached, so the lock is taken on the server the schema change
+    /// runs on. The wait has no timeout: a second migrator waits for the
+    /// first.
     ///
     /// The lock is taken with `pg_try_advisory_lock`, retried every
     /// [`LOCK_RETRY_INTERVAL`] while another session holds it, rather than
@@ -435,12 +452,13 @@ impl MigrationLock {
     }
 }
 
-/// Open a session to a target [`check_targets`] accepts, its connection driven
-/// by a task of its own. Every session the substrate opens goes through here,
-/// so none of them reaches a non-loopback target.
+/// Open a session to the target [`local_target`] makes of `config`, its
+/// connection driven by a task of its own. Every session the substrate opens
+/// goes through here, so none of them reaches a non-loopback target, and every
+/// session opened from one configuration connects to one address.
 async fn open_session(config: &Config) -> Result<(Client, JoinHandle<()>), PgError> {
-    check_targets(config)?;
-    let (client, connection) = config.connect(NoTls).await.map_err(database)?;
+    let target = local_target(config)?;
+    let (client, connection) = target.connect(NoTls).await.map_err(database)?;
     let connection = tokio::spawn(async move {
         // A closed connection surfaces as an error on the next statement.
         let _ = connection.await;
@@ -448,21 +466,42 @@ async fn open_session(config: &Config) -> Result<(Client, JoinHandle<()>), PgErr
     Ok((client, connection))
 }
 
-/// Refuse a connection target that is not local: every `hostaddr` must be a
-/// loopback address, and every `host` a Unix socket, `localhost` or a
-/// loopback address.
-fn check_targets(config: &Config) -> Result<(), PgError> {
-    for address in config.get_hostaddrs() {
-        if !address.is_loopback() {
-            return Err(PgError::TlsRequired {
-                host: address.to_string(),
-            });
+/// The one local target of `config`, as the driver is to connect to it.
+///
+/// Refuses more than one `host` or more than one `hostaddr`
+/// ([`PgError::MultipleHosts`]): the driver would try them in turn, and two
+/// sessions opened from one configuration could reach two servers. Refuses a
+/// `hostaddr` that is not a loopback address, and a `host` that is not a Unix
+/// socket, a loopback address or `localhost` ([`PgError::TlsRequired`]).
+///
+/// The driver looks a `host` up unless a `hostaddr` is given, and the
+/// resolver (`/etc/hosts`, DNS) decides where even `localhost` leads, so a
+/// `localhost` without a `hostaddr` is given 127.0.0.1 as its `hostaddr`: the
+/// driver connects there and uses the name only as a name. What is left names
+/// one socket without a lookup: the `hostaddr`, the loopback address the
+/// `host` spells out, or the Unix socket, at the one port the driver accepts
+/// for one host.
+fn local_target(config: &Config) -> Result<Config, PgError> {
+    let (hosts, hostaddrs) = (config.get_hosts(), config.get_hostaddrs());
+    if hosts.len() > 1 || hostaddrs.len() > 1 {
+        return Err(PgError::MultipleHosts {
+            hosts: hosts.len(),
+            hostaddrs: hostaddrs.len(),
+        });
+    }
+    if let Some(address) = hostaddrs.iter().find(|address| !address.is_loopback()) {
+        return Err(PgError::TlsRequired {
+            host: address.to_string(),
+        });
+    }
+    let mut target = config.clone();
+    for host in hosts {
+        check_loopback(host)?;
+        if hostaddrs.is_empty() && matches!(host, Host::Tcp(name) if name == "localhost") {
+            target.hostaddr(IpAddr::V4(Ipv4Addr::LOCALHOST));
         }
     }
-    for host in config.get_hosts() {
-        check_loopback(host)?;
-    }
-    Ok(())
+    Ok(target)
 }
 
 fn check_loopback(host: &Host) -> Result<(), PgError> {
@@ -472,7 +511,7 @@ fn check_loopback(host: &Host) -> Result<(), PgError> {
         Host::Tcp(name) => {
             let loopback = name == "localhost"
                 || name
-                    .parse::<std::net::IpAddr>()
+                    .parse::<IpAddr>()
                     .is_ok_and(|address| address.is_loopback());
             if loopback {
                 Ok(())
@@ -545,6 +584,76 @@ mod tests {
                 .err()
                 .expect("a remote lock session must be refused");
             assert_eq!(refused, PgError::TlsRequired { host: host.into() }, "{dsn}");
+        }
+    }
+
+    #[test]
+    fn localhost_is_connected_at_the_loopback_address_without_being_looked_up() {
+        // Left to the driver, localhost is looked up, and a resolver mapping
+        // it to a remote address would receive the session in the clear.
+        let pinned = local_target(&"host=localhost port=5433 user=ptr".parse().unwrap()).unwrap();
+        assert_eq!(pinned.get_hosts(), [Host::Tcp("localhost".into())]);
+        assert_eq!(pinned.get_hostaddrs(), [IpAddr::V4(Ipv4Addr::LOCALHOST)]);
+        assert_eq!(pinned.get_ports(), [5433]);
+        // Pinning twice pins the same address: the lock session, opened from
+        // the pinned configuration, connects where the substrate's did.
+        assert_eq!(local_target(&pinned).unwrap(), pinned);
+        // Every other accepted target already names its address or socket.
+        for dsn in [
+            "host=127.0.0.1 user=ptr",
+            "host=::1 user=ptr",
+            "host=/var/run/postgresql user=ptr",
+            "hostaddr=127.0.0.1 user=ptr",
+            "host=localhost hostaddr=::1 user=ptr",
+        ] {
+            let config: Config = dsn.parse().unwrap();
+            assert_eq!(local_target(&config).unwrap(), config, "{dsn}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_driver_connects_to_the_hostaddr_without_looking_up_the_host() {
+        // What the pin relies on: given a hostaddr, the driver connects there
+        // and never asks the resolver about the host, here a name no resolver
+        // answers (RFC 6761 reserves .invalid).
+        let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let config: Config = format!("host=ptr.invalid hostaddr=127.0.0.1 port={port} user=ptr")
+            .parse()
+            .unwrap();
+        let connecting = tokio::spawn(async move { config.connect(NoTls).await.map(drop) });
+        let accepted = tokio::time::timeout(Duration::from_secs(10), listener.accept()).await;
+        connecting.abort();
+        assert!(
+            matches!(accepted, Ok(Ok(_))),
+            "the driver did not connect to the hostaddr"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_target_naming_more_than_one_server_is_refused_before_any_session_opens() {
+        let schemas = SchemaSet::with_prefix("ptr").unwrap();
+        for (dsn, hosts, hostaddrs) in [
+            ("host=127.0.0.1,127.0.0.1 user=ptr", 2, 0),
+            ("host=/var/run/postgresql,localhost user=ptr", 2, 0),
+            ("hostaddr=127.0.0.1,::1 user=ptr", 0, 2),
+            ("host=localhost hostaddr=127.0.0.1,::1 user=ptr", 1, 2),
+            (
+                "host=localhost,localhost hostaddr=127.0.0.1,::1 user=ptr",
+                2,
+                2,
+            ),
+        ] {
+            let config: Config = dsn.parse().unwrap();
+            let expected = PgError::MultipleHosts { hosts, hostaddrs };
+            assert_eq!(local_target(&config), Err(expected.clone()), "{dsn}");
+            let refused = MigrationLock::acquire(&config, &schemas)
+                .await
+                .err()
+                .expect("a lock session naming two servers must be refused");
+            assert_eq!(refused, expected, "{dsn}");
         }
     }
 }

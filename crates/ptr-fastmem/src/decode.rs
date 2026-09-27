@@ -1,4 +1,5 @@
-use std::collections::BTreeSet;
+use std::collections::btree_map::Entry;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ptr_search::SearchHit;
 use ptr_types::{CapsuleId, Generation};
@@ -158,7 +159,7 @@ pub struct DecodePolicy {
 /// and no function of this crate takes one.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Recall {
-    /// Named facts, best first, each at the lowest evidence stage.
+    /// Named facts, best first, each once and at the lowest evidence stage.
     Hits(Vec<SearchHit>),
     /// No fact scores high enough, or the best does not lead clearly. Unknown
     /// is a valid answer, not a failure.
@@ -171,7 +172,8 @@ pub enum Recall {
 /// orthogonal codes it estimates the memory's weight on that fact. Hits start
 /// at the lowest evidence stage, so a recall must still be resolved against
 /// live generations and verified before it is relied on. Ties are broken by
-/// capsule, then generation. A returned `Hits` always names at least one fact.
+/// capsule, then generation. A returned `Hits` always names at least one fact,
+/// and none twice.
 ///
 /// Every fact code must be from the readout's codebook, the one its memory's
 /// values are codes of. A code from another codebook of the same length would
@@ -179,15 +181,25 @@ pub enum Recall {
 /// not scored. Every fact must name a capsule: a hit is a capsule candidate,
 /// and a lifecycle target that is not one is refused, not decoded.
 ///
+/// A fact, one capsule at one generation, is scored once however often it is
+/// supplied: a fact code equal to an earlier candidate, as when a caller
+/// combines candidate sources that overlap, is skipped after its own checks.
+/// Scored again, it would be the runner-up with exactly the best score, so a
+/// clear match would be `Unknown` under any positive margin and named twice
+/// under a zero one.
+///
 /// # Errors
 /// Before scoring, refuses a policy with a zero limit or a NaN, infinite or
 /// negative threshold. Then refuses, fact by fact, a fact code from another
 /// codebook than the readout's (`CodebookMismatch`), one naming a
 /// `constraint:` or `procedure:` target (`ReservedTarget`, which no public
 /// constructor of [`FactCode`] builds), one whose length differs from the
-/// readout's, and a score that is not finite (a nonfinite readout or code
+/// readout's, a score that is not finite (a nonfinite readout or code
 /// cell, or an overflowing product), which the confidence checks could not
-/// order.
+/// order, and a fact code naming the same capsule and generation as an
+/// earlier candidate but not equal to it (`ConflictingFact`, which no public
+/// constructor builds either: under one codebook a fact has one code), since
+/// at most one of the two is the fact's.
 pub fn decode_readout<'a, I>(
     readout: &Readout,
     facts: I,
@@ -198,6 +210,8 @@ where
 {
     check_policy(&policy)?;
     let mut scored = Vec::new();
+    // Each fact scored so far, with its position among the candidates.
+    let mut seen = BTreeMap::new();
     for (index, fact) in facts.into_iter().enumerate() {
         if fact.codebook != readout.codebook() {
             return Err(FastMemoryError::CodebookMismatch {
@@ -225,6 +239,22 @@ where
                 field: "score",
                 index,
             });
+        }
+        match seen.entry((&fact.capsule, fact.generation)) {
+            Entry::Vacant(entry) => {
+                entry.insert((index, fact));
+            }
+            // A copy would be the runner-up with exactly the best score. Both
+            // codes are finite, as their scores are, so a copy compares equal.
+            Entry::Occupied(entry) if entry.get().1 == fact => continue,
+            Entry::Occupied(entry) => {
+                return Err(FastMemoryError::ConflictingFact {
+                    capsule: fact.capsule.clone(),
+                    generation: fact.generation,
+                    first: entry.get().0,
+                    index,
+                });
+            }
         }
         scored.push((score, fact));
     }
@@ -398,6 +428,75 @@ mod tests {
         };
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].capsule(), &CapsuleId::from("a"));
+    }
+
+    #[test]
+    fn a_candidate_equal_to_an_earlier_one_is_scored_once() {
+        // The copy of "a" used to be the runner-up with exactly the best
+        // score: a positive margin made the clear winner `Unknown`, and a zero
+        // margin named it twice.
+        let clear = readout(vec![0.9, 0.1], 1);
+        let facts = [
+            fact("a", vec![1.0, 0.0]),
+            fact("b", vec![0.0, 1.0]),
+            fact("a", vec![1.0, 0.0]),
+        ];
+        let Recall::Hits(hits) = decode_readout(&clear, &facts, policy()).unwrap() else {
+            panic!("a duplicated clear winner is still named");
+        };
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].capsule(), &CapsuleId::from("a"));
+        let permissive = DecodePolicy {
+            limit: 5,
+            min_score: 0.0,
+            min_margin: 0.0,
+        };
+        let Recall::Hits(hits) = decode_readout(&clear, &facts, permissive).unwrap() else {
+            panic!("zero thresholds name every candidate");
+        };
+        let named: Vec<_> = hits
+            .iter()
+            .map(|hit| (hit.capsule().0.as_str(), hit.generation()))
+            .collect();
+        assert_eq!(named, [("a", Generation(2)), ("b", Generation(2))]);
+        // Another generation of the same capsule is another fact.
+        let later = FactCode {
+            generation: Generation(3),
+            ..fact("a", vec![1.0, 0.0])
+        };
+        assert_eq!(
+            decode_readout(&clear, [&facts[0], &later], policy()).unwrap(),
+            Recall::Unknown
+        );
+    }
+
+    #[test]
+    fn two_candidates_for_one_fact_with_different_codes_are_refused() {
+        // A fact has one code under a codebook, so at most one of these is
+        // "a"'s. Both used to be scored, and whichever led was named "a".
+        let clear = readout(vec![0.9, 0.1], 1);
+        let facts = [
+            fact("a", vec![1.0, 0.0]),
+            fact("b", vec![0.0, 1.0]),
+            fact("a", vec![0.0, 1.0]),
+        ];
+        let conflict = FastMemoryError::ConflictingFact {
+            capsule: CapsuleId::from("a"),
+            generation: Generation(2),
+            first: 0,
+            index: 2,
+        };
+        assert_eq!(
+            decode_readout(&clear, &facts, policy()),
+            Err(conflict.clone())
+        );
+        assert_eq!(conflict.code(), "PTR_FASTMEM_CONFLICTING_FACT");
+        // The later candidate's own checks come first.
+        let shorter = fact("a", vec![1.0]);
+        assert!(matches!(
+            decode_readout(&clear, [&facts[0], &shorter], policy()),
+            Err(FastMemoryError::DimensionMismatch { .. })
+        ));
     }
 
     #[test]

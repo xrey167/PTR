@@ -1,5 +1,7 @@
 use std::fmt;
 
+use ptr_types::{CapsuleId, Generation};
+
 use crate::projection::IdentifierCodebook;
 
 /// Every way a fast-memory operation can refuse. Each variant names the value it
@@ -69,6 +71,17 @@ pub enum FastMemoryError {
     /// A decoded hit names a capsule, and the runtime accepts no capsule id in
     /// either namespace, so such a candidate is neither built nor decoded.
     ReservedTarget { target: String },
+    /// Two fact candidates handed to decoding name the same capsule at the
+    /// same generation but differ: under one codebook a fact has one code, so
+    /// at most one of them is that fact's, and neither is chosen silently.
+    /// `first` and `index` are their positions among the candidates. A
+    /// candidate equal to an earlier one is not refused; it is scored once.
+    ConflictingFact {
+        capsule: CapsuleId,
+        generation: Generation,
+        first: usize,
+        index: usize,
+    },
     /// A query is read by a memory bound to a key projection (its digest,
     /// `expected`) but was projected by another one, or states none
     /// (`actual`): its scores against keys written under that projection
@@ -101,6 +114,7 @@ impl FastMemoryError {
             Self::Denied { .. } => "PTR_FASTMEM_DENIED",
             Self::CodebookMismatch { .. } => "PTR_FASTMEM_CODEBOOK_MISMATCH",
             Self::ReservedTarget { .. } => "PTR_FASTMEM_RESERVED_TARGET",
+            Self::ConflictingFact { .. } => "PTR_FASTMEM_CONFLICTING_FACT",
             Self::ProjectionMismatch { .. } => "PTR_FASTMEM_PROJECTION_MISMATCH",
             Self::CorruptState { .. } => "PTR_FASTMEM_CORRUPT_STATE",
             Self::DigestMismatch => "PTR_FASTMEM_DIGEST_MISMATCH",
@@ -177,6 +191,17 @@ impl fmt::Display for FastMemoryError {
                 formatter,
                 "{target:?} is a constraint or procedure target, not a capsule: it is no fact \
                  candidate"
+            ),
+            Self::ConflictingFact {
+                capsule,
+                generation,
+                first,
+                index,
+            } => write!(
+                formatter,
+                "fact codes {first} and {index} both name {:?} at generation {} with different \
+                 codes: a fact has one code under a codebook",
+                capsule.0, generation.0
             ),
             Self::ProjectionMismatch { expected, actual } => {
                 write!(formatter, "the query states key projection ")?;
@@ -280,6 +305,12 @@ mod tests {
             },
             FastMemoryError::ReservedTarget {
                 target: "constraint:budget".into(),
+            },
+            FastMemoryError::ConflictingFact {
+                capsule: CapsuleId::from("a"),
+                generation: Generation(1),
+                first: 0,
+                index: 1,
             },
             FastMemoryError::ProjectionMismatch {
                 expected: [1; 32],

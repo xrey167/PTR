@@ -74,10 +74,17 @@ over LF-normalised SQL, so a Windows checkout does not change a migration's
 identity (`.gitattributes` also pins `*.sql` to LF). Covered by
 `migrations_apply_once_and_record_their_checksums` and
 `an_edited_migration_is_refused_as_drift`. The lock is held by a session of its own,
-opened to the same checked loopback target, while the migrations run on the
-substrate's session: a migration or rebuild whose future is cancelled or unwinds
-releases the lock when that session closes, rather than leaving it with a session
-that stays open, and a retry takes it afresh instead of re-entering it
+opened to the loopback address or Unix socket the substrate's session reached, while
+the migrations run on the substrate's session. A connection string naming more than
+one `host` or `hostaddr` is refused with `MultipleHosts` before any session opens,
+since the driver would try them in turn and the lock's session could land on another
+server than the one the migrations run on, where the lock would guard nothing
+(`a_connection_string_naming_more_than_one_server_is_refused`,
+`a_target_naming_more_than_one_server_is_refused_before_any_session_opens`); and no
+name is left for the driver to look up (see the boundary rules), so both sessions
+connect to one address. A migration or rebuild whose future is cancelled or unwinds
+releases the lock when the lock's session closes, rather than leaving it with a
+session that stays open, and a retry takes it afresh instead of re-entering it
 (`a_migration_cancelled_while_holding_the_lock_does_not_block_the_next_migrator`,
 `a_migration_retried_after_a_cancellation_completes_and_leaves_no_lock_held`,
 `a_rebuild_cancelled_while_holding_the_lock_releases_it_and_keeps_the_schemas`).
@@ -545,7 +552,15 @@ Covered by `a_sealed_branch_round_trips_with_every_dependency_and_op`,
   sent credentials in the clear (`a_non_loopback_host_is_refused_without_a_tls_connector`).
   Every `hostaddr` is checked as well as every `host`, because the driver connects to
   `hostaddr` and uses `host` only as a name
-  (`a_hostaddr_that_is_not_loopback_is_refused_whatever_the_host`).
+  (`a_hostaddr_that_is_not_loopback_is_refused_whatever_the_host`). A `host` must be a
+  Unix socket, a loopback address or `localhost`. The name `localhost` is never looked
+  up, since `/etc/hosts` or DNS may map it to a remote address: without a `hostaddr` it
+  is given 127.0.0.1 as one, which the driver connects to instead of resolving the name
+  (`localhost_is_connected_at_the_loopback_address_without_being_looked_up`,
+  `the_driver_connects_to_the_hostaddr_without_looking_up_the_host`). A server
+  listening on `::1` only is reached with `host=::1`.
+- A substrate connects to one server: more than one `host` or `hostaddr` is refused
+  with `MultipleHosts`, so there is no failover or load balancing across hosts.
 - A string PostgreSQL `text` cannot hold (one containing NUL) is refused with
   `InvalidText` before anything is written. A ledger record carrying one is refused as
   `InvalidRecord`, and the PostgreSQL projection stops at it while the ledger and the
@@ -908,8 +923,15 @@ is decoded against the codes of the facts actually written into named capsules a
 lowest evidence stage, or into `Unknown` when no fact reaches the minimum score or the
 best does not lead the runner-up by the minimum margin
 (`an_unrelated_cue_is_unknown_rather_than_a_guess`,
-`an_update_under_the_same_cue_recalls_the_newer_fact`). A memory is bound to the
-`IdentifierCodebook` (seed and code length) its values are codes of when it is
+`an_update_under_the_same_cue_recalls_the_newer_fact`). A fact, a capsule at one
+generation, is scored once however often the candidates supply it: `decode_readout`
+skips a candidate equal to an earlier one, as when a caller combines overlapping
+candidate sources, so a copy is neither the runner-up that would make a clear match
+`Unknown` under a positive margin nor a second hit under a zero one
+(`a_fact_supplied_by_two_candidate_sources_is_decoded_once`), and refuses a candidate
+for the same fact with another code (`ConflictingFact`) rather than choosing between them
+(`two_candidates_for_one_fact_with_different_codes_are_refused`). A memory is bound to
+the `IdentifierCodebook` (seed and code length) its values are codes of when it is
 created or restored, its readouts carry that codebook and expose their values only
 read-only, `fact_codes` derives candidates from it, and a fact code from any other
 codebook, whose scores would be crosstalk of the right length, is refused

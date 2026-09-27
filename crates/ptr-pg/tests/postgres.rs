@@ -1,13 +1,13 @@
 //! Integration tests against a real PostgreSQL server.
 //!
-//! `PTR_PG_TEST_DSN` must name a loopback PostgreSQL 16+ server where the
-//! connecting role may create schemas and where pgvector 0.8+ is installed or
-//! installable. Every test works in its own schema prefix and drops it at the
-//! end, so tests run in parallel against one database. Some tests need more
-//! than that, which the server's superuser has: writing rows as a writer from
-//! before a migration, or as a restore stores them, sets
-//! `session_replication_role`, and one test creates and drops a role of its
-//! own, named after its schema prefix.
+//! `PTR_PG_TEST_DSN` must name one loopback PostgreSQL 16+ server, by one host
+//! or hostaddr, where the connecting role may create schemas and where
+//! pgvector 0.8+ is installed or installable. Every test works in its own
+//! schema prefix and drops it at the end, so tests run in parallel against one
+//! database. Some tests need more than that, which the server's superuser
+//! has: writing rows as a writer from before a migration, or as a restore
+//! stores them, sets `session_replication_role`, and one test creates and
+//! drops a role of its own, named after its schema prefix.
 
 use std::future::Future;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -68,8 +68,22 @@ async fn raw_client() -> tokio_postgres::Client {
     raw_client_at(&dsn()).await
 }
 
+/// A raw client of the server and database `dsn` names, connected where the
+/// substrate connects: a `localhost` without a `hostaddr` is reached at
+/// 127.0.0.1, where the substrate pins it, rather than wherever the resolver
+/// sends the name. (The substrate refuses a string naming several servers,
+/// so a test that builds one fails against such a string.)
 async fn raw_client_at(dsn: &str) -> tokio_postgres::Client {
-    let (client, connection) = tokio_postgres::connect(dsn, tokio_postgres::NoTls)
+    let mut config: tokio_postgres::Config = dsn.parse().expect("parse PTR_PG_TEST_DSN");
+    let localhost = matches!(
+        config.get_hosts(),
+        [tokio_postgres::config::Host::Tcp(host)] if host == "localhost"
+    );
+    if localhost && config.get_hostaddrs().is_empty() {
+        config.hostaddr(std::net::Ipv4Addr::LOCALHOST.into());
+    }
+    let (client, connection) = config
+        .connect(tokio_postgres::NoTls)
         .await
         .expect("connect to PTR_PG_TEST_DSN");
     tokio::spawn(async move {
@@ -3312,6 +3326,31 @@ async fn a_non_loopback_host_is_refused_without_a_tls_connector() {
             host: "db.example.com".into()
         }
     );
+}
+
+#[tokio::test]
+async fn a_connection_string_naming_more_than_one_server_is_refused() {
+    // The driver tries several hosts in turn, so the migration lock's session
+    // could reach another server than the substrate's, where the lock would
+    // guard nothing. Loopback servers all, and still refused.
+    for (dsn, hosts, hostaddrs) in [
+        ("host=127.0.0.1,127.0.0.1 user=ptr", 2, 0),
+        ("host=/var/run/postgresql,127.0.0.1 user=ptr", 2, 0),
+        ("hostaddr=127.0.0.1,::1 user=ptr", 0, 2),
+        (
+            "host=localhost,localhost hostaddr=127.0.0.1,::1 user=ptr",
+            2,
+            2,
+        ),
+    ] {
+        let schemas = SchemaSet::with_prefix("ptr_unused").unwrap();
+        let error = PgSubstrate::connect_with(dsn, schemas)
+            .await
+            .err()
+            .expect("a second server must be refused");
+        assert_eq!(error, PgError::MultipleHosts { hosts, hostaddrs }, "{dsn}");
+        assert_eq!(error.code(), "PTR_PG_MULTIPLE_HOSTS");
+    }
 }
 
 #[tokio::test]
