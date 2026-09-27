@@ -1,6 +1,6 @@
 use crate::error::LineageError;
 use crate::lineage::AdapterId;
-use crate::scale;
+use crate::scale::{self, Wide};
 
 /// `values[i][j]`: score on task `j` after training stage `i`, for `T` stages
 /// and `T` tasks (task `j` is the one introduced at stage `j`).
@@ -22,12 +22,20 @@ impl AccuracyMatrix {
     /// Build a square stage-by-task score matrix. Scores need only be finite;
     /// they are not restricted to probabilities.
     ///
-    /// No summary overflows on the way to its value: means are computed
-    /// without an overflowing running sum and differences as differences of
-    /// halves, so the average accuracy is always finite, and backward
-    /// transfer and forgetting are infinite only when their exact value
-    /// exceeds `f64::MAX` (a score of `f64::MAX` forgotten down to
-    /// `-f64::MAX`), never NaN.
+    /// No intermediate result of a summary overflows or underflows: every
+    /// difference of scores and every sum is rounded as `f64` rounds it but
+    /// with an exponent range `f64` does not bound, and every mean is that
+    /// sum divided by the count and rounded once. The average accuracy is
+    /// therefore always finite, backward transfer and forgetting are
+    /// infinite only when their exact value exceeds `f64::MAX` (a score of
+    /// `f64::MAX` forgotten down to `-f64::MAX`), never NaN, and a summary
+    /// is zero only when its exact value is at most half the smallest
+    /// subnormal, `5e-324`, in magnitude. A task's forgetting, a difference
+    /// of two scores, is exact below the normal range: a task scored
+    /// `5e-324` and finally zero is forgotten by `5e-324`, not by zero. A
+    /// mean of such changes is rounded like any other: that one forgetting
+    /// over three tasks is a third of `5e-324`, and the average forgetting
+    /// and backward transfer round it to zero, as the `f64` quotient does.
     ///
     /// # Errors
     /// Rejects an empty matrix, rows of the wrong length, or nonfinite scores.
@@ -73,35 +81,34 @@ impl AccuracyMatrix {
             return 0.0;
         }
         let last = self.last();
-        let halves: Vec<f64> = (0..tasks - 1)
-            .map(|j| last[j] / 2.0 - self.values[j][j] / 2.0)
+        let changes: Vec<Wide> = (0..tasks - 1)
+            .map(|j| scale::difference(last[j], self.values[j][j]))
             .collect();
-        2.0 * scale::mean(&halves)
+        scale::wide_mean(&changes)
     }
 
     /// Forgetting of each earlier task (Chaudhry et al.): its best score at any
     /// earlier stage minus its final score. Never negative.
     pub fn task_forgetting(&self) -> Vec<f64> {
-        self.half_forgetting()
+        self.wide_forgetting()
             .into_iter()
-            .map(|half| 2.0 * half)
+            .map(Wide::to_f64)
             .collect()
     }
 
     /// Mean forgetting over earlier tasks, or zero for a single task.
     pub fn average_forgetting(&self) -> f64 {
-        let halves = self.half_forgetting();
-        if halves.is_empty() {
+        let forgetting = self.wide_forgetting();
+        if forgetting.is_empty() {
             0.0
         } else {
-            2.0 * scale::mean(&halves)
+            scale::wide_mean(&forgetting)
         }
     }
 
-    /// Half of each earlier task's forgetting, `max(0, best / 2 - last / 2)`,
-    /// which is finite for any finite scores; halving is exact unless a score
-    /// is subnormal.
-    fn half_forgetting(&self) -> Vec<f64> {
+    /// Each earlier task's forgetting, `max(0, best - last)`, as a
+    /// [`scale::difference`], which neither overflows nor underflows.
+    fn wide_forgetting(&self) -> Vec<Wide> {
         let tasks = self.values.len();
         let last = self.last();
         (0..tasks.saturating_sub(1))
@@ -109,7 +116,12 @@ impl AccuracyMatrix {
                 let best = (j..tasks - 1)
                     .map(|stage| self.values[stage][j])
                     .fold(f64::NEG_INFINITY, f64::max);
-                (best / 2.0 - last[j] / 2.0).max(0.0)
+                let forgetting = scale::difference(best, last[j]);
+                if forgetting.signum() > 0.0 {
+                    forgetting
+                } else {
+                    Wide::ZERO
+                }
             })
             .collect()
     }

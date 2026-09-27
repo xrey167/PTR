@@ -256,6 +256,101 @@ fn a_product_entry_whose_large_terms_cancel_keeps_the_small_term_that_decides_it
 }
 
 #[test]
+fn a_product_entry_whose_terms_underflow_is_the_sum_they_make_with_an_unbounded_exponent_range() {
+    // 2^-1074, the smallest positive subnormal.
+    let unit = 5e-324;
+    // Each term 1e-162 * 1e-162 = 1e-324 rounds to zero on its own, so the
+    // direct product is zero; the in-order sum with an unbounded exponent
+    // range is 3e-324, which rounds to the smallest subnormal.
+    let row = matrix(1, 3, &[1e-162; 3]);
+    let column = matrix(3, 1, &[1e-162; 3]);
+    assert_eq!(row.multiply(&column).unwrap().as_slice(), &[unit]);
+    // Each term 3 * 2^-540 * 2^-535 = 1.5 units rounds to 2 on its own, so
+    // the direct product is 4 units, not the 3 the terms make.
+    let row = matrix(1, 2, &[3.0 * 2f64.powi(-540); 2]);
+    let column = matrix(2, 1, &[2f64.powi(-535); 2]);
+    assert_eq!(row.multiply(&column).unwrap().as_slice(), &[3.0 * unit]);
+    // The update is the same one its bases and a consolidation see: not
+    // erased by delta_weight while the bases keep it.
+    let update = LayerUpdate::new(
+        "q",
+        matrix(2, 3, &[1e-162, 1e-162, 1e-162, 0.0, 0.0, 0.0]),
+        matrix(3, 1, &[1e-162; 3]),
+    )
+    .unwrap();
+    let delta = update.delta_weight().unwrap();
+    assert_eq!(delta.as_slice(), &[unit, 0.0]);
+    assert_eq!(
+        (update.output_basis().rank(), update.input_basis().rank()),
+        (1, 1)
+    );
+    assert_eq!(update.output_basis(), column_basis(&delta));
+    assert_eq!(
+        ptr_lineage::ties_merge(&[delta.as_slice().to_vec()], 1.0).unwrap(),
+        vec![unit, 0.0]
+    );
+    // An entry of one term is that term rounded once, as the f64 product is:
+    // (1 + 2^-52) 2^-537 * (1 - 2^-53) 2^-538 is (1 + 2^-53 - 2^-105) 2^-1075,
+    // just above half the smallest subnormal, so it is 5e-324. Rounded first
+    // to 53 bits it is 2^-1075, exactly half, which rounds to even: zero.
+    let b = (1.0 + f64::EPSILON) * 2f64.powi(-537);
+    let a = (1.0 - f64::EPSILON / 2.0) * 2f64.powi(-538);
+    assert_eq!(b * a, unit);
+    let single = LayerUpdate::new("q", matrix(1, 1, &[b]), matrix(1, 1, &[a])).unwrap();
+    assert_eq!(single.b().multiply(single.a()).unwrap().as_slice(), &[unit]);
+    let delta = single.delta_weight().unwrap();
+    assert_eq!(delta.as_slice(), &[unit]);
+    assert_eq!(
+        (single.output_basis().rank(), single.input_basis().rank()),
+        (1, 1)
+    );
+    assert_eq!(
+        ptr_lineage::ties_merge(&[delta.as_slice().to_vec()], 1.0).unwrap(),
+        vec![unit]
+    );
+    // So is every entry of a rank-1 update built the same way: the f64
+    // outer product of its factors.
+    let (column, row) = ([b, -b, b], [a, -a, a, a]);
+    let rank_one = LayerUpdate::new("q", matrix(3, 1, &column), matrix(1, 4, &row)).unwrap();
+    let outer: Vec<f64> = column
+        .iter()
+        .flat_map(|b| row.iter().map(move |a| b * a))
+        .collect();
+    assert!(outer.iter().all(|entry| entry.abs() == unit));
+    assert_eq!(
+        rank_one.delta_weight().unwrap().as_slice(),
+        outer.as_slice()
+    );
+    assert_eq!(
+        (
+            rank_one.output_basis().rank(),
+            rank_one.input_basis().rank()
+        ),
+        (1, 1)
+    );
+    // An entry of several terms is their in-order sum rounded once: 2^-1075
+    // + 2^-1200 is 2^-1075 at 53 bits, exactly half the smallest subnormal,
+    // but the sum itself is above half and rounds to it, and 2^-1075 -
+    // 2^-1200 is below half and rounds to zero.
+    let row = matrix(1, 2, &[2f64.powi(-537), 2f64.powi(-600)]);
+    let column = matrix(2, 1, &[2f64.powi(-538), 2f64.powi(-600)]);
+    assert_eq!(row.multiply(&column).unwrap().as_slice(), &[unit]);
+    let column = matrix(2, 1, &[2f64.powi(-538), -2f64.powi(-600)]);
+    assert_eq!(row.multiply(&column).unwrap().as_slice(), &[0.0]);
+    // An interference ratio below the normal range is rounded once, as the
+    // f64 quotient of the two effects is: (5 * 2^50 + 7) units over five
+    // is 2^50 + 1.4 units, not 2^50 + 2 by way of 2^50 + 1.5.
+    let total = (5.0 * 2f64.powi(50) + 7.0) * unit;
+    let scalar =
+        |value: f64| LayerUpdate::new("q", matrix(1, 1, &[value]), matrix(1, 1, &[1.0])).unwrap();
+    assert_eq!(
+        activation_interference(&scalar(total), &scalar(5.0), &matrix(1, 1, &[1.0])),
+        Ok(Some(total / 5.0))
+    );
+    assert_eq!(total / 5.0, (2f64.powi(50) + 1.0) * unit);
+}
+
+#[test]
 fn a_report_with_a_nan_overlap_is_not_within_any_limit() {
     let layer = |overlap: f64| LayerInterference {
         layer: "q".into(),

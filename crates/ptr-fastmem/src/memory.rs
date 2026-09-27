@@ -388,15 +388,23 @@ impl FastMemory {
     /// removed writes may survive in storage the caller keeps (journals,
     /// checkpoints, database pages, backups), and erasing those is the
     /// storage's obligation, audited separately.
+    ///
+    /// `is_revoked` is asked about each write exactly once, in journal order,
+    /// and those answers alone decide both which writes are removed and which
+    /// checkpoint the refold restarts from. A predicate that consults changing
+    /// state (a lock, an atomic, a lifecycle view refreshed mid-call) and would
+    /// answer differently if asked again cannot make the two disagree: a write
+    /// it answered `false` for stays in both the journal and the state.
     pub fn revoke<F>(&mut self, is_revoked: F) -> RevocationReport
     where
         F: Fn(&SourceRef) -> bool,
     {
-        let Some(first) = self
+        let decisions: Vec<bool> = self
             .writes
             .iter()
-            .position(|write| is_revoked(write.source()))
-        else {
+            .map(|write| is_revoked(write.source()))
+            .collect();
+        let Some(first) = decisions.iter().position(|&revoked| revoked) else {
             return RevocationReport {
                 removed: 0,
                 replayed: 0,
@@ -405,7 +413,11 @@ impl FastMemory {
         };
         let first_seq = self.writes[first].seq();
         let before = self.writes.len();
-        self.writes.retain(|write| !is_revoked(write.source()));
+        self.writes = std::mem::take(&mut self.writes)
+            .into_iter()
+            .zip(decisions)
+            .filter_map(|(write, revoked)| (!revoked).then_some(write))
+            .collect();
         let removed = before - self.writes.len();
 
         // A checkpoint taken before the first revoked write contains none of the

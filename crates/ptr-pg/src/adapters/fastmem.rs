@@ -219,6 +219,16 @@ impl PgSubstrate {
     /// `FastMemoryError::SequenceExhausted` before it is folded, whatever
     /// room the journal has left and whatever was revoked since.
     ///
+    /// The journal's sources are not checked against the lifecycle catalog
+    /// here. [`append_write`](Self::append_write) checked each when it
+    /// journaled it, and the database does not: a row written around it can
+    /// name a source generation that was never live, or one revoked since
+    /// whose writes the revocation had already deleted, and the memory
+    /// restored here folds it all the same. Admission is decided when the
+    /// memory is read ([`FastMemory::read_admitted`], answered for example
+    /// from [`source_admission`](Self::source_admission)), and a read of a
+    /// state that depends on such a write is refused.
+    ///
     /// # Errors
     /// Propagates database errors; a registration [`load_memory`](Self::load_memory)
     /// refuses, or a journal row that is malformed (including one at
@@ -426,6 +436,11 @@ impl PgSubstrate {
     /// which also restores the registration's sequence high-water mark
     /// ([`FastMemory::with_sequence_high_water`]) and the journal's limit
     /// ([`FastMemory::with_sequence_limit`] at [`JOURNAL_SEQ_LIMIT`]).
+    ///
+    /// The rows are decoded, not checked: [`FastMemory::restore`] holds them
+    /// to the memory's configuration, and their sources' lifecycle, which
+    /// [`append_write`](Self::append_write) checked, is decided only when
+    /// the memory is read (see [`restore_memory`](Self::restore_memory)).
     ///
     /// # Errors
     /// Propagates database errors; a malformed row, including one at

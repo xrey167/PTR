@@ -1072,6 +1072,138 @@ fn a_branch_read_shows_a_derived_key_its_own_write_to_an_input_evicts() {
     assert_eq!(snapshot.get("derived:total"), None);
 }
 
+#[test]
+fn a_prefix_scan_shows_the_branch_s_own_work_while_its_range_digest_stays_the_base() {
+    // Under `order:`, `order:4` is derived from `input:rate` and `order:8`
+    // from `order:4`; `orders` is outside the prefix.
+    let host_for = || {
+        let mut host = SemanticHost::default();
+        let mut setup = SemanticDelta::default();
+        for (key, value) in [
+            ("input:rate", text("0.19")),
+            ("order:1", text("open")),
+            ("order:2", text("open")),
+            ("order:4", text("19")),
+            ("order:5", counter_value(1)),
+            (
+                "order:6",
+                set_value(&BTreeSet::from(["a".to_owned()])).unwrap(),
+            ),
+            ("order:8", text("119")),
+            ("orders", text("outside the prefix")),
+        ] {
+            setup.upserts.insert(key.into(), value);
+        }
+        setup
+            .dependencies
+            .insert("order:4".into(), BTreeSet::from(["input:rate".to_owned()]));
+        setup
+            .dependencies
+            .insert("order:8".into(), BTreeSet::from(["order:4".to_owned()]));
+        host.apply_delta(setup).unwrap();
+        host
+    };
+    let mut host = host_for();
+    let entry = |key: &str, value: SemanticValue| (key.to_owned(), value);
+
+    // With nothing staged, a scan shows the base.
+    let mut pristine = branch(&host, "pristine");
+    assert_eq!(
+        pristine.scan_prefix("order:").unwrap(),
+        vec![
+            entry("order:1", text("open")),
+            entry("order:2", text("open")),
+            entry("order:4", text("19")),
+            entry("order:5", counter_value(1)),
+            entry(
+                "order:6",
+                set_value(&BTreeSet::from(["a".to_owned()])).unwrap()
+            ),
+            entry("order:8", text("119")),
+        ]
+    );
+    let base_scans = pristine.seal().unwrap().scans().clone();
+
+    // The branch updates, removes and inserts keys under the prefix, adds to
+    // a counter and to a set, creates a counter, and changes an input of a
+    // derived key, writing that key's recomputed value.
+    let mut work = branch(&host, "b1");
+    for key in ["order:1", "order:2", "order:3", "order:4", "input:rate"] {
+        work.read(key).unwrap();
+    }
+    work.put("order:1", text("closed")).unwrap();
+    work.remove("order:2").unwrap();
+    work.put("order:3", text("open")).unwrap();
+    work.put("input:rate", text("0.07")).unwrap();
+    work.put("order:4", text("7")).unwrap();
+    work.stage_commutative(BranchOp::Add {
+        key: "order:5".into(),
+        amount: 2,
+    })
+    .unwrap();
+    work.stage_commutative(BranchOp::SetInsert {
+        key: "order:6".into(),
+        member: "b".into(),
+        in_base: false,
+    })
+    .unwrap();
+    work.stage_commutative(BranchOp::Add {
+        key: "order:7".into(),
+        amount: 4,
+    })
+    .unwrap();
+
+    // The scan shows what merging the branch onto its unchanged base
+    // leaves: the removed key and `order:8`, which the changed `order:4`
+    // evicts, are gone.
+    let scanned = work.scan_prefix("order:").unwrap();
+    assert_eq!(
+        scanned,
+        vec![
+            entry("order:1", text("closed")),
+            entry("order:3", text("open")),
+            entry("order:4", text("7")),
+            entry("order:5", counter_value(3)),
+            entry(
+                "order:6",
+                set_value(&BTreeSet::from(["a".to_owned(), "b".to_owned()])).unwrap()
+            ),
+            entry("order:7", counter_value(4)),
+        ]
+    );
+    // Every key under the prefix reads as the scan shows it.
+    for key in (1..=8).map(|n| format!("order:{n}")) {
+        let shown = scanned
+            .iter()
+            .find(|(scanned, _)| *scanned == key)
+            .map(|(_, value)| value.clone());
+        assert_eq!(work.read(&key).unwrap(), shown, "{key}");
+    }
+    let sealed = work.seal().unwrap();
+    // The scan is recorded as the base's range, whatever it showed.
+    assert_eq!(sealed.scans(), &base_scans);
+
+    // So a key a concurrent commit inserts under the prefix, which no read
+    // covers, is still a phantom that refuses the branch.
+    let mut moved = host_for();
+    change(&mut moved, "order:9", text("open"));
+    assert_eq!(
+        certify(&sealed, &moved.snapshot(), no_lifecycle).unwrap_err(),
+        BranchError::Conflict {
+            keys: BTreeSet::from(["order:*".to_owned()])
+        }
+    );
+
+    // Against the unchanged base, what the scan showed is what the merge
+    // leaves.
+    let certification = certify(&sealed, &host.snapshot(), no_lifecycle).unwrap();
+    commit(&mut host, certification);
+    assert_eq!(
+        branch(&host, "after").scan_prefix("order:").unwrap(),
+        scanned
+    );
+}
+
 /// A host where `derived:d` holds `value` and is derived from `input:rate`,
 /// and `derived:total` holds a counter derived from `derived:d`.
 fn rate_host(value: SemanticValue) -> SemanticHost {

@@ -274,11 +274,13 @@ A raw row the cited policy cannot have produced, such as a slice row of a policy
 no slice, used to reach the calibration samples and every triage metric; over a grid
 of rows under three policies the database now stores exactly those the policy
 explains (`a_raw_triage_row_is_stored_exactly_when_its_cited_policy_explains_it`).
-The trigger sees only rows written from version 10 on, so `adjudicated_samples` and
-`record_policy` rebuild every calibration row through `TriageOutcome::from_parts` and
-recheck it against the policy it cites when they read it, and refuse as `CorruptRow`,
-rather than serve as a calibration sample, an older slice row no policy or not that
-policy can have produced, or one citing a version no table recorded (`a_calibration_row_its_cited_policy_cannot_have_produced_is_refused_by_every_reader`);
+The trigger sees only rows written from version 10 on, so `adjudicated_samples`,
+`record_policy` and `load_policy` rebuild every calibration row through
+`TriageOutcome::from_parts` and recheck it against the policy it cites when they read
+it, and refuse as `CorruptRow`, rather than serve as a calibration sample, an older
+slice row no policy or not that policy can have produced, or one citing a version no
+table recorded (`a_calibration_row_its_cited_policy_cannot_have_produced_is_refused_by_every_reader`,
+`a_calibrated_policy_loads_only_when_its_rule_on_its_calibration_branches_chooses_it`);
 the triage metrics still count such older rows. A
 policy's calibration rate is zero or lowers `1 − rate` below one, as
 `TriagePolicy::new` requires, and a policy stored before that check loads and is cited
@@ -581,7 +583,12 @@ each records whether its member was in the base's set (`in_base`, which staging 
 A branch reads what merging it onto its unchanged base would leave: a derived key it
 does not write is absent once it changes one of the key's inputs, directly or
 transitively, because the merge evicts it
-(`a_branch_read_shows_a_derived_key_its_own_write_to_an_input_evicts`). A counter
+(`a_branch_read_shows_a_derived_key_its_own_write_to_an_input_evicts`). A prefix scan
+shows the same view, every key under the prefix as a read of it shows it: the
+branch's own inserts, updates and removals applied and the keys its changes evict
+left out. The range digest the scan records is of the base all the same, and it is
+what certification checks
+(`a_prefix_scan_shows_the_branch_s_own_work_while_its_range_digest_stays_the_base`). A counter
 addition or set operation never builds on such a value: staging refuses one on a key
 the branch reads as evicted, whatever the key holds, and, in the other order, a write
 that would change an input of a key the branch has changed only commutatively
@@ -852,6 +859,22 @@ verification:
   Every calibration row it and `adjudicated_samples` read is rechecked against the
   policy it cites, so a row stored before work migration 10 that its policy cannot
   have produced is refused as `CorruptRow`, never used as a sample (§1).
+  The database holds a policy to the size of its calibration set and to nothing
+  else, so a writer going around `record_policy` could store an arbitrary permissive
+  threshold under a calibrated rule, or name branches that are no calibration
+  evidence. `load_policy` therefore checks it all again: it reads the policy, its
+  calibration rows and each calibration branch's triage row, verdict and cited policy
+  in one statement, and returns a calibrated policy only when every calibration branch
+  is an adjudicated calibration-slice branch whose row its cited policy explains and
+  the rule, rerun at the policy's levels on exactly those branches, chooses the stored
+  threshold; any other is `CorruptRow`. For a policy `record_policy` wrote, every
+  calibration branch was adjudicated before the policy committed and no verdict is
+  rewritten, so adjudications made later are not its evidence and do not change what
+  loads. The database does not record whether a verdict came before or after a policy,
+  though: a policy written around `record_policy` that names a branch nobody has
+  adjudicated yet is refused until that branch is adjudicated, and then loads if the
+  rule, rerun on that later verdict, chooses its threshold
+  (`a_calibrated_policy_loads_only_when_its_rule_on_its_calibration_branches_chooses_it`).
 
 ## 3. Fast-weight working memory (`ptr-fastmem`)
 
@@ -970,6 +993,12 @@ the memory bound to the codebook whose seed the registration records and to its 
 projection digest, so a memory loaded from PostgreSQL decodes against no other
 codebook and reads no query stating another projection
 (`a_restored_memory_decodes_only_against_the_codebook_its_registration_records`).
+Neither it nor `load_journal` rechecks a journal row's source lifecycle, which
+`append_write` checks and the database does not: a write journaled around
+`append_write` for a generation revoked since is restored and folded, and the read
+decides admission (`FastMemory::read_admitted`, answered from `source_admission`) and
+refuses it
+(`a_revoked_write_journaled_around_append_write_restores_and_is_refused_when_read`).
 
 A checkpoint is bound to `binding_digest_of` the writes it claims to fold — their
 sequence numbers, source keys, generations and input digests; the digest binds which
@@ -1006,7 +1035,15 @@ passing forgetting gate — thresholds on average and per-task forgetting, backw
 transfer and public-suite regression — lets it serve (`only_a_passing_gate_lets_an_adapter_serve`).
 Those summaries never overflow for finite scores: each is infinite only when its
 exact value exceeds `f64::MAX`, never NaN
-(`summaries_of_extreme_finite_scores_do_not_overflow`).
+(`summaries_of_extreme_finite_scores_do_not_overflow`). Nor does anything underflow on
+the way to their value: differences and sums of scores are rounded as `f64` rounds
+them with an unbounded exponent range and each mean is rounded once, so a summary is
+zero only when its exact value is at most half of `5e-324`. A task's forgetting is its
+exact change, so a task scored `5e-324` and finally zero is forgotten by `5e-324` and
+fails a gate that allows no forgetting; averaged over three tasks that forgetting is a
+third of `5e-324`, and the average forgetting and backward transfer round it to zero,
+as the `f64` quotient does, leaving the per-task limit to see it
+(`summaries_of_subnormal_scores_lose_nothing_before_they_are_rounded_once`).
 A gate report can only come from the gate (its fields are private), and it binds the
 verdict to the adapter id it was evaluated for, not to the scores, which the caller
 must have measured on that adapter (`a_passing_report_cannot_gate_another_adapter`).
@@ -1045,16 +1082,26 @@ and fail both checks
 `factors_that_cancel_or_spread_too_far_are_measured_on_their_formed_product`).
 Bases, norms and interference ratios do not depend on the scale of the factors. Bases
 and norms are computed on matrices divided by powers of two; interference effects, the
-products bases are taken from, and a product entry whose running sum overflows, are
+products bases are taken from, and every product `delta_weight` forms that `f64` cannot
+provably form exactly (a running sum that overflows, or a term that underflows), are
 computed with an exponent range `f64` does not bound, rounding every step as `f64`
-does, so an entry far below the largest of its matrix keeps its effect and large terms
-that cancel leave the small one that decides the entry. Finite updates of any
+does and the result once, so an entry far below the largest of its matrix keeps its
+effect, large terms that cancel leave the small one that decides the entry, and terms
+that each round to zero in `f64` still make the subnormal entry they sum to, which
+`delta_weight`, the bases and a TIES merge all keep. The last step of an entry, its
+product when it has one nonzero term and its last sum otherwise, is rounded to `f64`
+once, not to 53 bits and again to the subnormal grid, so an entry of one term is the
+`f64` product: `(1 + 2^-52) 2^-537 · (1 - 2^-53) 2^-538` is `5e-324`, not the zero
+that `2^-1075`, its 53-bit rounding, rounds to
+(`an_entry_of_one_term_is_the_f64_product_whatever_its_magnitude`,
+`an_entry_of_several_terms_is_their_sum_rounded_once`). Finite updates of any
 magnitude are measured, and only a product entry or ratio that is itself beyond
 `f64::MAX` is refused
 (`update_subspaces_are_measured_whatever_the_scale_of_the_factors`,
 `activation_interference_does_not_depend_on_the_scale_of_updates_or_inputs`,
 `activation_interference_keeps_an_input_or_factor_entry_far_below_the_largest_of_its_matrix`,
-`a_product_entry_whose_large_terms_cancel_keeps_the_small_term_that_decides_it`). When a
+`a_product_entry_whose_large_terms_cancel_keeps_the_small_term_that_decides_it`,
+`a_product_entry_whose_terms_underflow_is_the_sum_they_make_with_an_unbounded_exponent_range`). When a
 lineage grows too deep or too entangled, the next step is a TIES merge of the full
 updates into one consolidated adapter
 (`consolidation_resets_depth_and_is_due_past_the_policy_limits`); consolidation is
@@ -1070,7 +1117,10 @@ sum, and the elected sign is that of the in-order sum with an unbounded exponent
 range, even when large entries cancel exactly and a far smaller one decides it
 (`ties_merges_entries_near_the_largest_finite_value_without_overflow`,
 `the_elected_sign_is_that_of_the_true_sum_when_a_running_sum_would_overflow`,
-`an_entry_too_small_to_survive_rescaling_still_decides_the_sign_when_the_large_ones_cancel`).
+`an_entry_too_small_to_survive_rescaling_still_decides_the_sign_when_the_large_ones_cancel`);
+the mean is that sum divided by the count and rounded once, so below the normal range
+it is the `f64` mean of the entries it averages
+(`summaries_of_subnormal_scores_lose_nothing_before_they_are_rounded_once`).
 A report names the candidate it was measured for
 (`a_report_names_the_candidate_it_was_measured_for`) and has one row per layer: an
 adapter, candidate or earlier, that updates a layer twice is refused before anything is
@@ -1297,7 +1347,7 @@ another by idea.
 | HNSW cosine index on delta embeddings | defer | Deferred with delta embeddings. The mechanism exists for search documents (§1): `halfvec` embeddings, one partial HNSW cosine index per registered space and iterative strict-order scans, in PostgreSQL with no separate vector store; a delta index would reuse it. | Delta embeddings are adopted. |
 | Index `delta_entity_idx` over `entity_table`/`entity_id` | reject | Branches and deltas do not address business tables, which only the effect boundary writes (ADR-0012, ADR-0016). Changes to a semantic key are in the ledger's committed deltas; the projection records revision positions, not payloads, and every backend projects exactly `ptr_state::projection_entries` (§1). | A consumer (audit or adjudication) needs every committed change to one key; `projection_entries` then gains (key, revision) positions, which the projector writes and a rebuild replays. |
 | **Arbiter policies** | | | |
-| Table `arbiter_policy` | adopt-now | Adopted as `triage_policy` and `triage_policy_sample` (work migration 0005; §1 and §2): typed columns instead of `policy_weights` (rule `manual`, `conformal_risk_control` or `learn_then_test`; threshold, NULL when nothing is auto-proposed; calibration rate; α and δ where the rule has them; `calibration_size`; `created_at`) and the calibration branches by name. `branch_triage.policy_version` is a foreign key to it. `ptr-branch` defines `PolicyRecord` and `ThresholdRule`; `ptr-pg` stores and reads them (`record_policy`, `load_policy`). Tests: `triage_policies_record_their_calibration_and_hold_out_everything_else`, `a_policy_is_recorded_only_when_its_rule_on_the_stored_adjudications_chooses_it`, `a_calibration_set_is_complete_when_its_policy_commits_and_never_grows`, `policy_rows_that_break_a_rule_level_or_size_constraint_are_refused`, `a_work_schema_holding_triage_rows_upgrades_and_keeps_their_unrecorded_policies`. | Implemented. |
+| Table `arbiter_policy` | adopt-now | Adopted as `triage_policy` and `triage_policy_sample` (work migration 0005; §1 and §2): typed columns instead of `policy_weights` (rule `manual`, `conformal_risk_control` or `learn_then_test`; threshold, NULL when nothing is auto-proposed; calibration rate; α and δ where the rule has them; `calibration_size`; `created_at`) and the calibration branches by name. `branch_triage.policy_version` is a foreign key to it. `ptr-branch` defines `PolicyRecord` and `ThresholdRule`; `ptr-pg` stores and reads them (`record_policy`, `load_policy`). Tests: `triage_policies_record_their_calibration_and_hold_out_everything_else`, `a_policy_is_recorded_only_when_its_rule_on_the_stored_adjudications_chooses_it`, `a_calibration_set_is_complete_when_its_policy_commits_and_never_grows`, `policy_rows_that_break_a_rule_level_or_size_constraint_are_refused`, `a_calibrated_policy_loads_only_when_its_rule_on_its_calibration_branches_chooses_it`, `a_work_schema_holding_triage_rows_upgrades_and_keeps_their_unrecorded_policies`. | Implemented. |
 | Versioned policies with a training watermark | adopt-now | Adopted as recorded calibration sets rather than a time watermark. Each recalibration is a new policy version that names the branches its threshold was chosen from (`PolicyRecord::calibrated_on`): adjudicated calibration-slice branches only, never merges or reverts; a manual policy names none. F003 estimates a policy's harm only on adjudications outside that set (`PolicyRecord::held_out` over `adjudicated_samples`), so disjointness is exact. Disjointness is not sufficient (§2), so F003 pre-registers the rule that picks the set, for example every adjudication observed before the policy's `created_at`, which anyone can recompute from the stored rows. No weights are updated incrementally. Tests: `a_recorded_policy_names_its_calibration_branches_and_holds_out_the_rest`, `a_recorded_policy_refuses_what_would_make_its_evaluation_dishonest`. | Implemented. |
 | Policies scoped per entity type | defer | A triage policy is global: one `triage_policy` version applies to every eligible branch. Scoping by `entity_table` is rejected, since branches address semantic keys and business tables stay behind the effect boundary. Per-key-namespace policies would each need their own calibration slice with at least ⌈ln δ / ln(1−α)⌉ admitted adjudications (59 at α = δ = 0.05, `certify_threshold`), a rule for branches that touch several namespaces, and stratified estimators, which `ptr-analytics` lacks. F003 reports the harm rate per key namespace as a descriptive breakdown. | F003 per key namespace shows harm rates whose intervals do not overlap, with each namespace past the Learn-then-Test minimum. |
 | **Fast-memory links (L5)** | | | |
@@ -1306,7 +1356,7 @@ another by idea.
 | Delta-to-memory link (`wmp_projection_event.delta_id`) | replaced | Replaced by the write's source: each fast-memory write names the lifecycle input it was derived from (`SourceRef`: key, generation, input digest), stored as `source_key`, `source_generation` and `input_digest` and indexed for revocation. The commit that published the generation is its lifecycle event on the projection event log; `live_generation` records only the target's latest lifecycle change. A write never cites a semantic delta, which publishes a revision, not a generation, and so has no tombstone or supersession that could revoke the write. | Memory sources are widened beyond lifecycle generations, which first needs a revocation event for the new kind of source (INVARIANT 17). |
 | Every content change also updates working memory | reject | Branch operations are speculative and have no generation, and a memory admits only committed, live generations, so staging a change never writes a memory; an agent sees its own staged changes through `Branch::read`. A merged delta publishes a revision, not a generation, so it is no source either. The admissible form is a writer that composes memory writes from committed lifecycle changes read from the projection event log. | The admissible writer is built when M008 shows an update-aware recall gain at equal tokens and the memory is declared as a neural-state binding in `ptr-runtime` (missing in `ptr-fastmem`). |
 | **Adapter lineage (L3)** | | | |
-| `orthogonality_proof` JSONB column | adopt-now | Adopted as typed tables (work migration 0007; §4): `adapter_interference_report`, one header row per adapter with its layer count and `recorded_at`, and `adapter_interference`, one row per layer with the output and input overlap, their chance levels and the worst earlier adapter, as `ptr-lineage`'s `InterferenceReport` holds them. `PgSubstrate::record_interference` stores a report once, only under the adapter it names (`InterferenceReport::candidate`, which `measure_interference` sets; the public field proves no provenance), complete when it commits and never rewritten, and `load_interference` reads it back. The null-space projection is not stored: the null space of a sum is not the intersection of the null spaces. Tests: `interference_reports_are_stored_once_as_measured`, `an_empty_interference_report_or_one_for_an_unknown_adapter_stores_nothing`, `an_interference_report_measured_for_another_adapter_is_refused_before_anything_is_written`, `a_calibration_set_and_an_interference_report_are_counted_once_not_once_per_row`. | Implemented. |
+| `orthogonality_proof` JSONB column | adopt-now | Adopted as typed tables (work migration 0007; §4): `adapter_interference_report`, one header row per adapter with its layer count and `recorded_at`, and `adapter_interference`, one row per layer with the output and input overlap, their chance levels and the worst earlier adapter, as `ptr-lineage`'s `InterferenceReport` holds them. `PgSubstrate::record_interference` stores a report once, only under the adapter it names (`InterferenceReport::candidate`, which `measure_interference` sets; the public field proves no provenance), complete when it commits and never rewritten, and `load_interference` reads it back, refusing a report whose layers are not its recorded count; every other rule `record_interference` applies is the table's and binds any writer. The null-space projection is not stored: the null space of a sum is not the intersection of the null spaces. Tests: `interference_reports_are_stored_once_as_measured`, `an_empty_interference_report_or_one_for_an_unknown_adapter_stores_nothing`, `an_interference_report_measured_for_another_adapter_is_refused_before_anything_is_written`, `a_calibration_set_and_an_interference_report_are_counted_once_not_once_per_row`. | Implemented. |
 | Per-layer overlap score as JSON proof | adopt-now | Adopted as typed rows, not JSON: each `LayerInterference` becomes one `adapter_interference` row under its report's header, so the per-layer evidence behind `ConsolidationPolicy`'s overlap limit can be queried next to the adapter catalog. `ptr-lineage` keeps no serialization dependency, and no work-schema table uses `jsonb`. Tests as in the previous row. | Implemented. |
 | Index `lora_adapter_chain_idx` | defer | `parent` and `adapter_source` replace the ordered `(chain_id, sequence_no)` chain, so the index has nothing to cover; the only secondary index serves erasure lookups by input, and interference reports are read by primary key. Indexes for the lineage walks (children by `parent`, consolidations by `source`, adapters by base model, revision and domain) come with the adapter for the rest of the lineage catalog. | That adapter exists and its query plans show sequential scans on a realistically sized catalog. |
 | Table `lora_training_run` | adopt-later | With the first adapter actually trained (the default backend is `dry-run`): one work-schema row per run naming the training chain (the identity replay rows are keyed by), the adapter produced, the run manifest's `input_fingerprint_sha256` and the adapter's `data_fingerprint` (different digests: the first covers code, configuration, hardware and dataset artifact, the second the exact training input with replay ids), the trigger, the replay and new sample counts, wall-clock and model time at start and end, and the gate result. Training stays outside `ptr-lineage`; `TrainingRunId` and `TrainingChainId` are open in the training-evaluation family. | An R004 run, or a selected training backend that trains adapters. |

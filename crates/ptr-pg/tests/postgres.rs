@@ -5527,6 +5527,62 @@ async fn a_source_set_is_judged_from_one_snapshot_at_the_commit_it_names() {
     substrate.drop_all().await.unwrap();
 }
 
+#[tokio::test]
+async fn a_revoked_write_journaled_around_append_write_restores_and_is_refused_when_read() {
+    let mut substrate = substrate().await;
+    let log = vec![capsule(1, "live", 1), revoke(2, "live", 1)];
+    let chain = anchors(&log);
+    substrate.apply_committed(&log[0], chain[0]).await.unwrap();
+    let config = memory_with(&substrate, "m", 8).await;
+    let request = write_request("live", [1.0, 0.0, 0.0, 0.0], [0.5, 0.0, 0.0, 0.0]);
+    substrate
+        .append_write("m", ptr_fastmem::WriteSeq(1), &request)
+        .await
+        .unwrap();
+    // Revoking live@1 deletes its write, and append_write refuses it again.
+    substrate.apply_committed(&log[1], chain[1]).await.unwrap();
+    assert_eq!(substrate.load_journal("m").await.unwrap(), vec![]);
+    assert_eq!(
+        substrate
+            .append_write("m", ptr_fastmem::WriteSeq(2), &request)
+            .await,
+        Err(PgError::NotLive {
+            target: "live".into(),
+            generation: 1,
+        })
+    );
+    // A writer with the work schema's privileges journals it all the same
+    // (the database does not check a source's lifecycle), and restoring the
+    // memory does not check it either: the memory folds the revoked write.
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    raw.batch_execute(&raw_write(&work, "m", 2)).await.unwrap();
+    let memory = substrate.restore_memory("m").await.unwrap().unwrap();
+    assert_eq!(memory.writes().len(), 1);
+    // Admission is decided when the memory is read, and the read is refused.
+    let admission = substrate
+        .source_admission(
+            memory
+                .sources()
+                .into_iter()
+                .map(|source| (source.key.as_str(), source.generation)),
+            CommitIndex(2),
+        )
+        .await
+        .unwrap();
+    assert!(!admission.admits("live", Generation(1)));
+    let query = Query::with_projection(&config, [3; 32], vec![1.0, 0.0, 0.0, 0.0]).unwrap();
+    assert_eq!(
+        memory
+            .read_admitted(&query, |source| {
+                admission.admits(&source.key, source.generation)
+            })
+            .unwrap_err(),
+        FastMemoryError::Denied { sources: 1 }
+    );
+    substrate.drop_all().await.unwrap();
+}
+
 /// Lowercase hex of `bytes`, for a `decode(..., 'hex')` literal.
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
@@ -8365,6 +8421,219 @@ async fn a_calibration_branch_deleted_and_written_again_in_one_statement_is_refu
     ))
     .await
     .unwrap();
+    substrate.drop_all().await.unwrap();
+}
+
+/// Write a conformal-risk-control policy at `alpha = 0.3` and calibration
+/// rate 0.05 around `record_policy`, as a writer with the work schema's
+/// privileges can: the policy row and one calibration row per branch in one
+/// transaction, which the database accepts once the rows are as many as the
+/// policy's `calibration_size`, whatever branches they name and whatever
+/// threshold the policy states.
+async fn write_policy_around_record_policy(
+    raw: &tokio_postgres::Client,
+    work: &impl std::fmt::Display,
+    version: &str,
+    threshold: AutoThreshold,
+    branches: &[&str],
+) {
+    let threshold = match threshold {
+        AutoThreshold::Never => "NULL".to_owned(),
+        AutoThreshold::AtLeast(threshold) => threshold.to_string(),
+    };
+    let samples: String = branches
+        .iter()
+        .map(|branch| {
+            format!(
+                "INSERT INTO {work}.triage_policy_sample (policy_version, branch) \
+                 VALUES ('{version}', '{branch}');"
+            )
+        })
+        .collect();
+    raw.batch_execute(&format!(
+        "BEGIN; \
+         INSERT INTO {work}.triage_policy \
+             (version, rule, threshold, calibration_rate, alpha, calibration_size) \
+         VALUES ('{version}', 'conformal_risk_control', {threshold}, 0.05, 0.3, {}); \
+         {samples} \
+         COMMIT;",
+        branches.len()
+    ))
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn a_calibrated_policy_loads_only_when_its_rule_on_its_calibration_branches_chooses_it() {
+    let (mut substrate, record) = store_with_a_calibration_to_record().await;
+    substrate.record_policy(&record).await.unwrap();
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    let calibrated: Vec<&str> = record
+        .calibrated_on()
+        .iter()
+        .map(|branch| branch.0.as_str())
+        .collect();
+    let chosen = record.policy().threshold();
+    assert_eq!(chosen, AutoThreshold::AtLeast(0.001));
+    // A slice branch nobody adjudicated, and an adjudicated branch outside
+    // the calibration slice.
+    calibration_branch(&mut substrate, "pending", 0.5, "bootstrap", None).await;
+    substrate
+        .store_branch(&sealed_branch("outside", "agent-c"))
+        .await
+        .unwrap();
+    substrate
+        .record_triage(
+            &BranchId::from("outside"),
+            &triage(TriageDecision::Escalate, true, false),
+            "bootstrap",
+        )
+        .await
+        .unwrap();
+    substrate
+        .record_outcome(
+            &BranchId::from("outside"),
+            BranchOutcome::AdjudicatedHarmless,
+        )
+        .await
+        .unwrap();
+
+    // The database counts a calibration set and nothing else, so each of
+    // these is stored: an arbitrary permissive threshold attributed to the
+    // recorded calibration branches, which the rule on their adjudications
+    // does not choose, and the chosen threshold attributed to a set holding
+    // a branch that is no calibration evidence. Each claims a guarantee its
+    // stored evidence does not give, and none loads.
+    write_policy_around_record_policy(
+        &raw,
+        &work,
+        "permissive",
+        AutoThreshold::AtLeast(0.0),
+        &calibrated,
+    )
+    .await;
+    assert_eq!(
+        substrate.load_policy("permissive").await,
+        Err(PgError::CorruptRow {
+            table: "triage_policy",
+            reason: NOT_REPRODUCED.to_owned(),
+        })
+    );
+    for branch in ["pending", "outside"] {
+        let version = format!("with-{branch}");
+        let mut branches = calibrated.clone();
+        branches.push(branch);
+        write_policy_around_record_policy(&raw, &work, &version, chosen, &branches).await;
+        assert_eq!(
+            substrate.load_policy(&version).await,
+            Err(PgError::CorruptRow {
+                table: "triage_policy",
+                reason: format!("{NOT_ADJUDICATED}: {branch:?}"),
+            }),
+            "{branch}"
+        );
+    }
+    // The database does not record whether a verdict came before or after a
+    // policy, so the verdicts read are those the named branches hold when the
+    // policy is loaded: the policy written around record_policy while
+    // "pending" awaited its verdict loads once that verdict is stored and the
+    // rule on it chooses the policy's threshold. Only for a policy
+    // record_policy wrote is every calibration verdict known to come first.
+    substrate
+        .record_outcome(
+            &BranchId::from("pending"),
+            BranchOutcome::AdjudicatedHarmless,
+        )
+        .await
+        .unwrap();
+    let mut with_pending = record.calibrated_on().to_vec();
+    with_pending.push(BranchId::from("pending"));
+    assert_eq!(
+        substrate.load_policy("with-pending").await.unwrap(),
+        Some(
+            PolicyRecord::from_parts("with-pending", chosen, 0.05, record.rule(), with_pending)
+                .unwrap()
+        )
+    );
+    assert_eq!(
+        substrate.load_policy("with-outside").await,
+        Err(PgError::CorruptRow {
+            table: "triage_policy",
+            reason: format!("{NOT_ADJUDICATED}: \"outside\""),
+        })
+    );
+
+    // What the rule chooses loads whoever wrote it, and adjudications of
+    // branches a policy does not name are not its calibration evidence: its
+    // rule is rerun on exactly the branches it names, whose triage rows and
+    // verdicts are never rewritten.
+    write_policy_around_record_policy(&raw, &work, "copied", chosen, &calibrated).await;
+    calibration_branch(&mut substrate, "late", 0.9, "policy-2", Some(true)).await;
+    assert_eq!(
+        substrate.load_policy("copied").await.unwrap(),
+        Some(
+            PolicyRecord::from_parts(
+                "copied",
+                chosen,
+                0.05,
+                record.rule(),
+                record.calibrated_on().to_vec()
+            )
+            .unwrap()
+        )
+    );
+    assert_eq!(
+        substrate.load_policy("policy-2").await.unwrap(),
+        Some(record.clone())
+    );
+
+    // A calibration branch whose slice row its cited policy cannot have
+    // produced, stored before work migration 10 (a slice row of a policy with
+    // no slice), is no calibration sample either: the policy naming it is
+    // refused as record_policy and adjudicated_samples refuse the row.
+    substrate
+        .record_policy(
+            &PolicyRecord::manual(
+                "no-slice",
+                TriagePolicy::new(AutoThreshold::AtLeast(0.5), 0.0).unwrap(),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    substrate
+        .store_branch(&sealed_branch("under-no-slice", "agent-c"))
+        .await
+        .unwrap();
+    write_before_invariants(
+        &raw,
+        &work,
+        &[],
+        &format!(
+            "INSERT INTO {work}.branch_triage (branch, decision, eligible, calibration_slice, \
+             score, auto_propensity, policy_version) \
+             VALUES ('under-no-slice', 'escalate', true, true, 0.2, 0.0, 'no-slice')"
+        ),
+    )
+    .await;
+    substrate
+        .record_outcome(
+            &BranchId::from("under-no-slice"),
+            BranchOutcome::AdjudicatedHarmless,
+        )
+        .await
+        .unwrap();
+    let mut branches = calibrated.clone();
+    branches.push("under-no-slice");
+    write_policy_around_record_policy(&raw, &work, "unexplained", chosen, &branches).await;
+    assert!(matches!(
+        substrate.load_policy("unexplained").await,
+        Err(PgError::CorruptRow {
+            table: "branch_triage",
+            ..
+        })
+    ));
     substrate.drop_all().await.unwrap();
 }
 

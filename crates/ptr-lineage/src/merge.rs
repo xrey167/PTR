@@ -17,7 +17,10 @@ use crate::scale;
 /// not bound, rounding each step as `f64` does. Its sign is that of the
 /// in-order sum computed without overflow, even when the large entries
 /// cancel exactly and an entry far smaller than them decides it
-/// (`MAX, MAX, -MAX, -MAX, 1e-20` elects plus).
+/// (`MAX, MAX, -MAX, -MAX, 1e-20` elects plus). The mean is that sum divided
+/// by the count and rounded once, so below the normal range it is still the
+/// `f64` mean of the entries it averages, and an entry of a task vector
+/// `delta_weight` formed below the normal range is merged as it is.
 ///
 /// This is the consolidation step of a lineage: several adapters' deltas
 /// become one, so serving cost and chain depth stop growing. The merged update

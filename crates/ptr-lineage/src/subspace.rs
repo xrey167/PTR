@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use crate::error::LineageError;
 use crate::lineage::AdapterId;
-use crate::scale::{self, Wide};
+use crate::scale::{self, Rounded, Wide};
 
 /// A dense row-major matrix of `f64`.
 ///
@@ -87,18 +87,39 @@ impl Matrix {
         &self.data
     }
 
-    /// `self * other`.
+    /// `self * other`: every entry the in-order sum of products, rounded as
+    /// `f64` rounds each step but with an exponent range `f64` does not
+    /// bound, and then once to the nearest `f64`. Rounded to 53 bits, these
+    /// are the entries [`LayerUpdate::input_basis`] takes the bases of a
+    /// formed product from, before they are brought to scale.
+    ///
+    /// The rounding to `f64` is the only rounding of an entry's last step:
+    /// its exact result, the product of an entry with one nonzero term or
+    /// the last sum of one with more, is rounded once, as `f64` rounds the
+    /// result of an operation, so an entry of one term is the `f64` product
+    /// of its two entries. Rounding that result to 53 bits first and then to
+    /// the subnormal grid would round twice: `(1 + 2^-52) 2^-537` times
+    /// `(1 - 2^-53) 2^-538` is just above half the smallest subnormal, which
+    /// `f64` rounds to `5e-324`, but `2^-1075` at 53 bits, exactly half,
+    /// which rounds to even, zero.
+    ///
+    /// It is the direct product wherever that provably is exactly this: no
+    /// entry overflows, and the smallest nonzero magnitudes of the two
+    /// factors multiply to at least `f64::MIN_POSITIVE`, so no product of
+    /// two entries underflows. Otherwise every entry is computed with the
+    /// unbounded exponent range, so an entry that is finite although its
+    /// running sum overflows (`MAX + MAX - MAX`) is not refused, large terms
+    /// that cancel leave the small ones that decide the entry
+    /// (`MAX + MAX - MAX - MAX + 1e-20` is `1e-20`), and terms that would
+    /// each round below the normal range are summed before the entry is
+    /// rounded: three terms of `1e-162 * 1e-162` make the smallest
+    /// subnormal, `5e-324`, where the direct product rounds each to zero.
     ///
     /// # Errors
     /// Returns `LineageError::ShapeMismatch` unless `self` has as many columns
     /// as `other` has rows, and `LineageError::NonFinite` when an entry of the
     /// product exceeds `f64::MAX`, so the result is a matrix
-    /// [`Matrix::new`] would accept. An entry that is finite although its
-    /// running sum overflows (`MAX + MAX - MAX`) is not refused: such entries
-    /// are recomputed as the same in-order sum of products with an exponent
-    /// range `f64` does not bound, so large terms that cancel leave the small
-    /// ones that decide the entry (`MAX + MAX - MAX - MAX + 1e-20` is
-    /// `1e-20`); every other entry is the direct sum of products.
+    /// [`Matrix::new`] would accept.
     pub fn multiply(&self, other: &Matrix) -> Result<Matrix, LineageError> {
         if self.cols != other.rows {
             return Err(LineageError::ShapeMismatch {
@@ -107,28 +128,58 @@ impl Matrix {
                 actual: other.rows,
             });
         }
-        let mut product = self.product(other);
-        if product.data.iter().all(|cell| cell.is_finite()) {
-            return Ok(product);
-        }
-        let (left, right) = (WideMatrix::of(self), WideMatrix::of(other));
-        for (index, cell) in product.data.iter_mut().enumerate() {
-            if !cell.is_finite() {
-                *cell = left
-                    .entry_of_product(&right, index / other.cols, index % other.cols)
-                    .to_f64();
+        match self.exact_product(other) {
+            Product::Direct(direct) => Ok(direct),
+            Product::Wide(wide) => {
+                let data: Vec<f64> = wide.data.iter().map(|entry| entry.to_f64()).collect();
+                if data.iter().any(|cell| !cell.is_finite()) {
+                    return Err(LineageError::NonFinite {
+                        field: "matrix product",
+                    });
+                }
+                Ok(Matrix {
+                    rows: wide.rows,
+                    cols: wide.cols,
+                    data,
+                })
             }
         }
-        if product.data.iter().any(|cell| !cell.is_finite()) {
-            return Err(LineageError::NonFinite {
-                field: "matrix product",
-            });
+    }
+
+    /// `self * other` for matching shapes, every entry the in-order sum of
+    /// products rounded as `f64` rounds each step but with an exponent range
+    /// `f64` does not bound: the direct product where
+    /// [`Matrix::product_in_range`] proves it is exactly that, and the wide
+    /// one otherwise.
+    ///
+    /// Every product of an update's factors with each other or with inputs
+    /// is formed here, or on [`Wide`] values throughout once a product it
+    /// reads is wide: [`Matrix::multiply`] and so
+    /// [`LayerUpdate::delta_weight`], the formed product the bases of an
+    /// update are taken from, and the effects [`activation_interference`]
+    /// compares. None of them trusts a direct result that is merely finite.
+    /// The other products in this crate are formed directly, from values
+    /// that are bounded: inner products of orthonormal vectors and their
+    /// Gram matrix in [`principal_cosines`], orthonormal coordinates lifted
+    /// through an orthonormal basis ([`RowSpan::lift`]), and the coordinates
+    /// [`RowSpan::combinations`] forms from factor entries rescaled to lie
+    /// between `2^-400` and two in magnitude and coefficients no larger than
+    /// the norms of the rows they come from. None of them overflows, and a
+    /// term of one that underflows loses at most `2^-1075`, far below the
+    /// rounding of the values its result is compared with: cosines of at
+    /// most one, unit vectors, and coordinates whose largest column (row)
+    /// is, wherever they are used, at least `2^-808`, to which the rank
+    /// tolerance is relative.
+    fn exact_product(&self, other: &Matrix) -> Product {
+        match self.product_in_range(other) {
+            Some(direct) => Product::Direct(direct),
+            None => Product::Wide(WideMatrix::of(self).times(&WideMatrix::of(other))),
         }
-        Ok(product)
     }
 
     /// The product of matrices of matching shapes, as floating-point sums of
-    /// products in order; an entry may overflow.
+    /// products in order; an entry may overflow, and a product of two
+    /// entries may underflow, so only [`Matrix::product_in_range`] reads it.
     fn product(&self, other: &Matrix) -> Matrix {
         let mut data = vec![0.0; self.rows * other.cols];
         for i in 0..self.rows {
@@ -604,16 +655,17 @@ impl LayerUpdate {
     /// that sum, the wide one otherwise), brought to scale by [`at_scale`],
     /// which treats equal entries alike whichever way they were computed.
     fn product_at_scale(&self) -> Matrix {
-        match self.b.product_in_range(&self.a) {
-            Some(direct) => at_scale(
+        match self.b.exact_product(&self.a) {
+            Product::Direct(direct) => at_scale(
                 direct.rows,
                 direct.cols,
                 direct.data.iter().copied().map(Wide::new),
             ),
-            None => {
-                let wide = WideMatrix::of(&self.b).times(&WideMatrix::of(&self.a));
-                at_scale(wide.rows, wide.cols, wide.data.iter().copied())
-            }
+            Product::Wide(wide) => at_scale(
+                wide.rows,
+                wide.cols,
+                wide.data.iter().copied().map(Rounded::value),
+            ),
         }
     }
 
@@ -621,6 +673,13 @@ impl LayerUpdate {
     /// work on this product, never on the factors: `B A = (B G)(G^-1 A)` for
     /// every invertible `G`, so any operation on `A` and `B` separately
     /// depends on an arbitrary choice of basis.
+    ///
+    /// Its entries are those the bases of the formed product are taken
+    /// from, each rounded once to `f64` ([`Matrix::multiply`]): an entry of
+    /// one term, as is every entry when `B` has one column, is the `f64`
+    /// product of its two factor entries, and an update whose terms each
+    /// round to zero in `f64` but sum to a subnormal entry is that entry
+    /// here too, not erased while its bases keep it.
     ///
     /// # Errors
     /// Returns `LineageError::NonFinite` when an entry of the product exceeds
@@ -641,9 +700,10 @@ impl LayerUpdate {
 ///
 /// Each effect `B (A X)` and its norm are computed as `f64` computes them,
 /// rounding every step the same way, but with an exponent range `f64` does
-/// not bound; only the ratio is rounded into range. Finite inputs whose
-/// effects would overflow or underflow (updates and inputs of `1e100`, or of
-/// `1e-100`) therefore still give their ratio, and an entry far smaller than
+/// not bound; only the ratio is rounded into range, and only once, a
+/// subnormal ratio included. Finite inputs whose effects would overflow or
+/// underflow (updates and inputs of `1e100`, or of `1e-100`) therefore
+/// still give their ratio, and an entry far smaller than
 /// the largest of its matrix keeps its effect: an input of `1e-30` beside
 /// one of `1e300` that no update reads still moves the output by `1e-30`.
 /// Where no intermediate result leaves the range of `f64` the effects are
@@ -696,7 +756,7 @@ pub fn activation_interference(
 /// `||B (A X)||_F`, every product entry the in-order sum of products and the
 /// norm the root of the in-order sum of squares, rounded as `f64` rounds
 /// them but with an unbounded exponent range. The direct products are used
-/// when they provably are exactly that ([`Matrix::product_in_range`]).
+/// when they provably are exactly that ([`Matrix::exact_product`]).
 fn effect_norm(update: &LayerUpdate, inputs: &Matrix) -> Result<Wide, LineageError> {
     if update.a.cols != inputs.rows {
         return Err(LineageError::ShapeMismatch {
@@ -705,28 +765,37 @@ fn effect_norm(update: &LayerUpdate, inputs: &Matrix) -> Result<Wide, LineageErr
             actual: inputs.rows,
         });
     }
-    let direct = update
-        .a
-        .product_in_range(inputs)
-        .and_then(|reads| update.b.product_in_range(&reads));
-    let effect = match direct {
-        Some(effect) => WideMatrix::of(&effect),
-        None => WideMatrix::of(&update.b)
-            .times(&WideMatrix::of(&update.a).times(&WideMatrix::of(inputs))),
+    let effect = match update.a.exact_product(inputs) {
+        // A direct product that is exact holds the wide entries themselves.
+        Product::Direct(reads) => match update.b.exact_product(&reads) {
+            Product::Direct(effect) => WideMatrix::of(&effect),
+            Product::Wide(effect) => effect,
+        },
+        Product::Wide(reads) => WideMatrix::of(&update.b).times(&reads),
     };
     Ok(effect
         .data
         .iter()
-        .fold(Wide::ZERO, |sum, &entry| sum + entry * entry)
+        .map(|entry| entry.value())
+        .fold(Wide::ZERO, |sum, entry| sum + entry * entry)
         .sqrt())
 }
 
+/// A product of matrices as [`Matrix::exact_product`] forms it.
+enum Product {
+    /// The direct product, which is exactly the wide one.
+    Direct(Matrix),
+    /// The wide product, whose entries may leave the range of `f64`.
+    Wide(WideMatrix),
+}
+
 /// A matrix of [`Wide`] entries, for products whose entries leave the range
-/// of `f64`.
+/// of `f64`, each with the sign of what the last rounding of it discarded,
+/// so that it is rounded to `f64` once ([`Rounded`]).
 struct WideMatrix {
     rows: usize,
     cols: usize,
-    data: Vec<Wide>,
+    data: Vec<Rounded>,
 }
 
 impl WideMatrix {
@@ -734,19 +803,26 @@ impl WideMatrix {
         Self {
             rows: matrix.rows,
             cols: matrix.cols,
-            data: matrix.data.iter().copied().map(Wide::new).collect(),
+            data: matrix
+                .data
+                .iter()
+                .map(|&value| Rounded::exact(Wide::new(value)))
+                .collect(),
         }
     }
 
     /// Entry `(row, col)` of `self * other`: the in-order sum of products,
-    /// skipping zero terms as [`Matrix::product`] does.
-    fn entry_of_product(&self, other: &WideMatrix, row: usize, col: usize) -> Wide {
+    /// skipping zero terms as [`Matrix::product`] does, each product and sum
+    /// rounded to 53 bits. What the last rounding discarded is kept: the
+    /// product of an entry with one nonzero term, or the last sum of one
+    /// with more, so that [`Rounded::to_f64`] rounds that result once.
+    fn entry_of_product(&self, other: &WideMatrix, row: usize, col: usize) -> Rounded {
         (0..self.cols)
-            .map(|inner| self.data[row * self.cols + inner])
+            .map(|inner| self.data[row * self.cols + inner].value())
             .enumerate()
             .filter(|(_, left)| !left.is_zero())
-            .fold(Wide::ZERO, |sum, (inner, left)| {
-                sum + left * other.data[inner * other.cols + col]
+            .fold(Rounded::ZERO, |sum, (inner, left)| {
+                sum + Rounded::product(left, other.data[inner * other.cols + col].value())
             })
     }
 
@@ -1294,6 +1370,183 @@ mod tests {
             matrix(1, 1, &[1e200]).product_in_range(&matrix(1, 1, &[1e200])),
             None
         );
+    }
+
+    #[test]
+    fn a_product_whose_terms_underflow_is_the_wide_product_rounded_once() {
+        // Entries whose products fall below MIN_POSITIVE, some of them below
+        // half the smallest subnormal, with zeros and both signs.
+        let entries = |count: usize, seed: u64| -> Vec<f64> {
+            let mut state = seed;
+            (0..count)
+                .map(|_| {
+                    state = state
+                        .wrapping_mul(6364136223846793005)
+                        .wrapping_add(1442695040888963407);
+                    let unit = (state >> 11) as f64 / (1u64 << 53) as f64;
+                    match state % 5 {
+                        0 => 0.0,
+                        1 => unit * 1e-160,
+                        2 => -unit * 2f64.powi(-530),
+                        3 => unit * 2f64.powi(-545),
+                        _ => -unit * 1e-155,
+                    }
+                })
+                .collect()
+        };
+        let mut differed = 0;
+        for seed in 0..20 {
+            let left = matrix(3, 4, &entries(12, 2 * seed + 1));
+            let right = matrix(4, 5, &entries(20, 2 * seed + 2));
+            assert_eq!(left.product_in_range(&right), None);
+            let wide: Vec<f64> = WideMatrix::of(&left)
+                .times(&WideMatrix::of(&right))
+                .data
+                .iter()
+                .map(|entry| entry.to_f64())
+                .collect();
+            let product = left.multiply(&right).unwrap();
+            assert_eq!(product.as_slice(), wide.as_slice(), "seed {seed}");
+            // The direct product, which rounds every term on its own, does
+            // not give those entries.
+            if left.product(&right).as_slice() != wide.as_slice() {
+                differed += 1;
+            }
+        }
+        assert!(differed > 0);
+    }
+
+    /// Significands of every bit pattern, and ones whose products lie on,
+    /// just above or just below a tie at 53 bits.
+    fn significands() -> Vec<f64> {
+        let epsilon = f64::EPSILON;
+        let mut significands = vec![
+            1.0,
+            1.0 + epsilon,
+            1.0 + 2.0 * epsilon,
+            1.0 - epsilon / 2.0,
+            1.5,
+            1.5 + epsilon,
+            1.5 - epsilon,
+            1.25,
+            1.75 + epsilon,
+            2.0 - epsilon,
+            2.0 - 2.0 * epsilon,
+        ];
+        significands.extend(pseudo_random(8, 11).into_iter().map(|x| 1.0 + x.abs()));
+        significands
+    }
+
+    #[test]
+    fn an_entry_of_one_term_is_the_f64_product_whatever_its_magnitude() {
+        // Products from 2^-1140, below every subnormal, through the whole
+        // subnormal range into the normal one: the product of one term is
+        // rounded once, as f64 rounds it, never to 53 bits and then again.
+        let significands = significands();
+        for &left in &significands {
+            for &right in &significands {
+                for exponent in -1140..=-1015 {
+                    for sign in [1.0, -1.0] {
+                        let a = sign * left * 2f64.powi(-540);
+                        let b = right * 2f64.powi(exponent + 540);
+                        let product = matrix(1, 1, &[a]).multiply(&matrix(1, 1, &[b])).unwrap();
+                        assert_eq!(
+                            product.as_slice()[0].to_bits(),
+                            (a * b).to_bits(),
+                            "{a:e} * {b:e}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn an_entry_of_several_terms_is_their_sum_rounded_once() {
+        // Reference: each term rounded to 53 bits, as the f64 product of the
+        // factors scaled into the normal range, and their sum rounded once to
+        // a multiple of 2^-1074, computed exactly on integers counting units
+        // of 2^-1148.
+        let reference = |terms: &[(f64, f64)]| -> f64 {
+            let units: i128 = terms
+                .iter()
+                .map(|&(a, b)| {
+                    let term = (a * 2f64.powi(600)) * (b * 2f64.powi(600)) * 2f64.powi(-52);
+                    assert!(term.fract() == 0.0 && term.abs() <= 2f64.powi(126));
+                    term as i128
+                })
+                .sum();
+            let (whole, rest) = (units.abs() >> 74, units.abs() & ((1 << 74) - 1));
+            let half = 1 << 73;
+            let whole = if rest > half || (rest == half && whole % 2 == 1) {
+                whole + 1
+            } else {
+                whole
+            };
+            (whole as f64 * 5e-324).copysign(units as f64)
+        };
+        let power = |exponent: i32| 2f64.powi(exponent);
+        let mut cases: Vec<Vec<(f64, f64)>> = Vec::new();
+        // Halfway between two subnormal values, or between zero and the
+        // smallest, and something far smaller of either sign after it.
+        for halves in [1.0, 3.0, 5.0, 2f64.powi(53) - 1.0] {
+            for exponent in -1140..=-1076 {
+                for sign in [1.0, -1.0] {
+                    let tie = (halves * power(-537), power(-538));
+                    let small = (sign * power(-570), power(exponent + 570));
+                    cases.push(vec![tie, small]);
+                    cases.push(vec![small, tie]);
+                    cases.push(vec![tie, small, small]);
+                }
+            }
+        }
+        // And terms of every bit pattern with products from 2^-1095 to
+        // 2^-1030, of both signs.
+        let significands = significands();
+        let count = significands.len();
+        for (i, &left) in significands.iter().enumerate() {
+            for (j, &right) in significands.iter().enumerate() {
+                let (third, fourth) = (
+                    significands[(7 * i + 3 * j) % count],
+                    significands[(i + j) % count],
+                );
+                let sign = if (i + j) % 2 == 0 { 1.0 } else { -1.0 };
+                let gap = ((i + 2 * j) % 9) as i32;
+                for exponent in (-1095 + gap..=-1030).step_by(5) {
+                    let first = (left * power(-540), right * power(exponent + 540));
+                    let second = (
+                        sign * third * power(-545),
+                        fourth * power(exponent + 545 - gap),
+                    );
+                    cases.push(vec![first, second]);
+                    cases.push(vec![first, second, (right * power(-547), power(-548))]);
+                }
+            }
+        }
+        let mut differed = 0;
+        for terms in cases {
+            let row: Vec<f64> = terms.iter().map(|term| term.0).collect();
+            let column: Vec<f64> = terms.iter().map(|term| term.1).collect();
+            let product = matrix(1, terms.len(), &row)
+                .multiply(&matrix(terms.len(), 1, &column))
+                .unwrap();
+            let expected = reference(&terms);
+            assert_eq!(
+                product.as_slice()[0].to_bits(),
+                expected.to_bits(),
+                "{terms:?}"
+            );
+            // Rounding the sum to 53 bits first gives another entry.
+            let twice = WideMatrix::of(&matrix(1, terms.len(), &row))
+                .times(&WideMatrix::of(&matrix(terms.len(), 1, &column)))
+                .data[0]
+                .value()
+                .to_f64();
+            if twice != expected {
+                differed += 1;
+            }
+        }
+        assert!(differed > 0);
     }
 
     #[test]

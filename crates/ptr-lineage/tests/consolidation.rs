@@ -155,6 +155,117 @@ fn summaries_of_extreme_finite_scores_do_not_overflow() {
 }
 
 #[test]
+fn summaries_of_subnormal_scores_lose_nothing_before_they_are_rounded_once() {
+    // 2^-1074, the smallest positive subnormal: half of it rounds to zero.
+    let unit = 5e-324;
+    // Task 0 is forgotten by one unit, which halving the scores would lose.
+    let matrix = AccuracyMatrix::new(vec![vec![unit, 0.0], vec![0.0, 0.0]]).unwrap();
+    assert_eq!(matrix.task_forgetting(), vec![unit]);
+    assert_eq!(matrix.average_forgetting(), unit);
+    assert_eq!(matrix.backward_transfer(), -unit);
+    // And a forgetting of one unit, from two units to one, is not doubled.
+    let matrix = AccuracyMatrix::new(vec![vec![2.0 * unit, 0.0], vec![unit, 0.0]]).unwrap();
+    assert_eq!(matrix.task_forgetting(), vec![unit]);
+    assert_eq!(matrix.average_forgetting(), unit);
+    assert_eq!(matrix.backward_transfer(), -unit);
+    // A gate that allows no forgetting at all sees it.
+    let strict = ForgettingGate {
+        max_average_forgetting: 0.0,
+        max_task_forgetting: 0.0,
+        min_backward_transfer: 0.0,
+        max_public_regression: 0.0,
+    };
+    let matrix = AccuracyMatrix::new(vec![vec![unit, 0.0], vec![0.0, 0.0]]).unwrap();
+    let report = strict
+        .evaluate(
+            &ptr_lineage::AdapterId::from("candidate"),
+            &matrix,
+            PublicSuite {
+                serving: 0.5,
+                candidate: 0.5,
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        report.violations(),
+        &[
+            GateViolation::AverageForgetting {
+                observed: unit,
+                limit: 0.0
+            },
+            GateViolation::TaskForgetting {
+                task: 0,
+                observed: unit,
+                limit: 0.0
+            },
+            GateViolation::BackwardTransfer {
+                observed: -unit,
+                limit: 0.0
+            },
+        ]
+    );
+    // A mean is rounded once, so it is zero exactly when its exact value is
+    // at most half a unit: one unit of forgetting over three tasks is a
+    // third of a unit, which rounds to zero, and so is the backward transfer
+    // (minus a third), while two units over three round to one. Each task's
+    // own forgetting is exact, so the strict gate still sees the forgetting
+    // through its per-task limit.
+    let mut values = vec![vec![0.0; 4]; 4];
+    values[0][0] = unit;
+    let matrix = AccuracyMatrix::new(values.clone()).unwrap();
+    assert_eq!(matrix.task_forgetting(), vec![unit, 0.0, 0.0]);
+    assert_eq!(matrix.average_forgetting(), 0.0);
+    assert_eq!(matrix.backward_transfer(), 0.0);
+    let report = strict
+        .evaluate(
+            &ptr_lineage::AdapterId::from("candidate"),
+            &matrix,
+            PublicSuite {
+                serving: 0.5,
+                candidate: 0.5,
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        report.violations(),
+        &[GateViolation::TaskForgetting {
+            task: 0,
+            observed: unit,
+            limit: 0.0
+        }]
+    );
+    values[0][0] = 2.0 * unit;
+    let matrix = AccuracyMatrix::new(values).unwrap();
+    assert_eq!(matrix.average_forgetting(), unit);
+    assert_eq!(matrix.backward_transfer(), -unit);
+    // The mean of scores is their sum divided once: (5 * 2^50 + 7) units
+    // over five is 2^50 + 1.4 units, which rounds to 2^50 + 1. Dividing a
+    // significand first and rounding again to the subnormal grid would give
+    // 2^50 + 1.5 and then 2^50 + 2.
+    let total = (5.0 * 2f64.powi(50) + 7.0) * unit;
+    let last = vec![total - 4.0 * unit, unit, unit, unit, unit];
+    assert_eq!(last.iter().sum::<f64>(), total);
+    let mut values = vec![vec![0.0; 5]; 4];
+    values.push(last);
+    let matrix = AccuracyMatrix::new(values).unwrap();
+    assert_eq!(matrix.average_accuracy(), total / 5.0);
+    assert_eq!(matrix.average_accuracy(), (2f64.powi(50) + 1.0) * unit);
+    // So is the mean TIES takes of the agreeing entries.
+    let merged = ties_merge(
+        &[
+            vec![total - 4.0 * unit],
+            vec![unit],
+            vec![unit],
+            vec![unit],
+            vec![unit],
+        ],
+        1.0,
+    )
+    .unwrap();
+    assert_eq!(merged, vec![total / 5.0]);
+}
+
+#[test]
 fn merging_refuses_nonfinite_updates_and_invalid_densities() {
     assert_eq!(
         ties_merge(&[], 1.0),

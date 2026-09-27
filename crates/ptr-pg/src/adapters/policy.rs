@@ -12,6 +12,21 @@ use super::{check_text, database, PgSubstrate};
 use crate::config::Identifier;
 use crate::error::PgError;
 
+/// Why a policy naming a calibration branch that is not an adjudicated
+/// calibration-slice branch is refused.
+const NOT_ADJUDICATED: &str = "a calibration branch is not an adjudicated calibration-slice branch";
+
+/// Why a policy whose rule, rerun on the stored adjudications of its
+/// calibration branches, chooses another threshold is refused.
+const NOT_REPRODUCED: &str =
+    "the rule on the stored adjudications of the calibration branches chooses another threshold";
+
+/// The columns of [`adjudicated_query`]: in `load_policy`'s rows the
+/// calibration branch follows them, then the policy's own columns.
+const ADJUDICATED_COLUMNS: usize = 10;
+const CALIBRATION_BRANCH: usize = ADJUDICATED_COLUMNS;
+const POLICY_COLUMNS: usize = ADJUDICATED_COLUMNS + 1;
+
 impl PgSubstrate {
     /// Record a policy and exactly which branches its threshold was
     /// calibrated on, in one transaction. A triage row can cite the policy
@@ -100,9 +115,7 @@ impl PgSubstrate {
                 .map(adjudicated_sample)
                 .collect::<Result<Vec<_>, _>>()?;
             if samples.len() != branches.len() {
-                return Err(refuse(
-                    "a calibration branch is not an adjudicated calibration-slice branch",
-                ));
+                return Err(refuse(NOT_ADJUDICATED));
             }
             match PolicyRecord::calibrate(
                 record.version(),
@@ -111,12 +124,7 @@ impl PgSubstrate {
                 &samples,
             ) {
                 Ok(chosen) if chosen == *record => {}
-                _ => {
-                    return Err(refuse(
-                        "the rule on the stored adjudications of the calibration branches \
-                         chooses another threshold",
-                    ))
-                }
+                _ => return Err(refuse(NOT_REPRODUCED)),
             }
         }
         transaction
@@ -152,32 +160,86 @@ impl PgSubstrate {
         transaction.commit().await.map_err(database)
     }
 
-    /// A recorded policy with its calibration branches, or `None`. A policy
-    /// whose stored calibration set is not the size it was recorded with is
-    /// refused as a corrupt row rather than returned.
+    /// A recorded policy with its calibration branches, or `None`, only once
+    /// the stored adjudications of those branches show that its rule chose
+    /// its threshold.
+    ///
+    /// The database holds a policy to its calibration set's size and to
+    /// nothing else: a writer that goes around
+    /// [`record_policy`](Self::record_policy), with the work schema's
+    /// privileges, can store any threshold under a calibrated rule and name
+    /// any branches, as many as the size it states. So everything
+    /// `record_policy` checks is checked again here. The policy row, its
+    /// calibration rows and, for each calibration branch, its triage row,
+    /// verdict and the policy that triage row cites are read in one
+    /// statement, so from one snapshot; every calibration branch of a
+    /// calibrated rule must be an adjudicated calibration-slice branch, its
+    /// triage row is rebuilt and rechecked against the policy it cites as
+    /// [`adjudicated_samples`](Self::adjudicated_samples) does, and the rule
+    /// is rerun at the record's levels on exactly those branches: the record
+    /// is returned only if it is what the rule chooses. Only the
+    /// adjudications of the branches the policy names are read, and none of
+    /// them is rewritten or deleted while the policy stands (see
+    /// `record_policy`). For a policy `record_policy` wrote, every one of
+    /// them was stored before the policy committed, so nothing adjudicated
+    /// later is its calibration evidence, and it loads for as long as it is
+    /// stored. The database does not record whether a verdict came before or
+    /// after a policy, though, so for a policy written around
+    /// `record_policy` they are the verdicts its branches hold when it is
+    /// loaded: one naming a branch nobody has adjudicated yet is refused
+    /// until that branch is adjudicated, and from then on loads if the rule,
+    /// rerun on that later verdict, chooses its threshold.
+    ///
+    /// # Errors
+    /// Refuses as `PgError::CorruptRow` naming `triage_policy` a policy whose
+    /// calibration set is not the size it was recorded with, one
+    /// `PolicyRecord::from_parts` refuses, one naming a calibration branch
+    /// that is not an adjudicated calibration-slice branch, and one whose
+    /// rule on its calibration branches' stored adjudications chooses another
+    /// threshold; and a calibration branch whose stored triage row its cited
+    /// policy cannot have produced as `adjudicated_samples` refuses it
+    /// (naming `branch_triage`, or `triage_policy` for a cited policy that is
+    /// not a valid one).
     pub async fn load_policy(&self, version: &str) -> Result<Option<PolicyRecord>, PgError> {
         check_text("triage_policy.version", version)?;
         let work = &self.schemas.work;
-        let Some(row) = self
+        // One row per calibration branch: the adjudicated sample it is, as
+        // adjudicated_sample reads it (all NULL for a branch that is none),
+        // the branch, and the policy's own columns, which every row repeats.
+        // A policy calibrated on nothing comes as one row with no branch.
+        let rows = self
             .client
-            .query_opt(
+            .query(
                 &format!(
-                    "SELECT rule, threshold, calibration_rate, alpha, delta, calibration_size \
-                     FROM {work}.triage_policy WHERE version = $1"
+                    "SELECT adjudicated.*, calibration.branch, recorded.rule, \
+                            recorded.threshold, recorded.calibration_rate, recorded.alpha, \
+                            recorded.delta, recorded.calibration_size \
+                     FROM {work}.triage_policy recorded \
+                     LEFT JOIN {work}.triage_policy_sample calibration \
+                         ON calibration.policy_version = recorded.version \
+                     LEFT JOIN LATERAL ({} AND t.branch = calibration.branch) adjudicated \
+                         ON true \
+                     WHERE recorded.version = $1 \
+                     ORDER BY calibration.branch",
+                    adjudicated_query(work)
                 ),
                 &[&version],
             )
             .await
-            .map_err(database)?
-        else {
+            .map_err(database)?;
+        let Some(row) = rows.first() else {
             return Ok(None);
         };
+        debug_assert_eq!(row.len(), POLICY_COLUMNS + 6, "load_policy's column layout");
         let corrupt = |reason: String| PgError::CorruptRow {
             table: "triage_policy",
             reason,
         };
-        let (rule, alpha, delta): (String, Option<f64>, Option<f64>) =
-            (row.get(0), row.get(3), row.get(4));
+        let (rule, alpha, delta): (String, Option<f64>, Option<f64>) = (
+            row.get(POLICY_COLUMNS),
+            row.get(POLICY_COLUMNS + 3),
+            row.get(POLICY_COLUMNS + 4),
+        );
         let rule = match (rule.as_str(), alpha, delta) {
             ("manual", None, None) => ThresholdRule::Manual,
             ("conformal_risk_control", Some(alpha), None) => {
@@ -188,34 +250,50 @@ impl PgSubstrate {
             }
             (other, _, _) => return Err(corrupt(format!("rule {other:?} with its levels"))),
         };
-        let threshold = match row.get::<_, Option<f32>>(1) {
+        let threshold = match row.get::<_, Option<f32>>(POLICY_COLUMNS + 1) {
             None => AutoThreshold::Never,
             Some(threshold) => AutoThreshold::AtLeast(threshold),
         };
-        let branches: Vec<BranchId> = self
-            .client
-            .query(
-                &format!(
-                    "SELECT branch FROM {work}.triage_policy_sample \
-                     WHERE policy_version = $1 ORDER BY branch"
-                ),
-                &[&version],
-            )
-            .await
-            .map_err(database)?
-            .into_iter()
-            .map(|row| BranchId(row.get(0)))
+        let calibration_rate: f64 = row.get(POLICY_COLUMNS + 2);
+        let calibration_size: i32 = row.get(POLICY_COLUMNS + 5);
+        let calibration: Vec<&Row> = rows
+            .iter()
+            .filter(|row| row.get::<_, Option<&str>>(CALIBRATION_BRANCH).is_some())
             .collect();
-        let calibration_size: i32 = row.get(5);
-        if usize::try_from(calibration_size).ok() != Some(branches.len()) {
+        if usize::try_from(calibration_size).ok() != Some(calibration.len()) {
             return Err(corrupt(format!(
                 "{} calibration branches, recorded with {calibration_size}",
-                branches.len()
+                calibration.len()
             )));
         }
-        PolicyRecord::from_parts(version, threshold, row.get(2), rule, branches)
-            .map(Some)
-            .map_err(|error| corrupt(error.to_string()))
+        let branches = calibration
+            .iter()
+            .map(|row| BranchId(row.get(CALIBRATION_BRANCH)))
+            .collect();
+        let stored = PolicyRecord::from_parts(version, threshold, calibration_rate, rule, branches)
+            .map_err(|error| corrupt(error.to_string()))?;
+        // A manual record names no calibration branch (from_parts refuses one
+        // that does), so there is nothing to rerun.
+        if rule == ThresholdRule::Manual {
+            return Ok(Some(stored));
+        }
+        let samples = calibration
+            .iter()
+            .map(|row| {
+                // Column 0 is the triage row's branch, which is NOT NULL, so
+                // a NULL there is a calibration branch the lateral join found
+                // no adjudicated calibration-slice row for.
+                if row.get::<_, Option<&str>>(0).is_none() {
+                    let branch: &str = row.get(CALIBRATION_BRANCH);
+                    return Err(corrupt(format!("{NOT_ADJUDICATED}: {branch:?}")));
+                }
+                adjudicated_sample(row)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        match PolicyRecord::calibrate(version, rule, calibration_rate, &samples) {
+            Ok(chosen) if chosen == stored => Ok(Some(stored)),
+            _ => Err(corrupt(NOT_REPRODUCED.to_owned())),
+        }
     }
 
     /// Every adjudicated calibration-slice branch as a calibration sample, in
@@ -257,9 +335,9 @@ impl PgSubstrate {
 
 /// Every adjudicated calibration-slice branch with its logged triage, its
 /// verdict and the policy the triage cites, as [`adjudicated_sample`] reads a
-/// row; callers append further conditions, the order and any locking clause
-/// (the tables are `b`, `t` and `o`; the policy, `p`, is outer-joined and
-/// cannot be locked). A branch is adjudicated at most once, so there is one
+/// row, in [`ADJUDICATED_COLUMNS`] columns; callers append further
+/// conditions, the order and any locking clause (the tables are `b`, `t` and
+/// `o`; the policy, `p`, is outer-joined and cannot be locked). A branch is adjudicated at most once, so there is one
 /// row per branch.
 fn adjudicated_query(work: &Identifier) -> String {
     format!(

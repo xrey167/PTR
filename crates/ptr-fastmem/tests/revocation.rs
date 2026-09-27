@@ -1,5 +1,8 @@
 mod common;
 
+use std::cell::{Cell, RefCell};
+use std::collections::BTreeSet;
+
 use common::{codebook, config, write_about};
 use ptr_fastmem::{FastMemory, FastMemoryConfig, FastMemoryError, Query, SourceRef, WriteSeq};
 use ptr_types::Generation;
@@ -217,4 +220,46 @@ fn revoking_every_write_resets_cells_and_dependencies_but_keeps_sequence_monoton
     assert!(memory.writes().is_empty());
     assert_eq!(memory.write(write_about("e", 4)).unwrap().seq, WriteSeq(5));
     assert_eq!(memory.state(), &memory.refold_from_journal());
+}
+
+#[test]
+fn a_revocation_asks_about_each_write_once_and_removes_exactly_what_it_answered() {
+    for interval in [1, 2, 3, 4, 100] {
+        let mut memory = memory_with(interval, &SOURCES);
+        let before = memory.writes().len();
+        // The lifecycle view the predicate consults changes while it is being
+        // asked: by the time it answers for "e", "b" has been revoked too, as
+        // a revocation committing at the authority mid-call would make it.
+        let revoked = RefCell::new(BTreeSet::from(["e".to_owned()]));
+        let asked = Cell::new(0);
+        let report = memory.revoke(|source| {
+            asked.set(asked.get() + 1);
+            let answer = revoked.borrow().contains(&source.key);
+            if source.key == "e" {
+                revoked.borrow_mut().insert("b".to_owned());
+            }
+            answer
+        });
+        // The rebuilt state is the fold of exactly the journal it kept.
+        assert_eq!(
+            memory.state(),
+            &memory.refold_from_journal(),
+            "interval {interval}"
+        );
+        assert_eq!(asked.get(), before, "interval {interval}");
+        // "b" was live when it was asked about, so it stays; only "e" goes.
+        assert_eq!(report.removed, 1, "interval {interval}");
+        let kept: Vec<&str> = memory
+            .writes()
+            .iter()
+            .map(|write| write.source().key.as_str())
+            .collect();
+        let never: Vec<&str> = SOURCES.iter().copied().filter(|s| *s != "e").collect();
+        assert_eq!(kept, never, "interval {interval}");
+        assert_eq!(
+            memory.state().cells(),
+            memory_with(interval, &never).state().cells(),
+            "interval {interval}"
+        );
+    }
 }

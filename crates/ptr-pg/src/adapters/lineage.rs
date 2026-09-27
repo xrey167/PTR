@@ -107,6 +107,17 @@ impl PgSubstrate {
     /// candidate, layers in name order, or `None` when none was stored. A
     /// report whose stored layers are not the number it was recorded with is
     /// refused as a corrupt row rather than returned.
+    ///
+    /// Nothing else is rechecked, because a writer that goes around
+    /// [`record_interference`](Self::record_interference) can forge nothing
+    /// else it checks: the candidate is the adapter the report is stored
+    /// under, and every other rule it applies is the table's (at least one
+    /// layer, overlaps and chance levels in `[0, 1]`, no layer named twice,
+    /// none naming the candidate as its worst overlap). Nor is anything
+    /// `record_interference` leaves unproven established here: the layers are
+    /// returned as stored, so that they are what
+    /// `ptr_lineage::measure_interference` measured, and which earlier
+    /// adapter each names as its worst overlap, remain their writer's word.
     pub async fn load_interference(
         &self,
         adapter: &AdapterId,

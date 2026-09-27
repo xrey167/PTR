@@ -377,33 +377,54 @@ impl Branch {
     /// not here.
     pub fn read(&mut self, key: &str) -> Result<Option<SemanticValue>, BranchError> {
         self.record_read(key)?;
-        if !self.operates_on(key) && self.changed_input_of(key)?.is_some() {
-            return Ok(None);
-        }
-        self.overlay(key)
+        self.view(key)
     }
 
-    /// Enumerate every base key under `prefix` with its value. The scan is
-    /// recorded as a range digest, so a key later inserted or removed under the
-    /// prefix is a conflict even though no point read covers it.
+    /// Enumerate, in key order, every key under `prefix` that holds a value
+    /// in the branch's view, with that value: exactly what [`Branch::read`]
+    /// returns for each key. A key the branch inserts appears, one it
+    /// removes does not, one it changes shows the changed value, and a
+    /// derived key the branch's own change evicts is left out, as a read of
+    /// it shows it absent.
+    ///
+    /// The first scan of a prefix records the range digest of every key the
+    /// base holds under it with its base value, whatever this returns, so a
+    /// key later inserted or removed under the prefix is a conflict even
+    /// though no point read covers it; that digest is what certification
+    /// checks. A scan records no read of a key: a `Put` or `Remove` of a
+    /// scanned key still needs [`Branch::read`] first. A scan that fails
+    /// records nothing.
+    ///
+    /// # Errors
+    /// Returns `BranchError::InvalidValue` if a base value under the prefix
+    /// cannot be encoded for the range digest.
     pub fn scan_prefix(
         &mut self,
         prefix: &str,
     ) -> Result<Vec<(String, SemanticValue)>, BranchError> {
-        let entries: Vec<(String, SemanticValue)> = self
+        let digest = match self.scans.get(prefix) {
+            Some(digest) => *digest,
+            None => RangeDigest::of(
+                prefix,
+                self.base
+                    .keys()
+                    .filter(|key| key.starts_with(prefix))
+                    .filter_map(|key| Some((key, self.base.value(key)?))),
+            )?,
+        };
+        let keys: BTreeSet<&str> = self
             .base
             .keys()
+            .chain(self.ops.iter().map(BranchOp::key))
             .filter(|key| key.starts_with(prefix))
-            .filter_map(|key| {
-                self.base
-                    .value(key)
-                    .map(|value| (key.to_owned(), value.clone()))
-            })
             .collect();
-        if !self.scans.contains_key(prefix) {
-            let digest = RangeDigest::of(prefix, entries.iter().map(|(k, v)| (k.as_str(), v)))?;
-            self.scans.insert(prefix.to_owned(), digest);
+        let mut entries = Vec::new();
+        for key in keys {
+            if let Some(value) = self.view(key)? {
+                entries.push((key.to_owned(), value));
+            }
         }
+        self.scans.entry(prefix.to_owned()).or_insert(digest);
         Ok(entries)
     }
 
@@ -704,6 +725,17 @@ impl Branch {
             pending.extend(self.base.inputs(input));
         }
         Ok(None)
+    }
+
+    /// What `key` holds in the branch's view, which [`Branch::read`] and
+    /// [`Branch::scan_prefix`] both return: absent for a key with no
+    /// operation of its own that is derived from a key the branch changes,
+    /// otherwise its [`overlay`](Self::overlay).
+    fn view(&self, key: &str) -> Result<Option<SemanticValue>, BranchError> {
+        if !self.operates_on(key) && self.changed_input_of(key)?.is_some() {
+            return Ok(None);
+        }
+        self.overlay(key)
     }
 
     /// The base value of `key` with the branch's operations on `key` applied.
