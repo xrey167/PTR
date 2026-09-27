@@ -363,3 +363,41 @@ fn every_fusion_refusal_has_a_stable_code() {
         assert!(!error.to_string().is_empty());
     }
 }
+
+#[test]
+fn unweighted_fusion_returns_each_generation_of_a_capsule_with_its_own_score() {
+    // Generation 1 of "a" is first in one list; generation 2 of "a" is second
+    // in the other, behind "b". With k = 0 a first place scores 1 and a second
+    // place 1/2.
+    let lexical = [hit("a", 1, 9.0, "lexical"), hit("b", 1, 8.0, "lexical")];
+    let dense = [hit("b", 1, 0.9, "dense"), hit("a", 2, 0.8, "dense")];
+    let fused = reciprocal_rank_fusion(&[lexical.to_vec(), dense.to_vec()], 0.0).unwrap();
+    assert_eq!(
+        fused,
+        vec![
+            (CapsuleId::from("b"), Generation(1), 1.5),
+            (CapsuleId::from("a"), Generation(1), 1.0),
+            (CapsuleId::from("a"), Generation(2), 0.5),
+        ]
+    );
+    // It is the unit-weight form of weighted_rank_fusion, entry for entry.
+    let weighted = weighted_rank_fusion(
+        &[
+            WeightedList {
+                weight: 1.0,
+                hits: &lexical,
+            },
+            WeightedList {
+                weight: 1.0,
+                hits: &dense,
+            },
+        ],
+        0.0,
+    )
+    .unwrap();
+    let expected: Vec<_> = weighted
+        .into_iter()
+        .map(|hit| (hit.capsule, hit.generation, hit.score))
+        .collect();
+    assert_eq!(fused, expected);
+}

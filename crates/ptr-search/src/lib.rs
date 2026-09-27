@@ -218,12 +218,14 @@ pub trait SearchIndex {
     fn search(&self, query: &str, limit: usize) -> Vec<SearchHit>;
 }
 
-/// Unweighted reciprocal rank fusion with `k`, returning `(capsule, score)`.
+/// Unweighted reciprocal rank fusion with `k`, returning
+/// `(capsule, generation, score)`.
 ///
 /// Delegates to [`weighted_rank_fusion`], so two generations of one capsule
 /// stay two entries and a stale generation never adds to the live one's score;
-/// a capsule may therefore appear twice. Prefer [`weighted_rank_fusion`],
-/// which also keeps the generation and the contributing backends.
+/// a capsule may therefore appear twice, each time with the generation its
+/// score belongs to. Prefer [`weighted_rank_fusion`], which also keeps the
+/// contributing backends.
 ///
 /// # Errors
 /// Refuses what [`weighted_rank_fusion`] refuses with every weight one: a
@@ -233,13 +235,13 @@ pub trait SearchIndex {
 pub fn reciprocal_rank_fusion(
     lists: &[Vec<SearchHit>],
     k: f32,
-) -> Result<Vec<(CapsuleId, f32)>, FusionError> {
+) -> Result<Vec<(CapsuleId, Generation, f32)>, FusionError> {
     let weighted: Vec<WeightedList<'_>> = lists
         .iter()
         .map(|hits| WeightedList { weight: 1.0, hits })
         .collect();
     Ok(weighted_rank_fusion(&weighted, k)?
         .into_iter()
-        .map(|fused| (fused.capsule, fused.score))
+        .map(|fused| (fused.capsule, fused.generation, fused.score))
         .collect())
 }

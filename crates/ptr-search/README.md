@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-27  
-**Code footprint:** 2 Rust source files · 650 nonblank source lines · 3 integration-test files · 23 `#[test]` markers
+**Code footprint:** 2 Rust source files · 652 nonblank source lines · 3 integration-test files · 24 `#[test]` markers
 
 ### Implemented now
 
@@ -20,7 +20,7 @@
 - Reciprocal-rank fusion implementation
 - weighted_rank_fusion and convex_score_fusion keyed by capsule and generation, so a stale generation never borrows the live one's rank, with deterministic tie-breaking and per-hit backend attribution
 - FusedHit is plain data, a search candidate that no function of the crate takes back: the bounds on its score are what the fusions compute, not what every value holds, and a candidate enters evidence promotion only as a SearchHit, which starts at SearchCandidate; WeightedList is validated by every fusion
-- retain_live keeps a hit only when the lifecycle answers Validity::Live for its capsule and generation (as generation_validity does), so a revoked generation that is still the capsule's live one is dropped; reciprocal_rank_fusion delegates to the weighted form
+- retain_live keeps a hit only when the lifecycle answers Validity::Live for its capsule and generation (as generation_validity does), so a revoked generation that is still the capsule's live one is dropped; reciprocal_rank_fusion delegates to the weighted form and returns each entry's generation with its capsule and score, so two generations of one capsule stay two entries a caller can tell apart
 - Every fused score is finite and at most the total weight: fusion refuses (FusionError, stable codes) negative or nonfinite weights, weights summing beyond MAX_TOTAL_WEIGHT (f32::MAX), a negative or nonfinite rank constant, a list naming a capsule generation twice and, for score fusion, a nonfinite score, before accumulating anything; scores are accumulated and min-max normalised in f64, so scores spanning the whole f32 range normalise into [0, 1]; check_rank_fusion applies the parameter check on its own
 
 ### Missing for the target architecture
@@ -64,7 +64,7 @@
 - compile_fail doctests on SearchHit: its capsule and generation cannot be assigned
 - workspace fmt/check/test/clippy
 - fusion unit tests: two generations of one capsule are never merged, agreement across backends outranks a single first place, a zero-weight list contributes nothing, convex fusion normalises each list, stale, revoked and unknown generations are dropped
-- tests/fusion.rs: a revoked generation is dropped although it is still the live one; weights whose total could overflow a fused score, invalid weights and rank constants, a repeated capsule generation and a nonfinite score are refused; scores spanning the whole f32 range normalise into [0, 1]; every refusal has a stable code
+- tests/fusion.rs: a revoked generation is dropped although it is still the live one; unweighted fusion returns each generation of a capsule with its own score (unweighted_fusion_returns_each_generation_of_a_capsule_with_its_own_score); weights whose total could overflow a fused score, invalid weights and rank constants, a repeated capsule generation and a nonfinite score are refused; scores spanning the whole f32 range normalise into [0, 1]; every refusal has a stable code
 - ptr-runtime tests/verified_delta.rs: search hits filtered by generation_validity drop a revoked live generation
 - ptr-pg postgres test fuses full-text and halfvec hits over live generations only
 
