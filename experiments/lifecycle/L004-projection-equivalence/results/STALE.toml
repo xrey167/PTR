@@ -1,0 +1,3 @@
+results_git_sha = "ed52931ae028f3666c2940e60e19e7ae69e029f4"
+stale_since = "7f119841747d3ebd0b69b8327ee71fc55d67a599"
+reason = "The runtime's execution layer changed after these results: a settlement that cannot be committed after an effect applied is returned as SettlementNotRecorded rather than as an audit refusal. The experiment has to be rerun on the new code before its results describe it."
