@@ -1166,11 +1166,11 @@ async fn hybrid_search_returns_live_candidates_fused_by_capsule_and_generation()
     let lexical: Vec<&str> = results
         .lexical
         .iter()
-        .map(|hit| hit.capsule.0.as_str())
+        .map(|hit| hit.capsule().0.as_str())
         .collect();
     assert_eq!(lexical.len(), 2);
     assert!(lexical.contains(&"c2") && lexical.contains(&"c3"));
-    assert_eq!(results.vector[0].capsule, CapsuleId::from("c2"));
+    assert_eq!(results.vector[0].capsule(), &CapsuleId::from("c2"));
     assert_eq!(results.vector.len(), 3);
     assert_eq!(results.fused[0].capsule, CapsuleId::from("c2"));
     assert_eq!(
@@ -1260,7 +1260,7 @@ async fn a_document_of_a_revoked_generation_is_never_returned_although_it_is_sti
     for hits in [&results.lexical, &results.vector] {
         assert_eq!(
             hits.iter()
-                .map(|hit| hit.capsule.0.as_str())
+                .map(|hit| hit.capsule().0.as_str())
                 .collect::<Vec<_>>(),
             vec!["c1"]
         );
@@ -6342,7 +6342,7 @@ async fn a_stale_cache_row_never_takes_a_live_document_s_place_within_the_vector
             .unwrap()
             .vector
             .iter()
-            .map(|hit| (hit.capsule.0.clone(), hit.generation.0))
+            .map(|hit| (hit.capsule().0.clone(), hit.generation().0))
             .collect();
         assert_eq!(hits, [("live".to_owned(), 1)], "limit {limit}");
     }

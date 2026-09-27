@@ -259,13 +259,83 @@ pub enum LabelOutcome {
     Unknown,
 }
 
+/// The outcome of every item of one vote matrix, each paired with the
+/// posterior it was resolved from.
+///
+/// Only [`resolve`] makes one, from a model and the matrix it was fitted on,
+/// and its fields are private: item `i`'s outcome and posterior were computed
+/// together, from row `i` of that matrix and the model's posterior of item
+/// `i`, and cannot be paired with another item's, reordered, truncated or
+/// replaced. [`crate::rank_for_annotation`] ranks nothing else.
+///
+/// ```compile_fail
+/// use ptr_labeling::{LabelOutcome, Resolution};
+/// let forged = Resolution {
+///     outcomes: vec![LabelOutcome::Unknown],
+///     posteriors: vec![Some(vec![0.5, 0.5])],
+///     matrix: [0; 32],
+/// };
+/// ```
+#[derive(Clone, Debug, PartialEq)]
+pub struct Resolution {
+    outcomes: Vec<LabelOutcome>,
+    posteriors: Vec<Option<Vec<f64>>>,
+    matrix: [u8; 32],
+}
+
+impl Resolution {
+    /// The outcome of every item, in item order.
+    pub fn outcomes(&self) -> &[LabelOutcome] {
+        &self.outcomes
+    }
+
+    /// The outcomes alone, in item order.
+    pub fn into_outcomes(self) -> Vec<LabelOutcome> {
+        self.outcomes
+    }
+
+    /// The distribution over the schema's classes that item `item`'s outcome
+    /// was resolved from, or `None` for an item that is `Disputed` (no class
+    /// is left) or beyond the matrix.
+    ///
+    /// Every vetoed class has probability zero. The classes left share the
+    /// model's posterior renormalized over them, as [`resolve`] computes it;
+    /// where [`resolve`] computes no share (no probabilistic function voted
+    /// on the item, or the classes left carry less posterior mass than
+    /// `f64::MIN_POSITIVE`) they share it uniformly, since nothing the
+    /// resolution holds tells them apart. A `Determined` item's one class left
+    /// has probability one, and an `Estimated` item's class has exactly the
+    /// probability its outcome states.
+    pub fn posterior(&self, item: usize) -> Option<&[f64]> {
+        self.posteriors.get(item)?.as_deref()
+    }
+
+    /// The digest of the vote matrix the items were resolved against.
+    pub fn matrix_digest(&self) -> [u8; 32] {
+        self.matrix
+    }
+
+    /// The number of items.
+    pub fn len(&self) -> usize {
+        self.outcomes.len()
+    }
+
+    /// Whether there are no items. [`fit_label_model`] refuses a matrix
+    /// without items, so a resolution of a fitted model never is.
+    pub fn is_empty(&self) -> bool {
+        self.outcomes.is_empty()
+    }
+}
+
 /// Resolve every item: verifier vetoes first, then the label model.
 ///
 /// Vetoed classes get probability zero whatever the model says; the posterior
 /// is renormalized over the classes that remain. Verifiers ruling out all
 /// classes yield `Disputed`; leaving exactly one yields `Determined`, even
 /// without probabilistic votes. If multiple classes remain and no
-/// probabilistic function voted, the item is `Unknown`.
+/// probabilistic function voted, the item is `Unknown`. Each outcome is
+/// returned with the posterior it was resolved from
+/// ([`Resolution::posterior`]).
 ///
 /// The shares are computed only when the classes the verifiers left carry
 /// posterior mass of at least `f64::MIN_POSITIVE`, the smallest normal `f64`.
@@ -298,7 +368,7 @@ pub fn resolve(
     matrix: &VoteMatrix,
     model: &LabelModel,
     min_probability: f64,
-) -> Result<Vec<LabelOutcome>, LabelingError> {
+) -> Result<Resolution, LabelingError> {
     if !(min_probability.is_finite() && min_probability > 0.0 && min_probability <= 1.0) {
         return Err(LabelingError::InvalidParameter {
             field: "min_probability",
@@ -321,47 +391,84 @@ pub fn resolve(
         }
         check_posterior(item, posterior)?;
     }
-    Ok((0..matrix.items())
+    let (outcomes, posteriors) = (0..matrix.items())
         .map(|item| {
-            let row = matrix.row(item);
-            let vetoed: BTreeSet<usize> = row
-                .iter()
-                .filter_map(|vote| match vote {
-                    Vote::Veto(class) => Some(*class),
-                    Vote::Class(_) | Vote::Abstain => None,
-                })
-                .collect();
-            let remaining: Vec<usize> = (0..classes).filter(|c| !vetoed.contains(c)).collect();
-            match remaining.as_slice() {
-                [] => return LabelOutcome::Disputed { vetoed },
-                [only] => return LabelOutcome::Determined { class: *only },
-                _ => {}
-            }
-            let voted = row.iter().any(|vote| matches!(vote, Vote::Class(_)));
-            if !voted {
-                return LabelOutcome::Unknown;
-            }
-            let posterior = &model.posteriors[item];
-            let mass: f64 = remaining.iter().map(|&c| posterior[c]).sum();
-            // Below the smallest normal f64 the stored posteriors of the
-            // classes left have lost their ratio to underflow (and with no
-            // mass left every share would be 0 / 0): the model says nothing
-            // reliable about them, so the item is Unknown.
-            if mass < f64::MIN_POSITIVE {
-                return LabelOutcome::Unknown;
-            }
-            let (class, probability) = remaining
-                .iter()
-                .map(|&c| (c, posterior[c] / mass))
-                .max_by(|a, b| a.1.total_cmp(&b.1))
-                .expect("at least two classes remain");
-            if probability >= min_probability {
-                LabelOutcome::Estimated { class, probability }
-            } else {
-                LabelOutcome::Unknown
-            }
+            resolve_item(
+                matrix.row(item),
+                &model.posteriors[item],
+                classes,
+                min_probability,
+            )
         })
-        .collect())
+        .unzip();
+    Ok(Resolution {
+        outcomes,
+        posteriors,
+        matrix: model.matrix,
+    })
+}
+
+/// One item's outcome and the posterior over the classes left that it was
+/// resolved from (see [`Resolution::posterior`]).
+fn resolve_item(
+    row: &[Vote],
+    posterior: &[f64],
+    classes: usize,
+    min_probability: f64,
+) -> (LabelOutcome, Option<Vec<f64>>) {
+    let vetoed: BTreeSet<usize> = row
+        .iter()
+        .filter_map(|vote| match vote {
+            Vote::Veto(class) => Some(*class),
+            Vote::Class(_) | Vote::Abstain => None,
+        })
+        .collect();
+    let remaining: Vec<usize> = (0..classes).filter(|c| !vetoed.contains(c)).collect();
+    match remaining.as_slice() {
+        [] => return (LabelOutcome::Disputed { vetoed }, None),
+        [only] => {
+            let certain = spread(classes, &remaining, |_| 1.0);
+            return (LabelOutcome::Determined { class: *only }, Some(certain));
+        }
+        _ => {}
+    }
+    let uniform = 1.0 / remaining.len() as f64;
+    let voted = row.iter().any(|vote| matches!(vote, Vote::Class(_)));
+    if !voted {
+        let even = spread(classes, &remaining, |_| uniform);
+        return (LabelOutcome::Unknown, Some(even));
+    }
+    let mass: f64 = remaining.iter().map(|&c| posterior[c]).sum();
+    // Below the smallest normal f64 the stored posteriors of the classes left
+    // have lost their ratio to underflow (and with no mass left every share
+    // would be 0 / 0): the model says nothing reliable about them, so the item
+    // is Unknown.
+    if mass < f64::MIN_POSITIVE {
+        let even = spread(classes, &remaining, |_| uniform);
+        return (LabelOutcome::Unknown, Some(even));
+    }
+    let left = spread(classes, &remaining, |class| posterior[class] / mass);
+    let (class, probability) = remaining
+        .iter()
+        .map(|&c| (c, left[c]))
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .expect("at least two classes remain");
+    let outcome = if probability >= min_probability {
+        LabelOutcome::Estimated { class, probability }
+    } else {
+        LabelOutcome::Unknown
+    };
+    (outcome, Some(left))
+}
+
+/// A distribution over `classes` classes that gives each class in `remaining`
+/// its `share` and every other class zero.
+fn spread(classes: usize, remaining: &[usize], share: impl Fn(usize) -> f64) -> Vec<f64> {
+    let mut distribution = vec![0.0; classes];
+    for &class in remaining {
+        distribution[class] = share(class);
+    }
+    distribution
 }
 
 /// Tolerance on the total of a posterior, the one the statistics kernel's

@@ -111,7 +111,7 @@ fn a_cue_recalls_the_fact_written_under_it_as_a_named_capsule() {
     }
     for (cue, capsule) in pairs {
         match recall(&memory, &codec, cue) {
-            Recall::Hits(hits) => assert_eq!(hits[0].capsule, CapsuleId::from(capsule), "{cue}"),
+            Recall::Hits(hits) => assert_eq!(hits[0].capsule(), &CapsuleId::from(capsule), "{cue}"),
             Recall::Unknown => panic!("{cue:?} must be recalled"),
         }
     }
@@ -131,7 +131,10 @@ fn an_update_under_the_same_cue_recalls_the_newer_fact() {
         .unwrap();
     match recall(&memory, &codec, "home city") {
         Recall::Hits(hits) => {
-            assert_eq!(hits[0].capsule, CapsuleId::from("city-from-2026-profile"));
+            assert_eq!(
+                hits[0].capsule(),
+                &CapsuleId::from("city-from-2026-profile")
+            );
             assert_eq!(hits.len(), 1);
         }
         Recall::Unknown => panic!("the newer fact must be recalled"),
@@ -196,7 +199,7 @@ fn constraint_and_procedure_sources_are_never_decoded_as_capsules() {
     assert_eq!(recall(&memory, &codec, "monthly budget"), Recall::Unknown);
     assert_eq!(recall(&memory, &codec, "release steps"), Recall::Unknown);
     match recall(&memory, &codec, "home city") {
-        Recall::Hits(hits) => assert_eq!(hits[0].capsule, CapsuleId::from("pref-city")),
+        Recall::Hits(hits) => assert_eq!(hits[0].capsule(), &CapsuleId::from("pref-city")),
         Recall::Unknown => panic!("the capsule source is still recalled"),
     }
 }
@@ -239,7 +242,7 @@ fn a_readout_decodes_only_against_the_codebook_its_memory_was_written_with() {
     ));
     // Its own codes name the fact.
     match decode_readout(&readout, &memory.fact_codes(), policy()).unwrap() {
-        Recall::Hits(hits) => assert_eq!(hits[0].capsule, CapsuleId::from("pref-city")),
+        Recall::Hits(hits) => assert_eq!(hits[0].capsule(), &CapsuleId::from("pref-city")),
         Recall::Unknown => panic!("the fact written under the cue is recalled"),
     }
     // A memory is never bound to a codebook whose codes are not values.
@@ -338,7 +341,7 @@ fn a_memory_bound_to_a_key_projection_reads_only_queries_that_state_it() {
         ] {
             let readout = bound.read_admitted(&query, |_| true).unwrap();
             match decode_readout(&readout, &bound.fact_codes(), policy()).unwrap() {
-                Recall::Hits(hits) => assert_eq!(hits[0].capsule, CapsuleId::from("pref-city")),
+                Recall::Hits(hits) => assert_eq!(hits[0].capsule(), &CapsuleId::from("pref-city")),
                 Recall::Unknown => panic!("the fact written under the cue is recalled"),
             }
         }

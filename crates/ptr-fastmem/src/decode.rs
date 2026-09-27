@@ -318,7 +318,7 @@ mod tests {
             panic!("a clear winner is named");
         };
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].capsule, CapsuleId::from("a"));
+        assert_eq!(hits[0].capsule(), &CapsuleId::from("a"));
         assert_eq!(hits[0].stage(), EvidenceStage::SearchCandidate);
         assert_eq!(hits[0].backend, FASTMEM_BACKEND);
     }
@@ -394,7 +394,7 @@ mod tests {
             panic!("zero thresholds still name a clear winner");
         };
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].capsule, CapsuleId::from("a"));
+        assert_eq!(hits[0].capsule(), &CapsuleId::from("a"));
     }
 
     #[test]

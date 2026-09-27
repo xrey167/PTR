@@ -240,7 +240,7 @@ fn search_hits_filtered_by_generation_validity_drop_a_revoked_live_generation() 
     });
     assert_eq!(
         kept.iter()
-            .map(|hit| hit.capsule.0.as_str())
+            .map(|hit| hit.capsule().0.as_str())
             .collect::<Vec<_>>(),
         vec!["fact:b"]
     );

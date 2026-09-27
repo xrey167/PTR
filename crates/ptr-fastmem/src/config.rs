@@ -4,10 +4,22 @@ use crate::error::FastMemoryError;
 pub const MAX_HEADS: usize = 64;
 /// Largest supported key or value width per head.
 pub const MAX_HEAD_DIM: usize = 1024;
-/// Largest supported state, in `f32` cells. 16 Mi cells are 64 MiB, the same
-/// bound `ptr-runtime` places on an opaque neural-state payload, so a state this
-/// crate accepts is always one the admission layer can seal.
+/// Largest supported state, in `f32` cells: 16 Mi cells, whose raw `f32`
+/// bytes are exactly 64 MiB, the bound `ptr-runtime` places on an opaque
+/// neural-state payload (`MAX_PAYLOAD_BYTES`).
+///
+/// Only the raw cells are held to that figure. The `PTRFW001` encoding
+/// ([`crate::encode_state`], the form `ptr-pg` stores) adds a 36-byte header
+/// and a 32-byte digest, so a state of more than 16,777,199 cells encodes to
+/// more than 64 MiB, the largest to 64 MiB + 68 bytes. Declaring a memory as a
+/// neural-state binding is not implemented: one that seals a state as a
+/// payload must seal its cells without that framing, or the payload bound
+/// must allow for it.
 pub const MAX_STATE_CELLS: usize = 16 * 1024 * 1024;
+
+// The raw cells of the largest state are exactly 64 MiB, as documented above.
+const _: () = assert!(MAX_STATE_CELLS * std::mem::size_of::<f32>() == 64 * 1024 * 1024);
+
 /// Widest embedding a [`crate::SeededProjection`] maps from: 8,192
 /// coordinates, twice the 4,096 of the widest embedding models in common use.
 ///
@@ -20,9 +32,21 @@ pub const MAX_STATE_CELLS: usize = 16 * 1024 * 1024;
 pub const MAX_EMBEDDING_DIM: usize = 8192;
 /// Largest supported distance between two checkpoints, in writes.
 pub const MAX_CHECKPOINT_INTERVAL: u32 = 1_000_000;
-/// Largest supported journal. A memory's state depends on every write in its
-/// journal, and a neural-state binding lists every input it depends on; 65,536
-/// is the binding item bound, so a memory can always be declared in full.
+/// Largest supported journal: 65,536 writes. A memory's state depends on
+/// every write in its journal, and a `ptr-runtime` neural-state binding lists
+/// at most 65,536 items in a section, so a memory never depends on more
+/// inputs than one binding can name.
+///
+/// The count alone does not make a memory declarable. A binding also holds
+/// each key to 1..=4096 bytes and its whole encoding to 8 MiB
+/// (`MAX_BINDING_BYTES`), and lists each source twice, as a semantic input
+/// (its key and a 32-byte digest) and as a generation (its key and 8 bytes).
+/// This crate bounds neither the length of a source key nor the total: 65,536
+/// sources with 40-byte keys already take more than 8 MiB, and a write whose
+/// source key is empty or longer than 4096 bytes is admitted although no
+/// binding can list it. Declaring a memory as a neural-state binding is not
+/// implemented; a memory whose sources exceed that budget must be sharded into
+/// smaller windows ([`FastMemoryConfig::max_writes`]).
 pub const MAX_WRITES: u32 = 65_536;
 /// Largest magnitude a written value cell may have: `2^24`.
 ///
@@ -100,7 +124,7 @@ pub fn check_config(config: &FastMemoryConfig) -> Result<(), FastMemoryError> {
             return Err(FastMemoryError::InvalidConfig {
                 field: "state_cells",
                 value: cells as u64,
-                message: "state exceeds the 64 MiB neural-state payload bound",
+                message: "state exceeds MAX_STATE_CELLS, 64 MiB of f32 cells",
             })
         }
         None => {
@@ -221,6 +245,33 @@ mod tests {
             ));
         }
         assert_eq!(config().state_cells(), 4 * 16 * 16);
+    }
+
+    #[test]
+    fn the_journal_bound_is_the_binding_item_count_and_is_checked_as_a_count_only() {
+        // 65,536 is the most items a neural-state binding lists in a section;
+        // what fits in a binding's bytes depends on source keys, which this
+        // bound does not see.
+        assert_eq!(MAX_WRITES, 65_536);
+        for accepted in [1, MAX_WRITES] {
+            assert!(check_config(&FastMemoryConfig {
+                max_writes: accepted,
+                ..config()
+            })
+            .is_ok());
+        }
+        for refused in [0, MAX_WRITES + 1] {
+            assert!(matches!(
+                check_config(&FastMemoryConfig {
+                    max_writes: refused,
+                    ..config()
+                }),
+                Err(FastMemoryError::InvalidConfig {
+                    field: "max_writes",
+                    ..
+                })
+            ));
+        }
     }
 
     #[test]

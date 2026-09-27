@@ -143,7 +143,8 @@ fn a_verifier_veto_overrides_a_confident_model_and_vetoing_everything_is_a_dispu
     votes[2] = vec![class(0), a, a, veto(0), veto(1), a];
     let matrix = VoteMatrix::new(schema, functions, votes).unwrap();
     let model = fit_label_model(&matrix, DawidSkeneParams::default()).unwrap();
-    let outcomes = resolve(&matrix, &model, 0.95).unwrap();
+    let resolution = resolve(&matrix, &model, 0.95).unwrap();
+    let outcomes = resolution.outcomes();
     assert_eq!(outcomes[0], LabelOutcome::Determined { class: 1 });
     assert!(matches!(outcomes[1], LabelOutcome::Disputed { .. }));
     // Determined by elimination against the only heuristic vote.
@@ -151,8 +152,7 @@ fn a_verifier_veto_overrides_a_confident_model_and_vetoing_everything_is_a_dispu
     assert_eq!(outcomes[3], LabelOutcome::Unknown);
     assert_eq!(outcomes[4], LabelOutcome::Unknown);
     // The dispute is the first thing a person is asked about.
-    let ranked =
-        rank_for_annotation(&model.posteriors, &outcomes, Acquisition::Entropy, 1).unwrap();
+    let ranked = rank_for_annotation(&resolution, Acquisition::Entropy, 1);
     assert_eq!(ranked, vec![1]);
 }
 
@@ -215,7 +215,7 @@ fn abstentions_do_not_become_labels_even_with_a_low_resolution_threshold() {
         function: "model".into()
     }));
     assert_eq!(
-        resolve(&matrix, &model, 0.1).unwrap(),
+        resolve(&matrix, &model, 0.1).unwrap().into_outcomes(),
         vec![LabelOutcome::Unknown; 3]
     );
 }
@@ -240,7 +240,7 @@ fn verifiers_alone_can_determine_a_class_only_by_eliminating_every_alternative()
         .warnings
         .contains(&ModelWarning::FewerThanThreeFunctions { count: 0 }));
     assert_eq!(
-        resolve(&matrix, &model, 1.0).unwrap(),
+        resolve(&matrix, &model, 1.0).unwrap().into_outcomes(),
         vec![LabelOutcome::Unknown, LabelOutcome::Determined { class: 2 }]
     );
 }
@@ -267,21 +267,34 @@ fn ragged_vote_rows_report_the_item_and_expected_function_count() {
 
 #[test]
 fn annotation_ties_are_stable_and_budget_zero_never_requests_work() {
-    let posteriors = vec![vec![0.5, 0.5], vec![0.9, 0.1], vec![0.5, 0.5]];
-    let outcomes = vec![LabelOutcome::Unknown; 3];
+    let (c0, c1, a) = (Vote::Class(0), Vote::Class(1), Vote::Abstain);
+    // Items 0 and 2 have the same split votes, so the same posterior; item 1
+    // and every even item after it have the same three agreeing votes.
+    let mut votes = vec![vec![c0, c1, a], vec![c0, c0, c0], vec![c0, c1, a]];
+    votes.extend(agreeing(2, 3, 0, 5));
+    let matrix = two_heuristics_and_a_third(votes);
+    let model = fit_label_model(&matrix, DawidSkeneParams::default()).unwrap();
+    let resolution = resolve(&matrix, &model, 1.0).unwrap();
+    assert_eq!(resolution.posterior(0), resolution.posterior(2));
+    let settled = [1, 3, 5, 7, 9, 11];
+    for item in settled {
+        assert_eq!(
+            resolution.posterior(item),
+            resolution.posterior(1),
+            "{item}"
+        );
+    }
     for strategy in [Acquisition::Entropy, Acquisition::Margin] {
-        assert_eq!(
-            rank_for_annotation(&posteriors, &outcomes, strategy, 2),
-            Ok(vec![0, 2])
-        );
-        assert_eq!(
-            rank_for_annotation(&posteriors, &outcomes, strategy, 9),
-            Ok(vec![0, 2, 1])
-        );
-        assert_eq!(
-            rank_for_annotation(&posteriors, &outcomes, strategy, 0),
-            Ok(vec![])
-        );
+        assert_eq!(rank_for_annotation(&resolution, strategy, 2), vec![0, 2]);
+        let all = rank_for_annotation(&resolution, strategy, 99);
+        assert_eq!(all.len(), matrix.items());
+        let tied: Vec<usize> = all
+            .iter()
+            .copied()
+            .filter(|item| settled.contains(item))
+            .collect();
+        assert_eq!(tied, settled, "{strategy:?}");
+        assert_eq!(rank_for_annotation(&resolution, strategy, 0), vec![]);
     }
 }
 
@@ -670,74 +683,278 @@ fn an_em_tolerance_outside_zero_to_one_is_refused_and_zero_waits_for_a_fixed_poi
 }
 
 #[test]
-fn annotation_ranking_refuses_posteriors_and_outcomes_of_different_lengths() {
-    let disputed = LabelOutcome::Disputed {
-        vetoed: std::collections::BTreeSet::from([0, 1]),
+fn annotation_ranking_takes_outcomes_and_posteriors_only_from_one_resolution() {
+    let (c0, c1, c2, a) = (
+        Vote::Class(0),
+        Vote::Class(1),
+        Vote::Class(2),
+        Vote::Abstain,
+    );
+    let mut votes = vec![
+        // Uncertain: the heuristics split three ways.
+        vec![c0, c1, c2, a, a, a],
+        // Settled by agreement.
+        vec![c1, c1, c1, a, a, a],
+        // Determined by elimination.
+        vec![c2, a, a, Vote::Veto(0), Vote::Veto(1), a],
+        // Every class ruled out.
+        vec![c0, a, a, Vote::Veto(0), Vote::Veto(1), Vote::Veto(2)],
+        // Nothing probabilistic voted.
+        vec![a, a, a, Vote::Veto(2), a, a],
+    ];
+    votes.extend(agreeing(3, 3, 3, 5));
+    let matrix = VoteMatrix::new(
+        LabelSchema::new(["a", "b", "c"]).unwrap(),
+        vec![
+            function("h1", FunctionKind::Heuristic),
+            function("h2", FunctionKind::Heuristic),
+            function("h3", FunctionKind::Heuristic),
+            function("v1", FunctionKind::Verifier),
+            function("v2", FunctionKind::Verifier),
+            function("v3", FunctionKind::Verifier),
+        ],
+        votes,
+    )
+    .unwrap();
+    let mut model = fit_label_model(&matrix, DawidSkeneParams::default()).unwrap();
+    let resolution = resolve(&matrix, &model, 0.9).unwrap();
+    assert_eq!(resolution.len(), matrix.items());
+    assert_eq!(resolution.matrix_digest(), matrix.digest());
+    // Ranking read outcomes and posteriors as two slices that only had to be
+    // equally long: an uncertain item paired with another item's Determined
+    // outcome was never proposed, and a settled one paired with a Disputed
+    // outcome was proposed first. Each item's pair now comes from resolve.
+    let outcomes = resolution.outcomes();
+    assert_eq!(outcomes[0], LabelOutcome::Unknown);
+    assert!(matches!(
+        outcomes[1],
+        LabelOutcome::Estimated { class: 1, .. }
+    ));
+    assert_eq!(outcomes[2], LabelOutcome::Determined { class: 2 });
+    assert!(matches!(outcomes[3], LabelOutcome::Disputed { .. }));
+    assert_eq!(outcomes[4], LabelOutcome::Unknown);
+    for strategy in [Acquisition::Entropy, Acquisition::Margin] {
+        let ranked = rank_for_annotation(&resolution, strategy, 99);
+        // The dispute first, the determined item never, and the settled item
+        // after both unresolved ones.
+        assert_eq!(ranked[0], 3, "{strategy:?}");
+        assert_eq!(ranked.len(), matrix.items() - 1, "{strategy:?}");
+        assert!(!ranked.contains(&2), "{strategy:?}");
+        let at = |item| ranked.iter().position(|ranked| *ranked == item).unwrap();
+        assert!(at(1) > at(0) && at(1) > at(4), "{strategy:?} {ranked:?}");
+    }
+    // A model with a posterior missing or added never resolves, so no
+    // shorter or longer list of either kind reaches ranking.
+    let items = matrix.items();
+    let fitted = model.posteriors.clone();
+    model.posteriors.pop();
+    assert_eq!(
+        resolve(&matrix, &model, 0.9),
+        Err(LabelingError::LengthMismatch {
+            expected: items,
+            actual: items - 1
+        })
+    );
+    model.posteriors = fitted.clone();
+    model.posteriors.push(fitted[0].clone());
+    assert_eq!(
+        resolve(&matrix, &model, 0.9),
+        Err(LabelingError::LengthMismatch {
+            expected: items,
+            actual: items + 1
+        })
+    );
+}
+
+#[test]
+fn a_resolution_pairs_every_outcome_with_the_posterior_it_was_resolved_from() {
+    let (c0, c1, a) = (Vote::Class(0), Vote::Class(1), Vote::Abstain);
+    let mut votes = vec![
+        vec![c0, c1, Vote::Veto(2), a],
+        vec![c1, c1, a, a],
+        vec![c0, a, Vote::Veto(0), Vote::Veto(1)],
+        vec![c0, a, Vote::Veto(0), a],
+        vec![a, a, Vote::Veto(0), a],
+    ];
+    votes.extend(agreeing(3, 2, 2, 5));
+    let matrix = VoteMatrix::new(
+        LabelSchema::new(["a", "b", "c"]).unwrap(),
+        vec![
+            function("h1", FunctionKind::Heuristic),
+            function("h2", FunctionKind::Heuristic),
+            function("v1", FunctionKind::Verifier),
+            function("v2", FunctionKind::Verifier),
+        ],
+        votes,
+    )
+    .unwrap();
+    let mut model = fit_label_model(&matrix, DawidSkeneParams::default()).unwrap();
+    // Item 3's classes left carry less mass than the smallest normal f64.
+    let unit = f64::from_bits(1);
+    model.posteriors[3] = vec![1.0, unit, 0.0];
+    let dispute = VoteMatrix::new(
+        LabelSchema::new(["a", "b"]).unwrap(),
+        vec![
+            function("h", FunctionKind::Heuristic),
+            function("v1", FunctionKind::Verifier),
+            function("v2", FunctionKind::Verifier),
+        ],
+        vec![vec![c0, Vote::Veto(0), Vote::Veto(1)]],
+    )
+    .unwrap();
+    let resolution = resolve(&matrix, &model, 0.5).unwrap();
+    let posterior = |item: usize| resolution.posterior(item).unwrap().to_vec();
+
+    // Vetoed classes have probability zero and the model's posterior is
+    // renormalized over the rest.
+    let raw = &model.posteriors[0];
+    let left = posterior(0);
+    assert_eq!(left[2], 0.0);
+    assert_eq!(left[0], raw[0] / (raw[0] + raw[1]));
+    assert_eq!(left[1], raw[1] / (raw[0] + raw[1]));
+    // An estimate states exactly the probability its posterior gives it.
+    match resolution.outcomes()[1] {
+        LabelOutcome::Estimated { class, probability } => {
+            assert_eq!(posterior(1)[class], probability)
+        }
+        ref other => panic!("{other:?}"),
+    }
+    // Determined by elimination: the one class left is certain.
+    assert_eq!(
+        resolution.outcomes()[2],
+        LabelOutcome::Determined { class: 2 }
+    );
+    assert_eq!(posterior(2), vec![0.0, 0.0, 1.0]);
+    // No share is computed from mass below f64::MIN_POSITIVE, nor for an
+    // item no probabilistic function voted on: the classes left are uniform.
+    assert!(unit < f64::MIN_POSITIVE);
+    for item in [3, 4] {
+        assert_eq!(resolution.outcomes()[item], LabelOutcome::Unknown, "{item}");
+    }
+    assert_eq!(posterior(3), vec![0.0, 0.5, 0.5]);
+    assert_eq!(posterior(4), vec![0.0, 0.5, 0.5]);
+    assert_eq!(resolution.posterior(matrix.items()), None);
+    // A disputed item has no class left, so no posterior.
+    let model = fit_label_model(&dispute, DawidSkeneParams::default()).unwrap();
+    let resolution = resolve(&dispute, &model, 0.5).unwrap();
+    assert!(matches!(
+        resolution.outcomes()[0],
+        LabelOutcome::Disputed { .. }
+    ));
+    assert_eq!(resolution.posterior(0), None);
+}
+
+#[test]
+fn annotation_ranks_an_item_on_its_posterior_after_vetoes_not_on_the_model_s() {
+    let (c0, c1, c2, a) = (
+        Vote::Class(0),
+        Vote::Class(1),
+        Vote::Class(2),
+        Vote::Abstain,
+    );
+    let matrix = |first: Vec<Vote>, second: Vec<Vote>| {
+        let mut votes = vec![first, second];
+        for item in 0..15 {
+            let agreed = Vote::Class(item % 3);
+            votes.push(vec![agreed, agreed, agreed, a]);
+        }
+        VoteMatrix::new(
+            LabelSchema::new(["a", "b", "c"]).unwrap(),
+            vec![
+                function("h1", FunctionKind::Heuristic),
+                function("h2", FunctionKind::Heuristic),
+                function("h3", FunctionKind::Heuristic),
+                function("v", FunctionKind::Verifier),
+            ],
+            votes,
+        )
+        .unwrap()
     };
-    // Pairing them up to the shorter list would drop item 1, the dispute a
-    // person must always be asked about first.
-    let outcomes = vec![LabelOutcome::Unknown, disputed, LabelOutcome::Unknown];
+
+    // Item 0: the model is confident in a class the verifier ruled out, and
+    // the two classes left are close to even, so the item is Unknown. Item 1
+    // is estimated. The model's own posterior made item 0 look settled, and
+    // the one annotation went to item 1, which is already labelled.
+    let confident_in_vetoed = matrix(vec![c0, c0, c0, Vote::Veto(0)], vec![c1, c1, c2, a]);
+    let model = fit_label_model(&confident_in_vetoed, DawidSkeneParams::default()).unwrap();
+    assert!(model.posteriors[0][0] > 0.99, "{:?}", model.posteriors[0]);
+    let resolution = resolve(&confident_in_vetoed, &model, 0.9).unwrap();
+    assert_eq!(resolution.outcomes()[0], LabelOutcome::Unknown);
+    assert!(matches!(
+        resolution.outcomes()[1],
+        LabelOutcome::Estimated { class: 1, .. }
+    ));
     for strategy in [Acquisition::Entropy, Acquisition::Margin] {
         assert_eq!(
-            rank_for_annotation(&[vec![0.5, 0.5]], &outcomes, strategy, 10),
-            Err(LabelingError::LengthMismatch {
-                expected: 3,
-                actual: 1
-            })
+            rank_for_annotation(&resolution, strategy, 1),
+            vec![0],
+            "{strategy:?}"
         );
+    }
+
+    // Item 0: the model splits its mass evenly between a vetoed class and
+    // another, so the item is estimated as that other class. Item 1 is
+    // Unknown. The model's even split ranked item 0 ahead by margin.
+    let split_with_vetoed = matrix(vec![c0, c1, a, Vote::Veto(0)], vec![c0, c1, c2, a]);
+    let model = fit_label_model(&split_with_vetoed, DawidSkeneParams::default()).unwrap();
+    let raw = &model.posteriors[0];
+    assert!((raw[0] - raw[1]).abs() < 1e-9, "{raw:?}");
+    let resolution = resolve(&split_with_vetoed, &model, 0.8).unwrap();
+    assert!(matches!(
+        resolution.outcomes()[0],
+        LabelOutcome::Estimated { class: 1, .. }
+    ));
+    assert_eq!(resolution.outcomes()[1], LabelOutcome::Unknown);
+    for strategy in [Acquisition::Entropy, Acquisition::Margin] {
         assert_eq!(
-            rank_for_annotation(
-                &[vec![0.9, 0.1], vec![0.5, 0.5], vec![0.5, 0.5]],
-                &[LabelOutcome::Unknown],
-                strategy,
-                10
-            ),
-            Err(LabelingError::LengthMismatch {
-                expected: 1,
-                actual: 3
-            })
+            rank_for_annotation(&resolution, strategy, 2),
+            vec![1, 0],
+            "{strategy:?}"
         );
     }
 }
 
 #[test]
-fn annotation_ranking_refuses_a_scored_posterior_that_is_not_a_distribution() {
-    let outcomes = vec![LabelOutcome::Unknown; 3];
+fn a_posterior_that_is_not_a_distribution_never_reaches_annotation_ranking() {
+    let matrix = two_heuristics_and_a_third(vec![vec![Vote::Class(0); 3]; 3]);
+    let mut model = fit_label_model(&matrix, DawidSkeneParams::default()).unwrap();
     let confident = vec![0.99, 0.01];
     let even = vec![0.5, 0.5];
     // An empty posterior has no margin, a NaN one ranked below a confident
-    // item, and one outside [0, 1] has a negative entropy.
+    // item, and one outside [0, 1] has a negative entropy. Ranking takes
+    // only a resolution, and resolve refuses every one of them.
     for invalid in [
         vec![],
         vec![f64::NAN, f64::NAN],
         vec![2.0, -1.0],
         vec![0.5, 0.6],
     ] {
-        for strategy in [Acquisition::Entropy, Acquisition::Margin] {
-            assert_eq!(
-                rank_for_annotation(
-                    &[confident.clone(), invalid.clone(), even.clone()],
-                    &outcomes,
-                    strategy,
-                    10
-                ),
-                Err(LabelingError::InvalidPosterior { item: 1 }),
-                "{invalid:?} {strategy:?}"
-            );
-        }
+        model.posteriors = vec![confident.clone(), invalid.clone(), even.clone()];
+        assert_eq!(
+            resolve(&matrix, &model, 0.5),
+            Err(LabelingError::InvalidPosterior { item: 1 }),
+            "{invalid:?}"
+        );
     }
-    // Posteriors of items that are not ranked by them are not read.
-    let outcomes = vec![
-        LabelOutcome::Determined { class: 0 },
-        LabelOutcome::Disputed {
-            vetoed: std::collections::BTreeSet::from([0, 1]),
-        },
-        LabelOutcome::Unknown,
-    ];
-    assert_eq!(
-        rank_for_annotation(&[vec![], vec![], even], &outcomes, Acquisition::Margin, 10),
-        Ok(vec![1, 2])
-    );
+}
+
+/// `per_class` items of every one of `classes` classes on which each of
+/// `heuristics` functions votes that class and each of `verifiers` functions
+/// abstains: agreement from which the model learns the heuristics are
+/// accurate.
+fn agreeing(
+    classes: usize,
+    heuristics: usize,
+    verifiers: usize,
+    per_class: usize,
+) -> Vec<Vec<Vote>> {
+    (0..classes * per_class)
+        .map(|item| {
+            let mut row = vec![Vote::Class(item % classes); heuristics];
+            row.extend(vec![Vote::Abstain; verifiers]);
+            row
+        })
+        .collect()
 }
 
 fn two_heuristics_and_a_third(votes: Vec<Vec<Vote>>) -> VoteMatrix {
@@ -785,7 +1002,7 @@ fn a_smoothing_near_the_largest_finite_value_fits_finite_uniform_probabilities()
             "{smoothing}"
         );
         assert_eq!(
-            resolve(&matrix, &model, 0.9).unwrap(),
+            resolve(&matrix, &model, 0.9).unwrap().into_outcomes(),
             vec![LabelOutcome::Unknown, LabelOutcome::Unknown]
         );
     }
@@ -853,7 +1070,7 @@ fn resolution_refuses_a_posterior_that_is_not_a_distribution_over_the_schema() {
     }
     model.posteriors = vec![vec![0.25, 0.75]];
     assert_eq!(
-        resolve(&matrix, &model, 0.5).unwrap(),
+        resolve(&matrix, &model, 0.5).unwrap().into_outcomes(),
         vec![LabelOutcome::Estimated {
             class: 1,
             probability: 0.75
@@ -880,7 +1097,9 @@ fn a_model_with_no_mass_on_the_classes_left_resolves_to_unknown() {
         model.posteriors = vec![posterior];
         for min_probability in [f64::MIN_POSITIVE, 0.5, 1.0] {
             assert_eq!(
-                resolve(&matrix, &model, min_probability).unwrap(),
+                resolve(&matrix, &model, min_probability)
+                    .unwrap()
+                    .into_outcomes(),
                 vec![LabelOutcome::Unknown]
             );
         }
@@ -911,18 +1130,8 @@ fn a_posterior_entry_above_one_is_refused_whatever_the_tolerance_on_the_total() 
             Err(LabelingError::InvalidPosterior { item: 0 }),
             "{posterior:?}"
         );
-        for strategy in [Acquisition::Entropy, Acquisition::Margin] {
-            assert_eq!(
-                rank_for_annotation(
-                    std::slice::from_ref(&posterior),
-                    &[LabelOutcome::Unknown],
-                    strategy,
-                    1
-                ),
-                Err(LabelingError::InvalidPosterior { item: 0 }),
-                "{posterior:?} {strategy:?}"
-            );
-        }
+        // Ranking takes only a resolution, so the refusal above keeps the
+        // posterior from being ranked too.
         for set in [&uniform, &active] {
             assert_eq!(
                 evaluate(std::slice::from_ref(&posterior), set, 5),
@@ -935,7 +1144,7 @@ fn a_posterior_entry_above_one_is_refused_whatever_the_tolerance_on_the_total() 
     for posterior in [vec![1.0, 0.0], vec![1.0, -0.0]] {
         model.posteriors = vec![posterior.clone()];
         assert_eq!(
-            resolve(&matrix, &model, 0.5).unwrap(),
+            resolve(&matrix, &model, 0.5).unwrap().into_outcomes(),
             vec![LabelOutcome::Estimated {
                 class: 0,
                 probability: 1.0
@@ -992,13 +1201,15 @@ fn posterior_mass_left_below_the_smallest_normal_f64_resolves_to_unknown() {
     );
     for min_probability in [f64::MIN_POSITIVE, 0.5, 0.9, 1.0] {
         assert_eq!(
-            resolve(&matrix, &model, min_probability).unwrap()[50],
+            resolve(&matrix, &model, min_probability)
+                .unwrap()
+                .outcomes()[50],
             LabelOutcome::Unknown,
             "{min_probability}"
         );
     }
     // The items no verifier touched keep their estimates.
-    let outcomes = resolve(&matrix, &model, 0.9).unwrap();
+    let outcomes = resolve(&matrix, &model, 0.9).unwrap().into_outcomes();
     for (item, class) in [(0, 0), (10, 1), (20, 2)] {
         assert!(
             matches!(outcomes[item], LabelOutcome::Estimated { class: estimated, .. } if estimated == class),
@@ -1022,7 +1233,7 @@ fn posterior_mass_left_below_the_smallest_normal_f64_resolves_to_unknown() {
     let quarter = f64::MIN_POSITIVE / 4.0;
     model.posteriors = vec![vec![1.0, 3.0 * quarter, quarter]];
     assert_eq!(
-        resolve(&matrix, &model, 0.7).unwrap(),
+        resolve(&matrix, &model, 0.7).unwrap().into_outcomes(),
         vec![LabelOutcome::Estimated {
             class: 1,
             probability: 0.75
@@ -1035,7 +1246,9 @@ fn posterior_mass_left_below_the_smallest_normal_f64_resolves_to_unknown() {
     ] {
         model.posteriors = vec![posterior.clone()];
         assert_eq!(
-            resolve(&matrix, &model, f64::MIN_POSITIVE).unwrap(),
+            resolve(&matrix, &model, f64::MIN_POSITIVE)
+                .unwrap()
+                .into_outcomes(),
             vec![LabelOutcome::Unknown],
             "{posterior:?}"
         );

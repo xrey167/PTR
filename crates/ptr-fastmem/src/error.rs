@@ -36,7 +36,11 @@ pub enum FastMemoryError {
     /// A decode threshold is NaN, infinite or negative; a comparison against
     /// it could not refuse an ambiguous or weak readout.
     InvalidThreshold { field: &'static str, value: f32 },
-    /// A write sequence number did not advance the journal by exactly one.
+    /// A restored journal's sequence number was not above the one before it
+    /// (or was zero): `FastMemory::restore` requires sequence numbers to
+    /// strictly increase. Gaps are accepted, because revoked writes leave
+    /// them, so a lost journal row is not reported here. `expected` is the
+    /// smallest number that would have been accepted.
     OutOfOrderWrite { expected: u64, actual: u64 },
     /// A write would be journaled at `u64::MAX`, the one sequence number
     /// without a successor: no write could be numbered after it, so a journal
@@ -141,7 +145,8 @@ impl fmt::Display for FastMemoryError {
             ),
             Self::OutOfOrderWrite { expected, actual } => write!(
                 formatter,
-                "write sequence {actual} does not follow the journal, expected {expected}"
+                "write sequence {actual} is not above the journal's previous one, expected at \
+                 least {expected}"
             ),
             Self::SequenceExhausted { seq } => write!(
                 formatter,

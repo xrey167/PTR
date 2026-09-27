@@ -133,6 +133,36 @@ mod tests {
     }
 
     #[test]
+    fn the_largest_state_s_cells_are_64_mib_and_its_encoding_adds_68_bytes() {
+        // Only the raw cells of the largest state equal the 64 MiB neural-state
+        // payload bound; the encoding frames them with a header and a digest.
+        assert_eq!(HEADER_LEN + DIGEST_LEN, 68);
+        let original = state();
+        assert_eq!(
+            encode_state(&original).len(),
+            original.cells().len() * 4 + 68
+        );
+        for (heads, key_dim, value_dim) in [(64, 512, 512), (16, 1024, 1024)] {
+            let largest = FastMemoryConfig {
+                heads,
+                key_dim,
+                value_dim,
+                checkpoint_interval: 1,
+                max_writes: 1,
+            };
+            check_config(&largest).unwrap();
+            assert_eq!(largest.state_cells(), crate::MAX_STATE_CELLS);
+            assert_eq!(largest.state_cells() * 4, 64 * 1024 * 1024);
+            // The length encode_state gives it, computed rather than
+            // allocated.
+            assert_eq!(
+                HEADER_LEN + largest.state_cells() * 4 + DIGEST_LEN,
+                64 * 1024 * 1024 + 68
+            );
+        }
+    }
+
+    #[test]
     fn a_foreign_magic_is_refused() {
         let mut bytes = encode_state(&state());
         bytes[7] = b'2';

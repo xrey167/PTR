@@ -22,6 +22,6 @@ pub use gold::{
     GoldLabel, GoldSampling, GoldSource,
 };
 pub use model::{
-    fit_label_model, resolve, DawidSkeneParams, LabelModel, LabelOutcome, ModelWarning,
+    fit_label_model, resolve, DawidSkeneParams, LabelModel, LabelOutcome, ModelWarning, Resolution,
 };
 pub use votes::{FunctionKind, LabelSchema, LabelingFunction, Vote, VoteMatrix};

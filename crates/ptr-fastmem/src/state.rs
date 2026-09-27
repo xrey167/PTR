@@ -28,25 +28,51 @@ pub struct FastWeightState {
     applied: WriteSeq,
 }
 
-/// One read: `heads * value_dim` values, head by head, and the identifier
-/// codebook of the memory it was read from.
+/// One read: `heads * value_dim` values, head by head, the last write they
+/// reflect, and the identifier codebook of the memory they were read from.
 ///
-/// Only [`crate::FastMemory::read_admitted`] makes a readout, so its codebook
-/// is always the one the memory's values are codes of; [`crate::decode_readout`]
-/// refuses fact codes from any other.
+/// Only [`crate::FastMemory::read_admitted`] makes a readout, and nothing in
+/// it can be replaced afterwards: the codebook is private, and the values and
+/// write sequence are read through [`ReadoutView`], to which a readout
+/// dereferences read-only (there is no `DerefMut`). So the codebook is always
+/// the one the values are codes of, and [`crate::decode_readout`], which
+/// refuses fact codes from any other codebook, scores only values read from a
+/// memory bound to it. A caller may copy the values out and use them as it
+/// likes, but cannot hand them back as a readout.
+///
+/// ```compile_fail
+/// fn swap(mut mine: ptr_fastmem::Readout, theirs: &ptr_fastmem::Readout) -> ptr_fastmem::Readout {
+///     mine.values = theirs.values.clone();
+///     mine
+/// }
+/// ```
+///
+/// ```compile_fail
+/// fn nudge(readout: &mut ptr_fastmem::Readout) {
+///     readout.values[0] += 1.0;
+/// }
+/// ```
 #[derive(Clone, Debug, PartialEq)]
 pub struct Readout {
+    view: ReadoutView,
+    codebook: IdentifierCodebook,
+}
+
+/// What a [`Readout`] lets a caller read: its values and the last write they
+/// reflect, reached through the readout (`readout.values`, `readout.as_of`)
+/// but never changed through it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReadoutView {
+    /// `heads * value_dim` values, head by head.
     pub values: Vec<f32>,
     /// The last write this readout reflects.
     pub as_of: WriteSeq,
-    codebook: IdentifierCodebook,
 }
 
 impl Readout {
     pub(crate) fn new(values: Vec<f32>, as_of: WriteSeq, codebook: IdentifierCodebook) -> Self {
         Self {
-            values,
-            as_of,
+            view: ReadoutView { values, as_of },
             codebook,
         }
     }
@@ -55,6 +81,16 @@ impl Readout {
     /// whose fact codes it may be decoded against.
     pub fn codebook(&self) -> IdentifierCodebook {
         self.codebook
+    }
+}
+
+/// Read-only access to the values and write sequence: without `DerefMut`,
+/// neither can be assigned, mutated in place or moved out of a readout.
+impl std::ops::Deref for Readout {
+    type Target = ReadoutView;
+
+    fn deref(&self) -> &ReadoutView {
+        &self.view
     }
 }
 

@@ -9,13 +9,13 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-26  
-**Code footprint:** 2 Rust source files · 526 nonblank source lines · 3 integration-test files · 19 `#[test]` markers
+**Last reviewed:** 2026-09-27  
+**Code footprint:** 2 Rust source files · 642 nonblank source lines · 3 integration-test files · 23 `#[test]` markers
 
 ### Implemented now
 
 - EvidenceStage promotion states
-- SearchHit with private evidence stage and explicit promotion API
+- SearchHit with private evidence stage and explicit promotion API; its capsule and generation are private too, fixed by SearchHit::new and read through capsule() and generation(), so the generation promote_verified promotes is the one observe asked about and a hit observed live cannot be renamed to a revoked or superseded generation (promote_verified does not ask the lifecycle again); observe asks the lifecycle authority for the validity of the hit's own capsule and generation (as generation_validity answers it, the question retain_live asks) and moves the hit to Observed only on Validity::Live, so a revoked generation that is still the capsule's live one is refused (RevokedGeneration), as are superseded, disputed and unknown ones; every promotion refusal has a stable code
 - SearchIndex contract
 - Reciprocal-rank fusion implementation
 - weighted_rank_fusion and convex_score_fusion keyed by capsule and generation, so a stale generation never borrows the live one's rank, with deterministic tie-breaking and per-hit backend attribution
@@ -59,7 +59,8 @@
 
 ### Current automated checks
 
-- evidence promotion integration test blocks direct Known and stale generation
+- tests/evidence_promotion.rs: direct Known is blocked; a revoked generation that is still the live one is never observed (a_revoked_generation_is_never_observed_although_it_is_still_the_live_one); superseded, disputed and unknown generations are refused and only a live one is observed; a hit is promoted as the capsule and generation the lifecycle answered live for (a_hit_is_promoted_as_the_capsule_and_generation_the_lifecycle_answered_live_for); every promotion refusal has a stable code
+- compile_fail doctests on SearchHit: its capsule and generation cannot be assigned
 - workspace fmt/check/test/clippy
 - fusion unit tests: two generations of one capsule are never merged, agreement across backends outranks a single first place, a zero-weight list contributes nothing, convex fusion normalises each list, stale, revoked and unknown generations are dropped
 - tests/fusion.rs: a revoked generation is dropped although it is still the live one; weights whose total could overflow a fused score, invalid weights and rank constants, a repeated capsule generation and a nonfinite score are refused; scores spanning the whole f32 range normalise into [0, 1]; every refusal has a stable code

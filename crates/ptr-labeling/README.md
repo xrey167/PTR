@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-26  
-**Code footprint:** 6 Rust source files · 1249 nonblank source lines · 1 integration-test files · 33 `#[test]` markers
+**Last reviewed:** 2026-09-27  
+**Code footprint:** 6 Rust source files · 1364 nonblank source lines · 1 integration-test files · 35 `#[test]` markers
 
 ### Implemented now
 
@@ -22,7 +22,8 @@
 - Gold labels record source (oracle or human with annotator) and sampling (uniform or active); an evaluation set holds one resolved gold label per item and refuses a second; only uniform gold estimates population accuracy and calibration, while active gold reports accuracy on the sampled items and no calibration
 - Evaluation with Brier score and expected calibration error from ptr-analytics; every scoring path refuses a gold class outside the scored classes, and evaluation a scored posterior that is not a probability distribution, before scoring and whatever the sampling; a gold item at usize::MAX is reported missing without overflow
 - A model labeling function may name the adapter that produced its votes (refused on any other kind); function_accuracy scores each function's class votes (never abstentions or vetoes) against uniform gold with a Wilson interval and refuses an invalid z whatever the votes, so labeling quality is measured per adapter
-- Acquisition ranking by posterior entropy or margin that never proposes an item verifiers already determined and always proposes disputed items first; posteriors and outcomes of different lengths, and a ranked posterior that is not a probability distribution, are refused rather than truncated or misranked
+- resolve returns a Resolution (private fields, made only by resolve) that pairs each item's outcome with the posterior it was resolved from: the model's posterior renormalized over the classes no verifier vetoed, uniform over them where no share is computed, a point mass for Determined and none for Disputed
+- Acquisition ranking by posterior entropy or margin over one Resolution only, so outcomes and posteriors cannot be mispaired, reordered, truncated or replaced; each item is ranked on the posterior its outcome was resolved from, never on the model's raw posterior, so mass on a vetoed class neither hides an unresolved item nor promotes a resolved one; it never proposes an item verifiers already determined and always proposes disputed items first
 
 ### Missing for the target architecture
 
@@ -51,7 +52,8 @@
 
 ### Current automated checks
 
-- tests/label_model.rs recovery, veto, dispute and identifiability cases, and gold-set, gold-class, z, tolerance, smoothing, posterior (including an entry above one within the total's tolerance) and annotation-alignment refusals; subnormal posterior mass left by vetoes resolves to Unknown
+- tests/label_model.rs recovery, veto, dispute and identifiability cases, and gold-set, gold-class, z, tolerance, smoothing and posterior (including an entry above one within the total's tolerance) refusals; subnormal posterior mass left by vetoes resolves to Unknown
+- tests/label_model.rs: annotation ranking takes outcomes and posteriors only from one resolution, a resolution pairs every outcome with the posterior it was resolved from, an item is ranked on its posterior after vetoes and not on the model's, and a posterior that is not a distribution never reaches ranking; a compile_fail doctest shows a Resolution cannot be built outside resolve
 - tests/label_model.rs: empty and duplicate function names are refused; a model is refused with any matrix but the one it was fitted on (other votes, functions or schema of the same shape) and accepted with an equal rebuilt one
 - workspace fmt/check/test/clippy
 
@@ -98,7 +100,7 @@ PTR keeps this responsibility in its own crate so the semantics remain stable ev
 | Direction | Contract |
 |---|---|
 | Input | LabelSchema, labeling functions (a model function may name the adapter that produced its votes), VoteMatrix, gold labels |
-| Output | LabelModel, LabelOutcome per item, EvaluationReport, FunctionAccuracy per function and adapter on uniform gold, annotation ranking |
+| Output | LabelModel, a Resolution (a LabelOutcome per item, each with the posterior it was resolved from), EvaluationReport, FunctionAccuracy per function and adapter on uniform gold, annotation ranking of one Resolution |
 | Failure | Explicit typed error / rejected state; no silent fallback that changes semantics |
 | Observability | Standard PTR tracing fields and a stable component span |
 

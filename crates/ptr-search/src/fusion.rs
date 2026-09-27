@@ -293,8 +293,9 @@ pub fn convex_score_fusion(lists: &[WeightedList<'_>]) -> Result<Vec<FusedHit>, 
 /// tombstone, so a revoked generation still equals the live one.
 ///
 /// Filtering here is not a substitute for the promotion checks on
-/// [`SearchHit`]; it keeps stale and revoked candidates from taking fusion
-/// slots a live candidate would otherwise have had. Order, scores and
+/// [`SearchHit`], which ask the same question again when a hit is used
+/// ([`SearchHit::observe`]); it keeps stale and revoked candidates from taking
+/// fusion slots a live candidate would otherwise have had. Order, scores and
 /// candidate metadata of the kept hits are unchanged.
 pub fn retain_live<F>(hits: Vec<SearchHit>, mut validity: F) -> Vec<SearchHit>
 where

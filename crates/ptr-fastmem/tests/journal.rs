@@ -51,6 +51,33 @@ fn a_journal_that_goes_backwards_is_refused() {
 }
 
 #[test]
+fn an_out_of_order_refusal_names_the_smallest_number_a_gapped_journal_would_accept() {
+    // Rows 2 to 4 are missing, as revocation leaves them: accepted.
+    let gapped = [
+        (WriteSeq(1), write_about("a", 0)),
+        (WriteSeq(5), write_about("b", 1)),
+        (WriteSeq(6), write_about("c", 2)),
+    ];
+    assert!(FastMemory::restore(config(2), codebook(&config(2)), gapped).is_ok());
+    // A number not above the one before it is refused, and `expected` is the
+    // smallest number that would have followed row 5, not row 5 plus one row.
+    let repeated = [
+        (WriteSeq(1), write_about("a", 0)),
+        (WriteSeq(5), write_about("b", 1)),
+        (WriteSeq(5), write_about("c", 2)),
+    ];
+    let error = FastMemory::restore(config(2), codebook(&config(2)), repeated).unwrap_err();
+    assert_eq!(
+        error,
+        FastMemoryError::OutOfOrderWrite {
+            expected: 6,
+            actual: 5
+        }
+    );
+    assert!(error.to_string().contains("at least 6"), "{error}");
+}
+
+#[test]
 fn the_incremental_state_is_the_fold_of_its_journal() {
     let mut memory = FastMemory::new(config(2), codebook(&config(2))).unwrap();
     for salt in 0..7 {
