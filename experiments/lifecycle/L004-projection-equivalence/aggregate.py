@@ -4,12 +4,14 @@ Inputs are the run records `scripts/run_experiment.py run L004 --seed <s>
 --set iterations=<n>` writes (results/run-<timestamp>-seed-<s>.json); by
 default the newest record of every declared seed. Every declared seed must be
 present. The records must be of one configuration and have run the checkout's
-code, this script included, and each record's harness result must report the
-benchmark, seed and iteration count its wrapper ran (`scripts/experiment_records.py`);
-`git_sha` in run.json is the commit they ran at, and `aggregated_at_git_sha` the
-commit this script ran at. results/mutations.json, when present, must be this
-experiment's evidence from the same code, mutation checker and mutation plan;
-otherwise aggregation is refused rather than carrying counts of other code.
+code, this script included, HEAD must hold every provenance file of the
+checkout (none untracked, modified or hidden from git), and each record's
+harness result must report the benchmark, seed and iteration count its wrapper
+ran (`scripts/experiment_records.py`); `git_sha` in run.json is the commit they
+ran at, and `aggregated_at_git_sha` the commit this script ran at.
+results/mutations.json, when present, must be this experiment's evidence from
+the same code, mutation checker and mutation plan; otherwise aggregation is
+refused rather than carrying counts of other code.
 
 `verdict` in run.json is, in this order of precedence:
 
@@ -21,8 +23,13 @@ otherwise aggregation is refused rather than carrying counts of other code.
   names; a PostgreSQL-only run is never a hard pass;
 - `hard-pass`: none of these; `hard_pass` is true for this verdict only.
 
-Writing fresh results removes results/STALE.toml, which marks archived results
-of older code (`scripts/check_research_gates.py`).
+metrics.json and run.json are published as one aggregate
+(`experiment_records.publish_aggregate`): run.json names the SHA-256 of the
+metrics.json written with it, a failure while writing leaves the previous pair,
+and an interruption while publishing leaves no run.json rather than the previous
+one beside new metrics. Only then does writing fresh results remove
+results/STALE.toml, which marks archived results of older code
+(`scripts/check_research_gates.py`).
 """
 
 from __future__ import annotations
@@ -212,9 +219,6 @@ def main() -> None:
         "probe_coverage": coverage,
         "mutation_checks": mutations,
     }
-    (RESULTS / "metrics.json").write_text(
-        json.dumps(metrics, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-    )
     run = {
         "experiment_id": "L004",
         "status": manifest["status"],
@@ -232,8 +236,10 @@ def main() -> None:
         "mutation_checks": mutations,
         "limitations": LIMITATIONS,
     }
-    (RESULTS / "run.json").write_text(json.dumps(run, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    experiment_records.clear_stale_marker(RESULTS)
+    try:
+        experiment_records.publish_aggregate(RESULTS, metrics, run)
+    except experiment_records.ProvenanceError as error:
+        raise SystemExit(f"L004: {error}")
     print(
         f"L004 verdict={verdict} hard_pass={hard_pass} coverage_ok={coverage_ok} cases={totals['cases']} "
         f"hard_failures={hard_failures}"

@@ -1,4 +1,5 @@
 import contextlib
+import errno
 import importlib.util
 import io
 import json
@@ -16,6 +17,27 @@ spec = importlib.util.spec_from_file_location(
 )
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
+
+
+@contextlib.contextmanager
+def disk_full_writing(name: str):
+    """Fail every write to a file whose name contains `name` as a full disk
+    does: the file is opened, and truncated when its mode says so, and its
+    first write raises ENOSPC."""
+    real_open = io.open
+
+    def opener(file, mode="r", *args, **kwargs):
+        handle = real_open(file, mode, *args, **kwargs)
+        if isinstance(file, (str, os.PathLike)) and name in Path(file).name and set(mode) & set("wxa+"):
+
+            def full(*_args, **_kwargs):
+                raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))
+
+            handle.write = full
+        return handle
+
+    with mock.patch("io.open", side_effect=opener), mock.patch("builtins.open", side_effect=opener):
+        yield
 
 
 def experiments_with_mutations():
@@ -195,6 +217,11 @@ class MutationCheckTests(unittest.TestCase):
         self.assertIn(f":(exclude){experiment}/results", specs)
 
 
+def files(directory: Path) -> dict[str, str]:
+    """Every file in `directory` by name, with its text."""
+    return {path.name: path.read_text(encoding="utf-8") for path in sorted(directory.iterdir())}
+
+
 def git(root: Path, *args: str) -> str:
     command = [
         "git",
@@ -255,10 +282,11 @@ class RecordedRunWatchTests(unittest.TestCase):
     def write(self, relative: str, text: str) -> None:
         (self.root / relative).write_text(text, encoding="utf-8")
 
-    def run_check(self, during_build=None):
+    def run_check(self, during_build=None, rebuild_exit=0):
         """`main` over the one-mutation plan in the temporary repository, with
-        cargo and the harness faked (the mutated harness is killed) and
-        `during_build` called while the mutated harness builds; returns the
+        cargo and the harness faked (the mutated harness is killed),
+        `during_build` called while the mutated harness builds and the final
+        rebuild of the unmutated harness exiting `rebuild_exit`; returns the
         exit status and what `main` printed."""
         real_run = subprocess.run
         builds = []
@@ -270,6 +298,8 @@ class RecordedRunWatchTests(unittest.TestCase):
                 builds.append((self.root / "src/lib.rs").read_text(encoding="utf-8"))
                 if len(builds) == 1 and during_build is not None:
                     during_build()
+                if len(builds) == 2:
+                    return subprocess.CompletedProcess(command, rebuild_exit, "", "error: could not compile")
                 return subprocess.CompletedProcess(command, 0, "", "")
             return subprocess.CompletedProcess(command, 1, json.dumps({"hard_failures": 1, "wrong": 1}) + "\n", "")
 
@@ -294,6 +324,103 @@ class RecordedRunWatchTests(unittest.TestCase):
         self.assertEqual(status, 0)
         record = json.loads(self.record.read_text(encoding="utf-8"))
         self.assertEqual((record["git_sha"], record["killed"], record["total"]), (self.head, 1, 1))
+
+    PREVIOUS = '{"previous": "record"}\n'
+
+    def test_a_mutation_run_whose_clean_rebuild_fails_writes_no_record(self):
+        # Every mutation was killed, but the checker fails the run; nothing
+        # downstream records or checks that, so the record must not exist.
+        self.record.write_text(self.PREVIOUS, encoding="utf-8")
+        status, stdout = self.run_check(rebuild_exit=101)
+        self.assertEqual(status, 1)
+        self.assertEqual(self.record.read_text(encoding="utf-8"), self.PREVIOUS)
+        self.assertIn("rebuilding the unmutated harness failed", stdout)
+        self.assertIn("no record is written", stdout)
+
+    def test_a_record_whose_write_fails_leaves_the_previous_record_whole(self):
+        self.record.write_text(self.PREVIOUS, encoding="utf-8")
+        with disk_full_writing("mutations.json"), self.assertRaises(OSError):
+            self.run_check()
+        self.assertEqual(files(self.record.parent), {".gitkeep": "", "mutations.json": self.PREVIOUS})
+
+    def test_a_planted_file_whose_write_fails_is_left_whole(self):
+        # Planting the defect and removing it again replace the file in one
+        # step; a write that failed half way used to leave it truncated.
+        with disk_full_writing("lib.rs"), self.assertRaises(OSError):
+            self.run_check()
+        self.assertEqual(files(self.root / "src"), {"lib.rs": self.PLANTED, "other.rs": self.OTHER})
+        self.assertFalse(self.record.exists())
+
+    def test_a_planted_file_is_restored_though_the_disk_fills_after_the_plant(self):
+        # The build fills the disk after the defect is planted; putting the
+        # original back used to need room for a new copy of it, and failing
+        # left the defect in the source tree.
+        real_write_temporary = mod.experiment_records.write_temporary
+        writes = []
+
+        def fill_after_the_plant(path, data, mode=None):
+            if path.name == "lib.rs":
+                writes.append(data)
+                if len(writes) > 1:
+                    raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))
+            return real_write_temporary(path, data, mode)
+
+        with mock.patch.object(mod.experiment_records, "write_temporary", side_effect=fill_after_the_plant):
+            status, _ = self.run_check()
+        self.assertEqual(status, 0)
+        self.assertEqual(files(self.root / "src"), {"lib.rs": self.PLANTED, "other.rs": self.OTHER})
+
+    def test_a_planted_file_whose_restore_fails_is_named_with_where_its_original_is(self):
+        real_replace = os.replace
+        onto = []
+
+        def replace(source, target):
+            if Path(target).name == "lib.rs":
+                onto.append(source)
+                if len(onto) == 2:
+                    raise OSError(errno.EIO, os.strerror(errno.EIO))
+            return real_replace(source, target)
+
+        plan = mod.load_toml(self.experiment / "tests/mutations.toml")
+
+        def run(command, **_kwargs):
+            if command[0] == "cargo":
+                return subprocess.CompletedProcess(command, 0, "", "")
+            return subprocess.CompletedProcess(command, 1, json.dumps({"hard_failures": 1, "wrong": 1}) + "\n", "")
+
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(mod, "ROOT", self.root),
+            mock.patch.object(mod.subprocess, "run", side_effect=run),
+            mock.patch.object(mod.os, "replace", side_effect=replace),
+            contextlib.redirect_stdout(stdout),
+            self.assertRaises(OSError),
+        ):
+            mod.run_mutation(plan, plan["mutation"][0], 60)
+        self.assertEqual((self.root / "src/lib.rs").read_text(encoding="utf-8"), "pub fn f() -> u8 { 2 }\n")
+        sources = files(self.root / "src")
+        kept = {name: text for name, text in sources.items() if name not in ("lib.rs", "other.rs")}
+        self.assertEqual(list(kept.values()), [self.PLANTED])
+        self.assertIn("src/lib.rs still holds the mutation return-two", stdout.getvalue())
+        self.assertIn(f"src/{next(iter(kept))}", stdout.getvalue())
+
+    def test_a_mutation_run_whose_plan_changes_as_it_is_read_is_not_recorded(self):
+        # HEAD moves, a checkout in another terminal say, just after the plan
+        # is read: the record would name a commit whose plan it did not run.
+        real_load_plan = mod.load_plan
+
+        def load_plan_then_move(exp_root):
+            plan = real_load_plan(exp_root)
+            path = self.experiment / "tests/mutations.toml"
+            path.write_text(path.read_text(encoding="utf-8").replace("seed = 17", "seed = 29"), encoding="utf-8")
+            git(self.root, "commit", "-q", "--no-verify", "-am", "another plan")
+            return plan
+
+        with mock.patch.object(mod, "load_plan", side_effect=load_plan_then_move):
+            status, stdout = self.run_check()
+        self.assertEqual(status, 2)
+        self.assertFalse(self.record.exists())
+        self.assertIn(f"HEAD moved from {self.head}", stdout)
 
     def test_a_mutation_run_whose_source_is_edited_and_restored_while_it_runs_is_not_recorded(self):
         def edit_and_restore():

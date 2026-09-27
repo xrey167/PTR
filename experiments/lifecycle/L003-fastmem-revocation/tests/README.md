@@ -26,7 +26,12 @@ service; archived results come only from the seeds in `experiment.toml`.
 
 Seed runs and a mutation run that writes `results/mutations.json` start only from a
 working tree whose sources HEAD holds, and write no record when HEAD moved or a source
-was written while they ran, even if it was put back. `aggregate.py` refuses records or mutation
+was written while they ran, even if it was put back; a mutation run whose rebuild of the
+unmutated harness fails writes none either. `aggregate.py` refuses records or mutation
 evidence whose commit differs from the checkout in code, recording scripts, the
-aggregator or, for mutation evidence, the mutation plan ([`scripts/experiment_records.py`](../../../../scripts/experiment_records.py)).
+aggregator or, for mutation evidence, the mutation plan, and a checkout holding sources
+HEAD does not hold, untracked ones included, even a crate linked or cloned in or a file only a
+`.gitignore` HEAD does not hold hides ([`scripts/experiment_records.py`](../../../../scripts/experiment_records.py)).
+It publishes `results/metrics.json` and `results/run.json` as one aggregate, `run.json`
+naming the SHA-256 of `metrics.json`, and removes `results/STALE.toml` only then.
 A hard pass needs every seed to exit 0 with no hard failure and to reach every probe.

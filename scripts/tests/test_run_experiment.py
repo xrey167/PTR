@@ -1,4 +1,5 @@
 import contextlib
+import errno
 import importlib.util
 import io
 import json
@@ -16,6 +17,27 @@ spec = importlib.util.spec_from_file_location(
 )
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
+
+
+@contextlib.contextmanager
+def disk_full_writing(name: str):
+    """Fail every write to a file whose name contains `name` as a full disk
+    does: the file is opened, and truncated when its mode says so, and its
+    first write raises ENOSPC."""
+    real_open = io.open
+
+    def opener(file, mode="r", *args, **kwargs):
+        handle = real_open(file, mode, *args, **kwargs)
+        if isinstance(file, (str, os.PathLike)) and name in Path(file).name and set(mode) & set("wxa+"):
+
+            def full(*_args, **_kwargs):
+                raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))
+
+            handle.write = full
+        return handle
+
+    with mock.patch("io.open", side_effect=opener), mock.patch("builtins.open", side_effect=opener):
+        yield
 
 
 class ExperimentRunnerTests(unittest.TestCase):
@@ -224,6 +246,24 @@ class RunWatchTests(unittest.TestCase):
         )
         self.assertEqual((status, records), (2, []))
         self.assertIn(f"HEAD moved from {self.head}", stderr)
+
+    def test_a_record_whose_write_fails_leaves_no_partial_record(self):
+        # A partial record is the newest of its seed, and the aggregator reads
+        # every record it selects from.
+        with disk_full_writing("-seed-17.json"), self.assertRaises(OSError):
+            self.run_seed()
+        self.assertEqual(sorted(path.name for path in self.results.iterdir()), [".gitkeep"])
+
+    def test_a_record_never_replaces_another(self):
+        path = self.results / "run-1-seed-17.json"
+        path.write_text('{"first": true}\n', encoding="utf-8")
+        with self.assertRaises(FileExistsError):
+            mod.write_json_exclusive(path, {"second": True})
+        self.assertEqual(sorted(p.name for p in self.results.iterdir()), [".gitkeep", "run-1-seed-17.json"])
+        self.assertEqual(path.read_text(encoding="utf-8"), '{"first": true}\n')
+        other = self.results / "run-2-seed-17.json"
+        mod.write_json_exclusive(other, {"second": True})
+        self.assertEqual(json.loads(other.read_text(encoding="utf-8")), {"second": True})
 
     def test_a_record_the_results_hold_is_no_change_of_the_sources(self):
         # Records accumulate in results/, which the run writes into itself.

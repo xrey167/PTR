@@ -55,10 +55,11 @@ def utc_stamp() -> str:
 
 
 def write_json_exclusive(path: Path, record: dict) -> None:
+    """Write `record` to the new file `path`, whole or not at all: a write
+    that fails leaves no partial record for an aggregator to select. Raises
+    `FileExistsError` when `path` exists; a record never replaces another."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("x", encoding="utf-8") as handle:
-        json.dump(record, handle, indent=2)
-        handle.write("\n")
+    experiment_records.write_exclusively(path, json.dumps(record, indent=2) + "\n")
 
 
 def validate():
@@ -214,7 +215,8 @@ def run_experiment(
     no record, returning 2, when HEAD moved or a provenance or experiment
     file was written, created or removed while the command ran, even if its
     content was put back, so the record's `git_sha` is the code that ran as
-    far as that watch can see (its `changes` names what it cannot)."""
+    far as that watch can see (its `changes` names what it cannot). The
+    record is written whole or not at all (`write_json_exclusive`)."""
     _, root, data = resolve(exp_id)
     try:
         command = build_command(

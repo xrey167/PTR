@@ -35,5 +35,28 @@ class ResearchGateTests(unittest.TestCase):
         for exp_id in completed:
             self.assertIn(f"ERROR: {exp_id}: results/run.json ran at other code",output.getvalue())
 
+    def test_artifacts_of_a_completed_experiment_that_are_not_one_aggregate_fail_the_gate(self):
+        # Both required paths can exist and run.json's provenance hold while
+        # metrics.json or mutations.json is not what run.json was aggregated
+        # with.
+        completed=[
+            item["id"]
+            for item in mod.load(ROOT/"experiments/registry.toml").get("experiment",[])
+            if mod.load(ROOT/"experiments"/item["path"]/"experiment.toml").get("status")=="completed"
+        ]
+        checked=[]
+
+        def unbound(exp_id,experiment,results,root):
+            checked.append(exp_id)
+            self.assertEqual((root,results.parent),(mod.ROOT,experiment))
+            return [f"{exp_id}: results/metrics.json is not the metrics run.json was aggregated with"]
+
+        output=io.StringIO()
+        with mock.patch.object(mod.experiment_records,"aggregate_errors",side_effect=unbound),contextlib.redirect_stdout(output):
+            self.assertEqual(mod.main(),1)
+        self.assertEqual(checked,completed)
+        for exp_id in completed:
+            self.assertIn(f"ERROR: {exp_id}: results/metrics.json is not the metrics",output.getvalue())
+
 if __name__=="__main__":
     unittest.main()

@@ -7,23 +7,29 @@ optional further edits (`[[mutation.also]]`, each with its own `find`,
 `replace` and optionally `file`) when one defect spans several places.
 Each mutation also names the hard counters that show its defect (`expect`).
 This script plants one defect at a time, rebuilds the harness, runs it, and
-restores the file whatever happens. A mutation is *killed* when the harness
-exits with status 1 and one of its expected counters fired. A run that fails
-only on other counters is recorded as `failed-elsewhere`: the defect may have
-broken something unrelated first (a query that no longer binds, say), which
-shows nothing about whether the harness sees the defect itself. Exiting any
-other way (a panic, a build failure, a timeout) or passing is recorded as it
-is. The record goes to the experiment's `results/mutations.json`, stamped with
-the commit HEAD was at when the run started, so a run that writes it refuses
-to start from a working tree with uncommitted or untracked provenance files,
-and writes no record, exiting 2, when HEAD moved or a provenance file was
-written, created or removed while it ran, apart from the checker's own edits
-of the files it plants defects in (`ProvenanceWatch` in
-`scripts/experiment_records.py`); the aggregators accept it only while its
-commit has the checkout's code, checker and mutation plan. Every name given to
-`--only` must be one the plan lists; a run with `--only` writes no record and
-so checks no tree. Afterwards the unmutated harness is rebuilt, and the run
-fails if that rebuild does.
+restores the file whatever happens: each edit replaces the file in one step, so
+a write that fails never leaves it truncated, and restoring renames the
+original, kept under a second name beside it before the defect is planted,
+back into place, which needs no free space; should even that fail, the script
+names each file that still holds the defect and where its original is. A
+mutation is *killed* when the harness exits with status 1 and one of its
+expected counters fired. A run that fails only on other counters is recorded as
+`failed-elsewhere`: the defect may have broken something unrelated first (a
+query that no longer binds, say), which shows nothing about whether the
+harness sees the defect itself. Exiting any other way (a panic, a build
+failure, a timeout) or passing is recorded as it is. The record goes to the
+experiment's `results/mutations.json`, written whole or not at all and stamped
+with the commit HEAD was at when the run started, before the plan was read, so
+a run that writes it refuses to start from a working tree with uncommitted or
+untracked provenance files, and writes no record, exiting 2, when HEAD moved or
+a provenance file, the plan included, was written, created or removed while it
+ran, apart from the checker's own edits of the files it plants defects in
+(`ProvenanceWatch` in `scripts/experiment_records.py`); the aggregators accept
+it only while its commit has the checkout's code, checker and mutation plan.
+Every name given to `--only` must be one the plan lists; a run with `--only`
+writes no record and so checks no tree. Afterwards the unmutated harness is
+rebuilt, and the run fails, writing no record, if that rebuild does: nothing
+downstream would see that the run was invalid.
 
     python scripts/mutation_check.py L004
     python scripts/mutation_check.py L003 --only append-without-row-lock
@@ -39,6 +45,9 @@ import argparse
 import contextlib
 import datetime as dt
 import json
+import os
+import secrets
+import stat
 import subprocess
 import sys
 import tomllib
@@ -175,11 +184,54 @@ def own_writes(watch: experiment_records.ProvenanceWatch | None, files):
     return watch.rewriting(files) if watch is not None else contextlib.nullcontext()
 
 
+def keep_original(path: Path) -> Path:
+    """A second name beside `path` for its current content, from which
+    `restore_originals` puts it back by a rename, which needs no free space:
+    a hard link to the file, or, where the filesystem has none, a copy made
+    before anything is planted."""
+    kept = path.with_name(f".{path.name}.{secrets.token_hex(6)}.orig")
+    try:
+        os.link(path, kept)
+    except OSError:
+        return experiment_records.write_temporary(path, path.read_bytes(), stat.S_IMODE(path.stat().st_mode))
+    return kept
+
+
+def restore_originals(name: str, kept: dict[str, Path]) -> None:
+    """Put each file of `kept` (file -> the second name `keep_original` gave
+    its original) back by renaming the original over it. A restore that
+    fails names every file that still holds the mutation `name` and where
+    its original is, and raises."""
+    unrestored = []
+    for file, original in kept.items():
+        try:
+            os.replace(original, ROOT / file)
+            # A rename between two names of one file, as when the plant never
+            # replaced it, leaves both names.
+            original.unlink(missing_ok=True)
+        except OSError as error:
+            unrestored.append((file, original, error))
+        experiment_records.sync_directory((ROOT / file).parent)
+    if unrestored:
+        print(
+            "ERROR: restoring the planted files failed; "
+            + "; ".join(
+                f"{file} still holds the mutation {name}, and its original is "
+                f"{original.relative_to(ROOT)} ({error})"
+                for file, original, error in unrestored
+            ),
+            flush=True,
+        )
+        raise unrestored[0][2]
+
+
 def run_mutation(
     plan: dict, mutation: dict, timeout: int, watch: experiment_records.ProvenanceWatch | None = None
 ) -> dict:
     """Plant `mutation`, build and run the harness, and restore the edited
-    files whatever happens. With a `watch`, the checker's own writes of the
+    files whatever happens: before planting, each original gets a second
+    name beside it (`keep_original`), and restoring renames it back, which a
+    full disk cannot stop. With a `watch`, the checker's own writes of the
     edited files are accepted and any other write to them is left for
     `watch.changes` to report."""
     cases = int(mutation.get("cases", plan["cases"]))
@@ -188,13 +240,16 @@ def run_mutation(
     planned = edits(mutation)
     originals = {file: (ROOT / file).read_text(encoding="utf-8") for file, _, _ in planned}
     outcome: dict = {"name": mutation["name"], "file": mutation["file"], "cases": cases, "seed": seed}
+    kept: dict[str, Path] = {}
     try:
         mutated = dict(originals)
         for file, find, replace in planned:
             mutated[file] = mutated[file].replace(find, replace, 1)
         with own_writes(watch, mutated):
+            for file in mutated:
+                kept[file] = keep_original(ROOT / file)
             for file, text in mutated.items():
-                (ROOT / file).write_text(text, encoding="utf-8")
+                experiment_records.write_atomically(ROOT / file, text)
         built = subprocess.run(build, cwd=ROOT, capture_output=True, text=True, check=False)
         if built.returncode != 0:
             outcome.update(result="build-failed", detail=built.stderr[-2000:])
@@ -208,8 +263,7 @@ def run_mutation(
             return outcome
     finally:
         with own_writes(watch, originals):
-            for file, text in originals.items():
-                (ROOT / file).write_text(text, encoding="utf-8")
+            restore_originals(mutation["name"], kept)
     metrics = last_json_line(ran.stdout)
     result, fired = classify(ran.returncode, metrics, plan, mutation)
     outcome.update(
@@ -247,23 +301,11 @@ def main() -> int:
     args = parser.parse_args()
 
     exp_root = experiment_root(args.id)
-    plan = load_plan(exp_root)
-    errors = anchor_errors(plan)
-    if errors:
-        print("\n".join("ERROR: " + error for error in errors))
-        return 1
-    if args.check:
-        print(f"OK: {len(plan.get('mutation', []))} mutation anchors for {args.id}")
-        return 0
-
-    selected, errors = select(plan, args.only)
-    if errors:
-        print("\n".join("ERROR: " + error for error in errors))
-        return 2
     watch = None
-    if not args.only:
+    if not args.check and not args.only:
         # The record names HEAD as the code it mutated, so HEAD must hold
-        # every file that decides it: refuse before planting anything.
+        # every file that decides it, the plan included, from before the plan
+        # is read until the record is written: refuse before reading it.
         try:
             watch = experiment_records.ProvenanceWatch(
                 ROOT,
@@ -283,6 +325,19 @@ def main() -> int:
                 f"hold; commit or remove {experiment_records.listed(watch.uncommitted)}"
             )
             return 2
+    plan = load_plan(exp_root)
+    errors = anchor_errors(plan)
+    if errors:
+        print("\n".join("ERROR: " + error for error in errors))
+        return 1
+    if args.check:
+        print(f"OK: {len(plan.get('mutation', []))} mutation anchors for {args.id}")
+        return 0
+
+    selected, errors = select(plan, args.only)
+    if errors:
+        print("\n".join("ERROR: " + error for error in errors))
+        return 2
     outcomes = []
     for mutation in selected:
         outcome = run_mutation(plan, mutation, args.timeout, watch)
@@ -291,14 +346,16 @@ def main() -> int:
 
     # Rebuild the unmutated harness so no mutated binary is left behind. Until
     # that succeeds the binary may still hold the last mutation, so a failed
-    # rebuild fails the run whatever the mutations did.
+    # rebuild fails the run whatever the mutations did, and a run that fails
+    # writes no record: mutations.json says nothing of the rebuild, so the
+    # aggregators would take it as valid evidence.
     build, run = binary_command(plan, 1, int(plan["seed"]))
     rebuilt = subprocess.run(build, cwd=ROOT, capture_output=True, text=True, check=False)
     restored = rebuilt.returncode == 0
     if not restored:
         print(
-            f"ERROR: rebuilding the unmutated harness failed; {run[0]} may still hold a mutation\n"
-            + rebuilt.stderr[-2000:]
+            f"ERROR: rebuilding the unmutated harness failed; {run[0]} may still hold a mutation, "
+            "and no record is written\n" + rebuilt.stderr[-2000:]
         )
 
     killed = all(outcome["result"] == "killed" for outcome in outcomes)
@@ -316,6 +373,7 @@ def main() -> int:
                 "rerun from a working tree that stays at HEAD"
             )
             return 2
+    if watch is not None and restored:
         record = {
             "experiment_id": args.id,
             "git_sha": watch.head,
@@ -326,7 +384,7 @@ def main() -> int:
             "mutations": outcomes,
         }
         out = exp_root / "results/mutations.json"
-        out.write_text(json.dumps(record, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        experiment_records.write_atomically(out, experiment_records.json_text(record))
         print(out.relative_to(ROOT))
     return 0 if restored and killed else 1
 

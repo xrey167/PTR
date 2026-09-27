@@ -3,11 +3,15 @@
 A completed experiment must have its required artifacts, and its archived
 results must describe HEAD's code: `results/run.json` and
 `results/mutations.json` fail the gate once a provenance file (the Rust, SQL,
-Cargo and toolchain files, the recording scripts, the experiment's
+protobuf, Cargo and toolchain files, the recording scripts, the experiment's
 `aggregate.py` and mutation plan) differs from the one at their `git_sha`,
 unless `results/STALE.toml` names those results and the first commit that
-made them stale (`experiment_records.staleness_errors`). Experiments that
-need a pinned baseline may run only once it is pinned.
+made them stale (`experiment_records.staleness_errors`). `results/run.json`
+must also be one aggregate with the `metrics.json` it names the SHA-256 of
+and the `mutations.json` whose summary it carries; a run.json that binds no
+metrics, aggregated before run.json bound them, passes only while it is stale
+and beside the metrics.json committed with it (`experiment_records.aggregate_errors`).
+Experiments that need a pinned baseline may run only once it is pinned.
 """
 
 from __future__ import annotations
@@ -42,6 +46,7 @@ def main() -> int:
                 if not (results/artifact).exists():
                     errors.append(f'{item["id"]}: completed experiment missing {artifact}')
             errors.extend(experiment_records.staleness_errors(item["id"],experiment,results,ROOT))
+            errors.extend(experiment_records.aggregate_errors(item["id"],experiment,results,ROOT))
 
     plain=load(ROOT/"research/baselines/plain_model/config.toml")
     for exp_id in ["M001","M002","M003","M004","M005"]:

@@ -1362,7 +1362,19 @@ different commits with the same code are covered by one marker
 from the results: a base-branch commit merged in never counts, and the merge that brings its change to the
 results' line does, so one marker holds on a pull request's head, on the merge CI checks and on the base
 branch afterwards (`test_a_base_branch_commit_merged_in_does_not_move_the_first_change`,
-`test_a_change_reaching_the_results_only_through_a_merge_is_stale_since_that_merge`).
+`test_a_change_reaching_the_results_only_through_a_merge_is_stale_since_that_merge`). The gate also fails a
+`run.json` that is not one aggregate with the `metrics.json` whose SHA-256 it names and the `mutations.json`
+whose summary it carries (`test_run_json_beside_other_metrics_is_refused`,
+`test_mutation_evidence_run_json_does_not_carry_is_refused`); a `run.json` aggregated before it named that
+SHA-256, as the archived L003 and L004 ones were, passes only while it is stale and beside the `metrics.json`
+committed with it (`test_an_unbound_stale_run_json_passes_only_beside_the_metrics_committed_with_it`). The
+aggregators publish the pair so that an interruption leaves no `run.json` beside other metrics
+(`test_an_interrupted_publish_leaves_no_run_json_beside_other_metrics`) and refuse a checkout holding
+provenance files HEAD does not hold, untracked ones included
+(`test_a_checkout_holding_provenance_files_head_does_not_is_not_aggregated`), a crate linked or cloned into
+`crates/` among them (`test_an_untracked_crate_git_does_not_look_into_in_the_checkout_is_refused`); a mutation
+run whose rebuild of the unmutated harness fails writes no record
+(`test_a_mutation_run_whose_clean_rebuild_fails_writes_no_record`).
 
 Evaluations: [relational-substrate](../../evaluations/components/relational-substrate/README.md),
 [fast-weight-memory](../../evaluations/components/fast-weight-memory/README.md),
