@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `foundation`  
-**Last reviewed:** 2026-09-25  
-**Code footprint:** 6 Rust source files · 2150 nonblank source lines · 6 integration-test files · 68 `#[test]` markers
+**Last reviewed:** 2026-09-27  
+**Code footprint:** 6 Rust source files · 2178 nonblank source lines · 6 integration-test files · 69 `#[test]` markers
 
 ### Implemented now
 
@@ -44,7 +44,7 @@
 - ConfidenceTarget and ConfidenceEstimate with target-checked access and diagnostic ConfidenceTargetMismatch errors
 - Compile-fail documentation rejects implicit confidence-to-verification/effect conversion and unqualified estimate ordering
 - Cognitive contract fixtures cover independent axes, constraints, uncertain claims, conflicting sources and revoked generations
-- PrincipalId: the admitted principal a branch, fast memory or effect attempt is attributed to, so audit and attribution use one name
+- PrincipalId: the name a branch or fast memory is attributed to, recorded as given (From<&str> and its public field take any string); effect attempts record a string, not a PrincipalId: one made through an admitted execution session records that session's principal, which the runtime validated when it created the session, while PtrRuntime::commit and replay record an EffectAttempted's principal as given, the empty string included; that a PrincipalId names the admitted principal is the caller's obligation
 
 ### Missing for the target architecture
 
@@ -95,6 +95,7 @@
 - canonical_bytes decoded by an independent decoder against the exact expected assignment with every byte accounted for
 - Only Live admits with every Validity decided exhaustively; masks narrow and never widen; a revoked slot keeps its codes and still cannot participate
 - probability_is_bounded unit test
+- a_principal_id_is_recorded_as_given_whatever_name_it_holds unit test
 - lifecycle_versions_are_distinct_concepts unit test
 - semantic_role_and_epistemic_state_are_independent_axes unit test
 - reasoning_operator_is_a_typed_cross_component_contract unit test

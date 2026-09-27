@@ -809,6 +809,173 @@ fn a_logged_score_that_is_not_a_probability_is_refused_before_any_reweighting() 
 }
 
 #[test]
+fn a_logged_triage_no_policy_can_produce_is_refused_before_any_reweighting() {
+    // `LoggedTriage` has public fields, so a log can hold records no
+    // `TriagePolicy::triage` returns. An ineligible auto-proposal was
+    // reweighted by one under every target, as if verification alone had
+    // proposed it; a propensity on an ineligible record was ignored; and the
+    // eligible contradictions surfaced, if at all, as a zero-probability
+    // propensity or a positivity violation instead of as what they are.
+    let ineligible = |decision, auto_propensity| LoggedTriage {
+        eligible: false,
+        score: 0.8,
+        decision,
+        auto_propensity,
+        reward: 1.0,
+    };
+    let impossible = [
+        (
+            ineligible(TriageDecision::AutoPropose, 0.0),
+            "verification alone never auto-proposes",
+        ),
+        (
+            ineligible(TriageDecision::AutoPropose, 0.7),
+            "verification alone never auto-proposes",
+        ),
+        (
+            ineligible(TriageDecision::Escalate, 0.5),
+            "a branch verification decided has auto-propose propensity zero",
+        ),
+        (
+            ineligible(TriageDecision::Discard, 1.0),
+            "a branch verification decided has auto-propose propensity zero",
+        ),
+        (
+            eligible(TriageDecision::Discard, 0.7, 0.0),
+            "an eligible branch is never discarded",
+        ),
+        (
+            eligible(TriageDecision::Discard, 0.0, 0.0),
+            "an eligible branch is never discarded",
+        ),
+        (
+            eligible(TriageDecision::AutoPropose, 0.0, 1.0),
+            "an eligible branch is auto-proposed only with positive auto-propose propensity",
+        ),
+        (
+            eligible(TriageDecision::Escalate, 1.0, 0.2),
+            "an eligible branch with auto-propose propensity one is never escalated",
+        ),
+    ];
+    let targets = [
+        TriagePolicy::new(AutoThreshold::AtLeast(0.5), 0.3).unwrap(),
+        TriagePolicy::new(AutoThreshold::AtLeast(0.0), 0.0).unwrap(),
+        TriagePolicy::new(AutoThreshold::Never, 0.0).unwrap(),
+    ];
+    let model = |_: &LoggedTriage, _: TriageDecision| 0.5;
+    for (record, reason) in impossible {
+        let log = [eligible(TriageDecision::AutoPropose, 0.7, 1.0), record];
+        for target in &targets {
+            let refused = evaluate_off_policy(&log, target).unwrap_err();
+            assert_eq!(
+                refused,
+                ArbiterError::ImpossibleTriage { index: 1, reason },
+                "{record:?} under {target:?}"
+            );
+            assert_eq!(refused.code(), "PTR_ARBITER_IMPOSSIBLE_TRIAGE");
+            assert_eq!(
+                refused.to_string(),
+                format!("record 1 is not a triage any policy produces: {reason}")
+            );
+            assert_eq!(
+                doubly_robust(&log, target, |_, _| panic!(
+                    "the reward model is consulted only for a log that passed every check"
+                )),
+                Err(refused),
+                "{record:?} under {target:?}"
+            );
+        }
+        // The same record is refused wherever it sits in the log.
+        assert_eq!(
+            doubly_robust(&[record], &targets[0], model),
+            Err(ArbiterError::ImpossibleTriage { index: 0, reason })
+        );
+    }
+    // A propensity outside [0, 1] is refused as such before the rules that
+    // compare it with zero and one.
+    assert!(matches!(
+        evaluate_off_policy(&[ineligible(TriageDecision::AutoPropose, 1.5)], &targets[0]),
+        Err(ArbiterError::InvalidPropensity { index: 0, .. })
+    ));
+    // So is a score that is not a probability.
+    let mut unscored = ineligible(TriageDecision::AutoPropose, 0.0);
+    unscored.score = f32::NAN;
+    assert!(matches!(
+        evaluate_off_policy(&[unscored], &targets[0]),
+        Err(ArbiterError::InvalidScore { index: 0, .. })
+    ));
+}
+
+#[test]
+fn every_triage_a_policy_produces_is_accepted_by_both_off_policy_estimates() {
+    // The control for the refusals above: the boundary combinations they sit
+    // next to (an ineligible escalation or discard with propensity zero, an
+    // eligible escalation with propensity zero or below one, an eligible
+    // auto-proposal with propensity one) are all triages some policy makes.
+    let mut hard = passing();
+    hard.findings.push(Finding {
+        code: "unsafe".into(),
+        message: "constraint failed".into(),
+        hard: true,
+    });
+    let reports = [
+        passing(),
+        report(VerificationStatus::Fail, VerificationLevel::Deterministic),
+        report(
+            VerificationStatus::Disputed,
+            VerificationLevel::Deterministic,
+        ),
+        report(VerificationStatus::Pass, VerificationLevel::SampleVerified),
+        hard,
+    ];
+    let policies = [
+        TriagePolicy::new(AutoThreshold::AtLeast(0.5), 0.25).unwrap(),
+        TriagePolicy::new(AutoThreshold::AtLeast(0.5), 0.0).unwrap(),
+        TriagePolicy::new(AutoThreshold::AtLeast(0.0), 0.0).unwrap(),
+        TriagePolicy::new(AutoThreshold::Never, 0.5).unwrap(),
+        TriagePolicy::new(AutoThreshold::AtLeast(0.5), 2f64.powi(-53)).unwrap(),
+    ];
+    let mut seen = std::collections::BTreeSet::new();
+    for policy in &policies {
+        for verified in &reports {
+            for value in [0.0, 0.2, 0.5, 0.9, 1.0] {
+                for draw in [0.0, 0.1, 0.9] {
+                    let triage = policy.triage(verified, score(value), draw).unwrap();
+                    let mut record = LoggedTriage::from(&triage);
+                    record.reward = 0.5;
+                    seen.insert((
+                        record.eligible,
+                        record.decision,
+                        record.auto_propensity == 0.0,
+                        record.auto_propensity == 1.0,
+                    ));
+                    assert!(
+                        evaluate_off_policy(&[record], policy).is_ok(),
+                        "{record:?} under {policy:?}"
+                    );
+                    assert!(
+                        doubly_robust(&[record], policy, |_, _| 0.5).is_ok(),
+                        "{record:?} under {policy:?}"
+                    );
+                }
+            }
+        }
+    }
+    // Every shape a triage can take was exercised.
+    for shape in [
+        (false, TriageDecision::Discard, true, false),
+        (false, TriageDecision::Escalate, true, false),
+        (true, TriageDecision::Escalate, true, false),
+        (true, TriageDecision::Escalate, false, false),
+        (true, TriageDecision::AutoPropose, false, false),
+        (true, TriageDecision::AutoPropose, false, true),
+    ] {
+        assert!(seen.contains(&shape), "{shape:?} not exercised: {seen:?}");
+    }
+    assert_eq!(seen.len(), 6, "{seen:?}");
+}
+
+#[test]
 fn a_policy_explains_every_triage_it_produces_and_nothing_else() {
     let policy = TriagePolicy::new(AutoThreshold::AtLeast(0.5), 0.25).unwrap();
     let mut hard = passing();

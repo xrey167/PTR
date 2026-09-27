@@ -220,9 +220,10 @@ pub enum ArbiterError {
     InvalidThreshold { value: f32 },
     /// A calibration draw that is not a finite number in `[0, 1)`.
     InvalidDraw { draw: f64 },
-    /// A logged propensity outside `[0, 1]`, a logged action the logging
-    /// policy gave zero probability, or one it gave a probability so small
-    /// that the record's importance weight is not finite.
+    /// A logged propensity outside `[0, 1]`, or a logged action the logging
+    /// policy gave a probability so small that the record's importance weight
+    /// is not finite. A logged action with probability zero contradicts its
+    /// record's own fields and is refused first, as `ImpossibleTriage`.
     InvalidPropensity { index: usize, value: f64 },
     /// A logged reward that is not a finite number: any estimate that
     /// averaged it would be NaN or infinite rather than a refusal.
@@ -261,6 +262,13 @@ pub enum ArbiterError {
     /// score is not a probability. Calibration and off-policy evaluation
     /// would attribute it to a logging policy that never made it.
     UnexplainedTriage { reason: &'static str },
+    /// A logged record no triage policy can have produced, whatever its
+    /// threshold and calibration rate: an ineligible record that is
+    /// auto-proposed or carries a nonzero auto-propose propensity, an eligible
+    /// one that is discarded, auto-proposed with propensity zero or escalated
+    /// with propensity one. Off-policy estimates would otherwise reweight it
+    /// as a decision some logging policy made.
+    ImpossibleTriage { index: usize, reason: &'static str },
 }
 
 impl ArbiterError {
@@ -281,6 +289,7 @@ impl ArbiterError {
             Self::InvalidRule { .. } => "PTR_ARBITER_INVALID_RULE",
             Self::DuplicateCalibrationBranch { .. } => "PTR_ARBITER_DUPLICATE_CALIBRATION_BRANCH",
             Self::UnexplainedTriage { .. } => "PTR_ARBITER_UNEXPLAINED_TRIAGE",
+            Self::ImpossibleTriage { .. } => "PTR_ARBITER_IMPOSSIBLE_TRIAGE",
         }
     }
 }
@@ -340,6 +349,10 @@ impl fmt::Display for ArbiterError {
                     "the policy cannot have produced this triage: {reason}"
                 )
             }
+            Self::ImpossibleTriage { index, reason } => write!(
+                formatter,
+                "record {index} is not a triage any policy produces: {reason}"
+            ),
         }
     }
 }

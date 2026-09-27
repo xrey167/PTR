@@ -17,12 +17,36 @@ use crate::ops::holds_member;
 /// committed with both: [`MergePlan::into_parts`] yields exactly the
 /// `expected`, `delta` and `relied` arguments of the runtime's
 /// `apply_certified_semantic_delta(expected, delta, relied, required,
-/// verify)`, which refuses the plan if anything has been committed since,
-/// refuses it if any relied-on generation is no longer live when it would
-/// append, and appends it only after verification of the exact state it
-/// would publish. Nothing enforces that path by type: the runtime does not
-/// depend on this crate, so a caller that drops `relied` or calls another
-/// commit path is not stopped here.
+/// verify)`. That call refuses the plan unless the runtime's semantic revision
+/// is still `expected`, refuses it if any relied-on generation is no longer
+/// live when it would append, and appends it only after verification of the
+/// exact state it would publish.
+///
+/// The revision and the reliance check are the plan's only freshness fences.
+/// The semantic revision moves only when a semantic delta that changes
+/// semantic state is committed (another plan, ingested request text, a
+/// promoted Pod output or any other `SemanticDeltaCommitted`); lifecycle,
+/// verifier, snapshot and effect records leave it where it is. So a plan
+/// certified before a new hard constraint, a capsule or procedure the branch
+/// did not rely on or a verifier attestation is not refused for it: of those
+/// records, only one that leaves a generation in `relied` revoked,
+/// superseded or unknown refuses the plan, through the reliance check.
+/// Nothing else the branch depended on is checked again when the plan
+/// commits: a hard constraint committed after certification, for example, is
+/// taken into account then only if the caller's verifier looks for it.
+///
+/// Apart from those checks, the runtime refuses every commit, this plan's
+/// included, with `ExecutionFenced` while it is fenced: while an effect
+/// attempt it recorded (`EffectAttempted`) is neither settled nor reconciled,
+/// or while it does not know whether its own last append committed. That
+/// refusal is not about the plan and does not move its revision; once the
+/// attempt is settled or reconciled the plan is judged by the checks above
+/// again.
+///
+/// Nothing enforces that path by type: the runtime does not depend on this
+/// crate, so a caller that drops `relied` or calls another commit path
+/// (`apply_verified_semantic_delta` checks no relied generation,
+/// `apply_semantic_delta` also verifies nothing) is not stopped here.
 ///
 /// Its fields are private and only [`certify`] builds one, so nothing
 /// [`MergePlan::digest`] covers can change between certification and
@@ -50,8 +74,13 @@ impl MergePlan {
         &self.branch
     }
 
-    /// The revision the plan was certified against; the runtime refuses it
-    /// at any other.
+    /// The semantic revision the plan was certified against; the runtime
+    /// refuses it at any other. Only a committed semantic delta that changes
+    /// semantic state moves this revision: a lifecycle, verifier, snapshot or
+    /// effect record does not, so none of them refuses the plan through this
+    /// check (see [`MergePlan::relied`] for the lifecycle changes that do,
+    /// and the type's documentation for the runtime's `ExecutionFenced`
+    /// refusal while an effect attempt is unsettled).
     pub fn expected(&self) -> Revision {
         self.expected
     }
@@ -69,7 +98,9 @@ impl MergePlan {
 
     /// Each lifecycle target the branch relied on and the generation it
     /// relied on, all live when the plan was certified. The runtime must
-    /// check them again when it commits the plan.
+    /// check them again when it commits the plan, and those are the only
+    /// lifecycle targets it checks: a change to any other, such as a new hard
+    /// constraint, neither moves [`MergePlan::expected`] nor refuses the plan.
     pub fn relied(&self) -> &BTreeMap<String, Generation> {
         &self.relied
     }

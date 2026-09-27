@@ -289,7 +289,9 @@ impl TriagePolicy {
         Ok(())
     }
 
-    /// Probability this policy takes `action` on a logged record.
+    /// Probability this policy takes `action` on a logged record. An
+    /// ineligible record was decided by verification, which no policy
+    /// outvotes, so any policy takes its decision with probability one.
     fn probability(&self, record: &LoggedTriage, action: TriageDecision) -> f64 {
         if !record.eligible {
             return if action == record.decision { 1.0 } else { 0.0 };
@@ -632,6 +634,32 @@ fn check_level(field: &'static str, value: f64) -> Result<(), ArbiterError> {
 }
 
 /// One logged triage with the reward its decision earned.
+///
+/// The fields are public, so a record can say anything. The off-policy
+/// estimators ([`evaluate_off_policy`], [`doubly_robust`]) refuse a log
+/// holding a record that [`TriagePolicy::triage`] cannot return under any
+/// threshold and calibration rate (`ArbiterError::ImpossibleTriage`), checked
+/// before the record's importance weight is computed and before any estimate
+/// is formed or a reward model consulted:
+///
+/// - an ineligible record (verification decided it) is discarded or
+///   escalated, never auto-proposed, and has auto-propose propensity zero;
+/// - an eligible record is never discarded;
+/// - an eligible auto-proposed record has a positive propensity, since only a
+///   score the threshold admits is auto-proposed and its propensity is
+///   `1 - calibration_rate`;
+/// - an eligible escalated record has a propensity below one, since
+///   propensity one means calibration rate zero and an admitted score, which
+///   is always auto-proposed.
+///
+/// A record does not name the policy that logged it, so the estimators cannot
+/// check that its propensity is the one that policy gives its score, nor
+/// that its decision is the one that policy makes for it outside the
+/// calibration slice: [`TriagePolicy::explains`] checks that against the
+/// cited policy, and storage runs it before a triage row is written. Nor do
+/// they check that a positive propensity is one some calibration rate yields
+/// (every positive propensity a policy logs is at least `2^-53`): any
+/// propensity in `[0, 1]` that fits the rules above is used as given.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LoggedTriage {
     pub eligible: bool,
@@ -639,7 +667,8 @@ pub struct LoggedTriage {
     /// the off-policy estimators check before reweighting by it.
     pub score: f32,
     pub decision: TriageDecision,
-    /// The logging policy's probability of auto-proposing this record.
+    /// The logging policy's probability of auto-proposing this record: zero
+    /// for an ineligible record.
     pub auto_propensity: f64,
     pub reward: f64,
 }
@@ -657,6 +686,35 @@ impl From<&TriageOutcome> for LoggedTriage {
 }
 
 impl LoggedTriage {
+    /// The first rule of [`TriagePolicy::triage`] this record breaks whatever
+    /// the policy, if any. Checked only once its propensity is known to be in
+    /// `[0, 1]`.
+    fn contradiction(&self) -> Option<&'static str> {
+        if !self.eligible {
+            if self.decision == TriageDecision::AutoPropose {
+                return Some("verification alone never auto-proposes");
+            }
+            if self.auto_propensity != 0.0 {
+                return Some("a branch verification decided has auto-propose propensity zero");
+            }
+            return None;
+        }
+        match self.decision {
+            TriageDecision::Discard => Some("an eligible branch is never discarded"),
+            TriageDecision::AutoPropose if self.auto_propensity == 0.0 => Some(
+                "an eligible branch is auto-proposed only with positive auto-propose propensity",
+            ),
+            TriageDecision::Escalate if self.auto_propensity == 1.0 => {
+                Some("an eligible branch with auto-propose propensity one is never escalated")
+            }
+            TriageDecision::AutoPropose | TriageDecision::Escalate => None,
+        }
+    }
+
+    /// The logging policy's probability of `action` on this record. An
+    /// ineligible record was decided by verification, so its decision had
+    /// probability one; the record's propensity is zero, which
+    /// [`Self::contradiction`] checks before this is used.
     fn logging_probability(&self, action: TriageDecision) -> f64 {
         if !self.eligible {
             return if action == self.decision { 1.0 } else { 0.0 };
@@ -698,13 +756,17 @@ pub struct OffPolicyEstimate {
 /// of squared weights would, and one that is still not finite is refused.
 ///
 /// # Errors
-/// Refuses an empty log, a propensity outside `[0, 1]`, a logged action the
-/// logging policy gave zero probability or one it gave so small a probability
-/// that the importance weight is not finite (`InvalidPropensity`), a score
-/// that is not a finite number in `[0, 1]` (`InvalidScore`, before any
-/// target probability is computed from it), a reward that is not finite
-/// (`InvalidReward`), and a positivity violation, at the first record that
-/// shows one; then an estimate that is not finite (`NonFiniteEstimate`).
+/// Refuses an empty log (`EmptyLog`), then, at the first record that shows
+/// one and in this order for each record: a propensity outside `[0, 1]`
+/// (`InvalidPropensity`), a score that is not a finite number in `[0, 1]`
+/// (`InvalidScore`, before any target probability is computed from it), a
+/// reward that is not finite (`InvalidReward`), a record no policy can have
+/// produced, such as an ineligible auto-proposal or an ineligible record with
+/// a nonzero propensity (`ImpossibleTriage`, naming the rule it breaks; see
+/// [`LoggedTriage`]), a positivity violation (`PositivityViolation`), and a
+/// logged action whose probability is so small that the importance weight is
+/// not finite (`InvalidPropensity`); then an estimate that is not finite
+/// (`NonFiniteEstimate`).
 /// That includes a log on which `target` gives every logged action
 /// probability zero: every weight is zero, so SNIPS is `0 / 0` and the
 /// effective sample size is undefined, and the log says nothing about what
@@ -761,11 +823,12 @@ pub fn evaluate_off_policy(
 /// estimate that is itself finite (up to rounding at the limit of `f64`).
 ///
 /// # Errors
-/// Refuses the logs [`evaluate_off_policy`] refuses for their records, a
-/// nonfinite logged reward, a score outside `[0, 1]` or an infinite
-/// importance weight included, and an
-/// estimate that is not finite (`NonFiniteEstimate`), as a reward model's
-/// nonfinite prediction makes it.
+/// Refuses the logs [`evaluate_off_policy`] refuses for their records, with
+/// the same error and before `reward_model` is called: an empty log, a
+/// nonfinite logged reward, a score outside `[0, 1]`, a record no policy can
+/// have produced (`ImpossibleTriage`) or an infinite importance weight
+/// included. Then refuses an estimate that is not finite
+/// (`NonFiniteEstimate`), as a reward model's nonfinite prediction makes it.
 pub fn doubly_robust<M>(
     log: &[LoggedTriage],
     target: &TriagePolicy,
@@ -839,6 +902,12 @@ fn importance_weights(
                 value: record.reward,
             });
         }
+        // Both probability helpers trust the record's eligibility, decision
+        // and propensity to fit together: an ineligible auto-proposal would
+        // otherwise be reweighted by one under every target.
+        if let Some(reason) = record.contradiction() {
+            return Err(ArbiterError::ImpossibleTriage { index, reason });
+        }
         for action in actions {
             if target.probability(record, action) > 0.0 && record.logging_probability(action) == 0.0
             {
@@ -847,8 +916,9 @@ fn importance_weights(
         }
         let logged = record.logging_probability(record.decision);
         let weight = target.probability(record, record.decision) / logged;
-        // A zero probability, or a positive one so small that the weight
-        // overflows: either way the record cannot be reweighted.
+        // A positive probability so small that the weight overflows. A zero
+        // one contradicts the record's own fields and was refused above; it
+        // is checked again so that no division by zero is ever returned.
         if logged <= 0.0 || !weight.is_finite() {
             return Err(ArbiterError::InvalidPropensity {
                 index,

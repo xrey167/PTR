@@ -778,3 +778,54 @@ fn action_digest_of(action: &ActionIr) -> [u8; 32] {
 fn response_digest_of(response: &[u8]) -> [u8; 32] {
     ptr_ledger::integrity::sha256(response)
 }
+
+#[test]
+fn only_an_attempt_made_through_an_admitted_session_records_a_validated_principal() {
+    // A session's principal is validated when the session is created, and the
+    // attempts it makes record that principal
+    // (an_applied_effect_commits_its_attempt_before_and_its_settlement_after).
+    let (mut runtime, action) = fixture();
+    let probe = Probe::default();
+    for refused in ["", " alice", "alice\n", "bell\u{7}"] {
+        assert!(
+            matches!(
+                runtime.register_execution_session(
+                    refused,
+                    vec![grant(
+                        scope(&action),
+                        &probe,
+                        RequiredVerification::FullSemantic,
+                        ExecutorMode::Success,
+                    )],
+                    TTL,
+                ),
+                Err(ExecutionError::InvalidSession)
+            ),
+            "{refused:?}"
+        );
+    }
+
+    // `commit` and replay check an attempt's key and nothing else it names:
+    // an EffectAttempted written through them records its principal as given,
+    // one no session admitted and one a session would refuse included.
+    for given in ["", " alice", "bell\u{7}", "mallory"] {
+        let mut attempt = attempt_with(None);
+        let LedgerEvent::EffectAttempted { principal, .. } = &mut attempt else {
+            unreachable!("attempt_with builds an attempt");
+        };
+        *principal = given.to_owned();
+        let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+        let index = runtime.commit(attempt.clone()).unwrap();
+        assert_eq!(
+            attempts(&runtime),
+            vec![(index, attempt.clone())],
+            "{given:?}"
+        );
+        let replayed = replayed(vec![attempt.clone()]).unwrap();
+        assert_eq!(
+            attempts(&replayed),
+            vec![(CommitIndex(1), attempt)],
+            "{given:?}"
+        );
+    }
+}

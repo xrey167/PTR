@@ -40,7 +40,8 @@ impl Generation {
 pub struct CommitIndex(pub u64);
 
 macro_rules! string_id {
-    ($name:ident) => {
+    ($(#[$meta:meta])* $name:ident) => {
+        $(#[$meta])*
         #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
         pub struct $name(pub String);
         impl From<&str> for $name {
@@ -66,10 +67,27 @@ string_id!(CandidateId);
 string_id!(RequestId);
 string_id!(NodeId);
 string_id!(EvidenceId);
-// The principal an execution session admitted. Agents are principals: a branch
-// or a fast memory is attributed to the principal that wrote it, the same name
-// an effect attempt records, so audit and attribution never disagree.
-string_id!(PrincipalId);
+string_id!(
+    /// The name work is attributed to. Agents are principals: a branch's author
+    /// (`ptr_branch::Branch::open`) and a fast memory's owner
+    /// (`ptr_pg::FastMemoryRecord::principal`) are a `PrincipalId`.
+    ///
+    /// It is a bare name and checks nothing: `From<&str>` and the public field
+    /// take any string, the empty one and one with surrounding whitespace
+    /// included, and nothing binds it to an execution session. Effect attempts
+    /// do not use this type: `EffectAttempted.principal` is a string. An
+    /// attempt made through an admitted execution session records that
+    /// session's principal, which the runtime validated when it created the
+    /// session (not empty, no surrounding whitespace, no control characters).
+    /// `PtrRuntime::commit` and replay check an `EffectAttempted`'s key but
+    /// not its principal, so an attempt written through them records any
+    /// string, the empty one included, and names no admitted session. That a
+    /// `PrincipalId` names the principal the caller's execution session
+    /// admitted, the same string that session's effect attempts record, is
+    /// the caller's obligation until branches and fast memories are opened
+    /// only through an entry point that takes the principal from the session.
+    PrincipalId
+);
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
 pub struct Probability(f32);
@@ -210,6 +228,17 @@ mod tests {
         assert!(Probability::new(0.5).is_some());
         assert!(Probability::new(-0.1).is_none());
         assert!(Probability::new(1.1).is_none());
+    }
+
+    #[test]
+    fn a_principal_id_is_recorded_as_given_whatever_name_it_holds() {
+        // Nothing here validates or admits a principal; the runtime's session
+        // rules (non-empty, no surrounding whitespace) are not this type's.
+        for name in ["agent-7", "agent-7 ", "", "\tagent-7"] {
+            assert_eq!(PrincipalId::from(name).0, name);
+            assert_eq!(PrincipalId::from(name).to_string(), name);
+        }
+        assert_ne!(PrincipalId::from("agent-7"), PrincipalId::from("agent-7 "));
     }
 
     #[test]
