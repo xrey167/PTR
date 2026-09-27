@@ -105,9 +105,14 @@ anything happened. The runtime now returns it as `SettlementNotRecorded`
 (`28-durable-execution-audit.md`) and the wire reports `AppliedWithoutResponse`:
 the effect applied, so a refusal would invite a retry under a fresh key that
 applies it again, and the response is not handed on because the host could not
-record it. The host stays fenced until it is reopened, replays what it wrote and,
-if the attempt is still unsettled there, its operator reconciles it
+record it. The host stays fenced. After a failed durable write it is reopened,
+replays what it wrote and, if the attempt is still unsettled there, its operator
+reconciles it; when the ledger has no index left, reconciling fails the same way
+and the fence cannot be lifted in band
 (`an_effect_whose_settlement_the_host_cannot_record_is_reported_applied_not_refused`).
+An attempt record the host cannot commit is the other side: nothing was attempted,
+the adapter is never reached, and the requester is told `Refused`
+(`an_attempt_the_host_cannot_record_is_refused_and_reaches_no_adapter`).
 
 ## One refusal code for every reason of authority
 

@@ -7,7 +7,7 @@
 use ptr_config::PtrConfig;
 use ptr_core::action_head::ActionIr;
 use ptr_ledger::integrity::{self, LogAnchor};
-use ptr_ledger::LedgerEvent;
+use ptr_ledger::{CommittedEvent, LedgerEvent};
 use ptr_runtime::compacted::CompactedAnchor;
 use ptr_runtime::{execution::*, PtrRuntime};
 use ptr_types::{
@@ -169,10 +169,25 @@ pub fn fixture() -> (PtrRuntime, ActionIr) {
 /// granted again. Exactly one more record can be appended, so an effect's attempt
 /// takes the last index and its settlement finds none left.
 pub fn one_record_below_the_index_ceiling() -> (PtrRuntime, ActionIr) {
+    let (bytes, trusted, action) = fixture_snapshot_at_floor(CommitIndex(u64::MAX - 1));
+    (restore_fixture(&bytes, trusted, &[], &action), action)
+}
+
+/// The fixture's committed state restored at the last index the ledger can hand
+/// out, with its permissions granted again. No record can be appended, so an
+/// effect's attempt finds no index and nothing is attempted.
+pub fn no_index_left() -> (PtrRuntime, ActionIr) {
+    let (bytes, trusted, action) = fixture_snapshot_at_floor(CommitIndex(u64::MAX));
+    (restore_fixture(&bytes, trusted, &[], &action), action)
+}
+
+/// The fixture's compacted snapshot with its floor moved to `floor` and resealed,
+/// with the anchor it is trusted under.
+pub fn fixture_snapshot_at_floor(floor: CommitIndex) -> (Vec<u8>, CompactedAnchor, ActionIr) {
     let (runtime, action) = fixture();
     let snapshot = runtime.export_compacted_snapshot().unwrap();
     let floor = LogAnchor {
-        index: CommitIndex(u64::MAX - 1),
+        index: floor,
         digest: snapshot.anchor().floor.digest,
     };
     let mut bytes = snapshot.bytes().to_vec();
@@ -185,14 +200,26 @@ pub fn one_record_below_the_index_ceiling() -> (PtrRuntime, ActionIr) {
         floor,
         digest,
     };
+    (bytes, trusted, action)
+}
+
+/// Restore a snapshot of the fixture with the records committed above its floor,
+/// granting the fixture's permissions again, since permissions belong to the
+/// process rather than to the snapshot.
+pub fn restore_fixture(
+    bytes: &[u8],
+    trusted: CompactedAnchor,
+    above_floor: &[CommittedEvent],
+    action: &ActionIr,
+) -> PtrRuntime {
     let mut restored =
-        PtrRuntime::restore_compacted(PtrConfig::default(), &bytes, trusted, &[]).unwrap();
+        PtrRuntime::restore_compacted(PtrConfig::default(), bytes, trusted, above_floor).unwrap();
     restored
         .permissions_mut()
         .capabilities
         .insert(action.capability.clone());
     restored.permissions_mut().allow_mutation = true;
-    (restored, action)
+    restored
 }
 
 pub fn session(

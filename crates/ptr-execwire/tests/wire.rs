@@ -881,17 +881,18 @@ async fn an_uncertain_outcome_is_not_a_refusal_and_the_fence_reaches_the_next_re
     assert_eq!(probe.executions(), 1, "and nothing else was dispatched");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_effect_whose_settlement_the_host_cannot_record_is_reported_applied_not_refused() {
-    // The host's ledger has one index left. The attempt takes it, the adapter
-    // applies the effect, and the settlement finds none. Reporting that as a
-    // refusal would tell the requester nothing was attempted, when its effect
-    // applied, and invite a retry that applies it again.
-    let client = ExecutionClient::bind().await.unwrap();
-    let (runtime, action, probe) = runtime_admitting(&client.identity(), Mode::Success);
+/// A host admitting `peer`, whose runtime is the ordinary one restored from its
+/// compacted snapshot with the floor moved to `floor`, so the ledger can hand out
+/// only the indices above it. Permissions and the admission policy belong to the
+/// process, not to the snapshot, so they are installed again.
+async fn host_restored_at_floor(
+    peer: &NodeIdentity,
+    floor: CommitIndex,
+) -> (Arc<ExecutionHost>, ActionIr, Probe) {
+    let (runtime, action, probe) = runtime_admitting(peer, Mode::Success);
     let snapshot = runtime.export_compacted_snapshot().unwrap();
     let floor = LogAnchor {
-        index: CommitIndex(u64::MAX - 1),
+        index: floor,
         digest: snapshot.anchor().floor.digest,
     };
     let mut bytes = snapshot.bytes().to_vec();
@@ -911,13 +912,20 @@ async fn an_effect_whose_settlement_the_host_cannot_record_is_reported_applied_n
         .capabilities
         .insert(action.capability.clone());
     runtime.permissions_mut().allow_mutation = true;
-    runtime.install_admission_policy(policy_admitting(
-        &client.identity(),
-        &action,
-        &probe,
-        Mode::Success,
-    ));
+    runtime.install_admission_policy(policy_admitting(peer, &action, &probe, Mode::Success));
     let host = Arc::new(ExecutionHost::bind(runtime).await.unwrap());
+    (host, action, probe)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_effect_whose_settlement_the_host_cannot_record_is_reported_applied_not_refused() {
+    // The host's ledger has one index left. The attempt takes it, the adapter
+    // applies the effect, and the settlement finds none. Reporting that as a
+    // refusal would tell the requester nothing was attempted, when its effect
+    // applied, and invite a retry that applies it again.
+    let client = ExecutionClient::bind().await.unwrap();
+    let (host, action, probe) =
+        host_restored_at_floor(&client.identity(), CommitIndex(u64::MAX - 1)).await;
 
     let serving = Arc::clone(&host);
     let asked = request(&host, &action, 1);
@@ -941,6 +949,41 @@ async fn an_effect_whose_settlement_the_host_cannot_record_is_reported_applied_n
         host.runtime().unsettled_effects().len(),
         1,
         "the attempt still fences the host until its outcome is recorded"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_attempt_the_host_cannot_record_is_refused_and_reaches_no_adapter() {
+    // The other side of the boundary above. The host's ledger has no index left,
+    // so the attempt record itself cannot be committed and the adapter is never
+    // called: nothing was attempted, and the requester is told so.
+    let client = ExecutionClient::bind().await.unwrap();
+    let (host, action, probe) =
+        host_restored_at_floor(&client.identity(), CommitIndex(u64::MAX)).await;
+
+    let serving = Arc::clone(&host);
+    let asked = request(&host, &action, 1);
+    let (answer, served) = tokio::join!(
+        client.request(located(host.address()), &asked),
+        serving.serve_once()
+    );
+    assert_eq!(
+        answer.unwrap().outcome,
+        WireOutcome::Refused {
+            code: RefusalCode::Runtime
+        },
+        "the requester is told nothing was attempted"
+    );
+    assert!(matches!(
+        served.unwrap().refused,
+        Some(WireError::Runtime(
+            ptr_runtime::execution::ExecutionError::Audit(_)
+        ))
+    ));
+    assert_eq!(probe.executions(), 0, "the adapter was never reached");
+    assert!(
+        host.runtime().unsettled_effects().is_empty(),
+        "and no attempt was recorded"
     );
 }
 

@@ -74,6 +74,7 @@
 - a detached grant is refused over the wire, before the adapter is reached, and leaves the runtime unfenced
 - an adapter that cannot say whether it applied yields an uncertain outcome rather than a refusal, the fence stands, and the next request is refused rather than reported as a second uncertainty
 - an effect the adapter applied whose settlement the host cannot commit, because its ledger has no index left, is reported to the requester as applied without a response rather than refused, the adapter is reached once, and the attempt still fences the host
+- an attempt record the host cannot commit, because its ledger has no index left at all, is reported as refused, the adapter is never reached and no attempt is left unsettled
 - withdrawing a peer takes effect on its very next request over the wire
 - two runtimes audit the same peer's requests independently: an at-most-once key spent at one says nothing at the other
 - compile-fail doctest: a bare endpoint address is not an argument to request, verified against a positive control so it fails on the type rather than on a path

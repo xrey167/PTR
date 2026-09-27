@@ -568,22 +568,29 @@ pub enum ExecutionError {
     NotDetached {
         attempt: CommitIndex,
     },
-    /// The audit record itself could not be committed: the attempt record, so
-    /// nothing was attempted and it denies rather than fences, or a
-    /// reconciliation, which leaves the attempt awaiting one. A settlement that
-    /// could not be committed after the effect applied is
-    /// [`ExecutionError::SettlementNotRecorded`] instead.
+    /// The audit record itself could not be committed.
+    ///
+    /// For the attempt record, nothing was attempted and no unsettled attempt is
+    /// left to fence on, so it is a refusal. A failure in the ledger's own append
+    /// still leaves this runtime's last append ambiguous, and so the runtime
+    /// fenced until it is reopened; a record refused by validation before the
+    /// append leaves it unfenced. For a reconciliation, the attempt is left
+    /// awaiting one. A settlement that could not be committed after the effect
+    /// applied is [`ExecutionError::SettlementNotRecorded`] instead.
     Audit(Box<RuntimeError>),
     /// The effect applied, as the executor or the detached adapter reported,
     /// but its settlement record could not be committed. `error` says why.
     ///
     /// This is not a refusal: the effect applied, and answering "nothing was
     /// attempted" would invite a retry that applies it twice. The runtime stays
-    /// fenced, because the attempt is still unsettled or the ledger's last
-    /// append is uncertain, until a restart replays what was written or
-    /// reconciliation records the outcome. The response is not handed on,
-    /// since the runtime could not record it; the execution wire reports this as
-    /// `AppliedWithoutResponse`.
+    /// fenced: the failed append leaves its own last append ambiguous and the
+    /// attempt unsettled, so settling or reconciling it again in this process is
+    /// refused too. A reopened runtime replays what was written, and an attempt
+    /// still unsettled there fences it until reconciliation records the outcome.
+    /// Reconciling is an append of its own, so while the ledger has no index or
+    /// record left the fence cannot be lifted in band. The response is not
+    /// handed on, since the runtime could not record it; the execution wire
+    /// reports this as `AppliedWithoutResponse`.
     SettlementNotRecorded {
         attempt: CommitIndex,
         error: Box<RuntimeError>,
