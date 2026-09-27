@@ -1,11 +1,12 @@
 version = 1
 id = "ptr-analytics"
 maturity = "prototype"
-last_reviewed = "2026-09-26"
+last_reviewed = "2026-09-27"
 
 implemented = [
-  "Wilson score interval and one-sided Clopper-Pearson upper bound by bisection over the full unit interval on an exact binomial tail; the public binomial CDF refuses a p that is NaN, infinite or outside [0, 1] rather than answering a confident 0 or 1",
-  "Self-normalised Horvitz-Thompson rate with a Wilson interval on the Kish effective sample size, for calibration slices audited at a known rate; computed on the weights divided by the largest, so finite positive weights of any magnitude neither overflow nor underflow it",
+  "Wilson score interval whose bounds are clamped to the point estimate as well as to [0, 1], so it always contains the point, with a lower bound of exactly 0 at no successes and an upper bound of exactly 1 at all successes",
+  "One-sided Clopper-Pearson upper bound by bisection over the full unit interval on the binomial tail; the tail is summed on its shorter side outward from k, starting from Loader's saddle-point point probability and stopping once a geometric bound on the rest is below 2^-60 of the sum, so one evaluation sums a number of terms that grows with sqrt(n p (1 - p)) (about nine standard deviations near the centre) rather than in proportion to n or k, and k = n - 1 above the mean is a single term, as is k = 0, computed as exp(n ln(1 - p)) without the ratio q / p, which overflows for p below 1 / f64::MAX, so a subnormal p gives a probability rather than NaN; the side is decided by comparing k with n p exactly, on the integer mantissa of p, so no count, however large, picks the wrong tail; 1 - p, the ratio q / p every term reuses and the means n p and n q are carried to about twice f64 precision and the sum is compensated, so against 70-digit references at 5,995 points for up to 10^7 trials, p from 10^-6 to 1 - 10^-6, the largest absolute error was 4.8e-15 and the largest relative error for tails above 1e-300 was 2.9e-13 (measured on those points, not a proven bound; counts above 2^53 round in the arithmetic, though not in choosing the side, and are not covered); the public binomial CDF refuses a p that is NaN, infinite or outside [0, 1] rather than answering a confident 0 or 1",
+  "Self-normalised Horvitz-Thompson rate with a Wilson interval on the Kish effective sample size, for calibration slices audited at a known rate; computed on the weights divided by the largest, so finite positive weights of any magnitude neither overflow nor underflow it; the interval always contains the estimate",
   "Brier score and expected calibration error with equal-width or equal-mass binning; only occupied bins are materialised, so any positive bin count, usize::MAX included, is computed in memory proportional to the predictions; a predicted distribution is refused unless every entry lies in [0, 1] on its own and the total is within 1e-6 of one, so no score is computed from an entry above one that the tolerance on the total would admit",
   "Krippendorff's alpha for nominal data with missing values and direct single-category refusal",
   "Welford running moments with an exact parallel merge whose cross term is evaluated so that no intermediate overflows unless the merged sum of squared deviations does; a value or merge that would make the mean or the sum of squared deviations nonfinite, or count more than u64::MAX values, is refused and leaves the summary unchanged",
@@ -38,7 +39,7 @@ decisions = [
 ]
 
 checks = [
-  "unit tests beside every estimator, including distributions whose total is within tolerance but whose entry exceeds one",
-  "tests/metrics.rs interval and metric-row integration tests",
+  "unit tests beside every estimator, including distributions whose total is within tolerance but whose entry exceeds one, a cross-check of the binomial tail against the full summation from zero on up to 60 trials, a bound on the terms summed for up to 10^9 trials, and the exact choice of tail at counts whose f64 rounding meets n p (the_tail_is_chosen_by_comparing_k_with_n_p_exactly_at_any_count)",
+  "tests/metrics.rs interval and metric-row integration tests, including Wilson and weighted intervals at no and all successes, Clopper-Pearson bounds on millions of trials, and binomial tails against high-precision references for up to u64::MAX trials, seven of them at p = 0.3 to 0.45 held to 1e-14 absolute near the centre and 5e-13 relative in tails down to 2e-300 (binomial_tails_at_ordinary_probabilities_stay_within_the_documented_error), and no successes at a subnormal p have probability one, not NaN (no_successes_at_a_p_too_small_to_invert_have_probability_one_not_nan)",
   "workspace fmt/check/test/clippy",
 ]

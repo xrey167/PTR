@@ -431,6 +431,36 @@ fn the_binomial_cdf_refuses_a_p_that_is_not_a_probability() {
 }
 
 #[test]
+fn no_successes_at_a_p_too_small_to_invert_have_probability_one_not_nan() {
+    // Below 1 / f64::MAX (about 5.56e-309) the ratio (1 - p) / p overflows.
+    // For k = 0 no ratio is summed, yet it was formed anyway, and its
+    // infinite quotient with a zero low part made the value NaN.
+    let tiny = [
+        f64::from_bits(1),
+        1e-310,
+        5.5e-309,
+        5.56e-309,
+        f64::MIN_POSITIVE,
+        1e-300,
+    ];
+    for p in tiny {
+        for n in [1, 10, 1_000_000, u64::MAX] {
+            // (1 - p)^n = exp(n ln(1 - p)) rounds to one for all of these.
+            assert_eq!(binomial_cdf(0, n, p), Ok(1.0), "0 of {n} at {p:e}");
+            for k in [1, 2] {
+                if k < n {
+                    assert_eq!(binomial_cdf(k, n, p), Ok(1.0), "{k} of {n} at {p:e}");
+                }
+            }
+        }
+    }
+    // Where n p is not negligible the one term is still (1 - p)^n.
+    let p = 1e-300;
+    let n = u64::MAX;
+    assert_eq!(binomial_cdf(0, n, p), Ok((n as f64 * (-p).ln_1p()).exp()));
+}
+
+#[test]
 fn a_bin_count_beyond_memory_is_computed_on_the_occupied_bins_alone() {
     let predictions = [vec![0.75, 0.25], vec![0.0, 1.0], vec![0.6, 0.4]];
     let truth = [0, 0, 1];
@@ -456,4 +486,165 @@ fn a_bin_count_beyond_memory_is_computed_on_the_occupied_bins_alone() {
         expected_calibration_error(&[vec![1.0, 0.0]], &[0], Binning::EqualWidth(usize::MAX)),
         Ok(0.0)
     );
+}
+
+#[test]
+fn a_wilson_interval_contains_its_point_with_no_successes_or_only_successes() {
+    // At 0 and at n successes the Wilson interval touches its point in exact
+    // arithmetic; the centre and half-width used to round apart and leave
+    // the point one rounding outside (6 of 6 and 0 of 11 at z = 1.96).
+    for z in [1.0, 1.645, 1.96, 2.576] {
+        for trials in 1..=3000 {
+            let none = wilson_interval(0, trials, z).unwrap();
+            let all = wilson_interval(trials, trials, z).unwrap();
+            assert_eq!((none.point, none.low), (0.0, 0.0), "0/{trials} at {z}");
+            assert!(none.high > 0.0, "0/{trials} at {z}");
+            assert_eq!(
+                (all.point, all.high),
+                (1.0, 1.0),
+                "{trials}/{trials} at {z}"
+            );
+            assert!(all.low < 1.0, "{trials}/{trials} at {z}");
+        }
+    }
+    assert_eq!(wilson_interval(6, 6, 1.96).unwrap().high, 1.0);
+    assert_eq!(wilson_interval(0, 11, 1.96).unwrap().low, 0.0);
+    assert_eq!(wilson_interval(0, 65, 1.0).unwrap().low, 0.0);
+    // Interior points stay strictly inside.
+    for trials in 2..=400 {
+        for successes in 1..trials {
+            let rate = wilson_interval(successes, trials, 1.96).unwrap();
+            assert!(
+                rate.low < rate.point && rate.point < rate.high,
+                "{successes}/{trials}: {rate:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_weighted_rate_with_no_successes_or_only_successes_contains_its_estimate() {
+    for count in 1..=200 {
+        for weight in [1.0, 3.0, 0.1] {
+            let observations = |success| vec![WeightedOutcome { weight, success }; count];
+            let none = weighted_rate(&observations(false), 1.96).unwrap();
+            let all = weighted_rate(&observations(true), 1.96).unwrap();
+            assert_eq!((none.estimate, none.low), (0.0, 0.0), "{count} x {weight}");
+            assert_eq!((all.estimate, all.high), (1.0, 1.0), "{count} x {weight}");
+        }
+    }
+}
+
+#[test]
+fn a_clopper_pearson_bound_on_millions_of_trials_with_one_failure_solves_the_closed_form() {
+    // P(X <= n - 1) = 1 - p^n, so the bound is (1 - delta)^(1 / n). Summed
+    // from zero, that tail has n terms, and the bisection evaluates it 100
+    // times.
+    let trials: u64 = 5_000_000;
+    for delta in [0.05, 0.5, 0.95] {
+        let bound = clopper_pearson_upper(trials - 1, trials, delta).unwrap();
+        let exact = ((-delta).ln_1p() / trials as f64).exp();
+        assert!((bound - exact).abs() < 1e-12, "{delta}: {bound} {exact}");
+    }
+    let p = 1.0 - 1e-7;
+    let tail = binomial_cdf(trials - 1, trials, p).unwrap();
+    assert!(
+        (tail - (1.0 - p.powf(trials as f64))).abs() < 1e-12,
+        "{tail}"
+    );
+}
+
+#[test]
+fn binomial_tails_of_millions_of_trials_match_references_computed_at_fifty_digits() {
+    // (k, n, p, P(X <= k)): each reference is the exact tail at the f64 `p`,
+    // summed at 50 significant digits and rounded. For an even n at p = 1/2
+    // it is also 1/2 + P(X = n/2)/2.
+    let references = [
+        (5_000_000, 10_000_000, 0.5, 0.500_126_156_622_947_1),
+        (30_000, 3_000_000, 0.01, 0.501_535_542_400_828_6),
+        (29_500, 3_000_000, 0.01, 0.001_833_567_565_795_332_4),
+        (31_000, 3_000_000, 0.01, 0.999_999_996_150_658_3),
+        (12, 2_000_000, 1e-5, 0.039_011_287_848_817_69),
+    ];
+    for (k, n, p, reference) in references {
+        let tail = binomial_cdf(k, n, p).unwrap();
+        assert!(
+            (tail - reference).abs() <= 1e-13 * reference,
+            "{k} of {n} at {p}: {tail}"
+        );
+    }
+    // The bound at the centre is the root of its own tail.
+    for delta in [0.05, 0.5] {
+        let bound = clopper_pearson_upper(5_000_000, 10_000_000, delta).unwrap();
+        let tail = binomial_cdf(5_000_000, 10_000_000, bound).unwrap();
+        assert!((tail - delta).abs() < 1e-9, "{delta}: {bound} {tail}");
+    }
+}
+
+#[test]
+fn a_binomial_tail_near_the_largest_count_is_summed_on_the_side_its_exact_count_picks() {
+    // With p = 1 - 2^-53, failures number about 2048 in u64::MAX trials. As
+    // an f64, u64::MAX - 3000 rounds to the mean, which used to pick the
+    // upper tail and return the rounding of its complement instead of a
+    // tail near 1e-86. References are exact tails summed at 80 digits.
+    let (n, p, q) = (u64::MAX, 1.0 - 2.0_f64.powi(-53), 2.0_f64.powi(-53));
+    let references = [
+        (n - 3000, p, 2.718_230_685_978_389e-86),
+        (n - 2100, p, 0.127_780_095_439_163_77),
+        (n - 2000, p, 0.858_203_579_962_535_4),
+        (1500, q, 2.804_905_285_645_475_3e-37),
+        (2000, q, 0.146_856_473_677_153_38),
+    ];
+    for (k, p, reference) in references {
+        let tail = binomial_cdf(k, n, p).unwrap();
+        assert!(
+            (tail - reference).abs() <= 1e-12 * reference,
+            "{k} at {p}: {tail}"
+        );
+    }
+}
+
+#[test]
+fn binomial_tails_at_ordinary_probabilities_stay_within_the_documented_error() {
+    // (k, n, p, P(X <= k)): exact tails at the f64 `p`, summed at 70 digits
+    // and rounded to the nearest f64. At p = 0.3 or 0.45 the rounding of
+    // 1 - p, of the ratio q / p reused by every term and of n p and n q
+    // used to compound, to about 1e-13 absolute near the centre and 8e-12
+    // relative in the far tails; the rustdoc of binomial_cdf states the
+    // figures these must meet.
+    let centre = [
+        (4_500_000, 10_000_000, 0.45, 0.500_131_018_582_184),
+        (3_000_000, 10_000_000, 0.3, 0.500_156_001_245_883_2),
+        (
+            3_414_944,
+            10_000_000,
+            0.341_449_488_349_846_06,
+            0.617_861_286_993_527_5,
+        ),
+        (1_350_000, 3_000_000, 0.45, 0.500_239_206_094_156_2),
+    ];
+    for (k, n, p, reference) in centre {
+        let tail = binomial_cdf(k, n, p).unwrap();
+        assert!(
+            (tail - reference).abs() < 1e-14,
+            "{k} of {n} at {p}: {tail}"
+        );
+    }
+    let far = [
+        (1_318_118, 3_000_000, 0.45, 2.108_970_683_372_145_2e-300),
+        (
+            3_273_683,
+            10_000_000,
+            0.332_732_453_339_112_33,
+            7.208_910_012_437_18e-285,
+        ),
+        (1_332_766, 3_000_000, 0.45, 2.358_265_733_900_953e-89),
+    ];
+    for (k, n, p, reference) in far {
+        let tail = binomial_cdf(k, n, p).unwrap();
+        assert!(
+            (tail - reference).abs() < 5e-13 * reference,
+            "{k} of {n} at {p}: {tail}"
+        );
+    }
 }

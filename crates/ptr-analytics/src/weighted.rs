@@ -31,6 +31,10 @@ pub struct WeightedRate {
 /// largest one: any finite positive weights, however large or small, give the
 /// rate of a moderate copy instead of overflowing `sum w` or `w^2`.
 ///
+/// The interval always contains the estimate, `low <= estimate <= high`.
+/// If nothing succeeded `low` is exactly `0`; if everything did, the estimate
+/// and `high` are exactly `1`.
+///
 /// # Errors
 /// Returns `StatsError::Empty` for no observations and
 /// `StatsError::InvalidParameter` for a weight that is not finite and
