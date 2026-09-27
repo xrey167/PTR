@@ -452,3 +452,46 @@ fn an_oversize_detached_answer_keeps_its_digest_without_being_retained() {
     ));
     assert_eq!(handoff.handoffs(), 1);
 }
+
+#[test]
+fn an_adapter_answer_that_cannot_be_recorded_is_reported_as_applied_and_the_window_stays_open() {
+    let (mut runtime, action) = one_record_below_the_index_ceiling();
+    let probe = Probe::default();
+    let handoff = Handoff::default();
+    let session = detached_session(&mut runtime, &action, &probe, &handoff);
+    let permit = runtime
+        .prepare_execution(&session, &ProjectId::from("p"), &action, TTL)
+        .unwrap();
+    let dispatched = runtime.dispatch_detached(&session, permit).unwrap();
+    assert_eq!(dispatched.attempt, CommitIndex(u64::MAX));
+
+    // The adapter answers, and the settlement finds no index left. The answer
+    // says the effect applied, so the failure to record it is not reported as
+    // an audit refusal, and the window stays open: the attempt is still owed an
+    // outcome, and it still fences the runtime.
+    assert_eq!(
+        runtime.settle_detached(dispatched.attempt, b"queued and done".to_vec()),
+        Err(ExecutionError::SettlementNotRecorded {
+            attempt: CommitIndex(u64::MAX),
+            error: Box::new(RuntimeError::Ledger(
+                "PTR_LEDGER_INDEX_EXHAUSTED".to_owned()
+            )),
+        })
+    );
+    assert_eq!(runtime.outstanding_detached(), vec![dispatched.attempt]);
+    assert_eq!(runtime.unsettled_effects().len(), 1);
+    assert_eq!(runtime.journal_anchor(), Err(RuntimeError::ExecutionFenced));
+
+    // Handing the same answer over again is still an applied effect whose
+    // settlement could not be recorded, not a refusal: the failed append left
+    // this process's last append ambiguous, and that blocks every settlement.
+    assert_eq!(
+        runtime.settle_detached(dispatched.attempt, b"queued and done".to_vec()),
+        Err(ExecutionError::SettlementNotRecorded {
+            attempt: CommitIndex(u64::MAX),
+            error: Box::new(RuntimeError::ExecutionFenced),
+        })
+    );
+    assert_eq!(runtime.outstanding_detached(), vec![dispatched.attempt]);
+    assert_eq!(handoff.handoffs(), 1);
+}

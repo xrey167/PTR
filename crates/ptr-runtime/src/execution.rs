@@ -568,9 +568,26 @@ pub enum ExecutionError {
     NotDetached {
         attempt: CommitIndex,
     },
-    /// The audit record itself could not be committed. Nothing was attempted
-    /// when this is returned from the attempt, so it denies rather than fences.
+    /// The audit record itself could not be committed: the attempt record, so
+    /// nothing was attempted and it denies rather than fences, or a
+    /// reconciliation, which leaves the attempt awaiting one. A settlement that
+    /// could not be committed after the effect applied is
+    /// [`ExecutionError::SettlementNotRecorded`] instead.
     Audit(Box<RuntimeError>),
+    /// The effect applied, as the executor or the detached adapter reported,
+    /// but its settlement record could not be committed. `error` says why.
+    ///
+    /// This is not a refusal: the effect applied, and answering "nothing was
+    /// attempted" would invite a retry that applies it twice. The runtime stays
+    /// fenced, because the attempt is still unsettled or the ledger's last
+    /// append is uncertain, until a restart replays what was written or
+    /// reconciliation records the outcome. The response is not handed on,
+    /// since the runtime could not record it; the execution wire reports this as
+    /// `AppliedWithoutResponse`.
+    SettlementNotRecorded {
+        attempt: CommitIndex,
+        error: Box<RuntimeError>,
+    },
     AuthorizationDenied(AuthorizationDenial),
     VerificationRejected {
         status: VerificationStatus,
@@ -1072,7 +1089,11 @@ impl PtrRuntime {
             Err(error) => return Err(ExecutionError::Executor(error)),
         };
 
-        self.record_settlement(attempted.attempt, output.clone())?;
+        self.record_settlement(attempted.attempt, output.clone())
+            .map_err(|error| ExecutionError::SettlementNotRecorded {
+                attempt: attempted.attempt,
+                error: Box::new(error),
+            })?;
         Ok(output)
     }
 
@@ -1141,7 +1162,12 @@ impl PtrRuntime {
         if !self.execution.detached.contains(&attempt) {
             return Err(ExecutionError::NotDetached { attempt });
         }
-        let settled = self.record_settlement(attempt, response)?;
+        let settled = self.record_settlement(attempt, response).map_err(|error| {
+            ExecutionError::SettlementNotRecorded {
+                attempt,
+                error: Box::new(error),
+            }
+        })?;
         self.execution.detached.remove(&attempt);
         Ok(settled)
     }
@@ -1157,11 +1183,15 @@ impl PtrRuntime {
     ///
     /// The digest is unconditional: "we did not keep the response" must never become
     /// "we do not know what happened".
+    ///
+    /// The effect has applied by the time this runs, so a failure is returned as
+    /// the ledger's error for the caller to report as
+    /// [`ExecutionError::SettlementNotRecorded`], never as a refusal.
     fn record_settlement(
         &mut self,
         attempt: CommitIndex,
         output: Vec<u8>,
-    ) -> Result<CommitIndex, ExecutionError> {
+    ) -> Result<CommitIndex, RuntimeError> {
         let response_digest = integrity::sha256(&output);
         let response = (output.len() <= MAX_RETAINED_RESPONSE).then_some(output);
         self.commit_settlement(LedgerEvent::EffectSettled {
@@ -1169,7 +1199,6 @@ impl PtrRuntime {
             response,
             response_digest,
         })
-        .map_err(audit)
     }
 
     /// Every check that must hold before an effect is attempted, and the attempt

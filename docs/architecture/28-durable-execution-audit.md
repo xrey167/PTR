@@ -71,6 +71,40 @@ wrong answer rather than a missing one. So a retained response that is longer th
 the bound, or that disagrees with the digest beside it, is refused during
 validation — before append and again during replay.
 
+### A settlement that fails is not a refusal
+
+The attempt is committed before the executor is called and the settlement after it
+returns, so the second append can fail after the effect applied: the ledger has no
+index left, or a durable write fails. `execute_prepared` and `settle_detached`
+return `SettlementNotRecorded { attempt, error }` for that, never `Audit`. `Audit`
+is what a failed attempt record returns, which denies rather than fences, and what
+a failed reconciliation returns, which leaves the attempt awaiting one; the
+execution wire reports it as `Refused`, nothing attempted. Earlier builds returned
+`Audit` for a failed settlement too, so a requester was told that nothing had been
+attempted for an effect that had applied, and a retry under a fresh key would have
+applied it a second time.
+
+Nothing about the failure clears the fence. The failed append leaves this process's
+own last append ambiguous and the attempt unsettled, so no permit is prepared, no
+journal anchor is produced and detached work stays outstanding. Settling again and
+reconciling are both refused in this process, because ambiguity about the runtime's
+own last append blocks every settlement (below); a second `settle_detached` of the
+same answer returns `SettlementNotRecorded` again rather than a refusal. Reopening
+is what moves it: the reopened runtime replays whatever the ledger holds, and an
+attempt still unsettled there is what reconciliation is for. The response is not
+handed on, since the runtime could not record it, and the wire reports the effect
+as `AppliedWithoutResponse` (`32-execution-wire.md`).
+
+Asserted with a ledger one index below its ceiling, so the attempt takes the last
+index and the settlement finds none: for a synchronous effect
+(`an_effect_whose_settlement_cannot_be_recorded_is_reported_as_applied_and_fences_the_runtime`
+in `crates/ptr-runtime/tests/execution_audit.rs`), for an adapter's answer
+(`an_adapter_answer_that_cannot_be_recorded_is_reported_as_applied_and_the_window_stays_open`
+in `crates/ptr-runtime/tests/detached_effects.rs`) and over the wire
+(`an_effect_whose_settlement_the_host_cannot_record_is_reported_applied_not_refused`
+in `crates/ptr-execwire/tests/wire.rs`). Each fails with the settlement mapped
+back onto `Audit`, as it was before the fix.
+
 ### Reconciliation records, it does not infer
 
 `reconcile_effect(attempt, applied, evidence)` commits what an operator

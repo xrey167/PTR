@@ -829,3 +829,55 @@ fn only_an_attempt_made_through_an_admitted_session_records_a_validated_principa
         );
     }
 }
+
+#[test]
+fn an_effect_whose_settlement_cannot_be_recorded_is_reported_as_applied_and_fences_the_runtime() {
+    let (mut runtime, action) = one_record_below_the_index_ceiling();
+    let probe = Probe::default();
+    let session = session(&mut runtime, &action, &probe, "alice");
+    let permit = runtime
+        .prepare_execution_once(&session, &ProjectId::from("p"), &action, TTL, "invoice-7")
+        .unwrap();
+
+    // The attempt takes the last index the ledger has and the executor applies
+    // the effect; the settlement then finds no index left. That is reported as a
+    // settlement that was not recorded, not as a refusal: the effect applied, and
+    // a caller told that nothing was attempted could apply it a second time.
+    assert_eq!(
+        runtime.execute_prepared(&session, permit),
+        Err(ExecutionError::SettlementNotRecorded {
+            attempt: CommitIndex(u64::MAX),
+            error: Box::new(RuntimeError::Ledger(
+                "PTR_LEDGER_INDEX_EXHAUSTED".to_owned()
+            )),
+        })
+    );
+    assert_eq!(probe.executions(), 1);
+
+    // The attempt still fences the runtime: nothing more is prepared, so a retry
+    // under the key reaches no executor, and no journal position is vouched for.
+    assert_eq!(
+        runtime
+            .unsettled_effects()
+            .iter()
+            .map(|effect| effect.attempt)
+            .collect::<Vec<_>>(),
+        vec![CommitIndex(u64::MAX)]
+    );
+    assert!(runtime
+        .prepare_execution_once(&session, &ProjectId::from("p"), &action, TTL, "invoice-7")
+        .is_err());
+    assert_eq!(runtime.journal_anchor(), Err(RuntimeError::ExecutionFenced));
+
+    // Nor can this process record the outcome another way: the failed append
+    // left its own last append ambiguous, and that blocks a reconciliation as it
+    // blocks every settlement. Reopening is what replays what was written.
+    assert_eq!(
+        runtime.reconcile_effect(CommitIndex(u64::MAX), true, "operator saw it applied"),
+        Err(ExecutionError::Audit(Box::new(
+            RuntimeError::ExecutionFenced
+        )))
+    );
+    assert_eq!(runtime.unsettled_effects().len(), 1);
+    assert_eq!(probe.executions(), 1);
+}

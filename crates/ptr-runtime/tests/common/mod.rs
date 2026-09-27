@@ -6,11 +6,13 @@
 
 use ptr_config::PtrConfig;
 use ptr_core::action_head::ActionIr;
+use ptr_ledger::integrity::{self, LogAnchor};
 use ptr_ledger::LedgerEvent;
+use ptr_runtime::compacted::CompactedAnchor;
 use ptr_runtime::{execution::*, PtrRuntime};
 use ptr_types::{
-    CapabilityId, CapsuleId, Effect, Generation, Probability, ProjectId, RequestId, TypeId,
-    VerificationLevel,
+    CapabilityId, CapsuleId, CommitIndex, Effect, Generation, Probability, ProjectId, RequestId,
+    TypeId, VerificationLevel,
 };
 use ptr_verifier::{Finding, VerificationReport, VerificationStatus, Verifier};
 use std::sync::{
@@ -160,6 +162,37 @@ pub fn fixture() -> (PtrRuntime, ActionIr) {
         .insert(action.capability.clone());
     runtime.permissions_mut().allow_mutation = true;
     (runtime, action)
+}
+
+/// The fixture's committed state restored from a compacted snapshot whose floor
+/// sits one below the last index the ledger can hand out, with its permissions
+/// granted again. Exactly one more record can be appended, so an effect's attempt
+/// takes the last index and its settlement finds none left.
+pub fn one_record_below_the_index_ceiling() -> (PtrRuntime, ActionIr) {
+    let (runtime, action) = fixture();
+    let snapshot = runtime.export_compacted_snapshot().unwrap();
+    let floor = LogAnchor {
+        index: CommitIndex(u64::MAX - 1),
+        digest: snapshot.anchor().floor.digest,
+    };
+    let mut bytes = snapshot.bytes().to_vec();
+    bytes[16..24].copy_from_slice(&floor.index.0.to_le_bytes());
+    let end = bytes.len() - 32;
+    let digest = integrity::sha256(&bytes[..end]);
+    bytes[end..].copy_from_slice(&digest);
+    let trusted = CompactedAnchor {
+        revision: snapshot.anchor().revision,
+        floor,
+        digest,
+    };
+    let mut restored =
+        PtrRuntime::restore_compacted(PtrConfig::default(), &bytes, trusted, &[]).unwrap();
+    restored
+        .permissions_mut()
+        .capabilities
+        .insert(action.capability.clone());
+    restored.permissions_mut().allow_mutation = true;
+    (restored, action)
 }
 
 pub fn session(

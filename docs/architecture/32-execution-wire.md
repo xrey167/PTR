@@ -81,7 +81,7 @@ use means re-derived at use.
 | Outcome | What it means |
 |---|---|
 | `Applied` | the effect applied, and this is what it returned |
-| `AppliedWithoutResponse` | it applied and the bytes are not coming: either not retained, or too large for a frame |
+| `AppliedWithoutResponse` | it applied and the bytes are not coming: not retained, too large for a frame, or the host could not record its settlement |
 | `Uncertain` | it **may** have applied and the receiver does not know |
 | `Refused` | nothing was attempted |
 
@@ -96,6 +96,18 @@ A catch-all would quietly report a refusal a later build invents as "nothing was
 attempted", and if that new refusal happened to mean the opposite, a requester would
 retry something that had already happened. Adding a variant must break the build
 instead.
+
+That is not only about variants a later build adds. An effect the adapter applied
+whose settlement record the host then could not commit — no ledger index left, a
+failed durable write — reached the requester as `Refused`, because the runtime
+returned it as the same `Audit` error as an attempt record that failed before
+anything happened. The runtime now returns it as `SettlementNotRecorded`
+(`28-durable-execution-audit.md`) and the wire reports `AppliedWithoutResponse`:
+the effect applied, so a refusal would invite a retry under a fresh key that
+applies it again, and the response is not handed on because the host could not
+record it. The host stays fenced until it is reopened, replays what it wrote and,
+if the attempt is still unsettled there, its operator reconciles it
+(`an_effect_whose_settlement_the_host_cannot_record_is_reported_applied_not_refused`).
 
 ## One refusal code for every reason of authority
 
