@@ -1,0 +1,3 @@
+results_git_sha = "5f71d84747c3e624ca468fce683e03306197a8b0"
+stale_since = "c4c9b20e86ca5e8e6ac8c42a04804a376420edc9"
+reason = "T1-2 (only the runtime merges a branch) changes the runtime, ledger, state, branch and PostgreSQL code these results ran on, beginning with the single ingress list in ptr-semdb. The experiment is rerun once T1-2's last code change is in."
