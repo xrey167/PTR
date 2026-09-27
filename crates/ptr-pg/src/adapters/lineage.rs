@@ -36,7 +36,12 @@ impl PgSubstrate {
     ///
     /// An overlap or chance level outside `[0, 1]` (which
     /// `ptr_lineage::measure_interference` never produces) or a layer named
-    /// twice is refused by the table before anything is committed.
+    /// twice is refused by the table before anything is committed, and so is
+    /// a layer naming the candidate itself as its worst overlap. Which
+    /// earlier adapter a layer names as its worst overlap, and whether it
+    /// names one at all, is otherwise stored as given: nothing here compares
+    /// it with the overlaps (`measure_interference` names one exactly when an
+    /// overlap is positive).
     pub async fn record_interference(
         &mut self,
         adapter: &AdapterId,

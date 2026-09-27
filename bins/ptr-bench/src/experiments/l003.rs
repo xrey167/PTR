@@ -1311,32 +1311,33 @@ impl Case<'_> {
             ),
             Ok(Some(checkpoint)) => {
                 self.metrics.checkpoints_verified += 1;
-                if Some(checkpoint.applied) != newest {
+                if Some(checkpoint.applied()) != newest {
                     diverged(
                         &mut self.metrics.checkpoint_violations,
                         format!(
                             "{}: the checkpoint of {id:?} handed out is at {}, the newest valid at {:?}",
-                            self.label, checkpoint.applied.0, newest
+                            self.label, checkpoint.applied().0, newest
                         ),
                     );
                 }
                 let prefix: Vec<(WriteSeq, WriteRequest)> = expected
                     .iter()
-                    .filter(|(seq, _)| *seq <= checkpoint.applied)
+                    .filter(|(seq, _)| *seq <= checkpoint.applied())
                     .cloned()
                     .collect();
                 let binding =
                     binding_digest_of(prefix.iter().map(|(seq, request)| (*seq, &request.source)));
-                let folded = prefix.last().map(|(seq, _)| *seq) == Some(checkpoint.applied)
-                    && binding == checkpoint.binding_digest
+                let folded = prefix.last().map(|(seq, _)| *seq) == Some(checkpoint.applied())
+                    && binding == checkpoint.binding_digest()
                     && FastMemory::restore(config, codebook, prefix)
-                        .is_ok_and(|fold| same_state(fold.state(), &checkpoint.state));
+                        .is_ok_and(|fold| same_state(fold.state(), checkpoint.state()));
                 if !folded {
                     diverged(
                         &mut self.metrics.checkpoint_violations,
                         format!(
                             "{}: the checkpoint of {id:?} at {} is not the fold of the journal",
-                            self.label, checkpoint.applied.0
+                            self.label,
+                            checkpoint.applied().0
                         ),
                     );
                 }

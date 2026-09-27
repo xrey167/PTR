@@ -43,7 +43,8 @@ pub struct SearchDocument {
     pub capsule: CapsuleId,
     pub generation: Generation,
     /// Digest of the capsule content the body and embedding were computed
-    /// from.
+    /// from, as the writer declares it: nothing here reads the capsule to
+    /// compare it (see [`PgSubstrate::upsert_document`]).
     pub content_digest: [u8; 32],
     pub body: String,
     pub embedding: Option<(Identifier, Vec<f32>)>,
@@ -68,6 +69,11 @@ pub struct HybridQuery {
 }
 
 /// What one hybrid query returned, all from one snapshot.
+///
+/// The fields are public to read. What they say below holds for the value
+/// [`PgSubstrate::search`] returns; nothing in this crate takes a
+/// `SearchResults` back, so one built or changed by hand misleads only its
+/// reader.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchResults {
     pub lexical: Vec<SearchHit>,

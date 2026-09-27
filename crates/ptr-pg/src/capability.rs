@@ -22,7 +22,14 @@ pub enum LexicalBackend {
     ParadeDb,
 }
 
-/// What one server offers, parsed from catalog queries.
+/// What one server offers, as [`Capabilities::from_catalog`] parses it from
+/// catalog queries.
+///
+/// The fields are public to read, and the methods compute from them each
+/// time. The substrate decides nothing on a value a caller passes: before it
+/// migrates or rebuilds it takes a reading of its own
+/// (`PgSubstrate::capabilities`) and checks that one, so a value built or
+/// changed by hand misleads only its reader.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Capabilities {
     pub server_version_num: u32,

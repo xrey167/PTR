@@ -55,8 +55,8 @@ impl FastMemoryRecord {
 }
 
 /// A stored checkpoint: a state its writer declared to be the fold of the
-/// journal prefix up to `applied`, bound to the digest of the writes it
-/// claims to fold.
+/// journal prefix up to [`applied`](Self::applied), bound to the digest of
+/// the writes it claims to fold.
 ///
 /// The substrate checks the binding against the stored prefix, and the
 /// state's configuration against the memory's registration, when the
@@ -65,11 +65,62 @@ impl FastMemoryRecord {
 /// writes is the writer's obligation, met by passing
 /// [`ptr_fastmem::FastMemory::state`] together with
 /// [`ptr_fastmem::FastMemory::binding_digest`] of one memory.
+///
+/// # Guarantees
+/// Its fields are private and only
+/// [`latest_checkpoint`](PgSubstrate::latest_checkpoint) builds one, so every
+/// `FastMemoryCheckpoint` is a checkpoint read back from the store with the
+/// checks above: in the snapshot it was read from, its binding digest was
+/// that of the memory's journal prefix up to `applied`, its state's last
+/// applied write is that one (`state().applied() == applied()`), and the
+/// state has the memory's registered configuration. That the state cells are
+/// the fold of those writes is still only its writer's word. The snapshot is not held: a
+/// revocation committed since may have deleted a write it folds, and the
+/// checkpoint with it.
+///
+/// ```
+/// fn binding(checkpoint: &ptr_pg::FastMemoryCheckpoint) -> [u8; 32] {
+///     checkpoint.binding_digest()
+/// }
+/// ```
+///
+/// No field can be changed to pair the state with another binding, or a
+/// binding with another state:
+///
+/// ```compile_fail
+/// fn rebind(checkpoint: &mut ptr_pg::FastMemoryCheckpoint, other: [u8; 32]) {
+///     checkpoint.binding_digest = other;
+/// }
+/// ```
 #[derive(Clone, Debug, PartialEq)]
 pub struct FastMemoryCheckpoint {
-    pub applied: WriteSeq,
-    pub binding_digest: [u8; 32],
-    pub state: FastWeightState,
+    applied: WriteSeq,
+    binding_digest: [u8; 32],
+    state: FastWeightState,
+}
+
+impl FastMemoryCheckpoint {
+    /// The last journaled write the state folds: `state().applied()`.
+    pub fn applied(&self) -> WriteSeq {
+        self.applied
+    }
+
+    /// The digest of the journal prefix up to [`applied`](Self::applied)
+    /// ([`binding_digest_of`]), which matched the stored prefix when the
+    /// checkpoint was read.
+    pub fn binding_digest(&self) -> [u8; 32] {
+        self.binding_digest
+    }
+
+    /// The stored state, with the memory's registered configuration.
+    pub fn state(&self) -> &FastWeightState {
+        &self.state
+    }
+
+    /// Give up the checkpoint for its state.
+    pub fn into_state(self) -> FastWeightState {
+        self.state
+    }
 }
 
 impl PgSubstrate {

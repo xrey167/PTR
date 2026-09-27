@@ -275,10 +275,10 @@ no slice, used to reach the calibration samples and every triage metric; over a 
 of rows under three policies the database now stores exactly those the policy
 explains (`a_raw_triage_row_is_stored_exactly_when_its_cited_policy_explains_it`).
 The trigger sees only rows written from version 10 on, so `adjudicated_samples` and
-`record_policy` recheck every calibration row against the policy it cites when they
-read it, and refuse as `CorruptRow`, rather than serve as a calibration sample, an
-older slice row that policy cannot have produced or one citing a version no table
-recorded (`a_calibration_row_its_cited_policy_cannot_have_produced_is_refused_by_every_reader`);
+`record_policy` rebuild every calibration row through `TriageOutcome::from_parts` and
+recheck it against the policy it cites when they read it, and refuse as `CorruptRow`,
+rather than serve as a calibration sample, an older slice row no policy or not that
+policy can have produced, or one citing a version no table recorded (`a_calibration_row_its_cited_policy_cannot_have_produced_is_refused_by_every_reader`);
 the triage metrics still count such older rows. A
 policy's calibration rate is zero or lowers `1 − rate` below one, as
 `TriagePolicy::new` requires, and a policy stored before that check loads and is cited
@@ -363,24 +363,36 @@ the end of the statement and so accepted a parent written later in the same stat
 Work migration 13 closes three rules that held only for writers that did not race or
 nest their writes or undo them within one statement. An update that changes a replay sample leaves its last probe at or after
 every probe stored for it, where it was compared only with the row it replaced, and
-a probe locks its sample's row before it is checked and updates the row without
-change when its transaction commits, so a probe and a sample update of one sample, or
-two probes of it, wait for each other at read committed and fail with a
-serialization error at repeatable read instead of each checking against what the
-other has not committed
-(`a_sample_s_last_probe_never_falls_behind_a_probe_stored_for_it`). The lock alone
-would not do at repeatable read, where a row a committed transaction only locked is
-locked and updated again without error. The update is deferred to commit, after
-every statement of the transaction, so a statement that records a probe and updates
-its sample is stored however it nests the two, each write checked as it would be in a
-statement of its own; an update from the probe's `BEFORE` trigger would leave the row
-changed by the current command, and PostgreSQL refuses such a statement with SQLSTATE
-27000 (`a_statement_that_records_a_probe_may_then_update_its_sample`). So would an
-update at the end of the probe's statement when a function that the `UPDATE` of the
-sample calls writes the probe: that nested statement ends before the `UPDATE` reaches
-the row, and a writer that sets the trigger immediate with `SET CONSTRAINTS` is refused
-so. A later statement of the probe's transaction may still delete the sample, and the
-probe with it (`a_probe_a_function_writes_inside_an_update_of_its_sample_is_stored`).
+a probe locks its sample's row before it is checked, so a probe and a sample update
+of one sample, or two probes of it, wait for each other at read committed instead of
+each checking against what the other has not committed
+(`a_sample_s_last_probe_never_falls_behind_a_probe_stored_for_it`). Migration 13
+also had every probe update its sample's row without change when its transaction
+committed, which `check_replay_clock` let through unchecked; nothing compared the
+sample with the probe, so a probe past the sample's last probe committed with the
+sample left behind it. Work migration 14 replaces that update with a deferred check:
+a probe's transaction commits only once its sample's last probe is at or after every
+probe stored for the sample, and every update of a sample is checked, one that
+leaves the row as it was included
+(`a_probe_commits_only_once_its_sample_s_last_probe_reaches_it`). The check keeps the
+order at repeatable read, where a row a committed transaction only locked is locked
+and updated again without error: a probe past the last probe commits only with an
+update of the row by its own transaction, which fails a writer whose snapshot
+predates it with a serialization error, and a probe at the last probe itself leaves
+nothing such a writer could contradict. Deferred to commit and writing no row, it
+lets a statement that records a probe and updates its sample be stored however it
+nests the two, each write checked as it would be in a statement of its own
+(`a_statement_that_records_a_probe_may_then_update_its_sample`); a no-change update
+from the probe's `BEFORE` trigger, or from one fired at the end of the probe's
+statement when a function that the `UPDATE` of the sample calls writes the probe,
+left the row changed by the current command, which PostgreSQL refuses with SQLSTATE
+27000. A later statement of the probe's transaction may still delete the sample, and
+the probe with it, and a writer that sets the check immediate with `SET CONSTRAINTS`
+has it run at the end of each statement
+(`a_probe_a_function_writes_inside_an_update_of_its_sample_is_stored`). Stored rows
+are not checked: a sample a version 13 transaction left behind its probe is caught
+up by its next write
+(`a_sample_version_13_left_behind_its_probe_catches_up_with_its_next_write`).
 And an append-only row used to be deletable by any DELETE issued below another trigger
 (`pg_trigger_depth() > 1`, meant for the cascade from its branch or sample), so a
 trigger the writer created removed a policy's calibration row or an adjudication that
@@ -460,7 +472,8 @@ read on both sides of the delete
 refuses, as `InvalidTriage`, a version no policy is recorded under and a row that
 policy cannot have produced (`TriagePolicy::explains`): for the row's eligibility and
 score, a decision, slice flag or propensity its threshold and calibration rate do not
-give, or a score that is not a probability
+give. A triage no policy produces at all, such as one whose score is not a
+probability, never reaches it: `TriageOutcome::from_parts` refuses to build it
 (`a_policy_explains_every_triage_it_produces_and_nothing_else`,
 `a_triage_is_logged_only_under_a_policy_that_can_have_produced_it`), and the database
 refuses such a row written around it (work migration 10). What neither can see is the
@@ -701,6 +714,21 @@ verification:
   auto-proposed branches are observed only through later reverts, so only this slice
   is an exchangeable sample of what the threshold decides about
   (`the_calibration_slice_escalates_high_scores_and_only_it_can_be_adjudicated`).
+  A `TriageOutcome` has private fields and is built only by the policy or by
+  `TriageOutcome::from_parts`, which refuses parts no policy produces for any report,
+  score and draw (`ImpossibleOutcome`: a score or propensity that is not a
+  probability, a positive propensity that is `1 − r` for no rate `r`, an ineligible
+  triage that is auto-proposed, in the slice or has a nonzero propensity, an eligible
+  one that is discarded, a slice triage that is not escalated or has propensity one,
+  an eligible one outside the slice auto-proposed with propensity zero or escalated
+  with a positive one), and `adjudicate` checks those rules again and refuses any
+  triage outside the slice (`NotCalibrationSlice`). A calibration sample therefore
+  never hides a harmful branch behind a NaN score, which no grid threshold admits,
+  nor comes from an auto-proposed triage
+  (`a_triage_is_rebuilt_from_parts_exactly_when_some_policy_produces_it`,
+  `triage_parts_no_policy_produces_are_refused_naming_the_rule_they_break`,
+  `no_calibration_sample_hides_harm_behind_a_score_no_triage_sees`). Which policy
+  made a triage is not part of it: `explains` checks the one a log cites.
 - The threshold is chosen on a fixed grid by conformal risk control,
   `n/(n+1) · R̂(t) + 1/(n+1) ≤ α`, which bounds the expected joint probability that
   the next eligible branch is auto-proposed and harmful
@@ -741,8 +769,12 @@ verification:
   computed on weights divided by the largest, and the doubly robust estimate on
   weights divided by the largest and residuals halved and divided by the log's
   length before they are multiplied, so large finite weights do not overflow them,
-  and whatever still overflows is refused
-  (`a_lower_threshold_than_the_log_ever_explored_is_refused_as_a_positivity_violation`,
+  and whatever still overflows is refused. The doubly robust estimate consults its
+  reward model exactly once per record and action and uses the logged action's
+  prediction in both the direct term and the residual, so the two cancel even for a
+  stochastic or stateful model
+  (`doubly_robust_consults_the_reward_model_once_per_record_and_action_and_reuses_the_logged_prediction`,
+  `a_lower_threshold_than_the_log_ever_explored_is_refused_as_a_positivity_violation`,
   `evaluating_the_logging_policy_on_its_own_log_returns_its_mean_reward`,
   `a_nonfinite_logged_reward_is_refused_by_every_off_policy_estimate`,
   `a_logged_score_that_is_not_a_probability_is_refused_before_any_reweighting`,
@@ -917,7 +949,9 @@ around `put_checkpoint`, is refused as `CorruptRow`, not handed out
 (`a_checkpoint_whose_state_has_another_shape_than_its_memory_is_a_corrupt_row`).
 Neither refolds the journal to check the state cells: that they are the fold of the
 bound writes is the writer's obligation, met by storing `FastMemory::state` with
-`FastMemory::binding_digest` of the same memory. A digest recomputed from the stored
+`FastMemory::binding_digest` of the same memory. `FastMemoryCheckpoint`'s fields are
+private, so every checkpoint is one `latest_checkpoint` read back with these checks,
+and none can be paired with another state or binding digest after it is read. A digest recomputed from the stored
 journal beside a state folded before a revocation would pass both checks.
 
 This is **exact revocation, not erasure**: copies of a deleted write may survive in
@@ -927,12 +961,20 @@ dead tuples, WAL and backups until the storage's own erasure obligations
 ## 4. Adapter lineage (`ptr-lineage`)
 
 An adapter is a sealed, content-addressed checkpoint bound to one exact base model
-and revision, with a data manifest. Registration always yields a candidate; only a
+and revision, with a data manifest. Its record carries the checkpoint's artifact id
+and SHA-256 and the training-data fingerprint as the trainer supplies them;
+`ptr-lineage` holds neither weights nor inputs, never reads those digests and checks
+none of them, and erasure follows the manifest exactly as declared
+(`a_record_s_digests_and_manifest_are_registered_as_given_and_never_checked`).
+Registration always yields a candidate; only a
 passing forgetting gate — thresholds on average and per-task forgetting, backward
 transfer and public-suite regression — lets it serve (`only_a_passing_gate_lets_an_adapter_serve`).
 Those summaries never overflow for finite scores: each is infinite only when its
 exact value exceeds `f64::MAX`, never NaN
 (`summaries_of_extreme_finite_scores_do_not_overflow`).
+A gate report can only come from the gate (its fields are private), and it binds the
+verdict to the adapter id it was evaluated for, not to the scores, which the caller
+must have measured on that adapter (`a_passing_report_cannot_gate_another_adapter`).
 Revoking a training input names every adapter, descendant and consolidation that
 depends on it (`revoking_one_input_names_its_adapter_every_descendant_and_every_consolidation`).
 
@@ -981,10 +1023,13 @@ magnitude are measured, and only a product entry or ratio that is itself beyond
 lineage grows too deep or too entangled, the next step is a TIES merge of the full
 updates into one consolidated adapter
 (`consolidation_resets_depth_and_is_due_past_the_policy_limits`); consolidation is
-also due when an overlap cannot be compared with the limit, and a report holding a NaN
-overlap is within no limit
+also due when an overlap cannot be compared with the limit or lies outside `[0, 1]`,
+where no measured overlap lies, and a report holding an overlap that is NaN or outside
+`[0, 1]` is within no limit
 (`consolidation_is_due_when_an_overlap_or_its_limit_cannot_be_compared`,
-`a_report_with_a_nan_overlap_is_not_within_any_limit`). A merge of finite updates is
+`consolidation_is_due_when_an_overlap_lies_outside_the_unit_interval`,
+`a_report_with_a_nan_overlap_is_not_within_any_limit`,
+`a_report_with_an_overlap_outside_the_unit_interval_is_not_within_any_limit`). A merge of finite updates is
 finite: the sign election and the mean are computed without an overflowing running
 sum, and the elected sign is that of the in-order sum with an unbounded exponent
 range, even when large entries cancel exactly and a far smaller one decides it
@@ -992,8 +1037,13 @@ range, even when large entries cancel exactly and a far smaller one decides it
 `the_elected_sign_is_that_of_the_true_sum_when_a_running_sum_would_overflow`,
 `an_entry_too_small_to_survive_rescaling_still_decides_the_sign_when_the_large_ones_cancel`).
 A report names the candidate it was measured for
-(`a_report_names_the_candidate_it_was_measured_for`). It is stored
-with the candidate, one row per layer under one header row per adapter, so a promotion
+(`a_report_names_the_candidate_it_was_measured_for`) and has one row per layer: an
+adapter, candidate or earlier, that updates a layer twice is refused before anything is
+measured (`an_adapter_that_updates_a_layer_twice_is_refused_before_anything_is_measured`).
+Activation interference compares two updates of one layer only; a different layer name
+or output size is refused
+(`activation_interference_compares_two_updates_of_one_layer_only`). An interference
+report is stored with the candidate, one row per layer under one header row per adapter, so a promotion
 or consolidation decision can be audited against the evidence it was made on; a report
 naming another adapter, a second report for the adapter (rather than merged into
 the first) and an empty one are refused, the first and the last before anything is
@@ -1003,7 +1053,9 @@ written (`interference_reports_are_stored_once_as_measured`,
 That check catches a report passed with the wrong adapter, not a forged one: the
 report's fields are public, so one relabelled or built by hand is stored as the
 adapter it names, and recording only what `measure_interference` measured is the
-caller's obligation.
+caller's obligation. The same holds for the overlaps, chance levels and worst adapter
+of a report built or loaded by hand; `ptr-lineage` reads only its overlaps, and treats
+one that is NaN or outside `[0, 1]` as unmeasured.
 
 Replay samples carry an FSRS-4.5 memory state updated from probe losses on the
 training clock, not wall time; priority grows with forgetting and difficulty, and
@@ -1053,8 +1105,15 @@ the matrix's schema, functions and votes, and resolving it against any other mat
 even one of the same shape, is refused (`MatrixMismatch`) rather than combining that
 matrix's vetoes and votes with posteriors of other items
 (`a_model_is_refused_with_any_matrix_but_the_one_it_was_fitted_on`).
-A posterior that is not a probability distribution over the schema is refused before
-anything is resolved or scored
+Everything a fitted model holds (priors, confusion matrices, posteriors, iteration
+count and warnings) is private, set only by the fit and lent out read only, so the
+posteriors `resolve` combines with the matrix's vetoes are the ones the fit computed
+for the matrix the digest names: a caller cannot substitute another fit's, or any
+other distributions, while the digest stays (compile_fail doctests on `LabelModel`,
+`a_label_model_lends_out_one_posterior_per_item_and_one_confusion_entry_per_function`).
+A posterior that is not a probability distribution over the schema is still refused
+before anything is resolved or scored, as a guard against a defect in the fit and,
+for `evaluate`, which takes any posteriors, against a caller's input
 (`resolution_refuses_a_posterior_that_is_not_a_distribution_over_the_schema`,
 `evaluation_refuses_a_posterior_that_is_not_a_distribution_whatever_the_sampling`);
 every entry must lie in `[0, 1]` on its own, whatever the `1e-6` tolerance on the total
@@ -1205,7 +1264,7 @@ another by idea.
 | Delta-to-memory link (`wmp_projection_event.delta_id`) | replaced | Replaced by the write's source: each fast-memory write names the lifecycle input it was derived from (`SourceRef`: key, generation, input digest), stored as `source_key`, `source_generation` and `input_digest` and indexed for revocation. The commit that published the generation is its lifecycle event on the projection event log; `live_generation` records only the target's latest lifecycle change. A write never cites a semantic delta, which publishes a revision, not a generation, and so has no tombstone or supersession that could revoke the write. | Memory sources are widened beyond lifecycle generations, which first needs a revocation event for the new kind of source (INVARIANT 17). |
 | Every content change also updates working memory | reject | Branch operations are speculative and have no generation, and a memory admits only committed, live generations, so staging a change never writes a memory; an agent sees its own staged changes through `Branch::read`. A merged delta publishes a revision, not a generation, so it is no source either. The admissible form is a writer that composes memory writes from committed lifecycle changes read from the projection event log. | The admissible writer is built when M008 shows an update-aware recall gain at equal tokens and the memory is declared as a neural-state binding in `ptr-runtime` (missing in `ptr-fastmem`). |
 | **Adapter lineage (L3)** | | | |
-| `orthogonality_proof` JSONB column | adopt-now | Adopted as typed tables (work migration 0007; §4): `adapter_interference_report`, one header row per adapter with its layer count and `recorded_at`, and `adapter_interference`, one row per layer with the output and input overlap, their chance levels and the worst earlier adapter, as `ptr-lineage`'s `InterferenceReport` measured them. `PgSubstrate::record_interference` stores a report once, only under the adapter it names (`InterferenceReport::candidate`, which `measure_interference` sets; the public field proves no provenance), complete when it commits and never rewritten, and `load_interference` reads it back. The null-space projection is not stored: the null space of a sum is not the intersection of the null spaces. Tests: `interference_reports_are_stored_once_as_measured`, `an_empty_interference_report_or_one_for_an_unknown_adapter_stores_nothing`, `an_interference_report_measured_for_another_adapter_is_refused_before_anything_is_written`, `a_calibration_set_and_an_interference_report_are_counted_once_not_once_per_row`. | Implemented. |
+| `orthogonality_proof` JSONB column | adopt-now | Adopted as typed tables (work migration 0007; §4): `adapter_interference_report`, one header row per adapter with its layer count and `recorded_at`, and `adapter_interference`, one row per layer with the output and input overlap, their chance levels and the worst earlier adapter, as `ptr-lineage`'s `InterferenceReport` holds them. `PgSubstrate::record_interference` stores a report once, only under the adapter it names (`InterferenceReport::candidate`, which `measure_interference` sets; the public field proves no provenance), complete when it commits and never rewritten, and `load_interference` reads it back. The null-space projection is not stored: the null space of a sum is not the intersection of the null spaces. Tests: `interference_reports_are_stored_once_as_measured`, `an_empty_interference_report_or_one_for_an_unknown_adapter_stores_nothing`, `an_interference_report_measured_for_another_adapter_is_refused_before_anything_is_written`, `a_calibration_set_and_an_interference_report_are_counted_once_not_once_per_row`. | Implemented. |
 | Per-layer overlap score as JSON proof | adopt-now | Adopted as typed rows, not JSON: each `LayerInterference` becomes one `adapter_interference` row under its report's header, so the per-layer evidence behind `ConsolidationPolicy`'s overlap limit can be queried next to the adapter catalog. `ptr-lineage` keeps no serialization dependency, and no work-schema table uses `jsonb`. Tests as in the previous row. | Implemented. |
 | Index `lora_adapter_chain_idx` | defer | `parent` and `adapter_source` replace the ordered `(chain_id, sequence_no)` chain, so the index has nothing to cover; the only secondary index serves erasure lookups by input, and interference reports are read by primary key. Indexes for the lineage walks (children by `parent`, consolidations by `source`, adapters by base model, revision and domain) come with the adapter for the rest of the lineage catalog. | That adapter exists and its query plans show sequential scans on a realistically sized catalog. |
 | Table `lora_training_run` | adopt-later | With the first adapter actually trained (the default backend is `dry-run`): one work-schema row per run naming the training chain (the identity replay rows are keyed by), the adapter produced, the run manifest's `input_fingerprint_sha256` and the adapter's `data_fingerprint` (different digests: the first covers code, configuration, hardware and dataset artifact, the second the exact training input with replay ids), the trigger, the replay and new sample counts, wall-clock and model time at start and end, and the gate result. Training stays outside `ptr-lineage`; `TrainingRunId` and `TrainingChainId` are open in the training-evaluation family. | An R004 run, or a selected training backend that trains adapters. |
