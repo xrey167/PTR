@@ -81,6 +81,11 @@ def git(root: Path, *args: str) -> str:
         "-c", "user.email=tests@example.invalid",
         "-c", "commit.gpgsign=false",
         "-c", "init.defaultBranch=main",
+        # No automatic maintenance: a commit would start it detached, and it
+        # can still be writing into .git/objects when the test deletes the
+        # repository.
+        "-c", "maintenance.auto=false",
+        "-c", "gc.auto=0",
         *args,
     ]
     return subprocess.run(command, cwd=root, check=True, capture_output=True, text=True).stdout.strip()
