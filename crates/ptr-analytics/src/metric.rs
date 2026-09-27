@@ -93,7 +93,12 @@ pub enum Window {
     /// Every record.
     #[default]
     All,
-    /// Records from the last so many days. Zero days counts nothing.
+    /// Records from the last so many days, each 24 hours of elapsed time:
+    /// stamped at most that many times 24 hours before the query and not
+    /// after it, so a record stamped after the query runs is in no such
+    /// window, and the window is as long in every time zone, whether or not
+    /// its offset changed within it. Zero days counts nothing, whatever the
+    /// stamps.
     LastDays(u16),
 }
 

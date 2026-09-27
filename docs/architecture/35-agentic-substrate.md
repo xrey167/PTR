@@ -436,7 +436,41 @@ registers as a candidate on its parent's base and changes only its status, along
 lifecycle; a consolidated adapter commits with at least one source, only a
 consolidated adapter has sources, each on its base, and sources and data manifests go
 only with their adapter, so the edges erasure follows cannot be lost
-(`a_consolidated_adapter_has_sources_on_its_base_and_only_it_has_them`). Replay rows
+(`a_consolidated_adapter_has_sources_on_its_base_and_only_it_has_them`). Nothing
+refused an `INSERT`, though: a later transaction could add an input to the manifest
+erasure starts from, or a source to a registered consolidation, and make two registered
+consolidations each other's source, a cycle `Lineage::register` cannot construct. Work
+migration 15 accepts a source or a manifest entry only in the transaction that
+registers its adapter, in any statement or savepoint of it. That transaction is stamped
+on the adapter (`adapter.registered_xact`) by a trigger, whatever the `INSERT` gives,
+and no update changes the stamp, since an update may change only the status; a branch
+header's `xmin` serves for its rows because a header is never updated, but an
+adapter's row is updated along its lifecycle, and an update that changed nothing gave a
+later transaction its `xmin`. Nor does the stamp alone name the transaction: a
+transaction id means something only in the cluster that assigned it, and a restore
+(`pg_dump` writes a table's rows before its triggers) or a logical-replication
+subscriber keeps the stamp as data, so in a cluster whose counter was behind it the
+transaction later given that id passed for the registering one. An adapter is
+registered by a transaction only when its stamp is that transaction's id and that
+transaction wrote its row (its `xmin`, in any savepoint), which no logical copy carries
+over, whichever cluster it goes to, and the one transaction whose id a copied stamp
+repeats cannot update the adapter to give the row its `xmin`
+(`an_adapter_stored_with_another_cluster_s_stamp_gains_no_row_in_the_transaction_that_repeats_it`);
+a physical copy keeps the transaction counter with the rows. A source is also refused when it descends from its
+consolidation, through parents and sources, so adapters registered together form no
+cycle either
+(`an_adapter_s_sources_and_data_manifest_are_written_only_in_the_transaction_that_registers_it`).
+An adapter registered before the migration carries no stamp and gains no row
+(`an_adapter_registered_before_work_version_15_gains_no_source_or_input`). The
+migration records, for every other parent and child of the work schema (every other
+foreign key, one entry per parent), whether its rows are sealed (a branch's), counted
+(a calibration set, an interference report's layers), appendable by design (triage
+rows of a branch or citing a policy, outcomes, a branch's calibration rows,
+interference reports of an adapter of any status, fast-memory journals and
+checkpoints, replay probes, the weak-supervision store) or a column of a row never
+rewritten (an adapter's parent, a layer's worst overlap, a model labeling function's
+adapter)
+(`work_migration_15_gives_a_reason_for_every_other_parent_and_child_of_the_work_schema`). Replay rows
 are finite, where `stability > 0` alone admitted NaN and infinity, and the training
 clock never runs back (`replay_rows_are_finite_and_the_training_clock_never_runs_back`).
 A label schema has at least two distinct, non-empty, non-NULL classes indexed from
@@ -1163,7 +1197,14 @@ successes (`a_metric_row_turns_into_an_interval_that_contains_its_point`,
 the definition to SQL over the work schema only. `RevertShare` counts merged branches
 later reverted; it is a descriptive operational signal, not a harm rate (reverts are
 decided by people who noticed something), and the calibrated harm rate remains
-`AdjudicatedHarmRate`. Any metric can be restricted to the last so many days. Each
+`AdjudicatedHarmRate`. Any metric can be restricted to the last so many days, from
+that many times 24 hours before the query's `now()` up to `now()` itself: a record
+stamped later, explicitly or on a clock that has since moved back, is in no such
+window, and zero days counts nothing, not even a record stamped at the query's own time
+(`a_window_of_days_counts_no_record_stamped_after_the_query_and_zero_days_count_nothing`).
+A day is 24 hours of elapsed time whatever the session's time zone, which the substrate
+does not set; a calendar day there is not 24 hours long across a change of its offset
+(`a_window_of_days_is_that_many_times_24_hours_whatever_the_session_time_zone`). Each
 counts a branch once and is windowed on one timestamp per branch, that of the record
 that puts the branch into its denominator: the triage for `AutoProposeShare` and
 `EscalationShare`; the first recorded outcome for `ConflictRate`, whose numerator

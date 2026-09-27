@@ -131,6 +131,11 @@ pub const WORK_MIGRATIONS: &[Migration] = &[
         name: "replay_clock_at_commit",
         sql: include_str!("../migrations/work/0014_replay_clock_at_commit.sql"),
     },
+    Migration {
+        version: 15,
+        name: "adapter_record_sealed",
+        sql: include_str!("../migrations/work/0015_adapter_record_sealed.sql"),
+    },
 ];
 
 impl Migration {

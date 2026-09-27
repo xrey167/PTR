@@ -11,7 +11,14 @@ use crate::config::SchemaSet;
 /// bounds the one timestamp per branch that `ptr-analytics` names for the
 /// metric (the record that puts the branch into the denominator), measured
 /// back from the server's `now()`; the day count is a `u16`, so it is
-/// rendered literally.
+/// rendered literally, as that many times 24 hours. A window of days runs
+/// from that many times 24 hours before `now()` up to `now()` itself, both
+/// included, whatever the session's time zone (a calendar day there is not
+/// 24 hours long across a change of its offset): a record stamped later (a
+/// stamp written explicitly, or taken from a clock that has since moved
+/// back) is in no such window, only in [`Window::All`]. Zero days counts
+/// nothing, so its window is empty whatever the stamps, rather than the
+/// records stamped exactly at `now()`.
 pub fn metric_sql(spec: MetricSpec, schemas: &SchemaSet) -> String {
     let work = schemas.work.as_str();
     let group = match spec.grouping {
@@ -93,8 +100,16 @@ pub fn metric_sql(spec: MetricSpec, schemas: &SchemaSet) -> String {
     };
     match spec.window {
         Window::All => {}
+        Window::LastDays(0) => conditions.push("false".to_owned()),
         Window::LastDays(days) => {
-            conditions.push(format!("{stamp} >= now() - make_interval(days => {days})"));
+            // Hours, which timestamptz arithmetic takes as elapsed time; days
+            // would be calendar days of the session's time zone, shorter or
+            // longer than 24 hours across a change of its offset.
+            let hours = u32::from(days) * 24;
+            conditions.push(format!(
+                "{stamp} >= now() - make_interval(hours => {hours})"
+            ));
+            conditions.push(format!("{stamp} <= now()"));
         }
     }
     let filter = if conditions.is_empty() {
@@ -121,7 +136,7 @@ mod tests {
                 Grouping::ByPrincipal,
                 Grouping::ByPolicyVersion,
             ] {
-                for window in [Window::All, Window::LastDays(7)] {
+                for window in [Window::All, Window::LastDays(7), Window::LastDays(0)] {
                     let sql = metric_sql(
                         MetricSpec {
                             metric,
@@ -134,11 +149,28 @@ mod tests {
                     assert!(!sql.contains("ptr_projection."), "{sql}");
                     assert!(sql.starts_with("SELECT "));
                     assert!(sql.matches(" WHERE ").count() <= 1, "{sql}");
+                    // Seven times 24 hours, not seven calendar days of
+                    // the session's time zone.
                     assert_eq!(
-                        sql.contains("make_interval(days => 7)"),
+                        sql.contains("make_interval(hours => 168)"),
                         window == Window::LastDays(7),
                         "{sql}"
                     );
+                    assert!(!sql.contains("days =>"), "{sql}");
+                    // A window of days ends at the query's time, and zero
+                    // days is empty rather than the records stamped then.
+                    assert_eq!(
+                        sql.contains(" <= now()"),
+                        window == Window::LastDays(7),
+                        "{sql}"
+                    );
+                    assert_eq!(
+                        sql.contains(" false GROUP BY "),
+                        window == Window::LastDays(0),
+                        "{sql}"
+                    );
+                    assert!(!sql.contains("make_interval(days => 0)"), "{sql}");
+                    assert!(!sql.contains("make_interval(hours => 0)"), "{sql}");
                     assert_eq!(
                         sql.contains("r.commit_index > o.commit_index"),
                         metric == Metric::RevertShare,
@@ -154,5 +186,15 @@ mod tests {
                 }
             }
         }
+        // The longest window still fits the hours make_interval takes.
+        let sql = metric_sql(
+            MetricSpec {
+                metric: Metric::AutoProposeShare,
+                grouping: Grouping::Overall,
+                window: Window::LastDays(u16::MAX),
+            },
+            &schemas,
+        );
+        assert!(sql.contains("make_interval(hours => 1572840)"), "{sql}");
     }
 }

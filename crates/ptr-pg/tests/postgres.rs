@@ -5,8 +5,9 @@
 //! installable. Every test works in its own schema prefix and drops it at the
 //! end, so tests run in parallel against one database. Some tests need more
 //! than that, which the server's superuser has: writing rows as a writer from
-//! before a migration sets `session_replication_role`, and one test creates
-//! and drops a role of its own, named after its schema prefix.
+//! before a migration, or as a restore stores them, sets
+//! `session_replication_role`, and one test creates and drops a role of its
+//! own, named after its schema prefix.
 
 use std::future::Future;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -2533,9 +2534,12 @@ async fn a_consolidated_adapter_has_sources_on_its_base_and_only_it_has_them() {
     let adapter = |id: &str, model: &str, origin: &str, parent: Option<&str>| {
         adapter_row(&work, id, model, origin, parent, "candidate")
     };
+    // t1 is registered with its data manifest, which is written in the
+    // transaction that registers it (work migration 15).
     raw.batch_execute(
         &[
             adapter("t1", "m", "trained", None),
+            format!("INSERT INTO {work}.adapter_input (adapter, input) VALUES ('t1', 'doc-1'); "),
             adapter("t2", "m", "trained", Some("t1")),
             adapter("other", "m2", "trained", None),
         ]
@@ -2577,11 +2581,6 @@ async fn a_consolidated_adapter_has_sources_on_its_base_and_only_it_has_them() {
         adapter("c1", "m", "consolidated", None),
         source("c1", "t1"),
         source("c1", "t2")
-    ))
-    .await
-    .unwrap();
-    raw.batch_execute(&format!(
-        "INSERT INTO {work}.adapter_input (adapter, input) VALUES ('t1', 'doc-1')"
     ))
     .await
     .unwrap();
@@ -3936,6 +3935,220 @@ async fn every_metric_windows_a_branch_once_on_the_record_that_enters_its_denomi
     // its month-old merge.
     assert_eq!(counts(Metric::RevertShare, Window::All).await, (2, 4));
     assert_eq!(counts(Metric::RevertShare, week).await, (1, 2));
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_window_of_days_counts_no_record_stamped_after_the_query_and_zero_days_count_nothing() {
+    let mut substrate = substrate().await;
+    record_manual_policy(&mut substrate, "policy-z").await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    // A stamp after the query's time (given explicitly, or taken from a clock
+    // that has since moved back), and one inside the week before it.
+    let (later, earlier) = ("now() + interval '1 hour'", "now() - interval '1 day'");
+    // (branch, decision, calibration slice, triage stamp); every branch is
+    // eligible and scores 0.8, which policy-z admits with propensity 0.9.
+    let triages = [
+        ("z1", "auto_propose", false, later),
+        ("z2", "auto_propose", false, earlier),
+        ("s1", "escalate", true, earlier),
+        ("s2", "escalate", true, earlier),
+    ];
+    for (id, decision, slice, stamp) in triages {
+        substrate
+            .store_branch(&sealed_branch(id, "agent-z"))
+            .await
+            .unwrap();
+        raw.execute(
+            &format!(
+                "INSERT INTO {work}.branch_triage (branch, decision, eligible, \
+                 calibration_slice, score, auto_propensity, policy_version, decided_at) \
+                 VALUES ($1, $2, true, $3, 0.8, 0.9, 'policy-z', {stamp})"
+            ),
+            &[&id, &decision, &slice],
+        )
+        .await
+        .unwrap();
+    }
+    // (branch, outcome, commit index, stamp)
+    let outcomes: [(&str, &str, Option<i64>, &str); 4] = [
+        ("z1", "merged", Some(1), later),
+        ("z2", "merged", Some(2), earlier),
+        ("s1", "adjudicated_harmful", None, later),
+        ("s2", "adjudicated_harmless", None, earlier),
+    ];
+    for (id, outcome, commit, stamp) in outcomes {
+        raw.execute(
+            &format!(
+                "INSERT INTO {work}.branch_outcome (branch, outcome, commit_index, observed_at) \
+                 VALUES ($1, $2, $3, {stamp})"
+            ),
+            &[&id, &outcome, &commit],
+        )
+        .await
+        .unwrap();
+    }
+    let spec = |metric, window| MetricSpec {
+        metric,
+        grouping: Grouping::Overall,
+        window,
+    };
+    let counts = |metric: Metric, window: Window| {
+        let substrate = &substrate;
+        async move {
+            let rows = substrate.metric(spec(metric, window)).await.unwrap();
+            assert_eq!(rows.len(), 1, "{metric:?} {window:?}: {rows:?}");
+            (rows[0].numerator, rows[0].denominator)
+        }
+    };
+    // Every record, whenever stamped, against the week, which leaves out
+    // z1's triage and merge and s1's adjudication, stamped an hour after the
+    // query.
+    for (metric, all, week) in [
+        (Metric::AutoProposeShare, (2, 4), (1, 3)),
+        (Metric::EscalationShare, (2, 4), (2, 3)),
+        (Metric::ConflictRate, (0, 4), (0, 2)),
+        (Metric::AdjudicatedHarmRate, (1, 2), (0, 1)),
+        (Metric::RevertShare, (0, 2), (0, 1)),
+    ] {
+        assert_eq!(counts(metric, Window::All).await, all, "{metric:?}");
+        assert_eq!(
+            counts(metric, Window::LastDays(7)).await,
+            week,
+            "{metric:?}"
+        );
+        // Zero days counts nothing, not even a record stamped after the
+        // query.
+        assert_eq!(
+            substrate
+                .metric(spec(metric, Window::LastDays(0)))
+                .await
+                .unwrap(),
+            vec![],
+            "{metric:?}"
+        );
+    }
+    // Nor a record stamped at the query's own time: a triage logged by the
+    // transaction the query runs in carries exactly its now().
+    substrate
+        .store_branch(&sealed_branch("z3", "agent-z"))
+        .await
+        .unwrap();
+    raw.batch_execute(&format!(
+        "BEGIN; \
+         INSERT INTO {work}.branch_triage (branch, decision, eligible, calibration_slice, \
+         score, auto_propensity, policy_version) \
+         VALUES ('z3', 'auto_propose', true, false, 0.8, 0.9, 'policy-z')"
+    ))
+    .await
+    .unwrap();
+    let in_transaction = |window| {
+        let raw = &raw;
+        let sql = ptr_pg::metric_sql(spec(Metric::AutoProposeShare, window), substrate.schemas());
+        async move {
+            raw.query(&sql, &[])
+                .await
+                .unwrap()
+                .iter()
+                .map(|row| (row.get::<_, i64>(1), row.get::<_, i64>(2)))
+                .collect::<Vec<_>>()
+        }
+    };
+    assert_eq!(in_transaction(Window::LastDays(0)).await, vec![]);
+    // A positive window counts it: it is stamped at the query's time, not
+    // after it.
+    assert_eq!(in_transaction(Window::LastDays(7)).await, vec![(2, 4)]);
+    raw.batch_execute("ROLLBACK").await.unwrap();
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_window_of_days_is_that_many_times_24_hours_whatever_the_session_time_zone() {
+    let mut substrate = substrate().await;
+    record_manual_policy(&mut substrate, "policy-d").await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    // A time zone whose offset changed within the last so many days, the
+    // fewest for which it did: that many calendar days before now() in it
+    // are an hour more or less than that many times 24 hours.
+    let mut changed = None;
+    for zone in [
+        "Europe/Berlin",
+        "America/New_York",
+        "America/Santiago",
+        "Australia/Sydney",
+    ] {
+        raw.batch_execute(&format!("SET TIME ZONE '{zone}'"))
+            .await
+            .unwrap();
+        let days: Option<i32> = raw
+            .query_one(
+                "SELECT min(n) FROM generate_series(1, 400) AS n \
+                 WHERE extract(epoch FROM now() - (now() - make_interval(days => n))) \
+                       <> 86400 * n",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        if let Some(days) = days {
+            changed = Some((zone, days));
+            break;
+        }
+    }
+    let (zone, days) = changed.expect("a time zone whose offset changed within 400 days");
+    // Two auto-proposals, triaged half an hour inside and half an hour
+    // outside that many times 24 hours before now(); both are eligible and
+    // score 0.8, which policy-d admits with propensity 0.9.
+    for (id, offset) in [
+        ("d-in", "+ interval '30 minutes'"),
+        ("d-out", "- interval '30 minutes'"),
+    ] {
+        substrate
+            .store_branch(&sealed_branch(id, "agent-d"))
+            .await
+            .unwrap();
+        raw.execute(
+            &format!(
+                "INSERT INTO {work}.branch_triage (branch, decision, eligible, \
+                 calibration_slice, score, auto_propensity, policy_version, decided_at) \
+                 VALUES ($1, 'auto_propose', true, false, 0.8, 0.9, 'policy-d', \
+                         now() - make_interval(hours => 24 * {days}) {offset})"
+            ),
+            &[&id],
+        )
+        .await
+        .unwrap();
+    }
+    let spec = MetricSpec {
+        metric: Metric::AutoProposeShare,
+        grouping: Grouping::Overall,
+        window: Window::LastDays(u16::try_from(days).unwrap()),
+    };
+    let sql = ptr_pg::metric_sql(spec, substrate.schemas());
+    // The window counts the triage inside it and not the one outside, in the
+    // zone that changed its offset as in UTC.
+    for session_zone in [zone, "UTC"] {
+        raw.batch_execute(&format!("SET TIME ZONE '{session_zone}'"))
+            .await
+            .unwrap();
+        let counted: Vec<(i64, i64)> = raw
+            .query(&sql, &[])
+            .await
+            .unwrap()
+            .iter()
+            .map(|row| (row.get(1), row.get(2)))
+            .collect();
+        assert_eq!(counted, vec![(1, 1)], "{days} days in {session_zone}");
+    }
+    let rows = substrate.metric(spec).await.unwrap();
+    assert_eq!(
+        rows.iter()
+            .map(|row| (row.numerator, row.denominator))
+            .collect::<Vec<_>>(),
+        vec![(1, 1)]
+    );
     substrate.drop_all().await.unwrap();
 }
 
@@ -7951,8 +8164,8 @@ async fn a_row_that_goes_only_with_its_parent_is_never_deleted_by_a_trigger() {
     let work = substrate.schemas().work.clone();
     raw.batch_execute(&format!(
         "{} BEGIN; {} INSERT INTO {work}.adapter_source (consolidated, source) \
-         VALUES ('c1', 't1'); COMMIT; \
-         INSERT INTO {work}.adapter_input (adapter, input) VALUES ('t1', 'doc-1'); \
+         VALUES ('c1', 't1'); \
+         INSERT INTO {work}.adapter_input (adapter, input) VALUES ('t1', 'doc-1'); COMMIT; \
          BEGIN; \
          INSERT INTO {work}.adapter_interference_report (adapter, layer_count) \
          VALUES ('t1', 1); \
@@ -8537,4 +8750,512 @@ async fn operators_a_writer_puts_first_on_its_search_path_decide_no_work_check()
     raw.batch_execute(&format!("DROP SCHEMA {own} CASCADE; DROP ROLE {role};"))
         .await
         .unwrap();
+}
+
+/// Statements writing an adapter's consolidation source and one entry of
+/// its data manifest.
+fn lineage_rows(
+    work: &Identifier,
+) -> (
+    impl Fn(&str, &str) -> String + '_,
+    impl Fn(&str, &str) -> String + '_,
+) {
+    (
+        move |consolidated: &str, source: &str| {
+            format!(
+                "INSERT INTO {work}.adapter_source (consolidated, source) \
+                 VALUES ('{consolidated}', '{source}'); "
+            )
+        },
+        move |adapter: &str, input: &str| {
+            format!(
+                "INSERT INTO {work}.adapter_input (adapter, input) \
+                 VALUES ('{adapter}', '{input}'); "
+            )
+        },
+    )
+}
+
+/// Every consolidation source and every data manifest entry stored, in
+/// order.
+async fn lineage_edges(
+    raw: &tokio_postgres::Client,
+    work: &Identifier,
+) -> (Vec<(String, String)>, Vec<(String, String)>) {
+    let pairs = |sql: String| async move {
+        raw.query(&sql, &[])
+            .await
+            .unwrap()
+            .iter()
+            .map(|row| (row.get::<_, String>(0), row.get::<_, String>(1)))
+            .collect::<Vec<_>>()
+    };
+    (
+        pairs(format!(
+            "SELECT consolidated, source FROM {work}.adapter_source ORDER BY 1, 2"
+        ))
+        .await,
+        pairs(format!(
+            "SELECT adapter, input FROM {work}.adapter_input ORDER BY 1, 2"
+        ))
+        .await,
+    )
+}
+
+fn owned_pairs(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+    pairs
+        .iter()
+        .map(|(a, b)| ((*a).to_owned(), (*b).to_owned()))
+        .collect()
+}
+
+#[tokio::test]
+async fn an_adapter_s_sources_and_data_manifest_are_written_only_in_the_transaction_that_registers_it(
+) {
+    let substrate = substrate().await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    let adapter = |id: &str, origin: &str, parent: Option<&str>| {
+        adapter_row(&work, id, "m", origin, parent, "candidate")
+    };
+    let (source, input) = lineage_rows(&work);
+    // Each adapter registered as Lineage::register records it: with its
+    // sources and data manifest, in the transaction that writes it.
+    raw.batch_execute(
+        &[
+            adapter("t1", "trained", None),
+            input("t1", "doc-1"),
+            adapter("t2", "trained", None),
+            input("t2", "doc-2"),
+            adapter("c1", "consolidated", None),
+            source("c1", "t1"),
+        ]
+        .concat(),
+    )
+    .await
+    .unwrap();
+    raw.batch_execute(&[adapter("c2", "consolidated", None), source("c2", "t2")].concat())
+        .await
+        .unwrap();
+
+    for (why, sql) in [
+        // Erasure of doc-9 would name t1, and a manifest that lists one input
+        // could lose none of it but gain any.
+        ("a manifest entry appended later", input("t1", "doc-9")),
+        ("a source appended later", source("c1", "t2")),
+        // A cycle Lineage::register cannot construct, since every source it
+        // records was registered before its consolidation.
+        (
+            "two registered consolidations made each other's source",
+            source("c1", "c2") + &source("c2", "c1"),
+        ),
+        // A no-change update, or a lifecycle step, gives the adapter's row a
+        // version its own transaction wrote, which is no registration.
+        (
+            "a manifest entry after a no-change update of its adapter",
+            format!("UPDATE {work}.adapter SET status = status WHERE id = 't1'; ")
+                + &input("t1", "doc-9"),
+        ),
+        (
+            "a source after a lifecycle step of its adapter",
+            format!("UPDATE {work}.adapter SET status = 'gated' WHERE id = 'c1'; ")
+                + &source("c1", "t2"),
+        ),
+        (
+            "a manifest entry beside another adapter's registration",
+            adapter("t3", "trained", None) + &input("t1", "doc-9"),
+        ),
+        (
+            "a registration claiming the current transaction",
+            format!(
+                "UPDATE {work}.adapter SET registered_xact = pg_current_xact_id() \
+                 WHERE id = 't1'; "
+            ) + &input("t1", "doc-9"),
+        ),
+        // Registered in one transaction, adapters still name only adapters
+        // they do not descend from.
+        (
+            "two consolidations registered together, each the other's source",
+            [
+                adapter("c3", "consolidated", None),
+                adapter("c4", "consolidated", None),
+                source("c3", "c4"),
+                source("c4", "c3"),
+            ]
+            .concat(),
+        ),
+        (
+            "two consolidations made each other's source in one statement",
+            [
+                adapter("c3", "consolidated", None),
+                adapter("c4", "consolidated", None),
+                format!(
+                    "INSERT INTO {work}.adapter_source (consolidated, source) \
+                     VALUES ('c3', 'c4'), ('c4', 'c3'); "
+                ),
+            ]
+            .concat(),
+        ),
+        (
+            "a consolidation of an adapter that continues it",
+            [
+                adapter("c5", "consolidated", None),
+                adapter("t5", "trained", Some("c5")),
+                source("c5", "t5"),
+            ]
+            .concat(),
+        ),
+        (
+            "three consolidations in a ring",
+            [
+                adapter("c6", "consolidated", None),
+                adapter("c7", "consolidated", None),
+                adapter("c8", "consolidated", None),
+                source("c6", "c7"),
+                source("c7", "c8"),
+                source("c8", "c6"),
+            ]
+            .concat(),
+        ),
+    ] {
+        assert_eq!(refused_sqlstate(&raw, &sql).await, "23000", "{why}");
+    }
+
+    // The rows of a registration may be written in any savepoint of its
+    // transaction, released or still open, before or after the adapter, in
+    // the adapter's own statement, and name adapters the same transaction
+    // registered, before or after it, as long as none descends from it.
+    for sql in [
+        format!(
+            "BEGIN; SAVEPOINT a; {} RELEASE SAVEPOINT a; {} COMMIT;",
+            adapter("t4", "trained", None),
+            input("t4", "doc-4")
+        ),
+        format!(
+            "BEGIN; {} SAVEPOINT a; {}{} RELEASE SAVEPOINT a; SAVEPOINT b; {} COMMIT;",
+            adapter("c9", "consolidated", None),
+            source("c9", "t1"),
+            source("c9", "t4"),
+            input("c9", "doc-9")
+        ),
+        format!(
+            "WITH a AS (INSERT INTO {work}.adapter \
+                            (id, domain, base_model, base_revision, origin, rank, artifact, \
+                             artifact_sha256, data_fingerprint, status) \
+                        VALUES ('t6', 'support', 'm', 'r1', 'trained', 8, 'artifact', \
+                                decode(repeat('00', 32), 'hex'), \
+                                decode(repeat('00', 32), 'hex'), 'candidate')) \
+             INSERT INTO {work}.adapter_input (adapter, input) VALUES ('t6', 'doc-6')"
+        ),
+        [
+            adapter("t7", "trained", None),
+            adapter("c10", "consolidated", None),
+            source("c10", "t7"),
+            source("c10", "c1"),
+            adapter("c11", "consolidated", None),
+            adapter("t8", "trained", Some("c10")),
+            source("c11", "t8"),
+        ]
+        .concat(),
+    ] {
+        raw.batch_execute(&sql).await.unwrap();
+    }
+    // A registration rolled back with its savepoint takes its rows' adapter
+    // with it.
+    assert_eq!(
+        refused_sqlstate(
+            &raw,
+            &format!(
+                "BEGIN; SAVEPOINT a; {} ROLLBACK TO SAVEPOINT a; {} COMMIT;",
+                adapter("t9", "trained", None),
+                input("t9", "doc-9")
+            )
+        )
+        .await,
+        "23503"
+    );
+    raw.batch_execute("ROLLBACK").await.unwrap();
+
+    let (sources, inputs) = lineage_edges(&raw, &work).await;
+    assert_eq!(
+        sources,
+        owned_pairs(&[
+            ("c1", "t1"),
+            ("c10", "c1"),
+            ("c10", "t7"),
+            ("c11", "t8"),
+            ("c2", "t2"),
+            ("c9", "t1"),
+            ("c9", "t4"),
+        ])
+    );
+    assert_eq!(
+        inputs,
+        owned_pairs(&[
+            ("c9", "doc-9"),
+            ("t1", "doc-1"),
+            ("t2", "doc-2"),
+            ("t4", "doc-4"),
+            ("t6", "doc-6"),
+        ])
+    );
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn an_adapter_registered_before_work_version_15_gains_no_source_or_input() {
+    let mut substrate = unmigrated_substrate_at(&dsn()).await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    work_schema_at(&raw, &substrate, 14).await;
+    let adapter = |id: &str, origin: &str| adapter_row(&work, id, "m", origin, None, "candidate");
+    let (source, input) = lineage_rows(&work);
+    raw.batch_execute(
+        &[
+            adapter("t1", "trained"),
+            input("t1", "doc-1"),
+            adapter("t2", "trained"),
+            adapter("c1", "consolidated"),
+            source("c1", "t1"),
+        ]
+        .concat(),
+    )
+    .await
+    .unwrap();
+    // Version 14 let a later transaction append to both.
+    raw.batch_execute(&input("t2", "doc-2")).await.unwrap();
+
+    let report = substrate.migrate().await.unwrap();
+    assert_eq!(
+        report.work,
+        (15..=WORK_MIGRATIONS.len() as u32).collect::<Vec<_>>()
+    );
+    // Nothing records which transaction registered them, and it was an
+    // earlier one: they gain no row.
+    for sql in [
+        input("t1", "doc-9"),
+        input("t2", "doc-9"),
+        source("c1", "t2"),
+        format!("UPDATE {work}.adapter SET status = status WHERE id = 't1'; ")
+            + &input("t1", "doc-9"),
+    ] {
+        assert_eq!(refused_sqlstate(&raw, &sql).await, "23000", "{sql}");
+    }
+    // Their lifecycle goes on.
+    for status in ["gated", "serving", "retired"] {
+        raw.batch_execute(&format!(
+            "UPDATE {work}.adapter SET status = '{status}' WHERE id = 't1'"
+        ))
+        .await
+        .unwrap();
+    }
+    let (sources, inputs) = lineage_edges(&raw, &work).await;
+    assert_eq!(sources, owned_pairs(&[("c1", "t1")]));
+    assert_eq!(inputs, owned_pairs(&[("t1", "doc-1"), ("t2", "doc-2")]));
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn an_adapter_stored_with_another_cluster_s_stamp_gains_no_row_in_the_transaction_that_repeats_it(
+) {
+    let substrate = substrate().await;
+    let raw = raw_client().await;
+    let restorer = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    let adapter = |id: &str, origin: &str| adapter_row(&work, id, "m", origin, None, "candidate");
+    let (source, input) = lineage_rows(&work);
+    // A transaction of this cluster whose id another cluster gave to the
+    // transaction that registered t1 and c1 there; that cluster's next
+    // transaction registered c2, a consolidation of c1.
+    raw.batch_execute("BEGIN").await.unwrap();
+    let this: String = raw
+        .query_one("SELECT pg_current_xact_id()::text", &[])
+        .await
+        .unwrap()
+        .get(0);
+    let next = this.parse::<u64>().unwrap() + 1;
+    // Those adapters as a restore stores them (pg_dump writes a table's rows
+    // before its triggers) and as a logical-replication subscriber does (its
+    // apply worker runs no ordinary trigger): rows another transaction of
+    // this cluster wrote, each carrying the stamp it was registered with
+    // there.
+    restorer
+        .batch_execute(&format!(
+            "BEGIN; SET LOCAL session_replication_role = replica; {} \
+             UPDATE {work}.adapter SET registered_xact = '{this}' WHERE id IN ('t1', 'c1'); \
+             UPDATE {work}.adapter SET registered_xact = '{next}' WHERE id = 'c2'; COMMIT;",
+            [
+                adapter("t1", "trained"),
+                input("t1", "doc-1"),
+                adapter("c1", "consolidated"),
+                source("c1", "t1"),
+                adapter("c2", "consolidated"),
+                source("c2", "c1"),
+            ]
+            .concat()
+        ))
+        .await
+        .unwrap();
+    let stamps: Vec<(String, String)> = raw
+        .query(
+            &format!(
+                "SELECT id, registered_xact::text FROM {work}.adapter \
+                 WHERE registered_xact = pg_current_xact_id() ORDER BY id"
+            ),
+            &[],
+        )
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| (row.get(0), row.get(1)))
+        .collect();
+    assert_eq!(
+        stamps,
+        vec![
+            ("c1".to_owned(), this.clone()),
+            ("t1".to_owned(), this.clone())
+        ]
+    );
+    // The transaction whose id their stamp repeats did not register them: it
+    // extends no manifest, closes no cycle, and cannot make a row of theirs
+    // its own first.
+    for (why, sql) in [
+        ("a manifest entry", input("t1", "doc-appended-later")),
+        (
+            "a source closing the cycle c1 -> c2 -> c1",
+            source("c1", "c2"),
+        ),
+        (
+            "a manifest entry after a no-change update of its adapter",
+            format!("UPDATE {work}.adapter SET status = status WHERE id = 't1'; ")
+                + &input("t1", "doc-appended-later"),
+        ),
+        (
+            "a manifest entry after a lifecycle step of its adapter",
+            format!("UPDATE {work}.adapter SET status = 'gated' WHERE id = 't1'; ")
+                + &input("t1", "doc-appended-later"),
+        ),
+        (
+            "a source after a no-change update of its consolidation",
+            format!("UPDATE {work}.adapter SET status = status WHERE id = 'c1'; ")
+                + &source("c1", "c2"),
+        ),
+    ] {
+        assert_eq!(
+            refused_sqlstate(&raw, &format!("SAVEPOINT attempt; {sql}")).await,
+            "23000",
+            "{why}"
+        );
+        raw.batch_execute("ROLLBACK TO SAVEPOINT attempt")
+            .await
+            .unwrap();
+    }
+    // What the transaction registers itself it records as ever, in a
+    // savepoint and after a lifecycle step in the same transaction too.
+    raw.batch_execute(
+        &[
+            "SAVEPOINT own; ".to_owned(),
+            adapter("t3", "trained"),
+            "RELEASE SAVEPOINT own; ".to_owned(),
+            format!("UPDATE {work}.adapter SET status = 'gated' WHERE id = 't3'; "),
+            input("t3", "doc-3"),
+            "COMMIT;".to_owned(),
+        ]
+        .concat(),
+    )
+    .await
+    .unwrap();
+    // The stored adapters go on along their lifecycle in later transactions.
+    for status in ["gated", "serving"] {
+        raw.batch_execute(&format!(
+            "UPDATE {work}.adapter SET status = '{status}' WHERE id IN ('t1', 'c1')"
+        ))
+        .await
+        .unwrap();
+    }
+    let (sources, inputs) = lineage_edges(&raw, &work).await;
+    assert_eq!(sources, owned_pairs(&[("c1", "t1"), ("c2", "c1")]));
+    assert_eq!(inputs, owned_pairs(&[("t1", "doc-1"), ("t3", "doc-3")]));
+    substrate.drop_all().await.unwrap();
+}
+
+/// The (parent, child) table pairs a migration's audit names: the entries
+/// that follow the comment line beginning `heading`, each `parent -> child,
+/// child (column): why`, over as many comment lines as it takes.
+fn audited_pairs(sql: &str, heading: &str) -> Vec<(String, String)> {
+    let mut entries: Vec<String> = Vec::new();
+    let mut lines = sql
+        .lines()
+        .skip_while(|line| !line.starts_with(heading))
+        .skip(1)
+        .skip_while(|line| !line.starts_with("--   * "));
+    for line in lines.by_ref() {
+        if let Some(entry) = line.strip_prefix("--   * ") {
+            entries.push(entry.to_owned());
+        } else if let Some(more) = line.strip_prefix("--     ") {
+            let entry = entries.last_mut().unwrap();
+            entry.push(' ');
+            entry.push_str(more.trim());
+        } else {
+            break;
+        }
+    }
+    assert!(!entries.is_empty(), "no entry follows {heading:?}");
+    let mut pairs = Vec::new();
+    for entry in &entries {
+        let head = entry.split(':').next().unwrap();
+        let (parent, children) = head.split_once(" -> ").unwrap_or_else(|| panic!("{entry}"));
+        for child in children.split(", ") {
+            let table = child.split(" (").next().unwrap().trim();
+            pairs.push((parent.trim().to_owned(), table.to_owned()));
+        }
+    }
+    pairs
+}
+
+#[tokio::test]
+async fn work_migration_15_gives_a_reason_for_every_other_parent_and_child_of_the_work_schema() {
+    let mut substrate = unmigrated_substrate_at(&dsn()).await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    work_schema_at(&raw, &substrate, 15).await;
+    // Every parent and child of the work schema at version 15: the tables
+    // each foreign key joins.
+    let keys: Vec<(String, String)> = raw
+        .query(
+            "SELECT DISTINCT parent.relname::text, child.relname::text \
+             FROM pg_constraint k \
+             JOIN pg_class child ON child.oid = k.conrelid \
+             JOIN pg_class parent ON parent.oid = k.confrelid \
+             WHERE k.contype = 'f' AND k.connamespace = $1::text::regnamespace \
+             ORDER BY 1, 2",
+            &[&work.as_str()],
+        )
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| (row.get(0), row.get(1)))
+        .collect();
+    // The migration's subject, and the others it gives a reason for, once
+    // each.
+    let migration = WORK_MIGRATIONS
+        .iter()
+        .find(|migration| migration.version == 15)
+        .unwrap();
+    let mut named = audited_pairs(
+        migration.sql,
+        "-- The other parents and children of the work schema",
+    );
+    let entries = named.len();
+    named.sort();
+    named.dedup();
+    assert_eq!(named.len(), entries, "a pair named twice: {named:?}");
+    named.extend(owned_pairs(&[
+        ("adapter", "adapter_input"),
+        ("adapter", "adapter_source"),
+    ]));
+    named.sort();
+    assert_eq!(named, keys);
+    substrate.migrate().await.unwrap();
+    substrate.drop_all().await.unwrap();
 }
