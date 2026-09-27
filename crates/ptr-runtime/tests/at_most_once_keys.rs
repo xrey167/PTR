@@ -741,10 +741,10 @@ fn a_principal_of_any_length_spends_a_key_and_a_snapshot_carries_it() {
     let long = "a".repeat(64 * 1024);
 
     // A spent key's principal travels in every later snapshot. No build has
-    // bounded a principal, so the snapshot writes it at any length: a session
-    // or a peer admitted under one this long spends a key, and the runtime
-    // still exports, restores and answers the retry, while another principal
-    // is refused under the key.
+    // bounded a principal, so the snapshot writes it at any length: the
+    // admission policy admits a peer under one this long, a session registered
+    // under one spends a key, and the runtime still exports, restores and
+    // answers the retry, while another principal is refused under the key.
     let mut policy = AdmissionPolicy::new();
     policy
         .admit(NodeId::from("peer"), long.as_str(), TTL, Vec::new)
@@ -1241,4 +1241,48 @@ fn a_snapshot_whose_keys_bind_no_action_is_refused_by_version() {
         &[]
     )
     .is_ok());
+}
+
+#[test]
+fn a_snapshot_whose_recorded_project_or_principal_is_malformed_is_refused() {
+    let (mut runtime, action) = fixture();
+    let alice = synchronous(&mut runtime, "alice", &action, &Echo::default());
+    let permit = once(&runtime, &alice, &action, "invoice-7");
+    runtime.execute_prepared(&alice, permit).unwrap();
+    let snapshot = runtime.export_compacted_snapshot().unwrap();
+    let bytes = snapshot.bytes();
+
+    // The section holds no unsettled attempt and one settled key: its magic,
+    // the two counts, the key, the outcome tag and the settling attempt, then
+    // the project and principal that attempt recorded, each a length and the
+    // bytes. They are written at any length, so decoding holds them to their
+    // framing: a length past the bytes that remain, and bytes that are not
+    // UTF-8, are refused. Each edit is resealed, so only the section can refuse
+    // it.
+    let project = execution_section(bytes) + 8 + 4 + 4 + (4 + "invoice-7".len()) + 8 + 8;
+    let principal = project + 4 + "p".len();
+    assert_eq!(&bytes[project..project + 4], &1_u32.to_le_bytes());
+    assert_eq!(&bytes[principal..principal + 4], &5_u32.to_le_bytes());
+    assert_eq!(&bytes[principal + 4..principal + 9], b"alice");
+
+    let mut past_the_end = bytes.to_vec();
+    past_the_end[principal..principal + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+    let anchor = reseal(&mut past_the_end, snapshot.anchor());
+    assert_eq!(
+        PtrRuntime::restore_compacted(PtrConfig::default(), &past_the_end, anchor, &[]).err(),
+        Some(RuntimeError::Compacted(CompactedError::LengthMismatch))
+    );
+
+    let mut not_utf8 = bytes.to_vec();
+    not_utf8[project + 4] = 0xFF;
+    let anchor = reseal(&mut not_utf8, snapshot.anchor());
+    assert_eq!(
+        PtrRuntime::restore_compacted(PtrConfig::default(), &not_utf8, anchor, &[]).err(),
+        Some(RuntimeError::Compacted(CompactedError::NoncanonicalSection))
+    );
+
+    // The control: the snapshot as exported restores.
+    assert!(
+        PtrRuntime::restore_compacted(PtrConfig::default(), bytes, snapshot.anchor(), &[]).is_ok()
+    );
 }

@@ -42,9 +42,10 @@ const LIFECYCLE_MAGIC: &[u8; 8] = b"PTRLC001";
 const HEADER: usize = 80;
 const DIGEST_BYTES: usize = 32;
 const MAX_SECTION_ITEMS: usize = 65_536;
-/// The bound on each string the lifecycle section writes and on each
-/// at-most-once key the execution section writes: 1 to this many bytes, as in
-/// every earlier layout. A key in an attempt being committed is held to it
+/// The bound on each string the lifecycle section writes, and on each
+/// at-most-once key and each unsettled attempt's target and operation the
+/// execution section writes: 1 to this many bytes, as in every earlier layout.
+/// A key in an attempt being committed is held to it
 /// ([`MAX_KEY_BYTES`](crate::execution::MAX_KEY_BYTES)). A longer key, which a
 /// log written by an earlier build may hold, is replayed, and export then fails
 /// with [`CompactedError::SectionLimit`] once it has settled, as it did before.
@@ -59,6 +60,10 @@ const MAX_SECTION_ITEMS: usize = 65_536;
 /// each retaining a full-size response, or more than `MAX_SECTION_ITEMS`
 /// settled keys, make every later export fail with
 /// [`CompactedError::SectionLimit`] although no string is out of bounds.
+/// PTREX002 writes each applied key with 64 bytes more than PTREX001 did (the
+/// settling attempt, revision, generation, action digest and two lengths) plus
+/// its project and principal, so a history whose execution section came close
+/// to the bound in the previous layout can pass it in this one.
 pub(crate) const MAX_STRING_BYTES: usize = 4096;
 /// Bound on one encoded section, checked before any allocation driven by a count.
 pub const MAX_SECTION_BYTES: usize = 8 * 1024 * 1024;
@@ -192,7 +197,6 @@ impl Writer {
         self.raw(&(value.len() as u32).to_le_bytes())?;
         self.raw(value.as_bytes())
     }
-    /// Encode one little-endian unsigned integer.
     /// Encode one bounded byte string.
     ///
     /// Separate from `count`, which bounds a *collection's cardinality* at
@@ -208,6 +212,7 @@ impl Writer {
         self.raw(value)
     }
 
+    /// Encode one little-endian unsigned integer.
     fn number(&mut self, value: u64) -> Result<(), RuntimeError> {
         self.raw(&value.to_le_bytes())
     }
@@ -215,9 +220,10 @@ impl Writer {
     /// Encode one UTF-8 string of any length the section has room for, the
     /// empty one included.
     ///
-    /// For what an attempt recorded, which no build has bounded: a snapshot has
-    /// to carry whatever a log it compacts could hold, or a history that
-    /// compacted before an upgrade could not compact after it.
+    /// For what an attempt recorded, which no build has bounded: a snapshot
+    /// must not refuse a string a log it compacts could hold. The section as a
+    /// whole is still bounded ([`MAX_STRING_BYTES`] says by how much more an
+    /// applied key weighs here than in the previous layout).
     fn field(&mut self, value: &str) -> Result<(), RuntimeError> {
         let length =
             u32::try_from(value.len()).map_err(|_| invalid(CompactedError::SectionLimit))?;
@@ -273,7 +279,6 @@ impl<'a> Reader<'a> {
         String::from_utf8(self.take(length)?.to_vec())
             .map_err(|_| invalid(CompactedError::NoncanonicalSection))
     }
-    /// Decode one little-endian unsigned integer.
     /// Decode one bounded byte string, with the same bound the writer used.
     fn blob(&mut self) -> Result<Vec<u8>, RuntimeError> {
         let length = u32::from_le_bytes(self.take(4)?.try_into().expect("length bytes")) as usize;
@@ -283,6 +288,7 @@ impl<'a> Reader<'a> {
         Ok(self.take(length)?.to_vec())
     }
 
+    /// Decode one little-endian unsigned integer.
     fn number(&mut self) -> Result<u64, RuntimeError> {
         Ok(u64::from_le_bytes(
             self.take(8)?.try_into().expect("fixed number"),
@@ -647,8 +653,10 @@ impl PtrRuntime {
     /// log whose anchor carries that same floor. Each one goes through the
     /// validation replay applies, the ordinary lifecycle and semantic path, so a
     /// restored runtime cannot reach a state a replay of the whole log would have
-    /// refused. That is every check a live commit makes except the bound on a
-    /// new attempt's key, which a log written by an earlier build may exceed.
+    /// refused. That is the validation a live commit applies to the record
+    /// itself, except the bound on a new attempt's key, which a log written by
+    /// an earlier build may exceed; the fence a live commit also checks is the
+    /// runtime's state, not the record's, and replay rebuilds it.
     pub fn restore_compacted(
         config: PtrConfig,
         bytes: &[u8],

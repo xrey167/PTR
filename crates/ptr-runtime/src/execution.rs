@@ -27,17 +27,18 @@ const ACTION_DOMAIN: &[u8] = b"PTREXEC01-ACTION";
 /// string of 1 to this many bytes, as the layout before it did, and every later
 /// snapshot carries it again, so a longer key would make every export after its
 /// attempt settled fail. [`PtrRuntime::prepare_execution_once`] refuses a longer
-/// key this runtime does not already hold with [`ExecutionError::InvalidKey`],
-/// before it can be spent, and a keyed `EffectAttempted` being committed that
-/// names one is refused with [`RuntimeError::InvalidEffectKey`].
+/// key that has not settled here with [`ExecutionError::InvalidKey`], before it
+/// can be spent, and a keyed `EffectAttempted` being committed that names one is
+/// refused with [`RuntimeError::InvalidEffectKey`].
 ///
 /// Earlier builds held a key only to being an identifier, of any length, and
 /// the execution wire carries one of up to 64 KiB, so a log may hold a longer
-/// key. Replay takes it as it is, and the runtime opens. Preparation lets a key
-/// the runtime already holds through, so a retry under it is answered from the
+/// key. Replay takes it as it is, and the runtime opens. Preparation lets such a
+/// key through once it has settled, so a retry under it is answered from the
 /// key's entry as it was before: the same request's outcome, or a refusal for
 /// another request. It is still never spent again: an attempt under it, after
-/// it was reconciled as not applied, is refused at commit. Once such a key has
+/// it was reconciled as not applied, is refused at commit. While its attempt is
+/// unsettled the runtime is fenced, so no session exists to prepare under it. Once such a key has
 /// settled, every export fails with `PTR_COMPACTED_SECTION_LIMIT`, as it did
 /// before this bound.
 pub const MAX_KEY_BYTES: usize = super::compacted::MAX_STRING_BYTES;
@@ -159,7 +160,9 @@ pub enum SettledOutcome {
     },
     /// Reconciliation established that nothing applied, so the at-most-once
     /// budget was never spent. The key binds no action, and a later attempt
-    /// under it may proceed for any action.
+    /// under it may proceed for any action, unless the key is longer than
+    /// [`MAX_KEY_BYTES`], which a log written by an earlier build may hold: an
+    /// attempt under such a key is refused at commit.
     NotApplied,
 }
 
@@ -537,8 +540,8 @@ pub enum ExecutionError {
         attempt: CommitIndex,
     },
     /// An at-most-once key that is not a well-formed identifier, or one longer
-    /// than [`MAX_KEY_BYTES`] that this runtime does not already hold. Refused
-    /// at preparation, before it can be spent.
+    /// than [`MAX_KEY_BYTES`] that has not settled in this runtime. Refused at
+    /// preparation, before it can be spent.
     InvalidKey,
     InvalidEvidence,
     /// No admission policy entry for this peer. A peer the host never bound is
@@ -684,10 +687,9 @@ impl ExecutionState {
         self.unsettled.contains_key(&attempt)
     }
 
-    /// Whether a key has an entry: settled with either outcome, or attempted
-    /// and awaiting settlement.
-    pub(super) fn holds_key(&self, key: &str) -> bool {
-        self.settled.contains_key(key) || self.key_in_flight(key)
+    /// Whether a key has settled here, with either outcome.
+    pub(super) fn has_settled(&self, key: &str) -> bool {
+        self.settled.contains_key(key)
     }
 
     pub(super) fn key_in_flight(&self, key: &str) -> bool {
@@ -961,11 +963,11 @@ impl PtrRuntime {
     ///
     /// A key that is not a well-formed identifier is refused with
     /// [`ExecutionError::InvalidKey`] before anything else is checked, and so is
-    /// one longer than [`MAX_KEY_BYTES`] that this runtime does not already
-    /// hold: every later compacted snapshot carries a settled key, so one no
-    /// snapshot can carry must not be spent. A longer key that a log written by
-    /// an earlier build left behind is let through, so a retry under it is
-    /// answered from its entry as it was before.
+    /// one longer than [`MAX_KEY_BYTES`] that has not settled here: every later
+    /// compacted snapshot carries a settled key, so one no snapshot can carry
+    /// must not be spent. A longer key that a log written by an earlier build
+    /// settled is let through, so a retry under it is answered from its entry as
+    /// it was before.
     pub fn prepare_execution_once(
         &self,
         session: &ExecutionSession,
@@ -975,7 +977,8 @@ impl PtrRuntime {
         key: impl Into<String>,
     ) -> Result<ExecutionPermit, ExecutionError> {
         let key = key.into();
-        if !valid_identifier(&key) || (key.len() > MAX_KEY_BYTES && !self.execution.holds_key(&key))
+        if !valid_identifier(&key)
+            || (key.len() > MAX_KEY_BYTES && !self.execution.has_settled(&key))
         {
             return Err(ExecutionError::InvalidKey);
         }

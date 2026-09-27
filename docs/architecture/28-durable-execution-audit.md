@@ -350,10 +350,9 @@ key's tag first: an applied outcome follows it with the settling attempt's index
 project, principal, revision, generation and action digest (and, for tag 0, the
 retained response); `NotApplied` is the tag alone.
 
-A snapshot has to carry whatever a log it compacts could hold, or a history that
-compacted before an upgrade would stop compacting after it. So the project and
-principal are written at any length, the empty string included, as a length and
-the bytes. No build has bounded either: a session's principal and a grant's
+A snapshot must not refuse a string a log it compacts could hold. So the project
+and principal are written at any length, the empty string included, as a length
+and the bytes. No build has bounded either: a session's principal and a grant's
 project must be identifiers of any length, and a directly committed
 `EffectAttempted` may name any string at all. `PTREX001` carried neither, so a
 bound here would have been new, and an earlier revision of this change had one,
@@ -361,9 +360,10 @@ bound here would have been new, and an earlier revision of this change had one,
 empty principal, which compacted on the previous build, fail every export once a
 key under it applied, and it made the runtime refuse sessions and peers the
 previous build admitted. Both are gone: what an attempt records is recorded as
-given, and the snapshot carries it. What the section holds in total is still
-bounded, and the project and principal of every applied key count towards that
-bound (under "What this does not close").
+given, and no string of it makes an export fail. What the section holds in total
+is still bounded, and `PTREX002` weighs more per applied key than `PTREX001`
+did, so a history near that bound on the previous build can pass it after the
+upgrade (under "What this does not close").
 
 A key is still written as 1 to 4096 bytes, as `PTREX001` wrote it, because a key
 is chosen by the requester rather than by the host and every later snapshot
@@ -388,8 +388,9 @@ that is wrong: a peer granted a keyed request on the previous build could have
 spent a key of up to 65,536 bytes, and after an upgrade the runtime would refuse
 its own log and not start.
 
-Preparation lets a key past the bound through when the runtime already holds it,
-settled either way or awaiting settlement. The request that spent it is
+Preparation lets a key past the bound through once it has settled here, with
+either outcome; while its attempt is unsettled the runtime is fenced and no
+session can be registered to prepare under it. The request that spent it is
 therefore answered from history as it would have been before: its response, or
 `ResponseNotRetained`. Another request under it is refused as bound to another
 action, which the previous build, binding no key, did not do. Refusing the
@@ -474,6 +475,11 @@ the code before the fix:
   earlier build could have written with such a project reopens and exports as
   the principal's does
   (`a_keyed_attempt_under_any_project_is_committed_and_a_snapshot_carries_it`);
+- a resealed snapshot whose recorded principal has a length past the bytes that
+  remain is refused with `PTR_COMPACTED_LENGTH`, and one whose recorded project
+  is not UTF-8 with `PTR_COMPACTED_NONCANONICAL_SECTION`, while the snapshot as
+  exported restores
+  (`a_snapshot_whose_recorded_project_or_principal_is_malformed_is_refused`);
 - a detached retry names its own key's attempt when another key settled equal bytes,
   and after a compacted round trip; a refusal names the attempt that settled the
   key, not the first attempt under it
@@ -549,6 +555,17 @@ the code before the fix:
   so do fewer keys spent under a principal or project the host made long. This
   predates the key bound, which does not reach it; closing it needs a retention
   rule for settled keys or a layout that does not put them all in one section.
+  `PTREX002` makes it reachable sooner, and on upgrade: it writes each applied key
+  with 64 bytes more than `PTREX001` (the settling attempt, revision, generation,
+  action digest and two lengths) plus its project and principal, which
+  `PTREX001` did not carry. A history whose execution section the previous build
+  could still write can therefore fail every export after the upgrade. For
+  example, 20,000 applied keys of 36 bytes with 330-byte responses under project
+  `p` and principal `alice` take 7.64 MB in `PTREX001` and 9.04 MB in
+  `PTREX002`, past the 8 MiB bound, and so do about 130 applied keys under a
+  64 KiB principal. (The lifecycle section's three materialized entries per
+  attempt already stop every export past about 21,845 attempts, in both
+  layouts.)
 - **A log written before the key bound can still stop compaction.** The bound
   holds new keys only. A log an earlier build wrote may hold a keyed attempt
   whose key is past `MAX_KEY_BYTES`: up to the execution wire's 64 KiB from a
