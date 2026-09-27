@@ -1,7 +1,7 @@
 {
   "experiment_id": "L004",
-  "git_sha": "dcfbb3ea0da08bf9043e4ad79111a95d7924069f",
-  "recorded_at": "2026-09-27T15:01:44.938816+00:00",
+  "git_sha": "7b60216b9b1cabca7faa94327a52d9207f3a453d",
+  "recorded_at": "2026-09-27T16:26:58.224532+00:00",
   "subcommand": "projection-equivalence",
   "killed": 17,
   "total": 17,
@@ -154,16 +154,16 @@
       "seed": 17,
       "result": "killed",
       "exit_code": 1,
-      "hard_failures": 14,
+      "hard_failures": 15,
       "expected": [
         "crash_recovery_failures",
         "commit_fault_failures",
         "duel_failures"
       ],
       "counters": {
-        "crash_recovery_failures": 2,
-        "commit_fault_failures": 8,
-        "duel_failures": 4
+        "crash_recovery_failures": 1,
+        "commit_fault_failures": 9,
+        "duel_failures": 5
       }
     },
     {
@@ -204,16 +204,16 @@
       "seed": 17,
       "result": "killed",
       "exit_code": 1,
-      "hard_failures": 17,
+      "hard_failures": 18,
       "expected": [
         "crash_recovery_failures",
         "commit_fault_failures",
         "duel_failures"
       ],
       "counters": {
-        "crash_recovery_failures": 3,
-        "commit_fault_failures": 9,
-        "duel_failures": 5
+        "crash_recovery_failures": 5,
+        "commit_fault_failures": 7,
+        "duel_failures": 6
       }
     },
     {

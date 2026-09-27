@@ -1418,11 +1418,11 @@ another by idea.
 | [F002](../../experiments/feedback/F002-weak-supervision/README.md) | Is the verifier-precedence label model better calibrated than majority vote? | any label contradicting a verifier veto |
 | [E005](../../experiments/system/E005-agent-memory-benchmark/README.md) | Does the combined stack beat current agent-memory systems on LongMemEval and LoCoMo? | no category improvement at equal budget |
 
-L004 and L003 are completed for PostgreSQL 18 (2026-09-27, at dcfbb3e): over five seeds each, with crashes,
+L004 and L003 are completed for PostgreSQL 18 (2026-09-27, at 7b60216): over five seeds each, with crashes,
 commits the server failed and races, no projection diverged from the reference, no foreign history was
 accepted, no refold differed by a bit and no revoked input was read; every planted defect of their mutation
 lists was detected (17 of 17 and 16 of 16). Their seed records, mutation checks and aggregates all ran at
-that commit, and an earlier run at ad2f8d1 also passed. Results and limitations are in each experiment's
+that commit, and earlier runs at ad2f8d1 and dcfbb3e also passed. Results and limitations are in each experiment's
 `results/`. `scripts/check_research_gates.py` fails CI on a completed experiment whose archived `run.json`
 or `mutations.json` ran at code, aggregation scripts or mutation plan HEAD has changed without a
 `results/STALE.toml` marker naming them and the first change (`test_results_of_other_code_fail_without_a_marker`,
