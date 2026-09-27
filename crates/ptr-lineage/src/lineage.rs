@@ -69,7 +69,16 @@ impl AdapterStatus {
     }
 }
 
-/// Everything needed to reproduce and audit one adapter.
+/// Everything needed to reproduce and audit one adapter, as its trainer
+/// declares it.
+///
+/// [`Lineage::register`] checks the base, the id, the origin and the rank,
+/// and stores the record as a candidate whatever `status` it carries; a
+/// registered record is then only lent out immutably ([`Lineage::get`],
+/// [`Lineage::serving`]). The artifact, its SHA-256, the data fingerprint and
+/// the data manifest are recorded as given: the lineage holds neither the
+/// weights nor the training input, never reads the two digests and compares
+/// none of these fields with anything.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AdapterRecord {
     pub id: AdapterId,
@@ -81,15 +90,25 @@ pub struct AdapterRecord {
     pub origin: Origin,
     pub rank: u32,
     pub target_modules: BTreeSet<String>,
-    /// The sealed weights, content-addressed through `ptr-storage`.
+    /// The sealed weights in `ptr-storage`, as the trainer names them. Nothing
+    /// here checks that the artifact exists or that its bytes have
+    /// `artifact_sha256` as their digest.
     pub artifact: ArtifactId,
+    /// SHA-256 of the sealed weights, as the trainer computed it; recorded,
+    /// never recomputed or compared.
     pub artifact_sha256: [u8; 32],
-    /// Fingerprint of the exact training input, replay sample ids included.
+    /// Fingerprint of the exact training input, replay sample ids included,
+    /// as the trainer computed it; recorded, never recomputed or compared
+    /// with `data_manifest`.
     pub data_fingerprint: [u8; 32],
-    /// Ids of every raw input the adapter was trained on. This is what makes
-    /// erasure propagate: revoking an input names every adapter that has to be
-    /// retired or retrained.
+    /// Ids of every raw input the adapter was trained on, as the trainer
+    /// declares them. This is what makes erasure propagate:
+    /// [`Lineage::affected_by`] follows exactly these ids, so revoking an
+    /// input names the adapter only if its manifest (or that of an adapter
+    /// it descends from) lists the input.
     pub data_manifest: BTreeSet<String>,
+    /// Ignored by [`Lineage::register`], which stores every new record as a
+    /// candidate; the lifecycle methods change it from there.
     pub status: AdapterStatus,
 }
 
@@ -167,7 +186,9 @@ impl Lineage {
     }
 
     /// Promote a candidate on a passing gate report for that adapter. A failing
-    /// or mismatched report changes nothing.
+    /// or mismatched report changes nothing. The report binds its verdict to
+    /// the adapter id it was evaluated for and to nothing else (see
+    /// [`GateReport`]).
     pub fn gate(&mut self, id: &AdapterId, report: &GateReport) -> Result<(), LineageError> {
         let status = self
             .adapters
@@ -310,13 +331,16 @@ impl ConsolidationPolicy {
     /// Whether extending an adapter at `depth` with a candidate whose worst
     /// overlap is `overlap` should instead trigger consolidation.
     ///
-    /// An overlap that cannot be compared with the limit, because it or
-    /// `max_overlap` is NaN, makes consolidation due: an unmeasured candidate
-    /// is not evidence that the lineage may grow, and a NaN limit must not
-    /// switch the overlap check off.
+    /// An overlap that is not a measured one, because it is NaN or lies
+    /// outside `[0, 1]` (every [`crate::subspace_overlap`] lies inside, and
+    /// [`crate::InterferenceReport::max_overlap`] is NaN for a report holding
+    /// anything else), makes consolidation due, and so does a NaN
+    /// `max_overlap`: an unmeasured candidate is not evidence that the
+    /// lineage may grow, however it compares with the limit, and a NaN limit
+    /// must not switch the overlap check off.
     pub fn consolidation_due(&self, depth: usize, overlap: f64) -> bool {
         depth >= self.max_depth
-            || overlap.is_nan()
+            || !(0.0..=1.0).contains(&overlap)
             || self.max_overlap.is_nan()
             || overlap > self.max_overlap
     }

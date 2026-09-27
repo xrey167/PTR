@@ -8,7 +8,9 @@
 //! admitted through checkpoint binding, which adapter serves must not be
 //! decided by any registry row. It serves only after a gate measured on
 //! held-out and public suites, and revoking a training input names every
-//! adapter whose weights depend on it. Interference with earlier adapters is measured as
+//! adapter whose weights depend on it through the data manifests registered
+//! with the lineage, which it records as declared and cannot check against
+//! the weights. Interference with earlier adapters is measured as
 //! principal-angle overlap between update subspaces, layer by layer; when a
 //! lineage grows too deep or too entangled, the next step is a consolidation
 //! (a TIES merge) rather than another link. Replay samples are scheduled by a

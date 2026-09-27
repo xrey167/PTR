@@ -283,6 +283,123 @@ fn a_report_with_a_nan_overlap_is_not_within_any_limit() {
 }
 
 #[test]
+fn a_report_with_an_overlap_outside_the_unit_interval_is_not_within_any_limit() {
+    let layer = |output_overlap: f64, input_overlap: f64| LayerInterference {
+        layer: "q".into(),
+        output_overlap,
+        input_overlap,
+        output_chance: 0.0,
+        input_chance: 0.0,
+        worst: None,
+    };
+    // No measured overlap lies outside [0, 1]. Folded from zero, a negative
+    // one would vanish and its layer pass as no overlap at all, and one
+    // above one would pass any limit above it.
+    for (output, input) in [
+        (-0.25, 0.0),
+        (0.0, -f64::MIN_POSITIVE),
+        (f64::NEG_INFINITY, 0.1),
+        (1.5, 0.0),
+        (0.0, f64::INFINITY),
+    ] {
+        let report = InterferenceReport {
+            candidate: candidate(),
+            layers: vec![layer(0.1, 0.1), layer(output, input)],
+        };
+        assert!(report.max_overlap().is_nan(), "{output} {input}");
+        for limit in [0.1, 1.0, 2.0, f64::INFINITY] {
+            assert!(!report.within(limit), "{output} {input} within {limit}");
+        }
+    }
+    // Both ends of the interval are overlaps, and so is a signed zero.
+    let ends = InterferenceReport {
+        candidate: candidate(),
+        layers: vec![layer(0.0, 1.0), layer(-0.0, 0.5)],
+    };
+    assert_eq!(ends.max_overlap(), 1.0);
+    assert!(ends.within(1.0));
+}
+
+#[test]
+fn activation_interference_compares_two_updates_of_one_layer_only() {
+    let inputs = matrix(4, 1, &[1.0; 4]);
+    assert_eq!(
+        activation_interference(&rank_one("q", 0, 0), &rank_one("q", 0, 0), &inputs),
+        Ok(Some(1.0))
+    );
+    // Same shapes on different layers: the ratio would compare changes to
+    // two different outputs, and the activations belong to one of them.
+    assert_eq!(
+        activation_interference(&rank_one("q", 0, 0), &rank_one("k", 0, 0), &inputs),
+        Err(LineageError::LayerMismatch {
+            expected: "k".into(),
+            actual: "q".into(),
+        })
+    );
+    // One layer name, but outputs of different sizes: not one layer.
+    let wider = LayerUpdate::new("q", matrix(5, 1, &[1.0; 5]), matrix(1, 4, &[1.0; 4])).unwrap();
+    assert_eq!(
+        activation_interference(&wider, &rank_one("q", 0, 0), &inputs),
+        Err(LineageError::ShapeMismatch {
+            field: "layer outputs",
+            expected: 4,
+            actual: 5,
+        })
+    );
+}
+
+#[test]
+fn an_adapter_that_updates_a_layer_twice_is_refused_before_anything_is_measured() {
+    let duplicate = |adapter: &str| {
+        Err(LineageError::DuplicateLayer {
+            adapter: adapter.into(),
+            layer: "q".into(),
+        })
+    };
+    let once = vec![(AdapterId::from("a1"), vec![rank_one("q", 0, 0)])];
+    // Each row reports one layer: two updates of "q" would give two rows,
+    // neither of them the overlap of the layer's update, their sum.
+    assert_eq!(
+        measure_interference(
+            &candidate(),
+            &[rank_one("q", 1, 1), rank_one("q", 2, 2)],
+            &once
+        ),
+        duplicate("candidate")
+    );
+    // The same for an earlier adapter, within one entry or across two.
+    let twice = vec![(
+        AdapterId::from("a1"),
+        vec![rank_one("q", 0, 0), rank_one("q", 3, 3)],
+    )];
+    let split = vec![
+        (AdapterId::from("a1"), vec![rank_one("q", 0, 0)]),
+        (AdapterId::from("a1"), vec![rank_one("q", 3, 3)]),
+    ];
+    for earlier in [twice, split] {
+        assert_eq!(
+            measure_interference(&candidate(), &[rank_one("q", 1, 1)], &earlier),
+            duplicate("a1")
+        );
+    }
+    // One adapter's layers may be listed across entries, and different
+    // adapters update the same layer.
+    let spread = vec![
+        (AdapterId::from("a1"), vec![rank_one("q", 0, 0)]),
+        (AdapterId::from("a1"), vec![rank_one("k", 0, 0)]),
+        (AdapterId::from("a2"), vec![rank_one("q", 1, 1)]),
+    ];
+    let report = measure_interference(
+        &candidate(),
+        &[rank_one("q", 1, 1), rank_one("k", 2, 2)],
+        &spread,
+    )
+    .unwrap();
+    assert_eq!(report.layers.len(), 2);
+    assert_eq!(report.layers[0].worst, Some(AdapterId::from("a2")));
+}
+
+#[test]
 fn chance_overlap_refuses_subspaces_of_different_dimensions() {
     let plane_line = column_basis(&matrix(2, 1, &[1.0, 0.0]));
     let mut axis = vec![0.0; 100];

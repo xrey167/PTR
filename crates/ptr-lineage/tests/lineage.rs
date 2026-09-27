@@ -263,3 +263,58 @@ fn consolidation_is_due_when_an_overlap_or_its_limit_cannot_be_compared() {
     assert!(unlimited.consolidation_due(0, 0.0));
     assert!(unlimited.consolidation_due(0, 1.0));
 }
+
+#[test]
+fn consolidation_is_due_when_an_overlap_lies_outside_the_unit_interval() {
+    let policy = ConsolidationPolicy {
+        max_depth: 10,
+        max_overlap: 0.5,
+    };
+    // No measured overlap is negative or above one: such a value is not
+    // evidence that the lineage may grow, however it compares with a limit.
+    for overlap in [
+        -0.25,
+        -f64::MIN_POSITIVE,
+        f64::NEG_INFINITY,
+        1.5,
+        f64::INFINITY,
+    ] {
+        assert!(policy.consolidation_due(0, overlap), "{overlap}");
+    }
+    let lenient = ConsolidationPolicy {
+        max_depth: 10,
+        max_overlap: 2.0,
+    };
+    assert!(lenient.consolidation_due(0, 1.5));
+    assert!(!lenient.consolidation_due(0, 1.0));
+    assert!(!policy.consolidation_due(0, 0.0));
+    assert!(!policy.consolidation_due(0, -0.0));
+}
+
+#[test]
+fn a_record_s_digests_and_manifest_are_registered_as_given_and_never_checked() {
+    // The lineage holds neither the weights nor the training input: it keeps
+    // the artifact id, SHA-256 and data fingerprint the trainer supplies,
+    // without comparing them with anything.
+    let mut lineage = Lineage::new(base());
+    let mut declared = trained("a1", None);
+    declared.artifact = ArtifactId::from("");
+    declared.artifact_sha256 = [0; 32];
+    declared.data_fingerprint = [0; 32];
+    declared.data_manifest = BTreeSet::new();
+    lineage.register(declared.clone()).unwrap();
+    let registered = lineage.get(&AdapterId::from("a1")).unwrap();
+    assert_eq!(
+        (
+            &registered.artifact,
+            registered.artifact_sha256,
+            registered.data_fingerprint
+        ),
+        (&declared.artifact, [0; 32], [0; 32])
+    );
+    // Erasure follows the manifest exactly as declared: an input it leaves
+    // out names no adapter, whatever the fingerprint covered.
+    assert!(lineage
+        .affected_by(&BTreeSet::from(["a1-input".to_owned()]))
+        .is_empty());
+}

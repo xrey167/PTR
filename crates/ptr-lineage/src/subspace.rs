@@ -1,8 +1,19 @@
+use std::collections::BTreeSet;
+
 use crate::error::LineageError;
 use crate::lineage::AdapterId;
 use crate::scale::{self, Wide};
 
 /// A dense row-major matrix of `f64`.
+///
+/// Every entry is finite and neither dimension is zero, and everything that
+/// reads a matrix relies on that. The fields are private so that
+/// [`Matrix::new`], which checks it, is the only way to build one:
+///
+/// ```compile_fail
+/// use ptr_lineage::Matrix;
+/// let unchecked = Matrix { rows: 1, cols: 1, data: vec![f64::NAN] };
+/// ```
 #[derive(Clone, Debug, PartialEq)]
 pub struct Matrix {
     rows: usize,
@@ -239,6 +250,16 @@ impl Matrix {
 }
 
 /// An orthonormal basis of a subspace of `R^dim`.
+///
+/// [`principal_cosines`] and [`subspace_overlap`] rely on the vectors being
+/// orthonormal, so the fields are private and a basis comes only from
+/// [`column_basis`], [`LayerUpdate::output_basis`] and
+/// [`LayerUpdate::input_basis`]:
+///
+/// ```compile_fail
+/// use ptr_lineage::Basis;
+/// let skewed = Basis { dim: 2, vectors: vec![vec![1.0, 0.0], vec![1.0, 1.0]] };
+/// ```
 #[derive(Clone, Debug, PartialEq)]
 pub struct Basis {
     dim: usize,
@@ -628,15 +649,36 @@ impl LayerUpdate {
 /// Where no intermediate result leaves the range of `f64` the effects are
 /// the direct products.
 ///
+/// Both updates must modify the same layer: the layer name each carries is
+/// compared, and so are the sizes of their outputs, before anything is
+/// computed. The name is the caller's label; it is compared as given and
+/// proves nothing about where the factors came from.
+///
 /// # Errors
-/// Returns `LineageError::ShapeMismatch` when the activations do not have
-/// one row per input of both updates, and `LineageError::NonFinite` when the
-/// ratio itself exceeds `f64::MAX`.
+/// Returns `LineageError::LayerMismatch` when the candidate names another
+/// layer than the earlier update (`expected` is the earlier update's layer),
+/// `LineageError::ShapeMismatch` when the two write outputs of different
+/// sizes (field `"layer outputs"`) or the activations do not have one row
+/// per input of both updates, and `LineageError::NonFinite` when the ratio
+/// itself exceeds `f64::MAX`.
 pub fn activation_interference(
     candidate: &LayerUpdate,
     earlier: &LayerUpdate,
     activations: &Matrix,
 ) -> Result<Option<f64>, LineageError> {
+    if candidate.layer != earlier.layer {
+        return Err(LineageError::LayerMismatch {
+            expected: earlier.layer.clone(),
+            actual: candidate.layer.clone(),
+        });
+    }
+    if candidate.b.rows != earlier.b.rows {
+        return Err(LineageError::ShapeMismatch {
+            field: "layer outputs",
+            expected: earlier.b.rows,
+            actual: candidate.b.rows,
+        });
+    }
     let new_norm = effect_norm(candidate, activations)?;
     let old_norm = effect_norm(earlier, activations)?;
     if old_norm.is_zero() {
@@ -893,6 +935,16 @@ fn within_cancellation(mut coordinates: Matrix, uncancelled: f64) -> Option<Matr
 /// earlier update on the layer and the chance level of that same comparison,
 /// so the two can be compared with each other. The output and the input side
 /// may come from different earlier updates.
+///
+/// [`measure_interference`] fills every field as documented below, so each
+/// overlap and chance level lies in `[0, 1]` and `worst` is `None` exactly
+/// when both overlaps are zero. The fields are public, and a value built,
+/// changed or loaded by hand (`ptr-pg` rebuilds stored reports from their
+/// rows) holds whatever it was given: nothing here checks it against a
+/// measurement. [`InterferenceReport::max_overlap`] and
+/// [`InterferenceReport::within`] read only the two overlaps and treat one
+/// that is NaN or outside `[0, 1]` as unmeasured; the chance levels and
+/// `worst` are read by nothing in this crate.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LayerInterference {
     pub layer: String,
@@ -926,20 +978,28 @@ pub struct InterferenceReport {
     /// field is public and a report relabelled or built by hand names
     /// whatever it was given.
     pub candidate: AdapterId,
+    /// One entry per candidate update, in the order the updates were given.
+    /// [`measure_interference`] refuses an adapter that updates a layer
+    /// twice, so no layer appears in two entries of a report it returns.
     pub layers: Vec<LayerInterference>,
 }
 
 impl InterferenceReport {
-    /// The largest overlap on any layer, output or input side, or NaN when
-    /// any overlap is NaN. [`measure_interference`] never reports one, but a
-    /// report built or loaded by hand can, and folding it away with
-    /// `f64::max` would let an unmeasured layer pass as no overlap at all.
+    /// The largest overlap on any layer, output or input side (zero for a
+    /// report with no layer), or NaN when any overlap is NaN or lies outside
+    /// `[0, 1]`. [`measure_interference`] never reports such an overlap, but
+    /// a report built or loaded by hand can, and folding it into the largest
+    /// would let an unmeasured layer pass: `f64::max` drops a NaN, and a
+    /// negative overlap falls below the zero the fold starts from, leaving
+    /// no overlap at all.
     pub fn max_overlap(&self) -> f64 {
         self.layers
             .iter()
             .flat_map(|layer| [layer.output_overlap, layer.input_overlap])
             .fold(0.0, |worst, overlap| {
-                if overlap.is_nan() || overlap > worst {
+                if worst.is_nan() || !(0.0..=1.0).contains(&overlap) {
+                    f64::NAN
+                } else if overlap > worst {
                     overlap
                 } else {
                     worst
@@ -948,8 +1008,9 @@ impl InterferenceReport {
     }
 
     /// Whether every layer stays within `max_overlap`. False when any
-    /// overlap, or `max_overlap` itself, is NaN: what cannot be compared is
-    /// not within the limit.
+    /// overlap is NaN or outside `[0, 1]`, or when `max_overlap` itself is
+    /// NaN: what cannot be compared, or is not a measured overlap, is not
+    /// within the limit.
     pub fn within(&self, max_overlap: f64) -> bool {
         self.max_overlap() <= max_overlap
     }
@@ -973,11 +1034,41 @@ impl InterferenceReport {
 /// matrices for one whose factors are not smaller than the product, cancel,
 /// or spread over more than `2^400`, whose bases come from the formed
 /// product.
+///
+/// # Errors
+/// Returns `LineageError::DuplicateLayer`, before any basis is computed,
+/// when the candidate names a layer in two of its updates or an earlier
+/// adapter does (in one entry of `earlier` or across entries with the same
+/// id): an adapter's update of a layer is one `B A`, and measuring its parts
+/// one by one would report the overlap of a part, not of the layer's
+/// update. Returns `LineageError::ShapeMismatch` when an update and an
+/// earlier update of the same layer have outputs or inputs of different
+/// sizes, as [`principal_cosines`] does.
 pub fn measure_interference(
     candidate: &AdapterId,
     updates: &[LayerUpdate],
     earlier: &[(AdapterId, Vec<LayerUpdate>)],
 ) -> Result<InterferenceReport, LineageError> {
+    let mut named = BTreeSet::new();
+    for update in updates {
+        if !named.insert(update.layer.as_str()) {
+            return Err(LineageError::DuplicateLayer {
+                adapter: candidate.to_string(),
+                layer: update.layer.clone(),
+            });
+        }
+    }
+    let mut named = BTreeSet::new();
+    for (id, previous) in earlier {
+        for update in previous {
+            if !named.insert((id, update.layer.as_str())) {
+                return Err(LineageError::DuplicateLayer {
+                    adapter: id.to_string(),
+                    layer: update.layer.clone(),
+                });
+            }
+        }
+    }
     let previous: Vec<(&AdapterId, &str, (Basis, Basis))> = earlier
         .iter()
         .flat_map(|(id, previous)| previous.iter().map(move |update| (id, update)))

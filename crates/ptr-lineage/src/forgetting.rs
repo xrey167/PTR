@@ -4,6 +4,15 @@ use crate::scale;
 
 /// `values[i][j]`: score on task `j` after training stage `i`, for `T` stages
 /// and `T` tasks (task `j` is the one introduced at stage `j`).
+///
+/// Every summary relies on the matrix being square, non-empty and finite, so
+/// the field is private and [`AccuracyMatrix::new`], which checks that, is
+/// the only way to build one:
+///
+/// ```compile_fail
+/// use ptr_lineage::AccuracyMatrix;
+/// let ragged = AccuracyMatrix { values: vec![vec![0.9, 0.1], vec![0.8]] };
+/// ```
 #[derive(Clone, Debug, PartialEq)]
 pub struct AccuracyMatrix {
     values: Vec<Vec<f64>>,
@@ -139,7 +148,20 @@ pub enum GateViolation {
     },
 }
 
-/// The outcome of a gate. Only [`ForgettingGate::evaluate`] produces one.
+/// The outcome of a gate. Only [`ForgettingGate::evaluate`] produces one,
+/// and [`crate::Lineage::gate`] relies on that: the fields are private, so a
+/// report cannot be built or changed by hand.
+///
+/// ```compile_fail
+/// use ptr_lineage::{AdapterId, GateReport};
+/// let forged = GateReport { adapter: AdapterId::from("a1"), violations: Vec::new() };
+/// ```
+///
+/// It binds the verdict to the adapter id passed to
+/// [`ForgettingGate::evaluate`] and to nothing else: the gate cannot tell
+/// which adapter the accuracy matrix and public-suite scores were measured
+/// on, and the report names no lineage or base model, so passing scores
+/// measured on the adapter it names is the caller's obligation.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GateReport {
     adapter: AdapterId,
@@ -147,7 +169,7 @@ pub struct GateReport {
 }
 
 impl GateReport {
-    /// The adapter whose evaluation produced this report.
+    /// The adapter named when this report was evaluated.
     pub fn adapter(&self) -> &AdapterId {
         &self.adapter
     }

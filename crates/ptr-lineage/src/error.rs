@@ -21,6 +21,10 @@ pub enum LineageError {
     UnknownAdapter { id: String },
     /// A child adapter was trained on a different base model than its parent.
     BaseMismatch { expected: String, actual: String },
+    /// An adapter names one layer in more than one update.
+    DuplicateLayer { adapter: String, layer: String },
+    /// Two updates that must modify one layer name different layers.
+    LayerMismatch { expected: String, actual: String },
     /// A lifecycle transition that the current status does not allow.
     InvalidTransition {
         id: String,
@@ -51,6 +55,8 @@ impl LineageError {
             Self::DuplicateAdapter { .. } => "PTR_LINEAGE_DUPLICATE",
             Self::UnknownAdapter { .. } => "PTR_LINEAGE_UNKNOWN",
             Self::BaseMismatch { .. } => "PTR_LINEAGE_BASE_MISMATCH",
+            Self::DuplicateLayer { .. } => "PTR_LINEAGE_DUPLICATE_LAYER",
+            Self::LayerMismatch { .. } => "PTR_LINEAGE_LAYER_MISMATCH",
             Self::InvalidTransition { .. } => "PTR_LINEAGE_INVALID_TRANSITION",
             Self::GateFailed { .. } => "PTR_LINEAGE_GATE_FAILED",
             Self::HeldOutSample { .. } => "PTR_LINEAGE_HELD_OUT_SAMPLE",
@@ -77,6 +83,15 @@ impl fmt::Display for LineageError {
                 formatter,
                 "base model {actual:?} does not match the lineage base {expected:?}"
             ),
+            Self::DuplicateLayer { adapter, layer } => {
+                write!(
+                    formatter,
+                    "adapter {adapter:?} updates layer {layer:?} twice"
+                )
+            }
+            Self::LayerMismatch { expected, actual } => {
+                write!(formatter, "layer {actual:?} is not layer {expected:?}")
+            }
             Self::InvalidTransition { id, from, to } => {
                 write!(formatter, "adapter {id:?} cannot move from {from} to {to}")
             }
