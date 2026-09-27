@@ -6983,7 +6983,9 @@ async fn a_statement_that_records_a_probe_may_then_update_its_sample() {
     // trigger, that update left the row changed by a trigger of the current
     // command, and a statement that went on to update the row (here a
     // data-modifying WITH) was refused with SQLSTATE 27000, where work
-    // version 12 stored it.
+    // version 12 stored it. A probe that a function called by the UPDATE
+    // writes is covered by
+    // a_probe_a_function_writes_inside_an_update_of_its_sample_is_stored.
     let substrate = substrate().await;
     let raw = raw_client().await;
     let work = substrate.schemas().work.clone();
@@ -7011,25 +7013,7 @@ async fn a_statement_that_records_a_probe_may_then_update_its_sample() {
              SELECT id, {probe}, 0.1 FROM u"
         )
     };
-    let state = |id: &str| {
-        let raw = &raw;
-        let sample = format!(
-            "SELECT last_probe_model_time, lapses FROM {work}.replay_sample WHERE id = '{id}'"
-        );
-        let probes =
-            format!("SELECT model_time FROM {work}.replay_probe WHERE sample = '{id}' ORDER BY 1");
-        async move {
-            let row = raw.query_one(&sample, &[]).await.unwrap();
-            let probes: Vec<f64> = raw
-                .query(&probes, &[])
-                .await
-                .unwrap()
-                .iter()
-                .map(|row| row.get(0))
-                .collect();
-            (row.get::<_, f64>(0), row.get::<_, i32>(1), probes)
-        }
-    };
+    let state = |id: &'static str| replay_state(&raw, &work, id);
 
     raw.batch_execute(&probe_then_clock("s1", 20, 20))
         .await
@@ -7077,6 +7061,196 @@ async fn a_statement_that_records_a_probe_may_then_update_its_sample() {
         "23503"
     );
     assert_eq!(state("s2").await, (10.0, 0, vec![]));
+    substrate.drop_all().await.unwrap();
+}
+
+/// A replay sample's last probe and lapses, and the model times of its
+/// probes in order.
+async fn replay_state(
+    raw: &tokio_postgres::Client,
+    work: &impl std::fmt::Display,
+    id: &str,
+) -> (f64, i32, Vec<f64>) {
+    let row = raw
+        .query_one(
+            &format!(
+                "SELECT last_probe_model_time, lapses FROM {work}.replay_sample WHERE id = $1"
+            ),
+            &[&id],
+        )
+        .await
+        .unwrap();
+    let probes = raw
+        .query(
+            &format!("SELECT model_time FROM {work}.replay_probe WHERE sample = $1 ORDER BY 1"),
+            &[&id],
+        )
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| row.get(0))
+        .collect();
+    (row.get(0), row.get(1), probes)
+}
+
+#[tokio::test]
+async fn a_probe_a_function_writes_inside_an_update_of_its_sample_is_stored() {
+    // A probe written by a function that an UPDATE of its sample calls, in
+    // its SET list or its WHERE clause, is an INSERT statement of its own,
+    // nested in the UPDATE, and that statement ends before the UPDATE
+    // reaches the row it has read. Renewed at the end of the nested
+    // statement, the row was then changed by a trigger of the current
+    // command, and PostgreSQL refused the UPDATE with SQLSTATE 27000, where
+    // work version 12 stored it. The renewal now comes when the probe's
+    // transaction commits.
+    let substrate = substrate().await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    raw.batch_execute(&format!(
+        "INSERT INTO {work}.replay_sample \
+             (id, stratum, split, stability, difficulty, last_probe_model_time) \
+         VALUES ('s1', 'x', 'train', 1, 5, 10), ('s2', 'x', 'train', 1, 5, 10), \
+                ('s3', 'x', 'train', 1, 5, 10); \
+         CREATE FUNCTION pg_temp.probe(s text, t double precision) \
+             RETURNS double precision LANGUAGE plpgsql AS $$ \
+             BEGIN \
+                 INSERT INTO {work}.replay_probe (sample, model_time, loss) VALUES (s, t, 0.1); \
+                 RETURN t; \
+             END $$"
+    ))
+    .await
+    .unwrap();
+    let state = |id: &'static str| replay_state(&raw, &work, id);
+
+    raw.batch_execute(&format!(
+        "UPDATE {work}.replay_sample \
+         SET last_probe_model_time = pg_temp.probe(id, 20), lapses = lapses + 1 \
+         WHERE id = 's1'"
+    ))
+    .await
+    .unwrap();
+    assert_eq!(state("s1").await, (20.0, 1, vec![20.0]));
+    raw.batch_execute(&format!(
+        "UPDATE {work}.replay_sample SET last_probe_model_time = 30, lapses = lapses + 1 \
+         WHERE id = 's1' AND pg_temp.probe(id, 30) = 30"
+    ))
+    .await
+    .unwrap();
+    assert_eq!(state("s1").await, (30.0, 2, vec![20.0, 30.0]));
+
+    // Each write is still checked as it would be in a statement of its own:
+    // the probe against the row it finds, the update against every probe
+    // stored, the one its function recorded included.
+    for (why, sql) in [
+        (
+            "a clock put before the probe the function records",
+            format!(
+                "UPDATE {work}.replay_sample \
+                 SET last_probe_model_time = pg_temp.probe(id, 40) - 5 WHERE id = 's1'"
+            ),
+        ),
+        (
+            "a probe before the last one",
+            format!(
+                "UPDATE {work}.replay_sample \
+                 SET last_probe_model_time = pg_temp.probe(id, 25) + 20 WHERE id = 's1'"
+            ),
+        ),
+    ] {
+        assert_eq!(refused_sqlstate(&raw, &sql).await, "23000", "{why}");
+    }
+    assert_eq!(state("s1").await, (30.0, 2, vec![20.0, 30.0]));
+
+    // The renewal still comes before the probe's transaction commits, and a
+    // writer at repeatable read whose snapshot predates that commit fails
+    // with a serialization error rather than check against a probe it cannot
+    // see.
+    let late = raw_client().await;
+    late.batch_execute("BEGIN ISOLATION LEVEL REPEATABLE READ")
+        .await
+        .unwrap();
+    late.query_one(&format!("SELECT count(*) FROM {work}.replay_sample"), &[])
+        .await
+        .unwrap();
+    raw.batch_execute("BEGIN; SELECT pg_temp.probe('s3', 40); COMMIT")
+        .await
+        .unwrap();
+    assert_eq!(
+        sqlstate_of(
+            late.batch_execute(&format!(
+                "UPDATE {work}.replay_sample SET last_probe_model_time = 35 WHERE id = 's3'"
+            ))
+            .await
+        ),
+        "40001"
+    );
+    late.batch_execute("ROLLBACK").await.unwrap();
+    assert_eq!(state("s3").await, (10.0, 0, vec![40.0]));
+
+    // A later statement of the probe's transaction may delete the sample,
+    // which takes the probe with it; the renewal then finds no row to order.
+    raw.batch_execute(&format!(
+        "BEGIN; \
+         INSERT INTO {work}.replay_probe (sample, model_time, loss) VALUES ('s2', 20, 0.1); \
+         DELETE FROM {work}.replay_sample WHERE id = 's2'; \
+         COMMIT"
+    ))
+    .await
+    .unwrap();
+    let left: i64 = raw
+        .query_one(
+            &format!(
+                "SELECT (SELECT count(*) FROM {work}.replay_sample WHERE id = 's2') \
+                      + (SELECT count(*) FROM {work}.replay_probe WHERE sample = 's2')"
+            ),
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(left, 0);
+
+    // A writer that sets the renewal IMMEDIATE has it fire at the end of
+    // every statement again, the nested one included, and is refused as
+    // before.
+    assert_eq!(
+        refused_sqlstate(
+            &raw,
+            &format!(
+                "BEGIN; SET CONSTRAINTS ALL IMMEDIATE; \
+                 UPDATE {work}.replay_sample \
+                 SET last_probe_model_time = pg_temp.probe(id, 50) WHERE id = 's1'"
+            )
+        )
+        .await,
+        "27000"
+    );
+    raw.batch_execute("ROLLBACK").await.unwrap();
+
+    // The renewal writes the sample's row again, and PostgreSQL checks every
+    // CHECK of it, NOT VALID ones included: a probe of a sample stored before
+    // migration 9 with a stability that is not finite is refused when its
+    // transaction commits.
+    write_before_invariants(
+        &raw,
+        &work,
+        &[("replay_sample", "replay_sample_finite")],
+        &format!(
+            "INSERT INTO {work}.replay_sample \
+                 (id, stratum, split, stability, difficulty, last_probe_model_time) \
+             VALUES ('old', 'x', 'train', 'NaN', 5, 10)"
+        ),
+    )
+    .await;
+    raw.batch_execute(&format!(
+        "BEGIN; \
+         INSERT INTO {work}.replay_probe (sample, model_time, loss) VALUES ('old', 20, 0.1)"
+    ))
+    .await
+    .unwrap();
+    assert_eq!(refused_sqlstate(&raw, "COMMIT").await, "23514");
+    assert_eq!(state("old").await.2, Vec::<f64>::new());
+    assert_eq!(state("s1").await, (30.0, 2, vec![20.0, 30.0]));
     substrate.drop_all().await.unwrap();
 }
 

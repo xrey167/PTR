@@ -364,19 +364,24 @@ Work migration 13 closes three rules that held only for writers that did not rac
 nest their writes or undo them within one statement. An update that changes a replay sample leaves its last probe at or after
 every probe stored for it, where it was compared only with the row it replaced, and
 a probe locks its sample's row before it is checked and updates the row without
-change at the end of its statement, so a probe and a sample update of one sample, or
+change when its transaction commits, so a probe and a sample update of one sample, or
 two probes of it, wait for each other at read committed and fail with a
 serialization error at repeatable read instead of each checking against what the
 other has not committed
 (`a_sample_s_last_probe_never_falls_behind_a_probe_stored_for_it`). The lock alone
 would not do at repeatable read, where a row a committed transaction only locked is
-locked and updated again without error. The update comes after the statement's own writes, so a
-statement that records a probe and then updates its sample is stored, each write
-checked as it would be in a statement of its own; an update from the probe's
-`BEFORE` trigger would leave the row changed by the current command, and PostgreSQL
-refuses such a statement with SQLSTATE 27000
-(`a_statement_that_records_a_probe_may_then_update_its_sample`). And an
-append-only row used to be deletable by any DELETE issued below another trigger
+locked and updated again without error. The update is deferred to commit, after
+every statement of the transaction, so a statement that records a probe and updates
+its sample is stored however it nests the two, each write checked as it would be in a
+statement of its own; an update from the probe's `BEFORE` trigger would leave the row
+changed by the current command, and PostgreSQL refuses such a statement with SQLSTATE
+27000 (`a_statement_that_records_a_probe_may_then_update_its_sample`). So would an
+update at the end of the probe's statement when a function that the `UPDATE` of the
+sample calls writes the probe: that nested statement ends before the `UPDATE` reaches
+the row, and a writer that sets the trigger immediate with `SET CONSTRAINTS` is refused
+so. A later statement of the probe's transaction may still delete the sample, and the
+probe with it (`a_probe_a_function_writes_inside_an_update_of_its_sample_is_stored`).
+And an append-only row used to be deletable by any DELETE issued below another trigger
 (`pg_trigger_depth() > 1`, meant for the cascade from its branch or sample), so a
 trigger the writer created removed a policy's calibration row or an adjudication that
 could then be written again with the opposite verdict; now a row of a branch or

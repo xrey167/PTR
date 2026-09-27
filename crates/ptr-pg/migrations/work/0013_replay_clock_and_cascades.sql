@@ -61,8 +61,8 @@
 -- its identity, and leaves the last probe at or after every probe stored for
 -- the sample, whether or not it moves the clock. An update that leaves the
 -- row as it was passes unchecked: every probe makes one to its sample's row
--- at the end of its statement (renew_replay_sample, below), which with the
--- lock each probe takes before it is checked is what orders probes and
+-- before its transaction commits (renew_replay_sample, below), which with
+-- the lock each probe takes before it is checked is what orders probes and
 -- sample updates at every isolation level.
 --
 -- The UPDATE holds the row's lock when this runs, and every probe takes that
@@ -140,7 +140,7 @@ BEGIN
 END;
 $$;
 
--- At the end of the statement that wrote it, every probe updates its
+-- Before the transaction that wrote it commits, every probe updates its
 -- sample's row without change, which check_replay_clock lets through. The
 -- row then has a version written by the probe's transaction, which no
 -- snapshot taken before that transaction commits sees, and a writer at
@@ -148,33 +148,46 @@ $$;
 -- serialization error when it locks or updates the row. The lock
 -- check_replay_probe takes would not do that alone: at those levels a row
 -- that a committed transaction only locked is locked and updated again
--- without error.
+-- without error. That lock is held until the transaction ends, so no other
+-- transaction writes the row between the probe and this update.
 --
--- Running after the statement's own writes, the update finds the row as the
--- statement left it, so it does not refuse a statement that records a probe
--- and then updates the sample. A statement that records a probe and then
--- deletes its sample is refused by the probe's foreign key (SQLSTATE 23503),
--- whose check fires before this trigger (AFTER triggers of one event fire in
--- name order, and the key's internal trigger is named RI_...); a sample this
--- function finds gone is refused with the same code. The update writes the
--- sample's row again, and PostgreSQL checks every CHECK of a row an UPDATE
--- writes, NOT VALID ones included: a probe of a sample stored before
--- migration 9 with a stability, difficulty or clock that is not finite is
--- refused by replay_sample_finite.
+-- The trigger is deferred to commit: the update comes after every statement
+-- of the transaction has ended, so it leaves no statement a row changed by
+-- a trigger of its own command, and a statement that records a probe and
+-- updates its sample is stored however it nests the two, each write checked
+-- as it would be in a statement of its own. Fired at the end of the probe's
+-- own statement instead, the update would refuse such a statement whenever
+-- the probe is written by a function that the UPDATE of its sample calls
+-- (in its SET list or its WHERE clause): that INSERT is a statement of its
+-- own, nested in the UPDATE, and ends before the UPDATE reaches the row it
+-- has read, which the UPDATE would then find changed by a trigger of the
+-- current command (SQLSTATE 27000). A writer that sets the trigger
+-- IMMEDIATE (SET CONSTRAINTS) has it fire at the end of every statement,
+-- nested ones included, and so has such a statement refused; the update
+-- still comes before the transaction commits, which is all the ordering
+-- needs.
+--
+-- A statement that records a probe and then deletes its sample is refused
+-- by the probe's foreign key (SQLSTATE 23503), which is checked at the end
+-- of the statement. A later statement of the transaction that deletes the
+-- sample takes the probe with it (the key cascades), and this update then
+-- finds no row: with the sample and its probes gone there is nothing left
+-- to order. The update writes the sample's row again, and PostgreSQL checks
+-- every CHECK of a row an UPDATE writes, NOT VALID ones included: a probe
+-- of a sample stored before migration 9 with a stability, difficulty or
+-- clock that is not finite is refused by replay_sample_finite when its
+-- transaction commits.
 CREATE FUNCTION {{work}}.renew_replay_sample() RETURNS trigger
     LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$
 BEGIN
     UPDATE {{work}}.replay_sample SET lapses = lapses WHERE id = NEW.sample;
-    IF NOT FOUND THEN
-        RAISE EXCEPTION 'a probe names replay sample %, which is not recorded', NEW.sample
-            USING ERRCODE = 'foreign_key_violation';
-    END IF;
     RETURN NULL;
 END;
 $$;
 
-CREATE TRIGGER replay_probe_renews_sample
+CREATE CONSTRAINT TRIGGER replay_probe_renews_sample
     AFTER INSERT ON {{work}}.replay_probe
+    DEFERRABLE INITIALLY DEFERRED
     FOR EACH ROW EXECUTE FUNCTION {{work}}.renew_replay_sample();
 
 -- ---------------------------------------------------------------------------
