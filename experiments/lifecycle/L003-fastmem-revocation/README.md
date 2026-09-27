@@ -16,6 +16,10 @@ Any bit difference from the never-saw-it fold, or any admitted read that depends
 Mechanism and threat model: [35 — Agentic substrate](../../../docs/architecture/35-agentic-substrate.md).
 
 ## Result
+**Stale since b397cb5:** the counts below describe the code at 7b60216, and
+[`results/STALE.toml`](results/STALE.toml) says so for `scripts/check_research_gates.py` until all five
+seeds and the mutation check are rerun at the commit that merges the change to the execution layer.
+
 Completed on 2026-09-27 at 7b60216 (seed records, mutation check and aggregation all at that commit):
 **hard pass**, 5 seeds of 30 cases on
 PostgreSQL 18.6 (Ubuntu 18.6-1.pgdg24.04+2) with pgvector 0.8.6 and

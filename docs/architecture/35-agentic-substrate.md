@@ -1423,7 +1423,8 @@ commits the server failed and races, no projection diverged from the reference, 
 accepted, no refold differed by a bit and no revoked input was read; every planted defect of their mutation
 lists was detected (17 of 17 and 16 of 16). Their seed records, mutation checks and aggregates all ran at
 that commit, and earlier runs at ad2f8d1 and dcfbb3e also passed. Results and limitations are in each experiment's
-`results/`. `scripts/check_research_gates.py` fails CI on a completed experiment whose archived `run.json`
+`results/`. They are stale since b397cb5, which changed the runtime's execution layer and compacted snapshot
+format, as each experiment's `results/STALE.toml` records until both are rerun. `scripts/check_research_gates.py` fails CI on a completed experiment whose archived `run.json`
 or `mutations.json` ran at code, aggregation scripts or mutation plan HEAD has changed without a
 `results/STALE.toml` marker naming them and the first change (`test_results_of_other_code_fail_without_a_marker`,
 `test_a_dishonest_or_incomplete_marker_is_refused`), and on a marker beside current results. A marker names

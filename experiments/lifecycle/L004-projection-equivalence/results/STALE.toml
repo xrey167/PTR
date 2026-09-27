@@ -1,0 +1,13 @@
+# The archived results in this directory no longer describe the checkout's code.
+# scripts/check_research_gates.py accepts stale results only with this marker,
+# checks that it names them and the first commit that changed a file their
+# provenance covers (scripts/experiment_records.py), and fails once it sits next
+# to current results; aggregate.py removes it when it writes fresh ones.
+results_git_sha = "7b60216b9b1cabca7faa94327a52d9207f3a453d"
+stale_since = "b397cb518c42a0b2497a740fcc23d88232333780"
+reason = """The seed records, the mutation check and the aggregate ran at 7b60216 and were \
+archived in cd60b41 (PR #38). b397cb5 then changed code every Rust file of the \
+checkout counts as provenance for: ptr-runtime's execution layer and compacted \
+snapshot format, ptr-execwire and ptr-cluster. The counts in README.md describe \
+7b60216's code only. A rerun of all five seeds and the mutation check at the commit \
+this follow-up merges is pending."""
