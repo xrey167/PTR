@@ -2246,6 +2246,59 @@ class PreregistrationGateTests(unittest.TestCase):
         self.assertEqual(gate(root),(0,[]))
         self.assertIsNotNone(mod.launchable_at(root,repair,"X900","experiments/semdb/X900-fixture"))
 
+    def test_a_cargo_alias_is_checked_as_what_it_stands_for(self):
+        # Cargo expands an alias the repository's configuration defines before
+        # it parses the rest of its arguments, so the gate reads the command
+        # through the alias.
+        files={
+            ".cargo/config.toml":(
+                '[alias]\nb = "build --manifest-path /tmp/x/Cargo.toml"\nc2 = ["run", "--config", "c.toml"]\n'
+                'chain = "b"\nloop = "loop"\nok = "run --release"\n'
+            ),
+        }
+        seeds={"seeds":[17,29]}
+
+        def errors(entrypoint,read=files.get):
+            return mod.command_errors("X900",{"entrypoint":entrypoint},seeds,read)
+
+        outside=CARGO_OUTSIDE.format("--manifest-path","/tmp/x/Cargo.toml")
+        self.assertEqual(errors("cargo b -- <seed>"),[outside])
+        self.assertEqual(errors("cargo c2 -- <seed>"),[CARGO_CONFIGURATION])
+        self.assertEqual(errors("cargo +nightly -v chain -- <seed>"),[outside])
+        self.assertEqual(errors("rustup run stable cargo.exe b -- <seed>"),[outside])
+        for entrypoint in ("cargo ok -- <seed>","cargo loop -- <seed>","cargo run -- b <seed>","cargo run b <seed>"):
+            with self.subTest(entrypoint=entrypoint):
+                self.assertEqual(errors(entrypoint),[])
+        # Without the repository's configuration, a name is only a name.
+        self.assertEqual(errors("cargo b -- <seed>",lambda name:None),[])
+        # Cargo reads the configuration of the directory it runs in (-C) and
+        # each above it, the nearer's alias of a name winning, and
+        # .cargo/config before .cargo/config.toml in one directory; text that
+        # does not parse defines none.
+        nested={
+            **files,
+            "crates/x/.cargo/config":'[alias]\nb = "build --target-dir t"\n',
+            "crates/x/.cargo/config.toml":'[alias]\nb = "build"\n',
+            "crates/y/.cargo/config.toml":"[alias\n",
+        }
+        self.assertEqual(
+            errors("cargo -Zunstable-options -C crates/x b -- <seed>",nested.get),
+            ["X900: entrypoint gives Cargo a target directory (--target-dir), which could hold a build made outside "
+             "the commit; the runner builds a listed run into a fresh one"],
+        )
+        self.assertEqual(errors("cargo -Zunstable-options -C crates/y b -- <seed>",nested.get),[outside])
+        self.assertEqual(mod.cargo_aliases(nested.get,"crates/x")["c2"],["run","--config","c.toml"])
+        # The launch reads the configuration in the tree, and the history the
+        # configuration at each commit.
+        root=self.tree(status="running")
+        (root/".cargo").mkdir(exist_ok=True)
+        (root/".cargo/config.toml").write_text(files[".cargo/config.toml"],encoding="utf-8")
+        self.edit(root,self.MANIFEST,'entrypoint = "bench <seed>"\n','entrypoint = "cargo b -- <seed>"\n')
+        self.assert_blocked(root,outside)
+        self.assertEqual(mod.launch_errors(root,"X900"),[outside])
+        commit=commit_all(root)
+        self.assertIsNone(mod.launchable_at(root,commit,"X900","experiments/semdb/X900-fixture"))
+
     def test_a_name_that_is_not_utf8_is_no_repository_path(self):
         # Git holds a name's bytes as they are. One that is not UTF-8 is
         # refused in the tree, froze nothing at a commit, and fails no later

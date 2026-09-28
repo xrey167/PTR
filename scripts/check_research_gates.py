@@ -218,7 +218,7 @@ def names_an_entrypoint(manifest: dict) -> bool:
     entrypoint=manifest.get("entrypoint")
     return isinstance(entrypoint,str) and bool(entrypoint.strip())
 
-def command_errors(exp_id: str, manifest: dict, table: dict) -> list[str]:
+def command_errors(exp_id: str, manifest: dict, table: dict, read=None) -> list[str]:
     """What keeps the runner from building the command of `exp_id`, a listed
     experiment, from its manifest `manifest` and its `[preregistration]`
     table `table`: it splits the manifest's `entrypoint` as a shell would
@@ -271,7 +271,7 @@ def command_errors(exp_id: str, manifest: dict, table: dict) -> list[str]:
         return ("true" if value else "false") if isinstance(value,bool) else (
             str(value) if isinstance(value,(int,str)) else match.group(0))
     command=[experiment_records.PLACEHOLDER.sub(filled,token) for token in tokens]
-    arguments=cargo_arguments(command)
+    arguments=cargo_arguments(command,read)
     if any(argument=="--config" or argument.startswith("--config=") for argument in arguments):
         errors.append(f"{exp_id}: entrypoint gives Cargo configuration on its command line (--config), which can name "
                       "a rustc wrapper, flags or sources outside the commit; set what the build needs in the "
@@ -387,13 +387,17 @@ def outside_repository(path: str) -> bool:
             depth+=1
     return False
 
-def cargo_arguments(tokens: list[str]) -> list[str]:
+def cargo_arguments(tokens: list[str], read=None) -> list[str]:
     """The arguments the command `tokens` gives Cargo itself, up to a `--`
     past which they are the built program's: those after `cargo`, as a
     rustup proxy or not, and after `rustup run <toolchain> cargo`, past
     rustup's own options and `+<toolchain>` and the options of `run`; none
     for another program. Each program is named as a platform runs it
-    (`experiment_records.program_name`: `C:\\Rust\\rustup.exe` is rustup)."""
+    (`experiment_records.program_name`: `C:\\Rust\\rustup.exe` is rustup).
+    Given `read`, which returns the text of a repository file or None,
+    Cargo's subcommand is read through the aliases the repository's Cargo
+    configuration defines for it (`cargo_aliases`), as Cargo expands them
+    before it parses the rest."""
     program=experiment_records.program_name(tokens[0]) if tokens else ""
     rest=tokens[1:]
     if program=="rustup":
@@ -409,7 +413,92 @@ def cargo_arguments(tokens: list[str]) -> list[str]:
         rest=rest[1:]
     if program!="cargo":
         return []
+    if read is not None:
+        rest=expand_cargo_aliases(rest,read)
     return rest[:rest.index("--")] if "--" in rest else rest
+
+def expand_cargo_aliases(arguments: list[str], read) -> list[str]:
+    """Cargo's own `arguments` with the subcommand, the first argument that
+    is no option or option's value, replaced by what the alias of its name
+    stands for (`cargo_aliases`, read from the directory Cargo runs in,
+    `-C` given), again for the subcommand that yields, up to sixteen times
+    and never through a name twice, as Cargo expands aliases of aliases."""
+    seen=set()
+    for _ in range(16):
+        before=arguments[:arguments.index("--")] if "--" in arguments else arguments
+        index=cargo_subcommand_index(before)
+        if index is None or before[index] in seen:
+            return arguments
+        directory=next((value for option,value in cargo_path_options(before) if option=="-C"),"")
+        aliases=cargo_aliases(read,directory)
+        name=before[index]
+        if name not in aliases:
+            return arguments
+        seen.add(name)
+        arguments=[*arguments[:index],*aliases[name],*arguments[index+1:]]
+    return arguments
+
+def cargo_subcommand_index(arguments: list[str]) -> int | None:
+    """The index among Cargo's own `arguments` of the first that is neither
+    an option nor the value an option takes as the next argument, nor a
+    rustup `+<toolchain>`: Cargo's subcommand; None when there is none."""
+    taken=False
+    for index,argument in enumerate(arguments):
+        following=arguments[index+1] if index+1<len(arguments) else ""
+        if taken:
+            taken=False
+        elif argument in CARGO_LONG_VALUES:
+            taken=True
+        elif argument.startswith("-") and not argument.startswith("--"):
+            short=cargo_short_value(argument,following)
+            taken=short is not None and not short[2]
+        elif not argument.startswith(("-","+")):
+            return index
+    return None
+
+# The names Cargo reads its configuration from in a `.cargo` directory, the
+# older first, which Cargo prefers where both are.
+CARGO_CONFIGURATION_NAMES=("config","config.toml")
+
+def cargo_aliases(read, directory: str="") -> dict[str,list[str]]:
+    """The aliases Cargo run from the repository's `directory` (`-C`, the
+    root when empty) reads from the repository's Cargo configuration, each
+    as the arguments it stands for: the `[alias]` tables of `.cargo/config`,
+    or `.cargo/config.toml` where there is none, in that directory and each
+    above it up to the root, a nearer one's alias of a name winning; a
+    string alias split at whitespace, as Cargo splits it, a list of strings
+    as it is. `read` returns a repository file's text, or None where there
+    is none; text that does not parse defines none (Cargo refuses to run
+    from it). A directory outside the repository, which the path check
+    refuses, holds none."""
+    if outside_repository(directory or "."):
+        return {}
+    parts=[part for part in directory.replace("\\","/").split("/") if part not in ("",".")]
+    directories=[]
+    for part in parts:
+        if part=="..":
+            if directories:
+                directories.pop()
+        else:
+            directories.append(part)
+    aliases={}
+    for depth in range(len(directories),-1,-1):
+        base="/".join(directories[:depth])
+        for name in CARGO_CONFIGURATION_NAMES:
+            text=read(f"{base}/.cargo/{name}" if base else f".cargo/{name}")
+            if text is None:
+                continue
+            try:
+                table=tomllib.loads(text).get("alias")
+            except tomllib.TOMLDecodeError:
+                table=None
+            for alias,value in (table.items() if isinstance(table,dict) else ()):
+                expansion=value.split() if isinstance(value,str) else value if (
+                    isinstance(value,list) and all(isinstance(item,str) for item in value)) else None
+                if expansion is not None:
+                    aliases.setdefault(alias,expansion)
+            break
+    return aliases
 
 def repeated_seeds(seeds) -> list:
     """The seeds a preregistered seed list names more than once, each once,
@@ -824,6 +913,28 @@ def blob(root: Path, commit: str, relative: str) -> bytes | None:
         return None
     return object_bytes(root,entry[2])
 
+def blob_text(root: Path, commit: str, relative: str) -> str | None:
+    """The UTF-8 text of the regular file `relative` at `commit` (`blob`),
+    or None when there is none or it is not UTF-8."""
+    data=blob(root,commit,relative)
+    try:
+        return None if data is None else data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+def tree_text(root: Path, relative: str) -> str | None:
+    """The UTF-8 text of the regular file `relative` in the tree at `root`,
+    reached through no symlink, or None when there is none or it is not
+    UTF-8."""
+    path=root/relative
+    if any((root/PurePosixPath(*PurePosixPath(relative).parts[:depth])).is_symlink()
+           for depth in range(1,len(PurePosixPath(relative).parts)+1)) or not path.is_file():
+        return None
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError,UnicodeDecodeError):
+        return None
+
 def toml_at(root: Path, commit: str, relative: str) -> dict | None:
     """The TOML file `relative` at `commit`, or None when it is absent or
     does not parse."""
@@ -1021,7 +1132,7 @@ def launchable_at(root: Path, commit: str, exp_id: str, directory: str) -> tuple
     # The runner builds the command from the manifest and the table as the
     # tree check reads them, and a run under a runner changed to let another
     # through was never confirmatory.
-    if command_errors(exp_id,manifest,table):
+    if command_errors(exp_id,manifest,table,lambda name:blob_text(root,commit,name)):
         return None
     for key,kind in entry["required"].items():
         if key not in table or kind_problem(table[key],kind):
@@ -1472,7 +1583,7 @@ def frozen_errors(exp_id: str, entry: dict, manifest: dict, experiment: Path, ro
     if not names_an_entrypoint(manifest):
         errors.append(f"{exp_id}: experiment.toml names no entrypoint; a listed experiment names what it runs before "
                       "it leaves planned, since its manifest is frozen from then on")
-    errors.extend(command_errors(exp_id,manifest,table))
+    errors.extend(command_errors(exp_id,manifest,table,lambda name:tree_text(root,name)))
     results_dir=manifest.get("results_dir","results")
     results=None
     if isinstance(results_dir,str) and any(is_git_administration(part) for part in PurePosixPath(results_dir).parts):

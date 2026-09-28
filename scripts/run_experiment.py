@@ -175,6 +175,24 @@ def restore_records(results: Path, attempts: Path) -> list[str]:
     return restored
 
 
+# The longest part of a file name the runner makes from an experiment's id,
+# well within the 255 bytes most file systems allow a name.
+ID_NAME_LIMIT = 120
+
+
+def id_file_name(exp_id: str) -> str:
+    """`exp_id` as part of a file name: every character a file name could
+    not hold as itself percent-encoded (`team/trial` as `team%2Ftrial`),
+    and where that runs longer than `ID_NAME_LIMIT`, as a long id or one
+    of characters that encode to several bytes does, its beginning with the
+    SHA-256 of the id, so every id names one file a file system can hold."""
+    quoted = urllib.parse.quote(exp_id, safe="")
+    if len(quoted) <= ID_NAME_LIMIT:
+        return quoted
+    digest = hashlib.sha256(exp_id.encode("utf-8", "surrogatepass")).hexdigest()
+    return f"{quoted[: ID_NAME_LIMIT - len(digest) - 1]}-{digest}"
+
+
 def run_lock(exp_id: str, directory: Path) -> Path | None:
     """Take the lock on runs of `exp_id`, a file in git's own `directory`
     created only if absent, and return it, or return None, printing why,
@@ -183,10 +201,9 @@ def run_lock(exp_id: str, directory: Path) -> Path | None:
     A lock left by a run that died is removed by hand, once no run of it is
     in progress; the copy of its record the run kept (`attempts_directory`)
     stays, so its seed has run all the same. The lock is named by the
-    experiment's id with every character a file name could not hold as
-    itself percent-encoded (`team/trial` as `team%2Ftrial`); a lock that
-    cannot be created is refused as well."""
-    lock = directory / f"ptr-run-{urllib.parse.quote(exp_id, safe='')}.lock"
+    experiment's id as a file name can hold it (`id_file_name`); a lock
+    that cannot be created is refused as well."""
+    lock = directory / f"ptr-run-{id_file_name(exp_id)}.lock"
     try:
         descriptor = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
     except FileExistsError:
@@ -931,12 +948,12 @@ def scratch_directory(exp_id: str, environment: dict[str, str]) -> Path:
     """The directory a listed run of `exp_id` builds and caches in, fresh for
     each run (`execute_command`): one of the experiment's name in the
     command's temporary directory (`TMPDIR` in `environment`, or the
-    runner's), its id percent-encoded as its lock's is (`run_lock`). Its path
-    is the same for every seed run there, so the variables naming it
+    runner's), its id named as its lock's is (`id_file_name`). Its path is
+    the same for every seed run there, so the variables naming it
     (`scratch_variables`), which the command can read, are part of the
     environment its record names and its seeds share."""
     temporary = environment.get("TMPDIR") or tempfile.gettempdir()
-    return Path(temporary) / f"ptr-run-{urllib.parse.quote(exp_id, safe='')}"
+    return Path(temporary) / f"ptr-run-{id_file_name(exp_id)}"
 
 
 def scratch_variables(directory: str, cargo: bool) -> dict[str, str]:

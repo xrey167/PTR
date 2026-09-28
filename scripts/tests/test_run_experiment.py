@@ -1008,6 +1008,18 @@ class RunWatchTests(unittest.TestCase):
             self.assertIsNone(mod.run_lock("L901", directory / "missing"))
             (directory / "file").write_text("", encoding="utf-8")
             self.assertIsNone(mod.run_lock("L902", directory / "file"))
+            # A long id, or one of characters that encode to several bytes,
+            # names a file a file system can hold, one for each id.
+            for long_id in ("x" * 300, "\u00e9" * 100):
+                bounded = mod.run_lock(long_id, directory)
+                self.assertLessEqual(len(bounded.name.encode("utf-8")), 255)
+                self.assertTrue(bounded.exists())
+                self.assertEqual(len(mod.id_file_name(long_id)), mod.ID_NAME_LIMIT)
+            self.assertNotEqual(mod.id_file_name("x" * 300), mod.id_file_name("x" * 299 + "y"))
+            self.assertEqual(mod.id_file_name("x" * mod.ID_NAME_LIMIT), "x" * mod.ID_NAME_LIMIT)
+            self.assertEqual(
+                mod.scratch_directory("x" * 300, {"TMPDIR": "/scratch"}).name, f"ptr-run-{mod.id_file_name('x' * 300)}"
+            )
         self.assertIn(f"another run of team/trial holds {lock}", stderr.getvalue())
         self.assertIn(f"cannot take the lock on runs of L902 in {directory / 'file' / 'ptr-run-L902.lock'}", stderr.getvalue())
         self.assertIn(

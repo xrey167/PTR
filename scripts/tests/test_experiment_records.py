@@ -1245,6 +1245,8 @@ class StalenessTests(unittest.TestCase):
             ("another entry's status", {"experiments/registry.toml": self.REGISTRY.format(status="completed", other="running")},
              "experiments/registry.toml"),
             ("a comment", {"experiments/registry.toml": "# read by the harness\n" + registry}, "experiments/registry.toml"),
+            ("a comment at the end", {"experiments/registry.toml": registry + "\n# read by the harness"},
+             "experiments/registry.toml"),
             ("a comment on the status line", {"experiments/registry.toml": registry.replace(
                 'status = "completed"', 'status = "completed" # done')}, "experiments/registry.toml"),
             ("a key beside the status", {"experiments/L900-x/experiment.toml": self.MANIFEST.format(status="completed")
