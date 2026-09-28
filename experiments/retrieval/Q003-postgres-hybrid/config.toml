@@ -17,7 +17,7 @@ recall_margin_permille = "must-be-pinned-before-prepared"
 k = 10
 embedding_model = "must-be-pinned-before-prepared"
 embedding_revision = "must-be-pinned-before-prepared"
-# The digests of the baselines' configuration files, which freeze every
-# setting of them with this table.
+# The digests of the baselines' directories, which freeze every setting and
+# the implementation of each with this table.
 baseline_rag_reference_sha256 = "must-be-pinned-before-prepared"
 baseline_strong_rag_sha256 = "must-be-pinned-before-prepared"

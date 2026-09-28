@@ -7,18 +7,21 @@
 # is that table's digest (scripts/experiment_records.py,
 # preregistration_digest), its `preregistration_rules_sha256` is the digest of
 # the experiment's entry below, every `baseline` is pinned at each of its
-# `keys` and not `blocked-*` at its `status_key`, and every run record and
-# aggregate in the experiment's results names those digests and a commit that
-# holds the same preregistration. scripts/run_experiment.py runs or prepares a
-# listed experiment only once all of this holds.
+# `keys` and not `blocked-*` at its `status_key`, and every run record the
+# experiment has committed and its aggregate name those digests and a commit on
+# HEAD's history that holds the same preregistration, manifest and
+# configuration, the status alone having moved forward since.
+# scripts/run_experiment.py runs or prepares a listed experiment only once all
+# of this holds. An experiment this list has named stays listed.
 #
 # Types: "int", "str", "bool", "int-list", "str-list" and "file"; a required
 # list must not be empty, and strings are printable ASCII. A "file" is a path
 # in the repository whose content is frozen too: the table's `<key>_sha256`
-# must be its digest (preregistered_file_digest). A baseline's whole
-# configuration file is frozen the same way: the table's
-# `baseline_<name>_sha256` must be its digest, so every setting of the
-# baseline is frozen, not only the `keys` that must be pinned.
+# must be its digest (preregistered_file_digest). A baseline's directory, its
+# configuration and the implementation beside it, is frozen the same way: the
+# table's `baseline_<name>_sha256` must be the digest of every file in it, so
+# every setting and every line of the baseline is frozen, not only the `keys`
+# that must be pinned.
 # A value still to be chosen is a `must-be-pinned-…` string and an owner
 # decision still to be taken a `must-be-signed-…` string; either blocks
 # whatever the key's type, and in a key this list does not require too. A

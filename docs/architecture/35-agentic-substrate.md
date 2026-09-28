@@ -1545,20 +1545,26 @@ another by idea.
 | [F002](../../experiments/feedback/F002-weak-supervision/README.md) | Is the verifier-precedence label model better calibrated than majority vote? | any label contradicting a verifier veto |
 | [E005](../../experiments/system/E005-agent-memory-benchmark/README.md) | Does the combined stack beat current agent-memory systems on LongMemEval and LoCoMo? | no category improvement at equal budget |
 
-S003, F003, Q003, R004, M008 and E005 preregister (`experiments/preregistration.toml`). Each leaves `planned`
-only once the `[preregistration]` table of its `config.toml` holds every key the list requires, pinned and of
-its declared type, and no placeholder in any other key, its manifest names the SHA-256 of the table's canonical
-text and of its entry in the list, every baseline the list names is pinned and not blocked, the table freezes the
-baselines' whole configurations and the content of every file it names by their digests, and every archived run
-record and aggregate names those digests and a commit that holds the same preregistration, entry, files and
-baseline configurations; `scripts/check_research_gates.py` fails CI otherwise, whether the experiment is prepared, running,
-completed or failed (`test_a_missing_required_key_keeps_an_experiment_from_leaving_planned`,
+S003, F003, Q003, R004, M008 and E005 preregister (`experiments/preregistration.toml`), and an experiment the
+list has named stays listed (`test_a_listed_experiment_stays_listed`). Each leaves `planned` only once the
+`[preregistration]` table of its `config.toml` holds every key the list requires, pinned and of its declared
+type, and no placeholder in any other key, its manifest names the SHA-256 of the table's canonical text and of
+its entry in the list, every baseline the list names is pinned and not blocked, the table freezes every file of
+each baseline's directory (its configuration and implementation) and the content of every file it names by
+their digests, and every run record the experiment has committed, wherever it was kept, and its aggregate name
+those digests and a commit on HEAD's history that holds the same preregistration, entry, files, baselines,
+manifest and configuration, the status alone having moved forward since; `scripts/check_research_gates.py`
+fails CI otherwise, whether the experiment is prepared, running, completed or failed, and one whose runs were
+committed cannot go back to `planned` (`test_a_missing_required_key_keeps_an_experiment_from_leaving_planned`,
 `test_a_placeholder_or_wrongly_typed_value_blocks`, `test_a_digest_mismatch_blocks`,
-`test_an_unpinned_or_blocked_baseline_blocks`, `test_a_baseline_is_frozen_by_its_whole_configuration`,
+`test_an_unpinned_or_blocked_baseline_blocks`, `test_a_baseline_is_frozen_by_every_file_of_its_directory`,
 `test_a_file_the_preregistration_names_is_frozen_by_its_content`,
 `test_archived_runs_must_name_the_frozen_digests_and_a_commit_that_holds_them`,
 `test_a_preregistration_rewritten_after_its_runs_fails_whatever_else_is_rewritten`,
-`test_rules_changed_after_the_runs_fail`, `test_a_run_record_deleted_or_renamed_after_it_was_committed_fails`).
+`test_rules_changed_after_the_runs_fail`, `test_a_run_record_deleted_or_renamed_after_it_was_committed_fails`,
+`test_after_a_run_the_manifest_and_configuration_change_only_in_status`,
+`test_after_a_run_the_status_only_moves_forward`, `test_run_records_are_found_wherever_the_experiment_kept_them`,
+`test_a_run_record_names_a_commit_on_heads_history`).
 `scripts/run_experiment.py` runs or prepares a listed experiment only once this holds, and holds the files that
 decision reads to HEAD while it runs, so no outcome is seen before its preregistration is frozen
 (`test_a_listed_experiment_is_not_run_or_prepared_before_its_preregistration_is_frozen`,

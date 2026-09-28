@@ -343,13 +343,20 @@ class RunWatchTests(unittest.TestCase):
     def test_what_decides_a_launch_is_held_to_head_before_and_while_the_run(self):
         self.preregister("running")
         listed = (self.root / "experiments/preregistration.toml").read_text(encoding="utf-8")
-        # Edited to let the run launch, and not committed: refused before it runs.
-        self.write("experiments/preregistration.toml", "version = 1\n")
+        # Edited, and not committed: refused before it runs, even where the
+        # edit leaves the experiment's entry as it was.
+        self.write("experiments/preregistration.toml", listed + "# edited\n")
         ran = []
         status, records, stderr = self.run_seed(lambda: ran.append(True))
         self.assertEqual((status, records, ran), (2, [], []))
         self.assertIn("refusing to run", stderr)
         self.assertIn("experiments/preregistration.toml", stderr)
+        # An entry taken out of the list does not open the runner either: an
+        # experiment the list has named stays listed.
+        self.write("experiments/preregistration.toml", "version = 1\n")
+        status, records, stderr = self.run_seed(lambda: ran.append(True))
+        self.assertEqual((status, records, ran), (2, [], []))
+        self.assertIn("L900 was listed at", stderr)
         self.write("experiments/preregistration.toml", listed)
         # Edited while it runs, and put back: no record.
         def edit_and_restore():
