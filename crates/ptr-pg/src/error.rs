@@ -194,6 +194,18 @@ pub enum PgError {
         branch: String,
         reason: &'static str,
     },
+    /// A merged outcome names a merge the projection does not hold: no
+    /// merge of the branch is projected (not committed, not yet projected,
+    /// or the projection was rebuilt and has not caught up). Nothing was
+    /// written.
+    MergeNotProjected { branch: String, index: u64 },
+    /// A merged outcome names another commit index than the one the
+    /// projection holds the branch's merge at. Nothing was written.
+    MergeMismatch {
+        branch: String,
+        claimed: u64,
+        projected: u64,
+    },
     /// A string contains NUL, which a PostgreSQL `text` value cannot hold.
     InvalidText { field: &'static str },
     /// The database refused a statement.
@@ -239,6 +251,8 @@ impl PgError {
             Self::DocumentConflict { .. } => "PTR_PG_DOCUMENT_CONFLICT",
             Self::InvalidTriage { .. } => "PTR_PG_INVALID_TRIAGE",
             Self::InvalidOutcome { .. } => "PTR_PG_INVALID_OUTCOME",
+            Self::MergeNotProjected { .. } => "PTR_PG_MERGE_NOT_PROJECTED",
+            Self::MergeMismatch { .. } => "PTR_PG_MERGE_MISMATCH",
             Self::InvalidText { .. } => "PTR_PG_INVALID_TEXT",
             Self::Database { .. } => "PTR_PG_DATABASE",
             Self::Connection { .. } => "PTR_PG_CONNECTION",
@@ -373,6 +387,20 @@ impl fmt::Display for PgError {
             Self::InvalidOutcome { branch, reason } => {
                 write!(formatter, "outcome of {branch:?} refused: {reason}")
             }
+            Self::MergeNotProjected { branch, index } => write!(
+                formatter,
+                "merge of {branch:?} at commit {index} refused: the projection holds no merge \
+                 of the branch"
+            ),
+            Self::MergeMismatch {
+                branch,
+                claimed,
+                projected,
+            } => write!(
+                formatter,
+                "merge of {branch:?} at commit {claimed} refused: the projection holds it at \
+                 commit {projected}"
+            ),
             Self::InvalidText { field } => write!(
                 formatter,
                 "{field} contains NUL, which PostgreSQL text cannot store"

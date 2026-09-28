@@ -24,7 +24,9 @@ use ptr_fastmem::{
     IdentifierCodebook, Query, SourceRef, WriteRequest,
 };
 use ptr_ledger::integrity::{chain_anchors, LogAnchor};
-use ptr_ledger::{CommittedEvent, LedgerEvent};
+use ptr_ledger::{
+    Attestation, CommittedEvent, LedgerEvent, MergeAuthorityRecord, MergeRecord, SemanticOrigin,
+};
 use ptr_lineage::{
     measure_interference, AdapterId, InterferenceReport, LayerInterference, LayerUpdate, Matrix,
 };
@@ -240,6 +242,71 @@ fn revoke(index: u64, subject: &str, generation: u64) -> CommittedEvent {
             generation: Generation(generation),
         },
     )
+}
+
+/// A merge of `branch` committed at `index`, as the runtime records one. The
+/// projector checks its anchor and projects the branch's merge key at
+/// `index`; it does not rerun the runtime's checks.
+fn merge_of(index: u64, branch: &str) -> CommittedEvent {
+    let mut delta = ptr_semdb::SemanticDelta::default();
+    delta
+        .upserts
+        .insert(format!("merged-by:{branch}"), "1".into());
+    let encoded = delta.encode().unwrap();
+    let base = Revision(index - 1);
+    committed(
+        index,
+        LedgerEvent::SemanticDeltaCommitted {
+            base_revision: base,
+            revision: Revision(index),
+            encoded_delta: encoded.clone(),
+            origin: SemanticOrigin::Merge(MergeRecord {
+                branch: branch.into(),
+                author: "agent-m".into(),
+                seal: [1; 32],
+                plan: ptr_branch::merge_plan_digest(
+                    branch,
+                    base,
+                    &encoded,
+                    &[3; 32],
+                    &Default::default(),
+                ),
+                dependencies: [3; 32],
+                rebased: Default::default(),
+                verification: Attestation {
+                    required: ptr_types::VerificationLevel::Deterministic,
+                    level: ptr_types::VerificationLevel::Deterministic,
+                    verifiers: vec!["schema".into()],
+                    findings: Vec::new(),
+                },
+                authority: MergeAuthorityRecord::Reviewed {
+                    reviewer: "reviewer-1".into(),
+                },
+            }),
+        },
+    )
+}
+
+/// Project, from the empty log, a log up to the greatest index `merges`
+/// names, whose record at each of those indices is a merge of its branch and
+/// every other a hard constraint: what a merged outcome is checked against.
+async fn project_merges(substrate: &mut PgSubstrate, merges: &[(&str, u64)]) {
+    let last = merges.iter().map(|(_, index)| *index).max().unwrap();
+    let log: Vec<CommittedEvent> = (1..=last)
+        .map(
+            |index| match merges.iter().find(|(_, merged)| *merged == index) {
+                Some((branch, _)) => merge_of(index, branch),
+                None => committed(
+                    index,
+                    LedgerEvent::HardConstraintCommitted {
+                        key: format!("filler-{index}"),
+                        generation: Generation(1),
+                    },
+                ),
+            },
+        )
+        .collect();
+    assert_eq!(substrate.replay(&log).await.unwrap(), last);
 }
 
 /// Anchors of `log` from the empty log, computed with the ledger's encoder.
@@ -2199,6 +2266,7 @@ async fn triage_logs_and_outcomes_feed_the_platform_metrics() {
             .await
             .unwrap();
     }
+    project_merges(&mut substrate, &[("b1", 9)]).await;
     substrate
         .record_outcome(&BranchId::from("b1"), BranchOutcome::Merged(CommitIndex(9)))
         .await
@@ -3721,6 +3789,11 @@ async fn revert_share_counts_merged_branches_later_reverted_within_a_window() {
             .await
             .unwrap();
     }
+    project_merges(
+        &mut substrate,
+        &[("r1", 10), ("r2", 11), ("r5", 14), ("r6", 15)],
+    )
+    .await;
     for (id, outcome) in [
         ("r1", BranchOutcome::Merged(CommitIndex(10))),
         ("r1", BranchOutcome::Reverted(CommitIndex(12))),
@@ -4475,6 +4548,7 @@ async fn a_policy_is_recorded_only_when_its_rule_on_the_stored_adjudications_cho
         .await
         .unwrap();
     calibration_branch(&mut substrate, "merged", 0.5, "bootstrap", None).await;
+    project_merges(&mut substrate, &[("merged", 3)]).await;
     substrate
         .record_outcome(
             &BranchId::from("merged"),
@@ -5211,6 +5285,7 @@ async fn a_revert_is_recorded_and_counted_only_after_the_merge_it_reverts() {
             .await,
         refused("v1", "a revert needs the branch's recorded merge")
     );
+    project_merges(&mut substrate, &[("v1", 9), ("v2", 11)]).await;
     substrate
         .record_outcome(&v1, BranchOutcome::Merged(CommitIndex(9)))
         .await
@@ -9654,5 +9729,105 @@ async fn work_migration_15_gives_a_reason_for_every_other_foreign_key_of_the_wor
         ])
     );
     substrate.migrate().await.unwrap();
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_merged_outcome_must_match_the_projected_merge() {
+    let mut substrate = substrate().await;
+    for id in ["m1", "m2", "m"] {
+        substrate
+            .store_branch(&sealed_branch(id, "agent-m"))
+            .await
+            .unwrap();
+    }
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    let merged_rows = || async {
+        let count: i64 = raw
+            .query_one(
+                &format!("SELECT count(*) FROM {work}.branch_outcome WHERE outcome = 'merged'"),
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        count
+    };
+    let m1 = BranchId::from("m1");
+
+    // Nothing projected yet: the merge is not in the ledger as far as the
+    // projection knows.
+    assert_eq!(
+        substrate
+            .record_outcome(&m1, BranchOutcome::Merged(CommitIndex(4)))
+            .await,
+        Err(PgError::MergeNotProjected {
+            branch: "m1".into(),
+            index: 4,
+        })
+    );
+    project_merges(&mut substrate, &[("m1", 4), ("m2", 6)]).await;
+
+    // Another index than the projected one, before or after it.
+    for claimed in [3, 5] {
+        let refused = substrate
+            .record_outcome(&m1, BranchOutcome::Merged(CommitIndex(claimed)))
+            .await;
+        assert_eq!(
+            refused,
+            Err(PgError::MergeMismatch {
+                branch: "m1".into(),
+                claimed,
+                projected: 4,
+            })
+        );
+        assert_eq!(refused.unwrap_err().code(), "PTR_PG_MERGE_MISMATCH");
+    }
+    // A branch whose id only begins like a merged one's has no merge.
+    let refused = substrate
+        .record_outcome(&BranchId::from("m"), BranchOutcome::Merged(CommitIndex(4)))
+        .await;
+    assert_eq!(
+        refused,
+        Err(PgError::MergeNotProjected {
+            branch: "m".into(),
+            index: 4,
+        })
+    );
+    assert_eq!(refused.unwrap_err().code(), "PTR_PG_MERGE_NOT_PROJECTED");
+    assert_eq!(merged_rows().await, 0, "a refused merge writes nothing");
+
+    // The projected index is recorded, once.
+    substrate
+        .record_outcome(&m1, BranchOutcome::Merged(CommitIndex(4)))
+        .await
+        .unwrap();
+    assert!(matches!(
+        substrate
+            .record_outcome(&m1, BranchOutcome::Merged(CommitIndex(4)))
+            .await,
+        Err(PgError::Database { .. })
+    ));
+    assert_eq!(merged_rows().await, 1);
+
+    // A rebuilt projection holds no merge until it has caught up again.
+    substrate.rebuild_projection().await.unwrap();
+    let m2 = BranchId::from("m2");
+    assert_eq!(
+        substrate
+            .record_outcome(&m2, BranchOutcome::Merged(CommitIndex(6)))
+            .await,
+        Err(PgError::MergeNotProjected {
+            branch: "m2".into(),
+            index: 6,
+        })
+    );
+    project_merges(&mut substrate, &[("m1", 4), ("m2", 6)]).await;
+    substrate
+        .record_outcome(&m2, BranchOutcome::Merged(CommitIndex(6)))
+        .await
+        .unwrap();
+    assert_eq!(merged_rows().await, 2);
     substrate.drop_all().await.unwrap();
 }

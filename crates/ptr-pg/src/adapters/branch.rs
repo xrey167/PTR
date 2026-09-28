@@ -17,7 +17,11 @@ use crate::error::PgError;
 /// What later happened to a triaged branch.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BranchOutcome {
-    /// Its merge plan committed at this index.
+    /// The runtime committed its merge at this index. Recorded only once the
+    /// projection holds the branch's merge key
+    /// (`ptr_state::merged_branch_key`) at exactly this index
+    /// ([`PgSubstrate::record_outcome`] refuses any other), so a merged
+    /// outcome names a merge the ledger holds.
     Merged(CommitIndex),
     /// A later commit at this index reverted it. It is recorded only after
     /// the branch's merge and only at a greater index
@@ -510,6 +514,16 @@ impl PgSubstrate {
     /// Append an observed outcome. Each outcome kind is recorded once per
     /// branch and never rewritten.
     ///
+    /// A merge is the runtime's to commit (`PtrRuntime::merge_branch`), and
+    /// the ledger record it appends projects the branch's merge key with the
+    /// index it was committed at. So [`BranchOutcome::Merged`] is written
+    /// only if `{projection}.state_entry` holds that key at exactly the
+    /// claimed index: the projection is read and the outcome inserted in one
+    /// statement, from one snapshot. A merged row a raw SQL writer inserts
+    /// around this call is not checked; the rule is this method's, not the
+    /// table's, because a work-schema trigger would read a projection schema
+    /// that a rebuild drops.
+    ///
     /// A revert is a later commit undoing the branch's merge, so
     /// [`BranchOutcome::Reverted`] is written only if the branch's merge is
     /// recorded at a smaller commit index. The merge is read and the revert
@@ -518,10 +532,12 @@ impl PgSubstrate {
     /// once, no merge can be recorded after its revert either.
     ///
     /// # Errors
-    /// Refuses a revert with no recorded merge, or at a commit index not
-    /// greater than the merge's, as [`PgError::InvalidOutcome`], writing
-    /// nothing; an outcome kind recorded twice as the primary key's
-    /// [`PgError::Database`].
+    /// Refuses a merge the projection does not hold as
+    /// [`PgError::MergeNotProjected`], and one it holds at another index as
+    /// [`PgError::MergeMismatch`]; a revert with no recorded merge, or at a
+    /// commit index not greater than the merge's, as
+    /// [`PgError::InvalidOutcome`]; each writing nothing. An outcome kind
+    /// recorded twice is the primary key's [`PgError::Database`].
     pub async fn record_outcome(
         &self,
         branch: &BranchId,
@@ -533,6 +549,41 @@ impl PgSubstrate {
             .commit_index()
             .map(|index| to_i64(index, "commit_index"))
             .transpose()?;
+        if let BranchOutcome::Merged(index) = outcome {
+            let projection = &self.schemas.projection;
+            let row = self
+                .client
+                .query_one(
+                    &format!(
+                        "WITH projected AS ( \
+                             SELECT commit_index FROM {projection}.state_entry WHERE key = $3), \
+                         inserted AS ( \
+                             INSERT INTO {work}.branch_outcome (branch, outcome, commit_index) \
+                             SELECT $1, 'merged', $2 FROM projected WHERE commit_index = $2 \
+                             RETURNING 1) \
+                         SELECT (SELECT commit_index FROM projected), \
+                                EXISTS (SELECT 1 FROM inserted)"
+                    ),
+                    &[&branch.0, &commit, &ptr_state::merged_branch_key(&branch.0)],
+                )
+                .await
+                .map_err(database)?;
+            let (projected, inserted): (Option<i64>, bool) = (row.get(0), row.get(1));
+            if inserted {
+                return Ok(());
+            }
+            return Err(match projected {
+                None => PgError::MergeNotProjected {
+                    branch: branch.0.clone(),
+                    index: index.0,
+                },
+                Some(projected) => PgError::MergeMismatch {
+                    branch: branch.0.clone(),
+                    claimed: index.0,
+                    projected: to_u64(projected, "state_entry")?,
+                },
+            });
+        }
         if let BranchOutcome::Reverted(_) = outcome {
             let row = self
                 .client

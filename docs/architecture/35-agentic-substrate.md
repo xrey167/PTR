@@ -522,10 +522,18 @@ probability, never reaches it: `TriageOutcome::from_parts` refuses to build it
 `a_triage_is_logged_only_under_a_policy_that_can_have_produced_it`), and the database
 refuses such a row written around it (work migration 10). What neither can see is the
 verification report and the calibration draw, so a row's eligibility and a slice
-branch's draw remain the caller's word. `record_outcome` writes a revert only
-after the branch's merge and at a greater commit index, reading the merge and
-inserting the revert in one statement, and refuses any other as `InvalidOutcome`
-(`a_revert_is_recorded_and_counted_only_after_the_merge_it_reverts`).
+branch's draw remain the caller's word. `record_outcome` writes a merge only when
+the projection holds the branch's merge key (`branch-merge:<len>:<id>`, which only
+the runtime's merge record projects) at exactly the claimed commit index, reading
+the projection and inserting the outcome in one statement; a merge the projection
+does not hold is refused as `MergeNotProjected`, one it holds at another index as
+`MergeMismatch`, and a rebuilt projection holds none until it has caught up
+(`a_merged_outcome_must_match_the_projected_merge`). The rule is the method's, not
+the table's: a work-schema trigger would read a projection schema a rebuild drops,
+so a merged row a raw SQL writer inserts is not checked. `record_outcome` writes a
+revert only after the branch's merge and at a greater commit index, reading the
+merge and inserting the revert in one statement, and refuses any other as
+`InvalidOutcome` (`a_revert_is_recorded_and_counted_only_after_the_merge_it_reverts`).
 Rows relying on two generations of one target, which the primary key already
 refuses, are `CorruptBranch` (`ConflictingReliance`) rather than collapsed to either
 (`a_stored_branch_relying_on_two_generations_of_one_target_is_refused_on_load`).
@@ -1351,7 +1359,10 @@ was stamped
 `revert_share_counts_merged_branches_later_reverted_within_a_window`). A revert
 counts only at a commit index after its merge's: `record_outcome` refuses any other,
 and a row written around it is not counted as reverting a merge it precedes
-(`a_revert_is_recorded_and_counted_only_after_the_merge_it_reverts`). Likewise the
+(`a_revert_is_recorded_and_counted_only_after_the_merge_it_reverts`). A merge
+`record_outcome` writes is one the projection holds at that index
+(`a_merged_outcome_must_match_the_projected_merge`), so the denominator counts
+merges the ledger committed, apart from rows a raw SQL writer inserted. Likewise the
 numerator of `AutoProposeShare` counts eligible branches only, as its denominator
 does, so an ineligible auto-proposal stored before work migration 9's NOT VALID check
 is in neither count and the share never exceeds one
