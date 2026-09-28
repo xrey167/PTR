@@ -596,6 +596,14 @@ fn the_weakest_verifier_level_decides() {
             }
         ))
     );
+    // Nothing was appended, and each verifier's own result was emitted: the
+    // strong one passed the requirement, the weaker one did not.
+    assert!(strict.committed_events().is_empty());
+    assert_eq!(strict.revision(), Revision(0));
+    assert_eq!(
+        verifier_results(&strict),
+        [("strong".to_owned(), true), ("weaker".to_owned(), false)]
+    );
     // Under a full-semantic requirement it is admitted, and the record names
     // both verifiers in grant order and the weakest level.
     let mut lenient = PtrRuntime::new(PtrConfig::default()).unwrap();
@@ -616,18 +624,22 @@ fn the_weakest_verifier_level_decides() {
         }
     );
     // Each verifier's result was emitted as it was judged.
-    let results: Vec<_> = lenient
+    assert_eq!(
+        verifier_results(&lenient),
+        [("strong".to_owned(), true), ("weaker".to_owned(), true)]
+    );
+}
+
+/// Every verifier result the runtime emitted, in order.
+fn verifier_results(runtime: &PtrRuntime) -> Vec<(String, bool)> {
+    runtime
         .events()
         .iter()
         .filter_map(|envelope| match &envelope.event {
             RuntimeEvent::VerifierResult { verifier, passed } => Some((verifier.clone(), *passed)),
             _ => None,
         })
-        .collect();
-    assert_eq!(
-        results,
-        [("strong".to_owned(), true), ("weaker".to_owned(), true)]
-    );
+        .collect()
 }
 
 #[test]
@@ -699,4 +711,39 @@ fn an_invalid_finding_code_fails_closed() {
         let result = host_write(&mut runtime, Revision(0), delta("price", "1"));
         assert_eq!(result.is_ok(), admitted, "{count}: {result:?}");
     }
+}
+
+#[test]
+fn a_report_that_fails_closed_is_emitted_as_not_passed_and_stops_the_verifiers_after_it() {
+    let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+    runtime
+        .install_semantic_grant(
+            SemanticGrant::new(RequiredVerification::Deterministic)
+                .with_verifier(FnVerifier::new("first", |_| {
+                    pass(VerificationLevel::Deterministic)
+                }))
+                .with_verifier(FnVerifier::new("second", |_| {
+                    let mut report = pass(VerificationLevel::Deterministic);
+                    report.findings = vec![finding(" bad", false)];
+                    report
+                }))
+                .with_verifier(FnVerifier::new("third", |_| {
+                    panic!("a verifier after one that failed closed is not asked")
+                }))
+                .allow_host_writes(),
+        )
+        .unwrap();
+    assert_eq!(
+        host_write(&mut runtime, Revision(0), delta("price", "1")),
+        Err(RuntimeError::InvalidVerificationReport {
+            verifier: "second".into()
+        })
+    );
+    assert!(runtime.committed_events().is_empty());
+    // The verifiers that judged are in the telemetry: the first passed, the
+    // one whose report failed closed did not, and the third never judged.
+    assert_eq!(
+        verifier_results(&runtime),
+        [("first".to_owned(), true), ("second".to_owned(), false)]
+    );
 }

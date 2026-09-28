@@ -128,38 +128,48 @@ impl SemanticGrant {
     }
 
     /// Let every verifier judge `change`, in grant order, and combine their
-    /// reports.
+    /// reports, with each verifier's result as far as they got.
     ///
-    /// # Errors
-    /// [`RuntimeError::InvalidVerificationReport`] naming the verifier whose
-    /// report has a finding code that is not an identifier of at most
-    /// [`MAX_FINDING_CODE`] bytes, or whose soft findings take the record past
-    /// [`MAX_ATTESTED_FINDINGS`]. Such a report fails closed rather than be
-    /// recorded as something else.
-    pub(crate) fn judge(
-        &self,
-        change: &SemanticChange<'_>,
-    ) -> Result<SemanticVerdict, RuntimeError> {
+    /// The verdict is [`RuntimeError::InvalidVerificationReport`] naming the
+    /// verifier whose report has a finding code that is not an identifier of
+    /// at most [`MAX_FINDING_CODE`] bytes, or whose soft findings take the
+    /// record past [`MAX_ATTESTED_FINDINGS`]. Such a report fails closed
+    /// rather than be recorded as something else; it is that verifier's
+    /// result, not passed, and no verifier after it judges.
+    pub(crate) fn judge(&self, change: &SemanticChange<'_>) -> Judgement {
+        let mut results = Vec::with_capacity(self.verifiers.len());
         let mut reports = Vec::with_capacity(self.verifiers.len());
         let mut soft = BTreeSet::new();
         for verifier in &self.verifiers {
             let name = verifier.name();
             let report = verifier.verify(change);
+            let mut fits = true;
             for finding in &report.findings {
                 if !valid_finding_code(&finding.code) {
-                    return Err(RuntimeError::InvalidVerificationReport {
-                        verifier: name.to_owned(),
-                    });
+                    fits = false;
+                    break;
                 }
                 if !finding.hard {
                     soft.insert(format!("{name}/{}", finding.code));
                     if soft.len() > MAX_ATTESTED_FINDINGS {
-                        return Err(RuntimeError::InvalidVerificationReport {
-                            verifier: name.to_owned(),
-                        });
+                        fits = false;
+                        break;
                     }
                 }
             }
+            if !fits {
+                results.push((name, false));
+                return Judgement {
+                    results,
+                    verdict: Err(RuntimeError::InvalidVerificationReport {
+                        verifier: name.to_owned(),
+                    }),
+                };
+            }
+            let passed = report.status == VerificationStatus::Pass
+                && self.required.accepts(report.level)
+                && !report.findings.iter().any(|finding| finding.hard);
+            results.push((name, passed));
             reports.push((name, report));
         }
         let status = reports
@@ -177,14 +187,27 @@ impl SemanticGrant {
             .map(|(_, report)| report.score)
             .min_by(|left, right| left.get().total_cmp(&right.get()))
             .expect("an installed grant has a verifier");
-        Ok(SemanticVerdict {
-            required: self.required,
-            status,
-            level,
-            score,
-            reports,
-        })
+        Judgement {
+            results,
+            verdict: Ok(SemanticVerdict {
+                required: self.required,
+                status,
+                level,
+                score,
+                reports,
+            }),
+        }
     }
+}
+
+/// What a grant's verifiers made of one change.
+pub(crate) struct Judgement {
+    /// Each verifier that judged, in grant order, and whether it passed:
+    /// `Pass` at a level the grant accepts with no hard finding. A verifier
+    /// whose report failed closed is the last, and did not pass.
+    pub(crate) results: Vec<(&'static str, bool)>,
+    /// The combined verdict, or the refusal of a report that failed closed.
+    pub(crate) verdict: Result<SemanticVerdict, RuntimeError>,
 }
 
 impl fmt::Debug for SemanticGrant {

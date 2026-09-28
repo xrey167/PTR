@@ -104,10 +104,19 @@ the runtime's to check, with the same rules on every write and every replay:
   is refused (`LegacySemanticRecord`). The runtime never writes one.
 - **R2.** A request's record holds exactly its raw text, and a Pod's output record
   exactly that output, sourced from the Pod and derived from the request's text.
-- **R3.** A host write touches no ingress key, names a valid principal, and
-  carries an attestation whose weakest level meets its requirement, whose
-  verifiers are distinct valid names, and whose soft findings are sorted,
-  distinct, and each a recorded verifier's code.
+- **R3.** A host write writes, removes, derives and evicts no ingress key,
+  names a valid principal, and carries an attestation whose weakest level meets
+  its requirement, with 1 to 16 verifiers whose names are distinct and valid,
+  and at most 32 soft findings, sorted, distinct, and each a recorded verifier's
+  code. An ingress key is evicted only through a dependency a record without an
+  origin set up (a key only ingress writes, derived from one the write changes).
+  No write since can remove such a dependency, so the host key it hangs on can no
+  longer be written by a host: the write is refused naming the ingress key rather
+  than erasing ingress by invalidation.
+
+Replay also refuses a record the ledger could not frame, which only a history
+held in memory (replay, the records a compacted restore replays above its floor)
+can carry, since the codec refuses to write or read one.
 
 A merge record is refused (`InvalidSemanticOrigin`) until the runtime merges.
 Replay never runs a verifier again: a grant is not history.

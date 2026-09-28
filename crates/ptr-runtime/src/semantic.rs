@@ -10,7 +10,6 @@ use ptr_semdb::{
     is_ingress_key, PreparedDelta, SemanticDelta, SemanticError, SemanticPayload, SemanticSnapshot,
     SemanticValue,
 };
-use ptr_verifier::VerificationStatus;
 
 use ptr_types::{
     CommitIndex, Generation, PodId, PrincipalId, RequestId, Revision, Validity, VerificationLevel,
@@ -142,7 +141,11 @@ impl PtrRuntime {
     /// 6. an ingress key as an upsert, a removal or a derived (dependency)
     ///    key ([`RuntimeError::ReservedSemanticNamespace`]); an ingress key
     ///    may be a dependency input;
-    /// 7. a delta that does not encode or prepare;
+    /// 7. a delta that does not encode or prepare, and one that would evict
+    ///    an ingress key a record written before origins existed derived from
+    ///    a key it changes ([`RuntimeError::ReservedSemanticNamespace`]); no
+    ///    write since can remove such a dependency, so the key it hangs on can
+    ///    no longer be written by a host;
     /// 8. a change the grant's verifiers do not admit
     ///    ([`RuntimeError::SemanticVerificationRejected`], naming the hard
     ///    findings by code, never by message), or a report that does not fit
@@ -153,7 +156,8 @@ impl PtrRuntime {
     /// no-op is returned without appending, after it too has been admitted.
     /// Each verifier's result is emitted as a
     /// [`RuntimeEvent::VerifierResult`], passed when it reported `Pass` at a
-    /// level the grant accepts with no hard finding.
+    /// level the grant accepts with no hard finding; a verifier whose report
+    /// fails closed is emitted as not passed, and none after it judges.
     ///
     /// It checks no lifecycle generation; work that relied on some is
     /// committed through [`Self::apply_certified_semantic_delta`].
@@ -257,7 +261,12 @@ impl PtrRuntime {
             .semdb
             .prepare_delta(delta)
             .map_err(RuntimeError::Semantic)?;
-        let verdict = {
+        if let Some(key) = evicted_ingress_key(&prepared) {
+            return Err(RuntimeError::ReservedSemanticNamespace {
+                key: key.to_owned(),
+            });
+        }
+        let judgement = {
             let change = SemanticChange {
                 base: expected,
                 next: prepared.revision(),
@@ -270,17 +279,15 @@ impl PtrRuntime {
                 affected: prepared.affected(),
                 origin: ChangeOrigin::Host { principal },
             };
-            grant.judge(&change)?
+            grant.judge(&change)
         };
-        for (name, report) in &verdict.reports {
-            let passed = report.status == VerificationStatus::Pass
-                && verdict.required.accepts(report.level)
-                && !report.findings.iter().any(|finding| finding.hard);
+        for (name, passed) in &judgement.results {
             self.emit(RuntimeEvent::VerifierResult {
                 verifier: (*name).to_owned(),
-                passed,
+                passed: *passed,
             });
         }
+        let verdict = judgement.verdict?;
         if !verdict.admitted() {
             return Err(RuntimeError::SemanticVerificationRejected(
                 verdict.refusal(),
@@ -453,10 +460,24 @@ impl PtrRuntime {
         }
         let delta = SemanticDelta::decode(encoded_delta).map_err(RuntimeError::Semantic)?;
         self.validate_semantic_origin(index, &delta, origin)?;
+        // A record replayed from memory never passed through the codec; one
+        // the ledger could not frame would leave a runtime that cannot export
+        // its own history.
+        ptr_ledger::check_encodable(event).map_err(|_| RuntimeError::InvalidSemanticOrigin {
+            index,
+            reason: "a record the ledger cannot frame",
+        })?;
         let prepared = self
             .semdb
             .prepare_delta(delta)
             .map_err(RuntimeError::Semantic)?;
+        if matches!(origin, SemanticOrigin::Host { .. }) && evicted_ingress_key(&prepared).is_some()
+        {
+            return Err(RuntimeError::InvalidSemanticOrigin {
+                index,
+                reason: "a host write evicts an ingress key",
+            });
+        }
         if prepared.revision() == self.revision() {
             return Err(RuntimeError::Semantic(SemanticError::NoChangeRecord));
         }
@@ -483,7 +504,9 @@ impl PtrRuntime {
     ///   A Pod's output: one payload at [`pod_output_key`] whose source is
     ///   the Pod, depending on exactly the request's raw text, and nothing
     ///   else.
-    /// - **R3, `Host`.** No ingress key written, removed or derived; a
+    /// - **R3, `Host`.** No ingress key written, removed, derived or evicted
+    ///   (a key only ingress writes that a record without an origin derived
+    ///   from one the write changes, checked once the delta is prepared); a
     ///   principal that is an identifier of at most
     ///   [`MAX_PROVENANCE_TEXT`](crate::merge::MAX_PROVENANCE_TEXT) bytes; and
     ///   an attestation whose weakest level meets its requirement, whose
@@ -494,7 +517,9 @@ impl PtrRuntime {
     /// # Errors
     /// [`RuntimeError::LegacySemanticRecord`] for R1 on replay, and
     /// [`RuntimeError::InvalidSemanticOrigin`] with the rule's reason for
-    /// every other failure.
+    /// every other failure. Replay also refuses, with the same error, a
+    /// record the ledger could not frame, which only a history held in memory
+    /// can carry.
     pub(super) fn validate_semantic_origin(
         &self,
         index: Option<CommitIndex>,
@@ -577,15 +602,39 @@ fn written_ingress_key(delta: &SemanticDelta) -> Option<&str> {
         .find(|key| is_ingress_key(key))
 }
 
-/// The attestation rules replay checks beyond the codec's: the weakest level
-/// meets the requirement, the verifier names are distinct valid names, and
-/// the findings are sorted, distinct, and each a recorded verifier's name,
-/// `/` and a valid finding code.
+/// The key only ingress writes that a prepared change evicts, if any. A host
+/// write never writes or derives one, so such a key is derived from a key the
+/// write changes, which only a record written before origins existed can
+/// have set up.
+fn evicted_ingress_key(prepared: &PreparedDelta) -> Option<&str> {
+    prepared
+        .affected()
+        .iter()
+        .map(String::as_str)
+        .find(|key| is_ingress_key(key))
+}
+
+/// The attestation rules replay checks: the requirement is one a grant
+/// records, the weakest level meets it, there are 1 to
+/// [`MAX_SEMANTIC_VERIFIERS`](merge::MAX_SEMANTIC_VERIFIERS) verifiers with
+/// distinct valid names, and at most
+/// [`MAX_ATTESTED_FINDINGS`](merge::MAX_ATTESTED_FINDINGS) findings, sorted,
+/// distinct, and each a recorded verifier's name, `/` and a valid finding
+/// code. The counts are the codec's too, but a history replayed from memory
+/// never passed through the codec.
 fn check_attestation(attestation: &Attestation) -> Result<(), &'static str> {
     let required = merge::requirement_of(attestation.required)
         .ok_or("an attestation requires a level no grant requires")?;
     if !required.accepts(attestation.level) {
         return Err("an attestation's weakest level does not meet its requirement");
+    }
+    if attestation.verifiers.is_empty()
+        || attestation.verifiers.len() > merge::MAX_SEMANTIC_VERIFIERS
+    {
+        return Err("an attestation names no verifier, or more than a grant installs");
+    }
+    if attestation.findings.len() > merge::MAX_ATTESTED_FINDINGS {
+        return Err("an attestation carries more soft findings than a record holds");
     }
     let mut names = BTreeSet::new();
     for name in &attestation.verifiers {

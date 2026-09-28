@@ -34,7 +34,8 @@ use crate::ops::holds_member;
 /// superseded or unknown refuses the plan, through the reliance check.
 /// Nothing else the branch depended on is checked again when the plan
 /// commits: a hard constraint committed after certification, for example, is
-/// taken into account then only if the caller's verifier looks for it.
+/// taken into account then only if the installed grant's verifiers look for
+/// it.
 ///
 /// Apart from those checks, the runtime refuses every commit, this plan's
 /// included, with `ExecutionFenced` while it is fenced: while an effect

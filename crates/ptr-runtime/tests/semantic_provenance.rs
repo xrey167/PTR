@@ -4,6 +4,7 @@
 //! ingress writes (R2), and host writes only with an attestation that holds
 //! and no ingress key written (R3). The runtime never writes a record its own
 //! replay refuses.
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -19,7 +20,8 @@ use ptr_runtime::semantic::{pod_output_key, request_raw_key};
 use ptr_runtime::{PtrRuntime, RuntimeError, SemanticGrant};
 use ptr_semdb::{SemanticDelta, SemanticPayload, SemanticValue};
 use ptr_types::{
-    CapsuleId, CommitIndex, Generation, PodId, ProjectId, RequestId, Revision, VerificationLevel,
+    CapsuleId, CommitIndex, Generation, PodId, PrincipalId, ProjectId, RequestId, Revision,
+    VerificationLevel,
 };
 use ptr_verifier::{VerificationReport, Verifier};
 
@@ -122,12 +124,42 @@ fn recovery_snapshot(history: &[CommittedEvent]) -> (Vec<u8>, SnapshotAnchor) {
     (bytes, trusted)
 }
 
+/// What a rebuilt runtime holds that the runtime which wrote its history
+/// must hold too: its revision, its materialized state, and every semantic
+/// key with its value and its inputs.
+type Held = (
+    Revision,
+    BTreeMap<String, String>,
+    Vec<(String, Option<SemanticValue>, Vec<String>)>,
+);
+
+fn held(runtime: &PtrRuntime) -> Held {
+    let snapshot = runtime.snapshot();
+    (
+        runtime.revision(),
+        runtime.materialized_state().values.clone(),
+        snapshot
+            .keys()
+            .map(|key| {
+                (
+                    key.to_owned(),
+                    snapshot.value(key).cloned(),
+                    snapshot.inputs(key).map(str::to_owned).collect(),
+                )
+            })
+            .collect(),
+    )
+}
+
 /// What every path that rebuilds a runtime from `history` answers: replay,
 /// `open_durable` and `open_durable_at` over a log holding it,
 /// `restore_recovery_snapshot` over a snapshot of it, and `restore_compacted`
 /// from a compacted snapshot of its first `floor` records with the rest above
-/// the floor. `None` for a path that opened.
-fn rebuilt(history: &[CommittedEvent], floor: usize) -> Vec<(&'static str, Option<RuntimeError>)> {
+/// the floor; for a path that opened, what the runtime holds.
+fn rebuilt_held(
+    history: &[CommittedEvent],
+    floor: usize,
+) -> Vec<(&'static str, Result<Held, RuntimeError>)> {
     let temp = Temp::new();
     let anchor = {
         let mut log = FileLedger::open(temp.log()).unwrap();
@@ -145,22 +177,27 @@ fn rebuilt(history: &[CommittedEvent], floor: usize) -> Vec<(&'static str, Optio
         .unwrap()
         .export_compacted_snapshot()
         .unwrap();
+    // Each runtime is dropped as soon as what it holds is read, so no log is
+    // held open when it is read back below.
     let outcomes = vec![
         (
             "replay",
-            PtrRuntime::replay(PtrConfig::default(), history).err(),
+            PtrRuntime::replay(PtrConfig::default(), history).map(|runtime| held(&runtime)),
         ),
         (
             "open_durable",
-            PtrRuntime::open_durable(PtrConfig::default(), temp.log()).err(),
+            PtrRuntime::open_durable(PtrConfig::default(), temp.log())
+                .map(|runtime| held(&runtime)),
         ),
         (
             "open_durable_at",
-            PtrRuntime::open_durable_at(PtrConfig::default(), temp.log(), anchor).err(),
+            PtrRuntime::open_durable_at(PtrConfig::default(), temp.log(), anchor)
+                .map(|runtime| held(&runtime)),
         ),
         (
             "restore_recovery_snapshot",
-            PtrRuntime::restore_recovery_snapshot(PtrConfig::default(), &snapshot, trusted).err(),
+            PtrRuntime::restore_recovery_snapshot(PtrConfig::default(), &snapshot, trusted)
+                .map(|runtime| held(&runtime)),
         ),
         (
             "restore_compacted",
@@ -170,12 +207,20 @@ fn rebuilt(history: &[CommittedEvent], floor: usize) -> Vec<(&'static str, Optio
                 compacted.anchor(),
                 &history[floor..],
             )
-            .err(),
+            .map(|runtime| held(&runtime)),
         ),
     ];
-    // Refusing to open never rewrites the log.
+    // Opening, or refusing to, never rewrites the log.
     assert_eq!(before, std::fs::read(temp.log()).unwrap());
     outcomes
+}
+
+/// [`rebuilt_held`]'s refusals: `None` for a path that opened.
+fn rebuilt(history: &[CommittedEvent], floor: usize) -> Vec<(&'static str, Option<RuntimeError>)> {
+    rebuilt_held(history, floor)
+        .into_iter()
+        .map(|(path, outcome)| (path, outcome.err()))
+        .collect()
 }
 
 fn assert_every_path(history: &[CommittedEvent], floor: usize, expected: Option<RuntimeError>) {
@@ -278,10 +323,13 @@ fn an_ingress_record_of_another_shape_is_refused() {
     with_dependency
         .dependencies
         .insert(raw.clone(), ["other".to_owned()].into());
+    let mut with_removal = delta(&raw, "text");
+    with_removal.removals.insert("other".into());
     let request_shapes = [
         extra,
         with_payload,
         with_dependency,
+        with_removal,
         delta(&request_raw_key(&RequestId::from("r2")), "text"),
     ];
     for shape in request_shapes {
@@ -300,11 +348,22 @@ fn an_ingress_record_of_another_shape_is_refused() {
         .get_mut(&output)
         .unwrap()
         .insert("other".into());
+    let mut pod_removal = pod_shape(payload("echo"), &[&raw]);
+    pod_removal.removals.insert("other".into());
+    let mut pod_extra = pod_shape(payload("echo"), &[&raw]);
+    pod_extra.upserts.insert("other".into(), "x".into());
+    let mut pod_second_dependency = pod_shape(payload("echo"), &[&raw]);
+    pod_second_dependency
+        .dependencies
+        .insert("other".into(), [raw.clone()].into());
     let pod_shapes = [
         pod_shape(payload("other-pod"), &[&raw]),
         pod_shape(payload("echo"), &[]),
         extra_input,
         pod_shape(SemanticValue::Text("text".into()), &[&raw]),
+        pod_removal,
+        pod_extra,
+        pod_second_dependency,
     ];
     for shape in pod_shapes {
         assert_every_path(
@@ -454,6 +513,158 @@ fn an_attestation_below_its_required_level_is_refused() {
             &history(vec![semantic(0, &delta("a", "1"), host(verification))]),
             0,
             refused(reason),
+        );
+    }
+}
+
+#[test]
+fn an_attestation_naming_no_verifier_or_more_than_a_record_holds_is_refused() {
+    // The ledger refuses to write such a record, so only a history held in
+    // memory carries one: replay, and the records a compacted restore replays
+    // above its floor.
+    let named = |count: usize| (0..count).map(|n| format!("v{n:02}")).collect::<Vec<_>>();
+    let noted = |count: usize| {
+        (0..count)
+            .map(|n| format!("v00/f{n:02}"))
+            .collect::<Vec<_>>()
+    };
+    let verifiers = "an attestation names no verifier, or more than a grant installs";
+    let findings = "an attestation carries more soft findings than a record holds";
+    let empty = PtrRuntime::new(PtrConfig::default())
+        .unwrap()
+        .export_compacted_snapshot()
+        .unwrap();
+    for (names, codes, reason) in [
+        (named(0), vec![], verifiers),
+        (
+            named(ptr_runtime::merge::MAX_SEMANTIC_VERIFIERS + 1),
+            vec![],
+            verifiers,
+        ),
+        (
+            named(1),
+            noted(ptr_runtime::merge::MAX_ATTESTED_FINDINGS + 1),
+            findings,
+        ),
+    ] {
+        let event = semantic(
+            0,
+            &delta("a", "1"),
+            host(Attestation {
+                verifiers: names,
+                findings: codes,
+                ..attestation()
+            }),
+        );
+        assert!(ptr_ledger::check_encodable(&event).is_err());
+        let history = history(vec![event]);
+        let refused = Some(RuntimeError::InvalidSemanticOrigin {
+            index: Some(CommitIndex(1)),
+            reason,
+        });
+        assert_eq!(
+            PtrRuntime::replay(PtrConfig::default(), &history).err(),
+            refused
+        );
+        assert_eq!(
+            PtrRuntime::restore_compacted(
+                PtrConfig::default(),
+                empty.bytes(),
+                empty.anchor(),
+                &history,
+            )
+            .err(),
+            refused
+        );
+    }
+    // Exactly the bounds replay on every path.
+    assert_every_path(
+        &history(vec![semantic(
+            0,
+            &delta("a", "1"),
+            host(Attestation {
+                verifiers: named(ptr_runtime::merge::MAX_SEMANTIC_VERIFIERS),
+                findings: noted(ptr_runtime::merge::MAX_ATTESTED_FINDINGS),
+                ..attestation()
+            }),
+        )]),
+        0,
+        None,
+    );
+}
+
+#[test]
+fn a_host_write_that_would_evict_an_ingress_key_is_refused() {
+    // Before origins existed any delta could be committed, so a history may
+    // hold a Pod's output derived from a key a host write changes. Changing
+    // that key would evict the output, a key only ingress writes.
+    let request = RequestId::from("r1");
+    let output = pod_output_key(&request, &PodId::from("echo"));
+    let mut legacy = delta("price", "1");
+    legacy.upserts.insert(
+        output.clone(),
+        SemanticValue::Payload(SemanticPayload {
+            type_id: "bytes".into(),
+            source: "echo".into(),
+            bytes: vec![1],
+        }),
+    );
+    legacy
+        .dependencies
+        .insert(output.clone(), ["price".to_owned()].into());
+    let prefix = semantic(0, &legacy, SemanticOrigin::Legacy);
+
+    // The writer refuses it before any verifier is asked.
+    let mut runtime =
+        PtrRuntime::replay(PtrConfig::default(), &history(vec![prefix.clone()])).unwrap();
+    let asked = Arc::new(AtomicU64::new(0));
+    let counted = asked.clone();
+    runtime
+        .install_semantic_grant(
+            SemanticGrant::new(RequiredVerification::Deterministic)
+                .with_verifier(FnVerifier::new(ACCEPT_ALL, move |_| {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    pass(VerificationLevel::Deterministic)
+                }))
+                .allow_host_writes(),
+        )
+        .unwrap();
+    let events = runtime.committed_events().len();
+    assert_eq!(
+        runtime.apply_verified_semantic_delta(
+            Revision(1),
+            delta("price", "2"),
+            &PrincipalId::from("test-operator"),
+        ),
+        Err(RuntimeError::ReservedSemanticNamespace {
+            key: output.clone()
+        })
+    );
+    assert_eq!(asked.load(Ordering::SeqCst), 0);
+    assert_eq!(runtime.committed_events().len(), events);
+    assert!(runtime.snapshot().value(&output).is_some());
+    // A write that does not reach the output is admitted.
+    runtime
+        .apply_verified_semantic_delta(
+            Revision(1),
+            delta("other", "2"),
+            &PrincipalId::from("test-operator"),
+        )
+        .unwrap();
+
+    // Replay refuses a host record that evicts one, with the output below
+    // the floor and above it.
+    for floor in [0, 1] {
+        assert_every_path(
+            &history(vec![
+                prefix.clone(),
+                semantic(1, &delta("price", "2"), host(attestation())),
+            ]),
+            floor,
+            Some(RuntimeError::InvalidSemanticOrigin {
+                index: Some(CommitIndex(2)),
+                reason: "a host write evicts an ingress key",
+            }),
         );
     }
 }
@@ -662,24 +873,15 @@ fn the_runtime_never_writes_a_record_its_replay_refuses() {
                 }
             }
         }
-        // And every path that rebuilds from it accepts it, reaching the same
-        // state.
-        for (path, outcome) in rebuilt(&written, written.len() / 2) {
-            assert_eq!(outcome, None, "seed {seed}, {path}");
-        }
-        let replayed = PtrRuntime::replay(PtrConfig::default(), &written).unwrap();
-        assert_eq!(replayed.revision(), runtime.revision(), "seed {seed}");
-        assert_eq!(
-            replayed.materialized_state().values,
-            runtime.materialized_state().values,
-            "seed {seed}"
-        );
-        for key in runtime.snapshot().keys() {
-            assert_eq!(
-                replayed.snapshot().value(key),
-                runtime.snapshot().value(key),
-                "seed {seed}, {key}"
-            );
+        // And every path that rebuilds from it accepts it, reaching the
+        // writer's state: revision, materialized state, and every value with
+        // its inputs.
+        let expected = held(&runtime);
+        for (path, outcome) in rebuilt_held(&written, written.len() / 2) {
+            match outcome {
+                Ok(rebuilt) => assert!(rebuilt == expected, "seed {seed}, {path}"),
+                Err(error) => panic!("seed {seed}, {path}: {error:?}"),
+            }
         }
     }
     assert!(ingress_refusals > 0);

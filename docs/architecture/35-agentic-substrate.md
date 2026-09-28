@@ -747,7 +747,7 @@ no-op included, with nothing appended
 `a_certified_delta_is_refused_while_a_generation_it_relied_on_is_not_live_and_appends_nothing`).
 The revision and the relied generations are the plan's only freshness fences: a new
 hard constraint, a capsule the branch did not rely on or a verifier attestation
-committed after certification refuses nothing, and only the caller's verifier can
+committed after certification refuses nothing, and only the grant's verifiers can
 take it into account at commit time
 (`a_commit_that_moves_neither_the_revision_nor_a_relied_generation_does_not_refuse_the_plan`).
 An effect record is no freshness check either, but while an effect attempt is
@@ -765,7 +765,9 @@ nothing stops a caller from committing a plan's delta as an ordinary host write
 without its relied generations
 (`a_plan_committed_without_its_relied_generations_is_not_stopped_by_the_runtime`).
 Every such write is still judged by the grant's verifiers and names its principal:
-there is no public path that commits a semantic delta no verifier judged. Closing
+apart from ingress (`ingest_text`, a verified Pod output), which writes only the
+fixed shapes its origin allows, there is no public path that commits a semantic
+delta no verifier judged. Closing
 the rest of the gap (a plan consumable only by a verifying entry point) is listed in
 §7.
 

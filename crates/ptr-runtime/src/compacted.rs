@@ -694,9 +694,12 @@ impl PtrRuntime {
     /// validation replay applies, the ordinary lifecycle and semantic path, so a
     /// restored runtime cannot reach a state a replay of the whole log would have
     /// refused. That is the validation a live commit applies to the record
-    /// itself, except the bound on a new attempt's key, which a log written by
-    /// an earlier build may exceed; the fence a live commit also checks is the
-    /// runtime's state, not the record's, and replay rebuilds it.
+    /// itself, with two exceptions: the bound on a new attempt's key, which a
+    /// log written by an earlier build may exceed, and the refusal of every
+    /// semantic record, which only the semantic write paths may write and
+    /// which replay judges by the origin rules they check instead. The fence a
+    /// live commit also checks is the runtime's state, not the record's, and
+    /// replay rebuilds it.
     pub fn restore_compacted(
         config: PtrConfig,
         bytes: &[u8],

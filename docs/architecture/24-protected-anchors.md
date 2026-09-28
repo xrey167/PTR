@@ -310,8 +310,11 @@ exactly one authority for any fact. `restore_compacted` therefore takes the
 retained records as a separate argument and replays them through the ordinary
 lifecycle and semantic validation path, so a restored runtime cannot reach a state
 a replay of the whole log would have refused. That is every check a live commit
-makes except the bound on a new attempt's at-most-once key, which a log written by
-an earlier build may exceed (`28-durable-execution-audit.md`). They keep the
+makes, with two exceptions: the bound on a new attempt's at-most-once key, which a
+log written by an earlier build may exceed (`28-durable-execution-audit.md`), and
+the refusal of every semantic record, which only the semantic write paths may write
+and which replay judges by the origin rules those paths check instead
+(`22-durable-semantic-state.md`). They keep the
 indices they were committed at; a ledger that renumbered them from 1 would
 contradict the floor.
 

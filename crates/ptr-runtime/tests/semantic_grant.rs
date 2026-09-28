@@ -5,7 +5,10 @@ use std::sync::Arc;
 
 use ptr_config::PtrConfig;
 use ptr_ledger::{Attestation, CommittedEvent, LedgerEvent, SemanticOrigin};
-use ptr_model_api::{InferenceBackend, ModelError, ModelEvent, ModelRequest};
+use ptr_model_api::{
+    InferenceBackend, ModelError, ModelEvent, ModelRequest, ModelResumeRequest,
+    ResumableInferenceBackend,
+};
 use ptr_pods::{DynPod, PodManifest, PodRegistry};
 use ptr_protocol::TypedPayload;
 use ptr_runtime::execution::RequiredVerification;
@@ -313,6 +316,12 @@ impl InferenceBackend for Asks {
     }
 }
 
+impl ResumableInferenceBackend for Asks {
+    fn resume(&self, _: &ModelResumeRequest) -> Result<Vec<ModelEvent>, ModelError> {
+        Ok(vec![ModelEvent::Finished])
+    }
+}
+
 struct Echo(PodManifest);
 impl DynPod for Echo {
     fn manifest(&self) -> &PodManifest {
@@ -344,63 +353,98 @@ fn echo_pods() -> PodRegistry {
     pods
 }
 
+/// The Pod loops that promote a Pod's output.
+#[derive(Clone, Copy, Debug)]
+enum PodLoop {
+    Once,
+    Resumable,
+}
+
+/// Run request `r1` through `pod_loop` with the echo Pod, whose output the
+/// Pod verifier reports as `report`.
+fn run_pod_loop(
+    runtime: &mut PtrRuntime,
+    pod_loop: PodLoop,
+    report: VerificationReport,
+) -> Result<(), RuntimeError> {
+    let (request, project) = (RequestId::from("r1"), ProjectId::from("p"));
+    match pod_loop {
+        PodLoop::Once => runtime
+            .run_model_with_pods(
+                request,
+                &project,
+                "text",
+                &Asks,
+                &echo_pods(),
+                &Reports(report),
+            )
+            .map(|_| ()),
+        PodLoop::Resumable => runtime
+            .run_resumable_with_pods(
+                request,
+                &project,
+                "text",
+                &Asks,
+                &echo_pods(),
+                &Reports(report),
+                2,
+            )
+            .map(|_| ()),
+    }
+}
+
 #[test]
 fn a_pod_output_with_a_hard_finding_is_not_promoted() {
-    let request = RequestId::from("r1");
-    let output_key = pod_output_key(&request, &PodId::from("echo"));
+    let output_key = pod_output_key(&RequestId::from("r1"), &PodId::from("echo"));
+    for pod_loop in [PodLoop::Once, PodLoop::Resumable] {
+        // Pass with a hard finding: refused, and nothing but the request's
+        // text is recorded.
+        let mut hard = pass(VerificationLevel::SampleVerified);
+        hard.findings.push(finding("unsafe", true));
+        let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+        assert_eq!(
+            run_pod_loop(&mut runtime, pod_loop, hard),
+            Err(RuntimeError::PodVerificationFailed { pod: "echo".into() }),
+            "{pod_loop:?}"
+        );
+        assert_eq!(runtime.committed_events().len(), 1, "{pod_loop:?}");
+        assert_eq!(
+            runtime.snapshot().payload(&output_key),
+            None,
+            "{pod_loop:?}"
+        );
 
-    // Pass with a hard finding: refused, and nothing but the request's text is
-    // recorded.
-    let mut hard = pass(VerificationLevel::SampleVerified);
-    hard.findings.push(finding("unsafe", true));
-    let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
-    assert_eq!(
-        runtime.run_model_with_pods(
-            request.clone(),
-            &ProjectId::from("p"),
-            "text",
-            &Asks,
-            &echo_pods(),
-            &Reports(hard),
-        ),
-        Err(RuntimeError::PodVerificationFailed { pod: "echo".into() })
-    );
-    assert_eq!(runtime.committed_events().len(), 1);
-    assert_eq!(runtime.snapshot().payload(&output_key), None);
-
-    // A soft finding does not refuse it; it is promoted at the level the
-    // verifier reported, which no minimum gates.
-    let mut soft = pass(VerificationLevel::SampleVerified);
-    soft.findings.push(finding("style", false));
-    let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
-    runtime
-        .run_model_with_pods(
-            request.clone(),
-            &ProjectId::from("p"),
-            "text",
-            &Asks,
-            &echo_pods(),
-            &Reports(soft),
-        )
-        .unwrap();
-    let promoted = runtime.committed_events().last().unwrap();
-    assert_eq!(
-        origin_of(promoted),
-        SemanticOrigin::PodOutput {
-            request: "r1".into(),
-            pod: "echo".into(),
-            level: VerificationLevel::SampleVerified,
-        }
-    );
-    let stored = runtime.snapshot().payload(&output_key).unwrap().clone();
-    assert_eq!(stored.bytes, [7, 8, 9]);
-    assert_eq!(stored.source, "echo");
-    assert!(matches!(
-        runtime.snapshot().value(&output_key),
-        Some(SemanticValue::Payload(_))
-    ));
-    // Replay accepts it.
-    assert!(PtrRuntime::replay(PtrConfig::default(), runtime.committed_events()).is_ok());
+        // A soft finding does not refuse it; it is promoted at the level the
+        // verifier reported, which no minimum gates.
+        let mut soft = pass(VerificationLevel::SampleVerified);
+        soft.findings.push(finding("style", false));
+        let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+        run_pod_loop(&mut runtime, pod_loop, soft).unwrap();
+        let promoted = runtime
+            .committed_events()
+            .iter()
+            .rev()
+            .find(|committed| matches!(committed.event, LedgerEvent::SemanticDeltaCommitted { .. }))
+            .unwrap();
+        assert_eq!(
+            origin_of(promoted),
+            SemanticOrigin::PodOutput {
+                request: "r1".into(),
+                pod: "echo".into(),
+                level: VerificationLevel::SampleVerified,
+            },
+            "{pod_loop:?}"
+        );
+        let stored = runtime.snapshot().payload(&output_key).unwrap().clone();
+        assert_eq!(stored.bytes, [7, 8, 9]);
+        assert_eq!(stored.source, "echo");
+        assert!(matches!(
+            runtime.snapshot().value(&output_key),
+            Some(SemanticValue::Payload(_))
+        ));
+        // Replay accepts it.
+        assert!(PtrRuntime::replay(PtrConfig::default(), runtime.committed_events()).is_ok());
+    }
 }
 
 #[test]
