@@ -3,3 +3,30 @@ kind = "workspace-area"
 name = "F003-calibrated-arbiter"
 path = "experiments/feedback/F003-calibrated-arbiter"
 tests_dir = "tests"
+
+# Frozen before F003 leaves `planned` (experiments/preregistration.toml,
+# scripts/check_research_gates.py); the README's Design section gives the
+# reasons. A `must-be-pinned-…` value is still to be chosen, and a
+# `must-be-signed-…` value is an owner decision still to be taken: the owner
+# signs it by committing the decided value in its place.
+[preregistration]
+# Risk level alpha and confidence 1 - delta of Learn-then-Test
+# (ptr_branch::ThresholdRule::LearnThenTest), in permille.
+alpha_permille = 50
+delta_permille = 50
+threshold_rule = "learn_then_test"
+# ptr_branch::THRESHOLD_GRID_STEPS.
+threshold_grid_steps = 1000
+# The fewest adjudications with which Learn-then-Test can certify any
+# threshold at alpha = delta = 0.05: 0.95^n <= 0.05 first holds at n = 59.
+min_adjudications_per_policy = 59
+# The "fixed uncalibrated threshold" baseline.
+uncalibrated_threshold_permille = "must-be-pinned-before-prepared"
+# Proposed: "every adjudication recorded before the policy version; held-out = every one after".
+calibration_set_rule = "must-be-signed-by-owner"
+# Proposed: false.
+adjudicators_see_intent = "must-be-signed-by-owner"
+# Proposed: the first `:`-separated segment of each changed key, descriptive only.
+harm_breakdown_namespaces = "must-be-signed-by-owner"
+# Proposed: a PROTOCOL.md in this directory, still to be written.
+adjudication_protocol = "must-be-signed-by-owner"

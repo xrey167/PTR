@@ -981,8 +981,9 @@ verification:
   A policy's harm rate may only be estimated on adjudications it was not calibrated on
   (`PolicyRecord::held_out`), the disjointness F003 needs. Disjointness is not
   sufficient: the calibration subset, rule and levels must be fixed before the
-  held-out outcomes are looked at, as F003's pre-registration requires, and nothing
-  in the record can check that. A policy calibrated on a branch nobody adjudicated, or
+  held-out outcomes are looked at, as F003's preregistration requires (the
+  `[preregistration]` table of its `config.toml`, §8), and nothing in the record
+  can check that. A policy calibrated on a branch nobody adjudicated, or
   whose rule, rerun on the stored adjudications of its calibration branches, chooses
   another threshold, is refused
   (`a_recorded_policy_names_its_calibration_branches_and_holds_out_the_rest`,
@@ -1543,6 +1544,17 @@ another by idea.
 | [R004](../../experiments/runtime/R004-adapter-lineage/README.md) | Does gated lineage with replay and consolidation forget less than a naive chain? | public regression beyond the gate |
 | [F002](../../experiments/feedback/F002-weak-supervision/README.md) | Is the verifier-precedence label model better calibrated than majority vote? | any label contradicting a verifier veto |
 | [E005](../../experiments/system/E005-agent-memory-benchmark/README.md) | Does the combined stack beat current agent-memory systems on LongMemEval and LoCoMo? | no category improvement at equal budget |
+
+S003, F003, Q003, R004, M008 and E005 preregister (`experiments/preregistration.toml`). Each leaves `planned`
+only once the `[preregistration]` table of its `config.toml` holds every key the list requires, pinned and of
+its declared type, its manifest names the SHA-256 of the table's canonical text, and every baseline the list
+names is pinned and not blocked; `scripts/check_research_gates.py` fails CI otherwise
+(`test_a_missing_required_key_keeps_an_experiment_from_leaving_planned`,
+`test_a_placeholder_or_wrongly_typed_value_blocks`, `test_a_digest_mismatch_blocks`,
+`test_an_unpinned_or_blocked_baseline_blocks`). A value still to be chosen and an owner decision still to be
+taken, such as whether F003's adjudicators see a branch's intent, are placeholder strings that pass as no type,
+so none of the six can leave `planned` yet
+(`test_the_enrolled_experiments_are_held_until_their_placeholders_are_pinned`).
 
 L004 and L003 are completed for PostgreSQL 18 (2026-09-28, on T1-2's final code at 039beff): over five seeds
 each, with crashes, commits the server failed and races, no projection diverged from the reference, no

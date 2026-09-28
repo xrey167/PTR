@@ -3,3 +3,14 @@ kind = "workspace-area"
 name = "E005-agent-memory-benchmark"
 path = "experiments/system/E005-agent-memory-benchmark"
 tests_dir = "tests"
+
+# Frozen before E005 leaves `planned` (experiments/preregistration.toml,
+# scripts/check_research_gates.py). A `must-be-pinned-…` value is still to be
+# chosen. The RAG baseline is research/baselines/strong_rag, which must be
+# pinned too; the others have no configuration there, so they are pinned here.
+[preregistration]
+# The equal token budget of every arm.
+token_budget = "must-be-pinned-before-prepared"
+full_context_baseline = "must-be-pinned-before-prepared"
+# The published agent-memory systems re-run, where their licences allow.
+agent_memory_baselines = ["must-be-pinned-before-prepared"]

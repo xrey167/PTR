@@ -70,6 +70,12 @@ The archived run.json must also be one aggregate with the metrics.json and
 mutations.json beside it (`aggregate_errors`, run there too); one aggregated
 before run.json bound its metrics passes only while it is stale and beside
 the metrics.json committed with it.
+
+An experiment's preregistration, the `[preregistration]` table of its
+`config.toml`, has one canonical text and digest
+(`preregistration_canonical`, `preregistration_digest`), which the research
+gate compares with the manifest's `preregistration_sha256` and an aggregator
+compares with what its harness printed.
 """
 
 from __future__ import annotations
@@ -861,6 +867,42 @@ def write_exclusively(path: Path, text: str) -> None:
 def json_text(value) -> str:
     """`value` as the aggregators and recorders write JSON."""
     return json.dumps(value, indent=2, ensure_ascii=False) + "\n"
+
+
+def canonical_value_problem(value) -> str | None:
+    """Why `value` has no canonical preregistration text, or None when it
+    has one: an integer, a boolean, a string, or a list holding only integers
+    or only strings. A float, a date, a table or any other list has a text
+    that depends on who serializes it."""
+    if type(value) in (int, bool, str):
+        return None
+    if isinstance(value, list):
+        kinds = {type(element) for element in value}
+        if kinds <= {int} or kinds <= {str}:
+            return None
+        return "is a list that holds anything but only integers or only strings"
+    return f"is a {type(value).__name__}, which has no canonical text"
+
+
+def preregistration_canonical(table: dict) -> str:
+    """The canonical text of an experiment's `[preregistration]` table: JSON
+    with its keys sorted and no whitespace, which a harness in another
+    language reproduces byte for byte and prints in its results. Raises
+    `ValueError`, naming the key, for a value `canonical_value_problem`
+    refuses."""
+    for key, value in table.items():
+        problem = canonical_value_problem(value)
+        if problem:
+            raise ValueError(f"preregistration key {key} {problem}")
+    return json.dumps(table, sort_keys=True, separators=(",", ":"))
+
+
+def preregistration_digest(table: dict) -> str:
+    """The SHA-256, in hex, of the UTF-8 bytes of
+    `preregistration_canonical(table)`: the `preregistration_sha256` an
+    experiment's manifest names once it leaves `planned`
+    (`scripts/check_research_gates.py`)."""
+    return hashlib.sha256(preregistration_canonical(table).encode("utf-8")).hexdigest()
 
 
 RUN = "run.json"

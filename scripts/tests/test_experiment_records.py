@@ -1574,5 +1574,52 @@ class AggregatorTests(unittest.TestCase):
                 self.assertEqual((results / "STALE.toml").read_text(encoding="utf-8"), self.MARKER)
 
 
+class PreregistrationTests(unittest.TestCase):
+    TABLE = tomllib.loads(
+        "schema = 1\n"
+        'harness = "fixture"\n'
+        "seeds = [17, 29]\n"
+        'programs = ["rmw", "set_op"]\n'
+        "see_intent = false\n"
+        "low_cells = []\n"
+        'note = "Grüße"\n'
+    )
+
+    def test_the_preregistration_canonical_text_is_sorted_compact_json_and_its_digest_is_sha256(self):
+        text = (
+            '{"harness":"fixture","low_cells":[],"note":"Gr\\u00fc\\u00dfe","programs":["rmw","set_op"],'
+            '"schema":1,"see_intent":false,"seeds":[17,29]}'
+        )
+        self.assertEqual(mod.preregistration_canonical(self.TABLE), text)
+        self.assertEqual(mod.preregistration_digest(self.TABLE), hashlib.sha256(text.encode("utf-8")).hexdigest())
+        # The order the table was written in does not move the text.
+        reordered = dict(reversed(list(self.TABLE.items())))
+        self.assertEqual(mod.preregistration_canonical(reordered), text)
+        # Every value moves the digest, a list's order included.
+        for key, value in (("schema", 2), ("seeds", [29, 17]), ("see_intent", True), ("low_cells", ["L0N2"])):
+            with self.subTest(key=key):
+                changed = {**self.TABLE, key: value}
+                self.assertNotEqual(mod.preregistration_digest(changed), mod.preregistration_digest(self.TABLE))
+
+    def test_a_value_without_a_canonical_text_is_refused(self):
+        refused = tomllib.loads(
+            "rate = 0.1\n"
+            "day = 2026-09-28\n"
+            "nested = { a = 1 }\n"
+            'mixed = [1, "a"]\n'
+            "flags = [true, false]\n"
+            "lists = [[1], [2]]\n"
+        )
+        for key, value in refused.items():
+            with self.subTest(key=key):
+                self.assertIsNotNone(mod.canonical_value_problem(value))
+                with self.assertRaisesRegex(ValueError, f"preregistration key {key} "):
+                    mod.preregistration_canonical({**self.TABLE, key: value})
+                with self.assertRaisesRegex(ValueError, f"preregistration key {key} "):
+                    mod.preregistration_digest({**self.TABLE, key: value})
+        for value in self.TABLE.values():
+            self.assertIsNone(mod.canonical_value_problem(value))
+
+
 if __name__ == "__main__":
     unittest.main()
