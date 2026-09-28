@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import math
 import os
 import subprocess
 import sys
@@ -109,17 +110,46 @@ class AgreementTests(unittest.TestCase):
         self.assertEqual(mod.agreement_errors("L900", {**MANIFEST, "status": "completed"}, records), [])
 
     def test_a_manifest_agrees_with_the_record_as_json_holds_it(self):
-        # NaN is not equal to itself: the manifest is compared as the JSON
-        # text a record holds it as.
-        manifest = {**MANIFEST, "loss_cap": float("nan")}
+        # The manifest is compared as the JSON text a record holds it as:
+        # 1.0, 1 and true are equal in Python and three values to a run, and
+        # so are 0.0 and -0.0.
+        manifest = {**MANIFEST, "loss_cap": 1.0, "floor": -0.0}
         held = json.loads(json.dumps(manifest))
         records = {"a.json": record("a" * 40, manifest=held)}
         self.assertEqual(mod.agreement_errors("L900", manifest, records), [])
-        changed = {"b.json": record("b" * 40, manifest={**held, "loss_cap": 1.0})}
-        self.assertEqual(
-            mod.agreement_errors("L900", manifest, changed),
-            ["b.json ran under an experiment.toml that differs from the current one"],
+        for key, value in (("loss_cap", 1), ("loss_cap", True), ("loss_cap", 2.0), ("floor", 0.0)):
+            with self.subTest(key=key, value=value):
+                changed = {"b.json": record("b" * 40, manifest={**held, key: value})}
+                self.assertEqual(
+                    mod.agreement_errors("L900", manifest, changed),
+                    ["b.json ran under an experiment.toml that differs from the current one"],
+                )
+
+    def test_a_manifest_holding_a_nan_is_refused(self):
+        # JSON writes a NaN as NaN whatever its sign, which a run can read:
+        # nan and -nan would be one manifest to the records.
+        refusal = (
+            "experiment.toml holds a NaN at {}, which a run record, holding the manifest as JSON, cannot tell from a "
+            "NaN of the other sign; write it as a string"
         )
+        negative = -float("nan")
+        self.assertEqual(math.copysign(1.0, negative), -1.0)
+        manifest = tomllib.loads('loss_cap = -nan\nfloor = 0.5\n[limits]\nsteps = [1.0, nan, +nan]\n')
+        manifest = {**MANIFEST, **manifest}
+        self.assertEqual(math.copysign(1.0, manifest["loss_cap"]), -1.0)
+        self.assertEqual(json.dumps(manifest["loss_cap"]), json.dumps(float("nan")))
+        keys = ["loss_cap", "limits.steps[1]", "limits.steps[2]"]
+        self.assertEqual([key for key, _, _ in mod.unrecordable_keys(manifest)], keys)
+        held = json.loads(json.dumps(manifest))
+        self.assertEqual(
+            mod.agreement_errors("L900", manifest, {"a.json": record("a" * 40, manifest=held)}),
+            [refusal.format(key) for key in keys],
+        )
+        self.assertEqual(mod.manifest_problems(manifest), [refusal.format(key) for key in keys])
+        # An infinity keeps its sign in JSON, as a zero does.
+        bounded = {**MANIFEST, "ceiling": float("inf"), "floor": -float("inf"), "zero": -0.0}
+        self.assertEqual(mod.unrecordable_keys(bounded), [])
+        self.assertEqual(json.loads(json.dumps(-float("inf"))), -float("inf"))
 
     def test_a_manifest_holding_a_date_or_time_is_refused(self):
         # JSON has no date: a record holds one as its text, so a date and
@@ -136,13 +166,16 @@ class AgreementTests(unittest.TestCase):
         }
         held = json.loads(json.dumps(dated, default=mod.toml_time))
         self.assertEqual(held["created"], "2026-01-02")
-        self.assertEqual(mod.temporal_keys(dated), ["created", "window.start", "slots[0]"])
+        self.assertEqual(
+            mod.unrecordable_keys(dated),
+            [(key, "a TOML date or time", "a string") for key in ("created", "window.start", "slots[0]")],
+        )
         self.assertEqual(
             mod.agreement_errors("L900", dated, {"a.json": record("a" * 40, manifest=held)}),
             [refusal.format(key) for key in ("created", "window.start", "slots[0]")],
         )
         # The string of its text is no date.
-        self.assertEqual(mod.temporal_keys(held), [])
+        self.assertEqual(mod.unrecordable_keys(held), [])
         self.assertEqual(mod.agreement_errors("L900", held, {"a.json": record("a" * 40, manifest=held)}), [])
         with self.assertRaises(TypeError):
             mod.toml_time(object())

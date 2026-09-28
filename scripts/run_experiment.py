@@ -61,8 +61,8 @@ def write_json_exclusive(path: Path, record: dict) -> None:
     """Write `record` to the new file `path`, whole or not at all: a write
     that fails leaves no partial record for an aggregator to select. The
     runner refuses a manifest holding a TOML date or time before anything
-    runs (`dated_manifest`); were one to reach this point, it would be
-    written as its ISO 8601 text (`experiment_records.toml_time`) rather
+    runs (`unrecordable_manifest`); were one to reach this point, it would
+    be written as its ISO 8601 text (`experiment_records.toml_time`) rather
     than lose the record of a run that ran. Raises `FileExistsError` when
     `path` exists; a record never replaces another."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -71,11 +71,17 @@ def write_json_exclusive(path: Path, record: dict) -> None:
 
 def write_json_replacing(path: Path, record: dict) -> None:
     """Write `record` to `path` in one step, replacing the reservation the
-    run made there (`reserve_run`): the record appears whole or not at all,
-    and a failed write leaves the reservation."""
-    temporary = experiment_records.write_temporary(
-        path, (json.dumps(record, indent=2, default=experiment_records.toml_time) + "\n").encode("utf-8")
-    )
+    run made there (`launch_and_record`): the record appears whole or not at
+    all, and a failed write leaves the reservation."""
+    replace_file(path, (json.dumps(record, indent=2, default=experiment_records.toml_time) + "\n").encode("utf-8"))
+
+
+def replace_file(path: Path, data: bytes) -> None:
+    """Write `data` to `path` in one step, creating its directory when it
+    has none and replacing what is there: the file appears whole or not at
+    all, and a failed write leaves what was there."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = experiment_records.write_temporary(path, data)
     try:
         os.replace(temporary, path)
     finally:
@@ -83,18 +89,59 @@ def write_json_replacing(path: Path, record: dict) -> None:
     experiment_records.sync_directory(path.parent)
 
 
-def run_lock(exp_id: str) -> Path | None:
-    """Take the lock on runs of `exp_id`, a file in git's own directory
-    created only if absent, and return it, or return None, printing why,
-    when another run holds it: two runs of a listed experiment at once could
-    both find a seed not yet run, both run it and keep the better record.
-    A lock left by a run that died is removed by hand, once no run of it is
-    in progress."""
+def git_directory() -> Path | None:
+    """git's own directory for the repository, which its worktrees share,
+    or None, printing why, when git cannot name it."""
     common = experiment_records.git(ROOT, "rev-parse", "--git-common-dir")
     if common.returncode != 0:
         print(f"ERROR: cannot find git's directory: {common.stderr.strip()}", file=sys.stderr)
         return None
-    lock = (ROOT / common.stdout.strip()).resolve() / f"ptr-run-{exp_id}.lock"
+    return (ROOT / common.stdout.strip()).resolve()
+
+
+def attempts_directory(directory: Path, results: Path) -> Path:
+    """Where, in git's own `directory`, the runner keeps a copy of the
+    record of every run of a listed experiment whose results directory is
+    `results`: under the results directory's repository path, out of the
+    reach of a command that clears its results. The copy is written before
+    the command starts and replaced by the whole record once it ends, so it
+    outlasts a reservation the command removed or rewrote while its runner
+    was stopped; `seed_runs` reads it, and `restore_records` puts back a
+    record it holds that the results directory lost."""
+    return directory / "ptr-runs" / results.relative_to(ROOT)
+
+
+def restore_records(results: Path, attempts: Path) -> list[str]:
+    """Put back into `results`, from the copies in `attempts`
+    (`attempts_directory`), each record of a run that HEAD does not hold and
+    that the results directory holds no longer, or holds otherwise than the
+    copy, and return their repository paths. A record HEAD holds is the
+    gate's, which keeps it as it was committed. Raises `OSError` when a
+    copy cannot be read or a record written, and
+    `check_research_gates.HistoryUnreadable` when git cannot read HEAD."""
+    restored = []
+    for kept in sorted(attempts.glob("run-*.json")):
+        path = results / kept.name
+        relative = path.relative_to(ROOT).as_posix()
+        if check_research_gates.tree_entry(ROOT, "HEAD", relative) is not None:
+            continue
+        data = kept.read_bytes()
+        if not path.is_symlink() and path.is_file() and path.read_bytes() == data:
+            continue
+        replace_file(path, data)
+        restored.append(relative)
+    return restored
+
+
+def run_lock(exp_id: str, directory: Path) -> Path | None:
+    """Take the lock on runs of `exp_id`, a file in git's own `directory`
+    created only if absent, and return it, or return None, printing why,
+    when another run holds it: two runs of a listed experiment at once could
+    both find a seed not yet run, both run it and keep the better record.
+    A lock left by a run that died is removed by hand, once no run of it is
+    in progress; the copy of its record the run kept (`attempts_directory`)
+    stays, so its seed has run all the same."""
+    lock = directory / f"ptr-run-{exp_id}.lock"
     try:
         descriptor = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
     except FileExistsError:
@@ -134,11 +181,7 @@ def validate():
             data.get("entrypoint", "")
         ).strip():
             errors.append(f"{exp_id}: active experiment needs executable entrypoint")
-        for key in experiment_records.temporal_keys(data):
-            errors.append(
-                f"{exp_id}: experiment.toml holds a TOML date or time at {key}, which a run record, holding the "
-                "manifest as JSON, cannot tell from a string; write it as a string"
-            )
+        errors.extend(f"{exp_id}: {problem}" for problem in experiment_records.manifest_problems(data))
         if not (root / "config.toml").exists():
             errors.append(f"{exp_id}: missing config.toml")
         if not (root / "tests").exists():
@@ -165,20 +208,17 @@ def base_record(exp_id: str, data: dict, root: Path) -> dict:
     }
 
 
-def dated_manifest(exp_id: str, data: dict) -> bool:
+def unrecordable_manifest(exp_id: str, data: dict) -> bool:
     """Print why the manifest `data` of `exp_id` cannot be recorded and
     return True, or return False when it can: a run record holds the
-    manifest as JSON, which has no date or time, so a TOML date and the
-    string of its text would be one manifest to aggregation
-    (`experiment_records.temporal_keys`)."""
-    keys = experiment_records.temporal_keys(data)
-    for key in keys:
-        print(
-            f"ERROR: {exp_id}: experiment.toml holds a TOML date or time at {key}, which a run record, holding the "
-            "manifest as JSON, cannot tell from a string; write it as a string",
-            file=sys.stderr,
-        )
-    return bool(keys)
+    manifest as JSON, which has no date or time and writes a NaN of either
+    sign as `NaN`, so a TOML date and the string of its text, or `nan` and
+    `-nan`, would be one manifest to aggregation
+    (`experiment_records.manifest_problems`)."""
+    problems = experiment_records.manifest_problems(data)
+    for problem in problems:
+        print(f"ERROR: {exp_id}: {problem}", file=sys.stderr)
+    return bool(problems)
 
 
 def is_listed(exp_id: str) -> bool:
@@ -188,23 +228,26 @@ def is_listed(exp_id: str) -> bool:
     return isinstance(entries, dict) and exp_id in entries
 
 
-def seed_runs(results: Path, seed: int) -> list[str]:
-    """The run records in `results` of a run of `seed` whose command ran,
-    as repository paths: every record naming the seed but one whose command
-    failed to launch, which saw no outcome. Raises `ValueError` for a record
-    it cannot read, since it could be one."""
-    found = []
-    for path in sorted(results.glob("run-*.json")):
-        name = path.relative_to(ROOT).as_posix()
-        try:
-            record = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-            raise ValueError(f"{name} cannot be read, so whether seed {seed} ran is unknown: {error}") from error
-        if not isinstance(record, dict):
-            raise ValueError(f"{name} is not a JSON object, so whether seed {seed} ran is unknown")
-        if "seed" in record and record["seed"] == seed and record.get("status") != "failed-to-launch":
-            found.append(name)
-    return found
+def seed_runs(results: Path, seed: int, attempts: Path) -> list[str]:
+    """The records of a run of `seed` whose command ran, as the repository
+    paths of the records in `results`: every record naming the seed but one
+    whose command failed to launch, which saw no outcome, in `results` or
+    among the copies the runner keeps in `attempts` (`attempts_directory`),
+    which a command cannot clear with its results. Raises `ValueError` for a
+    record or copy it cannot read, since it could be one."""
+    found = set()
+    for directory in (results, attempts):
+        for path in sorted(directory.glob("run-*.json")):
+            name = path.relative_to(ROOT).as_posix() if directory == results else str(path)
+            try:
+                record = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+                raise ValueError(f"{name} cannot be read, so whether seed {seed} ran is unknown: {error}") from error
+            if not isinstance(record, dict):
+                raise ValueError(f"{name} is not a JSON object, so whether seed {seed} ran is unknown")
+            if "seed" in record and record["seed"] == seed and record.get("status") != "failed-to-launch":
+                found.add((results / path.name).relative_to(ROOT).as_posix())
+    return sorted(found)
 
 
 def launch_refused(exp_id: str) -> bool:
@@ -332,10 +375,10 @@ def launch_watch(
 def prepare(exp_id: str):
     """Write a `prepared` record of `exp_id` at HEAD, once it may launch
     (`launch_refused`) and HEAD holds every file that decides that
-    (`launch_watch`), and its manifest holds no TOML date or time
-    (`dated_manifest`)."""
+    (`launch_watch`), and its manifest holds no TOML date or time and no
+    NaN (`unrecordable_manifest`)."""
     _, root, data = resolve(exp_id)
-    if dated_manifest(exp_id, data) or launch_refused(exp_id):
+    if unrecordable_manifest(exp_id, data) or launch_refused(exp_id):
         return 2
     results = results_directory(root, data)
     if results is None:
@@ -459,35 +502,51 @@ def execute_command(command: list[str]) -> dict:
     output, launch error and duration. Python in it reads and writes its
     bytecode cache in a fresh directory (`PYTHONPYCACHEPREFIX`), so no
     `__pycache__` entry the tree holds, which git ignores and HEAD does not
-    hold, runs in place of a tracked source."""
+    hold, runs in place of a tracked source. A command that could not start,
+    for want of that directory or of its program, has no exit status and
+    its launch error: it saw no outcome. Once it started, whatever stops the
+    runner stops the command and is raised, as `subprocess.run` does, and a
+    cache that cannot be removed afterwards is left: the command ran."""
     started = time.perf_counter_ns()
-    cache = tempfile.TemporaryDirectory()
-    try:
-        completed = subprocess.run(
-            command,
-            cwd=ROOT,
-            text=True,
-            capture_output=True,
-            check=False,
-            env={**os.environ, "PYTHONPYCACHEPREFIX": cache.name},
-        )
-        result = {
-            "exit_code": completed.returncode,
-            "stdout": completed.stdout,
-            "stderr": completed.stderr,
-            "launch_error": None,
-        }
-    except OSError as error:
-        result = {
+
+    def not_started(error: OSError) -> dict:
+        return {
             "exit_code": None,
             "stdout": "",
             "stderr": "",
             "launch_error": f"{type(error).__name__}: {error}",
+            "duration_ns": time.perf_counter_ns() - started,
         }
-    finally:
-        cache.cleanup()
-    result["duration_ns"] = time.perf_counter_ns() - started
-    return result
+
+    try:
+        cache = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+    except OSError as error:
+        return not_started(error)
+    with cache:
+        try:
+            process = subprocess.Popen(
+                command,
+                cwd=ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env={**os.environ, "PYTHONPYCACHEPREFIX": cache.name},
+            )
+        except OSError as error:
+            return not_started(error)
+        with process:
+            try:
+                stdout, stderr = process.communicate()
+            except BaseException:
+                process.kill()
+                raise
+    return {
+        "exit_code": process.returncode,
+        "stdout": stdout,
+        "stderr": stderr,
+        "launch_error": None,
+        "duration_ns": time.perf_counter_ns() - started,
+    }
 
 
 def run_experiment(
@@ -505,24 +564,28 @@ def run_experiment(
     (`experiment_records.uncommitted_files`, which also covers the files that
     decide whether it may launch, `check_research_gates.launch_inputs`), and
     a listed experiment whose preregistration is not frozen
-    (`launch_refused`), and a manifest holding a TOML date or time
-    (`dated_manifest`). A listed experiment runs only through its
+    (`launch_refused`), and a manifest holding a TOML date or time or a NaN
+    (`unrecordable_manifest`). A listed experiment runs only through its
     `entrypoint`, with its preregistered values (`command_parameters`), and
     each seed once (`seed_runs`): a seed run again after its outcome was
     seen could keep whichever run came out best. Its run holds a lock on
-    the experiment's runs (`run_lock`), reads no uncommitted file in its
-    results, and reserves its record before the command starts, the whole
-    record replacing the reservation once it ends (`write_json_replacing`).
-    After the command ends it looks at the same tree again
-    (`experiment_records.ProvenanceWatch`) and writes no record, returning
-    2, when HEAD moved or a provenance or experiment file was written,
-    created or removed while the command ran, even if its content was put
-    back, so the record's `git_sha` is the code that ran as far as that
-    watch can see (its `changes` names what it cannot); a listed
+    the experiment's runs (`run_lock`), puts back first a record of an
+    earlier run its results lost (`restore_records`), reads no uncommitted
+    file in its results, and reserves its record before the command starts,
+    in its results and in a copy in git's own directory
+    (`attempts_directory`), the whole record replacing both once it ends
+    (`write_json_replacing`). After the command ends it looks at the same
+    tree again (`experiment_records.ProvenanceWatch`) and writes no record,
+    returning 2, when HEAD moved or a provenance or experiment file was
+    written, created or removed while the command ran, even if its content
+    was put back, so the record's `git_sha` is the code that ran as far as
+    that watch can see (its `changes` names what it cannot); a listed
     experiment's reservation then stays, as the record that its seed ran.
-    The record is written whole or not at all (`write_json_exclusive`)."""
+    A command that could not start ran no code, so its record, that it
+    failed to launch, is written whatever the watch saw. The record is
+    written whole or not at all (`write_json_exclusive`)."""
     _, root, data = resolve(exp_id)
-    if dated_manifest(exp_id, data) or launch_refused(exp_id):
+    if unrecordable_manifest(exp_id, data) or launch_refused(exp_id):
         return 2
 
     # The record names HEAD as the code it ran, so HEAD must hold every file
@@ -530,19 +593,33 @@ def run_experiment(
     results = results_directory(root, data)
     if results is None:
         return 2
-    listed = is_listed(exp_id)
     timestamp = utc_stamp()
     out = results / f"run-{timestamp}-seed-{seed}.json"
-    lock = run_lock(exp_id) if listed else None
-    if listed and lock is None:
+    if not is_listed(exp_id):
+        return launch_and_record(
+            exp_id, root, data, results, out, timestamp, entrypoint=entrypoint, seed=seed, params=params, attempts=None
+        )
+    directory = git_directory()
+    if directory is None:
+        return 2
+    lock = run_lock(exp_id, directory)
+    if lock is None:
         return 2
     try:
         return launch_and_record(
-            exp_id, root, data, results, out, timestamp, entrypoint=entrypoint, seed=seed, params=params, listed=listed
+            exp_id,
+            root,
+            data,
+            results,
+            out,
+            timestamp,
+            entrypoint=entrypoint,
+            seed=seed,
+            params=params,
+            attempts=attempts_directory(directory, results),
         )
     finally:
-        if lock is not None:
-            lock.unlink(missing_ok=True)
+        lock.unlink(missing_ok=True)
 
 
 def launch_and_record(
@@ -556,11 +633,29 @@ def launch_and_record(
     entrypoint: str,
     seed: int,
     params: dict[str, str] | None,
-    listed: bool,
+    attempts: Path | None,
 ) -> int:
     """The part of `run_experiment` from the watch on, for the record `out`
-    stamped `timestamp`; a listed experiment's run holds its lock
-    throughout."""
+    stamped `timestamp`. `attempts` is where a listed experiment's run keeps
+    the copy of its record (`attempts_directory`), and None for an unlisted
+    experiment; a listed experiment's run holds its lock throughout."""
+    listed = attempts is not None
+    if listed:
+        # A record the results lost (the command of a run whose runner was
+        # stopped could clear them) comes back from its copy, and is
+        # committed before any other run: the seed it names has run.
+        try:
+            restored = restore_records(results, attempts)
+        except (OSError, check_research_gates.HistoryUnreadable) as error:
+            print(f"ERROR: cannot put back the records of {exp_id}'s runs kept in {attempts}: {error}", file=sys.stderr)
+            return 2
+        if restored:
+            print(
+                f"ERROR: put back {', '.join(restored)} from the copies kept in {attempts}: the results directory had "
+                "lost these records of runs of it; commit them before the next run",
+                file=sys.stderr,
+            )
+            return 2
     watch = launch_watch(exp_id, root, results, data, (out.name,) if listed else experiment_records.RESULT_OUTPUTS)
     if watch is None:
         return 2
@@ -571,8 +666,9 @@ def launch_and_record(
         command = build_command(data, entrypoint=entrypoint, seed=seed, params=params)
         # A listed experiment runs each seed once: every run of it is
         # evidence, so none can be chosen by its outcome. The results
-        # directory holds every record committed, which the gate keeps.
-        ran = seed_runs(results, seed) if listed else []
+        # directory holds every record committed, which the gate keeps, and
+        # git's own directory a copy of every record this clone wrote.
+        ran = seed_runs(results, seed, attempts) if listed else []
     except ValueError as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 2
@@ -596,41 +692,34 @@ def launch_and_record(
             "command": command,
         }
     )
+    kept = attempts / out.name if listed else None
     if listed:
         # The reservation: the record, as far as it is known before the
         # command starts, which the whole record replaces once it ends. A run
-        # that dies or goes unrecorded leaves it, and its seed has run.
+        # that dies or goes unrecorded leaves it, and its seed has run. Its
+        # copy in git's own directory is written first, and outlasts what
+        # the command does to its results.
+        try:
+            write_json_exclusive(kept, record)
+        except OSError as error:
+            print(f"ERROR: cannot reserve {out.relative_to(ROOT)} in {kept}: {error}", file=sys.stderr)
+            return 2
         try:
             write_json_exclusive(out, record)
         except OSError as error:
-            print(f"ERROR: cannot reserve {out.relative_to(ROOT)}: {error}", file=sys.stderr)
+            # Nothing ran: the copy goes, so the seed may run.
+            problem = str(error)
+            try:
+                kept.unlink()
+            except OSError as removal:
+                problem += f"; and {kept}, which says seed {seed} ran, cannot be removed: {removal}"
+            print(f"ERROR: cannot reserve {out.relative_to(ROOT)}: {problem}", file=sys.stderr)
             return 2
-    kept = f"; {out.relative_to(ROOT)} stays as the record that seed {seed} ran" if listed else ""
+    stays = f"; {out.relative_to(ROOT)} stays as the record that seed {seed} ran" if listed else ""
 
     execution = execute_command(command)
     exit_code = execution["exit_code"]
-    # The command read the tree while it ran (a `cargo run` entrypoint
-    # compiles it first): the record may name HEAD only if the tree stayed so.
-    try:
-        changes = watch.changes()
-    except experiment_records.ProvenanceError as error:
-        changes = [str(error)]
-    if changes:
-        print(
-            f"ERROR: not recording the run (exit status {exit_code}): its sources changed while it ran, "
-            f"so {watch.head} may not be the code it ran; {'; '.join(changes)}; "
-            f"rerun from a working tree that stays at HEAD{kept}",
-            file=sys.stderr,
-        )
-        return 2
-    # The command could have put a file or a link where the results
-    # directory is, which the watch leaves out.
-    if results_directory(root, data) is None:
-        print(
-            f"ERROR: not recording the run (exit status {exit_code}): its results directory changed while it ran{kept}",
-            file=sys.stderr,
-        )
-        return 2
+    launched = exit_code is not None
     record.update(
         {
             "status": (
@@ -642,8 +731,42 @@ def launch_and_record(
             **execution,
         }
     )
+    # A command that could not start ran no code and saw no outcome: its
+    # record says so whatever the tree did meanwhile, so its seed may run.
+    if launched:
+        # The command read the tree while it ran (a `cargo run` entrypoint
+        # compiles it first): the record may name HEAD only if the tree
+        # stayed so.
+        try:
+            changes = watch.changes()
+        except experiment_records.ProvenanceError as error:
+            changes = [str(error)]
+        if changes:
+            print(
+                f"ERROR: not recording the run (exit status {exit_code}): its sources changed while it ran, "
+                f"so {watch.head} may not be the code it ran; {'; '.join(changes)}; "
+                f"rerun from a working tree that stays at HEAD{stays}",
+                file=sys.stderr,
+            )
+            return 2
+    # The command could have put a file or a link where the results
+    # directory is, which the watch leaves out.
+    if results_directory(root, data) is None:
+        if listed and not launched:
+            # The copy says the command never started; the next run puts
+            # the record back once the results directory is one again.
+            write_json_replacing(kept, record)
+        print(
+            f"ERROR: not recording the run (exit status {exit_code}): its results directory changed while it ran"
+            f"{stays if launched else ''}",
+            file=sys.stderr,
+        )
+        return 2
 
     if listed:
+        # The copy first: a runner stopped between the two writes leaves the
+        # whole record in the copy, which the next run puts back.
+        write_json_replacing(kept, record)
         write_json_replacing(out, record)
     else:
         write_json_exclusive(out, record)

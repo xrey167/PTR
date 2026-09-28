@@ -82,6 +82,7 @@ from __future__ import annotations
 import datetime
 import hashlib
 import json
+import math
 import os
 import posixpath
 import re
@@ -200,33 +201,54 @@ def without_status(manifest: dict) -> dict:
 def toml_time(value):
     """A TOML date, time or datetime as its ISO 8601 text (`json.dumps`'s
     `default`): JSON has no such type. A manifest holding one is refused
-    (`temporal_keys`); this only keeps such a value from failing a write or
-    a comparison that reports it."""
+    (`unrecordable_keys`); this only keeps such a value from failing a write
+    or a comparison that reports it."""
     if isinstance(value, (datetime.date, datetime.time)):
         return value.isoformat()
     raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
-def temporal_keys(value, where: str = "") -> list[str]:
+def unrecordable_keys(value, where: str = "") -> list[tuple[str, str, str]]:
     """The key paths in `value`, a manifest as TOML reads it, that hold a
-    TOML date, time or datetime, in any table or array. A run record holds
-    the manifest as JSON, which has no such type, so a date and the string
-    of its text would be one manifest to the record: the runner, `validate`
-    and aggregation refuse a manifest that holds one."""
+    value a run record cannot keep apart from another, in any table or
+    array, each with what it holds and what the record would take it for.
+    A run record holds the manifest as JSON, which has no date or time, so
+    a TOML date, time or datetime and the string of its text would be one
+    manifest; and which writes a NaN as `NaN` whatever its sign, so `nan`
+    and `-nan`, which a run can tell apart (`math.copysign`), would be one
+    manifest. The runner, `validate` and aggregation refuse a manifest that
+    holds one (`manifest_problems`)."""
     if isinstance(value, (datetime.date, datetime.time)):
-        return [where]
+        return [(where, "a TOML date or time", "a string")]
+    if isinstance(value, float) and math.isnan(value):
+        return [(where, "a NaN", "a NaN of the other sign")]
     if isinstance(value, dict):
-        return [found for key, item in value.items() for found in temporal_keys(item, f"{where}.{key}" if where else str(key))]
+        return [
+            found for key, item in value.items() for found in unrecordable_keys(item, f"{where}.{key}" if where else str(key))
+        ]
     if isinstance(value, list):
-        return [found for index, item in enumerate(value) for found in temporal_keys(item, f"{where}[{index}]")]
+        return [found for index, item in enumerate(value) for found in unrecordable_keys(item, f"{where}[{index}]")]
     return []
+
+
+def manifest_problems(manifest: dict) -> list[str]:
+    """Why a run record could not hold `manifest` apart from another
+    manifest, one line for each value it holds that a record cannot keep
+    apart (`unrecordable_keys`); empty when it can."""
+    return [
+        f"experiment.toml holds {held} at {key}, which a run record, holding the manifest as JSON, cannot tell from "
+        f"{taken}; write it as a string"
+        for key, held, taken in unrecordable_keys(manifest)
+    ]
 
 
 def recorded_text(value) -> str:
     """`value` as the JSON text a run record holds it as, keys sorted, so a
-    manifest compares with the one a record names as the record holds it,
-    NaN as itself. A date or time, which no manifest may hold
-    (`temporal_keys`), is written as its text (`toml_time`)."""
+    manifest compares with the one a record names as the record holds it:
+    `1`, `1.0` and `true` are three values, and so are `0.0` and `-0.0`. A
+    date or time, which no manifest may hold, is written as its text
+    (`toml_time`), and a NaN, which no manifest may hold either, as `NaN`
+    (`unrecordable_keys`)."""
     return json.dumps(value, sort_keys=True, default=toml_time)
 
 
@@ -234,12 +256,9 @@ def agreement_errors(experiment_id: str, manifest: dict, records: dict[str, dict
     """Why `records` (file name -> run record) cannot be seeds of one run of
     `experiment_id`, whose manifest is now `manifest`; empty when they can.
     This compares the records alone; `source_revision` also compares code.
-    A manifest holding a TOML date or time is refused (`temporal_keys`)."""
-    errors = [
-        f"experiment.toml holds a TOML date or time at {key}, which a run record, holding the manifest as JSON, "
-        "cannot tell from a string; write it as a string"
-        for key in temporal_keys(manifest)
-    ]
+    A manifest holding a TOML date or time, or a NaN, is refused
+    (`manifest_problems`)."""
+    errors = manifest_problems(manifest)
     for name, record in records.items():
         if record.get("experiment_id") != experiment_id:
             errors.append(f"{name} is a record of {record.get('experiment_id')!r}, not {experiment_id!r}")
