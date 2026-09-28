@@ -31,9 +31,10 @@ class ResearchGateTests(unittest.TestCase):
         self.assertTrue(completed)
         checked=[]
 
-        def stale(exp_id,experiment,results,root):
+        def stale(exp_id,experiment,results,root,listed_experiment):
             checked.append(exp_id)
             self.assertEqual((root,results.parent),(mod.ROOT,experiment))
+            self.assertEqual(listed_experiment,exp_id in mod.listed_now(mod.ROOT))
             return [f"{exp_id}: results/run.json ran at other code"]
 
         output=io.StringIO()
@@ -143,7 +144,7 @@ def gate(root: Path) -> tuple[int, list[str]]:
     experiments' archived results (git history the fixtures do not have)
     passing once they are asked about that tree, and return its exit code
     and error lines."""
-    def archived(exp_id,experiment,results,given_root):
+    def archived(exp_id,experiment,results,given_root,listed_experiment=False):
         """Pass the archived-results checks, once they are asked about `root`."""
         if given_root!=root or not experiment.is_relative_to(root):
             raise AssertionError(f"{exp_id}: archived results checked in {given_root}, not {root}")
@@ -1779,6 +1780,28 @@ class PreregistrationGateTests(unittest.TestCase):
             "X900: results_dir 1 is not a directory below the experiment's directory",
         )
 
+    def test_a_listed_experiments_results_are_checked_against_the_whole_repository(self):
+        # Its command may run or read any file of the repository, so its
+        # archived results are stale once any of them changes
+        # (`experiment_records.listed_staleness_paths`).
+        root=self.tree(status="completed")
+        seen=[]
+
+        def stale(exp_id,experiment,results,checked_root,listed_experiment):
+            seen.append((exp_id,listed_experiment))
+            return []
+
+        with (
+            mock.patch.object(mod.experiment_records,"staleness_errors",side_effect=stale),
+            mock.patch.object(mod.experiment_records,"aggregate_errors",return_value=[]),
+        ):
+            mod.gate_errors(root)
+        self.assertEqual(seen,[("X900",True)])
+        self.assertEqual(mod.listed_now(root),{"X900"})
+        # A list that cannot be read names none; the gate names why.
+        write(root,"experiments/preregistration.toml","version = [\n")
+        self.assertEqual(mod.listed_now(root),set())
+
     def test_a_listed_experiment_stays_listed(self):
         root=self.tree()
         listed=(root/"experiments/preregistration.toml").read_text(encoding="utf-8")
@@ -2083,8 +2106,13 @@ class PreregistrationGateTests(unittest.TestCase):
              "X900: entrypoint placeholder <programs> is preregistered as a list, which no command token takes"),
             ('bench <seed> "unterminated',"X900: entrypoint cannot be split into a command: No closing quotation"),
             ('"" <seed>',"X900: entrypoint names no program: its first token is empty"),
-            ("' '","X900: entrypoint names no program: its first token is empty"),
+            ("' ' <seed>","X900: entrypoint names no program: its first token is empty"),
             ("bench\0 <seed>","X900: entrypoint holds a NUL character, which no command can be given"),
+            # Two seeds, one command: each record would name a seed it did not
+            # run, as `--seed 17` hardcoded runs seed 17 for `run --seed 29`.
+            ("bench --seed 17",
+             "X900: entrypoint takes no <seed> placeholder, so each of its 2 preregistered seeds would run one command "
+             "while its record named another seed"),
         ):
             with self.subTest(entrypoint=entrypoint):
                 root=self.tree(status="running")
@@ -2106,6 +2134,11 @@ class PreregistrationGateTests(unittest.TestCase):
              "given"],
         )
         self.assertEqual(mod.command_errors("X900",{"entrypoint":"bench <seed> <harness>"},{"harness":"ab"}),[])
+        # One seed, named once or more, needs no <seed>; one given inside a
+        # token counts.
+        for seeds in ([17],[17,17],[]):
+            self.assertEqual(mod.command_errors("X900",{"entrypoint":"bench --seed 17"},{"seeds":seeds}),[])
+        self.assertEqual(mod.command_errors("X900",{"entrypoint":"bench --seed=<seed>"},{"seeds":[17,29]}),[])
         # A commit holding such an entrypoint could not launch it and froze
         # nothing, so preregistering the value repairs it, and so does
         # naming a program.

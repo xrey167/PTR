@@ -1415,6 +1415,23 @@ class RunWatchTests(unittest.TestCase):
             self.assertEqual(
                 mod.command_environment(), {"PATH": "/bin", "HOME": "/home/runner", "PYTHONNOUSERSITE": "1"}
             )
+        # A relative PATH entry is taken from the root, where the command
+        # starts, not from wherever the runner was started: the program the
+        # record names is the one that runs.
+        with (
+            mock.patch.object(mod, "ROOT", self.root),
+            mock.patch.dict(os.environ, {"PATH": os.pathsep.join(("tools", "", "../elsewhere", "/bin"))}, clear=True),
+        ):
+            environment = mod.command_environment()
+            self.assertEqual(environment["PATH"], os.pathsep.join(
+                (str(self.root / "tools"), str(self.root), str(self.root.parent / "elsewhere"), "/bin")
+            ))
+            decoy = Path(self.enterContext(tempfile.TemporaryDirectory()))
+            (decoy / "tools").mkdir()
+            (decoy / "tools" / "run.sh").write_text("#!/bin/sh\necho decoy\n", encoding="utf-8")
+            (decoy / "tools" / "run.sh").chmod(0o755)
+            with contextlib.chdir(decoy):
+                self.assertEqual(mod.resolved_executable(["run.sh"], environment), found)
 
     def test_a_copy_from_another_line_of_history_is_not_put_back_but_its_seed_has_run(self):
         # A run on another branch, or another worktree's, belongs to that

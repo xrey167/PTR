@@ -199,6 +199,17 @@ def listed_record_paths(results: str) -> tuple[str, ...]:
     return (".", f":(exclude,glob){results}/{SEED_RECORDS}")
 
 
+def listed_staleness_paths(results: str) -> tuple[str, ...]:
+    """The provenance of a listed experiment's archived results against
+    HEAD, as pathspecs: the whole repository but what the tools write into
+    its results directory `results` (a repository path, `RESULT_OUTPUTS`)
+    and its stale marker (`STALE_MARKER`), which are committed once the
+    seeds have run. Its command may run or read any other file of the
+    repository, so a change to one after the results makes them stale
+    (`staleness_errors`)."""
+    return (".", *(f":(exclude,glob){results}/{pattern}" for pattern in (*RESULT_OUTPUTS, STALE_MARKER)))
+
+
 def tree_pathspecs(
     experiment_dir: Path, results_dir: Path, root: Path, paths: tuple[str, ...], outputs: tuple[str, ...] = RESULT_OUTPUTS
 ) -> list[str]:
@@ -323,9 +334,11 @@ def git(
     try:
         return subprocess.run(
             # Git reads the tree itself: no file system monitor a clone's own
-            # configuration names answers for it, and no hook of the clone's
-            # runs when git refreshes its index.
-            ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", *args],
+            # configuration names answers for it, no hook of the clone's runs
+            # when git refreshes its index, and no name is taken for another
+            # that differs from it in case, which a clone told to ignore case
+            # would do on a file system that does not.
+            ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.ignoreCase=false", *args],
             cwd=root, input=stdin, env=env, capture_output=True, text=not binary, check=False,
         )
     except OSError as error:
@@ -1376,12 +1389,18 @@ def is_current(sha, paths: tuple[str, ...], root: Path) -> bool:
 ARCHIVED = (("run.json", seed_record_paths), ("mutations.json", mutation_record_paths))
 
 
-def staleness_errors(experiment_id: str, experiment_dir: Path, results_dir: Path, root: Path) -> list[str]:
+def staleness_errors(
+    experiment_id: str, experiment_dir: Path, results_dir: Path, root: Path, listed_experiment: bool = False
+) -> list[str]:
     """Why the archived results of `experiment_id` misdescribe HEAD's code;
     empty when they do not. `results/run.json` and `results/mutations.json`
     are stale when HEAD's provenance files (`seed_record_paths`,
-    `mutation_record_paths`) differ from those at their `git_sha`. Stale
-    results pass only with a `results/STALE.toml` marker that names them, the
+    `mutation_record_paths`) differ from those at their `git_sha`; for an
+    experiment the list names (`listed_experiment`), whose command may run
+    or read any file of the repository, when HEAD's repository does, but
+    for the tools' outputs in its results and its stale marker
+    (`listed_staleness_paths`). Stale results pass only with a
+    `results/STALE.toml` marker that names them, the
     first commit after them that changed a provenance file (`stale_since`)
     and a `reason` (`marker_errors`); a marker next to current results is an
     error too, so none outlives the rerun that replaces them."""
@@ -1400,7 +1419,7 @@ def staleness_errors(experiment_id: str, experiment_dir: Path, results_dir: Path
         if not COMMIT.fullmatch(str(sha or "")):
             errors.append(f"{experiment_id}: {results}/{name} names no commit it ran at: {sha!r}")
             continue
-        paths = paths_of(experiment_dir, root)
+        paths = listed_staleness_paths(results) if listed_experiment else paths_of(experiment_dir, root)
         try:
             changed = code_changes(sha, "HEAD", root, paths)
         except ProvenanceError as error:

@@ -595,8 +595,19 @@ def command_parameters(exp_id: str, root: Path, data: dict, entrypoint: str, par
 def command_environment() -> dict[str, str]:
     """The environment a listed experiment's command runs in: the variables
     `COMMAND_ENVIRONMENT` names that the runner's environment sets, and
-    `FIXED_ENVIRONMENT`, and no other."""
-    return {**{name: os.environ[name] for name in COMMAND_ENVIRONMENT if name in os.environ}, **FIXED_ENVIRONMENT}
+    `FIXED_ENVIRONMENT`, and no other. A relative `PATH` entry (an empty one
+    is the current directory) is made absolute from the repository's root,
+    where the command starts and its program is found: resolved from the
+    runner's own directory, it would name another program than the one
+    that runs, and a program the command starts in turn, from wherever it
+    runs, yet another."""
+    environment = {name: os.environ[name] for name in COMMAND_ENVIRONMENT if name in os.environ}
+    if "PATH" in environment:
+        environment["PATH"] = os.pathsep.join(
+            entry if os.path.isabs(entry) else os.path.normpath(os.path.join(ROOT, entry))
+            for entry in environment["PATH"].split(os.pathsep)
+        )
+    return {**environment, **FIXED_ENVIRONMENT}
 
 
 def outside_cargo_configurations(environment: dict[str, str]) -> list[str]:

@@ -690,6 +690,17 @@ class SourceTreeTests(GitTree, unittest.TestCase):
         self.write("scripts/run_experiment.py", "# rewritten\n")
         self.assertEqual(mod.content_changes(self.root, ["scripts/run_experiment.py"]), ["scripts/run_experiment.py"])
 
+    def test_a_clone_told_to_ignore_case_hides_no_source(self):
+        # On a file system that tells names apart by case, a clone told to
+        # ignore it would take a new src/LIB.rs for the tracked src/lib.rs
+        # and list it nowhere.
+        git(self.root, "config", "core.ignorecase", "true")
+        self.write("src/LIB.rs", "pub fn g() {}\n")
+        if (self.root / "src/lib.rs").read_text(encoding="utf-8") == "pub fn g() {}\n":
+            self.skipTest("the file system does not tell names apart by case")
+        self.assertEqual(git(self.root, "ls-files", "--others", "--", "src"), "")
+        self.assertEqual(mod.uncommitted_files(self.root, self.pathspecs), ["src/LIB.rs"])
+
     def test_no_hook_of_the_clones_runs_while_the_tree_is_read(self):
         # Git runs a clone's post-index-change hook when a status refreshes
         # its index; no code the commit does not hold runs in the watch.
@@ -1035,6 +1046,38 @@ class StalenessTests(unittest.TestCase):
                     self.assertIn(f"results/{name} ran at {self.code}", error)
                     self.assertIn(f"changed since, in {relative}", error)
                 git(self.root, "reset", "-q", "--hard", self.archived)
+
+    def test_a_listed_experiments_results_are_stale_once_any_file_changes(self):
+        # A listed experiment's command may run or read any file of the
+        # repository, a harness outside the provenance files say: its results
+        # are stale once one changes, but for the tools' outputs and the stale
+        # marker in its results, which are committed once the seeds ran.
+        def listed() -> list[str]:
+            return mod.staleness_errors("L900", self.experiment, self.results, self.root, True)
+
+        commit(
+            self.root,
+            {"experiments/L900-x/results/metrics.json": "{}\n", "experiments/L900-x/results/run-1.json": "{}\n"},
+            "outputs",
+        )
+        self.assertEqual(listed(), [])
+        harness = commit(self.root, {"scripts/harness.py": "print('changed')\n"}, "harness")
+        # The provenance files alone do not see it; the whole repository does.
+        self.assertEqual(self.errors(), [])
+        errors = listed()
+        self.assertEqual(len(errors), 2, errors)
+        for name, error in zip(("run.json", "mutations.json"), errors):
+            self.assertIn(f"results/{name} ran at {self.code}", error)
+            self.assertIn("changed since, in scripts/harness.py", error)
+        # A marker naming that first change passes, and is itself no change.
+        self.mark(stale_since=harness)
+        self.assertEqual(listed(), [])
+        self.assertEqual(
+            mod.listed_staleness_paths("experiments/L900-x/results"),
+            (".", *(f":(exclude,glob)experiments/L900-x/results/{name}" for name in (
+                "run-*.json", "run.json", "metrics.json", "mutations.json", "STALE.toml"
+            ))),
+        )
 
     def test_an_honest_marker_names_the_results_and_the_first_change(self):
         first = commit(self.root, {"src/lib.rs": "pub fn f() { g() }\n"}, "first change")

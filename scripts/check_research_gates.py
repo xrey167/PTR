@@ -220,9 +220,12 @@ def command_errors(exp_id: str, manifest: dict, table: dict) -> list[str]:
     a NUL character, which no process can be given, and it fills each
     placeholder in it but `<seed>` with the table's value of that name, an
     integer, a string holding no NUL character or a boolean
-    (`run_experiment.command_parameters`). A commit whose command the runner
-    cannot build could not launch and froze nothing (`launchable_at`); the
-    tree check refuses it first."""
+    (`run_experiment.command_parameters`). And where the table preregisters
+    more than one seed, the command takes `<seed>`: one that does not runs
+    the same command for every seed, while each record names the seed it
+    was given. A commit whose command the runner cannot build could not
+    launch and froze nothing (`launchable_at`); the tree check refuses it
+    first."""
     if not names_an_entrypoint(manifest):
         return []
     try:
@@ -244,6 +247,14 @@ def command_errors(exp_id: str, manifest: dict, table: dict) -> list[str]:
         elif isinstance(table[name],str) and "\0" in table[name]:
             errors.append(f"{exp_id}: entrypoint placeholder <{name}> is preregistered holding a NUL character, which no "
                           "command can be given")
+    seeds=table.get("seeds")
+    distinct=[]
+    for seed in seeds if isinstance(seeds,list) else ():
+        if not any(same_value(seed,other) for other in distinct):
+            distinct.append(seed)
+    if len(distinct)>1 and not any("seed" in experiment_records.PLACEHOLDER.findall(token) for token in tokens):
+        errors.append(f"{exp_id}: entrypoint takes no <seed> placeholder, so each of its {len(distinct)} preregistered "
+                      "seeds would run one command while its record named another seed")
     return errors
 
 def repeated_seeds(seeds) -> list:
@@ -1603,6 +1614,15 @@ def duplicate_registrations(registry: dict, exp_id: str | None = None) -> list[s
         for name,paths in sorted(places.items()) if len(paths)>1 and exp_id in (None,name)
     ]
 
+def listed_now(root: Path) -> set[str]:
+    """The experiments the list names now; none when it cannot be read,
+    which `preregistration_errors` names."""
+    try:
+        entries=load(root/PREREGISTRATION).get("experiment",{})
+    except Unreadable:
+        return set()
+    return set(entries) if isinstance(entries,dict) else set()
+
 def gate_errors(root: Path) -> list[str]:
     """Every error of every gate on the repository at `root` (`main`),
     raising `Unreadable` for a file it cannot read outside the listed
@@ -1612,6 +1632,7 @@ def gate_errors(root: Path) -> list[str]:
     directories={}
     registry=load(root/REGISTRY)
     errors.extend(duplicate_registrations(registry))
+    listed=listed_now(root)
     for item in registry.get("experiment",[]):
         if not isinstance(item,dict) or not isinstance(item.get("id"),str) or not isinstance(item.get("path"),str):
             errors.append(f"{REGISTRY}: every experiment names an id and a path, not {item!r}")
@@ -1630,7 +1651,9 @@ def gate_errors(root: Path) -> list[str]:
             for artifact in manifest.get("required_artifacts",[]):
                 if not (results/artifact).exists():
                     errors.append(f'{item["id"]}: completed experiment missing {artifact}')
-            errors.extend(experiment_records.staleness_errors(item["id"],experiment,results,root))
+            # A listed experiment's command may run or read any file of the
+            # repository: its results are stale once any of them changes.
+            errors.extend(experiment_records.staleness_errors(item["id"],experiment,results,root,item["id"] in listed))
             errors.extend(experiment_records.aggregate_errors(item["id"],experiment,results,root))
 
     plain=load(root/"research/baselines/plain_model/config.toml")
