@@ -180,6 +180,17 @@ def mutation_record_paths(experiment_dir: Path, root: Path) -> tuple[str, ...]:
 RESULT_OUTPUTS = ("run-*.json", "run.json", "metrics.json", "mutations.json")
 
 
+def listed_record_paths(results: str) -> tuple[str, ...]:
+    """The provenance of a listed experiment's seed records, as pathspecs:
+    the whole repository but the outputs the tools write into its results
+    directory `results` (a repository path, `RESULT_OUTPUTS`). A listed
+    experiment's command may run or read any file of the repository (a
+    script under `scripts/`, say), so its seeds ran one tree only if their
+    commits differ in nothing else: between them, only their records and
+    outputs are committed."""
+    return (".", *(f":(exclude,glob){results}/{pattern}" for pattern in RESULT_OUTPUTS))
+
+
 def tree_pathspecs(
     experiment_dir: Path, results_dir: Path, root: Path, paths: tuple[str, ...], outputs: tuple[str, ...] = RESULT_OUTPUTS
 ) -> list[str]:
@@ -731,20 +742,27 @@ def listed(paths: list[str], limit: int = 5) -> str:
 
 
 def source_revision(
-    experiment_id: str, manifest: dict, records: dict[str, dict], root: Path, experiment_dir: Path
+    experiment_id: str,
+    manifest: dict,
+    records: dict[str, dict],
+    root: Path,
+    experiment_dir: Path,
+    paths: tuple[str, ...] | None = None,
 ) -> str:
     """The commit the results in `records` were produced at: the earliest
     record's `git_sha`, once every record agrees (`agreement_errors`),
     every record's commit and the checkout in `root` have the same
-    provenance files (`seed_record_paths` of `experiment_dir`), and HEAD
-    holds each of them as the checkout does (`checkout_problem`). Raises
-    `ProvenanceError` naming what disagrees."""
+    provenance files (`paths`: `seed_record_paths` of `experiment_dir`
+    unless named, and for a listed experiment the whole repository,
+    `listed_record_paths`), and HEAD holds each of them as the checkout
+    does (`checkout_problem`). Raises `ProvenanceError` naming what
+    disagrees."""
     if not records:
         raise ProvenanceError("no run records")
     errors = agreement_errors(experiment_id, manifest, records)
     if errors:
         raise ProvenanceError("; ".join(errors))
-    paths = seed_record_paths(experiment_dir, root)
+    paths = seed_record_paths(experiment_dir, root) if paths is None else paths
     ordered = sorted(records.items(), key=lambda item: (str(item[1].get("started_at", "")), item[0]))
     revision = ordered[0][1]["git_sha"]
     for name, record in ordered[1:]:

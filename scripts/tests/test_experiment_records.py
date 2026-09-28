@@ -313,6 +313,38 @@ class RevisionTests(unittest.TestCase):
         with self.assertRaisesRegex(mod.ProvenanceError, r"run-1\.json ran at .* differs in src/lib\.rs"):
             self.revision(self.records(self.first, changed))
 
+    def test_a_listed_experiments_records_ran_one_repository(self):
+        # A listed experiment's command may run any file of the repository,
+        # a script outside the provenance files say: its seeds ran one tree
+        # only if their commits differ in nothing but the results' records.
+        paths = mod.listed_record_paths("experiments/L900-x/results")
+        self.assertEqual(paths, (
+            ".",
+            ":(exclude,glob)experiments/L900-x/results/run-*.json",
+            ":(exclude,glob)experiments/L900-x/results/run.json",
+            ":(exclude,glob)experiments/L900-x/results/metrics.json",
+            ":(exclude,glob)experiments/L900-x/results/mutations.json",
+        ))
+        recorded = commit(self.root, {"experiments/L900-x/results/run-0.json": "{}\n"}, "record")
+        records = self.records(self.first, recorded)
+        # The archive the fixture made between them commits a file that is no
+        # record or output of the tools.
+        with self.assertRaisesRegex(
+            mod.ProvenanceError, r"run-1\.json ran at .* differs in experiments/L900-x/results/b\.json"
+        ):
+            mod.source_revision("L900", MANIFEST, records, self.root, self.experiment, paths)
+        git(self.root, "rm", "-q", "experiments/L900-x/results/b.json")
+        git(self.root, "commit", "-q", "--no-verify", "-m", "no archive")
+        clean = git(self.root, "rev-parse", "HEAD")
+        records = self.records(clean, commit(self.root, {"experiments/L900-x/results/run-1.json": "{}\n"}, "record"))
+        self.assertEqual(mod.source_revision("L900", MANIFEST, records, self.root, self.experiment, paths), clean)
+        harness = commit(self.root, {"scripts/harness.py": "print('changed')\n"}, "harness")
+        changed = self.records(clean, harness)
+        # The provenance files alone do not see it; the whole repository does.
+        self.assertEqual(self.revision(changed), clean)
+        with self.assertRaisesRegex(mod.ProvenanceError, r"run-1\.json ran at .* differs in .*scripts/harness\.py"):
+            mod.source_revision("L900", MANIFEST, changed, self.root, self.experiment, paths)
+
     def test_a_checkout_whose_code_changed_since_the_records_is_refused(self):
         records = self.records(self.first, self.archived)
         for relative in ("src/lib.rs", "Cargo.lock", "migrations/0001.sql", "crates/x/Cargo.toml"):

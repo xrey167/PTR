@@ -1547,6 +1547,55 @@ class PreregistrationGateTests(unittest.TestCase):
                     "); a program or toolchain replaced between seeds lies outside the commit every record names"),errors[0])
                 self.assertEqual(mod.launch_errors(root,"X900"),errors)
 
+    def test_a_listed_experiments_seeds_ran_one_tree(self):
+        # The command may run or read any file of the repository: its seeds
+        # ran one tree only if their commits differ in nothing but the
+        # records and outputs of the results directory.
+        root=self.tree(status="running")
+        first=commit_all(root)
+        results="experiments/semdb/X900-fixture/results"
+        seventeen=f"{results}/run-20260101T000000.000000Z-seed-17.json"
+        twenty_nine=f"{results}/run-20260102T000000.000000Z-seed-29.json"
+        write(root,seventeen,json.dumps({**self.record(root,first,seed=17,status="completed"),"started_at":"20260101"}))
+        write(root,f"{results}/metrics.json","{}\n")
+        recorded=commit_all(root,"seed 17 recorded")
+        write(root,twenty_nine,json.dumps({**self.record(root,recorded,seed=29,status="completed"),"started_at":"20260102"}))
+        self.assertEqual(gate(root),(0,[]))
+        commit_all(root,"seed 29 recorded")
+        self.assertEqual(gate(root),(0,[]))
+        # A script outside the provenance files, changed between the seeds.
+        root=self.tree(status="running")
+        first=commit_all(root)
+        write(root,seventeen,json.dumps({**self.record(root,first,seed=17,status="completed"),"started_at":"20260101"}))
+        commit_all(root,"seed 17 recorded")
+        write(root,"scripts/harness.py","print('changed')\n")
+        changed=commit_all(root,"harness changed")
+        write(root,twenty_nine,json.dumps({**self.record(root,changed,seed=29,status="completed"),"started_at":"20260102"}))
+        refusal=(f"X900: results/run-20260102T000000.000000Z-seed-29.json ran at {changed[:12]}, whose repository differs "
+                 f"from {first[:12]}'s, where results/run-20260101T000000.000000Z-seed-17.json ran, in scripts/harness.py; "
+                 "the seeds of a listed experiment run one tree, only their records and outputs committed between them")
+        self.assert_blocked(root,refusal)
+        self.assertEqual(mod.launch_errors(root,"X900"),[refusal])
+        # A command that failed to launch ran no tree.
+        write(root,twenty_nine,json.dumps({**self.record(root,changed,seed=29,status="failed-to-launch"),"started_at":"20260102"}))
+        self.assertEqual(gate(root),(0,[]))
+
+    def test_an_experiment_is_registered_once(self):
+        # Of two entries of one id, the gate would check one and the runner,
+        # which finds both, launch neither.
+        root=self.tree(status="running")
+        registry=(root/"experiments/registry.toml").read_text(encoding="utf-8")
+        shutil.copytree(root/"experiments/semdb/X900-fixture",root/"experiments/semdb/X900-twin")
+        write(root,"experiments/registry.toml",registry+'\n[[experiment]]\nid = "X900"\npath = "semdb/X900-twin"\nstatus = "running"\n')
+        refusal=("experiments/registry.toml registers X900 2 times ('semdb/X900-fixture', 'semdb/X900-twin'); an "
+                 "experiment is registered once, in one directory")
+        self.assertEqual(mod.launch_errors(root,"X900"),[refusal])
+        self.assertIn(refusal,gate(root)[1])
+        commit=commit_all(root)
+        self.assertIsNone(mod.launchable_at(root,commit,"X900","experiments/semdb/X900-fixture"))
+        write(root,"experiments/registry.toml",registry)
+        self.assertEqual(gate(root),(0,[]))
+
     def test_settings_are_compared_by_type_sign_and_offset_and_nan_is_itself(self):
         name=self.RECORD.removeprefix("experiments/semdb/X900-fixture/")
         config="experiments/semdb/X900-fixture/config.toml"

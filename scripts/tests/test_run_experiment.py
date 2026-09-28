@@ -825,6 +825,13 @@ class RunWatchTests(unittest.TestCase):
         )))
         self.write("experiments/x/L900-x/experiment.toml", manifest + 'cap = "nan"\nceiling = -inf\n')
         self.assertEqual(validate(), (0, "OK: validated 1 experiments\n"))
+        # An experiment is registered once: a second entry of its id would go
+        # unchecked, and leave the runner no one place to launch it.
+        registry = (self.root / "experiments/registry.toml").read_text(encoding="utf-8")
+        self.write(
+            "experiments/registry.toml", registry + '[[experiment]]\nid = "L900"\npath = "x/L900-x"\nstatus = "running"\n'
+        )
+        self.assertEqual(validate(), (1, "ERROR: L900: registered 2 times; an experiment is registered once\n"))
 
     def launch_listed(self, params: dict[str, str], entrypoint: str = "entrypoint") -> tuple[int, list, str]:
         """Runs seed 17 of L900 through `entrypoint` with `params`; returns

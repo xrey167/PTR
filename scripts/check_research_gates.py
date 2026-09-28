@@ -1121,7 +1121,11 @@ def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path,
     after its outcome was seen could keep whichever run came out best. And
     they all name one program and one Rust toolchain (`executable`,
     `toolchain`), which lie outside the commit: one replaced between seeds
-    would leave records naming one commit for different code."""
+    would leave records naming one commit for different code. And the
+    seeds ran one tree: the repository at each run's commit is the first
+    run's, but for the records and outputs of the results directory
+    (`experiment_records.listed_record_paths`), since the command may run
+    or read any file of it."""
     relative=experiment.relative_to(root).as_posix()
     current=(manifest,config)
 
@@ -1148,6 +1152,7 @@ def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path,
                 records.add(held)
     runs={}
     programs={}
+    trees=[]
     for path in sorted(records):
         name=shown(path)
         where=f"{exp_id}: {name}"
@@ -1176,6 +1181,7 @@ def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path,
                 # seeds of one experiment ran one of each.
                 programs.setdefault(
                     json.dumps([record.get("executable"),record.get("toolchain")],sort_keys=True),[]).append(name)
+                trees.append((str(record.get("started_at","")),name,record.get("git_sha")))
         if aggregate:
             # Written again, an aggregate keeps every version it was
             # committed in: each saw the outcome of the runs it names.
@@ -1214,6 +1220,25 @@ def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path,
         errors.append(f"{exp_id}: its runs name {len(programs)} programs or toolchains ("
                       + "; ".join(", ".join(names) for _,names in sorted(programs.items()))
                       + "); a program or toolchain replaced between seeds lies outside the commit every record names")
+    # The seeds ran one tree: the command may run or read any file of the
+    # repository, and each run's commit is the tree it launched from, so
+    # between the first run's commit and each other's only the records and
+    # outputs of the results directory may differ.
+    if trees and is_repository_path(results_dir):
+        paths=experiment_records.listed_record_paths(f"{relative}/{results_dir}")
+        _,first,base=min(trees)
+        for _,name,commit in sorted(trees):
+            if commit==base or not isinstance(commit,str) or not isinstance(base,str):
+                continue
+            try:
+                changed=experiment_records.code_changes(base,commit,root,paths)
+            except experiment_records.ProvenanceError:
+                # record_errors names a commit the history does not hold.
+                continue
+            if changed:
+                errors.append(f"{exp_id}: {name} ran at {commit[:12]}, whose repository differs from {base[:12]}'s, "
+                              f"where {first} ran, in {experiment_records.listed(changed)}; the seeds of a listed "
+                              "experiment run one tree, only their records and outputs committed between them")
     # A commit that holds the experiment past planned froze it, whether or
     # not a record of a run there was kept: the runner could launch it, and
     # a record can be discarded before it is committed.
@@ -1416,6 +1441,9 @@ def launch_decision(root: Path, exp_id: str) -> list[str]:
     if exp_id not in entries:
         commit=enrolled(root,set(items)).get(exp_id)
         return [] if commit is None else [delisted_error(exp_id,commit)]
+    twice=duplicate_registrations(load(root/REGISTRY),exp_id)
+    if twice:
+        return twice
     problems=entry_errors(exp_id,entries[exp_id],set(items))
     if problems:
         return problems
@@ -1513,6 +1541,23 @@ def main(root: Path = ROOT) -> int:
     print("OK: research execution gates satisfied")
     return 0
 
+def duplicate_registrations(registry: dict, exp_id: str | None = None) -> list[str]:
+    """Why the registry `registry` registers an experiment more than once,
+    of every experiment, or of `exp_id` alone when named: the registry
+    places an experiment in one directory, and of two entries of one id the
+    gate would check one and the runner, which finds both
+    (`launchable_at`), launch neither."""
+    items=registry.get("experiment",[])
+    places={}
+    for item in items if isinstance(items,list) else ():
+        if isinstance(item,dict) and isinstance(item.get("id"),str):
+            places.setdefault(item["id"],[]).append(item.get("path"))
+    return [
+        f"{REGISTRY} registers {name} {len(paths)} times ({', '.join(map(repr,paths))}); an experiment is registered "
+        "once, in one directory"
+        for name,paths in sorted(places.items()) if len(paths)>1 and exp_id in (None,name)
+    ]
+
 def gate_errors(root: Path) -> list[str]:
     """Every error of every gate on the repository at `root` (`main`),
     raising `Unreadable` for a file it cannot read outside the listed
@@ -1521,6 +1566,7 @@ def gate_errors(root: Path) -> list[str]:
     experiments={}
     directories={}
     registry=load(root/REGISTRY)
+    errors.extend(duplicate_registrations(registry))
     for item in registry.get("experiment",[]):
         if not isinstance(item,dict) or not isinstance(item.get("id"),str) or not isinstance(item.get("path"),str):
             errors.append(f"{REGISTRY}: every experiment names an id and a path, not {item!r}")

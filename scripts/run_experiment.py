@@ -197,6 +197,11 @@ def validate():
     required = set(schema["required"])
     allowed = set(schema["allowed_status"])
     errors = []
+    # `registry` keeps one entry of an id: a second, in another directory,
+    # would go unchecked here and leave the runner no one place to launch.
+    ids = [entry.get("id") for entry in load(REGISTRY).get("experiment", []) if isinstance(entry, dict)]
+    for exp_id in sorted({exp_id for exp_id in ids if ids.count(exp_id) > 1}, key=str):
+        errors.append(f"{exp_id}: registered {ids.count(exp_id)} times; an experiment is registered once")
     for exp_id, item in registry().items():
         root = ROOT / "experiments" / item["path"]
         path = root / "experiment.toml"
