@@ -1232,7 +1232,7 @@ fn a_snapshot_whose_keys_bind_no_action_is_refused_by_version() {
 
     // The control: this build's own layout restores, so the refusals above are
     // about the version and nothing else.
-    assert_eq!(&snapshot.bytes()[..8], b"PTRCS003");
+    assert_eq!(&snapshot.bytes()[..8], b"PTRCS004");
     assert_eq!(&snapshot.bytes()[section..section + 8], b"PTREX002");
     assert!(PtrRuntime::restore_compacted(
         PtrConfig::default(),

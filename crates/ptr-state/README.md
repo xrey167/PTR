@@ -9,11 +9,12 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-25  
-**Code footprint:** 1 Rust source files · 247 nonblank source lines · 3 integration-test files · 6 `#[test]` markers
+**Last reviewed:** 2026-09-28  
+**Code footprint:** 1 Rust source files · 259 nonblank source lines · 3 integration-test files · 6 `#[test]` markers
 
 ### Implemented now
 
+- ATTESTED_MARKER (semdb:attested) and MERGED_BRANCH_PREFIX (branch-merge:) name the materialized keys that record attributed semantic records and merged branches; no record projects them in this build, and ptr-runtime refuses a compacted snapshot in the pre-attestation lifecycle layout (PTRLC001) that carries either
 - Semantic transaction position and revision materialization without duplicated payload ownership
 - MaterializedState reference map with last_applied commit index
 - Application of Revoked and HardConstraintCommitted ledger events

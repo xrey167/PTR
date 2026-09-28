@@ -1,9 +1,10 @@
 version = 1
 id = "ptr-state"
 maturity = "prototype"
-last_reviewed = "2026-09-25"
+last_reviewed = "2026-09-28"
 
 implemented = [
+  "ATTESTED_MARKER (semdb:attested) and MERGED_BRANCH_PREFIX (branch-merge:) name the materialized keys that record attributed semantic records and merged branches; no record projects them in this build, and ptr-runtime refuses a compacted snapshot in the pre-attestation lifecycle layout (PTRLC001) that carries either",
   "Semantic transaction position and revision materialization without duplicated payload ownership",
 
   "MaterializedState reference map with last_applied commit index",

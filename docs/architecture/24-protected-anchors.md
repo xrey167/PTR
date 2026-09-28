@@ -288,7 +288,7 @@ no sound basis for raising a floor at all.
 
 ```text
 offset size field
-0      8    magic "PTRCS003"
+0      8    magic "PTRCS004"       "PTRCS003" is still read
 8      8    revision               semantic revision at the floor
 16     8    floor_index
 24     32   floor_digest
@@ -296,7 +296,7 @@ offset size field
 64     8    lifecycle_len
 72     8    execution_len          was reserved in PTRCS001
 80     ...  semantic section       canonical SemanticDelta encoding
-       ...  lifecycle section      PTRLC001
+       ...  lifecycle section      PTRLC002; PTRLC001 inside PTRCS003
        ...  execution section      PTREX002
        32   digest                 SHA-256 over all preceding bytes
 ```
@@ -334,6 +334,16 @@ each spent key with the attempt that settled it and the project, principal and
 action digest that attempt recorded. `28-durable-execution-audit.md` gives its
 layout. A `PTRCS001` or `PTRCS002` snapshot, and a `PTREX001` section, are refused
 with `PTR_COMPACTED_VERSION` rather than read with the weaker meaning they had.
+
+`PTRCS004` differs from `PTRCS003` only in its lifecycle section, `PTRLC002`, the
+first that may carry `semdb:attested` (`ptr_state::ATTESTED_MARKER`) and the
+`branch-merge:` keys (`ptr_state::MERGED_BRANCH_PREFIX`). A build from before
+attributed semantic records stops at the new magic instead of restoring a history
+it would then extend with records that history's replay refuses. A `PTRCS003`
+snapshot is still read, and only with a `PTRLC001` section, as a snapshot of a
+history that holds no attributed record, which is what every such snapshot
+describes. A `PTRLC001` section that carries the marker or a merged-branch key is
+refused by version, as is any other pairing of the outer and lifecycle versions.
 
 `covers()` is taken from the snapshot, not chosen by the caller: reporting a
 position the snapshot does not hold would let a cutover discard records whose

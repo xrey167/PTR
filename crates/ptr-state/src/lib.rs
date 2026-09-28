@@ -54,6 +54,20 @@ impl MaterializedState {
     }
 }
 
+/// The materialized key that records that a history holds a semantic record
+/// with an attributed origin (ledger tag 12).
+///
+/// No record projects it in this build, since the runtime refuses every
+/// attributed record. It is named here so that a compacted snapshot in the
+/// lifecycle layout from before attributed records (PTRLC001) that carries it
+/// is refused: no history that layout describes could have set it.
+pub const ATTESTED_MARKER: &str = "semdb:attested";
+
+/// The prefix of the materialized keys that record a merged branch, one key
+/// per branch id. No record projects one in this build; a PTRLC001 compacted
+/// snapshot that carries one is refused, as for [`ATTESTED_MARKER`].
+pub const MERGED_BRANCH_PREFIX: &str = "branch-merge:";
+
 /// The key/value entries one committed event projects to.
 ///
 /// This is the single definition of what an event means as current state; the

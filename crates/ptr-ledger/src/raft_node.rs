@@ -36,7 +36,7 @@ pub const MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 ///
 /// The payload is opaque here on purpose: a snapshot is the *application's* state,
 /// and this layer carrying it does not entitle it to an opinion about what is
-/// inside. A PTR deployment puts a PTRCS003 compacted snapshot here rather than a
+/// inside. A PTR deployment puts a PTRCS004 compacted snapshot here rather than a
 /// second artifact invented for raft.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InstalledSnapshot {
