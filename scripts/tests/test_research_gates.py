@@ -1128,7 +1128,9 @@ class PreregistrationGateTests(unittest.TestCase):
         # A results directory outside the experiment's directory, or the
         # experiment's directory itself, is refused: the runner holds the
         # rest of that directory to HEAD.
-        for results_dir in ("../shared",".","./"):
+        # Nor one that begins with a drive letter and a colon, which Windows
+        # reads as a path on that drive.
+        for results_dir in ("../shared",".","./","C:/out","c:out","C:"):
             with self.subTest(results_dir=results_dir):
                 root=self.tree()
                 write(root,self.MANIFEST,(root/self.MANIFEST).read_text(encoding="utf-8")+f'results_dir = "{results_dir}"\n')
@@ -1505,6 +1507,62 @@ class PreregistrationGateTests(unittest.TestCase):
             "stays prepared, running, completed or failed, or is superseded",
         )
 
+    def test_a_freeze_in_a_directory_the_registry_has_left_is_one_the_experiment_left_planned_after(self):
+        # Frozen in one directory, and placed by the registry in another
+        # where it is planned, the experiment has left planned all the same.
+        root=self.tree(status="prepared")
+        frozen=commit_all(root)
+        git(root,"mv","experiments/semdb/X900-fixture","experiments/semdb/X900-moved")
+        self.edit(root,"experiments/registry.toml",'path = "semdb/X900-fixture"','path = "semdb/X900-moved"')
+        for relative in ("experiments/semdb/X900-moved/experiment.toml","experiments/registry.toml"):
+            self.edit(root,relative,'status = "prepared"','status = "planned"')
+        commit_all(root,"moved, and planned there")
+        self.assert_blocked(
+            root,
+            f"X900 is 'planned', but it was 'prepared' at {frozen[:12]}; a listed experiment that has left planned "
+            "stays prepared, running, completed or failed, or is superseded",
+        )
+
+    def test_the_freezes_of_a_listing_are_one_for_each_state_named_by_its_oldest_commit_and_ordered_by_it(self):
+        # Newest first: c3 and c1 hold the state A, c2 holds B, and c0 holds
+        # nothing frozen. A is one freeze, named by c1, its oldest commit, and
+        # c2 is newer than that: the freezes are ordered by the oldest commit
+        # of each state, newest first.
+        listing=[("c3",("prepared","A")),("c2",("running","B")),("c1",("prepared","A")),("c0",None)]
+        self.assertEqual(mod.freezes(listing),[("c2","running"),("c1","prepared")])
+        # A state in one commit only is named by it, and no commit that holds
+        # nothing frozen is a freeze.
+        self.assertEqual(mod.freezes([("c2",("prepared","A")),("c1",None),("c0",("running","B"))]),
+                         [("c2","prepared"),("c0","running")])
+        self.assertEqual(mod.freezes([("c1",None),("c0",None)]),[])
+        self.assertEqual(mod.freezes([]),[])
+        # The same status in two states is two freezes.
+        self.assertEqual(mod.freezes([("c1",("prepared","B")),("c0",("prepared","A"))]),
+                         [("c1","prepared"),("c0","prepared")])
+
+    def test_the_freeze_named_after_a_return_to_planned_is_the_one_whose_oldest_commit_is_the_newest(self):
+        # c1 freezes the experiment in one directory, c2 in another the
+        # registry moved it to, and c3 moves it back. The two states have
+        # oldest commits c1 and c2, so the one c2 holds is the newest freeze,
+        # and the gate names it when the experiment then goes back to planned.
+        root=self.tree(status="prepared")
+        first=commit_all(root)
+        git(root,"mv","experiments/semdb/X900-fixture","experiments/semdb/X900-moved")
+        self.edit(root,"experiments/registry.toml",'path = "semdb/X900-fixture"','path = "semdb/X900-moved"')
+        second=commit_all(root,"moved to another directory")
+        git(root,"mv","experiments/semdb/X900-moved","experiments/semdb/X900-fixture")
+        self.edit(root,"experiments/registry.toml",'path = "semdb/X900-moved"','path = "semdb/X900-fixture"')
+        commit_all(root,"moved back")
+        self.assertEqual(mod.frozen_commits(root,"X900","experiments/semdb/X900-fixture"),
+                         [(second,"prepared"),(first,"prepared")])
+        for relative in (self.MANIFEST,"experiments/registry.toml"):
+            self.edit(root,relative,'status = "prepared"','status = "planned"')
+        self.assert_blocked(
+            root,
+            f"X900 is 'planned', but it was 'prepared' at {second[:12]}; a listed experiment that has left planned "
+            "stays prepared, running, completed or failed, or is superseded",
+        )
+
     def move_to(self, root: Path, then: str, now: str) -> str:
         """Commit the manifest and the registry of `root`, which hold the
         status `then`, at the status `now`, and return the commit."""
@@ -1512,7 +1570,7 @@ class PreregistrationGateTests(unittest.TestCase):
             self.edit(root,relative,f'status = "{then}"',f'status = "{now}"')
         return commit_all(root,f"{then} to {now}")
 
-    def regression(self, then: str, anchor: str, now: str, commit: str) -> str:
+    def regression(self, then: str, anchor: str, now: str | None, commit: str) -> str:
         """The refusal of a status `now` at `commit` after `then` at `anchor`."""
         return (f"X900 was {then!r} at {anchor[:12]} and is {now!r} at {commit[:12]}, a commit after it; a status moves "
                 "only from prepared to running to completed or failed, or to superseded, and never back, whether or not "
@@ -1574,6 +1632,24 @@ class PreregistrationGateTests(unittest.TestCase):
         self.assertIn(found[0][1],(first[:12],second[:12]))
         self.assertEqual(fourth,git(root,"rev-parse","HEAD"))
 
+    def test_the_descendants_of_a_freeze_are_read_once_however_many_commits_are_compared_with_it(self):
+        # One `git rev-list` for each commit a check is anchored at, not one
+        # for each commit compared with it.
+        root=self.tree(status="prepared")
+        commit_all(root)
+        for then,now in (("prepared","running"),("running","prepared"),("prepared","running"),("running","prepared"),("prepared","running")):
+            self.move_to(root,then,now)
+        reads=[]
+        real=mod.descendants_of
+        def counted(where: Path, commit: str) -> set[str]:
+            reads.append(commit)
+            return real(where,commit)
+        with mock.patch.object(mod,"descendants_of",counted):
+            found=self.regressions(root)
+        self.assertEqual(len(found),2)
+        self.assertTrue(reads)
+        self.assertEqual(len(reads),len(set(reads)))
+
     def test_a_status_no_freeze_came_before_moves_freely(self):
         # Nothing was frozen, so nothing was run, and nothing could be chosen.
         root=self.tree(status="planned")
@@ -1618,6 +1694,218 @@ class PreregistrationGateTests(unittest.TestCase):
         commit_all(root,"a note on the main line")
         git(root,"merge","-q","--no-ff","-m","merge","side")
         self.assertEqual(self.regressions(root),[("prepared",frozen[:12],"planned",back[:12])])
+
+    def test_a_status_that_is_no_string_in_the_history_is_named_not_a_crash(self):
+        # A commit after a freeze whose manifest holds a list, a table, a
+        # number or a bool as its status is one that went back (to no status
+        # at all), whatever it holds and whatever a later commit restores;
+        # what it holds is never looked up as a status name.
+        for spelling in ('["prepared"]',"{ prepared = 1 }","1","true","1.5"):
+            with self.subTest(spelling=spelling):
+                root=self.tree(status="prepared")
+                frozen=commit_all(root)
+                self.edit(root,self.MANIFEST,'status = "prepared"',f"status = {spelling}")
+                broken=commit_all(root,"status holds no string")
+                self.edit(root,self.MANIFEST,f"status = {spelling}",'status = "prepared"')
+                restored=commit_all(root,"status restored")
+                code,lines=gate(root)
+                self.assertEqual((code,lines),(1,[self.regression("prepared",frozen,None,broken)]))
+                self.assertEqual(restored,git(root,"rev-parse","HEAD"))
+
+    def test_a_commit_holding_no_readable_manifest_holds_no_status(self):
+        # A manifest that is absent or does not parse at a commit between two
+        # commits that hold prepared says nothing of a status: it is neither
+        # a status that went back nor one that stayed.
+        for spelling in (None,"status = = 1\n"):
+            with self.subTest(spelling=spelling):
+                root=self.tree(status="prepared")
+                kept=(root/self.MANIFEST).read_text(encoding="utf-8")
+                frozen=commit_all(root)
+                if spelling is None:
+                    (root/self.MANIFEST).unlink()
+                else:
+                    write(root,self.MANIFEST,spelling)
+                commit_all(root,"no readable manifest")
+                write(root,self.MANIFEST,kept)
+                commit_all(root,"manifest restored")
+                self.assertEqual(mod.statuses_at(root,frozen,"X900"),["prepared"])
+                self.assertEqual(mod.statuses_at(root,git(root,"rev-parse","HEAD~1"),"X900"),[])
+                self.assertEqual(mod.statuses_at(root,"HEAD","X900"),["prepared"])
+                self.assertEqual(gate(root),(0,[]))
+
+    def test_a_commit_holds_a_status_for_every_directory_the_registry_places_the_experiment_in(self):
+        # The registry places X900 in two directories at one commit; each
+        # holds a manifest, and the commit holds the status of each, in the
+        # order of the sorted directories.
+        root=self.tree(status="prepared")
+        shutil.copytree(root/"experiments/semdb/X900-fixture",root/"experiments/semdb/X900-twin")
+        self.edit(root,"experiments/semdb/X900-twin/experiment.toml",'status = "prepared"','status = "running"')
+        write(root,"experiments/registry.toml",
+              (root/"experiments/registry.toml").read_text(encoding="utf-8")
+              +'\n[[experiment]]\nid = "X900"\npath = "semdb/X900-twin"\nstatus = "running"\n')
+        placed=commit_all(root,"placed in two directories")
+        self.assertEqual(mod.placed_directories(root,placed,"X900"),
+                         ["experiments/semdb/X900-fixture","experiments/semdb/X900-twin"])
+        self.assertEqual(mod.statuses_at(root,placed,"X900"),["prepared","running"])
+
+    def two_directories(self, root: Path, twin_status: str, fixture_status: str = "running") -> str:
+        """Commit a second directory for X900, in the registry too, whose
+        manifest holds `twin_status`, beside the first, which holds
+        `fixture_status`, and return the commit."""
+        shutil.copytree(root/"experiments/semdb/X900-fixture",root/"experiments/semdb/X900-twin")
+        self.edit(root,"experiments/semdb/X900-twin/experiment.toml",f'status = "{fixture_status}"',f'status = "{twin_status}"')
+        write(root,"experiments/registry.toml",
+              (root/"experiments/registry.toml").read_text(encoding="utf-8")
+              +f'\n[[experiment]]\nid = "X900"\npath = "semdb/X900-twin"\nstatus = "{twin_status}"\n')
+        return commit_all(root,"placed in two directories")
+
+    def test_a_status_the_registry_places_beside_the_frozen_one_is_checked_against_the_freeze_behind_it(self):
+        # X900 runs in one directory, and a later commit places it in a
+        # second, prepared, beside it: the first status follows the freeze,
+        # the second goes back, and each status the commit holds is checked,
+        # not the first alone.
+        root=self.tree(status="running")
+        first=commit_all(root)
+        child=self.two_directories(root,"prepared")
+        self.assertEqual(mod.statuses_at(root,child,"X900"),["running","prepared"])
+        self.assertEqual(
+            mod.status_regressions(root,"X900",[(child,None),(first,("running","D"))]),
+            [self.regression("running",first,"prepared",child)],
+        )
+        # A commit is no descendant of itself in this sense: a freeze that
+        # holds both statuses at once is one commit, and went back from
+        # nothing.
+        self.assertEqual(mod.status_regressions(root,"X900",[(child,("running","D"))]),[])
+
+    def test_a_status_superseded_beside_a_frozen_one_is_no_final_status_of_its_own(self):
+        # A superseded status is final only where a freeze is behind it, and
+        # a commit that is a freeze holds its own status frozen, not the
+        # superseded one another directory of it holds at once.
+        root=self.tree(status="running")
+        registry=(root/"experiments/registry.toml").read_text(encoding="utf-8")
+        both=self.two_directories(root,"superseded")
+        self.assertEqual(mod.statuses_at(root,both,"X900"),["running","superseded"])
+        shutil.rmtree(root/"experiments/semdb/X900-twin")
+        write(root,"experiments/registry.toml",registry)
+        later=commit_all(root,"one directory again")
+        self.assertEqual(mod.statuses_at(root,later,"X900"),["running"])
+        self.assertEqual(mod.status_regressions(root,"X900",[(later,None),(both,("running","D"))]),[])
+
+    def test_the_descendants_of_a_commit_are_all_of_them_on_head_and_a_commit_git_cannot_read_raises(self):
+        root=self.tree(status="prepared")
+        first=commit_all(root)
+        git(root,"checkout","-q","-b","side",first)
+        write(root,"side.md","side\n")
+        side=commit_all(root,"side")
+        git(root,"checkout","-q","main")
+        write(root,"main.md","main\n")
+        main=commit_all(root,"main")
+        git(root,"merge","-q","--no-ff","-m","merge","side")
+        merged=git(root,"rev-parse","HEAD")
+        # A commit that descends from the first and is on no line of HEAD's
+        # history is no descendant of it there.
+        git(root,"checkout","-q","-b","elsewhere",first)
+        write(root,"elsewhere.md","elsewhere\n")
+        commit_all(root,"elsewhere")
+        git(root,"checkout","-q","main")
+        # Every commit below it, a merge for both of its lines, by full name,
+        # and never the commit itself.
+        self.assertEqual(mod.descendants_of(root,first),{side,main,merged})
+        self.assertEqual(mod.descendants_of(root,side),{merged})
+        self.assertEqual(mod.descendants_of(root,main),{merged})
+        self.assertEqual(mod.descendants_of(root,merged),set())
+        # A name git cannot resolve is a history that cannot be read, not one
+        # that holds nothing.
+        with self.assertRaises(mod.HistoryUnreadable) as caught:
+            mod.descendants_of(root,"0"*40)
+        self.assertTrue(str(caught.exception))
+        # Nor is a name no process can be given one that names no descendants.
+        with self.assertRaises(mod.HistoryUnreadable) as caught:
+            mod.descendants_of(root,"a\0b")
+        self.assertTrue(str(caught.exception))
+
+    def test_the_history_is_listed_once_for_each_freeze_and_not_once_for_each_commit_that_is_listed(self):
+        # Commits that hold the experiment planned come before its freezes, so
+        # each holds a status no freeze may be followed by, and none descends
+        # from a freeze: a listing of the history for each of them would make
+        # the gate that the runner calls at every launch as slow as the
+        # history is long.
+        listings={}
+        for planned in (2,9):
+            with self.subTest(planned=planned):
+                root=self.tree(status="planned")
+                commit_all(root)
+                for step in range(planned):
+                    write(root,"experiments/registry.toml",
+                          (root/"experiments/registry.toml").read_text(encoding="utf-8")+f"# planned {step}\n")
+                    commit_all(root,f"planned {step}")
+                self.move_to(root,"planned","prepared")
+                self.move_to(root,"prepared","running")
+                asked=[]
+                original=mod.experiment_records.git
+                def counting(where,*arguments,**options):
+                    asked.append(arguments)
+                    return original(where,*arguments,**options)
+                with mock.patch.object(mod.experiment_records,"git",side_effect=counting):
+                    self.assertEqual(gate(root),(0,[]))
+                listings[planned]=[arguments for arguments in asked if arguments[0]=="rev-list"]
+        self.assertEqual(len(listings[2]),2)
+        self.assertEqual(len(listings[9]),2)
+
+    def test_a_superseded_status_is_final_for_a_freeze_that_comes_after_it_and_not_only_for_the_newest_freeze(self):
+        # The experiment is frozen as prepared, superseded, and then frozen as
+        # running: the superseded commit descends from the first freeze but
+        # not from the newest one, and the running commit after it is named.
+        root=self.tree(status="prepared")
+        commit_all(root)
+        gone=self.move_to(root,"prepared","superseded")
+        ran=self.move_to(root,"superseded","running")
+        self.assertEqual(self.regressions(root),[("superseded",gone[:12],"running",ran[:12])])
+
+    def test_a_status_that_went_back_at_a_merge_is_named_though_only_its_second_parent_saw_the_freeze(self):
+        # The main line holds prepared and never saw the side line run; the
+        # merge keeps prepared, and holds more than either parent so that it
+        # is a commit of its own. Behind its first parent alone nothing ran.
+        root=self.tree(status="prepared")
+        start=commit_all(root)
+        git(root,"checkout","-q","-b","side",start)
+        ran=self.move_to(root,"prepared","running")
+        git(root,"checkout","-q","main")
+        write(root,self.MANIFEST,(root/self.MANIFEST).read_text(encoding="utf-8")+"# a note on the main line\n")
+        commit_all(root,"a note on the main line")
+        git(root,"merge","-q","--no-ff","--no-commit","side")
+        write(root,self.MANIFEST,(root/self.MANIFEST).read_text(encoding="utf-8")+"# merged\n")
+        merged=self.move_to(root,"running","prepared")
+        self.assertEqual(len(git(root,"rev-list","--parents","-n","1","HEAD").split()),3)
+        # A commit after the merge runs it again, so that only the merge went back.
+        self.move_to(root,"prepared","running")
+        self.assertEqual(self.regressions(root),[("running",ran[:12],"prepared",merged[:12])])
+
+    def test_a_superseded_status_no_freeze_is_behind_is_no_final_status_for_a_merge_that_brings_a_freeze(self):
+        # The side line supersedes the experiment before anything froze it,
+        # and the main line freezes it as prepared. The side line's commit has
+        # no freeze behind it, so superseded is not final there, and the merge
+        # of the two, which keeps prepared, is no status that went back.
+        root=self.tree(status="planned")
+        start=commit_all(root)
+        git(root,"checkout","-q","-b","side",start)
+        superseded=self.move_to(root,"planned","superseded")
+        git(root,"checkout","-q","main")
+        frozen=self.move_to(root,"planned","prepared")
+        git(root,"merge","-q","--no-ff","--no-commit","-s","ours","side")
+        write(root,self.MANIFEST,(root/self.MANIFEST).read_text(encoding="utf-8")+"# merged\n")
+        merged=commit_all(root,"merge")
+        self.assertEqual(len(git(root,"rev-list","--parents","-n","1","HEAD").split()),3)
+        self.assertEqual(mod.statuses_at(root,superseded,"X900"),["superseded"])
+        self.assertEqual(mod.descendants_of(root,start),{superseded,frozen,merged})
+        self.assertEqual(self.regressions(root),[])
+        # Where a freeze is behind the superseded status, it is final, and a
+        # commit after it that holds the frozen status again is named.
+        root=self.tree(status="prepared")
+        frozen=commit_all(root)
+        gone=self.move_to(root,"prepared","superseded")
+        back=self.move_to(root,"superseded","prepared")
+        self.assertEqual(self.regressions(root),[("superseded",gone[:12],"prepared",back[:12])])
 
     def test_a_status_follows_another_only_forward(self):
         allowed={
@@ -2741,11 +3029,26 @@ class PreregistrationGateTests(unittest.TestCase):
         for refused in ("../x",".. /x","a/.. /b","a/.../b","a/. /b","a/..:x/b","a/ /b","a/. ./b","...","a/.. ","a/.:x/b"):
             with self.subTest(refused=refused):
                 self.assertFalse(mod.is_repository_path(refused))
+        # A drive letter and a colon at the start names a path on that drive
+        # on Windows, whatever follows it, whatever the letter's case.
+        for refused in ("C:x","C:/x","c:/x","z:","Z:y/z","C:.."):
+            with self.subTest(refused=refused):
+                self.assertFalse(mod.is_repository_path(refused))
         # A name with anything else in it is a name of its own on every
-        # platform.
-        for accepted in ("...x/y","a../b",".a./b","a b/c","..x/y","a/.x./b",".hidden/y","a.b/c","a/x ../y"):
+        # platform, and a colon after the first component is a stream's name
+        # inside the directory it names, one of the files in the repository.
+        for accepted in ("...x/y","a../b",".a./b","a b/c","..x/y","a/.x./b",".hidden/y","a.b/c","a/x ../y","x/C:y","ab:c/d","1:x/y"):
             with self.subTest(accepted=accepted):
                 self.assertTrue(mod.is_repository_path(accepted))
+        # The gate's two predicates and the runner's read the same names as a
+        # drive, so none of them can accept what another refuses.
+        for drive in ("C:x","C:/x","c:/x","z:","Z:y/z","C:..","a:b","C:\\x"):
+            with self.subTest(drive=drive):
+                self.assertTrue(mod.names_a_drive(drive))
+                self.assertTrue(mod.outside_repository(drive))
+        for no_drive in ("","x","/x","x/C:y","ab:c","1:x","::x",":x","C","results/a:b"," C:x"):
+            with self.subTest(no_drive=no_drive):
+                self.assertFalse(mod.names_a_drive(no_drive))
         for stepping in (".. ","...","."," ",". ",".. ..","..:x",":x"):
             with self.subTest(stepping=stepping):
                 self.assertEqual(mod.is_windows_dot_name(stepping),stepping not in (".",".."))

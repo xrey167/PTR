@@ -791,6 +791,29 @@ def file_stamps(root: Path, pathspecs: list[str]) -> dict[str, Stamp | None]:
     return {name: file_stamp(root / name) for name in [*tracked, *untracked_files(root, pathspecs)]}
 
 
+def directories_above(names) -> list[str]:
+    """The repository root (`.`) and every directory that holds one of the
+    paths `names`, or holds a directory that does, sorted."""
+    found = {"."}
+    for name in names:
+        parent = posixpath.dirname(name)
+        while parent and parent not in found:
+            found.add(parent)
+            parent = posixpath.dirname(parent)
+    return sorted(found)
+
+
+def directory_stamps(root: Path, names) -> dict[str, Stamp | None]:
+    """The stamp of every directory on the way from `root` to the paths
+    `names` (`directories_above`), by path relative to `root`; None for one
+    that is gone. A directory's status-change time moves when it is renamed
+    and when an entry is added to it, removed from it or renamed in it, so
+    the stamps show a directory that was moved aside and put back, which the
+    stamps of the files in it do not: it keeps its inode and every file in
+    it keeps theirs. The directory it is in, stamped as well, moves too."""
+    return {directory: file_stamp(root / directory) for directory in directories_above(names)}
+
+
 class ProvenanceWatch:
     """The provenance tree of a run (the files under `pathspecs` in `root`)
     as it was when the run was about to start, to tell whether it stayed
@@ -812,6 +835,20 @@ class ProvenanceWatch:
         self.stamps = file_stamps(root, self.pathspecs)
         self.uncommitted = uncommitted_files(root, self.pathspecs)
         self.foreign: set[str] = set()
+        self.directories: dict[str, Stamp | None] = {}
+
+    def stamp_directories(self) -> None:
+        """Stamp, as they are now, the directories on the way from the root
+        to every file the watch holds (`directory_stamps`), for `changes` to
+        compare. A file's stamp does not show that the directory it is in
+        was renamed aside, a prepared one put in its place for the run to
+        read, and the original put back: every file in it is the one the
+        watch stamped. Call it right before the run starts, once the caller
+        has made every write of its own to the tree; from then on a run that
+        adds an entry to one of them, or takes one out, even a file it
+        removes again, is a change too, so it is for a run that writes
+        nothing into the tree."""
+        self.directories = directory_stamps(self.root, self.stamps)
 
     @contextmanager
     def rewriting(self, files):
@@ -837,9 +874,13 @@ class ProvenanceWatch:
         written, replaced, created or removed since the watch looked (other
         than inside `rewriting`), even when its content was put back.
 
-        It does not see a file created and removed again between its two
-        looks, a write that keeps a file's inode and size and lands within
-        the filesystem's timestamp resolution of the stamp before it, what
+        Once `stamp_directories` has stamped them, it sees a directory on
+        the way to a watched file that was renamed, or had an entry added or
+        removed, since. Without that it does not see a file created and
+        removed again between its two looks, nor a directory moved aside and
+        put back; and it never sees a write that keeps a file's inode and
+        size and lands within the filesystem's timestamp resolution of the
+        stamp before it, a rename of a directory above the root, what
         `uncommitted_files` cannot see, or anything outside the pathspecs.
         Raises `ProvenanceError` when git cannot tell."""
         problems = []
@@ -852,6 +893,16 @@ class ProvenanceWatch:
         }
         if written:
             problems.append(f"{listed(sorted(written))} changed on disk")
+        moved = [
+            directory
+            for directory, stamp in self.directories.items()
+            if file_stamp(self.root / directory) != stamp
+        ]
+        if moved:
+            problems.append(
+                f"{listed(moved)} changed on disk, a directory holding watched files that was renamed, or had an "
+                "entry added or removed, since the run started"
+            )
         uncommitted = uncommitted_files(self.root, self.pathspecs)
         if uncommitted:
             problems.append(f"HEAD does not hold {listed(uncommitted)}")

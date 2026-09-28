@@ -345,10 +345,20 @@ def results_directory(root: Path, data: dict) -> Path | None:
     holds the rest of that directory to HEAD, so a results directory that is
     the experiment's own, or a link that carries records elsewhere, would
     take sources out of that watch; and a file on the way would leave no
-    directory to write the record into once the run had run."""
+    directory to write the record into once the run had run. Nor may it be
+    written with a backslash or a drive letter and a colon, which Windows
+    reads as steps and as another drive, or hold a NUL, which no path can."""
     named = data.get("results_dir", "results")
     relative = PurePosixPath(named) if isinstance(named, str) and named else None
-    if relative is None or relative.is_absolute() or not relative.parts or ".." in relative.parts:
+    if (
+        relative is None
+        or relative.is_absolute()
+        or not relative.parts
+        or ".." in relative.parts
+        or "\\" in named
+        or "\0" in named
+        or check_research_gates.names_a_drive(named)
+    ):
         print(f"ERROR: results_dir {named!r} is not a directory below {root.relative_to(ROOT)}", file=sys.stderr)
         return None
     if any(check_research_gates.is_git_administration(part) for part in relative.parts):
@@ -1360,6 +1370,10 @@ def launch_and_record(
                 problem += f"; and {kept}, which says seed {seed} ran, cannot be removed: {removal}"
             print(f"ERROR: cannot reserve {out.relative_to(ROOT)}: {problem}", file=sys.stderr)
             return 2
+        # The command starts next, in the live tree, and the runner has made
+        # its last write there: a directory moved aside and put back while it
+        # runs keeps every file's stamp, so the directories are stamped too.
+        watch.stamp_directories()
     stays = f"; {out.relative_to(ROOT)} stays as the record that seed {seed} ran" if listed else ""
 
     if not listed:

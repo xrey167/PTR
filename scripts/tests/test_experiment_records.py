@@ -8,6 +8,7 @@ import json
 import math
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -1224,6 +1225,143 @@ class ProvenanceWatchTests(GitTree, unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaisesRegex(mod.ProvenanceError, "cannot name the commit HEAD is at"):
                 mod.ProvenanceWatch(Path(directory), self.pathspecs)
+
+    DIRECTORY_CHANGE = (
+        "changed on disk, a directory holding watched files that was renamed, or had an entry added or removed, "
+        "since the run started"
+    )
+
+    def stamp_directories(self, watch=None):
+        """Stamp the directories of `watch` (this test's own by default), after
+        their modification times are set long ago, so that a rename in one
+        moves them whatever the clock's resolution."""
+        watch = watch or self.watch
+        for directory in mod.directories_above(watch.stamps):
+            os.utime(self.root / directory, ns=(10**18, 10**18))
+        watch.stamp_directories()
+        return watch
+
+    def move_aside_and_back(self, relative: str) -> None:
+        """Rename the directory `relative` and rename it back, as a run that
+        swaps in a prepared tree for the sources does, and restores them."""
+        path = self.root / relative
+        aside = path.with_name(path.name + ".aside")
+        path.rename(aside)
+        aside.rename(path)
+
+    def test_the_directories_above_files_are_the_root_and_every_one_on_the_way(self):
+        self.assertEqual(mod.directories_above([]), ["."])
+        self.assertEqual(mod.directories_above(["Cargo.toml"]), ["."])
+        self.assertEqual(
+            mod.directories_above(["src/lib.rs", "crates/ptr-a/src/lib.rs", "Cargo.toml", "crates/ptr-a/Cargo.toml"]),
+            [".", "crates", "crates/ptr-a", "crates/ptr-a/src", "src"],
+        )
+        self.assertEqual(mod.directories_above({"a/b/c": None}), [".", "a", "a/b"])
+
+    def test_the_directory_stamps_are_those_of_each_directory_above_the_files(self):
+        names = ["src/lib.rs", "Cargo.toml"]
+        stamps = mod.directory_stamps(self.root, names)
+        self.assertEqual(sorted(stamps), [".", "src"])
+        for directory, stamp in stamps.items():
+            self.assertIsNotNone(stamp)
+            self.assertEqual(stamp, mod.file_stamp(self.root / directory))
+        self.assertNotEqual(stamps["."], stamps["src"])
+
+    def test_a_directory_put_back_is_no_change_before_the_directories_are_stamped(self):
+        self.move_aside_and_back("src")
+        self.assertEqual(self.watch.directories, {})
+        self.assertEqual(self.watch.changes(), [])
+
+    def test_a_directory_moved_aside_and_put_back_is_a_change_once_stamped(self):
+        self.stamp_directories()
+        self.assertEqual(self.watch.changes(), [])
+        self.move_aside_and_back("src")
+        self.assertEqual(mod.uncommitted_files(self.root, self.pathspecs), [])
+        self.assertEqual(self.watch.changes(), [f"., src {self.DIRECTORY_CHANGE}"])
+
+    def test_a_directory_above_the_directory_of_a_file_is_watched_too(self):
+        self.crate("crates/ptr-a")
+        commit(self.root, {}, "a crate")
+        watch = self.stamp_directories(mod.ProvenanceWatch(self.root, self.pathspecs))
+        self.assertEqual(watch.changes(), [])
+        # Neither the crate's own directory nor the one holding its files moves.
+        self.move_aside_and_back("crates")
+        self.assertEqual(watch.changes(), [f"., crates {self.DIRECTORY_CHANGE}"])
+        self.stamp_directories(watch)
+        self.move_aside_and_back("crates/ptr-a")
+        self.assertEqual(watch.changes(), [f"crates, crates/ptr-a {self.DIRECTORY_CHANGE}"])
+        self.stamp_directories(watch)
+        self.move_aside_and_back("crates/ptr-a/src")
+        self.assertEqual(watch.changes(), [f"crates/ptr-a, crates/ptr-a/src {self.DIRECTORY_CHANGE}"])
+
+    def test_a_file_created_and_removed_in_a_watched_directory_is_a_change_once_stamped(self):
+        self.stamp_directories()
+        self.write("scratch.txt")
+        (self.root / "scratch.txt").unlink()
+        self.write("src/scratch.txt")
+        (self.root / "src/scratch.txt").unlink()
+        self.assertEqual(self.watch.changes(), [f"., src {self.DIRECTORY_CHANGE}"])
+
+    def test_the_root_is_watched_when_the_run_adds_and_removes_an_entry_there(self):
+        self.stamp_directories()
+        self.write("scratch.txt")
+        (self.root / "scratch.txt").unlink()
+        self.assertEqual(self.watch.changes(), [f". {self.DIRECTORY_CHANGE}"])
+
+    def test_a_directory_holding_no_watched_file_is_not_watched(self):
+        self.write("docs/notes.md")
+        self.stamp_directories()
+        self.write("docs/more.md")
+        (self.root / "docs/notes.md").unlink()
+        self.assertEqual(self.watch.changes(), [])
+
+    def test_what_happened_before_the_directories_were_stamped_is_no_change(self):
+        # The caller's own writes to the tree, before the run starts.
+        self.write("scratch.txt")
+        (self.root / "scratch.txt").unlink()
+        self.move_aside_and_back("src")
+        self.stamp_directories()
+        self.assertEqual(self.watch.changes(), [])
+        self.stamp_directories()
+        self.move_aside_and_back("scripts")
+        self.assertEqual(self.watch.changes(), [f"., scripts {self.DIRECTORY_CHANGE}"])
+
+    def test_a_directory_that_is_gone_is_a_change_once_stamped(self):
+        self.stamp_directories()
+        shutil.rmtree(self.root / "scripts")
+        problems = self.watch.changes()
+        self.assertIn(f"., scripts {self.DIRECTORY_CHANGE}", problems)
+        self.assertIn("scripts/run_experiment.py changed on disk", problems)
+
+    def test_directories_are_reported_beside_the_files_written_and_head_moved(self):
+        self.stamp_directories()
+        before = self.watch.head
+        self.write("src/lib.rs", "pub fn f() { g() }\n")
+        self.move_aside_and_back("scripts")
+        git(self.root, "commit", "-q", "--no-verify", "--allow-empty", "-m", "moved")
+        after = git(self.root, "rev-parse", "HEAD")
+        self.assertEqual(
+            self.watch.changes(),
+            [
+                f"HEAD moved from {before} to {after}",
+                "src/lib.rs changed on disk",
+                f"., scripts {self.DIRECTORY_CHANGE}",
+                "HEAD does not hold src/lib.rs",
+            ],
+        )
+
+    def test_the_directories_are_named_up_to_five_with_a_count_of_the_rest(self):
+        for name in "abcdefg":
+            self.write(f"crates/{name}/x.rs", "pub fn x() {}\n")
+        commit(self.root, {}, "seven directories")
+        watch = self.stamp_directories(mod.ProvenanceWatch(self.root, self.pathspecs))
+        for name in "abcdefg":
+            (self.root / f"crates/{name}/x.rs").unlink()
+            (self.root / f"crates/{name}/x.rs").write_text("pub fn x() {}\n", encoding="utf-8")
+        self.assertIn(
+            f"crates/a, crates/b, crates/c, crates/d, crates/e and 2 more {self.DIRECTORY_CHANGE}",
+            watch.changes(),
+        )
 
 
 class StalenessTests(unittest.TestCase):

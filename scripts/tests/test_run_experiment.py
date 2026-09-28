@@ -697,10 +697,17 @@ class RunWatchTests(unittest.TestCase):
             ("results/. /x", stepping),
             ("results/..:stream", stepping),
             ("results/ ", stepping),
+            # Windows reads a backslash as a step and a drive letter with a
+            # colon as another drive, and no path holds a NUL.
+            ("..\\elsewhere", "is not a directory below experiments/x/L900-x"),
+            ("results\\.git", "is not a directory below experiments/x/L900-x"),
+            ("C:/out", "is not a directory below experiments/x/L900-x"),
+            ("c:out", "is not a directory below experiments/x/L900-x"),
+            ("results/a\0b", "is not a directory below experiments/x/L900-x"),
         ):
             with self.subTest(results_dir=results_dir):
-                self.write("experiments/x/L900-x/experiment.toml", manifest + f'results_dir = "{results_dir}"\n')
-                git(self.root, "commit", "-q", "--no-verify", "-am", f"results in {results_dir}")
+                self.write("experiments/x/L900-x/experiment.toml", manifest + f"results_dir = {json.dumps(results_dir)}\n")
+                git(self.root, "commit", "-q", "--no-verify", "-am", f"results in {results_dir!r}")
                 ran = []
                 status, _, stderr = self.run_seed(lambda: ran.append(True))
                 self.assertEqual((status, ran), (2, []))
@@ -709,7 +716,7 @@ class RunWatchTests(unittest.TestCase):
         # name of its own on every platform, and is no step.
         experiment = self.root / "experiments/x/L900-x"
         with mock.patch.object(mod, "ROOT", self.root):
-            for accepted in ("..x/results", "...x", "a../results", ".hidden/results", "a b", "results/.a."):
+            for accepted in ("..x/results", "...x", "a../results", ".hidden/results", "a b", "results/.a.", "results/C:x", "ab:c/results"):
                 with self.subTest(accepted=accepted):
                     self.assertEqual(mod.results_directory(experiment, {"results_dir": accepted}), experiment / accepted)
         # A file on the way would leave no directory to write the record
@@ -2090,6 +2097,65 @@ class RunWatchTests(unittest.TestCase):
         self.setUp()
         self.write("scripts/harness.py", "print('unrecorded')\n")
         status, records, stderr = self.run_seed()
+        self.assertEqual((status, stderr, [record["status"] for record in records]), (0, "", ["completed"]))
+
+    def test_a_listed_run_watches_the_directories_holding_the_files_it_watches(self):
+        # A directory renamed aside and put back keeps every file in it, and
+        # each file's stamp: the sources the command read were another
+        # tree's, which the directory's own stamp and its parent's show.
+        self.preregister("running")
+        self.write("scripts/harness.py", "print('recorded')\n")
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-q", "--no-verify", "-m", "harness")
+        os.utime(self.root / "scripts/harness.py", ns=(10**18, 10**18))
+        changed = (
+            "changed on disk, a directory holding watched files that was renamed, or had an entry added or removed, "
+            "since the run started"
+        )
+
+        def swap_and_restore():
+            # Past the filesystem's timestamp resolution since the launch looked.
+            time.sleep(0.05)
+            (self.root / "scripts").rename(self.root / "scripts.aside")
+            (self.root / "scripts.aside").rename(self.root / "scripts")
+
+        status, records, stderr = self.run_seed(swap_and_restore)
+        self.assertEqual((status, [record["status"] for record in records]), (2, ["started"]))
+        self.assertIn(f"; ., scripts {changed}; rerun from a working tree that stays at HEAD", stderr)
+
+        # A file created in one of them and removed again is one the command
+        # could have run.
+        self.tearDown()
+        self.setUp()
+        self.preregister("running")
+
+        def create_and_remove():
+            time.sleep(0.05)
+            self.write("src/generated.rs", "pub fn g() {}\n")
+            (self.root / "src/generated.rs").unlink()
+
+        status, records, stderr = self.run_seed(create_and_remove)
+        self.assertEqual((status, [record["status"] for record in records]), (2, ["started"]))
+        self.assertIn(f"; src {changed}; rerun from a working tree that stays at HEAD", stderr)
+
+        # The runner's own writes to the results before the command starts
+        # are none of it: a run that changes nothing is recorded.
+        self.tearDown()
+        self.setUp()
+        self.preregister("running")
+        status, records, stderr = self.run_seed(lambda: time.sleep(0.05))
+        self.assertEqual((status, stderr, [record["status"] for record in records]), (0, "", ["completed"]))
+
+        # An unlisted experiment's watch is on its provenance files, as it was.
+        self.tearDown()
+        self.setUp()
+
+        def swap_sources_and_restore():
+            time.sleep(0.05)
+            (self.root / "src").rename(self.root / "src.aside")
+            (self.root / "src.aside").rename(self.root / "src")
+
+        status, records, stderr = self.run_seed(swap_sources_and_restore)
         self.assertEqual((status, stderr, [record["status"] for record in records]), (0, "", ["completed"]))
 
     def test_cargo_configuration_outside_the_repository_refuses_a_listed_run(self):

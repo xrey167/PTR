@@ -401,7 +401,7 @@ def outside_repository(path: str) -> bool:
     slash a separator. The runner starts no shell, so `~` is a name like any
     other."""
     normalized=path.replace("\\","/")
-    if normalized.startswith("/") or re.match(r"[A-Za-z]:",normalized):
+    if normalized.startswith("/") or names_a_drive(normalized):
         return True
     depth=0
     for part in normalized.split("/"):
@@ -585,6 +585,14 @@ def is_git_administration(part: str) -> bool:
     `git~1`, or with an NTFS stream (`.git::$INDEX_ALLOCATION`)."""
     return part.split(":",1)[0].lower().rstrip(". ") in {".git","git~1"}
 
+def names_a_drive(path: str) -> bool:
+    """Whether `path` begins with a drive letter and a colon (`C:x`, `C:/x`,
+    `c:out`), which Windows reads as a path on that drive, or as that
+    drive's working directory, whatever follows the colon, so a path that
+    does leaves the repository. A colon further on (`x/C:y`) is an NTFS
+    stream of a name and is not one."""
+    return re.match(r"[A-Za-z]:",path) is not None
+
 def is_windows_dot_name(part: str) -> bool:
     """Whether the path component `part` is a name Windows reads as a step it
     is not written as: `.` or `..` with trailing dots or spaces (`. `, `.. `),
@@ -608,12 +616,15 @@ def is_repository_path(value) -> bool:
     reports no file there as tracked or untracked, so a file frozen there
     would be one no commit made by `git add` holds. Nor is a part one Windows
     reads as a step it is not written as (`is_windows_dot_name`: `.. `,
-    `...`), which would climb out of the repository or name another entry."""
+    `...`), which would climb out of the repository or name another entry.
+    Nor does it begin with a drive letter and a colon (`C:x`, `C:/x`), which
+    Windows reads as a path on that drive, outside the repository."""
     if not isinstance(value,str) or not value or len(value)>MAX_PATH or not experiment_records.is_printable_ascii(value):
         return False
     path=PurePosixPath(value)
     return (not path.is_absolute() and ".." not in path.parts and "\\" not in value and path.as_posix()==value
-            and not value.startswith(":") and not any(character in value for character in "*?[")
+            and not value.startswith(":") and not names_a_drive(value)
+            and not any(character in value for character in "*?[")
             and not any(is_git_administration(part) or is_windows_dot_name(part) for part in path.parts))
 
 def repository_file(root: Path, relative: str) -> Path | None:
@@ -1252,11 +1263,13 @@ def statuses_at(root: Path, commit: str, exp_id: str) -> list[str | None]:
             found.append(status_of(manifest))
     return found
 
-def ancestors_of(root: Path, commit: str) -> set[str]:
-    """Every commit `commit` descends from, itself included, by full name.
-    Raises `HistoryUnreadable` when git cannot list them."""
+def descendants_of(root: Path, commit: str) -> set[str]:
+    """Every commit on HEAD's history that descends from `commit`, by full
+    name, `commit` itself not among them: one listing of git's for the
+    commit, and none for each commit that might descend from it. Raises
+    `HistoryUnreadable` when git cannot list them."""
     try:
-        listing=experiment_records.git(root,"rev-list",commit)
+        listing=experiment_records.git(root,"rev-list","--ancestry-path",f"{commit}..HEAD","--")
     except experiment_records.ProvenanceError as error:
         raise HistoryUnreadable(str(error)) from error
     if listing.returncode!=0:
@@ -1269,7 +1282,7 @@ def status_regressions(root: Path, exp_id: str, listing: list[tuple[str, tuple[s
     history (`may_follow`), one error for each. A freeze holds a status that
     was frozen there, and a commit that holds `superseded` with a freeze
     behind it holds it for good; whichever commit descends from one
-    (`ancestors_of`), on any side of any merge, may not go back, whether the
+    (`descendants_of`), on any side of any merge, may not go back, whether the
     status it goes back to was frozen or not, and whether a later commit puts
     the status back or not: a manifest that once was prepared and ran, and is
     prepared again at a commit between two freezes, is one whose runs could
@@ -1277,10 +1290,15 @@ def status_regressions(root: Path, exp_id: str, listing: list[tuple[str, tuple[s
     side branch that never saw it, is not one that went back."""
     held={commit:statuses_at(root,commit,exp_id) for commit,_ in listing}
     anchors=[(commit,frozen[0]) for commit,frozen in listing if frozen is not None]
+    below={}
+    def after(anchor: str, commit: str) -> bool:
+        if anchor not in below:
+            below[anchor]=descendants_of(root,anchor)
+        return commit in below[anchor]
     # A superseded status is final only where the experiment had been frozen.
-    frozen_names={commit for commit,_ in anchors}
+    frozen_names=tuple(commit for commit,_ in anchors)
     for commit,frozen in listing:
-        if frozen_names and frozen is None and "superseded" in held[commit] and frozen_names&ancestors_of(root,commit):
+        if frozen is None and "superseded" in held[commit] and any(after(name,commit) for name in frozen_names):
             anchors.append((commit,"superseded"))
     errors=[]
     for commit,_ in listing:
@@ -1288,11 +1306,8 @@ def status_regressions(root: Path, exp_id: str, listing: list[tuple[str, tuple[s
             (anchor,then,now) for anchor,then in anchors if anchor!=commit
             for now in dict.fromkeys(held[commit]) if not may_follow(then,now)
         ]
-        if not broken:
-            continue
-        behind=ancestors_of(root,commit)
         for anchor,then,now in broken:
-            if anchor in behind:
+            if after(anchor,commit):
                 errors.append(f"{exp_id} was {then!r} at {anchor[:12]} and is {now!r} at {commit[:12]}, a commit "
                               "after it; a status moves only from prepared to running to completed or failed, or to "
                               "superseded, and never back, whether or not a later commit puts it there again")
