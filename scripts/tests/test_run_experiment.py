@@ -160,8 +160,12 @@ class ExperimentRunnerTests(unittest.TestCase):
         # A __pycache__ entry, which git ignores and HEAD does not hold, could
         # run in place of a tracked source: the command's Python keeps its
         # cache in a fresh directory, removed once the command has run.
-        result = mod.execute_command([sys.executable, "-c", "import sys; print(sys.pycache_prefix)"])
-        prefix = result["stdout"].strip()
+        script = "import os, sys; print(sys.pycache_prefix); print(os.environ.get('CARGO_TARGET_DIR'))"
+        result = mod.execute_command([sys.executable, "-c", script])
+        prefix, target = result["stdout"].splitlines()
+        # Without an environment of its own (an unlisted experiment's), Cargo
+        # builds where it would.
+        self.assertEqual(target, str(os.environ.get("CARGO_TARGET_DIR")))
         self.assertEqual(result["exit_code"], 0)
         self.assertNotIn(prefix, ("", "None"))
         self.assertFalse(Path(prefix).exists())
@@ -204,6 +208,10 @@ class ExperimentRunnerTests(unittest.TestCase):
             self.assertEqual((result["exit_code"], result["stdout"]), (None, ""))
             self.assertTrue(result["launch_error"].startswith("FileExistsError: "), result["launch_error"])
             self.assertTrue((scratch / "left").exists())
+        # Named by the experiment's id as its lock is.
+        self.assertEqual(
+            mod.scratch_directory("team/trial", {"TMPDIR": "/scratch"}), Path("/scratch/ptr-run-team%2Ftrial")
+        )
 
     def test_a_command_that_started_ran_whatever_happens_after(self):
         # A cache the command left that cannot be removed does not make the
@@ -1449,6 +1457,7 @@ class RunWatchTests(unittest.TestCase):
         self.setUp()
         status, record, seen = self.run_bench()
         self.assertEqual((status, seen["PYTHONPATH"], seen["GH_TOKEN"]), (0, "/elsewhere", "credential"))
+        self.assertEqual(seen.get("CARGO_TARGET_DIR"), os.environ.get("CARGO_TARGET_DIR"))
         self.assertNotIn("environment", record)
         self.assertNotIn("executable", record)
 
@@ -1705,7 +1714,8 @@ class RunWatchTests(unittest.TestCase):
         outside = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
         (outside / "impl.sh").write_text('#!/bin/sh\ncase "$0" in *bench) echo "as bench $0";; *) echo "as other $0";; esac\n', encoding="utf-8")
         (outside / "impl.sh").chmod(0o755)
-        (outside / "bench").symlink_to("impl.sh")
+        (outside / "middle").symlink_to("impl.sh")
+        (outside / "bench").symlink_to("middle")
         self.preregister("running")
         with mock.patch.dict(os.environ, {"PATH": os.pathsep.join((str(outside), os.environ["PATH"]))}):
             status, records, stderr = self.run_started()
@@ -1718,15 +1728,16 @@ class RunWatchTests(unittest.TestCase):
                 record.unlink()
 
             def turned_and_back():
-                # The link pointed elsewhere for the run, and back after it.
+                # A link on the way pointed elsewhere for the run, and back
+                # after it.
                 (outside / "turn").symlink_to("other.sh")
-                os.replace(outside / "turn", outside / "bench")
+                os.replace(outside / "turn", outside / "middle")
                 (outside / "turn").symlink_to("impl.sh")
-                os.replace(outside / "turn", outside / "bench")
+                os.replace(outside / "turn", outside / "middle")
 
             status, records, stderr = self.run_started(turned_and_back)
         self.assertEqual((status, [record["status"] for record in records]), (2, ["started"]))
-        self.assertIn(f"{outside / 'bench'} changed since the launch read it", stderr)
+        self.assertIn(f"{outside / 'middle'} changed since the launch read it", stderr)
         # A name with a slash is started as it stands, from the root.
         self.tearDown()
         self.setUp()
