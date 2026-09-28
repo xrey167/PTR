@@ -18,6 +18,10 @@ from pathlib import Path, PurePosixPath
 ROOT = Path(__file__).resolve().parents[1]
 REGISTRY = ROOT / "experiments/registry.toml"
 
+# The runner writes no bytecode cache of the modules it imports into the
+# tree: a `__pycache__` directory is one git ignores, and a listed experiment
+# runs only from a checkout that holds none (`ignored_files`).
+sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import check_research_gates  # noqa: E402
 import experiment_records  # noqa: E402
@@ -335,6 +339,18 @@ def results_directory(root: Path, data: dict) -> Path | None:
     return root / relative
 
 
+def ignored_files() -> list[str]:
+    """What git ignores in the repository, by any rule (a build's output
+    under `target/`, a virtual environment, a `__pycache__` directory): a
+    directory all of whose files it ignores is named as the directory. No
+    commit holds such a file and the watch does not see one, and a listed
+    experiment's command could run or read it. Raises
+    `experiment_records.ProvenanceError` when git cannot list them."""
+    return experiment_records.listed_names(
+        ROOT, "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"
+    )
+
+
 def launch_watch(
     exp_id: str,
     root: Path,
@@ -357,7 +373,12 @@ def launch_watch(
     of the commit. A
     listed experiment also needs HEAD to hold it frozen as the tree launches
     it (`check_research_gates.launch_commit_errors`), each input a regular
-    file HEAD holds, so the gate can find the freeze from HEAD alone. And
+    file HEAD holds, so the gate can find the freeze from HEAD alone; and
+    HEAD decides whether the run is listed, `listed` having been read from
+    the tree before the watch looked
+    (`check_research_gates.launch_mode_errors`): the list as HEAD holds it
+    names `exp_id` exactly when `listed`, and an unlisted run's experiment
+    is one the list has never named on HEAD's history. And
     `data`, the manifest the command and the record are built from, read
     before the watch looked, must be the one the watched tree holds: a
     manifest changed or committed in between would run what HEAD does not
@@ -403,7 +424,12 @@ def launch_watch(
             file=sys.stderr,
         )
         return None
-    problems = check_research_gates.launch_commit_errors(ROOT, exp_id, watch.head)
+    # Whether the run is listed was read from the tree before the watch
+    # looked: the commit the record would name decides, and an experiment
+    # the list has named runs only as listed.
+    problems = check_research_gates.launch_mode_errors(
+        ROOT, exp_id, watch.head, listed
+    ) or check_research_gates.launch_commit_errors(ROOT, exp_id, watch.head)
     for problem in problems:
         print(f"ERROR: {problem}", file=sys.stderr)
     if problems:
@@ -415,9 +441,7 @@ def launch_watch(
     # (`execute_command`).
     if listed:
         try:
-            ignored = experiment_records.listed_names(
-                ROOT, "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"
-            )
+            ignored = ignored_files()
         except experiment_records.ProvenanceError as error:
             print(f"ERROR: {error}", file=sys.stderr)
             return None
@@ -753,7 +777,9 @@ def run_experiment(
     returning 2, when HEAD moved or a provenance or experiment file was
     written, created or removed while the command ran, even if its content
     was put back, so the record's `git_sha` is the code that ran as far as
-    that watch can see (its `changes` names what it cannot); a listed
+    that watch can see (its `changes` names what it cannot), and for a
+    listed experiment when the repository holds a file git ignores, which
+    the command could have run or read (`ignored_files`); a listed
     experiment's reservation then stays, as the record that its seed ran.
     A command that could not start ran no code, so its record, that it
     failed to launch, is written whatever the watch saw. A listed
@@ -939,9 +965,17 @@ def launch_and_record(
     if launched:
         # The command read the tree while it ran (a `cargo run` entrypoint
         # compiles it first): the record may name HEAD only if the tree
-        # stayed so.
+        # stayed so. A listed experiment's command could also have run or
+        # read a file git ignores, which the watch does not see, put there
+        # after the launch looked for one: the tree still holds none.
         try:
             changes = watch.changes()
+            ignored = ignored_files() if listed else []
+            if ignored:
+                changes.append(
+                    f"the repository holds {experiment_records.listed(ignored)}, which git ignores and the command "
+                    "could have run or read unrecorded"
+                )
         except experiment_records.ProvenanceError as error:
             changes = [str(error)]
         if changes:

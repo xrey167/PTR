@@ -118,6 +118,10 @@ import tomllib
 from pathlib import Path, PurePosixPath
 
 ROOT=Path(__file__).resolve().parents[1]
+# The gate writes no bytecode cache into the tree: a `__pycache__` directory
+# is one git ignores, and a listed experiment runs only from a checkout that
+# holds none.
+sys.dont_write_bytecode=True
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 import experiment_records  # noqa: E402
 
@@ -680,37 +684,38 @@ def history(root: Path, *args: str) -> list[str]:
     names=listing.stdout.decode("utf-8","surrogateescape")
     return [name for name in names.replace("\0","\n").split("\n") if name]
 
-def versions(root: Path, relative: str) -> list[tuple[str, dict]]:
-    """Every commit on HEAD's history that changes the TOML file `relative`,
-    newest first, with the file as that commit holds it; a commit where it
-    is absent or does not parse is left out."""
+def versions(root: Path, relative: str, start: str = "HEAD") -> list[tuple[str, dict]]:
+    """Every commit on the history of `start` (HEAD unless named) that
+    changes the TOML file `relative`, newest first, with the file as that
+    commit holds it; a commit where it is absent or does not parse is left
+    out."""
     found=[]
-    for commit in history(root,"--format=%H","HEAD","--",relative):
+    for commit in history(root,"--format=%H",start,"--",relative):
         held=toml_at(root,commit,relative)
         if isinstance(held,dict):
             found.append((commit,held))
     return found
 
-def ever_registered(root: Path) -> set[str]:
-    """Every experiment the registry has held at a commit on HEAD's
-    history."""
+def ever_registered(root: Path, start: str = "HEAD") -> set[str]:
+    """Every experiment the registry has held at a commit on the history of
+    `start` (HEAD unless named)."""
     found=set()
-    for _,registry in versions(root,REGISTRY):
+    for _,registry in versions(root,REGISTRY,start):
         items=registry.get("experiment")
         for item in items if isinstance(items,list) else ():
             if isinstance(item,dict) and isinstance(item.get("id"),str):
                 found.add(item["id"])
     return found
 
-def enrolled(root: Path, registered: set[str]) -> dict[str, str]:
-    """Every experiment the list has named at a commit on HEAD's history,
-    with the newest such commit, of those the registry holds now
-    (`registered`) or has held at any commit on HEAD's history, whether
-    before, with or after the list named it. A name the registry has never
-    held, such as a mistyped one, enrolled nothing."""
-    known=registered|ever_registered(root)
+def enrolled(root: Path, registered: set[str], start: str = "HEAD") -> dict[str, str]:
+    """Every experiment the list has named at a commit on the history of
+    `start` (HEAD unless named), with the newest such commit, of those the
+    registry holds now (`registered`) or has held at any commit on that
+    history, whether before, with or after the list named it. A name the
+    registry has never held, such as a mistyped one, enrolled nothing."""
+    known=registered|ever_registered(root,start)
     named={}
-    for commit,listed in versions(root,PREREGISTRATION):
+    for commit,listed in versions(root,PREREGISTRATION,start):
         entries=listed.get("experiment")
         for exp_id in entries if isinstance(entries,dict) else ():
             if exp_id in known:
@@ -1119,13 +1124,16 @@ def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path,
     pass `record_errors` in every version committed. No two run records are
     of one seed, bar those whose command failed to launch: a seed run again
     after its outcome was seen could keep whichever run came out best. And
-    they all name one program and one Rust toolchain (`executable`,
-    `toolchain`), which lie outside the commit: one replaced between seeds
-    would leave records naming one commit for different code. And the
+    they all name one program, one Rust toolchain and one environment
+    (`executable`, `toolchain`, `environment`), which lie outside the
+    commit: one replaced between seeds would leave records naming one
+    commit for different code, and a program the command starts by name is
+    found through the environment's PATH. And the
     seeds ran one tree: the repository at each run's commit is the first
-    run's, but for the records and outputs of the results directory
+    run's, but for the seed records of the results directory
     (`experiment_records.listed_record_paths`), since the command may run
-    or read any file of it."""
+    or read any file of it, an aggregate or mutation evidence committed
+    there included."""
     relative=experiment.relative_to(root).as_posix()
     current=(manifest,config)
 
@@ -1177,10 +1185,11 @@ def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path,
             # launch saw no outcome.
             if not aggregate and isinstance(record,dict) and "seed" in record and record.get("status")!="failed-to-launch":
                 runs.setdefault(json.dumps(record["seed"],sort_keys=True),[]).append(name)
-                # The program and the toolchain lie outside the commit: the
-                # seeds of one experiment ran one of each.
-                programs.setdefault(
-                    json.dumps([record.get("executable"),record.get("toolchain")],sort_keys=True),[]).append(name)
+                # The program, the toolchain and the environment lie outside
+                # the commit: the seeds of one experiment ran one of each.
+                programs.setdefault(json.dumps(
+                    [record.get("executable"),record.get("toolchain"),record.get("environment")],sort_keys=True),[]
+                ).append(name)
                 trees.append((str(record.get("started_at","")),name,record.get("git_sha")))
         if aggregate:
             # Written again, an aggregate keeps every version it was
@@ -1217,13 +1226,14 @@ def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path,
             errors.append(f"{exp_id}: seed {seed} ran more than once ({', '.join(names)}); a listed experiment runs each "
                           "seed once, so no run of it is chosen by its outcome")
     if len(programs)>1:
-        errors.append(f"{exp_id}: its runs name {len(programs)} programs or toolchains ("
+        errors.append(f"{exp_id}: its runs name {len(programs)} programs, toolchains or environments ("
                       + "; ".join(", ".join(names) for _,names in sorted(programs.items()))
-                      + "); a program or toolchain replaced between seeds lies outside the commit every record names")
+                      + "); a program, toolchain or environment changed between seeds lies outside the commit every "
+                      "record names")
     # The seeds ran one tree: the command may run or read any file of the
     # repository, and each run's commit is the tree it launched from, so
-    # between the first run's commit and each other's only the records and
-    # outputs of the results directory may differ.
+    # between the first run's commit and each other's only the seed records
+    # of the results directory may differ.
     if trees and is_repository_path(results_dir):
         paths=experiment_records.listed_record_paths(f"{relative}/{results_dir}")
         _,first,base=min(trees)
@@ -1238,7 +1248,7 @@ def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path,
             if changed:
                 errors.append(f"{exp_id}: {name} ran at {commit[:12]}, whose repository differs from {base[:12]}'s, "
                               f"where {first} ran, in {experiment_records.listed(changed)}; the seeds of a listed "
-                              "experiment run one tree, only their records and outputs committed between them")
+                              "experiment run one tree, only their seed records committed between them")
     # A commit that holds the experiment past planned froze it, whether or
     # not a record of a run there was kept: the runner could launch it, and
     # a record can be discarded before it is committed.
@@ -1497,6 +1507,41 @@ def launch_commit_errors(root: Path, exp_id: str, commit: str) -> list[str]:
         "every file that decides its launch must be a regular file that commit holds, not a file git ignores or "
         "keeps in its own directory, nor a symlink"
     ]
+
+def launch_mode_errors(root: Path, exp_id: str, commit: str, listed: bool) -> list[str]:
+    """Why a run of `exp_id` launched as a listed experiment's run (`listed`)
+    or as an unlisted one's may not name `commit`, the commit the tree was
+    found to hold (`experiment_records.ProvenanceWatch`); empty when it may.
+    `scripts/run_experiment.py` reads whether the list names `exp_id` from
+    the tree before that look, so a commit made in between could have named
+    or dropped it; and an unlisted run holds no lock, reserves no seed and
+    takes no frozen value, so its outcome could be seen and its record
+    discarded. So the list as `commit` holds it names `exp_id` exactly when
+    the run is listed, and an unlisted run's experiment is one the list has
+    named at no commit on `commit`'s history (`enrolled`). Read from
+    `commit`, no write to the tree after that look changes the answer. A
+    list the commit does not hold readable, or a history git cannot read,
+    refuses the launch."""
+    try:
+        held=toml_at(root,commit,PREREGISTRATION)
+        entries=held.get("experiment",{}) if isinstance(held,dict) else None
+        if not isinstance(entries,dict):
+            return [f"{PREREGISTRATION} cannot be read as {commit[:12]} holds it, so whether {exp_id} preregisters is unknown"]
+        if (exp_id in entries)!=listed:
+            return [f"{PREREGISTRATION} changed while the launch of {exp_id} was checked: {commit[:12]}, the commit its "
+                    f"run would name, {'does not name' if listed else 'names'} it; rerun from a tree that holds HEAD"]
+        if listed:
+            return []
+        registry=toml_at(root,commit,REGISTRY)
+        items=registry.get("experiment") if isinstance(registry,dict) else None
+        registered={
+            item["id"] for item in (items if isinstance(items,list) else ())
+            if isinstance(item,dict) and isinstance(item.get("id"),str)
+        }
+        named=enrolled(root,registered,commit).get(exp_id)
+    except HistoryUnreadable as error:
+        return [error.named(root)]
+    return [] if named is None else [delisted_error(exp_id,named)]
 
 def launch_inputs(root: Path, exp_id: str) -> list[str]:
     """The files besides the experiment's own that decide whether `exp_id`

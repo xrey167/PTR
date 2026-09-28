@@ -125,18 +125,21 @@ class AgreementTests(unittest.TestCase):
                     ["b.json ran under an experiment.toml that differs from the current one"],
                 )
 
-    def test_records_that_ran_another_program_or_toolchain_disagree(self):
-        # A listed run's record names the program it started and the Rust
-        # toolchain, which lie outside the commit: the seeds of one result
-        # ran one of each.
+    def test_records_that_ran_another_program_toolchain_or_environment_disagree(self):
+        # A listed run's record names the program it started, the Rust
+        # toolchain and the environment, which lie outside the commit: the
+        # seeds of one result ran one of each, and a program the command
+        # starts by name is found through the environment's PATH.
         program = {"path": "/usr/bin/bench", "sha256": "a" * 64}
         toolchain = {"rustc": {"path": "/toolchains/pinned/bin/rustc", "sha256": "b" * 64}}
-        ran = {"executable": program, "toolchain": toolchain}
+        environment = {"PATH": "/a:/usr/bin", "PYTHONNOUSERSITE": "1"}
+        ran = {"executable": program, "toolchain": toolchain, "environment": environment}
         records = {"a.json": {**record("a" * 40), **ran}, "b.json": {**record("b" * 40, seed=2), **ran}}
         self.assertEqual(mod.agreement_errors("L900", MANIFEST, records), [])
         for key, label, changed in (
             ("executable", "program", {**program, "sha256": "c" * 64}),
             ("toolchain", "toolchain", {"rustc": {**toolchain["rustc"], "path": "/toolchains/other/bin/rustc"}}),
+            ("environment", "environment", {**environment, "PATH": "/b:/usr/bin"}),
         ):
             with self.subTest(key=key):
                 other = {**records, "b.json": {**records["b.json"], key: changed}}
@@ -316,15 +319,11 @@ class RevisionTests(unittest.TestCase):
     def test_a_listed_experiments_records_ran_one_repository(self):
         # A listed experiment's command may run any file of the repository,
         # a script outside the provenance files say: its seeds ran one tree
-        # only if their commits differ in nothing but the results' records.
+        # only if their commits differ in nothing but the results' seed
+        # records: an aggregate or mutation evidence committed between two
+        # seeds is an input the later one could read.
         paths = mod.listed_record_paths("experiments/L900-x/results")
-        self.assertEqual(paths, (
-            ".",
-            ":(exclude,glob)experiments/L900-x/results/run-*.json",
-            ":(exclude,glob)experiments/L900-x/results/run.json",
-            ":(exclude,glob)experiments/L900-x/results/metrics.json",
-            ":(exclude,glob)experiments/L900-x/results/mutations.json",
-        ))
+        self.assertEqual(paths, (".", ":(exclude,glob)experiments/L900-x/results/run-*.json"))
         recorded = commit(self.root, {"experiments/L900-x/results/run-0.json": "{}\n"}, "record")
         records = self.records(self.first, recorded)
         # The archive the fixture made between them commits a file that is no

@@ -1516,53 +1516,76 @@ class PreregistrationGateTests(unittest.TestCase):
         self.assertEqual(gate(root),(0,[]))
         self.assertIsNotNone(mod.launchable_at(root,repair,"X900","experiments/semdb/X900-fixture"))
 
-    def test_a_listed_experiments_runs_name_one_program_and_toolchain(self):
-        # The program a run starts and the Rust toolchain lie outside the
-        # commit its record names: one replaced between seeds would leave
-        # records naming one commit for different code.
+    def test_a_listed_experiments_runs_name_one_program_toolchain_and_environment(self):
+        # The program a run starts, the Rust toolchain and the environment lie
+        # outside the commit its record names: one changed between seeds
+        # would leave records naming one commit for different code, and a
+        # program the command starts by name is found through its PATH.
         root=self.tree(status="running")
         commit=commit_all(root)
         results="experiments/semdb/X900-fixture/results"
         program={"path":"/usr/bin/bench","sha256":"a"*64}
         toolchain={"rustc":{"path":"/toolchains/pinned/bin/rustc","sha256":"b"*64},"cargo":{"path":None,"sha256":None}}
+        environment={"PATH":"/a:/usr/bin","PYTHONNOUSERSITE":"1"}
+        ran={"executable":program,"toolchain":toolchain,"environment":environment}
         names=[f"{results}/run-2026010{day}T000000.000000Z-seed-{seed}.json" for day,seed in ((1,17),(2,29))]
         for name,seed in zip(names,(17,29)):
-            write(root,name,json.dumps({**self.record(root,commit,seed=seed,status="completed"),
-                                        "executable":program,"toolchain":toolchain}))
+            write(root,name,json.dumps({**self.record(root,commit,seed=seed,status="completed"),**ran}))
         # A command that failed to launch ran no program.
         write(root,f"{results}/run-20260103T000000.000000Z-seed-31.json",json.dumps(
             {**self.record(root,commit,seed=31,status="failed-to-launch"),"executable":{"path":None,"sha256":None}}))
         self.assertEqual(gate(root),(0,[]))
         shown=[name.removeprefix("experiments/semdb/X900-fixture/") for name in names]
-        for changed in ({"executable":{**program,"sha256":"c"*64}},{"toolchain":{**toolchain,"cargo":program}}):
+        for changed in ({"executable":{**program,"sha256":"c"*64}},{"toolchain":{**toolchain,"cargo":program}},
+                        {"environment":{**environment,"PATH":"/b:/usr/bin"}}):
             with self.subTest(changed=sorted(changed)):
-                write(root,names[1],json.dumps({**self.record(root,commit,seed=29,status="completed"),
-                                                "executable":program,"toolchain":toolchain,**changed}))
+                write(root,names[1],json.dumps({**self.record(root,commit,seed=29,status="completed"),**ran,**changed}))
                 errors=gate(root)[1]
                 self.assertEqual(len(errors),1,errors)
-                self.assertTrue(errors[0].startswith("X900: its runs name 2 programs or toolchains ("),errors[0])
+                self.assertTrue(
+                    errors[0].startswith("X900: its runs name 2 programs, toolchains or environments ("),errors[0])
                 self.assertIn(shown[0],errors[0])
                 self.assertIn(shown[1],errors[0])
                 self.assertTrue(errors[0].endswith(
-                    "); a program or toolchain replaced between seeds lies outside the commit every record names"),errors[0])
+                    "); a program, toolchain or environment changed between seeds lies outside the commit every record "
+                    "names"),errors[0])
                 self.assertEqual(mod.launch_errors(root,"X900"),errors)
 
     def test_a_listed_experiments_seeds_ran_one_tree(self):
         # The command may run or read any file of the repository: its seeds
-        # ran one tree only if their commits differ in nothing but the
-        # records and outputs of the results directory.
+        # ran one tree only if their commits differ in nothing but the seed
+        # records of the results directory.
         root=self.tree(status="running")
         first=commit_all(root)
         results="experiments/semdb/X900-fixture/results"
         seventeen=f"{results}/run-20260101T000000.000000Z-seed-17.json"
         twenty_nine=f"{results}/run-20260102T000000.000000Z-seed-29.json"
         write(root,seventeen,json.dumps({**self.record(root,first,seed=17,status="completed"),"started_at":"20260101"}))
-        write(root,f"{results}/metrics.json","{}\n")
         recorded=commit_all(root,"seed 17 recorded")
         write(root,twenty_nine,json.dumps({**self.record(root,recorded,seed=29,status="completed"),"started_at":"20260102"}))
         self.assertEqual(gate(root),(0,[]))
         commit_all(root,"seed 29 recorded")
         self.assertEqual(gate(root),(0,[]))
+        # The tools' other outputs are written once the seeds have run.
+        for output in ("metrics.json","mutations.json","run.json"):
+            write(root,f"{results}/{output}","{}\n" if output!="run.json" else json.dumps(self.aggregate(root,first)))
+        commit_all(root,"aggregated")
+        self.assertEqual(gate(root),(0,[]))
+        # One committed between two seeds is an input the later seed could
+        # read, chosen once the earlier one's outcome was seen.
+        for output in ("metrics.json","mutations.json"):
+            with self.subTest(output=output):
+                root=self.tree(status="running")
+                first=commit_all(root)
+                write(root,seventeen,json.dumps({**self.record(root,first,seed=17,status="completed"),"started_at":"20260101"}))
+                write(root,f"{results}/{output}","{}\n")
+                recorded=commit_all(root,"seed 17 recorded")
+                write(root,twenty_nine,json.dumps({**self.record(root,recorded,seed=29,status="completed"),"started_at":"20260102"}))
+                self.assert_blocked(root,(
+                    f"X900: results/run-20260102T000000.000000Z-seed-29.json ran at {recorded[:12]}, whose repository "
+                    f"differs from {first[:12]}'s, where results/run-20260101T000000.000000Z-seed-17.json ran, in "
+                    f"{results}/{output}; the seeds of a listed experiment run one tree, only their seed records "
+                    "committed between them"))
         # A script outside the provenance files, changed between the seeds.
         root=self.tree(status="running")
         first=commit_all(root)
@@ -1573,7 +1596,7 @@ class PreregistrationGateTests(unittest.TestCase):
         write(root,twenty_nine,json.dumps({**self.record(root,changed,seed=29,status="completed"),"started_at":"20260102"}))
         refusal=(f"X900: results/run-20260102T000000.000000Z-seed-29.json ran at {changed[:12]}, whose repository differs "
                  f"from {first[:12]}'s, where results/run-20260101T000000.000000Z-seed-17.json ran, in scripts/harness.py; "
-                 "the seeds of a listed experiment run one tree, only their records and outputs committed between them")
+                 "the seeds of a listed experiment run one tree, only their seed records committed between them")
         self.assert_blocked(root,refusal)
         self.assertEqual(mod.launch_errors(root,"X900"),[refusal])
         # A command that failed to launch ran no tree.
@@ -1595,6 +1618,38 @@ class PreregistrationGateTests(unittest.TestCase):
         self.assertIsNone(mod.launchable_at(root,commit,"X900","experiments/semdb/X900-fixture"))
         write(root,"experiments/registry.toml",registry)
         self.assertEqual(gate(root),(0,[]))
+
+    def test_the_commit_a_run_names_decides_whether_it_is_listed(self):
+        # The runner reads whether the list names an experiment from the tree
+        # before it knows the commit its run would name: that commit decides,
+        # and an experiment the list has named on its history runs only as
+        # listed, since an unlisted run's outcome could be seen and its record
+        # discarded.
+        def refusal(commit,held):
+            return (f"experiments/preregistration.toml changed while the launch of X900 was checked: {commit[:12]}, the "
+                    f"commit its run would name, {held} it; rerun from a tree that holds HEAD")
+        root=self.tree(status="running")
+        listing=(root/"experiments/preregistration.toml").read_text(encoding="utf-8")
+        write(root,"experiments/preregistration.toml","version = 1\n")
+        before=commit_all(root,"not yet listed")
+        write(root,"experiments/preregistration.toml",listing)
+        listed_at=commit_all(root,"listed")
+        self.assertEqual(mod.launch_mode_errors(root,"X900",listed_at,True),[])
+        self.assertEqual(mod.launch_mode_errors(root,"X900",listed_at,False),[refusal(listed_at,"names")])
+        # The history is the commit's: the list named X900 only after it.
+        self.assertEqual(mod.launch_mode_errors(root,"X900",before,False),[])
+        self.assertEqual(mod.launch_mode_errors(root,"X900",before,True),[refusal(before,"does not name")])
+        write(root,"experiments/preregistration.toml","version = 1\n")
+        delisted=commit_all(root,"delisted")
+        self.assertEqual(mod.launch_mode_errors(root,"X900",delisted,True),[refusal(delisted,"does not name")])
+        self.assertEqual(mod.launch_mode_errors(root,"X900",delisted,False),[mod.delisted_error("X900",listed_at)])
+        # A list the commit does not hold readable decides nothing.
+        write(root,"experiments/preregistration.toml","version = [\n")
+        unreadable=commit_all(root,"unreadable")
+        for listed in (True,False):
+            self.assertEqual(mod.launch_mode_errors(root,"X900",unreadable,listed),[
+                f"experiments/preregistration.toml cannot be read as {unreadable[:12]} holds it, so whether X900 "
+                "preregisters is unknown"])
 
     def test_settings_are_compared_by_type_sign_and_offset_and_nan_is_itself(self):
         name=self.RECORD.removeprefix("experiments/semdb/X900-fixture/")

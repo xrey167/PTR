@@ -123,6 +123,28 @@ class ExperimentRunnerTests(unittest.TestCase):
         mod.write_json_replacing(directory / "run.json", {"created": datetime.time(7, 32)})
         self.assertEqual(json.loads((directory / "run.json").read_text(encoding="utf-8")), {"created": "07:32:00"})
 
+    def test_the_runner_and_the_gate_write_no_bytecode_cache_into_the_tree(self):
+        # A `__pycache__` directory is one git ignores, and a listed
+        # experiment runs only from a checkout that holds none: run as the
+        # README shows, without -B, neither the runner nor the gate writes
+        # one for the modules it imports.
+        environment = {
+            key: value for key, value in os.environ.items() if key not in ("PYTHONDONTWRITEBYTECODE", "PYTHONPYCACHEPREFIX")
+        }
+        for script, arguments in (("run_experiment.py", ["--help"]), ("check_research_gates.py", [])):
+            with self.subTest(script=script), tempfile.TemporaryDirectory() as directory:
+                copy = Path(directory) / "scripts"
+                copy.mkdir()
+                for name in ("run_experiment.py", "check_research_gates.py", "experiment_records.py"):
+                    shutil.copy(ROOT / "scripts" / name, copy / name)
+                subprocess.run(
+                    [sys.executable, str(copy / script), *arguments], cwd=directory, env=environment, capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(sorted(path.name for path in copy.iterdir()), sorted(
+                    ("run_experiment.py", "check_research_gates.py", "experiment_records.py")
+                ))
+
     def test_execute_command_captures_process_evidence(self):
         result = mod.execute_command(
             [sys.executable, "-c", "print('runner-ok')"]
@@ -1516,11 +1538,23 @@ class RunWatchTests(unittest.TestCase):
                 shutil.rmtree(self.root / shown)
                 status, records, stderr = self.run_seed()
                 self.assertEqual((status, stderr, [record["status"] for record in records]), (0, "", ["completed"]))
+        # One put there after the launch looked, and still there when the
+        # command has ended, is one it could have run or read: the run is
+        # not recorded, and its reservation stays.
+        self.tearDown()
+        self.setUp()
+        self.write(".gitignore", "__pycache__/\ntarget/\n")
+        self.preregister("running")
+        status, records, stderr = self.run_seed(lambda: self.write("target/release/helper", ""))
+        self.assertEqual((status, [record["status"] for record in records]), (2, ["started"]))
+        self.assertIn(
+            "the repository holds target/, which git ignores and the command could have run or read unrecorded", stderr
+        )
         # An unlisted experiment runs beside what git ignores, as it did.
         self.tearDown()
         self.setUp()
         self.write("scripts/__pycache__/harness.cpython-311.pyc", "")
-        status, records, stderr = self.run_seed()
+        status, records, stderr = self.run_seed(lambda: self.write("target/release/helper", ""))
         self.assertEqual((status, stderr, [record["status"] for record in records]), (0, "", ["completed"]))
         # An unlisted experiment's watch is on its provenance files, as it was.
         self.tearDown()
@@ -1797,6 +1831,52 @@ class RunWatchTests(unittest.TestCase):
             status, records, stderr = self.run_seed(lambda: ran.append(True))
         self.assertEqual((status, records, ran), (2, [], []))
         self.assertIn("experiment.toml changed while the launch was checked", stderr)
+
+    def test_the_commit_a_run_names_decides_whether_it_is_listed(self):
+        # The runner reads whether the list names the experiment from the
+        # tree before the watch looks, and an unlisted run holds no lock,
+        # reserves no seed and takes no frozen value: a commit dropping the
+        # experiment from the list in between would let it run so, its
+        # outcome be seen and its record discarded. The commit the record
+        # would name decides.
+        self.preregister("running")
+        enrolled_at = self.head
+        self.write("experiments/preregistration.toml", "version = 1\n")
+        git(self.root, "commit", "-q", "--no-verify", "-am", "delisted")
+        ran = []
+        # As when the launch was checked before the commit dropped it.
+        with mock.patch.object(mod, "launch_refused", return_value=False):
+            status, records, stderr = self.run_seed(lambda: ran.append(True))
+        self.assertEqual((status, records, ran), (2, [], []))
+        self.assertIn(
+            f"experiments/preregistration.toml: L900 was listed at {enrolled_at[:12]} and no longer is", stderr
+        )
+        # And a list read one way from the tree and held the other by HEAD.
+        for listed, held in ((False, "names"), (True, "does not name")):
+            with self.subTest(listed=listed):
+                self.tearDown()
+                self.setUp()
+                if not listed:
+                    self.preregister("running")
+                refusal = (
+                    f"experiments/preregistration.toml changed while the launch of L900 was checked: {self.head[:12]}, "
+                    f"the commit its run would name, {held} it; rerun from a tree that holds HEAD"
+                )
+                ran = []
+                with mock.patch.object(mod, "is_listed", return_value=listed):
+                    status, records, stderr = self.run_seed(lambda: ran.append(True))
+                    self.assertEqual((status, records, ran), (2, [], []))
+                    self.assertIn(refusal, stderr)
+                    prepared = io.StringIO()
+                    with (
+                        mock.patch.object(mod, "ROOT", self.root),
+                        mock.patch.object(mod, "REGISTRY", self.root / "experiments/registry.toml"),
+                        contextlib.redirect_stdout(io.StringIO()),
+                        contextlib.redirect_stderr(prepared),
+                    ):
+                        self.assertEqual(mod.prepare("L900"), 2)
+                    self.assertIn(refusal, prepared.getvalue())
+                self.assertEqual(sorted(path.name for path in self.results.iterdir()), [".gitkeep"])
 
     def test_a_record_the_results_hold_is_no_change_of_the_sources(self):
         # Records accumulate in results/, uncommitted while runs go on: what

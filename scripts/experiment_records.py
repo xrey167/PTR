@@ -136,10 +136,13 @@ AGREED = (
     ("cargo_lock_sha256", "Cargo.lock"),
     ("parameters", "parameters"),
     ("entrypoint", "entrypoint"),
-    # A listed experiment's run names the program it started and the Rust
-    # toolchain, which lie outside the commit: its seeds ran one of each.
+    # A listed experiment's run names the program it started, the Rust
+    # toolchain and the environment it ran in, which lie outside the
+    # commit: its seeds ran one of each, and a program the command starts
+    # by name is found through that environment's PATH.
     ("executable", "program"),
     ("toolchain", "toolchain"),
+    ("environment", "environment"),
 )
 
 
@@ -174,21 +177,26 @@ def mutation_record_paths(experiment_dir: Path, root: Path) -> tuple[str, ...]:
     )
 
 
+# The seed records the runner writes into a results directory, as a glob
+# pattern within it.
+SEED_RECORDS = "run-*.json"
 # The files the runner, the aggregators and the mutation checker write into
 # a results directory, as glob patterns within it: records accumulate there
 # uncommitted while runs go on.
-RESULT_OUTPUTS = ("run-*.json", "run.json", "metrics.json", "mutations.json")
+RESULT_OUTPUTS = (SEED_RECORDS, "run.json", "metrics.json", "mutations.json")
 
 
 def listed_record_paths(results: str) -> tuple[str, ...]:
     """The provenance of a listed experiment's seed records, as pathspecs:
-    the whole repository but the outputs the tools write into its results
-    directory `results` (a repository path, `RESULT_OUTPUTS`). A listed
-    experiment's command may run or read any file of the repository (a
-    script under `scripts/`, say), so its seeds ran one tree only if their
-    commits differ in nothing else: between them, only their records and
-    outputs are committed."""
-    return (".", *(f":(exclude,glob){results}/{pattern}" for pattern in RESULT_OUTPUTS))
+    the whole repository but the seed records in its results directory
+    `results` (a repository path, `SEED_RECORDS`). A listed experiment's
+    command may run or read any file of the repository (a script under
+    `scripts/`, say, or an aggregate or mutation evidence committed in its
+    results), so its seeds ran one tree only if their commits differ in
+    nothing else: between them, only their seed records are committed, and
+    the other outputs of the tools, which a later seed could read, once the
+    seeds have run."""
+    return (".", f":(exclude,glob){results}/{SEED_RECORDS}")
 
 
 def tree_pathspecs(
