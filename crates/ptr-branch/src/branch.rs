@@ -132,6 +132,10 @@ impl SealedBranch {
     ///   ([`BranchError::UnreadTarget`]): merging an overwrite of an unread
     ///   key would erase a concurrent change unseen;
     /// - no set operation has an empty member ([`BranchError::InvalidMember`]);
+    /// - every `Put` value is one the journal can encode
+    ///   ([`ptr_semdb::canonical_input_bytes`] accepts it;
+    ///   [`BranchError::InvalidValue`]): a value it refuses could never be
+    ///   merged, and the branch would have no [`seal_digest`](Self::seal_digest);
     /// - every key an operation touches has a base value in `touched_base`
     ///   and an input set in `touched_inputs` ([`BranchError::MalformedSeal`]);
     /// - every set operation on a member records the same `in_base` as the
@@ -258,7 +262,8 @@ impl SealedBranch {
     ///
     /// # Errors
     /// `BranchError::InvalidValue` for a `Put` whose value the journal cannot
-    /// encode, which sealing already refuses.
+    /// encode, which no `SealedBranch` holds: [`SealedBranch::from_parts`]
+    /// and sealing refuse it.
     pub fn seal_digest(&self) -> Result<[u8; 32], BranchError> {
         fn text(hasher: &mut Sha256, value: &str) {
             hasher.update((value.len() as u64).to_le_bytes());
@@ -393,6 +398,13 @@ pub(crate) fn check_sealed(parts: &SealedBranchParts) -> Result<(), BranchError>
         if let BranchOp::SetInsert { member, .. } | BranchOp::SetRemove { member, .. } = op {
             if member.is_empty() {
                 return Err(BranchError::InvalidMember {
+                    key: key.to_owned(),
+                });
+            }
+        }
+        if let BranchOp::Put { value, .. } = op {
+            if canonical_input_bytes(key, value).is_err() {
+                return Err(BranchError::InvalidValue {
                     key: key.to_owned(),
                 });
             }
@@ -597,14 +609,21 @@ impl Branch {
     /// # Errors
     /// Returns `BranchError::ReservedNamespace` for a key reserved to
     /// ingress, `BranchError::UnreadTarget` for a key the branch has not
-    /// read, and `BranchError::EvictedOperand` when the new value would
-    /// change an input, direct or transitive, of a key the branch has
-    /// changed only commutatively: those operations would then build on a
-    /// value the merge evicts. Putting that key's recomputed value first
-    /// lifts the refusal.
+    /// read, `BranchError::InvalidValue` for a value the journal cannot
+    /// encode ([`ptr_semdb::canonical_input_bytes`] refuses it), which no
+    /// sealed branch holds, and `BranchError::EvictedOperand` when the new
+    /// value would change an input, direct or transitive, of a key the
+    /// branch has changed only commutatively: those operations would then
+    /// build on a value the merge evicts. Putting that key's recomputed value
+    /// first lifts the refusal.
     pub fn put(&mut self, key: &str, value: SemanticValue) -> Result<(), BranchError> {
         self.check_writable(key)?;
         self.require_read(key)?;
+        if canonical_input_bytes(key, &value).is_err() {
+            return Err(BranchError::InvalidValue {
+                key: key.to_owned(),
+            });
+        }
         let inputs = self.unread_inputs_of(key)?;
         self.record_op(BranchOp::Put {
             key: key.to_owned(),

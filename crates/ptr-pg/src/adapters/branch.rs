@@ -9,9 +9,10 @@ use ptr_branch::{
 };
 use ptr_semdb::{SemanticPayload, SemanticValue};
 use ptr_types::{CommitIndex, Generation, PrincipalId, Revision, TypeId};
-use tokio_postgres::IsolationLevel;
+use tokio_postgres::{IsolationLevel, Transaction};
 
 use super::{check_text, database, digest_from, to_i64, to_u64, PgSubstrate};
+use crate::config::Identifier;
 use crate::error::PgError;
 
 /// What later happened to a triaged branch.
@@ -21,7 +22,9 @@ pub enum BranchOutcome {
     /// projection holds the branch's merge key
     /// (`ptr_state::merged_branch_key`) at exactly this index
     /// ([`PgSubstrate::record_outcome`] refuses any other), so a merged
-    /// outcome names a merge the ledger holds.
+    /// outcome `record_outcome` writes names a merge the ledger holds. Rows
+    /// it wrote before it checked this, and rows a raw SQL writer inserts,
+    /// are neither checked nor told apart.
     Merged(CommitIndex),
     /// A later commit at this index reverted it. It is recorded only after
     /// the branch's merge and only at a greater index
@@ -64,8 +67,9 @@ impl PgSubstrate {
     /// Only a `SealedBranch` can be stored, and one exists only once
     /// `SealedBranch::from_parts` (or sealing, which goes through it) has
     /// checked every sealing invariant: no operation on a key reserved to
-    /// ingress, no `Put` or `Remove` of an unread key, a base value and an
-    /// input set for exactly the keys operations touch. They are rechecked
+    /// ingress, no `Put` or `Remove` of an unread key, no `Put` of a value
+    /// the journal cannot encode, a base value and an input set for exactly
+    /// the keys operations touch. They are rechecked
     /// here before any row is written, and a branch that breaks one is
     /// refused as [`PgError::InvalidBranch`], as is a string PostgreSQL
     /// `text` cannot hold ([`PgError::InvalidText`]).
@@ -78,11 +82,12 @@ impl PgSubstrate {
     /// sealed them: a writer with the work schema's privileges can delete a
     /// whole branch and write other rows under its id in one transaction,
     /// exactly as this method does. On a substrate holding a branch seal key
-    /// ([`with_branch_seal_key`](Self::with_branch_seal_key)) the header
-    /// carries the key's tag of the sealed branch, and
-    /// [`load_branch`](Self::load_branch) under the key refuses rows that do
-    /// not carry the tag of what they rebuild into; without a key nothing
-    /// stored tells those rows from sealed ones.
+    /// ([`with_branch_seal_key`](Self::with_branch_seal_key)) the same
+    /// transaction writes the key's tag of the sealed branch (a row of
+    /// `branch_seal`, work migration 16), and
+    /// [`load_branch`](Self::load_branch) under the key refuses rows none of
+    /// whose tags is the key's tag of what they rebuild into; without a key
+    /// nothing stored tells those rows from sealed ones.
     pub async fn store_branch(&mut self, branch: &SealedBranch) -> Result<(), PgError> {
         let work = self.schemas.work.clone();
         branch.recheck().map_err(|error| PgError::InvalidBranch {
@@ -107,14 +112,12 @@ impl PgSubstrate {
         transaction
             .execute(
                 &format!(
-                    "INSERT INTO {work}.branch (id, author, base_revision, seal_tag) \
-                     VALUES ($1, $2, $3, $4)"
+                    "INSERT INTO {work}.branch (id, author, base_revision) VALUES ($1, $2, $3)"
                 ),
                 &[
                     &id,
                     &branch.author().0,
                     &to_i64(branch.base_revision().0, "base_revision")?,
-                    &seal_tag,
                 ],
             )
             .await
@@ -207,17 +210,27 @@ impl PgSubstrate {
                 .await
                 .map_err(database)?;
         }
+        if let Some(tag) = seal_tag {
+            transaction
+                .execute(
+                    &format!("INSERT INTO {work}.branch_seal (branch, tag) VALUES ($1, $2)"),
+                    &[&id, &tag],
+                )
+                .await
+                .map_err(database)?;
+        }
         transaction.commit().await.map_err(database)
     }
 
     /// Load a stored branch exactly as it was sealed.
     ///
-    /// The header and every child table are read in one read-only
-    /// repeatable-read transaction, so all of them come from one snapshot: a
-    /// branch deleted while it is loaded, whose cascade removes its reads,
-    /// digests and operations, comes back whole (the snapshot precedes the
-    /// delete) or as `None` (it follows it), never assembled from the rows
-    /// read before the delete and the absence of those read after it.
+    /// The header, every child table and the branch's seal tags are read in
+    /// one read-only repeatable-read transaction, so all of them come from
+    /// one snapshot: a branch deleted while it is loaded, whose cascade
+    /// removes its reads, digests, operations and tags, comes back whole
+    /// (the snapshot precedes the delete) or as `None` (it follows it), never
+    /// assembled from the rows read before the delete and the absence of
+    /// those read after it.
     ///
     /// The rows are rebuilt through `SealedBranch::from_parts`, so what comes
     /// back passes every sealing invariant a freshly sealed branch does, and
@@ -229,17 +242,23 @@ impl PgSubstrate {
     /// deleted and written again whole, or rows written with its triggers
     /// disabled, load like sealed ones. Under a key
     /// ([`with_branch_seal_key`](Self::with_branch_seal_key)) they come back
-    /// only if the header carries the tag the key gives the branch they
-    /// rebuild into, which only a [`store_branch`](Self::store_branch)
-    /// holding the key writes.
+    /// only if one of the branch's tags is the key's tag of the branch they
+    /// rebuild into, which only a [`store_branch`](Self::store_branch) or a
+    /// [`seal_stored_branch`](Self::seal_stored_branch) holding the key
+    /// writes.
     ///
     /// # Errors
-    /// Under a branch seal key, refuses a branch whose header carries no tag
-    /// as [`PgError::BranchWithoutSealTag`] before any other row is read, and
-    /// one whose rows rebuild into a branch but whose tag is not the key's
-    /// tag of that branch as [`PgError::BranchSealMismatch`] after every
-    /// check below; rows that break a check below are refused for it under a
-    /// key too.
+    /// Under a branch seal key, refuses a branch that carries no tag as
+    /// [`PgError::BranchWithoutSealTag`] before any other row is read, and
+    /// one whose rows rebuild into a branch none of whose tags is the key's
+    /// tag of it as [`PgError::BranchSealMismatch`]. A branch that carries a
+    /// tag was stored whole by a keyed [`store_branch`](Self::store_branch)
+    /// or vouched for by a keyed [`seal_stored_branch`](Self::seal_stored_branch),
+    /// never as a branch sealed before a rule below, so under a key the
+    /// refusals that say it was (`BranchWithoutInputSets`,
+    /// `BranchWithoutSetBase`, `BranchWithDerivedRemoval`) are reported as
+    /// [`PgError::BranchSealMismatch`] too: its rows were changed. Every
+    /// other refusal below is the same under a key.
     ///
     /// Refuses a branch stored before the input sets of touched keys were
     /// recorded as [`PgError::BranchWithoutInputSets`], one stored
@@ -251,18 +270,18 @@ impl PgSubstrate {
     /// bytes, or a key, prefix or target stored twice, is a
     /// [`PgError::CorruptRow`]; two generations relied on for one target, or
     /// rows that break any other sealing invariant (an operation on a
-    /// reserved key, an overwrite of an unread key, a touched key without
-    /// its base value or input set, a base value or input set no operation
-    /// needs, set operations recording two base presences for one member or
-    /// a member present in a base without its key), are a
-    /// [`PgError::CorruptBranch`] naming the `BranchError`. The invariants
-    /// are checked operation by operation in `SealedBranch::from_parts`'s
-    /// order, so rows that break more than one are refused for the first,
-    /// except that a derived removal is reported only when the rows break
-    /// no other invariant: sealing that accepted one broke none. Such a
-    /// removal is a [`PgError::CorruptBranch`] too when a set operation of
-    /// the branch records its member's base presence, which no sealing that
-    /// accepted derived removals recorded.
+    /// reserved key, an overwrite of an unread key, a `Put` of a value the
+    /// journal cannot encode, a touched key without its base value or input
+    /// set, a base value or input set no operation needs, set operations
+    /// recording two base presences for one member or a member present in a
+    /// base without its key), are a [`PgError::CorruptBranch`] naming the
+    /// `BranchError`. The invariants are checked operation by operation in
+    /// `SealedBranch::from_parts`'s order, so rows that break more than one
+    /// are refused for the first, except that a derived removal is reported
+    /// only when the rows break no other invariant: sealing that accepted
+    /// one broke none. Such a removal is a [`PgError::CorruptBranch`] too
+    /// when a set operation of the branch records its member's base
+    /// presence, which no sealing that accepted derived removals recorded.
     pub async fn load_branch(&mut self, id: &BranchId) -> Result<Option<SealedBranch>, PgError> {
         let work = self.schemas.work.clone();
         let transaction = self
@@ -273,195 +292,133 @@ impl PgSubstrate {
             .start()
             .await
             .map_err(database)?;
-        let Some(header) = transaction
-            .query_opt(
-                &format!("SELECT author, base_revision, seal_tag FROM {work}.branch WHERE id = $1"),
-                &[&id.0],
-            )
-            .await
-            .map_err(database)?
-        else {
+        let Some(header) = read_branch_header(&transaction, &work, id).await? else {
             return Ok(None);
         };
-        // Under a key the tag is checked once the rows are rebuilt; a branch
-        // without one is refused before they are read.
-        let required_tag = match (&self.branch_seal_key, header.get::<_, Option<Vec<u8>>>(2)) {
-            (None, _) => None,
-            (Some(key), Some(stored)) => Some((key, stored)),
-            (Some(_), None) => {
-                return Err(PgError::BranchWithoutSealTag {
-                    branch: id.0.clone(),
-                });
-            }
-        };
-
-        let mut reads = BTreeMap::new();
-        for row in transaction
-            .query(
-                &format!("SELECT key, digest FROM {work}.branch_read WHERE branch = $1"),
-                &[&id.0],
-            )
-            .await
-            .map_err(database)?
-        {
-            let key: String = row.get(0);
-            let digest = ValueDigest::from_bytes(digest_from(row.get(1), "branch_read")?);
-            if reads.insert(key, digest).is_some() {
-                return Err(stored_twice("branch_read", "a key"));
-            }
-        }
-        let mut scans = BTreeMap::new();
-        for row in transaction
-            .query(
-                &format!("SELECT prefix, digest FROM {work}.branch_scan WHERE branch = $1"),
-                &[&id.0],
-            )
-            .await
-            .map_err(database)?
-        {
-            let prefix: String = row.get(0);
-            let digest = RangeDigest::from_bytes(digest_from(row.get(1), "branch_scan")?);
-            if scans.insert(prefix, digest).is_some() {
-                return Err(stored_twice("branch_scan", "a prefix"));
-            }
-        }
-        let mut relied = BTreeMap::new();
-        for row in transaction
-            .query(
-                &format!(
-                    "SELECT target, generation FROM {work}.branch_relied WHERE branch = $1 \
-                     ORDER BY target, generation"
-                ),
-                &[&id.0],
-            )
-            .await
-            .map_err(database)?
-        {
-            let target: String = row.get(0);
-            let declared = Generation(to_u64(row.get(1), "branch_relied")?);
-            match relied.insert(target.clone(), declared) {
-                None => {}
-                Some(earlier) if earlier == declared => {
-                    return Err(stored_twice("branch_relied", "a target"));
-                }
-                // A branch relies on at most one generation of a target, as
-                // `Branch::rely_on` enforces; rows naming two are refused
-                // rather than collapsed to either.
-                Some(earlier) => {
-                    return Err(PgError::CorruptBranch {
+        // Under a key the tags are checked once the rows are rebuilt; a
+        // branch without one is refused before they are read.
+        let tags = match &self.branch_seal_key {
+            Some(_) => {
+                let tags = read_seal_tags(&transaction, &work, id).await?;
+                if tags.is_empty() {
+                    return Err(PgError::BranchWithoutSealTag {
                         branch: id.0.clone(),
-                        error: BranchError::ConflictingReliance {
-                            target,
-                            relied: earlier,
-                            declared,
-                        },
                     });
                 }
+                tags
             }
-        }
-        let mut touched_base = BTreeMap::new();
-        let mut touched_inputs = BTreeMap::new();
-        for row in transaction
-            .query(
-                &format!(
-                    "SELECT key, base_digest, inputs_digest FROM {work}.branch_touched \
-                     WHERE branch = $1 ORDER BY key"
-                ),
-                &[&id.0],
-            )
-            .await
-            .map_err(database)?
-        {
-            let key: String = row.get(0);
-            let Some(inputs) = row.get::<_, Option<Vec<u8>>>(2) else {
-                return Err(PgError::BranchWithoutInputSets {
-                    branch: id.0.clone(),
-                    key,
-                });
-            };
-            let inputs = InputsDigest::from_bytes(digest_from(inputs, "branch_touched")?);
-            let base = ValueDigest::from_bytes(digest_from(row.get(1), "branch_touched")?);
-            if touched_inputs.insert(key.clone(), inputs).is_some()
-                || touched_base.insert(key, base).is_some()
-            {
-                return Err(stored_twice("branch_touched", "a key"));
-            }
-        }
-        let ops = transaction
-            .query(
-                &format!(
-                    "SELECT kind, key, value_kind, value_text, value_type, value_source, \
-                            value_bytes, amount, member, member_in_base \
-                     FROM {work}.branch_op WHERE branch = $1 ORDER BY ordinal"
-                ),
-                &[&id.0],
-            )
-            .await
-            .map_err(database)?
-            .into_iter()
-            .map(|row| {
-                OpRow {
-                    kind: row.get(0),
-                    key: row.get(1),
-                    value_kind: row.get(2),
-                    value_text: row.get(3),
-                    value_type: row.get(4),
-                    value_source: row.get(5),
-                    value_bytes: row.get(6),
-                    amount: row.get(7),
-                    member: row.get(8),
-                    member_in_base: row.get(9),
-                }
-                .into_op(&id.0)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+            None => Vec::new(),
+        };
+        let rebuilt = read_branch_rows(&transaction, &work, id, header).await;
         transaction.commit().await.map_err(database)?;
-
-        // Every set operation here recorded its member's base presence (a
-        // row without one was refused above), which only sealing that
-        // refuses derived removals records.
-        let records_set_base = ops
-            .iter()
-            .any(|op| matches!(op, BranchOp::SetInsert { .. } | BranchOp::SetRemove { .. }));
-        let corrupt = |error| PgError::CorruptBranch {
+        let Some(key) = &self.branch_seal_key else {
+            return rebuilt.map(Some);
+        };
+        let mismatch = || PgError::BranchSealMismatch {
             branch: id.0.clone(),
+        };
+        let branch = rebuilt.map_err(|error| match error {
+            PgError::BranchWithoutInputSets { .. }
+            | PgError::BranchWithoutSetBase { .. }
+            | PgError::BranchWithDerivedRemoval { .. } => mismatch(),
+            error => error,
+        })?;
+        // Sealing refuses a value the journal cannot encode, so a rebuilt
+        // branch has a digest.
+        let digest = branch
+            .seal_digest()
+            .map_err(|error| PgError::CorruptBranch {
+                branch: id.0.clone(),
+                error,
+            })?;
+        if tags.iter().any(|stored| key.verifies(&digest, stored)) {
+            Ok(Some(branch))
+        } else {
+            Err(mismatch())
+        }
+    }
+
+    /// Tag a branch already stored with this substrate's branch seal key, so
+    /// that [`load_branch`](Self::load_branch) under the key returns it,
+    /// without deleting it: a branch stored before work migration 16, by a
+    /// substrate without a key, or under another key (a key is rotated by
+    /// tagging every branch under the new one, which leaves its other tags in
+    /// place). A branch a recorded policy was calibrated on cannot be deleted
+    /// and stored again, and any other would lose its triage and outcomes.
+    ///
+    /// `branch` is the sealed branch the host vouches for: the branch is
+    /// tagged only if its stored rows, rebuilt as
+    /// [`load_branch`](Self::load_branch) rebuilds them without a key, are
+    /// exactly `branch`. Tagging binds the rows as they are now; whether
+    /// they are what the branch's author sealed is what the host vouches for
+    /// by passing `branch` (for instance the branch as a trusted key loaded
+    /// it, or as its author still holds it). The header is read `FOR SHARE`
+    /// and the rows in the same repeatable-read transaction that writes the
+    /// tag, so no concurrent delete or rewrite of the branch comes between
+    /// the comparison and the tag. Tagging a branch that already carries the
+    /// key's tag of `branch` writes nothing.
+    ///
+    /// # Errors
+    /// [`PgError::NoBranchSealKey`] on a substrate without a key;
+    /// [`PgError::InvalidBranch`] for a `branch` that breaks a sealing
+    /// invariant and [`PgError::InvalidText`] for one PostgreSQL `text`
+    /// cannot hold, before anything is read; [`PgError::BranchNotStored`]
+    /// when no branch is stored under its id; the refusals of
+    /// [`load_branch`](Self::load_branch) without a key for rows that do not
+    /// rebuild; and [`PgError::BranchRowsDiffer`] for rows that rebuild into
+    /// another branch. Nothing is written on a refusal.
+    pub async fn seal_stored_branch(&mut self, branch: &SealedBranch) -> Result<(), PgError> {
+        let Some(key) = &self.branch_seal_key else {
+            return Err(PgError::NoBranchSealKey);
+        };
+        let invalid = |error| PgError::InvalidBranch {
+            branch: branch.id().0.clone(),
             error,
         };
-        let branch = SealedBranch::from_parts(SealedBranchParts {
-            id: id.clone(),
-            author: PrincipalId(header.get(0)),
-            base_revision: Revision(to_u64(header.get(1), "branch")?),
-            reads,
-            scans,
-            relied,
-            touched_base,
-            touched_inputs,
-            ops,
-        })
-        .map_err(|error| match error {
-            // Sealing has not always refused this, so a branch sealed
-            // before it did can hold one without anyone tampering: then it
-            // is the only rule the rows break (from_parts reports it only
-            // then) and no set operation records a base presence.
-            BranchError::DerivedRemoval { key } if !records_set_base => {
-                PgError::BranchWithDerivedRemoval {
-                    branch: id.0.clone(),
-                    key,
-                }
-            }
-            error => corrupt(error),
-        })?;
-        if let Some((key, stored)) = required_tag {
-            // A rebuilt branch passed every sealing check, which refuses a
-            // value the journal cannot encode, so its digest is defined.
-            let digest = branch.seal_digest().map_err(corrupt)?;
-            if !key.verifies(&digest, &stored) {
-                return Err(PgError::BranchSealMismatch {
-                    branch: id.0.clone(),
-                });
-            }
+        branch.recheck().map_err(invalid)?;
+        check_branch_text(branch)?;
+        let tag = key.tag(&branch.seal_digest().map_err(invalid)?).to_vec();
+        let work = self.schemas.work.clone();
+        let id = branch.id();
+        let transaction = self
+            .client
+            .build_transaction()
+            .isolation_level(IsolationLevel::RepeatableRead)
+            .start()
+            .await
+            .map_err(database)?;
+        let held = transaction
+            .query_opt(
+                &format!("SELECT 1 FROM {work}.branch WHERE id = $1 FOR SHARE"),
+                &[&id.0],
+            )
+            .await
+            .map_err(database)?;
+        let header = match held {
+            Some(_) => read_branch_header(&transaction, &work, id).await?,
+            None => None,
+        };
+        let Some(header) = header else {
+            return Err(PgError::BranchNotStored {
+                branch: id.0.clone(),
+            });
+        };
+        if read_branch_rows(&transaction, &work, id, header).await? != *branch {
+            return Err(PgError::BranchRowsDiffer {
+                branch: id.0.clone(),
+            });
         }
-        Ok(Some(branch))
+        transaction
+            .execute(
+                &format!(
+                    "INSERT INTO {work}.branch_seal (branch, tag) VALUES ($1, $2) \
+                     ON CONFLICT (branch, tag) DO NOTHING"
+                ),
+                &[&id.0, &tag],
+            )
+            .await
+            .map_err(database)?;
+        transaction.commit().await.map_err(database)
     }
 
     /// Log a branch's triage with what off-policy evaluation needs later: the
@@ -571,7 +528,8 @@ impl PgSubstrate {
     /// only if `{projection}.state_entry` holds that key at exactly the
     /// claimed index: the projection is read and the outcome inserted in one
     /// statement, from one snapshot. A merged row a raw SQL writer inserts
-    /// around this call is not checked; the rule is this method's, not the
+    /// around this call is not checked, nor are merged rows this method wrote
+    /// before it checked the projection; the rule is this method's, not the
     /// table's, because a work-schema trigger would read a projection schema
     /// that a rebuild drops.
     ///
@@ -584,8 +542,10 @@ impl PgSubstrate {
     ///
     /// # Errors
     /// Refuses a merge the projection does not hold as
-    /// [`PgError::MergeNotProjected`], and one it holds at another index as
-    /// [`PgError::MergeMismatch`]; a revert with no recorded merge, or at a
+    /// [`PgError::MergeNotProjected`], also while the projection is absent (a
+    /// rebuild dropped it and has not recreated it), and one it holds at
+    /// another index as [`PgError::MergeMismatch`]; a revert with no recorded
+    /// merge, or at a
     /// commit index not greater than the merge's, as
     /// [`PgError::InvalidOutcome`]; each writing nothing. An outcome kind
     /// recorded twice is the primary key's [`PgError::Database`].
@@ -618,16 +578,32 @@ impl PgSubstrate {
                     &[&branch.0, &commit, &ptr_state::merged_branch_key(&branch.0)],
                 )
                 .await
-                .map_err(database)?;
+                .map_err(database);
+            let not_projected = || PgError::MergeNotProjected {
+                branch: branch.0.clone(),
+                index: index.0,
+            };
+            let row = match row {
+                Ok(row) => row,
+                // The projection is gone while a rebuild drops and recreates
+                // it (or after a rebuild was cancelled between the two):
+                // nothing is projected, so no merge is.
+                Err(PgError::Database { sqlstate, message })
+                    if sqlstate == "42P01" || sqlstate == "3F000" =>
+                {
+                    if self.projection_absent().await? {
+                        return Err(not_projected());
+                    }
+                    return Err(PgError::Database { sqlstate, message });
+                }
+                Err(error) => return Err(error),
+            };
             let (projected, inserted): (Option<i64>, bool) = (row.get(0), row.get(1));
             if inserted {
                 return Ok(());
             }
             return Err(match projected {
-                None => PgError::MergeNotProjected {
-                    branch: branch.0.clone(),
-                    index: index.0,
-                },
+                None => not_projected(),
                 Some(projected) => PgError::MergeMismatch {
                     branch: branch.0.clone(),
                     claimed: index.0,
@@ -686,6 +662,221 @@ fn stored_twice(table: &'static str, what: &str) -> PgError {
         table,
         reason: format!("{what} is stored twice for one branch"),
     }
+}
+
+impl PgSubstrate {
+    /// Whether this substrate's projection holds no state table: a rebuild
+    /// dropped the projection schema and has not recreated it.
+    async fn projection_absent(&self) -> Result<bool, PgError> {
+        let table = format!("{}.state_entry", self.schemas.projection);
+        let found: Option<String> = self
+            .client
+            .query_one("SELECT to_regclass($1)::text", &[&table])
+            .await
+            .map_err(database)?
+            .get(0);
+        Ok(found.is_none())
+    }
+}
+
+/// A stored branch's header: its author and base revision, `None` when no
+/// branch is stored under `id`.
+async fn read_branch_header(
+    transaction: &Transaction<'_>,
+    work: &Identifier,
+    id: &BranchId,
+) -> Result<Option<(String, i64)>, PgError> {
+    Ok(transaction
+        .query_opt(
+            &format!("SELECT author, base_revision FROM {work}.branch WHERE id = $1"),
+            &[&id.0],
+        )
+        .await
+        .map_err(database)?
+        .map(|row| (row.get(0), row.get(1))))
+}
+
+/// The seal tags stored for branch `id`, in any order.
+async fn read_seal_tags(
+    transaction: &Transaction<'_>,
+    work: &Identifier,
+    id: &BranchId,
+) -> Result<Vec<Vec<u8>>, PgError> {
+    Ok(transaction
+        .query(
+            &format!("SELECT tag FROM {work}.branch_seal WHERE branch = $1"),
+            &[&id.0],
+        )
+        .await
+        .map_err(database)?
+        .iter()
+        .map(|row| row.get(0))
+        .collect())
+}
+
+/// The rows of the branch whose header is `header`, rebuilt through
+/// `SealedBranch::from_parts` (see [`PgSubstrate::load_branch`] for what it
+/// refuses without a key).
+async fn read_branch_rows(
+    transaction: &Transaction<'_>,
+    work: &Identifier,
+    id: &BranchId,
+    (author, base_revision): (String, i64),
+) -> Result<SealedBranch, PgError> {
+    let mut reads = BTreeMap::new();
+    for row in transaction
+        .query(
+            &format!("SELECT key, digest FROM {work}.branch_read WHERE branch = $1"),
+            &[&id.0],
+        )
+        .await
+        .map_err(database)?
+    {
+        let key: String = row.get(0);
+        let digest = ValueDigest::from_bytes(digest_from(row.get(1), "branch_read")?);
+        if reads.insert(key, digest).is_some() {
+            return Err(stored_twice("branch_read", "a key"));
+        }
+    }
+    let mut scans = BTreeMap::new();
+    for row in transaction
+        .query(
+            &format!("SELECT prefix, digest FROM {work}.branch_scan WHERE branch = $1"),
+            &[&id.0],
+        )
+        .await
+        .map_err(database)?
+    {
+        let prefix: String = row.get(0);
+        let digest = RangeDigest::from_bytes(digest_from(row.get(1), "branch_scan")?);
+        if scans.insert(prefix, digest).is_some() {
+            return Err(stored_twice("branch_scan", "a prefix"));
+        }
+    }
+    let mut relied = BTreeMap::new();
+    for row in transaction
+        .query(
+            &format!(
+                "SELECT target, generation FROM {work}.branch_relied WHERE branch = $1 \
+                     ORDER BY target, generation"
+            ),
+            &[&id.0],
+        )
+        .await
+        .map_err(database)?
+    {
+        let target: String = row.get(0);
+        let declared = Generation(to_u64(row.get(1), "branch_relied")?);
+        match relied.insert(target.clone(), declared) {
+            None => {}
+            Some(earlier) if earlier == declared => {
+                return Err(stored_twice("branch_relied", "a target"));
+            }
+            // A branch relies on at most one generation of a target, as
+            // `Branch::rely_on` enforces; rows naming two are refused
+            // rather than collapsed to either.
+            Some(earlier) => {
+                return Err(PgError::CorruptBranch {
+                    branch: id.0.clone(),
+                    error: BranchError::ConflictingReliance {
+                        target,
+                        relied: earlier,
+                        declared,
+                    },
+                });
+            }
+        }
+    }
+    let mut touched_base = BTreeMap::new();
+    let mut touched_inputs = BTreeMap::new();
+    for row in transaction
+        .query(
+            &format!(
+                "SELECT key, base_digest, inputs_digest FROM {work}.branch_touched \
+                     WHERE branch = $1 ORDER BY key"
+            ),
+            &[&id.0],
+        )
+        .await
+        .map_err(database)?
+    {
+        let key: String = row.get(0);
+        let Some(inputs) = row.get::<_, Option<Vec<u8>>>(2) else {
+            return Err(PgError::BranchWithoutInputSets {
+                branch: id.0.clone(),
+                key,
+            });
+        };
+        let inputs = InputsDigest::from_bytes(digest_from(inputs, "branch_touched")?);
+        let base = ValueDigest::from_bytes(digest_from(row.get(1), "branch_touched")?);
+        if touched_inputs.insert(key.clone(), inputs).is_some()
+            || touched_base.insert(key, base).is_some()
+        {
+            return Err(stored_twice("branch_touched", "a key"));
+        }
+    }
+    let ops = transaction
+        .query(
+            &format!(
+                "SELECT kind, key, value_kind, value_text, value_type, value_source, \
+                            value_bytes, amount, member, member_in_base \
+                     FROM {work}.branch_op WHERE branch = $1 ORDER BY ordinal"
+            ),
+            &[&id.0],
+        )
+        .await
+        .map_err(database)?
+        .into_iter()
+        .map(|row| {
+            OpRow {
+                kind: row.get(0),
+                key: row.get(1),
+                value_kind: row.get(2),
+                value_text: row.get(3),
+                value_type: row.get(4),
+                value_source: row.get(5),
+                value_bytes: row.get(6),
+                amount: row.get(7),
+                member: row.get(8),
+                member_in_base: row.get(9),
+            }
+            .into_op(&id.0)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    // Every set operation here recorded its member's base presence (a
+    // row without one was refused above), which only sealing that
+    // refuses derived removals records.
+    let records_set_base = ops
+        .iter()
+        .any(|op| matches!(op, BranchOp::SetInsert { .. } | BranchOp::SetRemove { .. }));
+    SealedBranch::from_parts(SealedBranchParts {
+        id: id.clone(),
+        author: PrincipalId(author),
+        base_revision: Revision(to_u64(base_revision, "branch")?),
+        reads,
+        scans,
+        relied,
+        touched_base,
+        touched_inputs,
+        ops,
+    })
+    .map_err(|error| match error {
+        // Sealing has not always refused this, so a branch sealed
+        // before it did can hold one without anyone tampering: then it
+        // is the only rule the rows break (from_parts reports it only
+        // then) and no set operation records a base presence.
+        BranchError::DerivedRemoval { key } if !records_set_base => {
+            PgError::BranchWithDerivedRemoval {
+                branch: id.0.clone(),
+                key,
+            }
+        }
+        error => PgError::CorruptBranch {
+            branch: id.0.clone(),
+            error,
+        },
+    })
 }
 
 /// Refuse a branch with a string PostgreSQL `text` cannot hold, before any row

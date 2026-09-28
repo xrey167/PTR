@@ -166,20 +166,34 @@ pub enum PgError {
     /// rows written around `store_branch` that break only this rule. It
     /// cannot be certified and must be re-run on a current snapshot.
     BranchWithDerivedRemoval { branch: String, key: String },
-    /// A substrate holding a branch seal key loaded a branch whose rows keep
-    /// every sealing invariant but whose stored tag is not the one the key
-    /// gives the branch they rebuild into: they were written, or the tag
-    /// was, by someone other than a `store_branch` holding the key (a whole
-    /// branch deleted and written again, rows written with the triggers off,
-    /// a tag copied from another branch, or a branch tagged under another
-    /// key). No branch is returned.
+    /// A substrate holding a branch seal key loaded a branch that carries a
+    /// tag, but none of its tags is the one the key gives the branch its
+    /// rows rebuild into: the rows, or the tags, were written by someone
+    /// other than a `store_branch` or `seal_stored_branch` holding the key (a
+    /// whole branch deleted and written again, rows written with the triggers
+    /// off, a tag copied from another branch or made under another key).
+    /// Rows of a tagged branch that look like a branch sealed before a rule
+    /// (what `BranchWithoutInputSets`, `BranchWithoutSetBase` and
+    /// `BranchWithDerivedRemoval` report without a key) are reported as this
+    /// too: no tagged branch was sealed before those rules. No branch is
+    /// returned.
     BranchSealMismatch { branch: String },
     /// A substrate holding a branch seal key loaded a branch that carries no
     /// tag: it was stored before work migration 16, by a substrate without a
     /// key, or by a writer around `store_branch`. Nothing tells which, so no
-    /// branch is returned: it must be stored again by a substrate holding
-    /// the key.
+    /// branch is returned; a host that vouches for the branch its rows hold
+    /// tags it with `seal_stored_branch`.
     BranchWithoutSealTag { branch: String },
+    /// `seal_stored_branch` was called on a substrate that holds no branch
+    /// seal key. Nothing was read or written.
+    NoBranchSealKey,
+    /// `seal_stored_branch` found no branch stored under the id of the branch
+    /// it was given. Nothing was written.
+    BranchNotStored { branch: String },
+    /// `seal_stored_branch` found the branch's stored rows rebuilding into
+    /// another branch than the one the host vouched for, so it did not tag
+    /// them. Nothing was written.
+    BranchRowsDiffer { branch: String },
     /// A search document was refused because its capsule generation is
     /// already indexed from content with another digest. One generation has
     /// one content, so a second digest is a stale or erroneous indexing job,
@@ -264,6 +278,9 @@ impl PgError {
             Self::BranchWithDerivedRemoval { .. } => "PTR_PG_BRANCH_WITH_DERIVED_REMOVAL",
             Self::BranchSealMismatch { .. } => "PTR_PG_BRANCH_SEAL_MISMATCH",
             Self::BranchWithoutSealTag { .. } => "PTR_PG_BRANCH_WITHOUT_SEAL_TAG",
+            Self::NoBranchSealKey => "PTR_PG_NO_BRANCH_SEAL_KEY",
+            Self::BranchNotStored { .. } => "PTR_PG_BRANCH_NOT_STORED",
+            Self::BranchRowsDiffer { .. } => "PTR_PG_BRANCH_ROWS_DIFFER",
             Self::DocumentConflict { .. } => "PTR_PG_DOCUMENT_CONFLICT",
             Self::InvalidTriage { .. } => "PTR_PG_INVALID_TRIAGE",
             Self::InvalidOutcome { .. } => "PTR_PG_INVALID_OUTCOME",
@@ -386,13 +403,24 @@ impl fmt::Display for PgError {
             ),
             Self::BranchSealMismatch { branch } => write!(
                 formatter,
-                "stored branch {branch:?} does not carry the seal tag of its rows under this \
-                 substrate's key: they were not stored by it"
+                "stored branch {branch:?} carries no seal tag of its rows under this substrate's \
+                 key: they, or its tags, were not written by a holder of the key"
             ),
             Self::BranchWithoutSealTag { branch } => write!(
                 formatter,
                 "stored branch {branch:?} carries no seal tag, which this substrate's key \
-                 requires; it must be stored again under the key"
+                 requires; a host that vouches for it tags it with seal_stored_branch"
+            ),
+            Self::NoBranchSealKey => {
+                formatter.write_str("this substrate holds no branch seal key to tag a branch with")
+            }
+            Self::BranchNotStored { branch } => {
+                write!(formatter, "no branch is stored under {branch:?}")
+            }
+            Self::BranchRowsDiffer { branch } => write!(
+                formatter,
+                "the stored rows of branch {branch:?} are not the sealed branch given; \
+                 they were not tagged"
             ),
             Self::DocumentConflict {
                 capsule,

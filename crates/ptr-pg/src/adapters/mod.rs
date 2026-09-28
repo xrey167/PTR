@@ -106,22 +106,29 @@ impl PgSubstrate {
     }
 
     /// Tag every branch this substrate stores with `key`, and load only
-    /// branches whose rows carry the tag `key` gives exactly what they
-    /// rebuild into.
+    /// branches one of whose tags is the one `key` gives exactly what their
+    /// rows rebuild into.
     ///
-    /// [`store_branch`](Self::store_branch) then writes, with the branch's
-    /// header, an HMAC-SHA-256 under `key` of the domain
-    /// `ptr-pg/branch-seal/v1` and the sealed branch's digest
-    /// (`ptr_branch::SealedBranch::seal_digest`, which covers its id, author,
-    /// base revision and every row), and [`load_branch`](Self::load_branch)
-    /// refuses a branch without a tag ([`PgError::BranchWithoutSealTag`]),
-    /// such as one stored before work migration 16 or by a substrate without
-    /// a key, and one whose tag is not that of the branch its rows rebuild
-    /// into ([`PgError::BranchSealMismatch`]). A writer of the work schema who
-    /// does not hold `key` therefore cannot make rows it wrote, whether whole
+    /// [`store_branch`](Self::store_branch) then writes, in the transaction
+    /// that stores the branch, a tag (a row of `branch_seal`, work migration
+    /// 16): an HMAC-SHA-256 under `key` of the domain `ptr-pg/branch-seal/v1`
+    /// and the sealed branch's digest (`ptr_branch::SealedBranch::seal_digest`,
+    /// which covers its id, author, base revision and every row).
+    /// [`load_branch`](Self::load_branch) refuses a branch without a tag
+    /// ([`PgError::BranchWithoutSealTag`]) and one none of whose tags is the
+    /// key's tag of the branch its rows rebuild into
+    /// ([`PgError::BranchSealMismatch`]). A writer of the work schema who does
+    /// not hold `key` therefore cannot make rows it wrote, whether whole
     /// branches deleted and written again or rows written with the triggers
     /// off, load as a sealed branch. Nothing else is tagged: triage rows and
     /// outcomes are checked as they are without a key.
+    ///
+    /// A branch stored without the key (before work migration 16, by a
+    /// substrate without a key, or under another key) is tagged in place by
+    /// [`seal_stored_branch`](Self::seal_stored_branch) once the host vouches
+    /// for the sealed branch its rows hold; a key is rotated by tagging every
+    /// branch under the new one. A tag authenticates a branch to every
+    /// substrate holding the same key, whatever its schemas.
     ///
     /// Without a key a substrate writes no tag and checks none, and a branch
     /// that keeps every sealing invariant loads whoever wrote its rows.

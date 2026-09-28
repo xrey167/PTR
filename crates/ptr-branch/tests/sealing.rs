@@ -10,9 +10,10 @@ use ptr_branch::{
     RangeDigest, SealedBranch, SealedBranchParts, ValueDigest, RESERVED_PREFIXES,
 };
 use ptr_semdb::{
-    canonical_input_bytes, SemanticDelta, SemanticHost, SemanticSnapshot, SemanticValue,
+    canonical_input_bytes, SemanticDelta, SemanticHost, SemanticPayload, SemanticSnapshot,
+    SemanticValue, MAX_DELTA_BYTES,
 };
-use ptr_types::{Generation, PrincipalId, Revision, Validity};
+use ptr_types::{Generation, PrincipalId, Revision, TypeId, Validity};
 use sha2::{Digest, Sha256};
 
 fn text(value: &str) -> SemanticValue {
@@ -185,6 +186,47 @@ fn a_hand_built_set_operation_with_an_empty_member_is_refused_by_the_constructor
             SealedBranch::from_parts(parts_for(&snapshot, vec![op])).unwrap_err(),
             BranchError::InvalidMember { key: "tags".into() }
         );
+    }
+}
+
+#[test]
+fn a_put_of_a_value_the_journal_cannot_encode_is_refused_when_put_and_by_the_constructor() {
+    let snapshot = snapshot_with(&[]);
+    let payload = |type_id: &str, source: &str| {
+        SemanticValue::Payload(SemanticPayload {
+            type_id: TypeId::from(type_id),
+            source: source.into(),
+            bytes: vec![1, 2, 3],
+        })
+    };
+    let refused = BranchError::InvalidValue { key: "doc".into() };
+    for value in [
+        payload("", "unit-test"),
+        payload("ptr.test.bytes", ""),
+        text(&"x".repeat(MAX_DELTA_BYTES + 1)),
+    ] {
+        assert!(canonical_input_bytes("doc", &value).is_err());
+        // Parts holding one are no sealed branch, so nothing can merge,
+        // digest or store it.
+        let parts = parts_for(
+            &snapshot,
+            vec![BranchOp::Put {
+                key: "doc".into(),
+                value: value.clone(),
+            }],
+        );
+        assert_eq!(SealedBranch::from_parts(parts).unwrap_err(), refused);
+        // An open branch refuses the put and records nothing.
+        let mut work = Branch::open(
+            BranchId::from("b"),
+            PrincipalId::from("agent-1"),
+            snapshot.clone(),
+        );
+        work.read("doc").unwrap();
+        assert_eq!(work.put("doc", value).unwrap_err(), refused);
+        let sealed = work.seal().unwrap();
+        assert!(sealed.ops().is_empty());
+        assert!(sealed.seal_digest().is_ok());
     }
 }
 

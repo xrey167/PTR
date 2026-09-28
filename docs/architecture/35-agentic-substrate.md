@@ -508,25 +508,42 @@ break the bookkeeping of touched keys, come back as `CorruptBranch` naming the
 Without a branch seal key, rows that keep every sealing invariant load as a branch
 whoever wrote them: a branch deleted and written again whole, or rows written with the
 triggers disabled, load like sealed ones (work migration 11 above). A substrate given a
-host-held `BranchSealKey` (`PgSubstrate::with_branch_seal_key`) closes that: `store_branch`
-writes into the header (`branch.seal_tag`, work migration 16) an HMAC-SHA-256 under the
-key of the domain `ptr-pg/branch-seal/v1` and `SealedBranch::seal_digest`, which covers
-the id, the author, the base revision and every row, and `load_branch` under the key
-refuses a branch with no tag, such as one stored before version 16, as
-`BranchWithoutSealTag` before its rows are read, and one whose rows rebuild into a
-branch whose tag is not the stored one as `BranchSealMismatch`. A whole branch written
-again with a changed value, author or base revision under its sealed tag, a tag copied
-from another branch or made under another key, a removed tag and a row edited with the
-triggers off are each refused, while every trigger accepts the rewrite
-(`a_tampered_or_injected_branch_is_refused_at_load_under_a_seal_key`,
-`a_branch_stored_before_seal_tags_is_refused_under_a_key`); a branch written again
-exactly as sealed, tag included, is the sealed branch and loads. The key is never
-stored in the database; the tag binds the rows to a `store_branch` holding it, not to
+host-held `BranchSealKey` (`PgSubstrate::with_branch_seal_key`) closes that:
+`store_branch` writes, in the transaction that stores the branch, a tag (a row of
+`branch_seal`, work migration 16): an HMAC-SHA-256 under the key of the domain
+`ptr-pg/branch-seal/v1` and `SealedBranch::seal_digest`, which covers the id, the
+author, the base revision and every row. `load_branch` under the key refuses a branch
+with no tag as `BranchWithoutSealTag` before its rows are read, and one none of whose
+tags is the key's tag of the branch its rows rebuild into as `BranchSealMismatch`;
+rows of a tagged branch that look like a branch sealed before a rule (what
+`BranchWithoutInputSets`, `BranchWithoutSetBase` and `BranchWithDerivedRemoval` report
+without a key) are a `BranchSealMismatch` too, since no tagged branch was. A whole
+branch written again with a changed value, author or base revision under its sealed
+tag, a tag copied from another branch or made under another key, a removed tag, an
+untagged injected branch, a row edited with the triggers off and legacy-looking rows
+under a tag are each refused, while every trigger accepts the rewrite; a branch written
+again exactly as sealed, tag included, is the sealed branch and loads, and a tag
+appended by a writer without the key changes nothing
+(`a_tampered_or_injected_branch_is_refused_at_load_under_a_seal_key`). The tags are a
+table of their own because the header stays as sealed (work migration 11 binds a
+branch's rows to its header's transaction): a tag is never rewritten and goes only
+with its branch (`a_seal_tag_is_never_rewritten_and_goes_only_with_its_branch`), and a
+branch may carry one per key. A branch stored without the key, before version 16, by a
+keyless substrate or under another key, is tagged in place by
+`PgSubstrate::seal_stored_branch` once the host vouches for the sealed branch its rows
+hold: it tags them only if they rebuild into exactly that branch, reading the header
+`FOR SHARE` in the transaction that writes the tag, so a branch a recorded policy was
+calibrated on, which is never deleted, and any branch with triage or outcomes keep
+them, and a key is rotated by tagging every branch under the new one
+(`a_branch_stored_before_seal_tags_is_tagged_in_place_and_keeps_its_triage`). The key
+is never stored in the database; a tag binds the rows to a holder of the key, not to
 the author, whose `PrincipalId` is whatever the sealing caller passed. A branch loaded
 under the key merges through `PtrRuntime::merge_branch` exactly as the sealed one, and
 its merge projects and records as its outcome
 (`a_loaded_branch_merges_exactly_as_the_sealed_one`). Without a key nothing is tagged
-or checked (`without_a_seal_key_branches_store_and_load_as_before`).
+or checked (`without_a_seal_key_branches_store_and_load_as_before`). Sealing refuses a
+`Put` of a value the journal cannot encode, so every sealed branch has a seal digest
+and a keyed and a keyless substrate store the same branches.
 It reads the header and every child table in one read-only repeatable-read
 snapshot, so a branch deleted while it loads, whose cascade removes its reads,
 digests and operations, comes back whole or as `None`, never assembled from rows
@@ -547,10 +564,12 @@ the projection holds the branch's merge key (`branch-merge:<len>:<id>`, which on
 the runtime's merge record projects) at exactly the claimed commit index, reading
 the projection and inserting the outcome in one statement; a merge the projection
 does not hold is refused as `MergeNotProjected`, one it holds at another index as
-`MergeMismatch`, and a rebuilt projection holds none until it has caught up
+`MergeMismatch`, and a rebuilt projection holds none until it has caught up (while a
+rebuild has dropped it and not yet recreated it, a merge is `MergeNotProjected` too)
 (`a_merged_outcome_must_match_the_projected_merge`). The rule is the method's, not
 the table's: a work-schema trigger would read a projection schema a rebuild drops,
-so a merged row a raw SQL writer inserts is not checked. `record_outcome` writes a
+so a merged row a raw SQL writer inserts is not checked, nor is one `record_outcome`
+wrote before it checked the projection. `record_outcome` writes a
 revert only after the branch's merge and at a greater commit index, reading the
 merge and inserting the revert in one statement, and refuses any other as
 `InvalidOutcome` (`a_revert_is_recorded_and_counted_only_after_the_merge_it_reverts`).
@@ -1382,7 +1401,9 @@ and a row written around it is not counted as reverting a merge it precedes
 (`a_revert_is_recorded_and_counted_only_after_the_merge_it_reverts`). A merge
 `record_outcome` writes is one the projection holds at that index
 (`a_merged_outcome_must_match_the_projected_merge`), so the denominator counts
-merges the ledger committed, apart from rows a raw SQL writer inserted. Likewise the
+merges the ledger committed, apart from rows written around that check: merged rows
+`record_outcome` wrote before it checked the projection, and rows a raw SQL writer
+inserted, are neither checked nor told apart. Likewise the
 numerator of `AutoProposeShare` counts eligible branches only, as its denominator
 does, so an ineligible auto-proposal stored before work migration 9's NOT VALID check
 is in neither count and the share never exceeds one
