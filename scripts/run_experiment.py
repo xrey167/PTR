@@ -287,6 +287,57 @@ def build_command(
     return command
 
 
+def token_text(name: str, value) -> str:
+    """The preregistered `value` of the placeholder `<name>` as a command
+    token takes it: an integer in decimal, a boolean as TOML writes it, a
+    string as itself. Raises `ValueError` for any other value."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, str)):
+        return str(value)
+    raise ValueError(f"<{name}> is preregistered as a {type(value).__name__}, which no command token takes")
+
+
+def command_parameters(exp_id: str, root: Path, data: dict, entrypoint: str, params: dict[str, str]) -> dict[str, str]:
+    """The values the placeholders other than `<seed>` take in the command
+    the manifest `data` of `exp_id`, whose directory is `root`, names at
+    `entrypoint`. An experiment the list names runs only through
+    `entrypoint`, the manifest's own command, and takes each value from its
+    frozen `[preregistration]` table (`token_text`), a `--set` value only
+    repeating it: a command or a value chosen at launch could be chosen
+    after an outcome was seen, the runs made with the others discarded. A
+    variant of its command is a placeholder the table fixes. Any other
+    experiment runs through any `entrypoint` with the `--set` values
+    `params`. Raises `ValueError` for another entrypoint of a listed
+    experiment, a placeholder its table does not hold, and a `--set` value
+    that is not the preregistered one."""
+    entries = load(ROOT / check_research_gates.PREREGISTRATION).get("experiment", {})
+    if not isinstance(entries, dict) or exp_id not in entries:
+        return params
+    if entrypoint != "entrypoint":
+        raise ValueError(
+            f"--entrypoint {entrypoint}: a listed experiment runs only through its manifest's entrypoint; a variant "
+            "of its command is a placeholder its frozen [preregistration] table fixes"
+        )
+    table = load(root / "config.toml").get("preregistration", {})
+    template = str(data.get(entrypoint, ""))
+    names = sorted({name for token in shlex.split(template) for name in PLACEHOLDER.findall(token)} - {"seed"})
+    values = {}
+    for name in names:
+        if name not in table:
+            raise ValueError(
+                f"<{name}> is no key of the frozen [preregistration] table; a listed experiment's command "
+                "takes only preregistered values"
+            )
+        values[name] = token_text(name, table[name])
+    for key, value in params.items():
+        if key not in values:
+            raise ValueError(f"--set {key} names no placeholder the command takes from the frozen [preregistration] table")
+        if value != values[key]:
+            raise ValueError(f"--set {key}={value} is not the preregistered value {values[key]}")
+    return values
+
+
 def execute_command(command: list[str]) -> dict:
     """Run `command` from the repository's root and return its exit status,
     output, launch error and duration. Python in it reads and writes its
@@ -338,7 +389,9 @@ def run_experiment(
     (`experiment_records.uncommitted_files`, which also covers the files that
     decide whether it may launch, `check_research_gates.launch_inputs`), and
     a listed experiment whose preregistration is not frozen
-    (`launch_refused`). After the command ends it looks
+    (`launch_refused`); a listed experiment runs only through its
+    `entrypoint`, with its preregistered values (`command_parameters`).
+    After the command ends it looks
     at the same tree again (`experiment_records.ProvenanceWatch`) and writes
     no record, returning 2, when HEAD moved or a provenance or experiment
     file was written, created or removed while the command ran, even if its
@@ -348,13 +401,6 @@ def run_experiment(
     _, root, data = resolve(exp_id)
     if launch_refused(exp_id):
         return 2
-    try:
-        command = build_command(
-            data, entrypoint=entrypoint, seed=seed, params=params or {}
-        )
-    except ValueError as error:
-        print(f"ERROR: {error}", file=sys.stderr)
-        return 2
 
     # The record names HEAD as the code it ran, so HEAD must hold every file
     # that decides the run: refuse before anything runs or is written.
@@ -363,6 +409,14 @@ def run_experiment(
         return 2
     watch = launch_watch(exp_id, root, results, data)
     if watch is None:
+        return 2
+    # Built once the watch holds the tree to HEAD, so a listed experiment's
+    # preregistered values are the ones HEAD holds.
+    try:
+        params = command_parameters(exp_id, root, data, entrypoint, params or {})
+        command = build_command(data, entrypoint=entrypoint, seed=seed, params=params)
+    except ValueError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
         return 2
 
     timestamp = utc_stamp()
@@ -374,7 +428,7 @@ def run_experiment(
             "started_at": timestamp,
             "entrypoint": entrypoint,
             "seed": seed,
-            "parameters": params or {},
+            "parameters": params,
             "command": command,
         }
     )

@@ -1760,6 +1760,27 @@ class PreregistrationGateTests(unittest.TestCase):
         commit_all(root,"a file, not a link")
         self.assertEqual(gate(root),(0,[]))
 
+    def test_a_baseline_file_named_as_no_repository_path_froze_nothing(self):
+        # The tree refuses a baseline directory holding such a name, so a
+        # commit holding one could not launch, and renaming it repairs the
+        # experiment rather than rewriting it.
+        baseline_text=(self.tree()/BASELINE_PATH).read_text(encoding="utf-8")
+        code="x = 1\n"
+        odd="research/baselines/fixture/helper[old].py"
+        table={**TABLE,"baseline_fixture_sha256":baseline_digest({"config.toml":baseline_text,"helper[old].py":code})}
+        root=self.tree(status="running",table=table)
+        write(root,odd,code)
+        commit=commit_all(root)
+        self.assertIsNone(mod.directory_digest_at(root,commit,"research/baselines/fixture"))
+        (root/odd).unlink()
+        write(root,"research/baselines/fixture/helper_old.py",code)
+        repaired=self.tree(status="running",table={**TABLE,"baseline_fixture_sha256":baseline_digest(
+            {"config.toml":baseline_text,"helper_old.py":code})})
+        for relative in ("experiments/semdb/X900-fixture/config.toml",self.MANIFEST):
+            shutil.copyfile(repaired/relative,root/relative)
+        commit_all(root,"renamed")
+        self.assertEqual(gate(root),(0,[]))
+
     def test_an_executable_file_is_frozen_as_a_regular_one(self):
         # Git holds an executable file as mode 100755: a preregistered one,
         # and one in a baseline's directory, freeze as any regular file does.
@@ -1776,6 +1797,27 @@ class PreregistrationGateTests(unittest.TestCase):
         head=commit_all(root)
         self.assertEqual(git(root,"ls-tree","HEAD","--",protocol).split()[0],"100755")
         self.assertEqual((gate(root),mod.launch_commit_errors(root,"X900",head)),((0,[]),[]))
+
+    def test_a_listed_experiments_manifest_and_configuration_are_regular_files(self):
+        # Read through a link, either is a file no commit holds as the
+        # experiment's, and the runner could not launch from it.
+        for name in ("config.toml","experiment.toml"):
+            with self.subTest(name=name):
+                root=self.tree(status="running")
+                held=root/"experiments/semdb/X900-fixture"/name
+                shutil.move(held,root/"experiments/semdb"/f"elsewhere-{name}")
+                self.link(Path(f"../elsewhere-{name}"),held)
+                refusal=f"X900: {name} is not a regular file reached through no symlink"
+                self.assert_blocked(root,refusal)
+                self.assertEqual(mod.launch_errors(root,"X900"),[refusal])
+        # A link to nothing is a link the tree holds, not a missing file.
+        root=self.tree(status="running")
+        held=root/"experiments/semdb/X900-fixture/config.toml"
+        held.unlink()
+        self.link(Path("../nowhere.toml"),held)
+        refusal="X900: config.toml is not a regular file reached through no symlink"
+        self.assert_blocked(root,refusal)
+        self.assertEqual(mod.launch_errors(root,"X900"),[refusal])
 
     def test_history_is_read_as_committed_whatever_replaces_it(self):
         # A replacement object (git replace) would show the gate another

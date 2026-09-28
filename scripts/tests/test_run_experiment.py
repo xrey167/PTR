@@ -293,17 +293,24 @@ class RunWatchTests(unittest.TestCase):
         self.assertEqual(json.loads(other.read_text(encoding="utf-8")), {"second": True})
 
     def preregister(
-        self, status: str, table: str | None = "schema = 1\n", frozen: bool = True, required: str = ""
+        self,
+        status: str,
+        table: str | None = "schema = 1\n",
+        frozen: bool = True,
+        required: str = "",
+        entrypoint: str = "bench <seed>",
+        manifest_lines: str = "",
     ) -> None:
         """List L900 as preregistering one integer, and the keys `required`
         adds, give it `status`, the `[preregistration]` table `table` (None
-        for none) and, when `frozen`, the manifest's digests of that table and
-        of its list entry; commit."""
+        for none), the command `entrypoint` and the further manifest lines
+        `manifest_lines` and, when `frozen`, the manifest's digests of that
+        table and of its list entry; commit."""
         listed = 'version = 1\n\n[experiment.L900.required]\nseeds = "int-list"\nschema = "int"\n' + required
         self.write("experiments/preregistration.toml", listed)
         if table is not None:
             table = "seeds = [17]\n" + table
-        manifest = f'id = "L900"\nstatus = "{status}"\nseeds = [17]\nentrypoint = "bench <seed>"\n'
+        manifest = f'id = "L900"\nstatus = "{status}"\nseeds = [17]\nentrypoint = "{entrypoint}"\n' + manifest_lines
         self.write("experiments/x/L900-x/config.toml", "version = 1\n" + ("" if table is None else "\n[preregistration]\n" + table))
         if table is not None:
             if frozen:
@@ -538,6 +545,90 @@ class RunWatchTests(unittest.TestCase):
         # And the record agrees with the manifest it ran under.
         data = tomllib.loads(manifest.read_text(encoding="utf-8"))
         self.assertEqual(mod.experiment_records.agreement_errors("L900", data, {"record": records[0]}), [])
+
+    def launch_listed(self, params: dict[str, str], entrypoint: str = "entrypoint") -> tuple[int, list, str]:
+        """Runs seed 17 of L900 through `entrypoint` with `params`; returns
+        the status, the commands the run executed, and what it wrote to
+        stderr."""
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(mod, "ROOT", self.root),
+            mock.patch.object(mod, "REGISTRY", self.root / "experiments/registry.toml"),
+            mock.patch.object(mod, "execute_command", return_value={
+                "exit_code": 0, "stdout": "", "stderr": "", "launch_error": None, "duration_ns": 1,
+            }) as execute,
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(stderr),
+        ):
+            status = mod.run_experiment("L900", entrypoint=entrypoint, seed=17, params=params)
+        return status, execute.call_args_list, stderr.getvalue()
+
+    def test_a_listed_experiments_command_takes_its_preregistered_values(self):
+        # A value chosen at launch could be chosen after an outcome was seen:
+        # each placeholder but <seed> takes the frozen [preregistration]
+        # value, and --set may only repeat it.
+        self.preregister(
+            "running",
+            "schema = 1\niterations = 30\nverbose = true\n",
+            entrypoint="bench <seed> <iterations> <verbose>",
+            manifest_lines='quick_entrypoint = "bench <seed> 1 <verbose>"\n',
+        )
+        run = self.launch_listed
+        status, calls, stderr = run({})
+        self.assertEqual((status, stderr), (0, ""))
+        self.assertEqual(calls[0].args[0], ["bench", "17", "30", "true"])
+        [record] = [json.loads(path.read_text(encoding="utf-8")) for path in self.results.glob("run-*.json")]
+        self.assertEqual(record["parameters"], {"iterations": "30", "verbose": "true"})
+        for params, refusal in (
+            ({"iterations": "31"}, "--set iterations=31 is not the preregistered value 30"),
+            ({"other": "1"}, "--set other names no placeholder the command takes from the frozen [preregistration] table"),
+        ):
+            with self.subTest(params=params):
+                status, calls, stderr = run(params)
+                self.assertEqual((status, calls), (2, []))
+                self.assertIn(refusal, stderr)
+        status, calls, stderr = run({"iterations": "30"})
+        self.assertEqual((status, stderr), (0, ""))
+        self.assertEqual(len(list(self.results.glob("run-*.json"))), 2)
+        # Another command the frozen manifest holds is chosen at launch too.
+        status, calls, stderr = run({}, entrypoint="quick_entrypoint")
+        self.assertEqual((status, calls), (2, []))
+        self.assertIn("--entrypoint quick_entrypoint: a listed experiment runs only through its manifest's entrypoint", stderr)
+        self.assertEqual(len(list(self.results.glob("run-*.json"))), 2)
+
+    def test_an_unlisted_experiment_runs_through_any_entrypoint_with_its_set_values(self):
+        # Only the list binds a command: L001 and L004 run their second
+        # entrypoints with values given at launch.
+        self.write(
+            "experiments/x/L900-x/experiment.toml",
+            'id = "L900"\nstatus = "running"\nseeds = [17]\nentrypoint = "bench <seed>"\n'
+            'quick_entrypoint = "bench <seed> <n>"\n',
+        )
+        git(self.root, "commit", "-q", "--no-verify", "-am", "a second entrypoint")
+        status, calls, stderr = self.launch_listed({"n": "5"}, entrypoint="quick_entrypoint")
+        self.assertEqual((status, stderr), (0, ""))
+        self.assertEqual(calls[0].args[0], ["bench", "17", "5"])
+        [record] = [json.loads(path.read_text(encoding="utf-8")) for path in self.results.glob("run-*.json")]
+        self.assertEqual((record["entrypoint"], record["parameters"]), ("quick_entrypoint", {"n": "5"}))
+
+    def test_a_placeholder_the_frozen_table_does_not_hold_or_holds_as_a_list_is_refused(self):
+        # A placeholder with no frozen value would take one chosen at launch,
+        # and a list has no single token to stand for it; neither runs.
+        for table, entrypoint, refusal in (
+            ("schema = 1\n", "bench <seed> <missing>", "<missing> is no key of the frozen [preregistration] table"),
+            ("schema = 1\ngrid = [1, 2]\n", "bench <seed> <grid>", "<grid> is preregistered as a list, which no command token takes"),
+        ):
+            with self.subTest(entrypoint=entrypoint):
+                # A frozen table is never rewritten, so each case starts from
+                # a repository of its own.
+                self.tearDown()
+                self.setUp()
+                self.preregister("running", table, entrypoint=entrypoint)
+                for params in ({}, {"missing": "1"}, {"grid": "1"}):
+                    status, calls, stderr = self.launch_listed(params)
+                    self.assertEqual((status, calls), (2, []))
+                    self.assertEqual(list(self.results.glob("run-*.json")), [])
+                self.assertIn(refusal, self.launch_listed({})[2])
 
     def test_a_manifest_changed_before_the_watch_looked_is_refused(self):
         # The command is built from the manifest read first; one committed

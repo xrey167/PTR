@@ -851,7 +851,9 @@ def directory_digest_at(root: Path, commit: str, directory: str) -> str | None:
             continue
         meta,_,name=entry.partition("\t")
         mode,kind,held=meta.split()
-        if kind!="blob" or mode not in REGULAR_MODES:
+        if kind!="blob" or mode not in REGULAR_MODES or not is_repository_path(name):
+            # A file the tree check refuses, by its kind or its name, makes
+            # a directory no launch could have frozen.
             return None
         data=object_bytes(root,held)
         files[PurePosixPath(name).relative_to(directory).as_posix()]=file_entry(mode,experiment_records.preregistered_bytes_digest(data))
@@ -1090,8 +1092,13 @@ def frozen_errors(exp_id: str, entry: dict, manifest: dict, experiment: Path, ro
         return [f"{exp_id}: {REGISTRY} places it in {relative}, which is reached through a symlink, so its runs and "
                 "freezes there could not be found"]
     config=experiment/"config.toml"
-    if not config.is_file():
+    if not config.is_file() and not config.is_symlink():
         return [f"{exp_id}: config.toml does not exist"]
+    for name in ("experiment.toml","config.toml"):
+        # Read through a link, either would be a file no commit holds as the
+        # experiment's, and the runner could not launch from it.
+        if repository_file(root,f"{relative}/{name}") is None:
+            return [f"{exp_id}: {name} is not a regular file reached through no symlink"]
     settings=load(config)
     table=settings.get("preregistration")
     if not isinstance(table,dict):
