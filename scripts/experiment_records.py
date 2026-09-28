@@ -501,7 +501,8 @@ def uncommitted_files(root: Path, pathspecs: list[str]) -> list[str]:
             root, "status", "--porcelain=v1", "-z", "--untracked-files=no", "--no-renames", "--", *pathspecs
         )
     }
-    found.update(untracked_files(root, pathspecs))
+    # A nested repository is listed as `name/`; `unseen_trees` names it too.
+    found.update(name.rstrip("/") for name in untracked_files(root, pathspecs))
     found.update(hiding_rules(root, pathspecs))
     tracked = []
     for entry in listed_names(root, "ls-files", "-z", "--stage", "-v", "--", *pathspecs):
@@ -682,25 +683,39 @@ def head_rules(root: Path) -> dict[str, bytes]:
 
 
 def unseen_trees(root: Path, pathspecs: list[str], directories: set[str]) -> list[str]:
-    """The paths git does not look into that lie within reach of the build
-    (`within_reach`, judged by `directories`): an untracked or tracked
-    symlink to anything but a file (a directory, or nothing yet), an
-    untracked nested repository and a submodule. Git lists each as one path,
-    which no file pathspec matches, and holds none of what is read through
-    it. Raises `ProvenanceError` when git cannot list the tree."""
+    """The paths git does not look into that `pathspecs` name themselves or
+    that lie within reach of the build (`within_reach`, judged by
+    `directories`): an untracked or tracked symlink to anything but a file
+    (a directory, or nothing yet), an untracked nested repository and a
+    submodule. Git lists each as one path and holds none of what is read
+    through it. A file pathspec (`*.rs`) names no such path, but `.`, a
+    listed experiment's whole repository (`listed_record_paths`), names
+    every one, a submodule or a linked directory at the root included.
+    Raises `ProvenanceError` when git cannot list the tree."""
+    named = set(unseen_paths(root, pathspecs))
+    return [
+        name for name in unseen_paths(root, []) if name in named or within_reach(name, pathspecs, directories)
+    ]
+
+
+def unseen_paths(root: Path, pathspecs: list[str]) -> list[str]:
+    """The paths under `pathspecs` (every path when there are none) that git
+    does not look into, as `unseen_trees` names them, matched by git's own
+    rules for pathspecs. Raises `ProvenanceError` when git cannot list the
+    tree."""
     found = []
-    for entry in listed_names(root, "ls-files", "-z", "--others", PER_DIRECTORY):
+    for entry in listed_names(root, "ls-files", "-z", "--others", PER_DIRECTORY, "--", *pathspecs):
         # Without --directory git lists every untracked file, and only a
         # repository it will not enter as a directory of its own.
         name = entry.rstrip("/")
         if entry.endswith("/") or links_to_no_file(root / name):
             found.append(name)
-    for entry in listed_names(root, "ls-files", "-z", "--stage"):
+    for entry in listed_names(root, "ls-files", "-z", "--stage", "--", *pathspecs):
         fields, _, name = entry.partition("\t")
         mode = fields.split(" ")[0]
         if mode == GITLINK_MODE or (mode == SYMLINK_MODE and links_to_no_file(root / name)):
             found.append(name)
-    return [name for name in found if within_reach(name, pathspecs, directories)]
+    return found
 
 
 def links_to_no_file(path: Path) -> bool:

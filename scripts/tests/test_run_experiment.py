@@ -11,6 +11,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 import unittest
 from pathlib import Path
@@ -335,7 +336,7 @@ class RunWatchTests(unittest.TestCase):
         `launch_error` when given; returns the exit status, the records
         written and what was printed to stderr."""
 
-        def execute(_command, _environment=None):
+        def execute(_command, _environment=None, _program=None):
             if during is not None:
                 during()
             if launch_error is not None:
@@ -1391,6 +1392,28 @@ class RunWatchTests(unittest.TestCase):
         # A program that cannot be read is found, and named by nothing else.
         with mock.patch.object(mod, "ROOT", self.root), mock.patch.object(Path, "read_bytes", side_effect=PermissionError):
             self.assertEqual(mod.resolved_executable(["tools/run.sh"], {}), {"path": str(script.resolve()), "sha256": None})
+        # So is one that changed while it was read, which holds no one
+        # content; its stamp from before the read is kept, and a later
+        # reading of the same file does not replace it.
+        reading = Path.read_bytes
+
+        def rewritten(path):
+            content = reading(path)
+            if path == script.resolve():
+                path.write_text("#!/bin/sh\necho another\n", encoding="utf-8")
+            return content
+
+        before = mod.experiment_records.file_stamp(script.resolve())
+        stamps = {}
+        with mock.patch.object(mod, "ROOT", self.root), mock.patch.object(Path, "read_bytes", rewritten):
+            self.assertEqual(
+                mod.resolved_executable(["tools/run.sh"], {}, stamps), {"path": str(script.resolve()), "sha256": None}
+            )
+        self.assertEqual(stamps, {str(script.resolve()): before})
+        with mock.patch.object(mod, "ROOT", self.root):
+            self.assertEqual(mod.resolved_executable(["tools/run.sh"], {}, stamps)["path"], str(script.resolve()))
+        self.assertEqual(stamps, {str(script.resolve()): before})
+        script.write_text("#!/bin/sh\n", encoding="utf-8")
         # A listed run refuses one, the program it starts or a tool it builds
         # with, before anything runs: named by its path alone, it could be
         # replaced between seeds while every record named the same. (The
@@ -1407,8 +1430,9 @@ class RunWatchTests(unittest.TestCase):
                 status, records, stderr = self.run_seed(lambda: ran.append(True))
                 self.assertEqual((status, records, ran, list(self.attempts().glob("run-*.json"))), (2, [], [], []))
                 self.assertEqual(stderr, (
-                    f"ERROR: refusing to run L900: {script.resolve()} cannot be read, so its record could not name by "
-                    "its content a program the run starts or builds with; make it readable for the run\n"
+                    f"ERROR: refusing to run L900: {script.resolve()} cannot be read, or changed while it was read, so "
+                    "its record could not name by its content a program the run starts or builds with; make it "
+                    "readable, and leave it unchanged, for the run\n"
                 ))
         # The allowed environment is what the runner's sets of the allowed
         # names, and nothing else.
@@ -1443,6 +1467,93 @@ class RunWatchTests(unittest.TestCase):
                     "resolves from wherever it starts, so the record could not say which one the run used; set "
                     "absolute directories for the run\n"
                 ))
+
+    def test_a_program_the_record_names_changed_while_the_command_ran_leaves_it_unrecorded(self):
+        # The record names the program the run starts and the tools it builds
+        # with by the digests the launch read: one replaced for the run and
+        # put back afterwards would leave every seed's record naming the same
+        # while another program ran. Every write or replacement moves the
+        # file's stamp, which ordinary tools cannot set back.
+        outside = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        for name in ("bench", "rustc"):
+            (outside / name).write_text(f"#!/bin/sh\necho {name}\n", encoding="utf-8")
+            (outside / name).chmod(0o755)
+        self.preregister("running")
+
+        def swapped_and_put_back():
+            # Replaced by another file, and the original linked back.
+            os.link(outside / "bench", outside / "kept")
+            (outside / "other").write_text("#!/bin/sh\necho other\n", encoding="utf-8")
+            (outside / "other").chmod(0o755)
+            os.replace(outside / "other", outside / "bench")
+            os.replace(outside / "kept", outside / "bench")
+
+        def rewritten_and_put_back():
+            # Rewritten in place with as many bytes, and its time set back.
+            before = (outside / "rustc").stat()
+            (outside / "rustc").write_text("#!/bin/sh\necho other\n", encoding="utf-8")
+            (outside / "rustc").write_text("#!/bin/sh\necho rustc\n", encoding="utf-8")
+            os.utime(outside / "rustc", ns=(before.st_atime_ns, before.st_mtime_ns))
+
+        # Each change lands on a later tick of the clock than the file's last.
+        time.sleep(0.05)
+        search = os.pathsep.join((str(outside), os.environ.get("PATH", os.defpath)))
+        for during, program in ((swapped_and_put_back, "bench"), (rewritten_and_put_back, "rustc")):
+            with self.subTest(program=program), mock.patch.dict(os.environ, {"PATH": search}):
+                content = (outside / program).read_bytes()
+                status, records, stderr = self.run_seed(during)
+                self.assertEqual((outside / program).read_bytes(), content)
+                self.assertEqual((status, [record["status"] for record in records]), (2, ["started"]))
+                self.assertEqual(records[0]["executable"]["path"], str((outside / "bench").resolve()))
+                self.assertEqual(records[0]["toolchain"]["rustc"]["path"], str((outside / "rustc").resolve()))
+                self.assertIn(
+                    f"{(outside / program).resolve()} changed since the launch read it, so the program that ran may "
+                    "not be the one its digest in the record names",
+                    stderr,
+                )
+                # The seed ran; the next case runs it anew.
+                for record in (*self.results.glob("run-*.json"), *self.attempts().glob("run-*.json")):
+                    record.unlink()
+        # Left alone, the programs leave the run recorded.
+        with mock.patch.dict(os.environ, {"PATH": search}):
+            status, records, stderr = self.run_seed()
+        self.assertEqual((status, stderr, [record["status"] for record in records]), (0, "", ["completed"]))
+
+    def test_a_listed_run_starts_the_program_its_record_names(self):
+        # The process that starts a command looks its name up on the PATH
+        # again: a program put earlier on it once the launch had read the
+        # one the record names would run in its place.
+        outside = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        first, second = outside / "first", outside / "second"
+        first.mkdir()
+        second.mkdir()
+        (second / "bench").write_text("#!/bin/sh\necho second\n", encoding="utf-8")
+        (second / "bench").chmod(0o755)
+        self.preregister("running")
+        started = mod.execute_command
+
+        def put_first_then_start(command, environment=None, program=None):
+            (first / "bench").write_text("#!/bin/sh\necho first\n", encoding="utf-8")
+            (first / "bench").chmod(0o755)
+            return started(command, environment, program)
+
+        stderr = io.StringIO()
+        search = os.pathsep.join((str(first), str(second), os.environ.get("PATH", os.defpath)))
+        with (
+            mock.patch.object(mod, "ROOT", self.root),
+            mock.patch.object(mod, "REGISTRY", self.root / "experiments/registry.toml"),
+            mock.patch.object(mod, "execute_command", side_effect=put_first_then_start),
+            mock.patch.dict(os.environ, {"PATH": search}),
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(stderr),
+        ):
+            status = mod.run_experiment("L900", entrypoint="entrypoint", seed=17)
+        records = [json.loads(path.read_text(encoding="utf-8")) for path in sorted(self.results.glob("run-*.json"))]
+        self.assertEqual((status, stderr.getvalue()), (0, ""))
+        self.assertEqual(
+            [(record["executable"]["path"], record["stdout"]) for record in records],
+            [(str((second / "bench").resolve()), "second\n")],
+        )
 
     def test_a_copy_from_another_line_of_history_is_not_put_back_but_its_seed_has_run(self):
         # A run on another branch, or another worktree's, belongs to that
@@ -1709,6 +1820,14 @@ class RunWatchTests(unittest.TestCase):
         with mock.patch.object(mod, "ROOT", self.root):
             environment = {"PATH": str(bin_directory)}
             self.assertEqual(mod.toolchain(environment, ["cargo", "run"]), {"rustc": named("rustc"), "cargo": named("cargo")})
+            # Each tool rustup resolves is stamped as it is read, so a run
+            # during which one changed goes unrecorded.
+            stamps = {}
+            mod.toolchain(environment, ["cargo", "run"], stamps)
+            self.assertEqual(stamps, {
+                named(tool)["path"]: mod.experiment_records.file_stamp(Path(named(tool)["path"]))
+                for tool in ("rustc", "cargo")
+            })
             # A proxy's first argument `+<toolchain>` names the toolchain that
             # builds, as rustup runs it.
             stable = {"rustc": named("rustc", "stable"), "cargo": named("cargo", "stable")}

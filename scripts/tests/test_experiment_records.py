@@ -925,6 +925,30 @@ class SourceTreeTests(GitTree, unittest.TestCase):
         self.link(elsewhere, ".cargo")
         self.assertEqual(mod.uncommitted_files(self.root, self.pathspecs), [".cargo"])
 
+    def test_the_whole_repository_holds_what_git_does_not_look_into_at_its_root(self):
+        # A listed experiment's command may run or read any path of the
+        # repository (`listed_record_paths`), a submodule at the root among
+        # them: git holds only the commit its entry names, while its checkout
+        # can hold anything between two seeds.
+        whole = list(mod.listed_record_paths("experiments/L900-x/results"))
+        before = git(self.root, "rev-parse", "HEAD")
+        git(self.root, "update-index", "--add", "--cacheinfo", f"160000,{before},payload")
+        git(self.root, "commit", "-q", "--no-verify", "-m", "a submodule at the root")
+        self.write("payload/harness.py", "print('another')\n")
+        self.assertEqual(mod.uncommitted_files(self.root, self.pathspecs), [])
+        self.assertEqual(mod.uncommitted_files(self.root, whole), ["payload"])
+        # So is a nested repository or a linked directory there, each named once.
+        git(self.crate("vendored"), "init", "-q")
+        self.link(self.outside_crate(), "linked")
+        self.assertEqual(mod.uncommitted_files(self.root, whole), ["linked", "payload", "vendored"])
+        # What a pathspec leaves out stays out.
+        self.assertEqual(
+            mod.uncommitted_files(
+                self.root, [".", ":(exclude)payload", ":(exclude,literal)vendored", ":(exclude,glob)link*"]
+            ),
+            [],
+        )
+
     def test_an_ignore_rule_that_hides_no_source_is_not_reported(self):
         # JetBrains IDEs write .idea/.gitignore, tools write rules into the
         # caches they own, and a clone may add a rule of its own to the root

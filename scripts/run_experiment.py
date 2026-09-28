@@ -738,18 +738,21 @@ def is_rustup_proxy(path: str, rustup: str) -> bool:
         return False
 
 
-def toolchain(environment: dict[str, str], command: list[str]) -> dict:
+def toolchain(
+    environment: dict[str, str], command: list[str], stamps: dict[str, experiment_records.Stamp | None] | None = None
+) -> dict:
     """The Rust toolchain `command`, run from the repository's root in
     `environment`, would build with, each of `rustc` and `cargo` named as
-    `resolved_executable` names a program, by nothing when it cannot be
-    resolved: as rustup resolves it there, after its overrides and
-    `rust-toolchain.toml`, or for the toolchain the command names itself
-    (`named_toolchain`: `cargo +stable run`, `rustup run stable cargo
-    run`), where the `PATH`'s tool of that name is rustup's proxy
-    (`is_rustup_proxy`) or the command is `rustup run`; and otherwise as the
-    `PATH` holds it, such as a standalone Cargo before rustup's proxies,
-    which runs whatever rustup would resolve. rustup keeps its toolchains
-    outside the repository, where the commit holds none."""
+    `resolved_executable` names a program (and stamped into `stamps` as it
+    does), by nothing when it cannot be resolved: as rustup resolves it
+    there, after its overrides and `rust-toolchain.toml`, or for the
+    toolchain the command names itself (`named_toolchain`: `cargo +stable
+    run`, `rustup run stable cargo run`), where the `PATH`'s tool of that
+    name is rustup's proxy (`is_rustup_proxy`) or the command is `rustup
+    run`; and otherwise as the `PATH` holds it, such as a standalone Cargo
+    before rustup's proxies, which runs whatever rustup would resolve.
+    rustup keeps its toolchains outside the repository, where the commit
+    holds none."""
     search = os.pathsep.join(os.get_exec_path(environment))
     rustup = shutil.which("rustup", path=search)
     name = named_toolchain(command)
@@ -759,7 +762,7 @@ def toolchain(environment: dict[str, str], command: list[str]) -> dict:
     for tool in ("rustc", "cargo"):
         on_path = shutil.which(tool, path=search)
         if rustup is None or not (run_by_rustup or (on_path is not None and is_rustup_proxy(on_path, rustup))):
-            found[tool] = resolved_executable([tool], environment)
+            found[tool] = resolved_executable([tool], environment, stamps)
             continue
         try:
             which = subprocess.run(
@@ -768,19 +771,25 @@ def toolchain(environment: dict[str, str], command: list[str]) -> dict:
         except (OSError, subprocess.SubprocessError):
             which = None
         resolved = which.stdout.strip() if which is not None and which.returncode == 0 else ""
-        found[tool] = resolved_executable([resolved], environment) if os.path.isabs(resolved) else {
+        found[tool] = resolved_executable([resolved], environment, stamps) if os.path.isabs(resolved) else {
             "path": None, "sha256": None,
         }
     return found
 
 
-def resolved_executable(command: list[str], environment: dict[str, str]) -> dict:
+def resolved_executable(
+    command: list[str], environment: dict[str, str], stamps: dict[str, experiment_records.Stamp | None] | None = None
+) -> dict:
     """The program `command` starts, as the command runs it from the
     repository's root in `environment`: its path with every link resolved,
-    and the SHA-256 of its content; both None when there is no such file. A
-    name without a slash is looked up on `environment`'s `PATH`, as the
-    process that starts the command looks it up, and one with a slash is
-    read from the root."""
+    and the SHA-256 of its content; both None when there is no such file,
+    and the digest None when the file cannot be read or changed while it
+    was read. A name without a slash is looked up on `environment`'s
+    `PATH`, as the process that starts the command looks it up, and one
+    with a slash is read from the root. Given `stamps`, the file's stamp
+    (`experiment_records.file_stamp`) from before it was read goes in under
+    its path, unless one is there already: while the stamp stays, the file
+    holds the content the digest names."""
     program = command[0]
     if os.sep in program or (os.altsep and os.altsep in program):
         found = str(ROOT / program)
@@ -790,20 +799,30 @@ def resolved_executable(command: list[str], environment: dict[str, str]) -> dict
     if found is None:
         return {"path": None, "sha256": None}
     target = Path(os.path.realpath(found))
+    stamp = experiment_records.file_stamp(target)
     try:
         digest = hashlib.sha256(target.read_bytes()).hexdigest()
     except OSError:
         digest = None
+    if stamp is None or experiment_records.file_stamp(target) != stamp:
+        digest = None
+    if stamps is not None:
+        stamps.setdefault(str(target), stamp)
     return {"path": str(target), "sha256": digest}
 
 
-def execute_command(command: list[str], environment: dict[str, str] | None = None) -> dict:
+def execute_command(
+    command: list[str], environment: dict[str, str] | None = None, program: str | None = None
+) -> dict:
     """Run `command` from the repository's root in `environment`, or in the
     runner's own environment when None, and return its exit status,
-    output, launch error and duration. Python in it reads and writes its
-    bytecode cache in a fresh directory (`PYTHONPYCACHEPREFIX`), so no
-    `__pycache__` entry the tree holds, which git ignores and HEAD does not
-    hold, runs in place of a tracked source. Given an environment (a listed
+    output, launch error and duration. Given `program`, the command starts
+    that file under the name `command[0]`, as the process would once it
+    looked the name up: a program put earlier on the `PATH` meanwhile does
+    not run in its place. Python in it reads and writes its bytecode cache
+    in a fresh directory (`PYTHONPYCACHEPREFIX`), so no `__pycache__` entry
+    the tree holds, which git ignores and HEAD does not hold, runs in place
+    of a tracked source. Given an environment (a listed
     experiment's), Cargo in it builds into a fresh directory too
     (`CARGO_TARGET_DIR`), from the commit's sources alone and outside the
     repository, which then holds no build output a later run could take
@@ -835,6 +854,7 @@ def execute_command(command: list[str], environment: dict[str, str] | None = Non
         try:
             process = subprocess.Popen(
                 command,
+                executable=program,
                 cwd=ROOT,
                 text=True,
                 stdout=subprocess.PIPE,
@@ -906,8 +926,11 @@ def run_experiment(
     whatever the watch saw. A listed experiment's command runs in the
     environment the runner allows (`command_environment`), which its record
     names with the program it started (`resolved_executable`) and the
-    toolchain (`toolchain`), each by its content: one that cannot be read
-    refuses the run. The record is written whole or not at all
+    toolchain (`toolchain`), each by its content: one that cannot be read,
+    or changes while it is read, refuses the run, the command starts the
+    very file its record names, and a run during which one of them changed
+    (its stamp moved, `experiment_records.file_stamp`) is not recorded. The
+    record is written whole or not at all
     (`write_json_exclusive`)."""
     _, root, data = resolve(exp_id)
     if unrecordable_manifest(exp_id, data) or launch_refused(exp_id):
@@ -1045,19 +1068,24 @@ def launch_and_record(
                 file=sys.stderr,
             )
             return 2
-        executable = resolved_executable(command, environment)
-        tools = toolchain(environment, command)
+        # Each program's stamp from before it was read: while it stays, the
+        # file holds what its digest names, through the run.
+        stamps: dict[str, experiment_records.Stamp | None] = {}
+        executable = resolved_executable(command, environment, stamps)
+        tools = toolchain(environment, command, stamps)
         # A program named by its path alone could be replaced between seeds
         # while every record named the same: one found that cannot be read,
-        # such as a binary only executable, is refused.
+        # such as a binary only executable, or that changed while it was
+        # read, is refused.
         unread = list(dict.fromkeys(
             program["path"] for program in (executable, *tools.values())
             if program["path"] is not None and program["sha256"] is None
         ))
         if unread:
             print(
-                f"ERROR: refusing to run {exp_id}: {', '.join(unread)} cannot be read, so its record could not name "
-                "by its content a program the run starts or builds with; make it readable for the run",
+                f"ERROR: refusing to run {exp_id}: {', '.join(unread)} cannot be read, or changed while it was read, "
+                "so its record could not name by its content a program the run starts or builds with; make it "
+                "readable, and leave it unchanged, for the run",
                 file=sys.stderr,
             )
             return 2
@@ -1110,7 +1138,7 @@ def launch_and_record(
             return 2
     stays = f"; {out.relative_to(ROOT)} stays as the record that seed {seed} ran" if listed else ""
 
-    execution = execute_command(command, environment)
+    execution = execute_command(command, environment, executable["path"] if listed else None)
     exit_code = execution["exit_code"]
     launched = exit_code is not None
     record.update(
@@ -1149,6 +1177,17 @@ def launch_and_record(
             changes.append(
                 f"Cargo would read {', '.join(outside)}, configuration outside the repository its build could have "
                 "read"
+            )
+        # A program the record names by its digest could have been replaced
+        # while the command ran, and put back: every write or replacement
+        # moves its stamp.
+        moved = [
+            path for path, stamp in stamps.items() if experiment_records.file_stamp(Path(path)) != stamp
+        ] if listed else []
+        if moved:
+            changes.append(
+                f"{experiment_records.listed(moved)} changed since the launch read it, so the program that ran may not "
+                "be the one its digest in the record names"
             )
         if changes:
             print(
