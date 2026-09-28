@@ -1796,9 +1796,11 @@ class AggregateBindingTests(unittest.TestCase):
         self.write("metrics.json", {**self.metrics, **carried})
         metrics = hashlib.sha256((self.results / "metrics.json").read_bytes()).hexdigest()
         self.write("run.json", {**self.run, **carried, "metrics_sha256": metrics})
-        errors = self.errors()
-        self.assertEqual(len(errors), 1, errors)
-        self.assertIn("run.json carries mutation checks that name no sha256 of mutations.json", errors[0])
+        # A current aggregate is one HEAD's aggregator wrote, which names it.
+        self.assertEqual(self.errors(), [
+            "L900: experiments/L900-x/results/run.json carries mutation checks that name no sha256 of mutations.json, "
+            "so nothing binds the outcomes it lists; rerun its aggregate.py"
+        ])
         commit(self.root, {}, "archive")
         commit(self.root, {"src/lib.rs": "pub fn f() { g() }\n"}, "change")
         self.assertEqual(self.errors(), [])
