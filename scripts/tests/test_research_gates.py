@@ -930,6 +930,22 @@ class PreregistrationGateTests(unittest.TestCase):
 
     def test_run_records_are_found_wherever_the_experiment_kept_them(self):
         name=self.RECORD.removeprefix("experiments/semdb/X900-fixture/")
+        # A record kept in a results directory a committed manifest named is
+        # found once the manifest names another, and deleted, it is missed.
+        root=self.tree(status="running")
+        write(root,self.MANIFEST,(root/self.MANIFEST).read_text(encoding="utf-8")+'results_dir = "out"\n')
+        ran=commit_all(root)
+        kept=self.RECORD.replace("/results/","/out/")
+        write(root,kept,json.dumps(self.record(root,ran)))
+        commit_all(root,"record")
+        self.assertIn(kept,mod.committed_records(root,["experiments/semdb/X900-fixture"]))
+        (root/kept).unlink()
+        write(root,self.MANIFEST,(root/self.MANIFEST).read_text(encoding="utf-8").replace('results_dir = "out"\n',""))
+        commit_all(root,"record deleted, results_dir dropped")
+        code,lines=gate(root)
+        self.assertEqual(code,1)
+        self.assertIn(f"X900: out/{name.removeprefix('results/')} was committed and has since been deleted or renamed; "
+                      "a run record stays as it was recorded",lines)
         # The results directory moved after the run, and a rewritten
         # preregistration recorded in the new one: the old record is still
         # checked, where it was committed.
@@ -1165,6 +1181,9 @@ class PreregistrationGateTests(unittest.TestCase):
                     f"X900: baseline {directory}/ shares files with the results directory experiments/semdb/X900-fixture/results/, "
                     "whose files the runner does not hold to HEAD",
                 )
+                # A commit holding it could not launch, and froze nothing.
+                commit=commit_all(root)
+                self.assertIsNone(mod.launchable_at(root,commit,"X900","experiments/semdb/X900-fixture"))
         # Once results_dir names another directory, the same file is frozen
         # like any other.
         root=self.tree(table=table,required={**REQUIRED,"protocol":"file"})
@@ -1392,12 +1411,18 @@ class PreregistrationGateTests(unittest.TestCase):
     def test_a_listed_experiment_names_its_entrypoint_before_it_leaves_planned(self):
         # The manifest is frozen from the first commit past planned, so an
         # entrypoint named only later could never be named at all.
-        root=self.tree(status="prepared")
-        self.edit(root,self.MANIFEST,'entrypoint = "bench <seed>"\n','entrypoint = ""\n')
         refusal=("X900: experiment.toml names no entrypoint; a listed experiment names what it runs before it "
                  "leaves planned, since its manifest is frozen from then on")
-        self.assert_blocked(root,refusal)
-        self.assertEqual(mod.launch_errors(root,"X900"),[refusal])
+        # Empty, absent, or no string: each is the one refusal, and no
+        # command is read from it.
+        for spelling in ('entrypoint = ""\n',"","entrypoint = 1\n"):
+            with self.subTest(spelling=spelling):
+                root=self.tree(status="prepared")
+                self.edit(root,self.MANIFEST,'entrypoint = "bench <seed>"\n',spelling)
+                self.assert_blocked(root,refusal)
+                self.assertEqual(mod.launch_errors(root,"X900"),[refusal])
+        root=self.tree(status="prepared")
+        self.edit(root,self.MANIFEST,'entrypoint = "bench <seed>"\n','entrypoint = ""\n')
         # A commit without one could not launch it, and froze nothing.
         commit_all(root)
         self.edit(root,self.MANIFEST,'entrypoint = ""\n','entrypoint = "bench <seed>"\n')
@@ -1432,6 +1457,8 @@ class PreregistrationGateTests(unittest.TestCase):
         write(root,second,json.dumps(self.record(root,commit,seed=17,status="failed-to-launch")))
         write(root,f"{results}/run-20260103T000000.000000Z-seed-29.json",json.dumps(self.record(root,commit,seed=29,status="completed")))
         write(root,f"{results}/run-20251231T000000.000000Z.json",json.dumps(self.record(root,commit,status="prepared")))
+        # Nor is an aggregate that names a seed a run of it.
+        write(root,self.AGGREGATE,json.dumps(self.aggregate(root,commit,seed=17)))
         self.assertEqual(gate(root),(0,[]))
         refusal=("X900: seed 17 ran more than once (results/run-20260101T000000.000000Z-seed-17.json, "
                  "results/run-20260102T000000.000000Z-seed-17.json); a listed experiment runs each seed once, so no "
@@ -1834,12 +1861,35 @@ class PreregistrationGateTests(unittest.TestCase):
                     shutil.copyfile(repaired/relative,root/relative)
                 commit_all(root,"renamed")
                 self.assertEqual(gate(root),(0,[]))
-        # Nor did a commit whose baseline held a link, the table naming none.
+        # Nor did a commit whose baseline held a link, the table naming none,
+        # or naming the digest the link's target path would give as a file.
+        linked=mod.file_table_digest({
+            "config.toml":mod.file_entry("100644",mod.experiment_records.preregistered_bytes_digest(baseline_text.encode("utf-8"))),
+            "alias.toml":mod.file_entry("120000",mod.experiment_records.preregistered_bytes_digest(b"config.toml")),
+        })
+        for table in ({key:value for key,value in TABLE.items() if key!="baseline_fixture_sha256"},
+                      {**TABLE,"baseline_fixture_sha256":linked}):
+            with self.subTest(named="baseline_fixture_sha256" in table):
+                root=self.tree(status="running",table=table,freeze_baselines=False)
+                self.link(Path("config.toml"),root/"research/baselines/fixture/alias.toml")
+                commit=commit_all(root)
+                self.assertIsNone(mod.directory_digest_at(root,commit,"research/baselines/fixture"))
+                self.assertIsNone(mod.launchable_at(root,commit,"X900","experiments/semdb/X900-fixture"))
+        # A record run there is not of the frozen baseline either, the table
+        # naming none: no digest is none a table could name.
         root=self.tree(status="running",table={key:value for key,value in TABLE.items() if key!="baseline_fixture_sha256"},
                        freeze_baselines=False)
         self.link(Path("config.toml"),root/"research/baselines/fixture/alias.toml")
-        commit=commit_all(root)
-        self.assertIsNone(mod.launchable_at(root,commit,"X900","experiments/semdb/X900-fixture"))
+        ran=commit_all(root)
+        write(root,self.RECORD,json.dumps(self.record(root,ran)))
+        commit_all(root,"record")
+        self.assert_blocked(
+            root,
+            "X900: baseline research/baselines/fixture/ holds research/baselines/fixture/alias.toml, which is not a "
+            "regular file reached through no symlink",
+            f"X900: {self.RECORD.removeprefix('experiments/semdb/X900-fixture/')} ran at {ran[:12]}, where baseline "
+            "fixture is not the frozen one: its directory holds other files",
+        )
 
     def test_a_listed_experiments_entrypoint_takes_only_preregistered_values(self):
         # The runner fills each placeholder but <seed> from the frozen table;
