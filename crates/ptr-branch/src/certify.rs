@@ -12,44 +12,42 @@ use crate::ops::holds_member;
 
 /// A certified branch, ready to be proposed as one ordinary semantic delta.
 ///
-/// A plan is not a commit. It carries the revision it was certified against
-/// and the lifecycle generations the branch relied on, and it must be
-/// committed with both: [`MergePlan::expected`], [`MergePlan::delta`] and
-/// [`MergePlan::relied`] are exactly the `expected`, `delta` and `relied`
-/// arguments of the runtime's `apply_certified_semantic_delta(expected,
-/// delta, relied, principal)`. That call refuses the plan unless the
-/// runtime's semantic revision is still `expected`, refuses it if any
-/// relied-on generation is no longer live when it would append, and appends
-/// it only after every verifier of the host's installed grant has admitted
-/// the exact state it would publish.
+/// A plan is not a commit, and nothing commits one. The runtime merges a
+/// branch, not a plan: `PtrRuntime::merge_branch(sealed, authority)` takes
+/// the [`SealedBranch`], certifies it against its own state in the same call,
+/// with every relied generation checked against its lifecycle state as it is
+/// then, and appends the plan that certification yields only after every
+/// verifier of the host's installed grant has admitted the exact state it
+/// would publish, and only under the grant's merge policy or a listed
+/// reviewer's approval of exactly this plan's [`MergePlan::digest`]. A plan
+/// [`certify`] returns here is a what-if: what a person reviews and what a
+/// verifier or a triage policy is shown, never something the runtime takes
+/// on trust.
 ///
-/// The revision and the reliance check are the plan's only freshness fences.
-/// The semantic revision moves only when a semantic delta that changes
-/// semantic state is committed (another plan, ingested request text, a
-/// promoted Pod output or any other `SemanticDeltaCommitted`); lifecycle,
-/// verifier, snapshot and effect records leave it where it is. So a plan
-/// certified before a new hard constraint, a capsule or procedure the branch
-/// did not rely on or a verifier attestation is not refused for it: of those
-/// records, only one that leaves a generation in `relied` revoked,
-/// superseded or unknown refuses the plan, through the reliance check.
-/// Nothing else the branch depended on is checked again when the plan
-/// commits: a hard constraint committed after certification, for example, is
-/// taken into account then only if the installed grant's verifiers look for
-/// it.
+/// Its revision and relied generations are what certification checked the
+/// branch against. The semantic revision moves only when a semantic delta
+/// that changes semantic state is committed (another merge, ingested request
+/// text, a promoted Pod output or a host write); lifecycle, verifier,
+/// snapshot and effect records leave it where it is. So a plan certified
+/// before a new hard constraint, a capsule or procedure the branch did not
+/// rely on or a verifier attestation is certified again unchanged when the
+/// branch is merged: of those records, only one that leaves a generation in
+/// `relied` revoked, superseded or unknown refuses the merge. Nothing else
+/// the branch depended on is checked again: a hard constraint committed after
+/// certification, for example, is taken into account at merge time only if
+/// the installed grant's verifiers look for it.
 ///
-/// Apart from those checks, the runtime refuses every commit, this plan's
+/// Apart from those checks, the runtime refuses every commit, a merge
 /// included, with `ExecutionFenced` while it is fenced: while an effect
 /// attempt it recorded (`EffectAttempted`) is neither settled nor reconciled,
 /// or while it does not know whether its own last append committed. That
-/// refusal is not about the plan and does not move its revision; once the
-/// attempt is settled or reconciled the plan is judged by the checks above
-/// again.
+/// refusal is not about the branch and does not move its revision.
 ///
-/// Nothing enforces that path by type: the runtime does not depend on this
-/// crate, so a caller that drops `relied` and commits the delta as an
-/// ordinary host write (`apply_verified_semantic_delta`, which checks no
-/// relied generation, though the grant's verifiers still judge it) is not
-/// stopped here.
+/// A plan's delta is an ordinary semantic delta, and a host whose grant
+/// allows host writes may write it through `apply_verified_semantic_delta`
+/// like any other delta: that is a host write, recorded with its principal
+/// and judged by the same verifiers, not a merge, and the branch stays
+/// unmerged.
 ///
 /// Its fields are private and only [`certify`] builds one, so nothing
 /// [`MergePlan::digest`] covers can change between certification and
@@ -109,13 +107,15 @@ impl MergePlan {
         &self.branch
     }
 
-    /// The semantic revision the plan was certified against; the runtime
-    /// refuses it at any other. Only a committed semantic delta that changes
-    /// semantic state moves this revision: a lifecycle, verifier, snapshot or
-    /// effect record does not, so none of them refuses the plan through this
-    /// check (see [`MergePlan::relied`] for the lifecycle changes that do,
+    /// The semantic revision the plan was certified against. Only a committed
+    /// semantic delta that changes semantic state moves this revision: a
+    /// lifecycle, verifier, snapshot or effect record does not, so a branch
+    /// certified again after one of them yields a plan with the same revision
+    /// (see [`MergePlan::relied`] for the lifecycle changes that refuse it,
     /// and the type's documentation for the runtime's `ExecutionFenced`
-    /// refusal while an effect attempt is unsettled).
+    /// refusal while an effect attempt is unsettled). The revision is part of
+    /// [`MergePlan::digest`], so an approval of a plan certified at one
+    /// revision does not stand for the plan certified at another.
     pub fn expected(&self) -> Revision {
         self.expected
     }
@@ -132,10 +132,11 @@ impl MergePlan {
     }
 
     /// Each lifecycle target the branch relied on and the generation it
-    /// relied on, all live when the plan was certified. The runtime must
-    /// check them again when it commits the plan, and those are the only
-    /// lifecycle targets it checks: a change to any other, such as a new hard
-    /// constraint, neither moves [`MergePlan::expected`] nor refuses the plan.
+    /// relied on, all live when the plan was certified. The runtime checks
+    /// them again when it merges the branch, since it certifies it again, and
+    /// those are the only lifecycle targets it checks: a change to any other,
+    /// such as a new hard constraint, neither moves [`MergePlan::expected`]
+    /// nor refuses the merge.
     pub fn relied(&self) -> &BTreeMap<String, Generation> {
         &self.relied
     }
@@ -349,9 +350,9 @@ impl Certification {
 /// would not produce meets them too. A `Put` of the value recomputed from
 /// the key's inputs, staged by a branch over the target, is the way through.
 ///
-/// The plan carries the relied-on generations, and the runtime
-/// must check them again when it commits (see [`MergePlan`]); a generation
-/// revoked or superseded after this call is not seen here.
+/// The plan carries the relied-on generations. A generation revoked or
+/// superseded after this call is not seen here; the runtime's merge certifies
+/// the branch again, so it refuses the merge there (see [`MergePlan`]).
 ///
 /// What sealing guarantees is checked once more rather than trusted
 /// ([`SealedBranch::recheck`], the invariants [`SealedBranch::from_parts`]

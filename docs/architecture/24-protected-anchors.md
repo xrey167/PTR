@@ -347,6 +347,11 @@ snapshot is still read, and only with a `PTRLC001` section, as a snapshot of a
 history that holds no attributed record, which is what every such snapshot
 describes. A `PTRLC001` section that carries the marker or a merged-branch key is
 refused by version, as is any other pairing of the outer and lifecycle versions.
+In a `PTRLC002` section a merged-branch key must be exactly
+`branch-merge:<byte length>:<id>` holding exactly `<commit index>:<plan digest in
+lowercase hexadecimal>`, as a merge projects it, or the section is refused as
+noncanonical: the runtime reads a branch as merged from that key, and a spelling it
+could not read would let the branch merge a second time.
 
 `covers()` is taken from the snapshot, not chosen by the caller: reporting a
 position the snapshot does not hold would let a cutover discard records whose

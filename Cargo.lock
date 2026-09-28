@@ -3470,9 +3470,6 @@ name = "ptr-branch"
 version = "0.1.0"
 dependencies = [
  "ptr-analytics",
- "ptr-config",
- "ptr-ledger",
- "ptr-runtime",
  "ptr-semdb",
  "ptr-types",
  "ptr-verifier",
@@ -3690,6 +3687,7 @@ dependencies = [
 name = "ptr-runtime"
 version = "0.1.0"
 dependencies = [
+ "ptr-branch",
  "ptr-config",
  "ptr-core",
  "ptr-events",

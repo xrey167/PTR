@@ -1,7 +1,9 @@
-//! The semantic grant: installed once and required for every host write,
-//! never needed by ingress, and not history, so a rebuilt runtime has none.
-//! `commit` takes no semantic record at all.
+//! The semantic grant: installed once and required for every host write and
+//! merge, never needed by ingress, and not history, so a rebuilt runtime has
+//! none. `commit` takes no semantic record at all.
 use std::sync::Arc;
+
+use ptr_branch::{AutoThreshold, Branch, BranchId, PolicyRecord, TriagePolicy};
 
 use ptr_config::PtrConfig;
 use ptr_ledger::{Attestation, CommittedEvent, LedgerEvent, SemanticOrigin};
@@ -13,9 +15,11 @@ use ptr_pods::{DynPod, PodManifest, PodRegistry};
 use ptr_protocol::TypedPayload;
 use ptr_runtime::execution::RequiredVerification;
 use ptr_runtime::semantic::{pod_output_key, request_raw_key};
-use ptr_runtime::{PtrRuntime, RuntimeError, SemanticGrant, SemanticGrantInfo};
+use ptr_runtime::{MergeAuthority, PtrRuntime, RuntimeError, SemanticGrant, SemanticGrantInfo};
 use ptr_semdb::{is_ingress_key, SemanticDelta, SemanticValue};
-use ptr_types::{PodId, PrincipalId, ProjectId, RequestId, Revision, VerificationLevel};
+use ptr_types::{
+    PodId, PrincipalId, Probability, ProjectId, RequestId, Revision, VerificationLevel,
+};
 use ptr_verifier::{VerificationReport, Verifier};
 
 #[path = "common/semantic.rs"]
@@ -64,6 +68,8 @@ fn a_second_grant_is_refused() {
             required: RequiredVerification::Deterministic,
             verifiers: vec![ACCEPT_ALL.into()],
             host_writes: true,
+            policy_version: None,
+            reviewers: Default::default(),
         })
     );
 }
@@ -140,16 +146,165 @@ fn no_grant_refuses_host_writes() {
         host_write(&mut runtime, Revision(0), delta("price", "1")),
         Err(RuntimeError::NoSemanticGrant)
     );
+    assert!(runtime.committed_events().is_empty());
+}
+
+/// A merge policy auto-proposing a branch scoring at least 0.8, versioned
+/// `version`.
+fn merge_policy(version: &str) -> PolicyRecord {
+    PolicyRecord::manual(
+        version,
+        TriagePolicy::new(AutoThreshold::AtLeast(0.8), 0.1).unwrap(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn no_grant_refuses_merges() {
+    let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+    let mut work = Branch::open(
+        BranchId::from("b1"),
+        PrincipalId::from("agent-1"),
+        runtime.snapshot(),
+    );
+    work.read("price").unwrap();
+    work.put("price", "1".into()).unwrap();
+    let sealed = work.seal().unwrap();
+    let triaged = MergeAuthority::Triage {
+        score: Probability::new(0.9).unwrap(),
+    };
+    let reviewed = MergeAuthority::Reviewed {
+        plan_digest: [0; 32],
+        reviewer: PrincipalId::from("reviewer-1"),
+    };
+
+    // No grant: no merge, previewed or committed, whoever authorizes it.
     assert_eq!(
-        runtime.apply_certified_semantic_delta(
-            Revision(0),
-            delta("price", "1"),
-            &Default::default(),
-            &operator(),
-        ),
+        runtime.preview_merge(&sealed),
         Err(RuntimeError::NoSemanticGrant)
     );
+    for authority in [triaged.clone(), reviewed.clone()] {
+        assert_eq!(
+            runtime.merge_branch(&sealed, authority),
+            Err(RuntimeError::NoSemanticGrant)
+        );
+    }
+    // A grant with neither a merge policy nor a reviewer admits host writes
+    // but commits no merge: the runtime triages under no policy, and no
+    // reviewer is listed.
+    granted(&mut runtime);
+    assert_eq!(
+        runtime.merge_branch(&sealed, triaged),
+        Err(RuntimeError::NoMergePolicy)
+    );
+    assert_eq!(
+        runtime.merge_branch(&sealed, reviewed),
+        Err(RuntimeError::UnknownReviewer {
+            reviewer: "reviewer-1".into()
+        })
+    );
     assert!(runtime.committed_events().is_empty());
+    assert_eq!(runtime.merged_at(&BranchId::from("b1")), None);
+}
+
+#[test]
+fn the_grant_info_never_reveals_the_calibration_seed() {
+    const SEED: u64 = 0x5eed_c0de_0bad_f00d;
+    let grant = || {
+        SemanticGrant::new(RequiredVerification::Deterministic)
+            .with_verifier(AcceptAll)
+            .with_merge_policy(merge_policy("policy-v1"), SEED)
+            .with_reviewer(PrincipalId::from("reviewer-1"))
+            .with_reviewer(PrincipalId::from("reviewer-2"))
+    };
+    let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+    runtime.install_semantic_grant(grant()).unwrap();
+    let info = runtime.semantic_grant().unwrap();
+    assert_eq!(
+        info,
+        SemanticGrantInfo {
+            required: RequiredVerification::Deterministic,
+            verifiers: vec![ACCEPT_ALL.into()],
+            host_writes: false,
+            policy_version: Some("policy-v1".into()),
+            reviewers: [
+                PrincipalId::from("reviewer-1"),
+                PrincipalId::from("reviewer-2"),
+            ]
+            .into(),
+        }
+    );
+    // Neither what the host reads back nor the grant as printed carries the
+    // seed, in any base it is commonly printed in.
+    for printed in [format!("{info:?}"), format!("{:?}", grant())] {
+        for seed in [
+            SEED.to_string(),
+            format!("{SEED:x}"),
+            format!("{SEED:X}"),
+            format!("{SEED:#x}"),
+            (SEED as i64).to_string(),
+        ] {
+            assert!(!printed.contains(&seed), "{printed} shows the seed");
+        }
+        assert!(printed.contains("policy-v1"), "{printed}");
+    }
+}
+
+#[test]
+fn a_policy_version_or_reviewer_that_is_not_a_valid_identifier_is_refused() {
+    let long = "a".repeat(ptr_runtime::merge::MAX_PROVENANCE_TEXT + 1);
+    let fits = "a".repeat(ptr_runtime::merge::MAX_PROVENANCE_TEXT);
+    let version_reason = "a merge policy version is not an identifier of at most 256 bytes";
+    let reviewer_reason = "a reviewer is not an identifier of at most 256 bytes";
+    let base = || SemanticGrant::new(RequiredVerification::Deterministic).with_verifier(AcceptAll);
+    let mut cases = Vec::new();
+    // `PolicyRecord` refuses only an empty version; the grant refuses what a
+    // record could not name.
+    for version in [" policy-v1", "policy-v1 ", "policy\u{0}v1", long.as_str()] {
+        cases.push((
+            base().with_merge_policy(merge_policy(version), 1),
+            version_reason,
+        ));
+    }
+    for reviewer in [
+        "",
+        " reviewer-1",
+        "reviewer-1\n",
+        "review\u{7}er",
+        long.as_str(),
+    ] {
+        cases.push((
+            base().with_reviewer(PrincipalId::from(reviewer)),
+            reviewer_reason,
+        ));
+    }
+    // One invalid reviewer among valid ones refuses the grant.
+    cases.push((
+        base()
+            .with_reviewer(PrincipalId::from("reviewer-1"))
+            .with_reviewer(PrincipalId::from(" reviewer-2")),
+        reviewer_reason,
+    ));
+    for (grant, reason) in cases {
+        let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+        assert_eq!(
+            runtime.install_semantic_grant(grant),
+            Err(RuntimeError::InvalidSemanticGrant { reason })
+        );
+        assert_eq!(runtime.semantic_grant(), None);
+    }
+    // Exactly the bound installs.
+    let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+    runtime
+        .install_semantic_grant(
+            base()
+                .with_merge_policy(merge_policy(&fits), 1)
+                .with_reviewer(PrincipalId::from(fits.as_str())),
+        )
+        .unwrap();
+    let info = runtime.semantic_grant().unwrap();
+    assert_eq!(info.policy_version.as_deref(), Some(fits.as_str()));
+    assert!(info.reviewers.contains(&PrincipalId::from(fits.as_str())));
 }
 
 #[test]

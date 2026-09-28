@@ -32,11 +32,15 @@ flowchart LR
 A semantic write checks optimistic concurrency, stages a complete validated
 update, then appends one record containing the base revision, result revision,
 canonical encoded delta and the origin that allowed it. Publication occurs only
-after successful append. There are two kinds of write. Ingress (`ingest_text`, and
-a verified Pod output) writes exactly the shape its origin fixes, with no
+after successful append. There are three kinds of write. Ingress (`ingest_text`,
+and a verified Pod output) writes exactly the shape its origin fixes, with no
 verifier. A host write (`apply_verified_semantic_delta(expected, delta,
 principal)`) is admitted only by every verifier of the `SemanticGrant` the host
-installed, and never touches a key only ingress writes. Generic `commit` refuses
+installed, and never touches a key only ingress writes. A merge
+(`merge_branch(sealed, authority)`, doc 35 §2) certifies a sealed agent branch
+against the runtime's own state, is admitted by the same verifiers, and commits
+only under the grant's merge policy or a listed reviewer's approval of its plan
+digest, once per branch id. Generic `commit` refuses
 semantic records outright (`SemanticRecordOutsideSemanticPath`). Replay validates
 the same transition, and the same origin rules, before materializing it. An
 invalid schema, revision jump, wrong base, encoded no-op record or origin that
@@ -104,21 +108,28 @@ the runtime's to check, with the same rules on every write and every replay:
   is refused (`LegacySemanticRecord`). The runtime never writes one.
 - **R2.** A request's record holds exactly its raw text, and a Pod's output record
   exactly that output, sourced from the Pod and derived from the request's text.
-- **R3.** A host write writes, removes, derives and evicts no ingress key,
-  names a valid principal, and carries an attestation whose weakest level meets
-  its requirement, with 1 to 16 verifiers whose names are distinct and valid,
-  and at most 32 soft findings, sorted, distinct, and each a recorded verifier's
-  code. An ingress key is evicted only through a dependency a record without an
-  origin set up (a key only ingress writes, derived from one the write changes).
-  No write since can remove such a dependency, so the host key it hangs on can no
-  longer be written by a host: the write is refused naming the ingress key rather
-  than erasing ingress by invalidation.
+- **R3.** A host write or a merge writes, removes, derives and evicts no ingress
+  key, names valid provenance text (a host write's principal; a merge's branch,
+  author, and reviewer or policy version, with a triage score in `[0, 1]`), and
+  carries an attestation whose weakest level meets its requirement, with 1 to 16
+  verifiers whose names are distinct and valid, and at most 32 soft findings,
+  sorted, distinct, and each a recorded verifier's code. An ingress key is
+  evicted only through a dependency a record without an origin set up (a key only
+  ingress writes, derived from one the change writes). No write since can remove
+  such a dependency, so the key it hangs on can no longer be written by a host or
+  a merge: the change is refused naming the ingress key rather than erasing
+  ingress by invalidation.
+- **R4.** A merge carries no dependency entry, since certification never rewires
+  a key; names no rebased key it removes or only ingress writes; carries the plan
+  digest `ptr_branch::merge_plan_digest` gives for its branch, base revision,
+  encoded delta, dependency digest and rebased keys, so it holds exactly the delta
+  of the plan it names; and merges a branch not merged before, whose
+  `branch-merge:<len>:<id>` key it then projects.
 
 Replay also refuses a record the ledger could not frame, which only a history
 held in memory (replay, the records a compacted restore replays above its floor)
 can carry, since the codec refuses to write or read one.
 
-A merge record is refused (`InvalidSemanticOrigin`) until the runtime merges.
 Replay never runs a verifier again: a grant is not history.
 
 The ledger does not depend on the semantic crate: it preserves

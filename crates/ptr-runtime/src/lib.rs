@@ -6,8 +6,8 @@ pub mod persistence;
 pub mod semantic;
 
 pub use merge::{
-    ChangeOrigin, SemanticChange, SemanticGrant, SemanticGrantInfo, SemanticRefusal,
-    SemanticVerdict,
+    ChangeOrigin, HoldReason, MergeAuthority, MergeHold, MergeOutcome, MergePreview, MergeReceipt,
+    SemanticChange, SemanticGrant, SemanticGrantInfo, SemanticRefusal, SemanticVerdict,
 };
 
 use ptr_config::PtrConfig;
@@ -83,14 +83,44 @@ pub enum RuntimeError {
     },
     /// A host write under a grant that does not allow host writes.
     HostWritesNotGranted,
-    /// Provenance text a record would carry, such as a host write's
-    /// principal, is not an identifier of at most
-    /// [`merge::MAX_PROVENANCE_TEXT`] bytes.
+    /// A merge under [`MergeAuthority::Triage`] with a grant that has no
+    /// merge policy.
+    NoMergePolicy,
+    /// A merge under [`MergeAuthority::Reviewed`] by a reviewer the grant
+    /// does not list.
+    UnknownReviewer {
+        reviewer: String,
+    },
+    /// Provenance text a record would carry (a host write's principal, a
+    /// merged branch's id or author) is not an identifier of at most
+    /// [`merge::MAX_PROVENANCE_TEXT`] bytes; `field` names it.
     InvalidProvenanceText {
         field: &'static str,
     },
-    /// A host write that writes, removes or derives a key only ingress
-    /// writes.
+    /// A branch that is already merged, and where.
+    BranchAlreadyMerged {
+        branch: String,
+        at: CommitIndex,
+    },
+    /// A branch that does not certify against the runtime's current state,
+    /// or whose sealed form is refused, as `ptr_branch` refuses it.
+    Certification(ptr_branch::BranchError),
+    /// A reviewed merge whose plan is no longer the one approved: the
+    /// approved digest, and the digest of the plan certification yields now.
+    MergePlanChanged {
+        approved: [u8; 32],
+        current: [u8; 32],
+    },
+    /// The grant's merge policy refused to triage, named by the arbiter's
+    /// code.
+    InvalidMergePolicy {
+        code: &'static str,
+    },
+    /// A merge whose record would be larger than the ledger frames; nothing
+    /// was appended.
+    MergeRecordTooLarge,
+    /// A host write or merge that writes, removes or derives a key only
+    /// ingress writes.
     ReservedSemanticNamespace {
         key: String,
     },
@@ -108,9 +138,6 @@ pub enum RuntimeError {
     LegacySemanticRecord {
         index: CommitIndex,
     },
-    /// A certified semantic delta was refused before append because a
-    /// lifecycle generation it relied on is no longer live.
-    StaleReliance(semantic::StaleReliance),
     ModelResumeLimit {
         max_rounds: usize,
     },
@@ -161,10 +188,11 @@ pub enum RuntimeError {
     },
     /// A semantic record's origin breaks a rule every semantic record is
     /// replayed under (and every writer checks before it appends): an
-    /// ingress record of another shape, a host write that touches an ingress
-    /// key or carries an attestation that does not hold, or a merge, which
-    /// this build does not make. `index` is where the record was committed,
-    /// or `None` for one about to be written; `reason` names the rule.
+    /// ingress record of another shape, a host write or merge that touches
+    /// an ingress key or carries an attestation that does not hold, or a
+    /// merge whose plan digest does not match its delta or whose branch is
+    /// already merged. `index` is where the record was committed, or `None`
+    /// for one about to be written; `reason` names the rule.
     InvalidSemanticOrigin {
         index: Option<CommitIndex>,
         reason: &'static str,

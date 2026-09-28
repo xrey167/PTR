@@ -235,8 +235,8 @@ notes = ["HTTP types do not leak into domain crates"]
 id = "ptr-runtime"
 current_shape = "large-flat"
 modules = ["error", "request", "runtime", "composition", "lifecycle", "model_loop", "pod_loop", "authorization", "commit", "events", "ledger"]
-public_groups = ["PtrRuntime", "RuntimeError", "ResumableRun", "typed runtime request/result", "composition handles", "SemanticGrant/SemanticChange/SemanticVerdict"]
-function_groups = ["construct/open/replay", "ingest", "run model", "run/resume Pods", "authorize", "commit", "install semantic grant", "host write", "query state"]
+public_groups = ["PtrRuntime", "RuntimeError", "ResumableRun", "typed runtime request/result", "composition handles", "SemanticGrant/SemanticChange/SemanticVerdict", "MergeAuthority/MergePreview/MergeOutcome/MergeReceipt/MergeHold"]
+function_groups = ["construct/open/replay", "ingest", "run model", "run/resume Pods", "authorize", "commit", "install semantic grant", "host write", "preview/merge branch", "query state"]
 notes = ["highest-priority lib.rs split candidate", "private helpers stay private", "backend composition uses PTR-owned ports"]
 
 [[crate]]
@@ -253,7 +253,7 @@ current_shape = "modular"
 modules = ["branch", "ops", "digest", "certify", "arbiter", "error"]
 public_groups = ["Branch/SealedBranch", "BranchOp", "digests", "Certification/MergePlan", "triage and off-policy evaluation"]
 function_groups = ["read/scan/stage/seal", "certify", "triage", "calibrate", "evaluate off-policy"]
-notes = ["callers must route merges through PtrRuntime::apply_certified_semantic_delta with the expected, delta and relied that MergePlan's accessors return; it refuses a moved semantic revision, which only a committed semantic delta moves, and a relied generation that is no longer live, and nothing else that changed since certification; this is not enforced because MergePlan::delta returns the delta and apply_verified_semantic_delta, a grant-verified host write that checks no relied generation, is public"]
+notes = ["only PtrRuntime::merge_branch merges a branch: it takes the SealedBranch and certifies it against its own state in the same call, so certify here is a what-if and a MergePlan is never committed as such; a plan's delta written through apply_verified_semantic_delta is a host write, not a merge", "no dependency on ptr-runtime, dev or normal: ptr-runtime depends on this crate"]
 
 [[crate]]
 id = "ptr-fastmem"

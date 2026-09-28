@@ -1,27 +1,35 @@
 //! What replay accepts as a semantic record's origin, on every path that
 //! rebuilds a runtime from history: a record without an origin only before
 //! the first attributed one (R1), ingress records only in the exact shapes
-//! ingress writes (R2), and host writes only with an attestation that holds
-//! and no ingress key written (R3). The runtime never writes a record its own
-//! replay refuses.
-use std::collections::BTreeMap;
+//! ingress writes (R2), host writes and merges only with an attestation that
+//! holds and no ingress key written or evicted (R3), and merges only with the
+//! plan digest of their own delta, no dependency entry, and once per branch
+//! (R4). The runtime never writes a record its own replay refuses.
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use ptr_branch::{
+    counter_value, merge_plan_digest, AutoThreshold, Branch, BranchId, BranchOp, PolicyRecord,
+    TriagePolicy,
+};
 use ptr_config::PtrConfig;
-use ptr_ledger::{integrity, Attestation, CommittedEvent, FileLedger, LedgerEvent, SemanticOrigin};
+use ptr_ledger::{
+    integrity, Attestation, CommittedEvent, FileLedger, LedgerEvent, MergeAuthorityRecord,
+    MergeRecord, SemanticOrigin,
+};
 use ptr_model_api::{InferenceBackend, ModelError, ModelEvent, ModelRequest};
 use ptr_pods::{DynPod, PodManifest, PodRegistry};
 use ptr_protocol::TypedPayload;
 use ptr_runtime::execution::RequiredVerification;
 use ptr_runtime::persistence::SnapshotAnchor;
 use ptr_runtime::semantic::{pod_output_key, request_raw_key};
-use ptr_runtime::{PtrRuntime, RuntimeError, SemanticGrant};
+use ptr_runtime::{MergeAuthority, PtrRuntime, RuntimeError, SemanticGrant};
 use ptr_semdb::{SemanticDelta, SemanticPayload, SemanticValue};
 use ptr_types::{
-    CapsuleId, CommitIndex, Generation, PodId, PrincipalId, ProjectId, RequestId, Revision,
-    VerificationLevel,
+    CapsuleId, CommitIndex, Generation, PodId, PrincipalId, Probability, ProjectId, RequestId,
+    Revision, VerificationLevel,
 };
 use ptr_verifier::{VerificationReport, Verifier};
 
@@ -663,9 +671,273 @@ fn a_host_write_that_would_evict_an_ingress_key_is_refused() {
             floor,
             Some(RuntimeError::InvalidSemanticOrigin {
                 index: Some(CommitIndex(2)),
-                reason: "a host write evicts an ingress key",
+                reason: "a host write or merge evicts an ingress key",
             }),
         );
+    }
+}
+
+/// The dependency digest every merge record here carries.
+const DEPENDENCIES: [u8; 32] = [3; 32];
+
+/// A merge of `branch` from revision `base`, writing `delta` and naming
+/// `rebased`, whose plan digest is the one its parts give.
+fn merge(branch: &str, base: u64, delta: &SemanticDelta, rebased: &[&str]) -> MergeRecord {
+    let rebased: BTreeSet<String> = rebased.iter().map(|key| (*key).to_owned()).collect();
+    MergeRecord {
+        branch: branch.into(),
+        author: "agent-1".into(),
+        seal: [1; 32],
+        plan: merge_plan_digest(
+            branch,
+            Revision(base),
+            &delta.encode().unwrap(),
+            &DEPENDENCIES,
+            &rebased,
+        ),
+        dependencies: DEPENDENCIES,
+        rebased,
+        verification: attestation(),
+        authority: MergeAuthorityRecord::Reviewed {
+            reviewer: "reviewer-1".into(),
+        },
+    }
+}
+
+fn refused_at(index: u64, reason: &'static str) -> Option<RuntimeError> {
+    Some(RuntimeError::InvalidSemanticOrigin {
+        index: Some(CommitIndex(index)),
+        reason,
+    })
+}
+
+#[test]
+fn a_merge_record_whose_plan_digest_does_not_match_its_delta_or_rebased_keys_is_refused() {
+    let digest = "a merge's plan digest is not the digest of its branch, base, delta, \
+                  dependencies and rebased keys";
+    let write = delta("a", "1");
+    // The record as a merge writes it replays on every path.
+    assert_every_path(
+        &history(vec![semantic(
+            0,
+            &write,
+            SemanticOrigin::Merge(merge("b1", 0, &write, &["a"])),
+        )]),
+        0,
+        None,
+    );
+    // A digest of any other plan does not stand for this record's delta.
+    let other = |plan| {
+        SemanticOrigin::Merge(MergeRecord {
+            plan,
+            ..merge("b1", 0, &write, &["a"])
+        })
+    };
+    let encoded = write.encode().unwrap();
+    let rebased = BTreeSet::from(["a".to_owned()]);
+    for plan in [
+        // of another delta,
+        merge("b1", 0, &delta("a", "2"), &["a"]).plan,
+        // with no rebased key where the record names one,
+        merge("b1", 0, &write, &[]).plan,
+        // of another branch,
+        merge("b2", 0, &write, &["a"]).plan,
+        // against another revision,
+        merge_plan_digest("b1", Revision(1), &encoded, &DEPENDENCIES, &rebased),
+        // with other dependencies,
+        merge_plan_digest("b1", Revision(0), &encoded, &[4; 32], &rebased),
+        // or none at all.
+        [0; 32],
+    ] {
+        assert_every_path(
+            &history(vec![semantic(0, &write, other(plan))]),
+            0,
+            refused_at(1, digest),
+        );
+    }
+    // Rebased keys the record names but the digest does not cover, and keys
+    // it names but its delta removes or only ingress writes.
+    let widened = MergeRecord {
+        rebased: BTreeSet::from(["a".to_owned(), "z".to_owned()]),
+        ..merge("b1", 0, &write, &["a"])
+    };
+    assert_every_path(
+        &history(vec![semantic(0, &write, SemanticOrigin::Merge(widened))]),
+        0,
+        refused_at(1, digest),
+    );
+    let mut removal = delta("a", "1");
+    removal.removals.insert("z".into());
+    let seeded = |origin| {
+        history(vec![
+            semantic(0, &delta("z", "0"), host(attestation())),
+            semantic(1, &removal, origin),
+        ])
+    };
+    assert_every_path(
+        &seeded(SemanticOrigin::Merge(merge("b1", 1, &removal, &["z"]))),
+        1,
+        refused_at(2, "a merge's rebased key is removed or reserved to ingress"),
+    );
+    let raw = request_raw_key(&RequestId::from("r1"));
+    assert_every_path(
+        &history(vec![semantic(
+            0,
+            &write,
+            SemanticOrigin::Merge(merge("b1", 0, &write, &[raw.as_str()])),
+        )]),
+        0,
+        refused_at(1, "a merge's rebased key is removed or reserved to ingress"),
+    );
+}
+
+#[test]
+fn a_merge_record_breaking_a_provenance_or_attestation_rule_is_refused() {
+    let write = delta("a", "1");
+    let record = || merge("b1", 0, &write, &[]);
+    let long = "a".repeat(ptr_runtime::merge::MAX_PROVENANCE_TEXT + 1);
+    let provenance = "a merge's branch or author is not valid provenance text";
+    let mut cases: Vec<(MergeRecord, &'static str)> = Vec::new();
+    for text in ["", " b1", "b1\n", long.as_str()] {
+        // The digest is recomputed for the branch, so only the text is wrong.
+        cases.push((merge(text, 0, &write, &[]), provenance));
+        cases.push((
+            MergeRecord {
+                author: text.into(),
+                ..record()
+            },
+            provenance,
+        ));
+        cases.push((
+            MergeRecord {
+                authority: MergeAuthorityRecord::Reviewed {
+                    reviewer: text.into(),
+                },
+                ..record()
+            },
+            "a merge's reviewer is not valid provenance text",
+        ));
+        cases.push((
+            MergeRecord {
+                authority: MergeAuthorityRecord::Triage {
+                    policy_version: text.into(),
+                    score_bits: 0.9_f32.to_bits(),
+                },
+                ..record()
+            },
+            "a merge's policy version is not valid provenance text",
+        ));
+    }
+    for score in [f32::NAN, f32::INFINITY, -0.5, 1.5] {
+        cases.push((
+            MergeRecord {
+                authority: MergeAuthorityRecord::Triage {
+                    policy_version: "policy-v1".into(),
+                    score_bits: score.to_bits(),
+                },
+                ..record()
+            },
+            "a merge's triage score is not a probability",
+        ));
+    }
+    cases.push((
+        MergeRecord {
+            verification: Attestation {
+                level: VerificationLevel::SampleVerified,
+                ..attestation()
+            },
+            ..record()
+        },
+        "an attestation's weakest level does not meet its requirement",
+    ));
+    let raw = request_raw_key(&RequestId::from("r1"));
+    let ingress = delta(&raw, "forged");
+    cases.push((
+        merge("b1", 0, &ingress, &[]),
+        "a merge writes, removes or derives an ingress key",
+    ));
+    for (record, reason) in cases {
+        let written = if record.plan == merge("b1", 0, &ingress, &[]).plan {
+            &ingress
+        } else {
+            &write
+        };
+        assert_every_path(
+            &history(vec![semantic(0, written, SemanticOrigin::Merge(record))]),
+            0,
+            refused_at(1, reason),
+        );
+    }
+    // Scores at both ends of the range, and a triage authority, replay.
+    for score in [0.0_f32, 1.0] {
+        let triaged = MergeRecord {
+            authority: MergeAuthorityRecord::Triage {
+                policy_version: "policy-v1".into(),
+                score_bits: score.to_bits(),
+            },
+            ..record()
+        };
+        assert_every_path(
+            &history(vec![semantic(0, &write, SemanticOrigin::Merge(triaged))]),
+            0,
+            None,
+        );
+    }
+}
+
+#[test]
+fn a_merge_record_with_dependency_entries_is_refused() {
+    // Certification never rewires a key: a merge's delta carries no
+    // dependency entry, even one a host write could carry.
+    let mut derived = delta("a", "2");
+    derived
+        .dependencies
+        .insert("a".into(), ["b".to_owned()].into());
+    let seeded = |origin| {
+        history(vec![
+            semantic(0, &delta("b", "1"), host(attestation())),
+            semantic(1, &derived, origin),
+        ])
+    };
+    assert_every_path(&seeded(host(attestation())), 1, None);
+    assert_every_path(
+        &seeded(SemanticOrigin::Merge(merge("b1", 1, &derived, &[]))),
+        1,
+        refused_at(2, "a merge carries a dependency entry"),
+    );
+}
+
+#[test]
+fn a_second_merge_record_of_one_branch_is_refused_also_across_compaction() {
+    let first = delta("a", "1");
+    let second = delta("a", "2");
+    let merges = |branch: &str| {
+        history(vec![
+            semantic(
+                0,
+                &first,
+                SemanticOrigin::Merge(merge("b1", 0, &first, &[])),
+            ),
+            semantic(
+                1,
+                &second,
+                SemanticOrigin::Merge(merge(branch, 1, &second, &[])),
+            ),
+        ])
+    };
+    // With the first merge replayed above the floor, and below it, carried
+    // by the compacted snapshot's materialized state.
+    for floor in [0, 1] {
+        assert_every_path(
+            &merges("b1"),
+            floor,
+            refused_at(2, "a merge of a branch that is already merged"),
+        );
+        // Another branch merges, and so does an id that only looks like it
+        // under another length.
+        for other in ["b2", "b1:", "1:b1", "b"] {
+            assert_every_path(&merges(other), floor, None);
+        }
     }
 }
 
@@ -731,8 +1003,10 @@ fn the_runtime_never_writes_a_record_its_replay_refuses() {
     let mut ingress_refusals = 0;
     // What the histories held, so the property is known to cover each kind
     // of record: requests, Pod outputs, host writes with and without soft
-    // findings, and derived keys.
+    // findings, derived keys, and clean and rebased merges under triage and
+    // review.
     let (mut requests, mut outputs, mut plain, mut noted, mut derived) = (0, 0, 0, 0, 0);
+    let (mut clean, mut rebased, mut triaged, mut reviewed) = (0, 0, 0, 0);
     for seed in 0..200u64 {
         let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
         let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
@@ -742,6 +1016,15 @@ fn the_runtime_never_writes_a_record_its_replay_refuses() {
             .install_semantic_grant(
                 SemanticGrant::new(RequiredVerification::FullSemantic)
                     .with_verifier(AcceptAll)
+                    .with_merge_policy(
+                        PolicyRecord::manual(
+                            "policy-v1",
+                            TriagePolicy::new(AutoThreshold::AtLeast(0.8), 0.25).unwrap(),
+                        )
+                        .unwrap(),
+                        seed,
+                    )
+                    .with_reviewer(PrincipalId::from("reviewer-1"))
                     .with_verifier(FnVerifier::new("varied", |change| {
                         let next = change.next_revision().0;
                         let mut report = if next % 2 == 0 {
@@ -763,7 +1046,7 @@ fn the_runtime_never_writes_a_record_its_replay_refuses() {
         let mut generation = 0;
         for _ in 0..20 {
             let request = RequestId(format!("r{}", rng.below(3)));
-            match rng.below(6) {
+            match rng.below(8) {
                 0 => {
                     let text = format!("text {}", rng.below(4));
                     runtime.ingest_text(request, text).unwrap();
@@ -824,6 +1107,60 @@ fn the_runtime_never_writes_a_record_its_replay_refuses() {
                         )
                         .unwrap();
                 }
+                6 | 7 => {
+                    // A branch over the current state, merged under triage or
+                    // on review of its preview. Refusals and holds write
+                    // nothing; a merge that commits is checked below like
+                    // every other record.
+                    let key = keys[rng.below(4) as usize];
+                    let counter = format!("count:{key}");
+                    let id = BranchId(format!("b{}", rng.below(12)));
+                    let mut work = Branch::open(id, "agent-1".into(), runtime.snapshot());
+                    let staged = if rng.below(2) == 0 {
+                        work.read(key)
+                            .and_then(|_| work.put(key, format!("m{}", rng.below(5)).into()))
+                    } else {
+                        work.stage_commutative(BranchOp::Add {
+                            key: counter.clone(),
+                            amount: 1 + rng.below(3) as i64,
+                        })
+                    };
+                    let Ok(sealed) = staged.and_then(|_| work.seal()) else {
+                        continue;
+                    };
+                    if rng.below(2) == 0 {
+                        // Another writer moves the counter, so the addition
+                        // rebases.
+                        let revision = runtime.revision();
+                        let _ = runtime.apply_verified_semantic_delta(
+                            revision,
+                            {
+                                let mut write = SemanticDelta::default();
+                                write
+                                    .upserts
+                                    .insert(counter, counter_value(rng.below(9) as i64));
+                                write
+                            },
+                            &"test-operator".into(),
+                        );
+                    }
+                    let authority = match (rng.below(2), runtime.preview_merge(&sealed)) {
+                        (0, Ok(preview)) => MergeAuthority::Reviewed {
+                            plan_digest: preview.plan_digest,
+                            reviewer: PrincipalId::from("reviewer-1"),
+                        },
+                        _ => MergeAuthority::Triage {
+                            score: Probability::new(0.5 + rng.below(50) as f32 / 100.0).unwrap(),
+                        },
+                    };
+                    let events = runtime.committed_events().len();
+                    match runtime.merge_branch(&sealed, authority) {
+                        Ok(ptr_runtime::MergeOutcome::Committed(_)) => {
+                            assert_eq!(runtime.committed_events().len(), events + 1)
+                        }
+                        _ => assert_eq!(runtime.committed_events().len(), events),
+                    }
+                }
                 _ => {
                     // A host write aimed at ingress is refused and writes
                     // nothing.
@@ -869,7 +1206,17 @@ fn the_runtime_never_writes_a_record_its_replay_refuses() {
                             derived += 1;
                         }
                     }
-                    SemanticOrigin::Merge(_) => panic!("seed {seed}: this build does not merge"),
+                    SemanticOrigin::Merge(merge) => {
+                        if merge.rebased.is_empty() {
+                            clean += 1;
+                        } else {
+                            rebased += 1;
+                        }
+                        match merge.authority {
+                            MergeAuthorityRecord::Triage { .. } => triaged += 1,
+                            MergeAuthorityRecord::Reviewed { .. } => reviewed += 1,
+                        }
+                    }
                 }
             }
         }
@@ -891,6 +1238,10 @@ fn the_runtime_never_writes_a_record_its_replay_refuses() {
         ("host write without findings", plain),
         ("host write with findings", noted),
         ("derived key", derived),
+        ("clean merge", clean),
+        ("rebased merge", rebased),
+        ("triaged merge", triaged),
+        ("reviewed merge", reviewed),
     ] {
         assert!(count > 0, "no {kind} in any history");
     }

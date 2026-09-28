@@ -669,9 +669,10 @@ fn a_snapshot_of_the_earlier_layout_restores_as_unattested() {
 fn an_earlier_lifecycle_section_carrying_attestation_keys_is_refused() {
     let original = legacy_fixture();
     let snapshot = original.export_compacted_snapshot().unwrap();
+    let merged = ptr_state::merged_branch_entry(7, &[5; 32]);
     for (key, value) in [
         (ptr_state::ATTESTED_MARKER, "1"),
-        ("branch-merge:2:b1", "7"),
+        ("branch-merge:2:b1", merged.as_str()),
     ] {
         assert!(
             key == ptr_state::ATTESTED_MARKER || key.starts_with(ptr_state::MERGED_BRANCH_PREFIX)
@@ -706,6 +707,44 @@ fn an_earlier_lifecycle_section_carrying_attestation_keys_is_refused() {
     );
     let (earlier, anchor) = with_materialized(&earlier, anchor, "semdb:attested-not", "1");
     assert_eq!(restore_error(&earlier, anchor), None);
+}
+
+#[test]
+fn a_lifecycle_section_whose_merge_entry_is_not_one_a_merge_projects_is_refused() {
+    let original = legacy_fixture();
+    let snapshot = original.export_compacted_snapshot().unwrap();
+    let merged = ptr_state::merged_branch_entry(7, &[5; 32]);
+    // Exactly what a merge of `b1` projects restores, and the runtime reads
+    // the branch as merged there.
+    let (bytes, anchor) = with_materialized(
+        snapshot.bytes(),
+        snapshot.anchor(),
+        "branch-merge:2:b1",
+        &merged,
+    );
+    let restored =
+        PtrRuntime::restore_compacted(PtrConfig::default(), &bytes, anchor, &[]).unwrap();
+    assert_eq!(
+        restored.merged_at(&ptr_branch::BranchId::from("b1")),
+        Some(CommitIndex(7))
+    );
+    // A key under the prefix that names no branch as a merge writes it, or a
+    // value that is not an index and a plan digest, is refused: the runtime
+    // would read either as a branch never merged.
+    for (key, value) in [
+        ("branch-merge:3:b1", merged.as_str()),
+        ("branch-merge:b1", merged.as_str()),
+        ("branch-merge:02:b1", merged.as_str()),
+        ("branch-merge:2:b1", "7"),
+        ("branch-merge:2:b1", &merged[..merged.len() - 1]),
+    ] {
+        let (bytes, anchor) = with_materialized(snapshot.bytes(), snapshot.anchor(), key, value);
+        assert_eq!(
+            restore_error(&bytes, anchor),
+            Some(RuntimeError::Compacted(CompactedError::NoncanonicalSection)),
+            "{key} = {value}"
+        );
+    }
 }
 
 #[test]

@@ -10,10 +10,12 @@
 //! Certification against a newer snapshot either refuses (a dependency
 //! changed) or yields a [`MergePlan`]: one ordinary semantic delta plus the
 //! revision it was certified against and the lifecycle generations the branch
-//! relied on, to be committed through the runtime's certified-delta path,
-//! which checks those generations again before it appends and verifies the
-//! state it would publish. That path is the caller's obligation: nothing here
-//! can enforce it. A plan's digest, what a person approves, can be recomputed
+//! relied on. Only the runtime merges a branch: `PtrRuntime::merge_branch`
+//! takes the [`SealedBranch`], certifies it here against its own state in the
+//! same call, lets the host's grant verify the state it would publish, and
+//! commits it under the grant's merge policy or a listed reviewer's approval
+//! of the plan's digest, once per branch id. [`certify`] stays public for
+//! what-if checks. A plan's digest, what a person approves, can be recomputed
 //! from the parts a record of its merge carries ([`merge_plan_digest`]), and
 //! [`SealedBranch::seal_digest`] names the sealed branch such a record merged.
 //! Triage decides whether a plan is proposed

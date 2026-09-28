@@ -4,18 +4,15 @@
 use super::{PtrRuntime, RuntimeError};
 use crate::merge::{self, ChangeOrigin, SemanticChange};
 use ptr_events::RuntimeEvent;
-use ptr_ledger::{Attestation, LedgerEvent, SemanticOrigin};
+use ptr_ledger::{Attestation, LedgerEvent, MergeAuthorityRecord, SemanticOrigin};
 use ptr_protocol::TypedPayload;
 use ptr_semdb::{
     is_ingress_key, PreparedDelta, SemanticDelta, SemanticError, SemanticPayload, SemanticSnapshot,
     SemanticValue,
 };
 
-use ptr_types::{
-    CommitIndex, Generation, PodId, PrincipalId, RequestId, Revision, Validity, VerificationLevel,
-};
-use std::collections::{BTreeMap, BTreeSet};
-use std::fmt;
+use ptr_types::{CommitIndex, PodId, PrincipalId, RequestId, Revision, VerificationLevel};
+use std::collections::BTreeSet;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SemanticCommit {
@@ -24,45 +21,6 @@ pub struct SemanticCommit {
     /// None means a validated no-op; it did not write a new journal record.
     pub commit_index: Option<CommitIndex>,
 }
-
-/// Lifecycle generations a commit relied on that are no longer live when it
-/// would append; the commit was refused and nothing was appended.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct StaleReliance {
-    /// Every relied-on target that is not live at the generation relied on.
-    pub targets: BTreeMap<String, StaleTarget>,
-}
-
-/// One relied-on target that is no longer live at the relied generation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct StaleTarget {
-    /// The generation the commit relied on.
-    pub relied: Generation,
-    /// What [`PtrRuntime::generation_validity`] answers for it now:
-    /// `Revoked`, `Superseded`, or `None` for a generation the lifecycle
-    /// authority does not know.
-    pub validity: Option<Validity>,
-}
-
-impl StaleReliance {
-    /// Stable diagnostic code for this refusal.
-    pub fn code(&self) -> &'static str {
-        "PTR_RUNTIME_STALE_RELIANCE"
-    }
-}
-
-impl fmt::Display for StaleReliance {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}: relied-on generations no longer live: {:?}",
-            self.code(),
-            self.targets.keys().collect::<Vec<_>>()
-        )
-    }
-}
-
-impl std::error::Error for StaleReliance {}
 
 pub fn request_raw_key(request: &RequestId) -> String {
     format!("request:{request}:raw")
@@ -95,8 +53,8 @@ impl PtrRuntime {
             return Err(RuntimeError::ExecutionFenced);
         }
         let expected = self.revision();
-        self.validate_semantic_origin(None, &delta, &origin)?;
         let encoded_delta = delta.encode().map_err(RuntimeError::Semantic)?;
+        self.validate_semantic_origin(None, expected, &encoded_delta, &delta, &origin)?;
         let prepared = self
             .semdb
             .prepare_delta(delta)
@@ -159,8 +117,11 @@ impl PtrRuntime {
     /// level the grant accepts with no hard finding; a verifier whose report
     /// fails closed is emitted as not passed, and none after it judges.
     ///
-    /// It checks no lifecycle generation; work that relied on some is
-    /// committed through [`Self::apply_certified_semantic_delta`].
+    /// It checks no lifecycle generation and certifies nothing, and its
+    /// record names the principal, not a branch: an agent branch is merged
+    /// through [`Self::merge_branch`], which certifies it against this
+    /// runtime's state in the same call. A plan's delta written here is a
+    /// host write like any other.
     ///
     /// The earlier form, which took a requirement and a closure instead of
     /// a principal and ran no installed verifier, no longer compiles:
@@ -189,47 +150,6 @@ impl PtrRuntime {
         &mut self,
         expected: Revision,
         delta: SemanticDelta,
-        principal: &PrincipalId,
-    ) -> Result<SemanticCommit, RuntimeError> {
-        self.host_write(expected, delta, &BTreeMap::new(), principal)
-    }
-
-    /// [`Self::apply_verified_semantic_delta`] for work that relied on
-    /// lifecycle generations: after the grant admits the change and
-    /// immediately before it would append, it asks
-    /// [`Self::generation_validity`] about every `(target, generation)` in
-    /// `relied` and refuses the delta unless each is `Live`.
-    ///
-    /// A certified agent branch's plan is committed this way today, as a
-    /// host write: `ptr_branch::MergePlan`'s accessors give exactly its
-    /// `expected`, `delta` and `relied` arguments, and certification checked
-    /// those generations against the lifecycle state it was given, which a
-    /// revocation or supersession committed since does not reach. The check
-    /// and the append happen in this one `&mut self` call, so no lifecycle
-    /// change can come between them. It checks only the generations passed:
-    /// a caller that passes fewer than its work relied on is not stopped, and
-    /// nothing here can tell.
-    ///
-    /// # Errors
-    /// Everything [`Self::apply_verified_semantic_delta`] refuses, and
-    /// [`RuntimeError::StaleReliance`] naming every relied-on target that is
-    /// revoked, superseded or unknown at the generation relied on. A stale
-    /// reliance refuses a no-op too, and nothing is appended.
-    pub fn apply_certified_semantic_delta(
-        &mut self,
-        expected: Revision,
-        delta: SemanticDelta,
-        relied: &BTreeMap<String, Generation>,
-        principal: &PrincipalId,
-    ) -> Result<SemanticCommit, RuntimeError> {
-        self.host_write(expected, delta, relied, principal)
-    }
-
-    fn host_write(
-        &mut self,
-        expected: Revision,
-        delta: SemanticDelta,
-        relied: &BTreeMap<String, Generation>,
         principal: &PrincipalId,
     ) -> Result<SemanticCommit, RuntimeError> {
         if self.execution.is_fenced() {
@@ -281,19 +201,13 @@ impl PtrRuntime {
             };
             grant.judge(&change)
         };
-        for (name, passed) in &judgement.results {
-            self.emit(RuntimeEvent::VerifierResult {
-                verifier: (*name).to_owned(),
-                passed: *passed,
-            });
-        }
+        self.emit_verifier_results(&judgement.results);
         let verdict = judgement.verdict?;
         if !verdict.admitted() {
             return Err(RuntimeError::SemanticVerificationRejected(
                 verdict.refusal(),
             ));
         }
-        self.check_reliance(relied)?;
         let revision = prepared.revision();
         let affected = prepared.affected().clone();
         if revision == expected {
@@ -308,7 +222,7 @@ impl PtrRuntime {
             verification: verdict.attestation(),
         };
         // What replay will check, checked before the record exists.
-        self.validate_semantic_origin(None, prepared.delta(), &origin)?;
+        self.validate_semantic_origin(None, expected, &encoded_delta, prepared.delta(), &origin)?;
         let event = LedgerEvent::SemanticDeltaCommitted {
             base_revision: expected,
             revision,
@@ -334,30 +248,6 @@ impl PtrRuntime {
         ptr_ledger::check_encodable(&event)
             .map_err(|error| RuntimeError::Ledger(error.to_string()))?;
         self.append_prepared(event, Some(prepared))
-    }
-
-    /// Refuse unless every relied-on generation is live now.
-    fn check_reliance(&self, relied: &BTreeMap<String, Generation>) -> Result<(), RuntimeError> {
-        let targets: BTreeMap<String, StaleTarget> = relied
-            .iter()
-            .filter_map(|(target, &generation)| {
-                let validity = self.generation_validity(target, generation);
-                (validity != Some(Validity::Live)).then(|| {
-                    (
-                        target.clone(),
-                        StaleTarget {
-                            relied: generation,
-                            validity,
-                        },
-                    )
-                })
-            })
-            .collect();
-        if targets.is_empty() {
-            Ok(())
-        } else {
-            Err(RuntimeError::StaleReliance(StaleReliance { targets }))
-        }
     }
 
     /// Record the raw text of a request as ingress: exactly one text value at
@@ -459,7 +349,7 @@ impl PtrRuntime {
             }));
         }
         let delta = SemanticDelta::decode(encoded_delta).map_err(RuntimeError::Semantic)?;
-        self.validate_semantic_origin(index, &delta, origin)?;
+        self.validate_semantic_origin(index, *base_revision, encoded_delta, &delta, origin)?;
         // A record replayed from memory never passed through the codec; one
         // the ledger could not frame would leave a runtime that cannot export
         // its own history.
@@ -471,11 +361,14 @@ impl PtrRuntime {
             .semdb
             .prepare_delta(delta)
             .map_err(RuntimeError::Semantic)?;
-        if matches!(origin, SemanticOrigin::Host { .. }) && evicted_ingress_key(&prepared).is_some()
+        if matches!(
+            origin,
+            SemanticOrigin::Host { .. } | SemanticOrigin::Merge(_)
+        ) && evicted_ingress_key(&prepared).is_some()
         {
             return Err(RuntimeError::InvalidSemanticOrigin {
                 index,
-                reason: "a host write evicts an ingress key",
+                reason: "a host write or merge evicts an ingress key",
             });
         }
         if prepared.revision() == self.revision() {
@@ -493,7 +386,9 @@ impl PtrRuntime {
     /// Whether a semantic record's origin may stand where it is: the rules a
     /// record is replayed under, which every writer also checks before it
     /// appends. `index` is where the record was committed, on replay, and
-    /// `None` for a record about to be written.
+    /// `None` for a record about to be written; `base` and `encoded` are the
+    /// record's base revision and its delta's encoding, from which `delta`
+    /// was decoded.
     ///
     /// - **R1, `Legacy`.** Replayed only while no attributed record precedes
     ///   it, which the materialized [`ptr_state::ATTESTED_MARKER`] records;
@@ -504,15 +399,22 @@ impl PtrRuntime {
     ///   A Pod's output: one payload at [`pod_output_key`] whose source is
     ///   the Pod, depending on exactly the request's raw text, and nothing
     ///   else.
-    /// - **R3, `Host`.** No ingress key written, removed, derived or evicted
-    ///   (a key only ingress writes that a record without an origin derived
-    ///   from one the write changes, checked once the delta is prepared); a
-    ///   principal that is an identifier of at most
-    ///   [`MAX_PROVENANCE_TEXT`](crate::merge::MAX_PROVENANCE_TEXT) bytes; and
-    ///   an attestation whose weakest level meets its requirement, whose
+    /// - **R3, `Host` and `Merge`.** No ingress key written, removed, derived
+    ///   or evicted (a key only ingress writes that a record without an
+    ///   origin derived from one the write changes, checked once the delta is
+    ///   prepared); provenance text that is an identifier of at most
+    ///   [`MAX_PROVENANCE_TEXT`](crate::merge::MAX_PROVENANCE_TEXT) bytes (a
+    ///   host write's principal; a merge's branch, author, and reviewer or
+    ///   policy version); a merge's triage score a finite `f32` in `[0, 1]`;
+    ///   and an attestation whose weakest level meets its requirement, whose
     ///   verifiers are distinct valid names, and whose findings are sorted,
     ///   distinct, and each a recorded verifier's name, `/` and a valid code.
-    /// - **`Merge`** is refused: this build does not merge.
+    /// - **R4, `Merge`.** No dependency entry, since certification never
+    ///   rewires one; no rebased key removed or reserved to ingress; a plan
+    ///   digest that is `ptr_branch::merge_plan_digest` of the branch, `base`,
+    ///   `encoded`, the dependency digest and the rebased keys, so the record
+    ///   carries exactly the delta of the plan it names; and a branch not
+    ///   merged before ([`ptr_state::merged_branch_key`] absent).
     ///
     /// # Errors
     /// [`RuntimeError::LegacySemanticRecord`] for R1 on replay, and
@@ -523,6 +425,8 @@ impl PtrRuntime {
     pub(super) fn validate_semantic_origin(
         &self,
         index: Option<CommitIndex>,
+        base: Revision,
+        encoded: &[u8],
         delta: &SemanticDelta,
         origin: &SemanticOrigin,
     ) -> Result<(), RuntimeError> {
@@ -585,14 +489,80 @@ impl PtrRuntime {
                 }
                 check_attestation(verification).map_err(invalid)
             }
-            SemanticOrigin::Merge(_) => Err(invalid("merge records need a build that merges")),
+            SemanticOrigin::Merge(merge) => {
+                if written_ingress_key(delta).is_some() {
+                    return Err(invalid("a merge writes, removes or derives an ingress key"));
+                }
+                if !merge::valid_provenance(&merge.branch)
+                    || !merge::valid_provenance(&merge.author)
+                {
+                    return Err(invalid(
+                        "a merge's branch or author is not valid provenance text",
+                    ));
+                }
+                match &merge.authority {
+                    MergeAuthorityRecord::Triage {
+                        policy_version,
+                        score_bits,
+                    } => {
+                        if !merge::valid_provenance(policy_version) {
+                            return Err(invalid(
+                                "a merge's policy version is not valid provenance text",
+                            ));
+                        }
+                        // `contains` is false for NaN and both infinities.
+                        if !(0.0..=1.0).contains(&f32::from_bits(*score_bits)) {
+                            return Err(invalid("a merge's triage score is not a probability"));
+                        }
+                    }
+                    MergeAuthorityRecord::Reviewed { reviewer } => {
+                        if !merge::valid_provenance(reviewer) {
+                            return Err(invalid("a merge's reviewer is not valid provenance text"));
+                        }
+                    }
+                }
+                check_attestation(&merge.verification).map_err(invalid)?;
+                if !delta.dependencies.is_empty() {
+                    return Err(invalid("a merge carries a dependency entry"));
+                }
+                if merge
+                    .rebased
+                    .iter()
+                    .any(|key| delta.removals.contains(key) || is_ingress_key(key))
+                {
+                    return Err(invalid(
+                        "a merge's rebased key is removed or reserved to ingress",
+                    ));
+                }
+                let plan = ptr_branch::merge_plan_digest(
+                    &merge.branch,
+                    base,
+                    encoded,
+                    &merge.dependencies,
+                    &merge.rebased,
+                );
+                if plan != merge.plan {
+                    return Err(invalid(
+                        "a merge's plan digest is not the digest of its branch, base, delta, \
+                         dependencies and rebased keys",
+                    ));
+                }
+                if self
+                    .state
+                    .values
+                    .contains_key(&ptr_state::merged_branch_key(&merge.branch))
+                {
+                    return Err(invalid("a merge of a branch that is already merged"));
+                }
+                Ok(())
+            }
         }
     }
 }
 
 /// The first ingress key `delta` writes, removes or derives, if any. An
 /// ingress key may still be a dependency input.
-fn written_ingress_key(delta: &SemanticDelta) -> Option<&str> {
+pub(crate) fn written_ingress_key(delta: &SemanticDelta) -> Option<&str> {
     delta
         .upserts
         .keys()
@@ -603,10 +573,10 @@ fn written_ingress_key(delta: &SemanticDelta) -> Option<&str> {
 }
 
 /// The key only ingress writes that a prepared change evicts, if any. A host
-/// write never writes or derives one, so such a key is derived from a key the
-/// write changes, which only a record written before origins existed can
-/// have set up.
-fn evicted_ingress_key(prepared: &PreparedDelta) -> Option<&str> {
+/// write or merge never writes or derives one, so such a key is derived from
+/// a key the change writes, which only a record written before origins
+/// existed can have set up.
+pub(crate) fn evicted_ingress_key(prepared: &PreparedDelta) -> Option<&str> {
     prepared
         .affected()
         .iter()

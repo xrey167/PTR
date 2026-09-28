@@ -1,7 +1,5 @@
 //! Host writes under a semantic grant: what the grant's verifiers see,
-//! what admits a change, what a refusal reports, and the lifecycle checks a
-//! certified plan is committed with.
-use std::collections::BTreeMap;
+//! what admits a change, and what a refusal reports.
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -9,7 +7,6 @@ use ptr_config::PtrConfig;
 use ptr_events::RuntimeEvent;
 use ptr_ledger::{Attestation, LedgerEvent, SemanticOrigin};
 use ptr_runtime::execution::RequiredVerification;
-use ptr_runtime::semantic::{StaleReliance, StaleTarget};
 use ptr_runtime::{ChangeOrigin, PtrRuntime, RuntimeError, SemanticGrant, SemanticRefusal};
 use ptr_search::{retain_live, SearchHit};
 use ptr_semdb::{SemanticDelta, SemanticError};
@@ -404,114 +401,6 @@ fn a_verified_delta_against_a_moved_revision_is_refused_before_verification() {
     assert_eq!(verifier.calls(), 1);
 }
 
-/// A runtime where capsule `fact:a` is live at generation 1, whose grant
-/// passes every change.
-fn runtime_with_fact() -> PtrRuntime {
-    let (mut runtime, _) = scripted_runtime(RequiredVerification::Deterministic, passing());
-    runtime
-        .commit(LedgerEvent::CapsuleCommitted {
-            project: ProjectId::from("p"),
-            capsule: CapsuleId::from("fact:a"),
-            generation: Generation(1),
-        })
-        .unwrap();
-    runtime
-}
-
-#[test]
-fn a_certified_delta_is_refused_while_a_generation_it_relied_on_is_not_live_and_appends_nothing() {
-    let revoke = LedgerEvent::Revoked {
-        subject: "fact:a".into(),
-        generation: Generation(1),
-    };
-    let supersede = LedgerEvent::CapsuleSuperseded {
-        capsule: CapsuleId::from("fact:a"),
-        old: Generation(1),
-        new: Generation(2),
-    };
-    // Relied at generation 1 after a revocation or a supersession, and at a
-    // generation the authority never published.
-    for (change, relied, validity) in [
-        (Some(revoke), Generation(1), Some(Validity::Revoked)),
-        (Some(supersede), Generation(1), Some(Validity::Superseded)),
-        (None, Generation(7), None),
-    ] {
-        let mut runtime = runtime_with_fact();
-        if let Some(change) = change {
-            runtime.commit(change).unwrap();
-        }
-        let revision = runtime.revision();
-        let events = runtime.committed_events().len();
-        let relied = BTreeMap::from([("fact:a".to_owned(), relied)]);
-        let refused = runtime
-            .apply_certified_semantic_delta(revision, delta("price", "12"), &relied, &operator())
-            .unwrap_err();
-        let RuntimeError::StaleReliance(stale) = refused else {
-            panic!("{refused:?}");
-        };
-        assert_eq!(
-            stale,
-            StaleReliance {
-                targets: BTreeMap::from([(
-                    "fact:a".to_owned(),
-                    StaleTarget {
-                        relied: relied["fact:a"],
-                        validity,
-                    },
-                )]),
-            }
-        );
-        assert_eq!(stale.code(), "PTR_RUNTIME_STALE_RELIANCE");
-        assert_eq!(runtime.revision(), revision);
-        assert_eq!(runtime.committed_events().len(), events);
-        assert_eq!(runtime.snapshot().get("price"), None);
-        // A plan that would change nothing is refused too.
-        assert!(matches!(
-            runtime.apply_certified_semantic_delta(
-                revision,
-                SemanticDelta::default(),
-                &relied,
-                &operator(),
-            ),
-            Err(RuntimeError::StaleReliance(_))
-        ));
-        assert_eq!(runtime.committed_events().len(), events);
-    }
-
-    // A live reliance commits, and only the targets that are not live are
-    // named.
-    let mut runtime = runtime_with_fact();
-    runtime
-        .commit(LedgerEvent::CapsuleCommitted {
-            project: ProjectId::from("p"),
-            capsule: CapsuleId::from("fact:b"),
-            generation: Generation(1),
-        })
-        .unwrap();
-    let revision = runtime.revision();
-    let both = BTreeMap::from([
-        ("fact:a".to_owned(), Generation(1)),
-        ("fact:b".to_owned(), Generation(1)),
-    ]);
-    runtime
-        .commit(LedgerEvent::Revoked {
-            subject: "fact:b".into(),
-            generation: Generation(1),
-        })
-        .unwrap();
-    assert!(matches!(
-        runtime.apply_certified_semantic_delta(revision, delta("price", "12"), &both, &operator()),
-        Err(RuntimeError::StaleReliance(StaleReliance { ref targets }))
-            if targets.keys().collect::<Vec<_>>() == ["fact:b"]
-    ));
-    let live = BTreeMap::from([("fact:a".to_owned(), Generation(1))]);
-    let commit = runtime
-        .apply_certified_semantic_delta(revision, delta("price", "12"), &live, &operator())
-        .unwrap();
-    assert!(commit.commit_index.is_some());
-    assert_eq!(runtime.snapshot().get("price"), Some("12"));
-}
-
 #[test]
 fn a_verifier_sees_before_after_delta_affected_and_its_origin() {
     #[derive(Debug, PartialEq)]
@@ -528,7 +417,9 @@ fn a_verifier_sees_before_after_delta_affected_and_its_origin() {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let record = seen.clone();
     let mut runtime = judged_by(RequiredVerification::Deterministic, move |change| {
-        let ChangeOrigin::Host { principal } = change.origin();
+        let ChangeOrigin::Host { principal } = change.origin() else {
+            panic!("a host write is judged as one");
+        };
         record.lock().unwrap().push(Seen {
             base: change.base_revision(),
             next: change.next_revision(),

@@ -46,7 +46,7 @@ flowchart LR
     L["ptr-ledger\n(authority)"] -->|"CommittedEvent + LogAnchor"| P["projection schema\nwatermark, anchors, state,\nlifecycle, event log"]
     P -->|"live generations"| D["derived schema\nsearch documents,\nhalfvec embeddings"]
     P -. "tombstones cascade" .-> W["work schema\nbranches, fast-memory journals,\nlineage, labels"]
-    B["ptr-branch\ncertify + triage"] -->|"MergePlan"| R["ptr-runtime\napply_certified_semantic_delta"]
+    B["ptr-branch\nseal"] -->|"SealedBranch"| R["ptr-runtime\nmerge_branch:\ncertify, verify, triage"]
     R -->|"append"| L
     W -. "never read as authority" .-> B
     D -->|"search candidates"| A["agents"]
@@ -720,56 +720,94 @@ computes the same digest from those parts rather than from the plan, so a record
 carries them lets the digest of the plan it merged be recomputed without the plan
 (`merge_plan_digest_is_the_plan_digest`).
 
-A plan is committed through `Runtime::apply_certified_semantic_delta` with exactly
-the `expected`, `delta` and `relied` that `MergePlan`'s accessors return, as a host
-write by a principal (the branch's author, in the end-to-end tests). It prepares the
-delta and hands every verifier of the `SemanticGrant` the host installed a
-`SemanticChange`: the published state before, the post-state with its values and
-dependency sets, the delta, the invalidated keys and the principal
-(`a_verifier_sees_and_can_refuse_the_dependency_set_a_delta_would_install`,
-`a_verifier_sees_before_after_delta_affected_and_its_origin`). It appends only if
-every verifier passes, the weakest level any of them reports meets the grant's
-requirement and no report has a hard finding
-(`a_certified_and_verified_branch_reaches_semantic_state_only_through_the_runtime`,
-`no_score_or_shallow_level_or_hard_finding_gets_a_delta_past_verification`,
-`the_weakest_verifier_level_decides`), and the record names the principal, the
-verifiers, the weakest level and the soft findings. A plan
-certified before another semantic commit, a committed delta that changes semantic
-state, is refused by the runtime's revision check
-(`a_plan_certified_before_another_commit_is_refused_by_the_runtime`,
-`a_verified_delta_against_a_moved_revision_is_refused_before_verification`).
-Nothing else moves the semantic revision: lifecycle, verifier, snapshot and effect
-records leave it where it is. So immediately before it appends, in the same call,
-the runtime asks `generation_validity` about every relied generation again and
-refuses one that is not live as `StaleReliance` (`PTR_RUNTIME_STALE_RELIANCE`), a
-no-op included, with nothing appended
+Only the runtime merges a branch. `PtrRuntime::merge_branch(sealed, authority)` takes
+the sealed branch, not a plan, and certifies it against the runtime's own state in the
+same call, so the plan it commits is always the one certification yields there: from
+the branch's declared dependencies, with every relied generation live as the lifecycle
+authority answers now
+(`a_certified_and_verified_branch_reaches_semantic_state_only_through_the_runtime`).
+A lifecycle change after sealing or after a preview refuses the merge through
+certification (`LifecycleChanged`), with nothing appended
 (`a_revocation_or_supersession_after_certification_refuses_the_commit_and_appends_nothing`,
-`a_certified_delta_is_refused_while_a_generation_it_relied_on_is_not_live_and_appends_nothing`).
-The revision and the relied generations are the plan's only freshness fences: a new
-hard constraint, a capsule the branch did not rely on or a verifier attestation
-committed after certification refuses nothing, and only the grant's verifiers can
-take it into account at commit time
+`a_revocation_between_sealing_and_merging_stops_the_branch`,
+`a_revocation_between_preview_and_merge_refuses_the_merge`), and so does a branch
+opened over another host's state whose reads differ here
+(`a_branch_opened_over_a_foreign_host_is_recertified_here_and_conflicts`). The runtime
+then hands every verifier of the `SemanticGrant` the host installed a
+`SemanticChange`: the published state before, the post-state with its values and
+dependency sets, the delta, the invalidated keys, and as its origin the sealed branch,
+the plan and whether it was rebased
+(`a_verifier_sees_and_can_refuse_the_dependency_set_a_delta_would_install`,
+`a_verifier_sees_before_after_delta_affected_and_its_origin`). The change is admitted
+only if every verifier passes, the weakest level any of them reports meets the grant's
+requirement and no report has a hard finding
+(`no_score_or_shallow_level_or_hard_finding_gets_a_delta_past_verification`,
+`the_weakest_verifier_level_decides`); a merge that is not admitted is held whatever
+authorizes it, since no approval overrides verification
+(`a_failed_verification_holds_the_branch_under_either_authority`).
+
+An admitted merge commits under one of two authorities. Under `Triage { score }` the
+runtime triages it under the grant's merge policy, with a calibration draw from the
+branch id and a seed the grant never reveals
+(`the_grant_info_never_reveals_the_calibration_seed`), and commits only what the policy
+auto-proposes; an escalated or calibration-slice branch is held with its triage, for
+the triage log
+(`an_escalated_or_calibration_slice_branch_appends_nothing_and_carries_its_triage`,
+`the_runtime_triage_is_explained_by_the_granted_policy`). Under
+`Reviewed { plan_digest, reviewer }` a reviewer the grant lists approved exactly the
+plan digest a preview or a hold showed
+(`a_reviewer_the_grant_does_not_list_is_refused`). Any change to the plan since voids
+the approval, another commit that moves the revision included
+(`a_plan_certified_before_another_commit_is_refused_by_the_runtime`,
+`a_reviewed_approval_is_void_once_the_plan_changes`), and an approval of one branch's
+plan does not merge another branch's identical delta
+(`a_plan_cannot_be_changed_between_review_and_merge`). A merge that changes nothing
+appends nothing and does not mark the branch merged
+(`a_no_op_merge_appends_nothing_and_does_not_mark_the_branch_merged`).
+
+The record names the branch, its author, the sealed branch's digest, the plan digest,
+the dependency digest, the rebased keys, the verifiers, their weakest level and soft
+findings, and the authority
+(`a_merge_records_branch_author_seal_plan_rebased_keys_verifiers_level_and_authority`,
+`a_merge_ledger_record_carries_its_provenance`). Replay recomputes the plan digest from
+the record's own delta, base revision, dependency digest and rebased keys, refuses a
+dependency entry, which certification never writes, and refuses a second merge of one
+branch id, whose first projects `branch-merge:<len>:<id>` into materialized state
+(`a_merge_record_whose_plan_digest_does_not_match_its_delta_or_rebased_keys_is_refused`,
+`a_merge_record_with_dependency_entries_is_refused`,
+`a_second_merge_record_of_one_branch_is_refused_also_across_compaction`). The runtime
+refuses to merge that id again as `BranchAlreadyMerged`, after replay, reopen and
+compaction too (`a_redelivered_branch_is_refused_after_merge_replay_reopen_and_compaction`).
+Every refusal comes before anything is appended and leaves the runtime unfenced
+(`every_merge_refusal_leaves_the_runtime_unfenced`), a record too large for the ledger
+to frame included (`a_merge_whose_record_would_exceed_the_bound_is_refused_unfenced`);
+a branch id or author that is not provenance text is refused at merge, not when the
+branch is sealed or stored (`a_branch_with_an_empty_or_padded_author_is_refused`).
+
+The semantic state and the relied generations are what certification checks the
+branch against; nothing the branch did not declare refuses it. A new hard constraint, a
+capsule the branch did not rely on or a verifier attestation committed after sealing
+refuses nothing, and only the grant's verifiers can take it into account
 (`a_commit_that_moves_neither_the_revision_nor_a_relied_generation_does_not_refuse_the_plan`).
-An effect record is no freshness check either, but while an effect attempt is
-neither settled nor reconciled the runtime refuses every commit, a plan's included,
-with `ExecutionFenced`; the gate is runtime-wide, not about the plan, and once the
-attempt is reconciled the same plan commits
+An effect record is no freshness check either, but while an effect attempt is neither
+settled nor reconciled the runtime refuses every commit, a merge included, with
+`ExecutionFenced`; the gate is runtime-wide, not about the branch, and once the attempt
+is reconciled the same approval commits
 (`an_unsettled_effect_attempt_fences_the_plan_until_it_is_reconciled`).
 `Runtime::generation_validity` reads a revoked generation as `Revoked` even while it
 is still the live one (`a_revoked_generation_is_revoked_although_it_is_still_the_live_generation`).
 
-Using that path is the caller's obligation, not a type-level guarantee: the runtime
-does not depend on `ptr-branch`, `MergePlan::delta` returns the delta, and the
-runtime's `apply_verified_semantic_delta`, which checks no generation, is public, so
-nothing stops a caller from committing a plan's delta as an ordinary host write
-without its relied generations
-(`a_plan_committed_without_its_relied_generations_is_not_stopped_by_the_runtime`).
-Every such write is still judged by the grant's verifiers and names its principal:
-apart from ingress (`ingest_text`, a verified Pod output), which writes only the
-fixed shapes its origin allows, there is no public path that commits a semantic
-delta no verifier judged. Closing
-the rest of the gap (a plan consumable only by a verifying entry point) is listed in
-§7.
+A plan's delta is still an ordinary semantic delta, and a host whose grant allows host
+writes may write it through `apply_verified_semantic_delta` like any other. That is a
+host write, recorded with its principal, not a merge, and the branch stays unmerged
+(`a_plan_delta_written_as_a_host_write_is_recorded_as_host_not_merge`). `commit` takes
+no semantic record of any origin (`a_raw_semantic_record_cannot_be_committed`), and a
+write to a key only ingress writes is refused by staging, by the sealed branch's
+constructor, whose checks certification runs again, and by replay
+(`a_reserved_write_is_refused_by_the_constructor_certification_and_the_runtime`).
+Ingress (`ingest_text`, a verified Pod output) writes only the fixed shapes its origin
+allows, with no grant verifier; every other public semantic write is judged by the
+grant's verifiers.
 
 ### The arbiter: verification first, calibration second
 
@@ -1330,10 +1368,6 @@ with Apache Iggy, NATS and Kafka as candidates behind it.
   authentication.
 - **TLS, separate projector/reader/migrator roles, row-level security, pooling and a
   logical-replication consumer.** Until TLS exists the substrate refuses remote hosts.
-- **A merge plan that can only be committed through verification.** Today it is the
-  caller's obligation (§2): `MergePlan::delta` returns its delta, and the
-  runtime's `apply_verified_semantic_delta`, which checks no relied generation, is
-  public, though, like every host write, it is judged by the installed grant.
 - **Strings containing NUL in the PostgreSQL substrate.** PostgreSQL `text` cannot
   hold them; they are refused with a typed error, and the PostgreSQL projection stops
   at a ledger record carrying one.

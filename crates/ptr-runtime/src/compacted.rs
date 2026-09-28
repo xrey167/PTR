@@ -379,7 +379,11 @@ impl LifecycleState {
     ///
     /// The section must be the one `layout` pairs with, and a PTRLC001 section
     /// must hold neither [`ptr_state::ATTESTED_MARKER`] nor a key under
-    /// [`ptr_state::MERGED_BRANCH_PREFIX`]: both are refused by version.
+    /// [`ptr_state::MERGED_BRANCH_PREFIX`]: both are refused by version. In a
+    /// PTRLC002 section every key under that prefix must be exactly a
+    /// [`ptr_state::merged_branch_key`] holding exactly a
+    /// [`ptr_state::merged_branch_entry`], as a merge projects them, or the
+    /// section is refused as noncanonical.
     fn decode(bytes: &[u8], layout: Layout) -> Result<Self, RuntimeError> {
         if bytes.len() > MAX_SECTION_BYTES {
             return Err(invalid(CompactedError::SizeLimit));
@@ -403,6 +407,12 @@ impl LifecycleState {
                     || key.starts_with(ptr_state::MERGED_BRANCH_PREFIX))
             {
                 return Err(invalid(CompactedError::UnsupportedVersion));
+            }
+            if key.starts_with(ptr_state::MERGED_BRANCH_PREFIX)
+                && (ptr_state::merged_branch_of(&key).is_none()
+                    || ptr_state::parse_merged_branch_entry(&value).is_none())
+            {
+                return Err(invalid(CompactedError::NoncanonicalSection));
             }
             state.materialized.insert(key, value);
         }
