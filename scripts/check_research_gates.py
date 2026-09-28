@@ -543,18 +543,29 @@ def committed_blobs(root: Path, relative: str) -> set[str]:
             found.add(held.stdout.strip())
     return found
 
-def launchable_at(root: Path, commit: str, exp_id: str, directory: str) -> str | None:
+def launchable_at(root: Path, commit: str, exp_id: str, directory: str) -> tuple[str, str] | None:
     """The status at which `commit` holds the experiment in `directory`
-    frozen as the runner launches it (`launch_errors`), or None when it does
-    not: the list names it with a well-formed entry, its manifest is past
+    frozen as the runner launches it (`launch_errors`), with the digest of
+    everything frozen there (the manifest, the configuration, the entry,
+    the files' and baselines' digests and the directory), or None when it
+    does not: the list names it with a well-formed entry, its manifest is past
     `planned`, its `[preregistration]` table holds every required key,
     pinned and of its type, and no placeholder, the table's seeds are the
     manifest's, the manifest names the digests of the table and of the
     entry, and every file and baseline the table freezes has the frozen
-    content there, each baseline pinned and not blocked. A commit that held
-    less could not launch it, and does not freeze it."""
+    content there, each baseline pinned and not blocked, and the registry
+    places the experiment in `directory`. A commit that held less could not
+    launch it, and does not freeze it."""
     manifest=toml_at(root,commit,f"{directory}/experiment.toml")
     if not isinstance(manifest,dict) or status_of(manifest) not in FROZEN or not names_an_entrypoint(manifest):
+        return None
+    registry=toml_at(root,commit,REGISTRY)
+    items=registry.get("experiment") if isinstance(registry,dict) else None
+    placed={
+        PurePosixPath("experiments",item["path"]).as_posix() for item in (items if isinstance(items,list) else ())
+        if isinstance(item,dict) and item.get("id")==exp_id and isinstance(item.get("path"),str)
+    }
+    if placed!={directory}:
         return None
     listed=toml_at(root,commit,PREREGISTRATION)
     entries=listed.get("experiment") if isinstance(listed,dict) else None
@@ -572,6 +583,8 @@ def launchable_at(root: Path, commit: str, exp_id: str, directory: str) -> str |
             data=blob(root,commit,table[key]) if is_repository_path(table[key]) else None
             if data is None or experiment_records.preregistered_bytes_digest(data)!=table.get(f"{key}_sha256"):
                 return None
+    # The file and baseline digests are the table's, checked here and
+    # below, so the table stands for them in the state.
     if any(unset_problem(value) for value in table.values()) or table.get("seeds")!=manifest.get("seeds"):
         return None
     for baseline in entry.get("baseline",[]):
@@ -593,22 +606,62 @@ def launchable_at(root: Path, commit: str, exp_id: str, directory: str) -> str |
             return None
     except (ValueError,UnicodeEncodeError):
         return None
-    return manifest["status"]
+    state=json.dumps({"directory":directory,"manifest":manifest,"config":config,"entry":entry},sort_keys=True,default=str)
+    return manifest["status"],hashlib.sha256(state.encode("utf-8")).hexdigest()
+
+def launch_paths(root: Path, exp_id: str, directories: list[str]) -> set[str]:
+    """Every repository path whose content can decide whether `exp_id` may
+    launch at a commit on HEAD's history: its `directories`, the list, the
+    registry, the directory of every baseline any version of its entry has
+    named, and every file any version of its table has named under a key
+    of type `file`."""
+    paths=set(directories)|{PREREGISTRATION,REGISTRY}
+    file_keys=set()
+    for _,listed in versions(root,PREREGISTRATION):
+        entries=listed.get("experiment")
+        entry=entries.get(exp_id) if isinstance(entries,dict) else None
+        if not isinstance(entry,dict):
+            continue
+        baselines=entry.get("baseline")
+        for baseline in baselines if isinstance(baselines,list) else ():
+            if isinstance(baseline,dict) and is_repository_path(baseline.get("path")):
+                directory=baseline_directory(baseline["path"])
+                if directory!=".":
+                    paths.add(directory)
+        required=entry.get("required")
+        if isinstance(required,dict):
+            file_keys.update(key for key,kind in required.items() if kind=="file")
+    for directory in directories:
+        for _,config in versions(root,f"{directory}/config.toml"):
+            table=config.get("preregistration")
+            for key in file_keys if isinstance(table,dict) else ():
+                if is_repository_path(table.get(key)):
+                    paths.add(table[key])
+    return paths
 
 def frozen_commits(root: Path, exp_id: str, relative: str) -> list[tuple[str, str]]:
-    """Every commit on HEAD's history that changes the experiment's
-    manifest, in any directory the registry has given it (`relative` is its
-    directory now), and holds it frozen as the runner launches it
-    (`launchable_at`), with its status there, newest first. From such a
-    commit on, the runner could launch the experiment, whether or not a
-    record of that run was kept."""
-    found=[]
-    for directory in experiment_directories(root,exp_id,relative):
-        for commit,_ in versions(root,f"{directory}/experiment.toml"):
-            status=launchable_at(root,commit,exp_id,directory)
-            if status is not None and commit not in {seen for seen,_ in found}:
-                found.append((commit,status))
-    return found
+    """Every commit on HEAD's history that changes a path that can decide
+    whether the experiment may launch (`launch_paths`: its manifest and
+    configuration in any directory the registry has given it, `relative`
+    being its directory now, the list, the registry, its baselines and its
+    files) and holds it frozen as the runner launches it (`launchable_at`),
+    with its status there, newest first. From such a commit on, the runner
+    could launch the experiment, whether or not a record of that run was
+    kept; the first such commit may change any one of those paths alone.
+    Commits that hold the same frozen state, such as those that add only
+    records, are one freeze, named by the oldest of them."""
+    directories=experiment_directories(root,exp_id,relative)
+    states={}
+    for commit in history(root,"--format=%H","HEAD","--",*sorted(launch_paths(root,exp_id,directories))):
+        for directory in directories:
+            frozen=launchable_at(root,commit,exp_id,directory)
+            if frozen is not None:
+                # Newest first: an older commit of the same state takes its
+                # place, and moves it behind the states seen since.
+                states.pop(frozen,None)
+                states[frozen]=commit
+                break
+    return [(commit,status) for (status,_),commit in states.items()]
 
 def directory_digest_at(root: Path, commit: str, directory: str) -> str | None:
     """`directory_digest` of the repository `directory` as `commit` holds it,

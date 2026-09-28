@@ -1110,6 +1110,61 @@ class PreregistrationGateTests(unittest.TestCase):
         ]
         self.assert_blocked(root,*errors)
         self.assertEqual(sorted(mod.launch_errors(root,"X900")),sorted(errors))
+        # The first commit that could launch it may change one file alone:
+        # here a manifest committed ahead named the digest of a table that
+        # only a later commit of config.toml put in place.
+        second=self.tree(status="running",table={**TABLE,"schema":2})
+        root=self.tree(status="running",digest=self.frozen(second)[0])
+        commit_all(root)
+        shutil.copyfile(second/"experiments/semdb/X900-fixture/config.toml",root/"experiments/semdb/X900-fixture/config.toml")
+        launchable=commit_all(root,"config alone")
+        self.assertEqual(mod.launch_errors(root,"X900"),[])
+        third=self.tree(status="running",table={**TABLE,"schema":3})
+        for relative in ("experiments/semdb/X900-fixture/config.toml",self.MANIFEST):
+            shutil.copyfile(third/relative,root/relative)
+        commit_all(root,"rewrite")
+        self.assert_blocked(
+            root,
+            f"X900 was frozen at {launchable[:12]}, whose config.toml holds another [preregistration] than the frozen one",
+            f"X900 was frozen at {launchable[:12]}, whose experiment.toml names other preregistration digests than the frozen ones",
+        )
+        # So may a commit that unblocks its baseline alone.
+        fixed=self.tree(status="running")
+        frozen_digest=mod.load(fixed/"experiments/semdb/X900-fixture/config.toml")["preregistration"]["baseline_fixture_sha256"]
+        root=self.tree(status="running",baseline_config={**BASELINE_CONFIG,"status":"blocked-unpinned"},
+                       table={**TABLE,"baseline_fixture_sha256":frozen_digest})
+        commit_all(root)
+        shutil.copyfile(fixed/BASELINE_PATH,root/BASELINE_PATH)
+        launchable=commit_all(root,"baseline alone")
+        self.assertEqual(mod.launch_errors(root,"X900"),[])
+        for relative in ("experiments/semdb/X900-fixture/config.toml",self.MANIFEST):
+            shutil.copyfile(third/relative,root/relative)
+        commit_all(root,"rewrite")
+        self.assert_blocked(
+            root,
+            f"X900 was frozen at {launchable[:12]}, whose config.toml holds another [preregistration] than the frozen one",
+            f"X900 was frozen at {launchable[:12]}, whose experiment.toml names other preregistration digests than the frozen ones",
+        )
+        # Or one that puts a preregistered file kept outside the experiment's
+        # directory in place.
+        protocol="docs/protocols/x900.md"
+        frozen_text="# Protocol\n"
+        table={**TABLE,"protocol":protocol,"protocol_sha256":hashlib.sha256(frozen_text.encode("utf-8")).hexdigest()}
+        root=self.tree(status="running",table=table,required={**REQUIRED,"protocol":"file"})
+        write(root,protocol,"# Draft\n")
+        commit_all(root)
+        write(root,protocol,frozen_text)
+        launchable=commit_all(root,"protocol alone")
+        self.assertEqual(mod.launch_errors(root,"X900"),[])
+        rewritten=self.tree(status="running",table={**table,"schema":3},required={**REQUIRED,"protocol":"file"})
+        for relative in ("experiments/semdb/X900-fixture/config.toml",self.MANIFEST):
+            shutil.copyfile(rewritten/relative,root/relative)
+        commit_all(root,"rewrite")
+        self.assert_blocked(
+            root,
+            f"X900 was frozen at {launchable[:12]}, whose config.toml holds another [preregistration] than the frozen one",
+            f"X900 was frozen at {launchable[:12]}, whose experiment.toml names other preregistration digests than the frozen ones",
+        )
         # A commit that could not launch it did not freeze it: here the
         # table still held a placeholder.
         root=self.tree(status="running",table={**TABLE,"harness":"must-be-pinned-before-prepared"})
