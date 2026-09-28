@@ -1749,6 +1749,22 @@ class AggregateBindingTests(unittest.TestCase):
         (self.results / "kept").unlink()
         (self.results / "metrics.json").write_text(archived, encoding="utf-8")
         self.assertEqual(self.errors(), [])
+        # A converting checkout writes both files with CRLF line endings,
+        # which the copies committed with LF ones hold; any other carriage
+        # return makes another file.
+        run_archived = (self.results / "run.json").read_bytes()
+        for name, kept in (("metrics.json", archived.encode("utf-8")), ("run.json", run_archived)):
+            with self.subTest(crlf=name):
+                self.assertTrue(kept.endswith(b"\n"))
+                path = self.results / name
+                path.write_bytes(kept.replace(b"\n", b"\r\n"))
+                self.assertEqual(self.errors(), [])
+                path.write_bytes(kept.replace(b"\n", b"\r"))
+                errors = self.errors()
+                self.assertEqual(len(errors), 1, errors)
+                self.assertIn(f"results/{name}", errors[0])
+                path.write_bytes(kept)
+        self.assertEqual(self.errors(), [])
         # A run.json no commit holds binds nothing either.
         self.write("run.json", {**self.run, "verdict": "hard-pass"})
         errors = self.errors()
@@ -1821,6 +1837,17 @@ class AggregateBindingTests(unittest.TestCase):
                 )
         (self.results / "mutations.json").write_bytes(archived)
         self.assertEqual(self.errors(), [])
+        # A converting checkout's CRLF copy holds the evidence committed
+        # with LF line endings; any other carriage return makes other evidence.
+        self.assertTrue(archived.endswith(b"\n"))
+        (self.results / "mutations.json").write_bytes(archived.replace(b"\n", b"\r\n"))
+        self.assertEqual(self.errors(), [])
+        (self.results / "mutations.json").write_bytes(archived.replace(b"\n", b"\r"))
+        errors = self.errors()
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("mutations.json is not the evidence committed with run.json", errors[0])
+        (self.results / "mutations.json").write_bytes(archived)
+        self.assertEqual(self.errors(), [])
         # Read from disk, not through a clean filter the clone's own
         # attributes name, which git hash-object would apply.
         git(self.root, "config", "filter.same.clean", f"cat {shlex.quote(str(self.results / 'kept'))}")
@@ -1832,6 +1859,48 @@ class AggregateBindingTests(unittest.TestCase):
         errors = self.errors()
         self.assertEqual(len(errors), 1, errors)
         self.assertIn("mutations.json is not the evidence committed with run.json", errors[0])
+
+    def test_a_file_holds_a_commits_content_only_as_a_regular_file_beside_a_regular_blob(self):
+        self.write("metrics.json", self.metrics)
+        relative = "experiments/L900-x/results/metrics.json"
+        path = self.root / relative
+        bytes_held = path.read_bytes()
+        held = commit(self.root, {}, "metrics")
+        self.assertTrue(mod.holds_committed(self.root, held, relative))
+        # A commit that does not hold the name, or that git does not hold.
+        self.assertFalse(mod.holds_committed(self.root, held, relative + ".absent"))
+        self.assertFalse(mod.holds_committed(self.root, "f" * 40, relative))
+        # A link that reads as the same bytes is a link, not the file.
+        (self.results / "copy.json").write_bytes(bytes_held)
+        path.unlink()
+        try:
+            os.symlink("copy.json", path)
+        except (OSError, NotImplementedError) as error:
+            self.skipTest(f"cannot create a symlink: {error}")
+        self.assertEqual(path.read_bytes(), bytes_held)
+        self.assertFalse(mod.holds_committed(self.root, held, relative))
+        path.unlink()
+        self.assertFalse(mod.holds_committed(self.root, held, relative))
+        path.write_bytes(bytes_held)
+        self.assertTrue(mod.holds_committed(self.root, held, relative))
+        # Another mode of a regular blob is still a regular blob.
+        path.chmod(0o755)
+        executable = commit(self.root, {}, "executable")
+        self.assertIn("100755", git(self.root, "ls-tree", executable, "--", relative))
+        self.assertTrue(mod.holds_committed(self.root, executable, relative))
+        # A commit that holds a symlink there holds its target's path, which
+        # a regular file of those bytes is not.
+        link = "experiments/L900-x/results/link.json"
+        try:
+            os.symlink("metrics.json", self.root / link)
+        except (OSError, NotImplementedError) as error:
+            self.skipTest(f"cannot create a symlink: {error}")
+        linked = commit(self.root, {}, "link")
+        self.assertIn("120000", git(self.root, "ls-tree", linked, "--", link))
+        self.assertTrue(mod.holds_committed(self.root, linked, relative))
+        (self.root / link).unlink()
+        (self.root / link).write_bytes(b"metrics.json")
+        self.assertFalse(mod.holds_committed(self.root, linked, link))
 
     def test_a_publish_that_finds_other_evidence_beside_it_keeps_the_stale_marker(self):
         (self.results / "STALE.toml").write_text('reason = "old"\n', encoding="utf-8")
