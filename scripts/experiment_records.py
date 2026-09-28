@@ -475,8 +475,12 @@ def hiding_rules(root: Path, pathspecs: list[str]) -> list[str]:
 def ignored_by_head_rules(root: Path, names: list[str]) -> set[str]:
     """Those of the untracked files `names` that the `.gitignore` files as
     HEAD holds them ignore, as git decides it: in a scratch repository
-    holding only those rules and an empty file at each name. Raises
-    `ProvenanceError` when git cannot read HEAD's rules or decide."""
+    holding only those rules and an empty file at each name. A top-level
+    directory those rules ignore as a whole, as `/target/` does a build's
+    output, decides every name below it at once, since git cannot show a
+    file again below an ignored directory; only the others are placed in
+    the scratch repository one by one. Raises `ProvenanceError` when git
+    cannot read HEAD's rules or decide."""
     rules = head_rules(root)
     # The scratch repository is git's own, whatever repository the caller's
     # environment points git at.
@@ -488,17 +492,35 @@ def ignored_by_head_rules(root: Path, names: list[str]) -> set[str]:
             raise ProvenanceError(
                 f"cannot create a repository to read HEAD's ignore rules in: {created.stderr.strip()}"
             )
-        for name in [*rules, *names]:
+        for name, rule in rules.items():
             path = mirror / name
             path.parent.mkdir(parents=True, exist_ok=True)
-            if name in rules:
-                path.write_bytes(rules[name])
-            elif not path.exists():
+            path.write_bytes(rule)
+        tops = sorted({name.split("/", 1)[0] for name in names if "/" in name} - set(rules))
+        for top in tops:
+            (mirror / top).mkdir(parents=True, exist_ok=True)
+        # Each named without a trailing slash, as an existing directory: a
+        # rule such as `target/*` matches `target/` but not the directory
+        # `target`, whose files it may show again (`!target/keep`).
+        decided = git(
+            mirror, "check-ignore", "-z", "--no-index", "--stdin", env=env,
+            stdin="".join(f"{top}\0" for top in tops),
+        )
+        # check-ignore exits 1 when it ignores none of them.
+        if decided.returncode not in (0, 1):
+            raise ProvenanceError(f"cannot apply HEAD's ignore rules: {decided.stderr.strip()}")
+        ignored_tops = {entry for entry in decided.stdout.split("\0") if entry}
+        below = {name for name in names if name.split("/", 1)[0] in ignored_tops and "/" in name}
+        rest = [name for name in names if name not in below]
+        for name in rest:
+            path = mirror / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if name not in rules and not path.exists():
                 path.touch()
         listing = git(mirror, "ls-files", "-z", "--others", "--ignored", PER_DIRECTORY, env=env)
         if listing.returncode != 0:
             raise ProvenanceError(f"cannot apply HEAD's ignore rules: {listing.stderr.strip()}")
-        return (set(listing.stdout.split("\0")) & set(names)) - set(rules)
+        return below | ((set(listing.stdout.split("\0")) & set(rest)) - set(rules))
 
 
 def head_rules(root: Path) -> dict[str, bytes]:

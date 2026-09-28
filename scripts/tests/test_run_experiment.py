@@ -158,6 +158,10 @@ class ExperimentRunnerTests(unittest.TestCase):
             result = mod.execute_command([str(missing / "program")])
             self.assertEqual((result["exit_code"], result["stdout"], result["stderr"]), (None, "", ""))
             self.assertTrue(result["launch_error"].startswith("FileNotFoundError: "), result["launch_error"])
+            # Nor can a command take an argument holding a NUL character.
+            result = mod.execute_command([sys.executable, "-c", "print('ran')", "a\0b"])
+            self.assertEqual((result["exit_code"], result["stdout"]), (None, ""))
+            self.assertEqual(result["launch_error"], "ValueError: embedded null byte")
 
     def test_a_command_that_started_ran_whatever_happens_after(self):
         # A cache the command left that cannot be removed does not make the
@@ -171,19 +175,29 @@ class ExperimentRunnerTests(unittest.TestCase):
         self.addCleanup(prefix.unlink, missing_ok=True)
         self.assertEqual((result["exit_code"], result["launch_error"]), (0, None))
         self.assertTrue(prefix.is_file())
-        # Whatever stops the runner once the command started stops the
-        # command, and is raised.
+        # An exception raised in the runner while the command runs kills
+        # the command, and is raised.
         started = []
+        killed = []
+        kill = subprocess.Popen.kill
 
         def interrupted(process, *args, **kwargs):
             started.append(process)
             raise KeyboardInterrupt
 
-        with mock.patch.object(subprocess.Popen, "communicate", autospec=True, side_effect=interrupted):
+        def killing(process):
+            killed.append(process)
+            kill(process)
+
+        with (
+            mock.patch.object(subprocess.Popen, "communicate", autospec=True, side_effect=interrupted),
+            mock.patch.object(subprocess.Popen, "kill", autospec=True, side_effect=killing),
+        ):
             with self.assertRaises(KeyboardInterrupt):
                 mod.execute_command([sys.executable, "-c", "import time; time.sleep(60)"])
         [process] = started
-        self.assertEqual(process.returncode, -signal.SIGKILL)
+        self.assertEqual(killed, [process])
+        self.assertEqual(process.wait(timeout=30), -signal.SIGKILL)
 
     def test_a_seed_run_from_a_dirty_source_tree_is_refused_before_it_runs(self):
         # A record names HEAD as the code it ran; an edit reverted before
@@ -258,6 +272,12 @@ class RunWatchTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.root = Path(self.directory.name)
+        # A listed run refuses Cargo configuration from outside the
+        # repository: the machine's own is none of these runs'.
+        cargo_home = Path(self.directory.name + "-cargo")
+        cargo_home.mkdir(exist_ok=True)
+        self.addCleanup(shutil.rmtree, cargo_home, ignore_errors=True)
+        self.enterContext(mock.patch.dict(os.environ, {"CARGO_HOME": str(cargo_home)}))
         files = {
             ".gitignore": "__pycache__/\n",
             "Cargo.lock": "# lock\n",
@@ -313,6 +333,7 @@ class RunWatchTests(unittest.TestCase):
         return status, records, stderr.getvalue()
 
     def write(self, relative: str, text: str) -> None:
+        (self.root / relative).parent.mkdir(parents=True, exist_ok=True)
         (self.root / relative).write_text(text, encoding="utf-8")
 
     def test_a_seed_run_whose_tree_stays_at_head_is_recorded_at_the_commit_it_started_from(self):
@@ -519,6 +540,24 @@ class RunWatchTests(unittest.TestCase):
                 mod.seed_runs(self.results, 17, attempts),
                 ["experiments/x/L900-x/results/run-17.json", "experiments/x/L900-x/results/run-kept.json"],
             )
+            # The copy counts where the record of its name says otherwise.
+            self.write("experiments/x/L900-x/results/run-other.json", json.dumps({"seed": 29, "status": "completed"}))
+            (attempts / "run-other.json").write_text(json.dumps({"seed": 17, "status": "started"}), encoding="utf-8")
+            self.write(
+                "experiments/x/L900-x/results/run-unlaunched.json", json.dumps({"seed": 17, "status": "failed-to-launch"})
+            )
+            (attempts / "run-unlaunched.json").write_text(json.dumps({"seed": 17, "status": "started"}), encoding="utf-8")
+            self.assertEqual(
+                mod.seed_runs(self.results, 17, attempts),
+                [
+                    "experiments/x/L900-x/results/run-17.json",
+                    "experiments/x/L900-x/results/run-kept.json",
+                    "experiments/x/L900-x/results/run-other.json",
+                    "experiments/x/L900-x/results/run-unlaunched.json",
+                ],
+            )
+            for name in ("run-other.json", "run-unlaunched.json"):
+                (attempts / name).unlink()
             (attempts / "run-kept.json").write_text("[17]", encoding="utf-8")
             with self.assertRaises(ValueError) as caught:
                 mod.seed_runs(self.results, 17, attempts)
@@ -873,15 +912,23 @@ class RunWatchTests(unittest.TestCase):
                 mod.attempts_directory(mod.git_directory(), worktree / "experiments/x/L900-x/results"),
                 git_directory / "ptr-runs/experiments/x/L900-x/results",
             )
-        # Where git cannot name its directory, nothing runs.
+        # Where git cannot name its directory, a listed run runs nothing and
+        # keeps no copy.
+        refused = subprocess.CompletedProcess(args=[], returncode=128, stdout="", stderr="fatal: not a git repository")
         stderr = io.StringIO()
-        with mock.patch.object(mod, "ROOT", self.root / "experiments"), contextlib.redirect_stderr(stderr):
-            os.rename(self.root / ".git", self.root / "git-moved")
-            try:
-                self.assertIsNone(mod.git_directory())
-            finally:
-                os.rename(self.root / "git-moved", self.root / ".git")
-        self.assertIn("ERROR: cannot find git's directory: ", stderr.getvalue())
+        with (
+            mock.patch.object(mod, "ROOT", self.root),
+            mock.patch.object(mod.experiment_records, "git", return_value=refused),
+            contextlib.redirect_stderr(stderr),
+        ):
+            self.assertIsNone(mod.git_directory())
+        self.assertEqual(stderr.getvalue(), "ERROR: cannot find git's directory: fatal: not a git repository\n")
+        self.preregister("running")
+        ran = []
+        with mock.patch.object(mod, "git_directory", return_value=None):
+            status, records, stderr = self.run_seed(lambda: ran.append(True))
+        self.assertEqual((status, records, ran), (2, [], []))
+        self.assertFalse((git_directory / "ptr-runs").exists())
 
     def test_a_listed_runs_record_outlasts_a_command_that_clears_its_results(self):
         # The command can write in its results: a reservation it removed or
@@ -905,8 +952,8 @@ class RunWatchTests(unittest.TestCase):
         status, records, stderr = self.run_seed()
         self.assertEqual((status, [record["status"] for record in records]), (2, ["started"]))
         self.assertEqual(stderr, (
-            f"ERROR: put back {restored} from the copies kept in {attempts}: the results directory had lost these "
-            "records of runs of it; commit them before the next run\n"
+            f"ERROR: put back {restored} from the copies kept in {attempts}: records of runs at commits on HEAD's "
+            "history, which the results directory held otherwise or not at all; commit them before the next run\n"
         ))
         self.assertEqual((self.root / restored).read_bytes(), kept.read_bytes())
         git(self.root, "add", "-A")
@@ -941,6 +988,29 @@ class RunWatchTests(unittest.TestCase):
         status, records, stderr = self.run_seed()
         self.assertEqual(status, 2)
         self.assertIn("seed 17 of L900 already ran", stderr)
+        # Committed as the command rewrote it, before any run could put it
+        # back, the reservation is the gate's; the copy alone says the seed
+        # ran, and the seed stays run.
+        for rewritten in ({"status": "failed-to-launch"}, {"seed": 29}):
+            with self.subTest(rewritten=rewritten):
+                self.tearDown()
+                self.setUp()
+                self.preregister("running")
+
+                def rewrites_and_dies():
+                    [reserved] = list(self.results.glob("run-*.json"))
+                    record = json.loads(reserved.read_text(encoding="utf-8"))
+                    reserved.write_text(json.dumps({**record, **rewritten}), encoding="utf-8")
+                    raise KeyboardInterrupt
+
+                with self.assertRaises(KeyboardInterrupt):
+                    self.run_seed(rewrites_and_dies)
+                git(self.root, "add", "-A")
+                git(self.root, "commit", "-q", "--no-verify", "-m", "rewritten reservation")
+                status, records, stderr = self.run_seed()
+                self.assertEqual(status, 2)
+                self.assertNotIn("put back", stderr)
+                self.assertIn("seed 17 of L900 already ran", stderr)
 
         # A runner stopped between writing the whole record to the copy and
         # to the results leaves the whole record in the copy.
@@ -1043,7 +1113,8 @@ class RunWatchTests(unittest.TestCase):
         self.assertIn(f"ERROR: cannot put back the records of L900's runs kept in {attempts}: [Errno 21]", stderr)
         (attempts / "run-kept.json").rmdir()
         # Nor can the runner put a record back where HEAD cannot be read.
-        (attempts / "run-kept.json").write_text("{}\n", encoding="utf-8")
+        kept_text = json.dumps({"git_sha": self.head}) + "\n"
+        (attempts / "run-kept.json").write_text(kept_text, encoding="utf-8")
         tree_entry = mod.check_research_gates.tree_entry
 
         def unreadable(root: Path, commit: str, relative: str):
@@ -1072,7 +1143,7 @@ class RunWatchTests(unittest.TestCase):
         status, calls, stderr = self.launch_listed({})
         self.assertEqual((status, calls), (2, []))
         self.assertIn("L900: results/run-kept.json is not a regular file reached through no symlink", stderr)
-        for held in (None, "{}\n", "[]\n"):
+        for held in (None, kept_text, "[]\n"):
             with self.subTest(held=held):
                 outside.unlink(missing_ok=True)
                 if held is not None:
@@ -1084,7 +1155,7 @@ class RunWatchTests(unittest.TestCase):
                         mod.restore_records(self.results, attempts), ["experiments/x/L900-x/results/run-kept.json"]
                     )
                 self.assertFalse((self.results / "run-kept.json").is_symlink())
-                self.assertEqual((self.results / "run-kept.json").read_text(encoding="utf-8"), "{}\n")
+                self.assertEqual((self.results / "run-kept.json").read_text(encoding="utf-8"), kept_text)
                 self.assertEqual(outside.read_text(encoding="utf-8") if outside.exists() else None, held)
 
     def test_a_command_that_cannot_start_leaves_its_seed_unrun(self):
@@ -1163,7 +1234,7 @@ class RunWatchTests(unittest.TestCase):
         status, records, stderr = self.run_seed()
         self.assertEqual((status, stderr), (0, ""))
         # A command that started and whose results were replaced leaves its
-        # reservation as the record that its seed ran.
+        # reservation as the record that its seed ran, and its copy says so.
         self.tearDown()
         self.setUp()
         self.preregister("running")
@@ -1172,6 +1243,21 @@ class RunWatchTests(unittest.TestCase):
         self.assertIn("ERROR: not recording the run (exit status 0)", stderr)
         self.assertIn("stays as the record that seed 17 ran", stderr)
         [kept] = list(self.attempts().glob("run-*.json"))
+        self.assertEqual(json.loads(kept.read_text(encoding="utf-8"))["status"], "started")
+        # So it does where the watch saw nothing, the results directory
+        # alone having changed.
+        self.tearDown()
+        self.setUp()
+        self.preregister("running")
+        with mock.patch.object(mod.experiment_records.ProvenanceWatch, "changes", return_value=[]):
+            status, _, stderr = self.run_seed(replaces_the_results)
+        [kept] = list(self.attempts().glob("run-*.json"))
+        self.assertEqual(status, 2)
+        self.assertEqual(stderr, (
+            "ERROR: results directory experiments/x/L900-x/results is not a directory\n"
+            "ERROR: not recording the run (exit status 0): its results directory changed while it ran; "
+            f"experiments/x/L900-x/results/{kept.name} stays as the record that seed 17 ran\n"
+        ))
         self.assertEqual(json.loads(kept.read_text(encoding="utf-8"))["status"], "started")
 
     def run_bench(self) -> tuple[int, dict, dict]:
@@ -1216,7 +1302,9 @@ class RunWatchTests(unittest.TestCase):
         self.preregister("running")
         status, record, seen = self.run_bench()
         self.assertEqual((status, record["status"]), (0, "completed"))
-        self.assertLessEqual(set(seen) - {"PYTHONPYCACHEPREFIX"}, set(mod.COMMAND_ENVIRONMENT))
+        self.assertLessEqual(set(seen) - {"PYTHONPYCACHEPREFIX"}, {*mod.COMMAND_ENVIRONMENT, *mod.FIXED_ENVIRONMENT})
+        # Python reads no package from the user's own site directory.
+        self.assertEqual(seen["PYTHONNOUSERSITE"], "1")
         for name in ("PYTHONPATH", "LD_LIBRARY_PATH", "RUSTC_WRAPPER", "RUSTUP_TOOLCHAIN", "GH_TOKEN"):
             self.assertNotIn(name, seen)
         self.assertEqual(record["environment"], self.allowed)
@@ -1266,7 +1354,240 @@ class RunWatchTests(unittest.TestCase):
         # The allowed environment is what the runner's sets of the allowed
         # names, and nothing else.
         with mock.patch.dict(os.environ, {"PATH": "/bin", "HOME": "/home/runner", "GH_TOKEN": "x"}, clear=True):
-            self.assertEqual(mod.command_environment(), {"PATH": "/bin", "HOME": "/home/runner"})
+            self.assertEqual(
+                mod.command_environment(), {"PATH": "/bin", "HOME": "/home/runner", "PYTHONNOUSERSITE": "1"}
+            )
+
+    def test_a_copy_from_another_line_of_history_is_not_put_back_but_its_seed_has_run(self):
+        # A run on another branch, or another worktree's, belongs to that
+        # history, whose record the gate here would refuse: its copy stays
+        # in git's own directory and still counts its seed as run.
+        self.preregister("running")
+        base = git(self.root, "rev-parse", "--abbrev-ref", "HEAD")
+        git(self.root, "switch", "-q", "-c", "elsewhere")
+        git(self.root, "commit", "-q", "--no-verify", "--allow-empty", "-m", "elsewhere")
+        status, records, stderr = self.run_seed()
+        self.assertEqual((status, stderr, [record["status"] for record in records]), (0, "", ["completed"]))
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-q", "--no-verify", "-m", "record elsewhere")
+        git(self.root, "switch", "-q", base)
+        self.assertEqual(list(self.results.glob("run-*.json")), [])
+        status, records, stderr = self.run_seed()
+        self.assertEqual((status, records), (2, []))
+        self.assertNotIn("put back", stderr)
+        self.assertIn("ERROR: seed 17 of L900 already ran (experiments/x/L900-x/results/run-", stderr)
+        self.assertEqual(mod.check_research_gates.launch_errors(self.root, "L900"), [])
+        # Merged, the record is HEAD's, and the gate keeps it.
+        git(self.root, "merge", "-q", "--no-edit", "elsewhere")
+        status, records, stderr = self.run_seed()
+        self.assertEqual((status, [record["status"] for record in records]), (2, ["completed"]))
+        self.assertNotIn("put back", stderr)
+        self.assertIn("ERROR: seed 17 of L900 already ran", stderr)
+
+    def test_a_copy_git_s_own_directory_cannot_hold_leaves_the_record_in_the_results(self):
+        # A full disk under .git: the copy cannot hold the whole record, so it
+        # goes, and the record the command's outcome is in is written all
+        # the same, to be committed before the next run.
+        self.preregister("running")
+        attempts = self.attempts()
+        replacing = mod.write_json_replacing
+
+        def full_in(directory: Path):
+            def write(path: Path, record: dict) -> None:
+                if path.parent == directory:
+                    raise OSError(errno.ENOSPC, "No space left on device")
+                replacing(path, record)
+
+            return write
+
+        with mock.patch.object(mod, "write_json_replacing", side_effect=full_in(attempts)):
+            status, records, stderr = self.run_seed()
+        [out] = [path.relative_to(self.root).as_posix() for path in self.results.glob("run-*.json")]
+        self.assertEqual((status, [record["status"] for record in records]), (0, ["completed"]))
+        self.assertEqual(list(attempts.glob("run-*.json")), [])
+        self.assertIn(f"ERROR: cannot write the record's copy {attempts}/run-", stderr)
+        self.assertIn(f"[Errno 28] No space left on device; commit {out} before the next run", stderr)
+        # A copy that can be neither written nor removed is named: the next
+        # run would put its reservation back over the record.
+        self.tearDown()
+        self.setUp()
+        self.preregister("running")
+        attempts = self.attempts()
+        unlink = Path.unlink
+
+        def stuck(path: Path, *args, **kwargs) -> None:
+            if path.parent == attempts and path.name.startswith("run-"):
+                raise PermissionError(errno.EACCES, "Permission denied")
+            unlink(path, *args, **kwargs)
+
+        with (
+            mock.patch.object(mod, "write_json_replacing", side_effect=full_in(attempts)),
+            mock.patch.object(Path, "unlink", autospec=True, side_effect=stuck),
+        ):
+            status, records, stderr = self.run_seed()
+        self.assertEqual((status, [record["status"] for record in records]), (0, ["completed"]))
+        self.assertIn("; nor remove it, so the next run would put its reservation back: [Errno 13]", stderr)
+        # A command that could not start, whose record cannot be written,
+        # ran nothing: its reservation and its copy go, and its seed runs.
+        for stuck_too in (False, True):
+            with self.subTest(stuck_too=stuck_too):
+                self.tearDown()
+                self.setUp()
+                self.preregister("running")
+                attempts = self.attempts()
+                with (
+                    mock.patch.object(mod, "write_json_replacing", side_effect=full_in(attempts)),
+                    mock.patch.object(Path, "unlink", autospec=True, side_effect=stuck if stuck_too else unlink),
+                ):
+                    status, records, stderr = self.run_seed(launch_error="FileNotFoundError: bench")
+                self.assertEqual(status, 2)
+                self.assertIn(
+                    "ERROR: cannot write the record of seed 17's launch, which failed: [Errno 28] No space left on device",
+                    stderr,
+                )
+                if stuck_too:
+                    self.assertIn("which says seed 17 ran, cannot be removed: [Errno 13] Permission denied", stderr)
+                    continue
+                self.assertEqual((records, list(attempts.glob("run-*.json"))), ([], []))
+                status, records, stderr = self.run_seed()
+                self.assertEqual((status, stderr, [record["status"] for record in records]), (0, "", ["completed"]))
+
+    def test_a_listed_run_watches_the_whole_repository(self):
+        # A listed command may run or read any file of the repository, a
+        # script under scripts/ say: every one must be HEAD's before and
+        # while it runs, but the record the run writes.
+        self.preregister("running")
+        self.write("scripts/harness.py", "print('unrecorded')\n")
+        status, records, stderr = self.run_seed()
+        self.assertEqual((status, records), (2, []))
+        self.assertIn("commit or remove scripts/harness.py", stderr)
+        stderr_prepare = io.StringIO()
+        with (
+            mock.patch.object(mod, "ROOT", self.root),
+            mock.patch.object(mod, "REGISTRY", self.root / "experiments/registry.toml"),
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(stderr_prepare),
+        ):
+            self.assertEqual(mod.prepare("L900"), 2)
+        self.assertIn("commit or remove scripts/harness.py", stderr_prepare.getvalue())
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-q", "--no-verify", "-m", "harness")
+
+        def edit_and_restore():
+            self.write("scripts/harness.py", "print('changed')\n")
+            self.write("scripts/harness.py", "print('unrecorded')\n")
+
+        status, records, stderr = self.run_seed(edit_and_restore)
+        self.assertEqual((status, [record["status"] for record in records]), (2, ["started"]))
+        self.assertIn("scripts/harness.py changed on disk", stderr)
+        # What git ignores is no file of the commit.
+        self.tearDown()
+        self.setUp()
+        self.preregister("running")
+        self.write("scripts/__pycache__/harness.cpython-311.pyc", "")
+        status, records, stderr = self.run_seed()
+        self.assertEqual((status, stderr, [record["status"] for record in records]), (0, "", ["completed"]))
+        # An unlisted experiment's watch is on its provenance files, as it was.
+        self.tearDown()
+        self.setUp()
+        self.write("scripts/harness.py", "print('unrecorded')\n")
+        status, records, stderr = self.run_seed()
+        self.assertEqual((status, stderr, [record["status"] for record in records]), (0, "", ["completed"]))
+
+    def test_cargo_configuration_outside_the_repository_refuses_a_listed_run(self):
+        # Cargo reads its home's configuration and every .cargo directory
+        # above the root, none of which the commit holds, and one could set
+        # a rustc wrapper, flags or sources for the build.
+        self.preregister("running")
+        home = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        cargo_home = home / "cargo"
+        cargo_home.mkdir()
+        (cargo_home / "config.toml").write_text('[build]\nrustc-wrapper = "/elsewhere/wrapper"\n', encoding="utf-8")
+        with mock.patch.dict(os.environ, {"CARGO_HOME": str(cargo_home)}):
+            status, records, stderr = self.run_seed()
+        self.assertEqual((status, records, list(self.attempts().glob("run-*.json"))), (2, [], []))
+        self.assertEqual(stderr, (
+            f"ERROR: refusing to run L900: Cargo would read {cargo_home / 'config.toml'}, configuration outside the "
+            "repository that could set a rustc wrapper, flags or sources the commit does not hold; move it aside for "
+            "the run, or commit what it sets in the repository's .cargo/config.toml\n"
+        ))
+        # Without CARGO_HOME, Cargo's home is .cargo under HOME; the older
+        # name counts as well.
+        (home / ".cargo").mkdir()
+        (home / ".cargo" / "config").write_text("[build]\n", encoding="utf-8")
+        environment = {name: value for name, value in os.environ.items() if name != "CARGO_HOME"}
+        with mock.patch.dict(os.environ, {**environment, "HOME": str(home)}, clear=True):
+            status, records, stderr = self.run_seed()
+        self.assertEqual((status, records), (2, []))
+        self.assertIn(f"Cargo would read {home / '.cargo' / 'config'}, configuration outside", stderr)
+        # A .cargo directory above the root counts, the repository's own does
+        # not.
+        above = Path(self.enterContext(tempfile.TemporaryDirectory())) / "above"
+        nested = above / "repository"
+        (nested / ".cargo").mkdir(parents=True)
+        (nested / ".cargo" / "config.toml").write_text("[build]\n", encoding="utf-8")
+        (above / ".cargo").mkdir()
+        (above / ".cargo" / "config.toml").write_text("[build]\n", encoding="utf-8")
+        with mock.patch.object(mod, "ROOT", nested):
+            self.assertEqual(
+                mod.outside_cargo_configurations({"CARGO_HOME": str(cargo_home), "HOME": str(home)}),
+                [str(above / ".cargo" / "config.toml"), str(cargo_home / "config.toml")],
+            )
+            (cargo_home / "config.toml").unlink()
+            self.assertEqual(
+                mod.outside_cargo_configurations({"HOME": str(home)}),
+                [str(above / ".cargo" / "config.toml"), str(home / ".cargo" / "config")],
+            )
+            self.assertEqual(mod.outside_cargo_configurations({}), [str(above / ".cargo" / "config.toml")])
+        # Cargo's home above the root is named once.
+        with mock.patch.object(mod, "ROOT", home / "repository"):
+            self.assertEqual(mod.outside_cargo_configurations({"HOME": str(home)}), [str(home / ".cargo" / "config")])
+
+    def test_the_toolchain_a_listed_run_builds_with_is_named_in_its_record(self):
+        # rustup keeps toolchains outside the repository and may override the
+        # one rust-toolchain.toml names: the record names rustc and cargo as
+        # rustup resolves them from the root, with their content.
+        tools = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        toolchain = tools / "toolchains" / "pinned" / "bin"
+        toolchain.mkdir(parents=True)
+        for tool in ("rustc", "cargo"):
+            (toolchain / tool).write_text(f"#!/bin/sh\necho {tool}\n", encoding="utf-8")
+            (toolchain / tool).chmod(0o755)
+        bin_directory = tools / "bin"
+        bin_directory.mkdir()
+        rustup = bin_directory / "rustup"
+        rustup.write_text(
+            f'#!/bin/sh\n[ "$1" = which ] && [ -e "{toolchain}/$2" ] && echo "{toolchain}/$2" && exit 0\nexit 1\n',
+            encoding="utf-8",
+        )
+        rustup.chmod(0o755)
+
+        def named(tool: str) -> dict:
+            path = toolchain / tool
+            return {"path": str(path.resolve()), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+
+        with mock.patch.object(mod, "ROOT", self.root):
+            self.assertEqual(mod.toolchain({"PATH": str(bin_directory)}), {"rustc": named("rustc"), "cargo": named("cargo")})
+            # A tool rustup cannot resolve is named by nothing.
+            (toolchain / "cargo").unlink()
+            self.assertEqual(
+                mod.toolchain({"PATH": str(bin_directory)}),
+                {"rustc": named("rustc"), "cargo": {"path": None, "sha256": None}},
+            )
+            # Without rustup, the PATH's rustc and cargo are named.
+            (toolchain / "cargo").write_text("#!/bin/sh\n", encoding="utf-8")
+            (toolchain / "cargo").chmod(0o755)
+            self.assertEqual(mod.toolchain({"PATH": str(toolchain)}), {"rustc": named("rustc"), "cargo": named("cargo")})
+            self.assertEqual(
+                mod.toolchain({"PATH": str(tools / "nowhere")}),
+                {"rustc": {"path": None, "sha256": None}, "cargo": {"path": None, "sha256": None}},
+            )
+        # A listed run's record holds it.
+        self.preregister("running")
+        with mock.patch.object(mod, "toolchain", return_value={"rustc": named("rustc"), "cargo": named("cargo")}):
+            status, records, stderr = self.run_seed()
+        self.assertEqual((status, stderr), (0, ""))
+        self.assertEqual(records[0]["toolchain"], {"rustc": named("rustc"), "cargo": named("cargo")})
 
     def test_a_listed_experiment_reads_no_output_the_tools_left_uncommitted(self):
         # An output could be an input: what a listed experiment's command

@@ -30,6 +30,13 @@ PLACEHOLDER = experiment_records.PLACEHOLDER
 # `RUSTUP_TOOLCHAIN` or `RUSTFLAGS` loads code the commit does not hold,
 # and no credential or network setting reaches it.
 COMMAND_ENVIRONMENT = ("PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "CARGO_HOME", "RUSTUP_HOME")
+# What the runner sets in that environment whatever the runner's holds:
+# Python reads no packages from the user's own site directory under `HOME`,
+# which the commit does not hold.
+FIXED_ENVIRONMENT = {"PYTHONNOUSERSITE": "1"}
+# The names Cargo reads its configuration from, in a `.cargo` directory and
+# in its home.
+CARGO_CONFIGURATIONS = ("config", "config.toml")
 
 
 def load(path: Path):
@@ -121,12 +128,16 @@ def attempts_directory(directory: Path, results: Path) -> Path:
 
 def restore_records(results: Path, attempts: Path) -> list[str]:
     """Put back into `results`, from the copies in `attempts`
-    (`attempts_directory`), each record of a run that HEAD does not hold and
-    that the results directory holds no longer, or holds otherwise than the
-    copy, and return their repository paths. A record HEAD holds is the
-    gate's, which keeps it as it was committed. Raises `OSError` when a
-    copy cannot be read or a record written, and
-    `check_research_gates.HistoryUnreadable` when git cannot read HEAD."""
+    (`attempts_directory`), each record of a run at HEAD or a commit on its
+    history that HEAD does not hold and that the results directory holds no
+    longer, or holds otherwise than the copy, and return their repository
+    paths. A record HEAD holds is the gate's, which keeps it as it was
+    committed. A run at a commit on another line of history, another branch
+    or another worktree's, belongs to that history, whose record the gate
+    here would refuse: its copy is not put back, and still counts its seed
+    as run (`seed_runs`). Raises `OSError` when a copy cannot be read or a
+    record written, and `check_research_gates.HistoryUnreadable` when git
+    cannot read HEAD."""
     restored = []
     for kept in sorted(attempts.glob("run-*.json")):
         path = results / kept.name
@@ -134,6 +145,17 @@ def restore_records(results: Path, attempts: Path) -> list[str]:
         if check_research_gates.tree_entry(ROOT, "HEAD", relative) is not None:
             continue
         data = kept.read_bytes()
+        try:
+            commit = json.loads(data.decode("utf-8")).get("git_sha")
+        except (UnicodeDecodeError, json.JSONDecodeError, AttributeError):
+            # `seed_runs` refuses a copy it cannot read.
+            continue
+        if not (
+            isinstance(commit, str)
+            and experiment_records.COMMIT.fullmatch(commit)
+            and experiment_records.is_ancestor(commit, "HEAD", ROOT)
+        ):
+            continue
         if not path.is_symlink() and path.is_file() and path.read_bytes() == data:
             continue
         replace_file(path, data)
@@ -303,7 +325,12 @@ def results_directory(root: Path, data: dict) -> Path | None:
 
 
 def launch_watch(
-    exp_id: str, root: Path, results: Path, data: dict, outputs: tuple[str, ...] = experiment_records.RESULT_OUTPUTS
+    exp_id: str,
+    root: Path,
+    results: Path,
+    data: dict,
+    outputs: tuple[str, ...] = experiment_records.RESULT_OUTPUTS,
+    listed: bool = False,
 ) -> experiment_records.ProvenanceWatch | None:
     """The watch on every file that decides a launch of `exp_id` (the
     provenance files, the experiment's directory but the `outputs` the tools
@@ -311,9 +338,12 @@ def launch_watch(
     None, printing why, when git cannot tell, HEAD does not hold one of
     them, or `results` holds a file git ignores, which the watch would not
     see: a record names HEAD as what it ran, so it may be written only from
-    a tree that holds HEAD. A listed experiment's watch leaves out only the
-    record the run itself writes, so every earlier record and output, which
-    a command could read, is one HEAD holds. A
+    a tree that holds HEAD. A listed experiment's watch is on the whole
+    repository, since its command may run or read any file there (a script
+    under `scripts/`, say), and leaves out only the record the run itself
+    writes, so every earlier record and output, which a command could read,
+    is one HEAD holds. What git ignores (build output, caches) is no file
+    of the commit. A
     listed experiment also needs HEAD to hold it frozen as the tree launches
     it (`check_research_gates.launch_commit_errors`), each input a regular
     file HEAD holds, so the gate can find the freeze from HEAD alone. And
@@ -326,7 +356,7 @@ def launch_watch(
             ROOT,
             [
                 *experiment_records.tree_pathspecs(
-                    root, results, ROOT, experiment_records.seed_record_paths(root, ROOT), outputs
+                    root, results, ROOT, (".",) if listed else experiment_records.seed_record_paths(root, ROOT), outputs
                 ),
                 # What decided that this experiment may launch: an edit to it
                 # would be undone after the outcome is seen.
@@ -393,8 +423,9 @@ def prepare(exp_id: str):
         return 2
     timestamp = utc_stamp()
     out = results / f"run-{timestamp}.json"
-    outputs = (out.name,) if is_listed(exp_id) else experiment_records.RESULT_OUTPUTS
-    watch = launch_watch(exp_id, root, results, data, outputs)
+    listed = is_listed(exp_id)
+    outputs = (out.name,) if listed else experiment_records.RESULT_OUTPUTS
+    watch = launch_watch(exp_id, root, results, data, outputs, listed)
     if watch is None:
         return 2
     record = base_record(exp_id, data, root)
@@ -507,9 +538,57 @@ def command_parameters(exp_id: str, root: Path, data: dict, entrypoint: str, par
 
 def command_environment() -> dict[str, str]:
     """The environment a listed experiment's command runs in: the variables
-    `COMMAND_ENVIRONMENT` names that the runner's environment sets, and no
-    other."""
-    return {name: os.environ[name] for name in COMMAND_ENVIRONMENT if name in os.environ}
+    `COMMAND_ENVIRONMENT` names that the runner's environment sets, and
+    `FIXED_ENVIRONMENT`, and no other."""
+    return {**{name: os.environ[name] for name in COMMAND_ENVIRONMENT if name in os.environ}, **FIXED_ENVIRONMENT}
+
+
+def outside_cargo_configurations(environment: dict[str, str]) -> list[str]:
+    """The Cargo configuration files outside the repository that Cargo, run
+    from the repository's root in `environment`, would read: a
+    `.cargo/config` or `.cargo/config.toml` in a directory above the root,
+    and `config` or `config.toml` in Cargo's home (`CARGO_HOME`, or `.cargo`
+    under `HOME`). The commit holds none of them, and one could set a rustc
+    wrapper, flags or sources for the build; a listed experiment's run is
+    refused while one exists. The repository's own `.cargo/config.toml` is
+    a provenance file."""
+    directories = [directory / ".cargo" for directory in ROOT.parents]
+    if environment.get("CARGO_HOME"):
+        directories.append(Path(environment["CARGO_HOME"]))
+    elif environment.get("HOME"):
+        directories.append(Path(environment["HOME"]) / ".cargo")
+    found = []
+    for directory in directories:
+        for name in CARGO_CONFIGURATIONS:
+            if os.path.lexists(directory / name) and str(directory / name) not in found:
+                found.append(str(directory / name))
+    return found
+
+
+def toolchain(environment: dict[str, str]) -> dict:
+    """The Rust toolchain a command run from the repository's root in
+    `environment` would build with: `rustc` and `cargo` as rustup resolves
+    them there, after its overrides and `rust-toolchain.toml`, or as the
+    `PATH` holds them without rustup, each named as `resolved_executable`
+    names a program, by nothing when it cannot be resolved. rustup keeps its
+    toolchains outside the repository, where the commit holds none."""
+    rustup = shutil.which("rustup", path=os.pathsep.join(os.get_exec_path(environment)))
+    found = {}
+    for tool in ("rustc", "cargo"):
+        if rustup is None:
+            found[tool] = resolved_executable([tool], environment)
+            continue
+        try:
+            which = subprocess.run(
+                [rustup, "which", tool], cwd=ROOT, env=environment, capture_output=True, text=True, timeout=120
+            )
+        except (OSError, subprocess.SubprocessError):
+            which = None
+        resolved = which.stdout.strip() if which is not None and which.returncode == 0 else ""
+        found[tool] = resolved_executable([resolved], environment) if os.path.isabs(resolved) else {
+            "path": None, "sha256": None,
+        }
+    return found
 
 
 def resolved_executable(command: list[str], environment: dict[str, str]) -> dict:
@@ -542,13 +621,17 @@ def execute_command(command: list[str], environment: dict[str, str] | None = Non
     bytecode cache in a fresh directory (`PYTHONPYCACHEPREFIX`), so no
     `__pycache__` entry the tree holds, which git ignores and HEAD does not
     hold, runs in place of a tracked source. A command that could not start,
-    for want of that directory or of its program, has no exit status and
-    its launch error: it saw no outcome. Once it started, whatever stops the
-    runner stops the command and is raised, as `subprocess.run` does, and a
-    cache that cannot be removed afterwards is left: the command ran."""
+    for want of that directory or of its program, or given an argument no
+    process can take (a NUL character), has no exit status and its launch
+    error: it saw no outcome. Once it started, an exception raised in the
+    runner while it waits (an interrupt, say) kills the command and is
+    raised, as `subprocess.run` does, and a cache that cannot be removed
+    afterwards is left: the command ran. A runner killed by a signal leaves
+    the command running; the copy of its reservation in git's own directory
+    (`attempts_directory`) keeps that its seed ran."""
     started = time.perf_counter_ns()
 
-    def not_started(error: OSError) -> dict:
+    def not_started(error: Exception) -> dict:
         return {
             "exit_code": None,
             "stdout": "",
@@ -571,7 +654,7 @@ def execute_command(command: list[str], environment: dict[str, str] | None = Non
                 stderr=subprocess.PIPE,
                 env={**(os.environ if environment is None else environment), "PYTHONPYCACHEPREFIX": cache.name},
             )
-        except OSError as error:
+        except (OSError, ValueError) as error:
             return not_started(error)
         with process:
             try:
@@ -693,12 +776,15 @@ def launch_and_record(
             return 2
         if restored:
             print(
-                f"ERROR: put back {', '.join(restored)} from the copies kept in {attempts}: the results directory had "
-                "lost these records of runs of it; commit them before the next run",
+                f"ERROR: put back {', '.join(restored)} from the copies kept in {attempts}: records of runs at commits "
+                "on HEAD's history, which the results directory held otherwise or not at all; commit them before the "
+                "next run",
                 file=sys.stderr,
             )
             return 2
-    watch = launch_watch(exp_id, root, results, data, (out.name,) if listed else experiment_records.RESULT_OUTPUTS)
+    watch = launch_watch(
+        exp_id, root, results, data, (out.name,) if listed else experiment_records.RESULT_OUTPUTS, listed
+    )
     if watch is None:
         return 2
     # Built once the watch holds the tree to HEAD, so a listed experiment's
@@ -735,11 +821,28 @@ def launch_and_record(
         }
     )
     # A listed experiment's command runs in the environment the runner
-    # allows (`command_environment`), and its record names that environment
-    # and the program it starts, which lies outside what the commit holds.
+    # allows (`command_environment`), with no Cargo configuration from
+    # outside the repository, and its record names that environment, the
+    # program it starts and the Rust toolchain, which lie outside what the
+    # commit holds.
     environment = command_environment() if listed else None
     if listed:
-        record.update({"environment": environment, "executable": resolved_executable(command, environment)})
+        outside = outside_cargo_configurations(environment)
+        if outside:
+            print(
+                f"ERROR: refusing to run {exp_id}: Cargo would read {', '.join(outside)}, configuration outside the "
+                "repository that could set a rustc wrapper, flags or sources the commit does not hold; move it aside "
+                "for the run, or commit what it sets in the repository's .cargo/config.toml",
+                file=sys.stderr,
+            )
+            return 2
+        record.update(
+            {
+                "environment": environment,
+                "executable": resolved_executable(command, environment),
+                "toolchain": toolchain(environment),
+            }
+        )
     kept = attempts / out.name if listed else None
     if listed:
         # The reservation: the record, as far as it is known before the
@@ -799,27 +902,61 @@ def launch_and_record(
             return 2
     # The command could have put a file or a link where the results
     # directory is, which the watch leaves out.
-    if results_directory(root, data) is None:
-        if listed and not launched:
-            # The copy says the command never started; the next run puts
-            # the record back once the results directory is one again.
-            write_json_replacing(kept, record)
+    results_changed = results_directory(root, data) is None
+    if results_changed:
         print(
             f"ERROR: not recording the run (exit status {exit_code}): its results directory changed while it ran"
             f"{stays if launched else ''}",
             file=sys.stderr,
         )
-        return 2
-
-    if listed:
-        # The copy first: a runner stopped between the two writes leaves the
-        # whole record in the copy, which the next run puts back.
-        write_json_replacing(kept, record)
-        write_json_replacing(out, record)
-    else:
+    if not listed:
+        if results_changed:
+            return 2
         write_json_exclusive(out, record)
+        print(out.relative_to(ROOT))
+        return exit_code if exit_code is not None else 127
+    if not launched:
+        # Nothing ran: the record that the command failed to launch replaces
+        # the reservation and its copy, the copy first; where it cannot be
+        # written, the reservation and its copy go, so the seed may run. The
+        # next run puts the record back once the results directory is one
+        # again.
+        try:
+            write_json_replacing(kept, record)
+            if not results_changed:
+                write_json_replacing(out, record)
+        except OSError as error:
+            problem = f"cannot write the record of seed {seed}'s launch, which failed: {error}"
+            for reservation in (kept,) if results_changed else (kept, out):
+                try:
+                    reservation.unlink(missing_ok=True)
+                except OSError as removal:
+                    problem += f"; and {reservation}, which says seed {seed} ran, cannot be removed: {removal}"
+            print(f"ERROR: {problem}", file=sys.stderr)
+            return 2
+        if results_changed:
+            return 2
+        print(out.relative_to(ROOT))
+        return 127
+    if results_changed:
+        return 2
+    # The copy first: a runner stopped between the two writes leaves the
+    # whole record in the copy, which the next run puts back. A copy git's
+    # own directory cannot hold (full, say) goes, so that no reservation
+    # there is put back over the record, which the results hold alone until
+    # it is committed.
+    try:
+        write_json_replacing(kept, record)
+    except OSError as error:
+        problem = f"cannot write the record's copy {kept}: {error}"
+        try:
+            kept.unlink(missing_ok=True)
+        except OSError as removal:
+            problem += f"; nor remove it, so the next run would put its reservation back: {removal}"
+        print(f"ERROR: {problem}; commit {out.relative_to(ROOT)} before the next run", file=sys.stderr)
+    write_json_replacing(out, record)
     print(out.relative_to(ROOT))
-    return exit_code if exit_code is not None else 127
+    return exit_code
 
 
 def main():

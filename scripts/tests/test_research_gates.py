@@ -1915,8 +1915,9 @@ class PreregistrationGateTests(unittest.TestCase):
 
     def test_a_listed_experiments_entrypoint_takes_only_preregistered_values(self):
         # The runner fills each placeholder but <seed> from the frozen table;
-        # one it cannot fill would make a freeze no run can use, and a
-        # committed freeze cannot be repaired, so the tree check refuses it.
+        # one it cannot fill, a program that is no name, or a character no
+        # process can be given would make a command no run can use, so the
+        # tree check refuses it.
         for entrypoint,refusal in (
             ("bench <seed> <iterations>",
              "X900: entrypoint placeholder <iterations> is no key of the [preregistration] table, so the runner has no "
@@ -1924,6 +1925,9 @@ class PreregistrationGateTests(unittest.TestCase):
             ("bench <seed> --programs=<programs>",
              "X900: entrypoint placeholder <programs> is preregistered as a list, which no command token takes"),
             ('bench <seed> "unterminated',"X900: entrypoint cannot be split into a command: No closing quotation"),
+            ('"" <seed>',"X900: entrypoint names no program: its first token is empty"),
+            ("' '","X900: entrypoint names no program: its first token is empty"),
+            ("bench\0 <seed>","X900: entrypoint holds a NUL character, which no command can be given"),
         ):
             with self.subTest(entrypoint=entrypoint):
                 root=self.tree(status="running")
@@ -1938,8 +1942,24 @@ class PreregistrationGateTests(unittest.TestCase):
         root=self.tree(status="planned")
         self.edit(root,self.MANIFEST,'entrypoint = "bench <seed>"\n','entrypoint = "bench <seed> <iterations>"\n')
         self.assertEqual(gate(root),(0,[]))
+        # A string value holding a NUL character fills no token either.
+        self.assertEqual(
+            mod.command_errors("X900",{"entrypoint":"bench <seed> <harness>"},{"harness":"a\0b"}),
+            ["X900: entrypoint placeholder <harness> is preregistered holding a NUL character, which no command can be "
+             "given"],
+        )
+        self.assertEqual(mod.command_errors("X900",{"entrypoint":"bench <seed> <harness>"},{"harness":"ab"}),[])
         # A commit holding such an entrypoint could not launch it and froze
-        # nothing, so preregistering the value repairs it.
+        # nothing, so preregistering the value repairs it, and so does
+        # naming a program.
+        root=self.tree(status="running")
+        self.edit(root,self.MANIFEST,'entrypoint = "bench <seed>"\n','entrypoint = "\\"\\" <seed>"\n')
+        commit=commit_all(root)
+        self.assertIsNone(mod.launchable_at(root,commit,"X900","experiments/semdb/X900-fixture"))
+        self.edit(root,self.MANIFEST,'entrypoint = "\\"\\" <seed>"\n','entrypoint = "bench <seed>"\n')
+        named=commit_all(root,"program named")
+        self.assertEqual(gate(root),(0,[]))
+        self.assertIsNotNone(mod.launchable_at(root,named,"X900","experiments/semdb/X900-fixture"))
         root=self.tree(status="running")
         self.edit(root,self.MANIFEST,'entrypoint = "bench <seed>"\n','entrypoint = "bench <seed> <iterations>"\n')
         commit=commit_all(root)

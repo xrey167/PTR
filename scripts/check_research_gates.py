@@ -212,10 +212,13 @@ def command_errors(exp_id: str, manifest: dict, table: dict) -> list[str]:
     """What keeps the runner from building the command of `exp_id`, a listed
     experiment, from its manifest `manifest` and its `[preregistration]`
     table `table`: it splits the manifest's `entrypoint` as a shell would
-    (without running one), and fills each placeholder in it but `<seed>`
-    with the table's value of that name, an integer, a string or a boolean
-    (`run_experiment.command_parameters`). A freeze no run can use cannot be
-    repaired once committed, so the tree check refuses it first."""
+    (without running one), its first token names a program, no token holds
+    a NUL character, which no process can be given, and it fills each
+    placeholder in it but `<seed>` with the table's value of that name, an
+    integer, a string holding no NUL character or a boolean
+    (`run_experiment.command_parameters`). A commit whose command the runner
+    cannot build could not launch and froze nothing (`launchable_at`); the
+    tree check refuses it first."""
     if not names_an_entrypoint(manifest):
         return []
     try:
@@ -223,6 +226,10 @@ def command_errors(exp_id: str, manifest: dict, table: dict) -> list[str]:
     except ValueError as error:
         return [f"{exp_id}: entrypoint cannot be split into a command: {error}"]
     errors=[]
+    if not tokens or not tokens[0].strip():
+        errors.append(f"{exp_id}: entrypoint names no program: its first token is empty")
+    if any("\0" in token for token in tokens):
+        errors.append(f"{exp_id}: entrypoint holds a NUL character, which no command can be given")
     for name in sorted({name for token in tokens for name in experiment_records.PLACEHOLDER.findall(token)}-{"seed"}):
         if name not in table:
             errors.append(f"{exp_id}: entrypoint placeholder <{name}> is no key of the [preregistration] table, so the "
@@ -230,6 +237,9 @@ def command_errors(exp_id: str, manifest: dict, table: dict) -> list[str]:
         elif not isinstance(table[name],(bool,int,str)):
             errors.append(f"{exp_id}: entrypoint placeholder <{name}> is preregistered as a {type(table[name]).__name__}, "
                           "which no command token takes")
+        elif isinstance(table[name],str) and "\0" in table[name]:
+            errors.append(f"{exp_id}: entrypoint placeholder <{name}> is preregistered holding a NUL character, which no "
+                          "command can be given")
     return errors
 
 def is_placeholder(value: str) -> bool:

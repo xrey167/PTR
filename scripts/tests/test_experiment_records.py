@@ -579,6 +579,28 @@ class SourceTreeTests(GitTree, unittest.TestCase):
             mod.uncommitted_files(self.root, self.pathspecs), [".gitignore", "crates/other/.gitignore"]
         )
 
+    def test_a_directory_heads_rules_ignore_decides_every_file_below_it(self):
+        # Git cannot show a file again below a directory its rules ignore, so
+        # one such top-level directory decides all its files at once; one its
+        # rules do not ignore as a whole, as `build/*` does not ignore
+        # `build`, is decided file by file, a file shown again included.
+        commit(self.root, {".gitignore": "__pycache__/\ntarget/\nbuild/*\n!build/keep.rs\n"}, "rules")
+        for index in range(40):
+            self.write(f"target/debug/build/out{index}.rs")
+        self.write("build/other.rs")
+        self.assertEqual(mod.uncommitted_files(self.root, self.pathspecs), [])
+        self.write("build/keep.rs")
+        self.assertEqual(mod.uncommitted_files(self.root, self.pathspecs), ["build/keep.rs"])
+        # This clone's own rule hiding the whole directory hides nothing HEAD
+        # shows.
+        (self.root / ".git/info").mkdir(parents=True, exist_ok=True)
+        (self.root / ".git/info/exclude").write_text("build/\ntarget/\n", encoding="utf-8")
+        self.assertEqual(mod.uncommitted_files(self.root, self.pathspecs), ["build/keep.rs"])
+        self.assertEqual(
+            mod.ignored_by_head_rules(self.root, ["target/debug/build/out1.rs", "build/other.rs", "build/keep.rs"]),
+            {"target/debug/build/out1.rs", "build/other.rs"},
+        )
+
     def test_heads_ignore_rules_are_read_as_committed_whatever_replaces_them(self):
         # A replacement object for HEAD's .gitignore would make every
         # untracked source look ignored by HEAD's own rules.
