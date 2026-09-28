@@ -545,6 +545,12 @@ class PreregistrationGateTests(unittest.TestCase):
                 write(root,"experiments/semdb/X900-fixture/results/metrics.json","{}")
                 write(root,"experiments/semdb/X900-fixture/results/run_notes.json","[]")
                 self.assertEqual(gate(root),(0,[]))
+                # A checkout that converts line endings hashed the manifest
+                # with CRLF; that is the committed manifest too.
+                crlf=hashlib.sha256(git(root,"show",f"{commit}:{self.MANIFEST}").replace("\n","\r\n").encode("utf-8")+b"\r\n").hexdigest()
+                write(root,self.RECORD,json.dumps(self.record(root,commit,manifest_sha256=crlf)))
+                self.assertEqual(gate(root),(0,[]))
+                write(root,self.RECORD,json.dumps(self.record(root,commit)))
                 commit_all(root,"records")
                 self.assertEqual(gate(root),(0,[]))
                 cases=[
@@ -681,7 +687,7 @@ class PreregistrationGateTests(unittest.TestCase):
         except (OSError,NotImplementedError) as error:
             self.skipTest(f"cannot create a symlink: {error}")
 
-    def test_a_file_or_baseline_reached_through_a_link_out_of_the_repository_is_refused(self):
+    def test_a_file_or_baseline_reached_through_a_symlink_is_refused(self):
         outside=Path(self.enterContext(tempfile.TemporaryDirectory()))
         text="# Protocol held elsewhere\n"
         (outside/"PROTOCOL.md").write_text(text,encoding="utf-8")
@@ -689,12 +695,28 @@ class PreregistrationGateTests(unittest.TestCase):
         table={**TABLE,"protocol":path,"protocol_sha256":hashlib.sha256(text.encode("utf-8")).hexdigest()}
         root=self.tree(table=table,required={**REQUIRED,"protocol":"file"})
         self.link(outside/"PROTOCOL.md",root/path)
-        self.assert_blocked(root,f"X900: preregistration key protocol names {path!r}, which is not a file in the repository")
-        # A link that stays inside the repository names a file it holds.
+        refused=f"X900: preregistration key protocol names {path!r}, which is not a file in the repository"
+        self.assert_blocked(root,refused)
+        # A link inside the repository is refused too: git holds it as its
+        # target's path, so the commit a run names could not show the content
+        # frozen through it.
         (root/path).unlink()
         write(root,"experiments/semdb/X900-fixture/protocols/v1.md",text)
         self.link(root/"experiments/semdb/X900-fixture/protocols/v1.md",root/path)
-        self.assertEqual(gate(root),(0,[]))
+        self.assert_blocked(root,refused)
+        # So is a file reached through a linked directory.
+        (root/path).unlink()
+        self.link(root/"experiments/semdb/X900-fixture/protocols",root/"experiments/semdb/X900-fixture/linked")
+        linked={**table,"protocol":"experiments/semdb/X900-fixture/linked/v1.md"}
+        root2=self.tree(table=linked,required={**REQUIRED,"protocol":"file"})
+        write(root2,"experiments/semdb/X900-fixture/protocols/v1.md",text)
+        self.link(root2/"experiments/semdb/X900-fixture/protocols",root2/"experiments/semdb/X900-fixture/linked")
+        self.assert_blocked(root2,"X900: preregistration key protocol names 'experiments/semdb/X900-fixture/linked/v1.md', which is not a file in the repository")
+        # The same file, named directly, is a file in the repository.
+        direct={**table,"protocol":"experiments/semdb/X900-fixture/protocols/v1.md"}
+        root3=self.tree(table=direct,required={**REQUIRED,"protocol":"file"})
+        write(root3,"experiments/semdb/X900-fixture/protocols/v1.md",text)
+        self.assertEqual(gate(root3),(0,[]))
         # A baseline configuration linked in from elsewhere is refused too.
         root=self.tree()
         (outside/"baseline.toml").write_text((root/BASELINE_PATH).read_text(encoding="utf-8"),encoding="utf-8")

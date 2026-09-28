@@ -48,8 +48,9 @@ replaced by another, whose own preregistration counts:
 
 `scripts/run_experiment.py` refuses to run or prepare a listed experiment
 until this holds for it (`launch_errors`), so no outcome is seen before the
-preregistration is frozen. A file or baseline the list names must be a file
-inside the repository, not a link out of it (`repository_file`).
+preregistration is frozen. A file or baseline the list names must be a
+regular file inside the repository, reached through no symlink
+(`repository_file`).
 
 A value is pinned unless it is a placeholder: a `must-be-pinned-…` string for
 a value still to be chosen, a `must-be-signed-…` string for an owner decision
@@ -182,14 +183,16 @@ def is_repository_path(value) -> bool:
     return not path.is_absolute() and ".." not in path.parts and "\\" not in value
 
 def repository_file(root: Path, relative: str) -> Path | None:
-    """The file `relative` names under `root`, or None when it names none, or
-    names one only through a link out of the repository: a symlink stored in
-    the repository whose target lies elsewhere holds content no other
-    checkout has."""
+    """The regular file `relative` names under `root`, or None when it names
+    none or reaches one through a symlink, in its own name or a directory's.
+    A link out of the repository holds content no other checkout has, and git
+    holds any link as its target's path, so the commit a run names could not
+    show the content frozen through it."""
     if not is_repository_path(relative):
         return None
     path=root/relative
-    if not path.is_file() or not path.resolve().is_relative_to(root.resolve()):
+    reached=[root/PurePosixPath(*PurePosixPath(relative).parts[:depth]) for depth in range(1,len(PurePosixPath(relative).parts)+1)]
+    if any(step.is_symlink() for step in reached) or not path.is_file():
         return None
     return path
 
@@ -391,7 +394,11 @@ def archived_errors(exp_id: str, manifest: dict, experiment: Path, root: Path, e
         relative=path.relative_to(root).as_posix()
         if commit is not None:
             held=blob(root,commit,f"{experiment.relative_to(root).as_posix()}/experiment.toml")
-            if held is None or hashlib.sha256(held).hexdigest()!=record.get("manifest_sha256"):
+            # run_experiment.py hashes the manifest as the checkout holds it,
+            # which is the committed text, or that text with CRLF line endings
+            # where the checkout converts them.
+            spellings=set() if held is None else {held,re.sub(rb"(?<!\r)\n",b"\r\n",held)}
+            if record.get("manifest_sha256") not in {hashlib.sha256(spelling).hexdigest() for spelling in spellings}:
                 errors.append(f"{where} names manifest_sha256 {record.get('manifest_sha256')!r}, not the SHA-256 of experiment.toml at {commit[:12]}")
         touched=experiment_records.git(root,"rev-list","HEAD","--",relative).stdout.split()
         if len(touched)>1:
