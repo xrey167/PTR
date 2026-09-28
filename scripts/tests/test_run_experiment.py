@@ -336,6 +336,15 @@ class RunWatchTests(unittest.TestCase):
         (tools / "bench").write_text("#!/bin/sh\n", encoding="utf-8")
         (tools / "bench").chmod(0o755)
         self.enterContext(mock.patch.dict(os.environ, {"PATH": os.pathsep.join((str(tools), os.environ.get("PATH", os.defpath)))}))
+        # A listed run refuses to start while its scratch directory exists,
+        # which is named by the experiment's id in the temporary directory:
+        # each test has a temporary directory of its own, so a run of this
+        # suite beside another one, or one an interrupted run left behind,
+        # is never taken for this test's.
+        temporary = Path(self.directory.name + "-tmp")
+        temporary.mkdir(exist_ok=True)
+        self.addCleanup(shutil.rmtree, temporary, ignore_errors=True)
+        self.enterContext(mock.patch.dict(os.environ, {"TMPDIR": str(temporary)}))
         files = {
             ".gitignore": "__pycache__/\n",
             "Cargo.lock": "# lock\n",
@@ -1294,11 +1303,14 @@ class RunWatchTests(unittest.TestCase):
 
     def test_a_command_that_cannot_start_leaves_its_seed_unrun(self):
         # A command stopped before it started, for want of a directory for
-        # its bytecode cache, saw no outcome.
+        # its bytecode cache, saw no outcome: here the runner's own
+        # temporary directory, the one used when no TMPDIR is set, is gone.
         self.preregister("running")
         attempts = self.attempts()
         stderr = io.StringIO()
+        unset = {name: value for name, value in os.environ.items() if name != "TMPDIR"}
         with (
+            mock.patch.dict(os.environ, unset, clear=True),
             mock.patch.object(mod, "ROOT", self.root),
             mock.patch.object(mod, "REGISTRY", self.root / "experiments/registry.toml"),
             mock.patch.object(mod.tempfile, "tempdir", str(self.root / "no-such-directory")),
@@ -1411,7 +1423,7 @@ class RunWatchTests(unittest.TestCase):
             "RUSTC_WRAPPER": "/elsewhere/wrapper",
             "RUSTUP_TOOLCHAIN": "nightly",
             "GH_TOKEN": "credential",
-            "TMPDIR": tempfile.gettempdir(),
+            "TMPDIR": os.environ["TMPDIR"],
         }
         with (
             mock.patch.dict(os.environ, runner),
