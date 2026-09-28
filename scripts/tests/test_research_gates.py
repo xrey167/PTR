@@ -569,6 +569,17 @@ class PreregistrationGateTests(unittest.TestCase):
         )
         shutil.rmtree(root/directory/"__pycache__")
         self.assertEqual(gate(root),(0,[]))
+        # An ignored link is refused once, as what git ignores: the listing of
+        # what the baseline holds leaves out what its .gitignore files ignore.
+        write(root,".gitignore","__pycache__/\ncache.lnk\n")
+        self.link(Path("config.toml"),root/directory/"cache.lnk")
+        self.assert_blocked(
+            root,
+            f"X900: baseline {directory}/ holds {directory}/cache.lnk, which git ignores; "
+            "a baseline's directory holds only what git tracks or would track",
+        )
+        (root/directory/"cache.lnk").unlink()
+        self.assertEqual(gate(root),(0,[]))
         # A file's mode is frozen with its content, as git holds it: made
         # executable, runner.py makes another baseline, in the tree and in a
         # commit.
@@ -1397,9 +1408,42 @@ class PreregistrationGateTests(unittest.TestCase):
         root,ran=self.ran()
         recorded=git(root,"rev-parse","HEAD")
         git(root,"revert","--no-edit",recorded)
+        # While it is missing, the gate fails and nothing launches, so no run
+        # or freeze can use the gap.
+        name=self.RECORD.removeprefix("experiments/semdb/X900-fixture/")
+        missing=f"X900: {name} was committed and has since been deleted or renamed; a run record stays as it was recorded"
+        self.assert_blocked(root,missing)
+        self.assertEqual(mod.launch_errors(root,"X900"),[missing])
         git(root,"revert","--no-edit","HEAD")
         self.assertTrue((root/self.RECORD).exists())
         self.assertEqual(gate(root),(0,[]))
+
+    def test_a_listed_experiment_runs_each_seed_once(self):
+        # A seed run again after its outcome was seen could keep whichever
+        # run came out best.
+        root=self.tree(status="running")
+        commit=commit_all(root)
+        results="experiments/semdb/X900-fixture/results"
+        first=f"{results}/run-20260101T000000.000000Z-seed-17.json"
+        second=f"{results}/run-20260102T000000.000000Z-seed-17.json"
+        write(root,first,json.dumps(self.record(root,commit,seed=17,status="completed")))
+        # A command that failed to launch saw no outcome, a prepared record
+        # names no seed, and another seed is another run.
+        write(root,second,json.dumps(self.record(root,commit,seed=17,status="failed-to-launch")))
+        write(root,f"{results}/run-20260103T000000.000000Z-seed-29.json",json.dumps(self.record(root,commit,seed=29,status="completed")))
+        write(root,f"{results}/run-20251231T000000.000000Z.json",json.dumps(self.record(root,commit,status="prepared")))
+        self.assertEqual(gate(root),(0,[]))
+        refusal=("X900: seed 17 ran more than once (results/run-20260101T000000.000000Z-seed-17.json, "
+                 "results/run-20260102T000000.000000Z-seed-17.json); a listed experiment runs each seed once, so no "
+                 "run of it is chosen by its outcome")
+        for status in ("completed","failed","unknown"):
+            with self.subTest(status=status):
+                write(root,second,json.dumps(self.record(root,commit,seed=17,status=status)))
+                self.assert_blocked(root,refusal)
+                self.assertEqual(mod.launch_errors(root,"X900"),[refusal])
+        # Committed, the second run stays, and so does the refusal.
+        commit_all(root,"records")
+        self.assert_blocked(root,refusal)
 
     def test_settings_are_compared_by_type_sign_and_offset_and_nan_is_itself(self):
         name=self.RECORD.removeprefix("experiments/semdb/X900-fixture/")
@@ -1768,18 +1812,93 @@ class PreregistrationGateTests(unittest.TestCase):
         code="x = 1\n"
         odd="research/baselines/fixture/helper[old].py"
         table={**TABLE,"baseline_fixture_sha256":baseline_digest({"config.toml":baseline_text,"helper[old].py":code})}
-        root=self.tree(status="running",table=table)
-        write(root,odd,code)
-        commit=commit_all(root)
-        self.assertIsNone(mod.directory_digest_at(root,commit,"research/baselines/fixture"))
-        (root/odd).unlink()
-        write(root,"research/baselines/fixture/helper_old.py",code)
+        misnamed=("X900: baseline research/baselines/fixture/ holds research/baselines/fixture/helper[old].py, whose "
+                  "name is not a repository path: printable ASCII, written as git writes a path, with no glob "
+                  "character, leading `:` or step through .git")
         repaired=self.tree(status="running",table={**TABLE,"baseline_fixture_sha256":baseline_digest(
             {"config.toml":baseline_text,"helper_old.py":code})})
-        for relative in ("experiments/semdb/X900-fixture/config.toml",self.MANIFEST):
-            shutil.copyfile(repaired/relative,root/relative)
-        commit_all(root,"renamed")
+        # A table that names no baseline digest yet froze nothing either:
+        # no digest is none a table could name.
+        for table in (table,{key:value for key,value in TABLE.items() if key!="baseline_fixture_sha256"}):
+            with self.subTest(named="baseline_fixture_sha256" in table):
+                root=self.tree(status="running",table=table,freeze_baselines=False)
+                write(root,odd,code)
+                self.assert_blocked(root,misnamed)
+                self.assertEqual(mod.launch_errors(root,"X900"),[misnamed])
+                commit=commit_all(root)
+                self.assertIsNone(mod.directory_digest_at(root,commit,"research/baselines/fixture"))
+                self.assertIsNone(mod.launchable_at(root,commit,"X900","experiments/semdb/X900-fixture"))
+                (root/odd).unlink()
+                write(root,"research/baselines/fixture/helper_old.py",code)
+                for relative in ("experiments/semdb/X900-fixture/config.toml",self.MANIFEST):
+                    shutil.copyfile(repaired/relative,root/relative)
+                commit_all(root,"renamed")
+                self.assertEqual(gate(root),(0,[]))
+        # Nor did a commit whose baseline held a link, the table naming none.
+        root=self.tree(status="running",table={key:value for key,value in TABLE.items() if key!="baseline_fixture_sha256"},
+                       freeze_baselines=False)
+        self.link(Path("config.toml"),root/"research/baselines/fixture/alias.toml")
+        commit=commit_all(root)
+        self.assertIsNone(mod.launchable_at(root,commit,"X900","experiments/semdb/X900-fixture"))
+
+    def test_a_listed_experiments_entrypoint_takes_only_preregistered_values(self):
+        # The runner fills each placeholder but <seed> from the frozen table;
+        # one it cannot fill would make a freeze no run can use, and a
+        # committed freeze cannot be repaired, so the tree check refuses it.
+        for entrypoint,refusal in (
+            ("bench <seed> <iterations>",
+             "X900: entrypoint placeholder <iterations> is no key of the [preregistration] table, so the runner has no "
+             "frozen value for it"),
+            ("bench <seed> --programs=<programs>",
+             "X900: entrypoint placeholder <programs> is preregistered as a list, which no command token takes"),
+            ('bench <seed> "unterminated',"X900: entrypoint cannot be split into a command: No closing quotation"),
+        ):
+            with self.subTest(entrypoint=entrypoint):
+                root=self.tree(status="running")
+                self.edit(root,self.MANIFEST,'entrypoint = "bench <seed>"\n',f"entrypoint = {json.dumps(entrypoint)}\n")
+                self.assert_blocked(root,refusal)
+                self.assertEqual(mod.launch_errors(root,"X900"),[refusal])
+        # An integer, a string and a boolean each fill one; a planned
+        # experiment is not gated.
+        root=self.tree(status="running")
+        self.edit(root,self.MANIFEST,'entrypoint = "bench <seed>"\n','entrypoint = "bench <seed> <schema> <harness> <see_intent>"\n')
         self.assertEqual(gate(root),(0,[]))
+        root=self.tree(status="planned")
+        self.edit(root,self.MANIFEST,'entrypoint = "bench <seed>"\n','entrypoint = "bench <seed> <iterations>"\n')
+        self.assertEqual(gate(root),(0,[]))
+
+    def test_a_name_that_is_not_utf8_is_no_repository_path(self):
+        # Git holds a name's bytes as they are. One that is not UTF-8 is
+        # refused in the tree, froze nothing at a commit, and fails no later
+        # gate once it is gone.
+        baseline_text=(self.tree()/BASELINE_PATH).read_text(encoding="utf-8")
+        root=self.tree(status="running",table={**TABLE,"baseline_fixture_sha256":baseline_digest({"config.toml":baseline_text})})
+        odd=os.path.join(os.fsencode(root/"research/baselines/fixture"),b"helper\xff.py")
+        notes=os.path.join(os.fsencode(root/"experiments/semdb/X900-fixture"),b"notes\xff.md")
+        try:
+            for name in (odd,notes):
+                with open(name,"wb") as handle:
+                    handle.write(b"x = 1\n")
+        except OSError as error:
+            self.skipTest(f"cannot name a file with bytes that are not UTF-8: {error}")
+        refusal="X900: baseline research/baselines/fixture/ holds a file whose name is not UTF-8, which no repository path is"
+        self.assert_blocked(root,refusal)
+        self.assertEqual(mod.launch_errors(root,"X900"),[refusal])
+        commit=commit_all(root)
+        self.assertIsNone(mod.directory_digest_at(root,commit,"research/baselines/fixture"))
+        for name in (odd,notes):
+            os.unlink(name)
+        commit_all(root,"removed")
+        self.assertEqual(gate(root),(0,[]))
+        self.assertEqual(mod.launch_errors(root,"X900"),[])
+        # A record so named is refused, and the gate prints its name's bytes
+        # as escapes rather than failing to print it.
+        root=self.tree(status="running")
+        (root/"experiments/semdb/X900-fixture/results").mkdir(exist_ok=True)
+        with open(os.path.join(os.fsencode(root/"experiments/semdb/X900-fixture/results"),b"run-\xff.json"),"wb") as handle:
+            handle.write(b"{}")
+        commit_all(root)
+        self.assert_blocked(root,"X900: results/run-\\udcff.json is not a regular file reached through no symlink")
 
     def test_an_executable_file_is_frozen_as_a_regular_one(self):
         # Git holds an executable file as mode 100755: a preregistered one,

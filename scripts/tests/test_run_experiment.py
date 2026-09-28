@@ -90,6 +90,22 @@ class ExperimentRunnerTests(unittest.TestCase):
                 params={"iterations": "3"},
             )
 
+    def test_build_command_takes_each_value_as_itself(self):
+        # One pass: text in a value that reads as a placeholder is no
+        # placeholder, so a value is never substituted into again.
+        data = {"seeds": [17], "entrypoint": "bench <seed> --label=<label> <n>"}
+        command = mod.build_command(data, entrypoint="entrypoint", seed=17, params={"label": "<n>/<seed>", "n": "3"})
+        self.assertEqual(command, ["bench", "17", "--label=<n>/<seed>", "3"])
+        # The seed is recorded whether or not the command takes it.
+        data = {"seeds": [17], "entrypoint": "bench --fixed"}
+        self.assertEqual(mod.build_command(data, entrypoint="entrypoint", seed=17), ["bench", "--fixed"])
+
+    def test_build_command_refuses_a_value_no_placeholder_takes(self):
+        # The record would name it as a parameter of a run it had no part in.
+        _, _, data = mod.resolve("L001")
+        with self.assertRaisesRegex(ValueError, "no placeholder of 'entrypoint' takes --set other, unused"):
+            mod.build_command(data, entrypoint="entrypoint", seed=17, params={"iterations": "3", "unused": "1", "other": "2"})
+
     def test_build_command_rejects_unresolved_placeholder(self):
         _, _, data = mod.resolve("L001")
         with self.assertRaisesRegex(ValueError, "missing value"):
@@ -213,14 +229,17 @@ class RunWatchTests(unittest.TestCase):
     def tearDown(self):
         self.directory.cleanup()
 
-    def run_seed(self, during=None):
+    def run_seed(self, during=None, launch_error: str | None = None):
         """Run seed 17 of L900 in the temporary repository, calling `during`
-        while the command "runs"; returns the exit status, the records written
-        and what was printed to stderr."""
+        while the command "runs", and failing to launch it with
+        `launch_error` when given; returns the exit status, the records
+        written and what was printed to stderr."""
 
         def execute(_command):
             if during is not None:
                 during()
+            if launch_error is not None:
+                return {"exit_code": None, "stdout": "", "stderr": "", "launch_error": launch_error, "duration_ns": 1}
             return {"exit_code": 0, "stdout": "", "stderr": "", "launch_error": None, "duration_ns": 1}
 
         stderr = io.StringIO()
@@ -365,9 +384,72 @@ class RunWatchTests(unittest.TestCase):
         git(self.root, "add", "-A")
         git(self.root, "commit", "-q", "--no-verify", "-m", "record")
         self.assertEqual(mod.check_research_gates.launch_errors(self.root, "L900"), [])
-        # The same experiment runs again under the same freeze.
-        status, records, _ = self.run_seed()
-        self.assertEqual((status, len(records)), (0, 2))
+
+    def test_a_listed_experiment_runs_each_seed_once(self):
+        # A seed run again after its outcome was seen could keep whichever
+        # run came out best, so every run of a listed seed is its one run.
+        self.preregister("running")
+        status, records, stderr = self.run_seed()
+        self.assertEqual((status, stderr, len(records)), (0, "", 1))
+        [first] = [path.relative_to(self.root).as_posix() for path in self.results.glob("run-*.json")]
+        refusal = (
+            f"ERROR: seed 17 of L900 already ran ({first}); a listed experiment runs each seed once, so no run of it "
+            "is chosen by its outcome\n"
+        )
+        # Before its record is committed and after.
+        for committed in (False, True):
+            with self.subTest(committed=committed):
+                if committed:
+                    git(self.root, "add", "-A")
+                    git(self.root, "commit", "-q", "--no-verify", "-m", "record")
+                status, records, stderr = self.run_seed()
+                self.assertEqual((status, stderr, len(records)), (2, refusal, 1))
+        # A committed record deleted since is refused by the gate.
+        (self.root / first).unlink()
+        git(self.root, "commit", "-q", "--no-verify", "-am", "record deleted")
+        status, records, stderr = self.run_seed()
+        self.assertEqual((status, records), (2, []))
+        self.assertIn("was committed and has since been deleted or renamed", stderr)
+        # A command that failed to launch saw no outcome, so its seed runs.
+        self.tearDown()
+        self.setUp()
+        self.preregister("running")
+        status, records, _ = self.run_seed(launch_error="no such file")
+        self.assertEqual((status, [record["status"] for record in records]), (127, ["failed-to-launch"]))
+        status, records, stderr = self.run_seed()
+        self.assertEqual((status, stderr), (0, ""))
+        self.assertEqual(sorted(record["status"] for record in records), ["completed", "failed-to-launch"])
+        # A record the runner cannot read could be a run of the seed.
+        self.tearDown()
+        self.setUp()
+        self.preregister("running")
+        self.write("experiments/x/L900-x/results/run-unreadable.json", "{")
+        status, calls, stderr = self.launch_listed({})
+        self.assertEqual((status, calls), (2, []))
+        # The gate reads the results first; the runner's own look refuses it
+        # all the same, as it does a record that is no JSON object.
+        self.assertIn("L900: results/run-unreadable.json cannot be read", stderr)
+        with mock.patch.object(mod, "ROOT", self.root):
+            for text, refusal in (
+                ("{", "experiments/x/L900-x/results/run-unreadable.json cannot be read, so whether seed 17 ran is unknown"),
+                ("[17]", "experiments/x/L900-x/results/run-unreadable.json is not a JSON object, so whether seed 17 ran is unknown"),
+            ):
+                self.write("experiments/x/L900-x/results/run-unreadable.json", text)
+                with self.assertRaises(ValueError) as caught:
+                    mod.seed_runs(self.results, 17)
+                self.assertIn(refusal, str(caught.exception))
+            # A prepared record names no seed, and another seed is another.
+            self.write("experiments/x/L900-x/results/run-unreadable.json", json.dumps({"status": "prepared"}))
+            self.write("experiments/x/L900-x/results/run-29.json", json.dumps({"seed": 29, "status": "completed"}))
+            self.assertEqual(mod.seed_runs(self.results, 17), [])
+            self.write("experiments/x/L900-x/results/run-17.json", json.dumps({"seed": 17, "status": "failed"}))
+            self.assertEqual(mod.seed_runs(self.results, 17), ["experiments/x/L900-x/results/run-17.json"])
+        # An unlisted experiment runs a seed again, as L003 and L004 do.
+        self.tearDown()
+        self.setUp()
+        for runs in (1, 2):
+            status, records, stderr = self.run_seed()
+            self.assertEqual((status, stderr, len(records)), (0, "", runs))
 
     def test_what_decides_a_launch_is_held_to_head_before_and_while_the_run(self):
         self.preregister("running")
@@ -532,19 +614,66 @@ class RunWatchTests(unittest.TestCase):
         status, records, stderr = self.run_seed()
         self.assertEqual((status, stderr, len(records)), (0, "", 1))
 
-    def test_a_manifest_date_is_recorded_as_its_iso_text(self):
-        # JSON has no date, so the record writes it as text rather than
-        # failing once the command has run.
+    def test_a_manifest_date_is_refused_before_anything_runs(self):
+        # A record holds the manifest as JSON, which has no date: a date and
+        # the string of its text would be one manifest to aggregation.
         manifest = self.root / "experiments/x/L900-x/experiment.toml"
-        self.write("experiments/x/L900-x/experiment.toml", manifest.read_text(encoding="utf-8") + "created = 2026-01-02\n")
+        self.write(
+            "experiments/x/L900-x/experiment.toml",
+            manifest.read_text(encoding="utf-8") + "created = 2026-01-02\n[timing]\nsteps = [1, 07:32:00]\n",
+        )
         git(self.root, "commit", "-q", "--no-verify", "-am", "dated")
-        self.head = git(self.root, "rev-parse", "HEAD")
+        refusal = (
+            "ERROR: L900: experiment.toml holds a TOML date or time at {}, which a run record, holding the manifest "
+            "as JSON, cannot tell from a string; write it as a string\n"
+        )
+        expected = refusal.format("created") + refusal.format("timing.steps[1]")
         status, records, stderr = self.run_seed()
-        self.assertEqual((status, stderr), (0, ""))
-        self.assertEqual(records[0]["manifest"]["created"], "2026-01-02")
-        # And the record agrees with the manifest it ran under.
+        self.assertEqual((status, records, stderr), (2, [], expected))
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(mod, "ROOT", self.root),
+            mock.patch.object(mod, "REGISTRY", self.root / "experiments/registry.toml"),
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(stderr),
+        ):
+            self.assertEqual(mod.prepare("L900"), 2)
+        self.assertEqual(stderr.getvalue(), expected)
+        self.assertEqual(sorted(path.name for path in self.results.iterdir()), [".gitkeep"])
+        # Aggregation refuses it too, whatever the records hold.
         data = tomllib.loads(manifest.read_text(encoding="utf-8"))
-        self.assertEqual(mod.experiment_records.agreement_errors("L900", data, {"record": records[0]}), [])
+        record = {"experiment_id": "L900", "git_sha": "a" * 40, "entrypoint": "entrypoint", "manifest": {
+            **data, "created": "2026-01-02", "timing": {"steps": [1, "07:32:00"]},
+        }}
+        self.assertEqual(
+            mod.experiment_records.agreement_errors("L900", data, {"record": record}),
+            [line.removeprefix("ERROR: L900: ").rstrip("\n") for line in expected.splitlines(keepends=True)],
+        )
+
+    def test_validate_refuses_a_manifest_holding_a_date_or_time(self):
+        self.write(
+            "experiments/schema.toml",
+            'version = 1\nrequired = ["id", "status", "seeds"]\nallowed_status = ["planned", "running"]\n',
+        )
+        (self.root / "experiments/x/L900-x/tests").mkdir()
+        self.write("experiments/x/L900-x/config.toml", "version = 1\n")
+        manifest = (self.root / "experiments/x/L900-x/experiment.toml").read_text(encoding="utf-8")
+
+        def validate() -> tuple[int, str]:
+            stdout = io.StringIO()
+            with (
+                mock.patch.object(mod, "ROOT", self.root),
+                mock.patch.object(mod, "REGISTRY", self.root / "experiments/registry.toml"),
+                contextlib.redirect_stdout(stdout),
+            ):
+                return mod.validate(), stdout.getvalue()
+
+        self.assertEqual(validate(), (0, "OK: validated 1 experiments\n"))
+        self.write("experiments/x/L900-x/experiment.toml", manifest + "created = 2026-01-02\n")
+        self.assertEqual(validate(), (1, (
+            "ERROR: L900: experiment.toml holds a TOML date or time at created, which a run record, holding the "
+            "manifest as JSON, cannot tell from a string; write it as a string\n"
+        )))
 
     def launch_listed(self, params: dict[str, str], entrypoint: str = "entrypoint") -> tuple[int, list, str]:
         """Runs seed 17 of L900 through `entrypoint` with `params`; returns
@@ -569,16 +698,20 @@ class RunWatchTests(unittest.TestCase):
         # value, and --set may only repeat it.
         self.preregister(
             "running",
-            "schema = 1\niterations = 30\nverbose = true\n",
-            entrypoint="bench <seed> <iterations> <verbose>",
+            'schema = 1\niterations = 30\nverbose = true\nharness = "fixture-1"\nlabel = "<iterations>/<seed>"\n',
+            entrypoint="bench <seed> <iterations> <verbose> <harness> --label=<label>",
             manifest_lines='quick_entrypoint = "bench <seed> 1 <verbose>"\n',
         )
         run = self.launch_listed
         status, calls, stderr = run({})
         self.assertEqual((status, stderr), (0, ""))
-        self.assertEqual(calls[0].args[0], ["bench", "17", "30", "true"])
+        # A string is itself, placeholder text in it included.
+        self.assertEqual(calls[0].args[0], ["bench", "17", "30", "true", "fixture-1", "--label=<iterations>/<seed>"])
         [record] = [json.loads(path.read_text(encoding="utf-8")) for path in self.results.glob("run-*.json")]
-        self.assertEqual(record["parameters"], {"iterations": "30", "verbose": "true"})
+        self.assertEqual(
+            record["parameters"],
+            {"iterations": "30", "verbose": "true", "harness": "fixture-1", "label": "<iterations>/<seed>"},
+        )
         for params, refusal in (
             ({"iterations": "31"}, "--set iterations=31 is not the preregistered value 30"),
             ({"other": "1"}, "--set other names no placeholder the command takes from the frozen [preregistration] table"),
@@ -587,14 +720,26 @@ class RunWatchTests(unittest.TestCase):
                 status, calls, stderr = run(params)
                 self.assertEqual((status, calls), (2, []))
                 self.assertIn(refusal, stderr)
+        # Repeating the preregistered value is no other command, but seed 17
+        # has run.
         status, calls, stderr = run({"iterations": "30"})
-        self.assertEqual((status, stderr), (0, ""))
-        self.assertEqual(len(list(self.results.glob("run-*.json"))), 2)
+        self.assertEqual((status, calls), (2, []))
+        self.assertIn("seed 17 of L900 already ran", stderr)
         # Another command the frozen manifest holds is chosen at launch too.
         status, calls, stderr = run({}, entrypoint="quick_entrypoint")
         self.assertEqual((status, calls), (2, []))
         self.assertIn("--entrypoint quick_entrypoint: a listed experiment runs only through its manifest's entrypoint", stderr)
-        self.assertEqual(len(list(self.results.glob("run-*.json"))), 2)
+        self.assertEqual(len(list(self.results.glob("run-*.json"))), 1)
+        # A --set repeating the preregistered value runs, in a repository
+        # where seed 17 has not.
+        self.tearDown()
+        self.setUp()
+        self.preregister(
+            "running", "schema = 1\niterations = 30\nverbose = true\n", entrypoint="bench <seed> <iterations> <verbose>"
+        )
+        status, calls, stderr = run({"iterations": "30"})
+        self.assertEqual((status, stderr), (0, ""))
+        self.assertEqual(calls[0].args[0], ["bench", "17", "30", "true"])
 
     def test_an_unlisted_experiment_runs_through_any_entrypoint_with_its_set_values(self):
         # Only the list binds a command: L001 and L004 run their second
@@ -610,13 +755,22 @@ class RunWatchTests(unittest.TestCase):
         self.assertEqual(calls[0].args[0], ["bench", "17", "5"])
         [record] = [json.loads(path.read_text(encoding="utf-8")) for path in self.results.glob("run-*.json")]
         self.assertEqual((record["entrypoint"], record["parameters"]), ("quick_entrypoint", {"n": "5"}))
+        # Its parameters are the values its placeholders took: a --set no
+        # placeholder takes is refused.
+        status, calls, stderr = self.launch_listed({"n": "5", "unused": "1"}, entrypoint="quick_entrypoint")
+        self.assertEqual((status, calls), (2, []))
+        self.assertIn("no placeholder of 'quick_entrypoint' takes --set unused", stderr)
 
     def test_a_placeholder_the_frozen_table_does_not_hold_or_holds_as_a_list_is_refused(self):
         # A placeholder with no frozen value would take one chosen at launch,
         # and a list has no single token to stand for it; neither runs.
-        for table, entrypoint, refusal in (
-            ("schema = 1\n", "bench <seed> <missing>", "<missing> is no key of the frozen [preregistration] table"),
-            ("schema = 1\ngrid = [1, 2]\n", "bench <seed> <grid>", "<grid> is preregistered as a list, which no command token takes"),
+        for table, entrypoint, gate_refusal, refusal in (
+            ("schema = 1\n", "bench <seed> <missing>",
+             "L900: entrypoint placeholder <missing> is no key of the [preregistration] table",
+             "<missing> is no key of the frozen [preregistration] table"),
+            ("schema = 1\ngrid = [1, 2]\n", "bench <seed> <grid>",
+             "L900: entrypoint placeholder <grid> is preregistered as a list",
+             "<grid> is preregistered as a list, which no command token takes"),
         ):
             with self.subTest(entrypoint=entrypoint):
                 # A frozen table is never rewritten, so each case starts from
@@ -628,7 +782,14 @@ class RunWatchTests(unittest.TestCase):
                     status, calls, stderr = self.launch_listed(params)
                     self.assertEqual((status, calls), (2, []))
                     self.assertEqual(list(self.results.glob("run-*.json")), [])
-                self.assertIn(refusal, self.launch_listed({})[2])
+                # The gate refuses such a freeze first; the runner's own look
+                # refuses it all the same.
+                self.assertIn(gate_refusal, self.launch_listed({})[2])
+                with mock.patch.object(mod, "ROOT", self.root):
+                    data = tomllib.loads((self.root / "experiments/x/L900-x/experiment.toml").read_text(encoding="utf-8"))
+                    with self.assertRaises(ValueError) as caught:
+                        mod.command_parameters("L900", self.root / "experiments/x/L900-x", data, "entrypoint", {})
+                self.assertIn(refusal, str(caught.exception))
 
     def test_a_manifest_changed_before_the_watch_looked_is_refused(self):
         # The command is built from the manifest read first; one committed

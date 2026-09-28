@@ -120,6 +120,10 @@ SYMLINK_MODE = "120000"
 GITLINK_MODE = "160000"
 LINK_MODES = (SYMLINK_MODE, GITLINK_MODE)
 EXCLUDE = ":(exclude)"
+# A placeholder in an entrypoint, `<name>`, which the runner fills with a
+# value (`scripts/run_experiment.py`); the gate reads a listed experiment's
+# entrypoint by the same rule.
+PLACEHOLDER = re.compile(r"<([A-Za-z][A-Za-z0-9_-]*)>")
 WILDCARD = re.compile(r"[*?\[]")
 # The scripts that decide what a record says and how it is judged.
 JUDGE = "scripts/experiment_records.py"
@@ -181,25 +185,48 @@ def without_status(manifest: dict) -> dict:
 
 
 def toml_time(value):
-    """A TOML date, time or datetime as its ISO 8601 text, as a run record
-    holds it: JSON has no such type (`json.dumps`'s `default`)."""
+    """A TOML date, time or datetime as its ISO 8601 text (`json.dumps`'s
+    `default`): JSON has no such type. A manifest holding one is refused
+    (`temporal_keys`); this only keeps such a value from failing a write or
+    a comparison that reports it."""
     if isinstance(value, (datetime.date, datetime.time)):
         return value.isoformat()
     raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
+def temporal_keys(value, where: str = "") -> list[str]:
+    """The key paths in `value`, a manifest as TOML reads it, that hold a
+    TOML date, time or datetime, in any table or array. A run record holds
+    the manifest as JSON, which has no such type, so a date and the string
+    of its text would be one manifest to the record: the runner, `validate`
+    and aggregation refuse a manifest that holds one."""
+    if isinstance(value, (datetime.date, datetime.time)):
+        return [where]
+    if isinstance(value, dict):
+        return [found for key, item in value.items() for found in temporal_keys(item, f"{where}.{key}" if where else str(key))]
+    if isinstance(value, list):
+        return [found for index, item in enumerate(value) for found in temporal_keys(item, f"{where}[{index}]")]
+    return []
+
+
 def recorded_text(value) -> str:
-    """`value` as the JSON text a run record holds it as, keys sorted
-    (`toml_time`), so a manifest compares with the one a record names as far
-    as the record can hold it: a date as its text, NaN as itself."""
+    """`value` as the JSON text a run record holds it as, keys sorted, so a
+    manifest compares with the one a record names as the record holds it,
+    NaN as itself. A date or time, which no manifest may hold
+    (`temporal_keys`), is written as its text (`toml_time`)."""
     return json.dumps(value, sort_keys=True, default=toml_time)
 
 
 def agreement_errors(experiment_id: str, manifest: dict, records: dict[str, dict]) -> list[str]:
     """Why `records` (file name -> run record) cannot be seeds of one run of
     `experiment_id`, whose manifest is now `manifest`; empty when they can.
-    This compares the records alone; `source_revision` also compares code."""
-    errors = []
+    This compares the records alone; `source_revision` also compares code.
+    A manifest holding a TOML date or time is refused (`temporal_keys`)."""
+    errors = [
+        f"experiment.toml holds a TOML date or time at {key}, which a run record, holding the manifest as JSON, "
+        "cannot tell from a string; write it as a string"
+        for key in temporal_keys(manifest)
+    ]
     for name, record in records.items():
         if record.get("experiment_id") != experiment_id:
             errors.append(f"{name} is a record of {record.get('experiment_id')!r}, not {experiment_id!r}")

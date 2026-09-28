@@ -109,19 +109,41 @@ class AgreementTests(unittest.TestCase):
         self.assertEqual(mod.agreement_errors("L900", {**MANIFEST, "status": "completed"}, records), [])
 
     def test_a_manifest_agrees_with_the_record_as_json_holds_it(self):
-        # JSON has no date and the record holds a TOML date as its text, and
-        # NaN is not equal to itself: the manifest is compared as a record
-        # can hold it.
-        manifest = {**MANIFEST, "created": datetime.date(2026, 1, 2), "loss_cap": float("nan")}
-        held = json.loads(json.dumps(manifest, default=mod.toml_time))
-        self.assertEqual(held["created"], "2026-01-02")
+        # NaN is not equal to itself: the manifest is compared as the JSON
+        # text a record holds it as.
+        manifest = {**MANIFEST, "loss_cap": float("nan")}
+        held = json.loads(json.dumps(manifest))
         records = {"a.json": record("a" * 40, manifest=held)}
         self.assertEqual(mod.agreement_errors("L900", manifest, records), [])
-        changed = {"b.json": record("b" * 40, manifest={**held, "created": "2026-01-03"})}
+        changed = {"b.json": record("b" * 40, manifest={**held, "loss_cap": 1.0})}
         self.assertEqual(
             mod.agreement_errors("L900", manifest, changed),
             ["b.json ran under an experiment.toml that differs from the current one"],
         )
+
+    def test_a_manifest_holding_a_date_or_time_is_refused(self):
+        # JSON has no date: a record holds one as its text, so a date and
+        # the string of its text would be one manifest.
+        refusal = (
+            "experiment.toml holds a TOML date or time at {}, which a run record, holding the manifest as JSON, "
+            "cannot tell from a string; write it as a string"
+        )
+        dated = {
+            **MANIFEST,
+            "created": datetime.date(2026, 1, 2),
+            "window": {"start": datetime.datetime(2026, 1, 2, 3, 4, tzinfo=datetime.timezone.utc)},
+            "slots": [datetime.time(7, 32), "07:33"],
+        }
+        held = json.loads(json.dumps(dated, default=mod.toml_time))
+        self.assertEqual(held["created"], "2026-01-02")
+        self.assertEqual(mod.temporal_keys(dated), ["created", "window.start", "slots[0]"])
+        self.assertEqual(
+            mod.agreement_errors("L900", dated, {"a.json": record("a" * 40, manifest=held)}),
+            [refusal.format(key) for key in ("created", "window.start", "slots[0]")],
+        )
+        # The string of its text is no date.
+        self.assertEqual(mod.temporal_keys(held), [])
+        self.assertEqual(mod.agreement_errors("L900", held, {"a.json": record("a" * 40, manifest=held)}), [])
         with self.assertRaises(TypeError):
             mod.toml_time(object())
 

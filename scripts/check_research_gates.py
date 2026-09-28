@@ -20,7 +20,11 @@ replaced by another, whose own preregistration counts, and is not launched,
 but one that was frozen or ran stays bound as below, as it was frozen:
 
 - its manifest names its `entrypoint`, since the manifest is frozen from
-  the first commit past `planned` and one named later could never be named;
+  the first commit past `planned` and one named later could never be named,
+  and the runner can build its command: it splits as a command, and each
+  placeholder in it but `<seed>` is a key of the `[preregistration]` table
+  holding an integer, a string or a boolean, the value the runner fills it
+  with (`command_errors`), since a freeze no run can use cannot be repaired;
 - its `config.toml` holds a `[preregistration]` table with every key the list
   requires, each a pinned value of its declared type (`int`, `str`, `bool`,
   a non-empty `int-list` or `str-list`, or `file`), and no other key of the
@@ -56,10 +60,14 @@ but one that was frozen or ran stays bound as below, as it was frozen:
   names the SHA-256 of the manifest at that commit and has held the same
   content in every commit on every side of every merge since it was
   committed, an aggregate, which may be written again, holds to this in
-  every version it was committed in, none once committed is deleted, renamed
-  or moved, and each is a regular file reached through no symlink. A
-  preregistration rewritten after its runs fails even when the manifest and
-  the records are rewritten to match, short of rewriting history;
+  every version it was committed in, every one once committed is at HEAD
+  where it was committed (one deleted and put back as it was, as a revert of
+  its revert puts it back, is the record committed: while it is missing the
+  gate fails and the runner launches nothing), no two run records are of
+  one seed but for a command that failed to launch, and each is a regular
+  file reached through no symlink. A preregistration rewritten after its
+  runs fails even when the manifest and the records are rewritten to match,
+  short of rewriting history;
 - every commit that held the experiment frozen as the runner launches it
   (`launchable_at`) holds the same as a run's commit must: a run can be made
   there and its record discarded before it is committed, so the first
@@ -103,6 +111,7 @@ import hashlib
 import json
 import math
 import re
+import shlex
 import struct
 import sys
 import tomllib
@@ -198,6 +207,30 @@ def names_an_entrypoint(manifest: dict) -> bool:
     """Whether the manifest names the command its runs run."""
     entrypoint=manifest.get("entrypoint")
     return isinstance(entrypoint,str) and bool(entrypoint.strip())
+
+def command_errors(exp_id: str, manifest: dict, table: dict) -> list[str]:
+    """What keeps the runner from building the command of `exp_id`, a listed
+    experiment, from its manifest `manifest` and its `[preregistration]`
+    table `table`: it splits the manifest's `entrypoint` as a shell would
+    (without running one), and fills each placeholder in it but `<seed>`
+    with the table's value of that name, an integer, a string or a boolean
+    (`run_experiment.command_parameters`). A freeze no run can use cannot be
+    repaired once committed, so the tree check refuses it first."""
+    if not names_an_entrypoint(manifest):
+        return []
+    try:
+        tokens=shlex.split(manifest["entrypoint"])
+    except ValueError as error:
+        return [f"{exp_id}: entrypoint cannot be split into a command: {error}"]
+    errors=[]
+    for name in sorted({name for token in tokens for name in experiment_records.PLACEHOLDER.findall(token)}-{"seed"}):
+        if name not in table:
+            errors.append(f"{exp_id}: entrypoint placeholder <{name}> is no key of the [preregistration] table, so the "
+                          "runner has no frozen value for it")
+        elif not isinstance(table[name],(bool,int,str)):
+            errors.append(f"{exp_id}: entrypoint placeholder <{name}> is preregistered as a {type(table[name]).__name__}, "
+                          "which no command token takes")
+    return errors
 
 def is_placeholder(value: str) -> bool:
     """A value still to be chosen: empty, `must-be-pinned-…`, `unconfigured`
@@ -359,6 +392,8 @@ def directory_digest(root: Path, directory: str) -> tuple[list[str], str | None]
         staged=experiment_records.listed_names(root,"--literal-pathspecs","ls-files","-z","--stage","--",directory)
     except experiment_records.ProvenanceError as error:
         return [f"cannot be listed: {error}"],None
+    except UnicodeDecodeError:
+        return ["holds a file whose name is not UTF-8, which no repository path is"],None
     modes={}
     for entry in staged:
         fields,_,name=entry.partition("\t")
@@ -370,6 +405,10 @@ def directory_digest(root: Path, directory: str) -> tuple[list[str], str | None]
         path=root/name
         if not path.exists() and not path.is_symlink():
             # Tracked, and removed from the tree: the tree does not hold it.
+            continue
+        if not is_repository_path(name):
+            problems.append(f"holds {name}, whose name is not a repository path: printable ASCII, written as git "
+                            "writes a path, with no glob character, leading `:` or step through .git")
             continue
         if repository_file(root,name) is None:
             problems.append(f"holds {name}, which is not a regular file reached through no symlink")
@@ -566,14 +605,18 @@ def history(root: Path, *args: str) -> list[str]:
     it otherwise: a history read as empty would hide every freeze and record
     in it."""
     try:
-        listing=experiment_records.git(root,"--literal-pathspecs","log","--full-history",*args)
+        listing=experiment_records.git(root,"--literal-pathspecs","log","--full-history",*args,binary=True)
     except experiment_records.ProvenanceError as error:
         raise HistoryUnreadable(str(error)) from error
     if listing.returncode!=0:
         if not has_head(root):
             return []
-        raise HistoryUnreadable(listing.stderr.strip() or f"git log exited {listing.returncode}")
-    return [name for name in listing.stdout.replace("\0","\n").split("\n") if name]
+        raise HistoryUnreadable(listing.stderr.decode("utf-8","replace").strip() or f"git log exited {listing.returncode}")
+    # A name that is not UTF-8 keeps its bytes (and so names its file), and
+    # fails every check that asks for a repository path, rather than
+    # failing every later gate on the commit that once held it.
+    names=listing.stdout.decode("utf-8","surrogateescape")
+    return [name for name in names.replace("\0","\n").split("\n") if name]
 
 def versions(root: Path, relative: str) -> list[tuple[str, dict]]:
     """Every commit on HEAD's history that changes the TOML file `relative`,
@@ -755,7 +798,10 @@ def launchable_at(root: Path, commit: str, exp_id: str, directory: str) -> tuple
             value=lookup(settings,key)
             if value is MISSING or pinned_problem(value):
                 return None
-        if directory_digest_at(root,commit,baseline_directory(baseline["path"]))!=table.get(f"baseline_{baseline['name']}_sha256"):
+        # A directory the tree check refuses has no digest, and one with
+        # none froze nothing, even where the table names none either.
+        held=directory_digest_at(root,commit,baseline_directory(baseline["path"]))
+        if held is None or held!=table.get(f"baseline_{baseline['name']}_sha256"):
             return None
     try:
         if (manifest.get("preregistration_sha256")!=experiment_records.preregistration_digest(table)
@@ -837,16 +883,21 @@ def frozen_commits(root: Path, exp_id: str, relative: str) -> list[tuple[str, st
 
 def directory_digest_at(root: Path, commit: str, directory: str) -> str | None:
     """`directory_digest` of the repository `directory` as `commit` holds it,
-    or None when it holds anything but regular files there (a symlink, a
-    submodule). Raises `HistoryUnreadable` when git cannot tell."""
+    or None when the tree check (`directory_digest`) would refuse what it
+    holds there: anything but a regular file (a symlink, a submodule), or a
+    file named as no repository path (`is_repository_path`), a name that is
+    not UTF-8 included. None is no digest, so it matches no frozen one.
+    Raises `HistoryUnreadable` when git cannot tell."""
     try:
-        listing=experiment_records.git(root,"--literal-pathspecs","ls-tree","-r","-z",commit,"--",directory)
+        listing=experiment_records.git(root,"--literal-pathspecs","ls-tree","-r","-z",commit,"--",directory,binary=True)
     except experiment_records.ProvenanceError as error:
         raise HistoryUnreadable(str(error)) from error
     if listing.returncode!=0:
-        raise HistoryUnreadable(listing.stderr.strip() or f"git ls-tree exited {listing.returncode}")
+        raise HistoryUnreadable(listing.stderr.decode("utf-8","replace").strip() or f"git ls-tree exited {listing.returncode}")
     files={}
-    for entry in listing.stdout.split("\0"):
+    # Git writes a name's bytes as they are; one that is not UTF-8 reads as
+    # a name no repository path is, rather than failing every later gate.
+    for entry in listing.stdout.decode("utf-8","surrogateescape").split("\0"):
         if not entry:
             continue
         meta,_,name=entry.partition("\t")
@@ -945,7 +996,7 @@ def history_errors(exp_id: str, name: str, named, root: Path, experiment: Path, 
             errors.append(f"{at}, where {table[key]} is not the file frozen as {key}")
     for baseline in entry.get("baseline",[]):
         held=directory_digest_at(root,commit,baseline_directory(baseline["path"])) if is_repository_path(baseline["path"]) else None
-        if held!=table.get(f"baseline_{baseline['name']}_sha256"):
+        if held is None or held!=table.get(f"baseline_{baseline['name']}_sha256"):
             errors.append(f"{at}, where baseline {baseline['name']} is not the frozen one: its directory holds other files")
     return errors,commit
 
@@ -988,11 +1039,16 @@ def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path,
     (`run-*.json`) and aggregate (`run.json`) committed under any directory
     the registry has given the experiment (`committed_records`), whatever
     its results directory is now, and the run records and aggregate in its
-    results directory. None once committed may be deleted, renamed or moved,
-    and each is a regular file reached through no symlink. Every run record
-    and aggregate must pass `record_errors`; a run record must also be
-    unchanged since it was committed, and an aggregate, which an aggregator
-    may write again, must pass `record_errors` in every version committed."""
+    results directory. Every one once committed must be at HEAD where it was
+    committed; one deleted and put back as it was, as a revert of its revert
+    puts it back, is the record committed, and while it is missing the gate
+    fails and the runner, which asks it, launches nothing. Each is a regular
+    file reached through no symlink. Every run record and aggregate must
+    pass `record_errors`; a run record must also be unchanged since it was
+    committed, and an aggregate, which an aggregator may write again, must
+    pass `record_errors` in every version committed. No two run records are
+    of one seed, bar those whose command failed to launch: a seed run again
+    after its outcome was seen could keep whichever run came out best."""
     relative=experiment.relative_to(root).as_posix()
     current=(manifest,config)
 
@@ -1017,6 +1073,7 @@ def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path,
             held=path.relative_to(root).as_posix()
             if is_aggregate(held) or is_run_record(held):
                 records.add(held)
+    runs={}
     for path in sorted(records):
         name=shown(path)
         where=f"{exp_id}: {name}"
@@ -1037,6 +1094,10 @@ def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path,
             record=MISSING
         if record is not MISSING:
             errors.extend(record_errors(exp_id,name,record,aggregate,root,experiment,entry,table,frozen,current))
+            # A prepared record names no seed, and a command that failed to
+            # launch saw no outcome.
+            if not aggregate and isinstance(record,dict) and "seed" in record and record.get("status")!="failed-to-launch":
+                runs.setdefault(json.dumps(record["seed"],sort_keys=True),[]).append(name)
         if aggregate:
             # Written again, an aggregate keeps every version it was
             # committed in: each saw the outcome of the runs it names.
@@ -1067,6 +1128,10 @@ def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path,
             errors.append(f"{where} was changed after it was committed ({len(blobs)} versions of it were committed)")
         if blobs and experiment_records.git(root,"--literal-pathspecs","diff","--quiet","HEAD","--",path).returncode!=0:
             errors.append(f"{where} differs from the record committed as it")
+    for seed,names in sorted(runs.items()):
+        if len(names)>1:
+            errors.append(f"{exp_id}: seed {seed} ran more than once ({', '.join(names)}); a listed experiment runs each "
+                          "seed once, so no run of it is chosen by its outcome")
     # A commit that holds the experiment past planned froze it, whether or
     # not a record of a run there was kept: the runner could launch it, and
     # a record can be discarded before it is committed.
@@ -1107,6 +1172,7 @@ def frozen_errors(exp_id: str, entry: dict, manifest: dict, experiment: Path, ro
     if not names_an_entrypoint(manifest):
         errors.append(f"{exp_id}: experiment.toml names no entrypoint; a listed experiment names what it runs before "
                       "it leaves planned, since its manifest is frozen from then on")
+    errors.extend(command_errors(exp_id,manifest,table))
     results_dir=manifest.get("results_dir","results")
     results=None
     if isinstance(results_dir,str) and any(is_git_administration(part) for part in PurePosixPath(results_dir).parts):
@@ -1353,7 +1419,8 @@ def main(root: Path = ROOT) -> int:
     except (Unreadable,HistoryUnreadable) as error:
         errors=[error.named(root)]
     if errors:
-        print("\n".join("ERROR: "+error for error in errors))
+        # A name that is not UTF-8 is printed as its escapes.
+        print("\n".join("ERROR: "+error for error in errors).encode("utf-8","backslashreplace").decode("utf-8"))
         return 1
     print("OK: research execution gates satisfied")
     return 0

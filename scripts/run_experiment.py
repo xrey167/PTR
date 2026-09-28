@@ -6,7 +6,6 @@ import hashlib
 import json
 import os
 import platform
-import re
 import shlex
 import subprocess
 import sys
@@ -17,11 +16,12 @@ from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[1]
 REGISTRY = ROOT / "experiments/registry.toml"
-PLACEHOLDER = re.compile(r"<([A-Za-z][A-Za-z0-9_-]*)>")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import check_research_gates  # noqa: E402
 import experiment_records  # noqa: E402
+
+PLACEHOLDER = experiment_records.PLACEHOLDER
 
 
 def load(path: Path):
@@ -59,11 +59,12 @@ def utc_stamp() -> str:
 
 def write_json_exclusive(path: Path, record: dict) -> None:
     """Write `record` to the new file `path`, whole or not at all: a write
-    that fails leaves no partial record for an aggregator to select. A TOML
-    date or time the manifest holds is written as its ISO 8601 text
-    (`experiment_records.toml_time`), so no manifest keeps the record of a
-    run that ran from being written. Raises `FileExistsError` when `path`
-    exists; a record never replaces another."""
+    that fails leaves no partial record for an aggregator to select. The
+    runner refuses a manifest holding a TOML date or time before anything
+    runs (`dated_manifest`); were one to reach this point, it would be
+    written as its ISO 8601 text (`experiment_records.toml_time`) rather
+    than lose the record of a run that ran. Raises `FileExistsError` when
+    `path` exists; a record never replaces another."""
     path.parent.mkdir(parents=True, exist_ok=True)
     experiment_records.write_exclusively(path, json.dumps(record, indent=2, default=experiment_records.toml_time) + "\n")
 
@@ -93,6 +94,11 @@ def validate():
             data.get("entrypoint", "")
         ).strip():
             errors.append(f"{exp_id}: active experiment needs executable entrypoint")
+        for key in experiment_records.temporal_keys(data):
+            errors.append(
+                f"{exp_id}: experiment.toml holds a TOML date or time at {key}, which a run record, holding the "
+                "manifest as JSON, cannot tell from a string; write it as a string"
+            )
         if not (root / "config.toml").exists():
             errors.append(f"{exp_id}: missing config.toml")
         if not (root / "tests").exists():
@@ -117,6 +123,48 @@ def base_record(exp_id: str, data: dict, root: Path) -> dict:
         "uv_lock_sha256": sha(ROOT / "training/uv.lock"),
         "hardware_profile": data.get("hardware_profile"),
     }
+
+
+def dated_manifest(exp_id: str, data: dict) -> bool:
+    """Print why the manifest `data` of `exp_id` cannot be recorded and
+    return True, or return False when it can: a run record holds the
+    manifest as JSON, which has no date or time, so a TOML date and the
+    string of its text would be one manifest to aggregation
+    (`experiment_records.temporal_keys`)."""
+    keys = experiment_records.temporal_keys(data)
+    for key in keys:
+        print(
+            f"ERROR: {exp_id}: experiment.toml holds a TOML date or time at {key}, which a run record, holding the "
+            "manifest as JSON, cannot tell from a string; write it as a string",
+            file=sys.stderr,
+        )
+    return bool(keys)
+
+
+def is_listed(exp_id: str) -> bool:
+    """Whether `experiments/preregistration.toml` names `exp_id`, so its
+    launches are bound to its frozen preregistration."""
+    entries = load(ROOT / check_research_gates.PREREGISTRATION).get("experiment", {})
+    return isinstance(entries, dict) and exp_id in entries
+
+
+def seed_runs(results: Path, seed: int) -> list[str]:
+    """The run records in `results` of a run of `seed` whose command ran,
+    as repository paths: every record naming the seed but one whose command
+    failed to launch, which saw no outcome. Raises `ValueError` for a record
+    it cannot read, since it could be one."""
+    found = []
+    for path in sorted(results.glob("run-*.json")):
+        name = path.relative_to(ROOT).as_posix()
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ValueError(f"{name} cannot be read, so whether seed {seed} ran is unknown: {error}") from error
+        if not isinstance(record, dict):
+            raise ValueError(f"{name} is not a JSON object, so whether seed {seed} ran is unknown")
+        if "seed" in record and record["seed"] == seed and record.get("status") != "failed-to-launch":
+            found.append(name)
+    return found
 
 
 def launch_refused(exp_id: str) -> bool:
@@ -219,9 +267,10 @@ def launch_watch(exp_id: str, root: Path, results: Path, data: dict) -> experime
 def prepare(exp_id: str):
     """Write a `prepared` record of `exp_id` at HEAD, once it may launch
     (`launch_refused`) and HEAD holds every file that decides that
-    (`launch_watch`)."""
+    (`launch_watch`), and its manifest holds no TOML date or time
+    (`dated_manifest`)."""
     _, root, data = resolve(exp_id)
-    if launch_refused(exp_id):
+    if dated_manifest(exp_id, data) or launch_refused(exp_id):
         return 2
     results = results_directory(root, data)
     if results is None:
@@ -272,19 +321,19 @@ def build_command(
 
     values = {"seed": str(seed)}
     values.update(params or {})
-    command = []
-    for token in shlex.split(template):
-        unresolved = PLACEHOLDER.findall(token)
-        for name in unresolved:
-            if name not in values:
-                raise ValueError(f"missing value for <{name}>")
-            token = token.replace(f"<{name}>", values[name])
-        command.append(token)
-
-    leftovers = [name for token in command for name in PLACEHOLDER.findall(token)]
-    if leftovers:
-        raise ValueError(f"unresolved placeholders: {sorted(set(leftovers))}")
-    return command
+    tokens = shlex.split(template)
+    taken = {name for token in tokens for name in PLACEHOLDER.findall(token)}
+    missing = sorted(taken - values.keys())
+    if missing:
+        raise ValueError(f"missing value for <{missing[0]}>")
+    # A value no placeholder takes would be recorded as a parameter of a
+    # run it had no part in.
+    unused = sorted(values.keys() - taken - {"seed"})
+    if unused:
+        raise ValueError(f"no placeholder of {entrypoint!r} takes --set {', '.join(unused)}")
+    # One pass, so a value is taken as itself: text in it that reads as a
+    # placeholder is not substituted again.
+    return [PLACEHOLDER.sub(lambda match: values[match.group(1)], token) for token in tokens]
 
 
 def token_text(name: str, value) -> str:
@@ -308,11 +357,12 @@ def command_parameters(exp_id: str, root: Path, data: dict, entrypoint: str, par
     after an outcome was seen, the runs made with the others discarded. A
     variant of its command is a placeholder the table fixes. Any other
     experiment runs through any `entrypoint` with the `--set` values
-    `params`. Raises `ValueError` for another entrypoint of a listed
-    experiment, a placeholder its table does not hold, and a `--set` value
-    that is not the preregistered one."""
-    entries = load(ROOT / check_research_gates.PREREGISTRATION).get("experiment", {})
-    if not isinstance(entries, dict) or exp_id not in entries:
+    `params`, each of which a placeholder of that command must take
+    (`build_command`). Raises `ValueError`, for a listed experiment, for
+    another entrypoint, a placeholder its table does not hold or holds as a
+    list, a `--set` naming no placeholder the table fills, and a `--set`
+    value that is not the preregistered one."""
+    if not is_listed(exp_id):
         return params
     if entrypoint != "entrypoint":
         raise ValueError(
@@ -389,17 +439,20 @@ def run_experiment(
     (`experiment_records.uncommitted_files`, which also covers the files that
     decide whether it may launch, `check_research_gates.launch_inputs`), and
     a listed experiment whose preregistration is not frozen
-    (`launch_refused`); a listed experiment runs only through its
-    `entrypoint`, with its preregistered values (`command_parameters`).
-    After the command ends it looks
-    at the same tree again (`experiment_records.ProvenanceWatch`) and writes
-    no record, returning 2, when HEAD moved or a provenance or experiment
-    file was written, created or removed while the command ran, even if its
-    content was put back, so the record's `git_sha` is the code that ran as
-    far as that watch can see (its `changes` names what it cannot). The
-    record is written whole or not at all (`write_json_exclusive`)."""
+    (`launch_refused`), and a manifest holding a TOML date or time
+    (`dated_manifest`). A listed experiment runs only through its
+    `entrypoint`, with its preregistered values (`command_parameters`), and
+    each seed once (`seed_runs`): a seed run again after its outcome was
+    seen could keep whichever run came out best. After the command ends it
+    looks at the same tree again (`experiment_records.ProvenanceWatch`) and
+    writes no record, returning 2, when HEAD moved or a provenance or
+    experiment file was written, created or removed while the command ran,
+    even if its content was put back, so the record's `git_sha` is the code
+    that ran as far as that watch can see (its `changes` names what it
+    cannot). The record is written whole or not at all
+    (`write_json_exclusive`)."""
     _, root, data = resolve(exp_id)
-    if launch_refused(exp_id):
+    if dated_manifest(exp_id, data) or launch_refused(exp_id):
         return 2
 
     # The record names HEAD as the code it ran, so HEAD must hold every file
@@ -415,8 +468,19 @@ def run_experiment(
     try:
         params = command_parameters(exp_id, root, data, entrypoint, params or {})
         command = build_command(data, entrypoint=entrypoint, seed=seed, params=params)
+        # A listed experiment runs each seed once: every run of it is
+        # evidence, so none can be chosen by its outcome. The results
+        # directory holds every record committed, which the gate keeps.
+        ran = seed_runs(results, seed) if is_listed(exp_id) else []
     except ValueError as error:
         print(f"ERROR: {error}", file=sys.stderr)
+        return 2
+    if ran:
+        print(
+            f"ERROR: seed {seed} of {exp_id} already ran ({', '.join(ran)}); a listed experiment runs each seed once, "
+            "so no run of it is chosen by its outcome",
+            file=sys.stderr,
+        )
         return 2
 
     timestamp = utc_stamp()
