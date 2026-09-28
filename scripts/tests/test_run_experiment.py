@@ -1793,6 +1793,7 @@ class RunWatchTests(unittest.TestCase):
         for make, shown in (
             (lambda: (self.root / "empty/inner").mkdir(parents=True), "empty/inner"),
             (lambda: self.write("scripts/.git/helper.py", "x = 1\n"), "scripts/.git"),
+            (lambda: self.write("docs/.git", "gitdir: /elsewhere\n"), "docs/.git"),
         ):
             with self.subTest(shown=shown):
                 make()

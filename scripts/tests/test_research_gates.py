@@ -2165,6 +2165,8 @@ class PreregistrationGateTests(unittest.TestCase):
                 ("cargo +nightly -Zscript /tmp/run.rs <seed>","-Zscript","/tmp/run.rs"),
                 ("cargo +nightly -Z script ../run.rs <seed>","-Zscript","../run.rs"),
                 ("cargo -vZscript --color always .git/run.rs <seed>","-Zscript",".git/run.rs"),
+                # A target may be a specification file.
+                ("cargo build --target /tmp/custom.json -- <seed>","--target","/tmp/custom.json"),
             )),
             ("cargo run --target-dir target-old -- <seed>",
              "X900: entrypoint gives Cargo a target directory (--target-dir), which could hold a build made outside "
@@ -2216,6 +2218,7 @@ class PreregistrationGateTests(unittest.TestCase):
                            "cargo run --manifest-path crates/.github/Cargo.toml -- <seed>",
                            "cargo +nightly -Zscript scripts/run.rs <seed>",
                            "cargo -Zunstable-options run -- /tmp <seed>",
+                           "cargo build --target x86_64-unknown-linux-gnu --target=targets/custom.json -- <seed>",
                            "cargo run -- --config c.toml <seed>","python3 bench.py --config c.toml <seed>",
                            "rustup run stable python3 bench.py --config c.toml <seed>","rustup which cargo --config <seed>","rustup show stable cargo --config c.toml <seed>"):
             with self.subTest(entrypoint=entrypoint):

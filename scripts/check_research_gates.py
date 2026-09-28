@@ -289,7 +289,7 @@ def command_errors(exp_id: str, manifest: dict, table: dict) -> list[str]:
 # where it builds, with the short options that take a value, which a cluster
 # of short options (`-vC dir`) ends with, and the long ones that take the
 # next argument as theirs.
-CARGO_PATH_OPTIONS=("--manifest-path","--lockfile-path","--target-dir")
+CARGO_PATH_OPTIONS=("--manifest-path","--lockfile-path","--target","--target-dir")
 CARGO_SHORT_VALUES="CFjpZ"
 CARGO_LONG_VALUES=("--config","--manifest-path","--lockfile-path","--target-dir","--color","--explain","--package",
                    "--jobs","--features","--target","--bin","--example","--test","--bench","--profile",
@@ -298,9 +298,11 @@ CARGO_LONG_VALUES=("--config","--manifest-path","--lockfile-path","--target-dir"
 def cargo_path_options(arguments: list[str]) -> list[tuple[str,str]]:
     """The options among Cargo's own `arguments` (`cargo_arguments`) that
     name a path it builds from or into, with their values: the manifest
-    (`--manifest-path`), the lockfile (`--lockfile-path`), the directory it
-    runs in (`-C`, alone, joined or ending a cluster of short options) and
-    the target directory (`--target-dir`), each given as one token
+    (`--manifest-path`), the lockfile (`--lockfile-path`), the target,
+    which may be a specification file (`--target custom.json`), the
+    directory it runs in (`-C`, alone, joined or ending a cluster of short
+    options) and the target directory (`--target-dir`), each given as one
+    token
     (`--manifest-path=x`, `-Cx`) or two; a value missing at the end reads
     as empty. In Cargo's script mode (`-Zscript`, `-Z script`), whose
     manifest is a file an argument names, every argument that is no option
