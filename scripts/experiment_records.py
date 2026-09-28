@@ -875,22 +875,32 @@ def is_printable_ascii(text: str) -> bool:
 
 
 OUTSIDE_ASCII = "holds a character outside printable ASCII, whose escape depends on who serializes it"
+# The largest magnitude an integer of the canonical text may have: RFC 8785
+# writes numbers as IEEE-754 doubles, which hold every integer only up to it.
+MAX_CANONICAL_INTEGER = 2**53 - 1
+OUTSIDE_RANGE = f"is an integer beyond +-{MAX_CANONICAL_INTEGER}, which RFC 8785 cannot write exactly"
 
 
 def canonical_value_problem(value) -> str | None:
     """Why `value` has no canonical preregistration text, or None when it
-    has one: an integer, a boolean, a string of printable ASCII, or a list
-    holding only integers or only such strings. A float, a date, a table, any
-    other list, and a string holding a control or non-ASCII character (which
-    one JSON writer escapes and another writes raw) have a text that depends
-    on who serializes them."""
-    if type(value) in (int, bool):
+    has one: a boolean, an integer of magnitude at most
+    `MAX_CANONICAL_INTEGER`, a string of printable ASCII, or a list holding
+    only such integers or only such strings. A float, a date, a table, any
+    other list, a larger integer, and a string holding a control or non-ASCII
+    character (which one JSON writer escapes and another writes raw) have a
+    text that depends on who serializes them."""
+    if type(value) is bool:
         return None
+    if type(value) is int:
+        return None if abs(value) <= MAX_CANONICAL_INTEGER else OUTSIDE_RANGE
     if type(value) is str:
         return None if is_printable_ascii(value) else f"is a string that {OUTSIDE_ASCII}"
     if isinstance(value, list):
         kinds = {type(element) for element in value}
         if kinds <= {int}:
+            for index, element in enumerate(value):
+                if abs(element) > MAX_CANONICAL_INTEGER:
+                    return f"has element {index} that {OUTSIDE_RANGE}"
             return None
         if kinds <= {str}:
             for index, element in enumerate(value):
@@ -901,20 +911,50 @@ def canonical_value_problem(value) -> str | None:
     return f"is a {type(value).__name__}, which has no canonical text"
 
 
+def canonical_text(value) -> str:
+    """The canonical text of a value `canonical_value_problem` accepts, or of
+    a table of them: `true` or `false`; an integer in decimal, with a leading
+    `-` when negative and no leading zeros; a string between double quotes,
+    in which `\\` is written `\\\\` and `"` is written `\\"` and every other
+    character as itself (no other escape, `/` included); a list as `[`, its
+    elements joined by `,`, `]`; a table as `{`, its entries `"key":value` in
+    ascending order of their keys' bytes joined by `,`, `}`. No whitespace
+    anywhere. On this domain it is exactly the JSON Canonicalization Scheme of
+    RFC 8785, and what Python's `json.dumps` writes with sorted keys and the
+    separators `,` and `:`."""
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    if type(value) is int:
+        return str(value)
+    if type(value) is str:
+        return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    if isinstance(value, list):
+        return "[" + ",".join(canonical_text(element) for element in value) + "]"
+    if isinstance(value, dict):
+        entries = sorted(value.items(), key=lambda item: item[0].encode("ascii"))
+        return "{" + ",".join(canonical_text(key) + ":" + canonical_text(item) for key, item in entries) + "}"
+    raise ValueError(f"no canonical text for {type(value).__name__}")
+
+
+def canonical_digest(value) -> str:
+    """The SHA-256, in hex, of the UTF-8 bytes of `canonical_text(value)`."""
+    return hashlib.sha256(canonical_text(value).encode("utf-8")).hexdigest()
+
+
 def preregistration_canonical(table: dict) -> str:
-    """The canonical text of an experiment's `[preregistration]` table: JSON
-    with its keys sorted and no whitespace. Its keys and strings are printable
-    ASCII, so the only escapes are `\\"` and `\\\\`, and a harness in another
-    language reproduces the text byte for byte. Raises `ValueError`, naming
-    the key, for a key outside printable ASCII or a value
-    `canonical_value_problem` refuses."""
+    """The canonical text (`canonical_text`) of an experiment's
+    `[preregistration]` table, which a harness in another language reproduces
+    byte for byte. Raises `ValueError`, naming the key, for a key outside
+    printable ASCII or a value `canonical_value_problem` refuses."""
     for key, value in table.items():
         if not is_printable_ascii(key):
             raise ValueError(f"preregistration key {key!r} {OUTSIDE_ASCII}")
         problem = canonical_value_problem(value)
         if problem:
             raise ValueError(f"preregistration key {key} {problem}")
-    return json.dumps(table, sort_keys=True, separators=(",", ":"))
+    return canonical_text(table)
 
 
 def preregistration_digest(table: dict) -> str:
@@ -922,7 +962,16 @@ def preregistration_digest(table: dict) -> str:
     `preregistration_canonical(table)`: the `preregistration_sha256` an
     experiment's manifest names once it leaves `planned`
     (`scripts/check_research_gates.py`)."""
-    return hashlib.sha256(preregistration_canonical(table).encode("utf-8")).hexdigest()
+    preregistration_canonical(table)
+    return canonical_digest(table)
+
+
+def preregistered_file_digest(path: Path) -> str:
+    """The SHA-256, in hex, of a file a preregistration names, such as an
+    adjudication protocol, with every CRLF line ending read as LF, so a
+    checkout that converts line endings digests the text the repository
+    holds."""
+    return hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
 
 
 RUN = "run.json"

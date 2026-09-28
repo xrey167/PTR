@@ -20,14 +20,26 @@ replaced by another, whose own preregistration counts:
 
 - its `config.toml` holds a `[preregistration]` table with every key the list
   requires, each a pinned value of its declared type (`int`, `str`, `bool`,
-  or a non-empty `int-list` or `str-list`), and no other key of the table
-  holds a placeholder either;
+  a non-empty `int-list` or `str-list`, or `file`), and no other key of the
+  table holds a placeholder either;
 - every value of that table has a canonical text
   (`experiment_records.preregistration_canonical`), and the manifest's
   `preregistration_sha256` is its digest;
+- a `file` key names a file in the repository, and the table's
+  `<key>_sha256` is that file's digest
+  (`experiment_records.preregistered_file_digest`), so the file's content is
+  frozen with the table, not only its path;
 - a `seeds` key in the table, where there is one, names the manifest's seeds;
 - every baseline the list names is pinned at each key path the list names
-  for it, and its status is pinned and not `blocked-*`.
+  for it, its status is pinned and not `blocked-*`, and the table's
+  `baseline_<name>_sha256` is the digest of the canonical text of those key
+  paths and their values, so a baseline's pinned values are frozen with the
+  table;
+- every run record in the experiment's results (`run-*.json`, written by
+  `scripts/run_experiment.py` with the manifest it ran under) and its
+  aggregate (`run.json`) name that same `preregistration_sha256`, so a
+  preregistration rewritten after its runs, with the manifest rewritten to
+  match, still fails.
 
 A value is pinned unless it is a placeholder: a `must-be-pinned-…` string for
 a value still to be chosen, a `must-be-signed-…` string for an owner decision
@@ -40,6 +52,8 @@ their status.
 
 from __future__ import annotations
 
+import json
+import re
 import sys
 import tomllib
 from pathlib import Path, PurePosixPath
@@ -51,9 +65,10 @@ import experiment_records  # noqa: E402
 PREREGISTRATION="experiments/preregistration.toml"
 FROZEN={"prepared","running","completed","failed"}
 SCALARS={"int":int,"str":str,"bool":bool}
-KINDS=set(SCALARS)|{f"{kind}-list" for kind in ("int","str")}
+KINDS=set(SCALARS)|{f"{kind}-list" for kind in ("int","str")}|{"file"}
 ENTRY_FIELDS={"required","baseline"}
-BASELINE_FIELDS={"path","keys","status_key"}
+BASELINE_FIELDS={"name","path","keys","status_key"}
+BASELINE_NAME=re.compile(r"[a-z0-9_]+")
 MISSING=object()
 
 def load(path: Path) -> dict:
@@ -101,7 +116,7 @@ def kind_problem(value, kind: str) -> str | None:
             if problem:
                 return f"has element {index} that {problem}"
         return None
-    if type(value) is not SCALARS[kind]:
+    if type(value) is not SCALARS["str" if kind=="file" else kind]:
         return f"must be {article(kind)} {kind}, not {type_name(value)}"
     return None
 
@@ -170,36 +185,51 @@ def entry_errors(exp_id: str, entry, registered: set[str]) -> list[str]:
     baselines=entry.get("baseline",[])
     if not isinstance(baselines,list):
         return errors+[f"{where}: baseline must be an array of tables"]
+    names=set()
     for index,baseline in enumerate(baselines):
         name=f"{where}: baseline {index}"
         if not isinstance(baseline,dict):
             errors.append(f"{name} is not a table")
             continue
+        if baseline.get("name") in names:
+            errors.append(f"{name} repeats the name {baseline['name']!r}")
+        if isinstance(baseline.get("name"),str):
+            names.add(baseline["name"])
         for field in sorted(set(baseline)-BASELINE_FIELDS):
             errors.append(f"{name} has unknown field {field}")
+        if not isinstance(baseline.get("name"),str) or not BASELINE_NAME.fullmatch(baseline["name"]):
+            errors.append(f"{name} needs a name of lowercase letters, digits and underscores")
         if not is_repository_path(baseline.get("path")):
             errors.append(f"{name} needs a path inside the repository")
         keys=baseline.get("keys")
-        if not isinstance(keys,list) or not keys or not all(isinstance(key,str) and key for key in keys):
-            errors.append(f"{name} needs a non-empty list of key paths")
+        if not isinstance(keys,list) or not keys or not all(isinstance(key,str) and key and experiment_records.is_printable_ascii(key) for key in keys):
+            errors.append(f"{name} needs a non-empty list of key paths in printable ASCII")
         status_key=baseline.get("status_key")
         if not isinstance(status_key,str) or not status_key:
             errors.append(f"{name} needs a status_key")
     return errors
 
-def baseline_errors(exp_id: str, baseline: dict, root: Path) -> list[str]:
-    """What keeps `baseline` from being a pinned, unblocked baseline."""
+def baseline_errors(exp_id: str, baseline: dict, root: Path) -> tuple[list[str], str | None]:
+    """What keeps `baseline` from being a pinned, unblocked baseline, and,
+    when nothing does, the digest of its pinned values: the canonical text of
+    its key paths and their values (`experiment_records.canonical_text`)."""
     where=f"{exp_id}: baseline {baseline['path']}"
     path=root/baseline["path"]
     if not path.is_file():
-        return [f"{where} does not exist"]
+        return [f"{where} does not exist"],None
     config=load(path)
     errors=[]
+    selection={}
     for key in baseline["keys"]:
         value=lookup(config,key)
         problem="is missing" if value is MISSING else pinned_problem(value)
         if problem:
             errors.append(f"{where}: {key} {problem}")
+        else:
+            problem=experiment_records.canonical_value_problem(value)
+            if problem:
+                errors.append(f"{where}: {key} {problem}")
+            selection[key]=value
     status_key=baseline["status_key"]
     status=lookup(config,status_key)
     if status is MISSING:
@@ -208,6 +238,48 @@ def baseline_errors(exp_id: str, baseline: dict, root: Path) -> list[str]:
         errors.append(f"{where}: {status_key} is not pinned ({status!r})")
     elif status.strip().lower().startswith("blocked-"):
         errors.append(f"{where} is {status}")
+    if errors:
+        return errors,None
+    return [],experiment_records.canonical_digest(selection)
+
+def frozen_value_errors(exp_id: str, table: dict, key: str, expected: str, what: str) -> list[str]:
+    """What keeps the table's `key` from being `expected`, the digest of
+    `what`. A placeholder there is already reported as one."""
+    if key not in table:
+        return [f"{exp_id}: preregistration key {key} is missing; it must be {expected}, the digest of {what}"]
+    if is_unset(table[key]):
+        return []
+    if table[key]!=expected:
+        return [f"{exp_id}: preregistration key {key} {table[key]!r} is not {expected}, the digest of {what}"]
+    return []
+
+def archived_errors(exp_id: str, manifest: dict, experiment: Path, digest: str) -> list[str]:
+    """What keeps the experiment's archived runs from having run under the
+    preregistration whose digest is `digest`: every run record
+    (`run-*.json`) must carry a manifest naming it, and the aggregate
+    (`run.json`) must name it too."""
+    results=experiment/manifest.get("results_dir","results")
+    if not results.is_dir():
+        return []
+    errors=[]
+    for path in sorted(results.glob("run*.json")):
+        if path.name!="run.json" and not path.name.startswith("run-"):
+            continue
+        name=path.relative_to(experiment).as_posix()
+        try:
+            record=json.loads(path.read_text(encoding="utf-8"))
+        except (OSError,UnicodeDecodeError,json.JSONDecodeError) as error:
+            errors.append(f"{exp_id}: {name} cannot be read: {error}")
+            continue
+        if not isinstance(record,dict):
+            errors.append(f"{exp_id}: {name} is not a JSON object")
+            continue
+        if path.name=="run.json":
+            recorded=record.get("preregistration_sha256")
+        else:
+            recorded=record.get("manifest",{}).get("preregistration_sha256") if isinstance(record.get("manifest"),dict) else None
+        if recorded!=digest:
+            errors.append(f"{exp_id}: {name} names preregistration_sha256 {recorded!r}, not {digest}, the digest the experiment is frozen at")
     return errors
 
 def frozen_errors(exp_id: str, entry: dict, manifest: dict, experiment: Path, root: Path) -> list[str]:
@@ -227,24 +299,37 @@ def frozen_errors(exp_id: str, entry: dict, manifest: dict, experiment: Path, ro
         problem=kind_problem(table[key],kind)
         if problem:
             errors.append(f"{exp_id}: preregistration key {key} {problem}")
+        elif kind=="file":
+            file=root/table[key] if is_repository_path(table[key]) else None
+            if file is None or not file.is_file():
+                errors.append(f"{exp_id}: preregistration key {key} names {table[key]!r}, which is not a file in the repository")
+            else:
+                errors.extend(frozen_value_errors(
+                    exp_id,table,f"{key}_sha256",experiment_records.preregistered_file_digest(file),table[key]))
     for key,value in table.items():
         problem=None if key in entry["required"] else unset_problem(value)
         if problem:
             errors.append(f"{exp_id}: preregistration key {key} {problem}")
+    if "seeds" in table and table["seeds"]!=manifest.get("seeds"):
+        errors.append(f"{exp_id}: preregistered seeds {table['seeds']!r} are not the manifest's seeds {manifest.get('seeds')!r}")
+    for baseline in entry.get("baseline",[]):
+        problems,selection=baseline_errors(exp_id,baseline,root)
+        errors.extend(problems)
+        if selection is not None:
+            errors.extend(frozen_value_errors(
+                exp_id,table,f"baseline_{baseline['name']}_sha256",selection,
+                f"{baseline['path']} at {', '.join(baseline['keys'])}"))
     try:
         digest=experiment_records.preregistration_digest(table)
     except ValueError as error:
         errors.append(f"{exp_id}: {error}")
-    else:
-        recorded=manifest.get("preregistration_sha256")
-        if recorded is None:
-            errors.append(f"{exp_id}: experiment.toml names no preregistration_sha256")
-        elif recorded!=digest:
-            errors.append(f"{exp_id}: preregistration_sha256 {recorded!r} is not {digest}, the digest of config.toml's [preregistration]")
-    if "seeds" in table and table["seeds"]!=manifest.get("seeds"):
-        errors.append(f"{exp_id}: preregistered seeds {table['seeds']!r} are not the manifest's seeds {manifest.get('seeds')!r}")
-    for baseline in entry.get("baseline",[]):
-        errors.extend(baseline_errors(exp_id,baseline,root))
+        return errors
+    recorded=manifest.get("preregistration_sha256")
+    if recorded is None:
+        errors.append(f"{exp_id}: experiment.toml names no preregistration_sha256")
+    elif recorded!=digest:
+        errors.append(f"{exp_id}: preregistration_sha256 {recorded!r} is not {digest}, the digest of config.toml's [preregistration]")
+    errors.extend(archived_errors(exp_id,manifest,experiment,digest))
     return errors
 
 def preregistration_errors(root: Path, manifests: dict[str, dict], experiments: dict[str, Path]) -> list[str]:

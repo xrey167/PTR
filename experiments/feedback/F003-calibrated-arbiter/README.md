@@ -26,7 +26,7 @@ The `[preregistration]` table of `config.toml` is frozen before F003 leaves `pla
   - `calibration_set_rule`: every adjudication recorded before the policy version is calibration, and every one after it is held out.
   - `adjudicators_see_intent = false`. The intent is free text the agent wrote, and the harm label calibrates that agent's auto-proposal threshold, so a change is judged from its delta, the state before and after, and the verifier codes alone.
   - `harm_breakdown_namespaces`: the first `:`-separated segment of each changed key, reported only descriptively, next to the global rate.
-  - `adjudication_protocol`: a `PROTOCOL.md` in this directory, still to be written.
+  - `adjudication_protocol`: `experiments/feedback/F003-calibrated-arbiter/PROTOCOL.md`, still to be written. Its content is frozen with the table: `adjudication_protocol_sha256` must be its SHA-256, so the protocol cannot change after an outcome is seen.
 
 ## Rule
 Record matched baselines, hardware, seeds and negative results. Do not change success criteria after observing results.

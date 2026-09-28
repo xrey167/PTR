@@ -1548,11 +1548,14 @@ another by idea.
 S003, F003, Q003, R004, M008 and E005 preregister (`experiments/preregistration.toml`). Each leaves `planned`
 only once the `[preregistration]` table of its `config.toml` holds every key the list requires, pinned and of
 its declared type, and no placeholder in any other key, its manifest names the SHA-256 of the table's canonical
-text, and every baseline the list names is pinned and not blocked; `scripts/check_research_gates.py` fails CI
-otherwise, whether the experiment is prepared, running, completed or failed
-(`test_a_missing_required_key_keeps_an_experiment_from_leaving_planned`,
+text, every baseline the list names is pinned and not blocked, the table freezes the baselines' pinned values and
+the content of every file it names by their digests, and every archived run record and aggregate names the
+manifest's digest; `scripts/check_research_gates.py` fails CI otherwise, whether the experiment is prepared,
+running, completed or failed (`test_a_missing_required_key_keeps_an_experiment_from_leaving_planned`,
 `test_a_placeholder_or_wrongly_typed_value_blocks`, `test_a_digest_mismatch_blocks`,
-`test_an_unpinned_or_blocked_baseline_blocks`). A value still to be chosen and an owner decision still to be
+`test_an_unpinned_or_blocked_baseline_blocks`, `test_a_baseline_is_frozen_by_its_pinned_values`,
+`test_a_file_the_preregistration_names_is_frozen_by_its_content`,
+`test_archived_runs_must_name_the_frozen_digest`). A value still to be chosen and an owner decision still to be
 taken, such as whether F003's adjudicators see a branch's intent, are placeholder strings that pass as no type.
 S003 has no `[preregistration]` table yet and the other five hold such placeholders, so none of the six can
 leave `planned` yet (`test_the_enrolled_experiments_are_held_until_their_placeholders_are_pinned`).

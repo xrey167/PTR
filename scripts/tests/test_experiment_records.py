@@ -1637,6 +1637,51 @@ class PreregistrationTests(unittest.TestCase):
             mod.preregistration_canonical({"all": printable}),
             '{"all":"' + printable.replace("\\", "\\\\").replace('"', '\\"') + '"}',
         )
+        # Integers are held to what RFC 8785 writes exactly.
+        bound = 2**53 - 1
+        for value in (bound, -bound, 0, [bound, -bound]):
+            self.assertIsNone(mod.canonical_value_problem(value))
+        for value, problem in (
+            (bound + 1, "is an integer beyond"),
+            (-bound - 1, "is an integer beyond"),
+            ([1, bound + 1], "has element 1 that is an integer beyond"),
+        ):
+            with self.subTest(value=value):
+                self.assertTrue(mod.canonical_value_problem(value).startswith(problem))
+                with self.assertRaisesRegex(ValueError, f"preregistration key big {problem}"):
+                    mod.preregistration_canonical({"big": value})
+
+    def test_the_canonical_text_is_spelled_exactly_and_is_rfc_8785_on_its_domain(self):
+        # Every rule of the spelling, written out: keys in byte order ("B" <
+        # "_" < "a"), no whitespace, only the quote and the backslash escaped
+        # ("/" is not), booleans and integers as JSON writes them.
+        table = {"a": 'p/q "r" \\ s', "_": [-1, 0, 9007199254740991], "B": ["x/y", ""], "b": True, "c": False}
+        text = '{"B":["x/y",""],"_":[-1,0,9007199254740991],"a":"p/q \\"r\\" \\\\ s","b":true,"c":false}'
+        self.assertEqual(mod.canonical_text(table), text)
+        self.assertEqual(mod.preregistration_canonical(table), text)
+        self.assertEqual(mod.canonical_digest(table), hashlib.sha256(text.encode("utf-8")).hexdigest())
+        self.assertEqual(mod.preregistration_digest(table), mod.canonical_digest(table))
+        # It is what Python's json module writes with sorted keys and no
+        # whitespace, for every table the domain allows.
+        for sample in (table, self.TABLE, {"all": "".join(chr(code) for code in range(0x20, 0x7F))}, {}):
+            with self.subTest(sample=sample):
+                self.assertEqual(mod.canonical_text(sample), json.dumps(sample, sort_keys=True, separators=(",", ":")))
+        # Nothing outside the domain has a text.
+        with self.assertRaises(ValueError):
+            mod.canonical_text(0.5)
+
+    def test_a_preregistered_file_is_digested_with_crlf_read_as_lf(self):
+        with tempfile.TemporaryDirectory() as directory:
+            unix = Path(directory) / "unix.md"
+            windows = Path(directory) / "windows.md"
+            unix.write_bytes(b"# Protocol\nline\n")
+            windows.write_bytes(b"# Protocol\r\nline\r\n")
+            expected = hashlib.sha256(b"# Protocol\nline\n").hexdigest()
+            self.assertEqual(mod.preregistered_file_digest(unix), expected)
+            self.assertEqual(mod.preregistered_file_digest(windows), expected)
+            # A lone CR is content, not a line ending.
+            windows.write_bytes(b"# Protocol\rline\n")
+            self.assertNotEqual(mod.preregistered_file_digest(windows), expected)
 
 
 if __name__ == "__main__":

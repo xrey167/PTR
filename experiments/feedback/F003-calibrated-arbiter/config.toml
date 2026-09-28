@@ -28,5 +28,8 @@ calibration_set_rule = "must-be-signed-by-owner"
 adjudicators_see_intent = "must-be-signed-by-owner"
 # Proposed: the first `:`-separated segment of each changed key, descriptive only.
 harm_breakdown_namespaces = "must-be-signed-by-owner"
-# Proposed: a PROTOCOL.md in this directory, still to be written.
+# Proposed: experiments/feedback/F003-calibrated-arbiter/PROTOCOL.md, still to
+# be written. The protocol's content is frozen with the table:
+# adjudication_protocol_sha256 must be its digest.
 adjudication_protocol = "must-be-signed-by-owner"
+adjudication_protocol_sha256 = "must-be-pinned-before-prepared"

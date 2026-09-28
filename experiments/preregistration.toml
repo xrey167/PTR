@@ -5,16 +5,21 @@
 # holds a [preregistration] table with every key under `required`, each a
 # pinned value of the type named there, the manifest's `preregistration_sha256`
 # is that table's digest (scripts/experiment_records.py,
-# preregistration_digest), and every `baseline` is pinned at each of its `keys`
-# and not `blocked-*` at its `status_key`.
+# preregistration_digest), every `baseline` is pinned at each of its `keys` and
+# not `blocked-*` at its `status_key`, and every run record and aggregate in
+# the experiment's results names that same digest.
 #
-# Types: "int", "str", "bool", "int-list" and "str-list"; a required list must
-# not be empty, and strings are printable ASCII. A value still to be chosen is
-# a `must-be-pinned-…` string and an owner decision still to be taken a
-# `must-be-signed-…` string; either blocks whatever the key's type, and in a
-# key this list does not require too. A baseline that has no configuration of
-# its own in research/baselines/ is a required key of the experiment's own
-# table.
+# Types: "int", "str", "bool", "int-list", "str-list" and "file"; a required
+# list must not be empty, and strings are printable ASCII. A "file" is a path
+# in the repository whose content is frozen too: the table's `<key>_sha256`
+# must be its digest (preregistered_file_digest). A baseline's pinned values
+# are frozen the same way: the table's `baseline_<name>_sha256` must be the
+# digest of the canonical text of its `keys` and their values (canonical_digest).
+# A value still to be chosen is a `must-be-pinned-…` string and an owner
+# decision still to be taken a `must-be-signed-…` string; either blocks
+# whatever the key's type, and in a key this list does not require too. A
+# baseline that has no configuration of its own in research/baselines/ is a
+# required key of the experiment's own table.
 version = 1
 
 # Design: docs/architecture/35-agentic-substrate.md. The pilot fills
@@ -91,7 +96,7 @@ uncalibrated_threshold_permille = "int"
 calibration_set_rule = "str"
 adjudicators_see_intent = "bool"
 harm_breakdown_namespaces = "str"
-adjudication_protocol = "str"
+adjudication_protocol = "file"
 
 [experiment.Q003.required]
 recall_margin_permille = "int"
@@ -102,11 +107,13 @@ embedding_revision = "str"
 # rag_reference's reranker is "not-configured", a decided value rather than a
 # placeholder, so the keys are named one by one.
 [[experiment.Q003.baseline]]
+name = "rag_reference"
 path = "research/baselines/rag_reference/config.toml"
 keys = ["hybrid.embedding_model"]
 status_key = "status"
 
 [[experiment.Q003.baseline]]
+name = "strong_rag"
 path = "research/baselines/strong_rag/config.toml"
 keys = ["dense.revision", "reranker.revision", "answer.generator", "answer.revision"]
 status_key = "status"
@@ -127,6 +134,7 @@ full_context_baseline = "str"
 agent_memory_baselines = "str-list"
 
 [[experiment.E005.baseline]]
+name = "strong_rag"
 path = "research/baselines/strong_rag/config.toml"
 keys = ["dense.revision", "reranker.revision", "answer.generator", "answer.revision"]
 status_key = "status"
