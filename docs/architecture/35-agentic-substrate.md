@@ -1544,13 +1544,13 @@ another by idea.
 | [F002](../../experiments/feedback/F002-weak-supervision/README.md) | Is the verifier-precedence label model better calibrated than majority vote? | any label contradicting a verifier veto |
 | [E005](../../experiments/system/E005-agent-memory-benchmark/README.md) | Does the combined stack beat current agent-memory systems on LongMemEval and LoCoMo? | no category improvement at equal budget |
 
-L004 and L003 are completed for PostgreSQL 18 (2026-09-27, at 5f71d84): over five seeds each, with crashes,
-commits the server failed and races, no projection diverged from the reference, no foreign history was
-accepted, no refold differed by a bit and no revoked input was read; every planted defect of their mutation
-lists was detected (17 of 17 and 16 of 16). Their seed records, mutation checks and aggregates all ran at
-that commit, and earlier runs at ad2f8d1, dcfbb3e, 7b60216, ed52931 and ff96ce0 also passed. Results and limitations
-are in each experiment's `results/`. They are stale since c4c9b20, the first change of T1-2 (only the runtime merges a
-branch), as each experiment's `results/STALE.toml` records until both are rerun on T1-2's final code.
+L004 and L003 are completed for PostgreSQL 18 (2026-09-28, on T1-2's final code at 039beff): over five seeds
+each, with crashes, commits the server failed and races, no projection diverged from the reference, no
+foreign history was accepted, no refold differed by a bit and no revoked input was read; every planted defect
+of their mutation lists was detected (17 of 17 and 16 of 16). L004's logs carry semantic records of every
+origin, merges included, and every seed projected each. Their seed records ran at 039beff and their mutation
+checks at 4659cbf, which adds only those records, and earlier runs at ad2f8d1, dcfbb3e, 7b60216, ed52931,
+ff96ce0 and 5f71d84 also passed. Results and limitations are in each experiment's `results/`.
 `scripts/check_research_gates.py` fails CI on a completed experiment whose archived
 `run.json`
 or `mutations.json` ran at code, aggregation scripts or mutation plan HEAD has changed without a
