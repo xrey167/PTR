@@ -32,16 +32,16 @@ replaced by another, whose own preregistration counts:
 - a `seeds` key in the table, where there is one, names the manifest's seeds;
 - every baseline the list names is pinned at each key path the list names
   for it, its status is pinned and not `blocked-*`, and the table's
-  `baseline_<name>_sha256` is the digest of the canonical text of those key
-  paths and their values, so a baseline's pinned values are frozen with the
-  table;
+  `baseline_<name>_sha256` is the digest of its whole configuration file, so
+  every setting of the baseline is frozen with the table, not only the keys
+  that must be pinned;
 - the manifest's `preregistration_rules_sha256` is the digest of the
   experiment's entry in the list, so its types and baselines are frozen too;
 - every run record in the experiment's results (`run-*.json`, written by
   `scripts/run_experiment.py` with the manifest it ran under) and its
   aggregate (`run.json`) name those digests and the commit they ran at, and
   that commit holds the same preregistration, entry, files and baseline
-  values (`history_errors`); a run record also names the SHA-256 of the
+  configurations (`history_errors`); a run record also names the SHA-256 of the
   manifest at that commit and is unchanged since it was committed. A
   preregistration rewritten after its runs fails even when the manifest and
   the records are rewritten to match, short of rewriting history.
@@ -241,21 +241,12 @@ def entry_errors(exp_id: str, entry, registered: set[str]) -> list[str]:
             errors.append(f"{name} needs a status_key")
     return errors
 
-def baseline_selection(config: dict, baseline: dict) -> dict | None:
-    """The key paths `baseline` names with their values in `config`, or None
-    when one is missing or has no canonical text."""
-    selection={}
-    for key in baseline["keys"]:
-        value=lookup(config,key)
-        if value is MISSING or experiment_records.canonical_value_problem(value) is not None:
-            return None
-        selection[key]=value
-    return selection
-
 def baseline_errors(exp_id: str, baseline: dict, root: Path) -> tuple[list[str], str | None]:
     """What keeps `baseline` from being a pinned, unblocked baseline, and,
-    when nothing does, the digest of its pinned values: the canonical text of
-    its key paths and their values (`experiment_records.canonical_text`)."""
+    when nothing does, the digest of its whole configuration file
+    (`experiment_records.preregistered_file_digest`): every setting of the
+    baseline, not only the keys that must be pinned, decides what the
+    experiment compares against."""
     where=f"{exp_id}: baseline {baseline['path']}"
     path=repository_file(root,baseline["path"])
     if path is None:
@@ -267,10 +258,6 @@ def baseline_errors(exp_id: str, baseline: dict, root: Path) -> tuple[list[str],
         problem="is missing" if value is MISSING else pinned_problem(value)
         if problem:
             errors.append(f"{where}: {key} {problem}")
-        else:
-            problem=experiment_records.canonical_value_problem(value)
-            if problem:
-                errors.append(f"{where}: {key} {problem}")
     status_key=baseline["status_key"]
     status=lookup(config,status_key)
     if status is MISSING:
@@ -281,7 +268,7 @@ def baseline_errors(exp_id: str, baseline: dict, root: Path) -> tuple[list[str],
         errors.append(f"{where} is {status}")
     if errors:
         return errors,None
-    return [],experiment_records.canonical_digest(baseline_selection(config,baseline))
+    return [],experiment_records.preregistered_file_digest(path)
 
 def frozen_value_errors(exp_id: str, table: dict, key: str, expected: str, what: str) -> list[str]:
     """What keeps the table's `key` from being `expected`, the digest of
@@ -358,11 +345,10 @@ def history_errors(exp_id: str, name: str, named, root: Path, experiment: Path, 
         if held!=table.get(f"{key}_sha256"):
             errors.append(f"{at}, where {table[key]} is not the file frozen as {key}")
     for baseline in entry.get("baseline",[]):
-        then_config=toml_at(root,commit,baseline["path"]) if is_repository_path(baseline["path"]) else None
-        selection=baseline_selection(then_config,baseline) if isinstance(then_config,dict) else None
-        held=None if selection is None else experiment_records.canonical_digest(selection)
+        data=blob(root,commit,baseline["path"]) if is_repository_path(baseline["path"]) else None
+        held=None if data is None else hashlib.sha256(data.replace(b"\r\n",b"\n")).hexdigest()
         if held!=table.get(f"baseline_{baseline['name']}_sha256"):
-            errors.append(f"{at}, where baseline {baseline['name']} is not pinned to the frozen values")
+            errors.append(f"{at}, where baseline {baseline['name']} is not the frozen configuration")
     return errors,commit
 
 def archived_errors(exp_id: str, manifest: dict, experiment: Path, root: Path, entry: dict, table: dict,
@@ -449,8 +435,7 @@ def frozen_errors(exp_id: str, entry: dict, manifest: dict, experiment: Path, ro
         errors.extend(problems)
         if selection is not None:
             errors.extend(frozen_value_errors(
-                exp_id,table,f"baseline_{baseline['name']}_sha256",selection,
-                f"{baseline['path']} at {', '.join(baseline['keys'])}"))
+                exp_id,table,f"baseline_{baseline['name']}_sha256",selection,baseline["path"]))
     try:
         digest=experiment_records.preregistration_digest(table)
     except ValueError as error:

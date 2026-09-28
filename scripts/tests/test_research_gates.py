@@ -172,18 +172,22 @@ class PreregistrationGateTests(unittest.TestCase):
         given (None leaves it out), and
         `listed_text`, when given, the whole of the list. With
         `freeze_baselines`, the table also holds each baseline's
-        `baseline_<name>_sha256`, the digest of its pinned values, whenever
-        they can be digested and the table does not set it itself."""
+        `baseline_<name>_sha256`, the digest of its configuration file,
+        unless the table sets it itself."""
         root=Path(self.enterContext(tempfile.TemporaryDirectory()))
-        if table is not None and freeze_baselines and baseline_config is not None:
+        baseline_text=None
+        if baseline_config is not None:
+            values={name:value for name,value in baseline_config.items() if not isinstance(value,dict)}
+            baseline_text="".join(f"{name} = {toml_value(value)}\n" for name,value in values.items())
+            for name,section in baseline_config.items():
+                if name not in values:
+                    baseline_text+="\n"+toml_table(name,section)
+        if table is not None and freeze_baselines and baseline_text is not None:
             table=dict(table)
             for baseline in baselines:
                 name=baseline.get("name") if isinstance(baseline,dict) else None
-                if not isinstance(name,str) or f"baseline_{name}_sha256" in table:
-                    continue
-                selection={key:mod.lookup(baseline_config,key) for key in baseline.get("keys",[]) if isinstance(key,str)}
-                if selection and all(value is not mod.MISSING and mod.experiment_records.canonical_value_problem(value) is None for value in selection.values()):
-                    table[f"baseline_{name}_sha256"]=mod.experiment_records.canonical_digest(selection)
+                if isinstance(name,str) and f"baseline_{name}_sha256" not in table:
+                    table[f"baseline_{name}_sha256"]=hashlib.sha256(baseline_text.encode("utf-8")).hexdigest()
         write(root,"experiments/registry.toml",f'version = 1\n\n[[experiment]]\nid = "X900"\npath = "semdb/X900-fixture"\nstatus = "{status}"\n')
         config=CONFIG_HEADER+("\n"+toml_table("preregistration",table) if table is not None else "")
         write(root,"experiments/semdb/X900-fixture/config.toml",config)
@@ -210,13 +214,8 @@ class PreregistrationGateTests(unittest.TestCase):
             manifest["preregistration_rules_sha256"]=rules
         write(root,"experiments/semdb/X900-fixture/experiment.toml","".join(f"{key} = {toml_value(value)}\n" for key,value in manifest.items()))
         write(root,"research/baselines/plain_model/config.toml",PLAIN_MODEL)
-        if baseline_config is not None:
-            values={name:value for name,value in baseline_config.items() if not isinstance(value,dict)}
-            text="".join(f"{name} = {toml_value(value)}\n" for name,value in values.items())
-            for name,section in baseline_config.items():
-                if name not in values:
-                    text+="\n"+toml_table(name,section)
-            write(root,BASELINE_PATH,text)
+        if baseline_text is not None:
+            write(root,BASELINE_PATH,baseline_text)
         return root
 
     def assert_blocked(self, root: Path, *errors: str) -> None:
@@ -474,39 +473,37 @@ class PreregistrationGateTests(unittest.TestCase):
         )
         self.assert_blocked(tree({**good,"protocol":1}),"X900: preregistration key protocol must be a file, not an integer")
 
-    def test_a_baseline_is_frozen_by_its_pinned_values(self):
-        selection={"model.revision":"0123abc","answer.generators":["g1","g2"]}
-        frozen=mod.experiment_records.canonical_digest(selection)
-        self.assertEqual(
-            mod.experiment_records.canonical_text(selection),
-            '{"answer.generators":["g1","g2"],"model.revision":"0123abc"}',
-        )
-        what=f"{BASELINE_PATH} at model.revision, answer.generators"
+    def test_a_baseline_is_frozen_by_its_whole_configuration(self):
+        text=(self.tree()/BASELINE_PATH).read_text(encoding="utf-8")
+        frozen=hashlib.sha256(text.encode("utf-8")).hexdigest()
         self.assertEqual(gate(self.tree(table={**TABLE,"baseline_fixture_sha256":frozen})),(0,[]))
         self.assert_blocked(
             self.tree(freeze_baselines=False),
-            f"X900: preregistration key baseline_fixture_sha256 is missing; it must be {frozen}, the digest of {what}",
+            f"X900: preregistration key baseline_fixture_sha256 is missing; it must be {frozen}, the digest of {BASELINE_PATH}",
         )
-        # A baseline pinned to other values after the freeze, still pinned and
-        # unblocked, no longer is the baseline the experiment froze.
-        for model,generators in (("4567def",["g1","g2"]),("0123abc",["g2","g1"]),("0123abc",["g1"])):
-            with self.subTest(model=model,generators=generators):
-                moved=mod.experiment_records.canonical_digest({"model.revision":model,"answer.generators":generators})
+        # A baseline changed after the freeze, still pinned and unblocked, is
+        # no longer the baseline the experiment froze, whether a pinned key or
+        # a setting the list does not name changed.
+        for config in (
+            {**BASELINE_CONFIG,"model":{"revision":"4567def"}},
+            {**BASELINE_CONFIG,"answer":{"generators":["g2","g1"]}},
+            {**BASELINE_CONFIG,"retrieval":{"top_k":50}},
+            {**BASELINE_CONFIG,"status":"reference-implemented-v2"},
+        ):
+            with self.subTest(config=config):
+                root=self.tree(table={**TABLE,"baseline_fixture_sha256":frozen},baseline_config=config)
+                moved=mod.experiment_records.preregistered_file_digest(root/BASELINE_PATH)
                 self.assert_blocked(
-                    self.tree(
-                        table={**TABLE,"baseline_fixture_sha256":frozen},
-                        baseline_config={**BASELINE_CONFIG,"model":{"revision":model},"answer":{"generators":generators}},
-                    ),
-                    f"X900: preregistration key baseline_fixture_sha256 {frozen!r} is not {moved}, the digest of {what}",
+                    root,
+                    f"X900: preregistration key baseline_fixture_sha256 {frozen!r} is not {moved}, the digest of {BASELINE_PATH}",
                 )
+        # A checkout that writes CRLF line endings holds the same baseline.
+        root=self.tree(table={**TABLE,"baseline_fixture_sha256":frozen})
+        (root/BASELINE_PATH).write_bytes(text.replace("\n","\r\n").encode("utf-8"))
+        self.assertEqual(gate(root),(0,[]))
         self.assert_blocked(
             self.tree(table={**TABLE,"baseline_fixture_sha256":"must-be-pinned-before-prepared"}),
             "X900: preregistration key baseline_fixture_sha256 is a placeholder ('must-be-pinned-before-prepared')",
-        )
-        # A pinned value without a canonical text cannot be frozen.
-        self.assert_blocked(
-            self.tree(baseline_config={**BASELINE_CONFIG,"model":{"revision":1.5}}),
-            f"X900: baseline {BASELINE_PATH}: model.revision is a float, which has no canonical text",
         )
 
     RECORD="experiments/semdb/X900-fixture/results/run-20260101T000000.000000Z-seed-17.json"
@@ -664,8 +661,7 @@ class PreregistrationGateTests(unittest.TestCase):
         name=self.RECORD.removeprefix("experiments/semdb/X900-fixture/")
         write(root,path,frozen_text)
         write(root,BASELINE_PATH,(self.tree(table=table,required=required)/BASELINE_PATH).read_text(encoding="utf-8"))
-        frozen_table={**table,"baseline_fixture_sha256":mod.experiment_records.canonical_digest(
-            {"model.revision":"0123abc","answer.generators":["g1","g2"]})}
+        frozen_table={**table,"baseline_fixture_sha256":mod.experiment_records.preregistered_file_digest(root/BASELINE_PATH)}
         fixed=self.tree(status="running",table=frozen_table,required=required)
         for relative in ("experiments/semdb/X900-fixture/config.toml",self.MANIFEST):
             shutil.copyfile(fixed/relative,root/relative)
@@ -675,7 +671,7 @@ class PreregistrationGateTests(unittest.TestCase):
         code,lines=gate(root)
         self.assertEqual(code,1)
         self.assertIn(f"X900: {name} ran at {short}, where {path} is not the file frozen as protocol",lines)
-        self.assertIn(f"X900: {name} ran at {short}, where baseline fixture is not pinned to the frozen values",lines)
+        self.assertIn(f"X900: {name} ran at {short}, where baseline fixture is not the frozen configuration",lines)
 
     def link(self, target: Path, link: Path) -> None:
         """A symlink at `link` to `target`, or skip where none can be made."""
