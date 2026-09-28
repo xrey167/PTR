@@ -713,6 +713,17 @@ class PreregistrationGateTests(unittest.TestCase):
                         self.assert_blocked(root,*errors,f"X900: {name} differs from the record committed as it")
                 write(root,self.RECORD,json.dumps(self.record(root,commit)))
                 self.assertEqual(gate(root),(0,[]))
+                # A record the index tells git to take as HEAD's, which git
+                # diff and status then do not look at, is read from disk.
+                kept=(root/self.RECORD).read_bytes()
+                for flag in ("skip-worktree","assume-unchanged"):
+                    with self.subTest(status=status,flag=flag):
+                        git(root,"update-index",f"--{flag}",self.RECORD)
+                        write(root,self.RECORD,json.dumps({**self.record(root,commit),"stdout":"another outcome\n"}))
+                        self.assert_blocked(root,f"X900: {name} differs from the record committed as it")
+                        (root/self.RECORD).write_bytes(kept)
+                        git(root,"update-index",f"--no-{flag}",self.RECORD)
+                self.assertEqual(gate(root),(0,[]))
                 for text,errors in (
                     (json.dumps({**self.aggregate(root,commit),"preregistration_sha256":None}),
                      [f"X900: results/run.json names preregistration_sha256 None, not {digest}, the digest the experiment is frozen at"]),
@@ -2274,7 +2285,8 @@ class PreregistrationGateTests(unittest.TestCase):
         # Cargo reads the configuration of the directory it runs in (-C) and
         # each above it, the nearer's alias of a name winning, and
         # .cargo/config before .cargo/config.toml in one directory; text that
-        # does not parse defines none.
+        # does not parse defines none, and Cargo refuses to run from it (as
+        # the configuration check does).
         nested={
             **files,
             "crates/x/.cargo/config":'[alias]\nb = "build --target-dir t"\n',
@@ -2286,7 +2298,9 @@ class PreregistrationGateTests(unittest.TestCase):
             ["X900: entrypoint gives Cargo a target directory (--target-dir), which could hold a build made outside "
              "the commit; the runner builds a listed run into a fresh one"],
         )
-        self.assertEqual(errors("cargo -Zunstable-options -C crates/y b -- <seed>",nested.get),[outside])
+        unparsed=next(error for error in errors("cargo -C crates/y ok -- <seed>",nested.get))
+        self.assertTrue(unparsed.startswith("X900: crates/y/.cargo/config.toml does not parse as TOML ("),unparsed)
+        self.assertEqual(errors("cargo -Zunstable-options -C crates/y b -- <seed>",nested.get),[outside,unparsed])
         self.assertEqual(mod.cargo_aliases(nested.get,"crates/x")["c2"],["run","--config","c.toml"])
         # The launch reads the configuration in the tree, and the history the
         # configuration at each commit.
@@ -2296,6 +2310,62 @@ class PreregistrationGateTests(unittest.TestCase):
         self.edit(root,self.MANIFEST,'entrypoint = "bench <seed>"\n','entrypoint = "cargo b -- <seed>"\n')
         self.assert_blocked(root,outside)
         self.assertEqual(mod.launch_errors(root,"X900"),[outside])
+        commit=commit_all(root)
+        self.assertIsNone(mod.launchable_at(root,commit,"X900","experiments/semdb/X900-fixture"))
+
+    def test_a_listed_runs_cargo_configuration_names_no_program_source_or_flags(self):
+        # Cargo runs the compiler, wrapper, linker or runner its configuration
+        # names, and builds from the sources and with the flags it names:
+        # none of them is what the record binds. A listed run's Cargo
+        # configuration, which Cargo started from the root or from the
+        # directory -C names reads there and above, sets only tables that
+        # name none of them.
+        def errors(entrypoint,files):
+            return mod.command_errors("X900",{"entrypoint":entrypoint},{"seeds":[17]},files.get)
+
+        def refused(path,keys):
+            return (f"X900: {path} sets {keys} for Cargo, which can name a program Cargo runs (a compiler, a "
+                    "wrapper, a linker or a runner), a source it builds from or flags it builds with outside what a "
+                    "record binds; a listed experiment's Cargo configuration sets only [alias], [cargo-new], [env], "
+                    "[future-incompat-report], [http], [net], [term]")
+
+        allowed=('[alias]\nok = "run --release"\n[env]\nLEVEL = "1"\n[term]\nverbose = false\n'
+                 '[net]\noffline = true\n[http]\ntimeout = 30\n[cargo-new]\nvcs = "none"\n'
+                 '[future-incompat-report]\nfrequency = "never"\n')
+        self.assertEqual(errors("cargo ok -- <seed>",{".cargo/config.toml":allowed}),[])
+        for text,keys in (
+            ('[build]\nrustc = "/tmp/fake-rustc"\n',"build"),
+            ('[build]\nrustc-wrapper = "/usr/bin/sccache"\n',"build"),
+            ('[build]\nrustflags = ["--sysroot=/tmp/std"]\n',"build"),
+            ("[target.x86_64-unknown-linux-gnu]\nrunner = \"/tmp/fake\"\n","target"),
+            ("[target.'cfg(unix)']\nlinker = \"/tmp/ld\"\n","target"),
+            ('[host]\nlinker = "/tmp/ld"\n',"host"),
+            ('include = ["/tmp/other.toml"]\n',"include"),
+            ('paths = ["/tmp/crate"]\n[source.local]\ndirectory = "/tmp/vendor"\n',"paths, source"),
+            ('[patch.crates-io]\nserde = { path = "/tmp/serde" }\n[unstable]\nbuild-std = ["std"]\n',"patch, unstable"),
+            ('[profile.release]\ncodegen-backend = "/tmp/backend.so"\n',"profile"),
+        ):
+            with self.subTest(configuration=text):
+                self.assertEqual(errors("cargo run -- <seed>",{".cargo/config.toml":text}),
+                                 [refused(".cargo/config.toml",keys)])
+                # Also the older name, which Cargo prefers where both are,
+                # and for a command that is no Cargo but may start one.
+                self.assertEqual(errors("python3 bench.py <seed>",{".cargo/config":text,".cargo/config.toml":allowed}),
+                                 [refused(".cargo/config",keys)])
+        runner="[target.x86_64-unknown-linux-gnu]\nrunner = \"/tmp/fake\"\n"
+        # The directory -C names and each above it, up to the root.
+        nested={"crates/x/.cargo/config.toml":runner,"crates/.cargo/config":runner,".cargo/config.toml":allowed}
+        self.assertEqual(errors("cargo -Zunstable-options -C crates/x run -- <seed>",nested),
+                         [refused("crates/x/.cargo/config.toml","target"),refused("crates/.cargo/config","target")])
+        # A directory Cargo is not started in is not read.
+        self.assertEqual(errors("cargo run -- <seed>",nested),[])
+        # The launch reads the configuration in the tree, and the history the
+        # configuration at each commit.
+        root=self.tree(status="running")
+        (root/".cargo").mkdir(exist_ok=True)
+        (root/".cargo/config.toml").write_text(runner,encoding="utf-8")
+        self.assert_blocked(root,refused(".cargo/config.toml","target"))
+        self.assertEqual(mod.launch_errors(root,"X900"),[refused(".cargo/config.toml","target")])
         commit=commit_all(root)
         self.assertIsNone(mod.launchable_at(root,commit,"X900","experiments/semdb/X900-fixture"))
 

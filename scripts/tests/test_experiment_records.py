@@ -7,6 +7,7 @@ import io
 import json
 import math
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -475,7 +476,11 @@ class RevisionTests(unittest.TestCase):
             encoding="utf-8",
         )
         summary = mod.mutation_evidence("L900", evidence, "bench", self.root, self.experiment)
-        self.assertEqual(summary, {"killed": 1, "total": 1, "git_sha": self.first})
+        # The summary binds the whole file, each outcome it lists included.
+        self.assertEqual(
+            summary,
+            {"killed": 1, "total": 1, "git_sha": self.first, "sha256": hashlib.sha256(evidence.read_bytes()).hexdigest()},
+        )
         (self.root / "crates/ptr-new/src").mkdir(parents=True)
         (self.root / "crates/ptr-new/src/lib.rs").write_text("pub fn g() {}\n", encoding="utf-8")
         with self.assertRaisesRegex(
@@ -1670,6 +1675,21 @@ class AggregateBindingTests(unittest.TestCase):
                 )
         (self.results / "metrics.json").write_text(archived, encoding="utf-8")
         self.assertEqual(self.errors(), [])
+        # Read from disk, not through a clean filter the clone's own
+        # attributes name, which git hash-object would apply.
+        (self.results / "kept").write_text(archived, encoding="utf-8")
+        git(self.root, "config", "filter.same.clean", f"cat {shlex.quote(str(self.results / 'kept'))}")
+        info = Path(git(self.root, "rev-parse", "--absolute-git-dir")) / "info"
+        info.mkdir(exist_ok=True)
+        (info / "attributes").write_text("metrics.json filter=same\n", encoding="utf-8")
+        self.write("metrics.json", {**self.metrics, "totals": {"cases": 999}})
+        errors = self.errors()
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("results/metrics.json is not the metrics.json committed with run.json", errors[0])
+        (info / "attributes").unlink()
+        (self.results / "kept").unlink()
+        (self.results / "metrics.json").write_text(archived, encoding="utf-8")
+        self.assertEqual(self.errors(), [])
         # A run.json no commit holds binds nothing either.
         self.write("run.json", {**self.run, "verdict": "hard-pass"})
         errors = self.errors()
@@ -1678,11 +1698,19 @@ class AggregateBindingTests(unittest.TestCase):
 
     def test_mutation_evidence_run_json_does_not_carry_is_refused(self):
         self.write("mutations.json", self.evidence())
-        carried = {"mutation_checks": self.summary}
+        carried = {"mutation_checks": mod.mutation_summary(self.results / "mutations.json")}
         mod.publish_aggregate(self.results, {**self.metrics, **carried}, {**self.run, **carried})
         self.assertEqual(self.errors(), [])
         # A mutation check rerun after the aggregate, with another outcome.
         self.write("mutations.json", self.evidence(killed=1))
+        errors = self.errors()
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("results/mutations.json is not the evidence run.json carries", errors[0])
+        # Outcomes replaced under the same counts and commit are other
+        # evidence too: the aggregate binds the whole file.
+        swapped = self.evidence()
+        swapped["mutations"] = [{**outcome, "name": outcome["name"] + "-other"} for outcome in swapped["mutations"]]
+        self.write("mutations.json", swapped)
         errors = self.errors()
         self.assertEqual(len(errors), 1, errors)
         self.assertIn("results/mutations.json is not the evidence run.json carries", errors[0])
@@ -1696,6 +1724,53 @@ class AggregateBindingTests(unittest.TestCase):
         errors = self.errors()
         self.assertEqual(len(errors), 1, errors)
         self.assertIn("run.json carries no mutation checks, but mutations.json is there", errors[0])
+
+    def test_mutation_checks_that_bind_no_whole_file_pass_only_while_stale_beside_the_evidence_committed_with_them(self):
+        # Aggregates written before the mutation checks named the SHA-256 of
+        # mutations.json carry its counts and commit alone, which outcomes
+        # replaced under them would keep.
+        self.write("mutations.json", self.evidence())
+        carried = {"mutation_checks": self.summary}
+        with self.assertRaisesRegex(mod.ProvenanceError, "name no sha256 of mutations.json"):
+            mod.publish_aggregate(self.results, {**self.metrics, **carried}, {**self.run, **carried})
+        self.assertFalse((self.results / "run.json").exists())
+        self.write("metrics.json", {**self.metrics, **carried})
+        metrics = hashlib.sha256((self.results / "metrics.json").read_bytes()).hexdigest()
+        self.write("run.json", {**self.run, **carried, "metrics_sha256": metrics})
+        errors = self.errors()
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("run.json carries mutation checks that name no sha256 of mutations.json", errors[0])
+        commit(self.root, {}, "archive")
+        commit(self.root, {"src/lib.rs": "pub fn f() { g() }\n"}, "change")
+        self.assertEqual(self.errors(), [])
+        archived = (self.results / "mutations.json").read_bytes()
+        swapped = self.evidence()
+        swapped["mutations"] = [{**outcome, "name": outcome["name"] + "-other"} for outcome in swapped["mutations"]]
+        self.write("mutations.json", swapped)
+        for state in ("uncommitted", "committed on their own"):
+            with self.subTest(evidence=state):
+                if state != "uncommitted":
+                    commit(self.root, {}, "new outcomes")
+                errors = self.errors()
+                self.assertEqual(len(errors), 1, errors)
+                self.assertIn(
+                    "L900: experiments/L900-x/results/mutations.json is not the evidence committed with run.json, "
+                    "whose mutation checks name no sha256 of it",
+                    errors[0],
+                )
+        (self.results / "mutations.json").write_bytes(archived)
+        self.assertEqual(self.errors(), [])
+        # Read from disk, not through a clean filter the clone's own
+        # attributes name, which git hash-object would apply.
+        git(self.root, "config", "filter.same.clean", f"cat {shlex.quote(str(self.results / 'kept'))}")
+        (self.results / "kept").write_bytes(archived)
+        info = Path(git(self.root, "rev-parse", "--absolute-git-dir")) / "info"
+        info.mkdir(exist_ok=True)
+        (info / "attributes").write_text("*.json filter=same\n", encoding="utf-8")
+        self.write("mutations.json", swapped)
+        errors = self.errors()
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("mutations.json is not the evidence committed with run.json", errors[0])
 
     def test_a_publish_that_finds_other_evidence_beside_it_keeps_the_stale_marker(self):
         (self.results / "STALE.toml").write_text('reason = "old"\n', encoding="utf-8")
@@ -1968,7 +2043,11 @@ class AggregatorTests(unittest.TestCase):
         for exp_id in AGGREGATORS:
             with self.subTest(experiment=exp_id):
                 run = self.aggregate(exp_id, mutations=self.mutations(exp_id))
-                self.assertEqual(run["mutation_checks"], {"killed": 2, "total": 2, "git_sha": "3333333"})
+                self.assertEqual(
+                    {key: value for key, value in run["mutation_checks"].items() if key != "sha256"},
+                    {"killed": 2, "total": 2, "git_sha": "3333333"},
+                )
+                self.assertRegex(run["mutation_checks"]["sha256"], "^[0-9a-f]{64}$")
                 relative = AGGREGATORS[exp_id].relative_to(ROOT).as_posix()
                 evidence = [paths for base, _, paths in run["_code_change_calls"] if base == "3333333"]
                 self.assertTrue(evidence)

@@ -34,7 +34,9 @@ bound the same way (`mutation_evidence`): it is refused, not omitted, unless
 it is this experiment's evidence for this benchmark and its commit has the
 checkout's code, mutation checker, aggregator and mutation plan
 (`mutation_record_paths`), which HEAD holds. A refused file is rerun or
-removed; an aggregate never carries mutation counts of other code.
+removed; an aggregate never carries mutation counts of other code, and the
+summary it carries names the SHA-256 of the whole file, so no outcome it
+lists is replaced under the same counts (`aggregate_problems`).
 
 `run_experiment.py` and `mutation_check.py` refuse to record from a working
 tree with uncommitted or untracked provenance files (`uncommitted_files`,
@@ -1148,8 +1150,9 @@ def harness_results(
 def mutation_evidence(
     experiment_id: str, path: Path, subcommand: str, root: Path, experiment_dir: Path
 ) -> dict | None:
-    """The mutation check summary (`killed`, `total`, `git_sha`) of `path`,
-    or None when there is no such file. The evidence must be of
+    """The mutation check summary (`killed`, `total`, `git_sha` and the
+    SHA-256 of the whole file, `sha256`, which binds each outcome it lists)
+    of `path`, or None when there is no such file. The evidence must be of
     `experiment_id`, have mutated `subcommand`, count its own outcomes, and
     have run at a commit whose provenance files (`mutation_record_paths`) are
     the checkout's, which HEAD holds as the checkout does (`checkout_problem`);
@@ -1159,7 +1162,8 @@ def mutation_evidence(
         return None
     name = path.name
     try:
-        evidence = json.loads(path.read_text(encoding="utf-8"))
+        data = path.read_bytes()
+        evidence = json.loads(data.decode("utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ProvenanceError(f"{name} cannot be read: {error}") from error
     if not isinstance(evidence, dict):
@@ -1192,7 +1196,7 @@ def mutation_evidence(
     unheld = checkout_problem(root, paths)
     if unheld:
         raise ProvenanceError(f"{name} ran at {sha}, but {unheld}; commit or remove them, or remove {name}")
-    return {"killed": killed, "total": total, "git_sha": sha}
+    return {"killed": killed, "total": total, "git_sha": sha, "sha256": hashlib.sha256(data).hexdigest()}
 
 
 def clear_stale_marker(results_dir: Path) -> None:
@@ -1425,7 +1429,15 @@ def publish_aggregate(results_dir: Path, metrics: dict, run: dict) -> None:
     missing artifact, never a run.json beside metrics it was not aggregated
     with. The marker is cleared only once both files read back as written
     and the mutation evidence beside them is the one `run` carries
-    (`aggregate_problems`). Raises `ProvenanceError` otherwise."""
+    (`aggregate_problems`), whole: mutation checks that name no SHA-256 of
+    it (`mutation_evidence`) are refused before anything is written. Raises
+    `ProvenanceError` otherwise."""
+    carried = run.get("mutation_checks")
+    if isinstance(carried, dict) and "sha256" not in carried:
+        raise ProvenanceError(
+            f"the mutation checks {RUN} would carry name no sha256 of {MUTATIONS}, so nothing would bind the "
+            "outcomes it lists; read it with mutation_evidence"
+        )
     metrics_data = json_text(metrics).encode("utf-8")
     run = {**run, "metrics_sha256": hashlib.sha256(metrics_data).hexdigest()}
     run_data = json_text(run).encode("utf-8")
@@ -1456,10 +1468,13 @@ def publish_aggregate(results_dir: Path, metrics: dict, run: dict) -> None:
 
 def mutation_summary(path: Path) -> dict:
     """The summary of the mutation evidence at `path` that an aggregate
-    carries. Raises OSError, ValueError or AttributeError when it cannot be
-    read."""
-    evidence = json.loads(path.read_text(encoding="utf-8"))
-    return {key: evidence.get(key) for key in ("killed", "total", "git_sha")}
+    carries (`mutation_evidence`): its counts, the commit it ran at and the
+    SHA-256 of the whole file, which binds each outcome it lists. Raises
+    OSError, ValueError or AttributeError when it cannot be read."""
+    data = path.read_bytes()
+    evidence = json.loads(data.decode("utf-8"))
+    summary = {key: evidence.get(key) for key in ("killed", "total", "git_sha")}
+    return {**summary, "sha256": hashlib.sha256(data).hexdigest()}
 
 
 def aggregate_problems(run: dict, results_dir: Path) -> list[str]:
@@ -1469,9 +1484,12 @@ def aggregate_problems(run: dict, results_dir: Path) -> list[str]:
 
     metrics.json must hash to the `metrics_sha256` run.json names, when it
     names one (`publish_aggregate`). mutations.json must be there exactly
-    when run.json carries `mutation_checks`, and have that summary: the
-    mutation checker rewrites it on its own, after or while the aggregate is
-    written."""
+    when run.json carries `mutation_checks`, and have that summary, the
+    SHA-256 of the whole file included: the mutation checker rewrites it on
+    its own, after or while the aggregate is written, and outcomes replaced
+    under the same counts would be other evidence. A summary aggregated
+    before it named that SHA-256 is compared by its counts and commit alone,
+    which `aggregate_errors` accepts only while the aggregate is stale."""
     problems = []
     bound = run.get("metrics_sha256")
     if bound is not None:
@@ -1496,6 +1514,8 @@ def aggregate_problems(run: dict, results_dir: Path) -> list[str]:
         except (OSError, ValueError, AttributeError) as error:
             problems.append(f"{MUTATIONS}, whose checks {RUN} carries, cannot be read: {error}")
         else:
+            if isinstance(carried, dict) and "sha256" not in carried:
+                summary.pop("sha256")
             if summary != carried:
                 problems.append(
                     f"{MUTATIONS} is not the evidence {RUN} carries: it sums up to "
@@ -1516,7 +1536,10 @@ def aggregate_errors(experiment_id: str, experiment_dir: Path, results_dir: Path
     results ran HEAD's aggregator, whose `publish_aggregate` binds them
     (every `aggregate.py` publishes through it), and only while it and the
     metrics.json beside it are the pair archived together
-    (`unbound_pair_problems`)."""
+    (`unbound_pair_problems`). So does one whose mutation checks name no
+    SHA-256 of mutations.json, only while it is stale and the mutations.json
+    beside it is the one committed with it (`unbound_evidence_problems`):
+    its counts alone would pass outcomes replaced under them."""
     shown = relative_to_root(results_dir, root)
     try:
         run = json.loads((results_dir / RUN).read_text(encoding="utf-8"))
@@ -1534,6 +1557,15 @@ def aggregate_errors(experiment_id: str, experiment_dir: Path, results_dir: Path
             )
         else:
             problems[0:0] = unbound_pair_problems(results_dir, root)
+    carried = run.get("mutation_checks")
+    if isinstance(carried, dict) and "sha256" not in carried and os.path.lexists(results_dir / MUTATIONS):
+        if is_current(run.get("git_sha"), seed_record_paths(experiment_dir, root), root):
+            problems.append(
+                f"{RUN} carries mutation checks that name no sha256 of {MUTATIONS}, so nothing binds the "
+                "outcomes it lists; rerun its aggregate.py"
+            )
+        else:
+            problems.extend(unbound_evidence_problems(results_dir, root))
     return [f"{experiment_id}: {shown}/{problem}" for problem in problems]
 
 
@@ -1553,24 +1585,71 @@ def unbound_pair_problems(results_dir: Path, root: Path) -> list[str]:
             f"{RUN} names no metrics_sha256, and no commit holds it, so nothing binds it to the "
             f"{METRICS} beside it; rerun its aggregate.py"
         ]
-    committed = {}
-    for entry in listed_names(root, "ls-tree", "-z", "--full-name", commit, "--", run_path, metrics_path):
-        fields, _, name = entry.partition("\t")
-        committed[name] = fields.split(" ")[2]
-    present = [name for name in (run_path, metrics_path) if (root / name).is_file()]
-    hashed = git(root, "hash-object", "--", *present)
-    current = dict(zip(present, hashed.stdout.split())) if hashed.returncode == 0 else {}
-    if current.get(run_path) != committed.get(run_path):
+    if not holds_committed(root, commit, run_path):
         return [
             f"{RUN} names no metrics_sha256 and is not the run.json committed at {commit}, so nothing "
             f"binds it to the {METRICS} beside it; restore it or rerun its aggregate.py"
         ]
-    if metrics_path in present and current.get(metrics_path) != committed.get(metrics_path):
+    if os.path.lexists(root / metrics_path) and not holds_committed(root, commit, metrics_path):
         return [
             f"{METRICS} is not the metrics.json committed with {RUN}, which names no metrics_sha256, "
             f"at {commit}; restore it or rerun its aggregate.py"
         ]
     return []
+
+
+def unbound_evidence_problems(results_dir: Path, root: Path) -> list[str]:
+    """Why the mutations.json of `results_dir`, whose summary the run.json
+    beside it carries without its SHA-256, is not the one the last commit
+    that changed run.json holds, as evidence aggregated before an aggregate
+    bound it whole is; empty when it is. Outcomes replaced under the same
+    counts, committed or not, are not that evidence. Each problem starts
+    with the name of the file it is about."""
+    run_path, evidence_path = (relative_to_root(results_dir / name, root) for name in (RUN, MUTATIONS))
+    last = git(root, "log", "-1", "--format=%H", "--", run_path)
+    commit = last.stdout.strip()
+    if last.returncode != 0 or not COMMIT.fullmatch(commit):
+        return [
+            f"{RUN} carries mutation checks that name no sha256 of {MUTATIONS}, and no commit holds it, so "
+            f"nothing binds the outcomes {MUTATIONS} lists; rerun its aggregate.py"
+        ]
+    if not holds_committed(root, commit, evidence_path):
+        return [
+            f"{MUTATIONS} is not the evidence committed with {RUN}, whose mutation checks name no sha256 of "
+            f"it, at {commit}; restore it or rerun its aggregate.py"
+        ]
+    return []
+
+
+def holds_committed(root: Path, commit: str, relative: str) -> bool:
+    """Whether the working tree of `root` holds, as a regular file at
+    `relative`, the content `commit` holds there as one, its bytes read
+    from disk as they are, so no clean filter or attribute of the clone's
+    own answers for them as it could for git hash-object; a copy that
+    differs from a blob holding no carriage return only in CRLF line
+    endings, as a converting checkout writes one, holds it. False when
+    either holds no regular file there or git cannot read the commit's."""
+    listing = git(root, "--literal-pathspecs", "ls-tree", "-z", "--full-name", commit, "--", relative)
+    held = None
+    for entry in listing.stdout.split("\0") if listing.returncode == 0 else ():
+        fields, _, name = entry.partition("\t")
+        parts = fields.split(" ")
+        if name == relative and len(parts) == 3 and parts[1] == "blob" and parts[0] in ("100644", "100755"):
+            held = parts[2]
+    if held is None:
+        return False
+    path = root / relative
+    try:
+        if not stat.S_ISREG(path.lstat().st_mode):
+            return False
+        data = path.read_bytes()
+    except OSError:
+        return False
+    shown = git(root, "cat-file", "blob", held, binary=True)
+    if shown.returncode != 0:
+        return False
+    content = shown.stdout
+    return data == content or (b"\r" not in content and data.replace(b"\r\n", b"\n") == content)
 
 
 def is_current(sha, paths: tuple[str, ...], root: Path) -> bool:

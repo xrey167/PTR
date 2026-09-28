@@ -29,7 +29,8 @@ but one that was frozen or ran stays bound as below, as it was frozen:
   placeholder in it but `<seed>` is a key of the `[preregistration]` table
   holding an integer, a string or a boolean, the value the runner fills it
   with, it takes `<seed>` when the table preregisters more than one seed,
-  and it gives Cargo no configuration on its command line
+  and it gives Cargo no configuration on its command line, nor does the
+  repository's Cargo configuration name a program, source or flags for it
   (`command_errors`), since a freeze no run can use cannot be repaired;
 - its `config.toml` holds a `[preregistration]` table with every key the list
   requires, each a pinned value of its declared type (`int`, `str`, `bool`,
@@ -231,8 +232,11 @@ def command_errors(exp_id: str, manifest: dict, table: dict, read=None) -> list[
     the same command for every seed, while each record names the seed it
     was given. And it gives Cargo no configuration on its command line
     (`cargo_arguments`): a `--config` file or value can name a rustc
-    wrapper, flags or sources outside what the commit holds, while the
-    repository's own `.cargo/config.toml` is a file of the commit. A commit
+    wrapper, flags or sources outside what the commit holds. Nor does the
+    repository's own Cargo configuration, a file of the commit, name any of
+    them, or a program Cargo runs (`cargo_configuration_errors`): the record
+    names the compiler rustup or the `PATH` resolves, not one Cargo is told
+    to run instead, or a runner started in place of the built program. A commit
     whose command the runner cannot build could not launch and froze
     nothing (`launchable_at`); the tree check refuses it first."""
     if not names_an_entrypoint(manifest):
@@ -283,6 +287,9 @@ def command_errors(exp_id: str, manifest: dict, table: dict, read=None) -> list[
         elif outside_repository(value):
             errors.append(f"{exp_id}: entrypoint gives Cargo {option} {value}, outside what the repository's watch "
                           "reads, whose sources no watch or record binds; name a path the repository holds")
+    if read is not None:
+        directory=next((value for option,value in cargo_path_options(arguments) if option=="-C"),"")
+        errors.extend(cargo_configuration_errors(exp_id,read,directory))
     return errors
 
 # Cargo's options naming a path it reads the build from, and the one naming
@@ -460,6 +467,66 @@ def cargo_subcommand_index(arguments: list[str]) -> int | None:
 # older first, which Cargo prefers where both are.
 CARGO_CONFIGURATION_NAMES=("config","config.toml")
 
+def cargo_configuration_directories(directory: str="") -> list[str]:
+    """The repository directories whose `.cargo` configuration Cargo run
+    from the repository's `directory` (`-C`, the root when empty) reads:
+    that directory and each above it up to the root, nearest first, the
+    root as the empty path; none for a directory outside the repository,
+    which the path check refuses."""
+    if outside_repository(directory or "."):
+        return []
+    parts=[part for part in directory.replace("\\","/").split("/") if part not in ("",".")]
+    directories=[]
+    for part in parts:
+        if part=="..":
+            if directories:
+                directories.pop()
+        else:
+            directories.append(part)
+    return ["/".join(directories[:depth]) for depth in range(len(directories),-1,-1)]
+
+# The tables a listed run's Cargo configuration may set. None names a
+# program Cargo runs (a compiler or its wrapper, rustdoc, a linker, a
+# runner the built program is started through), a source or file it builds
+# from (a path override, a patch, a source replacement, an included
+# configuration, a target specification) or flags it builds with, which
+# could lie outside what the record binds; the aliases are read through
+# (`expand_cargo_aliases`).
+CARGO_CONFIGURATION_TABLES=("alias","cargo-new","env","future-incompat-report","http","net","term")
+
+def cargo_configuration_errors(exp_id: str, read, directory: str="") -> list[str]:
+    """Why the repository's Cargo configuration a listed run's Cargo reads is
+    not one it may build under: Cargo started from the root, by the command
+    or by a program it runs, and from the directory the command gives it
+    with `-C`, reads `.cargo/config` and `.cargo/config.toml` there and in
+    each directory above (`cargo_configuration_directories`), and each of
+    those files must parse and set nothing but `CARGO_CONFIGURATION_TABLES`.
+    `read` returns a repository file's text, or None where there is none."""
+    errors=[]
+    paths=[]
+    for base in [*cargo_configuration_directories(directory),*cargo_configuration_directories("")]:
+        for name in CARGO_CONFIGURATION_NAMES:
+            path=f"{base}/.cargo/{name}" if base else f".cargo/{name}"
+            if path not in paths:
+                paths.append(path)
+    for path in paths:
+        text=read(path)
+        if text is None:
+            continue
+        try:
+            table=tomllib.loads(text)
+        except tomllib.TOMLDecodeError as error:
+            errors.append(f"{exp_id}: {path} does not parse as TOML ({error}), so what it sets for Cargo cannot be "
+                          "checked")
+            continue
+        others=sorted(set(table)-set(CARGO_CONFIGURATION_TABLES))
+        if others:
+            errors.append(f"{exp_id}: {path} sets {', '.join(others)} for Cargo, which can name a program Cargo "
+                          "runs (a compiler, a wrapper, a linker or a runner), a source it builds from or flags it "
+                          "builds with outside what a record binds; a listed experiment's Cargo configuration sets "
+                          "only "+", ".join(f"[{name}]" for name in CARGO_CONFIGURATION_TABLES))
+    return errors
+
 def cargo_aliases(read, directory: str="") -> dict[str,list[str]]:
     """The aliases Cargo run from the repository's `directory` (`-C`, the
     root when empty) reads from the repository's Cargo configuration, each
@@ -471,19 +538,8 @@ def cargo_aliases(read, directory: str="") -> dict[str,list[str]]:
     is none; text that does not parse defines none (Cargo refuses to run
     from it). A directory outside the repository, which the path check
     refuses, holds none."""
-    if outside_repository(directory or "."):
-        return {}
-    parts=[part for part in directory.replace("\\","/").split("/") if part not in ("",".")]
-    directories=[]
-    for part in parts:
-        if part=="..":
-            if directories:
-                directories.pop()
-        else:
-            directories.append(part)
     aliases={}
-    for depth in range(len(directories),-1,-1):
-        base="/".join(directories[:depth])
+    for base in cargo_configuration_directories(directory):
         for name in CARGO_CONFIGURATION_NAMES:
             text=read(f"{base}/.cargo/{name}" if base else f".cargo/{name}")
             if text is None:
@@ -1513,8 +1569,15 @@ def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path,
         blobs=committed_blobs(root,path)
         if len(blobs)>1:
             errors.append(f"{where} was changed after it was committed ({len(blobs)} versions of it were committed)")
-        if blobs and experiment_records.git(root,"--literal-pathspecs","diff","--quiet","HEAD","--",path).returncode!=0:
-            errors.append(f"{where} differs from the record committed as it")
+        # Its bytes on disk against HEAD's blob, not git diff, which takes a
+        # file the index marks skip-worktree or assume-unchanged as HEAD's
+        # whatever it holds; a copy that differs from a blob holding no
+        # carriage return only in CRLF line endings, as a converting
+        # checkout writes one, holds HEAD's content.
+        if blobs:
+            head=blob(root,"HEAD",path)
+            if head is None or not (data==head or (b"\r" not in head and data.replace(b"\r\n",b"\n")==head)):
+                errors.append(f"{where} differs from the record committed as it")
     for seed,names in sorted(runs.items()):
         if len(names)>1:
             errors.append(f"{exp_id}: seed {seed} ran more than once ({', '.join(names)}); a listed experiment runs each "
