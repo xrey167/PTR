@@ -429,10 +429,12 @@ def expand_cargo_aliases(arguments: list[str], read) -> list[str]:
     """Cargo's own `arguments` with the subcommand, the first argument that
     is no option or option's value, replaced by what the alias of its name
     stands for (`cargo_aliases`, read from the directory Cargo runs in,
-    `-C` given), again for the subcommand that yields, up to sixteen times
-    and never through a name twice, as Cargo expands aliases of aliases."""
+    `-C` given), again for the subcommand that yields, as Cargo expands
+    aliases of aliases, until it names no alias: never through a name
+    twice, where Cargo refuses the recursion, so the expansion ends, however
+    long the chain."""
     seen=set()
-    for _ in range(16):
+    while True:
         before=arguments[:arguments.index("--")] if "--" in arguments else arguments
         index=cargo_subcommand_index(before)
         if index is None or before[index] in seen:
@@ -444,7 +446,6 @@ def expand_cargo_aliases(arguments: list[str], read) -> list[str]:
             return arguments
         seen.add(name)
         arguments=[*arguments[:index],*aliases[name],*arguments[index+1:]]
-    return arguments
 
 def cargo_subcommand_index(arguments: list[str]) -> int | None:
     """The index among Cargo's own `arguments` of the first that is neither
@@ -490,10 +491,11 @@ def cargo_configuration_directories(directory: str="") -> list[str]:
 # program Cargo runs (a compiler or its wrapper, rustdoc, a linker, a
 # runner the built program is started through), a source or file it builds
 # from (a path override, a patch, a source replacement, an included
-# configuration, a target specification) or flags it builds with, which
-# could lie outside what the record binds; the aliases are read through
-# (`expand_cargo_aliases`).
-CARGO_CONFIGURATION_TABLES=("alias","cargo-new","env","future-incompat-report","http","net","term")
+# configuration, a target specification), flags it builds with, or
+# variables it sets for what it runs (`[env]`: `LD_PRELOAD`, say, outside
+# the environment the runner pins), which could lie outside what the record
+# binds; the aliases are read through (`expand_cargo_aliases`).
+CARGO_CONFIGURATION_TABLES=("alias","cargo-new","future-incompat-report","http","net","term")
 
 def cargo_configuration_errors(exp_id: str, read, directory: str="") -> list[str]:
     """Why the repository's Cargo configuration a listed run's Cargo reads is

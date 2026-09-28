@@ -38,8 +38,10 @@ PLACEHOLDER = experiment_records.PLACEHOLDER
 COMMAND_ENVIRONMENT = ("PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "CARGO_HOME", "RUSTUP_HOME")
 # What the runner sets in that environment whatever the runner's holds:
 # Python reads no packages from the user's own site directory under `HOME`,
-# which the commit does not hold.
-FIXED_ENVIRONMENT = {"PYTHONNOUSERSITE": "1"}
+# which the commit does not hold, and hashes strings the same way in every
+# run, so an order that follows hashing (a set's) is the same for every
+# seed rather than one each process draws at random.
+FIXED_ENVIRONMENT = {"PYTHONNOUSERSITE": "1", "PYTHONHASHSEED": "0"}
 # The names Cargo reads its configuration from, in a `.cargo` directory and
 # in its home.
 CARGO_CONFIGURATIONS = ("config", "config.toml")

@@ -2287,6 +2287,10 @@ class PreregistrationGateTests(unittest.TestCase):
                 self.assertEqual(errors(entrypoint),[])
         # Without the repository's configuration, a name is only a name.
         self.assertEqual(errors("cargo b -- <seed>",lambda name:None),[])
+        # However long the chain, as Cargo follows it to its end.
+        chain={".cargo/config.toml":"[alias]\n"+"".join(f'a{index} = "a{index+1}"\n' for index in range(40))
+               +'a40 = ["run", "--manifest-path", "/tmp/x/Cargo.toml"]\n'}
+        self.assertEqual(errors("cargo a0 -- <seed>",chain.get),[outside])
         # Cargo reads the configuration of the directory it runs in (-C) and
         # each above it, the nearer's alias of a name winning, and
         # .cargo/config before .cargo/config.toml in one directory; text that
@@ -2331,10 +2335,10 @@ class PreregistrationGateTests(unittest.TestCase):
         def refused(path,keys):
             return (f"X900: {path} sets {keys} for Cargo, which can name a program Cargo runs (a compiler, a "
                     "wrapper, a linker or a runner), a source it builds from or flags it builds with outside what a "
-                    "record binds; a listed experiment's Cargo configuration sets only [alias], [cargo-new], [env], "
+                    "record binds; a listed experiment's Cargo configuration sets only [alias], [cargo-new], "
                     "[future-incompat-report], [http], [net], [term]")
 
-        allowed=('[alias]\nok = "run --release"\n[env]\nLEVEL = "1"\n[term]\nverbose = false\n'
+        allowed=('[alias]\nok = "run --release"\n[term]\nverbose = false\n'
                  '[net]\noffline = true\n[http]\ntimeout = 30\n[cargo-new]\nvcs = "none"\n'
                  '[future-incompat-report]\nfrequency = "never"\n')
         self.assertEqual(errors("cargo ok -- <seed>",{".cargo/config.toml":allowed}),[])
@@ -2349,6 +2353,10 @@ class PreregistrationGateTests(unittest.TestCase):
             ('paths = ["/tmp/crate"]\n[source.local]\ndirectory = "/tmp/vendor"\n',"paths, source"),
             ('[patch.crates-io]\nserde = { path = "/tmp/serde" }\n[unstable]\nbuild-std = ["std"]\n',"patch, unstable"),
             ('[profile.release]\ncodegen-backend = "/tmp/backend.so"\n',"profile"),
+            # Cargo sets its [env] for what it runs: a library preloaded
+            # into the compiler and build scripts, outside the environment
+            # the runner pins.
+            ('[env]\nLD_PRELOAD = "/tmp/adapt.so"\n',"env"),
         ):
             with self.subTest(configuration=text):
                 self.assertEqual(errors("cargo run -- <seed>",{".cargo/config.toml":text}),

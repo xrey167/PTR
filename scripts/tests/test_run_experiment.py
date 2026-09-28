@@ -1462,8 +1462,10 @@ class RunWatchTests(unittest.TestCase):
         )
         self.assertFalse(Path(seen["CARGO_TARGET_DIR"]).is_relative_to(self.root))
         self.assertFalse(Path(scratch).exists())
-        # Python reads no package from the user's own site directory.
+        # Python reads no package from the user's own site directory, and
+        # hashes strings the same way for every seed, which the record names.
         self.assertEqual(seen["PYTHONNOUSERSITE"], "1")
+        self.assertEqual((seen["PYTHONHASHSEED"], record["environment"]["PYTHONHASHSEED"]), ("0", "0"))
         for name in ("PYTHONPATH", "LD_LIBRARY_PATH", "RUSTC_WRAPPER", "GH_TOKEN"):
             self.assertNotIn(name, seen)
         # The runner's RUSTUP_TOOLCHAIN does not reach the command; where
@@ -1567,10 +1569,12 @@ class RunWatchTests(unittest.TestCase):
                     "readable, and leave it unchanged, for the run\n"
                 ))
         # The allowed environment is what the runner's sets of the allowed
-        # names, and nothing else.
-        with mock.patch.dict(os.environ, {"PATH": "/bin", "HOME": "/home/runner", "GH_TOKEN": "x"}, clear=True):
+        # names, and the fixed values, whatever the runner's sets for them.
+        runner = {"PATH": "/bin", "HOME": "/home/runner", "GH_TOKEN": "x", "PYTHONHASHSEED": "random"}
+        with mock.patch.dict(os.environ, runner, clear=True):
             self.assertEqual(
-                mod.command_environment(), {"PATH": "/bin", "HOME": "/home/runner", "PYTHONNOUSERSITE": "1"}
+                mod.command_environment(),
+                {"PATH": "/bin", "HOME": "/home/runner", "PYTHONNOUSERSITE": "1", "PYTHONHASHSEED": "0"},
             )
         # A directory named by a relative path is one each program resolves
         # from wherever it starts: the runner from its own directory, the
