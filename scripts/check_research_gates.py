@@ -45,7 +45,9 @@ replaced by another, whose own preregistration counts:
   has committed, in any directory the registry has given it and whatever
   its results directory is now, and those in its results directory, name
   those digests and the commit they ran at, and that commit is on HEAD's
-  history and holds the same preregistration, entry, files and baselines,
+  history, where the registry placed the experiment in the directory it
+  places it in now, and holds the same preregistration, entry, files and
+  baselines,
   and the same manifest and `config.toml` but for the manifest's status,
   which has only moved forward since (`history_errors`); a run record also
   names the SHA-256 of the manifest at that commit and has held the same
@@ -74,7 +76,10 @@ until this holds for it (`launch_errors`), so no outcome is seen before the
 preregistration is frozen, and holds the files that decision reads to HEAD
 while it runs (`launch_inputs`). A file or baseline the list names, and every
 file of a baseline's directory, must be a regular file inside the repository,
-reached through no symlink (`repository_file`).
+reached through no symlink (`repository_file`), and a path the list or the
+table names must be one git reads as written: not starting with `:`, which
+git reads as pathspec magic, and holding none of the glob characters `*`, `?`
+and `[` (`is_repository_path`).
 
 A value is pinned unless it is a placeholder: a `must-be-pinned-…` string for
 a value still to be chosen, a `must-be-signed-…` string for an owner decision
@@ -207,11 +212,14 @@ def lookup(table: dict, key_path: str):
 
 def is_repository_path(value) -> bool:
     """A relative path of printable ASCII that names no parent, so it stays
-    inside the repository as written."""
+    inside the repository as written, and that git takes as the path it is
+    wherever a pathspec names it: no leading `:`, which git reads as
+    pathspec magic, and none of the glob characters `*`, `?` and `[`."""
     if not isinstance(value,str) or not value or not experiment_records.is_printable_ascii(value):
         return False
     path=PurePosixPath(value)
-    return not path.is_absolute() and ".." not in path.parts and "\\" not in value
+    return (not path.is_absolute() and ".." not in path.parts and "\\" not in value
+            and not value.startswith(":") and not any(character in value for character in "*?["))
 
 def repository_file(root: Path, relative: str) -> Path | None:
     """The regular file `relative` names under `root`, or None when it names
@@ -250,7 +258,7 @@ def directory_digest(root: Path, directory: str) -> tuple[list[str], str | None]
     symlink is refused, as `repository_file` refuses it."""
     try:
         names=experiment_records.listed_names(
-            root,"ls-files","-z","--cached","--others",experiment_records.PER_DIRECTORY,"--",directory)
+            root,"--literal-pathspecs","ls-files","-z","--cached","--others",experiment_records.PER_DIRECTORY,"--",directory)
     except experiment_records.ProvenanceError as error:
         return [f"cannot be listed: {error}"],None
     problems=[]
@@ -390,7 +398,7 @@ def history(root: Path, *args: str) -> list[str]:
     prints in `root`, side branches merged into HEAD included; empty where
     there is no such history."""
     try:
-        listing=experiment_records.git(root,"log","--full-history",*args)
+        listing=experiment_records.git(root,"--literal-pathspecs","log","--full-history",*args)
     except experiment_records.ProvenanceError:
         return []
     if listing.returncode!=0:
@@ -468,7 +476,9 @@ def committed_records(root: Path, directories: list[str]) -> list[str]:
     HEAD's history, as repository paths, whether the tree still holds it or
     not, sorted. Git reports a rename as the removal of the old path, so
     both are named."""
-    names=history(root,"--no-renames","--name-only","-z","--format=","HEAD","--",*directories)
+    # -m lists what a merge changes against each of its parents, so a record
+    # a merge alone added or removed is named too.
+    names=history(root,"-m","--no-renames","--name-only","-z","--format=","HEAD","--",*directories)
     return sorted({name for name in names if is_run_record(name) or is_aggregate(name)})
 
 def committed_blobs(root: Path, relative: str) -> set[str]:
@@ -554,7 +564,7 @@ def directory_digest_at(root: Path, commit: str, directory: str) -> str | None:
     or None when it holds anything but regular files there (a symlink, a
     submodule) or git cannot tell."""
     try:
-        listing=experiment_records.git(root,"ls-tree","-r","-z",commit,"--",directory)
+        listing=experiment_records.git(root,"--literal-pathspecs","ls-tree","-r","-z",commit,"--",directory)
     except experiment_records.ProvenanceError:
         return None
     if listing.returncode!=0:
@@ -603,6 +613,17 @@ def history_errors(exp_id: str, name: str, named, root: Path, experiment: Path, 
     if not experiment_records.is_ancestor(commit,"HEAD",root):
         errors.append(f"{at}, which is not on HEAD's history")
     relative=experiment.relative_to(root).as_posix()
+    # The files read at the commit are the experiment's only where the
+    # registry placed it there as it does now; another directory, even one
+    # holding a twin of it, ran something else.
+    registry=toml_at(root,commit,REGISTRY)
+    items=registry.get("experiment") if isinstance(registry,dict) else None
+    placed=sorted({
+        PurePosixPath("experiments",item["path"]).as_posix() for item in (items if isinstance(items,list) else ())
+        if isinstance(item,dict) and item.get("id")==exp_id and isinstance(item.get("path"),str)
+    })
+    if placed!=[relative]:
+        errors.append(f"{at}, where the registry placed it in {', '.join(placed) or 'no directory'}, not in {relative}")
     config=toml_at(root,commit,f"{relative}/config.toml")
     manifest=toml_at(root,commit,f"{relative}/experiment.toml")
     listed=toml_at(root,commit,PREREGISTRATION)
@@ -759,7 +780,7 @@ def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path,
         blobs=committed_blobs(root,path)
         if len(blobs)>1:
             errors.append(f"{where} was changed after it was committed ({len(blobs)} versions of it were committed)")
-        if blobs and experiment_records.git(root,"diff","--quiet","HEAD","--",path).returncode!=0:
+        if blobs and experiment_records.git(root,"--literal-pathspecs","diff","--quiet","HEAD","--",path).returncode!=0:
             errors.append(f"{where} differs from the record committed as it")
     # A commit that holds the experiment past planned froze it, whether or
     # not a record of a run there was kept: the runner could launch it, and

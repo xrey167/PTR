@@ -395,6 +395,10 @@ class PreregistrationGateTests(unittest.TestCase):
             ({"required":{}},{},[f"{where} requires no keys"]),
             ({"baselines":({**BASELINE,"path":"/etc/config.toml"},)},{},[f"{where}: baseline 0 needs a path inside the repository"]),
             ({"baselines":({**BASELINE,"path":"../outside.toml"},)},{},[f"{where}: baseline 0 needs a path inside the repository"]),
+            # git would read these as pathspec magic or globs, not as the path.
+            ({"baselines":({**BASELINE,"path":":research/fixture/config.toml"},)},{},[f"{where}: baseline 0 needs a path inside the repository"]),
+            ({"baselines":({**BASELINE,"path":"research/fix*/config.toml"},)},{},[f"{where}: baseline 0 needs a path inside the repository"]),
+            ({"baselines":({**BASELINE,"path":"research/fixture[1]/config.toml"},)},{},[f"{where}: baseline 0 needs a path inside the repository"]),
             ({"baselines":({**BASELINE,"keys":[]},)},{},[f"{where}: baseline 0 needs a non-empty list of key paths in printable ASCII"]),
             ({"baselines":({**BASELINE,"keys":["model.revision",""]},)},{},[f"{where}: baseline 0 needs a non-empty list of key paths in printable ASCII"]),
             ({"baselines":({key:value for key,value in BASELINE.items() if key!="status_key"},)},{},[f"{where}: baseline 0 needs a status_key"]),
@@ -711,6 +715,21 @@ class PreregistrationGateTests(unittest.TestCase):
         git(root,"merge","-q","-s","ours","--no-edit","side")
         self.assertFalse((root/self.RECORD).exists())
         self.assert_blocked(root,f"X900: {name} was committed and has since been deleted or renamed; a run record stays as it was recorded")
+        # Added by one merge and dropped by another, with no commit of its own,
+        # the record was committed all the same.
+        root=self.tree(status="running")
+        ran=commit_all(root)
+        for branch,change in (("adds",lambda: write(root,self.RECORD,json.dumps(self.record(root,ran)))),
+                              ("drops",lambda: git(root,"rm","-q",self.RECORD))):
+            git(root,"checkout","-q","-b",branch)
+            write(root,f"notes-{branch}.md",f"{branch}\n")
+            commit_all(root,branch)
+            git(root,"checkout","-q","main")
+            git(root,"merge","-q","--no-ff","--no-commit",branch)
+            change()
+            commit_all(root,f"merge {branch}")
+        self.assertFalse((root/self.RECORD).exists())
+        self.assert_blocked(root,f"X900: {name} was committed and has since been deleted or renamed; a run record stays as it was recorded")
         # A record that was never committed may be discarded: it holds no
         # outcome the history saw.
         root=self.tree(status="running")
@@ -876,6 +895,8 @@ class PreregistrationGateTests(unittest.TestCase):
             # Where it was frozen, the commit held no experiment where it is now.
             f"X900 was frozen at {ran[:12]}, whose config.toml holds another [preregistration] than the frozen one",
             f"X900 was frozen at {ran[:12]}, whose experiment.toml names other preregistration digests than the frozen ones",
+            f"{at}, where the registry placed it in experiments/semdb/X900-fixture, not in experiments/semdb/X900-moved",
+            f"X900 was frozen at {ran[:12]}, where the registry placed it in experiments/semdb/X900-fixture, not in experiments/semdb/X900-moved",
         )
         # Back at planned there, the records committed where the experiment
         # was are still its records.
@@ -884,6 +905,23 @@ class PreregistrationGateTests(unittest.TestCase):
             root,
             f"X900 is 'planned', but run records of it were committed ({self.RECORD}); a listed experiment that has run "
             "stays prepared, running, completed or failed, or is superseded",
+        )
+        # Moved in the registry to a twin of its directory, planted before the
+        # run with another setting, the experiment ran elsewhere all the same.
+        root=self.tree(status="running")
+        shutil.copytree(root/"experiments/semdb/X900-fixture",root/"experiments/semdb/X900-twin")
+        self.edit(root,"experiments/semdb/X900-twin/config.toml",'tests_dir = "tests"','tests_dir = "checks"')
+        ran=commit_all(root)
+        write(root,self.RECORD,json.dumps(self.record(root,ran)))
+        commit_all(root,"records")
+        self.assertEqual(gate(root),(0,[]))
+        self.edit(root,"experiments/registry.toml",'path = "semdb/X900-fixture"','path = "semdb/X900-twin"')
+        commit_all(root,"moved to the twin")
+        at=f"X900: experiments/semdb/X900-fixture/results/{name.removeprefix('results/')} ran at {ran[:12]}"
+        self.assert_blocked(
+            root,
+            f"{at}, where the registry placed it in experiments/semdb/X900-fixture, not in experiments/semdb/X900-twin",
+            f"X900 was frozen at {ran[:12]}, where the registry placed it in experiments/semdb/X900-fixture, not in experiments/semdb/X900-twin",
         )
         # A results directory outside the experiment's directory is refused.
         root=self.tree()
