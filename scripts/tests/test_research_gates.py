@@ -2139,6 +2139,10 @@ class PreregistrationGateTests(unittest.TestCase):
                 "/home/runner/.cargo/bin/cargo run --config=build.rustc-wrapper='\"/tmp/w\"' -- <seed>",
                 "rustup -v run --install stable cargo --config c.toml run -- <seed>",
                 "rustup +nightly run stable cargo --config c.toml run -- <seed>",
+                # As Windows spells the programs, in any case and with .exe.
+                "rustup.exe run nightly cargo --config=C:/mutable.toml run -- <seed>",
+                "'C:\\Rust\\bin\\CARGO.EXE' --config c.toml run -- <seed>",
+                "RUSTUP run stable Cargo.Exe --config c.toml run -- <seed>",
             )),
         ):
             with self.subTest(entrypoint=entrypoint):

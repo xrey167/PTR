@@ -709,8 +709,9 @@ def named_toolchain(command: list[str]) -> str | None:
     toolchain of `rustup run <toolchain> <program>`, which rustup documents
     as the same (`rustup run stable cargo run`), past rustup's own options
     and `+<toolchain>` before `run` and the options of `run` (`--install`)
-    before the toolchain."""
-    program = os.path.basename(command[0]) if command else ""
+    before the toolchain. Each program is named as a platform runs it
+    (`experiment_records.program_name`: `rustup.exe` is rustup)."""
+    program = experiment_records.program_name(command[0]) if command else ""
     if program in RUSTUP_PROXIES:
         return command[1][1:] if len(command) > 1 and command[1].startswith("+") else None
     if program != "rustup":
@@ -757,7 +758,7 @@ def toolchain(
     rustup = shutil.which("rustup", path=search)
     name = named_toolchain(command)
     named = [] if name is None else ["--toolchain", name]
-    run_by_rustup = bool(command) and os.path.basename(command[0]) == "rustup"
+    run_by_rustup = bool(command) and experiment_records.program_name(command[0]) == "rustup"
     found = {}
     for tool in ("rustc", "cargo"):
         on_path = shutil.which(tool, path=search)

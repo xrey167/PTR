@@ -150,6 +150,17 @@ class ProvenanceError(Exception):
     """The run records cannot be published as one result of the current code."""
 
 
+def program_name(token: str) -> str:
+    """The name of the program `token` starts, as a command's first token or
+    the program `rustup run` starts names it: its last path component,
+    either slash a separator, in lower case and without an `.exe` suffix,
+    as Windows runs `C:\\Rust\\Cargo.EXE` for `cargo`. A check of a command
+    reads its programs so on every platform, so no spelling one of them
+    accepts hides the program from it."""
+    name = re.split(r"[\\/]", token)[-1].lower()
+    return name[: -len(".exe")] if name.endswith(".exe") else name
+
+
 def relative_to_root(path: Path, root: Path) -> str:
     """`path` as a git pathspec relative to the repository `root`."""
     return path.resolve().relative_to(root.resolve()).as_posix()
@@ -199,11 +210,14 @@ def listed_record_paths(results: str) -> tuple[str, ...]:
     return (".", f":(exclude,glob){results}/{SEED_RECORDS}")
 
 
-# The files the gate binds for a listed experiment once its seeds have run,
-# whose later changes are then no change of what the runs read: its manifest,
-# which changes only in its status, moving forward; the registry, which holds
-# that status too; and the list, whose entry for it is frozen by its digest.
-AFTER_THE_RUNS = ("experiment.toml", "experiments/registry.toml", "experiments/preregistration.toml")
+# The files completing a listed experiment changes once its seeds have run:
+# its manifest and the registry, each in the status it names for it, moving
+# forward. Its command may read either whole, so any other change to them is
+# a change after its runs (`completion_changes`).
+AFTER_THE_RUNS = ("experiment.toml", "experiments/registry.toml")
+# A line naming a status, whose value is all completing an experiment
+# changes in its manifest and in the registry's entry for it.
+STATUS_LINE = re.compile(r'^(\s*status\s*=\s*)"[^"\\]*"')
 
 
 def listed_staleness_paths(results: str, experiment: str) -> tuple[str, ...]:
@@ -212,10 +226,11 @@ def listed_staleness_paths(results: str, experiment: str) -> tuple[str, ...]:
     into its results directory `results` (a repository path,
     `RESULT_OUTPUTS`) and its stale marker (`STALE_MARKER`), which are
     committed once the seeds have run, and the files completing it changes
-    (`AFTER_THE_RUNS`: the manifest in its directory `experiment`, the
-    registry and the list), which the gate binds otherwise. Its command may
-    run or read any other file of the repository, so a change to one after
-    the results makes them stale (`staleness_errors`), and one in the
+    (`AFTER_THE_RUNS`: the manifest in its directory `experiment` and the
+    registry), which `completion_changes` compares but for the status it
+    changes in them. Its command may run or read any other file of the
+    repository, the list of preregistrations included, so a change to one
+    after the results makes them stale (`staleness_errors`), and one in the
     checkout keeps them from being aggregated there (`source_revision`)."""
     return (
         ".",
@@ -865,6 +880,123 @@ def changes_after(base: str, head: str, root: Path, paths: tuple[str, ...]) -> l
     return listed_commits.stdout.split()
 
 
+def changes_after_results(
+    base: str, head: str, root: Path, paths: tuple[str, ...], experiment_id: str, experiment: str | None
+) -> list[str]:
+    """The commits `changes_after` names, and for a listed experiment (in the
+    repository directory `experiment`, None for another) also those after
+    `base` that left its manifest or the registry other than `base` holds
+    them but for the status completing it moves (`completion_changes`,
+    judged against `base`), in one order, parents before children. Raises
+    `ProvenanceError` when git cannot list them."""
+    found = changes_after(base, head, root, paths)
+    if experiment is None:
+        return found
+    names = [f":(literal){experiment}/{AFTER_THE_RUNS[0]}", *(f":(literal){name}" for name in AFTER_THE_RUNS[1:])]
+    touched = git(root, "rev-list", "--reverse", "--topo-order", "--ancestry-path", f"{base}..{head}", "--", *names)
+    if touched.returncode != 0:
+        raise ProvenanceError(f"cannot list the commits after {base}: {touched.stderr.strip()}")
+    moved = {
+        commit for commit in touched.stdout.split() if completion_changes(experiment_id, experiment, base, commit, root)
+    }
+    if not moved:
+        return found
+    every = git(root, "rev-list", "--reverse", "--topo-order", "--ancestry-path", f"{base}..{head}")
+    if every.returncode != 0:
+        raise ProvenanceError(f"cannot list the commits after {base}: {every.stderr.strip()}")
+    counted = {*found, *moved}
+    return [commit for commit in every.stdout.split() if commit in counted]
+
+
+def completion_changes(
+    experiment_id: str, experiment: str, base: str, head: str | None, root: Path
+) -> list[str]:
+    """The files completing the listed experiment `experiment_id` (in the
+    repository directory `experiment`) changes (`AFTER_THE_RUNS`: its
+    manifest and the registry) whose text at `head`, or in the checkout of
+    `root` when None, is not their text at commit `base` but for the status
+    completing it moves: the one its manifest names and the one the
+    registry's entry for it names, each on its own line, every other line
+    and value as it was (`status_moved_only`). Its command may read either
+    file whole, so another experiment's entry, a comment or a key added is
+    a change after its runs, as a change to any other file of the
+    repository is. Raises `ProvenanceError` when git cannot read them."""
+    changed = []
+    for name in (f"{experiment}/{AFTER_THE_RUNS[0]}", *AFTER_THE_RUNS[1:]):
+        before, after = text_at(root, base, name), text_at(root, head, name)
+        if before == after:
+            continue
+        if before is None or after is None or not status_moved_only(
+            before, after, experiment_id if name in AFTER_THE_RUNS[1:] else None
+        ):
+            changed.append(name)
+    return changed
+
+
+def text_at(root: Path, commit: str | None, name: str) -> str | None:
+    """The UTF-8 text of the regular file `name` (a repository path) at
+    `commit` in `root`, or in its checkout when None; None when there is
+    none there, it is no regular file (a symlink, whose target path is all
+    git holds of it), or it is not UTF-8. Raises `ProvenanceError` when git
+    cannot read the commit."""
+    if commit is None:
+        path = root / name
+        if path.is_symlink() or not path.is_file():
+            return None
+        try:
+            data = path.read_bytes()
+        except OSError:
+            return None
+    else:
+        listing = git(root, "ls-tree", "-z", commit, "--", f":(literal){name}")
+        if listing.returncode != 0:
+            raise ProvenanceError(f"cannot read {name} at {commit}: {listing.stderr.strip()}")
+        entry = listing.stdout.split("\0")[0]
+        fields, _, _ = entry.partition("\t")
+        if not entry or fields.split(" ")[:2] not in (["100644", "blob"], ["100755", "blob"]):
+            return None
+        shown = git(root, "cat-file", "blob", fields.split(" ")[2], binary=True)
+        if shown.returncode != 0:
+            raise ProvenanceError(f"cannot read {name} at {commit}: {shown.stderr.decode(errors='replace').strip()}")
+        data = shown.stdout
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def status_moved_only(before: str, after: str, experiment_id: str | None) -> bool:
+    """Whether the TOML text `after` is `before` with only a status moved:
+    the registry's entry for `experiment_id`, or the manifest's own when
+    None. Every line is as it was but for the value of a status line
+    (`STATUS_LINE`), and read as TOML the two are equal once that status is
+    set aside, so no other entry's status, no status in another table and
+    no line of a multi-line string moved."""
+    lines, moved = before.split("\n"), after.split("\n")
+    if len(lines) != len(moved):
+        return False
+    for line, other in zip(lines, moved):
+        if line != other and not (
+            STATUS_LINE.match(line)
+            and STATUS_LINE.match(other)
+            and STATUS_LINE.sub(r'\1""', line) == STATUS_LINE.sub(r'\1""', other)
+        ):
+            return False
+    try:
+        documents = [tomllib.loads(before), tomllib.loads(after)]
+    except tomllib.TOMLDecodeError:
+        return False
+    for document in documents:
+        if experiment_id is None:
+            document.pop("status", None)
+            continue
+        entries = document.get("experiment")
+        for entry in entries if isinstance(entries, list) else []:
+            if isinstance(entry, dict) and entry.get("id") == experiment_id:
+                entry.pop("status", None)
+    return documents[0] == documents[1]
+
+
 def listed(paths: list[str], limit: int = 5) -> str:
     more = f" and {len(paths) - limit} more" if len(paths) > limit else ""
     return ", ".join(paths[:limit]) + more
@@ -878,6 +1010,7 @@ def source_revision(
     experiment_dir: Path,
     paths: tuple[str, ...] | None = None,
     checkout_paths: tuple[str, ...] | None = None,
+    listed_experiment: bool = False,
 ) -> str:
     """The commit the results in `records` were produced at: the earliest
     record's `git_sha`, once every record agrees (`agreement_errors`),
@@ -888,8 +1021,11 @@ def source_revision(
     (`checkout_paths`, `paths` unless named, and for a listed experiment
     `listed_staleness_paths`, which leaves out what the tools write once the
     seeds have run and what completing it changes), and HEAD holds each of
-    them as the checkout does (`checkout_problem`). Raises `ProvenanceError`
-    naming what disagrees."""
+    them as the checkout does (`checkout_problem`); for a listed experiment
+    (`listed_experiment`), its manifest and the registry, in the checkout
+    and at HEAD, differ from their text at that commit in no more than the
+    status completing it moves (`completion_changes`). Raises
+    `ProvenanceError` naming what disagrees."""
     if not records:
         raise ProvenanceError("no run records")
     errors = agreement_errors(experiment_id, manifest, records)
@@ -907,6 +1043,11 @@ def source_revision(
         raise ProvenanceError(f"the records ran different code from {revision}: " + "; ".join(errors))
     checkout_paths = paths if checkout_paths is None else checkout_paths
     changed = code_changes(revision, None, root, checkout_paths)
+    if listed_experiment:
+        experiment = relative_to_root(experiment_dir, root)
+        for head in (None, "HEAD"):
+            moved = completion_changes(experiment_id, experiment, revision, head, root)
+            changed.extend(name for name in moved if name not in changed)
     if changed:
         raise ProvenanceError(
             f"the records ran at {revision}, and the checkout's code has changed since, "
@@ -1445,12 +1586,15 @@ def staleness_errors(
     experiment the list names (`listed_experiment`), whose command may run
     or read any file of the repository, when HEAD's repository does, but
     for the tools' outputs in its results and its stale marker
-    (`listed_staleness_paths`). Stale results pass only with a
+    (`listed_staleness_paths`), or when its manifest or the registry
+    differs from its text there in more than the status completing it
+    moves (`completion_changes`). Stale results pass only with a
     `results/STALE.toml` marker that names them, the
     first commit after them that changed a provenance file (`stale_since`)
     and a `reason` (`marker_errors`); a marker next to current results is an
     error too, so none outlives the rerun that replaces them."""
     results = relative_to_root(results_dir, root)
+    experiment = relative_to_root(experiment_dir, root)
     errors = []
     stale: dict[str, tuple[str, tuple[str, ...], list[str]]] = {}
     for name, paths_of in ARCHIVED:
@@ -1465,13 +1609,11 @@ def staleness_errors(
         if not COMMIT.fullmatch(str(sha or "")):
             errors.append(f"{experiment_id}: {results}/{name} names no commit it ran at: {sha!r}")
             continue
-        paths = (
-            listed_staleness_paths(results, relative_to_root(experiment_dir, root))
-            if listed_experiment
-            else paths_of(experiment_dir, root)
-        )
+        paths = listed_staleness_paths(results, experiment) if listed_experiment else paths_of(experiment_dir, root)
         try:
             changed = code_changes(sha, "HEAD", root, paths)
+            if listed_experiment:
+                changed = [*changed, *completion_changes(experiment_id, experiment, sha, "HEAD", root)]
         except ProvenanceError as error:
             errors.append(f"{experiment_id}: {results}/{name}: {error}")
             continue
@@ -1493,7 +1635,9 @@ def staleness_errors(
                 "remove it"
             )
         return errors
-    return errors + marker_errors(experiment_id, f"{results}/{STALE_MARKER}", marker, stale, root)
+    return errors + marker_errors(
+        experiment_id, f"{results}/{STALE_MARKER}", marker, stale, root, experiment if listed_experiment else None
+    )
 
 
 def marker_errors(
@@ -1502,9 +1646,13 @@ def marker_errors(
     marker: Path,
     stale: dict[str, tuple[str, tuple[str, ...], list[str]]],
     root: Path,
+    experiment: str | None = None,
 ) -> list[str]:
     """Why the stale marker `marker` (shown as `shown`) does not honestly
-    describe the `stale` results; empty when it does.
+    describe the `stale` results; empty when it does. For a listed
+    experiment (in the repository directory `experiment`), a change to its
+    manifest or the registry beyond the status completing it moves counts
+    as a change of a provenance file (`completion_changes`).
 
     `results_git_sha` names the results: a commit on HEAD's history at which
     every stale file's provenance files are those at its own `git_sha`. When
@@ -1538,6 +1686,8 @@ def marker_errors(
     others = []
     for name, (sha, name_paths, _) in stale.items():
         differing = code_changes(sha, marked, root, name_paths)
+        if experiment is not None:
+            differing = [*differing, *completion_changes(experiment_id, experiment, sha, marked, root)]
         if differing:
             others.append(f"{name} ran at {sha}, whose provenance files differ there in {listed(differing)}")
     if others:
@@ -1547,11 +1697,13 @@ def marker_errors(
     paths: list[str] = []
     for _, name_paths, _ in stale.values():
         paths.extend(path for path in name_paths if path not in paths)
-    changes = changes_after(marked, "HEAD", root, tuple(paths))
+    changes = changes_after_results(marked, "HEAD", root, tuple(paths), experiment_id, experiment)
     # A first change is one no other change after the results precedes. Two
     # lines of history leaving the results each have their own; the marker
     # may name either.
-    if since not in changes or changes_after(marked, since, root, tuple(paths)) != [since]:
+    if since not in changes or changes_after_results(
+        marked, since, root, tuple(paths), experiment_id, experiment
+    ) != [since]:
         first = changes[0] if changes else None
         errors.append(
             f"{experiment_id}: {shown} says stale since {since}, but the first commit after {marked} "

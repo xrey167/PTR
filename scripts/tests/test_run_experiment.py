@@ -1840,6 +1840,11 @@ class RunWatchTests(unittest.TestCase):
                 ["rustup", "run", "stable", "cargo", "build"],
                 ["/elsewhere/bin/rustup", "-v", "run", "--install", "stable", "python3", "bench.py"],
                 ["rustup", "+nightly", "run", "stable", "cargo"],
+                # As Windows spells the programs, in any case and with .exe.
+                ["rustup.exe", "run", "stable", "cargo", "build"],
+                ["C:\\Rust\\RUSTUP.EXE", "run", "stable", "cargo"],
+                ["cargo.exe", "+stable", "run"],
+                ["C:\\Rust\\Cargo.Exe", "+stable", "run"],
             ):
                 with self.subTest(command=command):
                     self.assertEqual(mod.toolchain(environment, command), stable)

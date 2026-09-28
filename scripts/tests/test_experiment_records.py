@@ -382,6 +382,48 @@ class RevisionTests(unittest.TestCase):
         with self.assertRaisesRegex(mod.ProvenanceError, "code has changed since, in scripts/harness.py"):
             mod.source_revision("L900", MANIFEST, records, self.root, self.experiment, paths, checkout)
 
+    def test_a_listed_experiment_is_aggregated_only_where_completing_it_moved_no_more_than_its_status(self):
+        # Its command may read its manifest and the registry whole: the
+        # checkout, and HEAD, may differ from the records' commit in the status
+        # completing it moves, and in nothing else of them.
+        manifest = 'id = "L900"\nstatus = "{}"\n'
+        registry = '[[experiment]]\nid = "L900"\nstatus = "{}"\n\n[[experiment]]\nid = "L901"\nstatus = "planned"\n'
+        ran = commit(
+            self.root,
+            {
+                "experiments/L900-x/experiment.toml": manifest.format("running"),
+                "experiments/registry.toml": registry.format("running"),
+            },
+            "listed",
+        )
+        records = self.records(ran)
+        paths = mod.listed_record_paths("experiments/L900-x/results")
+        checkout = mod.listed_staleness_paths("experiments/L900-x/results", "experiments/L900-x")
+
+        def revision(listed_experiment: bool = True) -> str:
+            return mod.source_revision(
+                "L900", MANIFEST, records, self.root, self.experiment, paths, checkout, listed_experiment
+            )
+
+        self.assertEqual(revision(), ran)
+        # Completed in the checkout, and then committed.
+        self.write_file("experiments/L900-x/experiment.toml", manifest.format("completed"))
+        self.write_file("experiments/registry.toml", registry.format("completed"))
+        self.assertEqual(revision(), ran)
+        git(self.root, "commit", "-q", "--no-verify", "-am", "completed")
+        self.assertEqual(revision(), ran)
+        # Another entry's status moved in the checkout.
+        self.write_file("experiments/registry.toml", registry.format("completed").replace('"planned"', '"running"'))
+        with self.assertRaisesRegex(mod.ProvenanceError, "code has changed since, in experiments/registry.toml;"):
+            revision()
+        # A comment at HEAD that the checkout does not hold.
+        commit(self.root, {"experiments/registry.toml": "# read by the harness\n" + registry.format("completed")}, "note")
+        self.write_file("experiments/registry.toml", registry.format("completed"))
+        with self.assertRaisesRegex(mod.ProvenanceError, "code has changed since, in experiments/registry.toml;"):
+            revision()
+        # Another experiment's aggregate compares them by its own paths.
+        self.assertEqual(revision(listed_experiment=False), ran)
+
     def write_file(self, relative: str, text: str) -> None:
         (self.root / relative).parent.mkdir(parents=True, exist_ok=True)
         (self.root / relative).write_text(text, encoding="utf-8")
@@ -1069,6 +1111,12 @@ class StalenessTests(unittest.TestCase):
     """`staleness_errors`: archived results must describe HEAD's code or say
     since when they no longer do."""
 
+    MANIFEST = 'id = "L900"\nstatus = "{status}"\n'
+    REGISTRY = (
+        'version = 1\n\n[[experiment]]\nid = "L900"\npath = "L900-x"\nstatus = "{status}"\n\n'
+        '[[experiment]]\nid = "L901"\npath = "L901-y"\nstatus = "{other}"\n'
+    )
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.root = Path(self.directory.name)
@@ -1082,6 +1130,9 @@ class StalenessTests(unittest.TestCase):
                 "src/lib.rs": "pub fn f() {}\n",
                 "experiments/L900-x/aggregate.py": "HARD = ['a']\n",
                 "experiments/L900-x/tests/mutations.toml": "[[mutation]]\n",
+                "experiments/L900-x/experiment.toml": self.MANIFEST.format(status="running"),
+                "experiments/registry.toml": self.REGISTRY.format(status="running", other="planned"),
+                "experiments/preregistration.toml": "version = 1\n",
             },
             "code",
         )
@@ -1156,27 +1207,95 @@ class StalenessTests(unittest.TestCase):
             (".", *(f":(exclude,glob)experiments/L900-x/results/{name}" for name in (
                 "run-*.json", "run.json", "metrics.json", "mutations.json", "STALE.toml"
             )), ":(exclude,literal)experiments/L900-x/experiment.toml",
-             ":(exclude,literal)experiments/registry.toml", ":(exclude,literal)experiments/preregistration.toml"),
+             ":(exclude,literal)experiments/registry.toml"),
         )
 
     def test_completing_a_listed_experiment_leaves_its_results_current(self):
-        # Completing it changes its manifest's status and the registry's, and
-        # listing others changes the list; the gate binds all three otherwise.
-        commit(
+        # Completing it moves the status its manifest names and the one the
+        # registry's entry for it names, each on its line.
+        def listed() -> list[str]:
+            return mod.staleness_errors("L900", self.experiment, self.results, self.root, True)
+
+        completed = commit(
             self.root,
             {
-                "experiments/L900-x/experiment.toml": 'id = "L900"\nstatus = "completed"\n',
-                "experiments/registry.toml": '[[experiment]]\nid = "L900"\nstatus = "completed"\n',
-                "experiments/preregistration.toml": "version = 1\n",
+                "experiments/L900-x/experiment.toml": self.MANIFEST.format(status="completed"),
+                "experiments/registry.toml": self.REGISTRY.format(status="completed", other="planned"),
             },
             "completed",
         )
-        self.assertEqual(mod.staleness_errors("L900", self.experiment, self.results, self.root, True), [])
-        # Another experiment's manifest is not one of them.
-        commit(self.root, {"experiments/L901-y/experiment.toml": 'id = "L901"\n'}, "another")
-        errors = mod.staleness_errors("L900", self.experiment, self.results, self.root, True)
-        self.assertEqual(len(errors), 2, errors)
-        self.assertIn("changed since, in experiments/L901-y/experiment.toml", errors[0])
+        self.assertEqual(listed(), [])
+        # Its command may read the registry, its manifest and the list whole:
+        # any other change to them is one after its runs, as another
+        # experiment's manifest is.
+        registry = self.REGISTRY.format(status="completed", other="planned")
+        for label, files, name in (
+            ("another entry's status", {"experiments/registry.toml": self.REGISTRY.format(status="completed", other="running")},
+             "experiments/registry.toml"),
+            ("a comment", {"experiments/registry.toml": "# read by the harness\n" + registry}, "experiments/registry.toml"),
+            ("a comment on the status line", {"experiments/registry.toml": registry.replace(
+                'status = "completed"', 'status = "completed" # done')}, "experiments/registry.toml"),
+            ("a key beside the status", {"experiments/L900-x/experiment.toml": self.MANIFEST.format(status="completed")
+                                         + 'note = "x"\n'}, "experiments/L900-x/experiment.toml"),
+            ("a status in a table", {"experiments/L900-x/experiment.toml": self.MANIFEST.format(status="completed")
+                                     + '\n[run]\nstatus = "x"\n'}, "experiments/L900-x/experiment.toml"),
+            ("the list", {"experiments/preregistration.toml": "version = 1\n\n[experiment.L901.required]\n"},
+             "experiments/preregistration.toml"),
+            ("another manifest", {"experiments/L901-y/experiment.toml": 'id = "L901"\n'},
+             "experiments/L901-y/experiment.toml"),
+        ):
+            with self.subTest(change=label):
+                changed = commit(self.root, files, label)
+                errors = listed()
+                self.assertEqual(len(errors), 2, errors)
+                for archived, error in zip(("run.json", "mutations.json"), errors):
+                    self.assertIn(f"results/{archived} ran at {self.code}, and the code has changed since, in {name};", error)
+                # A marker naming that first change passes; one naming a
+                # later commit does not.
+                self.mark(stale_since=changed)
+                self.assertEqual(listed(), [])
+                git(self.root, "rm", "-q", "experiments/L900-x/results/STALE.toml")
+                # Nor does the change itself hold the results' code.
+                self.mark(stale_since=changed, results_git_sha=changed)
+                errors = listed()
+                self.assertEqual(len(errors), 1, errors)
+                self.assertIn(f"names results of {changed}, but run.json ran at {self.code}, whose provenance files "
+                              f"differ there in {name}", errors[0])
+                git(self.root, "rm", "-q", "experiments/L900-x/results/STALE.toml")
+                later = commit(self.root, {"src/lib.rs": "pub fn f() { g() }\n"}, "later")
+                self.mark(stale_since=later)
+                errors = listed()
+                self.assertEqual(len(errors), 1, errors)
+                self.assertIn(f"the first commit after {self.code} that changed a provenance file is {changed}", errors[0])
+                git(self.root, "reset", "-q", "--hard", completed)
+        # A status put back is its text again.
+        commit(self.root, {"experiments/registry.toml": self.REGISTRY.format(status="running", other="planned")}, "back")
+        self.assertEqual(listed(), [])
+        # The text the comparison reads: a commit's, or the checkout's.
+        self.assertEqual(
+            mod.completion_changes("L900", "experiments/L900-x", self.code, "HEAD", self.root), []
+        )
+        (self.root / "experiments/registry.toml").write_text(registry + "# local\n", encoding="utf-8")
+        self.assertEqual(
+            mod.completion_changes("L900", "experiments/L900-x", self.code, None, self.root),
+            ["experiments/registry.toml"],
+        )
+        (self.root / "experiments/registry.toml").unlink()
+        self.assertEqual(
+            mod.completion_changes("L900", "experiments/L900-x", self.code, None, self.root),
+            ["experiments/registry.toml"],
+        )
+        # A symlink holds its target's path, not the text read through it.
+        elsewhere = Path(self.enterContext(tempfile.TemporaryDirectory())) / "registry.toml"
+        elsewhere.write_text(self.REGISTRY.format(status="running", other="planned"), encoding="utf-8")
+        try:
+            os.symlink(elsewhere, self.root / "experiments/registry.toml")
+        except (OSError, NotImplementedError) as error:
+            self.skipTest(f"cannot create a symlink: {error}")
+        self.assertEqual(
+            mod.completion_changes("L900", "experiments/L900-x", self.code, None, self.root),
+            ["experiments/registry.toml"],
+        )
 
     def test_an_honest_marker_names_the_results_and_the_first_change(self):
         first = commit(self.root, {"src/lib.rs": "pub fn f() { g() }\n"}, "first change")

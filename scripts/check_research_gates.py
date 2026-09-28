@@ -6,9 +6,10 @@ results must describe HEAD's code: `results/run.json` and
 protobuf, Cargo and toolchain files, the recording scripts, the experiment's
 `aggregate.py` and mutation plan) differs from the one at their `git_sha`,
 and for a listed experiment, whose command may run or read any file of the
-repository, once any file does but the tools' outputs, the stale marker and
-what completing it changes (`experiment_records.listed_staleness_paths`),
-unless `results/STALE.toml` names those results and the first commit that
+repository, once any file does but the tools' outputs and the stale marker
+(`experiment_records.listed_staleness_paths`), its manifest and the registry
+counting only where they differ in more than the status completing it moves
+(`experiment_records.completion_changes`), unless `results/STALE.toml` names those results and the first commit that
 made them stale (`experiment_records.staleness_errors`). `results/run.json`
 must also be one aggregate with the `metrics.json` it names the SHA-256 of
 and the `mutations.json` whose summary it carries; a run.json that binds no
@@ -281,8 +282,9 @@ def cargo_arguments(tokens: list[str]) -> list[str]:
     past which they are the built program's: those after `cargo`, as a
     rustup proxy or not, and after `rustup run <toolchain> cargo`, past
     rustup's own options and `+<toolchain>` and the options of `run`; none
-    for another program."""
-    program=PurePosixPath(tokens[0].replace("\\","/")).name if tokens else ""
+    for another program. Each program is named as a platform runs it
+    (`experiment_records.program_name`: `C:\\Rust\\rustup.exe` is rustup)."""
+    program=experiment_records.program_name(tokens[0]) if tokens else ""
     rest=tokens[1:]
     if program=="rustup":
         while rest and rest[0].startswith(("-","+")):
@@ -293,9 +295,9 @@ def cargo_arguments(tokens: list[str]) -> list[str]:
         while rest and rest[0].startswith("-"):
             rest=rest[1:]
         rest=rest[1:]
-        program=PurePosixPath(rest[0].replace("\\","/")).name if rest else ""
+        program=experiment_records.program_name(rest[0]) if rest else ""
         rest=rest[1:]
-    if program not in ("cargo","cargo.exe"):
+    if program!="cargo":
         return []
     return rest[:rest.index("--")] if "--" in rest else rest
 
