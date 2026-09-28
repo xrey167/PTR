@@ -430,6 +430,19 @@ def launch_watch(
     problems = check_research_gates.launch_mode_errors(
         ROOT, exp_id, watch.head, listed
     ) or check_research_gates.launch_commit_errors(ROOT, exp_id, watch.head)
+    # What decided the launch was read before the watch looked, and a commit
+    # made in between could have changed it: decide again from the tree the
+    # watch holds to HEAD, and from the directory its registry places the
+    # experiment in, where its command's values are read.
+    if not problems:
+        problems = check_research_gates.launch_errors(ROOT, exp_id)
+    if not problems:
+        placed = registry().get(exp_id)
+        if not placed or (ROOT / "experiments" / str(placed.get("path"))).resolve() != root.resolve():
+            problems = [
+                f"{check_research_gates.REGISTRY} placed {exp_id} elsewhere while its launch was checked; rerun from a "
+                "tree that holds HEAD"
+            ]
     for problem in problems:
         print(f"ERROR: {problem}", file=sys.stderr)
     if problems:
@@ -595,19 +608,76 @@ def command_parameters(exp_id: str, root: Path, data: dict, entrypoint: str, par
 def command_environment() -> dict[str, str]:
     """The environment a listed experiment's command runs in: the variables
     `COMMAND_ENVIRONMENT` names that the runner's environment sets, and
-    `FIXED_ENVIRONMENT`, and no other. A relative `PATH` entry (an empty one
-    is the current directory) is made absolute from the repository's root,
-    where the command starts and its program is found: resolved from the
-    runner's own directory, it would name another program than the one
-    that runs, and a program the command starts in turn, from wherever it
-    runs, yet another."""
+    `FIXED_ENVIRONMENT`, and no other. A listed run is refused while one of
+    them names a directory by a relative path (`relative_directories`)."""
     environment = {name: os.environ[name] for name in COMMAND_ENVIRONMENT if name in os.environ}
-    if "PATH" in environment:
-        environment["PATH"] = os.pathsep.join(
-            entry if os.path.isabs(entry) else os.path.normpath(os.path.join(ROOT, entry))
-            for entry in environment["PATH"].split(os.pathsep)
-        )
     return {**environment, **FIXED_ENVIRONMENT}
+
+
+# The variables of a listed experiment's environment besides `PATH` that
+# name a directory.
+DIRECTORY_VARIABLES = ("HOME", "TMPDIR", "CARGO_HOME", "RUSTUP_HOME")
+
+
+def relative_directories(environment: dict[str, str]) -> list[str]:
+    """The variables of `environment` that name a directory by a relative
+    path: `PATH` when an entry of it is relative (an empty one is the
+    current directory), and each of `DIRECTORY_VARIABLES` set to one. Each
+    program resolves such a path from wherever it starts (the runner from
+    its own directory, the command from the root, a program the command
+    starts from its own), so no record could say which directory the run
+    used, nor would seeds run from two checkouts name one environment; a
+    listed run is refused while one does."""
+    found = []
+    if "PATH" in environment and any(not os.path.isabs(entry) for entry in environment["PATH"].split(os.pathsep)):
+        found.append("PATH")
+    found.extend(name for name in DIRECTORY_VARIABLES if name in environment and not os.path.isabs(environment[name]))
+    return found
+
+
+def earlier_run_problems(exp_id: str, results: Path, head: str, record: dict) -> list[str]:
+    """Why a listed run of `exp_id` at `head`, whose record would be
+    `record`, could not be one more seed of the runs its results directory
+    already holds (committed, as the launch reads none that is not), empty
+    when it could: the gate refuses seeds that ran another program,
+    toolchain or environment, or another repository but for their seed
+    records (`check_research_gates.archived_errors`), and a seed found so
+    only once it ran would be spent. A record whose command failed to launch
+    ran nothing and counts for neither."""
+    earlier = []
+    for path in sorted(results.glob("run-*.json")):
+        try:
+            held = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            return [f"{path.relative_to(ROOT)} cannot be read, so what the earlier runs ran is unknown: {error}"]
+        if isinstance(held, dict) and "seed" in held and held.get("status") != "failed-to-launch":
+            earlier.append((str(held.get("started_at", "")), path.name, held))
+    if not earlier:
+        return []
+    problems = []
+    ran = json.dumps([record.get(key) for key in ("executable", "toolchain", "environment")], sort_keys=True)
+    others = [
+        name for _, name, held in earlier
+        if json.dumps([held.get(key) for key in ("executable", "toolchain", "environment")], sort_keys=True) != ran
+    ]
+    if others:
+        problems.append(
+            f"{exp_id}: {experiment_records.listed(others)} ran another program, toolchain or environment than this run "
+            "would; the seeds of a listed experiment run one of each"
+        )
+    _, first, held = min(earlier)
+    paths = experiment_records.listed_record_paths(results.relative_to(ROOT).as_posix())
+    try:
+        changed = experiment_records.code_changes(str(held.get("git_sha")), head, ROOT, paths)
+    except experiment_records.ProvenanceError as error:
+        return [*problems, f"{exp_id}: cannot compare the repository with {first}'s: {error}"]
+    if changed:
+        problems.append(
+            f"{exp_id}: the repository at {head[:12]} differs from {str(held.get('git_sha'))[:12]}'s, where {first} ran, "
+            f"in {experiment_records.listed(changed)}; the seeds of a listed experiment run one tree, only their seed "
+            "records committed between them"
+        )
+    return problems
 
 
 def outside_cargo_configurations(environment: dict[str, str]) -> list[str]:
@@ -939,6 +1009,15 @@ def launch_and_record(
     # commit holds.
     environment = command_environment() if listed else None
     if listed:
+        relative = relative_directories(environment)
+        if relative:
+            print(
+                f"ERROR: refusing to run {exp_id}: {', '.join(relative)} names a directory by a relative path, which "
+                "each program resolves from wherever it starts, so the record could not say which one the run used; "
+                "set absolute directories for the run",
+                file=sys.stderr,
+            )
+            return 2
         outside = outside_cargo_configurations(environment)
         if outside:
             print(
@@ -965,6 +1044,29 @@ def launch_and_record(
             )
             return 2
         record.update({"environment": environment, "executable": executable, "toolchain": tools})
+        # A record git would ignore could not be committed as written, and
+        # would read as a file the command could have run.
+        try:
+            ignored = experiment_records.git(
+                ROOT, "check-ignore", "-q", "--no-index", "--", out.relative_to(ROOT).as_posix()
+            ).returncode
+        except experiment_records.ProvenanceError as error:
+            ignored = str(error)
+        if ignored != 1:
+            print(
+                f"ERROR: refusing to run {exp_id}: git would ignore its record {out.relative_to(ROOT)}"
+                + (f" ({ignored})" if isinstance(ignored, str) else "")
+                + ", which could then not be committed as written; no rule of the repository or the clone may ignore it",
+                file=sys.stderr,
+            )
+            return 2
+        # A seed that could not join the earlier ones would be spent: the
+        # gate refuses it once its record exists.
+        problems = earlier_run_problems(exp_id, results, watch.head, record)
+        for problem in problems:
+            print(f"ERROR: {problem}", file=sys.stderr)
+        if problems:
+            return 2
     kept = attempts / out.name if listed else None
     if listed:
         # The reservation: the record, as far as it is known before the

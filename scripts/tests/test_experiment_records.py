@@ -344,6 +344,48 @@ class RevisionTests(unittest.TestCase):
         with self.assertRaisesRegex(mod.ProvenanceError, r"run-1\.json ran at .* differs in .*scripts/harness\.py"):
             mod.source_revision("L900", MANIFEST, changed, self.root, self.experiment, paths)
 
+    def test_a_listed_experiment_is_aggregated_beside_what_the_tools_wrote_after_its_seeds(self):
+        # Its seeds ran one tree but for their records; the checkout it is
+        # aggregated from also holds what the tools wrote once they ran (the
+        # mutation evidence the aggregate carries, an earlier aggregate) and
+        # what completing it changed, which are no change of what they ran.
+        git(self.root, "rm", "-q", "experiments/L900-x/results/b.json", "experiments/L900-x/results/a.json")
+        git(self.root, "commit", "-q", "--no-verify", "-m", "no archive")
+        clean = git(self.root, "rev-parse", "HEAD")
+        records = self.records(clean, commit(self.root, {"experiments/L900-x/results/run-0.json": "{}\n"}, "seed 0"))
+        paths = mod.listed_record_paths("experiments/L900-x/results")
+        checkout = mod.listed_staleness_paths("experiments/L900-x/results", "experiments/L900-x")
+        outputs = {
+            "experiments/L900-x/results/mutations.json": "{}\n",
+            "experiments/L900-x/results/run.json": "{}\n",
+            "experiments/L900-x/results/metrics.json": "{}\n",
+            "experiments/L900-x/experiment.toml": 'status = "completed"\n',
+        }
+        for relative, text in outputs.items():
+            with self.subTest(relative=relative):
+                self.write_file(relative, text)
+                # Not yet committed, as the aggregator writes it, and then
+                # committed.
+                self.assertEqual(
+                    mod.source_revision("L900", MANIFEST, records, self.root, self.experiment, paths, checkout), clean
+                )
+                git(self.root, "add", "-A")
+                git(self.root, "commit", "-q", "--no-verify", "-m", relative)
+                self.assertEqual(
+                    mod.source_revision("L900", MANIFEST, records, self.root, self.experiment, paths, checkout), clean
+                )
+                # Compared by the records' own paths, it would be a change.
+                with self.assertRaisesRegex(mod.ProvenanceError, f"code has changed since, in .*{relative}"):
+                    mod.source_revision("L900", MANIFEST, records, self.root, self.experiment, paths)
+        # Anything else is still one.
+        commit(self.root, {"scripts/harness.py": "print('changed')\n"}, "harness")
+        with self.assertRaisesRegex(mod.ProvenanceError, "code has changed since, in scripts/harness.py"):
+            mod.source_revision("L900", MANIFEST, records, self.root, self.experiment, paths, checkout)
+
+    def write_file(self, relative: str, text: str) -> None:
+        (self.root / relative).parent.mkdir(parents=True, exist_ok=True)
+        (self.root / relative).write_text(text, encoding="utf-8")
+
     def test_a_checkout_whose_code_changed_since_the_records_is_refused(self):
         records = self.records(self.first, self.archived)
         for relative in ("src/lib.rs", "Cargo.lock", "migrations/0001.sql", "crates/x/Cargo.toml"):
@@ -1073,11 +1115,31 @@ class StalenessTests(unittest.TestCase):
         self.mark(stale_since=harness)
         self.assertEqual(listed(), [])
         self.assertEqual(
-            mod.listed_staleness_paths("experiments/L900-x/results"),
+            mod.listed_staleness_paths("experiments/L900-x/results", "experiments/L900-x"),
             (".", *(f":(exclude,glob)experiments/L900-x/results/{name}" for name in (
                 "run-*.json", "run.json", "metrics.json", "mutations.json", "STALE.toml"
-            ))),
+            )), ":(exclude,literal)experiments/L900-x/experiment.toml",
+             ":(exclude,literal)experiments/registry.toml", ":(exclude,literal)experiments/preregistration.toml"),
         )
+
+    def test_completing_a_listed_experiment_leaves_its_results_current(self):
+        # Completing it changes its manifest's status and the registry's, and
+        # listing others changes the list; the gate binds all three otherwise.
+        commit(
+            self.root,
+            {
+                "experiments/L900-x/experiment.toml": 'id = "L900"\nstatus = "completed"\n',
+                "experiments/registry.toml": '[[experiment]]\nid = "L900"\nstatus = "completed"\n',
+                "experiments/preregistration.toml": "version = 1\n",
+            },
+            "completed",
+        )
+        self.assertEqual(mod.staleness_errors("L900", self.experiment, self.results, self.root, True), [])
+        # Another experiment's manifest is not one of them.
+        commit(self.root, {"experiments/L901-y/experiment.toml": 'id = "L901"\n'}, "another")
+        errors = mod.staleness_errors("L900", self.experiment, self.results, self.root, True)
+        self.assertEqual(len(errors), 2, errors)
+        self.assertIn("changed since, in experiments/L901-y/experiment.toml", errors[0])
 
     def test_an_honest_marker_names_the_results_and_the_first_change(self):
         first = commit(self.root, {"src/lib.rs": "pub fn f() { g() }\n"}, "first change")

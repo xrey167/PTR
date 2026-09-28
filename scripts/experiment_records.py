@@ -199,15 +199,30 @@ def listed_record_paths(results: str) -> tuple[str, ...]:
     return (".", f":(exclude,glob){results}/{SEED_RECORDS}")
 
 
-def listed_staleness_paths(results: str) -> tuple[str, ...]:
-    """The provenance of a listed experiment's archived results against
-    HEAD, as pathspecs: the whole repository but what the tools write into
-    its results directory `results` (a repository path, `RESULT_OUTPUTS`)
-    and its stale marker (`STALE_MARKER`), which are committed once the
-    seeds have run. Its command may run or read any other file of the
-    repository, so a change to one after the results makes them stale
-    (`staleness_errors`)."""
-    return (".", *(f":(exclude,glob){results}/{pattern}" for pattern in (*RESULT_OUTPUTS, STALE_MARKER)))
+# The files the gate binds for a listed experiment once its seeds have run,
+# whose later changes are then no change of what the runs read: its manifest,
+# which changes only in its status, moving forward; the registry, which holds
+# that status too; and the list, whose entry for it is frozen by its digest.
+AFTER_THE_RUNS = ("experiment.toml", "experiments/registry.toml", "experiments/preregistration.toml")
+
+
+def listed_staleness_paths(results: str, experiment: str) -> tuple[str, ...]:
+    """The provenance of a listed experiment's archived results against the
+    checkout, as pathspecs: the whole repository but what the tools write
+    into its results directory `results` (a repository path,
+    `RESULT_OUTPUTS`) and its stale marker (`STALE_MARKER`), which are
+    committed once the seeds have run, and the files completing it changes
+    (`AFTER_THE_RUNS`: the manifest in its directory `experiment`, the
+    registry and the list), which the gate binds otherwise. Its command may
+    run or read any other file of the repository, so a change to one after
+    the results makes them stale (`staleness_errors`), and one in the
+    checkout keeps them from being aggregated there (`source_revision`)."""
+    return (
+        ".",
+        *(f":(exclude,glob){results}/{pattern}" for pattern in (*RESULT_OUTPUTS, STALE_MARKER)),
+        f":(exclude,literal){experiment}/{AFTER_THE_RUNS[0]}",
+        *(f":(exclude,literal){name}" for name in AFTER_THE_RUNS[1:]),
+    )
 
 
 def tree_pathspecs(
@@ -836,15 +851,19 @@ def source_revision(
     root: Path,
     experiment_dir: Path,
     paths: tuple[str, ...] | None = None,
+    checkout_paths: tuple[str, ...] | None = None,
 ) -> str:
     """The commit the results in `records` were produced at: the earliest
     record's `git_sha`, once every record agrees (`agreement_errors`),
-    every record's commit and the checkout in `root` have the same
-    provenance files (`paths`: `seed_record_paths` of `experiment_dir`
-    unless named, and for a listed experiment the whole repository,
-    `listed_record_paths`), and HEAD holds each of them as the checkout
-    does (`checkout_problem`). Raises `ProvenanceError` naming what
-    disagrees."""
+    every record's commit has the same provenance files (`paths`:
+    `seed_record_paths` of `experiment_dir` unless named, and for a listed
+    experiment the whole repository but its seed records,
+    `listed_record_paths`), the checkout in `root` has them too
+    (`checkout_paths`, `paths` unless named, and for a listed experiment
+    `listed_staleness_paths`, which leaves out what the tools write once the
+    seeds have run and what completing it changes), and HEAD holds each of
+    them as the checkout does (`checkout_problem`). Raises `ProvenanceError`
+    naming what disagrees."""
     if not records:
         raise ProvenanceError("no run records")
     errors = agreement_errors(experiment_id, manifest, records)
@@ -860,13 +879,14 @@ def source_revision(
                 errors.append(f"{name} ran at {record['git_sha']}, whose code differs in {listed(changed)}")
     if errors:
         raise ProvenanceError(f"the records ran different code from {revision}: " + "; ".join(errors))
-    changed = code_changes(revision, None, root, paths)
+    checkout_paths = paths if checkout_paths is None else checkout_paths
+    changed = code_changes(revision, None, root, checkout_paths)
     if changed:
         raise ProvenanceError(
             f"the records ran at {revision}, and the checkout's code has changed since, "
             f"in {listed(changed)}; rerun the seeds or aggregate at that commit"
         )
-    unheld = checkout_problem(root, paths)
+    unheld = checkout_problem(root, checkout_paths)
     if unheld:
         raise ProvenanceError(
             f"the records ran at {revision}, but {unheld}; commit or remove them and aggregate again"
@@ -1419,7 +1439,11 @@ def staleness_errors(
         if not COMMIT.fullmatch(str(sha or "")):
             errors.append(f"{experiment_id}: {results}/{name} names no commit it ran at: {sha!r}")
             continue
-        paths = listed_staleness_paths(results) if listed_experiment else paths_of(experiment_dir, root)
+        paths = (
+            listed_staleness_paths(results, relative_to_root(experiment_dir, root))
+            if listed_experiment
+            else paths_of(experiment_dir, root)
+        )
         try:
             changed = code_changes(sha, "HEAD", root, paths)
         except ProvenanceError as error:

@@ -329,8 +329,8 @@ class RunWatchTests(unittest.TestCase):
     def tearDown(self):
         self.directory.cleanup()
 
-    def run_seed(self, during=None, launch_error: str | None = None):
-        """Run seed 17 of L900 in the temporary repository, calling `during`
+    def run_seed(self, during=None, launch_error: str | None = None, seed: int = 17):
+        """Run `seed` of L900 in the temporary repository, calling `during`
         while the command "runs", and failing to launch it with
         `launch_error` when given; returns the exit status, the records
         written and what was printed to stderr."""
@@ -350,7 +350,7 @@ class RunWatchTests(unittest.TestCase):
             contextlib.redirect_stdout(io.StringIO()),
             contextlib.redirect_stderr(stderr),
         ):
-            status = mod.run_experiment("L900", entrypoint="entrypoint", seed=17)
+            status = mod.run_experiment("L900", entrypoint="entrypoint", seed=seed)
         records = [json.loads(path.read_text(encoding="utf-8")) for path in sorted(self.results.glob("run-*.json"))]
         return status, records, stderr.getvalue()
 
@@ -420,6 +420,7 @@ class RunWatchTests(unittest.TestCase):
         required: str = "",
         entrypoint: str = "bench <seed>",
         manifest_lines: str = "",
+        seeds: str = "[17]",
     ) -> None:
         """List L900 as preregistering one integer, and the keys `required`
         adds, give it `status`, the `[preregistration]` table `table` (None
@@ -429,8 +430,8 @@ class RunWatchTests(unittest.TestCase):
         listed = 'version = 1\n\n[experiment.L900.required]\nseeds = "int-list"\nschema = "int"\n' + required
         self.write("experiments/preregistration.toml", listed)
         if table is not None:
-            table = "seeds = [17]\n" + table
-        manifest = f'id = "L900"\nstatus = "{status}"\nseeds = [17]\nentrypoint = "{entrypoint}"\n' + manifest_lines
+            table = f"seeds = {seeds}\n" + table
+        manifest = f'id = "L900"\nstatus = "{status}"\nseeds = {seeds}\nentrypoint = "{entrypoint}"\n' + manifest_lines
         self.write("experiments/x/L900-x/config.toml", "version = 1\n" + ("" if table is None else "\n[preregistration]\n" + table))
         if table is not None:
             if frozen:
@@ -1415,23 +1416,33 @@ class RunWatchTests(unittest.TestCase):
             self.assertEqual(
                 mod.command_environment(), {"PATH": "/bin", "HOME": "/home/runner", "PYTHONNOUSERSITE": "1"}
             )
-        # A relative PATH entry is taken from the root, where the command
-        # starts, not from wherever the runner was started: the program the
-        # record names is the one that runs.
-        with (
-            mock.patch.object(mod, "ROOT", self.root),
-            mock.patch.dict(os.environ, {"PATH": os.pathsep.join(("tools", "", "../elsewhere", "/bin"))}, clear=True),
+        # A directory named by a relative path is one each program resolves
+        # from wherever it starts: the runner from its own directory, the
+        # command from the root. A listed run is refused while one is.
+        self.assertEqual(mod.relative_directories({"PATH": "/bin", "HOME": "/home/runner"}), [])
+        self.assertEqual(mod.relative_directories({"PATH": os.pathsep.join(("/bin", ""))}), ["PATH"])
+        self.assertEqual(
+            mod.relative_directories({
+                "PATH": os.pathsep.join(("tools", "/bin")), "HOME": "home", "TMPDIR": "/tmp", "CARGO_HOME": "../cargo",
+                "RUSTUP_HOME": "/rustup",
+            }),
+            ["PATH", "HOME", "CARGO_HOME"],
+        )
+        for name, value in (
+            ("PATH", os.pathsep.join(("tools", os.environ.get("PATH", "/bin")))),
+            ("PATH", os.environ.get("PATH", "/bin") + os.pathsep),
+            ("TMPDIR", "tmp"),
+            ("RUSTUP_HOME", "../rustup"),
         ):
-            environment = mod.command_environment()
-            self.assertEqual(environment["PATH"], os.pathsep.join(
-                (str(self.root / "tools"), str(self.root), str(self.root.parent / "elsewhere"), "/bin")
-            ))
-            decoy = Path(self.enterContext(tempfile.TemporaryDirectory()))
-            (decoy / "tools").mkdir()
-            (decoy / "tools" / "run.sh").write_text("#!/bin/sh\necho decoy\n", encoding="utf-8")
-            (decoy / "tools" / "run.sh").chmod(0o755)
-            with contextlib.chdir(decoy):
-                self.assertEqual(mod.resolved_executable(["run.sh"], environment), found)
+            with self.subTest(name=name, value=value), mock.patch.dict(os.environ, {name: value}):
+                ran = []
+                status, records, stderr = self.run_seed(lambda: ran.append(True))
+                self.assertEqual((status, records, ran, list(self.attempts().glob("run-*.json"))), (2, [], [], []))
+                self.assertEqual(stderr, (
+                    f"ERROR: refusing to run L900: {name} names a directory by a relative path, which each program "
+                    "resolves from wherever it starts, so the record could not say which one the run used; set "
+                    "absolute directories for the run\n"
+                ))
 
     def test_a_copy_from_another_line_of_history_is_not_put_back_but_its_seed_has_run(self):
         # A run on another branch, or another worktree's, belongs to that
@@ -1953,6 +1964,116 @@ class RunWatchTests(unittest.TestCase):
                         self.assertEqual(mod.prepare("L900"), 2)
                     self.assertIn(refusal, prepared.getvalue())
                 self.assertEqual(sorted(path.name for path in self.results.iterdir()), [".gitkeep"])
+
+    def test_what_a_commit_made_before_the_watch_changed_decides_the_launch(self):
+        # The launch is decided from the tree before the watch looks: a commit
+        # made in between that changes what decides it, a setting outside the
+        # frozen table say, is decided again once the watch holds the tree.
+        self.preregister("running")
+        real = mod.launch_refused
+        config = self.root / "experiments/x/L900-x/config.toml"
+
+        def refused_then_changed(exp_id):
+            verdict = real(exp_id)
+            config.write_text("learning_rate = 0.5\n" + config.read_text(encoding="utf-8"), encoding="utf-8")
+            git(self.root, "commit", "-q", "--no-verify", "-am", "a setting changed")
+            return verdict
+
+        ran = []
+        with mock.patch.object(mod, "launch_refused", side_effect=refused_then_changed):
+            status, records, stderr = self.run_seed(lambda: ran.append(True))
+        self.assertEqual((status, records, ran), (2, [], []))
+        self.assertIn("config.toml differs from the current one in learning_rate", stderr)
+        # So is a registry that places the experiment elsewhere, where the
+        # command's values would be read from another directory.
+        self.tearDown()
+        self.setUp()
+        self.preregister("running")
+
+        def refused_then_moved(exp_id):
+            verdict = real(exp_id)
+            git(self.root, "mv", "experiments/x", "experiments/y")
+            registry = self.root / "experiments/registry.toml"
+            registry.write_text(registry.read_text(encoding="utf-8").replace("x/L900-x", "y/L900-x"), encoding="utf-8")
+            git(self.root, "commit", "-q", "--no-verify", "-am", "moved")
+            return verdict
+
+        ran = []
+        with mock.patch.object(mod, "launch_refused", side_effect=refused_then_moved):
+            status, _, stderr = self.run_seed(lambda: ran.append(True))
+        self.assertEqual((status, ran), (2, []))
+        self.assertIn("where the registry placed it in experiments/x/L900-x, not in experiments/y/L900-x", stderr)
+        # Where the gate's own answer would not refuse it, the directory the
+        # launch read does.
+        self.tearDown()
+        self.setUp()
+        self.preregister("running")
+        ran = []
+        with (
+            mock.patch.object(mod, "launch_refused", side_effect=refused_then_moved),
+            mock.patch.object(mod.check_research_gates, "launch_errors", return_value=[]),
+        ):
+            status, _, stderr = self.run_seed(lambda: ran.append(True))
+        self.assertEqual((status, ran), (2, []))
+        self.assertEqual(stderr, (
+            "ERROR: experiments/registry.toml placed L900 elsewhere while its launch was checked; rerun from a tree "
+            "that holds HEAD\n"
+        ))
+
+    def test_a_listed_runs_record_is_one_git_does_not_ignore(self):
+        # A record git ignores could not be committed as written, and would
+        # read as a file the command could have run once it ends.
+        self.preregister("running")
+        exclude = Path(git(self.root, "rev-parse", "--absolute-git-dir")) / "info" / "exclude"
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        exclude.write_text("results/\n", encoding="utf-8")
+        ran = []
+        status, records, stderr = self.run_seed(lambda: ran.append(True))
+        self.assertEqual((status, records, ran, list(self.attempts().glob("run-*.json"))), (2, [], [], []))
+        self.assertTrue(stderr.startswith("ERROR: refusing to run L900: git would ignore its record "), stderr)
+        self.assertTrue(stderr.endswith(
+            ", which could then not be committed as written; no rule of the repository or the clone may ignore it\n"
+        ), stderr)
+        exclude.write_text("", encoding="utf-8")
+        status, records, stderr = self.run_seed()
+        self.assertEqual((status, stderr, [record["status"] for record in records]), (0, "", ["completed"]))
+
+    def test_a_seed_that_could_not_join_the_earlier_ones_is_refused_before_it_runs(self):
+        # The gate refuses a listed experiment's seeds that ran another tree
+        # but for their seed records, or another program, toolchain or
+        # environment, once the record exists; found only then, the seed
+        # would be spent.
+        self.preregister("running", seeds="[17, 29]")
+        status, records, stderr = self.run_seed()
+        self.assertEqual((status, stderr), (0, ""))
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-q", "--no-verify", "-m", "seed 17 recorded")
+        seventeen = sorted(self.results.glob("run-*.json"))[0].name
+        mutations = "experiments/x/L900-x/results/mutations.json"
+        self.write(mutations, "{}\n")
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-q", "--no-verify", "-m", "mutations between seeds")
+        ran = []
+        status, records, stderr = self.run_seed(lambda: ran.append(True), seed=29)
+        self.assertEqual((status, ran, len(records)), (2, [], 1))
+        self.assertIn(f"'s, where {seventeen} ran, in {mutations}; the seeds of a listed experiment run one tree", stderr)
+        git(self.root, "rm", "-q", mutations)
+        git(self.root, "commit", "-q", "--no-verify", "-m", "no mutations")
+        with mock.patch.dict(os.environ, {"LANG": "xx_XX.UTF-8"}):
+            status, records, stderr = self.run_seed(lambda: ran.append(True), seed=29)
+        self.assertEqual((status, ran, len(records)), (2, [], 1))
+        self.assertEqual(stderr, (
+            f"ERROR: L900: {seventeen} ran another program, toolchain or environment than this run would; the seeds of "
+            "a listed experiment run one of each\n"
+        ))
+        # Neither, it runs.
+        environment = {name: value for name, value in os.environ.items() if name != "LANG"}
+        recorded = json.loads((self.results / seventeen).read_text(encoding="utf-8"))["environment"]
+        if "LANG" in recorded:
+            environment["LANG"] = recorded["LANG"]
+        with mock.patch.dict(os.environ, environment, clear=True):
+            status, records, stderr = self.run_seed(seed=29)
+        self.assertEqual((status, stderr, [record["status"] for record in records]), (0, "", ["completed", "completed"]))
 
     def test_a_record_the_results_hold_is_no_change_of_the_sources(self):
         # Records accumulate in results/, uncommitted while runs go on: what

@@ -5,6 +5,9 @@ results must describe HEAD's code: `results/run.json` and
 `results/mutations.json` fail the gate once a provenance file (the Rust, SQL,
 protobuf, Cargo and toolchain files, the recording scripts, the experiment's
 `aggregate.py` and mutation plan) differs from the one at their `git_sha`,
+and for a listed experiment, whose command may run or read any file of the
+repository, once any file does but the tools' outputs, the stale marker and
+what completing it changes (`experiment_records.listed_staleness_paths`),
 unless `results/STALE.toml` names those results and the first commit that
 made them stale (`experiment_records.staleness_errors`). `results/run.json`
 must also be one aggregate with the `metrics.json` it names the SHA-256 of
@@ -24,7 +27,9 @@ but one that was frozen or ran stays bound as below, as it was frozen:
   and the runner can build its command: it splits as a command, and each
   placeholder in it but `<seed>` is a key of the `[preregistration]` table
   holding an integer, a string or a boolean, the value the runner fills it
-  with (`command_errors`), since a freeze no run can use cannot be repaired;
+  with, it takes `<seed>` when the table preregisters more than one seed,
+  and it gives Cargo no configuration on its command line
+  (`command_errors`), since a freeze no run can use cannot be repaired;
 - its `config.toml` holds a `[preregistration]` table with every key the list
   requires, each a pinned value of its declared type (`int`, `str`, `bool`,
   a non-empty `int-list` or `str-list`, or `file`), and no other key of the
