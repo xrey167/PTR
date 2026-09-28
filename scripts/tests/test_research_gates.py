@@ -2719,6 +2719,12 @@ class PreregistrationGateTests(unittest.TestCase):
                 ("cargo run --manifest-path 'crates/..:stream/Cargo.toml' -- <seed>","--manifest-path",
                  "crates/..:stream/Cargo.toml"),
                 ("cargo run --manifest-path 'crates/ /Cargo.toml' -- <seed>","--manifest-path","crates/ /Cargo.toml"),
+                # A colon in a component is an NTFS stream of the name before
+                # it on Windows, a file no scan of the tree lists: a target
+                # specification, a manifest or a lockfile could hide there.
+                ("cargo build --target targets/base:evil.json -- <seed>","--target","targets/base:evil.json"),
+                ("cargo run --manifest-path=crates/x:y/Cargo.toml -- <seed>","--manifest-path","crates/x:y/Cargo.toml"),
+                ("cargo run --lockfile-path 'Cargo.lock:stream' -- <seed>","--lockfile-path","Cargo.lock:stream"),
                 # A target may be a specification file.
                 ("cargo build --target /tmp/custom.json -- <seed>","--target","/tmp/custom.json"),
             )),
@@ -3052,6 +3058,19 @@ class PreregistrationGateTests(unittest.TestCase):
         for accepted in (".gitignore",".github/workflows/ci.yml","a/.gitkeep","x.git/y","git/config","a/git~2",".gitx/y"):
             with self.subTest(accepted=accepted):
                 self.assertTrue(mod.is_repository_path(accepted))
+
+    def test_a_cargo_input_path_with_a_colon_in_a_component_names_a_file_outside_the_scan(self):
+        # On Windows a colon after a name starts an NTFS stream of it, which
+        # git and a walk of the tree do not list, so what a stream holds is
+        # bound by no watch or record; every platform refuses the same paths.
+        for outside in ("targets/base:evil.json","base:evil.json","a/b:c/d","crates/x:y/Cargo.toml","Cargo.lock:s","./a:b",
+                        "a/b:","a\\b:c","x/C:y","x/1:y","ab:c","::x"):
+            with self.subTest(outside=outside):
+                self.assertTrue(mod.outside_repository(outside))
+        # The names without one are as before.
+        for inside in ("targets/base.json","crates/x/Cargo.toml","Cargo.lock","a/b c/d","./a/b","crates/..x/y","x.y/z"):
+            with self.subTest(inside=inside):
+                self.assertFalse(mod.outside_repository(inside))
 
     def test_a_name_windows_reads_as_a_step_is_no_part_of_a_repository_path(self):
         # Windows trims trailing dots and spaces, and an NTFS stream, from a

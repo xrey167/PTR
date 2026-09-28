@@ -410,12 +410,22 @@ def unlisted_entries() -> list[str]:
     socket, a device), which git skips, and which a command can test for or
     read what another process writes into. A walk of the checkout, leaving
     out git's own directory at the root and what git ignores
-    (`ignored_files`), which a listed run refuses by itself. Raises
-    `experiment_records.ProvenanceError` when git cannot list what it
-    ignores."""
+    (`ignored_files`), which a listed run refuses by itself; and a directory
+    the walk cannot list (one without search permission), which git lists
+    nothing of either. Raises `experiment_records.ProvenanceError` when git
+    cannot list what it ignores."""
     ignored = {entry.rstrip("/") for entry in ignored_files()}
     found = []
-    for directory, subdirectories, files in os.walk(ROOT):
+
+    def unscannable(error: OSError) -> None:
+        # `os.walk` skips a directory it cannot list without a word, and git
+        # lists nothing of one either, though a command can see it: one
+        # without search permission is a directory no check here reads. One
+        # that is gone since the walk listed it is one removed then.
+        if not isinstance(error, (FileNotFoundError, NotADirectoryError)):
+            found.append(Path(error.filename).relative_to(ROOT).as_posix())
+
+    for directory, subdirectories, files in os.walk(ROOT, onerror=unscannable):
         relative = Path(directory).relative_to(ROOT).as_posix()
         here = "" if relative == "." else relative
         if here and not subdirectories and not files:
@@ -569,8 +579,9 @@ def launch_watch(
         if unlisted:
             print(
                 f"ERROR: refusing to run {exp_id} while the repository holds {experiment_records.listed(unlisted)}, "
-                "which git does not list (an empty directory, or an entry named .git below the root) and its command "
-                "could read unrecorded; a listed experiment runs from a checkout that holds none",
+                "which git does not list (an empty directory, an entry named .git below the root, or a directory that "
+                "cannot be listed) and its command could read unrecorded; a listed experiment runs from a checkout "
+                "that holds none",
                 file=sys.stderr,
             )
             return None

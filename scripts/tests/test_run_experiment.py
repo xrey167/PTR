@@ -1859,8 +1859,8 @@ class RunWatchTests(unittest.TestCase):
                 self.assertEqual((status, records), (2, []))
                 self.assertEqual(stderr, (
                     f"ERROR: refusing to run L900 while the repository holds {shown}, which git does not list (an "
-                    "empty directory, or an entry named .git below the root) and its command could read unrecorded; a "
-                    "listed experiment runs from a checkout that holds none\n"
+                    "empty directory, an entry named .git below the root, or a directory that cannot be listed) and "
+                    "its command could read unrecorded; a listed experiment runs from a checkout that holds none\n"
                 ))
                 shutil.rmtree(self.root / shown.split("/")[0])
         # However a platform names git's own directory: Windows reads `.git.`
@@ -1912,6 +1912,58 @@ class RunWatchTests(unittest.TestCase):
         (self.root / "empty").mkdir()
         status, records, stderr = self.run_seed()
         self.assertEqual((status, stderr), (0, ""))
+
+    def test_a_listed_run_refuses_a_directory_the_walk_cannot_list(self):
+        # Git lists nothing of a directory without search permission, and
+        # os.walk skips one silently, but a command can see it: its presence
+        # or mode could differ between seeds while every record names one
+        # commit. Run as root, where a mode changes nothing, the walk's own
+        # listing is made to fail for the directory instead.
+        self.preregister("running")
+        (self.root / "nested/sealed").mkdir(parents=True)
+        (self.root / "gone").mkdir()
+        (self.root / "replaced").mkdir()
+        scandir = os.scandir
+
+        def failing(path=".", *arguments):
+            name = Path(os.fspath(path)).name
+            if name == "sealed":
+                raise PermissionError(13, "Permission denied", os.fspath(path))
+            if name == "gone":
+                raise FileNotFoundError(2, "No such file or directory", os.fspath(path))
+            if name == "replaced":
+                raise NotADirectoryError(20, "Not a directory", os.fspath(path))
+            return scandir(path, *arguments)
+
+        with mock.patch.object(mod, "ROOT", self.root), mock.patch.object(os, "scandir", failing):
+            self.assertEqual(mod.unlisted_entries(), ["nested/sealed"])
+        # A directory removed, or replaced by a file, since the walk listed it
+        # is one removed then.
+        shutil.rmtree(self.root / "nested")
+        with mock.patch.object(mod, "ROOT", self.root), mock.patch.object(os, "scandir", failing):
+            self.assertEqual(mod.unlisted_entries(), [])
+        # The launch refuses a checkout holding one.
+        (self.root / "nested/sealed").mkdir(parents=True)
+        (self.root / "gone").rmdir()
+        (self.root / "replaced").rmdir()
+        with mock.patch.object(os, "scandir", failing):
+            status, records, stderr = self.run_seed()
+        self.assertEqual((status, records), (2, []))
+        self.assertEqual(stderr, (
+            "ERROR: refusing to run L900 while the repository holds nested/sealed, which git does not list (an empty "
+            "directory, an entry named .git below the root, or a directory that cannot be listed) and its command "
+            "could read unrecorded; a listed experiment runs from a checkout that holds none\n"
+        ))
+        # One that cannot be listed once the command has ended leaves the run
+        # unrecorded.
+        shutil.rmtree(self.root / "nested")
+        with mock.patch.object(os, "scandir", failing):
+            status, records, stderr = self.run_seed(lambda: (self.root / "nested/sealed").mkdir(parents=True))
+        self.assertEqual((status, [record["status"] for record in records]), (2, ["started"]))
+        self.assertIn(
+            "the repository holds nested/sealed, which git does not list and the command could have read unrecorded",
+            stderr,
+        )
 
     def test_a_listed_run_from_a_checkout_holding_a_name_that_is_not_utf8_is_refused(self):
         # Git prints such a name's bytes as they are: the watch cannot read it

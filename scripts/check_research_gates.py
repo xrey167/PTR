@@ -397,15 +397,19 @@ def outside_repository(path: str) -> bool:
     itself and never lists (`.git/x/Cargo.toml`), however a platform names
     it (`is_git_administration`: `.GIT`, and on Windows `.git.`, `git~1`
     and `.git::$INDEX_ALLOCATION`), or through a component Windows reads as
-    a step it is not written as (`is_windows_dot_name`: `.. `, `...`), either
-    slash a separator. The runner starts no shell, so `~` is a name like any
+    a step it is not written as (`is_windows_dot_name`: `.. `, `...`), or
+    through a component with a colon (`targets/base:evil.json`), which
+    Windows reads as an NTFS stream of the name before it, a file no scan of
+    the tree lists and no watch binds (a colon is a name character
+    elsewhere, but one entrypoint runs on every platform), either slash a
+    separator. The runner starts no shell, so `~` is a name like any
     other."""
     normalized=path.replace("\\","/")
     if normalized.startswith("/") or names_a_drive(normalized):
         return True
     depth=0
     for part in normalized.split("/"):
-        if is_git_administration(part) or is_windows_dot_name(part):
+        if is_git_administration(part) or is_windows_dot_name(part) or ":" in part:
             return True
         if part=="..":
             depth-=1
