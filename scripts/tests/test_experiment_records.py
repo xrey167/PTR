@@ -125,6 +125,34 @@ class AgreementTests(unittest.TestCase):
                     ["b.json ran under an experiment.toml that differs from the current one"],
                 )
 
+    def test_records_that_ran_another_program_or_toolchain_disagree(self):
+        # A listed run's record names the program it started and the Rust
+        # toolchain, which lie outside the commit: the seeds of one result
+        # ran one of each.
+        program = {"path": "/usr/bin/bench", "sha256": "a" * 64}
+        toolchain = {"rustc": {"path": "/toolchains/pinned/bin/rustc", "sha256": "b" * 64}}
+        ran = {"executable": program, "toolchain": toolchain}
+        records = {"a.json": {**record("a" * 40), **ran}, "b.json": {**record("b" * 40, seed=2), **ran}}
+        self.assertEqual(mod.agreement_errors("L900", MANIFEST, records), [])
+        for key, label, changed in (
+            ("executable", "program", {**program, "sha256": "c" * 64}),
+            ("toolchain", "toolchain", {"rustc": {**toolchain["rustc"], "path": "/toolchains/other/bin/rustc"}}),
+        ):
+            with self.subTest(key=key):
+                other = {**records, "b.json": {**records["b.json"], key: changed}}
+                self.assertEqual(
+                    mod.agreement_errors("L900", MANIFEST, other),
+                    [
+                        f"the records disagree on {label}: {json.dumps(ran[key], sort_keys=True)} in a.json; "
+                        f"{json.dumps(changed, sort_keys=True)} in b.json"
+                    ],
+                )
+        # Records of runs that name neither agree, as those of unlisted
+        # experiments do.
+        self.assertEqual(
+            mod.agreement_errors("L900", MANIFEST, {"a.json": record("a" * 40), "b.json": record("b" * 40, seed=2)}), []
+        )
+
     def test_a_manifest_holding_a_nan_is_refused(self):
         # JSON writes a NaN as NaN whatever its sign, which a run can read:
         # nan and -nan would be one manifest to the records.

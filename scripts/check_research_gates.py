@@ -37,8 +37,8 @@ but one that was frozen or ran stays bound as below, as it was frozen:
   (`experiment_records.preregistered_file_digest`), so the file's content is
   frozen with the table, not only its path;
 - the table's `seeds`, which every entry of the list must require as an
-  `int-list`, names the manifest's seeds, so no seed is added after an
-  outcome is seen;
+  `int-list`, names the manifest's seeds, each once, so no seed is added
+  after an outcome is seen and none is counted twice;
 - every baseline the list names is pinned at each key path the list names
   for it, its status is pinned and not `blocked-*`, and the table's
   `baseline_<name>_sha256` is the digest of every file in its directory
@@ -241,6 +241,20 @@ def command_errors(exp_id: str, manifest: dict, table: dict) -> list[str]:
             errors.append(f"{exp_id}: entrypoint placeholder <{name}> is preregistered holding a NUL character, which no "
                           "command can be given")
     return errors
+
+def repeated_seeds(seeds) -> list:
+    """The seeds a preregistered seed list names more than once, each once,
+    in the order they first repeat; none for anything but a list. A listed
+    experiment runs each seed once, so a seed named twice would be one run
+    an aggregator counts twice."""
+    seen,repeated=[],[]
+    for seed in seeds if isinstance(seeds,list) else ():
+        if any(same_value(seed,other) for other in seen):
+            if not any(same_value(seed,other) for other in repeated):
+                repeated.append(seed)
+        else:
+            seen.append(seed)
+    return repeated
 
 def is_placeholder(value: str) -> bool:
     """A value still to be chosen: empty, `must-be-pinned-…`, `unconfigured`
@@ -785,7 +799,7 @@ def launchable_at(root: Path, commit: str, exp_id: str, directory: str) -> tuple
     does not: the list names it with a well-formed entry, its manifest is past
     `planned`, its `[preregistration]` table holds every required key,
     pinned and of its type, and no placeholder, the table's seeds are the
-    manifest's, the manifest names the digests of the table and of the
+    manifest's, each named once, the manifest names the digests of the table and of the
     entry, every file and baseline the table freezes has the frozen
     content there, each baseline pinned and not blocked, the runner can
     build its command from the manifest and the table (`command_errors`),
@@ -836,7 +850,9 @@ def launchable_at(root: Path, commit: str, exp_id: str, directory: str) -> tuple
                 return None
     # The file and baseline digests are the table's, checked here and
     # below, so the table stands for them in the state.
-    if any(unset_problem(value) for value in table.values()) or not same_value(table.get("seeds",MISSING),manifest.get("seeds",MISSING)):
+    if (any(unset_problem(value) for value in table.values())
+            or not same_value(table.get("seeds",MISSING),manifest.get("seeds",MISSING))
+            or repeated_seeds(table.get("seeds"))):
         return None
     for baseline in entry.get("baseline",[]):
         held=PurePosixPath(baseline_directory(baseline["path"]))
@@ -1102,7 +1118,10 @@ def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path,
     committed, and an aggregate, which an aggregator may write again, must
     pass `record_errors` in every version committed. No two run records are
     of one seed, bar those whose command failed to launch: a seed run again
-    after its outcome was seen could keep whichever run came out best."""
+    after its outcome was seen could keep whichever run came out best. And
+    they all name one program and one Rust toolchain (`executable`,
+    `toolchain`), which lie outside the commit: one replaced between seeds
+    would leave records naming one commit for different code."""
     relative=experiment.relative_to(root).as_posix()
     current=(manifest,config)
 
@@ -1128,6 +1147,7 @@ def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path,
             if is_aggregate(held) or is_run_record(held):
                 records.add(held)
     runs={}
+    programs={}
     for path in sorted(records):
         name=shown(path)
         where=f"{exp_id}: {name}"
@@ -1152,6 +1172,10 @@ def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path,
             # launch saw no outcome.
             if not aggregate and isinstance(record,dict) and "seed" in record and record.get("status")!="failed-to-launch":
                 runs.setdefault(json.dumps(record["seed"],sort_keys=True),[]).append(name)
+                # The program and the toolchain lie outside the commit: the
+                # seeds of one experiment ran one of each.
+                programs.setdefault(
+                    json.dumps([record.get("executable"),record.get("toolchain")],sort_keys=True),[]).append(name)
         if aggregate:
             # Written again, an aggregate keeps every version it was
             # committed in: each saw the outcome of the runs it names.
@@ -1186,6 +1210,10 @@ def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path,
         if len(names)>1:
             errors.append(f"{exp_id}: seed {seed} ran more than once ({', '.join(names)}); a listed experiment runs each "
                           "seed once, so no run of it is chosen by its outcome")
+    if len(programs)>1:
+        errors.append(f"{exp_id}: its runs name {len(programs)} programs or toolchains ("
+                      + "; ".join(", ".join(names) for _,names in sorted(programs.items()))
+                      + "); a program or toolchain replaced between seeds lies outside the commit every record names")
     # A commit that holds the experiment past planned froze it, whether or
     # not a record of a run there was kept: the runner could launch it, and
     # a record can be discarded before it is committed.
@@ -1268,6 +1296,9 @@ def frozen_errors(exp_id: str, entry: dict, manifest: dict, experiment: Path, ro
             errors.append(f"{exp_id}: preregistration key {key} {problem}")
     if "seeds" in table and not same_value(table["seeds"],manifest.get("seeds",MISSING)):
         errors.append(f"{exp_id}: preregistered seeds {table['seeds']!r} are not the manifest's seeds {manifest.get('seeds')!r}")
+    for seed in repeated_seeds(table.get("seeds")):
+        errors.append(f"{exp_id}: preregistered seeds name seed {seed!r} more than once; each seed runs once, so an "
+                      "aggregate would count its one run twice")
     for baseline in entry.get("baseline",[]):
         directory=baseline_directory(baseline["path"])
         if in_results(directory) or (results is not None and results.is_relative_to(directory)):

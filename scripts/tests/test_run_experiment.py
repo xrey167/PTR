@@ -1302,7 +1302,14 @@ class RunWatchTests(unittest.TestCase):
         self.preregister("running")
         status, record, seen = self.run_bench()
         self.assertEqual((status, record["status"]), (0, "completed"))
-        self.assertLessEqual(set(seen) - {"PYTHONPYCACHEPREFIX"}, {*mod.COMMAND_ENVIRONMENT, *mod.FIXED_ENVIRONMENT})
+        self.assertLessEqual(
+            set(seen) - {"PYTHONPYCACHEPREFIX", "CARGO_TARGET_DIR"}, {*mod.COMMAND_ENVIRONMENT, *mod.FIXED_ENVIRONMENT}
+        )
+        # Cargo builds into a fresh directory outside the repository, beside
+        # Python's bytecode cache, both removed once the command has run.
+        self.assertEqual(seen["CARGO_TARGET_DIR"], os.path.join(seen["PYTHONPYCACHEPREFIX"], "cargo-target"))
+        self.assertFalse(Path(seen["CARGO_TARGET_DIR"]).is_relative_to(self.root))
+        self.assertFalse(Path(seen["PYTHONPYCACHEPREFIX"]).exists())
         # Python reads no package from the user's own site directory.
         self.assertEqual(seen["PYTHONNOUSERSITE"], "1")
         for name in ("PYTHONPATH", "LD_LIBRARY_PATH", "RUSTC_WRAPPER", "RUSTUP_TOOLCHAIN", "GH_TOKEN"):
@@ -1480,10 +1487,31 @@ class RunWatchTests(unittest.TestCase):
         status, records, stderr = self.run_seed(edit_and_restore)
         self.assertEqual((status, [record["status"] for record in records]), (2, ["started"]))
         self.assertIn("scripts/harness.py changed on disk", stderr)
-        # What git ignores is no file of the commit.
+        # What git ignores is no file of the commit, and the watch does not
+        # see it: a listed run starts only from a checkout that holds none,
+        # a build's output (target/) or a virtual environment (.venv/) say.
+        for ignored in ("scripts/__pycache__/harness.cpython-311.pyc", "target/release/harness", ".venv/bin/python"):
+            with self.subTest(ignored=ignored):
+                self.tearDown()
+                self.setUp()
+                self.write(".gitignore", "__pycache__/\ntarget/\n.venv/\n")
+                self.preregister("running")
+                self.write(ignored, "")
+                shown = ignored.split("/")[0] + "/" if not ignored.startswith("scripts/") else "scripts/__pycache__/"
+                status, records, stderr = self.run_seed()
+                self.assertEqual((status, records), (2, []))
+                self.assertTrue(stderr.startswith("ERROR: refusing to run L900 while the repository holds "), stderr)
+                self.assertIn(shown, stderr)
+                self.assertTrue(stderr.endswith(
+                    ", which git ignores and its command could run or read unrecorded; a listed experiment runs from a "
+                    "checkout that holds no such file (`git clean -ndX` lists them; a fresh worktree holds none)\n"
+                ), stderr)
+                shutil.rmtree(self.root / shown)
+                status, records, stderr = self.run_seed()
+                self.assertEqual((status, stderr, [record["status"] for record in records]), (0, "", ["completed"]))
+        # An unlisted experiment runs beside what git ignores, as it did.
         self.tearDown()
         self.setUp()
-        self.preregister("running")
         self.write("scripts/__pycache__/harness.cpython-311.pyc", "")
         status, records, stderr = self.run_seed()
         self.assertEqual((status, stderr, [record["status"] for record in records]), (0, "", ["completed"]))
@@ -1548,38 +1576,60 @@ class RunWatchTests(unittest.TestCase):
         # one rust-toolchain.toml names: the record names rustc and cargo as
         # rustup resolves them from the root, with their content.
         tools = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        for name in ("pinned", "stable"):
+            (tools / "toolchains" / name / "bin").mkdir(parents=True)
+            for tool in ("rustc", "cargo"):
+                (tools / "toolchains" / name / "bin" / tool).write_text(f"#!/bin/sh\necho {name} {tool}\n", encoding="utf-8")
+                (tools / "toolchains" / name / "bin" / tool).chmod(0o755)
         toolchain = tools / "toolchains" / "pinned" / "bin"
-        toolchain.mkdir(parents=True)
-        for tool in ("rustc", "cargo"):
-            (toolchain / tool).write_text(f"#!/bin/sh\necho {tool}\n", encoding="utf-8")
-            (toolchain / tool).chmod(0o755)
         bin_directory = tools / "bin"
         bin_directory.mkdir()
         rustup = bin_directory / "rustup"
         rustup.write_text(
-            f'#!/bin/sh\n[ "$1" = which ] && [ -e "{toolchain}/$2" ] && echo "{toolchain}/$2" && exit 0\nexit 1\n',
+            '#!/bin/sh\n[ "$1" = which ] || exit 1\nshift\nname=pinned\n'
+            'if [ "$1" = --toolchain ]; then name="$2"; shift 2; fi\n'
+            f'path="{tools}/toolchains/$name/bin/$1"\n[ -e "$path" ] && echo "$path" && exit 0\nexit 1\n',
             encoding="utf-8",
         )
         rustup.chmod(0o755)
 
-        def named(tool: str) -> dict:
-            path = toolchain / tool
+        def named(tool: str, name: str = "pinned") -> dict:
+            path = tools / "toolchains" / name / "bin" / tool
             return {"path": str(path.resolve()), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
 
         with mock.patch.object(mod, "ROOT", self.root):
-            self.assertEqual(mod.toolchain({"PATH": str(bin_directory)}), {"rustc": named("rustc"), "cargo": named("cargo")})
+            environment = {"PATH": str(bin_directory)}
+            self.assertEqual(mod.toolchain(environment, ["cargo", "run"]), {"rustc": named("rustc"), "cargo": named("cargo")})
+            # A proxy's first argument `+<toolchain>` names the toolchain that
+            # builds, as rustup runs it.
+            stable = {"rustc": named("rustc", "stable"), "cargo": named("cargo", "stable")}
+            self.assertEqual(mod.toolchain(environment, ["cargo", "+stable", "run"]), stable)
+            self.assertEqual(mod.toolchain(environment, ["/elsewhere/bin/cargo", "+stable", "run"]), stable)
+            self.assertEqual(mod.toolchain(environment, ["rustc", "+stable", "lib.rs"]), stable)
+            # Another program's `+` argument is its own.
+            self.assertEqual(
+                mod.toolchain(environment, ["python3", "+stable"]), {"rustc": named("rustc"), "cargo": named("cargo")}
+            )
+            self.assertEqual(mod.toolchain(environment, ["cargo"]), {"rustc": named("rustc"), "cargo": named("cargo")})
             # A tool rustup cannot resolve is named by nothing.
             (toolchain / "cargo").unlink()
             self.assertEqual(
-                mod.toolchain({"PATH": str(bin_directory)}),
+                mod.toolchain(environment, ["cargo", "run"]),
                 {"rustc": named("rustc"), "cargo": {"path": None, "sha256": None}},
+            )
+            self.assertEqual(
+                mod.toolchain(environment, ["cargo", "+missing", "run"]),
+                {"rustc": {"path": None, "sha256": None}, "cargo": {"path": None, "sha256": None}},
             )
             # Without rustup, the PATH's rustc and cargo are named.
             (toolchain / "cargo").write_text("#!/bin/sh\n", encoding="utf-8")
             (toolchain / "cargo").chmod(0o755)
-            self.assertEqual(mod.toolchain({"PATH": str(toolchain)}), {"rustc": named("rustc"), "cargo": named("cargo")})
             self.assertEqual(
-                mod.toolchain({"PATH": str(tools / "nowhere")}),
+                mod.toolchain({"PATH": str(toolchain)}, ["cargo", "+stable", "run"]),
+                {"rustc": named("rustc"), "cargo": named("cargo")},
+            )
+            self.assertEqual(
+                mod.toolchain({"PATH": str(tools / "nowhere")}, ["cargo", "run"]),
                 {"rustc": {"path": None, "sha256": None}, "cargo": {"path": None, "sha256": None}},
             )
         # A listed run's record holds it.

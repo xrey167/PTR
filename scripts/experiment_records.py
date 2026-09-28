@@ -136,6 +136,10 @@ AGREED = (
     ("cargo_lock_sha256", "Cargo.lock"),
     ("parameters", "parameters"),
     ("entrypoint", "entrypoint"),
+    # A listed experiment's run names the program it started and the Rust
+    # toolchain, which lie outside the commit: its seeds ran one of each.
+    ("executable", "program"),
+    ("toolchain", "toolchain"),
 )
 
 

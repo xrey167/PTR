@@ -1494,6 +1494,59 @@ class PreregistrationGateTests(unittest.TestCase):
         commit_all(root,"records")
         self.assert_blocked(root,refusal)
 
+    def test_a_listed_experiments_seeds_are_named_once(self):
+        # Each seed runs once: a seed named twice would be one run an
+        # aggregate counts twice, and once frozen the list could not change.
+        refusal=("X900: preregistered seeds name seed 17 more than once; each seed runs once, so an aggregate would count "
+                 "its one run twice")
+        root=self.tree(status="running",table={**TABLE,"seeds":[17,29,17,17]},seeds=(17,29,17,17))
+        self.assert_blocked(root,refusal)
+        self.assertEqual(mod.launch_errors(root,"X900"),[refusal])
+        self.assertEqual(mod.repeated_seeds([17,29,17,17,29]),[17,29])
+        self.assertEqual(mod.repeated_seeds([17,29]),[])
+        self.assertEqual(mod.repeated_seeds("17"),[])
+        # A commit holding such a list froze nothing, so naming each seed once
+        # repairs it.
+        commit=commit_all(root)
+        self.assertIsNone(mod.launchable_at(root,commit,"X900","experiments/semdb/X900-fixture"))
+        repaired=self.tree(status="running")
+        for relative in ("experiments/semdb/X900-fixture/config.toml",self.MANIFEST):
+            shutil.copyfile(repaired/relative,root/relative)
+        repair=commit_all(root,"seeds named once")
+        self.assertEqual(gate(root),(0,[]))
+        self.assertIsNotNone(mod.launchable_at(root,repair,"X900","experiments/semdb/X900-fixture"))
+
+    def test_a_listed_experiments_runs_name_one_program_and_toolchain(self):
+        # The program a run starts and the Rust toolchain lie outside the
+        # commit its record names: one replaced between seeds would leave
+        # records naming one commit for different code.
+        root=self.tree(status="running")
+        commit=commit_all(root)
+        results="experiments/semdb/X900-fixture/results"
+        program={"path":"/usr/bin/bench","sha256":"a"*64}
+        toolchain={"rustc":{"path":"/toolchains/pinned/bin/rustc","sha256":"b"*64},"cargo":{"path":None,"sha256":None}}
+        names=[f"{results}/run-2026010{day}T000000.000000Z-seed-{seed}.json" for day,seed in ((1,17),(2,29))]
+        for name,seed in zip(names,(17,29)):
+            write(root,name,json.dumps({**self.record(root,commit,seed=seed,status="completed"),
+                                        "executable":program,"toolchain":toolchain}))
+        # A command that failed to launch ran no program.
+        write(root,f"{results}/run-20260103T000000.000000Z-seed-31.json",json.dumps(
+            {**self.record(root,commit,seed=31,status="failed-to-launch"),"executable":{"path":None,"sha256":None}}))
+        self.assertEqual(gate(root),(0,[]))
+        shown=[name.removeprefix("experiments/semdb/X900-fixture/") for name in names]
+        for changed in ({"executable":{**program,"sha256":"c"*64}},{"toolchain":{**toolchain,"cargo":program}}):
+            with self.subTest(changed=sorted(changed)):
+                write(root,names[1],json.dumps({**self.record(root,commit,seed=29,status="completed"),
+                                                "executable":program,"toolchain":toolchain,**changed}))
+                errors=gate(root)[1]
+                self.assertEqual(len(errors),1,errors)
+                self.assertTrue(errors[0].startswith("X900: its runs name 2 programs or toolchains ("),errors[0])
+                self.assertIn(shown[0],errors[0])
+                self.assertIn(shown[1],errors[0])
+                self.assertTrue(errors[0].endswith(
+                    "); a program or toolchain replaced between seeds lies outside the commit every record names"),errors[0])
+                self.assertEqual(mod.launch_errors(root,"X900"),errors)
+
     def test_settings_are_compared_by_type_sign_and_offset_and_nan_is_itself(self):
         name=self.RECORD.removeprefix("experiments/semdb/X900-fixture/")
         config="experiments/semdb/X900-fixture/config.toml"

@@ -37,6 +37,12 @@ FIXED_ENVIRONMENT = {"PYTHONNOUSERSITE": "1"}
 # The names Cargo reads its configuration from, in a `.cargo` directory and
 # in its home.
 CARGO_CONFIGURATIONS = ("config", "config.toml")
+# rustup's proxies, which take a first argument `+<toolchain>` naming the
+# toolchain to run (`cargo +stable run`).
+RUSTUP_PROXIES = frozenset(
+    ("cargo", "rustc", "rustdoc", "rustfmt", "cargo-fmt", "cargo-clippy", "clippy-driver", "cargo-miri", "rust-gdb",
+     "rust-gdbgui", "rust-lldb", "rust-analyzer", "rls")
+)
 
 
 def load(path: Path):
@@ -397,6 +403,27 @@ def launch_watch(
         print(f"ERROR: {problem}", file=sys.stderr)
     if problems:
         return None
+    # A listed experiment's command may run or read any file of the
+    # repository, one git ignores (a build's output, a virtual environment)
+    # as well, which the watch does not see: it runs from a checkout that
+    # holds none, and builds into a directory of its own outside it
+    # (`execute_command`).
+    if listed:
+        try:
+            ignored = experiment_records.listed_names(
+                ROOT, "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"
+            )
+        except experiment_records.ProvenanceError as error:
+            print(f"ERROR: {error}", file=sys.stderr)
+            return None
+        if ignored:
+            print(
+                f"ERROR: refusing to run {exp_id} while the repository holds {experiment_records.listed(ignored)}, "
+                "which git ignores and its command could run or read unrecorded; a listed experiment runs from a "
+                "checkout that holds no such file (`git clean -ndX` lists them; a fresh worktree holds none)",
+                file=sys.stderr,
+            )
+            return None
     try:
         held = load(root / "experiment.toml")
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
@@ -565,14 +592,22 @@ def outside_cargo_configurations(environment: dict[str, str]) -> list[str]:
     return found
 
 
-def toolchain(environment: dict[str, str]) -> dict:
-    """The Rust toolchain a command run from the repository's root in
-    `environment` would build with: `rustc` and `cargo` as rustup resolves
-    them there, after its overrides and `rust-toolchain.toml`, or as the
-    `PATH` holds them without rustup, each named as `resolved_executable`
-    names a program, by nothing when it cannot be resolved. rustup keeps its
-    toolchains outside the repository, where the commit holds none."""
+def toolchain(environment: dict[str, str], command: list[str]) -> dict:
+    """The Rust toolchain `command`, run from the repository's root in
+    `environment`, would build with: `rustc` and `cargo` as rustup resolves
+    them there, after its overrides and `rust-toolchain.toml`, or for the
+    toolchain the command names itself when its program is one of rustup's
+    proxies and its first argument `+<toolchain>` (`cargo +stable run`), or
+    as the `PATH` holds them without rustup, each named as
+    `resolved_executable` names a program, by nothing when it cannot be
+    resolved. rustup keeps its toolchains outside the repository, where the
+    commit holds none."""
     rustup = shutil.which("rustup", path=os.pathsep.join(os.get_exec_path(environment)))
+    named = (
+        ["--toolchain", command[1][1:]]
+        if len(command) > 1 and command[1].startswith("+") and os.path.basename(command[0]) in RUSTUP_PROXIES
+        else []
+    )
     found = {}
     for tool in ("rustc", "cargo"):
         if rustup is None:
@@ -580,7 +615,7 @@ def toolchain(environment: dict[str, str]) -> dict:
             continue
         try:
             which = subprocess.run(
-                [rustup, "which", tool], cwd=ROOT, env=environment, capture_output=True, text=True, timeout=120
+                [rustup, "which", *named, tool], cwd=ROOT, env=environment, capture_output=True, text=True, timeout=120
             )
         except (OSError, subprocess.SubprocessError):
             which = None
@@ -620,7 +655,11 @@ def execute_command(command: list[str], environment: dict[str, str] | None = Non
     output, launch error and duration. Python in it reads and writes its
     bytecode cache in a fresh directory (`PYTHONPYCACHEPREFIX`), so no
     `__pycache__` entry the tree holds, which git ignores and HEAD does not
-    hold, runs in place of a tracked source. A command that could not start,
+    hold, runs in place of a tracked source. Given an environment (a listed
+    experiment's), Cargo in it builds into a fresh directory too
+    (`CARGO_TARGET_DIR`), from the commit's sources alone and outside the
+    repository, which then holds no build output a later run could take
+    in place of what the commit builds. A command that could not start,
     for want of that directory or of its program, or given an argument no
     process can take (a NUL character), has no exit status and its launch
     error: it saw no outcome. Once it started, an exception raised in the
@@ -652,7 +691,15 @@ def execute_command(command: list[str], environment: dict[str, str] | None = Non
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                env={**(os.environ if environment is None else environment), "PYTHONPYCACHEPREFIX": cache.name},
+                env=(
+                    {**os.environ, "PYTHONPYCACHEPREFIX": cache.name}
+                    if environment is None
+                    else {
+                        **environment,
+                        "PYTHONPYCACHEPREFIX": cache.name,
+                        "CARGO_TARGET_DIR": os.path.join(cache.name, "cargo-target"),
+                    }
+                ),
             )
         except (OSError, ValueError) as error:
             return not_started(error)
@@ -840,7 +887,7 @@ def launch_and_record(
             {
                 "environment": environment,
                 "executable": resolved_executable(command, environment),
-                "toolchain": toolchain(environment),
+                "toolchain": toolchain(environment, command),
             }
         )
     kept = attempts / out.name if listed else None
