@@ -196,9 +196,9 @@ def entry_errors(exp_id: str, entry, registered: set[str]) -> list[str]:
         if not isinstance(baseline,dict):
             errors.append(f"{name} is not a table")
             continue
-        if baseline.get("name") in names:
-            errors.append(f"{name} repeats the name {baseline['name']!r}")
         if isinstance(baseline.get("name"),str):
+            if baseline["name"] in names:
+                errors.append(f"{name} repeats the name {baseline['name']!r}")
             names.add(baseline["name"])
         for field in sorted(set(baseline)-BASELINE_FIELDS):
             errors.append(f"{name} has unknown field {field}")

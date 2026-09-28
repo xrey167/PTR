@@ -356,6 +356,8 @@ class PreregistrationGateTests(unittest.TestCase):
             ({"baselines":({**BASELINE,"status_key":1},)},{},[f"{where}: baseline 0 needs a status_key"]),
             ({"baselines":({key:value for key,value in BASELINE.items() if key!="name"},)},{},[f"{where}: baseline 0 needs a name of lowercase letters, digits and underscores"]),
             ({"baselines":({**BASELINE,"name":"Strong-RAG"},)},{},[f"{where}: baseline 0 needs a name of lowercase letters, digits and underscores"]),
+            ({"baselines":({**BASELINE,"name":["fixture"]},)},{},[f"{where}: baseline 0 needs a name of lowercase letters, digits and underscores"]),
+            ({"baselines":({**BASELINE,"name":{"a":1}},)},{},[f"{where}: baseline 0 needs a name of lowercase letters, digits and underscores"]),
             ({"baselines":(BASELINE,BASELINE)},{},[f"{where}: baseline 1 repeats the name 'fixture'"]),
         ]
         required=toml_table("experiment.X900.required",REQUIRED)
