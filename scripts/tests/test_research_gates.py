@@ -666,7 +666,10 @@ class PreregistrationGateTests(unittest.TestCase):
             root,
             f"X900: {name} ran at {short}, whose config.toml holds another [preregistration] than the frozen one",
             f"X900: {name} ran at {short}, whose experiment.toml names other preregistration digests than the frozen ones",
-            f"X900: {name} was changed after it was committed (2 commits touch it)",
+            f"X900: {name} was changed after it was committed (2 versions of it were committed)",
+            # The commit the runs were made at froze the old preregistration.
+            f"X900 was frozen at {short}, whose config.toml holds another [preregistration] than the frozen one",
+            f"X900 was frozen at {short}, whose experiment.toml names other preregistration digests than the frozen ones",
             f"X900: results/run.json ran at {short}, whose config.toml holds another [preregistration] than the frozen one",
             f"X900: results/run.json ran at {short}, whose experiment.toml names other preregistration digests than the frozen ones",
             # The aggregate as it was first committed saw the outcome under
@@ -739,15 +742,24 @@ class PreregistrationGateTests(unittest.TestCase):
         # the outcome is judged by, changed after the run.
         root,ran=self.ran()
         at=f"X900: {name} ran at {ran[:12]}"
+        froze=f"X900 was frozen at {ran[:12]}"
         write(root,self.MANIFEST,(root/self.MANIFEST).read_text(encoding="utf-8")+'falsification = "any outcome"\n')
-        self.assert_blocked(root,f"{at}, whose experiment.toml differs from the current one in falsification; after a run only its status changes")
+        changed=[
+            f"{at}, whose experiment.toml differs from the current one in falsification; after a run only its status changes",
+            f"{froze}, whose experiment.toml differs from the current one in falsification; after a run only its status changes",
+        ]
+        self.assert_blocked(root,*changed)
         commit_all(root,"criterion")
-        self.assert_blocked(root,f"{at}, whose experiment.toml differs from the current one in falsification; after a run only its status changes")
+        self.assert_blocked(root,*changed)
         # So is a setting of config.toml outside its [preregistration] table.
         root,ran=self.ran()
         at=f"X900: {name} ran at {ran[:12]}"
         self.edit(root,config,'tests_dir = "tests"','tests_dir = "checks"')
-        self.assert_blocked(root,f"{at}, whose config.toml differs from the current one in tests_dir; after a run the configuration stays as it ran")
+        self.assert_blocked(
+            root,
+            f"{at}, whose config.toml differs from the current one in tests_dir; after a run the configuration stays as it ran",
+            f"X900 was frozen at {ran[:12]}, whose config.toml differs from the current one in tests_dir; after a run the configuration stays as it ran",
+        )
         # The aggregate is bound the same way.
         root,ran=self.ran()
         at=f"X900: {name} ran at {ran[:12]}"
@@ -759,6 +771,7 @@ class PreregistrationGateTests(unittest.TestCase):
             root,
             f"{at}, whose experiment.toml differs from the current one in hypothesis; after a run only its status changes",
             f"X900: results/run.json ran at {ran[:12]}, whose experiment.toml differs from the current one in hypothesis; after a run only its status changes",
+            f"X900 was frozen at {ran[:12]}, whose experiment.toml differs from the current one in hypothesis; after a run only its status changes",
         )
 
     def test_after_a_run_the_status_only_moves_forward(self):
@@ -781,6 +794,8 @@ class PreregistrationGateTests(unittest.TestCase):
                         self.assert_blocked(
                             root,
                             f"X900: {name} ran at {ran[:12]}, where it was {then!r}; it cannot be {now!r} after that, "
+                            "since a status moves only from prepared to running to completed or failed",
+                            f"X900 was frozen at {ran[:12]}, where it was {then!r}; it cannot be {now!r} after that, "
                             "since a status moves only from prepared to running to completed or failed",
                         )
         # Back at planned, the experiment is not gated as frozen, but it has
@@ -827,6 +842,9 @@ class PreregistrationGateTests(unittest.TestCase):
             f"{at}, whose config.toml holds another [preregistration] than the frozen one",
             f"{at}, whose experiment.toml names other preregistration digests than the frozen ones",
             f"{at}, whose experiment.toml differs from the current one in results_dir; after a run only its status changes",
+            f"X900 was frozen at {ran[:12]}, whose config.toml holds another [preregistration] than the frozen one",
+            f"X900 was frozen at {ran[:12]}, whose experiment.toml names other preregistration digests than the frozen ones",
+            f"X900 was frozen at {ran[:12]}, whose experiment.toml differs from the current one in results_dir; after a run only its status changes",
         )
         # Moved into the new results directory, the record is gone from
         # where it was committed.
@@ -838,6 +856,7 @@ class PreregistrationGateTests(unittest.TestCase):
             root,
             f"X900: {name} was committed and has since been deleted or renamed; a run record stays as it was recorded",
             f"X900: new-results/{name.removeprefix('results/')} ran at {ran[:12]}, whose experiment.toml differs from the current one in results_dir; after a run only its status changes",
+            f"X900 was frozen at {ran[:12]}, whose experiment.toml differs from the current one in results_dir; after a run only its status changes",
         )
         # The experiment's directory moved in the registry, its records with
         # it: the records are gone from where they were committed, and the
@@ -854,6 +873,9 @@ class PreregistrationGateTests(unittest.TestCase):
             f"{at}, whose config.toml holds another [preregistration] than the frozen one",
             f"{at}, whose experiment.toml names other preregistration digests than the frozen ones",
             f"X900: {name} names manifest_sha256 {recorded!r}, not the SHA-256 of experiment.toml at {ran[:12]}",
+            # Where it was frozen, the commit held no experiment where it is now.
+            f"X900 was frozen at {ran[:12]}, whose config.toml holds another [preregistration] than the frozen one",
+            f"X900 was frozen at {ran[:12]}, whose experiment.toml names other preregistration digests than the frozen ones",
         )
         # Back at planned there, the records committed where the experiment
         # was are still its records.
@@ -905,6 +927,8 @@ class PreregistrationGateTests(unittest.TestCase):
             f"{at} names preregistration_sha256 {before[0]!r}, not {after[0]}, the digest the experiment is frozen at",
             f"{at} ran at {ran[:12]}, whose config.toml holds another [preregistration] than the frozen one",
             f"{at} ran at {ran[:12]}, whose experiment.toml names other preregistration digests than the frozen ones",
+            f"X900 was frozen at {ran[:12]}, whose config.toml holds another [preregistration] than the frozen one",
+            f"X900 was frozen at {ran[:12]}, whose experiment.toml names other preregistration digests than the frozen ones",
         ]
         self.assert_blocked(root,*earlier)
         # Written again in a new results directory instead, the old
@@ -920,12 +944,16 @@ class PreregistrationGateTests(unittest.TestCase):
         write(root,self.AGGREGATE.replace("/results/","/new-results/"),json.dumps(self.aggregate(root,rewrite)))
         commit_all(root,"new aggregate")
         at=f"X900: results/run.json ran at {ran[:12]}"
+        froze=f"X900 was frozen at {ran[:12]}"
         self.assert_blocked(
             root,
             f"X900: results/run.json names preregistration_sha256 {before[0]!r}, not {after[0]}, the digest the experiment is frozen at",
             f"{at}, whose config.toml holds another [preregistration] than the frozen one",
             f"{at}, whose experiment.toml names other preregistration digests than the frozen ones",
             f"{at}, whose experiment.toml differs from the current one in results_dir; after a run only its status changes",
+            f"{froze}, whose config.toml holds another [preregistration] than the frozen one",
+            f"{froze}, whose experiment.toml names other preregistration digests than the frozen ones",
+            f"{froze}, whose experiment.toml differs from the current one in results_dir; after a run only its status changes",
         )
         # And a committed aggregate stays.
         (root/self.AGGREGATE).unlink()
@@ -996,6 +1024,90 @@ class PreregistrationGateTests(unittest.TestCase):
         write(root,self.MANIFEST,(root/self.MANIFEST).read_text(encoding="utf-8")+'results_dir = "records"\n')
         self.assertEqual(gate(root),(0,[]))
 
+    def test_a_record_rewritten_on_one_side_of_a_merge_fails(self):
+        name=self.RECORD.removeprefix("experiments/semdb/X900-fixture/")
+        root=self.tree(status="running")
+        ran=commit_all(root)
+        git(root,"checkout","-q","-b","topic")
+        git(root,"checkout","-q","main")
+        write(root,self.RECORD,json.dumps(self.record(root,ran)))
+        commit_all(root,"records")
+        # On a topic branch the record is written otherwise, the branch
+        # takes main in with its own side of the conflict, and main takes
+        # the branch in: the record's path changed on one side only of each
+        # merge that git's default history follows.
+        git(root,"checkout","-q","topic")
+        write(root,self.RECORD,json.dumps(self.record(root,ran,note="rewritten")))
+        commit_all(root,"rewritten")
+        subprocess.run(["git","-c","user.name=PTR tests","-c","user.email=tests@example.invalid","merge","-q","--no-edit","main"],
+                       cwd=root,capture_output=True,check=False)
+        write(root,self.RECORD,json.dumps(self.record(root,ran,note="rewritten")))
+        commit_all(root,"resolved")
+        git(root,"checkout","-q","main")
+        git(root,"merge","-q","--no-edit","topic")
+        self.assert_blocked(root,f"X900: {name} was changed after it was committed (2 versions of it were committed)")
+
+    def test_a_committed_freeze_binds_whether_or_not_its_runs_were_kept(self):
+        # Frozen and committed, the experiment could be run; its record was
+        # discarded, and the preregistration rewritten and run again.
+        root=self.tree(status="running")
+        frozen=commit_all(root)
+        before=self.frozen(root)
+        rewritten=self.tree(status="running",table={**TABLE,"schema":2})
+        for relative in ("experiments/semdb/X900-fixture/config.toml",self.MANIFEST):
+            shutil.copyfile(rewritten/relative,root/relative)
+        rewrite=commit_all(root,"rewrite")
+        write(root,self.RECORD,json.dumps(self.record(root,rewrite)))
+        commit_all(root,"records")
+        self.assertNotEqual(before,self.frozen(root))
+        errors=[
+            f"X900 was frozen at {frozen[:12]}, whose config.toml holds another [preregistration] than the frozen one",
+            f"X900 was frozen at {frozen[:12]}, whose experiment.toml names other preregistration digests than the frozen ones",
+        ]
+        self.assert_blocked(root,*errors)
+        self.assertEqual(sorted(mod.launch_errors(root,"X900")),sorted(errors))
+        # A commit that could not launch it did not freeze it: here the
+        # table still held a placeholder.
+        root=self.tree(status="running",table={**TABLE,"harness":"must-be-pinned-before-prepared"})
+        commit_all(root)
+        fixed=self.tree(status="running")
+        for relative in ("experiments/semdb/X900-fixture/config.toml",self.MANIFEST):
+            shutil.copyfile(fixed/relative,root/relative)
+        commit_all(root,"pinned")
+        self.assertEqual(gate(root),(0,[]))
+        # Nor did one whose manifest named no digest of it yet.
+        root=self.tree(status="running",digest=None)
+        commit_all(root)
+        shutil.copyfile(fixed/self.MANIFEST,root/self.MANIFEST)
+        commit_all(root,"digest named")
+        self.assertEqual(gate(root),(0,[]))
+        # Nor did one whose baseline was still blocked.
+        blocked={**BASELINE_CONFIG,"status":"blocked-unpinned"}
+        root=self.tree(status="running",baseline_config=blocked,table={**TABLE,"baseline_fixture_sha256":baseline_digest(
+            {"config.toml":(self.tree(baseline_config=blocked)/BASELINE_PATH).read_text(encoding="utf-8")})})
+        commit_all(root)
+        for relative in ("experiments/semdb/X900-fixture/config.toml",self.MANIFEST,BASELINE_PATH):
+            shutil.copyfile(fixed/relative,root/relative)
+        commit_all(root,"unblocked")
+        self.assertEqual(gate(root),(0,[]))
+        # Nor did one where the list did not name it yet.
+        root=self.tree(status="running",listed_text="version = 1\n")
+        commit_all(root)
+        listed=self.tree(status="running")
+        for relative in ("experiments/preregistration.toml",self.MANIFEST):
+            shutil.copyfile(listed/relative,root/relative)
+        commit_all(root,"listed")
+        self.assertEqual(gate(root),(0,[]))
+        # Once frozen in a commit, it does not go back to planned.
+        root=self.tree(status="prepared")
+        frozen=commit_all(root)
+        self.edit(root,self.MANIFEST,'status = "prepared"','status = "planned"')
+        self.assert_blocked(
+            root,
+            f"X900 is 'planned', but it was 'prepared' at {frozen[:12]}; a listed experiment that has left planned "
+            "stays prepared, running, completed or failed, or is superseded",
+        )
+
     def test_a_listed_experiment_stays_listed(self):
         root=self.tree()
         listed=(root/"experiments/preregistration.toml").read_text(encoding="utf-8")
@@ -1020,8 +1132,31 @@ class PreregistrationGateTests(unittest.TestCase):
             "experiments/preregistration.toml: X901 is not a registered experiment",
             delisted.replace(first[:12],again[:12]),
         )
-        # A name the registry did not hold when it was listed, such as a
-        # mistyped one, enrolls nothing: taken out again, it is not missed.
+        # Listed before the registry held it and registered in a later
+        # commit, it is enrolled all the same.
+        root=self.tree()
+        registry=(root/"experiments/registry.toml").read_text(encoding="utf-8")
+        write(root,"experiments/registry.toml","version = 1\n")
+        early=commit_all(root,"listed first")
+        write(root,"experiments/registry.toml",registry)
+        commit_all(root,"registered")
+        write(root,"experiments/preregistration.toml","version = 1\n")
+        self.assert_blocked(root,delisted.replace(first[:12],early[:12]))
+        self.assertEqual(mod.launch_errors(root,"X900"),[delisted.replace(first[:12],early[:12])])
+        write(root,"experiments/preregistration.toml",listed)
+        again=commit_all(root,"listed again")
+        # Taken out of the registry and the list together, it is still
+        # enrolled: the registry held it.
+        root=self.tree()
+        together=commit_all(root)
+        write(root,"experiments/registry.toml","version = 1\n")
+        write(root,"experiments/preregistration.toml","version = 1\n")
+        self.assertEqual(mod.launch_errors(root,"X900"),[delisted.replace(first[:12],together[:12])])
+        write(root,"experiments/registry.toml",registry)
+        write(root,"experiments/preregistration.toml",listed)
+        again=commit_all(root,"listed again")
+        # A name the registry has never held, such as a mistyped one,
+        # enrolls nothing: taken out again, it is not missed.
         write(root,"experiments/preregistration.toml",listed+'\n[experiment.X9O0.required]\nseeds = "int-list"\n')
         commit_all(root,"typo")
         self.assert_blocked(root,"experiments/preregistration.toml: X9O0 is not a registered experiment")
@@ -1051,6 +1186,8 @@ class PreregistrationGateTests(unittest.TestCase):
             f"X900: {name} names preregistration_rules_sha256 {rules!r}, not {changed}, the digest the experiment is frozen at",
             f"{at}, whose experiments/preregistration.toml lists other rules for it than the frozen ones",
             f"{at}, whose experiment.toml names other preregistration digests than the frozen ones",
+            f"X900 was frozen at {ran[:12]}, whose experiments/preregistration.toml lists other rules for it than the frozen ones",
+            f"X900 was frozen at {ran[:12]}, whose experiment.toml names other preregistration digests than the frozen ones",
         ]
         self.assert_blocked(
             root,

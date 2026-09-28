@@ -48,20 +48,26 @@ replaced by another, whose own preregistration counts:
   history and holds the same preregistration, entry, files and baselines,
   and the same manifest and `config.toml` but for the manifest's status,
   which has only moved forward since (`history_errors`); a run record also
-  names the SHA-256 of the manifest at that commit and is unchanged since it
-  was committed, an aggregate, which may be written again, holds to this in
+  names the SHA-256 of the manifest at that commit and has held the same
+  content in every commit on every side of every merge since it was
+  committed, an aggregate, which may be written again, holds to this in
   every version it was committed in, none once committed is deleted, renamed
   or moved, and each is a regular file reached through no symlink. A
   preregistration rewritten after its runs fails even when the manifest and
   the records are rewritten to match, short of rewriting history;
+- every commit that held the experiment frozen as the runner launches it
+  (`launchable_at`) holds the same as a run's commit must: a run can be made
+  there and its record discarded before it is committed, so the first
+  committed freeze binds, whether or not a record of it was kept;
 - no file the table freezes and no baseline's directory lies in the results
   directory, or holds it: the runner holds the experiment's files to HEAD
   except those, where runs write.
 
 The list keeps every experiment it has named at a commit on HEAD's history
-(`enrolled`), so taking one out of it opens neither the gate nor the
-runner, and a listed experiment whose run records were committed cannot go
-back to `planned`; it can only be superseded.
+that the registry holds now or has held at any commit (`enrolled`), so
+taking one out of it opens neither the gate nor the runner, and a listed
+experiment that was committed frozen, or whose run records were committed,
+cannot go back to `planned`; it can only be superseded.
 
 `scripts/run_experiment.py` refuses to run or prepare a listed experiment
 until this holds for it (`launch_errors`), so no outcome is seen before the
@@ -402,24 +408,29 @@ def versions(root: Path, relative: str) -> list[tuple[str, dict]]:
             found.append((commit,held))
     return found
 
-def registered_at(root: Path, commit: str) -> set[str]:
-    """The experiments the registry holds at `commit`."""
-    registry=toml_at(root,commit,REGISTRY)
-    items=registry.get("experiment") if isinstance(registry,dict) else None
-    return {item.get("id") for item in items if isinstance(item,dict)} if isinstance(items,list) else set()
+def ever_registered(root: Path) -> set[str]:
+    """Every experiment the registry has held at a commit on HEAD's
+    history."""
+    found=set()
+    for _,registry in versions(root,REGISTRY):
+        items=registry.get("experiment")
+        for item in items if isinstance(items,list) else ():
+            if isinstance(item,dict) and isinstance(item.get("id"),str):
+                found.add(item["id"])
+    return found
 
-def enrolled(root: Path) -> dict[str, str]:
-    """Every experiment the list has named at a commit on HEAD's history
-    where the registry held it too, with the newest such commit. A name the
-    registry did not hold there, such as a mistyped one, enrolled nothing."""
+def enrolled(root: Path, registered: set[str]) -> dict[str, str]:
+    """Every experiment the list has named at a commit on HEAD's history,
+    with the newest such commit, of those the registry holds now
+    (`registered`) or has held at any commit on HEAD's history, whether
+    before, with or after the list named it. A name the registry has never
+    held, such as a mistyped one, enrolled nothing."""
+    known=registered|ever_registered(root)
     named={}
     for commit,listed in versions(root,PREREGISTRATION):
         entries=listed.get("experiment")
-        if not isinstance(entries,dict):
-            continue
-        registered=registered_at(root,commit)
-        for exp_id in entries:
-            if exp_id in registered:
+        for exp_id in entries if isinstance(entries,dict) else ():
+            if exp_id in known:
                 named.setdefault(exp_id,commit)
     return named
 
@@ -460,6 +471,84 @@ def committed_records(root: Path, directories: list[str]) -> list[str]:
     names=history(root,"--no-renames","--name-only","-z","--format=","HEAD","--",*directories)
     return sorted({name for name in names if is_run_record(name) or is_aggregate(name)})
 
+def committed_blobs(root: Path, relative: str) -> set[str]:
+    """The distinct contents, as blob names, that the repository path
+    `relative` has had at the commits of HEAD's full history that change it,
+    on every side of every merge."""
+    found=set()
+    for commit in history(root,"--format=%H","HEAD","--",relative):
+        held=experiment_records.git(root,"rev-parse","--verify","--quiet",f"{commit}:{relative}")
+        if held.returncode==0:
+            found.add(held.stdout.strip())
+    return found
+
+def launchable_at(root: Path, commit: str, exp_id: str, directory: str) -> str | None:
+    """The status at which `commit` holds the experiment in `directory`
+    frozen as the runner launches it (`launch_errors`), or None when it does
+    not: the list names it with a well-formed entry, its manifest is past
+    `planned`, its `[preregistration]` table holds every required key,
+    pinned and of its type, and no placeholder, the table's seeds are the
+    manifest's, the manifest names the digests of the table and of the
+    entry, and every file and baseline the table freezes has the frozen
+    content there, each baseline pinned and not blocked. A commit that held
+    less could not launch it, and does not freeze it."""
+    manifest=toml_at(root,commit,f"{directory}/experiment.toml")
+    if not isinstance(manifest,dict) or manifest.get("status") not in FROZEN:
+        return None
+    listed=toml_at(root,commit,PREREGISTRATION)
+    entries=listed.get("experiment") if isinstance(listed,dict) else None
+    entry=entries.get(exp_id) if isinstance(entries,dict) else None
+    if entry_errors(exp_id,entry,{exp_id}):
+        return None
+    config=toml_at(root,commit,f"{directory}/config.toml")
+    table=config.get("preregistration") if isinstance(config,dict) else None
+    if not isinstance(table,dict):
+        return None
+    for key,kind in entry["required"].items():
+        if key not in table or kind_problem(table[key],kind):
+            return None
+        if kind=="file":
+            data=blob(root,commit,table[key]) if is_repository_path(table[key]) else None
+            if data is None or hashlib.sha256(data.replace(b"\r\n",b"\n")).hexdigest()!=table.get(f"{key}_sha256"):
+                return None
+    if any(unset_problem(value) for value in table.values()) or table.get("seeds")!=manifest.get("seeds"):
+        return None
+    for baseline in entry.get("baseline",[]):
+        settings=toml_at(root,commit,baseline["path"])
+        if not isinstance(settings,dict):
+            return None
+        status=lookup(settings,baseline["status_key"])
+        if not isinstance(status,str) or is_unset(status) or status.strip().lower().startswith("blocked-"):
+            return None
+        for key in baseline["keys"]:
+            value=lookup(settings,key)
+            if value is MISSING or pinned_problem(value):
+                return None
+        if directory_digest_at(root,commit,baseline_directory(baseline["path"]))!=table.get(f"baseline_{baseline['name']}_sha256"):
+            return None
+    try:
+        if (manifest.get("preregistration_sha256")!=experiment_records.preregistration_digest(table)
+                or manifest.get("preregistration_rules_sha256")!=experiment_records.canonical_digest(entry)):
+            return None
+    except (ValueError,UnicodeEncodeError):
+        return None
+    return manifest["status"]
+
+def frozen_commits(root: Path, exp_id: str, relative: str) -> list[tuple[str, str]]:
+    """Every commit on HEAD's history that changes the experiment's
+    manifest, in any directory the registry has given it (`relative` is its
+    directory now), and holds it frozen as the runner launches it
+    (`launchable_at`), with its status there, newest first. From such a
+    commit on, the runner could launch the experiment, whether or not a
+    record of that run was kept."""
+    found=[]
+    for directory in experiment_directories(root,exp_id,relative):
+        for commit,_ in versions(root,f"{directory}/experiment.toml"):
+            status=launchable_at(root,commit,exp_id,directory)
+            if status is not None and commit not in {seen for seen,_ in found}:
+                found.append((commit,status))
+    return found
+
 def directory_digest_at(root: Path, commit: str, directory: str) -> str | None:
     """`directory_digest` of the repository `directory` as `commit` holds it,
     or None when it holds anything but regular files there (a symlink, a
@@ -490,7 +579,7 @@ def changed_keys(then: dict, now: dict, unbound: set[str]) -> list[str]:
     return sorted(key for key in (then.keys()|now.keys())-unbound if then.get(key,MISSING)!=now.get(key,MISSING))
 
 def history_errors(exp_id: str, name: str, named, root: Path, experiment: Path, entry: dict, table: dict,
-                   frozen: tuple[str, str], current: tuple[dict, dict]) -> tuple[list[str], str | None]:
+                   frozen: tuple[str, str], current: tuple[dict, dict], at: str | None = None) -> tuple[list[str], str | None]:
     """What keeps the commit a record names (`named`) from holding the
     preregistration frozen now and the experiment as it is now, and that
     commit. The commit is on HEAD's history; the experiment's
@@ -501,14 +590,15 @@ def history_errors(exp_id: str, name: str, named, root: Path, experiment: Path, 
     are the ones now (`current`: the manifest and the configuration), but
     for the manifest's status, which has only moved forward since (`RANK`).
     A record's own fields can be edited; the commit it ran at cannot, short
-    of rewriting history."""
+    of rewriting history. `at`, when given, names what is checked at the
+    commit in each error, in place of the record that ran there."""
     digest,rules=frozen
     now_manifest,now_config=current
     where=f"{exp_id}: {name}"
     commit=experiment_records.resolve_commit(named,root) if isinstance(named,str) else None
     if commit is None:
         return [f"{where} names no commit this repository holds ({named!r})"],None
-    at=f"{where} ran at {commit[:12]}"
+    at=f"{where} ran at {commit[:12]}" if at is None else at
     errors=[]
     if not experiment_records.is_ancestor(commit,"HEAD",root):
         errors.append(f"{at}, which is not on HEAD's history")
@@ -663,11 +753,21 @@ def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path,
                     continue
                 errors.extend(record_errors(exp_id,version,earlier,True,root,experiment,entry,table,frozen,current))
             continue
-        touched=experiment_records.git(root,"rev-list","HEAD","--",path).stdout.split()
-        if len(touched)>1:
-            errors.append(f"{where} was changed after it was committed ({len(touched)} commits touch it)")
-        if touched and experiment_records.git(root,"diff","--quiet","HEAD","--",path).returncode!=0:
+        # Every commit that holds the record, on every side of every merge,
+        # holds the same content: a record rewritten on one side of a merge
+        # and kept by it was changed all the same.
+        blobs=committed_blobs(root,path)
+        if len(blobs)>1:
+            errors.append(f"{where} was changed after it was committed ({len(blobs)} versions of it were committed)")
+        if blobs and experiment_records.git(root,"diff","--quiet","HEAD","--",path).returncode!=0:
             errors.append(f"{where} differs from the record committed as it")
+    # A commit that holds the experiment past planned froze it, whether or
+    # not a record of a run there was kept: the runner could launch it, and
+    # a record can be discarded before it is committed.
+    for commit,_ in frozen_commits(root,exp_id,relative):
+        problems,_=history_errors(exp_id,"",commit,root,experiment,entry,table,frozen,current,
+                                  at=f"{exp_id} was frozen at {commit[:12]}")
+        errors.extend(problems)
     return errors
 
 def frozen_errors(exp_id: str, entry: dict, manifest: dict, experiment: Path, root: Path) -> list[str]:
@@ -751,7 +851,8 @@ def preregistration_errors(root: Path, manifests: dict[str, dict], experiments: 
     """What keeps the listed experiments that left `planned` from having
     frozen preregistrations, and what is wrong with the list itself: it
     still names every experiment it has named (`enrolled`), and a listed
-    experiment whose runs were committed has not gone back to `planned`."""
+    experiment that has left `planned` in a commit, or whose runs were
+    committed, has not gone back to it."""
     if not (root/PREREGISTRATION).is_file():
         return [f"{PREREGISTRATION} does not exist"]
     listed=load(root/PREREGISTRATION)
@@ -773,12 +874,18 @@ def preregistration_errors(root: Path, manifests: dict[str, dict], experiments: 
         elif status!="superseded":
             relative=experiments[exp_id].relative_to(root).as_posix()
             committed=committed_records(root,experiment_directories(root,exp_id,relative))
+            left=frozen_commits(root,exp_id,relative)
             if committed:
                 errors.append(
                     f"{exp_id} is {status!r}, but run records of it were committed ({committed[0]}); a listed "
                     "experiment that has run stays prepared, running, completed or failed, or is superseded"
                 )
-    for exp_id,commit in sorted(enrolled(root).items()):
+            elif left:
+                errors.append(
+                    f"{exp_id} is {status!r}, but it was {left[0][1]!r} at {left[0][0][:12]}; a listed experiment "
+                    "that has left planned stays prepared, running, completed or failed, or is superseded"
+                )
+    for exp_id,commit in sorted(enrolled(root,set(manifests)).items()):
         if exp_id not in entries:
             errors.append(delisted_error(exp_id,commit))
     return errors
@@ -795,10 +902,10 @@ def launch_errors(root: Path, exp_id: str) -> list[str]:
     entries=load(root/PREREGISTRATION).get("experiment",{})
     if not isinstance(entries,dict):
         return [f"{PREREGISTRATION}: experiment must be a table of experiments"]
+    items={item.get("id"):item for item in load(root/REGISTRY).get("experiment",[]) if isinstance(item,dict)}
     if exp_id not in entries:
-        commit=enrolled(root).get(exp_id)
+        commit=enrolled(root,set(items)).get(exp_id)
         return [] if commit is None else [delisted_error(exp_id,commit)]
-    items={item.get("id"):item for item in load(root/REGISTRY).get("experiment",[])}
     problems=entry_errors(exp_id,entries[exp_id],set(items))
     if problems:
         return problems
