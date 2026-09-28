@@ -314,7 +314,11 @@ def git(
         env["GIT_NO_REPLACE_OBJECTS"] = "1"
     try:
         return subprocess.run(
-            ["git", *args], cwd=root, input=stdin, env=env, capture_output=True, text=not binary, check=False
+            # Git reads the tree itself: no file system monitor a clone's own
+            # configuration names answers for it, and no hook of the clone's
+            # runs when git refreshes its index.
+            ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", *args],
+            cwd=root, input=stdin, env=env, capture_output=True, text=not binary, check=False,
         )
     except OSError as error:
         raise ProvenanceError(f"cannot run git: {error}") from error
@@ -438,7 +442,11 @@ def uncommitted_files(root: Path, pathspecs: list[str]) -> list[str]:
     it. So does a directory git does not look into where the build reads
     (`unseen_trees`): a symlink to a directory, a nested repository or a
     submodule, such as a `crates/ptr-*` crate linked or cloned in, which git
-    lists as one path no file pathspec matches. Raises `ProvenanceError` when
+    lists as one path no file pathspec matches. And so does a tracked file
+    whose bytes on disk are not HEAD's (`content_changes`), whatever git
+    status says of it: a clone's own configuration (a file system monitor, a
+    clean filter its own attributes name, a stat cache it trusts) could have
+    it report a rewritten file as unchanged. Raises `ProvenanceError` when
     git cannot list the tree."""
     found = {
         entry[3:]
@@ -455,8 +463,67 @@ def uncommitted_files(root: Path, pathspecs: list[str]) -> list[str]:
         tracked.append(name)
         if tag.islower() or tag.upper() == "S" or mode == SYMLINK_MODE:
             found.add(name)
+    found.update(content_changes(root, tracked))
     found.update(unseen_trees(root, pathspecs, provenance_directories(tracked)))
     return sorted(found)
+
+
+def content_changes(root: Path, names: list[str]) -> list[str]:
+    """Those of the tracked files `names` whose bytes in the working tree of
+    `root` are not the blob HEAD holds for them, sorted, read from disk as
+    they are, so no clean filter, file system monitor or stat cache that a
+    clone's own configuration names answers for them, and those whose
+    executable bit is not HEAD's. A working copy that differs from a blob
+    holding no carriage return only in CRLF line endings, as a converting
+    checkout writes one, holds HEAD's content. A name HEAD does not hold as
+    a regular file, or the working tree does not hold as one, is git
+    status's to report. Raises `ProvenanceError` when git cannot read HEAD."""
+    wanted = set(names)
+    if not wanted:
+        return []
+    held = {}
+    for entry in listed_names(root, "ls-tree", "-r", "-z", "--full-tree", "HEAD"):
+        fields, _, name = entry.partition("\t")
+        mode, kind, blob = fields.split(" ")
+        if name in wanted and kind == "blob" and mode in ("100644", "100755"):
+            held[name] = (mode, blob)
+    changed, differing = [], []
+    for name, (mode, blob) in sorted(held.items()):
+        path = root / name
+        try:
+            info = path.lstat()
+            if not stat.S_ISREG(info.st_mode):
+                continue
+            data = path.read_bytes()
+        except OSError:
+            continue
+        if os.name == "posix" and bool(info.st_mode & stat.S_IXUSR) != (mode == "100755"):
+            changed.append(name)
+            continue
+        hashed = (hashlib.sha256 if len(blob) == 64 else hashlib.sha1)(b"blob %d\0" % len(data) + data).hexdigest()
+        if hashed != blob:
+            differing.append((name, blob, data))
+    if differing:
+        request = "".join(f"{blob}\n" for _, blob, _ in differing).encode("ascii")
+        copies = git(root, "cat-file", "--batch", stdin=request, binary=True)
+        if copies.returncode != 0:
+            problem = copies.stderr.decode(errors="replace").strip()
+            raise ProvenanceError(f"cannot read HEAD's files: {problem}")
+        # Each object is a header line, `<id> blob <size>`, its content and a
+        # newline; a blob git cannot read has the header `<id> missing`.
+        output, offset = copies.stdout, 0
+        for name, blob, data in differing:
+            end = output.find(b"\n", offset)
+            header = output[offset:end].split() if end >= 0 else []
+            if len(header) != 3 or header[:2] != [blob.encode("ascii"), b"blob"] or not header[2].isdigit():
+                raise ProvenanceError(f"cannot read HEAD's copy of {name}")
+            size = int(header[2])
+            content = output[end + 1 : end + 1 + size]
+            offset = end + 1 + size + 1
+            if b"\r" not in content and data.replace(b"\r\n", b"\n") == content:
+                continue
+            changed.append(name)
+    return sorted(changed)
 
 
 def hiding_rules(root: Path, pathspecs: list[str]) -> list[str]:

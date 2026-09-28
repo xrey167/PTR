@@ -639,6 +639,113 @@ class SourceTreeTests(GitTree, unittest.TestCase):
             mod.uncommitted_files(self.root, self.pathspecs), [".gitignore", "crates/other/.gitignore"]
         )
 
+    def test_a_clones_own_configuration_hides_no_rewritten_source(self):
+        # A clone's own configuration could have git status report a
+        # rewritten source as unchanged: a clean filter its own attributes
+        # name, a file system monitor, a file mode git is told to ignore.
+        # The bytes on disk are compared with HEAD's blob.
+        original = (self.root / "src/lib.rs").read_bytes()
+        (self.root / ".git/info").mkdir(parents=True, exist_ok=True)
+        (self.root / ".git/info/attributes").write_text("*.rs filter=hide\n", encoding="utf-8")
+        git(self.root, "config", "filter.hide.clean", "git show HEAD:src/lib.rs")
+        # Of one size, so git asks the filter rather than the stat.
+        self.assertEqual(len("pub fn g() {}\n"), len(original))
+        self.write("src/lib.rs", "pub fn g() {}\n")
+        self.assertEqual(git(self.root, "status", "--porcelain", "--", "src/lib.rs"), "")
+        self.assertEqual(mod.uncommitted_files(self.root, self.pathspecs), ["src/lib.rs"])
+        (self.root / ".git/info/attributes").unlink()
+        git(self.root, "config", "--unset", "filter.hide.clean")
+        (self.root / "src/lib.rs").write_bytes(original)
+        self.assertEqual(mod.uncommitted_files(self.root, self.pathspecs), [])
+        # A monitor that reports nothing changed since the last status hides
+        # a rewritten source and a deleted one from git status.
+        hook = self.root / ".git/quiet-monitor"
+        hook.write_text("#!/bin/sh\nprintf 'token\\0'\n", encoding="utf-8")
+        hook.chmod(0o755)
+        git(self.root, "config", "core.fsmonitor", str(hook))
+        git(self.root, "status", "--porcelain")
+        git(self.root, "status", "--porcelain")
+        self.write("src/lib.rs", "pub fn f() { rewritten() }\n")
+        (self.root / "Cargo.toml").unlink()
+        self.assertEqual(git(self.root, "status", "--porcelain", "--untracked-files=no"), "")
+        self.write("src/new.rs", "pub fn new() {}\n")
+        self.assertEqual(
+            mod.uncommitted_files(self.root, self.pathspecs), ["Cargo.toml", "src/lib.rs", "src/new.rs"]
+        )
+        git(self.root, "config", "--unset", "core.fsmonitor")
+        (self.root / "src/new.rs").unlink()
+        (self.root / "src/lib.rs").write_bytes(original)
+        git(self.root, "checkout", "--", "Cargo.toml")
+        self.assertEqual(mod.uncommitted_files(self.root, self.pathspecs), [])
+        # An executable bit git is told not to see.
+        git(self.root, "config", "core.fileMode", "false")
+        (self.root / "src/lib.rs").chmod(0o755)
+        self.assertEqual(git(self.root, "status", "--porcelain", "--", "src/lib.rs"), "")
+        self.assertEqual(mod.uncommitted_files(self.root, self.pathspecs), ["src/lib.rs"])
+        (self.root / "src/lib.rs").chmod(0o644)
+        self.assertEqual(mod.uncommitted_files(self.root, self.pathspecs), [])
+        git(self.root, "config", "--unset", "core.fileMode")
+        # A file HEAD holds as executable is read as well.
+        (self.root / "scripts/run_experiment.py").chmod(0o755)
+        self.assertTrue(commit(self.root, {}, "an executable recorder"))
+        self.write("scripts/run_experiment.py", "# rewritten\n")
+        self.assertEqual(mod.content_changes(self.root, ["scripts/run_experiment.py"]), ["scripts/run_experiment.py"])
+
+    def test_no_hook_of_the_clones_runs_while_the_tree_is_read(self):
+        # Git runs a clone's post-index-change hook when a status refreshes
+        # its index; no code the commit does not hold runs in the watch.
+        marker = self.root / ".git/hook-ran"
+        hook = self.root / ".git/hooks/post-index-change"
+        hook.parent.mkdir(parents=True, exist_ok=True)
+        hook.write_text(f"#!/bin/sh\ntouch '{marker}'\n", encoding="utf-8")
+        hook.chmod(0o755)
+        os.utime(self.root / "src/lib.rs", (1577836800, 1577836800))
+        git(self.root, "status", "--porcelain")
+        self.assertTrue(marker.exists())
+        marker.unlink()
+        os.utime(self.root / "src/lib.rs", (1609459200, 1609459200))
+        self.assertEqual(mod.uncommitted_files(self.root, self.pathspecs), [])
+        self.assertFalse(marker.exists())
+
+    def test_a_converting_checkouts_crlf_copy_holds_heads_content(self):
+        # A checkout that writes text with CRLF line endings holds the LF
+        # blob HEAD holds; carriage returns that blob does not end its lines
+        # with are content.
+        git(self.root, "config", "core.autocrlf", "true")
+        originals = {}
+        for name in ("Cargo.toml", "src/lib.rs"):
+            originals[name] = (self.root / name).read_bytes()
+            (self.root / name).unlink()
+        git(self.root, "checkout", "--", "Cargo.toml", "src/lib.rs")
+        for name, original in originals.items():
+            self.assertEqual((self.root / name).read_bytes(), original.replace(b"\n", b"\r\n"))
+        self.assertEqual(mod.uncommitted_files(self.root, self.pathspecs), [])
+        # Two copies, read back from HEAD in one request.
+        self.assertEqual(mod.content_changes(self.root, ["Cargo.toml", "src/lib.rs"]), [])
+        (self.root / "src/lib.rs").write_bytes(originals["src/lib.rs"].replace(b"\n", b"\r\r\n"))
+        self.assertEqual(mod.content_changes(self.root, ["Cargo.toml", "src/lib.rs"]), ["src/lib.rs"])
+        git(self.root, "checkout", "--", "src/lib.rs")
+        # A lone carriage return has git convert none of the file's line
+        # endings, so a CRLF ending over one of the blob's is content.
+        self.assertTrue(commit(self.root, {"src/cr.rs": "a\rb\r\n"}, "carriage returns"))
+        self.assertEqual(mod.content_changes(self.root, ["src/cr.rs"]), [])
+        (self.root / "src/cr.rs").write_bytes(b"a\rb\r\r\n")
+        self.assertEqual(mod.content_changes(self.root, ["src/cr.rs"]), ["src/cr.rs"])
+        # A name HEAD does not hold, or the tree does not hold as a file, is
+        # git status's to report.
+        (self.root / "src/cr.rs").unlink()
+        self.assertEqual(mod.content_changes(self.root, ["src/cr.rs", "src/absent.rs"]), [])
+        self.assertEqual(mod.content_changes(self.root, []), [])
+
+    def test_a_blob_git_cannot_read_leaves_the_tree_unknown(self):
+        # With HEAD's copy of a changed file gone from the object store, the
+        # watch cannot tell a converted checkout from a rewrite.
+        blob = git(self.root, "rev-parse", "HEAD:src/lib.rs")
+        self.write("src/lib.rs", "pub fn f() { rewritten() }\n")
+        (self.root / ".git/objects" / blob[:2] / blob[2:]).unlink()
+        with self.assertRaisesRegex(mod.ProvenanceError, "cannot read HEAD's copy of src/lib.rs"):
+            mod.content_changes(self.root, ["src/lib.rs"])
+
     def test_a_directory_heads_rules_ignore_decides_every_file_below_it(self):
         # Git cannot show a file again below a directory its rules ignore, so
         # one such top-level directory decides all its files at once; one its
