@@ -63,6 +63,13 @@ COVERAGE = [
     "backup_catchups",
     "nul_probes",
     "long_replay_commits",
+    # Semantic records of every origin: a prefix written before origins
+    # existed, then requests, Pod outputs, host writes and merges.
+    "legacy_records",
+    "request_records",
+    "pod_output_records",
+    "host_records",
+    "merge_records",
 ]
 HARD = [
     "invalid_logs",
@@ -86,7 +93,8 @@ HARD = [
     "nul_failures",
 ]
 SCOPE = (
-    "generated ledgers of every event kind replayed into a PostgreSQL projection on one "
+    "generated ledgers of every event kind, semantic records of every origin included, "
+    "replayed into a PostgreSQL projection on one "
     "local server, with client and server crashes, commits the server fails, redeliveries, "
     "gaps, dueling projectors, forked histories, a backup catch-up, rebuilds onto unrelated "
     "and true histories, "

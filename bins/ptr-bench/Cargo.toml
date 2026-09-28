@@ -14,6 +14,7 @@ default = []
 postgres-experiments = [
     "dep:ptr-pg",
     "ptr-pg/postgres-backend",
+    "dep:ptr-branch",
     "dep:ptr-state",
     "dep:ptr-fastmem",
     "dep:tokio",
@@ -32,6 +33,8 @@ ptr-exec = { workspace = true }
 ptr-ledger = { workspace = true }
 ptr-runtime = { workspace = true }
 ptr-pg = { workspace = true, optional = true }
+# L004 writes merge records whose plan digest replay recomputes.
+ptr-branch = { workspace = true, optional = true }
 ptr-state = { workspace = true, optional = true }
 ptr-fastmem = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
