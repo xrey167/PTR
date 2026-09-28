@@ -69,7 +69,8 @@ fn a_certified_and_verified_branch_reaches_semantic_state_only_through_the_runti
         .unwrap();
     assert_eq!(triage.decision(), TriageDecision::AutoPropose);
 
-    let (expected, delta, relied) = certification.plan().clone().into_parts();
+    let plan = certification.plan();
+    let (expected, delta, relied) = (plan.expected(), plan.delta().clone(), plan.relied().clone());
     runtime
         .apply_certified_semantic_delta(
             expected,
@@ -129,7 +130,8 @@ fn a_revocation_or_supersession_after_certification_refuses_the_commit_and_appen
         assert_eq!(plan.expected(), runtime.revision());
         let events = runtime.committed_events().len();
 
-        let (expected, delta, relied) = plan.into_parts();
+        let (expected, delta, relied) =
+            (plan.expected(), plan.delta().clone(), plan.relied().clone());
         let refused = runtime
             .apply_certified_semantic_delta(
                 expected,
@@ -164,7 +166,7 @@ fn a_revocation_or_supersession_after_certification_refuses_the_commit_and_appen
     let mut runtime = runtime_with_price();
     let plan = certified_repricing(&runtime);
     let events = runtime.committed_events().len();
-    let (expected, delta, relied) = plan.into_parts();
+    let (expected, delta, relied) = (plan.expected(), plan.delta().clone(), plan.relied().clone());
     let commit = runtime
         .apply_certified_semantic_delta(
             expected,
@@ -207,7 +209,7 @@ fn a_commit_that_moves_neither_the_revision_nor_a_relied_generation_does_not_ref
         assert_eq!(plan.expected(), runtime.revision());
     }
     assert!(!plan.relied().contains_key("constraint:max-price"));
-    let (expected, delta, relied) = plan.into_parts();
+    let (expected, delta, relied) = (plan.expected(), plan.delta().clone(), plan.relied().clone());
     let commit = runtime
         .apply_certified_semantic_delta(
             expected,
@@ -250,7 +252,7 @@ fn an_unsettled_effect_attempt_fences_the_plan_until_it_is_reconciled() {
         runtime.generation_validity("pricing-policy", Generation(1)),
         Some(Validity::Live)
     );
-    let (expected, delta, relied) = plan.into_parts();
+    let (expected, delta, relied) = (plan.expected(), plan.delta().clone(), plan.relied().clone());
     assert_eq!(
         runtime
             .apply_certified_semantic_delta(
@@ -299,7 +301,7 @@ fn a_plan_committed_without_its_relied_generations_is_not_stopped_by_the_runtime
             generation: Generation(1),
         })
         .unwrap();
-    let (expected, delta, relied) = plan.into_parts();
+    let (expected, delta, relied) = (plan.expected(), plan.delta().clone(), plan.relied().clone());
     assert_eq!(
         relied,
         BTreeMap::from([("pricing-policy".to_owned(), Generation(1))])
@@ -371,7 +373,7 @@ fn a_plan_certified_before_another_commit_is_refused_by_the_runtime() {
     let revision = runtime.revision();
     runtime.apply_semantic_delta(revision, other).unwrap();
 
-    let (expected, delta, relied) = plan.into_parts();
+    let (expected, delta, relied) = (plan.expected(), plan.delta().clone(), plan.relied().clone());
     assert!(matches!(
         runtime.apply_certified_semantic_delta(
             expected,

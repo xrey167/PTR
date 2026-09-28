@@ -1,8 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use ptr_semdb::{SemanticSnapshot, SemanticValue};
+use ptr_semdb::{canonical_input_bytes, SemanticSnapshot, SemanticValue};
 use ptr_types::{Generation, PrincipalId, Revision};
+use sha2::{Digest, Sha256};
 
 use crate::digest::{InputsDigest, RangeDigest, ValueDigest};
 use crate::error::BranchError;
@@ -15,6 +16,9 @@ use crate::ops::{holds_member, BranchOp};
 /// itself, so the branch checks and the runtime's cannot disagree about which
 /// keys are reserved.
 pub use ptr_semdb::INGRESS_PREFIXES as RESERVED_PREFIXES;
+
+/// Domain tag of [`SealedBranch::seal_digest`].
+const SEAL_DOMAIN: &[u8] = b"ptr-branch/sealed-branch/v1";
 
 /// Identity of one speculative branch.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -224,6 +228,135 @@ impl SealedBranch {
     /// The staged operations, in the order they were staged.
     pub fn ops(&self) -> &[BranchOp] {
         &self.parts.ops
+    }
+
+    /// Digest of every part of the branch: what a record of its merge names
+    /// as the branch that was merged, and what storage can bind a stored
+    /// branch to. Two sealed branches have the same digest only if they have
+    /// the same parts.
+    ///
+    /// SHA-256 under the domain tag `ptr-branch/sealed-branch/v1` of, in
+    /// this order and each length or count a little-endian `u64`:
+    ///
+    /// - the id and the author, each preceded by its length, and the base
+    ///   revision;
+    /// - `reads`, `scans`, `relied`, `touched_base` and `touched_inputs`,
+    ///   each as its entry count and then each entry in key order: the key
+    ///   preceded by its length, then its 32 digest bytes or, for `relied`,
+    ///   the generation;
+    /// - the operations, as their count and then each in staging order: a
+    ///   kind byte (1 `Put`, 2 `Remove`, 3 `Add`, 4 `SetInsert`,
+    ///   5 `SetRemove`), the key preceded by its length, and then for a
+    ///   `Put` the canonical bytes of the key and its value
+    ///   ([`ptr_semdb::canonical_input_bytes`]) preceded by their length,
+    ///   for an `Add` the amount as a little-endian `i64`, and for a set
+    ///   operation the member preceded by its length and one `in_base` byte.
+    ///
+    /// Counting every section keeps a digest moved from one map to another,
+    /// or an entry moved across an operation boundary, from hashing as the
+    /// same bytes.
+    ///
+    /// # Errors
+    /// `BranchError::InvalidValue` for a `Put` whose value the journal cannot
+    /// encode, which sealing already refuses.
+    pub fn seal_digest(&self) -> Result<[u8; 32], BranchError> {
+        fn text(hasher: &mut Sha256, value: &str) {
+            hasher.update((value.len() as u64).to_le_bytes());
+            hasher.update(value.as_bytes());
+        }
+        fn digests<'a>(
+            hasher: &mut Sha256,
+            entries: impl ExactSizeIterator<Item = (&'a String, &'a [u8; 32])>,
+        ) {
+            hasher.update((entries.len() as u64).to_le_bytes());
+            for (key, digest) in entries {
+                text(hasher, key);
+                hasher.update(digest);
+            }
+        }
+
+        let parts = &self.parts;
+        let mut hasher = Sha256::new();
+        hasher.update(SEAL_DOMAIN);
+        text(&mut hasher, &parts.id.0);
+        text(&mut hasher, &parts.author.0);
+        hasher.update(parts.base_revision.0.to_le_bytes());
+        digests(
+            &mut hasher,
+            parts
+                .reads
+                .iter()
+                .map(|(key, digest)| (key, digest.as_bytes())),
+        );
+        digests(
+            &mut hasher,
+            parts
+                .scans
+                .iter()
+                .map(|(key, digest)| (key, digest.as_bytes())),
+        );
+        hasher.update((parts.relied.len() as u64).to_le_bytes());
+        for (target, generation) in &parts.relied {
+            text(&mut hasher, target);
+            hasher.update(generation.0.to_le_bytes());
+        }
+        digests(
+            &mut hasher,
+            parts
+                .touched_base
+                .iter()
+                .map(|(key, digest)| (key, digest.as_bytes())),
+        );
+        digests(
+            &mut hasher,
+            parts
+                .touched_inputs
+                .iter()
+                .map(|(key, digest)| (key, digest.as_bytes())),
+        );
+        hasher.update((parts.ops.len() as u64).to_le_bytes());
+        for op in &parts.ops {
+            match op {
+                BranchOp::Put { key, value } => {
+                    hasher.update([1u8]);
+                    text(&mut hasher, key);
+                    let canonical = canonical_input_bytes(key, value)
+                        .map_err(|_| BranchError::InvalidValue { key: key.clone() })?;
+                    hasher.update((canonical.len() as u64).to_le_bytes());
+                    hasher.update(&canonical);
+                }
+                BranchOp::Remove { key } => {
+                    hasher.update([2u8]);
+                    text(&mut hasher, key);
+                }
+                BranchOp::Add { key, amount } => {
+                    hasher.update([3u8]);
+                    text(&mut hasher, key);
+                    hasher.update(amount.to_le_bytes());
+                }
+                BranchOp::SetInsert {
+                    key,
+                    member,
+                    in_base,
+                } => {
+                    hasher.update([4u8]);
+                    text(&mut hasher, key);
+                    text(&mut hasher, member);
+                    hasher.update([u8::from(*in_base)]);
+                }
+                BranchOp::SetRemove {
+                    key,
+                    member,
+                    in_base,
+                } => {
+                    hasher.update([5u8]);
+                    text(&mut hasher, key);
+                    text(&mut hasher, member);
+                    hasher.update([u8::from(*in_base)]);
+                }
+            }
+        }
+        Ok(hasher.finalize().into())
     }
 
     /// A sealed branch built without any check, so tests can show that

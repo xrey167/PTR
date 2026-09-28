@@ -13,7 +13,10 @@
 //! relied on, to be committed through the runtime's certified-delta path,
 //! which checks those generations again before it appends and verifies the
 //! state it would publish. That path is the caller's obligation: nothing here
-//! can enforce it. Triage decides whether a plan is proposed
+//! can enforce it. A plan's digest, what a person approves, can be recomputed
+//! from the parts a record of its merge carries ([`merge_plan_digest`]), and
+//! [`SealedBranch::seal_digest`] names the sealed branch such a record merged.
+//! Triage decides whether a plan is proposed
 //! automatically, sent to a person or dropped; it can move a branch towards
 //! more human review but never past verification.
 
@@ -31,7 +34,7 @@ pub use arbiter::{
     THRESHOLD_GRID_STEPS,
 };
 pub use branch::{Branch, BranchId, SealedBranch, SealedBranchParts, RESERVED_PREFIXES};
-pub use certify::{certify, Certification, MergePlan};
+pub use certify::{certify, merge_plan_digest, Certification, CertificationKind, MergePlan};
 pub use digest::{InputsDigest, RangeDigest, ValueDigest};
 pub use error::{ArbiterError, BranchError};
 pub use ops::{

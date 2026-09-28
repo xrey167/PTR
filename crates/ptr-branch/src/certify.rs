@@ -14,13 +14,13 @@ use crate::ops::holds_member;
 ///
 /// A plan is not a commit. It carries the revision it was certified against
 /// and the lifecycle generations the branch relied on, and it must be
-/// committed with both: [`MergePlan::into_parts`] yields exactly the
-/// `expected`, `delta` and `relied` arguments of the runtime's
-/// `apply_certified_semantic_delta(expected, delta, relied, required,
-/// verify)`. That call refuses the plan unless the runtime's semantic revision
-/// is still `expected`, refuses it if any relied-on generation is no longer
-/// live when it would append, and appends it only after verification of the
-/// exact state it would publish.
+/// committed with both: [`MergePlan::expected`], [`MergePlan::delta`] and
+/// [`MergePlan::relied`] are exactly the `expected`, `delta` and `relied`
+/// arguments of the runtime's `apply_certified_semantic_delta(expected,
+/// delta, relied, required, verify)`. That call refuses the plan unless the
+/// runtime's semantic revision is still `expected`, refuses it if any
+/// relied-on generation is no longer live when it would append, and appends
+/// it only after verification of the exact state it would publish.
 ///
 /// The revision and the reliance check are the plan's only freshness fences.
 /// The semantic revision moves only when a semantic delta that changes
@@ -56,6 +56,38 @@ use crate::ops::holds_member;
 /// fn widen(mut plan: ptr_branch::MergePlan) -> ptr_branch::MergePlan {
 ///     plan.rebased.clear();
 ///     plan
+/// }
+/// ```
+///
+/// Nor can one be written out with other parts, whole or as an update of a
+/// certified plan:
+///
+/// ```compile_fail
+/// fn rewind(plan: ptr_branch::MergePlan) -> ptr_branch::MergePlan {
+///     ptr_branch::MergePlan { expected: ptr_types::Revision(0), ..plan }
+/// }
+/// ```
+///
+/// while the same function returning the plan it was given compiles:
+///
+/// ```
+/// fn rewind(plan: ptr_branch::MergePlan) -> ptr_branch::MergePlan {
+///     plan
+/// }
+/// ```
+///
+/// A plan is read through its accessors; it does not come apart into loose
+/// parts that could be committed without the rest:
+///
+/// ```compile_fail
+/// fn parts(plan: ptr_branch::MergePlan) {
+///     let (_expected, _delta, _relied) = plan.into_parts();
+/// }
+/// ```
+///
+/// ```
+/// fn parts(plan: ptr_branch::MergePlan) {
+///     let (_expected, _delta, _relied) = (plan.expected(), plan.delta(), plan.relied());
 /// }
 /// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -137,30 +169,60 @@ impl MergePlan {
         let encoded = self.delta.encode().map_err(|_| BranchError::InvalidValue {
             key: "<merge delta>".into(),
         })?;
-        let mut hasher = Sha256::new();
-        hasher.update(b"ptr-branch/merge-plan/v3");
-        hasher.update((self.branch.0.len() as u64).to_le_bytes());
-        hasher.update(self.branch.0.as_bytes());
-        hasher.update(self.expected.0.to_le_bytes());
-        hasher.update((encoded.len() as u64).to_le_bytes());
-        hasher.update(&encoded);
-        hasher.update(self.dependencies);
-        hasher.update((self.rebased.len() as u64).to_le_bytes());
-        for key in &self.rebased {
-            hasher.update((key.len() as u64).to_le_bytes());
-            hasher.update(key.as_bytes());
-        }
-        Ok(hasher.finalize().into())
+        Ok(merge_plan_digest(
+            &self.branch.0,
+            self.expected,
+            &encoded,
+            &self.dependencies,
+            &self.rebased,
+        ))
     }
+}
 
-    /// Consume the plan into the expected revision, the delta and the relied
-    /// generations: the `expected`, `delta` and `relied` arguments of the
-    /// runtime's `apply_certified_semantic_delta`, which checks every relied
-    /// generation again immediately before it appends. Committing the delta
-    /// any other way skips that check.
-    pub fn into_parts(self) -> (Revision, SemanticDelta, BTreeMap<String, Generation>) {
-        (self.expected, self.delta, self.relied)
+/// [`MergePlan::digest`] from the parts of a plan rather than the plan: the
+/// branch id, the expected revision, the delta's journal encoding, the
+/// dependency digest and the rebased keys. A record of a merge carries
+/// exactly these, so whoever holds the record, replay included, can
+/// recompute the digest of the plan it merged without the plan, and find
+/// out whether the record's delta is the one that plan would commit.
+///
+/// The bytes hashed are the `ptr-branch/merge-plan/v3` domain tag, then the
+/// branch id, the expected revision as a little-endian `u64`, the encoded
+/// delta, the 32 dependency bytes, and the rebased keys in ascending order,
+/// with the id, the delta and each key preceded by its length and the keys
+/// by their count, every length and count a little-endian `u64`.
+pub fn merge_plan_digest(
+    branch: &str,
+    expected: Revision,
+    encoded_delta: &[u8],
+    dependencies: &[u8; 32],
+    rebased: &BTreeSet<String>,
+) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"ptr-branch/merge-plan/v3");
+    hasher.update((branch.len() as u64).to_le_bytes());
+    hasher.update(branch.as_bytes());
+    hasher.update(expected.0.to_le_bytes());
+    hasher.update((encoded_delta.len() as u64).to_le_bytes());
+    hasher.update(encoded_delta);
+    hasher.update(dependencies);
+    hasher.update((rebased.len() as u64).to_le_bytes());
+    for key in rebased {
+        hasher.update((key.len() as u64).to_le_bytes());
+        hasher.update(key.as_bytes());
     }
+    hasher.finalize().into()
+}
+
+/// Whether a certified plan rebased any key onto the target: what
+/// [`Certification::kind`] reads from the plan's rebased keys.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum CertificationKind {
+    /// Nothing the branch touched changed since its base.
+    Clean,
+    /// Keys the branch changes commutatively had changed, and its operations
+    /// were applied to their current values.
+    Rebased,
 }
 
 /// How a branch relates to the snapshot it was certified against, as
@@ -172,7 +234,8 @@ impl MergePlan {
 /// either one, and [`MergePlan::digest`] does not cover it. Which keys were
 /// rebased is [`MergePlan::rebased`], which only [`certify`] sets and the
 /// digest covers: whatever must know, such as what shows a plan for
-/// approval, reads it there.
+/// approval, reads it there, or asks [`Certification::kind`], which reads it
+/// there and ignores the variant.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Certification {
     /// As [`certify`] returns it: nothing the branch depended on or touched
@@ -187,6 +250,24 @@ pub enum Certification {
 
 impl Certification {
     pub fn plan(&self) -> &MergePlan {
+        match self {
+            Self::Clean(plan) | Self::Rebased(plan) => plan,
+        }
+    }
+
+    /// `Rebased` when the plan rebased any key, `Clean` otherwise: read from
+    /// [`MergePlan::rebased`], which the plan's digest covers, never from
+    /// which variant wraps the plan.
+    pub fn kind(&self) -> CertificationKind {
+        if self.plan().rebased().is_empty() {
+            CertificationKind::Clean
+        } else {
+            CertificationKind::Rebased
+        }
+    }
+
+    /// The plan, whichever variant wraps it.
+    pub fn into_plan(self) -> MergePlan {
         match self {
             Self::Clean(plan) | Self::Rebased(plan) => plan,
         }

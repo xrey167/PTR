@@ -7,10 +7,13 @@ use std::collections::BTreeMap;
 
 use ptr_branch::{
     certify, counter_value, set_value, Branch, BranchError, BranchId, BranchOp, InputsDigest,
-    SealedBranch, SealedBranchParts, ValueDigest, RESERVED_PREFIXES,
+    RangeDigest, SealedBranch, SealedBranchParts, ValueDigest, RESERVED_PREFIXES,
 };
-use ptr_semdb::{SemanticDelta, SemanticHost, SemanticSnapshot, SemanticValue};
-use ptr_types::{Generation, PrincipalId, Validity};
+use ptr_semdb::{
+    canonical_input_bytes, SemanticDelta, SemanticHost, SemanticSnapshot, SemanticValue,
+};
+use ptr_types::{Generation, PrincipalId, Revision, Validity};
+use sha2::{Digest, Sha256};
 
 fn text(value: &str) -> SemanticValue {
     SemanticValue::Text(value.into())
@@ -431,4 +434,241 @@ fn a_derived_removal_is_reported_only_when_the_parts_break_no_other_invariant() 
         SealedBranch::from_parts(parts).unwrap_err(),
         BranchError::DerivedRemoval { key: "k".into() }
     );
+}
+
+/// Parts with an entry in every map and one operation of every kind, which
+/// satisfy every sealing invariant: `a` is put and `d` removed, both read;
+/// `c` is added to and `s` has a member inserted and one removed.
+fn every_part() -> SealedBranchParts {
+    let snapshot = snapshot_with(&[
+        ("a", text("1")),
+        ("c", counter_value(3)),
+        ("d", text("gone")),
+        ("s", set_value(&["m".to_owned()].into()).unwrap()),
+    ]);
+    let digest = |key: &str| ValueDigest::of(key, snapshot.value(key)).unwrap();
+    let inputs = |key: &str| InputsDigest::of(key, snapshot.inputs(key));
+    SealedBranchParts {
+        id: BranchId::from("b1"),
+        author: PrincipalId::from("agent-1"),
+        base_revision: snapshot.revision,
+        reads: BTreeMap::from([("a".to_owned(), digest("a")), ("d".to_owned(), digest("d"))]),
+        scans: BTreeMap::from([("a".to_owned(), RangeDigest::from_bytes([7; 32]))]),
+        relied: BTreeMap::from([("capsule:x".to_owned(), Generation(2))]),
+        touched_base: ["a", "c", "d", "s"]
+            .into_iter()
+            .map(|key| (key.to_owned(), digest(key)))
+            .collect(),
+        touched_inputs: ["a", "c", "d", "s"]
+            .into_iter()
+            .map(|key| (key.to_owned(), inputs(key)))
+            .collect(),
+        ops: vec![
+            BranchOp::Put {
+                key: "a".into(),
+                value: text("2"),
+            },
+            BranchOp::Remove { key: "d".into() },
+            BranchOp::Add {
+                key: "c".into(),
+                amount: 1,
+            },
+            BranchOp::SetInsert {
+                key: "s".into(),
+                member: "n".into(),
+                in_base: false,
+            },
+            BranchOp::SetRemove {
+                key: "s".into(),
+                member: "m".into(),
+                in_base: true,
+            },
+        ],
+    }
+}
+
+fn seal(parts: SealedBranchParts) -> [u8; 32] {
+    SealedBranch::from_parts(parts)
+        .unwrap()
+        .seal_digest()
+        .unwrap()
+}
+
+#[test]
+fn seal_digest_changes_with_every_part_and_op() {
+    let base = seal(every_part());
+    // Rebuilding the branch from its parts keeps its digest.
+    let rebuilt = SealedBranch::from_parts(every_part()).unwrap();
+    assert_eq!(
+        seal(rebuilt.clone().into_parts()),
+        rebuilt.seal_digest().unwrap()
+    );
+    assert_eq!(rebuilt.seal_digest().unwrap(), base);
+
+    type Edit = fn(&mut SealedBranchParts);
+    let edits: [(&str, Edit); 15] = [
+        ("id", |p| p.id = BranchId::from("b2")),
+        ("author", |p| p.author = PrincipalId::from("agent-2")),
+        ("base revision", |p| {
+            p.base_revision = Revision(p.base_revision.0 + 1)
+        }),
+        ("a read", |p| {
+            p.reads.insert("x".into(), ValueDigest::from_bytes([1; 32]));
+        }),
+        ("a scan", |p| {
+            p.scans.insert("a".into(), RangeDigest::from_bytes([8; 32]));
+        }),
+        ("a relied generation", |p| {
+            p.relied.insert("capsule:x".into(), Generation(3));
+        }),
+        ("a touched base value", |p| {
+            p.touched_base
+                .insert("c".into(), ValueDigest::from_bytes([2; 32]));
+        }),
+        ("a touched input set", |p| {
+            p.touched_inputs
+                .insert("c".into(), InputsDigest::of("c", ["i"]));
+        }),
+        ("a put value", |p| {
+            p.ops[0] = BranchOp::Put {
+                key: "a".into(),
+                value: text("3"),
+            }
+        }),
+        ("an added amount", |p| {
+            p.ops[2] = BranchOp::Add {
+                key: "c".into(),
+                amount: 2,
+            }
+        }),
+        ("an inserted member", |p| {
+            p.ops[3] = BranchOp::SetInsert {
+                key: "s".into(),
+                member: "o".into(),
+                in_base: false,
+            }
+        }),
+        ("an in_base", |p| {
+            p.ops[3] = BranchOp::SetInsert {
+                key: "s".into(),
+                member: "n".into(),
+                in_base: true,
+            }
+        }),
+        ("an insert turned into a removal", |p| {
+            p.ops[3] = BranchOp::SetRemove {
+                key: "s".into(),
+                member: "n".into(),
+                in_base: false,
+            }
+        }),
+        ("the operation order", |p| p.ops.swap(1, 2)),
+        ("an operation dropped", |p| {
+            p.ops.remove(1);
+            p.reads.remove("d");
+            p.touched_base.remove("d");
+            p.touched_inputs.remove("d");
+        }),
+    ];
+    let mut seen = std::collections::BTreeSet::from([base]);
+    for (name, edit) in edits {
+        let mut parts = every_part();
+        edit(&mut parts);
+        let digest = seal(parts);
+        assert!(seen.insert(digest), "{name} did not change the digest");
+    }
+
+    // The same 32 bytes as the last read or as the only scan are different
+    // branches, although the entries alone would hash the same bytes in the
+    // same order: the sections are counted.
+    let mut as_read = every_part();
+    as_read.scans.clear();
+    as_read
+        .reads
+        .insert("x".into(), ValueDigest::from_bytes([9; 32]));
+    let mut as_scan = every_part();
+    as_scan.scans.clear();
+    as_scan
+        .scans
+        .insert("x".into(), RangeDigest::from_bytes([9; 32]));
+    assert_ne!(seal(as_read), seal(as_scan));
+}
+
+#[test]
+fn seal_digest_is_the_documented_layout() {
+    // Written out byte by byte: storage binds a stored branch to this
+    // digest, so its layout may not move.
+    fn text(hasher: &mut Sha256, value: &str) {
+        hasher.update((value.len() as u64).to_le_bytes());
+        hasher.update(value.as_bytes());
+    }
+    let parts = every_part();
+    let mut hasher = Sha256::new();
+    hasher.update(b"ptr-branch/sealed-branch/v1");
+    text(&mut hasher, "b1");
+    text(&mut hasher, "agent-1");
+    hasher.update(parts.base_revision.0.to_le_bytes());
+    for map in [
+        parts
+            .reads
+            .iter()
+            .map(|(key, digest)| (key, *digest.as_bytes()))
+            .collect::<Vec<_>>(),
+        parts
+            .scans
+            .iter()
+            .map(|(key, digest)| (key, *digest.as_bytes()))
+            .collect(),
+    ] {
+        hasher.update((map.len() as u64).to_le_bytes());
+        for (key, digest) in map {
+            text(&mut hasher, key);
+            hasher.update(digest);
+        }
+    }
+    hasher.update(1u64.to_le_bytes());
+    text(&mut hasher, "capsule:x");
+    hasher.update(2u64.to_le_bytes());
+    for map in [
+        parts
+            .touched_base
+            .iter()
+            .map(|(key, digest)| (key, *digest.as_bytes()))
+            .collect::<Vec<_>>(),
+        parts
+            .touched_inputs
+            .iter()
+            .map(|(key, digest)| (key, *digest.as_bytes()))
+            .collect(),
+    ] {
+        hasher.update((map.len() as u64).to_le_bytes());
+        for (key, digest) in map {
+            text(&mut hasher, key);
+            hasher.update(digest);
+        }
+    }
+    hasher.update(5u64.to_le_bytes());
+    let put = canonical_input_bytes("a", &text_value("2")).unwrap();
+    hasher.update([1]);
+    text(&mut hasher, "a");
+    hasher.update((put.len() as u64).to_le_bytes());
+    hasher.update(&put);
+    hasher.update([2]);
+    text(&mut hasher, "d");
+    hasher.update([3]);
+    text(&mut hasher, "c");
+    hasher.update(1i64.to_le_bytes());
+    hasher.update([4]);
+    text(&mut hasher, "s");
+    text(&mut hasher, "n");
+    hasher.update([0]);
+    hasher.update([5]);
+    text(&mut hasher, "s");
+    text(&mut hasher, "m");
+    hasher.update([1]);
+    assert_eq!(seal(parts), <[u8; 32]>::from(hasher.finalize()));
+}
+
+fn text_value(value: &str) -> SemanticValue {
+    SemanticValue::Text(value.into())
 }

@@ -715,10 +715,13 @@ A `MergePlan` has private fields with read accessors, so nothing can change it a
 certification, and `MergePlan::digest`, what a person approves, covers the branch id,
 the expected revision, the delta, the dependency digest (reads, scans, relied
 generations, input sets and set operations' base presences) and the ordered rebased
-keys (`the_plan_digest_changes_with_which_keys_were_rebased`).
+keys (`the_plan_digest_changes_with_which_keys_were_rebased`). `merge_plan_digest`
+computes the same digest from those parts rather than from the plan, so a record that
+carries them lets the digest of the plan it merged be recomputed without the plan
+(`merge_plan_digest_is_the_plan_digest`).
 
 A plan is committed through `Runtime::apply_certified_semantic_delta` with exactly
-the `expected`, `delta` and `relied` that `MergePlan::into_parts` yields. It prepares
+the `expected`, `delta` and `relied` that `MergePlan`'s accessors return. It prepares
 the delta, hands the verifier a view of the post-state, its values and its
 dependency sets (`a_verifier_sees_and_can_refuse_the_dependency_set_a_delta_would_install`),
 and appends only on a `Pass` at the required level with no hard finding
@@ -749,7 +752,7 @@ attempt is reconciled the same plan commits
 is still the live one (`a_revoked_generation_is_revoked_although_it_is_still_the_live_generation`).
 
 Using that path is the caller's obligation, not a type-level guarantee: the runtime
-does not depend on `ptr-branch`, `MergePlan::into_parts` yields the delta, and
+does not depend on `ptr-branch`, `MergePlan::delta` returns the delta, and
 the runtime's `apply_verified_semantic_delta` (which checks no generation) and
 unverified `apply_semantic_delta` are public, so nothing stops a caller from
 committing a plan without verification or without its relied generations
@@ -1316,7 +1319,7 @@ with Apache Iggy, NATS and Kafka as candidates behind it.
 - **TLS, separate projector/reader/migrator roles, row-level security, pooling and a
   logical-replication consumer.** Until TLS exists the substrate refuses remote hosts.
 - **A merge plan that can only be committed through verification.** Today it is the
-  caller's obligation (§2): `MergePlan::into_parts` yields its delta, and the
+  caller's obligation (§2): `MergePlan::delta` returns its delta, and the
   runtime's `apply_verified_semantic_delta`, which checks no relied generation, and
   its unverified `apply_semantic_delta` are public.
 - **Strings containing NUL in the PostgreSQL substrate.** PostgreSQL `text` cannot
