@@ -422,9 +422,28 @@ class EnrolledExperimentTests(unittest.TestCase):
     def test_the_list_enrolls_the_experiments_that_preregister(self):
         listed=mod.load(ROOT/"experiments/preregistration.toml")["experiment"]
         self.assertEqual(sorted(listed),sorted(ENROLLED))
-        # S003 lists every key its design preregisters, low_cells included.
-        self.assertEqual(len(listed["S003"]["required"]),58)
-        self.assertEqual(listed["S003"]["required"]["low_cells"],"str-list")
+        # S003 lists every key its design preregisters (doc 35 design, section
+        # 3.10), with the type of the design's value, low_cells included, in
+        # the design's order.
+        design={
+            "schema":"int","harness":"str","seeds":"int-list","pilot_seeds":"int-list",
+            "cases_per_seed":"int","tasks_per_case":"int","agents":"int-list","groups_ladder":"int-list",
+            "groups_ladder_fallback":"int-list","items_per_group":"int","insert_cap":"int","counters":"int",
+            "counter_start":"int","sets":"int","set_members":"int","policies":"int",
+            "tick_us":"int","think_min_ticks":"int","think_max_ticks":"int","step_ticks":"int",
+            "merge_ticks":"int","max_attempts":"int","review_min_ticks":"int","review_max_ticks":"int",
+            "programs":"str-list","program_weights_permille":"int-list","rmw_delta_max":"int","counter_add_max":"int",
+            "guard_amount":"int","rely_permille":"int","ingress_permille_per_tick":"int","external_write_permille_per_tick":"int",
+            "lifecycle_permille_per_tick":"int","rewire_permille_per_tick":"int","rewire_swap_min_ticks":"int","rewire_swap_max_ticks":"int",
+            "required_verification":"str","verifiers":"str-list","host_counter_jump_max":"int","auto_policy":"str",
+            "auto_threshold_permille":"int","auto_calibration_permille":"int","review_policy":"str","review_threshold_permille":"int",
+            "review_calibration_permille":"int","calibration_seed":"int","reviewer":"str","conflict_threshold_permille":"int",
+            "efficiency_floor_permille":"int","bootstrap_resamples":"int","bootstrap_seed":"int","bootstrap_interval_permille":"int",
+            "min_hazard_trials_per_class_per_seed":"int","min_cells_per_side":"int","merge_wall_budget_us_p99":"int","durable_roundtrip_every_cases":"int",
+            "nondeterminism_rerun_case":"int","low_cells":"str-list",
+        }
+        self.assertEqual(len(design),58)
+        self.assertEqual(list(listed["S003"]["required"].items()),list(design.items()))
 
     def test_the_enrolled_experiments_are_held_until_their_placeholders_are_pinned(self):
         code,lines=gate(self.prepared_tree())
