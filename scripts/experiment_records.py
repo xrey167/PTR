@@ -169,13 +169,24 @@ def mutation_record_paths(experiment_dir: Path, root: Path) -> tuple[str, ...]:
     )
 
 
+# The files the runner, the aggregators and the mutation checker write into
+# a results directory, as glob patterns within it: records accumulate there
+# uncommitted while runs go on.
+RESULT_OUTPUTS = ("run-*.json", "run.json", "metrics.json", "mutations.json")
+
+
 def tree_pathspecs(experiment_dir: Path, results_dir: Path, root: Path, paths: tuple[str, ...]) -> list[str]:
     """The pathspecs a run must find committed: the provenance `paths` and the
-    whole experiment directory except its results, where records accumulate."""
+    whole experiment directory but the records the tools write into its
+    results (`RESULT_OUTPUTS`). Every other file there, code or input a
+    command could read, must be one HEAD holds, as anywhere in the
+    experiment: one changed between runs would leave records naming one
+    commit for different code."""
+    results = relative_to_root(results_dir, root)
     return [
         *paths,
         relative_to_root(experiment_dir, root),
-        f":(exclude){relative_to_root(results_dir, root)}",
+        *(f":(exclude,glob){results}/{pattern}" for pattern in RESULT_OUTPUTS),
     ]
 
 
@@ -540,10 +551,11 @@ Stamp = tuple[int, int, int, int]
 
 
 def file_stamp(path: Path) -> Stamp | None:
-    """The stamp of `path`, or None when there is no such file."""
+    """The stamp of `path`, or None when there is no such file, a directory
+    on its way having been replaced by a file included."""
     try:
         status = path.lstat()
-    except FileNotFoundError:
+    except (FileNotFoundError, NotADirectoryError):
         return None
     return (status.st_ino, status.st_size, status.st_mtime_ns, status.st_ctime_ns)
 

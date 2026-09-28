@@ -213,10 +213,12 @@ def results_directory(root: Path, data: dict) -> Path | None:
 
 def launch_watch(exp_id: str, root: Path, results: Path, data: dict) -> experiment_records.ProvenanceWatch | None:
     """The watch on every file that decides a launch of `exp_id` (the
-    provenance files, the experiment's directory except `results`, and
-    `check_research_gates.launch_inputs`), or None, printing why, when git
-    cannot tell or HEAD does not hold one of them: a record names HEAD as
-    what it ran, so it may be written only from a tree that holds HEAD. A
+    provenance files, the experiment's directory but the records the tools
+    write into `results`, and `check_research_gates.launch_inputs`), or
+    None, printing why, when git cannot tell, HEAD does not hold one of
+    them, or `results` holds a file git ignores, which the watch would not
+    see: a record names HEAD as what it ran, so it may be written only from
+    a tree that holds HEAD. A
     listed experiment also needs HEAD to hold it frozen as the tree launches
     it (`check_research_gates.launch_commit_errors`), each input a regular
     file HEAD holds, so the gate can find the freeze from HEAD alone. And
@@ -243,6 +245,25 @@ def launch_watch(exp_id: str, root: Path, results: Path, data: dict) -> experime
         print(
             "ERROR: refusing to run from a working tree whose sources HEAD does not hold; "
             f"commit or remove {experiment_records.listed(watch.uncommitted)}",
+            file=sys.stderr,
+        )
+        return None
+    # The watch leaves out what git ignores, and the repository ignores
+    # most of a results directory: code or input kept there could change
+    # between runs while every record named one commit.
+    try:
+        ignored = experiment_records.listed_names(
+            ROOT, "--literal-pathspecs", "ls-files", "-z", "--others", "--ignored",
+            experiment_records.PER_DIRECTORY, "--", results.relative_to(ROOT).as_posix(),
+        )
+    except experiment_records.ProvenanceError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return None
+    if ignored:
+        print(
+            f"ERROR: refusing to run while the results directory holds {experiment_records.listed(ignored)}, which git "
+            "ignores; it holds the records the tools write and files HEAD holds, nothing a command could run or read "
+            "unrecorded",
             file=sys.stderr,
         )
         return None

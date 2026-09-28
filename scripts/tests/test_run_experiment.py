@@ -156,7 +156,12 @@ class ExperimentRunnerTests(unittest.TestCase):
         expected = ("*.rs", "Cargo.lock", "scripts/run_experiment.py", f"{experiment}/aggregate.py", experiment)
         for spec in expected:
             self.assertIn(spec, pathspecs)
-        self.assertIn(f":(exclude){experiment}/results", pathspecs)
+        # The results directory is left out only for the records the tools
+        # write there; anything else there is held to HEAD.
+        self.assertIn(experiment, pathspecs)
+        for output in ("run-*.json", "run.json", "metrics.json", "mutations.json"):
+            self.assertIn(f":(exclude,glob){experiment}/results/{output}", pathspecs)
+        self.assertNotIn(f":(exclude){experiment}/results", pathspecs)
 
     def test_a_seed_run_from_a_clean_source_tree_runs_and_is_recorded(self):
         with (
@@ -526,9 +531,10 @@ class RunWatchTests(unittest.TestCase):
         self.assertIn("results directory experiments/x/L900-x/results is a symlink", stderr)
 
     def test_a_results_directory_the_command_replaces_holds_no_record(self):
-        # The watch leaves the results directory out, so the command could
-        # put a file or a link where it is: the record is then not written
-        # through it, nor lost to a traceback.
+        # The command could put a file or a link where the results directory
+        # is: the record is then not written through it, nor lost to a
+        # traceback. The watch sees the tracked files there go; were it to
+        # miss that, the results directory is checked again all the same.
         outside = Path(self.enterContext(tempfile.TemporaryDirectory()))
 
         def with_file():
@@ -540,14 +546,23 @@ class RunWatchTests(unittest.TestCase):
             os.symlink(outside, self.results)
 
         for during, problem in ((with_file, "is not a directory"), (with_link, "is a symlink")):
-            with self.subTest(problem=problem):
-                status, records, stderr = self.run_seed(during)
-                self.assertEqual((status, records), (2, []))
-                self.assertIn(f"results directory experiments/x/L900-x/results {problem}", stderr)
-                self.assertIn("its results directory changed while it ran", stderr)
-                self.assertEqual(list(outside.iterdir()), [])
-                self.results.unlink()
-                git(self.root, "checkout", "-q", "--", "experiments/x/L900-x/results")
+            for watched in (True, False):
+                with self.subTest(problem=problem, watched=watched):
+                    with contextlib.ExitStack() as stack:
+                        if not watched:
+                            stack.enter_context(
+                                mock.patch.object(mod.experiment_records.ProvenanceWatch, "changes", return_value=[])
+                            )
+                        status, records, stderr = self.run_seed(during)
+                    self.assertEqual((status, records), (2, []))
+                    if watched:
+                        self.assertIn("experiments/x/L900-x/results/.gitkeep changed on disk", stderr)
+                    else:
+                        self.assertIn(f"results directory experiments/x/L900-x/results {problem}", stderr)
+                        self.assertIn("its results directory changed while it ran", stderr)
+                    self.assertEqual(list(outside.iterdir()), [])
+                    self.results.unlink()
+                    git(self.root, "checkout", "-q", "--", "experiments/x/L900-x/results")
 
     def test_prepare_holds_what_decides_a_launch_to_head(self):
         self.preregister("prepared")
@@ -812,10 +827,40 @@ class RunWatchTests(unittest.TestCase):
         self.assertIn("experiment.toml changed while the launch was checked", stderr)
 
     def test_a_record_the_results_hold_is_no_change_of_the_sources(self):
-        # Records accumulate in results/, which the run writes into itself.
-        status, records, _ = self.run_seed(lambda: self.write("experiments/x/L900-x/results/other.json", "{}\n"))
-        self.assertEqual(status, 0)
-        self.assertEqual(len(records), 1)
+        # Records accumulate in results/, uncommitted while runs go on: what
+        # the tools write there is no change of the sources.
+        for name in ("run-concurrent-seed-29.json", "run.json", "metrics.json", "mutations.json"):
+            self.write(f"experiments/x/L900-x/results/{name}", "{}\n")
+        status, records, stderr = self.run_seed(lambda: self.write("experiments/x/L900-x/results/run-other.json", "{}\n"))
+        self.assertEqual((status, stderr), (0, ""))
+
+    def test_the_results_directory_holds_nothing_a_command_could_run_unrecorded(self):
+        # Anything else there is held to HEAD like the rest of the
+        # experiment: code or input kept there could change between runs
+        # while every record named one commit.
+        harness = "experiments/x/L900-x/results/harness.py"
+        self.write(harness, "print('adapted')\n")
+        status, records, stderr = self.run_seed()
+        self.assertEqual((status, records), (2, []))
+        self.assertIn(f"commit or remove {harness}", stderr)
+        # The repository ignores most of a results directory, and the watch
+        # leaves out what git ignores, so an ignored file there is refused.
+        self.write(".gitignore", "__pycache__/\n/experiments/**/results/*\n!/experiments/**/results/*.json\n")
+        git(self.root, "commit", "-q", "--no-verify", "-am", "results ignored")
+        status, records, stderr = self.run_seed()
+        self.assertEqual((status, records), (2, []))
+        self.assertIn(f"results directory holds {harness}, which git ignores", stderr)
+        (self.root / harness).unlink()
+        status, records, stderr = self.run_seed()
+        self.assertEqual((status, stderr, len(records)), (0, "", 1))
+        # A file HEAD holds there is watched: changed while the command runs,
+        # the run is not recorded.
+        self.write("experiments/x/L900-x/results/notes.json", "{}\n")
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-q", "--no-verify", "-m", "notes")
+        status, records, stderr = self.run_seed(lambda: self.write("experiments/x/L900-x/results/notes.json", "[]\n"))
+        self.assertEqual((status, len(records)), (2, 1))
+        self.assertIn("experiments/x/L900-x/results/notes.json changed on disk", stderr)
 
 
 if __name__ == "__main__":
