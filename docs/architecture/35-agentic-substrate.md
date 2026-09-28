@@ -1564,7 +1564,10 @@ committed cannot go back to `planned` (`test_a_missing_required_key_keeps_an_exp
 `test_rules_changed_after_the_runs_fail`, `test_a_run_record_deleted_or_renamed_after_it_was_committed_fails`,
 `test_after_a_run_the_manifest_and_configuration_change_only_in_status`,
 `test_after_a_run_the_status_only_moves_forward`, `test_run_records_are_found_wherever_the_experiment_kept_them`,
-`test_a_run_record_names_a_commit_on_heads_history`).
+`test_a_run_record_names_a_commit_on_heads_history`,
+`test_an_aggregate_is_bound_in_every_version_it_was_committed_in`,
+`test_a_run_record_reached_through_a_symlink_is_refused`,
+`test_what_the_preregistration_freezes_lies_outside_the_results_directory`).
 `scripts/run_experiment.py` runs or prepares a listed experiment only once this holds, and holds the files that
 decision reads to HEAD while it runs, so no outcome is seen before its preregistration is frozen
 (`test_a_listed_experiment_is_not_run_or_prepared_before_its_preregistration_is_frozen`,

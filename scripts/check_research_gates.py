@@ -40,19 +40,23 @@ replaced by another, whose own preregistration counts:
   frozen with the table;
 - the manifest's `preregistration_rules_sha256` is the digest of the
   experiment's entry in the list, so its types and baselines are frozen too;
-- every run record the experiment has committed (`run-*.json`, written by
-  `scripts/run_experiment.py` with the manifest it ran under), in any
-  directory the registry has given it and whatever its results directory is
-  now, every run record in its results directory, and its aggregate
-  (`run.json`) name those digests and the commit they ran at, and that
-  commit is on HEAD's history and holds the same preregistration, entry,
-  files and baselines, and the same manifest and `config.toml` but for the
-  manifest's status, which has only moved forward since
-  (`history_errors`); a run record also names the SHA-256 of the manifest at
-  that commit and is unchanged since it was committed, and no run record
-  once committed is deleted, renamed or moved. A preregistration rewritten
-  after its runs fails even when the manifest and the records are rewritten
-  to match, short of rewriting history.
+- every run record (`run-*.json`, written by `scripts/run_experiment.py`
+  with the manifest it ran under) and aggregate (`run.json`) the experiment
+  has committed, in any directory the registry has given it and whatever
+  its results directory is now, and those in its results directory, name
+  those digests and the commit they ran at, and that commit is on HEAD's
+  history and holds the same preregistration, entry, files and baselines,
+  and the same manifest and `config.toml` but for the manifest's status,
+  which has only moved forward since (`history_errors`); a run record also
+  names the SHA-256 of the manifest at that commit and is unchanged since it
+  was committed, an aggregate, which may be written again, holds to this in
+  every version it was committed in, none once committed is deleted, renamed
+  or moved, and each is a regular file reached through no symlink. A
+  preregistration rewritten after its runs fails even when the manifest and
+  the records are rewritten to match, short of rewriting history;
+- no file the table freezes and no baseline's directory lies in the results
+  directory, or holds it: the runner holds the experiment's files to HEAD
+  except those, where runs write.
 
 The list keeps every experiment it has named at a commit on HEAD's history
 (`enrolled`), so taking one out of it opens neither the gate nor the
@@ -443,12 +447,18 @@ def is_run_record(relative: str) -> bool:
     name=PurePosixPath(relative).name
     return name.startswith("run-") and name.endswith(".json")
 
+def is_aggregate(relative: str) -> bool:
+    """Whether the repository path `relative` names an aggregate of runs,
+    which an aggregator writes as `run.json`."""
+    return PurePosixPath(relative).name=="run.json"
+
 def committed_records(root: Path, directories: list[str]) -> list[str]:
-    """Every run record committed under `directories` on HEAD's history, as
-    repository paths, whether the tree still holds it or not, sorted. Git
-    reports a rename as the removal of the old path, so both are named."""
+    """Every run record and aggregate committed under `directories` on
+    HEAD's history, as repository paths, whether the tree still holds it or
+    not, sorted. Git reports a rename as the removal of the old path, so
+    both are named."""
     names=history(root,"--no-renames","--name-only","-z","--format=","HEAD","--",*directories)
-    return sorted({name for name in names if is_run_record(name)})
+    return sorted({name for name in names if is_run_record(name) or is_aggregate(name)})
 
 def directory_digest_at(root: Path, commit: str, directory: str) -> str | None:
     """`directory_digest` of the repository `directory` as `commit` holds it,
@@ -551,23 +561,51 @@ def history_errors(exp_id: str, name: str, named, root: Path, experiment: Path, 
             errors.append(f"{at}, where baseline {baseline['name']} is not the frozen one: its directory holds other files")
     return errors,commit
 
+def record_errors(exp_id: str, name: str, record, aggregate: bool, root: Path, experiment: Path, entry: dict,
+                  table: dict, frozen: tuple[str, str], current: tuple[dict, dict]) -> list[str]:
+    """What keeps `record`, the parsed run record or aggregate the error
+    names as `name`, from having run under the preregistration frozen now
+    (`frozen`) and the experiment as it is now (`current`): it names both
+    digests (a run record in the manifest it carries) and a commit that
+    holds the same (`history_errors`), and a run record names the SHA-256 of
+    the manifest at that commit."""
+    digest,rules=frozen
+    where=f"{exp_id}: {name}"
+    if not isinstance(record,dict):
+        return [f"{where} is not a JSON object"]
+    errors=[]
+    named=record if aggregate else record.get("manifest") if isinstance(record.get("manifest"),dict) else {}
+    for field,expected in (("preregistration_sha256",digest),("preregistration_rules_sha256",rules)):
+        if named.get(field)!=expected:
+            errors.append(f"{where} names {field} {named.get(field)!r}, not {expected}, the digest the experiment is frozen at")
+    problems,commit=history_errors(exp_id,name,record.get("git_sha"),root,experiment,entry,table,frozen,current)
+    errors.extend(problems)
+    if not aggregate and commit is not None:
+        held=blob(root,commit,f"{experiment.relative_to(root).as_posix()}/experiment.toml")
+        # run_experiment.py hashes the manifest as the checkout holds it,
+        # which is the committed text, or that text with CRLF line endings
+        # where the checkout converts them.
+        spellings=set() if held is None else {held,re.sub(rb"(?<!\r)\n",b"\r\n",held)}
+        if record.get("manifest_sha256") not in {hashlib.sha256(spelling).hexdigest() for spelling in spellings}:
+            errors.append(f"{where} names manifest_sha256 {record.get('manifest_sha256')!r}, not the SHA-256 of experiment.toml at {commit[:12]}")
+    return errors
+
 def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path, root: Path, entry: dict, table: dict,
                     frozen: tuple[str, str]) -> list[str]:
     """What keeps the experiment's archived runs from having run under the
     preregistration frozen now (`frozen`: the digests of the table and of
     the list's rules for it), with the manifest and configuration as they
     are now (`manifest`, `config`). The records are every run record
-    (`run-*.json`) committed under any directory the registry has given the
-    experiment (`committed_records`), whatever its results directory is now,
-    and the run records and aggregate (`run.json`) in its results directory.
-    No run record once committed may be deleted, renamed or moved. Every run
-    record must carry a manifest naming both digests, name the commit it ran
-    at, which must hold that preregistration and the experiment as it is now
-    (`history_errors`) and the manifest the record names by its SHA-256, and
-    be unchanged since it was committed; the aggregate must name both
-    digests and a commit that holds the same."""
-    digest,rules=frozen
+    (`run-*.json`) and aggregate (`run.json`) committed under any directory
+    the registry has given the experiment (`committed_records`), whatever
+    its results directory is now, and the run records and aggregate in its
+    results directory. None once committed may be deleted, renamed or moved,
+    and each is a regular file reached through no symlink. Every run record
+    and aggregate must pass `record_errors`; a run record must also be
+    unchanged since it was committed, and an aggregate, which an aggregator
+    may write again, must pass `record_errors` in every version committed."""
     relative=experiment.relative_to(root).as_posix()
+    current=(manifest,config)
 
     def shown(path: str) -> str:
         """A record's path as an error names it: within the experiment's
@@ -577,47 +615,54 @@ def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path,
 
     committed=committed_records(root,experiment_directories(root,exp_id,relative))
     errors=[]
-    # A run record, once committed, stays where it was recorded: one deleted,
+    # A record, once committed, stays where it was recorded: one deleted,
     # renamed or moved after its outcome was seen could be replaced by a
     # record of another preregistration under a new name or in a new place.
     for path in committed:
-        if not (root/path).exists():
+        if not (root/path).exists() and not (root/path).is_symlink():
             errors.append(f"{exp_id}: {shown(path)} was committed and has since been deleted or renamed; a run record stays as it was recorded")
-    records={path for path in committed if (root/path).exists()}
+    records={path for path in committed if (root/path).exists() or (root/path).is_symlink()}
     results_dir=manifest.get("results_dir","results")
     if is_repository_path(results_dir) and (experiment/results_dir).is_dir():
         for path in (experiment/results_dir).glob("run*.json"):
             held=path.relative_to(root).as_posix()
-            if path.name=="run.json" or is_run_record(held):
+            if is_aggregate(held) or is_run_record(held):
                 records.add(held)
     for path in sorted(records):
         name=shown(path)
         where=f"{exp_id}: {name}"
+        aggregate=is_aggregate(path)
+        # A record read through a symlink is another file's content, whose
+        # history the checks below would not see.
+        if repository_file(root,path) is None:
+            errors.append(f"{where} is not a regular file reached through no symlink")
+            continue
         try:
-            record=json.loads((root/path).read_text(encoding="utf-8"))
-        except (OSError,UnicodeDecodeError,json.JSONDecodeError) as error:
+            data=(root/path).read_bytes()
+            record=json.loads(data.decode("utf-8"))
+        except OSError as error:
             errors.append(f"{where} cannot be read: {error}")
             continue
-        if not isinstance(record,dict):
-            errors.append(f"{where} is not a JSON object")
-            continue
-        aggregate=PurePosixPath(path).name=="run.json"
-        named=record if aggregate else record.get("manifest") if isinstance(record.get("manifest"),dict) else {}
-        for field,expected in (("preregistration_sha256",digest),("preregistration_rules_sha256",rules)):
-            if named.get(field)!=expected:
-                errors.append(f"{where} names {field} {named.get(field)!r}, not {expected}, the digest the experiment is frozen at")
-        problems,commit=history_errors(exp_id,name,record.get("git_sha"),root,experiment,entry,table,frozen,(manifest,config))
-        errors.extend(problems)
+        except (UnicodeDecodeError,json.JSONDecodeError) as error:
+            errors.append(f"{where} cannot be read: {error}")
+            record=MISSING
+        if record is not MISSING:
+            errors.extend(record_errors(exp_id,name,record,aggregate,root,experiment,entry,table,frozen,current))
         if aggregate:
+            # Written again, an aggregate keeps every version it was
+            # committed in: each saw the outcome of the runs it names.
+            for commit in history(root,"--format=%H","HEAD","--",path):
+                held=blob(root,commit,path)
+                if held is None or held==data:
+                    continue
+                version=f"{name} as committed at {commit[:12]}"
+                try:
+                    earlier=json.loads(held.decode("utf-8"))
+                except (UnicodeDecodeError,json.JSONDecodeError) as error:
+                    errors.append(f"{exp_id}: {version} cannot be read: {error}")
+                    continue
+                errors.extend(record_errors(exp_id,version,earlier,True,root,experiment,entry,table,frozen,current))
             continue
-        if commit is not None:
-            held=blob(root,commit,f"{relative}/experiment.toml")
-            # run_experiment.py hashes the manifest as the checkout holds it,
-            # which is the committed text, or that text with CRLF line endings
-            # where the checkout converts them.
-            spellings=set() if held is None else {held,re.sub(rb"(?<!\r)\n",b"\r\n",held)}
-            if record.get("manifest_sha256") not in {hashlib.sha256(spelling).hexdigest() for spelling in spellings}:
-                errors.append(f"{where} names manifest_sha256 {record.get('manifest_sha256')!r}, not the SHA-256 of experiment.toml at {commit[:12]}")
         touched=experiment_records.git(root,"rev-list","HEAD","--",path).stdout.split()
         if len(touched)>1:
             errors.append(f"{where} was changed after it was committed ({len(touched)} commits touch it)")
@@ -637,8 +682,18 @@ def frozen_errors(exp_id: str, entry: dict, manifest: dict, experiment: Path, ro
         return [f"{exp_id}: config.toml has no [preregistration] table"]
     errors=[]
     results_dir=manifest.get("results_dir","results")
+    results=None
     if not is_repository_path(results_dir):
         errors.append(f"{exp_id}: results_dir {results_dir!r} is not a path inside the experiment's directory")
+    else:
+        results=PurePosixPath(experiment.relative_to(root).as_posix(),results_dir)
+
+    def in_results(relative: str) -> bool:
+        """Whether the repository path `relative` lies in the experiment's
+        results directory, whose files the runner does not hold to HEAD: a
+        run writes its records there."""
+        return results is not None and PurePosixPath(relative).is_relative_to(results)
+
     for key,kind in entry["required"].items():
         if key not in table:
             errors.append(f"{exp_id}: preregistration key {key} is missing")
@@ -648,7 +703,10 @@ def frozen_errors(exp_id: str, entry: dict, manifest: dict, experiment: Path, ro
             errors.append(f"{exp_id}: preregistration key {key} {problem}")
         elif kind=="file":
             file=repository_file(root,table[key])
-            if file is None:
+            if in_results(table[key]):
+                errors.append(f"{exp_id}: preregistration key {key} names {table[key]!r}, which lies in the results "
+                              "directory, whose files the runner does not hold to HEAD")
+            elif file is None:
                 errors.append(f"{exp_id}: preregistration key {key} names {table[key]!r}, which is not a file in the repository")
             else:
                 errors.extend(frozen_value_errors(
@@ -660,6 +718,11 @@ def frozen_errors(exp_id: str, entry: dict, manifest: dict, experiment: Path, ro
     if "seeds" in table and table["seeds"]!=manifest.get("seeds"):
         errors.append(f"{exp_id}: preregistered seeds {table['seeds']!r} are not the manifest's seeds {manifest.get('seeds')!r}")
     for baseline in entry.get("baseline",[]):
+        directory=baseline_directory(baseline["path"])
+        if in_results(directory) or (results is not None and results.is_relative_to(directory)):
+            errors.append(f"{exp_id}: baseline {directory}/ shares files with the results directory {results}/, "
+                          "whose files the runner does not hold to HEAD")
+            continue
         problems,selection=baseline_errors(exp_id,baseline,root)
         errors.extend(problems)
         if selection is not None:

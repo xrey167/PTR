@@ -647,7 +647,7 @@ class PreregistrationGateTests(unittest.TestCase):
         ran=commit_all(root)
         write(root,self.RECORD,json.dumps(self.record(root,ran)))
         write(root,self.AGGREGATE,json.dumps(self.aggregate(root,ran)))
-        commit_all(root,"records")
+        recorded=commit_all(root,"records")
         before=self.frozen(root)
         # The table, the manifest and both records are rewritten to a new
         # preregistration, and committed.
@@ -669,6 +669,12 @@ class PreregistrationGateTests(unittest.TestCase):
             f"X900: {name} was changed after it was committed (2 commits touch it)",
             f"X900: results/run.json ran at {short}, whose config.toml holds another [preregistration] than the frozen one",
             f"X900: results/run.json ran at {short}, whose experiment.toml names other preregistration digests than the frozen ones",
+            # The aggregate as it was first committed saw the outcome under
+            # the old preregistration.
+            f"X900: results/run.json as committed at {recorded[:12]} names preregistration_sha256 {before[0]!r}, not {after[0]}, "
+            "the digest the experiment is frozen at",
+            f"X900: results/run.json as committed at {recorded[:12]} ran at {short}, whose config.toml holds another [preregistration] than the frozen one",
+            f"X900: results/run.json as committed at {recorded[:12]} ran at {short}, whose experiment.toml names other preregistration digests than the frozen ones",
         )
 
     def test_a_run_record_deleted_or_renamed_after_it_was_committed_fails(self):
@@ -875,6 +881,119 @@ class PreregistrationGateTests(unittest.TestCase):
         self.assert_blocked(root,f"X900: {name} ran at {side[:12]}, which is not on HEAD's history")
         # Merged, it is.
         git(root,"merge","-q","--no-edit","side")
+        self.assertEqual(gate(root),(0,[]))
+
+    def test_an_aggregate_is_bound_in_every_version_it_was_committed_in(self):
+        # Only the aggregate was committed; it shows the outcome.
+        root=self.tree(status="running")
+        ran=commit_all(root)
+        write(root,self.AGGREGATE,json.dumps(self.aggregate(root,ran)))
+        recorded=commit_all(root,"aggregate")
+        self.assertEqual(gate(root),(0,[]))
+        before=self.frozen(root)
+        # The preregistration and manifest are rewritten and the aggregate
+        # written again, in place, from a run at the rewritten commit.
+        rewritten=self.tree(status="running",table={**TABLE,"schema":2})
+        for relative in ("experiments/semdb/X900-fixture/config.toml",self.MANIFEST):
+            shutil.copyfile(rewritten/relative,root/relative)
+        after=self.frozen(root)
+        rewrite=commit_all(root,"rewrite")
+        write(root,self.AGGREGATE,json.dumps(self.aggregate(root,rewrite)))
+        commit_all(root,"aggregate again")
+        at=f"X900: results/run.json as committed at {recorded[:12]}"
+        earlier=[
+            f"{at} names preregistration_sha256 {before[0]!r}, not {after[0]}, the digest the experiment is frozen at",
+            f"{at} ran at {ran[:12]}, whose config.toml holds another [preregistration] than the frozen one",
+            f"{at} ran at {ran[:12]}, whose experiment.toml names other preregistration digests than the frozen ones",
+        ]
+        self.assert_blocked(root,*earlier)
+        # Written again in a new results directory instead, the old
+        # aggregate is still checked where it was committed.
+        root=self.tree(status="running")
+        ran=commit_all(root)
+        write(root,self.AGGREGATE,json.dumps(self.aggregate(root,ran)))
+        commit_all(root,"aggregate")
+        for relative in ("experiments/semdb/X900-fixture/config.toml",self.MANIFEST):
+            shutil.copyfile(rewritten/relative,root/relative)
+        write(root,self.MANIFEST,(root/self.MANIFEST).read_text(encoding="utf-8")+'results_dir = "new-results"\n')
+        rewrite=commit_all(root,"rewrite")
+        write(root,self.AGGREGATE.replace("/results/","/new-results/"),json.dumps(self.aggregate(root,rewrite)))
+        commit_all(root,"new aggregate")
+        at=f"X900: results/run.json ran at {ran[:12]}"
+        self.assert_blocked(
+            root,
+            f"X900: results/run.json names preregistration_sha256 {before[0]!r}, not {after[0]}, the digest the experiment is frozen at",
+            f"{at}, whose config.toml holds another [preregistration] than the frozen one",
+            f"{at}, whose experiment.toml names other preregistration digests than the frozen ones",
+            f"{at}, whose experiment.toml differs from the current one in results_dir; after a run only its status changes",
+        )
+        # And a committed aggregate stays.
+        (root/self.AGGREGATE).unlink()
+        commit_all(root,"deleted")
+        code,lines=gate(root)
+        self.assertEqual(code,1)
+        self.assertIn("X900: results/run.json was committed and has since been deleted or renamed; a run record stays as it was recorded",lines)
+        # Aggregated again after the run, under the same preregistration,
+        # the aggregate passes in every version.
+        root=self.tree(status="running")
+        ran=commit_all(root)
+        write(root,self.AGGREGATE,json.dumps(self.aggregate(root,ran)))
+        commit_all(root,"aggregate")
+        write(root,self.AGGREGATE,json.dumps(self.aggregate(root,ran,metrics_sha256="0"*64)))
+        commit_all(root,"aggregate again")
+        self.assertEqual(gate(root),(0,[]))
+
+    def test_a_run_record_reached_through_a_symlink_is_refused(self):
+        name=self.RECORD.removeprefix("experiments/semdb/X900-fixture/")
+        root=self.tree(status="running")
+        ran=commit_all(root)
+        # The record is a link to a file whose name is no run record's, so
+        # that file could be rewritten without touching the record's path.
+        target="experiments/semdb/X900-fixture/results/data/seed-17.json"
+        write(root,target,json.dumps(self.record(root,ran)))
+        self.link(Path("data/seed-17.json"),root/self.RECORD)
+        commit_all(root,"records")
+        self.assert_blocked(root,f"X900: {name} is not a regular file reached through no symlink")
+        # So is an aggregate.
+        root=self.tree(status="running")
+        ran=commit_all(root)
+        write(root,"experiments/semdb/X900-fixture/results/data/aggregate.json",json.dumps(self.aggregate(root,ran)))
+        self.link(Path("data/aggregate.json"),root/self.AGGREGATE)
+        commit_all(root,"aggregate")
+        self.assert_blocked(root,"X900: results/run.json is not a regular file reached through no symlink")
+
+    def test_what_the_preregistration_freezes_lies_outside_the_results_directory(self):
+        # The runner holds the experiment's files to HEAD except its results
+        # directory, where runs write: a frozen file or baseline there could
+        # change during a run unseen.
+        path="experiments/semdb/X900-fixture/results/PROTOCOL.md"
+        text="# Protocol\n"
+        table={**TABLE,"protocol":path,"protocol_sha256":hashlib.sha256(text.encode("utf-8")).hexdigest()}
+        root=self.tree(table=table,required={**REQUIRED,"protocol":"file"})
+        write(root,path,text)
+        self.assert_blocked(
+            root,
+            f"X900: preregistration key protocol names {path!r}, which lies in the results directory, whose files the runner does not hold to HEAD",
+        )
+        self.assertEqual(mod.launch_errors(root,"X900"),[
+            f"X900: preregistration key protocol names {path!r}, which lies in the results directory, whose files the runner does not hold to HEAD",
+        ])
+        # Nor may a baseline's directory lie in it, or hold it.
+        for config in ("experiments/semdb/X900-fixture/results/baseline/config.toml","experiments/semdb/X900-fixture/baseline.toml"):
+            with self.subTest(config=config):
+                directory=config.rsplit("/",1)[0]
+                root=self.tree(baselines=({**BASELINE,"path":config},))
+                shutil.copyfile(root/BASELINE_PATH,(root/config).parent.mkdir(parents=True,exist_ok=True) or root/config)
+                self.assert_blocked(
+                    root,
+                    f"X900: baseline {directory}/ shares files with the results directory experiments/semdb/X900-fixture/results/, "
+                    "whose files the runner does not hold to HEAD",
+                )
+        # Once results_dir names another directory, the same file is frozen
+        # like any other.
+        root=self.tree(table=table,required={**REQUIRED,"protocol":"file"})
+        write(root,path,text)
+        write(root,self.MANIFEST,(root/self.MANIFEST).read_text(encoding="utf-8")+'results_dir = "records"\n')
         self.assertEqual(gate(root),(0,[]))
 
     def test_a_listed_experiment_stays_listed(self):
