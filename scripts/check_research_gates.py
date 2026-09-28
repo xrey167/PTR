@@ -72,9 +72,12 @@ BASELINE_NAME=re.compile(r"[a-z0-9_]+")
 MISSING=object()
 
 def load(path: Path) -> dict:
+    """The TOML file at `path`."""
     return tomllib.loads(path.read_text(encoding="utf-8"))
 
 def is_placeholder(value: str) -> bool:
+    """A value still to be chosen: empty, `must-be-pinned-…`, `unconfigured`
+    or `none`, in any case and with any surrounding space."""
     value=value.strip().lower()
     return not value or "must-be-pinned" in value or value in {"unconfigured","none"}
 
@@ -83,6 +86,7 @@ def is_unsigned(value: str) -> bool:
     return "must-be-signed" in value.strip().lower()
 
 def is_unset(value) -> bool:
+    """A string that is a placeholder or an owner decision not yet taken."""
     return isinstance(value,str) and (is_placeholder(value) or is_unsigned(value))
 
 def type_name(value) -> str:
@@ -100,6 +104,7 @@ def type_name(value) -> str:
     return f"a {type(value).__name__}"
 
 def article(kind: str) -> str:
+    """The indefinite article before the type `kind` in an error."""
     return "an" if kind.startswith("int") else "a"
 
 def kind_problem(value, kind: str) -> str | None:
@@ -353,6 +358,8 @@ def preregistration_errors(root: Path, manifests: dict[str, dict], experiments: 
     return errors
 
 def main(root: Path = ROOT) -> int:
+    """Check every gate on the repository at `root`, print each error, and
+    return the exit status: 0 when every gate holds, 1 otherwise."""
     errors=[]
     experiments={}
     directories={}

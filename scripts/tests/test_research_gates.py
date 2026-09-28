@@ -79,9 +79,11 @@ def toml_value(value) -> str:
     raise TypeError(value)
 
 def toml_table(name: str, table: dict) -> str:
+    """`table` as the TOML table `[name]`."""
     return f"[{name}]\n"+"".join(f"{key} = {toml_value(value)}\n" for key,value in table.items())
 
 def write(root: Path, relative: str, text: str) -> None:
+    """Write `text` to `relative` under `root`, creating its directories."""
     path=root/relative
     path.parent.mkdir(parents=True,exist_ok=True)
     path.write_text(text,encoding="utf-8")
@@ -101,6 +103,7 @@ def gate(root: Path) -> tuple[int, list[str]]:
     passing once they are asked about that tree, and return its exit code
     and error lines."""
     def archived(exp_id,experiment,results,given_root):
+        """Pass the archived-results checks, once they are asked about `root`."""
         if given_root!=root or not experiment.is_relative_to(root):
             raise AssertionError(f"{exp_id}: archived results checked in {given_root}, not {root}")
         return []
@@ -174,6 +177,7 @@ class PreregistrationGateTests(unittest.TestCase):
         return root
 
     def assert_blocked(self, root: Path, *errors: str) -> None:
+        """The gate on `root` fails with exactly `errors`, in any order."""
         code,lines=gate(root)
         self.assertEqual(code,1)
         self.assertEqual(sorted(lines),sorted(errors))
@@ -551,6 +555,9 @@ class EnrolledExperimentTests(unittest.TestCase):
     tree with every listed experiment moved to `prepared`."""
 
     def prepared_tree(self, edit=None) -> Path:
+        """A fixture tree holding the repository's list, the six listed
+        experiments at status `prepared` and their baselines, changed by
+        `edit(root, paths)` when given."""
         root=Path(self.enterContext(tempfile.TemporaryDirectory()))
         paths={item["id"]:item["path"] for item in mod.load(ROOT/"experiments/registry.toml")["experiment"]}
         registry="version = 1\n"
