@@ -18,6 +18,7 @@ REGISTRY = ROOT / "experiments/registry.toml"
 PLACEHOLDER = re.compile(r"<([A-Za-z][A-Za-z0-9_-]*)>")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import check_research_gates  # noqa: E402
 import experiment_records  # noqa: E402
 
 
@@ -113,8 +114,21 @@ def base_record(exp_id: str, data: dict, root: Path) -> dict:
     }
 
 
+def launch_refused(exp_id: str) -> bool:
+    """Print why `exp_id` may not be run or prepared now and return True, or
+    return False when it may: an experiment `experiments/preregistration.toml`
+    lists runs only once its preregistration is frozen
+    (`check_research_gates.launch_errors`)."""
+    problems = check_research_gates.launch_errors(ROOT, exp_id)
+    for problem in problems:
+        print(f"ERROR: {problem}", file=sys.stderr)
+    return bool(problems)
+
+
 def prepare(exp_id: str):
     _, root, data = resolve(exp_id)
+    if launch_refused(exp_id):
+        return 2
     results = root / data.get("results_dir", "results")
     timestamp = utc_stamp()
     record = base_record(exp_id, data, root)
@@ -210,7 +224,8 @@ def run_experiment(
     run started. Refuses with status 2, before anything runs or is written,
     an undeclared seed, an unresolved command, and a working tree with
     uncommitted or untracked provenance files or experiment files
-    (`experiment_records.uncommitted_files`). After the command ends it looks
+    (`experiment_records.uncommitted_files`), and a listed experiment whose
+    preregistration is not frozen (`launch_refused`). After the command ends it looks
     at the same tree again (`experiment_records.ProvenanceWatch`) and writes
     no record, returning 2, when HEAD moved or a provenance or experiment
     file was written, created or removed while the command ran, even if its
@@ -218,6 +233,8 @@ def run_experiment(
     far as that watch can see (its `changes` names what it cannot). The
     record is written whole or not at all (`write_json_exclusive`)."""
     _, root, data = resolve(exp_id)
+    if launch_refused(exp_id):
+        return 2
     try:
         command = build_command(
             data, entrypoint=entrypoint, seed=seed, params=params or {}

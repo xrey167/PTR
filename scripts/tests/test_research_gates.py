@@ -3,7 +3,9 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 import shutil
+import subprocess
 import tempfile
 import tomllib
 import unittest
@@ -78,9 +80,37 @@ def toml_value(value) -> str:
         return "{ "+", ".join(f"{key} = {toml_value(item)}" for key,item in value.items())+" }"
     raise TypeError(value)
 
+def toml_key(key: str) -> str:
+    """`key` bare when TOML allows it, quoted otherwise."""
+    return key if key and all(character.isascii() and (character.isalnum() or character in "_-") for character in key) else json.dumps(key)
+
 def toml_table(name: str, table: dict) -> str:
     """`table` as the TOML table `[name]`."""
-    return f"[{name}]\n"+"".join(f"{key} = {toml_value(value)}\n" for key,value in table.items())
+    return f"[{name}]\n"+"".join(f"{toml_key(key)} = {toml_value(value)}\n" for key,value in table.items())
+
+def git(root: Path, *args: str) -> str:
+    """Run git in `root` as the tests' committer, without the automatic
+    maintenance that can outlive the temporary repository."""
+    command = [
+        "git",
+        "-c", "user.name=PTR tests",
+        "-c", "user.email=tests@example.invalid",
+        "-c", "commit.gpgsign=false",
+        "-c", "init.defaultBranch=main",
+        "-c", "maintenance.auto=false",
+        "-c", "gc.auto=0",
+        *args,
+    ]
+    return subprocess.run(command, cwd=root, check=True, capture_output=True, text=True).stdout.strip()
+
+def commit_all(root: Path, message: str = "tree") -> str:
+    """Commit everything under `root`, making it a repository first, and
+    return the commit."""
+    if not (root/".git").exists():
+        git(root,"init","-q")
+    git(root,"add","-A")
+    git(root,"commit","-q","--no-verify","--allow-empty","-m",message)
+    return git(root,"rev-parse","HEAD")
 
 def write(root: Path, relative: str, text: str) -> None:
     """Write `text` to `relative` under `root`, creating its directories."""
@@ -128,6 +158,7 @@ class PreregistrationGateTests(unittest.TestCase):
         table=TABLE,
         required=REQUIRED,
         digest=DIGEST,
+        rules=DIGEST,
         seeds=(17,29),
         baselines=(BASELINE,),
         baseline_config=BASELINE_CONFIG,
@@ -136,7 +167,9 @@ class PreregistrationGateTests(unittest.TestCase):
         freeze_baselines=True,
     ) -> Path:
         """A fixture tree; `digest` is the manifest's preregistration_sha256,
-        the table's own digest unless given (None leaves it out), and
+        the table's own digest unless given (None leaves it out), `rules` its
+        preregistration_rules_sha256, the digest of the list's entry unless
+        given (None leaves it out), and
         `listed_text`, when given, the whole of the list. With
         `freeze_baselines`, the table also holds each baseline's
         `baseline_<name>_sha256`, the digest of its pinned values, whenever
@@ -152,12 +185,6 @@ class PreregistrationGateTests(unittest.TestCase):
                 if selection and all(value is not mod.MISSING and mod.experiment_records.canonical_value_problem(value) is None for value in selection.values()):
                     table[f"baseline_{name}_sha256"]=mod.experiment_records.canonical_digest(selection)
         write(root,"experiments/registry.toml",f'version = 1\n\n[[experiment]]\nid = "X900"\npath = "semdb/X900-fixture"\nstatus = "{status}"\n')
-        manifest={"version":1,"id":"X900","status":status,"seeds":list(seeds),"required_artifacts":[]}
-        if digest is DIGEST:
-            digest=mod.experiment_records.preregistration_digest(table)
-        if digest is not None:
-            manifest["preregistration_sha256"]=digest
-        write(root,"experiments/semdb/X900-fixture/experiment.toml","".join(f"{key} = {toml_value(value)}\n" for key,value in manifest.items()))
         config=CONFIG_HEADER+("\n"+toml_table("preregistration",table) if table is not None else "")
         write(root,"experiments/semdb/X900-fixture/config.toml",config)
         listed="version = 1\n\n"+toml_table("experiment.X900.required",required)
@@ -165,7 +192,23 @@ class PreregistrationGateTests(unittest.TestCase):
             listed+="\n[[experiment.X900.baseline]]\n"+"".join(f"{key} = {toml_value(value)}\n" for key,value in baseline.items())
         if entry_extra:
             listed+="\n"+entry_extra
-        write(root,"experiments/preregistration.toml",listed if listed_text is None else listed_text)
+        listed=listed if listed_text is None else listed_text
+        write(root,"experiments/preregistration.toml",listed)
+        manifest={"version":1,"id":"X900","status":status,"seeds":list(seeds),"required_artifacts":[]}
+        if digest is DIGEST:
+            digest=mod.experiment_records.preregistration_digest(table) if table is not None else None
+        if digest is not None:
+            manifest["preregistration_sha256"]=digest
+        if rules is DIGEST:
+            entries=tomllib.loads(listed).get("experiment",{})
+            entry=entries.get("X900") if isinstance(entries,dict) else None
+            try:
+                rules=mod.experiment_records.canonical_digest(entry) if isinstance(entry,dict) else None
+            except (ValueError,UnicodeEncodeError):
+                rules=None
+        if rules is not None:
+            manifest["preregistration_rules_sha256"]=rules
+        write(root,"experiments/semdb/X900-fixture/experiment.toml","".join(f"{key} = {toml_value(value)}\n" for key,value in manifest.items()))
         write(root,"research/baselines/plain_model/config.toml",PLAIN_MODEL)
         if baseline_config is not None:
             values={name:value for name,value in baseline_config.items() if not isinstance(value,dict)}
@@ -326,7 +369,7 @@ class PreregistrationGateTests(unittest.TestCase):
             ({**BASELINE_CONFIG,"status":"must-be-pinned"},[f"{where}: status is not pinned ('must-be-pinned')"]),
             ({**BASELINE_CONFIG,"status":1},[f"{where}: status is not pinned (1)"]),
             ({key:value for key,value in BASELINE_CONFIG.items() if key!="status"},[f"{where}: status is missing"]),
-            (None,[f"{where} does not exist"]),
+            (None,[f"{where} is not a file in the repository"]),
         ]
         for config,errors in cases:
             with self.subTest(config=config):
@@ -347,6 +390,7 @@ class PreregistrationGateTests(unittest.TestCase):
             ({"baselines":({**BASELINE,"revision":"x"},)},{},[f"{where}: baseline 0 has unknown field revision"]),
             ({},{"entry_extra":"[experiment.X901.required]\nschema = \"int\"\n"},["experiments/preregistration.toml: X901 is not a registered experiment"]),
             ({},{"entry_extra":"[experiment.X900.optional]\nschema = \"int\"\n"},[f"{where} has unknown field optional"]),
+            ({"required":{**REQUIRED,"gr\u00f6\u00dfe":"int"}},{},[f"{where}: key 'gr\u00f6\u00dfe' is not printable ASCII"]),
             ({"required":{**REQUIRED,"seeds":["int"]}},{},[f"{where}: key seeds has unknown type ['int']"]),
             ({"required":{**REQUIRED,"seeds":1}},{},[f"{where}: key seeds has unknown type 1"]),
             ({"baselines":({**BASELINE,"keys":"model.revision"},)},{},[f"{where}: baseline 0 needs a non-empty list of key paths in printable ASCII"]),
@@ -465,61 +509,230 @@ class PreregistrationGateTests(unittest.TestCase):
             f"X900: baseline {BASELINE_PATH}: model.revision is a float, which has no canonical text",
         )
 
-    def test_archived_runs_must_name_the_frozen_digest(self):
-        record="experiments/semdb/X900-fixture/results/run-20260101T000000.000000Z-seed-17.json"
-        aggregate="experiments/semdb/X900-fixture/results/run.json"
+    RECORD="experiments/semdb/X900-fixture/results/run-20260101T000000.000000Z-seed-17.json"
+    AGGREGATE="experiments/semdb/X900-fixture/results/run.json"
+    MANIFEST="experiments/semdb/X900-fixture/experiment.toml"
+
+    def frozen(self, root: Path) -> tuple[str, str]:
+        """The digests the fixture's manifest names: the table's and the rules'."""
+        manifest=mod.load(root/self.MANIFEST)
+        return manifest["preregistration_sha256"],manifest["preregistration_rules_sha256"]
+
+    def record(self, root: Path, commit: str, **changes) -> dict:
+        """A run record as run_experiment.py writes one at `commit`."""
+        digest,rules=self.frozen(root)
+        record={
+            "git_sha":commit,
+            "manifest":{"id":"X900","preregistration_sha256":digest,"preregistration_rules_sha256":rules},
+            "manifest_sha256":hashlib.sha256(git(root,"show",f"{commit}:{self.MANIFEST}").encode("utf-8")+b"\n").hexdigest(),
+        }
+        record.update(changes)
+        return record
+
+    def aggregate(self, root: Path, commit: str, **changes) -> dict:
+        """An aggregate run.json of the runs at `commit`."""
+        digest,rules=self.frozen(root)
+        return {"git_sha":commit,"preregistration_sha256":digest,"preregistration_rules_sha256":rules,**changes}
+
+    def test_archived_runs_must_name_the_frozen_digests_and_a_commit_that_holds_them(self):
+        name=self.RECORD.removeprefix("experiments/semdb/X900-fixture/")
         for status in ("prepared","running","completed","failed"):
             with self.subTest(status=status):
                 root=self.tree(status=status)
-                digest=mod.load(root/"experiments/semdb/X900-fixture/experiment.toml")["preregistration_sha256"]
-                write(root,record,json.dumps({"manifest":{"id":"X900","preregistration_sha256":digest}}))
-                write(root,aggregate,json.dumps({"preregistration_sha256":digest}))
+                commit=commit_all(root)
+                short=commit[:12]
+                digest,rules=self.frozen(root)
+                write(root,self.RECORD,json.dumps(self.record(root,commit)))
+                write(root,self.AGGREGATE,json.dumps(self.aggregate(root,commit)))
                 # Files other than run records are not run records.
                 write(root,"experiments/semdb/X900-fixture/results/metrics.json","{}")
-                write(root,"experiments/semdb/X900-fixture/results/mutations.json","[]")
                 write(root,"experiments/semdb/X900-fixture/results/run_notes.json","[]")
                 self.assertEqual(gate(root),(0,[]))
-                name=record.removeprefix("experiments/semdb/X900-fixture/")
-                for text,recorded in (
-                    (json.dumps({"manifest":{"preregistration_sha256":"0"*64}}),"0"*64),
-                    (json.dumps({"manifest":{"id":"X900"}}),None),
-                    (json.dumps({"seed":17}),None),
+                commit_all(root,"records")
+                self.assertEqual(gate(root),(0,[]))
+                cases=[
+                    (self.record(root,commit,manifest={"preregistration_sha256":"0"*64,"preregistration_rules_sha256":rules}),
+                     [f"X900: {name} names preregistration_sha256 {'0'*64!r}, not {digest}, the digest the experiment is frozen at"]),
+                    (self.record(root,commit,manifest={"preregistration_sha256":digest}),
+                     [f"X900: {name} names preregistration_rules_sha256 None, not {rules}, the digest the experiment is frozen at"]),
+                    (self.record(root,commit,git_sha=None),
+                     [f"X900: {name} names no commit this repository holds (None)"]),
+                    (self.record(root,commit,git_sha="f"*40),
+                     [f"X900: {name} names no commit this repository holds ({'f'*40!r})"]),
+                    (self.record(root,commit,manifest_sha256="0"*64),
+                     [f"X900: {name} names manifest_sha256 {'0'*64!r}, not the SHA-256 of experiment.toml at {short}"]),
+                ]
+                for record,errors in cases:
+                    with self.subTest(status=status,record=record):
+                        # Edited in the working tree, the committed record differs too.
+                        write(root,self.RECORD,json.dumps(record))
+                        self.assert_blocked(root,*errors,f"X900: {name} differs from the record committed as it")
+                write(root,self.RECORD,json.dumps(self.record(root,commit)))
+                self.assertEqual(gate(root),(0,[]))
+                for text,errors in (
+                    (json.dumps({**self.aggregate(root,commit),"preregistration_sha256":None}),
+                     [f"X900: results/run.json names preregistration_sha256 None, not {digest}, the digest the experiment is frozen at"]),
+                    (json.dumps(self.aggregate(root,commit,git_sha="f"*40)),
+                     [f"X900: results/run.json names no commit this repository holds ({'f'*40!r})"]),
+                    ("[]",["X900: results/run.json is not a JSON object"]),
                 ):
-                    with self.subTest(status=status,record=text):
-                        write(root,record,text)
-                        self.assert_blocked(
-                            root,
-                            f"X900: {name} names preregistration_sha256 {recorded!r}, not {digest}, the digest the experiment is frozen at",
-                        )
-                write(root,record,json.dumps({"manifest":{"preregistration_sha256":digest}}))
-                write(root,aggregate,json.dumps({"hard_pass":True}))
-                self.assert_blocked(
-                    root,
-                    f"X900: results/run.json names preregistration_sha256 None, not {digest}, the digest the experiment is frozen at",
-                )
-                write(root,aggregate,"[]")
-                self.assert_blocked(root,"X900: results/run.json is not a JSON object")
-                write(root,aggregate,"{")
+                    with self.subTest(status=status,aggregate=text):
+                        write(root,self.AGGREGATE,text)
+                        self.assert_blocked(root,*errors)
+                write(root,self.AGGREGATE,"{")
                 code,lines=gate(root)
-                self.assertEqual(code,1)
-                self.assertEqual(len(lines),1)
+                self.assertEqual((code,len(lines)),(1,1))
                 self.assertTrue(lines[0].startswith("X900: results/run.json cannot be read: "),lines)
-        # A preregistration rewritten after its runs, with the manifest
-        # rewritten to match, still fails: the records name the digest they
-        # ran under.
-        root=self.tree(status="completed")
-        before=mod.load(root/"experiments/semdb/X900-fixture/experiment.toml")["preregistration_sha256"]
-        write(root,record,json.dumps({"manifest":{"preregistration_sha256":before}}))
-        write(root,aggregate,json.dumps({"preregistration_sha256":before}))
-        rewritten=self.tree(status="completed",table={**TABLE,"schema":2})
-        after=mod.load(rewritten/"experiments/semdb/X900-fixture/experiment.toml")["preregistration_sha256"]
-        shutil.copytree(root/"experiments/semdb/X900-fixture/results",rewritten/"experiments/semdb/X900-fixture/results")
+
+    def test_a_preregistration_rewritten_after_its_runs_fails_whatever_else_is_rewritten(self):
+        name=self.RECORD.removeprefix("experiments/semdb/X900-fixture/")
+        root=self.tree(status="running")
+        ran=commit_all(root)
+        write(root,self.RECORD,json.dumps(self.record(root,ran)))
+        write(root,self.AGGREGATE,json.dumps(self.aggregate(root,ran)))
+        commit_all(root,"records")
+        before=self.frozen(root)
+        # The table, the manifest and both records are rewritten to a new
+        # preregistration, and committed.
+        rewritten=self.tree(status="running",table={**TABLE,"schema":2})
+        for relative in ("experiments/semdb/X900-fixture/config.toml",self.MANIFEST):
+            shutil.copyfile(rewritten/relative,root/relative)
+        after=self.frozen(root)
         self.assertNotEqual(before,after)
+        record=self.record(root,ran)
+        record["manifest"]={**record["manifest"],"preregistration_sha256":after[0]}
+        write(root,self.RECORD,json.dumps(record))
+        write(root,self.AGGREGATE,json.dumps({**self.aggregate(root,ran),"preregistration_sha256":after[0]}))
+        commit_all(root,"rewrite")
+        short=ran[:12]
         self.assert_blocked(
-            rewritten,
-            f"X900: {record.removeprefix('experiments/semdb/X900-fixture/')} names preregistration_sha256 {before!r}, not {after}, the digest the experiment is frozen at",
-            f"X900: results/run.json names preregistration_sha256 {before!r}, not {after}, the digest the experiment is frozen at",
+            root,
+            f"X900: {name} ran at {short}, whose config.toml holds another [preregistration] than the frozen one",
+            f"X900: {name} ran at {short}, whose experiment.toml names other preregistration digests than the frozen ones",
+            f"X900: {name} was changed after it was committed (2 commits touch it)",
+            f"X900: results/run.json ran at {short}, whose config.toml holds another [preregistration] than the frozen one",
+            f"X900: results/run.json ran at {short}, whose experiment.toml names other preregistration digests than the frozen ones",
         )
+
+    def test_rules_changed_after_the_runs_fail(self):
+        name=self.RECORD.removeprefix("experiments/semdb/X900-fixture/")
+        root=self.tree(status="running")
+        ran=commit_all(root)
+        write(root,self.RECORD,json.dumps(self.record(root,ran)))
+        commit_all(root,"records")
+        digest,rules=self.frozen(root)
+        # A type changed in the list: the manifest's rules digest no longer
+        # matches it, and the runs' commit lists other rules.
+        listed=(root/"experiments/preregistration.toml").read_text(encoding="utf-8").replace('harness = "str"','harness = "file"')
+        write(root,"experiments/preregistration.toml",listed)
+        entry=mod.load(root/"experiments/preregistration.toml")["experiment"]["X900"]
+        changed=mod.experiment_records.canonical_digest(entry)
+        at=f"X900: {name} ran at {ran[:12]}"
+        runs=[
+            f"X900: {name} names preregistration_rules_sha256 {rules!r}, not {changed}, the digest the experiment is frozen at",
+            f"{at}, whose experiments/preregistration.toml lists other rules for it than the frozen ones",
+            f"{at}, whose experiment.toml names other preregistration digests than the frozen ones",
+        ]
+        self.assert_blocked(
+            root,
+            f"X900: preregistration_rules_sha256 {rules!r} is not {changed}, the digest of its entry in experiments/preregistration.toml",
+            "X900: preregistration key harness names 'fixture', which is not a file in the repository",
+            *runs,
+        )
+        # With the manifest rewritten to match, the runs still name the old
+        # rules and ran where the list held them.
+        manifest=(root/self.MANIFEST).read_text(encoding="utf-8").replace(rules,changed)
+        write(root,self.MANIFEST,manifest)
+        self.assert_blocked(
+            root,
+            "X900: preregistration key harness names 'fixture', which is not a file in the repository",
+            *runs,
+        )
+
+    def test_the_runs_commit_must_hold_the_frozen_files_and_baseline_values(self):
+        required={**REQUIRED,"protocol":"file"}
+        path="experiments/semdb/X900-fixture/PROTOCOL.md"
+        frozen_text="# Protocol\n"
+        table={**TABLE,"protocol":path,"protocol_sha256":hashlib.sha256(frozen_text.encode("utf-8")).hexdigest()}
+        # The runs' commit held another protocol and other baseline values
+        # than those the table freezes; the tree has since been made to match.
+        root=self.tree(status="running",table=table,required=required,
+                       baseline_config={**BASELINE_CONFIG,"model":{"revision":"4567def"}},freeze_baselines=False)
+        manifest=(root/self.MANIFEST).read_text(encoding="utf-8")
+        write(root,path,"# Another protocol\n")
+        ran=commit_all(root)
+        name=self.RECORD.removeprefix("experiments/semdb/X900-fixture/")
+        write(root,path,frozen_text)
+        write(root,BASELINE_PATH,(self.tree(table=table,required=required)/BASELINE_PATH).read_text(encoding="utf-8"))
+        frozen_table={**table,"baseline_fixture_sha256":mod.experiment_records.canonical_digest(
+            {"model.revision":"0123abc","answer.generators":["g1","g2"]})}
+        fixed=self.tree(status="running",table=frozen_table,required=required)
+        for relative in ("experiments/semdb/X900-fixture/config.toml",self.MANIFEST):
+            shutil.copyfile(fixed/relative,root/relative)
+        self.assertNotEqual(manifest,(root/self.MANIFEST).read_text(encoding="utf-8"))
+        write(root,self.RECORD,json.dumps(self.record(root,ran)))
+        short=ran[:12]
+        code,lines=gate(root)
+        self.assertEqual(code,1)
+        self.assertIn(f"X900: {name} ran at {short}, where {path} is not the file frozen as protocol",lines)
+        self.assertIn(f"X900: {name} ran at {short}, where baseline fixture is not pinned to the frozen values",lines)
+
+    def link(self, target: Path, link: Path) -> None:
+        """A symlink at `link` to `target`, or skip where none can be made."""
+        link.parent.mkdir(parents=True,exist_ok=True)
+        try:
+            os.symlink(target,link)
+        except (OSError,NotImplementedError) as error:
+            self.skipTest(f"cannot create a symlink: {error}")
+
+    def test_a_file_or_baseline_reached_through_a_link_out_of_the_repository_is_refused(self):
+        outside=Path(self.enterContext(tempfile.TemporaryDirectory()))
+        text="# Protocol held elsewhere\n"
+        (outside/"PROTOCOL.md").write_text(text,encoding="utf-8")
+        path="experiments/semdb/X900-fixture/PROTOCOL.md"
+        table={**TABLE,"protocol":path,"protocol_sha256":hashlib.sha256(text.encode("utf-8")).hexdigest()}
+        root=self.tree(table=table,required={**REQUIRED,"protocol":"file"})
+        self.link(outside/"PROTOCOL.md",root/path)
+        self.assert_blocked(root,f"X900: preregistration key protocol names {path!r}, which is not a file in the repository")
+        # A link that stays inside the repository names a file it holds.
+        (root/path).unlink()
+        write(root,"experiments/semdb/X900-fixture/protocols/v1.md",text)
+        self.link(root/"experiments/semdb/X900-fixture/protocols/v1.md",root/path)
+        self.assertEqual(gate(root),(0,[]))
+        # A baseline configuration linked in from elsewhere is refused too.
+        root=self.tree()
+        (outside/"baseline.toml").write_text((root/BASELINE_PATH).read_text(encoding="utf-8"),encoding="utf-8")
+        (root/BASELINE_PATH).unlink()
+        self.link(outside/"baseline.toml",root/BASELINE_PATH)
+        self.assert_blocked(root,f"X900: baseline {BASELINE_PATH} is not a file in the repository")
+
+    def test_a_missing_list_fails_the_gate_and_refuses_every_launch(self):
+        root=self.tree()
+        (root/"experiments/preregistration.toml").unlink()
+        self.assert_blocked(root,"experiments/preregistration.toml does not exist")
+        self.assertEqual(
+            mod.launch_errors(root,"X900"),
+            ["experiments/preregistration.toml does not exist, so whether X900 preregisters is unknown"],
+        )
+
+    def test_a_listed_experiment_launches_only_with_a_frozen_preregistration(self):
+        self.assertEqual(mod.launch_errors(self.tree(),"X900"),[])
+        self.assertEqual(
+            mod.launch_errors(self.tree(status="planned"),"X900"),
+            ["X900 preregisters (experiments/preregistration.toml) and is 'planned': it runs only once its "
+             "preregistration is frozen and it is prepared, running, completed or failed"],
+        )
+        self.assertEqual(
+            mod.launch_errors(self.tree(table={**TABLE,"harness":"must-be-pinned-x"}),"X900"),
+            ["X900: preregistration key harness is a placeholder ('must-be-pinned-x')"],
+        )
+        self.assertEqual(
+            mod.launch_errors(self.tree(required={**REQUIRED,"seeds":"list"}),"X900"),
+            ["experiments/preregistration.toml: X900: key seeds has unknown type 'list'"],
+        )
+        # An experiment the list does not name launches as before.
+        root=self.tree(listed_text="version = 1\n")
+        self.assertEqual(mod.launch_errors(root,"X900"),[])
 
     def test_the_matched_baseline_rules_read_the_tree_they_are_given(self):
         # M001-M005 and E002 keep their rules, on the tree the gate is given:
@@ -630,27 +843,32 @@ class EnrolledExperimentTests(unittest.TestCase):
             f"F003: preregistration key adjudication_protocol is a placeholder ({signed})",
             f"F003: preregistration key adjudication_protocol_sha256 is a placeholder ({pinned})",
             "F003: experiment.toml names no preregistration_sha256",
+            "F003: experiment.toml names no preregistration_rules_sha256",
             f"Q003: preregistration key recall_margin_permille is a placeholder ({pinned})",
             f"Q003: preregistration key embedding_model is a placeholder ({pinned})",
             f"Q003: preregistration key embedding_revision is a placeholder ({pinned})",
             f"Q003: preregistration key baseline_rag_reference_sha256 is a placeholder ({pinned})",
             f"Q003: preregistration key baseline_strong_rag_sha256 is a placeholder ({pinned})",
             "Q003: experiment.toml names no preregistration_sha256",
+            "Q003: experiment.toml names no preregistration_rules_sha256",
             "Q003: baseline research/baselines/rag_reference/config.toml: hybrid.embedding_model is a placeholder ('must-be-pinned-before-reported-run')",
             *strong_errors("Q003"),
             f"R004: preregistration key public_regression_gate_permille is a placeholder ({pinned})",
             f"R004: preregistration key backward_transfer_min_permille is a placeholder ({pinned})",
             "R004: experiment.toml names no preregistration_sha256",
+            "R004: experiment.toml names no preregistration_rules_sha256",
             f"M008: preregistration key token_budget is a placeholder ({pinned})",
             f"M008: preregistration key recency_window is a placeholder ({pinned})",
             f"M008: preregistration key recency_buffer_baseline is a placeholder ({pinned})",
             f"M008: preregistration key hybrid_retrieval_baseline is a placeholder ({pinned})",
             "M008: experiment.toml names no preregistration_sha256",
+            "M008: experiment.toml names no preregistration_rules_sha256",
             f"E005: preregistration key token_budget is a placeholder ({pinned})",
             f"E005: preregistration key full_context_baseline is a placeholder ({pinned})",
             f"E005: preregistration key agent_memory_baselines has element 0 that is a placeholder ({pinned})",
             f"E005: preregistration key baseline_strong_rag_sha256 is a placeholder ({pinned})",
             "E005: experiment.toml names no preregistration_sha256",
+            "E005: experiment.toml names no preregistration_rules_sha256",
             *strong_errors("E005"),
         ]
         self.assertEqual(sorted(lines),sorted(expected))
@@ -676,8 +894,10 @@ class EnrolledExperimentTests(unittest.TestCase):
             header="".join(f"{key} = {toml_value(value)}\n" for key,value in config.items())
             (directory/"config.toml").write_text(header+"\n"+toml_table("preregistration",table),encoding="utf-8")
             digest=mod.experiment_records.preregistration_digest(table)
+            rules=mod.experiment_records.canonical_digest(mod.load(root/"experiments/preregistration.toml")["experiment"]["F003"])
             manifest=(directory/"experiment.toml").read_text(encoding="utf-8")
-            (directory/"experiment.toml").write_text(manifest+f'preregistration_sha256 = "{digest}"\n',encoding="utf-8")
+            (directory/"experiment.toml").write_text(
+                manifest+f'preregistration_sha256 = "{digest}"\npreregistration_rules_sha256 = "{rules}"\n',encoding="utf-8")
 
         _,lines=gate(self.prepared_tree(sign))
         self.assertEqual([line for line in lines if line.startswith("F003")],[])

@@ -5,9 +5,12 @@
 # holds a [preregistration] table with every key under `required`, each a
 # pinned value of the type named there, the manifest's `preregistration_sha256`
 # is that table's digest (scripts/experiment_records.py,
-# preregistration_digest), every `baseline` is pinned at each of its `keys` and
-# not `blocked-*` at its `status_key`, and every run record and aggregate in
-# the experiment's results names that same digest.
+# preregistration_digest), its `preregistration_rules_sha256` is the digest of
+# the experiment's entry below, every `baseline` is pinned at each of its
+# `keys` and not `blocked-*` at its `status_key`, and every run record and
+# aggregate in the experiment's results names those digests and a commit that
+# holds the same preregistration. scripts/run_experiment.py runs or prepares a
+# listed experiment only once all of this holds.
 #
 # Types: "int", "str", "bool", "int-list", "str-list" and "file"; a required
 # list must not be empty, and strings are printable ASCII. A "file" is a path

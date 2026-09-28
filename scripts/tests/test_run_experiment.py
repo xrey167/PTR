@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -174,6 +175,8 @@ class RunWatchTests(unittest.TestCase):
                 'id = "L900"\nstatus = "running"\nseeds = [17]\nentrypoint = "bench <seed>"\n'
             ),
             "experiments/x/L900-x/results/.gitkeep": "",
+            # L900 is not listed, so it runs without a preregistration.
+            "experiments/preregistration.toml": "version = 1\n",
         }
         for relative, text in files.items():
             path = self.root / relative
@@ -269,6 +272,71 @@ class RunWatchTests(unittest.TestCase):
         other = self.results / "run-2-seed-17.json"
         mod.write_json_exclusive(other, {"second": True})
         self.assertEqual(json.loads(other.read_text(encoding="utf-8")), {"second": True})
+
+    def preregister(self, status: str, table: str | None = "schema = 1\n", frozen: bool = True) -> None:
+        """List L900 as preregistering one integer, give it `status`, the
+        `[preregistration]` table `table` (None for none) and, when `frozen`,
+        the manifest's digests of that table and of its list entry; commit."""
+        listed = 'version = 1\n\n[experiment.L900.required]\nschema = "int"\n'
+        self.write("experiments/preregistration.toml", listed)
+        manifest = f'id = "L900"\nstatus = "{status}"\nseeds = [17]\nentrypoint = "bench <seed>"\n'
+        self.write("experiments/x/L900-x/config.toml", "version = 1\n" + ("" if table is None else "\n[preregistration]\n" + table))
+        if table is not None:
+            if frozen:
+                digest = mod.experiment_records.preregistration_digest(tomllib.loads(table))
+                rules = mod.experiment_records.canonical_digest(tomllib.loads(listed)["experiment"]["L900"])
+                manifest += f'preregistration_sha256 = "{digest}"\npreregistration_rules_sha256 = "{rules}"\n'
+        self.write("experiments/x/L900-x/experiment.toml", manifest)
+        self.write(
+            "experiments/registry.toml",
+            f'[[experiment]]\nid = "L900"\npath = "x/L900-x"\nstatus = "{status}"\n',
+        )
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-q", "--no-verify", "-m", f"preregister at {status}")
+        self.head = git(self.root, "rev-parse", "HEAD")
+
+    def test_a_listed_experiment_is_not_run_or_prepared_before_its_preregistration_is_frozen(self):
+        cases = [
+            ("planned", "schema = 1\n", True, "L900 preregisters (experiments/preregistration.toml) and is 'planned'"),
+            ("running", None, True, "L900: config.toml has no [preregistration] table"),
+            ("running", 'schema = "must-be-pinned-before-prepared"\n', True, "L900: preregistration key schema is a placeholder"),
+            ("running", "schema = 1\n", False, "L900: experiment.toml names no preregistration_sha256"),
+        ]
+        for status, table, frozen, refusal in cases:
+            with self.subTest(status=status, table=table, frozen=frozen):
+                self.preregister(status, table, frozen)
+                ran = []
+                code, records, stderr = self.run_seed(lambda: ran.append(True))
+                self.assertEqual((code, records, ran), (2, [], []))
+                self.assertIn(refusal, stderr)
+                prepared = io.StringIO()
+                with (
+                    mock.patch.object(mod, "ROOT", self.root),
+                    mock.patch.object(mod, "REGISTRY", self.root / "experiments/registry.toml"),
+                    contextlib.redirect_stderr(prepared),
+                ):
+                    self.assertEqual(mod.prepare("L900"), 2)
+                self.assertIn(refusal, prepared.getvalue())
+                self.assertEqual(sorted(path.name for path in self.results.iterdir()), [".gitkeep"])
+
+    def test_a_listed_experiment_runs_once_frozen_and_its_record_is_bound_to_that_preregistration(self):
+        self.preregister("running")
+        status, records, stderr = self.run_seed()
+        self.assertEqual((status, stderr), (0, ""))
+        manifest = records[0]["manifest"]
+        self.assertEqual(
+            manifest["preregistration_sha256"],
+            mod.experiment_records.preregistration_digest({"schema": 1}),
+        )
+        self.assertEqual(records[0]["git_sha"], self.head)
+        # Committed, the record passes the gate: the commit it names holds
+        # the preregistration frozen now and the manifest it names.
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-q", "--no-verify", "-m", "record")
+        self.assertEqual(mod.check_research_gates.launch_errors(self.root, "L900"), [])
+        # The same experiment runs again under the same freeze.
+        status, records, _ = self.run_seed()
+        self.assertEqual((status, len(records)), (0, 2))
 
     def test_a_record_the_results_hold_is_no_change_of_the_sources(self):
         # Records accumulate in results/, which the run writes into itself.
