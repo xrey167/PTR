@@ -568,11 +568,15 @@ def content_changes(root: Path, names: list[str]) -> list[str]:
     `root` are not the blob HEAD holds for them, sorted, read from disk as
     they are, so no clean filter, file system monitor or stat cache that a
     clone's own configuration names answers for them, and those whose
-    executable bit is not HEAD's. A working copy that differs from a blob
-    holding no carriage return only in CRLF line endings, as a converting
-    checkout writes one, holds HEAD's content. A name HEAD does not hold as
-    a regular file, or the working tree does not hold as one, is git
-    status's to report. Raises `ProvenanceError` when git cannot read HEAD."""
+    executable bit is not HEAD's. The bytes are compared as they are, line
+    endings included: a checkout that writes text with CRLF line endings
+    (`core.autocrlf`, an `eol` attribute) holds other bytes than the blob,
+    which a command reading them could tell apart, and two checkouts of one
+    commit that converted differently would have run on different inputs
+    under one commit; the repository's `.gitattributes` pin one form, LF. A
+    name HEAD does not hold as a regular file, or the working tree does not
+    hold as one, is git status's to report. Raises `ProvenanceError` when
+    git cannot read HEAD."""
     wanted = set(names)
     if not wanted:
         return []
@@ -582,7 +586,7 @@ def content_changes(root: Path, names: list[str]) -> list[str]:
         mode, kind, blob = fields.split(" ")
         if name in wanted and kind == "blob" and mode in ("100644", "100755"):
             held[name] = (mode, blob)
-    changed, differing = [], []
+    changed = []
     for name, (mode, blob) in sorted(held.items()):
         path = root / name
         try:
@@ -597,26 +601,6 @@ def content_changes(root: Path, names: list[str]) -> list[str]:
             continue
         hashed = (hashlib.sha256 if len(blob) == 64 else hashlib.sha1)(b"blob %d\0" % len(data) + data).hexdigest()
         if hashed != blob:
-            differing.append((name, blob, data))
-    if differing:
-        request = "".join(f"{blob}\n" for _, blob, _ in differing).encode("ascii")
-        copies = git(root, "cat-file", "--batch", stdin=request, binary=True)
-        if copies.returncode != 0:
-            problem = copies.stderr.decode(errors="replace").strip()
-            raise ProvenanceError(f"cannot read HEAD's files: {problem}")
-        # Each object is a header line, `<id> blob <size>`, its content and a
-        # newline; a blob git cannot read has the header `<id> missing`.
-        output, offset = copies.stdout, 0
-        for name, blob, data in differing:
-            end = output.find(b"\n", offset)
-            header = output[offset:end].split() if end >= 0 else []
-            if len(header) != 3 or header[:2] != [blob.encode("ascii"), b"blob"] or not header[2].isdigit():
-                raise ProvenanceError(f"cannot read HEAD's copy of {name}")
-            size = int(header[2])
-            content = output[end + 1 : end + 1 + size]
-            offset = end + 1 + size + 1
-            if b"\r" not in content and data.replace(b"\r\n", b"\n") == content:
-                continue
             changed.append(name)
     return sorted(changed)
 
@@ -1402,28 +1386,11 @@ def preregistration_digest(table: dict) -> str:
     return canonical_digest(table)
 
 
-def is_preregistered_text(data: bytes) -> bool:
-    """Whether `data`, the content of a file a preregistration names, is
-    text: UTF-8 with no NUL byte."""
-    if b"\0" in data:
-        return False
-    try:
-        data.decode("utf-8")
-    except UnicodeDecodeError:
-        return False
-    return True
-
-
 def preregistered_bytes_digest(data: bytes) -> str:
     """The SHA-256, in hex, of `data`, the content of a file a
-    preregistration names: text (`is_preregistered_text`) with every CRLF
-    line ending read as LF, so a checkout that converts line endings digests
-    the text the repository holds, and anything else byte for byte, whose
-    carriage returns are content a converting checkout leaves alone. The
-    gate requires such text to be committed with LF line endings, so no two
-    committed versions read alike."""
-    if is_preregistered_text(data):
-        data = data.replace(b"\r\n", b"\n")
+    preregistration names, byte for byte: line endings are content, so a
+    checkout that converts them holds another file than the one frozen, and
+    the gate names it as such rather than reading two forms alike."""
     return hashlib.sha256(data).hexdigest()
 
 
@@ -1647,9 +1614,8 @@ def holds_committed(root: Path, commit: str, relative: str) -> bool:
     """Whether the working tree of `root` holds, as a regular file at
     `relative`, the content `commit` holds there as one, its bytes read
     from disk as they are, so no clean filter or attribute of the clone's
-    own answers for them as it could for git hash-object; a copy that
-    differs from a blob holding no carriage return only in CRLF line
-    endings, as a converting checkout writes one, holds it. False when
+    own answers for them as it could for git hash-object, and a copy that
+    differs from the blob in its line endings is another file. False when
     either holds no regular file there or git cannot read the commit's."""
     listing = git(root, "--literal-pathspecs", "ls-tree", "-z", "--full-name", commit, "--", relative)
     held = None
@@ -1671,7 +1637,7 @@ def holds_committed(root: Path, commit: str, relative: str) -> bool:
     if shown.returncode != 0:
         return False
     content = shown.stdout
-    return data == content or (b"\r" not in content and data.replace(b"\r\n", b"\n") == content)
+    return data == content
 
 
 def is_current(sha, paths: tuple[str, ...], root: Path) -> bool:

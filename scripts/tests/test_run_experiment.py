@@ -682,11 +682,21 @@ class RunWatchTests(unittest.TestCase):
         # The experiment's own directory would take all of it out of the
         # HEAD check, and one outside it is not the experiment's.
         # Nor may git's own directory hold it, where no record is committed.
+        # Nor a name Windows trims to a step: `.. ` and `...` would climb out
+        # of the experiment's directory there, and `. ` stay in it as another
+        # spelling of it.
+        stepping = ("passes through a name Windows reads as a step (a dot or two with trailing dots or spaces), "
+                    "which could climb out of the experiment's directory")
         for results_dir, refusal in (
             (".", "is not a directory below experiments/x/L900-x"),
             ("../elsewhere", "is not a directory below experiments/x/L900-x"),
             (".git", "passes through git's own directory, where no record can be committed"),
             ("results/.GIT", "passes through git's own directory, where no record can be committed"),
+            (".. /elsewhere", stepping),
+            ("results/.../elsewhere", stepping),
+            ("results/. /x", stepping),
+            ("results/..:stream", stepping),
+            ("results/ ", stepping),
         ):
             with self.subTest(results_dir=results_dir):
                 self.write("experiments/x/L900-x/experiment.toml", manifest + f'results_dir = "{results_dir}"\n')
@@ -695,6 +705,13 @@ class RunWatchTests(unittest.TestCase):
                 status, _, stderr = self.run_seed(lambda: ran.append(True))
                 self.assertEqual((status, ran), (2, []))
                 self.assertIn(f"results_dir {results_dir!r} {refusal}", stderr)
+        # A name that merely starts or ends with dots, or holds a space, is a
+        # name of its own on every platform, and is no step.
+        experiment = self.root / "experiments/x/L900-x"
+        with mock.patch.object(mod, "ROOT", self.root):
+            for accepted in ("..x/results", "...x", "a../results", ".hidden/results", "a b", "results/.a."):
+                with self.subTest(accepted=accepted):
+                    self.assertEqual(mod.results_directory(experiment, {"results_dir": accepted}), experiment / accepted)
         # A file on the way would leave no directory to write the record
         # into once the run had run.
         self.write("experiments/x/L900-x/notes", "a file\n")
@@ -1851,6 +1868,14 @@ class RunWatchTests(unittest.TestCase):
                     make()
                     self.assertEqual(mod.unlisted_entries(), [shown])
                     shutil.rmtree(self.root / shown.split("/")[0])
+            self.assertEqual(mod.unlisted_entries(), [])
+            # A file at the root under such a name too: only a file named
+            # `.git` itself is a linked worktree's, which git reads.
+            for name in (".GIT", ".GIT.", "git~1"):
+                with self.subTest(root_file=name):
+                    self.write(name, "gitdir: /elsewhere\n")
+                    self.assertEqual(mod.unlisted_entries(), [name])
+                    (self.root / name).unlink()
             self.assertEqual(mod.unlisted_entries(), [])
             # A file that is neither a regular file nor a symlink, which git
             # skips: a FIFO or a socket, in a directory that holds nothing

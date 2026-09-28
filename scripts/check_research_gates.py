@@ -65,7 +65,9 @@ but one that was frozen or ran stays bound as below, as it was frozen:
   places it in now, and holds the same preregistration, entry, files and
   baselines,
   and the same manifest and `config.toml` but for the manifest's status,
-  which has only moved forward since (`history_errors`); a run record also
+  which has only moved forward since (`history_errors`), and no commit after
+  a freeze holds it at an earlier status, whether or not a later commit puts
+  it right again (`status_regressions`); a run record also
   names the SHA-256 of the manifest at that commit and has held the same
   content in every commit on every side of every merge since it was
   committed, an aggregate, which may be written again, holds to this in
@@ -91,7 +93,8 @@ that the registry holds now or has held at any commit (`enrolled`), so
 taking one out of it opens neither the gate nor the runner, and a listed
 experiment that was committed frozen, or whose run records were committed,
 cannot go back to `planned`; it can only be superseded, which keeps its
-records and its preregistration as they were.
+records and its preregistration as they were, and nothing after it goes back
+to an earlier status on any line of history (`status_regressions`).
 
 `scripts/run_experiment.py` refuses to run or prepare a listed experiment
 until this holds for it (`launch_errors`), so no outcome is seen before the
@@ -193,6 +196,19 @@ def status_of(manifest: dict) -> str | None:
     """The manifest's status when it is a string, else None."""
     status=manifest.get("status")
     return status if isinstance(status,str) else None
+
+def may_follow(then: str | None, now: str | None) -> bool:
+    """Whether a manifest may hold the status `now` after it held `then`
+    on the same line of history: a status moves from prepared to running to
+    completed or failed (`RANK`), and from any of them to superseded, and
+    never back; completed and failed are final, and superseded is final too.
+    A status that is no string, or none of these (`planned`, say), follows
+    nothing, and nothing follows it, superseded included."""
+    if then=="superseded":
+        return now=="superseded"
+    if now=="superseded":
+        return then in RANK
+    return then in RANK and now in RANK and RANK[now]>=RANK[then] and (RANK[then]<2 or now==then)
 
 def same_value(then, now) -> bool:
     """Whether two TOML values are the same: of one type, tables and lists
@@ -380,14 +396,16 @@ def outside_repository(path: str) -> bool:
     root (`../x`, `a/../../x`), or through the directory git keeps for
     itself and never lists (`.git/x/Cargo.toml`), however a platform names
     it (`is_git_administration`: `.GIT`, and on Windows `.git.`, `git~1`
-    and `.git::$INDEX_ALLOCATION`), either slash a separator. The runner
-    starts no shell, so `~` is a name like any other."""
+    and `.git::$INDEX_ALLOCATION`), or through a component Windows reads as
+    a step it is not written as (`is_windows_dot_name`: `.. `, `...`), either
+    slash a separator. The runner starts no shell, so `~` is a name like any
+    other."""
     normalized=path.replace("\\","/")
     if normalized.startswith("/") or re.match(r"[A-Za-z]:",normalized):
         return True
     depth=0
     for part in normalized.split("/"):
-        if is_git_administration(part):
+        if is_git_administration(part) or is_windows_dot_name(part):
             return True
         if part=="..":
             depth-=1
@@ -567,6 +585,15 @@ def is_git_administration(part: str) -> bool:
     `git~1`, or with an NTFS stream (`.git::$INDEX_ALLOCATION`)."""
     return part.split(":",1)[0].lower().rstrip(". ") in {".git","git~1"}
 
+def is_windows_dot_name(part: str) -> bool:
+    """Whether the path component `part` is a name Windows reads as a step it
+    is not written as: `.` or `..` with trailing dots or spaces (`. `, `.. `),
+    a name of dots and spaces only (`...`), or one of them with an NTFS
+    stream (`..:x`), all of which Windows trims to `.`, `..` or nothing. The
+    exact `.` and `..` and the empty name are not: every platform reads them
+    as the steps they are."""
+    return part not in ("",".","..") and not part.split(":",1)[0].rstrip(". ")
+
 def is_repository_path(value) -> bool:
     """A relative path of printable ASCII that names no parent, so it stays
     inside the repository as written, and that git takes as the path it is
@@ -579,13 +606,15 @@ def is_repository_path(value) -> bool:
     an argument. No part of it is git's own directory
     (`is_git_administration`): git refuses to add a path through it and
     reports no file there as tracked or untracked, so a file frozen there
-    would be one no commit made by `git add` holds."""
+    would be one no commit made by `git add` holds. Nor is a part one Windows
+    reads as a step it is not written as (`is_windows_dot_name`: `.. `,
+    `...`), which would climb out of the repository or name another entry."""
     if not isinstance(value,str) or not value or len(value)>MAX_PATH or not experiment_records.is_printable_ascii(value):
         return False
     path=PurePosixPath(value)
     return (not path.is_absolute() and ".." not in path.parts and "\\" not in value and path.as_posix()==value
             and not value.startswith(":") and not any(character in value for character in "*?[")
-            and not any(is_git_administration(part) for part in path.parts))
+            and not any(is_git_administration(part) or is_windows_dot_name(part) for part in path.parts))
 
 def repository_file(root: Path, relative: str) -> Path | None:
     """The regular file `relative` names under `root`, or None when it names
@@ -625,9 +654,10 @@ def directory_digest(root: Path, directory: str) -> tuple[list[str], str | None]
     file reached through a symlink is refused, as `repository_file` refuses
     it, and so is a file the tree's `.gitignore` files ignore: an
     interpreter can run one in place of a tracked file (a `__pycache__`
-    entry, a bytecode file standing in for a module), and git holds none;
-    and so is text git holds with CRLF line endings, which the digest reads
-    as LF where a command would tell them apart."""
+    entry, a bytecode file standing in for a module), and git holds none.
+    The digest reads a file's bytes as they are, line endings included, so a
+    checkout that converts line endings holds another baseline than the
+    repository does; the repository's `.gitattributes` pin LF."""
     try:
         names=experiment_records.listed_names(
             root,"--literal-pathspecs","ls-files","-z","--cached","--others",experiment_records.PER_DIRECTORY,"--",directory)
@@ -638,24 +668,12 @@ def directory_digest(root: Path, directory: str) -> tuple[list[str], str | None]
         return ["holds a file whose name is not UTF-8, which no repository path is"],None
     except experiment_records.ProvenanceError as error:
         return [f"cannot be listed: {error}"],None
-    modes,blobs={},{}
+    modes={}
     for entry in staged:
         fields,_,name=entry.partition("\t")
-        modes[name],blobs[name]=fields.split(" ")[:2]
+        modes[name]=fields.split(" ")[0]
     problems=[f"holds {name}, which git ignores; a baseline's directory holds only what git tracks or would track"
               for name in sorted(set(ignored))]
-    # Its digest reads CRLF as LF, so a checkout that converts line endings
-    # holds the baseline the repository does; text committed with CRLF would
-    # read alike with LF, where a command reading it would tell them apart.
-    for name,held in sorted(blobs.items()):
-        try:
-            data=object_bytes(root,held)
-        except HistoryUnreadable as error:
-            problems.append(f"holds {name}, which git cannot read: {error}")
-            continue
-        if experiment_records.is_preregistered_text(data) and b"\r\n" in data:
-            problems.append(f"holds {name}, which is committed with CRLF line endings; its digest reads them as LF, so "
-                            "a baseline's text files are committed with LF line endings")
     files={}
     for name in sorted(set(names)):
         path=root/name
@@ -680,33 +698,26 @@ def directory_digest(root: Path, directory: str) -> tuple[list[str], str | None]
         return ["holds a file whose path is not printable ASCII"],None
     return [],digest
 
-def file_form_problem(data: bytes, mode: str) -> str | None:
-    """What keeps content `data` with git mode `mode` from being a
-    preregistered file as a commit holds it, or None: it is not executable,
-    since its digest holds its content alone and the executable bit changes
-    what a command does with it, and as text it holds no CRLF line ending,
-    since its digest reads CRLF as LF and a command reading it would read
-    two such versions apart."""
+def file_form_problem(mode: str) -> str | None:
+    """What keeps a file with git mode `mode` from being a preregistered file
+    as a commit holds it, or None: it is not executable, since its digest
+    holds its content alone and the executable bit changes what a command
+    does with it. Its content is digested as its bytes, line endings
+    included, so no form of it is refused."""
     if mode!="100644":
         return "is executable; a preregistered file is frozen by its content, so it is a file no command runs as a program"
-    if experiment_records.is_preregistered_text(data) and b"\r\n" in data:
-        return ("is committed with CRLF line endings; its digest reads them as LF, so a preregistered text file is "
-                "committed with LF line endings")
     return None
 
 def preregistered_file_problem(root: Path, relative: str, file: Path) -> str | None:
     """`file_form_problem` of the preregistered file `relative` names, `file`
     in the tree under `root`: its mode as git holds it (the index's for a
-    tracked file, the owner's execute bit for another), and its content as
-    HEAD holds it where HEAD holds it, a checkout that converts line endings
-    holding it with CRLF, or as the tree holds it where HEAD does not."""
+    tracked file, the owner's execute bit for another)."""
     try:
         staged=experiment_records.listed_names(root,"--literal-pathspecs","ls-files","-z","--stage","--",relative)
     except experiment_records.ProvenanceError as error:
         return f"cannot be listed: {error}"
     mode=staged[0].split(" ")[0] if staged else ("100755" if file.stat().st_mode & 0o100 else "100644")
-    held=blob(root,"HEAD",relative) if has_head(root) else None
-    return file_form_problem(file.read_bytes() if held is None else held,mode)
+    return file_form_problem(mode)
 
 def frozen_file_at(root: Path, commit: str, relative: str) -> bytes | None:
     """The content of the file `relative` names as `commit` holds it, or None
@@ -714,7 +725,7 @@ def frozen_file_at(root: Path, commit: str, relative: str) -> bytes | None:
     (`file_form_problem`). Raises `HistoryUnreadable` when git cannot tell."""
     held=tree_entry(root,commit,relative)
     data=blob(root,commit,relative)
-    if held is None or data is None or file_form_problem(data,held[0]):
+    if held is None or data is None or file_form_problem(held[0]):
         return None
     return data
 
@@ -978,19 +989,28 @@ def delisted_error(exp_id: str, commit: str) -> str:
     return (f"{PREREGISTRATION}: {exp_id} was listed at {commit[:12]} and no longer is; an experiment stays "
             "listed once it is, so neither its runs nor its preregistration leave the gate")
 
+def registered_directories(registry, exp_id: str) -> list[str]:
+    """The directories, sorted, in which the parsed `registry` (None or any
+    other value where it is absent or unreadable) places `exp_id`, each as
+    the repository path the runner reads: below `experiments`, without `.`
+    steps or a trailing slash. A directory that is no repository path
+    (`is_repository_path`) is named too; whoever asks decides what it means."""
+    items=registry.get("experiment") if isinstance(registry,dict) else None
+    return sorted({
+        PurePosixPath("experiments",item["path"]).as_posix() for item in (items if isinstance(items,list) else ())
+        if isinstance(item,dict) and item.get("id")==exp_id and isinstance(item.get("path"),str)
+    })
+
+def placed_directories(root: Path, commit: str, exp_id: str) -> list[str]:
+    """`registered_directories` of the registry as `commit` holds it."""
+    return registered_directories(toml_at(root,commit,REGISTRY),exp_id)
+
 def experiment_directories(root: Path, exp_id: str, current: str) -> list[str]:
     """The directories, as repository paths, that the registry has given
     `exp_id` at a commit on HEAD's history, and `current`, its directory now."""
     found={current}
     for _,registry in versions(root,REGISTRY):
-        items=registry.get("experiment")
-        for item in items if isinstance(items,list) else ():
-            if isinstance(item,dict) and item.get("id")==exp_id and isinstance(item.get("path"),str):
-                # As a path names it, without `.` steps or a trailing slash,
-                # as the runner and `launchable_at` read it.
-                directory=PurePosixPath("experiments",item["path"]).as_posix()
-                if is_repository_path(directory):
-                    found.add(directory)
+        found.update(directory for directory in registered_directories(registry,exp_id) if is_repository_path(directory))
     return sorted(found)
 
 def is_run_record(relative: str) -> bool:
@@ -1063,13 +1083,7 @@ def launchable_at(root: Path, commit: str, exp_id: str, directory: str) -> tuple
     manifest=toml_at(root,commit,f"{directory}/experiment.toml")
     if not isinstance(manifest,dict) or status_of(manifest) not in FROZEN or not names_an_entrypoint(manifest):
         return None
-    registry=toml_at(root,commit,REGISTRY)
-    items=registry.get("experiment") if isinstance(registry,dict) else None
-    placed={
-        PurePosixPath("experiments",item["path"]).as_posix() for item in (items if isinstance(items,list) else ())
-        if isinstance(item,dict) and item.get("id")==exp_id and isinstance(item.get("path"),str)
-    }
-    if placed!={directory} or not is_repository_path(directory):
+    if placed_directories(root,commit,exp_id)!=[directory] or not is_repository_path(directory):
         return None
     listed=toml_at(root,commit,PREREGISTRATION)
     entries=listed.get("experiment") if isinstance(listed,dict) else None
@@ -1182,37 +1196,115 @@ def launch_paths(root: Path, exp_id: str, directories: list[str]) -> set[str]:
                     paths.add(table[key])
     return paths
 
-def frozen_commits(root: Path, exp_id: str, relative: str) -> list[tuple[str, str]]:
+def launch_listing(root: Path, exp_id: str, directories: list[str]) -> list[tuple[str, tuple[str, str] | None]]:
     """Every commit on HEAD's history that changes a path that can decide
     whether the experiment may launch (`launch_paths`: its manifest and
-    configuration in any directory the registry has given it, `relative`
-    being its directory now, the list, the registry, its baselines and its
-    files) and holds it frozen as the runner launches it (`launchable_at`),
-    with its status there, newest first. From such a commit on, the runner
-    could launch the experiment, whether or not a record of that run was
-    kept; the first such commit may change any one of those paths alone.
-    Commits that hold the same frozen state, such as those that add only
-    records, are one freeze, named by the oldest of them."""
-    directories=experiment_directories(root,exp_id,relative)
-    states={}
+    configuration in any of `directories`, the list, the registry, its
+    baselines and its files), newest first, with what it holds there
+    (`launchable_at`, in the first of `directories` that holds it frozen) or
+    None where it does not hold it frozen as the runner launches it. A merge
+    is listed where it differs from any one of its parents, so the state of
+    the experiment on any line of history changes only at a listed commit."""
+    listing=[]
     for commit in history(root,"--format=%H","HEAD","--",*sorted(launch_paths(root,exp_id,directories))):
+        held=None
         for directory in directories:
-            frozen=launchable_at(root,commit,exp_id,directory)
-            if frozen is not None:
-                # Newest first: an older commit of the same state takes its
-                # place, and moves it behind the states seen since.
-                states.pop(frozen,None)
-                states[frozen]=commit
+            held=launchable_at(root,commit,exp_id,directory)
+            if held is not None:
                 break
+        listing.append((commit,held))
+    return listing
+
+def freezes(listing: list[tuple[str, tuple[str, str] | None]]) -> list[tuple[str, str]]:
+    """The freezes among the commits of `launch_listing`, each with its status
+    there, newest first. From such a commit on, the runner could launch the
+    experiment, whether or not a record of that run was kept; the first such
+    commit may change any one of those paths alone. Commits that hold the same
+    frozen state, such as those that add only records, are one freeze, named
+    by the oldest of them in the listing."""
+    states={}
+    for commit,held in listing:
+        if held is not None:
+            # Newest first: an older commit of the same state takes its
+            # place, and moves it behind the states seen since.
+            states.pop(held,None)
+            states[held]=commit
     return [(commit,status) for (status,_),commit in states.items()]
+
+def frozen_commits(root: Path, exp_id: str, relative: str) -> list[tuple[str, str]]:
+    """The freezes on HEAD's history (`freezes`) of the experiment, whose
+    directory now is `relative`, in every directory the registry has given
+    it (`experiment_directories`), with their status there, newest first."""
+    return freezes(launch_listing(root,exp_id,experiment_directories(root,exp_id,relative)))
+
+def statuses_at(root: Path, commit: str, exp_id: str) -> list[str | None]:
+    """The status the manifest of `exp_id` holds at `commit` in each
+    directory the registry places it in there: None for a status that is no
+    string. A directory that is no repository path, or holds no readable
+    manifest, adds none; what the commit does not hold says nothing of a
+    status."""
+    found=[]
+    for directory in placed_directories(root,commit,exp_id):
+        if not is_repository_path(directory):
+            continue
+        manifest=toml_at(root,commit,f"{directory}/experiment.toml")
+        if isinstance(manifest,dict):
+            found.append(status_of(manifest))
+    return found
+
+def ancestors_of(root: Path, commit: str) -> set[str]:
+    """Every commit `commit` descends from, itself included, by full name.
+    Raises `HistoryUnreadable` when git cannot list them."""
+    try:
+        listing=experiment_records.git(root,"rev-list",commit)
+    except experiment_records.ProvenanceError as error:
+        raise HistoryUnreadable(str(error)) from error
+    if listing.returncode!=0:
+        raise HistoryUnreadable(listing.stderr.strip() or f"git rev-list exited {listing.returncode}")
+    return set(listing.stdout.split())
+
+def status_regressions(root: Path, exp_id: str, listing: list[tuple[str, tuple[str, str] | None]]) -> list[str]:
+    """The commits of `listing` (`launch_listing`) that hold the manifest at a
+    status it may not hold after a status it held on their own line of
+    history (`may_follow`), one error for each. A freeze holds a status that
+    was frozen there, and a commit that holds `superseded` with a freeze
+    behind it holds it for good; whichever commit descends from one
+    (`ancestors_of`), on any side of any merge, may not go back, whether the
+    status it goes back to was frozen or not, and whether a later commit puts
+    the status back or not: a manifest that once was prepared and ran, and is
+    prepared again at a commit between two freezes, is one whose runs could
+    be chosen. A commit that is no descendant of the freeze, such as one on a
+    side branch that never saw it, is not one that went back."""
+    held={commit:statuses_at(root,commit,exp_id) for commit,_ in listing}
+    anchors=[(commit,frozen[0]) for commit,frozen in listing if frozen is not None]
+    # A superseded status is final only where the experiment had been frozen.
+    frozen_names={commit for commit,_ in anchors}
+    for commit,frozen in listing:
+        if frozen_names and frozen is None and "superseded" in held[commit] and frozen_names&ancestors_of(root,commit):
+            anchors.append((commit,"superseded"))
+    errors=[]
+    for commit,_ in listing:
+        broken=[
+            (anchor,then,now) for anchor,then in anchors if anchor!=commit
+            for now in dict.fromkeys(held[commit]) if not may_follow(then,now)
+        ]
+        if not broken:
+            continue
+        behind=ancestors_of(root,commit)
+        for anchor,then,now in broken:
+            if anchor in behind:
+                errors.append(f"{exp_id} was {then!r} at {anchor[:12]} and is {now!r} at {commit[:12]}, a commit "
+                              "after it; a status moves only from prepared to running to completed or failed, or to "
+                              "superseded, and never back, whether or not a later commit puts it there again")
+                break
+    return errors
 
 def directory_digest_at(root: Path, commit: str, directory: str) -> str | None:
     """`directory_digest` of the repository `directory` as `commit` holds it,
     or None when the tree check (`directory_digest`) would refuse what it
     holds there: anything but a regular file (a symlink, a submodule), a
     file named as no repository path (`is_repository_path`), a name that is
-    not UTF-8 included, or text committed with CRLF line endings, which its
-    digest reads as LF. None is no digest, so it matches no frozen one.
+    not UTF-8 included. None is no digest, so it matches no frozen one.
     Raises `HistoryUnreadable` when git cannot tell."""
     try:
         listing=experiment_records.git(root,"--literal-pathspecs","ls-tree","-r","-z",commit,"--",directory,binary=True)
@@ -1233,9 +1325,6 @@ def directory_digest_at(root: Path, commit: str, directory: str) -> str | None:
             # a directory no launch could have frozen.
             return None
         data=object_bytes(root,held)
-        if experiment_records.is_preregistered_text(data) and b"\r\n" in data:
-            # Text committed with CRLF, which its digest reads as LF.
-            return None
         files[PurePosixPath(name).relative_to(directory).as_posix()]=file_entry(mode,experiment_records.preregistered_bytes_digest(data))
     return file_table_digest(files)
 
@@ -1272,12 +1361,7 @@ def history_errors(exp_id: str, name: str, named, root: Path, experiment: Path, 
     # The files read at the commit are the experiment's only where the
     # registry placed it there as it does now; another directory, even one
     # holding a twin of it, ran something else.
-    registry=toml_at(root,commit,REGISTRY)
-    items=registry.get("experiment") if isinstance(registry,dict) else None
-    placed=sorted({
-        PurePosixPath("experiments",item["path"]).as_posix() for item in (items if isinstance(items,list) else ())
-        if isinstance(item,dict) and item.get("id")==exp_id and isinstance(item.get("path"),str)
-    })
+    placed=placed_directories(root,commit,exp_id)
     if placed!=[relative]:
         errors.append(f"{at}, where the registry placed it in {', '.join(placed) or 'no directory'}, not in {relative}")
     config=toml_at(root,commit,f"{relative}/config.toml")
@@ -1305,8 +1389,7 @@ def history_errors(exp_id: str, name: str, named, root: Path, experiment: Path, 
         then_status,now_status=status_of(manifest),status_of(now_manifest)
         if then_status not in RANK:
             errors.append(f"{at}, where it was {then_status!r}; a listed experiment runs only once it is prepared")
-        elif now_status!="superseded" and (now_status not in RANK or RANK[now_status]<RANK[then_status]
-                                            or (RANK[then_status]==2 and now_status!=then_status)):
+        elif not may_follow(then_status,now_status):
             errors.append(f"{at}, where it was {then_status!r}; it cannot be {now_status!r} after that, "
                           "since a status moves only from prepared to running to completed or failed, or to superseded")
     then_entry=listed.get("experiment",{}).get(exp_id) if isinstance(listed,dict) and isinstance(listed.get("experiment"),dict) else None
@@ -1350,12 +1433,11 @@ def record_errors(exp_id: str, name: str, record, aggregate: bool, root: Path, e
     errors.extend(problems)
     if not aggregate and commit is not None:
         held=blob(root,commit,f"{experiment.relative_to(root).as_posix()}/experiment.toml")
-        # run_experiment.py hashes the manifest as the checkout holds it,
-        # which is the committed text, or that text with CRLF line endings
-        # where the checkout converts them.
-        spellings=set() if held is None else {held,re.sub(rb"(?<!\r)\n",b"\r\n",held)}
+        # run_experiment.py hashes the manifest as the checkout holds it, and
+        # the watch holds every file it reads to HEAD's bytes, line endings
+        # included, so that is the committed manifest as it is.
         named_manifest=record.get("manifest_sha256")
-        if not isinstance(named_manifest,str) or named_manifest not in {hashlib.sha256(spelling).hexdigest() for spelling in spellings}:
+        if held is None or not isinstance(named_manifest,str) or named_manifest!=hashlib.sha256(held).hexdigest():
             errors.append(f"{where} names manifest_sha256 {record.get('manifest_sha256')!r}, not the SHA-256 of experiment.toml at {commit[:12]}")
     return errors
 
@@ -1397,7 +1479,8 @@ def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path,
         held=PurePosixPath(path)
         return held.relative_to(relative).as_posix() if held.is_relative_to(relative) else path
 
-    committed=committed_records(root,experiment_directories(root,exp_id,relative))
+    directories=experiment_directories(root,exp_id,relative)
+    committed=committed_records(root,directories)
     errors=[]
     # A record, once committed, stays where it was recorded: one deleted,
     # renamed or moved after its outcome was seen could be replaced by a
@@ -1475,12 +1558,12 @@ def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path,
             errors.append(f"{where} was changed after it was committed ({len(blobs)} versions of it were committed)")
         # Its bytes on disk against HEAD's blob, not git diff, which takes a
         # file the index marks skip-worktree or assume-unchanged as HEAD's
-        # whatever it holds; a copy that differs from a blob holding no
-        # carriage return only in CRLF line endings, as a converting
-        # checkout writes one, holds HEAD's content.
+        # whatever it holds; a copy that differs in line endings only is
+        # another file, which the repository's `.gitattributes` keeps a
+        # checkout from writing.
         if blobs:
             head=blob(root,"HEAD",path)
-            if head is None or not (data==head or (b"\r" not in head and data.replace(b"\r\n",b"\n")==head)):
+            if head is None or data!=head:
                 errors.append(f"{where} differs from the record committed as it")
     for seed,names in sorted(runs.items()):
         if len(names)>1:
@@ -1517,10 +1600,14 @@ def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path,
     # A commit that holds the experiment past planned froze it, whether or
     # not a record of a run there was kept: the runner could launch it, and
     # a record can be discarded before it is committed.
-    for commit,_ in frozen_commits(root,exp_id,relative):
+    listing=launch_listing(root,exp_id,directories)
+    for commit,_ in freezes(listing):
         problems,_=history_errors(exp_id,"",commit,root,experiment,entry,table,frozen,current,
                                   at=f"{exp_id} was frozen at {commit[:12]}")
         errors.extend(problems)
+    # And a status never goes back on any line of history, whether or not the
+    # commit it goes back to was frozen, or a later commit puts it there again.
+    errors.extend(status_regressions(root,exp_id,listing))
     return errors
 
 def frozen_errors(exp_id: str, entry: dict, manifest: dict, experiment: Path, root: Path) -> list[str]:
@@ -1757,12 +1844,7 @@ def launch_commit_errors(root: Path, exp_id: str, commit: str) -> list[str]:
             return [f"{PREREGISTRATION} cannot be read as {commit[:12]} holds it, so whether {exp_id} preregisters is unknown"]
         if exp_id not in listed.get("experiment",{}):
             return []
-        registry=toml_at(root,commit,REGISTRY)
-        items=registry.get("experiment") if isinstance(registry,dict) else None
-        placed=sorted({
-            PurePosixPath("experiments",item["path"]).as_posix() for item in (items if isinstance(items,list) else ())
-            if isinstance(item,dict) and item.get("id")==exp_id and isinstance(item.get("path"),str)
-        })
+        placed=placed_directories(root,commit,exp_id)
         if len(placed)==1 and launchable_at(root,commit,exp_id,placed[0]) is not None:
             return []
     except HistoryUnreadable as error:

@@ -357,6 +357,13 @@ def results_directory(root: Path, data: dict) -> Path | None:
             file=sys.stderr,
         )
         return None
+    if any(check_research_gates.is_windows_dot_name(part) for part in relative.parts):
+        print(
+            f"ERROR: results_dir {named!r} passes through a name Windows reads as a step (a dot or two with trailing "
+            "dots or spaces), which could climb out of the experiment's directory",
+            file=sys.stderr,
+        )
+        return None
     step = root
     for part in relative.parts:
         step = step / part

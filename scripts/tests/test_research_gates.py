@@ -5,6 +5,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -141,9 +142,9 @@ def baseline_digest(files: dict[str, str], executable=()) -> str:
     """The digest the gate freezes a baseline by: the canonical digest of
     each file of its directory, by path within it, mapped to its git mode
     (100755 for those named in `executable`, 100644 otherwise) and the
-    SHA-256 of its text with CRLF read as LF."""
+    SHA-256 of its bytes, line endings included."""
     return mod.experiment_records.canonical_digest({
-        name:("100755" if name in executable else "100644")+" "+hashlib.sha256(text.replace("\r\n","\n").encode("utf-8")).hexdigest()
+        name:("100755" if name in executable else "100644")+" "+hashlib.sha256(text.encode("utf-8")).hexdigest()
         for name,text in files.items()
     })
 
@@ -475,30 +476,41 @@ class PreregistrationGateTests(unittest.TestCase):
 
         good={**TABLE,"protocol":path,"protocol_sha256":digest}
         self.assertEqual(gate(tree(good)),(0,[]))
-        # A checkout that writes CRLF line endings holds the same protocol as
-        # the LF text committed.
+        # Line endings are content: a copy that a converting checkout wrote
+        # with CRLF ones is another file than the LF text frozen, which a
+        # command reading it tells apart.
+        crlf_text=text.replace("\n","\r\n")
+        crlf_digest=hashlib.sha256(crlf_text.encode("utf-8")).hexdigest()
+        self.assertNotEqual(crlf_digest,digest)
         root=tree(good)
-        commit_all(root)
-        (root/path).write_bytes(text.replace("\n","\r\n").encode("utf-8"))
-        self.assertEqual(gate(root),(0,[]))
-        # Committed with CRLF, the text would read alike with LF line
-        # endings, which a command reading it tells apart: it is refused, in
-        # the tree and at the commit, which froze nothing.
-        crlf=(f"X900: preregistration key protocol names {path!r}, which is committed with CRLF line endings; its "
-              "digest reads them as LF, so a preregistered text file is committed with LF line endings")
-        root=tree(good,content=text.replace("\n","\r\n"))
-        self.assert_blocked(root,crlf)
         committed=commit_all(root)
-        self.assert_blocked(root,crlf)
-        self.assertIsNone(mod.frozen_file_at(root,committed,path))
-        self.assertIsNone(mod.launchable_at(root,committed,"X900","experiments/semdb/X900-fixture"))
-        # Committed with LF line endings, it is the frozen protocol.
-        (root/path).write_bytes(text.encode("utf-8"))
-        commit_all(root,"protocol with LF line endings")
+        (root/path).write_bytes(crlf_text.encode("utf-8"))
+        self.assert_blocked(
+            root,
+            f"X900: preregistration key protocol_sha256 {digest!r} is not {crlf_digest}, the digest of {path}",
+        )
+        # The same copy is no more the file the commit froze, and the commit
+        # still freezes the LF text.
+        self.assertEqual(mod.frozen_file_at(root,committed,path),text.encode("utf-8"))
+        self.assertIsNotNone(mod.launchable_at(root,committed,"X900","experiments/semdb/X900-fixture"))
+        # Committed with CRLF, the text is frozen with them, byte for byte: by
+        # their own digest, and not by the digest of the LF text.
+        crlf_table={**good,"protocol_sha256":crlf_digest}
+        root=tree(crlf_table,content=crlf_text)
         self.assertEqual(gate(root),(0,[]))
-        # A binary file's carriage returns are content, digested as they are.
-        binary=b"\x00\r\n\x01"
-        self.assertIsNone(mod.file_form_problem(binary,"100644"))
+        committed=commit_all(root)
+        self.assertEqual(gate(root),(0,[]))
+        self.assertEqual(mod.frozen_file_at(root,committed,path),crlf_text.encode("utf-8"))
+        self.assertIsNotNone(mod.launchable_at(root,committed,"X900","experiments/semdb/X900-fixture"))
+        (root/path).write_bytes(text.encode("utf-8"))
+        self.assert_blocked(
+            root,
+            f"X900: preregistration key protocol_sha256 {crlf_digest!r} is not {digest}, the digest of {path}",
+        )
+        # A file is frozen by its content, and never as an executable one;
+        # its carriage returns, in text or not, are content.
+        self.assertIsNone(mod.file_form_problem("100644"))
+        self.assertIsNotNone(mod.file_form_problem("100755"))
         # A protocol edited after the freeze no longer is the frozen one.
         edited=text+"Or do not.\n"
         self.assert_blocked(
@@ -625,23 +637,35 @@ class PreregistrationGateTests(unittest.TestCase):
         (root/directory/"runner.py").chmod(0o755)
         chmodded=commit_all(root,"runner.py executable")
         self.assertEqual(mod.directory_digest_at(root,chmodded,directory),executable)
-        # A checkout that writes CRLF line endings holds the same baseline.
+        # Line endings are content: a copy a converting checkout wrote with
+        # CRLF ones is another baseline than the LF one frozen, in the tree
+        # and not at the commit, which still holds the LF one.
+        crlf_text=text.replace("\n","\r\n")
+        crlf_frozen=baseline_digest({"config.toml":crlf_text})
+        self.assertNotEqual(crlf_frozen,frozen)
         root=self.tree(table={**TABLE,"baseline_fixture_sha256":frozen})
-        (root/BASELINE_PATH).write_bytes(text.replace("\n","\r\n").encode("utf-8"))
-        self.assertEqual(gate(root),(0,[]))
-        # Committed with CRLF, a text file of it would read alike with LF, so
-        # it is refused in the tree, and a commit holding it froze nothing.
-        commit_all(root)
+        lf=commit_all(root,"LF")
+        (root/BASELINE_PATH).write_bytes(crlf_text.encode("utf-8"))
         self.assert_blocked(
             root,
-            f"X900: baseline {directory}/ holds {BASELINE_PATH}, which is committed with CRLF line endings; its digest "
-            "reads them as LF, so a baseline's text files are committed with LF line endings",
+            f"X900: preregistration key baseline_fixture_sha256 {frozen!r} is not {crlf_frozen}, the digest of every file in {directory}/",
         )
-        self.assertIsNone(mod.directory_digest_at(root,git(root,"rev-parse","HEAD"),directory))
-        (root/BASELINE_PATH).write_bytes(text.encode("utf-8"))
-        lf=commit_all(root,"LF")
-        self.assertEqual(gate(root),(0,[]))
         self.assertEqual(mod.directory_digest_at(root,lf,directory),frozen)
+        (root/BASELINE_PATH).write_bytes(text.encode("utf-8"))
+        self.assertEqual(gate(root),(0,[]))
+        # Committed with CRLF, a text file of it is frozen with them, byte for
+        # byte: by their own digest, and not by the digest of the LF text.
+        crlf_root=self.tree(table={**TABLE,"baseline_fixture_sha256":crlf_frozen})
+        (crlf_root/BASELINE_PATH).write_bytes(crlf_text.encode("utf-8"))
+        self.assertEqual(gate(crlf_root),(0,[]))
+        crlf_commit=commit_all(crlf_root,"CRLF")
+        self.assertEqual(gate(crlf_root),(0,[]))
+        self.assertEqual(mod.directory_digest_at(crlf_root,crlf_commit,directory),crlf_frozen)
+        (crlf_root/BASELINE_PATH).write_bytes(text.encode("utf-8"))
+        self.assert_blocked(
+            crlf_root,
+            f"X900: preregistration key baseline_fixture_sha256 {crlf_frozen!r} is not {frozen}, the digest of every file in {directory}/",
+        )
         # A file that is not text keeps its carriage returns as content.
         write(root,f"{directory}/table.bin","")
         (root/directory/"table.bin").write_bytes(b"\x00\r\n")
@@ -691,10 +715,15 @@ class PreregistrationGateTests(unittest.TestCase):
                 write(root,"experiments/semdb/X900-fixture/results/metrics.json","{}")
                 write(root,"experiments/semdb/X900-fixture/results/run_notes.json","[]")
                 self.assertEqual(gate(root),(0,[]))
-                # A checkout that converts line endings hashed the manifest
-                # with CRLF; that is the committed manifest too.
-                crlf=hashlib.sha256(git(root,"show",f"{commit}:{self.MANIFEST}").replace("\n","\r\n").encode("utf-8")+b"\r\n").hexdigest()
+                # A manifest hashed with CRLF line endings, as a converting
+                # checkout would read it, is not the committed manifest.
+                crlf=hashlib.sha256(git(root,"show",f"{commit}:{self.MANIFEST}").replace("\n","\r\n").encode("utf-8")).hexdigest()
                 write(root,self.RECORD,json.dumps(self.record(root,commit,manifest_sha256=crlf)))
+                self.assert_blocked(
+                    root,
+                    f"X900: {name} names manifest_sha256 {crlf!r}, not the SHA-256 of experiment.toml at {short}",
+                )
+                write(root,self.RECORD,json.dumps(self.record(root,commit)))
                 self.assertEqual(gate(root),(0,[]))
                 write(root,self.RECORD,json.dumps(self.record(root,commit),indent=1))
                 commit_all(root,"records")
@@ -729,13 +758,13 @@ class PreregistrationGateTests(unittest.TestCase):
                         (root/self.RECORD).write_bytes(kept)
                         git(root,"update-index",f"--no-{flag}",self.RECORD)
                 self.assertEqual(gate(root),(0,[]))
-                # A copy a converting checkout wrote with CRLF line endings
-                # holds the record committed with LF ones; any other carriage
-                # return makes it another record.
-                (root/self.RECORD).write_bytes(kept.replace(b"\n",b"\r\n"))
-                self.assertEqual(gate(root),(0,[]))
-                (root/self.RECORD).write_bytes(kept.replace(b"\n",b"\r"))
-                self.assert_blocked(root,f"X900: {name} differs from the record committed as it")
+                # Line endings are content: a copy a converting checkout wrote
+                # with CRLF ones, or with any other carriage return, is
+                # another record than the one committed with LF ones.
+                for other in (b"\r\n",b"\r"):
+                    with self.subTest(status=status,line_ending=other):
+                        (root/self.RECORD).write_bytes(kept.replace(b"\n",other))
+                        self.assert_blocked(root,f"X900: {name} differs from the record committed as it")
                 (root/self.RECORD).write_bytes(kept)
                 for text,errors in (
                     (json.dumps({**self.aggregate(root,commit),"preregistration_sha256":None}),
@@ -1475,6 +1504,134 @@ class PreregistrationGateTests(unittest.TestCase):
             f"X900 is 'planned', but it was 'prepared' at {frozen[:12]}; a listed experiment that has left planned "
             "stays prepared, running, completed or failed, or is superseded",
         )
+
+    def move_to(self, root: Path, then: str, now: str) -> str:
+        """Commit the manifest and the registry of `root`, which hold the
+        status `then`, at the status `now`, and return the commit."""
+        for relative in (self.MANIFEST,"experiments/registry.toml"):
+            self.edit(root,relative,f'status = "{then}"',f'status = "{now}"')
+        return commit_all(root,f"{then} to {now}")
+
+    def regression(self, then: str, anchor: str, now: str, commit: str) -> str:
+        """The refusal of a status `now` at `commit` after `then` at `anchor`."""
+        return (f"X900 was {then!r} at {anchor[:12]} and is {now!r} at {commit[:12]}, a commit after it; a status moves "
+                "only from prepared to running to completed or failed, or to superseded, and never back, whether or not "
+                "a later commit puts it there again")
+
+    def regressions(self, root: Path) -> list[tuple[str, str, str, str]]:
+        """The (then, anchor, now, commit) of each regression the gate names
+        on `root`, in any order; anything else the gate names fails the test."""
+        code,lines=gate(root)
+        found=[]
+        for line in lines:
+            named=re.fullmatch(
+                r"X900 was '(\w+)' at ([0-9a-f]{12}) and is '(\w+)' at ([0-9a-f]{12}), a commit after it; .*",line,
+            )
+            self.assertIsNotNone(named,line)
+            found.append(named.groups())
+        self.assertEqual(code,1 if found else 0)
+        return found
+
+    def test_a_status_that_went_back_after_a_freeze_is_named_though_a_later_commit_restores_it(self):
+        # A status moves forward only; a commit that holds an earlier one
+        # after a freeze could have let its runs be chosen, whatever the
+        # commits after it hold.
+        for path,named in (
+            (("prepared","planned","prepared"),(1,)),
+            (("prepared","running","prepared","running"),(2,)),
+            (("prepared","completed","running","completed"),(2,)),
+            (("prepared","completed","failed","superseded"),(2,)),
+            (("prepared","failed","completed","superseded"),(2,)),
+            (("prepared","superseded","prepared"),(2,)),
+            (("prepared","running","superseded","running"),(3,)),
+        ):
+            with self.subTest(path=path):
+                root=self.tree(status=path[0])
+                commits=[commit_all(root)]
+                self.assertEqual(gate(root),(0,[]))
+                for then,now in zip(path,path[1:]):
+                    commits.append(self.move_to(root,then,now))
+                found=self.regressions(root)
+                # One error for each commit that went back, naming the
+                # status it went back from at a commit before it.
+                self.assertEqual(sorted(commit for *_,commit in found),sorted(commits[index][:12] for index in named))
+                names=[held[:12] for held in commits]
+                for then,anchor,now,commit in found:
+                    index=names.index(commit)
+                    self.assertEqual(now,path[index])
+                    before=names.index(anchor)
+                    self.assertLess(before,index)
+                    self.assertEqual(then,path[before])
+                    self.assertFalse(mod.may_follow(then,now))
+        # The nearest freeze is named when several are broken at once.
+        root=self.tree(status="prepared")
+        first=commit_all(root)
+        second=self.move_to(root,"prepared","running")
+        third=self.move_to(root,"running","planned")
+        fourth=self.move_to(root,"planned","running")
+        found=self.regressions(root)
+        self.assertEqual([commit for *_,commit in found],[third[:12]])
+        self.assertIn(found[0][1],(first[:12],second[:12]))
+        self.assertEqual(fourth,git(root,"rev-parse","HEAD"))
+
+    def test_a_status_no_freeze_came_before_moves_freely(self):
+        # Nothing was frozen, so nothing was run, and nothing could be chosen.
+        root=self.tree(status="planned")
+        commit_all(root)
+        self.move_to(root,"planned","superseded")
+        self.move_to(root,"superseded","planned")
+        self.assertEqual(gate(root),(0,[]))
+        # A commit on a side line that never saw the freeze did not go back
+        # from it, and the merge that brings the two together holds the
+        # frozen status.
+        root=self.tree(status="planned")
+        start=commit_all(root)
+        self.move_to(root,"planned","prepared")
+        git(root,"checkout","-q","-b","side",start)
+        write(root,self.MANIFEST,(root/self.MANIFEST).read_text(encoding="utf-8")+"# a note\n")
+        commit_all(root,"a note on the side line")
+        git(root,"checkout","-q","main")
+        git(root,"merge","-q","--no-ff","-m","merge","side")
+        self.assertEqual(gate(root),(0,[]))
+
+    def test_a_status_that_went_back_on_a_side_line_is_named_whatever_a_merge_keeps(self):
+        # Merged with a strategy that keeps the main line's tree: nothing at
+        # the head shows the side line went back.
+        root=self.tree(status="prepared")
+        frozen=commit_all(root)
+        git(root,"checkout","-q","-b","side",frozen)
+        back=self.move_to(root,"prepared","planned")
+        git(root,"checkout","-q","main")
+        write(root,self.MANIFEST,(root/self.MANIFEST).read_text(encoding="utf-8")+"# a note\n")
+        commit_all(root,"a note on the main line")
+        git(root,"merge","-q","--no-ff","-s","ours","-m","merge","side")
+        self.assertEqual(self.regressions(root),[("prepared",frozen[:12],"planned",back[:12])])
+        # Merged so that the side line's later commit restores the status,
+        # the going back is reachable through the merge's second parent.
+        root=self.tree(status="prepared")
+        frozen=commit_all(root)
+        git(root,"checkout","-q","-b","side",frozen)
+        back=self.move_to(root,"prepared","planned")
+        self.move_to(root,"planned","prepared")
+        git(root,"checkout","-q","main")
+        write(root,self.MANIFEST,(root/self.MANIFEST).read_text(encoding="utf-8")+"# a note\n")
+        commit_all(root,"a note on the main line")
+        git(root,"merge","-q","--no-ff","-m","merge","side")
+        self.assertEqual(self.regressions(root),[("prepared",frozen[:12],"planned",back[:12])])
+
+    def test_a_status_follows_another_only_forward(self):
+        allowed={
+            "prepared":("prepared","running","completed","failed","superseded"),
+            "running":("running","completed","failed","superseded"),
+            "completed":("completed","superseded"),
+            "failed":("failed","superseded"),
+            "superseded":("superseded",),
+        }
+        every=("planned","prepared","running","completed","failed","superseded",None,"other")
+        for then in every:
+            for now in every:
+                with self.subTest(then=then,now=now):
+                    self.assertEqual(mod.may_follow(then,now),now in allowed.get(then,()))
 
     def test_a_listed_experiment_names_its_entrypoint_before_it_leaves_planned(self):
         # The manifest is frozen from the first commit past planned, so an
@@ -2232,6 +2389,17 @@ class PreregistrationGateTests(unittest.TestCase):
                 ("cargo run --lockfile-path 'crates/git~1/Cargo.lock' -- <seed>","--lockfile-path","crates/git~1/Cargo.lock"),
                 ("cargo run --manifest-path '.git::$INDEX_ALLOCATION/x/Cargo.toml' -- <seed>","--manifest-path",
                  ".git::$INDEX_ALLOCATION/x/Cargo.toml"),
+                # Or a step Windows reads as `.` or `..` though it is not written
+                # as one: trailing dots or spaces, dots and spaces only, or a
+                # stream.
+                ("cargo run --manifest-path '.. /outside/Cargo.toml' -- <seed>","--manifest-path",
+                 ".. /outside/Cargo.toml"),
+                ("cargo run --manifest-path crates/.../x/Cargo.toml -- <seed>","--manifest-path",
+                 "crates/.../x/Cargo.toml"),
+                ("cargo run --lockfile-path 'crates/. /Cargo.lock' -- <seed>","--lockfile-path","crates/. /Cargo.lock"),
+                ("cargo run --manifest-path 'crates/..:stream/Cargo.toml' -- <seed>","--manifest-path",
+                 "crates/..:stream/Cargo.toml"),
+                ("cargo run --manifest-path 'crates/ /Cargo.toml' -- <seed>","--manifest-path","crates/ /Cargo.toml"),
                 # A target may be a specification file.
                 ("cargo build --target /tmp/custom.json -- <seed>","--target","/tmp/custom.json"),
             )),
@@ -2287,6 +2455,11 @@ class PreregistrationGateTests(unittest.TestCase):
                            "cargo run -FCuda -pbench -- --manifest-path /elsewhere <seed>",
                            "cargo run -FCrate/../../feature -- <seed>",
                            "cargo run --manifest-path crates/.github/Cargo.toml -- <seed>",
+                           "cargo run --manifest-path crates/..x/Cargo.toml -- <seed>",
+                           "cargo run --manifest-path crates/...x/Cargo.toml -- <seed>",
+                           "cargo run --manifest-path crates/a.b/../Cargo.toml -- <seed>",
+                           "cargo run --manifest-path crates/.hidden/Cargo.toml -- <seed>",
+                           "cargo run --manifest-path crates/a../Cargo.toml -- <seed>",
                            "cargo +nightly run -Zunstable-options -- /tmp <seed>",
                            "cargo build --target x86_64-unknown-linux-gnu --target=targets/custom.json -- <seed>",
                            "cargo run -- --config c.toml <seed>","python3 bench.py --config c.toml <seed>",
@@ -2560,6 +2733,25 @@ class PreregistrationGateTests(unittest.TestCase):
         for accepted in (".gitignore",".github/workflows/ci.yml","a/.gitkeep","x.git/y","git/config","a/git~2",".gitx/y"):
             with self.subTest(accepted=accepted):
                 self.assertTrue(mod.is_repository_path(accepted))
+
+    def test_a_name_windows_reads_as_a_step_is_no_part_of_a_repository_path(self):
+        # Windows trims trailing dots and spaces, and an NTFS stream, from a
+        # name, so `.. ` climbs out of its directory as `..` does, `...` and
+        # ` ` name the directory itself, and `..:x` is `..` too.
+        for refused in ("../x",".. /x","a/.. /b","a/.../b","a/. /b","a/..:x/b","a/ /b","a/. ./b","...","a/.. ","a/.:x/b"):
+            with self.subTest(refused=refused):
+                self.assertFalse(mod.is_repository_path(refused))
+        # A name with anything else in it is a name of its own on every
+        # platform.
+        for accepted in ("...x/y","a../b",".a./b","a b/c","..x/y","a/.x./b",".hidden/y","a.b/c","a/x ../y"):
+            with self.subTest(accepted=accepted):
+                self.assertTrue(mod.is_repository_path(accepted))
+        for stepping in (".. ","...","."," ",". ",".. ..","..:x",":x"):
+            with self.subTest(stepping=stepping):
+                self.assertEqual(mod.is_windows_dot_name(stepping),stepping not in (".",".."))
+        for name in ("","..","a..","...x",".a.","a b","..x",".git"):
+            with self.subTest(name=name):
+                self.assertFalse(mod.is_windows_dot_name(name))
 
     def test_a_history_git_cannot_read_fails_the_gate_rather_than_reading_as_empty(self):
         # Read as empty, a history would hide every freeze and record in it.

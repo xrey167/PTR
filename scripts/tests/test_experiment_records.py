@@ -819,10 +819,11 @@ class SourceTreeTests(GitTree, unittest.TestCase):
         self.assertEqual(mod.uncommitted_files(self.root, self.pathspecs), [])
         self.assertFalse(marker.exists())
 
-    def test_a_converting_checkouts_crlf_copy_holds_heads_content(self):
-        # A checkout that writes text with CRLF line endings holds the LF
-        # blob HEAD holds; carriage returns that blob does not end its lines
-        # with are content.
+    def test_a_converting_checkouts_crlf_copy_is_not_the_content_head_holds(self):
+        # A checkout that writes text with CRLF line endings holds other
+        # bytes than the LF blob HEAD holds: a command reading them tells the
+        # two apart, so git status calling the copy clean does not make it
+        # the committed content. Line endings are content.
         git(self.root, "config", "core.autocrlf", "true")
         originals = {}
         for name in ("Cargo.toml", "src/lib.rs"):
@@ -831,16 +832,28 @@ class SourceTreeTests(GitTree, unittest.TestCase):
         git(self.root, "checkout", "--", "Cargo.toml", "src/lib.rs")
         for name, original in originals.items():
             self.assertEqual((self.root / name).read_bytes(), original.replace(b"\n", b"\r\n"))
-        self.assertEqual(mod.uncommitted_files(self.root, self.pathspecs), [])
-        # Two copies, read back from HEAD in one request.
+        # Git's own status reads the converting checkout as clean.
+        self.assertEqual(git(self.root, "status", "--porcelain"), "")
+        self.assertEqual(mod.content_changes(self.root, ["Cargo.toml", "src/lib.rs"]), ["Cargo.toml", "src/lib.rs"])
+        self.assertEqual(mod.uncommitted_files(self.root, self.pathspecs), ["Cargo.toml", "src/lib.rs"])
+        # One copy restored to the blob's bytes is the content again.
+        (self.root / "src/lib.rs").write_bytes(originals["src/lib.rs"])
+        self.assertEqual(mod.content_changes(self.root, ["Cargo.toml", "src/lib.rs"]), ["Cargo.toml"])
+        (self.root / "Cargo.toml").write_bytes(originals["Cargo.toml"])
         self.assertEqual(mod.content_changes(self.root, ["Cargo.toml", "src/lib.rs"]), [])
-        (self.root / "src/lib.rs").write_bytes(originals["src/lib.rs"].replace(b"\n", b"\r\r\n"))
-        self.assertEqual(mod.content_changes(self.root, ["Cargo.toml", "src/lib.rs"]), ["src/lib.rs"])
-        git(self.root, "checkout", "--", "src/lib.rs")
-        # A lone carriage return has git convert none of the file's line
-        # endings, so a CRLF ending over one of the blob's is content.
+        # Git's index keeps the size of the CRLF copy it wrote, so it calls
+        # the LF copy modified until the index is refreshed under settings
+        # that no longer convert.
+        git(self.root, "config", "--unset", "core.autocrlf")
+        git(self.root, "add", "-A")
+        self.assertEqual(git(self.root, "status", "--porcelain"), "")
+        self.assertEqual(mod.uncommitted_files(self.root, self.pathspecs), [])
+        # Carriage returns the blob holds are content as they stand, and a
+        # copy that ends its lines another way is another file.
         self.assertTrue(commit(self.root, {"src/cr.rs": "a\rb\r\n"}, "carriage returns"))
         self.assertEqual(mod.content_changes(self.root, ["src/cr.rs"]), [])
+        (self.root / "src/cr.rs").write_bytes(b"a\rb\n")
+        self.assertEqual(mod.content_changes(self.root, ["src/cr.rs"]), ["src/cr.rs"])
         (self.root / "src/cr.rs").write_bytes(b"a\rb\r\r\n")
         self.assertEqual(mod.content_changes(self.root, ["src/cr.rs"]), ["src/cr.rs"])
         # A name HEAD does not hold, or the tree does not hold as a file, is
@@ -849,14 +862,44 @@ class SourceTreeTests(GitTree, unittest.TestCase):
         self.assertEqual(mod.content_changes(self.root, ["src/cr.rs", "src/absent.rs"]), [])
         self.assertEqual(mod.content_changes(self.root, []), [])
 
-    def test_a_blob_git_cannot_read_leaves_the_tree_unknown(self):
-        # With HEAD's copy of a changed file gone from the object store, the
-        # watch cannot tell a converted checkout from a rewrite.
+    def test_a_file_committed_with_crlf_is_its_own_content(self):
+        # HEAD may hold CRLF text (`-text` keeps git from converting it): the
+        # blob's bytes are the content, LF copies of it are another file, and
+        # the copy holding the blob's bytes is clean.
+        commit(self.root, {".gitattributes": "*.txt -text\n"}, "attributes")
+        (self.root / "notes.txt").write_bytes(b"one\r\ntwo\r\n")
+        git(self.root, "add", "notes.txt")
+        git(self.root, "commit", "-m", "crlf text")
+        self.assertEqual(mod.content_changes(self.root, ["notes.txt"]), [])
+        (self.root / "notes.txt").write_bytes(b"one\ntwo\n")
+        self.assertEqual(mod.content_changes(self.root, ["notes.txt"]), ["notes.txt"])
+
+    def test_the_watch_reads_a_blob_by_its_id_alone(self):
+        # HEAD's copy of a changed file is never read back: the working
+        # tree's bytes hash to the blob id or they do not, so a blob gone
+        # from the object store leaves the answer for a rewrite unchanged.
         blob = git(self.root, "rev-parse", "HEAD:src/lib.rs")
         self.write("src/lib.rs", "pub fn f() { rewritten() }\n")
         (self.root / ".git/objects" / blob[:2] / blob[2:]).unlink()
-        with self.assertRaisesRegex(mod.ProvenanceError, "cannot read HEAD's copy of src/lib.rs"):
-            mod.content_changes(self.root, ["src/lib.rs"])
+        self.assertEqual(mod.content_changes(self.root, ["src/lib.rs"]), ["src/lib.rs"])
+
+    def test_the_repository_pins_line_endings_to_lf(self):
+        # A checkout with `core.autocrlf=true` writes LF anyway where the
+        # repository's `.gitattributes` say `eol=lf`, so a preregistered
+        # file's bytes are the same on every clone.
+        attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8").splitlines()
+        self.assertIn("* text=auto eol=lf", [line.strip() for line in attributes])
+        pinned = git(ROOT, "check-attr", "eol", "--", "experiments/README.md", "scripts/check_research_gates.py")
+        self.assertEqual(
+            pinned.splitlines(),
+            ["experiments/README.md: eol: lf", "scripts/check_research_gates.py: eol: lf"],
+        )
+        commit(self.root, {".gitattributes": "* text=auto eol=lf\n"}, "pin line endings")
+        git(self.root, "config", "core.autocrlf", "true")
+        (self.root / "src/lib.rs").unlink()
+        git(self.root, "checkout", "--", "src/lib.rs")
+        self.assertNotIn(b"\r", (self.root / "src/lib.rs").read_bytes())
+        self.assertEqual(mod.content_changes(self.root, ["src/lib.rs"]), [])
 
     def test_a_directory_heads_rules_ignore_decides_every_file_below_it(self):
         # Git cannot show a file again below a directory its rules ignore, so
@@ -1749,21 +1792,21 @@ class AggregateBindingTests(unittest.TestCase):
         (self.results / "kept").unlink()
         (self.results / "metrics.json").write_text(archived, encoding="utf-8")
         self.assertEqual(self.errors(), [])
-        # A converting checkout writes both files with CRLF line endings,
-        # which the copies committed with LF ones hold; any other carriage
-        # return makes another file.
+        # A converting checkout writes both files with CRLF line endings: the
+        # bytes are not the ones committed with LF line endings, so each copy
+        # is another file, as is one whose line endings are carriage returns.
         run_archived = (self.results / "run.json").read_bytes()
         for name, kept in (("metrics.json", archived.encode("utf-8")), ("run.json", run_archived)):
-            with self.subTest(crlf=name):
-                self.assertTrue(kept.endswith(b"\n"))
-                path = self.results / name
-                path.write_bytes(kept.replace(b"\n", b"\r\n"))
-                self.assertEqual(self.errors(), [])
-                path.write_bytes(kept.replace(b"\n", b"\r"))
-                errors = self.errors()
-                self.assertEqual(len(errors), 1, errors)
-                self.assertIn(f"results/{name}", errors[0])
-                path.write_bytes(kept)
+            for spelling, other in (("CRLF", b"\r\n"), ("CR", b"\r")):
+                with self.subTest(crlf=name, endings=spelling):
+                    self.assertTrue(kept.endswith(b"\n"))
+                    path = self.results / name
+                    path.write_bytes(kept.replace(b"\n", other))
+                    errors = self.errors()
+                    self.assertEqual(len(errors), 1, errors)
+                    self.assertIn(f"results/{name}", errors[0])
+                    path.write_bytes(kept)
+                    self.assertEqual(self.errors(), [])
         self.assertEqual(self.errors(), [])
         # A run.json no commit holds binds nothing either.
         self.write("run.json", {**self.run, "verdict": "hard-pass"})
@@ -1837,15 +1880,16 @@ class AggregateBindingTests(unittest.TestCase):
                 )
         (self.results / "mutations.json").write_bytes(archived)
         self.assertEqual(self.errors(), [])
-        # A converting checkout's CRLF copy holds the evidence committed
-        # with LF line endings; any other carriage return makes other evidence.
+        # A converting checkout's CRLF copy is not the evidence committed
+        # with LF line endings, and neither is a copy with carriage returns
+        # for line endings: the bytes are the evidence.
         self.assertTrue(archived.endswith(b"\n"))
-        (self.results / "mutations.json").write_bytes(archived.replace(b"\n", b"\r\n"))
-        self.assertEqual(self.errors(), [])
-        (self.results / "mutations.json").write_bytes(archived.replace(b"\n", b"\r"))
-        errors = self.errors()
-        self.assertEqual(len(errors), 1, errors)
-        self.assertIn("mutations.json is not the evidence committed with run.json", errors[0])
+        for spelling, other in (("CRLF", b"\r\n"), ("CR", b"\r")):
+            with self.subTest(evidence_endings=spelling):
+                (self.results / "mutations.json").write_bytes(archived.replace(b"\n", other))
+                errors = self.errors()
+                self.assertEqual(len(errors), 1, errors)
+                self.assertIn("mutations.json is not the evidence committed with run.json", errors[0])
         (self.results / "mutations.json").write_bytes(archived)
         self.assertEqual(self.errors(), [])
         # Read from disk, not through a clean filter the clone's own
@@ -2427,25 +2471,31 @@ class PreregistrationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             mod.canonical_text(0.5)
 
-    def test_a_preregistered_file_is_digested_with_crlf_read_as_lf(self):
+    def test_a_preregistered_file_is_digested_byte_for_byte(self):
+        # Line endings are content: a CRLF copy is another file than the LF
+        # one, so a checkout that converts them digests differently and the
+        # gate names it, where a digest reading the two alike would let two
+        # forms of one commit run on different inputs.
         with tempfile.TemporaryDirectory() as directory:
             unix = Path(directory) / "unix.md"
             windows = Path(directory) / "windows.md"
             unix.write_bytes(b"# Protocol\nline\n")
             windows.write_bytes(b"# Protocol\r\nline\r\n")
-            expected = hashlib.sha256(b"# Protocol\nline\n").hexdigest()
-            self.assertEqual(mod.preregistered_file_digest(unix), expected)
-            self.assertEqual(mod.preregistered_file_digest(windows), expected)
-            # A lone CR is content, not a line ending.
+            self.assertEqual(mod.preregistered_file_digest(unix), hashlib.sha256(b"# Protocol\nline\n").hexdigest())
+            self.assertEqual(mod.preregistered_file_digest(windows), hashlib.sha256(b"# Protocol\r\nline\r\n").hexdigest())
+            self.assertNotEqual(mod.preregistered_file_digest(unix), mod.preregistered_file_digest(windows))
+            # A lone CR is content too, and differs from both.
             windows.write_bytes(b"# Protocol\rline\n")
-            self.assertNotEqual(mod.preregistered_file_digest(windows), expected)
-            # A file that is not text is digested byte for byte: its carriage
-            # returns are content, which a converting checkout leaves alone.
-            for binary in (b"\x00\x01\r\n\x02", b"\xff\xfe\r\n"):
-                with self.subTest(binary=binary):
-                    self.assertEqual(mod.preregistered_bytes_digest(binary), hashlib.sha256(binary).hexdigest())
+            self.assertNotIn(
+                mod.preregistered_file_digest(windows),
+                (mod.preregistered_file_digest(unix), hashlib.sha256(b"# Protocol\r\nline\r\n").hexdigest()),
+            )
+            # Text or not, every file is digested as the bytes it holds.
+            for content in (b"# Protocol\r\nline\r\n", b"\x00\x01\r\n\x02", b"\xff\xfe\r\n"):
+                with self.subTest(content=content):
+                    self.assertEqual(mod.preregistered_bytes_digest(content), hashlib.sha256(content).hexdigest())
                     self.assertNotEqual(
-                        mod.preregistered_bytes_digest(binary), mod.preregistered_bytes_digest(binary.replace(b"\r\n", b"\n"))
+                        mod.preregistered_bytes_digest(content), mod.preregistered_bytes_digest(content.replace(b"\r\n", b"\n"))
                     )
 
     def test_git_reads_the_repository_it_is_given_whatever_the_environment_says(self):

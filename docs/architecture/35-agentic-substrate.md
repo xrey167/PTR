@@ -1553,7 +1553,8 @@ its entry in the list, every baseline the list names is pinned and not blocked, 
 each baseline's directory (its configuration and implementation) and the content of every file it names by
 their digests, and every run record the experiment has committed, wherever it was kept, and its aggregate name
 those digests and a commit on HEAD's history that holds the same preregistration, entry, files, baselines,
-manifest and configuration, the status alone having moved forward since; `scripts/check_research_gates.py`
+manifest and configuration, the status alone having moved forward since, and no commit after a freeze holding
+it at an earlier status on any line of history (`status_regressions`); `scripts/check_research_gates.py`
 fails CI otherwise, whether the experiment is prepared, running, completed or failed, and one whose runs were
 committed cannot go back to `planned` (`test_a_missing_required_key_keeps_an_experiment_from_leaving_planned`,
 `test_a_placeholder_or_wrongly_typed_value_blocks`, `test_a_digest_mismatch_blocks`,
@@ -1571,6 +1572,15 @@ committed cannot go back to `planned` (`test_a_missing_required_key_keeps_an_exp
 `test_a_record_rewritten_on_one_side_of_a_merge_fails`,
 `test_a_committed_freeze_binds_whether_or_not_its_runs_were_kept`,
 `test_a_commit_freezes_only_what_it_holds_as_regular_files`).
+Every digest reads a file's bytes as they are: line endings are content, not formatting, and a checkout that
+converts them (`core.autocrlf`) holds another file than the one that was frozen, whose digest differs and which
+the runner's watch names as changed content (`content_changes` compares git blob ids, and never reads HEAD's
+blob back). The repository's `.gitattributes` pins its files to LF (`* text=auto eol=lf`), so a clone checks out
+the committed bytes whatever that setting says
+(`test_a_preregistered_file_is_digested_byte_for_byte`,
+`test_a_converting_checkouts_crlf_copy_is_not_the_content_head_holds`,
+`test_a_file_committed_with_crlf_is_its_own_content`, `test_the_watch_reads_a_blob_by_its_id_alone`,
+`test_the_repository_pins_line_endings_to_lf`).
 `scripts/run_experiment.py` runs or prepares a listed experiment only once this holds, and holds the files that
 decision reads to HEAD while it runs, so no outcome is seen before its preregistration is frozen
 (`test_a_listed_experiment_is_not_run_or_prepared_before_its_preregistration_is_frozen`,
