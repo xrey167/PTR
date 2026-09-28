@@ -466,8 +466,26 @@ class PreregistrationGateTests(unittest.TestCase):
 
         good={**TABLE,"protocol":path,"protocol_sha256":digest}
         self.assertEqual(gate(tree(good)),(0,[]))
-        # A checkout that writes CRLF line endings holds the same protocol.
-        self.assertEqual(gate(tree(good,content=text.replace("\n","\r\n"))),(0,[]))
+        # A checkout that writes CRLF line endings holds the same protocol as
+        # the LF text committed.
+        root=tree(good)
+        commit_all(root)
+        (root/path).write_bytes(text.replace("\n","\r\n").encode("utf-8"))
+        self.assertEqual(gate(root),(0,[]))
+        # Committed with CRLF, the text would read alike with LF line
+        # endings, which a command reading it tells apart: it is refused, in
+        # the tree and at the commit, which froze nothing.
+        crlf=(f"X900: preregistration key protocol names {path!r}, which is committed with CRLF line endings; its "
+              "digest reads them as LF, so a preregistered text file is committed with LF line endings")
+        root=tree(good,content=text.replace("\n","\r\n"))
+        self.assert_blocked(root,crlf)
+        committed=commit_all(root)
+        self.assert_blocked(root,crlf)
+        self.assertIsNone(mod.frozen_file_at(root,committed,path))
+        self.assertIsNone(mod.launchable_at(root,committed,"X900","experiments/semdb/X900-fixture"))
+        # A binary file's carriage returns are content, digested as they are.
+        binary=b"\x00\r\n\x01"
+        self.assertIsNone(mod.file_form_problem(binary,"100644"))
         # A protocol edited after the freeze no longer is the frozen one.
         edited=text+"Or do not.\n"
         self.assert_blocked(
@@ -1916,6 +1934,19 @@ class PreregistrationGateTests(unittest.TestCase):
         root=self.tree(status="planned")
         self.edit(root,self.MANIFEST,'entrypoint = "bench <seed>"\n','entrypoint = "bench <seed> <iterations>"\n')
         self.assertEqual(gate(root),(0,[]))
+        # A commit holding such an entrypoint could not launch it and froze
+        # nothing, so preregistering the value repairs it.
+        root=self.tree(status="running")
+        self.edit(root,self.MANIFEST,'entrypoint = "bench <seed>"\n','entrypoint = "bench <seed> <iterations>"\n')
+        commit=commit_all(root)
+        self.assertIsNone(mod.launchable_at(root,commit,"X900","experiments/semdb/X900-fixture"))
+        repaired=self.tree(status="running",table={**TABLE,"iterations":30})
+        self.edit(repaired,self.MANIFEST,'entrypoint = "bench <seed>"\n','entrypoint = "bench <seed> <iterations>"\n')
+        for relative in ("experiments/semdb/X900-fixture/config.toml",self.MANIFEST):
+            shutil.copyfile(repaired/relative,root/relative)
+        repair=commit_all(root,"iterations preregistered")
+        self.assertEqual(gate(root),(0,[]))
+        self.assertIsNotNone(mod.launchable_at(root,repair,"X900","experiments/semdb/X900-fixture"))
 
     def test_a_name_that_is_not_utf8_is_no_repository_path(self):
         # Git holds a name's bytes as they are. One that is not UTF-8 is
@@ -1950,9 +1981,11 @@ class PreregistrationGateTests(unittest.TestCase):
         commit_all(root)
         self.assert_blocked(root,"X900: results/run-\\udcff.json is not a regular file reached through no symlink")
 
-    def test_an_executable_file_is_frozen_as_a_regular_one(self):
-        # Git holds an executable file as mode 100755: a preregistered one,
-        # and one in a baseline's directory, freeze as any regular file does.
+    def test_an_executable_file_is_frozen_with_its_mode(self):
+        # Git holds an executable file as mode 100755. A baseline's directory
+        # freezes each file's mode with its content, so one there freezes as
+        # it is; a preregistered file is frozen by its content alone, so it
+        # is no executable, whose bit would change what a command does.
         protocol="experiments/semdb/X900-fixture/run.sh"
         script="#!/bin/sh\nexit 0\n"
         helper="research/baselines/fixture/helper.sh"
@@ -1960,12 +1993,28 @@ class PreregistrationGateTests(unittest.TestCase):
         table={**TABLE,"protocol":protocol,"protocol_sha256":hashlib.sha256(script.encode("utf-8")).hexdigest(),
                "baseline_fixture_sha256":baseline_digest({"config.toml":baseline_text,"helper.sh":script},executable={"helper.sh"})}
         root=self.tree(status="running",table=table,required={**REQUIRED,"protocol":"file"})
-        for relative in (protocol,helper):
-            write(root,relative,script)
-            (root/relative).chmod(0o755)
+        write(root,protocol,script)
+        write(root,helper,script)
+        (root/helper).chmod(0o755)
         head=commit_all(root)
-        self.assertEqual(git(root,"ls-tree","HEAD","--",protocol).split()[0],"100755")
+        self.assertEqual(git(root,"ls-tree","HEAD","--",helper).split()[0],"100755")
         self.assertEqual((gate(root),mod.launch_commit_errors(root,"X900",head)),((0,[]),[]))
+        # Made executable, the preregistered file is refused, as git holds its
+        # mode in the index and at a commit, which then froze nothing: its bit
+        # put back repairs it.
+        (root/protocol).chmod(0o755)
+        git(root,"add","--",protocol)
+        refusal=(f"X900: preregistration key protocol names {protocol!r}, which is executable; a preregistered file is "
+                 "frozen by its content, so it is a file no command runs as a program")
+        self.assert_blocked(root,refusal)
+        self.assertEqual(mod.launch_errors(root,"X900"),[refusal])
+        executable=commit_all(root,"protocol executable")
+        self.assertEqual(git(root,"ls-tree","HEAD","--",protocol).split()[0],"100755")
+        self.assertIsNone(mod.frozen_file_at(root,executable,protocol))
+        self.assertIsNone(mod.launchable_at(root,executable,"X900","experiments/semdb/X900-fixture"))
+        (root/protocol).chmod(0o644)
+        commit_all(root,"protocol not executable")
+        self.assertEqual(gate(root),(0,[]))
 
     def test_a_listed_experiments_manifest_and_configuration_are_regular_files(self):
         # Read through a link, either is a file no commit holds as the

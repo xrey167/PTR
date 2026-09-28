@@ -175,18 +175,20 @@ def mutation_record_paths(experiment_dir: Path, root: Path) -> tuple[str, ...]:
 RESULT_OUTPUTS = ("run-*.json", "run.json", "metrics.json", "mutations.json")
 
 
-def tree_pathspecs(experiment_dir: Path, results_dir: Path, root: Path, paths: tuple[str, ...]) -> list[str]:
+def tree_pathspecs(
+    experiment_dir: Path, results_dir: Path, root: Path, paths: tuple[str, ...], outputs: tuple[str, ...] = RESULT_OUTPUTS
+) -> list[str]:
     """The pathspecs a run must find committed: the provenance `paths` and the
-    whole experiment directory but the records the tools write into its
-    results (`RESULT_OUTPUTS`). Every other file there, code or input a
-    command could read, must be one HEAD holds, as anywhere in the
-    experiment: one changed between runs would leave records naming one
-    commit for different code."""
+    whole experiment directory but the `outputs` the tools write into its
+    results, as glob patterns within it (`RESULT_OUTPUTS`, or a run's own
+    record). Every other file there, code or input a command could read,
+    must be one HEAD holds, as anywhere in the experiment: one changed
+    between runs would leave records naming one commit for different code."""
     results = relative_to_root(results_dir, root)
     return [
         *paths,
         relative_to_root(experiment_dir, root),
-        *(f":(exclude,glob){results}/{pattern}" for pattern in RESULT_OUTPUTS),
+        *(f":(exclude,glob){results}/{pattern}" for pattern in outputs),
     ]
 
 
@@ -1024,19 +1026,28 @@ def preregistration_digest(table: dict) -> str:
     return canonical_digest(table)
 
 
+def is_preregistered_text(data: bytes) -> bool:
+    """Whether `data`, the content of a file a preregistration names, is
+    text: UTF-8 with no NUL byte."""
+    if b"\0" in data:
+        return False
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True
+
+
 def preregistered_bytes_digest(data: bytes) -> str:
     """The SHA-256, in hex, of `data`, the content of a file a
-    preregistration names: text (UTF-8 with no NUL byte) with every CRLF line
-    ending read as LF, so a checkout that converts line endings digests the
-    text the repository holds, and anything else byte for byte, whose
-    carriage returns are content a converting checkout leaves alone."""
-    if b"\0" not in data:
-        try:
-            data.decode("utf-8")
-        except UnicodeDecodeError:
-            pass
-        else:
-            data = data.replace(b"\r\n", b"\n")
+    preregistration names: text (`is_preregistered_text`) with every CRLF
+    line ending read as LF, so a checkout that converts line endings digests
+    the text the repository holds, and anything else byte for byte, whose
+    carriage returns are content a converting checkout leaves alone. The
+    gate requires such text to be committed with LF line endings, so no two
+    committed versions read alike."""
+    if is_preregistered_text(data):
+        data = data.replace(b"\r\n", b"\n")
     return hashlib.sha256(data).hexdigest()
 
 

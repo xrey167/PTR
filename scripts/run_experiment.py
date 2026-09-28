@@ -69,6 +69,46 @@ def write_json_exclusive(path: Path, record: dict) -> None:
     experiment_records.write_exclusively(path, json.dumps(record, indent=2, default=experiment_records.toml_time) + "\n")
 
 
+def write_json_replacing(path: Path, record: dict) -> None:
+    """Write `record` to `path` in one step, replacing the reservation the
+    run made there (`reserve_run`): the record appears whole or not at all,
+    and a failed write leaves the reservation."""
+    temporary = experiment_records.write_temporary(
+        path, (json.dumps(record, indent=2, default=experiment_records.toml_time) + "\n").encode("utf-8")
+    )
+    try:
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    experiment_records.sync_directory(path.parent)
+
+
+def run_lock(exp_id: str) -> Path | None:
+    """Take the lock on runs of `exp_id`, a file in git's own directory
+    created only if absent, and return it, or return None, printing why,
+    when another run holds it: two runs of a listed experiment at once could
+    both find a seed not yet run, both run it and keep the better record.
+    A lock left by a run that died is removed by hand, once no run of it is
+    in progress."""
+    common = experiment_records.git(ROOT, "rev-parse", "--git-common-dir")
+    if common.returncode != 0:
+        print(f"ERROR: cannot find git's directory: {common.stderr.strip()}", file=sys.stderr)
+        return None
+    lock = (ROOT / common.stdout.strip()).resolve() / f"ptr-run-{exp_id}.lock"
+    try:
+        descriptor = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    except FileExistsError:
+        print(
+            f"ERROR: another run of {exp_id} holds {lock}; a listed experiment runs one seed at a time, and the lock "
+            "of a run that died is removed by hand once no run of it is in progress",
+            file=sys.stderr,
+        )
+        return None
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(f"{os.getpid()}\n")
+    return lock
+
+
 def validate():
     schema = load(ROOT / "experiments/schema.toml")
     required = set(schema["required"])
@@ -211,14 +251,18 @@ def results_directory(root: Path, data: dict) -> Path | None:
     return root / relative
 
 
-def launch_watch(exp_id: str, root: Path, results: Path, data: dict) -> experiment_records.ProvenanceWatch | None:
+def launch_watch(
+    exp_id: str, root: Path, results: Path, data: dict, outputs: tuple[str, ...] = experiment_records.RESULT_OUTPUTS
+) -> experiment_records.ProvenanceWatch | None:
     """The watch on every file that decides a launch of `exp_id` (the
-    provenance files, the experiment's directory but the records the tools
+    provenance files, the experiment's directory but the `outputs` the tools
     write into `results`, and `check_research_gates.launch_inputs`), or
     None, printing why, when git cannot tell, HEAD does not hold one of
     them, or `results` holds a file git ignores, which the watch would not
     see: a record names HEAD as what it ran, so it may be written only from
-    a tree that holds HEAD. A
+    a tree that holds HEAD. A listed experiment's watch leaves out only the
+    record the run itself writes, so every earlier record and output, which
+    a command could read, is one HEAD holds. A
     listed experiment also needs HEAD to hold it frozen as the tree launches
     it (`check_research_gates.launch_commit_errors`), each input a regular
     file HEAD holds, so the gate can find the freeze from HEAD alone. And
@@ -231,7 +275,7 @@ def launch_watch(exp_id: str, root: Path, results: Path, data: dict) -> experime
             ROOT,
             [
                 *experiment_records.tree_pathspecs(
-                    root, results, ROOT, experiment_records.seed_record_paths(root, ROOT)
+                    root, results, ROOT, experiment_records.seed_record_paths(root, ROOT), outputs
                 ),
                 # What decided that this experiment may launch: an edit to it
                 # would be undone after the outcome is seen.
@@ -296,13 +340,14 @@ def prepare(exp_id: str):
     results = results_directory(root, data)
     if results is None:
         return 2
-    watch = launch_watch(exp_id, root, results, data)
+    timestamp = utc_stamp()
+    out = results / f"run-{timestamp}.json"
+    outputs = (out.name,) if is_listed(exp_id) else experiment_records.RESULT_OUTPUTS
+    watch = launch_watch(exp_id, root, results, data, outputs)
     if watch is None:
         return 2
-    timestamp = utc_stamp()
     record = base_record(exp_id, data, root)
     record.update({"git_sha": watch.head, "status": "prepared", "prepared_at": timestamp})
-    out = results / f"run-{timestamp}.json"
     write_json_exclusive(out, record)
     print(out.relative_to(ROOT))
     return 0
@@ -464,14 +509,18 @@ def run_experiment(
     (`dated_manifest`). A listed experiment runs only through its
     `entrypoint`, with its preregistered values (`command_parameters`), and
     each seed once (`seed_runs`): a seed run again after its outcome was
-    seen could keep whichever run came out best. After the command ends it
-    looks at the same tree again (`experiment_records.ProvenanceWatch`) and
-    writes no record, returning 2, when HEAD moved or a provenance or
-    experiment file was written, created or removed while the command ran,
-    even if its content was put back, so the record's `git_sha` is the code
-    that ran as far as that watch can see (its `changes` names what it
-    cannot). The record is written whole or not at all
-    (`write_json_exclusive`)."""
+    seen could keep whichever run came out best. Its run holds a lock on
+    the experiment's runs (`run_lock`), reads no uncommitted file in its
+    results, and reserves its record before the command starts, the whole
+    record replacing the reservation once it ends (`write_json_replacing`).
+    After the command ends it looks at the same tree again
+    (`experiment_records.ProvenanceWatch`) and writes no record, returning
+    2, when HEAD moved or a provenance or experiment file was written,
+    created or removed while the command ran, even if its content was put
+    back, so the record's `git_sha` is the code that ran as far as that
+    watch can see (its `changes` names what it cannot); a listed
+    experiment's reservation then stays, as the record that its seed ran.
+    The record is written whole or not at all (`write_json_exclusive`)."""
     _, root, data = resolve(exp_id)
     if dated_manifest(exp_id, data) or launch_refused(exp_id):
         return 2
@@ -481,7 +530,38 @@ def run_experiment(
     results = results_directory(root, data)
     if results is None:
         return 2
-    watch = launch_watch(exp_id, root, results, data)
+    listed = is_listed(exp_id)
+    timestamp = utc_stamp()
+    out = results / f"run-{timestamp}-seed-{seed}.json"
+    lock = run_lock(exp_id) if listed else None
+    if listed and lock is None:
+        return 2
+    try:
+        return launch_and_record(
+            exp_id, root, data, results, out, timestamp, entrypoint=entrypoint, seed=seed, params=params, listed=listed
+        )
+    finally:
+        if lock is not None:
+            lock.unlink(missing_ok=True)
+
+
+def launch_and_record(
+    exp_id: str,
+    root: Path,
+    data: dict,
+    results: Path,
+    out: Path,
+    timestamp: str,
+    *,
+    entrypoint: str,
+    seed: int,
+    params: dict[str, str] | None,
+    listed: bool,
+) -> int:
+    """The part of `run_experiment` from the watch on, for the record `out`
+    stamped `timestamp`; a listed experiment's run holds its lock
+    throughout."""
+    watch = launch_watch(exp_id, root, results, data, (out.name,) if listed else experiment_records.RESULT_OUTPUTS)
     if watch is None:
         return 2
     # Built once the watch holds the tree to HEAD, so a listed experiment's
@@ -492,7 +572,7 @@ def run_experiment(
         # A listed experiment runs each seed once: every run of it is
         # evidence, so none can be chosen by its outcome. The results
         # directory holds every record committed, which the gate keeps.
-        ran = seed_runs(results, seed) if is_listed(exp_id) else []
+        ran = seed_runs(results, seed) if listed else []
     except ValueError as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 2
@@ -504,12 +584,11 @@ def run_experiment(
         )
         return 2
 
-    timestamp = utc_stamp()
     record = base_record(exp_id, data, root)
     record.update(
         {
             "git_sha": watch.head,
-            "status": "running",
+            "status": "started",
             "started_at": timestamp,
             "entrypoint": entrypoint,
             "seed": seed,
@@ -517,6 +596,16 @@ def run_experiment(
             "command": command,
         }
     )
+    if listed:
+        # The reservation: the record, as far as it is known before the
+        # command starts, which the whole record replaces once it ends. A run
+        # that dies or goes unrecorded leaves it, and its seed has run.
+        try:
+            write_json_exclusive(out, record)
+        except OSError as error:
+            print(f"ERROR: cannot reserve {out.relative_to(ROOT)}: {error}", file=sys.stderr)
+            return 2
+    kept = f"; {out.relative_to(ROOT)} stays as the record that seed {seed} ran" if listed else ""
 
     execution = execute_command(command)
     exit_code = execution["exit_code"]
@@ -530,7 +619,7 @@ def run_experiment(
         print(
             f"ERROR: not recording the run (exit status {exit_code}): its sources changed while it ran, "
             f"so {watch.head} may not be the code it ran; {'; '.join(changes)}; "
-            "rerun from a working tree that stays at HEAD",
+            f"rerun from a working tree that stays at HEAD{kept}",
             file=sys.stderr,
         )
         return 2
@@ -538,7 +627,7 @@ def run_experiment(
     # directory is, which the watch leaves out.
     if results_directory(root, data) is None:
         print(
-            f"ERROR: not recording the run (exit status {exit_code}): its results directory changed while it ran",
+            f"ERROR: not recording the run (exit status {exit_code}): its results directory changed while it ran{kept}",
             file=sys.stderr,
         )
         return 2
@@ -554,8 +643,10 @@ def run_experiment(
         }
     )
 
-    out = results / f"run-{timestamp}-seed-{seed}.json"
-    write_json_exclusive(out, record)
+    if listed:
+        write_json_replacing(out, record)
+    else:
+        write_json_exclusive(out, record)
     print(out.relative_to(ROOT))
     return exit_code if exit_code is not None else 127
 

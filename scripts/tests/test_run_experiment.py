@@ -401,14 +401,15 @@ class RunWatchTests(unittest.TestCase):
             f"ERROR: seed 17 of L900 already ran ({first}); a listed experiment runs each seed once, so no run of it "
             "is chosen by its outcome\n"
         )
-        # Before its record is committed and after.
-        for committed in (False, True):
-            with self.subTest(committed=committed):
-                if committed:
-                    git(self.root, "add", "-A")
-                    git(self.root, "commit", "-q", "--no-verify", "-m", "record")
-                status, records, stderr = self.run_seed()
-                self.assertEqual((status, stderr, len(records)), (2, refusal, 1))
+        # Before its record is committed, no launch reads the results: every
+        # earlier record is committed first. After, the seed has run.
+        status, records, stderr = self.run_seed()
+        self.assertEqual((status, len(records)), (2, 1))
+        self.assertIn(f"commit or remove {first}", stderr)
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-q", "--no-verify", "-m", "record")
+        status, records, stderr = self.run_seed()
+        self.assertEqual((status, stderr, len(records)), (2, refusal, 1))
         # A committed record deleted since is refused by the gate.
         (self.root / first).unlink()
         git(self.root, "commit", "-q", "--no-verify", "-am", "record deleted")
@@ -421,6 +422,8 @@ class RunWatchTests(unittest.TestCase):
         self.preregister("running")
         status, records, _ = self.run_seed(launch_error="no such file")
         self.assertEqual((status, [record["status"] for record in records]), (127, ["failed-to-launch"]))
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-q", "--no-verify", "-m", "failed to launch")
         status, records, stderr = self.run_seed()
         self.assertEqual((status, stderr), (0, ""))
         self.assertEqual(sorted(record["status"] for record in records), ["completed", "failed-to-launch"])
@@ -480,8 +483,11 @@ class RunWatchTests(unittest.TestCase):
             self.write("experiments/preregistration.toml", listed)
 
         status, records, stderr = self.run_seed(edit_and_restore)
-        self.assertEqual((status, records), (2, []))
+        self.assertEqual((status, [record["status"] for record in records]), (2, ["started"]))
         self.assertIn("experiments/preregistration.toml", stderr)
+        # The run went unrecorded, but its command ran: the reservation it
+        # made before the command stays as the record that seed 17 ran.
+        self.assertIn("stays as the record that seed 17 ran", stderr)
         self.assertEqual(
             mod.check_research_gates.launch_inputs(self.root, "L900"),
             ["experiments/preregistration.toml", "experiments/registry.toml", "scripts/check_research_gates.py"],
@@ -707,6 +713,85 @@ class RunWatchTests(unittest.TestCase):
             status = mod.run_experiment("L900", entrypoint=entrypoint, seed=17, params=params)
         return status, execute.call_args_list, stderr.getvalue()
 
+    def test_a_listed_experiments_run_holds_a_lock_and_leaves_a_reservation(self):
+        # Two runs at once could both find seed 17 not yet run; and a run
+        # stopped before its record is written left nothing. So a run holds
+        # a lock, and reserves its record before the command starts.
+        self.preregister("running")
+        lock = Path(git(self.root, "rev-parse", "--absolute-git-dir")) / "ptr-run-L900.lock"
+        lock.write_text("4242\n", encoding="utf-8")
+        status, records, stderr = self.run_seed()
+        self.assertEqual((status, records), (2, []))
+        self.assertIn(f"another run of L900 holds {lock}", stderr)
+        lock.unlink()
+        seen = []
+
+        def during():
+            # While the command runs, its record is reserved and the lock held.
+            [reserved] = list(self.results.glob("run-*.json"))
+            seen.append((json.loads(reserved.read_text(encoding="utf-8"))["status"], reserved.name, lock.exists()))
+
+        status, records, stderr = self.run_seed(during)
+        self.assertEqual((status, stderr), (0, ""))
+        [(reserved_status, reserved_name, locked)] = seen
+        [final] = list(self.results.glob("run-*.json"))
+        self.assertEqual((reserved_status, locked, final.name), ("started", True, reserved_name))
+        self.assertEqual(records[0]["status"], "completed")
+        self.assertFalse(lock.exists())
+        # A command that raises leaves the lock released and the reservation.
+        self.tearDown()
+        self.setUp()
+        self.preregister("running")
+        lock = Path(git(self.root, "rev-parse", "--absolute-git-dir")) / "ptr-run-L900.lock"
+
+        def dies():
+            raise KeyboardInterrupt
+
+        with self.assertRaises(KeyboardInterrupt):
+            self.run_seed(dies)
+        self.assertFalse(lock.exists())
+        [reserved] = [json.loads(path.read_text(encoding="utf-8")) for path in self.results.glob("run-*.json")]
+        self.assertEqual((reserved["status"], reserved["seed"]), ("started", 17))
+        # Committed, the reservation is a run of seed 17.
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-q", "--no-verify", "-m", "reservation")
+        with mock.patch.object(mod, "ROOT", self.root):
+            self.assertEqual(len(mod.seed_runs(self.results, 17)), 1)
+        status, records, stderr = self.run_seed()
+        self.assertEqual(status, 2)
+        self.assertIn("seed 17 of L900 already ran", stderr)
+
+    def test_a_listed_experiment_reads_no_output_the_tools_left_uncommitted(self):
+        # An output could be an input: what a listed experiment's command
+        # could read in its results is held to HEAD like any other file, all
+        # but the record the run itself writes.
+        self.preregister("running")
+        metrics = "experiments/x/L900-x/results/metrics.json"
+        self.write(metrics, "{}\n")
+        status, records, stderr = self.run_seed()
+        self.assertEqual((status, records), (2, []))
+        self.assertIn(f"commit or remove {metrics}", stderr)
+        stderr_prepare = io.StringIO()
+        with (
+            mock.patch.object(mod, "ROOT", self.root),
+            mock.patch.object(mod, "REGISTRY", self.root / "experiments/registry.toml"),
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(stderr_prepare),
+        ):
+            self.assertEqual(mod.prepare("L900"), 2)
+        self.assertIn(f"commit or remove {metrics}", stderr_prepare.getvalue())
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-q", "--no-verify", "-m", "metrics")
+        # Changed while the command runs and put back, the run goes
+        # unrecorded, its reservation staying.
+        def edit_and_restore():
+            self.write(metrics, '{"adapted": true}\n')
+            self.write(metrics, "{}\n")
+
+        status, records, stderr = self.run_seed(edit_and_restore)
+        self.assertEqual((status, [record["status"] for record in records]), (2, ["started"]))
+        self.assertIn(f"{metrics} changed on disk", stderr)
+
     def test_a_listed_experiments_command_takes_its_preregistered_values(self):
         # A value chosen at launch could be chosen after an outcome was seen:
         # each placeholder but <seed> takes the frozen [preregistration]
@@ -727,6 +812,8 @@ class RunWatchTests(unittest.TestCase):
             record["parameters"],
             {"iterations": "30", "verbose": "true", "harness": "fixture-1", "label": "<iterations>/<seed>"},
         )
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-q", "--no-verify", "-m", "record")
         for params, refusal in (
             ({"iterations": "31"}, "--set iterations=31 is not the preregistered value 30"),
             ({"other": "1"}, "--set other names no placeholder the command takes from the frozen [preregistration] table"),

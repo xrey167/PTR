@@ -424,6 +424,44 @@ def directory_digest(root: Path, directory: str) -> tuple[list[str], str | None]
         return ["holds a file whose path is not printable ASCII"],None
     return [],digest
 
+def file_form_problem(data: bytes, mode: str) -> str | None:
+    """What keeps content `data` with git mode `mode` from being a
+    preregistered file as a commit holds it, or None: it is not executable,
+    since its digest holds its content alone and the executable bit changes
+    what a command does with it, and as text it holds no CRLF line ending,
+    since its digest reads CRLF as LF and a command reading it would read
+    two such versions apart."""
+    if mode!="100644":
+        return "is executable; a preregistered file is frozen by its content, so it is a file no command runs as a program"
+    if experiment_records.is_preregistered_text(data) and b"\r\n" in data:
+        return ("is committed with CRLF line endings; its digest reads them as LF, so a preregistered text file is "
+                "committed with LF line endings")
+    return None
+
+def preregistered_file_problem(root: Path, relative: str, file: Path) -> str | None:
+    """`file_form_problem` of the preregistered file `relative` names, `file`
+    in the tree under `root`: its mode as git holds it (the index's for a
+    tracked file, the owner's execute bit for another), and its content as
+    HEAD holds it where HEAD holds it, a checkout that converts line endings
+    holding it with CRLF, or as the tree holds it where HEAD does not."""
+    try:
+        staged=experiment_records.listed_names(root,"--literal-pathspecs","ls-files","-z","--stage","--",relative)
+    except experiment_records.ProvenanceError as error:
+        return f"cannot be listed: {error}"
+    mode=staged[0].split(" ")[0] if staged else ("100755" if file.stat().st_mode & 0o100 else "100644")
+    held=blob(root,"HEAD",relative) if has_head(root) else None
+    return file_form_problem(file.read_bytes() if held is None else held,mode)
+
+def frozen_file_at(root: Path, commit: str, relative: str) -> bytes | None:
+    """The content of the file `relative` names as `commit` holds it, or None
+    when it holds none there in the form of a preregistered file
+    (`file_form_problem`). Raises `HistoryUnreadable` when git cannot tell."""
+    held=tree_entry(root,commit,relative)
+    data=blob(root,commit,relative)
+    if held is None or data is None or file_form_problem(data,held[0]):
+        return None
+    return data
+
 def file_entry(mode: str, digest: str) -> str:
     """A file of a frozen directory as the digest of its directory holds it:
     its git mode (`100644`, or `100755` for an executable file) and the
@@ -738,10 +776,11 @@ def launchable_at(root: Path, commit: str, exp_id: str, directory: str) -> tuple
     `planned`, its `[preregistration]` table holds every required key,
     pinned and of its type, and no placeholder, the table's seeds are the
     manifest's, the manifest names the digests of the table and of the
-    entry, and every file and baseline the table freezes has the frozen
-    content there, each baseline pinned and not blocked, and the registry
-    places the experiment in `directory`. A commit that held less could not
-    launch it, and does not freeze it."""
+    entry, every file and baseline the table freezes has the frozen
+    content there, each baseline pinned and not blocked, the runner can
+    build its command from the manifest and the table (`command_errors`),
+    and the registry places the experiment in `directory`. A commit that
+    held less could not launch it, and does not freeze it."""
     manifest=toml_at(root,commit,f"{directory}/experiment.toml")
     if not isinstance(manifest,dict) or status_of(manifest) not in FROZEN or not names_an_entrypoint(manifest):
         return None
@@ -771,13 +810,18 @@ def launchable_at(root: Path, commit: str, exp_id: str, directory: str) -> tuple
     table=config.get("preregistration") if isinstance(config,dict) else None
     if not isinstance(table,dict):
         return None
+    # The runner builds the command from the manifest and the table as the
+    # tree check reads them, and a run under a runner changed to let another
+    # through was never confirmatory.
+    if command_errors(exp_id,manifest,table):
+        return None
     for key,kind in entry["required"].items():
         if key not in table or kind_problem(table[key],kind):
             return None
         if kind=="file" and PurePosixPath(table[key]).is_relative_to(results):
             return None
         if kind=="file":
-            data=blob(root,commit,table[key]) if is_repository_path(table[key]) else None
+            data=frozen_file_at(root,commit,table[key]) if is_repository_path(table[key]) else None
             if data is None or experiment_records.preregistered_bytes_digest(data)!=table.get(f"{key}_sha256"):
                 return None
     # The file and baseline digests are the table's, checked here and
@@ -990,7 +1034,7 @@ def history_errors(exp_id: str, name: str, named, root: Path, experiment: Path, 
     for key,kind in entry["required"].items():
         if kind!="file" or not is_repository_path(table.get(key)):
             continue
-        data=blob(root,commit,table[key])
+        data=frozen_file_at(root,commit,table[key])
         held=None if data is None else experiment_records.preregistered_bytes_digest(data)
         if held!=table.get(f"{key}_sha256"):
             errors.append(f"{at}, where {table[key]} is not the file frozen as {key}")
@@ -1203,6 +1247,9 @@ def frozen_errors(exp_id: str, entry: dict, manifest: dict, experiment: Path, ro
             elif file is None:
                 errors.append(f"{exp_id}: preregistration key {key} names {table[key]!r}, which is not a file in the repository")
             else:
+                form=preregistered_file_problem(root,table[key],file)
+                if form:
+                    errors.append(f"{exp_id}: preregistration key {key} names {table[key]!r}, which {form}")
                 errors.extend(frozen_value_errors(
                     exp_id,table,f"{key}_sha256",experiment_records.preregistered_file_digest(file),table[key]))
     for key,value in table.items():
