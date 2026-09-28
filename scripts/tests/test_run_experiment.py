@@ -1738,6 +1738,11 @@ class RunWatchTests(unittest.TestCase):
             # proxy's name is its proxy all the same.
             standalone = os.pathsep.join((str(tools / "toolchains" / "stable" / "bin"), str(bin_directory)))
             self.assertEqual(mod.toolchain({"PATH": standalone}, ["cargo", "run"]), stable)
+            # `rustup run` puts its toolchain first, whatever the PATH holds.
+            self.assertEqual(
+                mod.toolchain({"PATH": standalone}, ["rustup", "run", "pinned", "cargo"]),
+                {"rustc": named("rustc"), "cargo": named("cargo")},
+            )
             copies = tools / "copies"
             copies.mkdir()
             for tool in ("rustc", "cargo", "rustup"):
