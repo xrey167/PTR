@@ -2120,6 +2120,7 @@ class PreregistrationGateTests(unittest.TestCase):
                 "cargo --config /tmp/adapted.toml run -- <seed>",
                 "/home/runner/.cargo/bin/cargo run --config=build.rustc-wrapper='\"/tmp/w\"' -- <seed>",
                 "rustup -v run --install stable cargo --config c.toml run -- <seed>",
+                "rustup +nightly run stable cargo --config c.toml run -- <seed>",
             )),
         ):
             with self.subTest(entrypoint=entrypoint):
@@ -2150,7 +2151,7 @@ class PreregistrationGateTests(unittest.TestCase):
         # Past `--` an argument is the built program's, and another program's
         # --config is its own.
         for entrypoint in ("cargo run -- --config c.toml <seed>","python3 bench.py --config c.toml <seed>",
-                           "rustup run stable python3 bench.py --config c.toml <seed>","rustup which cargo --config <seed>"):
+                           "rustup run stable python3 bench.py --config c.toml <seed>","rustup which cargo --config <seed>","rustup show stable cargo --config c.toml <seed>"):
             with self.subTest(entrypoint=entrypoint):
                 self.assertEqual(mod.command_errors("X900",{"entrypoint":entrypoint},{"seeds":[17,29]}),[])
         # A commit holding such an entrypoint could not launch it and froze
