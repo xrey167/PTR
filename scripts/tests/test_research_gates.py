@@ -399,6 +399,8 @@ class PreregistrationGateTests(unittest.TestCase):
             ({"baselines":({**BASELINE,"path":":research/fixture/config.toml"},)},{},[f"{where}: baseline 0 needs a path inside the repository"]),
             ({"baselines":({**BASELINE,"path":"research/fix*/config.toml"},)},{},[f"{where}: baseline 0 needs a path inside the repository"]),
             ({"baselines":({**BASELINE,"path":"research/fixture[1]/config.toml"},)},{},[f"{where}: baseline 0 needs a path inside the repository"]),
+            # Its directory, which freezes with it, would be the repository.
+            ({"baselines":({**BASELINE,"path":"config.toml"},)},{},[f"{where}: baseline 0 needs a configuration in a directory below the repository's root"]),
             ({"baselines":({**BASELINE,"keys":[]},)},{},[f"{where}: baseline 0 needs a non-empty list of key paths in printable ASCII"]),
             ({"baselines":({**BASELINE,"keys":["model.revision",""]},)},{},[f"{where}: baseline 0 needs a non-empty list of key paths in printable ASCII"]),
             ({"baselines":({key:value for key,value in BASELINE.items() if key!="status_key"},)},{},[f"{where}: baseline 0 needs a status_key"]),
@@ -923,10 +925,14 @@ class PreregistrationGateTests(unittest.TestCase):
             f"{at}, where the registry placed it in experiments/semdb/X900-fixture, not in experiments/semdb/X900-twin",
             f"X900 was frozen at {ran[:12]}, where the registry placed it in experiments/semdb/X900-fixture, not in experiments/semdb/X900-twin",
         )
-        # A results directory outside the experiment's directory is refused.
-        root=self.tree()
-        write(root,self.MANIFEST,(root/self.MANIFEST).read_text(encoding="utf-8")+'results_dir = "../shared"\n')
-        self.assert_blocked(root,"X900: results_dir '../shared' is not a path inside the experiment's directory")
+        # A results directory outside the experiment's directory, or the
+        # experiment's directory itself, is refused: the runner holds the
+        # rest of that directory to HEAD.
+        for results_dir in ("../shared",".","./"):
+            with self.subTest(results_dir=results_dir):
+                root=self.tree()
+                write(root,self.MANIFEST,(root/self.MANIFEST).read_text(encoding="utf-8")+f'results_dir = "{results_dir}"\n')
+                self.assert_blocked(root,f"X900: results_dir {results_dir!r} is not a directory below the experiment's directory")
 
     def test_a_run_record_names_a_commit_on_heads_history(self):
         name=self.RECORD.removeprefix("experiments/semdb/X900-fixture/")

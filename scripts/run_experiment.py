@@ -11,7 +11,7 @@ import subprocess
 import sys
 import time
 import tomllib
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[1]
 REGISTRY = ROOT / "experiments/registry.toml"
@@ -125,14 +125,74 @@ def launch_refused(exp_id: str) -> bool:
     return bool(problems)
 
 
+def results_directory(root: Path, data: dict) -> Path | None:
+    """The results directory of the experiment at `root` whose manifest is
+    `data`, or None, printing why, when it cannot hold its records: it must
+    lie below the experiment's directory, reached through no symlink. The
+    runner holds the rest of that directory to HEAD, so a results directory
+    that is the experiment's own, or a link that carries records elsewhere,
+    would take sources out of that watch."""
+    named = data.get("results_dir", "results")
+    relative = PurePosixPath(named) if isinstance(named, str) and named else None
+    if relative is None or relative.is_absolute() or not relative.parts or ".." in relative.parts:
+        print(f"ERROR: results_dir {named!r} is not a directory below {root.relative_to(ROOT)}", file=sys.stderr)
+        return None
+    step = root
+    for part in relative.parts:
+        step = step / part
+        if step.is_symlink():
+            print(f"ERROR: results directory {step.relative_to(ROOT)} is a symlink", file=sys.stderr)
+            return None
+    return root / relative
+
+
+def launch_watch(exp_id: str, root: Path, results: Path) -> experiment_records.ProvenanceWatch | None:
+    """The watch on every file that decides a launch of `exp_id` (the
+    provenance files, the experiment's directory except `results`, and
+    `check_research_gates.launch_inputs`), or None, printing why, when git
+    cannot tell or HEAD does not hold one of them: a record names HEAD as
+    what it ran, so it may be written only from a tree that holds HEAD."""
+    try:
+        watch = experiment_records.ProvenanceWatch(
+            ROOT,
+            [
+                *experiment_records.tree_pathspecs(
+                    root, results, ROOT, experiment_records.seed_record_paths(root, ROOT)
+                ),
+                # What decided that this experiment may launch: an edit to it
+                # would be undone after the outcome is seen.
+                *check_research_gates.launch_inputs(ROOT, exp_id),
+            ],
+        )
+    except experiment_records.ProvenanceError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return None
+    if watch.uncommitted:
+        print(
+            "ERROR: refusing to run from a working tree whose sources HEAD does not hold; "
+            f"commit or remove {experiment_records.listed(watch.uncommitted)}",
+            file=sys.stderr,
+        )
+        return None
+    return watch
+
+
 def prepare(exp_id: str):
+    """Write a `prepared` record of `exp_id` at HEAD, once it may launch
+    (`launch_refused`) and HEAD holds every file that decides that
+    (`launch_watch`)."""
     _, root, data = resolve(exp_id)
     if launch_refused(exp_id):
         return 2
-    results = root / data.get("results_dir", "results")
+    results = results_directory(root, data)
+    if results is None:
+        return 2
+    watch = launch_watch(exp_id, root, results)
+    if watch is None:
+        return 2
     timestamp = utc_stamp()
     record = base_record(exp_id, data, root)
-    record.update({"status": "prepared", "prepared_at": timestamp})
+    record.update({"git_sha": watch.head, "status": "prepared", "prepared_at": timestamp})
     out = results / f"run-{timestamp}.json"
     write_json_exclusive(out, record)
     print(out.relative_to(ROOT))
@@ -163,6 +223,9 @@ def build_command(
     seeds = data.get("seeds", [])
     if seed not in seeds:
         raise ValueError(f"seed {seed} is not declared in experiment seeds {seeds}")
+    if "seed" in (params or {}):
+        # The record names the seed --seed gave; a parameter would run another.
+        raise ValueError("the seed is given by --seed, not by a parameter")
 
     template = str(data.get(entrypoint, "")).strip()
     if not template:
@@ -245,30 +308,13 @@ def run_experiment(
         print(f"ERROR: {error}", file=sys.stderr)
         return 2
 
-    results = root / data.get("results_dir", "results")
     # The record names HEAD as the code it ran, so HEAD must hold every file
     # that decides the run: refuse before anything runs or is written.
-    try:
-        watch = experiment_records.ProvenanceWatch(
-            ROOT,
-            [
-                *experiment_records.tree_pathspecs(
-                    root, results, ROOT, experiment_records.seed_record_paths(root, ROOT)
-                ),
-                # What decided that this experiment may launch: an edit to it
-                # would be undone after the outcome is seen.
-                *check_research_gates.launch_inputs(ROOT, exp_id),
-            ],
-        )
-    except experiment_records.ProvenanceError as error:
-        print(f"ERROR: {error}", file=sys.stderr)
+    results = results_directory(root, data)
+    if results is None:
         return 2
-    if watch.uncommitted:
-        print(
-            "ERROR: refusing to run from a working tree whose sources HEAD does not hold; "
-            f"commit or remove {experiment_records.listed(watch.uncommitted)}",
-            file=sys.stderr,
-        )
+    watch = launch_watch(exp_id, root, results)
+    if watch is None:
         return 2
 
     timestamp = utc_stamp()

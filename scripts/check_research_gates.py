@@ -62,8 +62,9 @@ replaced by another, whose own preregistration counts:
   there and its record discarded before it is committed, so the first
   committed freeze binds, whether or not a record of it was kept;
 - no file the table freezes and no baseline's directory lies in the results
-  directory, or holds it: the runner holds the experiment's files to HEAD
-  except those, where runs write.
+  directory, or holds it, and the results directory is a directory below the
+  experiment's: the runner holds the experiment's files to HEAD except
+  those, where runs write.
 
 The list keeps every experiment it has named at a commit on HEAD's history
 that the registry holds now or has held at any commit (`enrolled`), so
@@ -321,6 +322,9 @@ def entry_errors(exp_id: str, entry, registered: set[str]) -> list[str]:
             errors.append(f"{name} needs a name of lowercase letters, digits and underscores")
         if not is_repository_path(baseline.get("path")):
             errors.append(f"{name} needs a path inside the repository")
+        elif len(PurePosixPath(baseline["path"]).parts)<2:
+            # Its directory, which freezes with it, would be the repository.
+            errors.append(f"{name} needs a configuration in a directory below the repository's root")
         keys=baseline.get("keys")
         if not isinstance(keys,list) or not keys or not all(isinstance(key,str) and key and experiment_records.is_printable_ascii(key) for key in keys):
             errors.append(f"{name} needs a non-empty list of key paths in printable ASCII")
@@ -519,7 +523,7 @@ def launchable_at(root: Path, commit: str, exp_id: str, directory: str) -> str |
             return None
         if kind=="file":
             data=blob(root,commit,table[key]) if is_repository_path(table[key]) else None
-            if data is None or hashlib.sha256(data.replace(b"\r\n",b"\n")).hexdigest()!=table.get(f"{key}_sha256"):
+            if data is None or experiment_records.preregistered_bytes_digest(data)!=table.get(f"{key}_sha256"):
                 return None
     if any(unset_problem(value) for value in table.values()) or table.get("seeds")!=manifest.get("seeds"):
         return None
@@ -580,7 +584,7 @@ def directory_digest_at(root: Path, commit: str, directory: str) -> str | None:
         data=blob(root,commit,name)
         if data is None:
             return None
-        files[PurePosixPath(name).relative_to(directory).as_posix()]=hashlib.sha256(data.replace(b"\r\n",b"\n")).hexdigest()
+        files[PurePosixPath(name).relative_to(directory).as_posix()]=experiment_records.preregistered_bytes_digest(data)
     return file_table_digest(files)
 
 def changed_keys(then: dict, now: dict, unbound: set[str]) -> list[str]:
@@ -663,7 +667,7 @@ def history_errors(exp_id: str, name: str, named, root: Path, experiment: Path, 
         if kind!="file" or not is_repository_path(table.get(key)):
             continue
         data=blob(root,commit,table[key])
-        held=None if data is None else hashlib.sha256(data.replace(b"\r\n",b"\n")).hexdigest()
+        held=None if data is None else experiment_records.preregistered_bytes_digest(data)
         if held!=table.get(f"{key}_sha256"):
             errors.append(f"{at}, where {table[key]} is not the file frozen as {key}")
     for baseline in entry.get("baseline",[]):
@@ -804,8 +808,8 @@ def frozen_errors(exp_id: str, entry: dict, manifest: dict, experiment: Path, ro
     errors=[]
     results_dir=manifest.get("results_dir","results")
     results=None
-    if not is_repository_path(results_dir):
-        errors.append(f"{exp_id}: results_dir {results_dir!r} is not a path inside the experiment's directory")
+    if not is_repository_path(results_dir) or not PurePosixPath(results_dir).parts:
+        errors.append(f"{exp_id}: results_dir {results_dir!r} is not a directory below the experiment's directory")
     else:
         results=PurePosixPath(experiment.relative_to(root).as_posix(),results_dir)
 

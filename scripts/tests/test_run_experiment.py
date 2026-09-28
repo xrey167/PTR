@@ -4,6 +4,7 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -71,6 +72,12 @@ class ExperimentRunnerTests(unittest.TestCase):
                 "17",
             ],
         )
+
+    def test_build_command_rejects_a_seed_given_as_a_parameter(self):
+        # The record names the seed --seed gave, so no parameter replaces it.
+        _, _, data = mod.resolve("L001")
+        with self.assertRaisesRegex(ValueError, "the seed is given by --seed, not by a parameter"):
+            mod.build_command(data, entrypoint="entrypoint", seed=17, params={"iterations": "3", "seed": "99"})
 
     def test_build_command_rejects_unlisted_seed(self):
         _, _, data = mod.resolve("L001")
@@ -370,6 +377,61 @@ class RunWatchTests(unittest.TestCase):
             mod.check_research_gates.launch_inputs(self.root, "L900"),
             ["experiments/preregistration.toml", "experiments/registry.toml", "scripts/check_research_gates.py"],
         )
+
+    def test_a_results_directory_below_the_experiment_and_no_link_holds_the_records(self):
+        manifest = (self.root / "experiments/x/L900-x/experiment.toml").read_text(encoding="utf-8")
+        # The experiment's own directory would take all of it out of the
+        # HEAD check, and one outside it is not the experiment's.
+        for results_dir in (".", "../elsewhere"):
+            with self.subTest(results_dir=results_dir):
+                self.write("experiments/x/L900-x/experiment.toml", manifest + f'results_dir = "{results_dir}"\n')
+                git(self.root, "commit", "-q", "--no-verify", "-am", f"results in {results_dir}")
+                ran = []
+                status, _, stderr = self.run_seed(lambda: ran.append(True))
+                self.assertEqual((status, ran), (2, []))
+                self.assertIn(f"results_dir {results_dir!r} is not a directory below experiments/x/L900-x", stderr)
+        self.write("experiments/x/L900-x/experiment.toml", manifest)
+        git(self.root, "commit", "-q", "--no-verify", "-am", "results in results")
+        # A link would carry the records, and what the check leaves out,
+        # elsewhere.
+        shutil.rmtree(self.results)
+        try:
+            os.symlink(self.root, self.results)
+        except (OSError, NotImplementedError) as error:
+            self.skipTest(f"cannot create a symlink: {error}")
+        ran = []
+        status, _, stderr = self.run_seed(lambda: ran.append(True))
+        self.assertEqual((status, ran), (2, []))
+        self.assertIn("results directory experiments/x/L900-x/results is a symlink", stderr)
+
+    def test_prepare_holds_what_decides_a_launch_to_head(self):
+        self.preregister("prepared")
+        listed = (self.root / "experiments/preregistration.toml").read_text(encoding="utf-8")
+
+        def prepare() -> tuple[int, str]:
+            stderr = io.StringIO()
+            with (
+                mock.patch.object(mod, "ROOT", self.root),
+                mock.patch.object(mod, "REGISTRY", self.root / "experiments/registry.toml"),
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(stderr),
+            ):
+                return mod.prepare("L900"), stderr.getvalue()
+
+        # An uncommitted edit to the list, even one that leaves the entry as
+        # it was, refuses the prepare record: it would name a HEAD that is not
+        # the tree the decision read.
+        self.write("experiments/preregistration.toml", listed + "# edited\n")
+        status, stderr = prepare()
+        self.assertEqual(status, 2)
+        self.assertIn("refusing to run", stderr)
+        self.assertIn("experiments/preregistration.toml", stderr)
+        self.assertEqual(sorted(path.name for path in self.results.iterdir()), [".gitkeep"])
+        self.write("experiments/preregistration.toml", listed)
+        status, stderr = prepare()
+        self.assertEqual((status, stderr), (0, ""))
+        [record] = [json.loads(path.read_text(encoding="utf-8")) for path in self.results.glob("run-*.json")]
+        self.assertEqual((record["status"], record["git_sha"]), ("prepared", self.head))
 
     def test_a_record_the_results_hold_is_no_change_of_the_sources(self):
         # Records accumulate in results/, which the run writes into itself.

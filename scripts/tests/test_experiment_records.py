@@ -1682,6 +1682,35 @@ class PreregistrationTests(unittest.TestCase):
             # A lone CR is content, not a line ending.
             windows.write_bytes(b"# Protocol\rline\n")
             self.assertNotEqual(mod.preregistered_file_digest(windows), expected)
+            # A file that is not text is digested byte for byte: its carriage
+            # returns are content, which a converting checkout leaves alone.
+            for binary in (b"\x00\x01\r\n\x02", b"\xff\xfe\r\n"):
+                with self.subTest(binary=binary):
+                    self.assertEqual(mod.preregistered_bytes_digest(binary), hashlib.sha256(binary).hexdigest())
+                    self.assertNotEqual(
+                        mod.preregistered_bytes_digest(binary), mod.preregistered_bytes_digest(binary.replace(b"\r\n", b"\n"))
+                    )
+
+    def test_git_reads_the_repository_it_is_given_whatever_the_environment_says(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ours, other = Path(directory) / "ours", Path(directory) / "other"
+            heads = {}
+            for root in (ours, other):
+                root.mkdir()
+                (root / "file.txt").write_text(root.name, encoding="utf-8")
+                for args in (("init", "-q"), ("add", "-A"),
+                             ("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "-m", root.name)):
+                    subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
+                heads[root.name] = subprocess.run(
+                    ["git", "rev-parse", "HEAD"], cwd=root, check=True, capture_output=True, text=True
+                ).stdout.strip()
+            # Variables that would point git at the other repository, or make
+            # it read pathspecs as globs, are not passed on.
+            with mock.patch.dict(os.environ, {
+                "GIT_DIR": str(other / ".git"), "GIT_WORK_TREE": str(other), "GIT_GLOB_PATHSPECS": "1",
+            }):
+                self.assertEqual(mod.git(ours, "rev-parse", "HEAD").stdout.strip(), heads["ours"])
+                self.assertEqual(mod.git(ours, "ls-files", "--", "file.txt").stdout.strip(), "file.txt")
 
 
 if __name__ == "__main__":

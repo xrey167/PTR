@@ -212,7 +212,14 @@ def git(
     root: Path, *args: str, stdin: str | None = None, env: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess:
     """Run git in `root`, given `stdin` and in `env` when named; raises
-    `ProvenanceError` when git cannot start."""
+    `ProvenanceError` when git cannot start. Without `env`, git runs in this
+    process's environment less every `GIT_*` variable, which could point it
+    at another work tree, index or object store or change how it reads
+    pathspecs, and with replacement objects off, so what it reports is the
+    repository at `root` as its history holds it."""
+    if env is None:
+        env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        env["GIT_NO_REPLACE_OBJECTS"] = "1"
     try:
         return subprocess.run(
             ["git", *args], cwd=root, input=stdin, env=env, capture_output=True, text=True, check=False
@@ -966,12 +973,26 @@ def preregistration_digest(table: dict) -> str:
     return canonical_digest(table)
 
 
+def preregistered_bytes_digest(data: bytes) -> str:
+    """The SHA-256, in hex, of `data`, the content of a file a
+    preregistration names: text (UTF-8 with no NUL byte) with every CRLF line
+    ending read as LF, so a checkout that converts line endings digests the
+    text the repository holds, and anything else byte for byte, whose
+    carriage returns are content a converting checkout leaves alone."""
+    if b"\0" not in data:
+        try:
+            data.decode("utf-8")
+        except UnicodeDecodeError:
+            pass
+        else:
+            data = data.replace(b"\r\n", b"\n")
+    return hashlib.sha256(data).hexdigest()
+
+
 def preregistered_file_digest(path: Path) -> str:
-    """The SHA-256, in hex, of a file a preregistration names, such as an
-    adjudication protocol, with every CRLF line ending read as LF, so a
-    checkout that converts line endings digests the text the repository
-    holds."""
-    return hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+    """`preregistered_bytes_digest` of the file at `path`, such as an
+    adjudication protocol."""
+    return preregistered_bytes_digest(path.read_bytes())
 
 
 RUN = "run.json"
