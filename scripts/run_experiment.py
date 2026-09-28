@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as dt
 import hashlib
 import json
@@ -808,25 +809,52 @@ def resolved_executable(
     command: list[str], environment: dict[str, str], stamps: dict[str, experiment_records.Stamp | None] | None = None
 ) -> dict:
     """The program `command` starts, as the command runs it from the
-    repository's root in `environment`: its path with every link resolved,
-    and the SHA-256 of its content; both None when there is no such file,
-    and the digest None when the file cannot be read or changed while it
-    was read. A name without a slash is looked up on `environment`'s
-    `PATH`, as the process that starts the command looks it up, and one
-    with a slash is read from the root. Given `stamps`, the file's stamp
-    (`experiment_records.file_stamp`) from before it was read goes in under
-    its path, unless one is there already: while the stamp stays, the file
-    holds the content the digest names."""
+    repository's root in `environment` (`found_program`), named as
+    `named_program` names it."""
+    return named_program(found_program(command, environment), stamps)
+
+
+def has_slash(program: str) -> bool:
+    """Whether the command's first token `program` names a path, which the
+    process that starts it reads as it stands rather than looking it up."""
+    return os.sep in program or bool(os.altsep and os.altsep in program)
+
+
+def found_program(command: list[str], environment: dict[str, str]) -> str | None:
+    """Where the process that starts `command` from the repository's root in
+    `environment` finds its program, or None when it finds none: a name
+    without a slash on `environment`'s `PATH`, as that process looks it up,
+    and one with a slash from the root, where it must be an executable
+    file."""
     program = command[0]
-    if os.sep in program or (os.altsep and os.altsep in program):
+    if has_slash(program):
         found = str(ROOT / program)
-        found = found if os.path.isfile(found) and os.access(found, os.X_OK) else None
-    else:
-        found = shutil.which(program, path=os.pathsep.join(os.get_exec_path(environment)))
+        return found if os.path.isfile(found) and os.access(found, os.X_OK) else None
+    return shutil.which(program, path=os.pathsep.join(os.get_exec_path(environment)))
+
+
+def named_program(found: str | None, stamps: dict[str, experiment_records.Stamp | None] | None = None) -> dict:
+    """The program at `found`: its path with every link resolved, and the
+    SHA-256 of its content; both None when there is none, and the digest
+    None when the file cannot be read or changed while it was read. Given
+    `stamps`, the stamps (`experiment_records.file_stamp`) of `found`, of
+    every link it is reached through and of the file, from before the file
+    was read, go in under their paths, unless one is there already: while
+    they stay, the name the command starts leads to the file the digest
+    names, holding that content."""
     if found is None:
         return {"path": None, "sha256": None}
+    before: dict[str, experiment_records.Stamp | None] = {}
+    hop = found
+    for _ in range(40):
+        before.setdefault(hop, experiment_records.file_stamp(Path(hop)))
+        try:
+            hop = os.path.join(os.path.dirname(hop), os.readlink(hop))
+        except OSError:
+            break
     target = Path(os.path.realpath(found))
     stamp = experiment_records.file_stamp(target)
+    before.setdefault(str(target), stamp)
     try:
         digest = hashlib.sha256(target.read_bytes()).hexdigest()
     except OSError:
@@ -834,12 +862,49 @@ def resolved_executable(
     if stamp is None or experiment_records.file_stamp(target) != stamp:
         digest = None
     if stamps is not None:
-        stamps.setdefault(str(target), stamp)
+        for path, taken in before.items():
+            stamps.setdefault(path, taken)
     return {"path": str(target), "sha256": digest}
 
 
+def scratch_directory(exp_id: str, environment: dict[str, str]) -> Path:
+    """The directory a listed run of `exp_id` builds and caches in, fresh for
+    each run (`execute_command`): one of the experiment's name in the
+    command's temporary directory (`TMPDIR` in `environment`, or the
+    runner's), its id percent-encoded as its lock's is (`run_lock`). Its path
+    is the same for every seed run there, so the variables naming it
+    (`scratch_variables`), which the command can read, are part of the
+    environment its record names and its seeds share."""
+    temporary = environment.get("TMPDIR") or tempfile.gettempdir()
+    return Path(temporary) / f"ptr-run-{urllib.parse.quote(exp_id, safe='')}"
+
+
+def scratch_variables(directory: str, cargo: bool) -> dict[str, str]:
+    """The variables naming a command's fresh directories under `directory`:
+    Python's bytecode cache (`PYTHONPYCACHEPREFIX`) and, for a listed
+    experiment's build (`cargo`), Cargo's target directory
+    (`CARGO_TARGET_DIR`)."""
+    variables = {"PYTHONPYCACHEPREFIX": directory}
+    if cargo:
+        variables["CARGO_TARGET_DIR"] = os.path.join(directory, "cargo-target")
+    return variables
+
+
+@contextlib.contextmanager
+def removed_after(directory: Path):
+    """Yield `directory`, made by the caller, as text, and remove it with
+    what it holds once the block ends; what cannot be removed is left."""
+    try:
+        yield str(directory)
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
 def execute_command(
-    command: list[str], environment: dict[str, str] | None = None, program: str | None = None
+    command: list[str],
+    environment: dict[str, str] | None = None,
+    program: str | None = None,
+    scratch: Path | None = None,
 ) -> dict:
     """Run `command` from the repository's root in `environment`, or in the
     runner's own environment when None, and return its exit status,
@@ -853,10 +918,13 @@ def execute_command(
     experiment's), Cargo in it builds into a fresh directory too
     (`CARGO_TARGET_DIR`), from the commit's sources alone and outside the
     repository, which then holds no build output a later run could take
-    in place of what the commit builds. A command that could not start,
-    for want of that directory or of its program, or given an argument no
-    process can take (a NUL character), has no exit status and its launch
-    error: it saw no outcome. Once it started, an exception raised in the
+    in place of what the commit builds. That directory is `scratch` when
+    named (a listed run's, `scratch_directory`, made here only if absent,
+    so nothing an earlier run left is read), and a temporary one of a fresh
+    name otherwise; it is removed once the command has run. A command that
+    could not start, for want of that directory or of its program, or given
+    an argument no process can take (a NUL character), has no exit status
+    and its launch error: it saw no outcome. Once it started, an exception raised in the
     runner while it waits (an interrupt, say) kills the command and is
     raised, as `subprocess.run` does, and a cache that cannot be removed
     afterwards is left: the command ran. A runner killed by a signal leaves
@@ -874,10 +942,14 @@ def execute_command(
         }
 
     try:
-        cache = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        if scratch is None:
+            cache = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        else:
+            os.mkdir(scratch)
+            cache = removed_after(scratch)
     except OSError as error:
         return not_started(error)
-    with cache:
+    with cache as directory:
         try:
             process = subprocess.Popen(
                 command,
@@ -886,15 +958,10 @@ def execute_command(
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                env=(
-                    {**os.environ, "PYTHONPYCACHEPREFIX": cache.name}
-                    if environment is None
-                    else {
-                        **environment,
-                        "PYTHONPYCACHEPREFIX": cache.name,
-                        "CARGO_TARGET_DIR": os.path.join(cache.name, "cargo-target"),
-                    }
-                ),
+                env={
+                    **(os.environ if environment is None else environment),
+                    **scratch_variables(directory, environment is not None),
+                },
             )
         except (OSError, ValueError) as error:
             return not_started(error)
@@ -954,10 +1021,11 @@ def run_experiment(
     environment the runner allows (`command_environment`), which its record
     names with the program it started (`resolved_executable`) and the
     toolchain (`toolchain`), each by its content: one that cannot be read,
-    or changes while it is read, refuses the run, the command starts the
-    very file its record names, and a run during which one of them changed
-    (its stamp moved, `experiment_records.file_stamp`) is not recorded. The
-    record is written whole or not at all
+    or changes while it is read, refuses the run, the command starts its
+    program by the name the launch found it by, and fails to launch when
+    the launch found none, and a run during which one of them, or a link on
+    the way to it, changed (its stamp moved, `experiment_records.file_stamp`)
+    is not recorded. The record is written whole or not at all
     (`write_json_exclusive`)."""
     _, root, data = resolve(exp_id)
     if unrecordable_manifest(exp_id, data) or launch_refused(exp_id):
@@ -1095,10 +1163,23 @@ def launch_and_record(
                 file=sys.stderr,
             )
             return 2
+        # The command builds and caches in a directory of the experiment's
+        # name, the same for every seed, which the environment names.
+        scratch = scratch_directory(exp_id, environment)
+        if os.path.lexists(scratch):
+            print(
+                f"ERROR: refusing to run {exp_id}: {scratch} exists, left by a run that died or held by one in "
+                "progress; a listed run builds in a fresh directory there, so remove it once no run of "
+                f"{exp_id} is in progress",
+                file=sys.stderr,
+            )
+            return 2
+        environment = {**environment, **scratch_variables(str(scratch), True)}
         # Each program's stamp from before it was read: while it stays, the
         # file holds what its digest names, through the run.
         stamps: dict[str, experiment_records.Stamp | None] = {}
-        executable = resolved_executable(command, environment, stamps)
+        found = found_program(command, environment)
+        executable = named_program(found, stamps)
         tools = toolchain(environment, command, stamps)
         # A program named by its path alone could be replaced between seeds
         # while every record named the same: one found that cannot be read,
@@ -1165,7 +1246,22 @@ def launch_and_record(
             return 2
     stays = f"; {out.relative_to(ROOT)} stays as the record that seed {seed} ran" if listed else ""
 
-    execution = execute_command(command, environment, executable["path"] if listed else None)
+    if not listed:
+        execution = execute_command(command)
+    elif found is None:
+        # No program was found for the record to name: the process would
+        # look the name up again, and could find one put there meanwhile.
+        execution = {
+            "exit_code": None,
+            "stdout": "",
+            "stderr": "",
+            "launch_error": f"FileNotFoundError: the launch found no program {command[0]!r} to start",
+            "duration_ns": 0,
+        }
+    else:
+        # The name as the process would find it, so a script reads its own
+        # name as it would (`$0`); a name with a slash it reads as given.
+        execution = execute_command(command, environment, None if has_slash(command[0]) else found, scratch)
     exit_code = execution["exit_code"]
     launched = exit_code is not None
     record.update(

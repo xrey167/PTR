@@ -186,6 +186,25 @@ class ExperimentRunnerTests(unittest.TestCase):
             self.assertEqual((result["exit_code"], result["stdout"]), (None, ""))
             self.assertEqual(result["launch_error"], "ValueError: embedded null byte")
 
+    def test_a_command_given_its_scratch_directory_makes_it_fresh_and_removes_it(self):
+        # A listed run builds and caches in a directory of a known name,
+        # which it makes only if absent: an earlier run's build left there
+        # is not taken for one of the commit's sources.
+        with tempfile.TemporaryDirectory() as directory:
+            scratch = Path(directory) / "ptr-run-L900"
+            script = "import os, sys; print(sys.pycache_prefix); print(os.environ['CARGO_TARGET_DIR'])"
+            environment = {"PATH": os.environ.get("PATH", os.defpath)}
+            result = mod.execute_command([sys.executable, "-c", script], environment, None, scratch)
+            self.assertEqual((result["exit_code"], result["launch_error"]), (0, None))
+            self.assertEqual(result["stdout"].splitlines(), [str(scratch), str(scratch / "cargo-target")])
+            self.assertFalse(scratch.exists())
+            scratch.mkdir()
+            (scratch / "left").write_text("an earlier build\n", encoding="utf-8")
+            result = mod.execute_command([sys.executable, "-c", "print('ran')"], environment, None, scratch)
+            self.assertEqual((result["exit_code"], result["stdout"]), (None, ""))
+            self.assertTrue(result["launch_error"].startswith("FileExistsError: "), result["launch_error"])
+            self.assertTrue((scratch / "left").exists())
+
     def test_a_command_that_started_ran_whatever_happens_after(self):
         # A cache the command left that cannot be removed does not make the
         # run one that never started.
@@ -301,6 +320,14 @@ class RunWatchTests(unittest.TestCase):
         cargo_home.mkdir(exist_ok=True)
         self.addCleanup(shutil.rmtree, cargo_home, ignore_errors=True)
         self.enterContext(mock.patch.dict(os.environ, {"CARGO_HOME": str(cargo_home)}))
+        # The entrypoint's program, found first on the PATH: a listed run
+        # starts only a program its launch found and named.
+        tools = Path(self.directory.name + "-tools")
+        tools.mkdir(exist_ok=True)
+        self.addCleanup(shutil.rmtree, tools, ignore_errors=True)
+        (tools / "bench").write_text("#!/bin/sh\n", encoding="utf-8")
+        (tools / "bench").chmod(0o755)
+        self.enterContext(mock.patch.dict(os.environ, {"PATH": os.pathsep.join((str(tools), os.environ.get("PATH", os.defpath)))}))
         files = {
             ".gitignore": "__pycache__/\n",
             "Cargo.lock": "# lock\n",
@@ -336,7 +363,7 @@ class RunWatchTests(unittest.TestCase):
         `launch_error` when given; returns the exit status, the records
         written and what was printed to stderr."""
 
-        def execute(_command, _environment=None, _program=None):
+        def execute(_command, _environment=None, _program=None, _scratch=None):
             if during is not None:
                 during()
             if launch_error is not None:
@@ -1393,17 +1420,23 @@ class RunWatchTests(unittest.TestCase):
             set(seen) - {"PYTHONPYCACHEPREFIX", "CARGO_TARGET_DIR"}, {*mod.COMMAND_ENVIRONMENT, *mod.FIXED_ENVIRONMENT}
         )
         # Cargo builds into a fresh directory outside the repository, beside
-        # Python's bytecode cache, both removed once the command has run.
-        self.assertEqual(seen["CARGO_TARGET_DIR"], os.path.join(seen["PYTHONPYCACHEPREFIX"], "cargo-target"))
+        # Python's bytecode cache, both removed once the command has run: a
+        # directory of the experiment's name in the command's temporary
+        # directory, the same for every seed, which the record names.
+        scratch = os.path.join(self.allowed["TMPDIR"], "ptr-run-L900")
+        self.assertEqual(
+            (seen["PYTHONPYCACHEPREFIX"], seen["CARGO_TARGET_DIR"]), (scratch, os.path.join(scratch, "cargo-target"))
+        )
         self.assertFalse(Path(seen["CARGO_TARGET_DIR"]).is_relative_to(self.root))
-        self.assertFalse(Path(seen["PYTHONPYCACHEPREFIX"]).exists())
+        self.assertFalse(Path(scratch).exists())
         # Python reads no package from the user's own site directory.
         self.assertEqual(seen["PYTHONNOUSERSITE"], "1")
         for name in ("PYTHONPATH", "LD_LIBRARY_PATH", "RUSTC_WRAPPER", "RUSTUP_TOOLCHAIN", "GH_TOKEN"):
             self.assertNotIn(name, seen)
-        self.assertEqual(record["environment"], self.allowed)
-        self.assertEqual({name: seen[name] for name in self.allowed}, self.allowed)
-        self.assertNotIn("PYTHONPYCACHEPREFIX", record["environment"])
+        self.assertEqual(record["environment"], {
+            **self.allowed, "PYTHONPYCACHEPREFIX": scratch, "CARGO_TARGET_DIR": os.path.join(scratch, "cargo-target"),
+        })
+        self.assertEqual({name: seen[name] for name in record["environment"]}, record["environment"])
         # A program found first on the PATH, wherever it lies, is named with
         # its content.
         self.assertEqual(record["executable"], {
@@ -1524,6 +1557,36 @@ class RunWatchTests(unittest.TestCase):
                     "absolute directories for the run\n"
                 ))
 
+    def test_a_listed_run_builds_in_a_directory_its_record_names_the_same_for_every_seed(self):
+        # The command can read the variables naming where it builds and
+        # caches, so they are the same for every seed and the record names
+        # them; a directory left there by a run that died refuses the run
+        # before anything is written.
+        self.preregister("running", seeds="[17, 29]")
+        temporary = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        scratch = temporary / "ptr-run-L900"
+        with mock.patch.dict(os.environ, {"TMPDIR": str(temporary)}):
+            scratch.mkdir()
+            status, records, stderr = self.run_seed()
+            self.assertEqual((status, records, list(self.attempts().glob("run-*.json"))), (2, [], []))
+            self.assertEqual(stderr, (
+                f"ERROR: refusing to run L900: {scratch} exists, left by a run that died or held by one in progress; "
+                "a listed run builds in a fresh directory there, so remove it once no run of L900 is in progress\n"
+            ))
+            scratch.rmdir()
+            status, records, stderr = self.run_seed()
+            self.assertEqual((status, stderr), (0, ""))
+            git(self.root, "add", "-A")
+            git(self.root, "commit", "-q", "--no-verify", "-m", "seed 17")
+            status, records, stderr = self.run_seed(seed=29)
+            self.assertEqual((status, stderr), (0, ""))
+        first, second = (record["environment"] for record in records)
+        self.assertEqual(first, second)
+        self.assertEqual(
+            (first["TMPDIR"], first["PYTHONPYCACHEPREFIX"], first["CARGO_TARGET_DIR"]),
+            (str(temporary), str(scratch), str(scratch / "cargo-target")),
+        )
+
     def test_a_program_the_record_names_changed_while_the_command_ran_leaves_it_unrecorded(self):
         # The record names the program the run starts and the tools it builds
         # with by the digests the launch read: one replaced for the run and
@@ -1588,10 +1651,10 @@ class RunWatchTests(unittest.TestCase):
         self.preregister("running")
         started = mod.execute_command
 
-        def put_first_then_start(command, environment=None, program=None):
+        def put_first_then_start(command, environment=None, program=None, scratch=None):
             (first / "bench").write_text("#!/bin/sh\necho first\n", encoding="utf-8")
             (first / "bench").chmod(0o755)
-            return started(command, environment, program)
+            return started(command, environment, program, scratch)
 
         stderr = io.StringIO()
         search = os.pathsep.join((str(first), str(second), os.environ.get("PATH", os.defpath)))
@@ -1610,6 +1673,94 @@ class RunWatchTests(unittest.TestCase):
             [(record["executable"]["path"], record["stdout"]) for record in records],
             [(str((second / "bench").resolve()), "second\n")],
         )
+
+    def run_started(self, during=None, seed: int = 17) -> tuple[int, list[dict], str]:
+        """Run `seed` of L900 through the real `execute_command`, calling
+        `during` just before the command starts; returns the exit status, the
+        records written and what was printed to stderr."""
+        started = mod.execute_command
+
+        def start(*arguments):
+            if during is not None:
+                during()
+            return started(*arguments)
+
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(mod, "ROOT", self.root),
+            mock.patch.object(mod, "REGISTRY", self.root / "experiments/registry.toml"),
+            mock.patch.object(mod, "execute_command", side_effect=start),
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(stderr),
+        ):
+            status = mod.run_experiment("L900", entrypoint="entrypoint", seed=seed)
+        records = [json.loads(path.read_text(encoding="utf-8")) for path in sorted(self.results.glob("run-*.json"))]
+        return status, records, stderr.getvalue()
+
+    def test_a_listed_run_starts_its_program_by_the_name_it_was_found_by(self):
+        # A script reads the name it was started by ($0), and one reached
+        # through a link may act on it, as xzfgrep, a link to xzgrep, does:
+        # the command starts the name the launch found, and every link on
+        # the way to the file its record names is stamped with it.
+        outside = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
+        (outside / "impl.sh").write_text('#!/bin/sh\ncase "$0" in *bench) echo "as bench $0";; *) echo "as other $0";; esac\n', encoding="utf-8")
+        (outside / "impl.sh").chmod(0o755)
+        (outside / "bench").symlink_to("impl.sh")
+        self.preregister("running")
+        with mock.patch.dict(os.environ, {"PATH": os.pathsep.join((str(outside), os.environ["PATH"]))}):
+            status, records, stderr = self.run_started()
+            self.assertEqual((status, stderr), (0, ""))
+            self.assertEqual(
+                [(record["stdout"], record["executable"]["path"]) for record in records],
+                [(f"as bench {outside / 'bench'}\n", str(outside / "impl.sh"))],
+            )
+            for record in (*self.results.glob("run-*.json"), *self.attempts().glob("run-*.json")):
+                record.unlink()
+
+            def turned_and_back():
+                # The link pointed elsewhere for the run, and back after it.
+                (outside / "turn").symlink_to("other.sh")
+                os.replace(outside / "turn", outside / "bench")
+                (outside / "turn").symlink_to("impl.sh")
+                os.replace(outside / "turn", outside / "bench")
+
+            status, records, stderr = self.run_started(turned_and_back)
+        self.assertEqual((status, [record["status"] for record in records]), (2, ["started"]))
+        self.assertIn(f"{outside / 'bench'} changed since the launch read it", stderr)
+        # A name with a slash is started as it stands, from the root.
+        self.tearDown()
+        self.setUp()
+        self.write("tools/run.sh", '#!/bin/sh\necho "$0"\n')
+        (self.root / "tools/run.sh").chmod(0o755)
+        self.preregister("running", entrypoint="tools/run.sh <seed>")
+        status, records, stderr = self.run_started()
+        self.assertEqual((status, stderr, [record["stdout"] for record in records]), (0, "", ["tools/run.sh\n"]))
+
+    def test_a_listed_run_whose_program_the_launch_did_not_find_starts_nothing(self):
+        # The process that starts the command would look its name up again,
+        # and could find a program put there meanwhile, which no record names:
+        # the command fails to launch, and its seed may run once the program
+        # is there.
+        self.preregister("running", entrypoint="no-such-program <seed>")
+        calls = []
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(mod, "ROOT", self.root),
+            mock.patch.object(mod, "REGISTRY", self.root / "experiments/registry.toml"),
+            mock.patch.object(mod, "execute_command", side_effect=lambda *arguments: calls.append(arguments)),
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(stderr),
+        ):
+            status = mod.run_experiment("L900", entrypoint="entrypoint", seed=17)
+        [record] = [json.loads(path.read_text(encoding="utf-8")) for path in self.results.glob("run-*.json")]
+        self.assertEqual((status, calls, stderr.getvalue()), (127, [], ""))
+        self.assertEqual(
+            (record["status"], record["exit_code"], record["launch_error"], record["executable"]),
+            ("failed-to-launch", None, "FileNotFoundError: the launch found no program 'no-such-program' to start",
+             {"path": None, "sha256": None}),
+        )
+        with mock.patch.object(mod, "ROOT", self.root):
+            self.assertEqual(mod.seed_runs(self.results, 17, self.attempts()), [])
 
     def test_a_copy_from_another_line_of_history_is_not_put_back_but_its_seed_has_run(self):
         # A run on another branch, or another worktree's, belongs to that
