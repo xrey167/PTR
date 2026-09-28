@@ -1582,12 +1582,12 @@ class PreregistrationTests(unittest.TestCase):
         'programs = ["rmw", "set_op"]\n'
         "see_intent = false\n"
         "low_cells = []\n"
-        'note = "Grüße"\n'
+        'note = "say \\"hi\\" \\\\ bye ~"\n'
     )
 
     def test_the_preregistration_canonical_text_is_sorted_compact_json_and_its_digest_is_sha256(self):
         text = (
-            '{"harness":"fixture","low_cells":[],"note":"Gr\\u00fc\\u00dfe","programs":["rmw","set_op"],'
+            '{"harness":"fixture","low_cells":[],"note":"say \\"hi\\" \\\\ bye ~","programs":["rmw","set_op"],'
             '"schema":1,"see_intent":false,"seeds":[17,29]}'
         )
         self.assertEqual(mod.preregistration_canonical(self.TABLE), text)
@@ -1609,6 +1609,11 @@ class PreregistrationTests(unittest.TestCase):
             'mixed = [1, "a"]\n'
             "flags = [true, false]\n"
             "lists = [[1], [2]]\n"
+            'accented = "Grüße"\n'
+            'tab = "a\\tb"\n'
+            'newline = "a\\nb"\n'
+            'delete = "a\\u007fb"\n'
+            'names = ["ok", "Grüße"]\n'
         )
         for key, value in refused.items():
             with self.subTest(key=key):
@@ -1619,6 +1624,19 @@ class PreregistrationTests(unittest.TestCase):
                     mod.preregistration_digest({**self.TABLE, key: value})
         for value in self.TABLE.values():
             self.assertIsNone(mod.canonical_value_problem(value))
+        # A key outside printable ASCII is refused as well.
+        for key in ("Größe", "a\tb"):
+            with self.subTest(key=key):
+                with self.assertRaisesRegex(ValueError, "outside printable ASCII"):
+                    mod.preregistration_canonical({**self.TABLE, key: 1})
+        # Every printable ASCII character is accepted, and only the quote and
+        # the backslash are escaped.
+        printable = "".join(chr(code) for code in range(0x20, 0x7F))
+        self.assertIsNone(mod.canonical_value_problem(printable))
+        self.assertEqual(
+            mod.preregistration_canonical({"all": printable}),
+            '{"all":"' + printable.replace("\\", "\\\\").replace('"', '\\"') + '"}',
+        )
 
 
 if __name__ == "__main__":

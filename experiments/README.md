@@ -15,14 +15,14 @@ Do not silently rewrite failed results. Supersede them with a new experiment/ver
 
 ## Preregistration
 
-An experiment listed in `preregistration.toml` leaves `planned` only with a frozen preregistration. Once its status is `prepared`, `running` or `completed`, `scripts/check_research_gates.py` fails CI unless:
+An experiment listed in `preregistration.toml` leaves `planned` only with a frozen preregistration. Once its status is `prepared`, `running`, `completed` or `failed`, `scripts/check_research_gates.py` fails CI unless:
 
-- its `config.toml` holds a `[preregistration]` table with every key the list requires, each a pinned value of its declared type (`int`, `str`, `bool`, or a non-empty `int-list` or `str-list`);
-- every value of that table is an integer, a boolean, a string or a list of only integers or only strings, so that its canonical text (JSON with sorted keys and no whitespace, `preregistration_canonical` in `scripts/experiment_records.py`) is the same whoever writes it, and `experiment.toml`'s `preregistration_sha256` is the SHA-256 of that text;
+- its `config.toml` holds a `[preregistration]` table with every key the list requires, each a pinned value of its declared type (`int`, `str`, `bool`, or a non-empty `int-list` or `str-list`), and no other key of the table holds a placeholder either;
+- every value of that table is an integer, a boolean, a string of printable ASCII or a list of only integers or only such strings, and every key is printable ASCII, so that its canonical text (JSON with sorted keys and no whitespace, `preregistration_canonical` in `scripts/experiment_records.py`) escapes only `"` and `\` and is the same whoever writes it; `experiment.toml`'s `preregistration_sha256` is the SHA-256 of that text;
 - a `seeds` key of the table, where there is one, names the manifest's seeds;
 - every baseline the list names is pinned at each key the list names for it, and its status is pinned and not `blocked-*`.
 
-A `must-be-pinned-…` string marks a value still to be chosen and a `must-be-signed-…` string an owner decision still to be taken, which the owner signs by committing the decided value in its place. Either blocks whatever the key's type, as do an empty string, `unconfigured` and `none`, so an owner decision cannot pass as a default. S003, F003, Q003, R004, M008 and E005 are listed, and all of them are still `planned`.
+A `must-be-pinned-…` string marks a value still to be chosen and a `must-be-signed-…` string an owner decision still to be taken, which the owner signs by committing the decided value in its place. Either blocks whatever the key's type, and whether or not the list requires the key, as do an empty string, `unconfigured` and `none`, in any case and with any surrounding space, so an owner decision cannot pass as a default. A superseded experiment is not gated: another experiment replaced it, and that one's preregistration counts. S003, F003, Q003, R004, M008 and E005 are listed, and all of them are still `planned`.
 
 
 ## Runner

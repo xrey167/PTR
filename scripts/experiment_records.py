@@ -74,8 +74,7 @@ the metrics.json committed with it.
 An experiment's preregistration, the `[preregistration]` table of its
 `config.toml`, has one canonical text and digest
 (`preregistration_canonical`, `preregistration_digest`), which the research
-gate compares with the manifest's `preregistration_sha256` and an aggregator
-compares with what its harness printed.
+gate compares with the manifest's `preregistration_sha256`.
 """
 
 from __future__ import annotations
@@ -869,16 +868,34 @@ def json_text(value) -> str:
     return json.dumps(value, indent=2, ensure_ascii=False) + "\n"
 
 
+def is_printable_ascii(text: str) -> bool:
+    """Every character of `text` is one of the 95 printable ASCII
+    characters, space included."""
+    return all(" " <= character <= "~" for character in text)
+
+
+OUTSIDE_ASCII = "holds a character outside printable ASCII, whose escape depends on who serializes it"
+
+
 def canonical_value_problem(value) -> str | None:
     """Why `value` has no canonical preregistration text, or None when it
-    has one: an integer, a boolean, a string, or a list holding only integers
-    or only strings. A float, a date, a table or any other list has a text
-    that depends on who serializes it."""
-    if type(value) in (int, bool, str):
+    has one: an integer, a boolean, a string of printable ASCII, or a list
+    holding only integers or only such strings. A float, a date, a table, any
+    other list, and a string holding a control or non-ASCII character (which
+    one JSON writer escapes and another writes raw) have a text that depends
+    on who serializes them."""
+    if type(value) in (int, bool):
         return None
+    if type(value) is str:
+        return None if is_printable_ascii(value) else f"is a string that {OUTSIDE_ASCII}"
     if isinstance(value, list):
         kinds = {type(element) for element in value}
-        if kinds <= {int} or kinds <= {str}:
+        if kinds <= {int}:
+            return None
+        if kinds <= {str}:
+            for index, element in enumerate(value):
+                if not is_printable_ascii(element):
+                    return f"has element {index} that {OUTSIDE_ASCII}"
             return None
         return "is a list that holds anything but only integers or only strings"
     return f"is a {type(value).__name__}, which has no canonical text"
@@ -886,11 +903,14 @@ def canonical_value_problem(value) -> str | None:
 
 def preregistration_canonical(table: dict) -> str:
     """The canonical text of an experiment's `[preregistration]` table: JSON
-    with its keys sorted and no whitespace, which a harness in another
-    language reproduces byte for byte and prints in its results. Raises
-    `ValueError`, naming the key, for a value `canonical_value_problem`
-    refuses."""
+    with its keys sorted and no whitespace. Its keys and strings are printable
+    ASCII, so the only escapes are `\\"` and `\\\\`, and a harness in another
+    language reproduces the text byte for byte. Raises `ValueError`, naming
+    the key, for a key outside printable ASCII or a value
+    `canonical_value_problem` refuses."""
     for key, value in table.items():
+        if not is_printable_ascii(key):
+            raise ValueError(f"preregistration key {key!r} {OUTSIDE_ASCII}")
         problem = canonical_value_problem(value)
         if problem:
             raise ValueError(f"preregistration key {key} {problem}")

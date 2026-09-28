@@ -14,12 +14,14 @@ and beside the metrics.json committed with it (`experiment_records.aggregate_err
 Experiments that need a pinned baseline may run only once it is pinned.
 
 An experiment listed in `experiments/preregistration.toml` leaves `planned`
-(status `prepared`, `running` or `completed`) only with a frozen
-preregistration (`preregistration_errors`):
+(status `prepared`, `running`, `completed` or `failed`) only with a frozen
+preregistration (`preregistration_errors`); a superseded experiment has been
+replaced by another, whose own preregistration counts:
 
 - its `config.toml` holds a `[preregistration]` table with every key the list
   requires, each a pinned value of its declared type (`int`, `str`, `bool`,
-  or a non-empty `int-list` or `str-list`);
+  or a non-empty `int-list` or `str-list`), and no other key of the table
+  holds a placeholder either;
 - every value of that table has a canonical text
   (`experiment_records.preregistration_canonical`), and the manifest's
   `preregistration_sha256` is its digest;
@@ -47,7 +49,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parent))
 import experiment_records  # noqa: E402
 
 PREREGISTRATION="experiments/preregistration.toml"
-FROZEN={"prepared","running","completed"}
+FROZEN={"prepared","running","completed","failed"}
 SCALARS={"int":int,"str":str,"bool":bool}
 KINDS=set(SCALARS)|{f"{kind}-list" for kind in ("int","str")}
 ENTRY_FIELDS={"required","baseline"}
@@ -118,6 +120,18 @@ def pinned_problem(value) -> str | None:
                 return f"has element {index} that {problem}"
     return None
 
+def unset_problem(value) -> str | None:
+    """Why a preregistered value the list does not require is not pinned, or
+    None: a placeholder, or a list holding one. Such a value may be an empty
+    list."""
+    if is_unset(value):
+        return f"is a placeholder ({value!r})"
+    if isinstance(value,list):
+        for index,element in enumerate(value):
+            if is_unset(element):
+                return f"has element {index} that is a placeholder ({element!r})"
+    return None
+
 def lookup(table: dict, key_path: str):
     """The value at the dotted `key_path` of `table`, or MISSING."""
     value=table
@@ -145,11 +159,13 @@ def entry_errors(exp_id: str, entry, registered: set[str]) -> list[str]:
     for field in sorted(set(entry)-ENTRY_FIELDS):
         errors.append(f"{where} has unknown field {field}")
     required=entry.get("required")
-    if not isinstance(required,dict) or not required:
+    if not isinstance(required,dict):
+        errors.append(f"{where}: required must be a table of keys and their types")
+    elif not required:
         errors.append(f"{where} requires no keys")
     else:
         for key,kind in required.items():
-            if kind not in KINDS:
+            if not isinstance(kind,str) or kind not in KINDS:
                 errors.append(f"{where}: key {key} has unknown type {kind!r}")
     baselines=entry.get("baseline",[])
     if not isinstance(baselines,list):
@@ -209,6 +225,10 @@ def frozen_errors(exp_id: str, entry: dict, manifest: dict, experiment: Path, ro
             errors.append(f"{exp_id}: preregistration key {key} is missing")
             continue
         problem=kind_problem(table[key],kind)
+        if problem:
+            errors.append(f"{exp_id}: preregistration key {key} {problem}")
+    for key,value in table.items():
+        problem=None if key in entry["required"] else unset_problem(value)
         if problem:
             errors.append(f"{exp_id}: preregistration key {key} {problem}")
     try:

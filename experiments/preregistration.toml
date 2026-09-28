@@ -1,18 +1,20 @@
 # What an experiment preregisters before it leaves `planned`.
 #
 # scripts/check_research_gates.py fails CI on a listed experiment whose status
-# is `prepared`, `running` or `completed` unless its config.toml holds a
-# [preregistration] table with every key under `required`, each a pinned value
-# of the type named there, the manifest's `preregistration_sha256` is that
-# table's digest (scripts/experiment_records.py, preregistration_digest), and
-# every `baseline` is pinned at each of its `keys` and not `blocked-*` at its
-# `status_key`.
+# is `prepared`, `running`, `completed` or `failed` unless its config.toml
+# holds a [preregistration] table with every key under `required`, each a
+# pinned value of the type named there, the manifest's `preregistration_sha256`
+# is that table's digest (scripts/experiment_records.py,
+# preregistration_digest), and every `baseline` is pinned at each of its `keys`
+# and not `blocked-*` at its `status_key`.
 #
-# Types: "int", "str", "bool", "int-list" and "str-list"; a list must not be
-# empty. A value still to be chosen is a `must-be-pinned-…` string and an
-# owner decision still to be taken a `must-be-signed-…` string; either blocks
-# whatever the key's type. A baseline that has no configuration of its own in
-# research/baselines/ is a required key of the experiment's own table.
+# Types: "int", "str", "bool", "int-list" and "str-list"; a required list must
+# not be empty, and strings are printable ASCII. A value still to be chosen is
+# a `must-be-pinned-…` string and an owner decision still to be taken a
+# `must-be-signed-…` string; either blocks whatever the key's type, and in a
+# key this list does not require too. A baseline that has no configuration of
+# its own in research/baselines/ is a required key of the experiment's own
+# table.
 version = 1
 
 # Design: docs/architecture/35-agentic-substrate.md. The pilot fills

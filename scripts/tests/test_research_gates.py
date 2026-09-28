@@ -97,11 +97,17 @@ DIGEST=object()
 def gate(root: Path) -> tuple[int, list[str]]:
     """Run the gate on the tree at `root`, with the checks of completed
     experiments' archived results (git history the fixtures do not have)
-    passing, and return its exit code and error lines."""
+    passing once they are asked about that tree, and return its exit code
+    and error lines."""
+    def archived(exp_id,experiment,results,given_root):
+        if given_root!=root or not experiment.is_relative_to(root):
+            raise AssertionError(f"{exp_id}: archived results checked in {given_root}, not {root}")
+        return []
+
     output=io.StringIO()
     with (
-        mock.patch.object(mod.experiment_records,"staleness_errors",return_value=[]),
-        mock.patch.object(mod.experiment_records,"aggregate_errors",return_value=[]),
+        mock.patch.object(mod.experiment_records,"staleness_errors",side_effect=archived),
+        mock.patch.object(mod.experiment_records,"aggregate_errors",side_effect=archived),
         contextlib.redirect_stdout(output),
     ):
         code=mod.main(root)
@@ -122,9 +128,11 @@ class PreregistrationGateTests(unittest.TestCase):
         baselines=(BASELINE,),
         baseline_config=BASELINE_CONFIG,
         entry_extra=None,
+        listed_text=None,
     ) -> Path:
         """A fixture tree; `digest` is the manifest's preregistration_sha256,
-        the table's own digest unless given (None leaves it out)."""
+        the table's own digest unless given (None leaves it out), and
+        `listed_text`, when given, the whole of the list."""
         root=Path(self.enterContext(tempfile.TemporaryDirectory()))
         write(root,"experiments/registry.toml",f'version = 1\n\n[[experiment]]\nid = "X900"\npath = "semdb/X900-fixture"\nstatus = "{status}"\n')
         manifest={"version":1,"id":"X900","status":status,"seeds":list(seeds),"required_artifacts":[]}
@@ -140,12 +148,13 @@ class PreregistrationGateTests(unittest.TestCase):
             listed+="\n[[experiment.X900.baseline]]\n"+"".join(f"{key} = {toml_value(value)}\n" for key,value in baseline.items())
         if entry_extra:
             listed+="\n"+entry_extra
-        write(root,"experiments/preregistration.toml",listed)
+        write(root,"experiments/preregistration.toml",listed if listed_text is None else listed_text)
         write(root,"research/baselines/plain_model/config.toml",PLAIN_MODEL)
         if baseline_config is not None:
-            text='status = '+toml_value(baseline_config["status"])+"\n" if "status" in baseline_config else ""
+            values={name:value for name,value in baseline_config.items() if not isinstance(value,dict)}
+            text="".join(f"{name} = {toml_value(value)}\n" for name,value in values.items())
             for name,section in baseline_config.items():
-                if name!="status":
+                if name not in values:
                     text+="\n"+toml_table(name,section)
             write(root,BASELINE_PATH,text)
         return root
@@ -161,13 +170,12 @@ class PreregistrationGateTests(unittest.TestCase):
             with self.subTest(table=table):
                 root=self.tree(status="planned",table=table,digest=None,baseline_config={"status":"blocked-unpinned"})
                 self.assertEqual(gate(root),(0,[]))
-        # Nor are a failed or a superseded one.
-        for status in ("failed","superseded"):
-            with self.subTest(status=status):
-                self.assertEqual(gate(self.tree(status=status,table=None,digest=None)),(0,[]))
+        # Nor is a superseded one: another experiment replaced it, and that
+        # one's preregistration counts. A failed one ran, and is gated.
+        self.assertEqual(gate(self.tree(status="superseded",table=None,digest=None)),(0,[]))
 
     def test_a_complete_preregistration_passes(self):
-        for status in ("prepared","running","completed"):
+        for status in ("prepared","running","completed","failed"):
             with self.subTest(status=status):
                 code,lines=gate(self.tree(status=status))
                 self.assertEqual((code,lines),(0,[]))
@@ -178,7 +186,7 @@ class PreregistrationGateTests(unittest.TestCase):
         self.assertEqual(gate(self.tree(baselines=(),baseline_config=None)),(0,[]))
 
     def test_a_missing_required_key_keeps_an_experiment_from_leaving_planned(self):
-        for status in ("prepared","running","completed"):
+        for status in ("prepared","running","completed","failed"):
             with self.subTest(status=status):
                 without={key:value for key,value in TABLE.items() if key!="harness"}
                 self.assert_blocked(self.tree(status=status,table=without),"X900: preregistration key harness is missing")
@@ -208,6 +216,16 @@ class PreregistrationGateTests(unittest.TestCase):
             ("seeds",["17","29"],"has element 0 that must be an int, not a string"),
             ("programs",["rmw","must-be-pinned-x"],"has element 1 that is a placeholder ('must-be-pinned-x')"),
             ("programs",[1,2],"has element 0 that must be a str, not an integer"),
+            # Case and surrounding space do not hide a placeholder.
+            ("harness","Must-Be-Signed-by-owner","is a placeholder ('Must-Be-Signed-by-owner')"),
+            ("harness"," MUST-BE-PINNED ","is a placeholder (' MUST-BE-PINNED ')"),
+            # Nor does leaving the key out of the list: every preregistered
+            # value is pinned, though a list the list does not require may be
+            # empty.
+            ("reviewer_pool","must-be-signed-by-owner","is a placeholder ('must-be-signed-by-owner')"),
+            ("margin","must-be-pinned-before-prepared","is a placeholder ('must-be-pinned-before-prepared')"),
+            ("note","",  "is a placeholder ('')"),
+            ("cells",["L0N2","must-be-pinned"],"has element 1 that is a placeholder ('must-be-pinned')"),
         ]
         for key,value,problem in cases:
             with self.subTest(key=key,value=value):
@@ -217,9 +235,12 @@ class PreregistrationGateTests(unittest.TestCase):
                     expected.append(f"X900: preregistered seeds {value!r} are not the manifest's seeds [17, 29]")
                 self.assert_blocked(self.tree(table=table),*expected)
         # A value without a canonical text, required or not, has no digest.
+        outside="holds a character outside printable ASCII, whose escape depends on who serializes it"
         for key,value,problem in (
             ("rate",0.5,"is a float, which has no canonical text"),
             ("seeds",[17,"29"],"is a list that holds anything but only integers or only strings"),
+            ("note","first segment \u2014 descriptive",f"is a string that {outside}"),
+            ("programs",["rmw","set\top"],f"has element 1 that {outside}"),
         ):
             with self.subTest(key=key,value=value):
                 table={**TABLE,key:value}
@@ -279,6 +300,9 @@ class PreregistrationGateTests(unittest.TestCase):
             ({**BASELINE_CONFIG,"answer":{"generators":["g1","none"]}},[f"{where}: answer.generators has element 1 that is a placeholder ('none')"]),
             ({**BASELINE_CONFIG,"status":"blocked-unpinned-model-revisions"},[f"{where} is blocked-unpinned-model-revisions"]),
             ({**BASELINE_CONFIG,"status":"Blocked-by-licence"},[f"{where} is Blocked-by-licence"]),
+            ({**BASELINE_CONFIG,"status":" blocked-x"},[f"{where} is  blocked-x"]),
+            # A value where the key path needs a table has no such key.
+            ({**BASELINE_CONFIG,"model":"revision-x"},[f"{where}: model.revision is missing"]),
             ({**BASELINE_CONFIG,"status":"must-be-pinned"},[f"{where}: status is not pinned ('must-be-pinned')"]),
             ({**BASELINE_CONFIG,"status":1},[f"{where}: status is not pinned (1)"]),
             ({key:value for key,value in BASELINE_CONFIG.items() if key!="status"},[f"{where}: status is missing"]),
@@ -303,11 +327,68 @@ class PreregistrationGateTests(unittest.TestCase):
             ({"baselines":({**BASELINE,"revision":"x"},)},{},[f"{where}: baseline 0 has unknown field revision"]),
             ({},{"entry_extra":"[experiment.X901.required]\nschema = \"int\"\n"},["experiments/preregistration.toml: X901 is not a registered experiment"]),
             ({},{"entry_extra":"[experiment.X900.optional]\nschema = \"int\"\n"},[f"{where} has unknown field optional"]),
+            ({"required":{**REQUIRED,"seeds":["int"]}},{},[f"{where}: key seeds has unknown type ['int']"]),
+            ({"required":{**REQUIRED,"seeds":1}},{},[f"{where}: key seeds has unknown type 1"]),
+            ({"baselines":({**BASELINE,"keys":"model.revision"},)},{},[f"{where}: baseline 0 needs a non-empty list of key paths"]),
+            ({"baselines":({**BASELINE,"keys":[1]},)},{},[f"{where}: baseline 0 needs a non-empty list of key paths"]),
+            ({"baselines":({**BASELINE,"status_key":""},)},{},[f"{where}: baseline 0 needs a status_key"]),
+            ({"baselines":({**BASELINE,"status_key":1},)},{},[f"{where}: baseline 0 needs a status_key"]),
+        ]
+        required=toml_table("experiment.X900.required",REQUIRED)
+        baseline="".join(f"{key} = {toml_value(value)}\n" for key,value in BASELINE.items())
+        listed=[
+            # A misspelt top-level table would take its experiments out of the gate.
+            ("version = 1\n"+required+'\n[experiments.X900.required]\nschema = "int"\n',["experiments/preregistration.toml has unknown field experiments"]),
+            ('version = 1\n[experiments.X900.required]\nschema = "int"\n',["experiments/preregistration.toml has unknown field experiments"]),
+            ('version = 1\n[[experiment]]\nid = "X900"\n',["experiments/preregistration.toml: experiment must be a table of experiments"]),
+            ("version = 1\n[experiment]\nX900 = 1\n",["experiments/preregistration.toml: X900 is not a table"]),
+            ('version = 1\n[experiment.X900]\nrequired = "int"\n',[f"{where}: required must be a table of keys and their types"]),
+            ("version = 1\n"+required+"\n[experiment.X900.baseline]\n"+baseline,[f"{where}: baseline must be an array of tables"]),
+            ("version = 1\n[experiment.X900]\nbaseline = [1]\n\n"+required,[f"{where}: baseline 0 is not a table"]),
         ]
         for status in ("planned","prepared"):
             for changes,extra,errors in cases:
                 with self.subTest(status=status,changes=changes,extra=extra):
                     self.assert_blocked(self.tree(status=status,**changes,**extra),*errors)
+            for text,errors in listed:
+                with self.subTest(status=status,listed=text):
+                    # X900 holds a complete preregistration, so only the list is wrong.
+                    self.assert_blocked(self.tree(status=status,listed_text=text),*errors)
+        # With the whole list misspelt, an experiment with nothing frozen
+        # still fails the gate.
+        self.assert_blocked(
+            self.tree(table=None,digest=None,listed_text=listed[1][0]),
+            "experiments/preregistration.toml has unknown field experiments",
+        )
+
+    def test_the_matched_baseline_rules_read_the_tree_they_are_given(self):
+        # M001-M005 and E002 keep their rules, on the tree the gate is given:
+        # the repository's own baselines are unpinned, so only a fixture whose
+        # baselines are pinned tells the trees apart.
+        def tree(plain: str, strong: str) -> Path:
+            root=Path(self.enterContext(tempfile.TemporaryDirectory()))
+            registry="version = 1\n"
+            for exp_id,path in (("M001","model/M001-fixture"),("E002","system/E002-fixture")):
+                registry+=f'\n[[experiment]]\nid = "{exp_id}"\npath = "{path}"\nstatus = "running"\n'
+                write(root,f"experiments/{path}/experiment.toml",f'version = 1\nid = "{exp_id}"\nstatus = "running"\n')
+            write(root,"experiments/registry.toml",registry)
+            write(root,"experiments/preregistration.toml","version = 1\n")
+            write(root,"research/baselines/plain_model/config.toml",plain)
+            write(root,"research/baselines/strong_rag/config.toml",strong)
+            return root
+
+        unpinned=tree(PLAIN_MODEL,'status = "blocked-unpinned"\n[dense]\nrevision = ""\n')
+        self.assert_blocked(
+            unpinned,
+            "M001: matched plain-model baseline is not pinned",
+            "E002: strong RAG model/generator revisions are not pinned",
+            "E002: strong RAG baseline is still blocked",
+        )
+        pinned=tree(
+            'version = 1\n[model]\nbackend = "b"\nmodel = "m"\n',
+            'status = "pinned"\n[dense]\nrevision = "r1"\n[reranker]\nrevision = "r2"\n[answer]\nrevision = "r3"\n',
+        )
+        self.assertEqual(gate(pinned),(0,[]))
 
 ENROLLED=("S003","F003","Q003","R004","M008","E005")
 

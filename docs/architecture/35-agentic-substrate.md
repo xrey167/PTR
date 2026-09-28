@@ -1547,8 +1547,9 @@ another by idea.
 
 S003, F003, Q003, R004, M008 and E005 preregister (`experiments/preregistration.toml`). Each leaves `planned`
 only once the `[preregistration]` table of its `config.toml` holds every key the list requires, pinned and of
-its declared type, its manifest names the SHA-256 of the table's canonical text, and every baseline the list
-names is pinned and not blocked; `scripts/check_research_gates.py` fails CI otherwise
+its declared type, and no placeholder in any other key, its manifest names the SHA-256 of the table's canonical
+text, and every baseline the list names is pinned and not blocked; `scripts/check_research_gates.py` fails CI
+otherwise, whether the experiment is prepared, running, completed or failed
 (`test_a_missing_required_key_keeps_an_experiment_from_leaving_planned`,
 `test_a_placeholder_or_wrongly_typed_value_blocks`, `test_a_digest_mismatch_blocks`,
 `test_an_unpinned_or_blocked_baseline_blocks`). A value still to be chosen and an owner decision still to be
