@@ -293,7 +293,7 @@ class RunWatchTests(unittest.TestCase):
         `launch_error` when given; returns the exit status, the records
         written and what was printed to stderr."""
 
-        def execute(_command):
+        def execute(_command, _environment=None):
             if during is not None:
                 during()
             if launch_error is not None:
@@ -1173,6 +1173,100 @@ class RunWatchTests(unittest.TestCase):
         self.assertIn("stays as the record that seed 17 ran", stderr)
         [kept] = list(self.attempts().glob("run-*.json"))
         self.assertEqual(json.loads(kept.read_text(encoding="utf-8"))["status"], "started")
+
+    def run_bench(self) -> tuple[int, dict, dict]:
+        """Run seed 17 of L900 through a real `bench` found on `PATH`, in a
+        runner environment holding settings that load code and a credential;
+        returns the status, the record and the environment `bench` saw."""
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        bench = Path(directory.name) / "bench"
+        bench.write_text("#!/usr/bin/env python3\nimport json, os\nprint(json.dumps(dict(os.environ)))\n", encoding="utf-8")
+        bench.chmod(0o755)
+        self.bench = bench
+        runner = {
+            "PATH": f"{directory.name}{os.pathsep}{os.environ['PATH']}",
+            "PYTHONPATH": "/elsewhere",
+            "LD_LIBRARY_PATH": "/elsewhere",
+            "RUSTC_WRAPPER": "/elsewhere/wrapper",
+            "RUSTUP_TOOLCHAIN": "nightly",
+            "GH_TOKEN": "credential",
+            "TMPDIR": tempfile.gettempdir(),
+        }
+        with (
+            mock.patch.dict(os.environ, runner),
+            mock.patch.object(mod, "ROOT", self.root),
+            mock.patch.object(mod, "REGISTRY", self.root / "experiments/registry.toml"),
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            allowed = mod.command_environment()
+            status = mod.run_experiment("L900", entrypoint="entrypoint", seed=17)
+        [record] = [json.loads(path.read_text(encoding="utf-8")) for path in self.results.glob("run-*.json")]
+        self.assertEqual(allowed["PATH"], runner["PATH"])
+        self.allowed = allowed
+        return status, record, json.loads(record["stdout"])
+
+    def test_a_listed_command_runs_in_the_environment_the_runner_allows(self):
+        # What the runner's environment sets could load code the commit does
+        # not hold (PYTHONPATH, LD_LIBRARY_PATH, RUSTC_WRAPPER, a toolchain
+        # other than the one it pins) or hand the command a credential: a
+        # listed experiment's command sees only the allowed variables, and
+        # its record names them and the program it started.
+        self.preregister("running")
+        status, record, seen = self.run_bench()
+        self.assertEqual((status, record["status"]), (0, "completed"))
+        self.assertLessEqual(set(seen) - {"PYTHONPYCACHEPREFIX"}, set(mod.COMMAND_ENVIRONMENT))
+        for name in ("PYTHONPATH", "LD_LIBRARY_PATH", "RUSTC_WRAPPER", "RUSTUP_TOOLCHAIN", "GH_TOKEN"):
+            self.assertNotIn(name, seen)
+        self.assertEqual(record["environment"], self.allowed)
+        self.assertEqual({name: seen[name] for name in self.allowed}, self.allowed)
+        self.assertNotIn("PYTHONPYCACHEPREFIX", record["environment"])
+        # A program found first on the PATH, wherever it lies, is named with
+        # its content.
+        self.assertEqual(record["executable"], {
+            "path": str(self.bench.resolve()),
+            "sha256": hashlib.sha256(self.bench.read_bytes()).hexdigest(),
+        })
+        # An unlisted experiment's command runs in the runner's environment,
+        # as it did.
+        self.tearDown()
+        self.setUp()
+        status, record, seen = self.run_bench()
+        self.assertEqual((status, seen["PYTHONPATH"], seen["GH_TOKEN"]), (0, "/elsewhere", "credential"))
+        self.assertNotIn("environment", record)
+        self.assertNotIn("executable", record)
+
+    def test_the_program_a_command_starts_is_found_as_the_process_finds_it(self):
+        tools = self.root / "tools"
+        tools.mkdir()
+        script = tools / "run.sh"
+        script.write_text("#!/bin/sh\n", encoding="utf-8")
+        script.chmod(0o755)
+        (tools / "link.sh").symlink_to("run.sh")
+        (tools / "plain.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+        digest = hashlib.sha256(script.read_bytes()).hexdigest()
+        found = {"path": str(script.resolve()), "sha256": digest}
+        missing = {"path": None, "sha256": None}
+        with mock.patch.object(mod, "ROOT", self.root):
+            # A name with a slash is read from the repository's root, through
+            # any link, and must be an executable file.
+            self.assertEqual(mod.resolved_executable(["tools/run.sh", "17"], {}), found)
+            self.assertEqual(mod.resolved_executable(["tools/link.sh"], {}), found)
+            self.assertEqual(mod.resolved_executable(["tools/plain.sh"], {}), missing)
+            self.assertEqual(mod.resolved_executable(["tools/absent.sh"], {}), missing)
+            # A name without one is looked up on the environment's PATH, and
+            # on the default path when it sets none.
+            self.assertEqual(mod.resolved_executable(["run.sh"], {"PATH": str(tools)}), found)
+            self.assertEqual(mod.resolved_executable(["run.sh"], {"PATH": "/nowhere"}), missing)
+            self.assertEqual(mod.resolved_executable(["plain.sh"], {"PATH": str(tools)}), missing)
+            shell = shutil.which("sh", path=os.defpath)
+            self.assertIsNotNone(shell)
+            self.assertEqual(mod.resolved_executable(["sh"], {})["path"], os.path.realpath(shell))
+        # The allowed environment is what the runner's sets of the allowed
+        # names, and nothing else.
+        with mock.patch.dict(os.environ, {"PATH": "/bin", "HOME": "/home/runner", "GH_TOKEN": "x"}, clear=True):
+            self.assertEqual(mod.command_environment(), {"PATH": "/bin", "HOME": "/home/runner"})
 
     def test_a_listed_experiment_reads_no_output_the_tools_left_uncommitted(self):
         # An output could be an input: what a listed experiment's command

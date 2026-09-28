@@ -7,6 +7,7 @@ import json
 import os
 import platform
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -22,6 +23,13 @@ import check_research_gates  # noqa: E402
 import experiment_records  # noqa: E402
 
 PLACEHOLDER = experiment_records.PLACEHOLDER
+# The environment a listed experiment's command runs in, taken from the
+# runner's: where its programs and toolchains are found, the home they
+# default to, the temporary directory and the locale. Nothing else reaches
+# the command, so no `PYTHONPATH`, `LD_PRELOAD`, `RUSTC_WRAPPER`,
+# `RUSTUP_TOOLCHAIN` or `RUSTFLAGS` loads code the commit does not hold,
+# and no credential or network setting reaches it.
+COMMAND_ENVIRONMENT = ("PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "CARGO_HOME", "RUSTUP_HOME")
 
 
 def load(path: Path):
@@ -497,8 +505,39 @@ def command_parameters(exp_id: str, root: Path, data: dict, entrypoint: str, par
     return values
 
 
-def execute_command(command: list[str]) -> dict:
-    """Run `command` from the repository's root and return its exit status,
+def command_environment() -> dict[str, str]:
+    """The environment a listed experiment's command runs in: the variables
+    `COMMAND_ENVIRONMENT` names that the runner's environment sets, and no
+    other."""
+    return {name: os.environ[name] for name in COMMAND_ENVIRONMENT if name in os.environ}
+
+
+def resolved_executable(command: list[str], environment: dict[str, str]) -> dict:
+    """The program `command` starts, as the command runs it from the
+    repository's root in `environment`: its path with every link resolved,
+    and the SHA-256 of its content; both None when there is no such file. A
+    name without a slash is looked up on `environment`'s `PATH`, as the
+    process that starts the command looks it up, and one with a slash is
+    read from the root."""
+    program = command[0]
+    if os.sep in program or (os.altsep and os.altsep in program):
+        found = str(ROOT / program)
+        found = found if os.path.isfile(found) and os.access(found, os.X_OK) else None
+    else:
+        found = shutil.which(program, path=os.pathsep.join(os.get_exec_path(environment)))
+    if found is None:
+        return {"path": None, "sha256": None}
+    target = Path(os.path.realpath(found))
+    try:
+        digest = hashlib.sha256(target.read_bytes()).hexdigest()
+    except OSError:
+        digest = None
+    return {"path": str(target), "sha256": digest}
+
+
+def execute_command(command: list[str], environment: dict[str, str] | None = None) -> dict:
+    """Run `command` from the repository's root in `environment`, or in the
+    runner's own environment when None, and return its exit status,
     output, launch error and duration. Python in it reads and writes its
     bytecode cache in a fresh directory (`PYTHONPYCACHEPREFIX`), so no
     `__pycache__` entry the tree holds, which git ignores and HEAD does not
@@ -530,7 +569,7 @@ def execute_command(command: list[str]) -> dict:
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                env={**os.environ, "PYTHONPYCACHEPREFIX": cache.name},
+                env={**(os.environ if environment is None else environment), "PYTHONPYCACHEPREFIX": cache.name},
             )
         except OSError as error:
             return not_started(error)
@@ -582,8 +621,11 @@ def run_experiment(
     that watch can see (its `changes` names what it cannot); a listed
     experiment's reservation then stays, as the record that its seed ran.
     A command that could not start ran no code, so its record, that it
-    failed to launch, is written whatever the watch saw. The record is
-    written whole or not at all (`write_json_exclusive`)."""
+    failed to launch, is written whatever the watch saw. A listed
+    experiment's command runs in the environment the runner allows
+    (`command_environment`), which its record names with the program it
+    started (`resolved_executable`). The record is written whole or not at
+    all (`write_json_exclusive`)."""
     _, root, data = resolve(exp_id)
     if unrecordable_manifest(exp_id, data) or launch_refused(exp_id):
         return 2
@@ -692,6 +734,12 @@ def launch_and_record(
             "command": command,
         }
     )
+    # A listed experiment's command runs in the environment the runner
+    # allows (`command_environment`), and its record names that environment
+    # and the program it starts, which lies outside what the commit holds.
+    environment = command_environment() if listed else None
+    if listed:
+        record.update({"environment": environment, "executable": resolved_executable(command, environment)})
     kept = attempts / out.name if listed else None
     if listed:
         # The reservation: the record, as far as it is known before the
@@ -717,7 +765,7 @@ def launch_and_record(
             return 2
     stays = f"; {out.relative_to(ROOT)} stays as the record that seed {seed} ran" if listed else ""
 
-    execution = execute_command(command)
+    execution = execute_command(command, environment)
     exit_code = execution["exit_code"]
     launched = exit_code is not None
     record.update(
