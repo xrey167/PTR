@@ -1,4 +1,5 @@
 import contextlib
+import datetime
 import errno
 import hashlib
 import importlib.util
@@ -110,6 +111,16 @@ class ExperimentRunnerTests(unittest.TestCase):
         _, _, data = mod.resolve("L001")
         with self.assertRaisesRegex(ValueError, "missing value"):
             mod.build_command(data, entrypoint="entrypoint", seed=17)
+
+    def test_a_record_holding_a_date_is_written_as_its_text(self):
+        # The runner refuses a dated manifest before it runs; were a date to
+        # reach the record all the same, it is written as its text rather
+        # than lose the record of a run that ran.
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        mod.write_json_exclusive(directory / "run.json", {"created": datetime.date(2026, 1, 2)})
+        self.assertEqual(json.loads((directory / "run.json").read_text(encoding="utf-8")), {"created": "2026-01-02"})
+        mod.write_json_replacing(directory / "run.json", {"created": datetime.time(7, 32)})
+        self.assertEqual(json.loads((directory / "run.json").read_text(encoding="utf-8")), {"created": "07:32:00"})
 
     def test_execute_command_captures_process_evidence(self):
         result = mod.execute_command(

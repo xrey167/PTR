@@ -483,6 +483,10 @@ class PreregistrationGateTests(unittest.TestCase):
         self.assert_blocked(root,crlf)
         self.assertIsNone(mod.frozen_file_at(root,committed,path))
         self.assertIsNone(mod.launchable_at(root,committed,"X900","experiments/semdb/X900-fixture"))
+        # Committed with LF line endings, it is the frozen protocol.
+        (root/path).write_bytes(text.encode("utf-8"))
+        commit_all(root,"protocol with LF line endings")
+        self.assertEqual(gate(root),(0,[]))
         # A binary file's carriage returns are content, digested as they are.
         binary=b"\x00\r\n\x01"
         self.assertIsNone(mod.file_form_problem(binary,"100644"))
@@ -2015,6 +2019,20 @@ class PreregistrationGateTests(unittest.TestCase):
         (root/protocol).chmod(0o644)
         commit_all(root,"protocol not executable")
         self.assertEqual(gate(root),(0,[]))
+        # Git's mode counts: a bit the checkout sets but git does not hold is
+        # a change the runner refuses as uncommitted, not the file's mode.
+        (root/protocol).chmod(0o755)
+        self.assertEqual(gate(root),(0,[]))
+        (root/protocol).chmod(0o644)
+        # A record run where the file was executable did not run the frozen
+        # file, whatever its content.
+        write(root,self.RECORD,json.dumps(self.record(root,executable)))
+        commit_all(root,"a record of the executable commit")
+        self.assert_blocked(
+            root,
+            f"X900: {self.RECORD.removeprefix('experiments/semdb/X900-fixture/')} ran at {executable[:12]}, where "
+            f"{protocol} is not the file frozen as protocol",
+        )
 
     def test_a_listed_experiments_manifest_and_configuration_are_regular_files(self):
         # Read through a link, either is a file no commit holds as the
