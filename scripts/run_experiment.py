@@ -9,6 +9,7 @@ import os
 import platform
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -187,12 +188,14 @@ def id_file_name(exp_id: str) -> str:
     not hold as itself percent-encoded (`team/trial` as `team%2Ftrial`),
     and where that runs longer than `ID_NAME_LIMIT`, as a long id or one
     of characters that encode to several bytes does, its beginning with the
-    SHA-256 of the id, so every id names one file a file system can hold."""
+    SHA-256 of the id after a `+`, which percent-encoding never leaves as
+    itself, so no id's name is another's and every one is a file name a
+    file system can hold."""
     quoted = urllib.parse.quote(exp_id, safe="")
     if len(quoted) <= ID_NAME_LIMIT:
         return quoted
     digest = hashlib.sha256(exp_id.encode("utf-8", "surrogatepass")).hexdigest()
-    return f"{quoted[: ID_NAME_LIMIT - len(digest) - 1]}-{digest}"
+    return f"{quoted[: ID_NAME_LIMIT - len(digest) - 1]}+{digest}"
 
 
 def run_lock(exp_id: str, directory: Path) -> Path | None:
@@ -385,10 +388,12 @@ def unlisted_entries() -> list[str]:
     below the root, however a platform names it
     (`check_research_gates.is_git_administration`: `.GIT`, and on Windows
     `.git.` and `git~1`), which git keeps for itself and never looks into
-    (`scripts/.git/helper.py`), or at the root under any name but `.git`.
-    A walk of the checkout, leaving out git's
-    own directory at the root and what git ignores (`ignored_files`), which
-    a listed run refuses by itself. Raises
+    (`scripts/.git/helper.py`), or at the root under any name but `.git`,
+    and a file that is neither a regular file nor a symlink (a FIFO, a
+    socket, a device), which git skips, and which a command can test for or
+    read what another process writes into. A walk of the checkout, leaving
+    out git's own directory at the root and what git ignores
+    (`ignored_files`), which a listed run refuses by itself. Raises
     `experiment_records.ProvenanceError` when git cannot list what it
     ignores."""
     ignored = {entry.rstrip("/") for entry in ignored_files()}
@@ -407,11 +412,19 @@ def unlisted_entries() -> list[str]:
             elif path not in ignored:
                 kept.append(name)
         subdirectories[:] = kept
-        found.extend(
-            f"{here}/{name}" if here else name
-            for name in files
-            if check_research_gates.is_git_administration(name) and (here or name != ".git")
-        )
+        for name in files:
+            path = f"{here}/{name}" if here else name
+            if check_research_gates.is_git_administration(name):
+                if here or name != ".git":
+                    found.append(path)
+            elif path not in ignored:
+                try:
+                    mode = os.lstat(os.path.join(directory, name)).st_mode
+                except OSError:
+                    # Gone since the walk listed it, as a file removed then is.
+                    continue
+                if not (stat.S_ISREG(mode) or stat.S_ISLNK(mode)):
+                    found.append(path)
     return sorted(found)
 
 
@@ -852,8 +865,8 @@ def toolchain(
     run`; and otherwise as the `PATH` holds it, such as a standalone Cargo
     before rustup's proxies, which runs whatever rustup would resolve.
     rustup keeps its toolchains outside the repository, where the commit
-    holds none. Given `selected`, the name of the toolchain rustup resolved
-    each tool from goes in under the tool (`toolchain_name`)."""
+    holds none. Given `selected`, the directory of the toolchain rustup
+    resolved each tool from goes in under the tool (`toolchain_directory`)."""
     search = os.pathsep.join(os.get_exec_path(environment))
     rustup = shutil.which("rustup", path=search)
     name = named_toolchain(command)
@@ -875,20 +888,23 @@ def toolchain(
         found[tool] = resolved_executable([resolved], environment, stamps) if os.path.isabs(resolved) else {
             "path": None, "sha256": None,
         }
-        name = toolchain_name(resolved) if os.path.isabs(resolved) else None
-        if selected is not None and name is not None:
-            selected[tool] = name
+        directory = toolchain_directory(resolved) if os.path.isabs(resolved) else None
+        if selected is not None and directory is not None:
+            selected[tool] = directory
     return found
 
 
-def toolchain_name(path: str) -> str | None:
-    """The name of the toolchain whose tool rustup names at `path`
-    (`<RUSTUP_HOME>/toolchains/<name>/bin/<tool>`, as `rustup which` prints
-    it), or None for a path laid out otherwise."""
-    tool = PurePosixPath(path.replace("\\", "/"))
-    if tool.parent.name == "bin" and tool.parent.parent.parent.name == "toolchains":
-        return tool.parent.parent.name
-    return None
+def toolchain_directory(path: str) -> str | None:
+    """The directory of the toolchain whose tool rustup names at `path`
+    (`<toolchain>/bin/<tool>`, as `rustup which` prints it), whether rustup
+    installed it under its home (`<RUSTUP_HOME>/toolchains/<name>`) or a
+    path names it (`path` in rust-toolchain.toml); None for a path laid out
+    otherwise. rustup takes that directory as the toolchain itself
+    (`RUSTUP_TOOLCHAIN=<directory>`), where a name would be looked up again
+    among the toolchains it installed, and a path toolchain has none."""
+    if os.path.basename(os.path.dirname(path)) != "bin":
+        return None
+    return os.path.dirname(os.path.dirname(path))
 
 
 def resolved_executable(

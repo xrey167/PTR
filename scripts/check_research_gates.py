@@ -29,9 +29,11 @@ but one that was frozen or ran stays bound as below, as it was frozen:
   placeholder in it but `<seed>` is a key of the `[preregistration]` table
   holding an integer, a string or a boolean, the value the runner fills it
   with, it takes `<seed>` when the table preregisters more than one seed,
-  and it gives Cargo no configuration on its command line, nor does the
-  repository's Cargo configuration name a program, source or flags for it
-  (`command_errors`), since a freeze no run can use cannot be repaired;
+  and where it runs Cargo, it runs a built-in command of Cargo's with no
+  configuration, directory or input from outside the repository on its
+  command line, nor does the repository's Cargo configuration name a
+  program, source or flags for it (`command_errors`), since a freeze no run
+  can use cannot be repaired;
 - its `config.toml` holds a `[preregistration]` table with every key the list
   requires, each a pinned value of its declared type (`int`, `str`, `bool`,
   a non-empty `int-list` or `str-list`, or `file`), and no other key of the
@@ -230,8 +232,10 @@ def command_errors(exp_id: str, manifest: dict, table: dict, read=None) -> list[
     (`run_experiment.command_parameters`). And where the table preregisters
     more than one seed, the command takes `<seed>`: one that does not runs
     the same command for every seed, while each record names the seed it
-    was given. And it gives Cargo no configuration on its command line
-    (`cargo_arguments`): a `--config` file or value can name a rustc
+    was given. And a command that runs Cargo runs one of its built-in
+    commands with arguments that give it no configuration, directory,
+    target directory or input outside the repository
+    (`cargo_command_errors`): a `--config` file or value can name a rustc
     wrapper, flags or sources outside what the commit holds. Nor does the
     repository's own Cargo configuration, a file of the commit, name any of
     them, or a program Cargo runs (`cargo_configuration_errors`): the record
@@ -275,11 +279,62 @@ def command_errors(exp_id: str, manifest: dict, table: dict, read=None) -> list[
         return ("true" if value else "false") if isinstance(value,bool) else (
             str(value) if isinstance(value,(int,str)) else match.group(0))
     command=[experiment_records.PLACEHOLDER.sub(filled,token) for token in tokens]
-    arguments=cargo_arguments(command,read)
+    invocation=cargo_invocation(command)
+    if invocation is not None:
+        errors.extend(cargo_command_errors(exp_id,invocation))
+    # Cargo started from the root, by the command or by a program it runs,
+    # reads the repository's configuration there.
+    if read is not None:
+        errors.extend(cargo_configuration_errors(exp_id,read))
+    return errors
+
+# The Cargo commands a listed experiment's command may run: built into Cargo,
+# so no alias the repository's configuration defines stands in for one
+# (Cargo lets none shadow a built-in command), and none runs a program of
+# another name, as an external command runs `cargo-<name>` from the PATH.
+CARGO_COMMANDS=("bench","build","check","run","test")
+# Cargo's options naming a path it reads the build from, and the one naming
+# where it builds, and the short options that take a value, which a cluster
+# of short options (`-vC dir`) ends with.
+CARGO_PATH_OPTIONS=("--manifest-path","--lockfile-path","--target","--target-dir")
+CARGO_SHORT_VALUES="CFjpZ"
+
+def cargo_command_errors(exp_id: str, invocation: list[str]) -> list[str]:
+    """Why the arguments a listed command gives Cargo (`invocation`,
+    `cargo_invocation`) could have it build or run what no record binds;
+    empty when they cannot. The first, after at most a rustup
+    `+<toolchain>`, is one of `CARGO_COMMANDS`, so what follows are that
+    command's arguments as written: an alias, an option before the command
+    (`--`, `-C`, `-Zscript`) or an external command would have Cargo read
+    them otherwise than as written, or run a program no record names. Up to
+    a `--`, past which they are the built program's, they give Cargo no
+    configuration (`--config`), which can name a rustc wrapper, flags or
+    sources outside the commit, no directory to run in (`-C`, in any
+    spelling a cluster of short options gives it), no target directory
+    (`--target-dir`), which could hold a build made outside the commit, and
+    no manifest, lockfile or target specification file outside what the
+    repository's watch reads (`cargo_path_options`, `outside_repository`).
+    Cargo takes a long option only by its full name."""
+    rest=invocation[1:] if invocation and invocation[0].startswith("+") else invocation
+    if not rest or rest[0] not in CARGO_COMMANDS:
+        given=repr(rest[0]) if rest else "nothing"
+        return [f"{exp_id}: entrypoint gives Cargo {given} where one of its built-in commands "
+                f"{', '.join(CARGO_COMMANDS)} comes first (after at most a +toolchain): an alias, an option before "
+                "the command or an external command could have Cargo build or run what no record binds"]
+    arguments=rest[1:]
+    arguments=arguments[:arguments.index("--")] if "--" in arguments else arguments
+    errors=[]
     if any(argument=="--config" or argument.startswith("--config=") for argument in arguments):
         errors.append(f"{exp_id}: entrypoint gives Cargo configuration on its command line (--config), which can name "
                       "a rustc wrapper, flags or sources outside the commit; set what the build needs in the "
                       "repository's .cargo/config.toml")
+    for index,argument in enumerate(arguments):
+        following=arguments[index+1] if index+1<len(arguments) else ""
+        if argument.startswith("-") and not argument.startswith("--"):
+            short=cargo_short_value(argument,following)
+            if short is not None and short[0]=="C":
+                errors.append(f"{exp_id}: entrypoint gives Cargo a directory to run in (-C), whose Cargo "
+                              "configuration no check reads; a listed experiment's Cargo runs from the root")
     for option,value in cargo_path_options(arguments):
         if option=="--target-dir":
             errors.append(f"{exp_id}: entrypoint gives Cargo a target directory (--target-dir), which could hold a "
@@ -287,34 +342,16 @@ def command_errors(exp_id: str, manifest: dict, table: dict, read=None) -> list[
         elif outside_repository(value):
             errors.append(f"{exp_id}: entrypoint gives Cargo {option} {value}, outside what the repository's watch "
                           "reads, whose sources no watch or record binds; name a path the repository holds")
-    if read is not None:
-        directory=next((value for option,value in cargo_path_options(arguments) if option=="-C"),"")
-        errors.extend(cargo_configuration_errors(exp_id,read,directory))
     return errors
 
-# Cargo's options naming a path it reads the build from, and the one naming
-# where it builds, with the short options that take a value, which a cluster
-# of short options (`-vC dir`) ends with, and the long ones that take the
-# next argument as theirs.
-CARGO_PATH_OPTIONS=("--manifest-path","--lockfile-path","--target","--target-dir")
-CARGO_SHORT_VALUES="CFjpZ"
-CARGO_LONG_VALUES=("--config","--manifest-path","--lockfile-path","--target-dir","--color","--explain","--package",
-                   "--jobs","--features","--target","--bin","--example","--test","--bench","--profile",
-                   "--message-format","--registry","--index")
-
 def cargo_path_options(arguments: list[str]) -> list[tuple[str,str]]:
-    """The options among Cargo's own `arguments` (`cargo_arguments`) that
-    name a path it builds from or into, with their values: the manifest
-    (`--manifest-path`), the lockfile (`--lockfile-path`), the target,
-    which may be a specification file (`--target custom.json`), the
-    directory it runs in (`-C`, alone, joined or ending a cluster of short
-    options) and the target directory (`--target-dir`), each given as one
-    token
-    (`--manifest-path=x`, `-Cx`) or two; a value missing at the end reads
-    as empty. In Cargo's script mode (`-Zscript`, `-Z script`), whose
-    manifest is a file an argument names, every argument that is no option
-    or option's value counts as one (`-Zscript`), the script's own after it
-    included."""
+    """The options among the arguments of a Cargo command
+    (`cargo_command_errors`) that name a path it builds from or into, with
+    their values: the manifest (`--manifest-path`), the lockfile
+    (`--lockfile-path`), the target, which may be a specification file
+    (`--target custom.json`), and the target directory (`--target-dir`),
+    each given as one token (`--manifest-path=x`) or two; a value missing
+    at the end reads as empty."""
     found=[]
     for index,argument in enumerate(arguments):
         following=arguments[index+1] if index+1<len(arguments) else ""
@@ -323,53 +360,18 @@ def cargo_path_options(arguments: list[str]) -> list[tuple[str,str]]:
                 found.append((option,following))
             elif argument.startswith(f"{option}="):
                 found.append((option,argument[len(option)+1:]))
-        if argument.startswith("-") and not argument.startswith("--"):
-            short=cargo_short_value(argument,following)
-            if short is not None and short[0]=="C":
-                found.append(("-C",short[1]))
-    if cargo_script_mode(arguments):
-        found.extend(("-Zscript",argument) for argument in cargo_positionals(arguments))
     return found
 
 def cargo_short_value(argument: str, following: str) -> tuple[str,str,bool] | None:
-    """The short option taking a value that the cluster `argument` (`-Zx`,
-    `-vZ x`) ends with, its value, joined or the `following` argument, and
-    whether it was joined; None for a cluster that takes none."""
+    """The short option taking a value that the cluster `argument` (`-Cx`,
+    `-vC x`, `-C=x`) ends with, its value, joined or the `following`
+    argument, and whether it was joined; None for a cluster that takes
+    none."""
     for position,letter in enumerate(argument[1:],start=1):
         if letter in CARGO_SHORT_VALUES:
             joined=argument[position+1:]
             return (letter,joined,True) if joined else (letter,following,False)
     return None
-
-def cargo_script_mode(arguments: list[str]) -> bool:
-    """Whether Cargo's own `arguments` turn on its script mode, `-Z script`
-    in any spelling (`-Zscript`, `-Z script`, `-vZscript`)."""
-    for index,argument in enumerate(arguments):
-        following=arguments[index+1] if index+1<len(arguments) else ""
-        if argument.startswith("-") and not argument.startswith("--"):
-            short=cargo_short_value(argument,following)
-            if short is not None and short[:2]==("Z","script"):
-                return True
-    return False
-
-def cargo_positionals(arguments: list[str]) -> list[str]:
-    """Those of Cargo's own `arguments` that are neither an option nor the
-    value an option takes as the next argument, a rustup `+<toolchain>`
-    being no argument of Cargo's."""
-    positionals=[]
-    taken=False
-    for index,argument in enumerate(arguments):
-        following=arguments[index+1] if index+1<len(arguments) else ""
-        if taken:
-            taken=False
-        elif argument in CARGO_LONG_VALUES:
-            taken=True
-        elif argument.startswith("-") and not argument.startswith("--"):
-            short=cargo_short_value(argument,following)
-            taken=short is not None and not short[2]
-        elif not argument.startswith(("-","+")):
-            positionals.append(argument)
-    return positionals
 
 def outside_repository(path: str) -> bool:
     """Whether `path`, as a command run from the repository's root reads it,
@@ -377,9 +379,9 @@ def outside_repository(path: str) -> bool:
     on any platform (`/x`, `C:/x`, `\\\\host\\x`), climbing above the
     root (`../x`, `a/../../x`), or through the directory git keeps for
     itself and never lists (`.git/x/Cargo.toml`), however a platform names
-    it (`is_git_administration`: `.GIT`, and on Windows `.git.` and
-    `git~1`), either slash a separator. The runner starts no shell, so `~`
-    is a name like any other."""
+    it (`is_git_administration`: `.GIT`, and on Windows `.git.`, `git~1`
+    and `.git::$INDEX_ALLOCATION`), either slash a separator. The runner
+    starts no shell, so `~` is a name like any other."""
     normalized=path.replace("\\","/")
     if normalized.startswith("/") or re.match(r"[A-Za-z]:",normalized):
         return True
@@ -395,97 +397,31 @@ def outside_repository(path: str) -> bool:
             depth+=1
     return False
 
-def cargo_arguments(tokens: list[str], read=None) -> list[str]:
-    """The arguments the command `tokens` gives Cargo itself, up to a `--`
-    past which they are the built program's: those after `cargo`, as a
-    rustup proxy or not, and after `rustup run <toolchain> cargo`, past
-    rustup's own options and `+<toolchain>` and the options of `run`; none
+def cargo_invocation(tokens: list[str]) -> list[str] | None:
+    """The arguments the command `tokens` gives Cargo: those after `cargo`,
+    as a rustup proxy or not, and after `rustup run <toolchain> cargo`, past
+    rustup's own options and `+<toolchain>` and the options of `run`; None
     for another program. Each program is named as a platform runs it
-    (`experiment_records.program_name`: `C:\\Rust\\rustup.exe` is rustup).
-    Given `read`, which returns the text of a repository file or None,
-    Cargo's subcommand is read through the aliases the repository's Cargo
-    configuration defines for it (`cargo_aliases`), as Cargo expands them
-    before it parses the rest."""
+    (`experiment_records.program_name`: `C:\\Rust\\rustup.exe` is
+    rustup)."""
     program=experiment_records.program_name(tokens[0]) if tokens else ""
     rest=tokens[1:]
     if program=="rustup":
         while rest and rest[0].startswith(("-","+")):
             rest=rest[1:]
         if not rest or rest[0]!="run":
-            return []
+            return None
         rest=rest[1:]
         while rest and rest[0].startswith("-"):
             rest=rest[1:]
         rest=rest[1:]
         program=experiment_records.program_name(rest[0]) if rest else ""
         rest=rest[1:]
-    if program!="cargo":
-        return []
-    if read is not None:
-        rest=expand_cargo_aliases(rest,read)
-    return rest[:rest.index("--")] if "--" in rest else rest
-
-def expand_cargo_aliases(arguments: list[str], read) -> list[str]:
-    """Cargo's own `arguments` with the subcommand, the first argument that
-    is no option or option's value, replaced by what the alias of its name
-    stands for (`cargo_aliases`, read from the directory Cargo runs in,
-    `-C` given), again for the subcommand that yields, as Cargo expands
-    aliases of aliases, until it names no alias: never through a name
-    twice, where Cargo refuses the recursion, so the expansion ends, however
-    long the chain."""
-    seen=set()
-    while True:
-        before=arguments[:arguments.index("--")] if "--" in arguments else arguments
-        index=cargo_subcommand_index(before)
-        if index is None or before[index] in seen:
-            return arguments
-        directory=next((value for option,value in cargo_path_options(before) if option=="-C"),"")
-        aliases=cargo_aliases(read,directory)
-        name=before[index]
-        if name not in aliases:
-            return arguments
-        seen.add(name)
-        arguments=[*arguments[:index],*aliases[name],*arguments[index+1:]]
-
-def cargo_subcommand_index(arguments: list[str]) -> int | None:
-    """The index among Cargo's own `arguments` of the first that is neither
-    an option nor the value an option takes as the next argument, nor a
-    rustup `+<toolchain>`: Cargo's subcommand; None when there is none."""
-    taken=False
-    for index,argument in enumerate(arguments):
-        following=arguments[index+1] if index+1<len(arguments) else ""
-        if taken:
-            taken=False
-        elif argument in CARGO_LONG_VALUES:
-            taken=True
-        elif argument.startswith("-") and not argument.startswith("--"):
-            short=cargo_short_value(argument,following)
-            taken=short is not None and not short[2]
-        elif not argument.startswith(("-","+")):
-            return index
-    return None
+    return rest if program=="cargo" else None
 
 # The names Cargo reads its configuration from in a `.cargo` directory, the
 # older first, which Cargo prefers where both are.
 CARGO_CONFIGURATION_NAMES=("config","config.toml")
-
-def cargo_configuration_directories(directory: str="") -> list[str]:
-    """The repository directories whose `.cargo` configuration Cargo run
-    from the repository's `directory` (`-C`, the root when empty) reads:
-    that directory and each above it up to the root, nearest first, the
-    root as the empty path; none for a directory outside the repository,
-    which the path check refuses."""
-    if outside_repository(directory or "."):
-        return []
-    parts=[part for part in directory.replace("\\","/").split("/") if part not in ("",".")]
-    directories=[]
-    for part in parts:
-        if part=="..":
-            if directories:
-                directories.pop()
-        else:
-            directories.append(part)
-    return ["/".join(directories[:depth]) for depth in range(len(directories),-1,-1)]
 
 # The tables a listed run's Cargo configuration may set. None names a
 # program Cargo runs (a compiler or its wrapper, rustdoc, a linker, a
@@ -494,25 +430,19 @@ def cargo_configuration_directories(directory: str="") -> list[str]:
 # configuration, a target specification), flags it builds with, or
 # variables it sets for what it runs (`[env]`: `LD_PRELOAD`, say, outside
 # the environment the runner pins), which could lie outside what the record
-# binds; the aliases are read through (`expand_cargo_aliases`).
+# binds. An alias stands in for no built-in command (`CARGO_COMMANDS`).
 CARGO_CONFIGURATION_TABLES=("alias","cargo-new","future-incompat-report","http","net","term")
 
-def cargo_configuration_errors(exp_id: str, read, directory: str="") -> list[str]:
+def cargo_configuration_errors(exp_id: str, read) -> list[str]:
     """Why the repository's Cargo configuration a listed run's Cargo reads is
     not one it may build under: Cargo started from the root, by the command
-    or by a program it runs, and from the directory the command gives it
-    with `-C`, reads `.cargo/config` and `.cargo/config.toml` there and in
-    each directory above (`cargo_configuration_directories`), and each of
-    those files must parse and set nothing but `CARGO_CONFIGURATION_TABLES`.
-    `read` returns a repository file's text, or None where there is none."""
+    or by a program it runs, reads `.cargo/config` and `.cargo/config.toml`
+    there (and those above the root, which the runner refuses), and each
+    must parse and set nothing but `CARGO_CONFIGURATION_TABLES`. `read`
+    returns a repository file's text, or None where there is none."""
     errors=[]
-    paths=[]
-    for base in [*cargo_configuration_directories(directory),*cargo_configuration_directories("")]:
-        for name in CARGO_CONFIGURATION_NAMES:
-            path=f"{base}/.cargo/{name}" if base else f".cargo/{name}"
-            if path not in paths:
-                paths.append(path)
-    for path in paths:
+    for name in CARGO_CONFIGURATION_NAMES:
+        path=f".cargo/{name}"
         text=read(path)
         if text is None:
             continue
@@ -529,35 +459,6 @@ def cargo_configuration_errors(exp_id: str, read, directory: str="") -> list[str
                           "builds with outside what a record binds; a listed experiment's Cargo configuration sets "
                           "only "+", ".join(f"[{name}]" for name in CARGO_CONFIGURATION_TABLES))
     return errors
-
-def cargo_aliases(read, directory: str="") -> dict[str,list[str]]:
-    """The aliases Cargo run from the repository's `directory` (`-C`, the
-    root when empty) reads from the repository's Cargo configuration, each
-    as the arguments it stands for: the `[alias]` tables of `.cargo/config`,
-    or `.cargo/config.toml` where there is none, in that directory and each
-    above it up to the root, a nearer one's alias of a name winning; a
-    string alias split at whitespace, as Cargo splits it, a list of strings
-    as it is. `read` returns a repository file's text, or None where there
-    is none; text that does not parse defines none (Cargo refuses to run
-    from it). A directory outside the repository, which the path check
-    refuses, holds none."""
-    aliases={}
-    for base in cargo_configuration_directories(directory):
-        for name in CARGO_CONFIGURATION_NAMES:
-            text=read(f"{base}/.cargo/{name}" if base else f".cargo/{name}")
-            if text is None:
-                continue
-            try:
-                table=tomllib.loads(text).get("alias")
-            except tomllib.TOMLDecodeError:
-                table=None
-            for alias,value in (table.items() if isinstance(table,dict) else ()):
-                expansion=value.split() if isinstance(value,str) else value if (
-                    isinstance(value,list) and all(isinstance(item,str) for item in value)) else None
-                if expansion is not None:
-                    aliases.setdefault(alias,expansion)
-            break
-    return aliases
 
 def repeated_seeds(seeds) -> list:
     """The seeds a preregistered seed list names more than once, each once,
@@ -662,9 +563,9 @@ def lookup(table: dict, key_path: str):
 def is_git_administration(part: str) -> bool:
     """Whether the path component `part` names the directory git keeps for
     itself, `.git`, as git refuses it in a path a commit holds: in any case,
-    and as Windows reads it, with trailing dots or spaces, or by its short
-    name `git~1`."""
-    return part.lower().rstrip(". ") in {".git","git~1"}
+    and as Windows reads it, with trailing dots or spaces, by its short name
+    `git~1`, or with an NTFS stream (`.git::$INDEX_ALLOCATION`)."""
+    return part.split(":",1)[0].lower().rstrip(". ") in {".git","git~1"}
 
 def is_repository_path(value) -> bool:
     """A relative path of printable ASCII that names no parent, so it stays
@@ -1602,6 +1503,10 @@ def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path,
                 continue
             try:
                 changed=experiment_records.code_changes(base,commit,root,paths)
+            except experiment_records.NotUTF8 as error:
+                errors.append(f"{exp_id}: {name} ran at {commit[:12]}, which cannot be compared with {base[:12]}, where "
+                              f"{first} ran: {error}")
+                continue
             except experiment_records.ProvenanceError:
                 # record_errors names a commit the history does not hold.
                 continue

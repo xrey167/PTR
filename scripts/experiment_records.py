@@ -371,15 +371,18 @@ def git(
     whatever `core.worktree` names, but for a command that makes a
     repository (`work_tree` false), which git refuses one without its own
     directory named. With `binary`, what git prints is kept as the bytes it
-    wrote, as a file's content must be, and `stdin` is bytes too. Output
-    that is not UTF-8 (a file name, say) raises `NotUTF8`, a
-    `ProvenanceError`, as what git cannot name as text no check can
-    compare."""
+    wrote, as a file's content must be, and `stdin` is bytes too. Without
+    it, what git prints is read as UTF-8 whatever the locale, and read as
+    it is: a carriage return in a name git prints with `-z` stays one, as no
+    translation of line endings would leave it. Output that is not UTF-8 (a
+    file name, say) raises `NotUTF8`, a `ProvenanceError`, as what git
+    cannot name as text no check can compare; so does an argument no
+    process can be given (one holding a NUL character)."""
     if env is None:
         env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
         env["GIT_NO_REPLACE_OBJECTS"] = "1"
     try:
-        return subprocess.run(
+        ran = subprocess.run(
             # Git reads the tree itself: no file system monitor a clone's own
             # configuration names answers for it, no hook of the clone's runs
             # when git refreshes its index, no name is taken for another that
@@ -390,18 +393,24 @@ def git(
                 "git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.ignoreCase=false",
                 *((f"--work-tree={root}",) if work_tree else ()), *args,
             ],
-            cwd=root, input=stdin, env=env, capture_output=True, check=False,
-            # Git prints paths as UTF-8 bytes. The locale's encoding could read
-            # bytes that are not UTF-8 as text, or a UTF-8 name as another
-            # name, which names no file of the tree.
-            encoding=None if binary else "utf-8",
+            cwd=root, input=stdin.encode("utf-8") if isinstance(stdin, str) else stdin, env=env,
+            capture_output=True, check=False,
         )
-    except OSError as error:
+    except (OSError, ValueError) as error:
         raise ProvenanceError(f"cannot run git: {error}") from error
+    if binary:
+        return ran
+    # Git prints paths as UTF-8 bytes. The locale's encoding could read bytes
+    # that are not UTF-8 as text, or a UTF-8 name as another name, which
+    # names no file of the tree, and text mode would turn a carriage return
+    # into a newline.
+    try:
+        stdout = ran.stdout.decode("utf-8")
     except UnicodeDecodeError as error:
         raise NotUTF8(
             f"git {' '.join(args[:2])} printed what is not UTF-8, such as a file name, which no check can read: {error}"
         ) from error
+    return subprocess.CompletedProcess(ran.args, ran.returncode, stdout, ran.stderr.decode("utf-8", "replace"))
 
 
 def code_changes(base: str, head: str | None, root: Path, paths: tuple[str, ...] = CODE_PATHS) -> list[str]:
@@ -414,14 +423,19 @@ def code_changes(base: str, head: str | None, root: Path, paths: tuple[str, ...]
     Raises `ProvenanceError` when git cannot compare them (say a commit is
     missing)."""
     revisions = [base] if head is None else [base, head]
-    files = git(root, "diff", "--name-only", "--no-renames", *revisions, "--", *paths)
-    entries = git(root, "diff", "--raw", "-z", "--no-renames", *revisions)
+    # Read as bytes: a name that is not UTF-8 keeps its bytes, so a file of
+    # such a name that differs is a difference like any other, named by its
+    # escapes, rather than one no comparison reports.
+    files = git(root, "diff", "--name-only", "-z", "--no-renames", *revisions, "--", *paths, binary=True)
+    entries = git(root, "diff", "--raw", "-z", "--no-renames", *revisions, binary=True)
     for diff in (files, entries):
         if diff.returncode != 0:
             against = "the checkout" if head is None else head
-            raise ProvenanceError(f"cannot compare {base} with {against}: {diff.stderr.strip()}")
-    links = links_within_reach(link_paths(entries.stdout.split("\0")), root, paths)
-    return sorted({*files.stdout.splitlines(), *links})
+            problem = diff.stderr.decode("utf-8", "replace").strip()
+            raise ProvenanceError(f"cannot compare {base} with {against}: {problem}")
+    names = files.stdout.decode("utf-8", "surrogateescape")
+    links = links_within_reach(link_paths(entries.stdout.decode("utf-8", "surrogateescape").split("\0")), root, paths)
+    return sorted({*(name for name in names.split("\0") if name), *links})
 
 
 def link_paths(fields: list[str]) -> list[str]:
@@ -882,12 +896,16 @@ def changes_after(base: str, head: str, root: Path, paths: tuple[str, ...]) -> l
     merge CI checks, changed files the results at `base` never ran, but it
     is not a change after them; the merge that brings it to their line is.
     Raises `ProvenanceError` when git cannot list them."""
+    # Read as bytes, so a name that is not UTF-8 a commit once held keeps its
+    # bytes rather than failing every later check.
     history = git(
-        root, "log", "-z", "--raw", "--no-renames", "-m", "--format=", "--ancestry-path", f"{base}..{head}"
+        root, "log", "-z", "--raw", "--no-renames", "-m", "--format=", "--ancestry-path", f"{base}..{head}",
+        binary=True,
     )
     if history.returncode != 0:
-        raise ProvenanceError(f"cannot list the commits after {base}: {history.stderr.strip()}")
-    links = links_within_reach(link_paths(history.stdout.split("\0")), root, paths)
+        problem = history.stderr.decode("utf-8", "replace").strip()
+        raise ProvenanceError(f"cannot list the commits after {base}: {problem}")
+    links = links_within_reach(link_paths(history.stdout.decode("utf-8", "surrogateescape").split("\0")), root, paths)
     literal = [f":(literal){name}" for name in sorted(set(links))]
     listed_commits = git(
         root, "rev-list", "--reverse", "--topo-order", "--ancestry-path", f"{base}..{head}",

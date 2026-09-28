@@ -984,6 +984,47 @@ class SourceTreeTests(GitTree, unittest.TestCase):
             mod.uncommitted_files(self.root, ["."])
         self.assertTrue(issubclass(mod.NotUTF8, mod.ProvenanceError))
 
+    def test_git_output_is_read_as_it_is_printed(self):
+        # A carriage return in a name git prints with -z stays one, so a
+        # tracked file of that name rewritten while git status trusts its
+        # stat cache is still compared with HEAD's blob.
+        try:
+            commit(self.root, {"data\r": "threshold = 1\n"}, "a name ending in a carriage return")
+        except (OSError, subprocess.CalledProcessError) as error:
+            self.skipTest(f"cannot name a file with a carriage return: {error}")
+        self.assertIn("data\r", mod.listed_names(self.root, "ls-files", "-z"))
+        path = self.root / "data\r"
+        stamp = path.stat()
+        git(self.root, "config", "core.checkStat", "minimal")
+        git(self.root, "config", "core.trustctime", "false")
+        git(self.root, "update-index", "--refresh")
+        path.write_text("threshold = 9\n", encoding="utf-8")
+        os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        self.assertIn("data\r", mod.uncommitted_files(self.root, ["."]))
+        # An argument no process can be given is refused as git failing to
+        # run, not raised as another error.
+        with self.assertRaisesRegex(mod.ProvenanceError, "cannot run git"):
+            mod.git(self.root, "ls-files", "--", "a\0b")
+
+    def test_a_name_that_is_not_utf8_is_a_difference_like_any_other(self):
+        # Between two commits, or after one in a history, a file whose name
+        # is not UTF-8 is compared by its bytes: it differs, and a later
+        # commit that once held it fails no check that reads the history.
+        try:
+            with open(os.path.join(os.fsencode(self.root), b"notes\xff.md"), "wb") as handle:
+                handle.write(b"x\n")
+        except OSError as error:
+            self.skipTest(f"cannot name a file with bytes that are not UTF-8: {error}")
+        base = git(self.root, "rev-parse", "HEAD")
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-q", "--no-verify", "-m", "a name that is not UTF-8")
+        head = git(self.root, "rev-parse", "HEAD")
+        self.assertEqual(mod.code_changes(base, head, self.root, (".",)), [os.fsdecode(b"notes\xff.md")])
+        os.remove(os.path.join(os.fsencode(self.root), b"notes\xff.md"))
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-q", "--no-verify", "-m", "gone again")
+        self.assertEqual(len(mod.changes_after(base, "HEAD", self.root, (".",))), 2)
+
     def test_git_prints_names_as_utf8_whatever_the_locale(self):
         # Git prints a name's UTF-8 bytes as they are. Read in the locale's
         # encoding, an ASCII or Latin-1 one, a UTF-8 name would be refused

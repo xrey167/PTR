@@ -8,12 +8,14 @@ import json
 import os
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
 import time
 import tomllib
 import unittest
+import urllib.parse
 from pathlib import Path
 from unittest import mock
 
@@ -1025,6 +1027,10 @@ class RunWatchTests(unittest.TestCase):
                 self.assertTrue(bounded.exists())
                 self.assertEqual(len(mod.id_file_name(long_id)), mod.ID_NAME_LIMIT)
             self.assertNotEqual(mod.id_file_name("x" * 300), mod.id_file_name("x" * 299 + "y"))
+            # No id that fits is named as a long one: its name, read back as
+            # an id, names another file.
+            long_name = mod.id_file_name("sweep-" + "x" * 200)
+            self.assertNotEqual(mod.id_file_name(urllib.parse.unquote(long_name)), long_name)
             self.assertEqual(mod.id_file_name("x" * mod.ID_NAME_LIMIT), "x" * mod.ID_NAME_LIMIT)
             self.assertEqual(
                 mod.scratch_directory("x" * 300, {"TMPDIR": "/scratch"}).name, f"ptr-run-{mod.id_file_name('x' * 300)}"
@@ -1475,7 +1481,7 @@ class RunWatchTests(unittest.TestCase):
         pinned = {}
         if "RUSTUP_TOOLCHAIN" in record["environment"]:
             pinned["RUSTUP_TOOLCHAIN"] = record["environment"]["RUSTUP_TOOLCHAIN"]
-            self.assertEqual(Path(record["toolchain"]["cargo"]["path"]).parent.parent.name, pinned["RUSTUP_TOOLCHAIN"])
+            self.assertEqual(str(Path(record["toolchain"]["cargo"]["path"]).parent.parent), pinned["RUSTUP_TOOLCHAIN"])
         self.assertEqual(record["environment"], {
             **self.allowed, "PYTHONPYCACHEPREFIX": scratch, "CARGO_TARGET_DIR": os.path.join(scratch, "cargo-target"),
             **pinned,
@@ -1846,6 +1852,24 @@ class RunWatchTests(unittest.TestCase):
                     self.assertEqual(mod.unlisted_entries(), [shown])
                     shutil.rmtree(self.root / shown.split("/")[0])
             self.assertEqual(mod.unlisted_entries(), [])
+            # A file that is neither a regular file nor a symlink, which git
+            # skips: a FIFO or a socket, in a directory that holds nothing
+            # else too, which a command can test for or read from.
+            os.mkfifo(self.root / "flag")
+            (self.root / "state").mkdir()
+            os.mkfifo(self.root / "state" / "seen")
+            listening = socket.socket(socket.AF_UNIX)
+            self.addCleanup(listening.close)
+            (self.root / "pg").mkdir()
+            # Bound by a relative name, which no socket path length limits.
+            with contextlib.chdir(self.root / "pg"):
+                listening.bind(".s.PGSQL.5432")
+            self.assertEqual(mod.unlisted_entries(), ["flag", "pg/.s.PGSQL.5432", "state/seen"])
+            for path in ("flag", "state/seen", "pg/.s.PGSQL.5432"):
+                (self.root / path).unlink()
+            for directory in ("state", "pg"):
+                (self.root / directory).rmdir()
+            self.assertEqual(mod.unlisted_entries(), [])
         # One put there while the command ran.
         status, records, stderr = self.run_seed(lambda: (self.root / "made").mkdir())
         self.assertEqual((status, [record["status"] for record in records]), (2, ["started"]))
@@ -2144,12 +2168,21 @@ class RunWatchTests(unittest.TestCase):
             # resolved it from is named.
             stamps, selected = {}, {}
             mod.toolchain(environment, ["cargo", "run"], stamps, selected)
-            self.assertEqual(selected, {"rustc": "pinned", "cargo": "pinned"})
+            pinned_directory = str(tools / "toolchains" / "pinned")
+            self.assertEqual(selected, {"rustc": pinned_directory, "cargo": pinned_directory})
             selected = {}
             mod.toolchain(environment, ["cargo", "+stable", "run"], None, selected)
-            self.assertEqual(selected, {"rustc": "stable", "cargo": "stable"})
-            self.assertEqual(mod.toolchain_name("/rustup/toolchains/stable-x86_64/bin/cargo"), "stable-x86_64")
-            self.assertIsNone(mod.toolchain_name("/usr/bin/cargo"))
+            stable_directory = str(tools / "toolchains" / "stable")
+            self.assertEqual(selected, {"rustc": stable_directory, "cargo": stable_directory})
+            # By its directory, which rustup takes as the toolchain itself,
+            # whether it installed it under its home or a path names it (a
+            # path toolchain, which has no name among those installed).
+            self.assertEqual(
+                mod.toolchain_directory("/rustup/toolchains/stable-x86_64/bin/cargo"), "/rustup/toolchains/stable-x86_64"
+            )
+            self.assertEqual(mod.toolchain_directory("/opt/toolchains/stable/bin/rustc"), "/opt/toolchains/stable")
+            self.assertEqual(mod.toolchain_directory("/opt/rust-custom/bin/cargo"), "/opt/rust-custom")
+            self.assertIsNone(mod.toolchain_directory("/opt/rust-custom/cargo"))
             self.assertEqual(stamps, {
                 named(tool)["path"]: mod.experiment_records.file_stamp(Path(named(tool)["path"]))
                 for tool in ("rustc", "cargo")
@@ -2247,7 +2280,7 @@ class RunWatchTests(unittest.TestCase):
             status, records, stderr = self.run_seed()
             self.assertEqual((status, stderr), (0, ""))
             self.assertEqual(records[0]["toolchain"], {"rustc": named("rustc"), "cargo": named("cargo")})
-            self.assertEqual(records[0]["environment"]["RUSTUP_TOOLCHAIN"], "pinned")
+            self.assertEqual(records[0]["environment"]["RUSTUP_TOOLCHAIN"], str(tools / "toolchains" / "pinned"))
             for record in (*self.results.glob("run-*.json"), *self.attempts().glob("run-*.json")):
                 record.unlink()
             stderr = io.StringIO()
@@ -2260,7 +2293,7 @@ class RunWatchTests(unittest.TestCase):
             ):
                 self.assertEqual(mod.run_experiment("L900", entrypoint="entrypoint", seed=17), 0)
         [environment] = started
-        self.assertEqual(environment["RUSTUP_TOOLCHAIN"], "pinned")
+        self.assertEqual(environment["RUSTUP_TOOLCHAIN"], str(tools / "toolchains" / "pinned"))
         # Tools rustup resolves from two toolchains pin neither.
         with mock.patch.object(mod, "toolchain", side_effect=lambda *arguments: (
             arguments[3].update({"rustc": "pinned", "cargo": "stable"}) or {"rustc": named("rustc"), "cargo": named("cargo")}
