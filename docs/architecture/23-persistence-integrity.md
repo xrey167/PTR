@@ -18,8 +18,11 @@ Hashes use pinned RustCrypto `sha2 = 0.11.0`, already present in the root lockfi
 no package version, scanner rule or license allowance is changed.
 
 Bounds are 8 MiB per event payload, 128 MiB per reference log and 100,000 records.
-`ptr_ledger::check_encodable` applies the payload bound, and the counts an
-attributed semantic origin carries, before anything is encoded. The framed log,
+`ptr_ledger::check_encodable` applies the payload bound, and every rule the
+decoder applies to an attributed semantic origin (the attestation's required
+level and counts, the number of rebased keys), before anything is encoded. Each
+of those rules is one function that both the check and the decoder call, so the
+two cannot drift apart. The framed log,
 the raft-engine adapter and a raft proposal all call it, so none of them writes a
 record that no decoder reads back. The in-memory ledger encodes nothing, so a
 writer that appends there checks the event itself.

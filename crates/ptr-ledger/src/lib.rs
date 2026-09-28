@@ -113,11 +113,11 @@ pub enum LedgerEvent {
 /// rebuild; the codec checks only its shape.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SemanticOrigin {
-    /// Written before origins were recorded: tag 8. Decoded only; a runtime
-    /// never appends it, and replay accepts it only before the first
-    /// attributed record. Not the unframed PTRLOG01 format that
-    /// `migrate_legacy_log` reads: a record of that format becomes a framed
-    /// tag-8 record when it is migrated.
+    /// Tag 8, byte for byte as records were written before origins existed.
+    /// ptr-runtime records it on every semantic write until it can check
+    /// attributed origins, and replays it wherever it appears. Not the
+    /// unframed PTRLOG01 format that `migrate_legacy_log` reads: a record of
+    /// that format becomes a framed tag-8 record when it is migrated.
     Legacy,
     /// The raw text of one request, written by ingest.
     Request { request: String },
@@ -565,13 +565,15 @@ fn verification_from_code(code: u8) -> io::Result<VerificationLevel> {
     }
 }
 
-/// Whether `event` is within every bound its encoding carries: the counts of
-/// an attributed origin and the size of the encoded record
-/// ([`integrity::MAX_RECORD_BYTES`]). An event outside them is refused with
-/// `InvalidData` rather than encoded, since an encoding the decoder refuses
-/// would leave a log that cannot be read back. The durable append paths
-/// check it, and a writer can check it before appending to a memory ledger,
-/// which encodes nothing.
+/// Whether `event` meets every rule its encoding carries: the rules the
+/// decoder applies to an attributed origin (an attestation's required level
+/// and counts, the number of rebased keys), checked by the same functions the
+/// decoder calls, and the size of the encoded record
+/// ([`integrity::MAX_RECORD_BYTES`]). An event that breaks one is refused
+/// with `InvalidData` rather than encoded, since an encoding the decoder
+/// refuses would leave a log that cannot be read back. The durable append
+/// paths check it, and a writer can check it before appending to a memory
+/// ledger, which encodes nothing.
 pub fn check_encodable(event: &LedgerEvent) -> Result<(), io::Error> {
     check_origin_bounds(event)?;
     let payload = encode_event(event);
@@ -581,31 +583,66 @@ pub fn check_encodable(event: &LedgerEvent) -> Result<(), io::Error> {
     Ok(())
 }
 
-/// The counts an attributed origin's encoding carries in a byte or a bounded
-/// word, checked before any encoding so an append path refuses rather than
-/// panics.
+/// The rules the decoder applies to an attributed origin, checked before any
+/// encoding with the functions the decoder itself calls, in the order it
+/// reads the fields they cover, so an append path refuses what the decoder
+/// would refuse (and never panics on a count too large for its byte).
 pub(crate) fn check_origin_bounds(event: &LedgerEvent) -> Result<(), io::Error> {
     if let LedgerEvent::SemanticDeltaCommitted { origin, .. } = event {
-        let attestation = match origin {
+        match origin {
             SemanticOrigin::Legacy
             | SemanticOrigin::Request { .. }
-            | SemanticOrigin::PodOutput { .. } => None,
-            SemanticOrigin::Host { verification, .. } => Some(verification),
+            | SemanticOrigin::PodOutput { .. } => {}
+            SemanticOrigin::Host { verification, .. } => check_attestation(verification)?,
             SemanticOrigin::Merge(merge) => {
-                if merge.rebased.len() > MAX_REBASED_KEYS {
-                    return Err(integrity::invalid("PTR_LEDGER_REBASED_KEY_LIMIT"));
-                }
-                Some(&merge.verification)
-            }
-        };
-        if let Some(attestation) = attestation {
-            if attestation.verifiers.is_empty()
-                || attestation.verifiers.len() > MAX_ATTESTATION_VERIFIERS
-                || attestation.findings.len() > MAX_ATTESTATION_FINDINGS
-            {
-                return Err(integrity::invalid("PTR_LEDGER_ATTESTATION_LIMIT"));
+                check_rebased_key_count(merge.rebased.len())?;
+                check_attestation(&merge.verification)?;
             }
         }
+    }
+    Ok(())
+}
+
+/// Every rule an attestation's encoding carries.
+fn check_attestation(attestation: &Attestation) -> Result<(), io::Error> {
+    check_attestation_requirement(attestation.required)?;
+    check_attestation_verifier_count(attestation.verifiers.len())?;
+    check_attestation_finding_count(attestation.findings.len())
+}
+
+/// An attestation requires `FullSemantic` or `Deterministic`: an attributed
+/// write admitted at a lower level is not one this format records.
+fn check_attestation_requirement(required: VerificationLevel) -> Result<(), io::Error> {
+    if matches!(
+        required,
+        VerificationLevel::FullSemantic | VerificationLevel::Deterministic
+    ) {
+        Ok(())
+    } else {
+        Err(integrity::invalid("PTR_LEDGER_ATTESTATION_REQUIREMENT"))
+    }
+}
+
+/// An attestation names 1 to [`MAX_ATTESTATION_VERIFIERS`] verifiers.
+fn check_attestation_verifier_count(count: usize) -> Result<(), io::Error> {
+    if count == 0 || count > MAX_ATTESTATION_VERIFIERS {
+        return Err(integrity::invalid("PTR_LEDGER_ATTESTATION_LIMIT"));
+    }
+    Ok(())
+}
+
+/// An attestation carries at most [`MAX_ATTESTATION_FINDINGS`] finding codes.
+fn check_attestation_finding_count(count: usize) -> Result<(), io::Error> {
+    if count > MAX_ATTESTATION_FINDINGS {
+        return Err(integrity::invalid("PTR_LEDGER_ATTESTATION_LIMIT"));
+    }
+    Ok(())
+}
+
+/// A merge record carries at most [`MAX_REBASED_KEYS`] rebased keys.
+fn check_rebased_key_count(count: usize) -> Result<(), io::Error> {
+    if count > MAX_REBASED_KEYS {
+        return Err(integrity::invalid("PTR_LEDGER_REBASED_KEY_LIMIT"));
     }
     Ok(())
 }
@@ -703,9 +740,7 @@ fn attributed_origin(cursor: &mut Cursor<'_>) -> io::Result<SemanticOrigin> {
             let plan = cursor.digest()?;
             let dependencies = cursor.digest()?;
             let count = cursor.u32()? as usize;
-            if count > MAX_REBASED_KEYS {
-                return Err(integrity::invalid("PTR_LEDGER_REBASED_KEY_LIMIT"));
-            }
+            check_rebased_key_count(count)?;
             let mut rebased = BTreeSet::new();
             let mut previous: Option<String> = None;
             for _ in 0..count {
@@ -753,26 +788,19 @@ fn attributed_origin(cursor: &mut Cursor<'_>) -> io::Result<SemanticOrigin> {
     })
 }
 
+/// An attestation as encoded, refused by the rules [`check_attestation`]
+/// applies before encoding, each as soon as the field it covers is read.
 fn attestation(cursor: &mut Cursor<'_>) -> io::Result<Attestation> {
     let required = verification_from_code(cursor.u8()?)?;
-    if !matches!(
-        required,
-        VerificationLevel::FullSemantic | VerificationLevel::Deterministic
-    ) {
-        return Err(integrity::invalid("PTR_LEDGER_ATTESTATION_REQUIREMENT"));
-    }
+    check_attestation_requirement(required)?;
     let level = verification_from_code(cursor.u8()?)?;
     let count = usize::from(cursor.u8()?);
-    if count == 0 || count > MAX_ATTESTATION_VERIFIERS {
-        return Err(integrity::invalid("PTR_LEDGER_ATTESTATION_LIMIT"));
-    }
+    check_attestation_verifier_count(count)?;
     let verifiers = (0..count)
         .map(|_| cursor.string())
         .collect::<io::Result<Vec<_>>>()?;
     let count = usize::from(cursor.u8()?);
-    if count > MAX_ATTESTATION_FINDINGS {
-        return Err(integrity::invalid("PTR_LEDGER_ATTESTATION_LIMIT"));
-    }
+    check_attestation_finding_count(count)?;
     let findings = (0..count)
         .map(|_| cursor.string())
         .collect::<io::Result<Vec<_>>>()?;
@@ -1750,5 +1778,116 @@ mod semantic_origin_tests {
         }
         let error = check_encodable(&committed(empty_merge)).unwrap_err();
         assert_eq!(error.to_string(), "PTR_LEDGER_ATTESTATION_LIMIT");
+
+        // A requirement below FullSemantic, for a host write and a merge.
+        for required in [
+            VerificationLevel::Unverified,
+            VerificationLevel::LatentAgreement,
+            VerificationLevel::SampleVerified,
+        ] {
+            let verification = Attestation {
+                required,
+                ..attestation()
+            };
+            let host_write = committed(SemanticOrigin::Host {
+                principal: "operator".into(),
+                verification: verification.clone(),
+            });
+            let SemanticOrigin::Merge(mut record) = merge(
+                MergeAuthorityRecord::Reviewed {
+                    reviewer: "bob".into(),
+                },
+                &[],
+            ) else {
+                unreachable!("merge builds a merge origin")
+            };
+            record.verification = verification;
+            for event in [host_write, committed(SemanticOrigin::Merge(record))] {
+                let error = check_encodable(&event).unwrap_err();
+                assert_eq!(error.to_string(), "PTR_LEDGER_ATTESTATION_REQUIREMENT");
+            }
+        }
+    }
+
+    /// The writer's check and the decoder cannot drift apart: over every
+    /// requirement and every count at and beyond its bounds, an event is
+    /// refused before encoding exactly when the decoder refuses its encoding,
+    /// with the same code, and an accepted one decodes to itself.
+    #[test]
+    fn an_event_is_refused_before_encoding_exactly_when_its_encoding_is_refused() {
+        let mut events = Vec::new();
+        for required in [
+            VerificationLevel::Unverified,
+            VerificationLevel::LatentAgreement,
+            VerificationLevel::SampleVerified,
+            VerificationLevel::FullSemantic,
+            VerificationLevel::Deterministic,
+        ] {
+            for verifiers in [
+                0,
+                1,
+                MAX_ATTESTATION_VERIFIERS,
+                MAX_ATTESTATION_VERIFIERS + 1,
+            ] {
+                for findings in [0, MAX_ATTESTATION_FINDINGS, MAX_ATTESTATION_FINDINGS + 1] {
+                    let verification = Attestation {
+                        required,
+                        level: VerificationLevel::Unverified,
+                        verifiers: (0..verifiers).map(|n| format!("v{n:02}")).collect(),
+                        findings: (0..findings).map(|n| format!("v00/f{n:02}")).collect(),
+                    };
+                    events.push(committed(SemanticOrigin::Host {
+                        principal: "operator".into(),
+                        verification: verification.clone(),
+                    }));
+                    let SemanticOrigin::Merge(mut record) = merge(
+                        MergeAuthorityRecord::Triage {
+                            policy_version: "policy-3".into(),
+                            score_bits: 0.5f32.to_bits(),
+                        },
+                        &["doc:a"],
+                    ) else {
+                        unreachable!("merge builds a merge origin")
+                    };
+                    record.verification = verification;
+                    events.push(committed(SemanticOrigin::Merge(record)));
+                }
+            }
+        }
+        for keys in [0, MAX_REBASED_KEYS, MAX_REBASED_KEYS + 1] {
+            let SemanticOrigin::Merge(mut record) = merge(
+                MergeAuthorityRecord::Reviewed {
+                    reviewer: "bob".into(),
+                },
+                &[],
+            ) else {
+                unreachable!("merge builds a merge origin")
+            };
+            record.rebased = (0..keys).map(|n| format!("k{n:05}")).collect();
+            events.push(committed(SemanticOrigin::Merge(record)));
+        }
+
+        let (mut accepted, mut refused) = (0, 0);
+        for event in &events {
+            match (check_encodable(event), decode_event(&encode_event(event))) {
+                (Ok(()), Ok(decoded)) => {
+                    assert_eq!(&decoded, event);
+                    accepted += 1;
+                }
+                (Err(before), Err(after)) => {
+                    assert_eq!(before.to_string(), after.to_string(), "{event:?}");
+                    refused += 1;
+                }
+                (before, after) => panic!(
+                    "the check and the decoder disagree: {before:?} before encoding, {:?} after, for {event:?}",
+                    after.map(|_| ())
+                ),
+            }
+        }
+        // Both sides of every rule are exercised: 2 of 5 requirements, 2 of 4
+        // verifier counts and 2 of 3 finding counts pass, for a host write
+        // and a merge, plus two of the three rebased-key counts.
+        assert_eq!(accepted, 2 * (2 * 2 * 2) + 2);
+        assert_eq!(refused, events.len() - accepted);
     }
 }

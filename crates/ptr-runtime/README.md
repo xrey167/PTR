@@ -45,7 +45,7 @@
 - Strict anchored reopen and explicit legacy-to-v2 migration preserve history while restoring no process-local authority
 - Ordered semantic journal publication before acknowledgment or model resume
 - Semantic payload/dependency/revision reconstruction with schema and transition validation during replay
-- Every semantic writer records SemanticOrigin::Legacy (tag 8), and a record with an attributed origin is refused with InvalidSemanticOrigin, naming its index, by commit and by replay, open_durable, open_durable_at, restore_recovery_snapshot and restore_compacted: nothing in this build checks what an origin attests, so it is refused rather than replayed unchecked
+- Every semantic writer records SemanticOrigin::Legacy (tag 8), and a record with an attributed origin is refused with InvalidSemanticOrigin by commit (with no index, since nothing was written) and by replay, open_durable, open_durable_at, restore_recovery_snapshot and restore_compacted (naming the index it was committed at): nothing in this build checks what an origin attests, so it is refused rather than replayed unchecked
 - Complete typed Pod bytes and source identity are revision-significant
 - Fallible ingestion, optimistic base revision and canonical no-op handling
 - Scoped synchronous execution gateway with opaque per-runtime sessions, exact grants, frozen ActionIR permits and registered verifier/executor binding

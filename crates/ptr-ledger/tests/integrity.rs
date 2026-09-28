@@ -367,10 +367,27 @@ fn a_record_above_the_bound_is_refused_before_framing() {
     };
     let error = check_encodable(&unattested).unwrap_err();
     assert_eq!(error.to_string(), "PTR_LEDGER_ATTESTATION_LIMIT");
+    // An attestation below the requirement the format records is refused
+    // the same way.
+    let underattested = LedgerEvent::SemanticDeltaCommitted {
+        base_revision: Revision(0),
+        revision: Revision(1),
+        encoded_delta: vec![0; 3],
+        origin: SemanticOrigin::Host {
+            principal: "operator".into(),
+            verification: Attestation {
+                required: VerificationLevel::SampleVerified,
+                ..attestation()
+            },
+        },
+    };
+    let error = check_encodable(&underattested).unwrap_err();
+    assert_eq!(error.to_string(), "PTR_LEDGER_ATTESTATION_REQUIREMENT");
 
     for (refused, code) in [
         (&attributed, "PTR_LOG_PAYLOAD_LIMIT"),
         (&unattested, "PTR_LEDGER_ATTESTATION_LIMIT"),
+        (&underattested, "PTR_LEDGER_ATTESTATION_REQUIREMENT"),
     ] {
         let committed = CommittedEvent {
             index: CommitIndex(1),

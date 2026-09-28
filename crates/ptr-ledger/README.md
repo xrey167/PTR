@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-27  
-**Code footprint:** 9 Rust source files · 5199 nonblank source lines · 12 integration-test files · 112 `#[test]` markers
+**Code footprint:** 9 Rust source files · 5330 nonblank source lines · 12 integration-test files · 113 `#[test]` markers
 
 ### Implemented now
 
@@ -24,7 +24,7 @@
 - Create-new checked-log restore and guarded explicit legacy inspection/migration
 - Explicit RAII unlock prevents duplicate-descriptor retention across concurrent process spawn
 - SemanticDeltaCommitted preserves base/result revisions and opaque transaction bytes and carries a SemanticOrigin recorded in the same append: Legacy encodes as tag 8, byte for byte as before origins existed, and Request, PodOutput, Host and Merge encode as tag 12 (a kind byte; an Attestation of required level FullSemantic or Deterministic, weakest level, 1 to 16 verifier names and up to 32 finding codes; a merge record's branch, author, seal, plan and dependency digests, strictly ascending rebased keys up to MAX_REBASED_KEYS and a Triage or Reviewed authority); the codec checks shape only, and which origin replay accepts where is ptr-runtime's rule
-- check_encodable refuses, before anything is encoded, an event whose attestation counts or rebased keys the decoder would refuse or whose encoding exceeds MAX_RECORD_BYTES: encode_log and FileLedger, the raft-engine adapter and a raft proposal all check it, so none writes a record no decoder reads back; InMemoryLedger encodes nothing, so a writer appending there checks it itself
+- check_encodable refuses, before anything is encoded, an event the decoder would refuse (an attestation below FullSemantic or with a verifier or finding count outside its bounds, more rebased keys than MAX_REBASED_KEYS: the same functions check each rule on both sides) or whose encoding exceeds MAX_RECORD_BYTES: encode_log and FileLedger, the raft-engine adapter and a raft proposal all check it, so none writes a record no decoder reads back; InMemoryLedger encodes nothing, so a writer appending there checks it itself
 - PTRANC01 protected anchor storage: HMAC-SHA256 under a host-held key, fixed-length record, atomic rename publication, monotonic epoch/index/digest and carried chain origin
 - Retained-epoch witness rejects rollback of the anchor file itself; authenticity alone is documented as insufficient for freshness
 - AcknowledgedLedger log-first append/acknowledge ordering with writer fencing when anchor publication fails
@@ -121,7 +121,8 @@
 - a deposed leader appends but cannot commit and the entry only it held is overwritten rather than resurrected; a leader change leaves one total order with indexes exactly 1..n; duplicated and stale messages change nothing; a restarted member restores exactly the leader's committed state
 - a conflicting append truncates on disk rather than splicing two histories; a gap, a non-consecutive batch, a damaged record digest, a damaged length field, a removed middle record, a torn state file, a snapshot ahead of the commit index and a snapshot older than requested are each refused
 - a legacy origin encodes as tag 8 byte for byte against golden bytes and nothing may follow its delta; every attributed origin round-trips through tag 12 and matches a layout written out by hand; unknown kinds, level codes and authorities, a requirement below FullSemantic, verifier counts outside 1..=16, more than 32 findings, rebased keys out of order, duplicated or above the bound, a trailing byte and every cut are each refused
-- a log mixing tag-8 and tag-12 records round-trips canonically through encode_log and FileLedger; a record above MAX_RECORD_BYTES and an attestation outside its counts are refused before framing by check_encodable, encode_log and FileLedger, which still appends afterwards, and by the raft-engine adapter and a raft proposal, after which each still commits and reopens
+- a log mixing tag-8 and tag-12 records round-trips canonically through encode_log and FileLedger; a record above MAX_RECORD_BYTES, an attestation outside its counts and one below FullSemantic are refused before framing by check_encodable, encode_log and FileLedger, which still appends afterwards, and by the raft-engine adapter and a raft proposal, after which each still commits and reopens
+- over every required level and every count at and beyond its bound, for a host write and a merge, an event is refused before encoding exactly when the decoder refuses its encoding, with the same code, and every accepted one decodes to itself
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->
