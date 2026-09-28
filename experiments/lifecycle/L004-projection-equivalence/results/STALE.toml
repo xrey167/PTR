@@ -1,0 +1,3 @@
+results_git_sha = "039beff7d604d75722382e40855c0f9ddd0601fa"
+stale_since = "56d19abe56db6318f89c6a6b1a3aff329c088720"
+reason = "T1-3 (preregistration as a research gate) changes scripts/experiment_records.py, which judges these results' seed records and mutation evidence, beginning with the preregistration's canonical text and digest. The experiment is rerun once in T1-4 (S003), whose changes to ptr-bench stale it again."

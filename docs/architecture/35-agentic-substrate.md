@@ -1562,7 +1562,10 @@ foreign history was accepted, no refold differed by a bit and no revoked input w
 of their mutation lists was detected (17 of 17 and 16 of 16). L004's logs carry semantic records of every
 origin, merges included, and every seed projected each. Their seed records ran at 039beff and their mutation
 checks at 4659cbf, which adds only those records, and earlier runs at ad2f8d1, dcfbb3e, 7b60216, ed52931,
-ff96ce0 and 5f71d84 also passed. Results and limitations are in each experiment's `results/`.
+ff96ce0 and 5f71d84 also passed. Results and limitations are in each experiment's `results/`. They are stale
+since 56d19ab, the first change of T1-3 (preregistration as a research gate), which changes
+`scripts/experiment_records.py`, a script that judges their records, as each experiment's `results/STALE.toml`
+records until both are rerun once in T1-4 (S003).
 `scripts/check_research_gates.py` fails CI on a completed experiment whose archived
 `run.json`
 or `mutations.json` ran at code, aggregation scripts or mutation plan HEAD has changed without a
