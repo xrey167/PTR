@@ -223,9 +223,12 @@ def command_errors(exp_id: str, manifest: dict, table: dict) -> list[str]:
     (`run_experiment.command_parameters`). And where the table preregisters
     more than one seed, the command takes `<seed>`: one that does not runs
     the same command for every seed, while each record names the seed it
-    was given. A commit whose command the runner cannot build could not
-    launch and froze nothing (`launchable_at`); the tree check refuses it
-    first."""
+    was given. And it gives Cargo no configuration on its command line
+    (`cargo_arguments`): a `--config` file or value can name a rustc
+    wrapper, flags or sources outside what the commit holds, while the
+    repository's own `.cargo/config.toml` is a file of the commit. A commit
+    whose command the runner cannot build could not launch and froze
+    nothing (`launchable_at`); the tree check refuses it first."""
     if not names_an_entrypoint(manifest):
         return []
     try:
@@ -255,7 +258,34 @@ def command_errors(exp_id: str, manifest: dict, table: dict) -> list[str]:
     if len(distinct)>1 and not any("seed" in experiment_records.PLACEHOLDER.findall(token) for token in tokens):
         errors.append(f"{exp_id}: entrypoint takes no <seed> placeholder, so each of its {len(distinct)} preregistered "
                       "seeds would run one command while its record named another seed")
+    if any(argument=="--config" or argument.startswith("--config=") for argument in cargo_arguments(tokens)):
+        errors.append(f"{exp_id}: entrypoint gives Cargo configuration on its command line (--config), which can name "
+                      "a rustc wrapper, flags or sources outside the commit; set what the build needs in the "
+                      "repository's .cargo/config.toml")
     return errors
+
+def cargo_arguments(tokens: list[str]) -> list[str]:
+    """The arguments the command `tokens` gives Cargo itself, up to a `--`
+    past which they are the built program's: those after `cargo`, as a
+    rustup proxy or not, and after `rustup run <toolchain> cargo`, past
+    rustup's own options and `+<toolchain>` and the options of `run`; none
+    for another program."""
+    program=PurePosixPath(tokens[0].replace("\\","/")).name if tokens else ""
+    rest=tokens[1:]
+    if program=="rustup":
+        while rest and rest[0].startswith(("-","+")):
+            rest=rest[1:]
+        if not rest or rest[0]!="run":
+            return []
+        rest=rest[1:]
+        while rest and rest[0].startswith("-"):
+            rest=rest[1:]
+        rest=rest[1:]
+        program=PurePosixPath(rest[0].replace("\\","/")).name if rest else ""
+        rest=rest[1:]
+    if program not in ("cargo","cargo.exe"):
+        return []
+    return rest[:rest.index("--")] if "--" in rest else rest
 
 def repeated_seeds(seeds) -> list:
     """The seeds a preregistered seed list names more than once, each once,

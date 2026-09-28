@@ -122,6 +122,7 @@ def write(root: Path, relative: str, text: str) -> None:
 
 PLAIN_MODEL='version = 1\n[model]\nbackend = "must-be-pinned-before-run"\nmodel = "must-be-pinned-before-run"\n'
 CONFIG_HEADER='version = 1\nkind = "workspace-area"\nname = "X900-fixture"\npath = "experiments/semdb/X900-fixture"\ntests_dir = "tests"\n'
+CARGO_CONFIGURATION="X900: entrypoint gives Cargo configuration on its command line (--config), which can name a rustc wrapper, flags or sources outside the commit; set what the build needs in the repository's .cargo/config.toml"
 TABLE={"schema":1,"harness":"fixture","seeds":[17,29],"programs":["rmw","set_op"],"see_intent":False}
 REQUIRED={"schema":"int","harness":"str","seeds":"int-list","programs":"str-list","see_intent":"bool"}
 BASELINE_PATH="research/baselines/fixture/config.toml"
@@ -2113,6 +2114,13 @@ class PreregistrationGateTests(unittest.TestCase):
             ("bench --seed 17",
              "X900: entrypoint takes no <seed> placeholder, so each of its 2 preregistered seeds would run one command "
              "while its record named another seed"),
+            # Cargo configuration on the command line names what the commit
+            # does not hold, in a file or a value.
+            *((entrypoint,CARGO_CONFIGURATION) for entrypoint in (
+                "cargo --config /tmp/adapted.toml run -- <seed>",
+                "/home/runner/.cargo/bin/cargo run --config=build.rustc-wrapper='\"/tmp/w\"' -- <seed>",
+                "rustup -v run --install stable cargo --config c.toml run -- <seed>",
+            )),
         ):
             with self.subTest(entrypoint=entrypoint):
                 root=self.tree(status="running")
@@ -2139,6 +2147,12 @@ class PreregistrationGateTests(unittest.TestCase):
         for seeds in ([17],[17,17],[]):
             self.assertEqual(mod.command_errors("X900",{"entrypoint":"bench --seed 17"},{"seeds":seeds}),[])
         self.assertEqual(mod.command_errors("X900",{"entrypoint":"bench --seed=<seed>"},{"seeds":[17,29]}),[])
+        # Past `--` an argument is the built program's, and another program's
+        # --config is its own.
+        for entrypoint in ("cargo run -- --config c.toml <seed>","python3 bench.py --config c.toml <seed>",
+                           "rustup run stable python3 bench.py --config c.toml <seed>","rustup which cargo --config <seed>"):
+            with self.subTest(entrypoint=entrypoint):
+                self.assertEqual(mod.command_errors("X900",{"entrypoint":entrypoint},{"seeds":[17,29]}),[])
         # A commit holding such an entrypoint could not launch it and froze
         # nothing, so preregistering the value repairs it, and so does
         # naming a program.
