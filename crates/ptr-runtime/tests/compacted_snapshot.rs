@@ -1,20 +1,24 @@
 //! Compacted materialized snapshots: does state at a floor plus the retained
 //! journal reconstruct exactly what a full replay produces, and does a revocation
 //! below the floor still deny?
+#[path = "common/semantic.rs"]
+mod semantic_common;
 use ptr_config::PtrConfig;
 use ptr_core::action_head::ActionIr;
 use ptr_ledger::integrity::{self, LogAnchor};
-use ptr_ledger::LedgerEvent;
-use ptr_runtime::compacted::CompactedAnchor;
+use ptr_ledger::{CommittedEvent, LedgerEvent, SemanticOrigin};
+use ptr_runtime::compacted::{CompactedAnchor, CompactedError};
 use ptr_runtime::{PtrRuntime, RuntimeError};
 use ptr_security::{AuthorizationDecision, AuthorizationDenial};
 use ptr_semdb::{SemanticDelta, SemanticPayload};
 use ptr_types::{CapabilityId, CommitIndex, Effect, Generation, Revision, TypeId};
+use semantic_common::{granted, host_write, host_write_now};
 
 /// A runtime exercising semantic values with dependencies, payload bytes, capsule
 /// lifecycle, supersession, constraints, procedures and a revocation.
 fn fixture() -> PtrRuntime {
     let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+    granted(&mut runtime);
     let mut delta = SemanticDelta::default();
     delta
         .upserts
@@ -32,7 +36,7 @@ fn fixture() -> PtrRuntime {
     delta
         .dependencies
         .insert("derived".into(), ["source".into()].into());
-    runtime.apply_semantic_delta(Revision(0), delta).unwrap();
+    host_write(&mut runtime, Revision(0), delta).unwrap();
 
     runtime
         .commit(LedgerEvent::CapsuleCommitted {
@@ -80,9 +84,7 @@ fn fixture() -> PtrRuntime {
 fn append_above_floor(runtime: &mut PtrRuntime) {
     let mut delta = SemanticDelta::default();
     delta.removals.insert("source".into());
-    runtime
-        .apply_semantic_delta(runtime.revision(), delta)
-        .unwrap();
+    host_write_now(runtime, delta).unwrap();
     runtime
         .commit(LedgerEvent::ProcedureRevoked {
             id: "deploy".into(),
@@ -359,10 +361,11 @@ fn framing_length_and_trusted_identity_are_all_required() {
     let anchor = reseal(&mut lengths, trusted.floor, trusted.revision);
     assert!(code(&lengths, anchor).contains("LengthMismatch"));
 
-    // Wrong magic. PTRCS003 is this build's format, so the unknown version has to
-    // be a different one — a later layout this build has no rules for.
+    // Wrong magic. PTRCS004 is this build's format and PTRCS003 the earlier one
+    // it still reads, so the unknown version has to be a later layout this
+    // build has no rules for.
     let mut magic = reference.clone();
-    magic[..8].copy_from_slice(b"PTRCS004");
+    magic[..8].copy_from_slice(b"PTRCS005");
     let anchor = reseal(&mut magic, trusted.floor, trusted.revision);
     assert!(code(&magic, anchor).contains("UnsupportedVersion"));
 
@@ -428,7 +431,7 @@ fn a_noncanonical_lifecycle_section_is_rejected_even_when_resealed() {
 
     // A wrong lifecycle magic is a version failure, also independent of the digest.
     let mut magic = reference.clone();
-    magic[lifecycle_start..lifecycle_start + 8].copy_from_slice(b"PTRLC002");
+    magic[lifecycle_start..lifecycle_start + 8].copy_from_slice(b"PTRLC003");
     let anchor = reseal(&mut magic, trusted.floor, trusted.revision);
     let error = PtrRuntime::restore_compacted(PtrConfig::default(), &magic, anchor, &[])
         .err()
@@ -484,23 +487,20 @@ fn a_restored_runtime_rejects_semantic_work_against_a_stale_base_revision() {
         &[],
     )
     .unwrap();
+    granted(&mut restored);
 
     // Restoring installs an exact revision, so revision isolation still applies:
     // a delta based on an earlier revision is refused.
     let mut delta = SemanticDelta::default();
     delta.upserts.insert("fresh".into(), "value".into());
-    assert!(restored
-        .apply_semantic_delta(Revision(0), delta.clone())
-        .is_err());
-    assert!(restored
-        .apply_semantic_delta(restored.revision(), delta)
-        .is_ok());
+    assert!(host_write(&mut restored, Revision(0), delta.clone()).is_err());
+    assert!(host_write_now(&mut restored, delta).is_ok());
 
     // A derived value still requires its declared input to be supplied.
     let mut stale = SemanticDelta::default();
     stale.upserts.insert("derived".into(), "recomputed".into());
     let before = restored.revision();
-    assert!(restored.apply_semantic_delta(before, stale).is_ok());
+    assert!(host_write(&mut restored, before, stale).is_ok());
     assert!(restored.revision().0 > before.0);
 }
 
@@ -521,4 +521,246 @@ fn an_exported_snapshot_carries_its_own_coverage() {
         second.covers(),
         CommitIndex(original.committed_events().len() as u64)
     );
+}
+
+/// Where the lifecycle section of a snapshot starts: after the 80-byte header
+/// and the semantic section.
+fn lifecycle_start(bytes: &[u8]) -> usize {
+    80 + u64::from_le_bytes(bytes[56..64].try_into().unwrap()) as usize
+}
+
+/// A copy of `bytes` whose outer and lifecycle magics are `outer` and
+/// `lifecycle`, resealed.
+fn with_magics(
+    bytes: &[u8],
+    trusted: CompactedAnchor,
+    outer: &[u8; 8],
+    lifecycle: &[u8; 8],
+) -> (Vec<u8>, CompactedAnchor) {
+    let mut bytes = bytes.to_vec();
+    let start = lifecycle_start(&bytes);
+    bytes[..8].copy_from_slice(outer);
+    bytes[start..start + 8].copy_from_slice(lifecycle);
+    let anchor = reseal(&mut bytes, trusted.floor, trusted.revision);
+    (bytes, anchor)
+}
+
+/// A copy of `bytes` whose lifecycle section also holds `key = value` in
+/// the materialized map, in key order, with the header's lifecycle length
+/// and the seal updated.
+fn with_materialized(
+    bytes: &[u8],
+    trusted: CompactedAnchor,
+    key: &str,
+    value: &str,
+) -> (Vec<u8>, CompactedAnchor) {
+    let start = lifecycle_start(bytes);
+    let lifecycle_len = u64::from_le_bytes(bytes[64..72].try_into().unwrap()) as usize;
+    let section = &bytes[start..start + lifecycle_len];
+    let count = u32::from_le_bytes(section[8..12].try_into().unwrap()) as usize;
+    let mut offset = 12;
+    let mut entries = Vec::new();
+    for _ in 0..count {
+        let mut pair = Vec::new();
+        for _ in 0..2 {
+            let length =
+                u32::from_le_bytes(section[offset..offset + 4].try_into().unwrap()) as usize;
+            pair.push(section[offset + 4..offset + 4 + length].to_vec());
+            offset += 4 + length;
+        }
+        entries.push((pair[0].clone(), pair[1].clone()));
+    }
+    entries.push((key.as_bytes().to_vec(), value.as_bytes().to_vec()));
+    entries.sort();
+    let mut rebuilt = section[..8].to_vec();
+    rebuilt.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+    for (key, value) in &entries {
+        for text in [key, value] {
+            rebuilt.extend_from_slice(&(text.len() as u32).to_le_bytes());
+            rebuilt.extend_from_slice(text);
+        }
+    }
+    rebuilt.extend_from_slice(&section[offset..]);
+    let mut out = bytes[..start].to_vec();
+    out[64..72].copy_from_slice(&(rebuilt.len() as u64).to_le_bytes());
+    out.extend_from_slice(&rebuilt);
+    out.extend_from_slice(&bytes[start + lifecycle_len..]);
+    let anchor = reseal(&mut out, trusted.floor, trusted.revision);
+    (out, anchor)
+}
+
+fn restore_error(bytes: &[u8], anchor: CompactedAnchor) -> Option<RuntimeError> {
+    PtrRuntime::restore_compacted(PtrConfig::default(), bytes, anchor, &[]).err()
+}
+
+/// The fixture's history with every semantic record's origin removed,
+/// replayed: the same state, as a build from before attributed records
+/// wrote it, so its snapshot carries no attestation marker.
+fn legacy_fixture() -> PtrRuntime {
+    let history: Vec<CommittedEvent> = fixture()
+        .committed_events()
+        .iter()
+        .map(|committed| match &committed.event {
+            LedgerEvent::SemanticDeltaCommitted {
+                base_revision,
+                revision,
+                encoded_delta,
+                ..
+            } => CommittedEvent {
+                index: committed.index,
+                event: LedgerEvent::SemanticDeltaCommitted {
+                    base_revision: *base_revision,
+                    revision: *revision,
+                    encoded_delta: encoded_delta.clone(),
+                    origin: SemanticOrigin::Legacy,
+                },
+            },
+            _ => committed.clone(),
+        })
+        .collect();
+    let mut runtime = PtrRuntime::replay(PtrConfig::default(), &history).unwrap();
+    granted(&mut runtime);
+    runtime
+}
+
+#[test]
+fn a_snapshot_of_the_earlier_layout_restores_as_unattested() {
+    // PTRCS003 with PTRLC001, as the build before attributed records wrote
+    // it: the sections of a history without origins under the earlier
+    // magics.
+    let mut original = legacy_fixture();
+    let snapshot = original.export_compacted_snapshot().unwrap();
+    assert_eq!(&snapshot.bytes()[..8], b"PTRCS004");
+    let start = lifecycle_start(snapshot.bytes());
+    assert_eq!(&snapshot.bytes()[start..start + 8], b"PTRLC002");
+    let (earlier, anchor) = with_magics(
+        snapshot.bytes(),
+        snapshot.anchor(),
+        b"PTRCS003",
+        b"PTRLC001",
+    );
+    let unattested = |runtime: &PtrRuntime| {
+        let values = &runtime.materialized_state().values;
+        !values.contains_key(ptr_state::ATTESTED_MARKER)
+            && !values
+                .keys()
+                .any(|key| key.starts_with(ptr_state::MERGED_BRANCH_PREFIX))
+    };
+
+    // Alone, it restores the state at its floor, with no attestation key.
+    let at_floor =
+        PtrRuntime::restore_compacted(PtrConfig::default(), &earlier, anchor, &[]).unwrap();
+    assert_equivalent(&original, &at_floor);
+    assert!(unattested(&at_floor));
+
+    // With the records above its floor, among them a host write, it
+    // restores what a full replay does, marker included.
+    append_above_floor(&mut original);
+    let all_events = original.committed_events().to_vec();
+    let above_floor = &all_events[snapshot.anchor().floor.index.0 as usize..];
+    let reference = PtrRuntime::replay(PtrConfig::default(), &all_events).unwrap();
+    let restored =
+        PtrRuntime::restore_compacted(PtrConfig::default(), &earlier, anchor, above_floor).unwrap();
+    assert_equivalent(&reference, &restored);
+    assert!(!unattested(&restored));
+}
+
+#[test]
+fn an_earlier_lifecycle_section_carrying_attestation_keys_is_refused() {
+    let original = legacy_fixture();
+    let snapshot = original.export_compacted_snapshot().unwrap();
+    let merged = ptr_state::merged_branch_entry(7, &[5; 32]);
+    for (key, value) in [
+        (ptr_state::ATTESTED_MARKER, "1"),
+        ("branch-merge:2:b1", merged.as_str()),
+    ] {
+        assert!(
+            key == ptr_state::ATTESTED_MARKER || key.starts_with(ptr_state::MERGED_BRANCH_PREFIX)
+        );
+        let (current, anchor) = with_materialized(snapshot.bytes(), snapshot.anchor(), key, value);
+        // In this build's layout the key is state like any other.
+        let restored =
+            PtrRuntime::restore_compacted(PtrConfig::default(), &current, anchor, &[]).unwrap();
+        assert_eq!(
+            restored
+                .materialized_state()
+                .values
+                .get(key)
+                .map(String::as_str),
+            Some(value)
+        );
+        // In the layout from before attributed records no history could have
+        // set it, so the snapshot is refused by version.
+        let (earlier, anchor) = with_magics(&current, anchor, b"PTRCS003", b"PTRLC001");
+        assert_eq!(
+            restore_error(&earlier, anchor),
+            Some(RuntimeError::Compacted(CompactedError::UnsupportedVersion)),
+            "{key}"
+        );
+    }
+    // A key that only shares the marker's namespace is not refused.
+    let (earlier, anchor) = with_magics(
+        snapshot.bytes(),
+        snapshot.anchor(),
+        b"PTRCS003",
+        b"PTRLC001",
+    );
+    let (earlier, anchor) = with_materialized(&earlier, anchor, "semdb:attested-not", "1");
+    assert_eq!(restore_error(&earlier, anchor), None);
+}
+
+#[test]
+fn a_lifecycle_section_whose_merge_entry_is_not_one_a_merge_projects_is_refused() {
+    let original = legacy_fixture();
+    let snapshot = original.export_compacted_snapshot().unwrap();
+    let merged = ptr_state::merged_branch_entry(7, &[5; 32]);
+    // Exactly what a merge of `b1` projects restores, and the runtime reads
+    // the branch as merged there.
+    let (bytes, anchor) = with_materialized(
+        snapshot.bytes(),
+        snapshot.anchor(),
+        "branch-merge:2:b1",
+        &merged,
+    );
+    let restored =
+        PtrRuntime::restore_compacted(PtrConfig::default(), &bytes, anchor, &[]).unwrap();
+    assert_eq!(
+        restored.merged_at(&ptr_branch::BranchId::from("b1")),
+        Some(CommitIndex(7))
+    );
+    // A key under the prefix that names no branch as a merge writes it, or a
+    // value that is not an index and a plan digest, is refused: the runtime
+    // would read either as a branch never merged.
+    for (key, value) in [
+        ("branch-merge:3:b1", merged.as_str()),
+        ("branch-merge:b1", merged.as_str()),
+        ("branch-merge:02:b1", merged.as_str()),
+        ("branch-merge:2:b1", "7"),
+        ("branch-merge:2:b1", &merged[..merged.len() - 1]),
+    ] {
+        let (bytes, anchor) = with_materialized(snapshot.bytes(), snapshot.anchor(), key, value);
+        assert_eq!(
+            restore_error(&bytes, anchor),
+            Some(RuntimeError::Compacted(CompactedError::NoncanonicalSection)),
+            "{key} = {value}"
+        );
+    }
+}
+
+#[test]
+fn mismatched_outer_and_lifecycle_versions_are_refused() {
+    let original = legacy_fixture();
+    let snapshot = original.export_compacted_snapshot().unwrap();
+    for (outer, lifecycle) in [(b"PTRCS004", b"PTRLC001"), (b"PTRCS003", b"PTRLC002")] {
+        let (bytes, anchor) = with_magics(snapshot.bytes(), snapshot.anchor(), outer, lifecycle);
+        assert_eq!(
+            restore_error(&bytes, anchor),
+            Some(RuntimeError::Compacted(CompactedError::UnsupportedVersion))
+        );
+    }
+    // The two pairs this build reads both restore.
+    for (outer, lifecycle) in [(b"PTRCS004", b"PTRLC002"), (b"PTRCS003", b"PTRLC001")] {
+        let (bytes, anchor) = with_magics(snapshot.bytes(), snapshot.anchor(), outer, lifecycle);
+        assert_eq!(restore_error(&bytes, anchor), None);
+    }
 }

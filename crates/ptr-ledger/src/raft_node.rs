@@ -36,7 +36,7 @@ pub const MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 ///
 /// The payload is opaque here on purpose: a snapshot is the *application's* state,
 /// and this layer carrying it does not entitle it to an opinion about what is
-/// inside. A PTR deployment puts a PTRCS003 compacted snapshot here rather than a
+/// inside. A PTR deployment puts a PTRCS004 compacted snapshot here rather than a
 /// second artifact invented for raft.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InstalledSnapshot {
@@ -358,6 +358,7 @@ impl RaftNode {
     /// buffering it for a leadership it may never regain. A buffered proposal that
     /// is replayed later is a write the group never ordered.
     pub fn propose(&mut self, event: LedgerEvent) -> Result<Vec<Message>, String> {
+        crate::check_encodable(&event).map_err(|error| error.to_string())?;
         self.node
             .propose(Vec::new(), encode_event(&event))
             .map_err(|error| error.to_string())?;

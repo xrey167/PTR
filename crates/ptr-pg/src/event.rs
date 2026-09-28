@@ -202,22 +202,31 @@ mod tests {
     }
 
     #[test]
-    fn a_semantic_delta_publishes_a_revision() {
-        let delta = committed(
-            6,
-            LedgerEvent::SemanticDeltaCommitted {
-                base_revision: Revision(2),
-                revision: Revision(3),
-                encoded_delta: vec![],
+    fn a_semantic_delta_publishes_a_revision_whatever_its_origin() {
+        for origin in [
+            ptr_ledger::SemanticOrigin::Legacy,
+            ptr_ledger::SemanticOrigin::Request {
+                request: "request-1".into(),
             },
-        );
-        assert_eq!(
-            lifecycle_change(&delta),
-            LifecycleChange::Revision {
-                base: 2,
-                revision: 3
-            }
-        );
-        assert_eq!(event_topic(&delta.event), "semantic.delta_committed");
+        ] {
+            let delta = committed(
+                6,
+                LedgerEvent::SemanticDeltaCommitted {
+                    base_revision: Revision(2),
+                    revision: Revision(3),
+                    encoded_delta: vec![],
+                    origin,
+                },
+            );
+            assert_eq!(
+                lifecycle_change(&delta),
+                LifecycleChange::Revision {
+                    base: 2,
+                    revision: 3
+                }
+            );
+            assert_eq!(event_topic(&delta.event), "semantic.delta_committed");
+            assert_eq!(event_subject(&delta), "revision:3");
+        }
     }
 }

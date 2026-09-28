@@ -166,6 +166,34 @@ pub enum PgError {
     /// rows written around `store_branch` that break only this rule. It
     /// cannot be certified and must be re-run on a current snapshot.
     BranchWithDerivedRemoval { branch: String, key: String },
+    /// A substrate holding a branch seal key loaded a branch that carries a
+    /// tag, but none of its tags is the one the key gives the branch its
+    /// rows rebuild into: the rows, or the tags, were written by someone
+    /// other than a `store_branch` or `seal_stored_branch` holding the key (a
+    /// whole branch deleted and written again, rows written with the triggers
+    /// off, a tag copied from another branch or made under another key).
+    /// Rows of a tagged branch that look like a branch sealed before a rule
+    /// (what `BranchWithoutInputSets`, `BranchWithoutSetBase` and
+    /// `BranchWithDerivedRemoval` report without a key) are reported as this
+    /// too: no tagged branch was sealed before those rules. No branch is
+    /// returned.
+    BranchSealMismatch { branch: String },
+    /// A substrate holding a branch seal key loaded a branch that carries no
+    /// tag: it was stored before work migration 16, by a substrate without a
+    /// key, or by a writer around `store_branch`. Nothing tells which, so no
+    /// branch is returned; a host that vouches for the branch its rows hold
+    /// tags it with `seal_stored_branch`.
+    BranchWithoutSealTag { branch: String },
+    /// `seal_stored_branch` was called on a substrate that holds no branch
+    /// seal key. Nothing was read or written.
+    NoBranchSealKey,
+    /// `seal_stored_branch` found no branch stored under the id of the branch
+    /// it was given. Nothing was written.
+    BranchNotStored { branch: String },
+    /// `seal_stored_branch` found the branch's stored rows rebuilding into
+    /// another branch than the one the host vouched for, so it did not tag
+    /// them. Nothing was written.
+    BranchRowsDiffer { branch: String },
     /// A search document was refused because its capsule generation is
     /// already indexed from content with another digest. One generation has
     /// one content, so a second digest is a stale or erroneous indexing job,
@@ -193,6 +221,18 @@ pub enum PgError {
     InvalidOutcome {
         branch: String,
         reason: &'static str,
+    },
+    /// A merged outcome names a merge the projection does not hold: no
+    /// merge of the branch is projected (not committed, not yet projected,
+    /// or the projection was rebuilt and has not caught up). Nothing was
+    /// written.
+    MergeNotProjected { branch: String, index: u64 },
+    /// A merged outcome names another commit index than the one the
+    /// projection holds the branch's merge at. Nothing was written.
+    MergeMismatch {
+        branch: String,
+        claimed: u64,
+        projected: u64,
     },
     /// A string contains NUL, which a PostgreSQL `text` value cannot hold.
     InvalidText { field: &'static str },
@@ -236,9 +276,16 @@ impl PgError {
             Self::BranchWithoutInputSets { .. } => "PTR_PG_BRANCH_WITHOUT_INPUT_SETS",
             Self::BranchWithoutSetBase { .. } => "PTR_PG_BRANCH_WITHOUT_SET_BASE",
             Self::BranchWithDerivedRemoval { .. } => "PTR_PG_BRANCH_WITH_DERIVED_REMOVAL",
+            Self::BranchSealMismatch { .. } => "PTR_PG_BRANCH_SEAL_MISMATCH",
+            Self::BranchWithoutSealTag { .. } => "PTR_PG_BRANCH_WITHOUT_SEAL_TAG",
+            Self::NoBranchSealKey => "PTR_PG_NO_BRANCH_SEAL_KEY",
+            Self::BranchNotStored { .. } => "PTR_PG_BRANCH_NOT_STORED",
+            Self::BranchRowsDiffer { .. } => "PTR_PG_BRANCH_ROWS_DIFFER",
             Self::DocumentConflict { .. } => "PTR_PG_DOCUMENT_CONFLICT",
             Self::InvalidTriage { .. } => "PTR_PG_INVALID_TRIAGE",
             Self::InvalidOutcome { .. } => "PTR_PG_INVALID_OUTCOME",
+            Self::MergeNotProjected { .. } => "PTR_PG_MERGE_NOT_PROJECTED",
+            Self::MergeMismatch { .. } => "PTR_PG_MERGE_MISMATCH",
             Self::InvalidText { .. } => "PTR_PG_INVALID_TEXT",
             Self::Database { .. } => "PTR_PG_DATABASE",
             Self::Connection { .. } => "PTR_PG_CONNECTION",
@@ -354,6 +401,27 @@ impl fmt::Display for PgError {
                  before such removals were refused, or written around store_branch; it cannot be \
                  certified and must be re-run"
             ),
+            Self::BranchSealMismatch { branch } => write!(
+                formatter,
+                "stored branch {branch:?} carries no seal tag of its rows under this substrate's \
+                 key: they, or its tags, were not written by a holder of the key"
+            ),
+            Self::BranchWithoutSealTag { branch } => write!(
+                formatter,
+                "stored branch {branch:?} carries no seal tag, which this substrate's key \
+                 requires; a host that vouches for it tags it with seal_stored_branch"
+            ),
+            Self::NoBranchSealKey => {
+                formatter.write_str("this substrate holds no branch seal key to tag a branch with")
+            }
+            Self::BranchNotStored { branch } => {
+                write!(formatter, "no branch is stored under {branch:?}")
+            }
+            Self::BranchRowsDiffer { branch } => write!(
+                formatter,
+                "the stored rows of branch {branch:?} are not the sealed branch given; \
+                 they were not tagged"
+            ),
             Self::DocumentConflict {
                 capsule,
                 generation,
@@ -373,6 +441,20 @@ impl fmt::Display for PgError {
             Self::InvalidOutcome { branch, reason } => {
                 write!(formatter, "outcome of {branch:?} refused: {reason}")
             }
+            Self::MergeNotProjected { branch, index } => write!(
+                formatter,
+                "merge of {branch:?} at commit {index} refused: the projection holds no merge \
+                 of the branch"
+            ),
+            Self::MergeMismatch {
+                branch,
+                claimed,
+                projected,
+            } => write!(
+                formatter,
+                "merge of {branch:?} at commit {claimed} refused: the projection holds it at \
+                 commit {projected}"
+            ),
             Self::InvalidText { field } => write!(
                 formatter,
                 "{field} contains NUL, which PostgreSQL text cannot store"

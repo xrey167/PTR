@@ -235,8 +235,8 @@ notes = ["HTTP types do not leak into domain crates"]
 id = "ptr-runtime"
 current_shape = "large-flat"
 modules = ["error", "request", "runtime", "composition", "lifecycle", "model_loop", "pod_loop", "authorization", "commit", "events", "ledger"]
-public_groups = ["PtrRuntime", "RuntimeError", "ResumableRun", "typed runtime request/result", "composition handles"]
-function_groups = ["construct/open/replay", "ingest", "run model", "run/resume Pods", "authorize", "commit", "query state"]
+public_groups = ["PtrRuntime", "RuntimeError", "ResumableRun", "typed runtime request/result", "composition handles", "SemanticGrant/SemanticChange/SemanticVerdict", "MergeAuthority/MergePreview/MergeOutcome/MergeReceipt/MergeHold"]
+function_groups = ["construct/open/replay", "ingest", "run model", "run/resume Pods", "authorize", "commit", "install semantic grant", "host write", "preview/merge branch", "query state"]
 notes = ["highest-priority lib.rs split candidate", "private helpers stay private", "backend composition uses PTR-owned ports"]
 
 [[crate]]
@@ -253,7 +253,7 @@ current_shape = "modular"
 modules = ["branch", "ops", "digest", "certify", "arbiter", "error"]
 public_groups = ["Branch/SealedBranch", "BranchOp", "digests", "Certification/MergePlan", "triage and off-policy evaluation"]
 function_groups = ["read/scan/stage/seal", "certify", "triage", "calibrate", "evaluate off-policy"]
-notes = ["callers must route merges through PtrRuntime::apply_certified_semantic_delta with the expected, delta and relied that MergePlan::into_parts returns; it refuses a moved semantic revision, which only a committed semantic delta moves, and a relied generation that is no longer live, and nothing else that changed since certification; this is not enforced because MergePlan has private fields but into_parts yields the delta, and apply_semantic_delta (unverified) and apply_verified_semantic_delta (no relied-generation check) are public"]
+notes = ["only PtrRuntime::merge_branch merges a branch: it takes the SealedBranch and certifies it against its own state in the same call, so certify here is a what-if and a MergePlan is never committed as such; a plan's delta written through apply_verified_semantic_delta is a host write, not a merge", "no dependency on ptr-runtime, dev or normal: ptr-runtime depends on this crate"]
 
 [[crate]]
 id = "ptr-fastmem"
@@ -282,7 +282,7 @@ notes = ["working model only; serving admission is out of scope until adapter pr
 [[crate]]
 id = "ptr-pg"
 current_shape = "modular"
-modules = ["config", "migrate", "capability", "event", "metric", "error", "adapters (feature postgres-backend)"]
-public_groups = ["SchemaSet/Identifier/PgConfig", "migration catalogs", "Capabilities", "LifecycleChange", "PgSubstrate and adapter types", "PgError"]
+modules = ["config", "migrate", "capability", "event", "metric", "error", "adapters (feature postgres-backend)", "seal (feature postgres-backend)"]
+public_groups = ["SchemaSet/Identifier/PgConfig", "migration catalogs", "Capabilities", "LifecycleChange", "PgSubstrate and adapter types (feature postgres-backend)", "BranchSealKey (feature postgres-backend)", "PgError"]
 function_groups = ["connect/migrate/rebuild", "apply/replay/check", "fenced reads", "index/search", "branch/journal storage", "metrics"]
-notes = ["driver types never leave the adapters module", "without the feature the crate is pure and server-free"]
+notes = ["driver types never leave the adapters module", "without the feature the crate is pure and server-free", "a branch seal key is the host's and is never stored; its tag is computed and checked only in Rust"]

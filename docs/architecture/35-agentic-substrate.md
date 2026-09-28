@@ -11,7 +11,8 @@ ADR-0002: the ledger stays the only authority.
 Decisions: [ADR-0016](../../research/decisions/ADR-0016-postgres-projection-substrate.md),
 [ADR-0017](../../research/decisions/ADR-0017-certified-agent-branches.md),
 [ADR-0018](../../research/decisions/ADR-0018-revocable-fast-weight-memory.md),
-[ADR-0019](../../research/decisions/ADR-0019-adapter-lineage-and-weak-supervision.md).
+[ADR-0019](../../research/decisions/ADR-0019-adapter-lineage-and-weak-supervision.md),
+[ADR-0020](../../research/decisions/ADR-0020-only-the-runtime-merges-an-agent-branch.md).
 
 ## What this revises, and why each part changed
 
@@ -32,7 +33,7 @@ of §7.
 |---|---|---|---|
 | Everything in one Postgres, no authority order | Postgres becomes a second authority; a restored backup or a rolled-back ledger tail is silently kept | Three schema classes; the projection verifies every record against the ledger's own anchor and is rebuilt by replay | `ptr-pg`, ADR-0016 |
 | Working memory: one vector updated by a "delta rule" | A single vector is not an associative memory, and the dot product mixed key and value spaces; nothing could be revoked | Multi-head matrix state under the gated delta rule; every write attributed to one input generation; admission at every read; exact revocation by refold | `ptr-fastmem`, ADR-0018 |
-| Branches, deltas and merge decisions over `entity_table`/`entity_id` | Polymorphic rows address business tables directly; merges decided by free weights; no notion of a stale read | Branches over immutable snapshots, certified against value, range and lifecycle digests; merged only as one verified semantic delta | `ptr-branch`, ADR-0017 |
+| Branches, deltas and merge decisions over `entity_table`/`entity_id` | Polymorphic rows address business tables directly; merges decided by free weights; no notion of a stale read | Branches over immutable snapshots, certified against value, range and lifecycle digests; merged only by the runtime, as one verified semantic delta whose record names the branch | `ptr-branch`, `ptr-runtime`, ADR-0017, ADR-0020 |
 | Merge "reputation" weights | An uncalibrated score can auto-merge anything | Verifier-bounded eligibility, a uniform calibration slice, finite-sample thresholds and off-policy evaluation | `ptr-branch` arbiter |
 | LoRA delta chain constrained to "the null space of the sum of previous updates" | The null space of a sum is not the intersection of null spaces; chains grow without bound | Principal-angle interference per layer against its chance level; a gated lifecycle; TIES consolidation | `ptr-lineage`, ADR-0019 |
 | Replay by `ORDER BY weight LIMIT n` | Deterministic, starves strata and moderately forgotten samples | FSRS-4.5 forgetting model on the training clock; stratified Gumbel-top-k sampling without replacement; held-out samples excluded by type | `ptr-lineage` |
@@ -46,7 +47,7 @@ flowchart LR
     L["ptr-ledger\n(authority)"] -->|"CommittedEvent + LogAnchor"| P["projection schema\nwatermark, anchors, state,\nlifecycle, event log"]
     P -->|"live generations"| D["derived schema\nsearch documents,\nhalfvec embeddings"]
     P -. "tombstones cascade" .-> W["work schema\nbranches, fast-memory journals,\nlineage, labels"]
-    B["ptr-branch\ncertify + triage"] -->|"MergePlan"| R["ptr-runtime\napply_certified_semantic_delta"]
+    B["ptr-branch\nseal"] -->|"SealedBranch"| R["ptr-runtime\nmerge_branch:\ncertify, verify, triage"]
     R -->|"append"| L
     W -. "never read as authority" .-> B
     D -->|"search candidates"| A["agents"]
@@ -301,8 +302,9 @@ every deferred check accepts is refused when appended later
 (`a_stored_branch_gains_no_row_in_a_later_transaction`). This binds a branch's rows
 to one transaction, not to its author: a writer with the work schema's privileges can
 still delete a whole branch and write other rows under its id in one transaction, as
-`store_branch` writes a branch, and nothing stored tells them from sealed ones; the
-keyed seal tag planned next is what would. A set operation's `in_base` is stored in
+`store_branch` writes a branch. Work migration 16 adds what tells them from sealed
+ones when the host gives the substrate a branch seal key (below). A set operation's
+`in_base` is stored in
 `branch_op.member_in_base`, present exactly for set operations, and the operations on
 one member agree on it; a branch stored before has none, can no longer be certified
 and loads as `BranchWithoutSetBase`
@@ -504,9 +506,45 @@ request text or a Pod output, to overwrite a key the branch did not read, or to
 break the bookkeeping of touched keys, come back as `CorruptBranch` naming the
 `BranchError`, never as a branch to certify
 (`a_branch_writing_a_reserved_namespace_is_never_stored_and_tampered_rows_never_load`).
-Rows that keep every sealing invariant load as a branch whoever wrote them: a
-branch deleted and written again whole, or rows written with the triggers disabled,
-load like sealed ones (work migration 11 above).
+Without a branch seal key, rows that keep every sealing invariant load as a branch
+whoever wrote them: a branch deleted and written again whole, or rows written with the
+triggers disabled, load like sealed ones (work migration 11 above). A substrate given a
+host-held `BranchSealKey` (`PgSubstrate::with_branch_seal_key`) closes that:
+`store_branch` writes, in the transaction that stores the branch, a tag (a row of
+`branch_seal`, work migration 16): an HMAC-SHA-256 under the key of the domain
+`ptr-pg/branch-seal/v1` and `SealedBranch::seal_digest`, which covers the id, the
+author, the base revision and every row. `load_branch` under the key refuses a branch
+with no tag as `BranchWithoutSealTag` before its rows are read, and one none of whose
+tags is the key's tag of the branch its rows rebuild into as `BranchSealMismatch`;
+rows of a tagged branch that look like a branch sealed before a rule (what
+`BranchWithoutInputSets`, `BranchWithoutSetBase` and `BranchWithDerivedRemoval` report
+without a key) are a `BranchSealMismatch` too, since no tagged branch was. A whole
+branch written again with a changed value, author or base revision under its sealed
+tag, a tag copied from another branch or made under another key, a removed tag, an
+untagged injected branch, a row edited with the triggers off and legacy-looking rows
+under a tag are each refused, while every trigger accepts the rewrite; a branch written
+again exactly as sealed, tag included, is the sealed branch and loads, and a tag
+appended by a writer without the key changes nothing
+(`a_tampered_or_injected_branch_is_refused_at_load_under_a_seal_key`). The tags are a
+table of their own because the header stays as sealed (work migration 11 binds a
+branch's rows to its header's transaction): a tag is never rewritten and goes only
+with its branch (`a_seal_tag_is_never_rewritten_and_goes_only_with_its_branch`), and a
+branch may carry one per key. A branch stored without the key, before version 16, by a
+keyless substrate or under another key, is tagged in place by
+`PgSubstrate::seal_stored_branch` once the host vouches for the sealed branch its rows
+hold: it tags them only if they rebuild into exactly that branch, reading the header
+`FOR SHARE` in the transaction that writes the tag, so a branch a recorded policy was
+calibrated on, which is never deleted, and any branch with triage or outcomes keep
+them, and a key is rotated by tagging every branch under the new one
+(`a_branch_stored_before_seal_tags_is_tagged_in_place_and_keeps_its_triage`). The key
+is never stored in the database; a tag binds the rows to a holder of the key, not to
+the author, whose `PrincipalId` is whatever the sealing caller passed. A branch loaded
+under the key merges through `PtrRuntime::merge_branch` exactly as the sealed one, and
+its merge projects and records as its outcome
+(`a_loaded_branch_merges_exactly_as_the_sealed_one`). Without a key nothing is tagged
+or checked (`without_a_seal_key_branches_store_and_load_as_before`). Sealing refuses a
+`Put` of a value the journal cannot encode, so every sealed branch has a seal digest
+and a keyed and a keyless substrate store the same branches.
 It reads the header and every child table in one read-only repeatable-read
 snapshot, so a branch deleted while it loads, whose cascade removes its reads,
 digests and operations, comes back whole or as `None`, never assembled from rows
@@ -522,10 +560,21 @@ probability, never reaches it: `TriageOutcome::from_parts` refuses to build it
 `a_triage_is_logged_only_under_a_policy_that_can_have_produced_it`), and the database
 refuses such a row written around it (work migration 10). What neither can see is the
 verification report and the calibration draw, so a row's eligibility and a slice
-branch's draw remain the caller's word. `record_outcome` writes a revert only
-after the branch's merge and at a greater commit index, reading the merge and
-inserting the revert in one statement, and refuses any other as `InvalidOutcome`
-(`a_revert_is_recorded_and_counted_only_after_the_merge_it_reverts`).
+branch's draw remain the caller's word. `record_outcome` writes a merge only when
+the projection holds the branch's merge key (`branch-merge:<len>:<id>`, which only a
+merge record projects: the runtime's, or one a writer below the runtime appended,
+ADR-0020) at exactly the claimed commit index, reading
+the projection and inserting the outcome in one statement; a merge the projection
+does not hold is refused as `MergeNotProjected`, one it holds at another index as
+`MergeMismatch`, and a rebuilt projection holds none until it has caught up (while a
+rebuild has dropped it and not yet recreated it, a merge is `MergeNotProjected` too)
+(`a_merged_outcome_must_match_the_projected_merge`). The rule is the method's, not
+the table's: a work-schema trigger would read a projection schema a rebuild drops,
+so a merged row a raw SQL writer inserts is not checked, nor is one `record_outcome`
+wrote before it checked the projection. `record_outcome` writes a
+revert only after the branch's merge and at a greater commit index, reading the
+merge and inserting the revert in one statement, and refuses any other as
+`InvalidOutcome` (`a_revert_is_recorded_and_counted_only_after_the_merge_it_reverts`).
 Rows relying on two generations of one target, which the primary key already
 refuses, are `CorruptBranch` (`ConflictingReliance`) rather than collapsed to either
 (`a_stored_branch_relying_on_two_generations_of_one_target_is_refused_on_load`).
@@ -634,8 +683,11 @@ goes through it too. It refuses parts that sealing an open branch could not have
 produced, however well their digests match the store: an operation on a
 reserved key (`a_hand_built_branch_that_writes_a_reserved_namespace_is_refused_by_the_constructor`),
 a `Put` or `Remove` of a key the branch did not read
-(`a_hand_built_put_or_remove_of_an_unread_key_is_refused_by_the_constructor`), a set
-operation with an empty member, a key an operation touches without its base value
+(`a_hand_built_put_or_remove_of_an_unread_key_is_refused_by_the_constructor`), a `Put`
+of a value the journal cannot encode, which `Branch::put` refuses too, so every sealed
+branch has a seal digest
+(`a_put_of_a_value_the_journal_cannot_encode_is_refused_when_put_and_by_the_constructor`),
+a set operation with an empty member, a key an operation touches without its base value
 or input set
 (`an_operated_key_without_a_recorded_base_value_or_input_set_is_refused_by_the_constructor`),
 a base value or input set for a key no operation touches
@@ -715,46 +767,119 @@ A `MergePlan` has private fields with read accessors, so nothing can change it a
 certification, and `MergePlan::digest`, what a person approves, covers the branch id,
 the expected revision, the delta, the dependency digest (reads, scans, relied
 generations, input sets and set operations' base presences) and the ordered rebased
-keys (`the_plan_digest_changes_with_which_keys_were_rebased`).
+keys (`the_plan_digest_changes_with_which_keys_were_rebased`). `merge_plan_digest`
+computes the same digest from those parts rather than from the plan, so a record that
+carries them lets the digest of the plan it merged be recomputed without the plan
+(`merge_plan_digest_is_the_plan_digest`).
 
-A plan is committed through `Runtime::apply_certified_semantic_delta` with exactly
-the `expected`, `delta` and `relied` that `MergePlan::into_parts` yields. It prepares
-the delta, hands the verifier a view of the post-state, its values and its
-dependency sets (`a_verifier_sees_and_can_refuse_the_dependency_set_a_delta_would_install`),
-and appends only on a `Pass` at the required level with no hard finding
-(`a_certified_and_verified_branch_reaches_semantic_state_only_through_the_runtime`,
-`no_score_or_shallow_level_or_hard_finding_gets_a_delta_past_verification`). A plan
-certified before another semantic commit, a committed delta that changes semantic
-state, is refused by the runtime's revision check
-(`a_plan_certified_before_another_commit_is_refused_by_the_runtime`,
-`a_verified_delta_against_a_moved_revision_is_refused_before_verification`).
-Nothing else moves the semantic revision: lifecycle, verifier, snapshot and effect
-records leave it where it is. So immediately before it appends, in the same call,
-the runtime asks `generation_validity` about every relied generation again and
-refuses one that is not live as `StaleReliance` (`PTR_RUNTIME_STALE_RELIANCE`), a
-no-op included, with nothing appended
+Only the runtime merges a branch. `PtrRuntime::merge_branch(sealed, authority)` takes
+the sealed branch, not a plan, and certifies it against the runtime's own state in the
+same call, so the plan it commits is always the one certification yields there: from
+the branch's declared dependencies, with every relied generation live as the lifecycle
+authority answers now
+(`a_certified_and_verified_branch_reaches_semantic_state_only_through_the_runtime`).
+A lifecycle change after sealing or after a preview refuses the merge through
+certification (`LifecycleChanged`), with nothing appended
 (`a_revocation_or_supersession_after_certification_refuses_the_commit_and_appends_nothing`,
-`a_certified_delta_is_refused_while_a_generation_it_relied_on_is_not_live_and_appends_nothing`).
-The revision and the relied generations are the plan's only freshness fences: a new
-hard constraint, a capsule the branch did not rely on or a verifier attestation
-committed after certification refuses nothing, and only the caller's verifier can
-take it into account at commit time
+`a_revocation_between_sealing_and_merging_stops_the_branch`,
+`a_revocation_between_preview_and_merge_refuses_the_merge`), and so does a branch
+opened over another host's state whose reads differ here
+(`a_branch_opened_over_a_foreign_host_is_recertified_here_and_conflicts`). The runtime
+then hands every verifier of the `SemanticGrant` the host installed a
+`SemanticChange`: the published state before, the post-state with its values and
+dependency sets, the delta and the invalidated keys, as for a host write
+(`a_verifier_sees_and_can_refuse_the_dependency_set_a_delta_would_install`,
+`a_verifier_sees_before_after_delta_affected_and_its_origin`), and as its origin the
+sealed branch, the plan and whether it was rebased
+(`a_certified_and_verified_branch_reaches_semantic_state_only_through_the_runtime`,
+`a_merge_records_branch_author_seal_plan_rebased_keys_verifiers_level_and_authority`).
+A lifecycle generation the branch relied on that was never published refuses the merge
+too, as does a relied generation revoked under a branch that changes nothing
+(`a_reliance_on_an_unknown_generation_or_a_revoked_no_op_refuses_the_merge`), and a
+plan whose delta the journal cannot carry is refused as its digest is computed
+(`a_plan_whose_delta_the_journal_cannot_carry_is_refused_as_it_is_certified`). The
+change is admitted
+only if every verifier passes, the weakest level any of them reports meets the grant's
+requirement and no report has a hard finding
+(`no_score_or_shallow_level_or_hard_finding_gets_a_delta_past_verification`,
+`the_weakest_verifier_level_decides`); a merge that is not admitted is held whatever
+authorizes it, since no approval overrides verification
+(`a_failed_verification_holds_the_branch_under_either_authority`).
+
+An admitted merge commits under one of two authorities. Under `Triage { score }` the
+runtime triages it under the grant's merge policy, with a calibration draw from the
+branch id and a seed the grant never reveals
+(`the_grant_info_never_reveals_the_calibration_seed`), and commits only what the policy
+auto-proposes; an escalated or calibration-slice branch is held with its triage, for
+the triage log
+(`an_escalated_or_calibration_slice_branch_appends_nothing_and_carries_its_triage`,
+`the_runtime_triage_is_explained_by_the_granted_policy`). Under
+`Reviewed { plan_digest, reviewer }` a reviewer the grant lists approved exactly the
+plan digest a preview or a hold showed
+(`a_reviewer_the_grant_does_not_list_is_refused`). Any change to the plan since voids
+the approval, another commit that moves the revision included
+(`a_plan_certified_before_another_commit_is_refused_by_the_runtime`,
+`a_reviewed_approval_is_void_once_the_plan_changes`), and an approval of one branch's
+plan does not merge another branch's identical delta
+(`a_plan_cannot_be_changed_between_review_and_merge`). A merge that changes nothing
+appends nothing and does not mark the branch merged
+(`a_no_op_merge_appends_nothing_and_does_not_mark_the_branch_merged`).
+
+The record names the branch, its author, the sealed branch's digest, the plan digest,
+the dependency digest, the rebased keys, the verifiers, their weakest level and soft
+findings, and the authority
+(`a_merge_records_branch_author_seal_plan_rebased_keys_verifiers_level_and_authority`,
+`a_merge_ledger_record_carries_its_provenance`). Replay recomputes the plan digest from
+the record's own delta, base revision, dependency digest and rebased keys, refuses a
+dependency entry, which certification never writes, and refuses a second merge of one
+branch id, whose first projects `branch-merge:<len>:<id>` into materialized state
+(`a_merge_record_whose_plan_digest_does_not_match_its_delta_or_rebased_keys_is_refused`,
+`a_merge_record_with_dependency_entries_is_refused`,
+`a_second_merge_record_of_one_branch_is_refused_also_across_compaction`). The runtime
+refuses to merge that id again as `BranchAlreadyMerged`, after replay, reopen and
+compaction too (`a_redelivered_branch_is_refused_after_merge_replay_reopen_and_compaction`).
+Every refusal comes before anything is appended and leaves the runtime unfenced
+(`every_merge_refusal_leaves_the_runtime_unfenced`), a record too large for the ledger
+to frame included (`a_merge_whose_record_would_exceed_the_bound_is_refused_unfenced`);
+a branch id or author that is not provenance text is refused at merge, not when the
+branch is sealed or stored (`a_branch_with_an_empty_or_padded_author_is_refused`).
+
+The semantic state and the relied generations are what certification checks the
+branch against; nothing the branch did not declare refuses it. A new hard constraint, a
+capsule the branch did not rely on or a verifier attestation committed after sealing
+refuses nothing, and only the grant's verifiers can take it into account
 (`a_commit_that_moves_neither_the_revision_nor_a_relied_generation_does_not_refuse_the_plan`).
-An effect record is no freshness check either, but while an effect attempt is
-neither settled nor reconciled the runtime refuses every commit, a plan's included,
-with `ExecutionFenced`; the gate is runtime-wide, not about the plan, and once the
-attempt is reconciled the same plan commits
+An effect record is no freshness check either, but while an effect attempt is neither
+settled nor reconciled the runtime refuses every commit, a merge included, with
+`ExecutionFenced`; the gate is runtime-wide, not about the branch, and once the attempt
+is reconciled the same approval commits
 (`an_unsettled_effect_attempt_fences_the_plan_until_it_is_reconciled`).
 `Runtime::generation_validity` reads a revoked generation as `Revoked` even while it
 is still the live one (`a_revoked_generation_is_revoked_although_it_is_still_the_live_generation`).
 
-Using that path is the caller's obligation, not a type-level guarantee: the runtime
-does not depend on `ptr-branch`, `MergePlan::into_parts` yields the delta, and
-the runtime's `apply_verified_semantic_delta` (which checks no generation) and
-unverified `apply_semantic_delta` are public, so nothing stops a caller from
-committing a plan without verification or without its relied generations
-(`a_plan_committed_without_its_relied_generations_is_not_stopped_by_the_runtime`). Closing
-that gap (a plan consumable only by a verifying entry point) is listed in §7.
+A plan's delta is still an ordinary semantic delta, and a host whose grant allows host
+writes may write it through `apply_verified_semantic_delta` like any other. That is a
+host write, recorded with its principal, not a merge, and the branch stays unmerged
+(`a_plan_delta_written_as_a_host_write_is_recorded_as_host_not_merge`). `commit` takes
+no semantic record of any origin (`a_raw_semantic_record_cannot_be_committed`), and a
+write to a key only ingress writes is refused by staging, by the sealed branch's
+constructor, whose checks certification runs again, and by replay
+(`a_reserved_write_is_refused_by_the_constructor_certification_and_the_runtime`).
+Ingress (`ingest_text`, a verified Pod output) writes only the fixed shapes its origin
+allows, with no grant verifier; every other public semantic write is judged by the
+grant's verifiers.
+
+What the record proves is the runtime's own claim (ADR-0020). Writers below the
+runtime, among them `Ledger::append`, `FileLedger::append_durable`,
+`FileLedger::create_from_log`,
+`AcknowledgedLedger::append_acknowledged`, `RaftEngineLedger::append_durable`,
+`RaftNode::propose` (through which `ptr-cluster` members propose) and
+`SingleNodeRaftConsensus::propose`, can write a well-formed record the origin rules
+accept, and a fresh log whose first records are forged unattributed records is accepted
+as a legacy prefix: replay refuses what is structurally wrong but cannot run the
+verifiers again. The grant is chosen once by whoever builds the runtime, not a sandbox
+against code holding the runtime, and the author, the host principal and the reviewer
+are recorded as given until principals are authenticated.
 
 ### The arbiter: verification first, calibration second
 
@@ -1290,7 +1415,12 @@ was stamped
 `revert_share_counts_merged_branches_later_reverted_within_a_window`). A revert
 counts only at a commit index after its merge's: `record_outcome` refuses any other,
 and a row written around it is not counted as reverting a merge it precedes
-(`a_revert_is_recorded_and_counted_only_after_the_merge_it_reverts`). Likewise the
+(`a_revert_is_recorded_and_counted_only_after_the_merge_it_reverts`). A merge
+`record_outcome` writes is one the projection holds at that index
+(`a_merged_outcome_must_match_the_projected_merge`), so the denominator counts
+merges the ledger committed, apart from rows written around that check: merged rows
+`record_outcome` wrote before it checked the projection, and rows a raw SQL writer
+inserted, are neither checked nor told apart. Likewise the
 numerator of `AutoProposeShare` counts eligible branches only, as its denominator
 does, so an ineligible auto-proposal stored before work migration 9's NOT VALID check
 is in neither count and the share never exceeds one
@@ -1315,10 +1445,6 @@ with Apache Iggy, NATS and Kafka as candidates behind it.
   authentication.
 - **TLS, separate projector/reader/migrator roles, row-level security, pooling and a
   logical-replication consumer.** Until TLS exists the substrate refuses remote hosts.
-- **A merge plan that can only be committed through verification.** Today it is the
-  caller's obligation (§2): `MergePlan::into_parts` yields its delta, and the
-  runtime's `apply_verified_semantic_delta`, which checks no relied generation, and
-  its unverified `apply_semantic_delta` are public.
 - **Strings containing NUL in the PostgreSQL substrate.** PostgreSQL `text` cannot
   hold them; they are refused with a typed error, and the PostgreSQL projection stops
   at a ledger record carrying one.
@@ -1418,12 +1544,14 @@ another by idea.
 | [F002](../../experiments/feedback/F002-weak-supervision/README.md) | Is the verifier-precedence label model better calibrated than majority vote? | any label contradicting a verifier veto |
 | [E005](../../experiments/system/E005-agent-memory-benchmark/README.md) | Does the combined stack beat current agent-memory systems on LongMemEval and LoCoMo? | no category improvement at equal budget |
 
-L004 and L003 are completed for PostgreSQL 18 (2026-09-27, at 5f71d84): over five seeds each, with crashes,
-commits the server failed and races, no projection diverged from the reference, no foreign history was
-accepted, no refold differed by a bit and no revoked input was read; every planted defect of their mutation
-lists was detected (17 of 17 and 16 of 16). Their seed records, mutation checks and aggregates all ran at
-that commit, and earlier runs at ad2f8d1, dcfbb3e, 7b60216, ed52931 and ff96ce0 also passed. Results and limitations
-are in each experiment's `results/`. `scripts/check_research_gates.py` fails CI on a completed experiment whose archived
+L004 and L003 are completed for PostgreSQL 18 (2026-09-28, on T1-2's final code at 039beff): over five seeds
+each, with crashes, commits the server failed and races, no projection diverged from the reference, no
+foreign history was accepted, no refold differed by a bit and no revoked input was read; every planted defect
+of their mutation lists was detected (17 of 17 and 16 of 16). L004's logs carry semantic records of every
+origin, merges included, and every seed projected each. Their seed records ran at 039beff and their mutation
+checks at 4659cbf, which adds only those records, and earlier runs at ad2f8d1, dcfbb3e, 7b60216, ed52931,
+ff96ce0 and 5f71d84 also passed. Results and limitations are in each experiment's `results/`.
+`scripts/check_research_gates.py` fails CI on a completed experiment whose archived
 `run.json`
 or `mutations.json` ran at code, aggregation scripts or mutation plan HEAD has changed without a
 `results/STALE.toml` marker naming them and the first change (`test_results_of_other_code_fail_without_a_marker`,

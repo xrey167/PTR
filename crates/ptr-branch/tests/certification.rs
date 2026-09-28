@@ -1,12 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ptr_branch::{
-    certify, counter_value, read_counter_value, read_set_value, set_value, Branch, BranchError,
-    BranchId, BranchOp, Certification, InputsDigest, SealedBranch, SealedBranchParts, ValueDigest,
-    COUNTER_TYPE,
+    certify, counter_value, merge_plan_digest, read_counter_value, read_set_value, set_value,
+    Branch, BranchError, BranchId, BranchOp, Certification, CertificationKind, InputsDigest,
+    SealedBranch, SealedBranchParts, ValueDigest, COUNTER_TYPE,
 };
 use ptr_semdb::{SemanticDelta, SemanticHost, SemanticPayload, SemanticValue};
 use ptr_types::{Generation, PrincipalId, TypeId, Validity};
+use sha2::{Digest, Sha256};
 
 fn text(value: &str) -> SemanticValue {
     SemanticValue::Text(value.into())
@@ -174,10 +175,10 @@ fn no_lifecycle(_: &str, _: Generation) -> Option<Validity> {
 /// Commit a plan to a bare host, which has no lifecycle authority: only for
 /// plans whose branch relied on no generation.
 fn commit(host: &mut SemanticHost, certification: Certification) {
-    let (expected, delta, relied) = certification.plan().clone().into_parts();
-    assert!(relied.is_empty());
-    assert_eq!(expected, host.revision());
-    host.apply_delta(delta).unwrap();
+    let plan = certification.into_plan();
+    assert!(plan.relied().is_empty());
+    assert_eq!(plan.expected(), host.revision());
+    host.apply_delta(plan.delta().clone()).unwrap();
 }
 
 fn change(host: &mut SemanticHost, key: &str, value: SemanticValue) {
@@ -1467,6 +1468,156 @@ fn the_plan_digest_changes_with_which_keys_were_rebased() {
     assert_ne!(clean.digest().unwrap(), rebased.digest().unwrap());
 }
 
+/// A branch that adds to a counter and writes a key it read, certified
+/// against a target whose counter holds 5: clean when the branch recorded 5
+/// as the counter's base value, rebased when it recorded 3.
+fn counter_branch_certified(base: i64) -> Certification {
+    let host = host_with(&[("c", counter_value(5)), ("a", text("1"))]);
+    let target = host.snapshot();
+    let a = ValueDigest::of("a", Some(&text("1"))).unwrap();
+    let parts = SealedBranchParts {
+        id: BranchId::from("b1"),
+        author: PrincipalId::from("agent-1"),
+        base_revision: target.revision,
+        reads: BTreeMap::from([("a".to_owned(), a)]),
+        scans: BTreeMap::new(),
+        relied: BTreeMap::new(),
+        touched_base: BTreeMap::from([
+            ("a".to_owned(), a),
+            (
+                "c".to_owned(),
+                ValueDigest::of("c", Some(&counter_value(base))).unwrap(),
+            ),
+        ]),
+        touched_inputs: BTreeMap::from([
+            ("a".to_owned(), InputsDigest::of("a", [])),
+            ("c".to_owned(), InputsDigest::of("c", [])),
+        ]),
+        ops: vec![
+            BranchOp::Put {
+                key: "a".into(),
+                value: text("2"),
+            },
+            BranchOp::Add {
+                key: "c".into(),
+                amount: 1,
+            },
+        ],
+    };
+    certify(
+        &SealedBranch::from_parts(parts).unwrap(),
+        &target,
+        no_lifecycle,
+    )
+    .unwrap()
+}
+
+#[test]
+fn merge_plan_digest_is_the_plan_digest() {
+    for certification in [counter_branch_certified(5), counter_branch_certified(3)] {
+        let plan = certification.plan();
+        let encoded = plan.delta().encode().unwrap();
+        let digest = merge_plan_digest(
+            &plan.branch().0,
+            plan.expected(),
+            &encoded,
+            plan.dependencies(),
+            plan.rebased(),
+        );
+        assert_eq!(digest, plan.digest().unwrap());
+
+        // The v3 layout, written out: whoever holds a merge record can
+        // recompute it with nothing but SHA-256.
+        let mut hasher = Sha256::new();
+        hasher.update(b"ptr-branch/merge-plan/v3");
+        hasher.update((plan.branch().0.len() as u64).to_le_bytes());
+        hasher.update(plan.branch().0.as_bytes());
+        hasher.update(plan.expected().0.to_le_bytes());
+        hasher.update((encoded.len() as u64).to_le_bytes());
+        hasher.update(&encoded);
+        hasher.update(plan.dependencies());
+        hasher.update((plan.rebased().len() as u64).to_le_bytes());
+        for key in plan.rebased() {
+            hasher.update((key.len() as u64).to_le_bytes());
+            hasher.update(key.as_bytes());
+        }
+        assert_eq!(digest, <[u8; 32]>::from(hasher.finalize()));
+
+        // Each part moves it.
+        let other_revision = ptr_types::Revision(plan.expected().0 + 1);
+        let mut other_delta = encoded.clone();
+        other_delta.push(0);
+        let mut other_dependencies = *plan.dependencies();
+        other_dependencies[0] ^= 1;
+        let mut other_rebased = plan.rebased().clone();
+        if !other_rebased.remove("c") {
+            other_rebased.insert("c".to_owned());
+        }
+        for other in [
+            merge_plan_digest(
+                "b2",
+                plan.expected(),
+                &encoded,
+                plan.dependencies(),
+                plan.rebased(),
+            ),
+            merge_plan_digest(
+                &plan.branch().0,
+                other_revision,
+                &encoded,
+                plan.dependencies(),
+                plan.rebased(),
+            ),
+            merge_plan_digest(
+                &plan.branch().0,
+                plan.expected(),
+                &other_delta,
+                plan.dependencies(),
+                plan.rebased(),
+            ),
+            merge_plan_digest(
+                &plan.branch().0,
+                plan.expected(),
+                &encoded,
+                &other_dependencies,
+                plan.rebased(),
+            ),
+            merge_plan_digest(
+                &plan.branch().0,
+                plan.expected(),
+                &encoded,
+                plan.dependencies(),
+                &other_rebased,
+            ),
+        ] {
+            assert_ne!(other, digest);
+        }
+    }
+}
+
+#[test]
+fn certification_kind_follows_the_rebased_keys_not_the_variant() {
+    let clean = counter_branch_certified(5);
+    let rebased = counter_branch_certified(3);
+    assert!(matches!(clean, Certification::Clean(_)));
+    assert!(matches!(rebased, Certification::Rebased(_)));
+    assert_eq!(clean.kind(), CertificationKind::Clean);
+    assert_eq!(rebased.kind(), CertificationKind::Rebased);
+    assert_eq!(rebased.plan().rebased(), &BTreeSet::from(["c".to_owned()]));
+
+    // The variants are public, so either can wrap any plan; the kind is read
+    // from the plan's rebased keys, which its digest covers.
+    let relabelled_clean = Certification::Rebased(clean.plan().clone());
+    let relabelled_rebased = Certification::Clean(rebased.plan().clone());
+    assert_eq!(relabelled_clean.kind(), CertificationKind::Clean);
+    assert_eq!(relabelled_rebased.kind(), CertificationKind::Rebased);
+
+    // into_plan hands back the plan whichever variant wraps it.
+    assert_eq!(relabelled_clean.into_plan(), clean.clone().into_plan());
+    assert_eq!(relabelled_rebased.into_plan(), rebased.into_plan());
+    assert_eq!(&clean.clone().into_plan(), clean.plan());
+}
+
 #[test]
 fn a_plan_carries_the_generations_its_branch_relied_on() {
     let host = host_with(&[("a", text("1"))]);
@@ -1481,12 +1632,9 @@ fn a_plan_carries_the_generations_its_branch_relied_on() {
         .plan()
         .clone();
     assert_eq!(plan.relied(), sealed.relied());
-    let (expected, delta, relied) = plan.clone().into_parts();
-    assert_eq!(expected, plan.expected());
-    assert_eq!(&delta, plan.delta());
     assert_eq!(
-        relied,
-        BTreeMap::from([("capsule:policy".to_owned(), Generation(3))])
+        plan.relied(),
+        &BTreeMap::from([("capsule:policy".to_owned(), Generation(3))])
     );
 }
 

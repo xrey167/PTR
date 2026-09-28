@@ -9,7 +9,7 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-27  
+**Last reviewed:** 2026-09-28  
 **Code footprint:** 3 Rust source files · 726 nonblank source lines · 1 integration-test files · 6 `#[test]` markers
 
 ### Implemented now
@@ -24,7 +24,7 @@
 - resume_with_applied is fallible because the applied-event count it records is persisted: a member that kept it only in memory would renumber events a snapshot covers on its next restart
 - take_installed_snapshot_matching lets a host that retains snapshot anchors out of band refuse a payload the elected leader sent but the host did not expect; take_installed_snapshot remains for deployments with no second channel and documents what it trusts
 - propose_membership adds or removes one voter from the leader and drives it to quiescence, and voters() reports the group in ascending order
-- Snapshot payloads are carried unread, and the test carries a real PTRCS003 compacted snapshot end to end: it is recorded by the leader, arrives byte for byte at a member the leader cannot replay to, and a runtime restores from exactly those bytes
+- Snapshot payloads are carried unread, and the test carries a real PTRCS004 compacted snapshot end to end: it is recorded by the leader, arrives byte for byte at a member the leader cannot replay to, and a runtime restores from exactly those bytes
 - No background loop, timer or retry policy: the caller drives accept and dispatch, which keeps scheduling decisions where they can be made deliberately and keeps the tests free of sleeps
 - The whole composition is feature-gated, so iroh and raft stay out of every other workspace build exactly as ptr-net and ptr-ledger keep their own backends out
 
@@ -61,7 +61,7 @@
 - a refused frame still receives an answer, and that answer is an empty batch
 - refusing a stranger's frame does not take a serving member off the air: after the refusal an admitted member still reaches it, so an unadmitted peer cannot silence an admitted one by connecting once
 - a member that cannot be reached is named in the report while the write is still decided by the majority that answered
-- a real PTRCS003 snapshot travels as the payload to a restarted member the leader compacted past, arrives byte for byte, and a runtime restores the state it described from exactly those bytes
+- a real PTRCS004 snapshot, exported by a runtime whose semantic value is a host write under a test grant, travels as the payload to a restarted member the leader compacted past, arrives byte for byte, and a runtime restores the state it described from exactly those bytes
 - frame codec unit tests: round trip including an empty batch, every prefix refused, foreign bytes, trailing bytes, an unknown layout version, an invented count refused by the bound rather than by allocation, an oversize frame refused before parsing, and one distinct code per refusal
 
 <!-- PTR:STATUS:END -->

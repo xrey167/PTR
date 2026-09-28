@@ -54,6 +54,74 @@ impl MaterializedState {
     }
 }
 
+/// The materialized key that records that a history holds a semantic record
+/// with an attributed origin (ledger tag 12): every such record projects it,
+/// with the value `1`, and a record without an origin does not.
+///
+/// ptr-runtime replays a record without an origin only while the marker is
+/// absent, and refuses a compacted snapshot in the lifecycle layout from
+/// before attributed records (PTRLC001) that carries it: no history that
+/// layout describes could have set it.
+pub const ATTESTED_MARKER: &str = "semdb:attested";
+
+/// The prefix of the materialized keys that record a merged branch, one key
+/// per branch id ([`merged_branch_key`]). A PTRLC001 compacted snapshot that
+/// carries one is refused, as for [`ATTESTED_MARKER`].
+pub const MERGED_BRANCH_PREFIX: &str = "branch-merge:";
+
+/// The materialized key a merge of `branch` projects:
+/// `branch-merge:<byte length>:<id>`. The length is part of the key so that no
+/// branch id, whatever bytes it holds, names another branch's key.
+pub fn merged_branch_key(branch: &str) -> String {
+    format!("{MERGED_BRANCH_PREFIX}{}:{branch}", branch.len())
+}
+
+/// The branch id a [`merged_branch_key`] names, or `None` for a key that is
+/// not exactly one: the prefix, a decimal byte length without a leading zero,
+/// `:`, and an id of exactly that many bytes.
+pub fn merged_branch_of(key: &str) -> Option<&str> {
+    let (length, branch) = key.strip_prefix(MERGED_BRANCH_PREFIX)?.split_once(':')?;
+    let canonical = !length.is_empty()
+        && length.bytes().all(|byte| byte.is_ascii_digit())
+        && (length == "0" || !length.starts_with('0'));
+    (canonical && length.parse::<usize>().ok()? == branch.len()).then_some(branch)
+}
+
+/// The value a merge projects at its branch's [`merged_branch_key`]: the
+/// index it was committed at, `:`, and the plan digest in lowercase
+/// hexadecimal.
+pub fn merged_branch_entry(index: u64, plan: &[u8; 32]) -> String {
+    let mut entry = format!("{index}:");
+    for byte in plan {
+        entry.push_str(&format!("{byte:02x}"));
+    }
+    entry
+}
+
+/// The commit index and plan digest of a [`merged_branch_entry`], or `None`
+/// for a value that is not exactly one: a decimal index without a sign or a
+/// leading zero, `:`, and 64 lowercase hexadecimal digits.
+pub fn parse_merged_branch_entry(entry: &str) -> Option<(u64, [u8; 32])> {
+    let (index, hex) = entry.split_once(':')?;
+    let canonical_index = !index.is_empty()
+        && index.bytes().all(|byte| byte.is_ascii_digit())
+        && (index == "0" || !index.starts_with('0'));
+    if !canonical_index || hex.len() != 64 {
+        return None;
+    }
+    let index = index.parse().ok()?;
+    let mut plan = [0; 32];
+    for (byte, pair) in plan.iter_mut().zip(hex.as_bytes().chunks(2)) {
+        let digit = |c: u8| match c {
+            b'0'..=b'9' => Some(c - b'0'),
+            b'a'..=b'f' => Some(c - b'a' + 10),
+            _ => None,
+        };
+        *byte = digit(pair[0])? << 4 | digit(pair[1])?;
+    }
+    Some((index, plan))
+}
+
 /// The key/value entries one committed event projects to.
 ///
 /// This is the single definition of what an event means as current state; the
@@ -65,8 +133,20 @@ pub fn projection_entries(committed: &CommittedEvent) -> Vec<(String, String)> {
     match &committed.event {
         // Lifecycle materialization records the position, not a second copy of
         // semantic payloads. Their authoritative replay belongs to ptr-semdb.
-        LedgerEvent::SemanticDeltaCommitted { revision, .. } => {
-            vec![("semdb:revision".into(), revision.0.to_string())]
+        LedgerEvent::SemanticDeltaCommitted {
+            revision, origin, ..
+        } => {
+            let mut entries = vec![("semdb:revision".into(), revision.0.to_string())];
+            if *origin != ptr_ledger::SemanticOrigin::Legacy {
+                entries.push((ATTESTED_MARKER.into(), "1".into()));
+            }
+            if let ptr_ledger::SemanticOrigin::Merge(merge) = origin {
+                entries.push((
+                    merged_branch_key(&merge.branch),
+                    merged_branch_entry(index, &merge.plan),
+                ));
+            }
+            entries
         }
         LedgerEvent::CapsuleCommitted {
             project,

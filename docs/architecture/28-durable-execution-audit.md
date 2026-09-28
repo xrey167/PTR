@@ -183,7 +183,9 @@ is refused (below).
 
 ## The records
 
-Tags 9, 10 and 11, added beside the existing 0–8 which are unchanged.
+Tags 9, 10 and 11, added beside the existing 0–8 which are unchanged. Tag 12, a
+semantic record with an attributed origin, came later
+(`22-durable-semantic-state.md`).
 
 | Record | Binds |
 |---|---|
@@ -322,8 +324,10 @@ fails on a build without the fix.
 So the compacted snapshot carries a third section holding what the execution
 layer cannot re-derive once the floor has moved: the spent at-most-once keys with
 their outcomes, and the unsettled attempts. It was introduced as `PTREX001` inside
-`PTRCS002`; the current layout is `PTREX002` inside `PTRCS003`, which also carries
-what each key is bound to (the next section).
+`PTRCS002`; the current layout is `PTREX002`, which also carries what each key is
+bound to (the next section). It is the execution section of `PTRCS003` and of
+`PTRCS004`, whose lifecycle section may carry the attestation marker
+(`24-protected-anchors.md`).
 
 Three things are worth stating exactly, because each is easy to get wrong in the
 telling:
@@ -340,6 +344,15 @@ telling:
   that forgets every spent key, silently, which is the failure being closed.
   `PTRCS002` is refused the same way since `PTRCS003`, for the reason the next
   section gives.
+- **The magic moved again for the attestation marker, but `PTRCS003` is still
+  read.** `PTRCS004` changes the lifecycle section only. A build from before
+  attributed records would read a `PTRCS004` snapshot without its marker and
+  then append records its history's replay refuses, so it has to stop at the
+  magic. The other direction is sound: a `PTRCS003` snapshot describes a history
+  of tag-8 semantic records only, so reading it as one without the marker is
+  true, and its execution section is `PTREX002` either way. That differs from
+  the `PTRCS002` refusal, where reading the older section would have lost what a
+  key is bound to.
 - **Nothing that belongs to a process travels.** Sessions, the admission policy,
   detached dispatch and commit-level `uncertain` are this process's, not
   committed history's. Carrying any of them would let a restored runtime claim

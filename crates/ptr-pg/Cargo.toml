@@ -35,6 +35,11 @@ tokio = { workspace = true, optional = true, features = ["time"] }
 
 [dev-dependencies]
 tokio = { workspace = true }
+# A branch loaded under a seal key is merged by the runtime in the postgres
+# tests, exactly as the sealed one; none of these depends on this crate.
+ptr-config = { workspace = true }
+ptr-runtime = { workspace = true }
+ptr-verifier = { workspace = true }
 
 [[test]]
 name = "postgres"

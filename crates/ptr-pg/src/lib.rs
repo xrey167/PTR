@@ -18,11 +18,13 @@
 //!   their triage log, fast-memory journals and checkpoints, the adapter
 //!   lineage catalog and replay pool, and the weak-supervision store. Not
 //!   derived from the ledger, never dropped by a rebuild, never read as
-//!   authority.
+//!   authority. Given a host-held `BranchSealKey`, a substrate tags every
+//!   branch it stores and loads only branches carrying their tag.
 //!
 //! Without the `postgres-backend` feature this crate is the schemas, their
 //! checksummed migration catalogs, capability parsing, the lifecycle mapping
-//! and the metric compiler; with it, the async adapters on `PgSubstrate`.
+//! and the metric compiler; with it, the async adapters on `PgSubstrate` and
+//! the branch seal key.
 
 mod capability;
 mod config;
@@ -33,6 +35,8 @@ mod migrate;
 
 #[cfg(feature = "postgres-backend")]
 mod adapters;
+#[cfg(feature = "postgres-backend")]
+mod seal;
 
 pub use capability::{
     parse_version, Capabilities, LexicalBackend, MINIMUM_PGVECTOR, MINIMUM_SERVER,
@@ -52,3 +56,5 @@ pub use adapters::{
     MigrationReport, PgSubstrate, ProjectionApply, ProjectionEventRow, SearchDocument,
     SearchResults, SourceAdmission, JOURNAL_SEQ_LIMIT, LEXICAL_BACKEND, VECTOR_BACKEND,
 };
+#[cfg(feature = "postgres-backend")]
+pub use seal::BranchSealKey;

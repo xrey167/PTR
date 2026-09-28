@@ -9,12 +9,14 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-25  
-**Code footprint:** 1 Rust source files · 247 nonblank source lines · 3 integration-test files · 6 `#[test]` markers
+**Last reviewed:** 2026-09-28  
+**Code footprint:** 1 Rust source files · 321 nonblank source lines · 3 integration-test files · 9 `#[test]` markers
 
 ### Implemented now
 
-- Semantic transaction position and revision materialization without duplicated payload ownership
+- ATTESTED_MARKER (semdb:attested) and MERGED_BRANCH_PREFIX (branch-merge:) name the materialized keys that record attributed semantic records and merged branches: every attributed semantic record projects the marker and every merge record its branch's key, and ptr-runtime refuses a compacted snapshot in the pre-attestation lifecycle layout (PTRLC001) that carries either
+- Semantic transaction position and revision materialization without duplicated payload ownership; every semantic record with an attributed origin also projects the semdb:attested marker (value 1), and ptr-runtime replays a record without an origin only in the absence of that marker
+- A merge record projects merged_branch_key(branch), branch-merge:<byte length>:<id>, so no branch id aliases another's key, with merged_branch_entry(index, plan), the commit index and the plan digest in lowercase hexadecimal; merged_branch_of and parse_merged_branch_entry read back exactly what a merge projects and nothing else, and ptr-runtime refuses a second merge of a branch whose key is present
 - MaterializedState reference map with last_applied commit index
 - Application of Revoked and HardConstraintCommitted ledger events
 - Monotonic materialization with duplicate/out-of-order/gap detection
@@ -48,9 +50,12 @@
 
 - [ADR-0002-authority-hierarchy.md](../../research/decisions/ADR-0002-authority-hierarchy.md)
 - [ADR-0009-consensus-ledger-state-separation.md](../../research/decisions/ADR-0009-consensus-ledger-state-separation.md)
+- [ADR-0020-only-the-runtime-merges-an-agent-branch.md](../../research/decisions/ADR-0020-only-the-runtime-merges-an-agent-branch.md)
 
 ### Current automated checks
 
+- an attributed semantic record of each ingress and host kind projects the revision and the semdb:attested marker, never its payload
+- a merge projects its branch's key with its index and plan digest (a_merge_projects_its_branch_key_with_its_index_and_plan), and merge keys are length-delimited: ids that share a character prefix or a length written into them project distinct keys, and merged_branch_of and parse_merged_branch_entry refuse every other spelling (branch_merge_keys_are_length_delimited)
 - replay ordering/idempotency integration test
 - Turso reopen/monotonicity integration test behind turso-backend feature
 - workspace fmt/check/test/clippy

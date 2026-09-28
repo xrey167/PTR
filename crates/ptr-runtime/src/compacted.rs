@@ -27,10 +27,24 @@ use ptr_state::MaterializedState;
 use ptr_types::{CommitIndex, Effect, Generation, ProjectId, Revision};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// PTRCS003 is the first layout whose execution section is PTREX002. A PTRCS002
-/// or PTRCS001 snapshot is refused by version rather than read with the weaker
-/// meaning its older section had.
-const MAGIC: &[u8; 8] = b"PTRCS003";
+/// PTRCS004 is the layout this build writes: its lifecycle section is
+/// PTRLC002, the first that may carry [`ptr_state::ATTESTED_MARKER`] and the
+/// merged-branch keys ([`ptr_state::MERGED_BRANCH_PREFIX`]).
+///
+/// The magic moved so that a build from before attributed records stops here.
+/// Reading a snapshot of a history that holds attributed records, such a
+/// build would ignore the marker, then append records that history's replay
+/// refuses, or merge a branch the history already merged.
+const MAGIC: &[u8; 8] = b"PTRCS004";
+/// PTRCS003, the layout before attributed records: still read, never written,
+/// and only with a PTRLC001 lifecycle section. Such a snapshot describes a
+/// history of tag-8 semantic records only, so the absence of the marker it
+/// implies is true, and a PTRLC001 section that holds the marker or a
+/// merged-branch key is refused by version. Its execution section is
+/// PTREX002, as in PTRCS004. PTRCS003 was the first layout with PTREX002: a
+/// PTRCS002 or PTRCS001 snapshot is refused by version rather than read with
+/// the weaker meaning its older execution section had.
+const PRE_ATTESTATION_MAGIC: &[u8; 8] = b"PTRCS003";
 /// PTREX002 binds every applied key to the attempt that settled it and to the
 /// project, principal, revision, generation and action digest that attempt
 /// recorded, and carries the same five for every unsettled attempt. PTREX001
@@ -38,7 +52,19 @@ const MAGIC: &[u8; 8] = b"PTRCS003";
 /// action nor named by its attempt, and a section in that layout is refused by
 /// version.
 const EXECUTION_MAGIC: &[u8; 8] = b"PTREX002";
-const LIFECYCLE_MAGIC: &[u8; 8] = b"PTRLC001";
+const LIFECYCLE_MAGIC: &[u8; 8] = b"PTRLC002";
+/// The lifecycle section of a PTRCS003 snapshot, read only inside one.
+const PRE_ATTESTATION_LIFECYCLE_MAGIC: &[u8; 8] = b"PTRLC001";
+
+/// Which of the two readable layouts a snapshot is in, as its outer magic
+/// says. The lifecycle section must be the one that layout pairs with.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Layout {
+    /// PTRCS004 with PTRLC002.
+    Attested,
+    /// PTRCS003 with PTRLC001.
+    PreAttestation,
+}
 const HEADER: usize = 80;
 const DIGEST_BYTES: usize = 32;
 const MAX_SECTION_ITEMS: usize = 65_536;
@@ -350,12 +376,24 @@ impl LifecycleState {
     /// Decoding enforces strict ascending key order per section, so each state has
     /// exactly one encoding and a reordered or duplicated entry fails closed
     /// rather than resolving to whichever entry happens to come last.
-    fn decode(bytes: &[u8]) -> Result<Self, RuntimeError> {
+    ///
+    /// The section must be the one `layout` pairs with, and a PTRLC001 section
+    /// must hold neither [`ptr_state::ATTESTED_MARKER`] nor a key under
+    /// [`ptr_state::MERGED_BRANCH_PREFIX`]: both are refused by version. In a
+    /// PTRLC002 section every key under that prefix must be exactly a
+    /// [`ptr_state::merged_branch_key`] holding exactly a
+    /// [`ptr_state::merged_branch_entry`], as a merge projects them, or the
+    /// section is refused as noncanonical.
+    fn decode(bytes: &[u8], layout: Layout) -> Result<Self, RuntimeError> {
         if bytes.len() > MAX_SECTION_BYTES {
             return Err(invalid(CompactedError::SizeLimit));
         }
         let mut reader = Reader { bytes, offset: 0 };
-        if reader.take(8)? != LIFECYCLE_MAGIC {
+        let magic = match layout {
+            Layout::Attested => LIFECYCLE_MAGIC,
+            Layout::PreAttestation => PRE_ATTESTATION_LIFECYCLE_MAGIC,
+        };
+        if reader.take(8)? != magic {
             return Err(invalid(CompactedError::UnsupportedVersion));
         }
         let mut state = Self::default();
@@ -364,6 +402,18 @@ impl LifecycleState {
             let key = reader.text()?;
             let value = reader.text()?;
             check_ascending(&mut previous, &key)?;
+            if layout == Layout::PreAttestation
+                && (key == ptr_state::ATTESTED_MARKER
+                    || key.starts_with(ptr_state::MERGED_BRANCH_PREFIX))
+            {
+                return Err(invalid(CompactedError::UnsupportedVersion));
+            }
+            if key.starts_with(ptr_state::MERGED_BRANCH_PREFIX)
+                && (ptr_state::merged_branch_of(&key).is_none()
+                    || ptr_state::parse_merged_branch_entry(&value).is_none())
+            {
+                return Err(invalid(CompactedError::NoncanonicalSection));
+            }
             state.materialized.insert(key, value);
         }
         let mut previous: Option<String> = None;
@@ -654,18 +704,21 @@ impl PtrRuntime {
     /// validation replay applies, the ordinary lifecycle and semantic path, so a
     /// restored runtime cannot reach a state a replay of the whole log would have
     /// refused. That is the validation a live commit applies to the record
-    /// itself, except the bound on a new attempt's key, which a log written by
-    /// an earlier build may exceed; the fence a live commit also checks is the
-    /// runtime's state, not the record's, and replay rebuilds it.
+    /// itself, with two exceptions: the bound on a new attempt's key, which a
+    /// log written by an earlier build may exceed, and the refusal of every
+    /// semantic record, which only the semantic write paths may write and
+    /// which replay judges by the origin rules they check instead. The fence a
+    /// live commit also checks is the runtime's state, not the record's, and
+    /// replay rebuilds it.
     pub fn restore_compacted(
         config: PtrConfig,
         bytes: &[u8],
         trusted: CompactedAnchor,
         above_floor: &[CommittedEvent],
     ) -> Result<Self, RuntimeError> {
-        let (semantic, lifecycle, execution) = compacted_sections(bytes, trusted)?;
+        let (layout, (semantic, lifecycle, execution)) = compacted_sections(bytes, trusted)?;
         let semantic = SemanticDelta::decode(semantic).map_err(RuntimeError::Semantic)?;
-        let lifecycle = LifecycleState::decode(lifecycle)?;
+        let lifecycle = LifecycleState::decode(lifecycle, layout)?;
         let semdb =
             SemanticHost::restore(trusted.revision, semantic).map_err(RuntimeError::Semantic)?;
 
@@ -694,7 +747,7 @@ impl PtrRuntime {
                 return Err(invalid(CompactedError::JournalNotAboveFloor));
             }
             runtime.validate_lifecycle_event(&expected.event)?;
-            let semantic = runtime.prepare_semantic_event(&expected.event)?;
+            let semantic = runtime.prepare_semantic_event(Some(expected.index), &expected.event)?;
             let actual = runtime.ledger.append(expected.event.clone())?;
             if actual != expected.index {
                 return Err(RuntimeError::ReplayIndexMismatch {
@@ -719,17 +772,20 @@ impl PtrRuntime {
 type CompactedSections<'a> = (&'a [u8], &'a [u8], &'a [u8]);
 
 /// Validate framing, bounds, digest and trusted identity, then hand back the
-/// sections. Nothing is decoded before the whole artifact is accounted for.
+/// layout and the sections. Nothing is decoded before the whole artifact is
+/// accounted for.
 fn compacted_sections(
     bytes: &[u8],
     trusted: CompactedAnchor,
-) -> Result<CompactedSections<'_>, RuntimeError> {
+) -> Result<(Layout, CompactedSections<'_>), RuntimeError> {
     if bytes.len() < HEADER + DIGEST_BYTES || bytes.len() > MAX_COMPACTED_BYTES {
         return Err(invalid(CompactedError::SizeLimit));
     }
-    if &bytes[..8] != MAGIC {
-        return Err(invalid(CompactedError::UnsupportedVersion));
-    }
+    let layout = match &bytes[..8] {
+        magic if magic == MAGIC => Layout::Attested,
+        magic if magic == PRE_ATTESTATION_MAGIC => Layout::PreAttestation,
+        _ => return Err(invalid(CompactedError::UnsupportedVersion)),
+    };
     let revision = Revision(u64::from_le_bytes(
         bytes[8..16].try_into().expect("revision"),
     ));
@@ -770,8 +826,11 @@ fn compacted_sections(
     let semantic_end = HEADER + semantic_len as usize;
     let lifecycle_end = semantic_end + lifecycle_len as usize;
     Ok((
-        &bytes[HEADER..semantic_end],
-        &bytes[semantic_end..lifecycle_end],
-        &bytes[lifecycle_end..end],
+        layout,
+        (
+            &bytes[HEADER..semantic_end],
+            &bytes[semantic_end..lifecycle_end],
+            &bytes[lifecycle_end..end],
+        ),
     ))
 }

@@ -1,8 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use ptr_semdb::{SemanticSnapshot, SemanticValue};
+use ptr_semdb::{canonical_input_bytes, SemanticSnapshot, SemanticValue};
 use ptr_types::{Generation, PrincipalId, Revision};
+use sha2::{Digest, Sha256};
 
 use crate::digest::{InputsDigest, RangeDigest, ValueDigest};
 use crate::error::BranchError;
@@ -11,8 +12,13 @@ use crate::ops::{holds_member, BranchOp};
 /// Key prefixes only ingress writes: raw request text and Pod outputs. A branch
 /// may read them but never change them: staging refuses an operation on one,
 /// and so do [`SealedBranch::from_parts`] and certification, so no sealed
-/// branch however built writes one.
-pub const RESERVED_PREFIXES: [&str; 2] = ["request:", "pod-output:"];
+/// branch however built writes one. This is `ptr_semdb::INGRESS_PREFIXES`
+/// itself, so the branch checks and the runtime's cannot disagree about which
+/// keys are reserved.
+pub use ptr_semdb::INGRESS_PREFIXES as RESERVED_PREFIXES;
+
+/// Domain tag of [`SealedBranch::seal_digest`].
+const SEAL_DOMAIN: &[u8] = b"ptr-branch/sealed-branch/v1";
 
 /// Identity of one speculative branch.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -126,6 +132,10 @@ impl SealedBranch {
     ///   ([`BranchError::UnreadTarget`]): merging an overwrite of an unread
     ///   key would erase a concurrent change unseen;
     /// - no set operation has an empty member ([`BranchError::InvalidMember`]);
+    /// - every `Put` value is one the journal can encode
+    ///   ([`ptr_semdb::canonical_input_bytes`] accepts it;
+    ///   [`BranchError::InvalidValue`]): a value it refuses could never be
+    ///   merged, and the branch would have no [`seal_digest`](Self::seal_digest);
     /// - every key an operation touches has a base value in `touched_base`
     ///   and an input set in `touched_inputs` ([`BranchError::MalformedSeal`]);
     /// - every set operation on a member records the same `in_base` as the
@@ -224,6 +234,136 @@ impl SealedBranch {
         &self.parts.ops
     }
 
+    /// Digest of every part of the branch: what a record of its merge names
+    /// as the branch that was merged, and what storage can bind a stored
+    /// branch to. Two sealed branches have the same digest only if they have
+    /// the same parts.
+    ///
+    /// SHA-256 under the domain tag `ptr-branch/sealed-branch/v1` of, in
+    /// this order and each length or count a little-endian `u64`:
+    ///
+    /// - the id and the author, each preceded by its length, and the base
+    ///   revision;
+    /// - `reads`, `scans`, `relied`, `touched_base` and `touched_inputs`,
+    ///   each as its entry count and then each entry in key order: the key
+    ///   preceded by its length, then its 32 digest bytes or, for `relied`,
+    ///   the generation;
+    /// - the operations, as their count and then each in staging order: a
+    ///   kind byte (1 `Put`, 2 `Remove`, 3 `Add`, 4 `SetInsert`,
+    ///   5 `SetRemove`), the key preceded by its length, and then for a
+    ///   `Put` the canonical bytes of the key and its value
+    ///   ([`ptr_semdb::canonical_input_bytes`]) preceded by their length,
+    ///   for an `Add` the amount as a little-endian `i64`, and for a set
+    ///   operation the member preceded by its length and one `in_base` byte.
+    ///
+    /// Counting every section keeps a digest moved from one map to another,
+    /// or an entry moved across an operation boundary, from hashing as the
+    /// same bytes.
+    ///
+    /// # Errors
+    /// `BranchError::InvalidValue` for a `Put` whose value the journal cannot
+    /// encode, which no `SealedBranch` holds: [`SealedBranch::from_parts`]
+    /// and sealing refuse it.
+    pub fn seal_digest(&self) -> Result<[u8; 32], BranchError> {
+        fn text(hasher: &mut Sha256, value: &str) {
+            hasher.update((value.len() as u64).to_le_bytes());
+            hasher.update(value.as_bytes());
+        }
+        fn digests<'a>(
+            hasher: &mut Sha256,
+            entries: impl ExactSizeIterator<Item = (&'a String, &'a [u8; 32])>,
+        ) {
+            hasher.update((entries.len() as u64).to_le_bytes());
+            for (key, digest) in entries {
+                text(hasher, key);
+                hasher.update(digest);
+            }
+        }
+
+        let parts = &self.parts;
+        let mut hasher = Sha256::new();
+        hasher.update(SEAL_DOMAIN);
+        text(&mut hasher, &parts.id.0);
+        text(&mut hasher, &parts.author.0);
+        hasher.update(parts.base_revision.0.to_le_bytes());
+        digests(
+            &mut hasher,
+            parts
+                .reads
+                .iter()
+                .map(|(key, digest)| (key, digest.as_bytes())),
+        );
+        digests(
+            &mut hasher,
+            parts
+                .scans
+                .iter()
+                .map(|(key, digest)| (key, digest.as_bytes())),
+        );
+        hasher.update((parts.relied.len() as u64).to_le_bytes());
+        for (target, generation) in &parts.relied {
+            text(&mut hasher, target);
+            hasher.update(generation.0.to_le_bytes());
+        }
+        digests(
+            &mut hasher,
+            parts
+                .touched_base
+                .iter()
+                .map(|(key, digest)| (key, digest.as_bytes())),
+        );
+        digests(
+            &mut hasher,
+            parts
+                .touched_inputs
+                .iter()
+                .map(|(key, digest)| (key, digest.as_bytes())),
+        );
+        hasher.update((parts.ops.len() as u64).to_le_bytes());
+        for op in &parts.ops {
+            match op {
+                BranchOp::Put { key, value } => {
+                    hasher.update([1u8]);
+                    text(&mut hasher, key);
+                    let canonical = canonical_input_bytes(key, value)
+                        .map_err(|_| BranchError::InvalidValue { key: key.clone() })?;
+                    hasher.update((canonical.len() as u64).to_le_bytes());
+                    hasher.update(&canonical);
+                }
+                BranchOp::Remove { key } => {
+                    hasher.update([2u8]);
+                    text(&mut hasher, key);
+                }
+                BranchOp::Add { key, amount } => {
+                    hasher.update([3u8]);
+                    text(&mut hasher, key);
+                    hasher.update(amount.to_le_bytes());
+                }
+                BranchOp::SetInsert {
+                    key,
+                    member,
+                    in_base,
+                } => {
+                    hasher.update([4u8]);
+                    text(&mut hasher, key);
+                    text(&mut hasher, member);
+                    hasher.update([u8::from(*in_base)]);
+                }
+                BranchOp::SetRemove {
+                    key,
+                    member,
+                    in_base,
+                } => {
+                    hasher.update([5u8]);
+                    text(&mut hasher, key);
+                    text(&mut hasher, member);
+                    hasher.update([u8::from(*in_base)]);
+                }
+            }
+        }
+        Ok(hasher.finalize().into())
+    }
+
     /// A sealed branch built without any check, so tests can show that
     /// certification refuses one on its own.
     #[cfg(test)]
@@ -234,9 +374,7 @@ impl SealedBranch {
 
 /// Whether `key` is in a namespace only ingress writes.
 pub(crate) fn is_reserved(key: &str) -> bool {
-    RESERVED_PREFIXES
-        .iter()
-        .any(|prefix| key.starts_with(prefix))
+    ptr_semdb::is_ingress_key(key)
 }
 
 /// The sealing invariants [`SealedBranch::from_parts`] documents, in its
@@ -260,6 +398,13 @@ pub(crate) fn check_sealed(parts: &SealedBranchParts) -> Result<(), BranchError>
         if let BranchOp::SetInsert { member, .. } | BranchOp::SetRemove { member, .. } = op {
             if member.is_empty() {
                 return Err(BranchError::InvalidMember {
+                    key: key.to_owned(),
+                });
+            }
+        }
+        if let BranchOp::Put { value, .. } = op {
+            if canonical_input_bytes(key, value).is_err() {
+                return Err(BranchError::InvalidValue {
                     key: key.to_owned(),
                 });
             }
@@ -464,14 +609,21 @@ impl Branch {
     /// # Errors
     /// Returns `BranchError::ReservedNamespace` for a key reserved to
     /// ingress, `BranchError::UnreadTarget` for a key the branch has not
-    /// read, and `BranchError::EvictedOperand` when the new value would
-    /// change an input, direct or transitive, of a key the branch has
-    /// changed only commutatively: those operations would then build on a
-    /// value the merge evicts. Putting that key's recomputed value first
-    /// lifts the refusal.
+    /// read, `BranchError::InvalidValue` for a value the journal cannot
+    /// encode ([`ptr_semdb::canonical_input_bytes`] refuses it), which no
+    /// sealed branch holds, and `BranchError::EvictedOperand` when the new
+    /// value would change an input, direct or transitive, of a key the
+    /// branch has changed only commutatively: those operations would then
+    /// build on a value the merge evicts. Putting that key's recomputed value
+    /// first lifts the refusal.
     pub fn put(&mut self, key: &str, value: SemanticValue) -> Result<(), BranchError> {
         self.check_writable(key)?;
         self.require_read(key)?;
+        if canonical_input_bytes(key, &value).is_err() {
+            return Err(BranchError::InvalidValue {
+                key: key.to_owned(),
+            });
+        }
         let inputs = self.unread_inputs_of(key)?;
         self.record_op(BranchOp::Put {
             key: key.to_owned(),

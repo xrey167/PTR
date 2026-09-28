@@ -9,12 +9,12 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-27  
-**Code footprint:** 9 Rust source files · 4479 nonblank source lines · 12 integration-test files · 104 `#[test]` markers
+**Last reviewed:** 2026-09-28  
+**Code footprint:** 9 Rust source files · 5338 nonblank source lines · 12 integration-test files · 113 `#[test]` markers
 
 ### Implemented now
 
-- EffectAttempted/EffectSettled/EffectReconciled records (tags 9-11, beside the unchanged 0-8) carry an execution audit: the attempt is addressed by its own commit index, and a settled response keeps its digest unconditionally and its bytes up to MAX_RETAINED_RESPONSE
+- EffectAttempted/EffectSettled/EffectReconciled records (tags 9-11, beside the unchanged 0-8 and the semantic tag 12) carry an execution audit: the attempt is addressed by its own commit index, and a settled response keeps its digest unconditionally and its bytes up to MAX_RETAINED_RESPONSE
 - Effect and VerificationLevel are written through explicit code tables rather than discriminant casts, so inserting an enum variant breaks a build instead of renumbering records already stored
 - Rustdoc covers the protected-anchor, acknowledgment, compaction and erasure APIs plus their integrity and serialization helpers
 - LogPaths::orphans claims a file only when log_path of the floor its name encodes is that same path, so a neighbouring log set sharing the directory can never have its live log reclaimed as this set's orphan
@@ -23,8 +23,10 @@
 - Strict nonmutating open; independently anchored rollback checks and explicit partial-tail recovery
 - Create-new checked-log restore and guarded explicit legacy inspection/migration
 - Explicit RAII unlock prevents duplicate-descriptor retention across concurrent process spawn
-- SemanticDeltaCommitted tag 8 preserves base/result revisions and opaque transaction bytes; legacy event tags are unchanged
+- SemanticDeltaCommitted preserves base/result revisions and opaque transaction bytes and carries a SemanticOrigin recorded in the same append: Legacy encodes as tag 8, byte for byte as before origins existed, and Request, PodOutput, Host and Merge encode as tag 12 (a kind byte; an Attestation of required level FullSemantic or Deterministic, weakest level, 1 to 16 verifier names and up to 32 finding codes; a merge record's branch, author, seal, plan and dependency digests, strictly ascending rebased keys up to MAX_REBASED_KEYS and a Triage or Reviewed authority); the codec checks shape only, and which origin replay accepts where is ptr-runtime's rule (it writes no Legacy record and replays one only before the first attributed record)
+- check_encodable refuses, before anything is encoded, an event the decoder would refuse (an attestation below FullSemantic or with a verifier or finding count outside its bounds, more rebased keys than MAX_REBASED_KEYS: the same functions check each rule on both sides) or whose encoding exceeds MAX_RECORD_BYTES: encode_log and FileLedger, the raft-engine adapter and a raft proposal all check it, so none writes a record no decoder reads back; InMemoryLedger encodes nothing, so a writer appending there checks it itself
 - PTRANC01 protected anchor storage: HMAC-SHA256 under a host-held key, fixed-length record, atomic rename publication, monotonic epoch/index/digest and carried chain origin
+- integrity::hmac_sha256 (RFC 2104, no dependency beyond sha2) and integrity::constant_time_eq are public: anchor MACs and ptr-pg's branch seal tags use them, each under a domain of its own
 - Retained-epoch witness rejects rollback of the anchor file itself; authenticity alone is documented as insufficient for freshness
 - AcknowledgedLedger log-first append/acknowledge ordering with writer fencing when anchor publication fails
 - RecoverableLog classifies every log/anchor split under one held lock and repairs only the tail per explicit TailPolicy
@@ -88,6 +90,7 @@
 
 - [ADR-0002-authority-hierarchy.md](../../research/decisions/ADR-0002-authority-hierarchy.md)
 - [ADR-0009-consensus-ledger-state-separation.md](../../research/decisions/ADR-0009-consensus-ledger-state-separation.md)
+- [ADR-0020-only-the-runtime-merges-an-agent-branch.md](../../research/decisions/ADR-0020-only-the-runtime-merges-an-agent-branch.md)
 
 ### Current automated checks
 
@@ -119,6 +122,9 @@
 - a restarted deposed leader recovers what was committed rather than the tail it wrote alone, and that tail does not survive the restart
 - a deposed leader appends but cannot commit and the entry only it held is overwritten rather than resurrected; a leader change leaves one total order with indexes exactly 1..n; duplicated and stale messages change nothing; a restarted member restores exactly the leader's committed state
 - a conflicting append truncates on disk rather than splicing two histories; a gap, a non-consecutive batch, a damaged record digest, a damaged length field, a removed middle record, a torn state file, a snapshot ahead of the commit index and a snapshot older than requested are each refused
+- a legacy origin encodes as tag 8 byte for byte against golden bytes and nothing may follow its delta; every attributed origin round-trips through tag 12 and matches a layout written out by hand; unknown kinds, level codes and authorities, a requirement below FullSemantic, verifier counts outside 1..=16, more than 32 findings, rebased keys out of order, duplicated or above the bound, a trailing byte and every cut are each refused
+- a log mixing tag-8 and tag-12 records round-trips canonically through encode_log and FileLedger; a record above MAX_RECORD_BYTES, an attestation outside its counts and one below FullSemantic are refused before framing by check_encodable, encode_log and FileLedger, which still appends afterwards, and by the raft-engine adapter and a raft proposal, after which each still commits and reopens
+- over every required level and every count at and beyond its bound, for a host write and a merge, an event is refused before encoding exactly when the decoder refuses its encoding, with the same code, and every accepted one decodes to itself
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->

@@ -288,7 +288,7 @@ no sound basis for raising a floor at all.
 
 ```text
 offset size field
-0      8    magic "PTRCS003"
+0      8    magic "PTRCS004"       "PTRCS003" is still read
 8      8    revision               semantic revision at the floor
 16     8    floor_index
 24     32   floor_digest
@@ -296,7 +296,7 @@ offset size field
 64     8    lifecycle_len
 72     8    execution_len          was reserved in PTRCS001
 80     ...  semantic section       canonical SemanticDelta encoding
-       ...  lifecycle section      PTRLC001
+       ...  lifecycle section      PTRLC002; PTRLC001 inside PTRCS003
        ...  execution section      PTREX002
        32   digest                 SHA-256 over all preceding bytes
 ```
@@ -310,8 +310,11 @@ exactly one authority for any fact. `restore_compacted` therefore takes the
 retained records as a separate argument and replays them through the ordinary
 lifecycle and semantic validation path, so a restored runtime cannot reach a state
 a replay of the whole log would have refused. That is every check a live commit
-makes except the bound on a new attempt's at-most-once key, which a log written by
-an earlier build may exceed (`28-durable-execution-audit.md`). They keep the
+makes, with two exceptions: the bound on a new attempt's at-most-once key, which a
+log written by an earlier build may exceed (`28-durable-execution-audit.md`), and
+the refusal of every semantic record, which only the semantic write paths may write
+and which replay judges by the origin rules those paths check instead
+(`22-durable-semantic-state.md`). They keep the
 indices they were committed at; a ledger that renumbered them from 1 would
 contradict the floor.
 
@@ -335,6 +338,21 @@ action digest that attempt recorded. `28-durable-execution-audit.md` gives its
 layout. A `PTRCS001` or `PTRCS002` snapshot, and a `PTREX001` section, are refused
 with `PTR_COMPACTED_VERSION` rather than read with the weaker meaning they had.
 
+`PTRCS004` differs from `PTRCS003` only in its lifecycle section, `PTRLC002`, the
+first that may carry `semdb:attested` (`ptr_state::ATTESTED_MARKER`) and the
+`branch-merge:` keys (`ptr_state::MERGED_BRANCH_PREFIX`). A build from before
+attributed semantic records stops at the new magic instead of restoring a history
+it would then extend with records that history's replay refuses. A `PTRCS003`
+snapshot is still read, and only with a `PTRLC001` section, as a snapshot of a
+history that holds no attributed record, which is what every such snapshot
+describes. A `PTRLC001` section that carries the marker or a merged-branch key is
+refused by version, as is any other pairing of the outer and lifecycle versions.
+In a `PTRLC002` section a merged-branch key must be exactly
+`branch-merge:<byte length>:<id>` holding exactly `<commit index>:<plan digest in
+lowercase hexadecimal>`, as a merge projects it, or the section is refused as
+noncanonical: the runtime reads a branch as merged from that key, and a spelling it
+could not read would let the branch merge a second time.
+
 `covers()` is taken from the snapshot, not chosen by the caller: reporting a
 position the snapshot does not hold would let a cutover discard records whose
 state nothing describes.
@@ -345,7 +363,7 @@ Those are not history and cannot be replayed.
 
 ### Executed evidence
 
-`crates/ptr-runtime/tests/compacted_snapshot.rs`, 9 integration tests over a
+`crates/ptr-runtime/tests/compacted_snapshot.rs`, 15 integration tests over a
 fixture covering semantic payload bytes, dependencies, capsule commit and
 supersession, hard constraints, procedures and a revocation:
 
@@ -368,6 +386,15 @@ supersession, hard constraints, procedures and a revocation:
   ordinary replay index check.
 - A restored runtime still enforces revision isolation against a stale base.
 - Successive snapshots report their own increasing coverage and distinct digests.
+- A `PTRCS003` snapshot with a `PTRLC001` section restores as a history without
+  attributed records, exactly as a full replay of it does
+  (`a_snapshot_of_the_earlier_layout_restores_as_unattested`); a `PTRLC001` section
+  carrying `semdb:attested` or a merged-branch key
+  (`an_earlier_lifecycle_section_carrying_attestation_keys_is_refused`), a `PTRLC002`
+  merge entry not in the form a merge projects
+  (`a_lifecycle_section_whose_merge_entry_is_not_one_a_merge_projects_is_refused`) and
+  any mismatched pair of outer and lifecycle versions
+  (`mismatched_outer_and_lifecycle_versions_are_refused`) are refused.
 
 ### Not yet covered
 

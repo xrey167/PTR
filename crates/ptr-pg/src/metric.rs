@@ -79,6 +79,11 @@ pub fn metric_sql(spec: MetricSpec, schemas: &SchemaSet) -> String {
         ),
         // A branch is merged at most once and reverted at most once (the
         // outcome key is (branch, outcome)), so both counts are of branches.
+        // `record_outcome` writes a merge only when the projection holds the
+        // branch's merge at that index, so the denominator counts merges the
+        // ledger committed, apart from rows written around it (before the
+        // check existed, or by another writer), which it neither checks nor
+        // tells apart.
         // A revert is a later commit undoing the merge, so it counts only at
         // a commit index after the merge's: `record_outcome` refuses any
         // other, and a row written around it (before the check existed, or

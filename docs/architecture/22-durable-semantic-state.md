@@ -29,12 +29,24 @@ flowchart LR
     V --> S
 ```
 
-`apply_semantic_delta(expected_revision, delta)` checks optimistic concurrency,
-stages a complete validated update, then appends one record containing the base
-revision, result revision and canonical encoded delta. Publication occurs only
-after successful append. Generic `commit` cannot bypass semantic validation;
-replay validates the same transition before materializing it. An invalid schema,
-revision jump, wrong base or encoded no-op record fails closed.
+A semantic write checks optimistic concurrency, stages a complete validated
+update, then appends one record containing the base revision, result revision,
+canonical encoded delta and the origin that allowed it. Publication occurs only
+after successful append. There are three kinds of write. Ingress (`ingest_text`,
+and a verified Pod output) writes exactly the shape its origin fixes, with no
+verifier. A host write (`apply_verified_semantic_delta(expected, delta,
+principal)`) is admitted only by every verifier of the `SemanticGrant` the host
+installed, and never touches a key only ingress writes. A merge
+(`merge_branch(sealed, authority)`, doc 35 §2) certifies a sealed agent branch
+against the runtime's own state, is admitted by the same verifiers, and commits
+only under the grant's merge policy or a listed reviewer's approval of its plan
+digest, once per branch id. Generic `commit` refuses
+semantic records outright (`SemanticRecordOutsideSemanticPath`). Replay validates
+the same transition, and the same origin rules, before materializing it. An
+invalid schema, revision jump, wrong base, encoded no-op record or origin that
+breaks a rule fails closed. What a record's origin states is the runtime's own
+claim: a writer below the runtime can append a well-formed record these rules
+accept, and replay cannot run the verifiers again (doc 35 §2, ADR-0020).
 
 A no-op through the high-level API writes no record and preserves pending P0.1
 permits. Real semantic commits invalidate the same authority epoch as other
@@ -85,7 +97,44 @@ versions/tags, conflicting operations, trailing bytes and truncation are rejecte
 Revisions use checked increment, never wraparound.
 
 `LedgerEvent::SemanticDeltaCommitted` uses new event tag 8; tags 0–7 retain their
-existing encoding. The ledger does not depend on the semantic crate: it preserves
+existing encoding. The record also carries a `SemanticOrigin`: why the write was
+allowed, recorded in the same append as the delta. `SemanticOrigin::Legacy` is
+tag 8 byte for byte, so every log and anchor written before origins existed keeps
+its exact encoding. Every attributed origin (a request's text, a Pod's output, a
+host write, a merge) is tag 12, with the origin after the delta. The ledger checks
+only the origin's shape and bounds (`check_encodable`). What an origin attests is
+the runtime's to check, with the same rules on every write and every replay:
+
+- **R1.** A record without an origin replays only while no attributed record
+  precedes it, which the materialized `semdb:attested` marker records; after one it
+  is refused (`LegacySemanticRecord`). The runtime never writes one.
+- **R2.** A request's record holds exactly its raw text, and a Pod's output record
+  exactly that output, sourced from the Pod and derived from the request's text.
+- **R3.** A host write or a merge writes, removes, derives and evicts no ingress
+  key, names valid provenance text (a host write's principal; a merge's branch,
+  author, and reviewer or policy version, with a triage score in `[0, 1]`), and
+  carries an attestation whose weakest level meets its requirement, with 1 to 16
+  verifiers whose names are distinct and valid, and at most 32 soft findings,
+  sorted, distinct, and each a recorded verifier's code. An ingress key is
+  evicted only through a dependency a record without an origin set up (a key only
+  ingress writes, derived from one the change writes). No write since can remove
+  such a dependency, so the key it hangs on can no longer be written by a host or
+  a merge: the change is refused naming the ingress key rather than erasing
+  ingress by invalidation.
+- **R4.** A merge carries no dependency entry, since certification never rewires
+  a key; names no rebased key it removes or only ingress writes; carries the plan
+  digest `ptr_branch::merge_plan_digest` gives for its branch, base revision,
+  encoded delta, dependency digest and rebased keys, so it holds exactly the delta
+  of the plan it names; and merges a branch not merged before, whose
+  `branch-merge:<len>:<id>` key it then projects.
+
+Replay also refuses a record the ledger could not frame, which only a history
+held in memory (replay, the records a compacted restore replays above its floor)
+can carry, since the codec refuses to write or read one.
+
+Replay never runs a verifier again: a grant is not history.
+
+The ledger does not depend on the semantic crate: it preserves
 opaque transaction bytes, while runtime replay validates their meaning. The
 materialized lifecycle store tracks `semdb:revision` and commit position; it does
 not duplicate semantic payload ownership. Existing Raft/storage adapters retain

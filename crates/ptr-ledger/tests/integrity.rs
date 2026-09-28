@@ -1,5 +1,8 @@
-use ptr_ledger::{integrity::*, CommittedEvent, FileLedger, LedgerEvent};
-use ptr_types::{CommitIndex, Generation};
+use ptr_ledger::{
+    check_encodable, integrity::*, Attestation, CommittedEvent, FileLedger, LedgerEvent,
+    MergeAuthorityRecord, MergeRecord, SemanticOrigin,
+};
+use ptr_types::{CommitIndex, Generation, Revision, VerificationLevel};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -155,9 +158,10 @@ fn create_new_and_rejected_oversize_append_do_not_destroy_existing_data() {
     assert!(FileLedger::create_from_log(tmp.path(), LOG_MAGIC, LogAnchor::empty()).is_err());
     assert!(ledger
         .append_durable(LedgerEvent::SemanticDeltaCommitted {
-            base_revision: ptr_types::Revision(0),
-            revision: ptr_types::Revision(1),
+            base_revision: Revision(0),
+            revision: Revision(1),
             encoded_delta: vec![0; MAX_RECORD_BYTES],
+            origin: SemanticOrigin::Legacy,
         })
         .is_err());
     assert_eq!(ledger.anchor().unwrap(), trusted);
@@ -219,4 +223,199 @@ fn migration_guard_excludes_a_second_writer_until_dropped() {
     assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
     drop(legacy);
     assert!(FileLedger::read_legacy(tmp.path()).is_ok());
+}
+
+fn semantic(n: u64, origin: SemanticOrigin) -> CommittedEvent {
+    CommittedEvent {
+        index: CommitIndex(n),
+        event: LedgerEvent::SemanticDeltaCommitted {
+            base_revision: Revision(n - 1),
+            revision: Revision(n),
+            encoded_delta: vec![u8::try_from(n).unwrap(); 3],
+            origin,
+        },
+    }
+}
+
+fn attestation() -> Attestation {
+    Attestation {
+        required: VerificationLevel::FullSemantic,
+        level: VerificationLevel::FullSemantic,
+        verifiers: vec!["schema".into()],
+        findings: Vec::new(),
+    }
+}
+
+fn merge(authority: MergeAuthorityRecord, rebased: &[&str]) -> SemanticOrigin {
+    SemanticOrigin::Merge(MergeRecord {
+        branch: "branch-7".into(),
+        author: "alice".into(),
+        seal: [1; 32],
+        plan: [2; 32],
+        dependencies: [3; 32],
+        rebased: rebased.iter().map(|key| (*key).to_owned()).collect(),
+        verification: attestation(),
+        authority,
+    })
+}
+
+#[test]
+fn a_log_mixing_tag_eight_and_tag_twelve_records_round_trips_canonically() {
+    // The codec checks shape only. Which origin may follow which is replay's
+    // rule, so a legacy record after attributed ones still round-trips here.
+    let events = vec![
+        semantic(1, SemanticOrigin::Legacy),
+        event(2),
+        semantic(
+            3,
+            SemanticOrigin::Request {
+                request: "request:1".into(),
+            },
+        ),
+        semantic(
+            4,
+            SemanticOrigin::PodOutput {
+                request: "request:1".into(),
+                pod: "pod-a".into(),
+                level: VerificationLevel::SampleVerified,
+            },
+        ),
+        semantic(
+            5,
+            SemanticOrigin::Host {
+                principal: "operator".into(),
+                verification: attestation(),
+            },
+        ),
+        semantic(
+            6,
+            merge(
+                MergeAuthorityRecord::Triage {
+                    policy_version: "policy-3".into(),
+                    score_bits: 0.5f32.to_bits(),
+                },
+                &[],
+            ),
+        ),
+        semantic(
+            7,
+            merge(
+                MergeAuthorityRecord::Reviewed {
+                    reviewer: "bob".into(),
+                },
+                &["doc:a", "doc:b"],
+            ),
+        ),
+        semantic(8, SemanticOrigin::Legacy),
+    ];
+    let bytes = encode_log(&events).unwrap();
+    let verified = decode_log(&bytes).unwrap();
+    assert_eq!(verified.events(), events.as_slice());
+    assert_eq!(encode_log(verified.events()).unwrap(), bytes);
+
+    // The durable path writes the same bytes and reads them back.
+    let tmp = Temp::new();
+    let mut ledger = FileLedger::create_new(tmp.path()).unwrap();
+    for committed in &events {
+        assert_eq!(
+            ledger.append_durable(committed.event.clone()).unwrap(),
+            committed.index
+        );
+    }
+    drop(ledger);
+    assert_eq!(std::fs::read(tmp.path()).unwrap(), bytes);
+    assert_eq!(FileLedger::open(tmp.path()).unwrap().events(), events);
+}
+
+#[test]
+fn a_record_above_the_bound_is_refused_before_framing() {
+    // The largest delta whose tag-8 record still fits: the tag, both
+    // revisions and the delta's length prefix take 21 bytes.
+    let fits = MAX_RECORD_BYTES - 21;
+    let legacy = LedgerEvent::SemanticDeltaCommitted {
+        base_revision: Revision(0),
+        revision: Revision(1),
+        encoded_delta: vec![0; fits],
+        origin: SemanticOrigin::Legacy,
+    };
+    check_encodable(&legacy).unwrap();
+    // The same delta with an origin no longer fits.
+    let attributed = LedgerEvent::SemanticDeltaCommitted {
+        base_revision: Revision(0),
+        revision: Revision(1),
+        encoded_delta: vec![0; fits],
+        origin: SemanticOrigin::Request {
+            request: "request:1".into(),
+        },
+    };
+    let error = check_encodable(&attributed).unwrap_err();
+    assert_eq!(error.to_string(), "PTR_LOG_PAYLOAD_LIMIT");
+
+    // An attestation outside its counts cannot be framed either, and is
+    // refused rather than encoded into bytes no decoder reads back.
+    let unattested = LedgerEvent::SemanticDeltaCommitted {
+        base_revision: Revision(0),
+        revision: Revision(1),
+        encoded_delta: vec![0; 3],
+        origin: SemanticOrigin::Host {
+            principal: "operator".into(),
+            verification: Attestation {
+                verifiers: Vec::new(),
+                ..attestation()
+            },
+        },
+    };
+    let error = check_encodable(&unattested).unwrap_err();
+    assert_eq!(error.to_string(), "PTR_LEDGER_ATTESTATION_LIMIT");
+    // An attestation below the requirement the format records is refused
+    // the same way.
+    let underattested = LedgerEvent::SemanticDeltaCommitted {
+        base_revision: Revision(0),
+        revision: Revision(1),
+        encoded_delta: vec![0; 3],
+        origin: SemanticOrigin::Host {
+            principal: "operator".into(),
+            verification: Attestation {
+                required: VerificationLevel::SampleVerified,
+                ..attestation()
+            },
+        },
+    };
+    let error = check_encodable(&underattested).unwrap_err();
+    assert_eq!(error.to_string(), "PTR_LEDGER_ATTESTATION_REQUIREMENT");
+
+    for (refused, code) in [
+        (&attributed, "PTR_LOG_PAYLOAD_LIMIT"),
+        (&unattested, "PTR_LEDGER_ATTESTATION_LIMIT"),
+        (&underattested, "PTR_LEDGER_ATTESTATION_REQUIREMENT"),
+    ] {
+        let committed = CommittedEvent {
+            index: CommitIndex(1),
+            event: refused.clone(),
+        };
+        assert_eq!(encode_log(&[committed]).unwrap_err().to_string(), code);
+
+        let tmp = Temp::new();
+        let bytes = encode_log(&[event(1)]).unwrap();
+        let trusted = decode_log(&bytes).unwrap().anchor();
+        let mut ledger = FileLedger::create_from_log(tmp.path(), &bytes, trusted).unwrap();
+        let error = ledger.append_durable(refused.clone()).unwrap_err();
+        assert_eq!(error.to_string(), code);
+        // Refused before anything was written: the ledger still appends. The
+        // bytes are read through the open ledger, because Windows refuses an
+        // independent read of a file whose writer holds its lock.
+        assert_eq!(ledger.anchor().unwrap(), trusted);
+        assert_eq!(ledger.retained_bytes().unwrap(), bytes);
+        assert_eq!(
+            ledger.append_durable(event(2).event).unwrap(),
+            CommitIndex(2)
+        );
+    }
+    // The tag-8 record at the bound is framed and read back.
+    let committed = CommittedEvent {
+        index: CommitIndex(1),
+        event: legacy,
+    };
+    let bytes = encode_log(std::slice::from_ref(&committed)).unwrap();
+    assert_eq!(decode_log(&bytes).unwrap().events(), [committed]);
 }

@@ -3,8 +3,10 @@
 //!
 //! Each case generates a random ledger log that the runtime itself accepts
 //! (every event kind, generations and supersessions that pass the runtime's
-//! lifecycle validation, real encoded semantic deltas, effect attempts that are
-//! settled or reconciled exactly once, awkward strings). The oracle is
+//! lifecycle validation, real encoded semantic deltas of every origin — a
+//! prefix written before origins existed, then requests, Pod outputs, host
+//! writes and merges in exactly the shapes replay accepts — effect attempts
+//! that are settled or reconciled exactly once, awkward strings). The oracle is
 //! `PtrRuntime::replay` of that log: its materialized state, its
 //! `generation_validity` for every target and generation, its revisions. The
 //! PostgreSQL projection receives the log record by record with injected
@@ -23,14 +25,17 @@ use std::time::{Duration, Instant};
 
 use ptr_config::PtrConfig;
 use ptr_ledger::integrity::{chain_anchors, sha256, LogAnchor};
-use ptr_ledger::{CommittedEvent, LedgerEvent};
+use ptr_ledger::{
+    Attestation, CommittedEvent, LedgerEvent, MergeAuthorityRecord, MergeRecord, SemanticOrigin,
+};
 use ptr_pg::{PgError, PgSubstrate, ProjectionApply};
+use ptr_runtime::semantic::{pod_output_key, request_raw_key};
 use ptr_runtime::PtrRuntime;
-use ptr_semdb::{SemanticDelta, SemanticHost, SemanticValue};
+use ptr_semdb::{SemanticDelta, SemanticHost, SemanticPayload, SemanticValue};
 use ptr_state::{projection_entries, ApplyOutcome, MaterializedState};
 use ptr_types::{
-    CapabilityId, CapsuleId, CommitIndex, Effect, Generation, ProjectId, Validity,
-    VerificationLevel,
+    CapabilityId, CapsuleId, CommitIndex, Effect, Generation, PodId, ProjectId, RequestId, TypeId,
+    Validity, VerificationLevel,
 };
 use tokio_postgres::Client;
 
@@ -56,12 +61,28 @@ const NAMES: [&str; 14] = [
     "tab\there",
 ];
 const PROJECTS: [&str; 3] = ["atlas", "borealis", "ç-project"];
+/// Verifier names an attested record may carry: identifiers without `/`,
+/// still with quotes, spaces and non-ASCII.
+const VERIFIERS: [&str; 4] = ["schema", "price watch", "Ωmega-check", "quote'd"];
+/// Soft finding codes an attested record may carry.
+const FINDING_CODES: [&str; 3] = ["stale-read", "soft limit", "naïve-unit"];
+/// Pods whose promoted outputs a log may carry.
+const PODS: [&str; 3] = ["summarizer", "pod 2", "ünïcode-pod"];
 const CONSTRAINTS: [&str; 3] = ["budget", "latency slo", "naïve"];
 const PROCEDURES: [&str; 3] = ["deploy", "roll back", "ünïcode"];
 
 #[derive(Default)]
 struct Metrics {
     records: u64,
+    /// Semantic records of the projected logs, by origin: records written
+    /// before origins existed, then requests, Pod outputs, host writes and
+    /// merges. Every seed must project each (the aggregate's coverage), so
+    /// the marker and the merge keys are compared as every other entry is.
+    legacy_records: u64,
+    request_records: u64,
+    pod_output_records: u64,
+    host_records: u64,
+    merge_records: u64,
     invalid_logs: u64,
     state_divergences: u64,
     extra_or_missing_keys: u64,
@@ -141,6 +162,11 @@ impl Metrics {
     fn fields(&self) -> Vec<(&'static str, u128)> {
         vec![
             ("records", self.records.into()),
+            ("legacy_records", self.legacy_records.into()),
+            ("request_records", self.request_records.into()),
+            ("pod_output_records", self.pod_output_records.into()),
+            ("host_records", self.host_records.into()),
+            ("merge_records", self.merge_records.into()),
             ("invalid_logs", self.invalid_logs.into()),
             ("state_divergences", self.state_divergences.into()),
             ("extra_or_missing_keys", self.extra_or_missing_keys.into()),
@@ -288,6 +314,7 @@ async fn run_case(raw: &Client, seed: u64, case: usize, rng: &mut Rng, metrics: 
     let log = extended[..length].to_vec();
     let anchors = chain_anchors(&log, LogAnchor::empty()).expect("the generated log chains");
     metrics.records += log.len() as u64;
+    count_origins(&log, metrics);
 
     // The oracle: the runtime's own replay of the log.
     let oracle = match PtrRuntime::replay(PtrConfig::default(), &log) {
@@ -1625,6 +1652,22 @@ async fn compare_turso(
 /// supersessions name the current generation, semantic deltas are real encoded
 /// deltas on the revision chain, and effect attempts are settled or reconciled
 /// exactly once with keys never reused while in flight.
+/// Count the semantic records of `log` by origin.
+fn count_origins(log: &[CommittedEvent], metrics: &mut Metrics) {
+    for record in log {
+        if let LedgerEvent::SemanticDeltaCommitted { origin, .. } = &record.event {
+            let counter = match origin {
+                SemanticOrigin::Legacy => &mut metrics.legacy_records,
+                SemanticOrigin::Request { .. } => &mut metrics.request_records,
+                SemanticOrigin::PodOutput { .. } => &mut metrics.pod_output_records,
+                SemanticOrigin::Host { .. } => &mut metrics.host_records,
+                SemanticOrigin::Merge(_) => &mut metrics.merge_records,
+            };
+            *counter += 1;
+        }
+    }
+}
+
 fn generate_log(rng: &mut Rng, length: usize) -> Vec<CommittedEvent> {
     let mut generator = Generator {
         events: Vec::with_capacity(length),
@@ -1634,6 +1677,11 @@ fn generate_log(rng: &mut Rng, length: usize) -> Vec<CommittedEvent> {
         tombstones: BTreeSet::new(),
         unsettled: Vec::new(),
         next_effect_key: 0,
+        attested: false,
+        requests: Vec::new(),
+        pod_outputs: BTreeSet::new(),
+        next_request: 0,
+        next_branch: 0,
     };
     while generator.events.len() < length {
         generator.step(rng);
@@ -1652,6 +1700,15 @@ struct Generator {
     /// Unsettled effect attempts: commit index and at-most-once key.
     unsettled: Vec<(u64, Option<String>)>,
     next_effect_key: u64,
+    /// Whether an attributed semantic record has been written: from then on
+    /// every semantic record is attributed (R1).
+    attested: bool,
+    /// Requests whose raw text a record wrote.
+    requests: Vec<String>,
+    /// The (request, Pod) pairs whose output a record wrote.
+    pod_outputs: BTreeSet<(String, String)>,
+    next_request: u64,
+    next_branch: u64,
 }
 
 impl Generator {
@@ -1662,6 +1719,55 @@ impl Generator {
 
     fn name(rng: &mut Rng) -> String {
         format!("{}-{}", rng.pick(&NAMES), rng.below(40))
+    }
+
+    /// A [`name`](Self::name) that is also provenance text a record may carry
+    /// (an identifier: no control character, no surrounding whitespace).
+    fn provenance(rng: &mut Rng) -> String {
+        loop {
+            let name = Self::name(rng);
+            if !name.chars().any(char::is_control) {
+                return name;
+            }
+        }
+    }
+
+    /// An attestation replay accepts: a requirement a grant can hold, a
+    /// weakest level that meets it, one to four distinct verifiers and sorted,
+    /// distinct soft findings of theirs.
+    fn attestation(rng: &mut Rng) -> Attestation {
+        let required = *rng.pick(&[
+            VerificationLevel::FullSemantic,
+            VerificationLevel::Deterministic,
+        ]);
+        let level = if required == VerificationLevel::Deterministic || rng.chance(0.5) {
+            VerificationLevel::Deterministic
+        } else {
+            VerificationLevel::FullSemantic
+        };
+        let mut verifiers = Vec::new();
+        for name in VERIFIERS {
+            if rng.chance(0.5) {
+                verifiers.push(name.to_owned());
+            }
+        }
+        if verifiers.is_empty() {
+            verifiers.push(rng.pick(&VERIFIERS).to_string());
+        }
+        let mut findings = Vec::new();
+        for name in &verifiers {
+            if rng.chance(0.3) {
+                findings.push(format!("{name}/{}", rng.pick(&FINDING_CODES)));
+            }
+        }
+        findings.sort();
+        findings.dedup();
+        Attestation {
+            required,
+            level,
+            verifiers,
+            findings,
+        }
     }
 
     /// A generation the runtime would accept for `target`: at least the live
@@ -1810,7 +1916,33 @@ impl Generator {
         });
     }
 
+    /// A semantic record of any origin. A log may begin with records written
+    /// before origins existed, but once one attributed record is written
+    /// every later one is attributed (R1); each attributed record has exactly
+    /// the shape the runtime's replay accepts (R2 to R4).
     fn semantic_delta(&mut self, rng: &mut Rng) {
+        if !self.attested && rng.chance(0.7) {
+            let delta = self.value_delta(rng);
+            return self.commit_semantic(delta, SemanticOrigin::Legacy);
+        }
+        self.attested = true;
+        match rng.below(4) {
+            0 => self.request(rng),
+            1 => self.pod_output(rng),
+            2 => {
+                let delta = self.value_delta(rng);
+                let origin = SemanticOrigin::Host {
+                    principal: Self::provenance(rng),
+                    verification: Self::attestation(rng),
+                };
+                self.commit_semantic(delta, origin);
+            }
+            _ => self.merge(rng),
+        }
+    }
+
+    /// One to three new values at keys only host writes and merges touch.
+    fn value_delta(&self, rng: &mut Rng) -> SemanticDelta {
         let mut delta = SemanticDelta::default();
         let index = self.events.len() + 1;
         for _ in 0..rng.range(1, 3) {
@@ -1819,6 +1951,10 @@ impl Generator {
                 SemanticValue::Text(format!("v{index}-{}", rng.below(1000))),
             );
         }
+        delta
+    }
+
+    fn commit_semantic(&mut self, delta: SemanticDelta, origin: SemanticOrigin) {
         let encoded = delta.encode().expect("a generated delta encodes");
         let base = self.semdb.revision();
         let (revision, _) = self
@@ -1829,7 +1965,110 @@ impl Generator {
             base_revision: base,
             revision,
             encoded_delta: encoded,
+            origin,
         });
+    }
+
+    /// A request's raw text, as ingest writes it: one text value at its raw
+    /// key and nothing else.
+    fn request(&mut self, rng: &mut Rng) {
+        self.next_request += 1;
+        let request = format!("req-{}-{}", self.next_request, Self::provenance(rng));
+        let mut delta = SemanticDelta::default();
+        delta.upserts.insert(
+            request_raw_key(&RequestId(request.clone())),
+            SemanticValue::Text(format!(
+                "raw text {} — “{}”",
+                self.next_request,
+                Self::name(rng)
+            )),
+        );
+        self.requests.push(request.clone());
+        self.commit_semantic(delta, SemanticOrigin::Request { request });
+    }
+
+    /// A Pod's promoted output for a request whose raw text is written, as
+    /// the runtime promotes it: one payload whose source is the Pod, derived
+    /// from exactly the request's raw text. A request first if there is none,
+    /// or if the Pod picked already answered it.
+    fn pod_output(&mut self, rng: &mut Rng) {
+        if self.requests.is_empty() {
+            return self.request(rng);
+        }
+        let request = rng.pick(&self.requests).clone();
+        let pod = rng.pick(&PODS).to_string();
+        if !self.pod_outputs.insert((request.clone(), pod.clone())) {
+            return self.request(rng);
+        }
+        let request_id = RequestId(request.clone());
+        let key = pod_output_key(&request_id, &PodId(pod.clone()));
+        let length = rng.range(0, 24) as usize;
+        let mut delta = SemanticDelta::default();
+        delta.upserts.insert(
+            key.clone(),
+            SemanticValue::Payload(SemanticPayload {
+                type_id: TypeId::from("ptr.bench.pod-output"),
+                source: pod.clone(),
+                bytes: rng.bytes(length),
+            }),
+        );
+        delta
+            .dependencies
+            .insert(key, [request_raw_key(&request_id)].into());
+        let level = *rng.pick(&[
+            VerificationLevel::Unverified,
+            VerificationLevel::SampleVerified,
+            VerificationLevel::FullSemantic,
+            VerificationLevel::Deterministic,
+        ]);
+        self.commit_semantic(
+            delta,
+            SemanticOrigin::PodOutput {
+                request,
+                pod,
+                level,
+            },
+        );
+    }
+
+    /// A merge record as the runtime appends one: a fresh branch id, no
+    /// dependency entry, rebased keys among the keys it writes, and the plan
+    /// digest `merge_plan_digest` gives for the record's own parts.
+    fn merge(&mut self, rng: &mut Rng) {
+        let delta = self.value_delta(rng);
+        let encoded = delta.encode().expect("a generated delta encodes");
+        let base = self.semdb.revision();
+        self.next_branch += 1;
+        let branch = format!("branch-{}-{}", self.next_branch, Self::provenance(rng));
+        let mut rebased = BTreeSet::new();
+        for key in delta.upserts.keys() {
+            if rng.chance(0.4) {
+                rebased.insert(key.clone());
+            }
+        }
+        let dependencies = rng.digest();
+        let plan = ptr_branch::merge_plan_digest(&branch, base, &encoded, &dependencies, &rebased);
+        let authority = if rng.chance(0.5) {
+            MergeAuthorityRecord::Triage {
+                policy_version: format!("policy-{}", rng.below(3)),
+                score_bits: (rng.below(1001) as f32 / 1000.0).to_bits(),
+            }
+        } else {
+            MergeAuthorityRecord::Reviewed {
+                reviewer: Self::provenance(rng),
+            }
+        };
+        let origin = SemanticOrigin::Merge(MergeRecord {
+            branch,
+            author: Self::provenance(rng),
+            seal: rng.digest(),
+            plan,
+            dependencies,
+            rebased,
+            verification: Self::attestation(rng),
+            authority,
+        });
+        self.commit_semantic(delta, origin);
     }
 
     fn attempt(&mut self, rng: &mut Rng) {

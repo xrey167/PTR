@@ -11,9 +11,12 @@ use crate::error::ArbiterError;
 /// What happens to a certified branch next.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum TriageDecision {
-    /// Propose the merge plan for commit. This is not authorisation: the plan
-    /// still goes through the runtime's revision check and required
-    /// verification, exactly like a human-approved plan.
+    /// Propose the merge plan for commit. This is not authorisation over
+    /// verification: the runtime asks the policy to triage only a merge its
+    /// grant's verifiers admitted, and holds one they did not admit with a
+    /// triage verification decided (discarded when a verifier failed it,
+    /// escalated otherwise, never auto-proposed). A human-approved plan is
+    /// verified exactly the same way.
     AutoPropose,
     /// Ask a person.
     Escalate,

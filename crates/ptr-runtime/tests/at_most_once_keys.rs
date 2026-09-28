@@ -217,7 +217,14 @@ fn durable_fixture(path: &PathBuf) -> (PtrRuntime, ActionIr) {
             generation: Generation(1),
         })
         .unwrap();
-    let action = ActionIr {
+    let action = fixture_action(revision);
+    regrant(&mut runtime, &action);
+    (runtime, action)
+}
+
+/// The fixture's action on `capsule:a` at generation 1, against `revision`.
+fn fixture_action(revision: Revision) -> ActionIr {
+    ActionIr {
         operation: "write".into(),
         target: "capsule:a".into(),
         capability: CapabilityId::from("file.write"),
@@ -226,9 +233,7 @@ fn durable_fixture(path: &PathBuf) -> (PtrRuntime, ActionIr) {
         generation: Generation(1),
         revision,
         payload: b"verified payload".to_vec(),
-    };
-    regrant(&mut runtime, &action);
-    (runtime, action)
+    }
 }
 
 fn reopen(path: &PathBuf, action: &ActionIr) -> PtrRuntime {
@@ -881,10 +886,11 @@ enum Ending {
 }
 
 /// A log an earlier build could have written, reopened by this one as after an
-/// upgrade: the durable fixture's ground state, then an attempt on the
-/// fixture's action under `key`, recorded for `project` and `principal`, ended
-/// as `ending`. Returns the log's directory, which has to outlive the runtime,
-/// the runtime, the action and the attempt's index.
+/// upgrade: the durable fixture's ground state as such a build recorded it
+/// (the request's raw text without an origin, then the capsule), then an
+/// attempt on the fixture's action under `key`, recorded for `project` and
+/// `principal`, ended as `ending`. Returns the log's directory, which has to
+/// outlive the runtime, the runtime, the action and the attempt's index.
 fn logged_by_an_earlier_build(
     key: &str,
     project: &str,
@@ -892,10 +898,27 @@ fn logged_by_an_earlier_build(
     ending: Ending,
 ) -> (Temp, PtrRuntime, ActionIr, CommitIndex) {
     let temp = Temp::new();
-    let (runtime, action) = durable_fixture(&temp.log());
-    drop(runtime);
+    let action = fixture_action(Revision(1));
     let attempt = {
         let mut log = FileLedger::open(temp.log()).unwrap();
+        let mut ground = ptr_semdb::SemanticDelta::default();
+        ground.upserts.insert(
+            ptr_runtime::semantic::request_raw_key(&RequestId::from("request")),
+            "ground state".into(),
+        );
+        log.append_durable(LedgerEvent::SemanticDeltaCommitted {
+            base_revision: Revision(0),
+            revision: Revision(1),
+            encoded_delta: ground.encode().unwrap(),
+            origin: ptr_ledger::SemanticOrigin::Legacy,
+        })
+        .unwrap();
+        log.append_durable(LedgerEvent::CapsuleCommitted {
+            project: ProjectId::from("p"),
+            capsule: CapsuleId::from("capsule:a"),
+            generation: Generation(1),
+        })
+        .unwrap();
         let attempt = log
             .append_durable(recorded(&action, Some(key), project, principal))
             .unwrap();
@@ -1232,7 +1255,7 @@ fn a_snapshot_whose_keys_bind_no_action_is_refused_by_version() {
 
     // The control: this build's own layout restores, so the refusals above are
     // about the version and nothing else.
-    assert_eq!(&snapshot.bytes()[..8], b"PTRCS003");
+    assert_eq!(&snapshot.bytes()[..8], b"PTRCS004");
     assert_eq!(&snapshot.bytes()[section..section + 8], b"PTREX002");
     assert!(PtrRuntime::restore_compacted(
         PtrConfig::default(),
