@@ -1,4 +1,5 @@
 import contextlib
+import datetime
 import errno
 import hashlib
 import importlib.util
@@ -106,6 +107,23 @@ class AgreementTests(unittest.TestCase):
         # The manifest's status changes when the experiment completes.
         records = {"a.json": record("a" * 40), "b.json": record("b" * 40, seed=2)}
         self.assertEqual(mod.agreement_errors("L900", {**MANIFEST, "status": "completed"}, records), [])
+
+    def test_a_manifest_agrees_with_the_record_as_json_holds_it(self):
+        # JSON has no date and the record holds a TOML date as its text, and
+        # NaN is not equal to itself: the manifest is compared as a record
+        # can hold it.
+        manifest = {**MANIFEST, "created": datetime.date(2026, 1, 2), "loss_cap": float("nan")}
+        held = json.loads(json.dumps(manifest, default=mod.toml_time))
+        self.assertEqual(held["created"], "2026-01-02")
+        records = {"a.json": record("a" * 40, manifest=held)}
+        self.assertEqual(mod.agreement_errors("L900", manifest, records), [])
+        changed = {"b.json": record("b" * 40, manifest={**held, "created": "2026-01-03"})}
+        self.assertEqual(
+            mod.agreement_errors("L900", manifest, changed),
+            ["b.json ran under an experiment.toml that differs from the current one"],
+        )
+        with self.assertRaises(TypeError):
+            mod.toml_time(object())
 
     def test_a_record_of_another_experiment_or_of_no_commit_is_refused(self):
         records = {

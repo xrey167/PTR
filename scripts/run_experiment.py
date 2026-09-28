@@ -4,11 +4,13 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import os
 import platform
 import re
 import shlex
 import subprocess
 import sys
+import tempfile
 import time
 import tomllib
 from pathlib import Path, PurePosixPath
@@ -55,22 +57,15 @@ def utc_stamp() -> str:
     return dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
 
 
-def toml_time(value):
-    """A TOML date, time or datetime in `record`, as its ISO 8601 text."""
-    if isinstance(value, (dt.date, dt.time)):
-        return value.isoformat()
-    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
-
-
 def write_json_exclusive(path: Path, record: dict) -> None:
     """Write `record` to the new file `path`, whole or not at all: a write
     that fails leaves no partial record for an aggregator to select. A TOML
     date or time the manifest holds is written as its ISO 8601 text
-    (`toml_time`), so no manifest keeps the record of a run that ran from
-    being written. Raises `FileExistsError` when `path` exists; a record
-    never replaces another."""
+    (`experiment_records.toml_time`), so no manifest keeps the record of a
+    run that ran from being written. Raises `FileExistsError` when `path`
+    exists; a record never replaces another."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    experiment_records.write_exclusively(path, json.dumps(record, indent=2, default=toml_time) + "\n")
+    experiment_records.write_exclusively(path, json.dumps(record, indent=2, default=experiment_records.toml_time) + "\n")
 
 
 def validate():
@@ -168,7 +163,7 @@ def results_directory(root: Path, data: dict) -> Path | None:
     return root / relative
 
 
-def launch_watch(exp_id: str, root: Path, results: Path) -> experiment_records.ProvenanceWatch | None:
+def launch_watch(exp_id: str, root: Path, results: Path, data: dict) -> experiment_records.ProvenanceWatch | None:
     """The watch on every file that decides a launch of `exp_id` (the
     provenance files, the experiment's directory except `results`, and
     `check_research_gates.launch_inputs`), or None, printing why, when git
@@ -176,7 +171,11 @@ def launch_watch(exp_id: str, root: Path, results: Path) -> experiment_records.P
     what it ran, so it may be written only from a tree that holds HEAD. A
     listed experiment also needs HEAD to hold it frozen as the tree launches
     it (`check_research_gates.launch_commit_errors`), each input a regular
-    file HEAD holds, so the gate can find the freeze from HEAD alone."""
+    file HEAD holds, so the gate can find the freeze from HEAD alone. And
+    `data`, the manifest the command and the record are built from, read
+    before the watch looked, must be the one the watched tree holds: a
+    manifest changed or committed in between would run what HEAD does not
+    hold."""
     try:
         watch = experiment_records.ProvenanceWatch(
             ROOT,
@@ -202,7 +201,19 @@ def launch_watch(exp_id: str, root: Path, results: Path) -> experiment_records.P
     problems = check_research_gates.launch_commit_errors(ROOT, exp_id, watch.head)
     for problem in problems:
         print(f"ERROR: {problem}", file=sys.stderr)
-    return None if problems else watch
+    if problems:
+        return None
+    try:
+        held = load(root / "experiment.toml")
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        held = None
+    if held is None or not check_research_gates.same_value(held, data):
+        print(
+            "ERROR: experiment.toml changed while the launch was checked; rerun from a tree that holds HEAD",
+            file=sys.stderr,
+        )
+        return None
+    return watch
 
 
 def prepare(exp_id: str):
@@ -215,7 +226,7 @@ def prepare(exp_id: str):
     results = results_directory(root, data)
     if results is None:
         return 2
-    watch = launch_watch(exp_id, root, results)
+    watch = launch_watch(exp_id, root, results, data)
     if watch is None:
         return 2
     timestamp = utc_stamp()
@@ -277,7 +288,13 @@ def build_command(
 
 
 def execute_command(command: list[str]) -> dict:
+    """Run `command` from the repository's root and return its exit status,
+    output, launch error and duration. Python in it reads and writes its
+    bytecode cache in a fresh directory (`PYTHONPYCACHEPREFIX`), so no
+    `__pycache__` entry the tree holds, which git ignores and HEAD does not
+    hold, runs in place of a tracked source."""
     started = time.perf_counter_ns()
+    cache = tempfile.TemporaryDirectory()
     try:
         completed = subprocess.run(
             command,
@@ -285,6 +302,7 @@ def execute_command(command: list[str]) -> dict:
             text=True,
             capture_output=True,
             check=False,
+            env={**os.environ, "PYTHONPYCACHEPREFIX": cache.name},
         )
         result = {
             "exit_code": completed.returncode,
@@ -299,6 +317,8 @@ def execute_command(command: list[str]) -> dict:
             "stderr": "",
             "launch_error": f"{type(error).__name__}: {error}",
         }
+    finally:
+        cache.cleanup()
     result["duration_ns"] = time.perf_counter_ns() - started
     return result
 
@@ -341,7 +361,7 @@ def run_experiment(
     results = results_directory(root, data)
     if results is None:
         return 2
-    watch = launch_watch(exp_id, root, results)
+    watch = launch_watch(exp_id, root, results, data)
     if watch is None:
         return 2
 

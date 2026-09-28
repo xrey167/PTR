@@ -105,6 +105,17 @@ class ExperimentRunnerTests(unittest.TestCase):
         self.assertIsNone(result["launch_error"])
         self.assertGreaterEqual(result["duration_ns"], 0)
 
+    def test_python_in_the_command_reads_no_bytecode_cache_the_tree_holds(self):
+        # A __pycache__ entry, which git ignores and HEAD does not hold, could
+        # run in place of a tracked source: the command's Python keeps its
+        # cache in a fresh directory, removed once the command has run.
+        result = mod.execute_command([sys.executable, "-c", "import sys; print(sys.pycache_prefix)"])
+        prefix = result["stdout"].strip()
+        self.assertEqual(result["exit_code"], 0)
+        self.assertNotIn(prefix, ("", "None"))
+        self.assertFalse(Path(prefix).exists())
+        self.assertNotIn("PYTHONPYCACHEPREFIX", os.environ)
+
     def test_a_seed_run_from_a_dirty_source_tree_is_refused_before_it_runs(self):
         # A record names HEAD as the code it ran; an edit reverted before
         # aggregation would otherwise be attributed to the clean revision.
@@ -524,6 +535,29 @@ class RunWatchTests(unittest.TestCase):
         status, records, stderr = self.run_seed()
         self.assertEqual((status, stderr), (0, ""))
         self.assertEqual(records[0]["manifest"]["created"], "2026-01-02")
+        # And the record agrees with the manifest it ran under.
+        data = tomllib.loads(manifest.read_text(encoding="utf-8"))
+        self.assertEqual(mod.experiment_records.agreement_errors("L900", data, {"record": records[0]}), [])
+
+    def test_a_manifest_changed_before_the_watch_looked_is_refused(self):
+        # The command is built from the manifest read first; one committed
+        # in its place before the watch looked would leave the watch holding
+        # another than the one that ran.
+        real = mod.experiment_records.ProvenanceWatch
+
+        def replaced(*args, **kwargs):
+            self.write(
+                "experiments/x/L900-x/experiment.toml",
+                'id = "L900"\nstatus = "running"\nseeds = [17]\nentrypoint = "other <seed>"\n',
+            )
+            git(self.root, "commit", "-q", "--no-verify", "-am", "replaced")
+            return real(*args, **kwargs)
+
+        ran = []
+        with mock.patch.object(mod.experiment_records, "ProvenanceWatch", side_effect=replaced):
+            status, records, stderr = self.run_seed(lambda: ran.append(True))
+        self.assertEqual((status, records, ran), (2, [], []))
+        self.assertIn("experiment.toml changed while the launch was checked", stderr)
 
     def test_a_record_the_results_hold_is_no_change_of_the_sources(self):
         # Records accumulate in results/, which the run writes into itself.

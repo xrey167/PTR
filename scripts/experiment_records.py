@@ -79,6 +79,7 @@ gate compares with the manifest's `preregistration_sha256`.
 
 from __future__ import annotations
 
+import datetime
 import hashlib
 import json
 import os
@@ -179,6 +180,21 @@ def without_status(manifest: dict) -> dict:
     return {key: value for key, value in manifest.items() if key != "status"}
 
 
+def toml_time(value):
+    """A TOML date, time or datetime as its ISO 8601 text, as a run record
+    holds it: JSON has no such type (`json.dumps`'s `default`)."""
+    if isinstance(value, (datetime.date, datetime.time)):
+        return value.isoformat()
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
+def recorded_text(value) -> str:
+    """`value` as the JSON text a run record holds it as, keys sorted
+    (`toml_time`), so a manifest compares with the one a record names as far
+    as the record can hold it: a date as its text, NaN as itself."""
+    return json.dumps(value, sort_keys=True, default=toml_time)
+
+
 def agreement_errors(experiment_id: str, manifest: dict, records: dict[str, dict]) -> list[str]:
     """Why `records` (file name -> run record) cannot be seeds of one run of
     `experiment_id`, whose manifest is now `manifest`; empty when they can.
@@ -198,9 +214,9 @@ def agreement_errors(experiment_id: str, manifest: dict, records: dict[str, dict
                 f"the records disagree on {label}: "
                 + "; ".join(f"{value} in {', '.join(names)}" for value, names in groups.items())
             )
-    current = without_status(manifest)
+    current = recorded_text(without_status(manifest))
     for name, record in records.items():
-        if without_status(record.get("manifest") or {}) != current:
+        if recorded_text(without_status(record.get("manifest") or {})) != current:
             errors.append(f"{name} ran under an experiment.toml that differs from the current one")
         entrypoint = record.get("entrypoint")
         if not isinstance(entrypoint, str) or not str(manifest.get(entrypoint, "")).strip():

@@ -16,7 +16,8 @@ Experiments that need a pinned baseline may run only once it is pinned.
 An experiment listed in `experiments/preregistration.toml` leaves `planned`
 (status `prepared`, `running`, `completed` or `failed`) only with a frozen
 preregistration (`preregistration_errors`); a superseded experiment has been
-replaced by another, whose own preregistration counts:
+replaced by another, whose own preregistration counts, and is not launched,
+but one that was frozen or ran stays bound as below, as it was frozen:
 
 - its manifest names its `entrypoint`, since the manifest is frozen from
   the first commit past `planned` and one named later could never be named;
@@ -72,7 +73,8 @@ The list keeps every experiment it has named at a commit on HEAD's history
 that the registry holds now or has held at any commit (`enrolled`), so
 taking one out of it opens neither the gate nor the runner, and a listed
 experiment that was committed frozen, or whose run records were committed,
-cannot go back to `planned`; it can only be superseded.
+cannot go back to `planned`; it can only be superseded, which keeps its
+records and its preregistration as they were.
 
 `scripts/run_experiment.py` refuses to run or prepare a listed experiment
 until this holds for it (`launch_errors`), so no outcome is seen before the
@@ -341,16 +343,28 @@ def directory_digest(root: Path, directory: str) -> tuple[list[str], str | None]
     """What keeps the repository `directory` under `root` from being frozen,
     and otherwise its digest: the canonical digest (`file_table_digest`) of
     every file in it that git tracks or would track (one the tree's
-    `.gitignore` files do not ignore, so no cache or build output), each
-    mapped from its path within the directory to its
-    `experiment_records.preregistered_file_digest`. A file reached through a
-    symlink is refused, as `repository_file` refuses it."""
+    `.gitignore` files do not ignore), each mapped from its path within the
+    directory to its git mode and its
+    `experiment_records.preregistered_file_digest` (`file_entry`), as git
+    holds a file's mode with its content and a mode can change what runs. A
+    file reached through a symlink is refused, as `repository_file` refuses
+    it, and so is a file the tree's `.gitignore` files ignore: an
+    interpreter can run one in place of a tracked file (a `__pycache__`
+    entry, a bytecode file standing in for a module), and git holds none."""
     try:
         names=experiment_records.listed_names(
             root,"--literal-pathspecs","ls-files","-z","--cached","--others",experiment_records.PER_DIRECTORY,"--",directory)
+        ignored=experiment_records.listed_names(
+            root,"--literal-pathspecs","ls-files","-z","--others","--ignored",experiment_records.PER_DIRECTORY,"--",directory)
+        staged=experiment_records.listed_names(root,"--literal-pathspecs","ls-files","-z","--stage","--",directory)
     except experiment_records.ProvenanceError as error:
         return [f"cannot be listed: {error}"],None
-    problems=[]
+    modes={}
+    for entry in staged:
+        fields,_,name=entry.partition("\t")
+        modes[name]=fields.split(" ")[0]
+    problems=[f"holds {name}, which git ignores; a baseline's directory holds only what git tracks or would track"
+              for name in sorted(set(ignored))]
     files={}
     for name in sorted(set(names)):
         path=root/name
@@ -360,13 +374,22 @@ def directory_digest(root: Path, directory: str) -> tuple[list[str], str | None]
         if repository_file(root,name) is None:
             problems.append(f"holds {name}, which is not a regular file reached through no symlink")
             continue
-        files[PurePosixPath(name).relative_to(directory).as_posix()]=experiment_records.preregistered_file_digest(path)
+        # Git's mode for a tracked file, whatever the checkout can show of
+        # it; the owner's execute bit, as git would take it, for another.
+        mode=modes.get(name) or ("100755" if path.stat().st_mode & 0o100 else "100644")
+        files[PurePosixPath(name).relative_to(directory).as_posix()]=file_entry(mode,experiment_records.preregistered_file_digest(path))
     if problems:
         return problems,None
     digest=file_table_digest(files)
     if digest is None:
         return ["holds a file whose path is not printable ASCII"],None
     return [],digest
+
+def file_entry(mode: str, digest: str) -> str:
+    """A file of a frozen directory as the digest of its directory holds it:
+    its git mode (`100644`, or `100755` for an executable file) and the
+    digest of its content, as `git ls-tree` writes a mode before an object."""
+    return f"{mode} {digest}"
 
 def entry_errors(exp_id: str, entry, registered: set[str]) -> list[str]:
     """What is wrong with the list's entry for `exp_id`."""
@@ -621,15 +644,36 @@ def is_aggregate(relative: str) -> bool:
     which an aggregator writes as `run.json`."""
     return PurePosixPath(relative).name=="run.json"
 
+def results_directories(root: Path, directories: list[str]) -> set[str]:
+    """Every results directory the experiment has had, as repository paths:
+    in each of `directories`, `results` and every `results_dir` a version of
+    its `experiment.toml` on HEAD's history names that is a directory below
+    it. The runner writes a record only into the results directory of the
+    manifest it runs, which a commit holds."""
+    found=set()
+    for directory in directories:
+        found.add(f"{directory}/results")
+        for _,manifest in versions(root,f"{directory}/experiment.toml"):
+            named=manifest.get("results_dir")
+            if is_repository_path(named) and PurePosixPath(named).parts:
+                found.add(PurePosixPath(directory,named).as_posix())
+    return found
+
 def committed_records(root: Path, directories: list[str]) -> list[str]:
-    """Every run record and aggregate committed under `directories` on
-    HEAD's history, as repository paths, whether the tree still holds it or
-    not, sorted. Git reports a rename as the removal of the old path, so
-    both are named."""
+    """Every run record and aggregate committed on HEAD's history in a
+    results directory the experiment has had in `directories`
+    (`results_directories`), as repository paths, whether the tree still
+    holds it or not, sorted; a file of that name elsewhere, such as a test's
+    fixture, is none. Git reports a rename as the removal of the old path,
+    so both are named."""
+    results=results_directories(root,directories)
     # -m lists what a merge changes against each of its parents, so a record
     # a merge alone added or removed is named too.
     names=history(root,"-m","--no-renames","--name-only","-z","--format=","HEAD","--",*directories)
-    return sorted({name for name in names if is_run_record(name) or is_aggregate(name)})
+    return sorted({
+        name for name in names
+        if (is_run_record(name) or is_aggregate(name)) and PurePosixPath(name).parent.as_posix() in results
+    })
 
 def committed_blobs(root: Path, relative: str) -> set[str]:
     """The distinct contents, as blob names, that the repository path
@@ -810,7 +854,7 @@ def directory_digest_at(root: Path, commit: str, directory: str) -> str | None:
         if kind!="blob" or mode not in REGULAR_MODES:
             return None
         data=object_bytes(root,held)
-        files[PurePosixPath(name).relative_to(directory).as_posix()]=experiment_records.preregistered_bytes_digest(data)
+        files[PurePosixPath(name).relative_to(directory).as_posix()]=file_entry(mode,experiment_records.preregistered_bytes_digest(data))
     return file_table_digest(files)
 
 def changed_keys(then: dict, now: dict, unbound: set[str]) -> list[str]:
@@ -879,9 +923,10 @@ def history_errors(exp_id: str, name: str, named, root: Path, experiment: Path, 
         then_status,now_status=status_of(manifest),status_of(now_manifest)
         if then_status not in RANK:
             errors.append(f"{at}, where it was {then_status!r}; a listed experiment runs only once it is prepared")
-        elif now_status not in RANK or RANK[now_status]<RANK[then_status] or (RANK[then_status]==2 and now_status!=then_status):
+        elif now_status!="superseded" and (now_status not in RANK or RANK[now_status]<RANK[then_status]
+                                            or (RANK[then_status]==2 and now_status!=then_status)):
             errors.append(f"{at}, where it was {then_status!r}; it cannot be {now_status!r} after that, "
-                          "since a status moves only from prepared to running to completed or failed")
+                          "since a status moves only from prepared to running to completed or failed, or to superseded")
     then_entry=listed.get("experiment",{}).get(exp_id) if isinstance(listed,dict) and isinstance(listed.get("experiment"),dict) else None
     try:
         then_rules=experiment_records.canonical_digest(then_entry) if isinstance(then_entry,dict) else None
@@ -1155,11 +1200,20 @@ def preregistration_errors(root: Path, manifests: dict[str, dict], experiments: 
                 errors.extend(frozen_errors(exp_id,entry,manifest,experiments[exp_id],root))
             except Unreadable as error:
                 errors.append(error.named(root))
-        elif status!="superseded":
+        else:
             relative=experiments[exp_id].relative_to(root).as_posix()
             committed=committed_records(root,experiment_directories(root,exp_id,relative))
             left=frozen_commits(root,exp_id,relative)
-            if committed:
+            if status=="superseded":
+                # Superseding stops the runner, not the binding: an experiment
+                # that was frozen or ran keeps its records and its
+                # preregistration, so no outcome is erased by superseding it.
+                if committed or left:
+                    try:
+                        errors.extend(frozen_errors(exp_id,entry,manifest,experiments[exp_id],root))
+                    except Unreadable as error:
+                        errors.append(error.named(root))
+            elif committed:
                 errors.append(
                     f"{exp_id} is {status!r}, but run records of it were committed ({committed[0]}); a listed "
                     "experiment that has run stays prepared, running, completed or failed, or is superseded"

@@ -128,12 +128,14 @@ BASELINE={"name":"fixture","path":BASELINE_PATH,"keys":["model.revision","answer
 BASELINE_CONFIG={"status":"reference-implemented","model":{"revision":"0123abc"},"answer":{"generators":["g1","g2"]}}
 DIGEST=object()
 
-def baseline_digest(files: dict[str, str]) -> str:
+def baseline_digest(files: dict[str, str], executable=()) -> str:
     """The digest the gate freezes a baseline by: the canonical digest of
-    each file of its directory, by path within it, mapped to the SHA-256 of
-    its text with CRLF read as LF."""
+    each file of its directory, by path within it, mapped to its git mode
+    (100755 for those named in `executable`, 100644 otherwise) and the
+    SHA-256 of its text with CRLF read as LF."""
     return mod.experiment_records.canonical_digest({
-        name:hashlib.sha256(text.replace("\r\n","\n").encode("utf-8")).hexdigest() for name,text in files.items()
+        name:("100755" if name in executable else "100644")+" "+hashlib.sha256(text.replace("\r\n","\n").encode("utf-8")).hexdigest()
+        for name,text in files.items()
     })
 
 def gate(root: Path) -> tuple[int, list[str]]:
@@ -554,12 +556,33 @@ class PreregistrationGateTests(unittest.TestCase):
             f"X900: preregistration key baseline_fixture_sha256 {with_code!r} is not {frozen}, the digest of every file in {directory}/",
         )
         write(root,f"{directory}/runner.py",code)
-        # What the .gitignore files ignore is no file of the baseline (a
-        # bytecode cache), and neither is a file of a directory beside it.
+        # What the .gitignore files ignore is refused rather than left out:
+        # an interpreter can run a bytecode cache in place of runner.py, and
+        # git holds none. A file of a directory beside it is no file of it.
         write(root,".gitignore","__pycache__/\n")
         write(root,f"{directory}/__pycache__/runner.cpython-313.pyc","cached")
         write(root,f"{directory}-other/config.toml","x = 1\n")
+        self.assert_blocked(
+            root,
+            f"X900: baseline {directory}/ holds {directory}/__pycache__/runner.cpython-313.pyc, which git ignores; "
+            "a baseline's directory holds only what git tracks or would track",
+        )
+        shutil.rmtree(root/directory/"__pycache__")
         self.assertEqual(gate(root),(0,[]))
+        # A file's mode is frozen with its content, as git holds it: made
+        # executable, runner.py makes another baseline, in the tree and in a
+        # commit.
+        # Git's mode counts for a tracked file, as a checkout that cannot
+        # show modes still holds it.
+        git(root,"update-index","--chmod=+x",f"{directory}/runner.py")
+        executable=baseline_digest({"config.toml":text,"runner.py":code},executable={"runner.py"})
+        self.assert_blocked(
+            root,
+            f"X900: preregistration key baseline_fixture_sha256 {with_code!r} is not {executable}, the digest of every file in {directory}/",
+        )
+        (root/directory/"runner.py").chmod(0o755)
+        chmodded=commit_all(root,"runner.py executable")
+        self.assertEqual(mod.directory_digest_at(root,chmodded,directory),executable)
         # A checkout that writes CRLF line endings holds the same baseline.
         root=self.tree(table={**TABLE,"baseline_fixture_sha256":frozen})
         (root/BASELINE_PATH).write_bytes(text.replace("\n","\r\n").encode("utf-8"))
@@ -818,9 +841,9 @@ class PreregistrationGateTests(unittest.TestCase):
                         self.assert_blocked(
                             root,
                             f"X900: {name} ran at {ran[:12]}, where it was {then!r}; it cannot be {now!r} after that, "
-                            "since a status moves only from prepared to running to completed or failed",
+                            "since a status moves only from prepared to running to completed or failed, or to superseded",
                             f"X900 was frozen at {ran[:12]}, where it was {then!r}; it cannot be {now!r} after that, "
-                            "since a status moves only from prepared to running to completed or failed",
+                            "since a status moves only from prepared to running to completed or failed, or to superseded",
                         )
         # Back at planned, the experiment is not gated as frozen, but it has
         # run: its committed records keep it from hiding as never run.
@@ -831,9 +854,14 @@ class PreregistrationGateTests(unittest.TestCase):
             f"X900 is 'planned', but run records of it were committed ({self.RECORD}); a listed experiment that has run "
             "stays prepared, running, completed or failed, or is superseded",
         )
-        # Superseded, another experiment replaced it, and it is not gated.
+        # Superseded, another experiment replaced it: it is not launched, and
+        # it stays as it ran.
         self.edit(root,self.MANIFEST,'status = "planned"','status = "superseded"')
         self.assertEqual(gate(root),(0,[]))
+        self.assertEqual(mod.launch_errors(root,"X900"),[
+            "X900 preregisters (experiments/preregistration.toml) and is 'superseded': it runs only once its "
+            "preregistration is frozen and it is prepared, running, completed or failed",
+        ])
         # A record whose commit held the experiment before it was prepared
         # did not come from the runner, which refuses to launch it there.
         root=self.tree(status="running")
@@ -843,6 +871,51 @@ class PreregistrationGateTests(unittest.TestCase):
         commit_all(root,"prepared")
         write(root,self.RECORD,json.dumps(self.record(root,early)))
         self.assert_blocked(root,f"X900: {name} ran at {early[:12]}, where it was 'planned'; a listed experiment runs only once it is prepared")
+
+    def test_a_superseded_experiment_that_ran_stays_as_it_ran(self):
+        # Superseding stops the runner, not the binding: an experiment that
+        # ran, superseded, keeps its records and its preregistration, so no
+        # outcome can be erased by superseding it.
+        name=self.RECORD.removeprefix("experiments/semdb/X900-fixture/")
+        for then in ("running","completed","failed"):
+            with self.subTest(then=then):
+                root,ran=self.ran(status=then)
+                self.edit(root,self.MANIFEST,f'status = "{then}"','status = "superseded"')
+                self.edit(root,"experiments/registry.toml",f'status = "{then}"','status = "superseded"')
+                commit_all(root,"superseded")
+                self.assertEqual(gate(root),(0,[]))
+                (root/self.RECORD).unlink()
+                rewritten=self.tree(status="superseded",table={**TABLE,"schema":2})
+                for relative in ("experiments/semdb/X900-fixture/config.toml",self.MANIFEST):
+                    shutil.copyfile(rewritten/relative,root/relative)
+                commit_all(root,"record deleted and criteria rewritten")
+                code,lines=gate(root)
+                self.assertEqual(code,1)
+                for line in (
+                    f"X900: {name} was committed and has since been deleted or renamed; a run record stays as it was recorded",
+                    f"X900 was frozen at {ran[:12]}, whose config.toml holds another [preregistration] than the frozen one",
+                ):
+                    self.assertIn(line,lines)
+        # One superseded before it ever left planned was never bound.
+        root=self.tree(status="planned",table={**TABLE,"harness":"must-be-pinned-before-prepared"})
+        commit_all(root)
+        self.edit(root,self.MANIFEST,'status = "planned"','status = "superseded"')
+        commit_all(root,"superseded")
+        self.assertEqual(gate(root),(0,[]))
+
+    def test_only_a_results_directory_holds_run_records(self):
+        # A file named like a record elsewhere in the experiment's directory,
+        # such as a test's fixture, is none: the runner writes records only
+        # into a results directory a committed manifest declared.
+        root,ran=self.ran()
+        for name in ("tests/run-example.json","tests/run.json"):
+            write(root,f"experiments/semdb/X900-fixture/{name}",'{"fixture": true}\n')
+        commit_all(root,"fixtures")
+        self.assertEqual(gate(root),(0,[]))
+        (root/"experiments/semdb/X900-fixture/tests/run-example.json").unlink()
+        commit_all(root,"a fixture removed")
+        self.assertEqual(gate(root),(0,[]))
+        self.assertEqual(mod.committed_records(root,["experiments/semdb/X900-fixture"]),[self.RECORD])
 
     def test_run_records_are_found_wherever_the_experiment_kept_them(self):
         name=self.RECORD.removeprefix("experiments/semdb/X900-fixture/")
@@ -1233,6 +1306,13 @@ class PreregistrationGateTests(unittest.TestCase):
         (root/inside).unlink()
         write(root,outside,protocol_text)
         commit_all(root,"protocol outside the results")
+        self.assertEqual(gate(root),(0,[]))
+        # So may moving the results directory away from the protocol.
+        root=self.tree(status="running",table={**TABLE,"protocol":inside,"protocol_sha256":digest},required=required)
+        write(root,inside,protocol_text)
+        commit_all(root)
+        write(root,self.MANIFEST,(root/self.MANIFEST).read_text(encoding="utf-8")+'results_dir = "records"\n')
+        commit_all(root,"results in records")
         self.assertEqual(gate(root),(0,[]))
         # Or one that held a file where its results directory would be.
         root=self.tree(status="running")
@@ -1688,7 +1768,7 @@ class PreregistrationGateTests(unittest.TestCase):
         helper="research/baselines/fixture/helper.sh"
         baseline_text=(self.tree()/BASELINE_PATH).read_text(encoding="utf-8")
         table={**TABLE,"protocol":protocol,"protocol_sha256":hashlib.sha256(script.encode("utf-8")).hexdigest(),
-               "baseline_fixture_sha256":baseline_digest({"config.toml":baseline_text,"helper.sh":script})}
+               "baseline_fixture_sha256":baseline_digest({"config.toml":baseline_text,"helper.sh":script},executable={"helper.sh"})}
         root=self.tree(status="running",table=table,required={**REQUIRED,"protocol":"file"})
         for relative in (protocol,helper):
             write(root,relative,script)
@@ -1815,6 +1895,14 @@ class PreregistrationGateTests(unittest.TestCase):
         self.assertEqual(mod.launch_errors(root,"X900"),[refusal])
         head=commit_all(root)
         self.assertIsNone(mod.launchable_at(root,head,"X900","experiments/semdb/X900[a]"))
+        # Nor one whose registry path climbs out and back in, which the tree
+        # reads as the directory and git names as no path at all.
+        root=self.tree(status="running")
+        write(root,"experiments/registry.toml",'version = 1\n\n[[experiment]]\nid = "X900"\npath = "semdb/../semdb/X900-fixture"\nstatus = "running"\n')
+        climbing=("X900: experiments/registry.toml places it in 'experiments/semdb/../semdb/X900-fixture', which is not a "
+                  "repository path, so its runs and freezes there could not be found")
+        self.assert_blocked(root,climbing)
+        self.assertEqual(mod.launch_errors(root,"X900"),[climbing])
         # A registry path with a trailing slash names the directory git
         # names without it, and a freeze there is found after a move.
         root=self.tree(status="running")
