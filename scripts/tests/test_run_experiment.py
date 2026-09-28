@@ -1829,6 +1829,19 @@ class RunWatchTests(unittest.TestCase):
                     "listed experiment runs from a checkout that holds none\n"
                 ))
                 shutil.rmtree(self.root / shown.split("/")[0])
+        # However a platform names git's own directory: Windows reads `.git.`
+        # and `git~1` as `.git`, at the root as below it.
+        with mock.patch.object(mod, "ROOT", self.root):
+            for make, shown in (
+                (lambda: self.write("scripts/git~1/helper.py", "x = 1\n"), "scripts/git~1"),
+                (lambda: self.write("docs/.GIT.", "gitdir: /elsewhere\n"), "docs/.GIT."),
+                (lambda: self.write("GIT~1/helper.py", "x = 1\n"), "GIT~1"),
+            ):
+                with self.subTest(shown=shown):
+                    make()
+                    self.assertEqual(mod.unlisted_entries(), [shown])
+                    shutil.rmtree(self.root / shown.split("/")[0])
+            self.assertEqual(mod.unlisted_entries(), [])
         # One put there while the command ran.
         status, records, stderr = self.run_seed(lambda: (self.root / "made").mkdir())
         self.assertEqual((status, [record["status"] for record in records]), (2, ["started"]))

@@ -379,9 +379,12 @@ def ignored_files() -> list[str]:
 def unlisted_entries() -> list[str]:
     """What the repository holds that git neither tracks nor lists, sorted,
     so no watch or record sees it: an empty directory, whose presence a
-    command can test as a file's, and an entry named `.git`, in any case,
-    below the root, which git keeps for itself and never looks into
-    (`scripts/.git/helper.py`). A walk of the checkout, leaving out git's
+    command can test as a file's, and an entry named as git's own directory
+    below the root, however a platform names it
+    (`check_research_gates.is_git_administration`: `.GIT`, and on Windows
+    `.git.` and `git~1`), which git keeps for itself and never looks into
+    (`scripts/.git/helper.py`), or at the root under any name but `.git`.
+    A walk of the checkout, leaving out git's
     own directory at the root and what git ignores (`ignored_files`), which
     a listed run refuses by itself. Raises
     `experiment_records.ProvenanceError` when git cannot list what it
@@ -396,13 +399,17 @@ def unlisted_entries() -> list[str]:
         kept = []
         for name in subdirectories:
             path = f"{here}/{name}" if here else name
-            if name.lower() == ".git":
-                if here:
+            if check_research_gates.is_git_administration(name):
+                if here or name != ".git":
                     found.append(path)
             elif path not in ignored:
                 kept.append(name)
         subdirectories[:] = kept
-        found.extend(f"{here}/{name}" for name in files if here and name.lower() == ".git")
+        found.extend(
+            f"{here}/{name}" if here else name
+            for name in files
+            if check_research_gates.is_git_administration(name) and (here or name != ".git")
+        )
     return sorted(found)
 
 

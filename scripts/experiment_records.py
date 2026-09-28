@@ -390,7 +390,11 @@ def git(
                 "git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.ignoreCase=false",
                 *((f"--work-tree={root}",) if work_tree else ()), *args,
             ],
-            cwd=root, input=stdin, env=env, capture_output=True, text=not binary, check=False,
+            cwd=root, input=stdin, env=env, capture_output=True, check=False,
+            # Git prints paths as UTF-8 bytes. The locale's encoding could read
+            # bytes that are not UTF-8 as text, or a UTF-8 name as another
+            # name, which names no file of the tree.
+            encoding=None if binary else "utf-8",
         )
     except OSError as error:
         raise ProvenanceError(f"cannot run git: {error}") from error

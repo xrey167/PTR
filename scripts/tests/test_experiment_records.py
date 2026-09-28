@@ -984,6 +984,24 @@ class SourceTreeTests(GitTree, unittest.TestCase):
             mod.uncommitted_files(self.root, ["."])
         self.assertTrue(issubclass(mod.NotUTF8, mod.ProvenanceError))
 
+    def test_git_prints_names_as_utf8_whatever_the_locale(self):
+        # Git prints a name's UTF-8 bytes as they are. Read in the locale's
+        # encoding, an ASCII or Latin-1 one, a UTF-8 name would be refused
+        # or read as another name, which names no file of the tree.
+        self.write("notes-\u00e9.md", "x\n")
+        script = (
+            "import json, sys\n"
+            f"sys.path.insert(0, {str(ROOT / 'scripts')!r})\n"
+            "import experiment_records\n"
+            f"print(json.dumps(experiment_records.untracked_files(__import__('pathlib').Path({str(self.root)!r}), ['.'])))\n"
+        )
+        environment = {**os.environ, "LC_ALL": "POSIX", "LANG": "POSIX", "PYTHONUTF8": "0", "PYTHONCOERCECLOCALE": "0"}
+        ran = subprocess.run(
+            [sys.executable, "-B", "-c", script], env=environment, capture_output=True, check=False
+        )
+        self.assertEqual(ran.returncode, 0, ran.stderr.decode(errors="replace"))
+        self.assertIn("notes-\u00e9.md", json.loads(ran.stdout))
+
     def test_the_whole_repository_holds_what_git_does_not_look_into_at_its_root(self):
         # A listed experiment's command may run or read any path of the
         # repository (`listed_record_paths`), a submodule at the root among

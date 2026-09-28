@@ -2172,6 +2172,11 @@ class PreregistrationGateTests(unittest.TestCase):
                 # Git keeps its own directory, which no scan of the tree lists.
                 ("cargo run --manifest-path .git/evil/Cargo.toml -- <seed>","--manifest-path",".git/evil/Cargo.toml"),
                 ("cargo run --manifest-path crates/.GIT/x/Cargo.toml -- <seed>","--manifest-path","crates/.GIT/x/Cargo.toml"),
+                # However Windows names it: with trailing dots or spaces, or
+                # by its short name.
+                ("cargo run --manifest-path .Git./evil/Cargo.toml -- <seed>","--manifest-path",".Git./evil/Cargo.toml"),
+                ("cargo --lockfile-path 'crates/git~1/Cargo.lock' run -- <seed>","--lockfile-path","crates/git~1/Cargo.lock"),
+                ("cargo -Zunstable-options -C 'GIT~1 ' run -- <seed>","-C","GIT~1 "),
                 # Script mode reads its manifest from the file an argument names.
                 ("cargo +nightly -Zscript /tmp/run.rs <seed>","-Zscript","/tmp/run.rs"),
                 ("cargo +nightly -Z script ../run.rs <seed>","-Zscript","../run.rs"),

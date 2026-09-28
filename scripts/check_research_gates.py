@@ -375,16 +375,17 @@ def outside_repository(path: str) -> bool:
     """Whether `path`, as a command run from the repository's root reads it,
     may name something outside what the repository's watch reads: absolute
     on any platform (`/x`, `C:/x`, `\\\\host\\x`), climbing above the
-    root (`../x`, `a/../../x`), or through a directory named `.git`, in any
-    case, which git keeps for itself and never lists (`.git/x/Cargo.toml`),
-    either slash a separator. The runner starts no shell, so `~` is a name
-    like any other."""
+    root (`../x`, `a/../../x`), or through the directory git keeps for
+    itself and never lists (`.git/x/Cargo.toml`), however a platform names
+    it (`is_git_administration`: `.GIT`, and on Windows `.git.` and
+    `git~1`), either slash a separator. The runner starts no shell, so `~`
+    is a name like any other."""
     normalized=path.replace("\\","/")
     if normalized.startswith("/") or re.match(r"[A-Za-z]:",normalized):
         return True
     depth=0
     for part in normalized.split("/"):
-        if part.lower()==".git":
+        if is_git_administration(part):
             return True
         if part=="..":
             depth-=1
