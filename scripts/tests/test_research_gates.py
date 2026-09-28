@@ -781,6 +781,37 @@ class PreregistrationGateTests(unittest.TestCase):
                 self.assertEqual((code,len(lines)),(1,1))
                 self.assertTrue(lines[0].startswith("X900: results/run.json cannot be read: "),lines)
 
+    def test_a_record_names_the_digest_of_the_manifest_bytes_as_committed_whatever_their_line_endings(self):
+        # `git()` reads text with universal newlines, so the committed bytes
+        # are read here as they are: a manifest committed with CRLF line
+        # endings is hashed with them, one committed with LF endings without.
+        name=self.RECORD.removeprefix("experiments/semdb/X900-fixture/")
+        for ending,other in ((b"\r\n",b"\n"),(b"\n",b"\r\n")):
+            with self.subTest(committed=ending):
+                root=self.tree(status="completed")
+                converted=(root/self.MANIFEST).read_bytes().replace(b"\r\n",b"\n").replace(b"\n",ending)
+                (root/self.MANIFEST).write_bytes(converted)
+                commit=commit_all(root)
+                short=commit[:12]
+                held=subprocess.run(
+                    ["git","-C",str(root),"show",f"{commit}:{self.MANIFEST}"],check=True,capture_output=True
+                ).stdout
+                self.assertEqual(held,converted)
+                self.assertEqual(held.count(b"\n"),held.count(ending))
+                named=hashlib.sha256(held).hexdigest()
+                write(root,self.RECORD,json.dumps(self.record(root,commit,manifest_sha256=named)))
+                self.assertEqual(gate(root),(0,[]))
+                # The same text with the other line endings, whole and
+                # including its last line ending, is another file.
+                unlike=held.replace(b"\r\n",b"\n").replace(b"\n",other)
+                self.assertNotEqual(hashlib.sha256(unlike).hexdigest(),named)
+                wrong=hashlib.sha256(unlike).hexdigest()
+                write(root,self.RECORD,json.dumps(self.record(root,commit,manifest_sha256=wrong)))
+                self.assert_blocked(
+                    root,
+                    f"X900: {name} names manifest_sha256 {wrong!r}, not the SHA-256 of experiment.toml at {short}",
+                )
+
     def test_a_preregistration_rewritten_after_its_runs_fails_whatever_else_is_rewritten(self):
         name=self.RECORD.removeprefix("experiments/semdb/X900-fixture/")
         root=self.tree(status="running")

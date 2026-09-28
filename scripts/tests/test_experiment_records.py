@@ -884,6 +884,20 @@ class SourceTreeTests(GitTree, unittest.TestCase):
         (self.root / ".git/objects" / blob[:2] / blob[2:]).unlink()
         self.assertEqual(mod.content_changes(self.root, ["src/lib.rs"]), ["src/lib.rs"])
 
+    def test_a_repository_of_the_sha256_object_format_names_its_blobs_by_sha256(self):
+        # A blob's id is the hash of its bytes in the repository's own object
+        # format, so the same bytes are 64 hexadecimal digits under sha256:
+        # hashed as sha1 they would be called changed while they are clean.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            git(root, "init", "-q", "--object-format=sha256")
+            commit(root, {"src/lib.rs": "pub fn f() {}\n", "Cargo.toml": "[workspace]\n"}, "code")
+            blob = git(root, "rev-parse", "HEAD:src/lib.rs")
+            self.assertEqual(len(blob), 64)
+            self.assertEqual(mod.content_changes(root, ["Cargo.toml", "src/lib.rs"]), [])
+            (root / "src/lib.rs").write_text("pub fn f() { rewritten() }\n", encoding="utf-8")
+            self.assertEqual(mod.content_changes(root, ["Cargo.toml", "src/lib.rs"]), ["src/lib.rs"])
+
     def test_the_repository_pins_line_endings_to_lf(self):
         # A checkout with `core.autocrlf=true` writes LF anyway where the
         # repository's `.gitattributes` say `eol=lf`, so a preregistered
@@ -1266,6 +1280,27 @@ class ProvenanceWatchTests(GitTree, unittest.TestCase):
             self.assertIsNotNone(stamp)
             self.assertEqual(stamp, mod.file_stamp(self.root / directory))
         self.assertNotEqual(stamps["."], stamps["src"])
+
+    def test_a_stamp_holds_the_inode_size_and_both_times_of_the_file_and_is_none_for_no_file(self):
+        path = self.root / "src/lib.rs"
+        status = os.lstat(path)
+        self.assertEqual(
+            mod.file_stamp(path),
+            (status.st_ino, status.st_size, status.st_mtime_ns, status.st_ctime_ns),
+        )
+        self.assertIsNone(mod.file_stamp(self.root / "missing.rs"))
+        # A directory on the way that is a file leaves nothing below it.
+        self.assertIsNone(mod.file_stamp(path / "below.rs"))
+
+    def test_stamping_the_directories_does_not_forgive_a_file_written_since_the_watch_looked(self):
+        # Only the directories are stamped afresh: the files keep the stamps
+        # they had when the watch looked, so an edit made in between, though
+        # undone, is still a change.
+        self.write("src/lib.rs", "pub fn f() { g() }\n")
+        self.write("src/lib.rs", "pub fn f() {}\n")
+        self.assertEqual(mod.uncommitted_files(self.root, self.pathspecs), [])
+        self.stamp_directories()
+        self.assertEqual(self.watch.changes(), ["src/lib.rs changed on disk"])
 
     def test_a_directory_put_back_is_no_change_before_the_directories_are_stamped(self):
         self.move_aside_and_back("src")
