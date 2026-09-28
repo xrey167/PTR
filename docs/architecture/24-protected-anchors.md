@@ -363,7 +363,7 @@ Those are not history and cannot be replayed.
 
 ### Executed evidence
 
-`crates/ptr-runtime/tests/compacted_snapshot.rs`, 9 integration tests over a
+`crates/ptr-runtime/tests/compacted_snapshot.rs`, 15 integration tests over a
 fixture covering semantic payload bytes, dependencies, capsule commit and
 supersession, hard constraints, procedures and a revocation:
 
@@ -386,6 +386,15 @@ supersession, hard constraints, procedures and a revocation:
   ordinary replay index check.
 - A restored runtime still enforces revision isolation against a stale base.
 - Successive snapshots report their own increasing coverage and distinct digests.
+- A `PTRCS003` snapshot with a `PTRLC001` section restores as a history without
+  attributed records, exactly as a full replay of it does
+  (`a_snapshot_of_the_earlier_layout_restores_as_unattested`); a `PTRLC001` section
+  carrying `semdb:attested` or a merged-branch key
+  (`an_earlier_lifecycle_section_carrying_attestation_keys_is_refused`), a `PTRLC002`
+  merge entry not in the form a merge projects
+  (`a_lifecycle_section_whose_merge_entry_is_not_one_a_merge_projects_is_refused`) and
+  any mismatched pair of outer and lifecycle versions
+  (`mismatched_outer_and_lifecycle_versions_are_refused`) are refused.
 
 ### Not yet covered
 

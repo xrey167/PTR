@@ -561,8 +561,9 @@ probability, never reaches it: `TriageOutcome::from_parts` refuses to build it
 refuses such a row written around it (work migration 10). What neither can see is the
 verification report and the calibration draw, so a row's eligibility and a slice
 branch's draw remain the caller's word. `record_outcome` writes a merge only when
-the projection holds the branch's merge key (`branch-merge:<len>:<id>`, which only
-the runtime's merge record projects) at exactly the claimed commit index, reading
+the projection holds the branch's merge key (`branch-merge:<len>:<id>`, which only a
+merge record projects: the runtime's, or one a writer below the runtime appended,
+ADR-0020) at exactly the claimed commit index, reading
 the projection and inserting the outcome in one statement; a merge the projection
 does not hold is refused as `MergeNotProjected`, one it holds at another index as
 `MergeMismatch`, and a rebuilt projection holds none until it has caught up (while a
@@ -869,7 +870,8 @@ allows, with no grant verifier; every other public semantic write is judged by t
 grant's verifiers.
 
 What the record proves is the runtime's own claim (ADR-0020). Writers below the
-runtime, `Ledger::append`, `FileLedger::append_durable`,
+runtime, among them `Ledger::append`, `FileLedger::append_durable`,
+`FileLedger::create_from_log`,
 `AcknowledgedLedger::append_acknowledged`, `RaftEngineLedger::append_durable`,
 `RaftNode::propose` (through which `ptr-cluster` members propose) and
 `SingleNodeRaftConsensus::propose`, can write a well-formed record the origin rules
