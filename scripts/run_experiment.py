@@ -621,22 +621,42 @@ def outside_cargo_configurations(environment: dict[str, str]) -> list[str]:
     return found
 
 
+def named_toolchain(command: list[str]) -> str | None:
+    """The toolchain `command` names itself, which rustup runs in place of
+    the one it resolves from the root, or None: the first argument
+    `+<toolchain>` of one of rustup's proxies (`cargo +stable run`), or the
+    toolchain of `rustup run <toolchain> <program>`, which rustup documents
+    as the same (`rustup run stable cargo run`), past rustup's own options
+    and `+<toolchain>` before `run` and the options of `run` (`--install`)
+    before the toolchain."""
+    program = os.path.basename(command[0]) if command else ""
+    if program in RUSTUP_PROXIES:
+        return command[1][1:] if len(command) > 1 and command[1].startswith("+") else None
+    if program != "rustup":
+        return None
+    rest = command[1:]
+    while rest and rest[0].startswith(("-", "+")):
+        rest = rest[1:]
+    if not rest or rest[0] != "run":
+        return None
+    rest = rest[1:]
+    while rest and rest[0].startswith("-"):
+        rest = rest[1:]
+    return rest[0] if rest else None
+
+
 def toolchain(environment: dict[str, str], command: list[str]) -> dict:
     """The Rust toolchain `command`, run from the repository's root in
     `environment`, would build with: `rustc` and `cargo` as rustup resolves
     them there, after its overrides and `rust-toolchain.toml`, or for the
-    toolchain the command names itself when its program is one of rustup's
-    proxies and its first argument `+<toolchain>` (`cargo +stable run`), or
-    as the `PATH` holds them without rustup, each named as
-    `resolved_executable` names a program, by nothing when it cannot be
-    resolved. rustup keeps its toolchains outside the repository, where the
-    commit holds none."""
+    toolchain the command names itself (`named_toolchain`: `cargo +stable
+    run`, `rustup run stable cargo run`), or as the `PATH` holds them
+    without rustup, each named as `resolved_executable` names a program, by
+    nothing when it cannot be resolved. rustup keeps its toolchains outside
+    the repository, where the commit holds none."""
     rustup = shutil.which("rustup", path=os.pathsep.join(os.get_exec_path(environment)))
-    named = (
-        ["--toolchain", command[1][1:]]
-        if len(command) > 1 and command[1].startswith("+") and os.path.basename(command[0]) in RUSTUP_PROXIES
-        else []
-    )
+    name = named_toolchain(command)
+    named = [] if name is None else ["--toolchain", name]
     found = {}
     for tool in ("rustc", "cargo"):
         if rustup is None:
@@ -779,14 +799,17 @@ def run_experiment(
     was put back, so the record's `git_sha` is the code that ran as far as
     that watch can see (its `changes` names what it cannot), and for a
     listed experiment when the repository holds a file git ignores, which
-    the command could have run or read (`ignored_files`); a listed
-    experiment's reservation then stays, as the record that its seed ran.
-    A command that could not start ran no code, so its record, that it
-    failed to launch, is written whatever the watch saw. A listed
-    experiment's command runs in the environment the runner allows
-    (`command_environment`), which its record names with the program it
-    started (`resolved_executable`). The record is written whole or not at
-    all (`write_json_exclusive`)."""
+    the command could have run or read (`ignored_files`), or Cargo would
+    read configuration from outside the repository
+    (`outside_cargo_configurations`); a listed experiment's reservation
+    then stays, as the record that its seed ran. A command that could not
+    start ran no code, so its record, that it failed to launch, is written
+    whatever the watch saw. A listed experiment's command runs in the
+    environment the runner allows (`command_environment`), which its record
+    names with the program it started (`resolved_executable`) and the
+    toolchain (`toolchain`), each by its content: one that cannot be read
+    refuses the run. The record is written whole or not at all
+    (`write_json_exclusive`)."""
     _, root, data = resolve(exp_id)
     if unrecordable_manifest(exp_id, data) or launch_refused(exp_id):
         return 2
@@ -914,13 +937,23 @@ def launch_and_record(
                 file=sys.stderr,
             )
             return 2
-        record.update(
-            {
-                "environment": environment,
-                "executable": resolved_executable(command, environment),
-                "toolchain": toolchain(environment, command),
-            }
-        )
+        executable = resolved_executable(command, environment)
+        tools = toolchain(environment, command)
+        # A program named by its path alone could be replaced between seeds
+        # while every record named the same: one found that cannot be read,
+        # such as a binary only executable, is refused.
+        unread = list(dict.fromkeys(
+            program["path"] for program in (executable, *tools.values())
+            if program["path"] is not None and program["sha256"] is None
+        ))
+        if unread:
+            print(
+                f"ERROR: refusing to run {exp_id}: {', '.join(unread)} cannot be read, so its record could not name "
+                "by its content a program the run starts or builds with; make it readable for the run",
+                file=sys.stderr,
+            )
+            return 2
+        record.update({"environment": environment, "executable": executable, "toolchain": tools})
     kept = attempts / out.name if listed else None
     if listed:
         # The reservation: the record, as far as it is known before the
@@ -978,6 +1011,14 @@ def launch_and_record(
                 )
         except experiment_records.ProvenanceError as error:
             changes = [str(error)]
+        # So could Cargo configuration outside the repository, put there
+        # after the launch looked for one.
+        outside = outside_cargo_configurations(environment) if listed else []
+        if outside:
+            changes.append(
+                f"Cargo would read {', '.join(outside)}, configuration outside the repository its build could have "
+                "read"
+            )
         if changes:
             print(
                 f"ERROR: not recording the run (exit status {exit_code}): its sources changed while it ran, "

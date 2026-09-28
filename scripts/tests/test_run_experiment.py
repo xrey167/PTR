@@ -1387,6 +1387,28 @@ class RunWatchTests(unittest.TestCase):
             shell = shutil.which("sh", path=os.defpath)
             self.assertIsNotNone(shell)
             self.assertEqual(mod.resolved_executable(["sh"], {})["path"], os.path.realpath(shell))
+        # A program that cannot be read is found, and named by nothing else.
+        with mock.patch.object(mod, "ROOT", self.root), mock.patch.object(Path, "read_bytes", side_effect=PermissionError):
+            self.assertEqual(mod.resolved_executable(["tools/run.sh"], {}), {"path": str(script.resolve()), "sha256": None})
+        # A listed run refuses one, the program it starts or a tool it builds
+        # with, before anything runs: named by its path alone, it could be
+        # replaced between seeds while every record named the same. (The
+        # tree holds no link a listed run would refuse first.)
+        (tools / "link.sh").unlink()
+        self.preregister("running")
+        unread = {"path": str(script.resolve()), "sha256": None}
+        for patched, value in (
+            ("resolved_executable", unread),
+            ("toolchain", {"rustc": unread, "cargo": {"path": None, "sha256": None}}),
+        ):
+            with self.subTest(patched=patched), mock.patch.object(mod, patched, return_value=value):
+                ran = []
+                status, records, stderr = self.run_seed(lambda: ran.append(True))
+                self.assertEqual((status, records, ran, list(self.attempts().glob("run-*.json"))), (2, [], [], []))
+                self.assertEqual(stderr, (
+                    f"ERROR: refusing to run L900: {script.resolve()} cannot be read, so its record could not name by "
+                    "its content a program the run starts or builds with; make it readable for the run\n"
+                ))
         # The allowed environment is what the runner's sets of the allowed
         # names, and nothing else.
         with mock.patch.dict(os.environ, {"PATH": "/bin", "HOME": "/home/runner", "GH_TOKEN": "x"}, clear=True):
@@ -1611,6 +1633,21 @@ class RunWatchTests(unittest.TestCase):
         # Cargo's home above the root is named once.
         with mock.patch.object(mod, "ROOT", home / "repository"):
             self.assertEqual(mod.outside_cargo_configurations({"HOME": str(home)}), [str(home / ".cargo" / "config")])
+        # One put there while the command ran, after the launch looked, is
+        # one its build could have read: the run is not recorded, and its
+        # reservation stays.
+        (home / ".cargo" / "config").unlink()
+        (home / ".cargo").rmdir()
+        late = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        with mock.patch.dict(os.environ, {"CARGO_HOME": str(late)}):
+            status, records, stderr = self.run_seed(
+                lambda: (late / "config.toml").write_text('[build]\nrustc = "/elsewhere/rustc"\n', encoding="utf-8")
+            )
+        self.assertEqual((status, [record["status"] for record in records]), (2, ["started"]))
+        self.assertIn(
+            f"Cargo would read {late / 'config.toml'}, configuration outside the repository its build could have read",
+            stderr,
+        )
 
     def test_the_toolchain_a_listed_run_builds_with_is_named_in_its_record(self):
         # rustup keeps toolchains outside the repository and may override the
@@ -1647,11 +1684,33 @@ class RunWatchTests(unittest.TestCase):
             self.assertEqual(mod.toolchain(environment, ["cargo", "+stable", "run"]), stable)
             self.assertEqual(mod.toolchain(environment, ["/elsewhere/bin/cargo", "+stable", "run"]), stable)
             self.assertEqual(mod.toolchain(environment, ["rustc", "+stable", "lib.rs"]), stable)
+            # So does `rustup run <toolchain>`, which rustup documents as the
+            # same, past rustup's options and `+<toolchain>` and those of run.
+            for command in (
+                ["rustup", "run", "stable", "cargo", "build"],
+                ["/elsewhere/bin/rustup", "-v", "run", "--install", "stable", "python3", "bench.py"],
+                ["rustup", "+nightly", "run", "stable", "cargo"],
+            ):
+                with self.subTest(command=command):
+                    self.assertEqual(mod.toolchain(environment, command), stable)
+            pinned = {"rustc": named("rustc"), "cargo": named("cargo")}
+            for command in (["rustup", "which", "stable"], ["rustup", "run"], ["rustup", "--version"], ["rustup"]):
+                with self.subTest(command=command):
+                    self.assertEqual(mod.toolchain(environment, command), pinned)
             # Another program's `+` argument is its own.
             self.assertEqual(
                 mod.toolchain(environment, ["python3", "+stable"]), {"rustc": named("rustc"), "cargo": named("cargo")}
             )
             self.assertEqual(mod.toolchain(environment, ["cargo"]), {"rustc": named("rustc"), "cargo": named("cargo")})
+            # What rustup prints when it fails names nothing, a path included.
+            failing = tools / "failing"
+            failing.mkdir()
+            (failing / "rustup").write_text(f'#!/bin/sh\necho "{toolchain}/$2"\nexit 3\n', encoding="utf-8")
+            (failing / "rustup").chmod(0o755)
+            self.assertEqual(
+                mod.toolchain({"PATH": str(failing)}, ["cargo", "run"]),
+                {"rustc": {"path": None, "sha256": None}, "cargo": {"path": None, "sha256": None}},
+            )
             # A tool rustup cannot resolve is named by nothing.
             (toolchain / "cargo").unlink()
             self.assertEqual(
