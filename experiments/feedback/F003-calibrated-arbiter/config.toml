@@ -10,6 +10,8 @@ tests_dir = "tests"
 # `must-be-signed-…` value is an owner decision still to be taken: the owner
 # signs it by committing the decided value in its place.
 [preregistration]
+# The confirmatory seeds, as experiment.toml declares them.
+seeds = [17, 29, 43, 71, 101]
 # Risk level alpha and confidence 1 - delta of Learn-then-Test
 # (ptr_branch::ThresholdRule::LearnThenTest), in permille.
 alpha_permille = 50

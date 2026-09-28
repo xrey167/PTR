@@ -8,6 +8,8 @@ tests_dir = "tests"
 # scripts/check_research_gates.py). A `must-be-pinned-…` value is still to be
 # chosen; the rag_reference and strong_rag baselines must be pinned too.
 [preregistration]
+# The confirmatory seeds, as experiment.toml declares them.
+seeds = [17, 29, 43, 71, 101]
 # How far recall@k may fall below the reference before Q003 is rejected as the
 # default.
 recall_margin_permille = "must-be-pinned-before-prepared"

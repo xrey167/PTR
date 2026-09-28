@@ -224,8 +224,10 @@ def run_experiment(
     run started. Refuses with status 2, before anything runs or is written,
     an undeclared seed, an unresolved command, and a working tree with
     uncommitted or untracked provenance files or experiment files
-    (`experiment_records.uncommitted_files`), and a listed experiment whose
-    preregistration is not frozen (`launch_refused`). After the command ends it looks
+    (`experiment_records.uncommitted_files`, which also covers the files that
+    decide whether it may launch, `check_research_gates.launch_inputs`), and
+    a listed experiment whose preregistration is not frozen
+    (`launch_refused`). After the command ends it looks
     at the same tree again (`experiment_records.ProvenanceWatch`) and writes
     no record, returning 2, when HEAD moved or a provenance or experiment
     file was written, created or removed while the command ran, even if its
@@ -249,9 +251,14 @@ def run_experiment(
     try:
         watch = experiment_records.ProvenanceWatch(
             ROOT,
-            experiment_records.tree_pathspecs(
-                root, results, ROOT, experiment_records.seed_record_paths(root, ROOT)
-            ),
+            [
+                *experiment_records.tree_pathspecs(
+                    root, results, ROOT, experiment_records.seed_record_paths(root, ROOT)
+                ),
+                # What decided that this experiment may launch: an edit to it
+                # would be undone after the outcome is seen.
+                *check_research_gates.launch_inputs(ROOT, exp_id),
+            ],
         )
     except experiment_records.ProvenanceError as error:
         print(f"ERROR: {error}", file=sys.stderr)

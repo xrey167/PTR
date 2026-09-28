@@ -9,6 +9,8 @@ tests_dir = "tests"
 # chosen. Neither baseline has a configuration in research/baselines/, so
 # each is pinned here.
 [preregistration]
+# The confirmatory seeds, as experiment.toml declares them.
+seeds = [17, 29, 43, 71, 101]
 # The equal token budget of every arm.
 token_budget = "must-be-pinned-before-prepared"
 # N, the facts the recency buffer keeps.

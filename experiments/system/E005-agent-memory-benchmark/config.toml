@@ -9,6 +9,8 @@ tests_dir = "tests"
 # chosen. The RAG baseline is research/baselines/strong_rag, which must be
 # pinned too; the others have no configuration there, so they are pinned here.
 [preregistration]
+# The confirmatory seeds, as experiment.toml declares them.
+seeds = [17, 29, 43, 71, 101]
 # The equal token budget of every arm.
 token_budget = "must-be-pinned-before-prepared"
 full_context_baseline = "must-be-pinned-before-prepared"

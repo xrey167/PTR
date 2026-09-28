@@ -91,6 +91,7 @@ low_cells = "str-list"
 # The four owner decisions (calibration_set_rule, adjudicators_see_intent,
 # harm_breakdown_namespaces, adjudication_protocol) block until signed.
 [experiment.F003.required]
+seeds = "int-list"
 alpha_permille = "int"
 delta_permille = "int"
 threshold_rule = "str"
@@ -103,6 +104,7 @@ harm_breakdown_namespaces = "str"
 adjudication_protocol = "file"
 
 [experiment.Q003.required]
+seeds = "int-list"
 recall_margin_permille = "int"
 k = "int"
 embedding_model = "str"
@@ -123,16 +125,19 @@ keys = ["dense.revision", "reranker.revision", "answer.generator", "answer.revis
 status_key = "status"
 
 [experiment.R004.required]
+seeds = "int-list"
 public_regression_gate_permille = "int"
 backward_transfer_min_permille = "int"
 
 [experiment.M008.required]
+seeds = "int-list"
 token_budget = "int"
 recency_window = "int"
 recency_buffer_baseline = "str"
 hybrid_retrieval_baseline = "str"
 
 [experiment.E005.required]
+seeds = "int-list"
 token_budget = "int"
 full_context_baseline = "str"
 agent_memory_baselines = "str-list"

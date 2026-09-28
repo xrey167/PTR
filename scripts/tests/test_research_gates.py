@@ -346,10 +346,10 @@ class PreregistrationGateTests(unittest.TestCase):
                     self.tree(seeds=seeds),
                     f"X900: preregistered seeds [17, 29] are not the manifest's seeds {list(seeds)!r}",
                 )
-        # A table without seeds leaves the manifest's alone.
+        # Every listed experiment preregisters its seeds, so none can be
+        # added to the manifest alone after an outcome is seen.
         without={key:value for key,value in TABLE.items() if key!="seeds"}
-        required={key:kind for key,kind in REQUIRED.items() if key!="seeds"}
-        self.assertEqual(gate(self.tree(table=without,required=required,seeds=(1,))),(0,[]))
+        self.assert_blocked(self.tree(table=without,seeds=(17,29,43)),"X900: preregistration key seeds is missing")
 
     def test_an_unpinned_or_blocked_baseline_blocks(self):
         where=f"X900: baseline {BASELINE_PATH}"
@@ -379,7 +379,9 @@ class PreregistrationGateTests(unittest.TestCase):
     def test_the_list_names_only_registered_experiments_known_types_and_well_formed_baselines(self):
         where="experiments/preregistration.toml: X900"
         cases=[
-            ({"required":{**REQUIRED,"seeds":"list"}},{},[f"{where}: key seeds has unknown type 'list'"]),
+            ({"required":{**REQUIRED,"seeds":"list"}},{},[f"{where}: key seeds has unknown type 'list'",f"{where} must require seeds as an int-list: every listed experiment preregisters the seeds it runs"]),
+            ({"required":{**REQUIRED,"seeds":"int"}},{},[f"{where} must require seeds as an int-list: every listed experiment preregisters the seeds it runs"]),
+            ({"required":{key:kind for key,kind in REQUIRED.items() if key!="seeds"}},{},[f"{where} must require seeds as an int-list: every listed experiment preregisters the seeds it runs"]),
             ({"required":{}},{},[f"{where} requires no keys"]),
             ({"baselines":({**BASELINE,"path":"/etc/config.toml"},)},{},[f"{where}: baseline 0 needs a path inside the repository"]),
             ({"baselines":({**BASELINE,"path":"../outside.toml"},)},{},[f"{where}: baseline 0 needs a path inside the repository"]),
@@ -387,11 +389,11 @@ class PreregistrationGateTests(unittest.TestCase):
             ({"baselines":({**BASELINE,"keys":["model.revision",""]},)},{},[f"{where}: baseline 0 needs a non-empty list of key paths in printable ASCII"]),
             ({"baselines":({key:value for key,value in BASELINE.items() if key!="status_key"},)},{},[f"{where}: baseline 0 needs a status_key"]),
             ({"baselines":({**BASELINE,"revision":"x"},)},{},[f"{where}: baseline 0 has unknown field revision"]),
-            ({},{"entry_extra":"[experiment.X901.required]\nschema = \"int\"\n"},["experiments/preregistration.toml: X901 is not a registered experiment"]),
+            ({},{"entry_extra":"[experiment.X901.required]\nseeds = \"int-list\"\n"},["experiments/preregistration.toml: X901 is not a registered experiment"]),
             ({},{"entry_extra":"[experiment.X900.optional]\nschema = \"int\"\n"},[f"{where} has unknown field optional"]),
             ({"required":{**REQUIRED,"gr\u00f6\u00dfe":"int"}},{},[f"{where}: key 'gr\u00f6\u00dfe' is not printable ASCII"]),
-            ({"required":{**REQUIRED,"seeds":["int"]}},{},[f"{where}: key seeds has unknown type ['int']"]),
-            ({"required":{**REQUIRED,"seeds":1}},{},[f"{where}: key seeds has unknown type 1"]),
+            ({"required":{**REQUIRED,"seeds":["int"]}},{},[f"{where}: key seeds has unknown type ['int']",f"{where} must require seeds as an int-list: every listed experiment preregisters the seeds it runs"]),
+            ({"required":{**REQUIRED,"seeds":1}},{},[f"{where}: key seeds has unknown type 1",f"{where} must require seeds as an int-list: every listed experiment preregisters the seeds it runs"]),
             ({"baselines":({**BASELINE,"keys":"model.revision"},)},{},[f"{where}: baseline 0 needs a non-empty list of key paths in printable ASCII"]),
             ({"baselines":({**BASELINE,"keys":[1]},)},{},[f"{where}: baseline 0 needs a non-empty list of key paths in printable ASCII"]),
             ({"baselines":({**BASELINE,"keys":["model.r\u00e9vision"]},)},{},[f"{where}: baseline 0 needs a non-empty list of key paths in printable ASCII"]),
@@ -617,6 +619,34 @@ class PreregistrationGateTests(unittest.TestCase):
             f"X900: results/run.json ran at {short}, whose experiment.toml names other preregistration digests than the frozen ones",
         )
 
+    def test_a_run_record_deleted_or_renamed_after_it_was_committed_fails(self):
+        name=self.RECORD.removeprefix("experiments/semdb/X900-fixture/")
+        root=self.tree(status="running")
+        ran=commit_all(root)
+        write(root,self.RECORD,json.dumps(self.record(root,ran)))
+        commit_all(root,"records")
+        self.assertEqual(gate(root),(0,[]))
+        # Renamed: the record is removed and put back under another name.
+        renamed=self.RECORD.replace("seed-17","seed-17-again")
+        git(root,"mv",self.RECORD,renamed)
+        commit_all(root,"renamed")
+        self.assert_blocked(root,f"X900: {name} was committed and has since been deleted or renamed; a run record stays as it was recorded")
+        # Deleted with the whole results directory, the record still fails.
+        root=self.tree(status="running")
+        ran=commit_all(root)
+        write(root,self.RECORD,json.dumps(self.record(root,ran)))
+        commit_all(root,"records")
+        git(root,"rm","-q","-r","experiments/semdb/X900-fixture/results")
+        commit_all(root,"deleted")
+        self.assert_blocked(root,f"X900: {name} was committed and has since been deleted or renamed; a run record stays as it was recorded")
+        # A record that was never committed may be discarded: it holds no
+        # outcome the history saw.
+        root=self.tree(status="running")
+        ran=commit_all(root)
+        write(root,self.RECORD,json.dumps(self.record(root,ran)))
+        (root/self.RECORD).unlink()
+        self.assertEqual(gate(root),(0,[]))
+
     def test_rules_changed_after_the_runs_fail(self):
         name=self.RECORD.removeprefix("experiments/semdb/X900-fixture/")
         root=self.tree(status="running")
@@ -746,7 +776,8 @@ class PreregistrationGateTests(unittest.TestCase):
         )
         self.assertEqual(
             mod.launch_errors(self.tree(required={**REQUIRED,"seeds":"list"}),"X900"),
-            ["experiments/preregistration.toml: X900: key seeds has unknown type 'list'"],
+            ["experiments/preregistration.toml: X900: key seeds has unknown type 'list'",
+             "experiments/preregistration.toml: X900 must require seeds as an int-list: every listed experiment preregisters the seeds it runs"],
         )
         # An experiment the list does not name launches as before.
         root=self.tree(listed_text="version = 1\n")
@@ -837,6 +868,9 @@ class EnrolledExperimentTests(unittest.TestCase):
             "nondeterminism_rerun_case":"int","low_cells":"str-list",
         }
         self.assertEqual(len(design),58)
+        # Every listed experiment preregisters the seeds its manifest declares.
+        for exp_id,entry in listed.items():
+            self.assertEqual(entry["required"].get("seeds"),"int-list",exp_id)
         self.assertEqual(list(listed["S003"]["required"].items()),list(design.items()))
 
     def test_the_enrolled_experiments_are_held_until_their_placeholders_are_pinned(self):

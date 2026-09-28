@@ -8,6 +8,8 @@ tests_dir = "tests"
 # scripts/check_research_gates.py). A `must-be-pinned-…` value is still to be
 # chosen.
 [preregistration]
+# The confirmatory seeds, as experiment.toml declares them.
+seeds = [17, 29, 43, 71, 101]
 # The largest public-suite regression the lineage policy may cause.
 public_regression_gate_permille = "must-be-pinned-before-prepared"
 # The smallest backward-transfer improvement over the naive chain that

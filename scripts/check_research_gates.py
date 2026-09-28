@@ -29,7 +29,9 @@ replaced by another, whose own preregistration counts:
   `<key>_sha256` is that file's digest
   (`experiment_records.preregistered_file_digest`), so the file's content is
   frozen with the table, not only its path;
-- a `seeds` key in the table, where there is one, names the manifest's seeds;
+- the table's `seeds`, which every entry of the list must require as an
+  `int-list`, names the manifest's seeds, so no seed is added after an
+  outcome is seen;
 - every baseline the list names is pinned at each key path the list names
   for it, its status is pinned and not `blocked-*`, and the table's
   `baseline_<name>_sha256` is the digest of its whole configuration file, so
@@ -42,13 +44,15 @@ replaced by another, whose own preregistration counts:
   aggregate (`run.json`) name those digests and the commit they ran at, and
   that commit holds the same preregistration, entry, files and baseline
   configurations (`history_errors`); a run record also names the SHA-256 of the
-  manifest at that commit and is unchanged since it was committed. A
+  manifest at that commit and is unchanged since it was committed, and no
+  run record once committed is deleted or renamed. A
   preregistration rewritten after its runs fails even when the manifest and
   the records are rewritten to match, short of rewriting history.
 
 `scripts/run_experiment.py` refuses to run or prepare a listed experiment
 until this holds for it (`launch_errors`), so no outcome is seen before the
-preregistration is frozen. A file or baseline the list names must be a
+preregistration is frozen, and holds the files that decision reads to HEAD
+while it runs (`launch_inputs`). A file or baseline the list names must be a
 regular file inside the repository, reached through no symlink
 (`repository_file`).
 
@@ -217,6 +221,8 @@ def entry_errors(exp_id: str, entry, registered: set[str]) -> list[str]:
                 errors.append(f"{where}: key {key!r} is not printable ASCII")
             if not isinstance(kind,str) or kind not in KINDS:
                 errors.append(f"{where}: key {key} has unknown type {kind!r}")
+        if required.get("seeds")!="int-list":
+            errors.append(f"{where} must require seeds as an int-list: every listed experiment preregisters the seeds it runs")
     baselines=entry.get("baseline",[])
     if not isinstance(baselines,list):
         return errors+[f"{where}: baseline must be an array of tables"]
@@ -366,9 +372,21 @@ def archived_errors(exp_id: str, manifest: dict, experiment: Path, root: Path, e
     that preregistration."""
     digest,rules=frozen
     results=experiment/manifest.get("results_dir","results")
-    if not results.is_dir():
-        return []
     errors=[]
+    # A run record, once committed, stays: one deleted or renamed after its
+    # outcome was seen could be replaced by a record of another
+    # preregistration under a new name.
+    deleted=experiment_records.git(
+        root,"log","--full-history","--no-renames","--diff-filter=D","--name-only","--format=","HEAD","--",
+        results.relative_to(root).as_posix(),
+    ).stdout.split()
+    for relative in sorted(set(deleted)):
+        name=PurePosixPath(relative).name
+        if name.startswith("run-") and name.endswith(".json") and not (root/relative).exists():
+            shown=PurePosixPath(relative).relative_to(experiment.relative_to(root).as_posix()).as_posix()
+            errors.append(f"{exp_id}: {shown} was committed and has since been deleted or renamed; a run record stays as it was recorded")
+    if not results.is_dir():
+        return errors
     for path in sorted(results.glob("run*.json")):
         if path.name!="run.json" and not path.name.startswith("run-"):
             continue
@@ -509,6 +527,33 @@ def launch_errors(root: Path, exp_id: str) -> list[str]:
             "is frozen and it is prepared, running, completed or failed"
         ]
     return frozen_errors(exp_id,entries[exp_id],manifest,experiment,root)
+
+def launch_inputs(root: Path, exp_id: str) -> list[str]:
+    """The files besides the experiment's own that decide whether `exp_id`
+    may launch (`launch_errors`), as repository paths: the list, the
+    registry, this gate, and the baselines and preregistered files a listed
+    experiment's entry and table name. `scripts/run_experiment.py` holds them
+    to HEAD before and while it runs, as it holds the experiment's own files,
+    so an edit made to launch cannot be put back after the outcome is seen."""
+    inputs=[PREREGISTRATION,"experiments/registry.toml","scripts/check_research_gates.py"]
+    try:
+        entries=load(root/PREREGISTRATION).get("experiment",{})
+        entry=entries.get(exp_id) if isinstance(entries,dict) else None
+        if not isinstance(entry,dict):
+            return inputs
+        baselines=entry.get("baseline",[])
+        for baseline in baselines if isinstance(baselines,list) else []:
+            if isinstance(baseline,dict) and is_repository_path(baseline.get("path")):
+                inputs.append(baseline["path"])
+        items={item.get("id"):item for item in load(root/"experiments/registry.toml").get("experiment",[])}
+        table=load(root/"experiments"/items[exp_id]["path"]/"config.toml").get("preregistration",{})
+        required=entry.get("required",{})
+        for key,kind in required.items() if isinstance(required,dict) and isinstance(table,dict) else []:
+            if kind=="file" and is_repository_path(table.get(key)):
+                inputs.append(table[key])
+    except (OSError,KeyError,TypeError,tomllib.TOMLDecodeError):
+        pass
+    return inputs
 
 def main(root: Path = ROOT) -> int:
     """Check every gate on the repository at `root`, print each error, and

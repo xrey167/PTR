@@ -277,8 +277,10 @@ class RunWatchTests(unittest.TestCase):
         """List L900 as preregistering one integer, give it `status`, the
         `[preregistration]` table `table` (None for none) and, when `frozen`,
         the manifest's digests of that table and of its list entry; commit."""
-        listed = 'version = 1\n\n[experiment.L900.required]\nschema = "int"\n'
+        listed = 'version = 1\n\n[experiment.L900.required]\nseeds = "int-list"\nschema = "int"\n'
         self.write("experiments/preregistration.toml", listed)
+        if table is not None:
+            table = "seeds = [17]\n" + table
         manifest = f'id = "L900"\nstatus = "{status}"\nseeds = [17]\nentrypoint = "bench <seed>"\n'
         self.write("experiments/x/L900-x/config.toml", "version = 1\n" + ("" if table is None else "\n[preregistration]\n" + table))
         if table is not None:
@@ -326,7 +328,7 @@ class RunWatchTests(unittest.TestCase):
         manifest = records[0]["manifest"]
         self.assertEqual(
             manifest["preregistration_sha256"],
-            mod.experiment_records.preregistration_digest({"schema": 1}),
+            mod.experiment_records.preregistration_digest({"seeds": [17], "schema": 1}),
         )
         self.assertEqual(records[0]["git_sha"], self.head)
         # Committed, the record passes the gate: the commit it names holds
@@ -337,6 +339,30 @@ class RunWatchTests(unittest.TestCase):
         # The same experiment runs again under the same freeze.
         status, records, _ = self.run_seed()
         self.assertEqual((status, len(records)), (0, 2))
+
+    def test_what_decides_a_launch_is_held_to_head_before_and_while_the_run(self):
+        self.preregister("running")
+        listed = (self.root / "experiments/preregistration.toml").read_text(encoding="utf-8")
+        # Edited to let the run launch, and not committed: refused before it runs.
+        self.write("experiments/preregistration.toml", "version = 1\n")
+        ran = []
+        status, records, stderr = self.run_seed(lambda: ran.append(True))
+        self.assertEqual((status, records, ran), (2, [], []))
+        self.assertIn("refusing to run", stderr)
+        self.assertIn("experiments/preregistration.toml", stderr)
+        self.write("experiments/preregistration.toml", listed)
+        # Edited while it runs, and put back: no record.
+        def edit_and_restore():
+            self.write("experiments/preregistration.toml", "version = 1\n")
+            self.write("experiments/preregistration.toml", listed)
+
+        status, records, stderr = self.run_seed(edit_and_restore)
+        self.assertEqual((status, records), (2, []))
+        self.assertIn("experiments/preregistration.toml", stderr)
+        self.assertEqual(
+            mod.check_research_gates.launch_inputs(self.root, "L900"),
+            ["experiments/preregistration.toml", "experiments/registry.toml", "scripts/check_research_gates.py"],
+        )
 
     def test_a_record_the_results_hold_is_no_change_of_the_sources(self):
         # Records accumulate in results/, which the run writes into itself.

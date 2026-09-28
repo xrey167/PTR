@@ -1558,9 +1558,11 @@ completed or failed (`test_a_missing_required_key_keeps_an_experiment_from_leavi
 `test_a_file_the_preregistration_names_is_frozen_by_its_content`,
 `test_archived_runs_must_name_the_frozen_digests_and_a_commit_that_holds_them`,
 `test_a_preregistration_rewritten_after_its_runs_fails_whatever_else_is_rewritten`,
-`test_rules_changed_after_the_runs_fail`). `scripts/run_experiment.py` runs or prepares a listed experiment
-only once this holds, so no outcome is seen before its preregistration is frozen
-(`test_a_listed_experiment_is_not_run_or_prepared_before_its_preregistration_is_frozen`). A value still to be chosen and an owner decision still to be
+`test_rules_changed_after_the_runs_fail`, `test_a_run_record_deleted_or_renamed_after_it_was_committed_fails`).
+`scripts/run_experiment.py` runs or prepares a listed experiment only once this holds, and holds the files that
+decision reads to HEAD while it runs, so no outcome is seen before its preregistration is frozen
+(`test_a_listed_experiment_is_not_run_or_prepared_before_its_preregistration_is_frozen`,
+`test_what_decides_a_launch_is_held_to_head_before_and_while_the_run`). A value still to be chosen and an owner decision still to be
 taken, such as whether F003's adjudicators see a branch's intent, are placeholder strings that pass as no type.
 S003 has no `[preregistration]` table yet and the other five hold such placeholders, so none of the six can
 leave `planned` yet (`test_the_enrolled_experiments_are_held_until_their_placeholders_are_pinned`).
