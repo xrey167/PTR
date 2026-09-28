@@ -1425,7 +1425,8 @@ class RunWatchTests(unittest.TestCase):
         status, record, seen = self.run_bench()
         self.assertEqual((status, record["status"]), (0, "completed"))
         self.assertLessEqual(
-            set(seen) - {"PYTHONPYCACHEPREFIX", "CARGO_TARGET_DIR"}, {*mod.COMMAND_ENVIRONMENT, *mod.FIXED_ENVIRONMENT}
+            set(seen) - {"PYTHONPYCACHEPREFIX", "CARGO_TARGET_DIR", "RUSTUP_TOOLCHAIN"},
+            {*mod.COMMAND_ENVIRONMENT, *mod.FIXED_ENVIRONMENT},
         )
         # Cargo builds into a fresh directory outside the repository, beside
         # Python's bytecode cache, both removed once the command has run: a
@@ -1439,10 +1440,19 @@ class RunWatchTests(unittest.TestCase):
         self.assertFalse(Path(scratch).exists())
         # Python reads no package from the user's own site directory.
         self.assertEqual(seen["PYTHONNOUSERSITE"], "1")
-        for name in ("PYTHONPATH", "LD_LIBRARY_PATH", "RUSTC_WRAPPER", "RUSTUP_TOOLCHAIN", "GH_TOKEN"):
+        for name in ("PYTHONPATH", "LD_LIBRARY_PATH", "RUSTC_WRAPPER", "GH_TOKEN"):
             self.assertNotIn(name, seen)
+        # The runner's RUSTUP_TOOLCHAIN does not reach the command; where
+        # rustup resolves the toolchain, the one it resolved for the launch
+        # is the command's, named in the record.
+        self.assertNotEqual(seen.get("RUSTUP_TOOLCHAIN"), "nightly")
+        pinned = {}
+        if "RUSTUP_TOOLCHAIN" in record["environment"]:
+            pinned["RUSTUP_TOOLCHAIN"] = record["environment"]["RUSTUP_TOOLCHAIN"]
+            self.assertEqual(Path(record["toolchain"]["cargo"]["path"]).parent.parent.name, pinned["RUSTUP_TOOLCHAIN"])
         self.assertEqual(record["environment"], {
             **self.allowed, "PYTHONPYCACHEPREFIX": scratch, "CARGO_TARGET_DIR": os.path.join(scratch, "cargo-target"),
+            **pinned,
         })
         self.assertEqual({name: seen[name] for name in record["environment"]}, record["environment"])
         # A program found first on the PATH, wherever it lies, is named with
@@ -1773,6 +1783,53 @@ class RunWatchTests(unittest.TestCase):
         with mock.patch.object(mod, "ROOT", self.root):
             self.assertEqual(mod.seed_runs(self.results, 17, self.attempts()), [])
 
+    def test_a_listed_run_starts_from_and_leaves_a_checkout_holding_nothing_git_does_not_list(self):
+        # An empty directory, whose presence a command can test, and an entry
+        # named .git below the root, which git never looks into, are in no
+        # commit and no watch sees them: a listed run is refused while the
+        # repository holds one, and one there once its command has ended
+        # leaves it unrecorded.
+        self.preregister("running")
+        for make, shown in (
+            (lambda: (self.root / "empty/inner").mkdir(parents=True), "empty/inner"),
+            (lambda: self.write("scripts/.git/helper.py", "x = 1\n"), "scripts/.git"),
+        ):
+            with self.subTest(shown=shown):
+                make()
+                status, records, stderr = self.run_seed()
+                self.assertEqual((status, records), (2, []))
+                self.assertEqual(stderr, (
+                    f"ERROR: refusing to run L900 while the repository holds {shown}, which git does not list (an "
+                    "empty directory, or an entry named .git below the root) and its command could read unrecorded; a "
+                    "listed experiment runs from a checkout that holds none\n"
+                ))
+                shutil.rmtree(self.root / shown.split("/")[0])
+        # One put there while the command ran.
+        status, records, stderr = self.run_seed(lambda: (self.root / "made").mkdir())
+        self.assertEqual((status, [record["status"] for record in records]), (2, ["started"]))
+        self.assertIn("the repository holds made, which git does not list and the command could have read unrecorded", stderr)
+        # An unlisted experiment runs beside them, as it did.
+        self.tearDown()
+        self.setUp()
+        (self.root / "empty").mkdir()
+        status, records, stderr = self.run_seed()
+        self.assertEqual((status, stderr), (0, ""))
+
+    def test_a_listed_run_from_a_checkout_holding_a_name_that_is_not_utf8_is_refused(self):
+        # Git prints such a name's bytes as they are: the watch cannot read it
+        # as a path, and refuses the run rather than failing.
+        self.preregister("running")
+        try:
+            with open(os.path.join(os.fsencode(self.root), b"notes\xff.md"), "wb") as handle:
+                handle.write(b"x\n")
+        except OSError as error:
+            self.skipTest(f"cannot name a file with bytes that are not UTF-8: {error}")
+        status, records, stderr = self.run_seed()
+        self.assertEqual((status, records), (2, []))
+        self.assertTrue(stderr.startswith("ERROR: "), stderr)
+        self.assertIn("printed what is not UTF-8, such as a file name, which no check can read", stderr)
+        self.assertNotIn("Traceback", stderr)
+
     def test_a_copy_from_another_line_of_history_is_not_put_back_but_its_seed_has_run(self):
         # A run on another branch, or another worktree's, belongs to that
         # history, whose record the gate here would refuse: its copy stays
@@ -1914,7 +1971,9 @@ class RunWatchTests(unittest.TestCase):
                     ", which git ignores and its command could run or read unrecorded; a listed experiment runs from a "
                     "checkout that holds no such file (`git clean -ndX` lists them; a fresh worktree holds none)\n"
                 ), stderr)
-                shutil.rmtree(self.root / shown)
+                # The directory it was put in goes with it: an empty one left
+                # behind is one git does not list either.
+                shutil.rmtree(self.root / ignored.split("/")[0])
                 status, records, stderr = self.run_seed()
                 self.assertEqual((status, stderr, [record["status"] for record in records]), (0, "", ["completed"]))
         # One put there after the launch looked, and still there when the
@@ -2039,9 +2098,16 @@ class RunWatchTests(unittest.TestCase):
             environment = {"PATH": str(bin_directory)}
             self.assertEqual(mod.toolchain(environment, ["cargo", "run"]), {"rustc": named("rustc"), "cargo": named("cargo")})
             # Each tool rustup resolves is stamped as it is read, so a run
-            # during which one changed goes unrecorded.
-            stamps = {}
-            mod.toolchain(environment, ["cargo", "run"], stamps)
+            # during which one changed goes unrecorded, and the toolchain it
+            # resolved it from is named.
+            stamps, selected = {}, {}
+            mod.toolchain(environment, ["cargo", "run"], stamps, selected)
+            self.assertEqual(selected, {"rustc": "pinned", "cargo": "pinned"})
+            selected = {}
+            mod.toolchain(environment, ["cargo", "+stable", "run"], None, selected)
+            self.assertEqual(selected, {"rustc": "stable", "cargo": "stable"})
+            self.assertEqual(mod.toolchain_name("/rustup/toolchains/stable-x86_64/bin/cargo"), "stable-x86_64")
+            self.assertIsNone(mod.toolchain_name("/usr/bin/cargo"))
             self.assertEqual(stamps, {
                 named(tool)["path"]: mod.experiment_records.file_stamp(Path(named(tool)["path"]))
                 for tool in ("rustc", "cargo")
@@ -2080,11 +2146,14 @@ class RunWatchTests(unittest.TestCase):
             # proxy's name is its proxy all the same.
             standalone = os.pathsep.join((str(tools / "toolchains" / "stable" / "bin"), str(bin_directory)))
             self.assertEqual(mod.toolchain({"PATH": standalone}, ["cargo", "run"]), stable)
-            # `rustup run` puts its toolchain first, whatever the PATH holds.
-            self.assertEqual(
-                mod.toolchain({"PATH": standalone}, ["rustup", "run", "pinned", "cargo"]),
-                {"rustc": named("rustc"), "cargo": named("cargo")},
-            )
+            # `rustup run` puts its toolchain first, whatever the PATH holds,
+            # however a platform spells rustup.
+            for rustup_run in ("rustup", "rustup.exe", "C:\\Rust\\RUSTUP.EXE"):
+                with self.subTest(rustup_run=rustup_run):
+                    self.assertEqual(
+                        mod.toolchain({"PATH": standalone}, [rustup_run, "run", "pinned", "cargo"]),
+                        {"rustc": named("rustc"), "cargo": named("cargo")},
+                    )
             copies = tools / "copies"
             copies.mkdir()
             for tool in ("rustc", "cargo", "rustup"):
@@ -2122,12 +2191,43 @@ class RunWatchTests(unittest.TestCase):
                 mod.toolchain({"PATH": str(tools / "nowhere")}, ["cargo", "run"]),
                 {"rustc": {"path": None, "sha256": None}, "cargo": {"path": None, "sha256": None}},
             )
-        # A listed run's record holds it.
+        # A listed run's record holds it, and the command runs the toolchain
+        # rustup resolved for the launch whatever override it would read by
+        # then: its environment names it (RUSTUP_TOOLCHAIN).
         self.preregister("running")
-        with mock.patch.object(mod, "toolchain", return_value={"rustc": named("rustc"), "cargo": named("cargo")}):
+        started = []
+
+        def execute(command, environment=None, program=None, scratch=None):
+            started.append(environment)
+            return {"exit_code": 0, "stdout": "", "stderr": "", "launch_error": None, "duration_ns": 1}
+
+        with mock.patch.dict(os.environ, {"PATH": os.pathsep.join((str(bin_directory), os.environ["PATH"]))}):
+            status, records, stderr = self.run_seed()
+            self.assertEqual((status, stderr), (0, ""))
+            self.assertEqual(records[0]["toolchain"], {"rustc": named("rustc"), "cargo": named("cargo")})
+            self.assertEqual(records[0]["environment"]["RUSTUP_TOOLCHAIN"], "pinned")
+            for record in (*self.results.glob("run-*.json"), *self.attempts().glob("run-*.json")):
+                record.unlink()
+            stderr = io.StringIO()
+            with (
+                mock.patch.object(mod, "ROOT", self.root),
+                mock.patch.object(mod, "REGISTRY", self.root / "experiments/registry.toml"),
+                mock.patch.object(mod, "execute_command", side_effect=execute),
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(stderr),
+            ):
+                self.assertEqual(mod.run_experiment("L900", entrypoint="entrypoint", seed=17), 0)
+        [environment] = started
+        self.assertEqual(environment["RUSTUP_TOOLCHAIN"], "pinned")
+        # Tools rustup resolves from two toolchains pin neither.
+        with mock.patch.object(mod, "toolchain", side_effect=lambda *arguments: (
+            arguments[3].update({"rustc": "pinned", "cargo": "stable"}) or {"rustc": named("rustc"), "cargo": named("cargo")}
+        )):
+            for record in (*self.results.glob("run-*.json"), *self.attempts().glob("run-*.json")):
+                record.unlink()
             status, records, stderr = self.run_seed()
         self.assertEqual((status, stderr), (0, ""))
-        self.assertEqual(records[0]["toolchain"], {"rustc": named("rustc"), "cargo": named("cargo")})
+        self.assertNotIn("RUSTUP_TOOLCHAIN", records[0]["environment"])
 
     def test_a_listed_experiment_reads_no_output_the_tools_left_uncommitted(self):
         # An output could be an input: what a listed experiment's command

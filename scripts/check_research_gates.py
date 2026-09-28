@@ -281,15 +281,19 @@ def command_errors(exp_id: str, manifest: dict, table: dict) -> list[str]:
             errors.append(f"{exp_id}: entrypoint gives Cargo a target directory (--target-dir), which could hold a "
                           "build made outside the commit; the runner builds a listed run into a fresh one")
         elif outside_repository(value):
-            errors.append(f"{exp_id}: entrypoint gives Cargo {option} {value}, outside the repository, whose sources "
-                          "no watch or record binds; name a path the repository holds")
+            errors.append(f"{exp_id}: entrypoint gives Cargo {option} {value}, outside what the repository's watch "
+                          "reads, whose sources no watch or record binds; name a path the repository holds")
     return errors
 
 # Cargo's options naming a path it reads the build from, and the one naming
 # where it builds, with the short options that take a value, which a cluster
-# of short options (`-vC dir`) ends with.
+# of short options (`-vC dir`) ends with, and the long ones that take the
+# next argument as theirs.
 CARGO_PATH_OPTIONS=("--manifest-path","--lockfile-path","--target-dir")
 CARGO_SHORT_VALUES="CFjpZ"
+CARGO_LONG_VALUES=("--config","--manifest-path","--lockfile-path","--target-dir","--color","--explain","--package",
+                   "--jobs","--features","--target","--bin","--example","--test","--bench","--profile",
+                   "--message-format","--registry","--index")
 
 def cargo_path_options(arguments: list[str]) -> list[tuple[str,str]]:
     """The options among Cargo's own `arguments` (`cargo_arguments`) that
@@ -298,7 +302,10 @@ def cargo_path_options(arguments: list[str]) -> list[tuple[str,str]]:
     runs in (`-C`, alone, joined or ending a cluster of short options) and
     the target directory (`--target-dir`), each given as one token
     (`--manifest-path=x`, `-Cx`) or two; a value missing at the end reads
-    as empty."""
+    as empty. In Cargo's script mode (`-Zscript`, `-Z script`), whose
+    manifest is a file an argument names, every argument that is no option
+    or option's value counts as one (`-Zscript`), the script's own after it
+    included."""
     found=[]
     for index,argument in enumerate(arguments):
         following=arguments[index+1] if index+1<len(arguments) else ""
@@ -308,24 +315,68 @@ def cargo_path_options(arguments: list[str]) -> list[tuple[str,str]]:
             elif argument.startswith(f"{option}="):
                 found.append((option,argument[len(option)+1:]))
         if argument.startswith("-") and not argument.startswith("--"):
-            for position,letter in enumerate(argument[1:],start=1):
-                if letter in CARGO_SHORT_VALUES:
-                    if letter=="C":
-                        found.append(("-C",argument[position+1:] or following))
-                    break
+            short=cargo_short_value(argument,following)
+            if short is not None and short[0]=="C":
+                found.append(("-C",short[1]))
+    if cargo_script_mode(arguments):
+        found.extend(("-Zscript",argument) for argument in cargo_positionals(arguments))
     return found
+
+def cargo_short_value(argument: str, following: str) -> tuple[str,str,bool] | None:
+    """The short option taking a value that the cluster `argument` (`-Zx`,
+    `-vZ x`) ends with, its value, joined or the `following` argument, and
+    whether it was joined; None for a cluster that takes none."""
+    for position,letter in enumerate(argument[1:],start=1):
+        if letter in CARGO_SHORT_VALUES:
+            joined=argument[position+1:]
+            return (letter,joined,True) if joined else (letter,following,False)
+    return None
+
+def cargo_script_mode(arguments: list[str]) -> bool:
+    """Whether Cargo's own `arguments` turn on its script mode, `-Z script`
+    in any spelling (`-Zscript`, `-Z script`, `-vZscript`)."""
+    for index,argument in enumerate(arguments):
+        following=arguments[index+1] if index+1<len(arguments) else ""
+        if argument.startswith("-") and not argument.startswith("--"):
+            short=cargo_short_value(argument,following)
+            if short is not None and short[:2]==("Z","script"):
+                return True
+    return False
+
+def cargo_positionals(arguments: list[str]) -> list[str]:
+    """Those of Cargo's own `arguments` that are neither an option nor the
+    value an option takes as the next argument, a rustup `+<toolchain>`
+    being no argument of Cargo's."""
+    positionals=[]
+    taken=False
+    for index,argument in enumerate(arguments):
+        following=arguments[index+1] if index+1<len(arguments) else ""
+        if taken:
+            taken=False
+        elif argument in CARGO_LONG_VALUES:
+            taken=True
+        elif argument.startswith("-") and not argument.startswith("--"):
+            short=cargo_short_value(argument,following)
+            taken=short is not None and not short[2]
+        elif not argument.startswith(("-","+")):
+            positionals.append(argument)
+    return positionals
 
 def outside_repository(path: str) -> bool:
     """Whether `path`, as a command run from the repository's root reads it,
-    may name something outside the repository: absolute on any platform
-    (`/x`, `C:/x`, `\\\\host\\x`), or climbing above the root (`../x`,
-    `a/../../x`), either slash a separator. The runner starts no shell, so
-    `~` is a name like any other."""
+    may name something outside what the repository's watch reads: absolute
+    on any platform (`/x`, `C:/x`, `\\\\host\\x`), climbing above the
+    root (`../x`, `a/../../x`), or through a directory named `.git`, in any
+    case, which git keeps for itself and never lists (`.git/x/Cargo.toml`),
+    either slash a separator. The runner starts no shell, so `~` is a name
+    like any other."""
     normalized=path.replace("\\","/")
     if normalized.startswith("/") or re.match(r"[A-Za-z]:",normalized):
         return True
     depth=0
     for part in normalized.split("/"):
+        if part.lower()==".git":
+            return True
         if part=="..":
             depth-=1
             if depth<0:
@@ -532,10 +583,10 @@ def directory_digest(root: Path, directory: str) -> tuple[list[str], str | None]
         ignored=experiment_records.listed_names(
             root,"--literal-pathspecs","ls-files","-z","--others","--ignored",experiment_records.PER_DIRECTORY,"--",directory)
         staged=experiment_records.listed_names(root,"--literal-pathspecs","ls-files","-z","--stage","--",directory)
+    except experiment_records.NotUTF8:
+        return ["holds a file whose name is not UTF-8, which no repository path is"],None
     except experiment_records.ProvenanceError as error:
         return [f"cannot be listed: {error}"],None
-    except UnicodeDecodeError:
-        return ["holds a file whose name is not UTF-8, which no repository path is"],None
     modes,blobs={},{}
     for entry in staged:
         fields,_,name=entry.partition("\t")

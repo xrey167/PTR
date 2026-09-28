@@ -150,6 +150,11 @@ class ProvenanceError(Exception):
     """The run records cannot be published as one result of the current code."""
 
 
+class NotUTF8(ProvenanceError):
+    """Git printed what is not UTF-8, such as a file name, which no check
+    can read as a repository path."""
+
+
 def program_name(token: str) -> str:
     """The name of the program `token` starts, as a command's first token or
     the program `rustup run` starts names it: its last path component,
@@ -364,7 +369,10 @@ def git(
     whatever `core.worktree` names, but for a command that makes a
     repository (`work_tree` false), which git refuses one without its own
     directory named. With `binary`, what git prints is kept as the bytes it
-    wrote, as a file's content must be, and `stdin` is bytes too."""
+    wrote, as a file's content must be, and `stdin` is bytes too. Output
+    that is not UTF-8 (a file name, say) raises `NotUTF8`, a
+    `ProvenanceError`, as what git cannot name as text no check can
+    compare."""
     if env is None:
         env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
         env["GIT_NO_REPLACE_OBJECTS"] = "1"
@@ -384,6 +392,10 @@ def git(
         )
     except OSError as error:
         raise ProvenanceError(f"cannot run git: {error}") from error
+    except UnicodeDecodeError as error:
+        raise NotUTF8(
+            f"git {' '.join(args[:2])} printed what is not UTF-8, such as a file name, which no check can read: {error}"
+        ) from error
 
 
 def code_changes(base: str, head: str | None, root: Path, paths: tuple[str, ...] = CODE_PATHS) -> list[str]:

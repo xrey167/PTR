@@ -122,6 +122,8 @@ def write(root: Path, relative: str, text: str) -> None:
 
 PLAIN_MODEL='version = 1\n[model]\nbackend = "must-be-pinned-before-run"\nmodel = "must-be-pinned-before-run"\n'
 CONFIG_HEADER='version = 1\nkind = "workspace-area"\nname = "X900-fixture"\npath = "experiments/semdb/X900-fixture"\ntests_dir = "tests"\n'
+CARGO_OUTSIDE=("X900: entrypoint gives Cargo {} {}, outside what the repository's watch reads, whose sources no watch or "
+               "record binds; name a path the repository holds")
 CARGO_CONFIGURATION="X900: entrypoint gives Cargo configuration on its command line (--config), which can name a rustc wrapper, flags or sources outside the commit; set what the build needs in the repository's .cargo/config.toml"
 TABLE={"schema":1,"harness":"fixture","seeds":[17,29],"programs":["rmw","set_op"],"see_intent":False}
 REQUIRED={"schema":"int","harness":"str","seeds":"int-list","programs":"str-list","see_intent":"bool"}
@@ -2147,27 +2149,23 @@ class PreregistrationGateTests(unittest.TestCase):
             # A manifest, lockfile or directory outside the repository holds
             # sources no watch or record binds, and a target directory given
             # to Cargo could hold a build made outside the commit.
-            ("cargo run --manifest-path /elsewhere/Cargo.toml -- <seed>",
-             "X900: entrypoint gives Cargo --manifest-path /elsewhere/Cargo.toml, outside the repository, whose sources "
-             "no watch or record binds; name a path the repository holds"),
-            ("rustup run stable cargo run --manifest-path=crates/../../x/Cargo.toml -- <seed>",
-             "X900: entrypoint gives Cargo --manifest-path crates/../../x/Cargo.toml, outside the repository, whose "
-             "sources no watch or record binds; name a path the repository holds"),
-            ("cargo --lockfile-path C:/x/Cargo.lock run -- <seed>",
-             "X900: entrypoint gives Cargo --lockfile-path C:/x/Cargo.lock, outside the repository, whose sources no "
-             "watch or record binds; name a path the repository holds"),
-            ("cargo -Zunstable-options -C /elsewhere run -- <seed>",
-             "X900: entrypoint gives Cargo -C /elsewhere, outside the repository, whose sources no watch or record "
-             "binds; name a path the repository holds"),
-            ("cargo -vC../elsewhere run -- <seed>",
-             "X900: entrypoint gives Cargo -C ../elsewhere, outside the repository, whose sources no watch or record "
-             "binds; name a path the repository holds"),
-            ("cargo run --manifest-path './../x/Cargo.toml' -- <seed>",
-             "X900: entrypoint gives Cargo --manifest-path ./../x/Cargo.toml, outside the repository, whose sources "
-             "no watch or record binds; name a path the repository holds"),
-            ("cargo run --manifest-path '..\\elsewhere\\Cargo.toml' -- <seed>",
-             "X900: entrypoint gives Cargo --manifest-path ..\\elsewhere\\Cargo.toml, outside the repository, whose "
-             "sources no watch or record binds; name a path the repository holds"),
+            *((entrypoint,CARGO_OUTSIDE.format(option,value)) for entrypoint,option,value in (
+                ("cargo run --manifest-path /elsewhere/Cargo.toml -- <seed>","--manifest-path","/elsewhere/Cargo.toml"),
+                ("rustup run stable cargo run --manifest-path=crates/../../x/Cargo.toml -- <seed>","--manifest-path",
+                 "crates/../../x/Cargo.toml"),
+                ("cargo --lockfile-path C:/x/Cargo.lock run -- <seed>","--lockfile-path","C:/x/Cargo.lock"),
+                ("cargo -Zunstable-options -C /elsewhere run -- <seed>","-C","/elsewhere"),
+                ("cargo -vC../elsewhere run -- <seed>","-C","../elsewhere"),
+                ("cargo run --manifest-path './../x/Cargo.toml' -- <seed>","--manifest-path","./../x/Cargo.toml"),
+                ("cargo run --manifest-path '..\\elsewhere\\Cargo.toml' -- <seed>","--manifest-path","..\\elsewhere\\Cargo.toml"),
+                # Git keeps its own directory, which no scan of the tree lists.
+                ("cargo run --manifest-path .git/evil/Cargo.toml -- <seed>","--manifest-path",".git/evil/Cargo.toml"),
+                ("cargo run --manifest-path crates/.GIT/x/Cargo.toml -- <seed>","--manifest-path","crates/.GIT/x/Cargo.toml"),
+                # Script mode reads its manifest from the file an argument names.
+                ("cargo +nightly -Zscript /tmp/run.rs <seed>","-Zscript","/tmp/run.rs"),
+                ("cargo +nightly -Z script ../run.rs <seed>","-Zscript","../run.rs"),
+                ("cargo -vZscript --color always .git/run.rs <seed>","-Zscript",".git/run.rs"),
+            )),
             ("cargo run --target-dir target-old -- <seed>",
              "X900: entrypoint gives Cargo a target directory (--target-dir), which could hold a build made outside "
              "the commit; the runner builds a listed run into a fresh one"),
@@ -2215,6 +2213,9 @@ class PreregistrationGateTests(unittest.TestCase):
                            "cargo run --manifest-path=./crates/../Cargo.toml -C crates -- <seed>",
                            "cargo run -FCuda -pbench -- --manifest-path /elsewhere <seed>",
                            "cargo run -FCrate/../../feature -- <seed>",
+                           "cargo run --manifest-path crates/.github/Cargo.toml -- <seed>",
+                           "cargo +nightly -Zscript scripts/run.rs <seed>",
+                           "cargo -Zunstable-options run -- /tmp <seed>",
                            "cargo run -- --config c.toml <seed>","python3 bench.py --config c.toml <seed>",
                            "rustup run stable python3 bench.py --config c.toml <seed>","rustup which cargo --config <seed>","rustup show stable cargo --config c.toml <seed>"):
             with self.subTest(entrypoint=entrypoint):

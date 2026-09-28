@@ -967,6 +967,18 @@ class SourceTreeTests(GitTree, unittest.TestCase):
         self.link(elsewhere, ".cargo")
         self.assertEqual(mod.uncommitted_files(self.root, self.pathspecs), [".cargo"])
 
+    def test_a_name_git_prints_that_is_not_utf8_is_a_provenance_error(self):
+        # Git prints a name's bytes as they are; one that is not UTF-8 names
+        # no path a check can compare, and refuses the run cleanly.
+        try:
+            with open(os.path.join(os.fsencode(self.root), b"notes\xff.md"), "wb") as handle:
+                handle.write(b"x\n")
+        except OSError as error:
+            self.skipTest(f"cannot name a file with bytes that are not UTF-8: {error}")
+        with self.assertRaisesRegex(mod.NotUTF8, "printed what is not UTF-8, such as a file name"):
+            mod.uncommitted_files(self.root, ["."])
+        self.assertTrue(issubclass(mod.NotUTF8, mod.ProvenanceError))
+
     def test_the_whole_repository_holds_what_git_does_not_look_into_at_its_root(self):
         # A listed experiment's command may run or read any path of the
         # repository (`listed_record_paths`), a submodule at the root among

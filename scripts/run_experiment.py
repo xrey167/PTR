@@ -359,6 +359,36 @@ def ignored_files() -> list[str]:
     )
 
 
+def unlisted_entries() -> list[str]:
+    """What the repository holds that git neither tracks nor lists, sorted,
+    so no watch or record sees it: an empty directory, whose presence a
+    command can test as a file's, and an entry named `.git`, in any case,
+    below the root, which git keeps for itself and never looks into
+    (`scripts/.git/helper.py`). A walk of the checkout, leaving out git's
+    own directory at the root and what git ignores (`ignored_files`), which
+    a listed run refuses by itself. Raises
+    `experiment_records.ProvenanceError` when git cannot list what it
+    ignores."""
+    ignored = {entry.rstrip("/") for entry in ignored_files()}
+    found = []
+    for directory, subdirectories, files in os.walk(ROOT):
+        relative = Path(directory).relative_to(ROOT).as_posix()
+        here = "" if relative == "." else relative
+        if here and not subdirectories and not files:
+            found.append(here)
+        kept = []
+        for name in subdirectories:
+            path = f"{here}/{name}" if here else name
+            if name.lower() == ".git":
+                if here:
+                    found.append(path)
+            elif path not in ignored:
+                kept.append(name)
+        subdirectories[:] = kept
+        found.extend(f"{here}/{name}" for name in files if here and name.lower() == ".git")
+    return sorted(found)
+
+
 def launch_watch(
     exp_id: str,
     root: Path,
@@ -471,6 +501,19 @@ def launch_watch(
                 f"ERROR: refusing to run {exp_id} while the repository holds {experiment_records.listed(ignored)}, "
                 "which git ignores and its command could run or read unrecorded; a listed experiment runs from a "
                 "checkout that holds no such file (`git clean -ndX` lists them; a fresh worktree holds none)",
+                file=sys.stderr,
+            )
+            return None
+        try:
+            unlisted = unlisted_entries()
+        except experiment_records.ProvenanceError as error:
+            print(f"ERROR: {error}", file=sys.stderr)
+            return None
+        if unlisted:
+            print(
+                f"ERROR: refusing to run {exp_id} while the repository holds {experiment_records.listed(unlisted)}, "
+                "which git does not list (an empty directory, or an entry named .git below the root) and its command "
+                "could read unrecorded; a listed experiment runs from a checkout that holds none",
                 file=sys.stderr,
             )
             return None
@@ -767,7 +810,10 @@ def is_rustup_proxy(path: str, rustup: str) -> bool:
 
 
 def toolchain(
-    environment: dict[str, str], command: list[str], stamps: dict[str, experiment_records.Stamp | None] | None = None
+    environment: dict[str, str],
+    command: list[str],
+    stamps: dict[str, experiment_records.Stamp | None] | None = None,
+    selected: dict[str, str] | None = None,
 ) -> dict:
     """The Rust toolchain `command`, run from the repository's root in
     `environment`, would build with, each of `rustc` and `cargo` named as
@@ -780,7 +826,8 @@ def toolchain(
     run`; and otherwise as the `PATH` holds it, such as a standalone Cargo
     before rustup's proxies, which runs whatever rustup would resolve.
     rustup keeps its toolchains outside the repository, where the commit
-    holds none."""
+    holds none. Given `selected`, the name of the toolchain rustup resolved
+    each tool from goes in under the tool (`toolchain_name`)."""
     search = os.pathsep.join(os.get_exec_path(environment))
     rustup = shutil.which("rustup", path=search)
     name = named_toolchain(command)
@@ -802,7 +849,20 @@ def toolchain(
         found[tool] = resolved_executable([resolved], environment, stamps) if os.path.isabs(resolved) else {
             "path": None, "sha256": None,
         }
+        name = toolchain_name(resolved) if os.path.isabs(resolved) else None
+        if selected is not None and name is not None:
+            selected[tool] = name
     return found
+
+
+def toolchain_name(path: str) -> str | None:
+    """The name of the toolchain whose tool rustup names at `path`
+    (`<RUSTUP_HOME>/toolchains/<name>/bin/<tool>`, as `rustup which` prints
+    it), or None for a path laid out otherwise."""
+    tool = PurePosixPath(path.replace("\\", "/"))
+    if tool.parent.name == "bin" and tool.parent.parent.parent.name == "toolchains":
+        return tool.parent.parent.name
+    return None
 
 
 def resolved_executable(
@@ -1180,7 +1240,14 @@ def launch_and_record(
         stamps: dict[str, experiment_records.Stamp | None] = {}
         found = found_program(command, environment)
         executable = named_program(found, stamps)
-        tools = toolchain(environment, command, stamps)
+        selected: dict[str, str] = {}
+        tools = toolchain(environment, command, stamps, selected)
+        # rustup's proxies resolve the toolchain anew each time they run, from
+        # overrides outside the repository: the one resolved here is the one
+        # every proxy the command starts runs (`RUSTUP_TOOLCHAIN`), and the
+        # record names it.
+        if len(set(selected.values())) == 1:
+            environment = {**environment, "RUSTUP_TOOLCHAIN": next(iter(selected.values()))}
         # A program named by its path alone could be replaced between seeds
         # while every record named the same: one found that cannot be read,
         # such as a binary only executable, or that changed while it was
@@ -1290,6 +1357,12 @@ def launch_and_record(
                 changes.append(
                     f"the repository holds {experiment_records.listed(ignored)}, which git ignores and the command "
                     "could have run or read unrecorded"
+                )
+            unlisted = unlisted_entries() if listed else []
+            if unlisted:
+                changes.append(
+                    f"the repository holds {experiment_records.listed(unlisted)}, which git does not list and the "
+                    "command could have read unrecorded"
                 )
         except experiment_records.ProvenanceError as error:
             changes = [str(error)]
