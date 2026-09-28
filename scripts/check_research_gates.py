@@ -18,6 +18,8 @@ An experiment listed in `experiments/preregistration.toml` leaves `planned`
 preregistration (`preregistration_errors`); a superseded experiment has been
 replaced by another, whose own preregistration counts:
 
+- its manifest names its `entrypoint`, since the manifest is frozen from
+  the first commit past `planned` and one named later could never be named;
 - its `config.toml` holds a `[preregistration]` table with every key the list
   requires, each a pinned value of its declared type (`int`, `str`, `bool`,
   a non-empty `int-list` or `str-list`, or `file`), and no other key of the
@@ -121,9 +123,54 @@ BASELINE_FIELDS={"name","path","keys","status_key"}
 BASELINE_NAME=re.compile(r"[a-z0-9_]+")
 MISSING=object()
 
+class Unreadable(Exception):
+    """A file the gate reads that is not a readable TOML document."""
+
+    def __init__(self, path: Path, error: Exception):
+        super().__init__(f"{path}: {error}")
+        self.path=path
+        self.error=error
+
+    def named(self, root: Path) -> str:
+        """The error line naming the file from `root`."""
+        try:
+            shown=self.path.relative_to(root).as_posix()
+        except ValueError:
+            shown=str(self.path)
+        return f"{shown} cannot be read as TOML: {self.error}"
+
 def load(path: Path) -> dict:
-    """The TOML file at `path`."""
-    return tomllib.loads(path.read_text(encoding="utf-8"))
+    """The TOML file at `path`. Raises `Unreadable` when it cannot be read
+    or does not parse, so the gate names it rather than crash."""
+    try:
+        return tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError,UnicodeDecodeError,tomllib.TOMLDecodeError) as error:
+        raise Unreadable(path,error) from error
+
+def status_of(manifest: dict) -> str | None:
+    """The manifest's status when it is a string, else None."""
+    status=manifest.get("status")
+    return status if isinstance(status,str) else None
+
+def same_value(then, now) -> bool:
+    """Whether two TOML values are the same: of one type, tables and lists
+    the same key by key and element by element, and NaN the same as NaN,
+    which `==` denies. `1`, `1.0` and `true` are three values, which `==`
+    would take as one."""
+    if type(then) is not type(now):
+        return False
+    if isinstance(then,dict):
+        return then.keys()==now.keys() and all(same_value(then[key],now[key]) for key in then)
+    if isinstance(then,list):
+        return len(then)==len(now) and all(same_value(first,second) for first,second in zip(then,now))
+    if isinstance(then,float) and then!=then and now!=now:
+        return True
+    return then==now
+
+def names_an_entrypoint(manifest: dict) -> bool:
+    """Whether the manifest names the command its runs run."""
+    entrypoint=manifest.get("entrypoint")
+    return isinstance(entrypoint,str) and bool(entrypoint.strip())
 
 def is_placeholder(value: str) -> bool:
     """A value still to be chosen: empty, `must-be-pinned-…`, `unconfigured`
@@ -507,7 +554,7 @@ def launchable_at(root: Path, commit: str, exp_id: str, directory: str) -> str |
     content there, each baseline pinned and not blocked. A commit that held
     less could not launch it, and does not freeze it."""
     manifest=toml_at(root,commit,f"{directory}/experiment.toml")
-    if not isinstance(manifest,dict) or manifest.get("status") not in FROZEN:
+    if not isinstance(manifest,dict) or status_of(manifest) not in FROZEN or not names_an_entrypoint(manifest):
         return None
     listed=toml_at(root,commit,PREREGISTRATION)
     entries=listed.get("experiment") if isinstance(listed,dict) else None
@@ -590,7 +637,7 @@ def directory_digest_at(root: Path, commit: str, directory: str) -> str | None:
 def changed_keys(then: dict, now: dict, unbound: set[str]) -> list[str]:
     """The keys other than `unbound` whose values differ between `then` and
     `now`, sorted; a key only one of them holds differs."""
-    return sorted(key for key in (then.keys()|now.keys())-unbound if then.get(key,MISSING)!=now.get(key,MISSING))
+    return sorted(key for key in (then.keys()|now.keys())-unbound if not same_value(then.get(key,MISSING),now.get(key,MISSING)))
 
 def history_errors(exp_id: str, name: str, named, root: Path, experiment: Path, entry: dict, table: dict,
                    frozen: tuple[str, str], current: tuple[dict, dict], at: str | None = None) -> tuple[list[str], str | None]:
@@ -650,7 +697,7 @@ def history_errors(exp_id: str, name: str, named, root: Path, experiment: Path, 
         if changed:
             errors.append(f"{at}, whose experiment.toml differs from the current one in {', '.join(changed)}; "
                           "after a run only its status changes")
-        then_status,now_status=manifest.get("status"),now_manifest.get("status")
+        then_status,now_status=status_of(manifest),status_of(now_manifest)
         if then_status not in RANK:
             errors.append(f"{at}, where it was {then_status!r}; a listed experiment runs only once it is prepared")
         elif now_status not in RANK or RANK[now_status]<RANK[then_status] or (RANK[then_status]==2 and now_status!=then_status):
@@ -701,7 +748,8 @@ def record_errors(exp_id: str, name: str, record, aggregate: bool, root: Path, e
         # which is the committed text, or that text with CRLF line endings
         # where the checkout converts them.
         spellings=set() if held is None else {held,re.sub(rb"(?<!\r)\n",b"\r\n",held)}
-        if record.get("manifest_sha256") not in {hashlib.sha256(spelling).hexdigest() for spelling in spellings}:
+        named_manifest=record.get("manifest_sha256")
+        if not isinstance(named_manifest,str) or named_manifest not in {hashlib.sha256(spelling).hexdigest() for spelling in spellings}:
             errors.append(f"{where} names manifest_sha256 {record.get('manifest_sha256')!r}, not the SHA-256 of experiment.toml at {commit[:12]}")
     return errors
 
@@ -806,6 +854,9 @@ def frozen_errors(exp_id: str, entry: dict, manifest: dict, experiment: Path, ro
     if not isinstance(table,dict):
         return [f"{exp_id}: config.toml has no [preregistration] table"]
     errors=[]
+    if not names_an_entrypoint(manifest):
+        errors.append(f"{exp_id}: experiment.toml names no entrypoint; a listed experiment names what it runs before "
+                      "it leaves planned, since its manifest is frozen from then on")
     results_dir=manifest.get("results_dir","results")
     results=None
     if not is_repository_path(results_dir) or not PurePosixPath(results_dir).parts:
@@ -880,7 +931,10 @@ def preregistration_errors(root: Path, manifests: dict[str, dict], experiments: 
     committed, has not gone back to it."""
     if not (root/PREREGISTRATION).is_file():
         return [f"{PREREGISTRATION} does not exist"]
-    listed=load(root/PREREGISTRATION)
+    try:
+        listed=load(root/PREREGISTRATION)
+    except Unreadable as error:
+        return [error.named(root)]
     errors=[]
     entries=listed.get("experiment",{})
     if not isinstance(entries,dict):
@@ -893,9 +947,14 @@ def preregistration_errors(root: Path, manifests: dict[str, dict], experiments: 
             errors.extend(problems)
             continue
         manifest=manifests[exp_id]
-        status=manifest.get("status")
-        if status in FROZEN:
-            errors.extend(frozen_errors(exp_id,entry,manifest,experiments[exp_id],root))
+        status=status_of(manifest)
+        if status is None:
+            errors.append(f"{exp_id}: status {manifest.get('status')!r} is not a status")
+        elif status in FROZEN:
+            try:
+                errors.extend(frozen_errors(exp_id,entry,manifest,experiments[exp_id],root))
+            except Unreadable as error:
+                errors.append(error.named(root))
         elif status!="superseded":
             relative=experiments[exp_id].relative_to(root).as_posix()
             committed=committed_records(root,experiment_directories(root,exp_id,relative))
@@ -921,26 +980,38 @@ def launch_errors(root: Path, exp_id: str) -> list[str]:
     left `planned` with a frozen preregistration (`frozen_errors`), so none of
     its outcomes can be seen before its preregistration is fixed, and one
     the list named once and no longer names (`enrolled`) does not run at
-    all; one the list has never named runs as before."""
+    all; one the list has never named runs as before. A file it cannot read
+    refuses the launch, named."""
+    try:
+        return launch_decision(root,exp_id)
+    except Unreadable as error:
+        return [error.named(root)]
+
+def launch_decision(root: Path, exp_id: str) -> list[str]:
+    """`launch_errors`, raising `Unreadable` for a file it cannot read."""
     if not (root/PREREGISTRATION).is_file():
         return [f"{PREREGISTRATION} does not exist, so whether {exp_id} preregisters is unknown"]
     entries=load(root/PREREGISTRATION).get("experiment",{})
     if not isinstance(entries,dict):
         return [f"{PREREGISTRATION}: experiment must be a table of experiments"]
-    items={item.get("id"):item for item in load(root/REGISTRY).get("experiment",[]) if isinstance(item,dict)}
+    items={
+        item["id"]:item for item in load(root/REGISTRY).get("experiment",[])
+        if isinstance(item,dict) and isinstance(item.get("id"),str)
+    }
     if exp_id not in entries:
         commit=enrolled(root,set(items)).get(exp_id)
         return [] if commit is None else [delisted_error(exp_id,commit)]
     problems=entry_errors(exp_id,entries[exp_id],set(items))
     if problems:
         return problems
+    if not isinstance(items[exp_id].get("path"),str):
+        return [f"{REGISTRY}: {exp_id} names no path"]
     experiment=root/"experiments"/items[exp_id]["path"]
     manifest=load(experiment/"experiment.toml")
-    status=manifest.get("status")
-    if status not in FROZEN:
+    if status_of(manifest) not in FROZEN:
         return [
-            f"{exp_id} preregisters ({PREREGISTRATION}) and is {status!r}: it runs only once its preregistration "
-            "is frozen and it is prepared, running, completed or failed"
+            f"{exp_id} preregisters ({PREREGISTRATION}) and is {manifest.get('status')!r}: it runs only once its "
+            "preregistration is frozen and it is prepared, running, completed or failed"
         ]
     return frozen_errors(exp_id,entries[exp_id],manifest,experiment,root)
 
@@ -968,25 +1039,47 @@ def launch_inputs(root: Path, exp_id: str) -> list[str]:
         for key,kind in required.items() if isinstance(required,dict) and isinstance(table,dict) else []:
             if kind=="file" and is_repository_path(table.get(key)):
                 inputs.append(table[key])
-    except (OSError,KeyError,TypeError,tomllib.TOMLDecodeError):
+    except (OSError,KeyError,TypeError,tomllib.TOMLDecodeError,Unreadable):
         pass
     return inputs
 
 def main(root: Path = ROOT) -> int:
     """Check every gate on the repository at `root`, print each error, and
-    return the exit status: 0 when every gate holds, 1 otherwise."""
+    return the exit status: 0 when every gate holds, 1 otherwise. A file the
+    gate cannot read is an error that names it."""
+    try:
+        errors=gate_errors(root)
+    except Unreadable as error:
+        errors=[error.named(root)]
+    if errors:
+        print("\n".join("ERROR: "+error for error in errors))
+        return 1
+    print("OK: research execution gates satisfied")
+    return 0
+
+def gate_errors(root: Path) -> list[str]:
+    """Every error of every gate on the repository at `root` (`main`),
+    raising `Unreadable` for a file it cannot read outside the listed
+    experiments, whose unreadable files are errors of their own."""
     errors=[]
     experiments={}
     directories={}
-    registry=load(root/"experiments/registry.toml")
+    registry=load(root/REGISTRY)
     for item in registry.get("experiment",[]):
+        if not isinstance(item,dict) or not isinstance(item.get("id"),str) or not isinstance(item.get("path"),str):
+            errors.append(f"{REGISTRY}: every experiment names an id and a path, not {item!r}")
+            continue
         experiment=root/"experiments"/item["path"]
         manifest=load(experiment/"experiment.toml")
         experiments[item["id"]]=manifest
         directories[item["id"]]=experiment
         status=manifest.get("status")
         if status=="completed":
-            results=experiment/manifest.get("results_dir","results")
+            results_dir=manifest.get("results_dir","results")
+            if not isinstance(results_dir,str):
+                errors.append(f'{item["id"]}: results_dir {results_dir!r} is not a path')
+                continue
+            results=experiment/results_dir
             for artifact in manifest.get("required_artifacts",[]):
                 if not (results/artifact).exists():
                     errors.append(f'{item["id"]}: completed experiment missing {artifact}')
@@ -995,12 +1088,12 @@ def main(root: Path = ROOT) -> int:
 
     plain=load(root/"research/baselines/plain_model/config.toml")
     for exp_id in ["M001","M002","M003","M004","M005"]:
-        if experiments.get(exp_id,{}).get("status") in {"running","completed"}:
+        if status_of(experiments.get(exp_id,{})) in {"running","completed"}:
             model=plain.get("model",{})
             if is_placeholder(str(model.get("backend",""))) or is_placeholder(str(model.get("model",""))):
                 errors.append(f"{exp_id}: matched plain-model baseline is not pinned")
 
-    if experiments.get("E002",{}).get("status") in {"running","completed"}:
+    if status_of(experiments.get("E002",{})) in {"running","completed"}:
         rag=load(root/"research/baselines/strong_rag/config.toml")
         required=[
             rag.get("dense",{}).get("revision",""),
@@ -1013,12 +1106,7 @@ def main(root: Path = ROOT) -> int:
             errors.append("E002: strong RAG baseline is still blocked")
 
     errors.extend(preregistration_errors(root,experiments,directories))
-
-    if errors:
-        print("\n".join("ERROR: "+error for error in errors))
-        return 1
-    print("OK: research execution gates satisfied")
-    return 0
+    return errors
 
 if __name__=="__main__":
     raise SystemExit(main())

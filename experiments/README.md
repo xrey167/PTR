@@ -17,6 +17,7 @@ Do not silently rewrite failed results. Supersede them with a new experiment/ver
 
 An experiment listed in `preregistration.toml` leaves `planned` only with a frozen preregistration. Once its status is `prepared`, `running`, `completed` or `failed`, `scripts/check_research_gates.py` fails CI unless:
 
+- its manifest names its `entrypoint`, since the manifest is frozen from the first commit past `planned` and one named later could never be named;
 - its `config.toml` holds a `[preregistration]` table with every key the list requires, each a pinned value of its declared type (`int`, `str`, `bool`, a non-empty `int-list` or `str-list`, or `file`), and no other key of the table holds a placeholder either;
 - every value of that table is a boolean, an integer of magnitude at most 2^53 − 1, a string of printable ASCII or a list of only such integers or only such strings, and every key is printable ASCII, so that its canonical text has one spelling whoever writes it; `experiment.toml`'s `preregistration_sha256` is the SHA-256 of that text;
 - a `file` key names a file in the repository, and the table's `<key>_sha256` is the SHA-256 of that file (`preregistered_bytes_digest`: in a text file, UTF-8 with no NUL byte, CRLF is read as LF, so a checkout that converts line endings holds the same digest; any other file is digested byte for byte, since its carriage returns are content), so the file's content is frozen with the table, not only its path;

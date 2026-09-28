@@ -207,7 +207,7 @@ class PreregistrationGateTests(unittest.TestCase):
             listed+="\n"+entry_extra
         listed=listed if listed_text is None else listed_text
         write(root,"experiments/preregistration.toml",listed)
-        manifest={"version":1,"id":"X900","status":status,"seeds":list(seeds),"required_artifacts":[]}
+        manifest={"version":1,"id":"X900","status":status,"seeds":list(seeds),"entrypoint":"bench <seed>","required_artifacts":[]}
         if digest is DIGEST:
             digest=mod.experiment_records.preregistration_digest(table) if table is not None else None
         if digest is not None:
@@ -1119,6 +1119,13 @@ class PreregistrationGateTests(unittest.TestCase):
             shutil.copyfile(fixed/relative,root/relative)
         commit_all(root,"pinned")
         self.assertEqual(gate(root),(0,[]))
+        # Nor did one whose table held a required value of the wrong type.
+        root=self.tree(status="running",table={**TABLE,"schema":"1"})
+        commit_all(root)
+        for relative in ("experiments/semdb/X900-fixture/config.toml",self.MANIFEST):
+            shutil.copyfile(fixed/relative,root/relative)
+        commit_all(root,"typed")
+        self.assertEqual(gate(root),(0,[]))
         # Nor did one whose manifest named no digest of it yet.
         root=self.tree(status="running",digest=None)
         commit_all(root)
@@ -1150,6 +1157,101 @@ class PreregistrationGateTests(unittest.TestCase):
             root,
             f"X900 is 'planned', but it was 'prepared' at {frozen[:12]}; a listed experiment that has left planned "
             "stays prepared, running, completed or failed, or is superseded",
+        )
+
+    def test_a_listed_experiment_names_its_entrypoint_before_it_leaves_planned(self):
+        # The manifest is frozen from the first commit past planned, so an
+        # entrypoint named only later could never be named at all.
+        root=self.tree(status="prepared")
+        self.edit(root,self.MANIFEST,'entrypoint = "bench <seed>"\n','entrypoint = ""\n')
+        refusal=("X900: experiment.toml names no entrypoint; a listed experiment names what it runs before it "
+                 "leaves planned, since its manifest is frozen from then on")
+        self.assert_blocked(root,refusal)
+        self.assertEqual(mod.launch_errors(root,"X900"),[refusal])
+        # A commit without one could not launch it, and froze nothing.
+        commit_all(root)
+        self.edit(root,self.MANIFEST,'entrypoint = ""\n','entrypoint = "bench <seed>"\n')
+        commit_all(root,"entrypoint named")
+        self.assertEqual(gate(root),(0,[]))
+
+    def test_a_record_reverted_and_restored_is_the_record_committed(self):
+        root,ran=self.ran()
+        recorded=git(root,"rev-parse","HEAD")
+        git(root,"revert","--no-edit",recorded)
+        git(root,"revert","--no-edit","HEAD")
+        self.assertTrue((root/self.RECORD).exists())
+        self.assertEqual(gate(root),(0,[]))
+
+    def test_settings_are_compared_by_type_and_nan_is_itself(self):
+        name=self.RECORD.removeprefix("experiments/semdb/X900-fixture/")
+        config="experiments/semdb/X900-fixture/config.toml"
+        # A NaN setting, unchanged since the run, is unchanged.
+        root=self.tree(status="running")
+        write(root,config,(root/config).read_text(encoding="utf-8").replace('tests_dir = "tests"','tests_dir = "tests"\nloss_cap = nan\nlimits = [nan, 1.0]'))
+        ran=commit_all(root)
+        write(root,self.RECORD,json.dumps(self.record(root,ran)))
+        commit_all(root,"records")
+        self.assertEqual(gate(root),(0,[]))
+        # 1, 1.0 and true are three values, which == takes as one.
+        for changed in ("loss_cap = 1","loss_cap = 1.0","loss_cap = true"):
+            with self.subTest(changed=changed):
+                root=self.tree(status="running")
+                write(root,config,(root/config).read_text(encoding="utf-8").replace('tests_dir = "tests"','tests_dir = "tests"\nloss_cap = 1'))
+                ran=commit_all(root)
+                write(root,self.RECORD,json.dumps(self.record(root,ran)))
+                commit_all(root,"records")
+                self.edit(root,config,"loss_cap = 1",changed)
+                if changed=="loss_cap = 1":
+                    self.assertEqual(gate(root),(0,[]))
+                    continue
+                self.assert_blocked(
+                    root,
+                    f"X900: {name} ran at {ran[:12]}, whose config.toml differs from the current one in loss_cap; after a run the configuration stays as it ran",
+                    f"X900 was frozen at {ran[:12]}, whose config.toml differs from the current one in loss_cap; after a run the configuration stays as it ran",
+                )
+
+    def test_malformed_files_are_named_errors_not_crashes(self):
+        name=self.RECORD.removeprefix("experiments/semdb/X900-fixture/")
+        config="experiments/semdb/X900-fixture/config.toml"
+        # A record whose manifest_sha256 is not a string.
+        root,ran=self.ran()
+        record=self.record(root,ran,manifest_sha256=["x"])
+        write(root,self.RECORD,json.dumps(record))
+        self.assert_blocked(
+            root,
+            f"X900: {name} names manifest_sha256 ['x'], not the SHA-256 of experiment.toml at {ran[:12]}",
+            f"X900: {name} differs from the record committed as it",
+        )
+        # A status that is not a string.
+        root=self.tree()
+        self.edit(root,self.MANIFEST,'status = "prepared"','status = ["prepared"]')
+        self.assert_blocked(root,"X900: status ['prepared'] is not a status")
+        self.assertEqual(mod.launch_errors(root,"X900"),[
+            "X900 preregisters (experiments/preregistration.toml) and is ['prepared']: it runs only once its "
+            "preregistration is frozen and it is prepared, running, completed or failed",
+        ])
+        # Files that do not parse as TOML.
+        for relative,text in (
+            (config,"version = 1\n[preregistration\n"),
+            (BASELINE_PATH,'{"status": "pinned"}\n'),
+            ("experiments/preregistration.toml","version = 1\n[experiment.X900\n"),
+        ):
+            with self.subTest(relative=relative):
+                root=self.tree()
+                write(root,relative,text)
+                code,lines=gate(root)
+                self.assertEqual((code,len(lines)),(1,1),lines)
+                self.assertTrue(lines[0].startswith(f"{relative} cannot be read as TOML: "),lines)
+                refused=mod.launch_errors(root,"X900")
+                self.assertEqual(len(refused),1,refused)
+                self.assertTrue(refused[0].startswith(f"{relative} cannot be read as TOML: "),refused)
+        # A completed experiment whose results_dir is not a path.
+        root=self.tree(status="completed")
+        write(root,self.MANIFEST,(root/self.MANIFEST).read_text(encoding="utf-8")+"results_dir = 1\n")
+        self.assert_blocked(
+            root,
+            "X900: results_dir 1 is not a path",
+            "X900: results_dir 1 is not a directory below the experiment's directory",
         )
 
     def test_a_listed_experiment_stays_listed(self):
@@ -1412,7 +1514,8 @@ class EnrolledExperimentTests(unittest.TestCase):
             registry+=f'\n[[experiment]]\nid = "{exp_id}"\npath = "{paths[exp_id]}"\nstatus = "prepared"\n'
             for name in ("experiment.toml","config.toml"):
                 source=ROOT/"experiments"/paths[exp_id]/name
-                text=source.read_text(encoding="utf-8").replace('status = "planned"','status = "prepared"')
+                # Leaving planned, the owner names what each one runs.
+                text=source.read_text(encoding="utf-8").replace('status = "planned"','status = "prepared"').replace('entrypoint = ""','entrypoint = "bench <seed>"')
                 write(root,f"experiments/{paths[exp_id]}/{name}",text)
         write(root,"experiments/registry.toml",registry)
         for relative in (
