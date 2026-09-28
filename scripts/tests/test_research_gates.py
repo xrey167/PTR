@@ -622,6 +622,24 @@ class PreregistrationGateTests(unittest.TestCase):
         root=self.tree(table={**TABLE,"baseline_fixture_sha256":frozen})
         (root/BASELINE_PATH).write_bytes(text.replace("\n","\r\n").encode("utf-8"))
         self.assertEqual(gate(root),(0,[]))
+        # Committed with CRLF, a text file of it would read alike with LF, so
+        # it is refused in the tree, and a commit holding it froze nothing.
+        commit_all(root)
+        self.assert_blocked(
+            root,
+            f"X900: baseline {directory}/ holds {BASELINE_PATH}, which is committed with CRLF line endings; its digest "
+            "reads them as LF, so a baseline's text files are committed with LF line endings",
+        )
+        self.assertIsNone(mod.directory_digest_at(root,git(root,"rev-parse","HEAD"),directory))
+        (root/BASELINE_PATH).write_bytes(text.encode("utf-8"))
+        lf=commit_all(root,"LF")
+        self.assertEqual(gate(root),(0,[]))
+        self.assertEqual(mod.directory_digest_at(root,lf,directory),frozen)
+        # A file that is not text keeps its carriage returns as content.
+        write(root,f"{directory}/table.bin","")
+        (root/directory/"table.bin").write_bytes(b"\x00\r\n")
+        binary=commit_all(root,"binary")
+        self.assertIsNotNone(mod.directory_digest_at(root,binary,directory))
         self.assert_blocked(
             self.tree(table={**TABLE,"baseline_fixture_sha256":"must-be-pinned-before-prepared"}),
             "X900: preregistration key baseline_fixture_sha256 is a placeholder ('must-be-pinned-before-prepared')",
@@ -2148,6 +2166,18 @@ class PreregistrationGateTests(unittest.TestCase):
         for seeds in ([17],[17,17],[]):
             self.assertEqual(mod.command_errors("X900",{"entrypoint":"bench --seed 17"},{"seeds":seeds}),[])
         self.assertEqual(mod.command_errors("X900",{"entrypoint":"bench --seed=<seed>"},{"seeds":[17,29]}),[])
+        # So is one a preregistered value fills in, as the runner fills it:
+        # the option, the program, or the whole token.
+        for entrypoint,table in (
+            ("cargo <option> <configuration> run -- <seed>",{"option":"--config","configuration":"/tmp/adapted.toml"}),
+            ("<tool> --config c.toml run -- <seed>",{"tool":"cargo"}),
+            ("cargo <option> run -- <seed>",{"option":"--config=build.jobs=1"}),
+        ):
+            with self.subTest(entrypoint=entrypoint):
+                self.assertEqual(
+                    mod.command_errors("X900",{"entrypoint":entrypoint},{**table,"seeds":[17,29]}),[CARGO_CONFIGURATION])
+        self.assertEqual(
+            mod.command_errors("X900",{"entrypoint":"cargo <option> run -- <seed>"},{"option":"--release","seeds":[17,29]}),[])
         # Past `--` an argument is the built program's, and another program's
         # --config is its own.
         for entrypoint in ("cargo run -- --config c.toml <seed>","python3 bench.py --config c.toml <seed>",

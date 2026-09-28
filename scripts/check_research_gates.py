@@ -263,7 +263,14 @@ def command_errors(exp_id: str, manifest: dict, table: dict) -> list[str]:
     if len(distinct)>1 and not any("seed" in experiment_records.PLACEHOLDER.findall(token) for token in tokens):
         errors.append(f"{exp_id}: entrypoint takes no <seed> placeholder, so each of its {len(distinct)} preregistered "
                       "seeds would run one command while its record named another seed")
-    if any(argument=="--config" or argument.startswith("--config=") for argument in cargo_arguments(tokens)):
+    # Read as the runner fills it: a placeholder could name Cargo, or give
+    # it --config, as well as the token it stands in.
+    def filled(match):
+        value=table.get(match.group(1)) if match.group(1)!="seed" else 0
+        return ("true" if value else "false") if isinstance(value,bool) else (
+            str(value) if isinstance(value,(int,str)) else match.group(0))
+    command=[experiment_records.PLACEHOLDER.sub(filled,token) for token in tokens]
+    if any(argument=="--config" or argument.startswith("--config=") for argument in cargo_arguments(command)):
         errors.append(f"{exp_id}: entrypoint gives Cargo configuration on its command line (--config), which can name "
                       "a rustc wrapper, flags or sources outside the commit; set what the build needs in the "
                       "repository's .cargo/config.toml")
@@ -457,7 +464,9 @@ def directory_digest(root: Path, directory: str) -> tuple[list[str], str | None]
     file reached through a symlink is refused, as `repository_file` refuses
     it, and so is a file the tree's `.gitignore` files ignore: an
     interpreter can run one in place of a tracked file (a `__pycache__`
-    entry, a bytecode file standing in for a module), and git holds none."""
+    entry, a bytecode file standing in for a module), and git holds none;
+    and so is text git holds with CRLF line endings, which the digest reads
+    as LF where a command would tell them apart."""
     try:
         names=experiment_records.listed_names(
             root,"--literal-pathspecs","ls-files","-z","--cached","--others",experiment_records.PER_DIRECTORY,"--",directory)
@@ -468,12 +477,24 @@ def directory_digest(root: Path, directory: str) -> tuple[list[str], str | None]
         return [f"cannot be listed: {error}"],None
     except UnicodeDecodeError:
         return ["holds a file whose name is not UTF-8, which no repository path is"],None
-    modes={}
+    modes,blobs={},{}
     for entry in staged:
         fields,_,name=entry.partition("\t")
-        modes[name]=fields.split(" ")[0]
+        modes[name],blobs[name]=fields.split(" ")[:2]
     problems=[f"holds {name}, which git ignores; a baseline's directory holds only what git tracks or would track"
               for name in sorted(set(ignored))]
+    # Its digest reads CRLF as LF, so a checkout that converts line endings
+    # holds the baseline the repository does; text committed with CRLF would
+    # read alike with LF, where a command reading it would tell them apart.
+    for name,held in sorted(blobs.items()):
+        try:
+            data=object_bytes(root,held)
+        except HistoryUnreadable as error:
+            problems.append(f"holds {name}, which git cannot read: {error}")
+            continue
+        if experiment_records.is_preregistered_text(data) and b"\r\n" in data:
+            problems.append(f"holds {name}, which is committed with CRLF line endings; its digest reads them as LF, so "
+                            "a baseline's text files are committed with LF line endings")
     files={}
     for name in sorted(set(names)):
         path=root/name
@@ -1005,9 +1026,10 @@ def frozen_commits(root: Path, exp_id: str, relative: str) -> list[tuple[str, st
 def directory_digest_at(root: Path, commit: str, directory: str) -> str | None:
     """`directory_digest` of the repository `directory` as `commit` holds it,
     or None when the tree check (`directory_digest`) would refuse what it
-    holds there: anything but a regular file (a symlink, a submodule), or a
+    holds there: anything but a regular file (a symlink, a submodule), a
     file named as no repository path (`is_repository_path`), a name that is
-    not UTF-8 included. None is no digest, so it matches no frozen one.
+    not UTF-8 included, or text committed with CRLF line endings, which its
+    digest reads as LF. None is no digest, so it matches no frozen one.
     Raises `HistoryUnreadable` when git cannot tell."""
     try:
         listing=experiment_records.git(root,"--literal-pathspecs","ls-tree","-r","-z",commit,"--",directory,binary=True)
@@ -1028,6 +1050,9 @@ def directory_digest_at(root: Path, commit: str, directory: str) -> str | None:
             # a directory no launch could have frozen.
             return None
         data=object_bytes(root,held)
+        if experiment_records.is_preregistered_text(data) and b"\r\n" in data:
+            # Text committed with CRLF, which its digest reads as LF.
+            return None
         files[PurePosixPath(name).relative_to(directory).as_posix()]=file_entry(mode,experiment_records.preregistered_bytes_digest(data))
     return file_table_digest(files)
 

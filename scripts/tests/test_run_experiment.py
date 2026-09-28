@@ -1698,6 +1698,9 @@ class RunWatchTests(unittest.TestCase):
             encoding="utf-8",
         )
         rustup.chmod(0o755)
+        # rustup installs its proxies beside itself, as links to it.
+        for tool in ("rustc", "cargo"):
+            (bin_directory / tool).symlink_to("rustup")
 
         def named(tool: str, name: str = "pinned") -> dict:
             path = tools / "toolchains" / name / "bin" / tool
@@ -1730,6 +1733,18 @@ class RunWatchTests(unittest.TestCase):
                 mod.toolchain(environment, ["python3", "+stable"]), {"rustc": named("rustc"), "cargo": named("cargo")}
             )
             self.assertEqual(mod.toolchain(environment, ["cargo"]), {"rustc": named("rustc"), "cargo": named("cargo")})
+            # A standalone Cargo and rustc before rustup's proxies are what
+            # runs, whatever rustup would resolve; a copy of rustup under a
+            # proxy's name is its proxy all the same.
+            standalone = os.pathsep.join((str(tools / "toolchains" / "stable" / "bin"), str(bin_directory)))
+            self.assertEqual(mod.toolchain({"PATH": standalone}, ["cargo", "run"]), stable)
+            copies = tools / "copies"
+            copies.mkdir()
+            for tool in ("rustc", "cargo", "rustup"):
+                shutil.copy2(rustup, copies / tool)
+            self.assertEqual(
+                mod.toolchain({"PATH": str(copies)}, ["cargo", "run"]), {"rustc": named("rustc"), "cargo": named("cargo")}
+            )
             # What rustup prints when it fails names nothing, a path included.
             failing = tools / "failing"
             failing.mkdir()

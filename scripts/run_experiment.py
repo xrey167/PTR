@@ -726,21 +726,39 @@ def named_toolchain(command: list[str]) -> str | None:
     return rest[0] if rest else None
 
 
+def is_rustup_proxy(path: str, rustup: str) -> bool:
+    """Whether the program at `path` is rustup itself under a proxy's name,
+    as rustup installs its proxies: the same file (a hard or symbolic link)
+    or a copy of it."""
+    try:
+        if os.path.samefile(path, rustup):
+            return True
+        return os.path.getsize(path) == os.path.getsize(rustup) and Path(path).read_bytes() == Path(rustup).read_bytes()
+    except OSError:
+        return False
+
+
 def toolchain(environment: dict[str, str], command: list[str]) -> dict:
     """The Rust toolchain `command`, run from the repository's root in
-    `environment`, would build with: `rustc` and `cargo` as rustup resolves
-    them there, after its overrides and `rust-toolchain.toml`, or for the
-    toolchain the command names itself (`named_toolchain`: `cargo +stable
-    run`, `rustup run stable cargo run`), or as the `PATH` holds them
-    without rustup, each named as `resolved_executable` names a program, by
-    nothing when it cannot be resolved. rustup keeps its toolchains outside
-    the repository, where the commit holds none."""
-    rustup = shutil.which("rustup", path=os.pathsep.join(os.get_exec_path(environment)))
+    `environment`, would build with, each of `rustc` and `cargo` named as
+    `resolved_executable` names a program, by nothing when it cannot be
+    resolved: as rustup resolves it there, after its overrides and
+    `rust-toolchain.toml`, or for the toolchain the command names itself
+    (`named_toolchain`: `cargo +stable run`, `rustup run stable cargo
+    run`), where the `PATH`'s tool of that name is rustup's proxy
+    (`is_rustup_proxy`) or the command is `rustup run`; and otherwise as the
+    `PATH` holds it, such as a standalone Cargo before rustup's proxies,
+    which runs whatever rustup would resolve. rustup keeps its toolchains
+    outside the repository, where the commit holds none."""
+    search = os.pathsep.join(os.get_exec_path(environment))
+    rustup = shutil.which("rustup", path=search)
     name = named_toolchain(command)
     named = [] if name is None else ["--toolchain", name]
+    run_by_rustup = bool(command) and os.path.basename(command[0]) == "rustup"
     found = {}
     for tool in ("rustc", "cargo"):
-        if rustup is None:
+        on_path = shutil.which(tool, path=search)
+        if rustup is None or not (run_by_rustup or (on_path is not None and is_rustup_proxy(on_path, rustup))):
             found[tool] = resolved_executable([tool], environment)
             continue
         try:

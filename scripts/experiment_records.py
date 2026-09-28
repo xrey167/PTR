@@ -333,16 +333,23 @@ def agreement_errors(experiment_id: str, manifest: dict, records: dict[str, dict
 
 
 def git(
-    root: Path, *args: str, stdin: str | bytes | None = None, env: dict[str, str] | None = None, binary: bool = False
+    root: Path,
+    *args: str,
+    stdin: str | bytes | None = None,
+    env: dict[str, str] | None = None,
+    binary: bool = False,
+    work_tree: bool = True,
 ) -> subprocess.CompletedProcess:
     """Run git in `root`, given `stdin` and in `env` when named; raises
     `ProvenanceError` when git cannot start. Without `env`, git runs in this
     process's environment less every `GIT_*` variable, which could point it
     at another work tree, index or object store or change how it reads
     pathspecs, and with replacement objects off, so what it reports is the
-    repository at `root` as its history holds it. With `binary`, what git
-    prints is kept as the bytes it wrote, as a file's content must be, and
-    `stdin` is bytes too."""
+    repository at `root` as its history holds it. Its work tree is `root`
+    whatever `core.worktree` names, but for a command that makes a
+    repository (`work_tree` false), which git refuses one without its own
+    directory named. With `binary`, what git prints is kept as the bytes it
+    wrote, as a file's content must be, and `stdin` is bytes too."""
     if env is None:
         env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
         env["GIT_NO_REPLACE_OBJECTS"] = "1"
@@ -350,10 +357,14 @@ def git(
         return subprocess.run(
             # Git reads the tree itself: no file system monitor a clone's own
             # configuration names answers for it, no hook of the clone's runs
-            # when git refreshes its index, and no name is taken for another
-            # that differs from it in case, which a clone told to ignore case
-            # would do on a file system that does not.
-            ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.ignoreCase=false", *args],
+            # when git refreshes its index, no name is taken for another that
+            # differs from it in case, which a clone told to ignore case
+            # would do on a file system that does not, and the work tree is
+            # `root`, where commands run, not one `core.worktree` names.
+            [
+                "git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.ignoreCase=false",
+                *((f"--work-tree={root}",) if work_tree else ()), *args,
+            ],
             cwd=root, input=stdin, env=env, capture_output=True, text=not binary, check=False,
         )
     except OSError as error:
@@ -605,7 +616,7 @@ def ignored_by_head_rules(root: Path, names: list[str]) -> set[str]:
     env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
     with tempfile.TemporaryDirectory() as scratch:
         mirror = Path(scratch)
-        created = git(mirror, "init", "-q", env=env)
+        created = git(mirror, "init", "-q", env=env, work_tree=False)
         if created.returncode != 0:
             raise ProvenanceError(
                 f"cannot create a repository to read HEAD's ignore rules in: {created.stderr.strip()}"

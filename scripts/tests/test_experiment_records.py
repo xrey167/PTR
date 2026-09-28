@@ -743,6 +743,19 @@ class SourceTreeTests(GitTree, unittest.TestCase):
         self.assertEqual(git(self.root, "ls-files", "--others", "--", "src"), "")
         self.assertEqual(mod.uncommitted_files(self.root, self.pathspecs), ["src/LIB.rs"])
 
+    def test_a_clones_own_work_tree_setting_points_git_at_no_other_tree(self):
+        # core.worktree could point git at a clean copy while commands run in
+        # the checkout, which then holds a source git never looked at.
+        copy = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        for relative in git(self.root, "ls-files").splitlines():
+            (copy / relative).parent.mkdir(parents=True, exist_ok=True)
+            (copy / relative).write_bytes((self.root / relative).read_bytes())
+        git(self.root, "config", "core.worktree", str(copy))
+        self.write("src/new.rs", "pub fn new() {}\n")
+        (self.root / "Cargo.toml").unlink()
+        self.assertEqual(git(self.root, "status", "--porcelain"), "")
+        self.assertEqual(mod.uncommitted_files(self.root, self.pathspecs), ["Cargo.toml", "src/new.rs"])
+
     def test_no_hook_of_the_clones_runs_while_the_tree_is_read(self):
         # Git runs a clone's post-index-change hook when a status refreshes
         # its index; no code the commit does not hold runs in the watch.
