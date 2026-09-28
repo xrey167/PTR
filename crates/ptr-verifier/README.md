@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `scaffold`  
-**Last reviewed:** 2026-09-18  
-**Code footprint:** 1 Rust source files · 98 nonblank source lines · 2 integration-test files · 2 `#[test]` markers
+**Last reviewed:** 2026-09-28  
+**Code footprint:** 1 Rust source files · 106 nonblank source lines · 2 integration-test files · 2 `#[test]` markers
 
 ### Implemented now
 
@@ -18,6 +18,7 @@
 - Finding and VerificationReport with level/score/findings
 - Generic Verifier<T> contract
 - NamedVerifier + VerifierFabric aggregate reports with Fail > Disputed > Unknown > Pass precedence
+- VerifierFabric's combined level is the strongest level any report reached (how deep the deepest verifier went), so a fabric report is no admission rule; the runtime's SemanticGrant admits only at the weakest level of all its verifiers (ADR-0020)
 
 ### Missing for the target architecture
 
@@ -46,6 +47,7 @@
 
 - [ADR-0002-authority-hierarchy.md](../../research/decisions/ADR-0002-authority-hierarchy.md)
 - [ADR-0012-hard-effect-boundary.md](../../research/decisions/ADR-0012-hard-effect-boundary.md)
+- [ADR-0020-only-the-runtime-merges-an-agent-branch.md](../../research/decisions/ADR-0020-only-the-runtime-merges-an-agent-branch.md)
 
 ### Current automated checks
 

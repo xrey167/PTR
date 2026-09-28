@@ -44,7 +44,9 @@ digest, once per branch id. Generic `commit` refuses
 semantic records outright (`SemanticRecordOutsideSemanticPath`). Replay validates
 the same transition, and the same origin rules, before materializing it. An
 invalid schema, revision jump, wrong base, encoded no-op record or origin that
-breaks a rule fails closed.
+breaks a rule fails closed. What a record's origin states is the runtime's own
+claim: a writer below the runtime can append a well-formed record these rules
+accept, and replay cannot run the verifiers again (doc 35 §2, ADR-0020).
 
 A no-op through the high-level API writes no record and preserves pending P0.1
 permits. Real semantic commits invalidate the same authority epoch as other

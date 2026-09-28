@@ -31,6 +31,14 @@ pub trait NamedVerifier<T>: Verifier<T> + Send + Sync {
     fn name(&self) -> &'static str;
 }
 
+/// Runs every verifier pushed on a candidate and combines their reports into
+/// one: the worst status, the lowest score, every finding, and as its level
+/// the strongest level any report reached; with no verifier, `Unknown` at
+/// `Unverified`. That level says how deep the deepest verifier went, not that
+/// every verifier went that deep, so a fabric's report is not an admission
+/// rule: the runtime's semantic grant (`ptr_runtime::SemanticGrant`) admits a
+/// change only when the weakest level of all its verifiers meets its
+/// requirement.
 #[derive(Default)]
 pub struct VerifierFabric<T> {
     verifiers: Vec<Box<dyn NamedVerifier<T>>>,

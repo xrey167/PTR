@@ -5,7 +5,7 @@
 
 **Component count:** 33  
 **Maturity distribution:** `foundation`: 1, `prototype`: 20, `research-scaffold`: 1, `scaffold`: 11  
-**Rust footprint:** 134 source files · 41714 nonblank source lines · 107 integration-test files · 1004 `#[test]` markers
+**Rust footprint:** 134 source files · 41722 nonblank source lines · 107 integration-test files · 1004 `#[test]` markers
 
 | Component | Maturity | Rust files | LOC | Test files | Tests | Implemented items | Missing items | Experiments | Evaluations |
 |---|---:|---:|---:|---:|---:|---:|---:|---|---|
@@ -41,7 +41,7 @@
 | [ptr-state](../../crates/ptr-state/README.md) | `prototype` | 1 | 321 | 3 | 9 | 11 | 1 | L001:running, L002:planned, E004:planned | materialized-state:open |
 | [ptr-storage](../../crates/ptr-storage/README.md) | `scaffold` | 1 | 23 | 1 | 1 | 3 | 5 | E004:planned | object-storage:open |
 | [ptr-types](../../crates/ptr-types/README.md) | `foundation` | 6 | 2178 | 6 | 69 | 31 | 10 | M005:planned, L001:running | — |
-| [ptr-verifier](../../crates/ptr-verifier/README.md) | `scaffold` | 1 | 98 | 2 | 2 | 4 | 4 | F001:planned, Q002:planned, E001:planned | code-quality-verifier:open |
+| [ptr-verifier](../../crates/ptr-verifier/README.md) | `scaffold` | 1 | 106 | 2 | 2 | 5 | 4 | F001:planned, Q002:planned, E001:planned | code-quality-verifier:open |
 
 ## Meaning of maturity labels
 

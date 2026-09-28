@@ -11,7 +11,8 @@ ADR-0002: the ledger stays the only authority.
 Decisions: [ADR-0016](../../research/decisions/ADR-0016-postgres-projection-substrate.md),
 [ADR-0017](../../research/decisions/ADR-0017-certified-agent-branches.md),
 [ADR-0018](../../research/decisions/ADR-0018-revocable-fast-weight-memory.md),
-[ADR-0019](../../research/decisions/ADR-0019-adapter-lineage-and-weak-supervision.md).
+[ADR-0019](../../research/decisions/ADR-0019-adapter-lineage-and-weak-supervision.md),
+[ADR-0020](../../research/decisions/ADR-0020-only-the-runtime-merges-an-agent-branch.md).
 
 ## What this revises, and why each part changed
 
@@ -32,7 +33,7 @@ of §7.
 |---|---|---|---|
 | Everything in one Postgres, no authority order | Postgres becomes a second authority; a restored backup or a rolled-back ledger tail is silently kept | Three schema classes; the projection verifies every record against the ledger's own anchor and is rebuilt by replay | `ptr-pg`, ADR-0016 |
 | Working memory: one vector updated by a "delta rule" | A single vector is not an associative memory, and the dot product mixed key and value spaces; nothing could be revoked | Multi-head matrix state under the gated delta rule; every write attributed to one input generation; admission at every read; exact revocation by refold | `ptr-fastmem`, ADR-0018 |
-| Branches, deltas and merge decisions over `entity_table`/`entity_id` | Polymorphic rows address business tables directly; merges decided by free weights; no notion of a stale read | Branches over immutable snapshots, certified against value, range and lifecycle digests; merged only as one verified semantic delta | `ptr-branch`, ADR-0017 |
+| Branches, deltas and merge decisions over `entity_table`/`entity_id` | Polymorphic rows address business tables directly; merges decided by free weights; no notion of a stale read | Branches over immutable snapshots, certified against value, range and lifecycle digests; merged only by the runtime, as one verified semantic delta whose record names the branch | `ptr-branch`, `ptr-runtime`, ADR-0017, ADR-0020 |
 | Merge "reputation" weights | An uncalibrated score can auto-merge anything | Verifier-bounded eligibility, a uniform calibration slice, finite-sample thresholds and off-policy evaluation | `ptr-branch` arbiter |
 | LoRA delta chain constrained to "the null space of the sum of previous updates" | The null space of a sum is not the intersection of null spaces; chains grow without bound | Principal-angle interference per layer against its chance level; a gated lifecycle; TIES consolidation | `ptr-lineage`, ADR-0019 |
 | Replay by `ORDER BY weight LIMIT n` | Deterministic, starves strata and moderately forgotten samples | FSRS-4.5 forgetting model on the training clock; stratified Gumbel-top-k sampling without replacement; held-out samples excluded by type | `ptr-lineage` |
@@ -681,8 +682,11 @@ goes through it too. It refuses parts that sealing an open branch could not have
 produced, however well their digests match the store: an operation on a
 reserved key (`a_hand_built_branch_that_writes_a_reserved_namespace_is_refused_by_the_constructor`),
 a `Put` or `Remove` of a key the branch did not read
-(`a_hand_built_put_or_remove_of_an_unread_key_is_refused_by_the_constructor`), a set
-operation with an empty member, a key an operation touches without its base value
+(`a_hand_built_put_or_remove_of_an_unread_key_is_refused_by_the_constructor`), a `Put`
+of a value the journal cannot encode, which `Branch::put` refuses too, so every sealed
+branch has a seal digest
+(`a_put_of_a_value_the_journal_cannot_encode_is_refused_when_put_and_by_the_constructor`),
+a set operation with an empty member, a key an operation touches without its base value
 or input set
 (`an_operated_key_without_a_recorded_base_value_or_input_set_is_refused_by_the_constructor`),
 a base value or input set for a key no operation touches
@@ -863,6 +867,17 @@ constructor, whose checks certification runs again, and by replay
 Ingress (`ingest_text`, a verified Pod output) writes only the fixed shapes its origin
 allows, with no grant verifier; every other public semantic write is judged by the
 grant's verifiers.
+
+What the record proves is the runtime's own claim (ADR-0020). Writers below the
+runtime, `Ledger::append`, `FileLedger::append_durable`,
+`AcknowledgedLedger::append_acknowledged`, `RaftEngineLedger::append_durable`,
+`RaftNode::propose` (through which `ptr-cluster` members propose) and
+`SingleNodeRaftConsensus::propose`, can write a well-formed record the origin rules
+accept, and a fresh log whose first records are forged unattributed records is accepted
+as a legacy prefix: replay refuses what is structurally wrong but cannot run the
+verifiers again. The grant is chosen once by whoever builds the runtime, not a sandbox
+against code holding the runtime, and the author, the host principal and the reviewer
+are recorded as given until principals are authenticated.
 
 ### The arbiter: verification first, calibration second
 

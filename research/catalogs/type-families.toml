@@ -123,9 +123,9 @@ id = "ledger-consensus"
 owner = "ptr-ledger"
 status = "prototype"
 purpose = "Authoritative ordered lifecycle events, durability and consensus metadata."
-implemented = ["LedgerEvent", "CommittedEvent", "CompactionBarrier"]
+implemented = ["LedgerEvent", "CommittedEvent", "CompactionBarrier", "SemanticOrigin", "Attestation", "MergeRecord", "MergeAuthorityRecord"]
 open = ["DurabilityMode", "ConsensusTerm", "ClusterEpoch", "Membership", "SnapshotManifest", "CommitReceipt", "RevocationBarrier", "ReplayCursor"]
-invariants = ["committed order is authoritative", "revocation survives restart and replay"]
+invariants = ["committed order is authoritative", "revocation survives restart and replay", "a semantic record names why it was allowed, and replay checks what is deterministic about that claim (ADR-0020)"]
 
 [[family]]
 id = "state-projection"
@@ -197,7 +197,7 @@ status = "prototype"
 purpose = "Speculative agent branches over immutable snapshots, certified against declared dependencies and triaged by a verifier-bounded calibrated policy."
 implemented = ["BranchId", "Branch", "SealedBranch", "BranchOp", "ValueDigest", "RangeDigest", "InputsDigest", "Certification", "MergePlan", "TriagePolicy", "TriageDecision", "TriageOutcome", "AutoThreshold", "CalibrationSample", "ThresholdRule", "PolicyRecord", "LoggedTriage", "OffPolicyEstimate", "BranchError", "ArbiterError"]
 open = ["BranchLease", "TypedMergeOperator registry", "PredicateDigest beyond prefixes"]
-invariants = ["a branch never writes semantic state", "a plan is committed through verified delta publication (a caller obligation until enforced by type)", "triage never moves a branch past verification"]
+invariants = ["a branch never writes semantic state", "a plan is a what-if: only PtrRuntime::merge_branch commits a sealed branch, certifying and verifying it again in the same call (ADR-0020)", "triage never moves a branch past verification"]
 
 [[family]]
 id = "fast-weight-memory"

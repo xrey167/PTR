@@ -81,6 +81,7 @@ evaluations = [
 decisions = [
   "ADR-0002-authority-hierarchy.md",
   "ADR-0009-consensus-ledger-state-separation.md",
+  "ADR-0020-only-the-runtime-merges-an-agent-branch.md",
 ]
 
 checks = ["all ten effect and verification codes are pinned to exact bytes, unknown codes are refused at a position located by diffing two records, and invalid presence bytes, truncated digests and trailing bytes are each rejected", "an exhausted anchor epoch refuses both acknowledge and compacted advance without republishing the record", "a neighbouring log set is never reported as this set's orphan, and short, non-numeric, past-u64 and non-canonical floor fields are all rejected", "an exhausted commit index is refused rather than repeated, leaving the ledger unchanged", 
