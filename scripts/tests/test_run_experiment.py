@@ -1,5 +1,6 @@
 import contextlib
 import errno
+import hashlib
 import importlib.util
 import io
 import json
@@ -280,11 +281,14 @@ class RunWatchTests(unittest.TestCase):
         mod.write_json_exclusive(other, {"second": True})
         self.assertEqual(json.loads(other.read_text(encoding="utf-8")), {"second": True})
 
-    def preregister(self, status: str, table: str | None = "schema = 1\n", frozen: bool = True) -> None:
-        """List L900 as preregistering one integer, give it `status`, the
-        `[preregistration]` table `table` (None for none) and, when `frozen`,
-        the manifest's digests of that table and of its list entry; commit."""
-        listed = 'version = 1\n\n[experiment.L900.required]\nseeds = "int-list"\nschema = "int"\n'
+    def preregister(
+        self, status: str, table: str | None = "schema = 1\n", frozen: bool = True, required: str = ""
+    ) -> None:
+        """List L900 as preregistering one integer, and the keys `required`
+        adds, give it `status`, the `[preregistration]` table `table` (None
+        for none) and, when `frozen`, the manifest's digests of that table and
+        of its list entry; commit."""
+        listed = 'version = 1\n\n[experiment.L900.required]\nseeds = "int-list"\nschema = "int"\n' + required
         self.write("experiments/preregistration.toml", listed)
         if table is not None:
             table = "seeds = [17]\n" + table
@@ -382,7 +386,8 @@ class RunWatchTests(unittest.TestCase):
         manifest = (self.root / "experiments/x/L900-x/experiment.toml").read_text(encoding="utf-8")
         # The experiment's own directory would take all of it out of the
         # HEAD check, and one outside it is not the experiment's.
-        for results_dir in (".", "../elsewhere"):
+        # Nor may git's own directory hold it, where no record is committed.
+        for results_dir in (".", "../elsewhere", ".git", "results/.GIT"):
             with self.subTest(results_dir=results_dir):
                 self.write("experiments/x/L900-x/experiment.toml", manifest + f'results_dir = "{results_dir}"\n')
                 git(self.root, "commit", "-q", "--no-verify", "-am", f"results in {results_dir}")
@@ -390,6 +395,17 @@ class RunWatchTests(unittest.TestCase):
                 status, _, stderr = self.run_seed(lambda: ran.append(True))
                 self.assertEqual((status, ran), (2, []))
                 self.assertIn(f"results_dir {results_dir!r} is not a directory below experiments/x/L900-x", stderr)
+        # A file on the way would leave no directory to write the record
+        # into once the run had run.
+        self.write("experiments/x/L900-x/notes", "a file\n")
+        for results_dir in ("notes", "notes/results"):
+            with self.subTest(results_dir=results_dir):
+                self.write("experiments/x/L900-x/experiment.toml", manifest + f'results_dir = "{results_dir}"\n')
+                ran = []
+                status, _, stderr = self.run_seed(lambda: ran.append(True))
+                self.assertEqual((status, ran), (2, []))
+                self.assertIn("results directory experiments/x/L900-x/notes is not a directory", stderr)
+        (self.root / "experiments/x/L900-x/notes").unlink()
         self.write("experiments/x/L900-x/experiment.toml", manifest)
         git(self.root, "commit", "-q", "--no-verify", "-am", "results in results")
         # A link would carry the records, and what the check leaves out,
@@ -432,6 +448,42 @@ class RunWatchTests(unittest.TestCase):
         self.assertEqual((status, stderr), (0, ""))
         [record] = [json.loads(path.read_text(encoding="utf-8")) for path in self.results.glob("run-*.json")]
         self.assertEqual((record["status"], record["git_sha"]), ("prepared", self.head))
+
+    def test_a_listed_experiment_runs_only_from_a_commit_that_holds_what_froze_it(self):
+        # The gate finds a freeze by what a commit holds. A protocol that
+        # HEAD's .gitignore hides is in the tree, so the tree is frozen and
+        # the watch sees nothing uncommitted, but HEAD does not hold it: a run
+        # from there would leave a freeze the gate could not find.
+        protocol = "experiments/x/L900-x/notes/protocol.md"
+        text = "# Protocol\n"
+        self.write(".gitignore", "__pycache__/\nnotes/\n")
+        (self.root / protocol).parent.mkdir()
+        self.write(protocol, text)
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        self.preregister(
+            "running", f'schema = 1\nprotocol = "{protocol}"\nprotocol_sha256 = "{digest}"\n', required='protocol = "file"\n'
+        )
+        self.assertEqual(mod.check_research_gates.launch_errors(self.root, "L900"), [])
+        refusal = f"L900: {self.head[:12]}, the commit its run would name, does not hold it frozen as the tree launches it"
+        ran = []
+        status, records, stderr = self.run_seed(lambda: ran.append(True))
+        self.assertEqual((status, records, ran), (2, [], []))
+        self.assertIn(refusal, stderr)
+        prepared = io.StringIO()
+        with (
+            mock.patch.object(mod, "ROOT", self.root),
+            mock.patch.object(mod, "REGISTRY", self.root / "experiments/registry.toml"),
+            contextlib.redirect_stderr(prepared),
+        ):
+            self.assertEqual(mod.prepare("L900"), 2)
+        self.assertIn(refusal, prepared.getvalue())
+        self.assertEqual(sorted(path.name for path in self.results.iterdir()), [".gitkeep"])
+        # Committed, the protocol is one HEAD holds, and the run is recorded.
+        self.write(".gitignore", "__pycache__/\n")
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-q", "--no-verify", "-m", "protocol committed")
+        status, records, stderr = self.run_seed()
+        self.assertEqual((status, stderr, len(records)), (0, "", 1))
 
     def test_a_record_the_results_hold_is_no_change_of_the_sources(self):
         # Records accumulate in results/, which the run writes into itself.

@@ -1569,11 +1569,15 @@ committed cannot go back to `planned` (`test_a_missing_required_key_keeps_an_exp
 `test_a_run_record_reached_through_a_symlink_is_refused`,
 `test_what_the_preregistration_freezes_lies_outside_the_results_directory`,
 `test_a_record_rewritten_on_one_side_of_a_merge_fails`,
-`test_a_committed_freeze_binds_whether_or_not_its_runs_were_kept`).
+`test_a_committed_freeze_binds_whether_or_not_its_runs_were_kept`,
+`test_a_commit_freezes_only_what_it_holds_as_regular_files`).
 `scripts/run_experiment.py` runs or prepares a listed experiment only once this holds, and holds the files that
 decision reads to HEAD while it runs, so no outcome is seen before its preregistration is frozen
 (`test_a_listed_experiment_is_not_run_or_prepared_before_its_preregistration_is_frozen`,
-`test_what_decides_a_launch_is_held_to_head_before_and_while_the_run`). A value still to be chosen and an owner decision still to be
+`test_what_decides_a_launch_is_held_to_head_before_and_while_the_run`); and it runs one only from a commit that
+holds that freeze, every frozen input a regular file the commit holds, so the gate can find the freeze from the
+commit its record names (`test_a_launch_names_a_commit_that_holds_the_experiment_frozen`,
+`test_a_listed_experiment_runs_only_from_a_commit_that_holds_what_froze_it`). A value still to be chosen and an owner decision still to be
 taken, such as whether F003's adjudicators see a branch's intent, are placeholder strings that pass as no type.
 S003 has no `[preregistration]` table yet and the other five hold such placeholders, so none of the six can
 leave `planned` yet (`test_the_enrolled_experiments_are_held_until_their_placeholders_are_pinned`).

@@ -128,13 +128,22 @@ def launch_refused(exp_id: str) -> bool:
 def results_directory(root: Path, data: dict) -> Path | None:
     """The results directory of the experiment at `root` whose manifest is
     `data`, or None, printing why, when it cannot hold its records: it must
-    lie below the experiment's directory, reached through no symlink. The
-    runner holds the rest of that directory to HEAD, so a results directory
-    that is the experiment's own, or a link that carries records elsewhere,
-    would take sources out of that watch."""
+    lie below the experiment's directory, outside git's own directory
+    (`check_research_gates.is_git_administration`), where no record could be
+    committed, and be reached through no symlink and no file. The runner
+    holds the rest of that directory to HEAD, so a results directory that is
+    the experiment's own, or a link that carries records elsewhere, would
+    take sources out of that watch; and a file on the way would leave no
+    directory to write the record into once the run had run."""
     named = data.get("results_dir", "results")
     relative = PurePosixPath(named) if isinstance(named, str) and named else None
-    if relative is None or relative.is_absolute() or not relative.parts or ".." in relative.parts:
+    if (
+        relative is None
+        or relative.is_absolute()
+        or not relative.parts
+        or ".." in relative.parts
+        or any(check_research_gates.is_git_administration(part) for part in relative.parts)
+    ):
         print(f"ERROR: results_dir {named!r} is not a directory below {root.relative_to(ROOT)}", file=sys.stderr)
         return None
     step = root
@@ -142,6 +151,9 @@ def results_directory(root: Path, data: dict) -> Path | None:
         step = step / part
         if step.is_symlink():
             print(f"ERROR: results directory {step.relative_to(ROOT)} is a symlink", file=sys.stderr)
+            return None
+        if step.exists() and not step.is_dir():
+            print(f"ERROR: results directory {step.relative_to(ROOT)} is not a directory", file=sys.stderr)
             return None
     return root / relative
 
@@ -151,7 +163,10 @@ def launch_watch(exp_id: str, root: Path, results: Path) -> experiment_records.P
     provenance files, the experiment's directory except `results`, and
     `check_research_gates.launch_inputs`), or None, printing why, when git
     cannot tell or HEAD does not hold one of them: a record names HEAD as
-    what it ran, so it may be written only from a tree that holds HEAD."""
+    what it ran, so it may be written only from a tree that holds HEAD. A
+    listed experiment also needs HEAD to hold it frozen as the tree launches
+    it (`check_research_gates.launch_commit_errors`), each input a regular
+    file HEAD holds, so the gate can find the freeze from HEAD alone."""
     try:
         watch = experiment_records.ProvenanceWatch(
             ROOT,
@@ -174,7 +189,10 @@ def launch_watch(exp_id: str, root: Path, results: Path) -> experiment_records.P
             file=sys.stderr,
         )
         return None
-    return watch
+    problems = check_research_gates.launch_commit_errors(ROOT, exp_id, watch.head)
+    for problem in problems:
+        print(f"ERROR: {problem}", file=sys.stderr)
+    return None if problems else watch
 
 
 def prepare(exp_id: str):

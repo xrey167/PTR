@@ -209,20 +209,22 @@ def agreement_errors(experiment_id: str, manifest: dict, records: dict[str, dict
 
 
 def git(
-    root: Path, *args: str, stdin: str | None = None, env: dict[str, str] | None = None
+    root: Path, *args: str, stdin: str | bytes | None = None, env: dict[str, str] | None = None, binary: bool = False
 ) -> subprocess.CompletedProcess:
     """Run git in `root`, given `stdin` and in `env` when named; raises
     `ProvenanceError` when git cannot start. Without `env`, git runs in this
     process's environment less every `GIT_*` variable, which could point it
     at another work tree, index or object store or change how it reads
     pathspecs, and with replacement objects off, so what it reports is the
-    repository at `root` as its history holds it."""
+    repository at `root` as its history holds it. With `binary`, what git
+    prints is kept as the bytes it wrote, as a file's content must be, and
+    `stdin` is bytes too."""
     if env is None:
         env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
         env["GIT_NO_REPLACE_OBJECTS"] = "1"
     try:
         return subprocess.run(
-            ["git", *args], cwd=root, input=stdin, env=env, capture_output=True, text=True, check=False
+            ["git", *args], cwd=root, input=stdin, env=env, capture_output=True, text=not binary, check=False
         )
     except OSError as error:
         raise ProvenanceError(f"cannot run git: {error}") from error

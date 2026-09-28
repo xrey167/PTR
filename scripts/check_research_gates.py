@@ -97,8 +97,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
-import subprocess
 import sys
 import tomllib
 from pathlib import Path, PurePosixPath
@@ -122,6 +122,8 @@ ENTRY_FIELDS={"required","baseline"}
 BASELINE_FIELDS={"name","path","keys","status_key"}
 BASELINE_NAME=re.compile(r"[a-z0-9_]+")
 MISSING=object()
+# The modes of a regular file in a git tree, executable or not.
+REGULAR_MODES={"100644","100755"}
 
 class Unreadable(Exception):
     """A file the gate reads that is not a readable TOML document."""
@@ -154,17 +156,18 @@ def status_of(manifest: dict) -> str | None:
 
 def same_value(then, now) -> bool:
     """Whether two TOML values are the same: of one type, tables and lists
-    the same key by key and element by element, and NaN the same as NaN,
-    which `==` denies. `1`, `1.0` and `true` are three values, which `==`
-    would take as one."""
+    the same key by key and element by element, NaN the same as NaN, which
+    `==` denies, and floats of one sign. `1`, `1.0` and `true` are three
+    values, which `==` would take as one, and so are `0.0` and `-0.0`: TOML
+    holds the sign of a zero and of a NaN, and a run can read it."""
     if type(then) is not type(now):
         return False
     if isinstance(then,dict):
         return then.keys()==now.keys() and all(same_value(then[key],now[key]) for key in then)
     if isinstance(then,list):
         return len(then)==len(now) and all(same_value(first,second) for first,second in zip(then,now))
-    if isinstance(then,float) and then!=then and now!=now:
-        return True
+    if isinstance(then,float):
+        return (then==now or (then!=then and now!=now)) and math.copysign(1.0,then)==math.copysign(1.0,now)
     return then==now
 
 def names_an_entrypoint(manifest: dict) -> bool:
@@ -258,16 +261,27 @@ def lookup(table: dict, key_path: str):
         value=value[part]
     return value
 
+def is_git_administration(part: str) -> bool:
+    """Whether the path component `part` names the directory git keeps for
+    itself, `.git`, as git refuses it in a path a commit holds: in any case,
+    and as Windows reads it, with trailing dots or spaces, or by its short
+    name `git~1`."""
+    return part.lower().rstrip(". ") in {".git","git~1"}
+
 def is_repository_path(value) -> bool:
     """A relative path of printable ASCII that names no parent, so it stays
     inside the repository as written, and that git takes as the path it is
     wherever a pathspec names it: no leading `:`, which git reads as
-    pathspec magic, and none of the glob characters `*`, `?` and `[`."""
+    pathspec magic, and none of the glob characters `*`, `?` and `[`. No
+    part of it is git's own directory (`is_git_administration`): git
+    reports no file there as tracked or untracked, and no commit holds one,
+    so a file frozen there would be one HEAD cannot show."""
     if not isinstance(value,str) or not value or not experiment_records.is_printable_ascii(value):
         return False
     path=PurePosixPath(value)
     return (not path.is_absolute() and ".." not in path.parts and "\\" not in value
-            and not value.startswith(":") and not any(character in value for character in "*?["))
+            and not value.startswith(":") and not any(character in value for character in "*?[")
+            and not any(is_git_administration(part) for part in path.parts))
 
 def repository_file(root: Path, relative: str) -> Path | None:
     """The regular file `relative` names under `root`, or None when it names
@@ -424,14 +438,44 @@ def frozen_value_errors(exp_id: str, table: dict, key: str, expected: str, what:
         return [f"{exp_id}: preregistration key {key} {table[key]!r} is not {expected}, the digest of {what}"]
     return []
 
-def blob(root: Path, commit: str, relative: str) -> bytes | None:
-    """The bytes of `relative` at `commit` in the repository at `root`, or
-    None when that commit holds no such file."""
+def tree_entry(root: Path, commit: str, relative: str) -> tuple[str, str, str] | None:
+    """The mode, kind and object name of the entry `relative` names in
+    `commit`, or None when that commit holds no such entry or git cannot
+    tell."""
     try:
-        shown=subprocess.run(["git","show",f"{commit}:{relative}"],cwd=root,capture_output=True,check=False)
-    except OSError:
+        listing=experiment_records.git(root,"--literal-pathspecs","ls-tree","-z",commit,"--",relative)
+    except experiment_records.ProvenanceError:
+        return None
+    if listing.returncode!=0:
+        return None
+    wanted=PurePosixPath(relative).as_posix()
+    for entry in listing.stdout.split("\0"):
+        meta,_,name=entry.partition("\t")
+        fields=meta.split()
+        if name==wanted and len(fields)==3:
+            return fields[0],fields[1],fields[2]
+    return None
+
+def object_bytes(root: Path, name: str) -> bytes | None:
+    """The content of the blob `name` in the repository at `root`, as its
+    history holds it (`experiment_records.git`), or None when git cannot
+    read it."""
+    try:
+        shown=experiment_records.git(root,"cat-file","blob",name,binary=True)
+    except experiment_records.ProvenanceError:
         return None
     return shown.stdout if shown.returncode==0 else None
+
+def blob(root: Path, commit: str, relative: str) -> bytes | None:
+    """The bytes of the regular file `relative` at `commit` in the repository
+    at `root`, or None when that commit holds none there: no entry, a
+    directory, a submodule, or a symlink, which git holds as its target's
+    path and not as the content read through it, as `repository_file`
+    refuses one in the tree."""
+    entry=tree_entry(root,commit,relative)
+    if entry is None or entry[1]!="blob" or entry[0] not in REGULAR_MODES:
+        return None
+    return object_bytes(root,entry[2])
 
 def toml_at(root: Path, commit: str, relative: str) -> dict | None:
     """The TOML file `relative` at `commit`, or None when it is absent or
@@ -585,7 +629,7 @@ def launchable_at(root: Path, commit: str, exp_id: str, directory: str) -> tuple
                 return None
     # The file and baseline digests are the table's, checked here and
     # below, so the table stands for them in the state.
-    if any(unset_problem(value) for value in table.values()) or table.get("seeds")!=manifest.get("seeds"):
+    if any(unset_problem(value) for value in table.values()) or not same_value(table.get("seeds",MISSING),manifest.get("seeds",MISSING)):
         return None
     for baseline in entry.get("baseline",[]):
         settings=toml_at(root,commit,baseline["path"])
@@ -678,10 +722,10 @@ def directory_digest_at(root: Path, commit: str, directory: str) -> str | None:
         if not entry:
             continue
         meta,_,name=entry.partition("\t")
-        mode,kind,_=meta.split()
-        if kind!="blob" or mode not in {"100644","100755"}:
+        mode,kind,held=meta.split()
+        if kind!="blob" or mode not in REGULAR_MODES:
             return None
-        data=blob(root,commit,name)
+        data=object_bytes(root,held)
         if data is None:
             return None
         files[PurePosixPath(name).relative_to(directory).as_posix()]=experiment_records.preregistered_bytes_digest(data)
@@ -868,10 +912,17 @@ def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path,
             # Written again, an aggregate keeps every version it was
             # committed in: each saw the outcome of the runs it names.
             for commit in history(root,"--format=%H","HEAD","--",path):
-                held=blob(root,commit,path)
-                if held is None or held==data:
+                if tree_entry(root,commit,path) is None:
+                    # The commit removed it.
                     continue
                 version=f"{name} as committed at {commit[:12]}"
+                held=blob(root,commit,path)
+                if held is None:
+                    # A link, say, which a checkout reads another file through.
+                    errors.append(f"{exp_id}: {version} is not a regular file")
+                    continue
+                if held==data:
+                    continue
                 try:
                     earlier=json.loads(held.decode("utf-8"))
                 except (UnicodeDecodeError,json.JSONDecodeError) as error:
@@ -944,7 +995,7 @@ def frozen_errors(exp_id: str, entry: dict, manifest: dict, experiment: Path, ro
         problem=None if key in entry["required"] else unset_problem(value)
         if problem:
             errors.append(f"{exp_id}: preregistration key {key} {problem}")
-    if "seeds" in table and table["seeds"]!=manifest.get("seeds"):
+    if "seeds" in table and not same_value(table["seeds"],manifest.get("seeds",MISSING)):
         errors.append(f"{exp_id}: preregistered seeds {table['seeds']!r} are not the manifest's seeds {manifest.get('seeds')!r}")
     for baseline in entry.get("baseline",[]):
         directory=baseline_directory(baseline["path"])
@@ -1067,6 +1118,38 @@ def launch_decision(root: Path, exp_id: str) -> list[str]:
             "preregistration is frozen and it is prepared, running, completed or failed"
         ]
     return frozen_errors(exp_id,entries[exp_id],manifest,experiment,root)
+
+def launch_commit_errors(root: Path, exp_id: str, commit: str) -> list[str]:
+    """Why `commit`, the commit a run of `exp_id` launched from the tree
+    names as what it ran, does not hold the experiment frozen as the tree
+    launches it (`launchable_at`), empty when it does or when the list does
+    not name `exp_id`. `scripts/run_experiment.py` asks this once the tree is
+    known to hold `commit`'s files (`experiment_records.ProvenanceWatch`).
+    The gate finds a freeze by what a commit holds (`frozen_commits`), so a
+    run launched from a tree whose inputs that commit does not hold as
+    regular files (a file git ignores, one below git's own directory, a
+    symlink, which git holds as its target's path) would leave a freeze the
+    gate cannot find, and a preregistration that could be rewritten once the
+    run's record was discarded. A file it cannot read refuses the launch,
+    named."""
+    try:
+        entries=load(root/PREREGISTRATION).get("experiment",{})
+        items=load(root/REGISTRY).get("experiment",[])
+    except Unreadable as error:
+        return [error.named(root)]
+    if not isinstance(entries,dict) or exp_id not in entries:
+        return []
+    placed=sorted({
+        PurePosixPath("experiments",item["path"]).as_posix() for item in (items if isinstance(items,list) else ())
+        if isinstance(item,dict) and item.get("id")==exp_id and isinstance(item.get("path"),str)
+    })
+    if len(placed)==1 and launchable_at(root,commit,exp_id,placed[0]) is not None:
+        return []
+    return [
+        f"{exp_id}: {commit[:12]}, the commit its run would name, does not hold it frozen as the tree launches it; "
+        "every file that decides its launch must be a regular file that commit holds, not a file git ignores or "
+        "keeps in its own directory, nor a symlink"
+    ]
 
 def launch_inputs(root: Path, exp_id: str) -> list[str]:
     """The files besides the experiment's own that decide whether `exp_id`

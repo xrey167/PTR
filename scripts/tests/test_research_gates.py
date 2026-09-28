@@ -350,7 +350,8 @@ class PreregistrationGateTests(unittest.TestCase):
                 )
 
     def test_preregistered_seeds_must_be_the_manifests_seeds(self):
-        for seeds in ((29,17),(17,),(17,29,43)):
+        # A float seed is not the integer the table froze, whatever == says.
+        for seeds in ((29,17),(17,),(17,29,43),(17.0,29)):
             with self.subTest(seeds=seeds):
                 self.assert_blocked(
                     self.tree(seeds=seeds),
@@ -478,7 +479,8 @@ class PreregistrationGateTests(unittest.TestCase):
             "X900: preregistration key protocol_sha256 is a placeholder ('must-be-pinned-before-prepared')",
         )
         # The path must name a file inside the repository.
-        for named in (path,"../PROTOCOL.md","/etc/hostname","experiments/semdb/X900-fixture"):
+        # Nor below git's own directory, whose files no commit holds.
+        for named in (path,"../PROTOCOL.md","/etc/hostname","experiments/semdb/X900-fixture",".git/config"):
             with self.subTest(named=named):
                 content=None if named==path else text
                 self.assert_blocked(
@@ -1014,6 +1016,23 @@ class PreregistrationGateTests(unittest.TestCase):
         write(root,self.AGGREGATE,json.dumps(self.aggregate(root,ran,metrics_sha256="0"*64)))
         commit_all(root,"aggregate again")
         self.assertEqual(gate(root),(0,[]))
+        # Deleted and put back as it was, it is the aggregate committed.
+        (root/self.AGGREGATE).unlink()
+        commit_all(root,"aggregate deleted")
+        write(root,self.AGGREGATE,json.dumps(self.aggregate(root,ran,metrics_sha256="0"*64)))
+        commit_all(root,"aggregate restored")
+        self.assertEqual(gate(root),(0,[]))
+        # A version committed as a link was another file's content, read
+        # through it; git holds only the link's target path.
+        root=self.tree(status="running")
+        ran=commit_all(root)
+        write(root,"experiments/semdb/X900-fixture/elsewhere.json",json.dumps(self.aggregate(root,ran)))
+        self.link(Path("../elsewhere.json"),root/self.AGGREGATE)
+        linked=commit_all(root,"aggregate linked")
+        (root/self.AGGREGATE).unlink()
+        write(root,self.AGGREGATE,json.dumps(self.aggregate(root,ran)))
+        commit_all(root,"aggregate")
+        self.assert_blocked(root,f"X900: results/run.json as committed at {linked[:12]} is not a regular file")
 
     def test_a_run_record_reached_through_a_symlink_is_refused(self):
         name=self.RECORD.removeprefix("experiments/semdb/X900-fixture/")
@@ -1165,6 +1184,24 @@ class PreregistrationGateTests(unittest.TestCase):
             f"X900 was frozen at {launchable[:12]}, whose config.toml holds another [preregistration] than the frozen one",
             f"X900 was frozen at {launchable[:12]}, whose experiment.toml names other preregistration digests than the frozen ones",
         )
+        # Or one that lists it, or registers it where it is, alone.
+        full=self.tree(status="running")
+        for relative in ("experiments/preregistration.toml","experiments/registry.toml"):
+            with self.subTest(alone=relative):
+                root=self.tree(status="running")
+                write(root,relative,"version = 1\n")
+                commit_all(root)
+                shutil.copyfile(full/relative,root/relative)
+                launchable=commit_all(root,f"{relative} alone")
+                self.assertEqual(mod.launch_errors(root,"X900"),[])
+                for rewritten in ("experiments/semdb/X900-fixture/config.toml",self.MANIFEST):
+                    shutil.copyfile(third/rewritten,root/rewritten)
+                commit_all(root,"rewrite")
+                self.assert_blocked(
+                    root,
+                    f"X900 was frozen at {launchable[:12]}, whose config.toml holds another [preregistration] than the frozen one",
+                    f"X900 was frozen at {launchable[:12]}, whose experiment.toml names other preregistration digests than the frozen ones",
+                )
         # A commit that could not launch it did not freeze it: here the
         # table still held a placeholder.
         root=self.tree(status="running",table={**TABLE,"harness":"must-be-pinned-before-prepared"})
@@ -1186,6 +1223,13 @@ class PreregistrationGateTests(unittest.TestCase):
         commit_all(root)
         shutil.copyfile(fixed/self.MANIFEST,root/self.MANIFEST)
         commit_all(root,"digest named")
+        self.assertEqual(gate(root),(0,[]))
+        # Nor did one whose manifest's seeds were the table's only as ==
+        # reads them.
+        root=self.tree(status="running",seeds=(17.0,29))
+        commit_all(root)
+        shutil.copyfile(fixed/self.MANIFEST,root/self.MANIFEST)
+        commit_all(root,"integer seeds")
         self.assertEqual(gate(root),(0,[]))
         # Nor did one whose baseline was still blocked.
         blocked={**BASELINE_CONFIG,"status":"blocked-unpinned"}
@@ -1237,7 +1281,7 @@ class PreregistrationGateTests(unittest.TestCase):
         self.assertTrue((root/self.RECORD).exists())
         self.assertEqual(gate(root),(0,[]))
 
-    def test_settings_are_compared_by_type_and_nan_is_itself(self):
+    def test_settings_are_compared_by_type_and_sign_and_nan_is_itself(self):
         name=self.RECORD.removeprefix("experiments/semdb/X900-fixture/")
         config="experiments/semdb/X900-fixture/config.toml"
         # A NaN setting, unchanged since the run, is unchanged.
@@ -1264,6 +1308,31 @@ class PreregistrationGateTests(unittest.TestCase):
                     f"X900: {name} ran at {ran[:12]}, whose config.toml differs from the current one in loss_cap; after a run the configuration stays as it ran",
                     f"X900 was frozen at {ran[:12]}, whose config.toml differs from the current one in loss_cap; after a run the configuration stays as it ran",
                 )
+        # 0.0 and -0.0, which == takes as one, and nan and -nan differ in a
+        # sign that TOML holds and a run can read; +0.0 is 0.0.
+        for first,changed in (("loss_cap = 0.0","loss_cap = -0.0"),("loss_cap = nan","loss_cap = -nan"),("loss_cap = 0.0","loss_cap = +0.0")):
+            with self.subTest(first=first,changed=changed):
+                root=self.tree(status="running")
+                write(root,config,(root/config).read_text(encoding="utf-8").replace('tests_dir = "tests"',f'tests_dir = "tests"\n{first}'))
+                ran=commit_all(root)
+                write(root,self.RECORD,json.dumps(self.record(root,ran)))
+                commit_all(root,"records")
+                self.edit(root,config,first,changed)
+                if changed=="loss_cap = +0.0":
+                    self.assertEqual(gate(root),(0,[]))
+                    continue
+                self.assert_blocked(
+                    root,
+                    f"X900: {name} ran at {ran[:12]}, whose config.toml differs from the current one in loss_cap; after a run the configuration stays as it ran",
+                    f"X900 was frozen at {ran[:12]}, whose config.toml differs from the current one in loss_cap; after a run the configuration stays as it ran",
+                )
+        nan=float("nan")
+        for then,now,same in (
+            (0.0,-0.0,False),(-0.0,-0.0,True),(nan,nan,True),(nan,-nan,False),(1.5,1.5,True),(1.5,-1.5,False),
+            ([0.0],[-0.0],False),({"cap":-0.0},{"cap":0.0},False),({"cap":[nan]},{"cap":[nan]},True),
+        ):
+            with self.subTest(then=then,now=now):
+                self.assertEqual(mod.same_value(then,now),same)
 
     def test_malformed_files_are_named_errors_not_crashes(self):
         name=self.RECORD.removeprefix("experiments/semdb/X900-fixture/")
@@ -1290,6 +1359,7 @@ class PreregistrationGateTests(unittest.TestCase):
             (config,"version = 1\n[preregistration\n"),
             (BASELINE_PATH,'{"status": "pinned"}\n'),
             ("experiments/preregistration.toml","version = 1\n[experiment.X900\n"),
+            ("experiments/registry.toml","version = 1\n[[experiment\n"),
         ):
             with self.subTest(relative=relative):
                 root=self.tree()
@@ -1487,6 +1557,115 @@ class PreregistrationGateTests(unittest.TestCase):
             "X900: baseline research/baselines/fixture/ holds research/baselines/fixture/runner.py, "
             "which is not a regular file reached through no symlink",
         )
+
+    def test_a_commit_freezes_only_what_it_holds_as_regular_files(self):
+        # Git holds a symlink as its target's path, and the gate and the
+        # runner refuse one, so a commit whose table froze a link's target
+        # path could not launch the experiment: replacing the link with the
+        # file it stood for repairs the experiment, it does not rewrite it.
+        required={**REQUIRED,"protocol":"file"}
+        protocol="experiments/semdb/X900-fixture/PROTOCOL.md"
+        target="REAL.md"
+        text="# Protocol\n"
+        linked={**TABLE,"protocol":protocol,"protocol_sha256":hashlib.sha256(target.encode("utf-8")).hexdigest()}
+        root=self.tree(status="running",table=linked,required=required)
+        write(root,f"experiments/semdb/X900-fixture/{target}",text)
+        self.link(Path(target),root/protocol)
+        self.assert_blocked(root,f"X900: preregistration key protocol names {protocol!r}, which is not a file in the repository")
+        commit_all(root)
+        repaired=self.tree(status="running",table={**linked,"protocol_sha256":hashlib.sha256(text.encode("utf-8")).hexdigest()},
+                           required=required)
+        for relative in ("experiments/semdb/X900-fixture/config.toml",self.MANIFEST):
+            shutil.copyfile(repaired/relative,root/relative)
+        (root/protocol).unlink()
+        write(root,protocol,text)
+        commit_all(root,"a file, not a link")
+        self.assertEqual((gate(root),mod.launch_errors(root,"X900")),((0,[]),[]))
+        # Nor did one whose file key named a directory, which git lists file
+        # by file: the key named no file.
+        directory="experiments/semdb/X900-fixture/docs/"
+        named={**linked,"protocol":directory,"protocol_sha256":hashlib.sha256(text.encode("utf-8")).hexdigest()}
+        root=self.tree(status="running",table=named,required=required)
+        write(root,f"{directory}only.md",text)
+        self.assert_blocked(root,f"X900: preregistration key protocol names {directory!r}, which is not a file in the repository")
+        commit_all(root)
+        repaired=self.tree(status="running",table={**named,"protocol":f"{directory}only.md"},required=required)
+        for relative in ("experiments/semdb/X900-fixture/config.toml",self.MANIFEST):
+            shutil.copyfile(repaired/relative,root/relative)
+        commit_all(root,"the file, not its directory")
+        self.assertEqual(gate(root),(0,[]))
+        # Nor did one whose baseline's directory held a link.
+        helper="research/baselines/fixture/helper.py"
+        target="../plain_model/config.toml"
+        baseline_text=(self.tree()/BASELINE_PATH).read_text(encoding="utf-8")
+        root=self.tree(status="running",table={**TABLE,"baseline_fixture_sha256":baseline_digest({"config.toml":baseline_text,"helper.py":target})})
+        self.link(Path(target),root/helper)
+        commit_all(root)
+        (root/helper).unlink()
+        code="def helper():\n    return 1\n"
+        write(root,helper,code)
+        repaired=self.tree(status="running",table={**TABLE,"baseline_fixture_sha256":baseline_digest({"config.toml":baseline_text,"helper.py":code})})
+        for relative in ("experiments/semdb/X900-fixture/config.toml",self.MANIFEST):
+            shutil.copyfile(repaired/relative,root/relative)
+        commit_all(root,"a file, not a link")
+        self.assertEqual(gate(root),(0,[]))
+
+    def test_history_is_read_as_committed_whatever_replaces_it(self):
+        # A replacement object (git replace) would show the gate another
+        # content than the commit holds.
+        root=self.tree()
+        write(root,"notes.md","committed\n")
+        commit=commit_all(root)
+        write(root,"other.md","replaced\n")
+        git(root,"replace",git(root,"rev-parse",f"{commit}:notes.md"),git(root,"hash-object","-w","other.md"))
+        self.assertEqual(git(root,"show",f"{commit}:notes.md"),"replaced")
+        self.assertEqual(mod.blob(root,commit,"notes.md"),b"committed\n")
+
+    def test_git_keeps_its_own_directory_so_no_path_through_it_is_a_repository_path(self):
+        # Git refuses `.git` in any case in a path a commit holds, and, as
+        # Windows reads it, with trailing dots or spaces or as `git~1`.
+        for refused in (".git",".git/config",".GIT/config","a/.git/b",".Git./config",".git /config","git~1/config","a/GIT~1"):
+            with self.subTest(refused=refused):
+                self.assertFalse(mod.is_repository_path(refused))
+        for accepted in (".gitignore",".github/workflows/ci.yml","a/.gitkeep","x.git/y","git/config","a/git~2",".gitx/y"):
+            with self.subTest(accepted=accepted):
+                self.assertTrue(mod.is_repository_path(accepted))
+
+    def test_a_launch_names_a_commit_that_holds_the_experiment_frozen(self):
+        # The gate finds a freeze by what a commit holds, so a run may name
+        # only a commit that holds the experiment frozen as the tree
+        # launches it.
+        def refusal(commit: str) -> str:
+            return (f"X900: {commit[:12]}, the commit its run would name, does not hold it frozen as the tree launches it; "
+                    "every file that decides its launch must be a regular file that commit holds, not a file git ignores "
+                    "or keeps in its own directory, nor a symlink")
+
+        root=self.tree(status="running")
+        head=commit_all(root)
+        self.assertEqual(mod.launch_commit_errors(root,"X900",head),[])
+        # A protocol that HEAD's .gitignore hides is frozen in the tree, and
+        # the runner's watch sees no change to it, but HEAD does not hold it.
+        protocol="experiments/semdb/X900-fixture/notes/protocol.md"
+        text="# Protocol\n"
+        table={**TABLE,"protocol":protocol,"protocol_sha256":hashlib.sha256(text.encode("utf-8")).hexdigest()}
+        root=self.tree(status="running",table=table,required={**REQUIRED,"protocol":"file"})
+        write(root,".gitignore","notes/\n")
+        write(root,protocol,text)
+        head=commit_all(root)
+        self.assertEqual(mod.launch_errors(root,"X900"),[])
+        self.assertEqual(mod.launch_commit_errors(root,"X900",head),[refusal(head)])
+        # Nor may a registry that no longer places it launch it.
+        write(root,"experiments/registry.toml","version = 1\n")
+        self.assertEqual(mod.launch_commit_errors(root,"X900",head),[refusal(head)])
+        # An experiment the list does not name runs as before.
+        root=self.tree(status="running",listed_text="version = 1\n")
+        head=commit_all(root)
+        self.assertEqual(mod.launch_commit_errors(root,"X900",head),[])
+        # A file it cannot read refuses the launch, named.
+        write(root,"experiments/registry.toml","version = 1\n[[experiment\n")
+        refused=mod.launch_commit_errors(root,"X900",head)
+        self.assertEqual(len(refused),1,refused)
+        self.assertTrue(refused[0].startswith("experiments/registry.toml cannot be read as TOML: "),refused)
 
     def test_a_missing_list_fails_the_gate_and_refuses_every_launch(self):
         root=self.tree()
