@@ -735,10 +735,18 @@ opened over another host's state whose reads differ here
 (`a_branch_opened_over_a_foreign_host_is_recertified_here_and_conflicts`). The runtime
 then hands every verifier of the `SemanticGrant` the host installed a
 `SemanticChange`: the published state before, the post-state with its values and
-dependency sets, the delta, the invalidated keys, and as its origin the sealed branch,
-the plan and whether it was rebased
+dependency sets, the delta and the invalidated keys, as for a host write
 (`a_verifier_sees_and_can_refuse_the_dependency_set_a_delta_would_install`,
-`a_verifier_sees_before_after_delta_affected_and_its_origin`). The change is admitted
+`a_verifier_sees_before_after_delta_affected_and_its_origin`), and as its origin the
+sealed branch, the plan and whether it was rebased
+(`a_certified_and_verified_branch_reaches_semantic_state_only_through_the_runtime`,
+`a_merge_records_branch_author_seal_plan_rebased_keys_verifiers_level_and_authority`).
+A lifecycle generation the branch relied on that was never published refuses the merge
+too, as does a relied generation revoked under a branch that changes nothing
+(`a_reliance_on_an_unknown_generation_or_a_revoked_no_op_refuses_the_merge`), and a
+plan whose delta the journal cannot carry is refused as its digest is computed
+(`a_plan_whose_delta_the_journal_cannot_carry_is_refused_as_it_is_certified`). The
+change is admitted
 only if every verifier passes, the weakest level any of them reports meets the grant's
 requirement and no report has a hard finding
 (`no_score_or_shallow_level_or_hard_finding_gets_a_delta_past_verification`,

@@ -112,7 +112,9 @@ impl SemanticGrant {
     /// `calibration_seed` ([`ptr_branch::calibration_draw`]); the seed is
     /// never recorded, returned or printed, so no one who can read the
     /// runtime can tell in advance which branches a person will see. A
-    /// second call replaces the first.
+    /// second call replaces the first. Installing the grant refuses a policy
+    /// whose version is not an identifier of at most
+    /// [`MAX_PROVENANCE_TEXT`] bytes, since a merge record names it.
     pub fn with_merge_policy(mut self, policy: PolicyRecord, calibration_seed: u64) -> Self {
         self.merge_policy = Some((policy, calibration_seed));
         self
@@ -120,7 +122,9 @@ impl SemanticGrant {
 
     /// List a reviewer whose approval of a plan lets a merge the verifiers
     /// admit commit ([`MergeAuthority::Reviewed`]). No approval lets a merge
-    /// the verifiers did not admit commit.
+    /// the verifiers did not admit commit. Installing the grant refuses a
+    /// reviewer that is not an identifier of at most [`MAX_PROVENANCE_TEXT`]
+    /// bytes, since a merge record names it.
     pub fn with_reviewer(mut self, reviewer: PrincipalId) -> Self {
         self.reviewers.insert(reviewer);
         self
@@ -728,9 +732,11 @@ impl PtrRuntime {
     /// [`RuntimeError::SemanticGrantInstalled`] if a grant is installed; it
     /// stays, since replacing it would change what later writes are admitted
     /// by without a record of the change. [`RuntimeError::InvalidSemanticGrant`]
-    /// for a grant with no verifier, more than [`MAX_SEMANTIC_VERIFIERS`], or
-    /// a verifier name that is not a distinct identifier of at most
-    /// [`MAX_VERIFIER_NAME`] bytes without a `/`.
+    /// for a grant with no verifier, more than [`MAX_SEMANTIC_VERIFIERS`], a
+    /// verifier name that is not a distinct identifier of at most
+    /// [`MAX_VERIFIER_NAME`] bytes without a `/`, or a merge policy version or
+    /// a reviewer that is not an identifier of at most
+    /// [`MAX_PROVENANCE_TEXT`] bytes.
     pub fn install_semantic_grant(&mut self, grant: SemanticGrant) -> Result<(), RuntimeError> {
         if self.semantic_grant.is_some() {
             return Err(RuntimeError::SemanticGrantInstalled);
@@ -798,17 +804,20 @@ impl PtrRuntime {
     ///    ([`RuntimeError::InvalidProvenanceText`]);
     /// 5. a branch already merged ([`RuntimeError::BranchAlreadyMerged`]);
     /// 6. a branch that does not certify against the current state, a
-    ///    lifecycle generation it relied on that is no longer live included
-    ///    ([`RuntimeError::Certification`]; `ptr_branch::certify` checks what
-    ///    sealing guarantees again first);
+    ///    lifecycle generation it relied on that is no longer live included,
+    ///    and one whose plan's delta has no journal encoding, found as the
+    ///    plan's digest is computed (all [`RuntimeError::Certification`], the
+    ///    last as `BranchError::InvalidValue` with key `<merge delta>`;
+    ///    `ptr_branch::certify` checks what sealing guarantees again first);
     /// 7. under [`MergeAuthority::Reviewed`], a plan whose digest is not the
     ///    one approved ([`RuntimeError::MergePlanChanged`]);
     /// 8. a plan that writes, removes or derives an ingress key
     ///    ([`RuntimeError::ReservedSemanticNamespace`]);
-    /// 9. a plan that does not encode or prepare, one that would evict an
-    ///    ingress key a record written before origins existed derived from a
-    ///    key it writes ([`RuntimeError::ReservedSemanticNamespace`]), and a
-    ///    verifier report that does not fit a record
+    /// 9. a plan that does not prepare ([`RuntimeError::Semantic`]), one
+    ///    that would evict an ingress key a record written before origins
+    ///    existed derived from a key it writes
+    ///    ([`RuntimeError::ReservedSemanticNamespace`]), and a verifier report
+    ///    that does not fit a record
     ///    ([`RuntimeError::InvalidVerificationReport`]).
     ///
     /// Then it decides:
@@ -980,7 +989,8 @@ impl PtrRuntime {
         }))
     }
 
-    /// Steps 4 to 6 of [`Self::merge_branch`], and the plan's digest.
+    /// Steps 4 to 6 of [`Self::merge_branch`], and the plan's digest, whose
+    /// encoding of the delta refuses a plan the journal cannot carry.
     fn certify_merge(&self, sealed: &SealedBranch) -> Result<CertifiedMerge, RuntimeError> {
         if !valid_provenance(&sealed.id().0) {
             return Err(RuntimeError::InvalidProvenanceText { field: "branch" });
@@ -1024,6 +1034,7 @@ impl PtrRuntime {
                 key: key.to_owned(),
             });
         }
+        // Cannot fail: certify_merge encoded the same delta for its digest.
         let encoded = plan.delta().encode().map_err(RuntimeError::Semantic)?;
         let prepared = self
             .semdb

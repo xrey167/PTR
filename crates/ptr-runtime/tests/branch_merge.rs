@@ -51,11 +51,12 @@ fn passing() -> VerificationReport {
 }
 
 /// What the grant's verifier was shown of one change: the price the change
-/// would publish, and for a merge the branch and how it certified.
+/// would publish, and for a merge the branch, how it certified and the digest
+/// of the plan it was shown.
 #[derive(Clone, Debug, PartialEq)]
 struct Seen {
     price: Option<String>,
-    merge: Option<(String, CertificationKind)>,
+    merge: Option<(String, CertificationKind, [u8; 32])>,
 }
 
 /// The grant verifier of these tests: remembers what each change would
@@ -85,7 +86,9 @@ impl PriceWatch {
 impl<'a> Verifier<SemanticChange<'a>> for PriceWatch {
     fn verify(&self, change: &SemanticChange<'a>) -> VerificationReport {
         let merge = match change.origin() {
-            ChangeOrigin::Merge { branch, kind, .. } => Some((branch.id().0.clone(), kind)),
+            ChangeOrigin::Merge { branch, plan, kind } => {
+                Some((branch.id().0.clone(), kind, plan.digest().unwrap()))
+            }
             ChangeOrigin::Host { .. } => None,
         };
         self.seen.lock().unwrap().push(Seen {
@@ -295,12 +298,12 @@ fn a_certified_and_verified_branch_reaches_semantic_state_only_through_the_runti
     let receipt = committed(runtime.merge_branch(&sealed, auto()).unwrap());
 
     // The grant's verifier judged the state the merge would publish, as a
-    // merge of this branch.
+    // merge of this branch, certified clean, with the plan the record names.
     assert_eq!(
         watch.last(),
         Some(Seen {
             price: Some("11".into()),
-            merge: Some(("b1".into(), CertificationKind::Clean)),
+            merge: Some(("b1".into(), CertificationKind::Clean, receipt.plan_digest)),
         })
     );
     assert_eq!(runtime.snapshot().get("price:sku-1"), Some("11"));
@@ -603,6 +606,11 @@ fn a_merge_records_branch_author_seal_plan_rebased_keys_verifiers_level_and_auth
             .value("stock")
             .and_then(read_counter_value),
         Some(10)
+    );
+    // The verifier was shown the merge as rebased, with the plan committed.
+    assert_eq!(
+        watch.last().and_then(|seen| seen.merge),
+        Some(("b1".into(), CertificationKind::Rebased, preview.plan_digest))
     );
 
     let index = receipt.commit.commit_index.unwrap();
@@ -1688,4 +1696,85 @@ fn each_verifier_result_of_a_merge_is_emitted_a_report_that_fails_closed_as_not_
         Some(&("price-watch".to_owned(), false))
     );
     assert_eq!(results(&runtime).len(), before + 3);
+}
+
+#[test]
+fn a_reliance_on_an_unknown_generation_or_a_revoked_no_op_refuses_the_merge() {
+    // A branch that relied on a generation the lifecycle authority never
+    // published, and one that changes nothing but relied on a generation
+    // since revoked: neither certifies, whoever authorizes the merge.
+    let (mut runtime, watch) = runtime_watching_prices();
+    let mut work = Branch::open(BranchId::from("b1"), agent(), runtime.snapshot());
+    work.rely_on("pricing-policy", Generation(7)).unwrap();
+    work.read("price:sku-1").unwrap();
+    work.put("price:sku-1", "11".into()).unwrap();
+    let unknown = work.seal().unwrap();
+    let mut work = Branch::open(BranchId::from("b2"), agent(), runtime.snapshot());
+    work.rely_on("pricing-policy", Generation(1)).unwrap();
+    work.read("price:sku-1").unwrap();
+    work.put("price:sku-1", "10".into()).unwrap();
+    let no_op = work.seal().unwrap();
+    let no_op_digest = runtime.preview_merge(&no_op).unwrap().plan_digest;
+    runtime
+        .commit(LedgerEvent::Revoked {
+            subject: "pricing-policy".into(),
+            generation: Generation(1),
+        })
+        .unwrap();
+    let events = runtime.committed_events().len();
+    let judged = watch.count();
+    let stale = RuntimeError::Certification(BranchError::LifecycleChanged {
+        targets: BTreeSet::from(["pricing-policy".to_owned()]),
+    });
+    for (sealed, approved) in [(&unknown, [0; 32]), (&no_op, no_op_digest)] {
+        assert_eq!(runtime.preview_merge(sealed), Err(stale.clone()));
+        for authority in [auto(), reviewed(approved)] {
+            assert_eq!(runtime.merge_branch(sealed, authority), Err(stale.clone()));
+        }
+        assert_eq!(runtime.merged_at(sealed.id()), None);
+    }
+    assert_eq!(watch.count(), judged);
+    assert_eq!(runtime.committed_events().len(), events);
+    assert!(unfenced(&runtime));
+}
+
+#[test]
+fn a_plan_whose_delta_the_journal_cannot_carry_is_refused_as_it_is_certified() {
+    // The set's own encoding is exactly MAX_DELTA_BYTES, so staging accepts
+    // it; the delta that carries it also holds the key, the type, the source
+    // and their framing, which no journal delta has room for. The runtime
+    // finds that as it computes the plan's digest, before any approval is
+    // compared or any verifier is asked.
+    let (mut runtime, watch) = runtime_watching_prices();
+    operator_writes(
+        &mut runtime,
+        put(
+            "tags",
+            ptr_branch::set_value(&BTreeSet::from(["a".to_owned()])).unwrap(),
+        ),
+    );
+    let mut work = Branch::open(BranchId::from("b1"), agent(), runtime.snapshot());
+    work.stage_commutative(BranchOp::SetInsert {
+        key: "tags".into(),
+        member: "m".repeat(ptr_semdb::MAX_DELTA_BYTES - 13),
+        in_base: false,
+    })
+    .unwrap();
+    let sealed = work.seal().unwrap();
+    let events = runtime.committed_events().len();
+    let judged = watch.count();
+    let unencodable = RuntimeError::Certification(BranchError::InvalidValue {
+        key: "<merge delta>".into(),
+    });
+    assert_eq!(runtime.preview_merge(&sealed), Err(unencodable.clone()));
+    for authority in [auto(), reviewed([0; 32])] {
+        assert_eq!(
+            runtime.merge_branch(&sealed, authority),
+            Err(unencodable.clone())
+        );
+    }
+    assert_eq!(watch.count(), judged);
+    assert_eq!(runtime.committed_events().len(), events);
+    assert_eq!(runtime.merged_at(&BranchId::from("b1")), None);
+    assert!(unfenced(&runtime));
 }
