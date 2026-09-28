@@ -923,6 +923,59 @@ class RunWatchTests(unittest.TestCase):
         self.assertEqual(status, 2)
         self.assertIn("seed 17 of L900 already ran", stderr)
 
+    def test_a_listed_experiments_prepare_holds_the_lock_on_its_runs(self):
+        # A seed run watches every file of its results but its own record: a
+        # prepare record written while its command ran would leave that run
+        # unrecorded and its seed spent.
+        self.preregister("prepared")
+        lock = Path(git(self.root, "rev-parse", "--absolute-git-dir")) / "ptr-run-L900.lock"
+
+        def prepare() -> tuple[int, str]:
+            stderr = io.StringIO()
+            with (
+                mock.patch.object(mod, "ROOT", self.root),
+                mock.patch.object(mod, "REGISTRY", self.root / "experiments/registry.toml"),
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(stderr),
+            ):
+                return mod.prepare("L900"), stderr.getvalue()
+
+        lock.write_text("4242\n", encoding="utf-8")
+        status, stderr = prepare()
+        self.assertEqual(status, 2)
+        self.assertIn(f"another run of L900 holds {lock}", stderr)
+        self.assertEqual(sorted(path.name for path in self.results.iterdir()), [".gitkeep"])
+        lock.unlink()
+        # Free, the lock is held while the record is written, and let go.
+        held = []
+        written = mod.write_json_exclusive
+
+        def writing(path, record):
+            held.append(lock.exists())
+            return written(path, record)
+
+        with mock.patch.object(mod, "write_json_exclusive", side_effect=writing):
+            status, stderr = prepare()
+        self.assertEqual((status, stderr, held, lock.exists()), (0, "", [True], False))
+
+    def test_the_lock_on_an_experiments_runs_is_one_file_whatever_its_id(self):
+        # No id format keeps a separator out of a listed experiment's id: the
+        # lock's name encodes it, and a lock that cannot be made is refused.
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            lock = mod.run_lock("team/trial", directory)
+            self.assertEqual(lock, directory / "ptr-run-team%2Ftrial.lock")
+            self.assertEqual(lock.read_text(encoding="utf-8"), f"{os.getpid()}\n")
+            self.assertIsNone(mod.run_lock("team/trial", directory))
+            self.assertEqual(mod.run_lock("L900", directory), directory / "ptr-run-L900.lock")
+            self.assertEqual(mod.run_lock("..", directory), directory / "ptr-run-...lock")
+            self.assertIsNone(mod.run_lock("L901", directory / "missing"))
+        self.assertIn(f"another run of team/trial holds {lock}", stderr.getvalue())
+        self.assertIn(
+            f"cannot take the lock on runs of L901 in {directory / 'missing' / 'ptr-run-L901.lock'}", stderr.getvalue()
+        )
+
     def attempts(self) -> Path:
         """The directory in the temporary repository's git directory where
         the runner keeps its copies of L900's records."""

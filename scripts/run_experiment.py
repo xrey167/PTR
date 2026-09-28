@@ -13,6 +13,7 @@ import sys
 import tempfile
 import time
 import tomllib
+import urllib.parse
 from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -180,8 +181,11 @@ def run_lock(exp_id: str, directory: Path) -> Path | None:
     both find a seed not yet run, both run it and keep the better record.
     A lock left by a run that died is removed by hand, once no run of it is
     in progress; the copy of its record the run kept (`attempts_directory`)
-    stays, so its seed has run all the same."""
-    lock = directory / f"ptr-run-{exp_id}.lock"
+    stays, so its seed has run all the same. The lock is named by the
+    experiment's id with every character a file name could not hold as
+    itself percent-encoded (`team/trial` as `team%2Ftrial`); a lock that
+    cannot be created is refused as well."""
+    lock = directory / f"ptr-run-{urllib.parse.quote(exp_id, safe='')}.lock"
     try:
         descriptor = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
     except FileExistsError:
@@ -190,6 +194,9 @@ def run_lock(exp_id: str, directory: Path) -> Path | None:
             "of a run that died is removed by hand once no run of it is in progress",
             file=sys.stderr,
         )
+        return None
+    except OSError as error:
+        print(f"ERROR: cannot take the lock on runs of {exp_id} in {lock}: {error}", file=sys.stderr)
         return None
     with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
         handle.write(f"{os.getpid()}\n")
@@ -483,16 +490,35 @@ def prepare(exp_id: str):
     """Write a `prepared` record of `exp_id` at HEAD, once it may launch
     (`launch_refused`) and HEAD holds every file that decides that
     (`launch_watch`), and its manifest holds no TOML date or time and no
-    NaN (`unrecordable_manifest`)."""
+    NaN (`unrecordable_manifest`). For a listed experiment it holds the
+    lock on its runs meanwhile (`run_lock`): a seed run watches every file
+    of its results but its own record, so a record written while its
+    command ran would leave that run unrecorded and its seed spent."""
     _, root, data = resolve(exp_id)
     if unrecordable_manifest(exp_id, data) or launch_refused(exp_id):
         return 2
     results = results_directory(root, data)
     if results is None:
         return 2
+    if not is_listed(exp_id):
+        return write_prepared(exp_id, root, data, results, listed=False)
+    directory = git_directory()
+    if directory is None:
+        return 2
+    lock = run_lock(exp_id, directory)
+    if lock is None:
+        return 2
+    try:
+        return write_prepared(exp_id, root, data, results, listed=True)
+    finally:
+        lock.unlink(missing_ok=True)
+
+
+def write_prepared(exp_id: str, root: Path, data: dict, results: Path, *, listed: bool) -> int:
+    """Write `prepare`'s record of `exp_id` into `results`, once HEAD holds
+    every file that decides a launch (`launch_watch`)."""
     timestamp = utc_stamp()
     out = results / f"run-{timestamp}.json"
-    listed = is_listed(exp_id)
     outputs = (out.name,) if listed else experiment_records.RESULT_OUTPUTS
     watch = launch_watch(exp_id, root, results, data, outputs, listed)
     if watch is None:

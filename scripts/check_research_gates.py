@@ -271,11 +271,68 @@ def command_errors(exp_id: str, manifest: dict, table: dict) -> list[str]:
         return ("true" if value else "false") if isinstance(value,bool) else (
             str(value) if isinstance(value,(int,str)) else match.group(0))
     command=[experiment_records.PLACEHOLDER.sub(filled,token) for token in tokens]
-    if any(argument=="--config" or argument.startswith("--config=") for argument in cargo_arguments(command)):
+    arguments=cargo_arguments(command)
+    if any(argument=="--config" or argument.startswith("--config=") for argument in arguments):
         errors.append(f"{exp_id}: entrypoint gives Cargo configuration on its command line (--config), which can name "
                       "a rustc wrapper, flags or sources outside the commit; set what the build needs in the "
                       "repository's .cargo/config.toml")
+    for option,value in cargo_path_options(arguments):
+        if option=="--target-dir":
+            errors.append(f"{exp_id}: entrypoint gives Cargo a target directory (--target-dir), which could hold a "
+                          "build made outside the commit; the runner builds a listed run into a fresh one")
+        elif outside_repository(value):
+            errors.append(f"{exp_id}: entrypoint gives Cargo {option} {value}, outside the repository, whose sources "
+                          "no watch or record binds; name a path the repository holds")
     return errors
+
+# Cargo's options naming a path it reads the build from, and the one naming
+# where it builds, with the short options that take a value, which a cluster
+# of short options (`-vC dir`) ends with.
+CARGO_PATH_OPTIONS=("--manifest-path","--lockfile-path","--target-dir")
+CARGO_SHORT_VALUES="CFjpZ"
+
+def cargo_path_options(arguments: list[str]) -> list[tuple[str,str]]:
+    """The options among Cargo's own `arguments` (`cargo_arguments`) that
+    name a path it builds from or into, with their values: the manifest
+    (`--manifest-path`), the lockfile (`--lockfile-path`), the directory it
+    runs in (`-C`, alone, joined or ending a cluster of short options) and
+    the target directory (`--target-dir`), each given as one token
+    (`--manifest-path=x`, `-Cx`) or two; a value missing at the end reads
+    as empty."""
+    found=[]
+    for index,argument in enumerate(arguments):
+        following=arguments[index+1] if index+1<len(arguments) else ""
+        for option in CARGO_PATH_OPTIONS:
+            if argument==option:
+                found.append((option,following))
+            elif argument.startswith(f"{option}="):
+                found.append((option,argument[len(option)+1:]))
+        if argument.startswith("-") and not argument.startswith("--"):
+            for position,letter in enumerate(argument[1:],start=1):
+                if letter in CARGO_SHORT_VALUES:
+                    if letter=="C":
+                        found.append(("-C",argument[position+1:] or following))
+                    break
+    return found
+
+def outside_repository(path: str) -> bool:
+    """Whether `path`, as a command run from the repository's root reads it,
+    may name something outside the repository: absolute on any platform
+    (`/x`, `C:/x`, `\\\\host\\x`), or climbing above the root (`../x`,
+    `a/../../x`), either slash a separator. The runner starts no shell, so
+    `~` is a name like any other."""
+    normalized=path.replace("\\","/")
+    if normalized.startswith("/") or re.match(r"[A-Za-z]:",normalized):
+        return True
+    depth=0
+    for part in normalized.split("/"):
+        if part=="..":
+            depth-=1
+            if depth<0:
+                return True
+        elif part not in ("","."):
+            depth+=1
+    return False
 
 def cargo_arguments(tokens: list[str]) -> list[str]:
     """The arguments the command `tokens` gives Cargo itself, up to a `--`

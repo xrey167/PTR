@@ -2144,6 +2144,27 @@ class PreregistrationGateTests(unittest.TestCase):
                 "'C:\\Rust\\bin\\CARGO.EXE' --config c.toml run -- <seed>",
                 "RUSTUP run stable Cargo.Exe --config c.toml run -- <seed>",
             )),
+            # A manifest, lockfile or directory outside the repository holds
+            # sources no watch or record binds, and a target directory given
+            # to Cargo could hold a build made outside the commit.
+            ("cargo run --manifest-path /elsewhere/Cargo.toml -- <seed>",
+             "X900: entrypoint gives Cargo --manifest-path /elsewhere/Cargo.toml, outside the repository, whose sources "
+             "no watch or record binds; name a path the repository holds"),
+            ("rustup run stable cargo run --manifest-path=crates/../../x/Cargo.toml -- <seed>",
+             "X900: entrypoint gives Cargo --manifest-path crates/../../x/Cargo.toml, outside the repository, whose "
+             "sources no watch or record binds; name a path the repository holds"),
+            ("cargo --lockfile-path C:/x/Cargo.lock run -- <seed>",
+             "X900: entrypoint gives Cargo --lockfile-path C:/x/Cargo.lock, outside the repository, whose sources no "
+             "watch or record binds; name a path the repository holds"),
+            ("cargo -Zunstable-options -C /elsewhere run -- <seed>",
+             "X900: entrypoint gives Cargo -C /elsewhere, outside the repository, whose sources no watch or record "
+             "binds; name a path the repository holds"),
+            ("cargo -vC../elsewhere run -- <seed>",
+             "X900: entrypoint gives Cargo -C ../elsewhere, outside the repository, whose sources no watch or record "
+             "binds; name a path the repository holds"),
+            ("cargo run --target-dir target-old -- <seed>",
+             "X900: entrypoint gives Cargo a target directory (--target-dir), which could hold a build made outside "
+             "the commit; the runner builds a listed run into a fresh one"),
         ):
             with self.subTest(entrypoint=entrypoint):
                 root=self.tree(status="running")
@@ -2184,7 +2205,10 @@ class PreregistrationGateTests(unittest.TestCase):
             mod.command_errors("X900",{"entrypoint":"cargo <option> run -- <seed>"},{"option":"--release","seeds":[17,29]}),[])
         # Past `--` an argument is the built program's, and another program's
         # --config is its own.
-        for entrypoint in ("cargo run -- --config c.toml <seed>","python3 bench.py --config c.toml <seed>",
+        for entrypoint in ("cargo run --manifest-path crates/bench/Cargo.toml -- <seed>",
+                           "cargo run --manifest-path=./crates/../Cargo.toml -C crates -- <seed>",
+                           "cargo run -FCuda -pbench -- --manifest-path /elsewhere <seed>",
+                           "cargo run -- --config c.toml <seed>","python3 bench.py --config c.toml <seed>",
                            "rustup run stable python3 bench.py --config c.toml <seed>","rustup which cargo --config <seed>","rustup show stable cargo --config c.toml <seed>"):
             with self.subTest(entrypoint=entrypoint):
                 self.assertEqual(mod.command_errors("X900",{"entrypoint":entrypoint},{"seeds":[17,29]}),[])
