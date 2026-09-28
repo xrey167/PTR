@@ -15,9 +15,8 @@
 //! detect replacement of the anchor file with an *older authentic* record,
 //! because that record carries a valid MAC; only the retained epoch witness
 //! described on [`AnchorStore::open_expecting`] closes that gap.
-use crate::integrity::LogAnchor;
+use crate::integrity::{constant_time_eq, hmac_sha256, LogAnchor};
 use ptr_types::CommitIndex;
-use sha2::{Digest, Sha256};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -29,7 +28,6 @@ const AUTHENTICATED_BYTES: usize = 136;
 /// Exact on-disk size of one anchor record. A different length is rejected
 /// rather than parsed, so a partially written file can never authenticate.
 pub const ANCHOR_BYTES: usize = AUTHENTICATED_BYTES + 32;
-const BLOCK_BYTES: usize = 64;
 
 /// Identity of the log a [`ProtectedAnchor`] belongs to, taken as the record
 /// digest at commit index 1.
@@ -510,95 +508,9 @@ fn mac(key: &AnchorKey, message: &[u8]) -> [u8; 32] {
     hmac_sha256(&key.0, &domained)
 }
 
-/// HMAC-SHA256 per RFC 2104, verified against the RFC 4231 vectors in this
-/// module's tests. Implemented here so anchor authentication adds no dependency
-/// outside the vendor-patch policy.
-fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
-    let mut block = [0u8; BLOCK_BYTES];
-    if key.len() > BLOCK_BYTES {
-        block[..32].copy_from_slice(&<[u8; 32]>::from(Sha256::digest(key)));
-    } else {
-        block[..key.len()].copy_from_slice(key);
-    }
-    let mut inner_key = [0u8; BLOCK_BYTES];
-    let mut outer_key = [0u8; BLOCK_BYTES];
-    for (index, byte) in block.iter().enumerate() {
-        inner_key[index] = byte ^ 0x36;
-        outer_key[index] = byte ^ 0x5c;
-    }
-    let mut inner = Sha256::new();
-    inner.update(inner_key);
-    inner.update(message);
-    let inner_digest = <[u8; 32]>::from(inner.finalize());
-    let mut outer = Sha256::new();
-    outer.update(outer_key);
-    outer.update(inner_digest);
-    <[u8; 32]>::from(outer.finalize())
-}
-
-/// Compare without an early exit, so a rejected MAC does not report how much of
-/// it matched.
-fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
-    if left.len() != right.len() {
-        return false;
-    }
-    let difference = left
-        .iter()
-        .zip(right)
-        .fold(0u8, |accumulated, (a, b)| accumulated | (a ^ b));
-    difference == 0
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn decode_hex(text: &str) -> Vec<u8> {
-        text.as_bytes()
-            .chunks(2)
-            .map(|pair| {
-                let digits = std::str::from_utf8(pair).expect("ascii hex");
-                u8::from_str_radix(digits, 16).expect("hex byte")
-            })
-            .collect()
-    }
-
-    #[test]
-    fn hmac_matches_rfc_4231_vectors() {
-        // Cases 1, 2, 3 and 6; case 6 exercises the key-longer-than-block path.
-        let cases: [(Vec<u8>, Vec<u8>, &str); 4] = [
-            (
-                vec![0x0b; 20],
-                b"Hi There".to_vec(),
-                "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7",
-            ),
-            (
-                b"Jefe".to_vec(),
-                b"what do ya want for nothing?".to_vec(),
-                "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843",
-            ),
-            (
-                vec![0xaa; 20],
-                vec![0xdd; 50],
-                "773ea91e36800e46854db8ebd09181a72959098b3ef8c122d9635514ced565fe",
-            ),
-            (
-                vec![0xaa; 131],
-                b"Test Using Larger Than Block-Size Key - Hash Key First".to_vec(),
-                "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54",
-            ),
-        ];
-        for (key, message, expected) in cases {
-            assert_eq!(hmac_sha256(&key, &message).as_slice(), decode_hex(expected));
-        }
-    }
-
-    #[test]
-    fn constant_time_eq_rejects_length_and_content_differences() {
-        assert!(constant_time_eq(&[1, 2, 3], &[1, 2, 3]));
-        assert!(!constant_time_eq(&[1, 2, 3], &[1, 2, 4]));
-        assert!(!constant_time_eq(&[1, 2, 3], &[1, 2]));
-    }
 
     #[test]
     fn redacted_debug_hides_key_material() {

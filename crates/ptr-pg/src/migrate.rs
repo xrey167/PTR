@@ -136,6 +136,11 @@ pub const WORK_MIGRATIONS: &[Migration] = &[
         name: "adapter_record_sealed",
         sql: include_str!("../migrations/work/0015_adapter_record_sealed.sql"),
     },
+    Migration {
+        version: 16,
+        name: "branch_seal_tag",
+        sql: include_str!("../migrations/work/0016_branch_seal_tag.sql"),
+    },
 ];
 
 impl Migration {

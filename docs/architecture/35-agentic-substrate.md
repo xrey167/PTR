@@ -301,8 +301,9 @@ every deferred check accepts is refused when appended later
 (`a_stored_branch_gains_no_row_in_a_later_transaction`). This binds a branch's rows
 to one transaction, not to its author: a writer with the work schema's privileges can
 still delete a whole branch and write other rows under its id in one transaction, as
-`store_branch` writes a branch, and nothing stored tells them from sealed ones; the
-keyed seal tag planned next is what would. A set operation's `in_base` is stored in
+`store_branch` writes a branch. Work migration 16 adds what tells them from sealed
+ones when the host gives the substrate a branch seal key (below). A set operation's
+`in_base` is stored in
 `branch_op.member_in_base`, present exactly for set operations, and the operations on
 one member agree on it; a branch stored before has none, can no longer be certified
 and loads as `BranchWithoutSetBase`
@@ -504,9 +505,28 @@ request text or a Pod output, to overwrite a key the branch did not read, or to
 break the bookkeeping of touched keys, come back as `CorruptBranch` naming the
 `BranchError`, never as a branch to certify
 (`a_branch_writing_a_reserved_namespace_is_never_stored_and_tampered_rows_never_load`).
-Rows that keep every sealing invariant load as a branch whoever wrote them: a
-branch deleted and written again whole, or rows written with the triggers disabled,
-load like sealed ones (work migration 11 above).
+Without a branch seal key, rows that keep every sealing invariant load as a branch
+whoever wrote them: a branch deleted and written again whole, or rows written with the
+triggers disabled, load like sealed ones (work migration 11 above). A substrate given a
+host-held `BranchSealKey` (`PgSubstrate::with_branch_seal_key`) closes that: `store_branch`
+writes into the header (`branch.seal_tag`, work migration 16) an HMAC-SHA-256 under the
+key of the domain `ptr-pg/branch-seal/v1` and `SealedBranch::seal_digest`, which covers
+the id, the author, the base revision and every row, and `load_branch` under the key
+refuses a branch with no tag, such as one stored before version 16, as
+`BranchWithoutSealTag` before its rows are read, and one whose rows rebuild into a
+branch whose tag is not the stored one as `BranchSealMismatch`. A whole branch written
+again with a changed value, author or base revision under its sealed tag, a tag copied
+from another branch or made under another key, a removed tag and a row edited with the
+triggers off are each refused, while every trigger accepts the rewrite
+(`a_tampered_or_injected_branch_is_refused_at_load_under_a_seal_key`,
+`a_branch_stored_before_seal_tags_is_refused_under_a_key`); a branch written again
+exactly as sealed, tag included, is the sealed branch and loads. The key is never
+stored in the database; the tag binds the rows to a `store_branch` holding it, not to
+the author, whose `PrincipalId` is whatever the sealing caller passed. A branch loaded
+under the key merges through `PtrRuntime::merge_branch` exactly as the sealed one, and
+its merge projects and records as its outcome
+(`a_loaded_branch_merges_exactly_as_the_sealed_one`). Without a key nothing is tagged
+or checked (`without_a_seal_key_branches_store_and_load_as_before`).
 It reads the header and every child table in one read-only repeatable-read
 snapshot, so a branch deleted while it loads, whose cascade removes its reads,
 digests and operations, comes back whole or as `None`, never assembled from rows

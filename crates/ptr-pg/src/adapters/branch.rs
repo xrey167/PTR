@@ -77,8 +77,12 @@ impl PgSubstrate {
     /// one. That binds the rows to one transaction, not to the author who
     /// sealed them: a writer with the work schema's privileges can delete a
     /// whole branch and write other rows under its id in one transaction,
-    /// exactly as this method does, and nothing stored tells those rows from
-    /// sealed ones.
+    /// exactly as this method does. On a substrate holding a branch seal key
+    /// ([`with_branch_seal_key`](Self::with_branch_seal_key)) the header
+    /// carries the key's tag of the sealed branch, and
+    /// [`load_branch`](Self::load_branch) under the key refuses rows that do
+    /// not carry the tag of what they rebuild into; without a key nothing
+    /// stored tells those rows from sealed ones.
     pub async fn store_branch(&mut self, branch: &SealedBranch) -> Result<(), PgError> {
         let work = self.schemas.work.clone();
         branch.recheck().map_err(|error| PgError::InvalidBranch {
@@ -86,17 +90,31 @@ impl PgSubstrate {
             error,
         })?;
         check_branch_text(branch)?;
+        let seal_tag = match &self.branch_seal_key {
+            Some(key) => {
+                let digest = branch
+                    .seal_digest()
+                    .map_err(|error| PgError::InvalidBranch {
+                        branch: branch.id().0.clone(),
+                        error,
+                    })?;
+                Some(key.tag(&digest).to_vec())
+            }
+            None => None,
+        };
         let id = branch.id().0.as_str();
         let transaction = self.client.transaction().await.map_err(database)?;
         transaction
             .execute(
                 &format!(
-                    "INSERT INTO {work}.branch (id, author, base_revision) VALUES ($1, $2, $3)"
+                    "INSERT INTO {work}.branch (id, author, base_revision, seal_tag) \
+                     VALUES ($1, $2, $3, $4)"
                 ),
                 &[
                     &id,
                     &branch.author().0,
                     &to_i64(branch.base_revision().0, "base_revision")?,
+                    &seal_tag,
                 ],
             )
             .await
@@ -204,14 +222,25 @@ impl PgSubstrate {
     /// The rows are rebuilt through `SealedBranch::from_parts`, so what comes
     /// back passes every sealing invariant a freshly sealed branch does, and
     /// rows that break one come back as an error, never as a branch
-    /// certification could plan from. Rows that keep every invariant come
-    /// back as a branch whoever wrote them: the database refuses changing,
-    /// removing or appending rows of a stored branch (see
-    /// [`store_branch`](Self::store_branch)), but a branch deleted and
-    /// written again whole, or rows written with its triggers disabled, load
-    /// like sealed ones.
+    /// certification could plan from. Without a branch seal key, rows that
+    /// keep every invariant come back as a branch whoever wrote them: the
+    /// database refuses changing, removing or appending rows of a stored
+    /// branch (see [`store_branch`](Self::store_branch)), but a branch
+    /// deleted and written again whole, or rows written with its triggers
+    /// disabled, load like sealed ones. Under a key
+    /// ([`with_branch_seal_key`](Self::with_branch_seal_key)) they come back
+    /// only if the header carries the tag the key gives the branch they
+    /// rebuild into, which only a [`store_branch`](Self::store_branch)
+    /// holding the key writes.
     ///
     /// # Errors
+    /// Under a branch seal key, refuses a branch whose header carries no tag
+    /// as [`PgError::BranchWithoutSealTag`] before any other row is read, and
+    /// one whose rows rebuild into a branch but whose tag is not the key's
+    /// tag of that branch as [`PgError::BranchSealMismatch`] after every
+    /// check below; rows that break a check below are refused for it under a
+    /// key too.
+    ///
     /// Refuses a branch stored before the input sets of touched keys were
     /// recorded as [`PgError::BranchWithoutInputSets`], one stored
     /// before set operations recorded their member's base presence as
@@ -246,13 +275,24 @@ impl PgSubstrate {
             .map_err(database)?;
         let Some(header) = transaction
             .query_opt(
-                &format!("SELECT author, base_revision FROM {work}.branch WHERE id = $1"),
+                &format!("SELECT author, base_revision, seal_tag FROM {work}.branch WHERE id = $1"),
                 &[&id.0],
             )
             .await
             .map_err(database)?
         else {
             return Ok(None);
+        };
+        // Under a key the tag is checked once the rows are rebuilt; a branch
+        // without one is refused before they are read.
+        let required_tag = match (&self.branch_seal_key, header.get::<_, Option<Vec<u8>>>(2)) {
+            (None, _) => None,
+            (Some(key), Some(stored)) => Some((key, stored)),
+            (Some(_), None) => {
+                return Err(PgError::BranchWithoutSealTag {
+                    branch: id.0.clone(),
+                });
+            }
         };
 
         let mut reads = BTreeMap::new();
@@ -383,7 +423,11 @@ impl PgSubstrate {
         let records_set_base = ops
             .iter()
             .any(|op| matches!(op, BranchOp::SetInsert { .. } | BranchOp::SetRemove { .. }));
-        SealedBranch::from_parts(SealedBranchParts {
+        let corrupt = |error| PgError::CorruptBranch {
+            branch: id.0.clone(),
+            error,
+        };
+        let branch = SealedBranch::from_parts(SealedBranchParts {
             id: id.clone(),
             author: PrincipalId(header.get(0)),
             base_revision: Revision(to_u64(header.get(1), "branch")?),
@@ -394,7 +438,6 @@ impl PgSubstrate {
             touched_inputs,
             ops,
         })
-        .map(Some)
         .map_err(|error| match error {
             // Sealing has not always refused this, so a branch sealed
             // before it did can hold one without anyone tampering: then it
@@ -406,11 +449,19 @@ impl PgSubstrate {
                     key,
                 }
             }
-            error => PgError::CorruptBranch {
-                branch: id.0.clone(),
-                error,
-            },
-        })
+            error => corrupt(error),
+        })?;
+        if let Some((key, stored)) = required_tag {
+            // A rebuilt branch passed every sealing check, which refuses a
+            // value the journal cannot encode, so its digest is defined.
+            let digest = branch.seal_digest().map_err(corrupt)?;
+            if !key.verifies(&digest, &stored) {
+                return Err(PgError::BranchSealMismatch {
+                    branch: id.0.clone(),
+                });
+            }
+        }
+        Ok(Some(branch))
     }
 
     /// Log a branch's triage with what off-policy evaluation needs later: the

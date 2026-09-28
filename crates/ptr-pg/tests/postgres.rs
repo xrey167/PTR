@@ -15,15 +15,16 @@ use std::time::Duration;
 
 use ptr_analytics::{Grouping, Metric, MetricRow, MetricSpec, Window};
 use ptr_branch::{
-    ArbiterError, AutoThreshold, BranchError, BranchId, BranchOp, CalibrationSample, InputsDigest,
-    PolicyRecord, RangeDigest, SealedBranch, SealedBranchParts, ThresholdRule, TriageDecision,
-    TriageOutcome, TriageOutcomeParts, TriagePolicy, ValueDigest,
+    ArbiterError, AutoThreshold, Branch, BranchError, BranchId, BranchOp, CalibrationSample,
+    InputsDigest, PolicyRecord, RangeDigest, SealedBranch, SealedBranchParts, ThresholdRule,
+    TriageDecision, TriageOutcome, TriageOutcomeParts, TriagePolicy, ValueDigest,
 };
+use ptr_config::PtrConfig;
 use ptr_fastmem::{
     decode_readout, Decay, DecodePolicy, FastMemory, FastMemoryConfig, FastMemoryError,
     IdentifierCodebook, Query, SourceRef, WriteRequest,
 };
-use ptr_ledger::integrity::{chain_anchors, LogAnchor};
+use ptr_ledger::integrity::{chain_anchors, hmac_sha256, LogAnchor};
 use ptr_ledger::{
     Attestation, CommittedEvent, LedgerEvent, MergeAuthorityRecord, MergeRecord, SemanticOrigin,
 };
@@ -31,14 +32,20 @@ use ptr_lineage::{
     measure_interference, AdapterId, InterferenceReport, LayerInterference, LayerUpdate, Matrix,
 };
 use ptr_pg::{
-    BranchOutcome, EmbeddingSpace, FastMemoryRecord, HybridQuery, Identifier, PgError, PgSubstrate,
-    SchemaSet, SearchDocument, LEXICAL_BACKEND, PROJECTION_MIGRATIONS, VECTOR_BACKEND,
-    WORK_MIGRATIONS,
+    BranchOutcome, BranchSealKey, EmbeddingSpace, FastMemoryRecord, HybridQuery, Identifier,
+    PgError, PgSubstrate, SchemaSet, SearchDocument, LEXICAL_BACKEND, PROJECTION_MIGRATIONS,
+    VECTOR_BACKEND, WORK_MIGRATIONS,
 };
+use ptr_runtime::execution::RequiredVerification;
+use ptr_runtime::{MergeAuthority, MergeOutcome, PtrRuntime, SemanticChange, SemanticGrant};
 use ptr_search::EvidenceStage;
 use ptr_semdb::{SemanticPayload, SemanticValue};
 use ptr_state::{ApplyOutcome, MaterializedState};
-use ptr_types::{CapsuleId, CommitIndex, Generation, PrincipalId, ProjectId, Revision, TypeId};
+use ptr_types::{
+    CapsuleId, CommitIndex, Generation, PrincipalId, Probability, ProjectId, Revision, TypeId,
+    VerificationLevel,
+};
+use ptr_verifier::{NamedVerifier, VerificationReport, VerificationStatus, Verifier};
 
 static NEXT_PREFIX: AtomicU32 = AtomicU32::new(0);
 
@@ -5857,8 +5864,10 @@ async fn a_stored_branch_gains_no_row_in_a_later_transaction() {
     assert_eq!(substrate.load_branch(&BranchId::from("s6")).await, Ok(None));
 
     // What the database cannot tell apart: a whole branch deleted and
-    // written again under its id in one transaction is a new branch, and it
-    // loads like the sealed one it replaced.
+    // written again under its id in one transaction is a new branch, and a
+    // substrate without a branch seal key loads it like the sealed one it
+    // replaced (under a key it is refused:
+    // a_tampered_or_injected_branch_is_refused_at_load_under_a_seal_key).
     raw.batch_execute(&format!(
         "BEGIN; DELETE FROM {work}.branch WHERE id = 'b1'; {} {} COMMIT;",
         header("b1"),
@@ -9829,5 +9838,493 @@ async fn a_merged_outcome_must_match_the_projected_merge() {
         .await
         .unwrap();
     assert_eq!(merged_rows().await, 2);
+    substrate.drop_all().await.unwrap();
+}
+
+/// The branch seal key of the substrates here that hold one.
+fn seal_key() -> BranchSealKey {
+    BranchSealKey::from_bytes([0x42; 32])
+}
+
+/// The tag `key` gives the sealed branch whose digest is `seal_digest`, as
+/// `PgSubstrate::with_branch_seal_key` specifies it: HMAC-SHA-256 of the
+/// domain `ptr-pg/branch-seal/v1` followed by the digest.
+fn seal_tag(key: [u8; 32], seal_digest: [u8; 32]) -> Vec<u8> {
+    let mut message = b"ptr-pg/branch-seal/v1".to_vec();
+    message.extend_from_slice(&seal_digest);
+    hmac_sha256(&key, &message).to_vec()
+}
+
+/// A substrate over `substrate`'s schemas, holding `key` if one is given.
+async fn beside(substrate: &PgSubstrate, key: Option<BranchSealKey>) -> PgSubstrate {
+    let other = PgSubstrate::connect_with(&dsn(), substrate.schemas().clone())
+        .await
+        .unwrap();
+    match key {
+        Some(key) => other.with_branch_seal_key(key),
+        None => other,
+    }
+}
+
+/// The seal tag stored in branch `id`'s header.
+async fn stored_seal_tag(
+    raw: &tokio_postgres::Client,
+    work: &impl std::fmt::Display,
+    id: &str,
+) -> Option<Vec<u8>> {
+    raw.query_one(
+        &format!("SELECT seal_tag FROM {work}.branch WHERE id = $1"),
+        &[&id],
+    )
+    .await
+    .unwrap()
+    .get(0)
+}
+
+/// Delete branch `id` and write it again whole in one transaction, with every
+/// trigger in force, as a writer with the work schema's privileges can: its
+/// rows are copied to temporary tables (`h` the header, `r` reads, `s` scans,
+/// `l` reliances, `t` touched keys, `o` operations), `edit` changes the
+/// copies, and the branch is deleted and written back from them.
+async fn rewrite_branch(
+    raw: &tokio_postgres::Client,
+    work: &impl std::fmt::Display,
+    id: &str,
+    edit: &str,
+) {
+    raw.batch_execute(&format!(
+        "BEGIN; \
+         CREATE TEMP TABLE h ON COMMIT DROP AS SELECT * FROM {work}.branch WHERE id = '{id}'; \
+         CREATE TEMP TABLE r ON COMMIT DROP AS \
+             SELECT * FROM {work}.branch_read WHERE branch = '{id}'; \
+         CREATE TEMP TABLE s ON COMMIT DROP AS \
+             SELECT * FROM {work}.branch_scan WHERE branch = '{id}'; \
+         CREATE TEMP TABLE l ON COMMIT DROP AS \
+             SELECT * FROM {work}.branch_relied WHERE branch = '{id}'; \
+         CREATE TEMP TABLE t ON COMMIT DROP AS \
+             SELECT * FROM {work}.branch_touched WHERE branch = '{id}'; \
+         CREATE TEMP TABLE o ON COMMIT DROP AS \
+             SELECT * FROM {work}.branch_op WHERE branch = '{id}'; \
+         {edit}; \
+         DELETE FROM {work}.branch WHERE id = '{id}'; \
+         INSERT INTO {work}.branch SELECT * FROM h; \
+         INSERT INTO {work}.branch_read SELECT * FROM r; \
+         INSERT INTO {work}.branch_scan SELECT * FROM s; \
+         INSERT INTO {work}.branch_relied SELECT * FROM l; \
+         INSERT INTO {work}.branch_touched SELECT * FROM t; \
+         INSERT INTO {work}.branch_op SELECT * FROM o; \
+         COMMIT;"
+    ))
+    .await
+    .unwrap();
+}
+
+/// [`sealed_branch`] with its first operation putting `value` at `order:1`
+/// instead of `shipped`.
+fn sealed_branch_putting(id: &str, author: &str, value: &str) -> SealedBranch {
+    let mut parts = sealed_branch(id, author).into_parts();
+    parts.ops[0] = BranchOp::Put {
+        key: "order:1".into(),
+        value: SemanticValue::from(value),
+    };
+    SealedBranch::from_parts(parts).unwrap()
+}
+
+#[tokio::test]
+async fn a_tampered_or_injected_branch_is_refused_at_load_under_a_seal_key() {
+    let mut keyed = substrate().await.with_branch_seal_key(seal_key());
+    let mut keyless = beside(&keyed, None).await;
+    let raw = raw_client().await;
+    let work = keyed.schemas().work.clone();
+    // A branch stored under the key, whose tag is copied below.
+    keyed
+        .store_branch(&sealed_branch("donor", "agent-7"))
+        .await
+        .unwrap();
+    let other_key_tag = |id: &str| {
+        let digest = sealed_branch(id, "agent-7").seal_digest().unwrap();
+        let tag: String = seal_tag([0x17; 32], digest)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        format!("UPDATE h SET seal_tag = decode('{tag}', 'hex')")
+    };
+    // Each case: the branch as it was sealed, how its rows are then written,
+    // what they load as without a key, and the refusal under the key.
+    let cases: [(&str, String, SealedBranch, PgError); 7] = [
+        (
+            // An operation's value changed; the tag stays the sealed one's.
+            "value",
+            "UPDATE o SET value_text = 'cancelled' WHERE ordinal = 0".into(),
+            sealed_branch_putting("value", "agent-7", "cancelled"),
+            PgError::BranchSealMismatch {
+                branch: "value".into(),
+            },
+        ),
+        (
+            "author",
+            "UPDATE h SET author = 'agent-8'".into(),
+            sealed_branch("author", "agent-8"),
+            PgError::BranchSealMismatch {
+                branch: "author".into(),
+            },
+        ),
+        (
+            "base",
+            "UPDATE h SET base_revision = 5".into(),
+            {
+                let mut parts = sealed_branch("base", "agent-7").into_parts();
+                parts.base_revision = Revision(5);
+                SealedBranch::from_parts(parts).unwrap()
+            },
+            PgError::BranchSealMismatch {
+                branch: "base".into(),
+            },
+        ),
+        (
+            // The rows as sealed, under the tag of another stored branch.
+            "copied",
+            format!(
+                "UPDATE h SET seal_tag = (SELECT seal_tag FROM {work}.branch WHERE id = 'donor')"
+            ),
+            sealed_branch("copied", "agent-7"),
+            PgError::BranchSealMismatch {
+                branch: "copied".into(),
+            },
+        ),
+        (
+            // The rows as sealed, under the tag another key gives them.
+            "foreign",
+            other_key_tag("foreign"),
+            sealed_branch("foreign", "agent-7"),
+            PgError::BranchSealMismatch {
+                branch: "foreign".into(),
+            },
+        ),
+        (
+            "untagged",
+            "UPDATE h SET seal_tag = NULL".into(),
+            sealed_branch("untagged", "agent-7"),
+            PgError::BranchWithoutSealTag {
+                branch: "untagged".into(),
+            },
+        ),
+        (
+            // A branch the key never tagged, its tag removed as well.
+            "injected",
+            "UPDATE o SET value_text = 'cancelled' WHERE ordinal = 0; \
+             UPDATE h SET seal_tag = NULL"
+                .into(),
+            sealed_branch_putting("injected", "agent-7", "cancelled"),
+            PgError::BranchWithoutSealTag {
+                branch: "injected".into(),
+            },
+        ),
+    ];
+    for (id, edit, rewritten, refusal) in cases {
+        let branch = sealed_branch(id, "agent-7");
+        keyed.store_branch(&branch).await.unwrap();
+        assert_eq!(keyed.load_branch(branch.id()).await.unwrap(), Some(branch));
+        // The database takes the rewrite: every row keeps every sealing
+        // invariant and is written in its header's transaction.
+        rewrite_branch(&raw, &work, id, &edit).await;
+        assert_eq!(
+            keyless.load_branch(rewritten.id()).await.unwrap(),
+            Some(rewritten),
+            "{id}"
+        );
+        let error = keyed.load_branch(&BranchId::from(id)).await.unwrap_err();
+        assert_eq!(error, refusal, "{id}");
+        let code = match refusal {
+            PgError::BranchSealMismatch { .. } => "PTR_PG_BRANCH_SEAL_MISMATCH",
+            _ => "PTR_PG_BRANCH_WITHOUT_SEAL_TAG",
+        };
+        assert_eq!(error.code(), code, "{id}");
+    }
+
+    // A branch written again exactly as it was sealed, tag and all, is the
+    // sealed branch: the tag authenticates what the rows hold, not the
+    // transaction that wrote them.
+    let again = sealed_branch("again", "agent-7");
+    keyed.store_branch(&again).await.unwrap();
+    rewrite_branch(&raw, &work, "again", "SELECT 1").await;
+    assert_eq!(keyed.load_branch(again.id()).await.unwrap(), Some(again));
+
+    // A row rewritten with the triggers off keeps its header, and its tag,
+    // and still does not load under the key.
+    let edited = sealed_branch("edited", "agent-7");
+    keyed.store_branch(&edited).await.unwrap();
+    write_before_invariants(
+        &raw,
+        &work,
+        &[],
+        &format!(
+            "UPDATE {work}.branch_op SET value_text = 'cancelled' \
+             WHERE branch = 'edited' AND ordinal = 0"
+        ),
+    )
+    .await;
+    assert_eq!(
+        keyless.load_branch(edited.id()).await.unwrap(),
+        Some(sealed_branch_putting("edited", "agent-7", "cancelled"))
+    );
+    assert_eq!(
+        keyed.load_branch(edited.id()).await.unwrap_err(),
+        PgError::BranchSealMismatch {
+            branch: "edited".into(),
+        }
+    );
+
+    // Rows that break a sealing invariant are refused for it under the key
+    // too, before their tag is compared.
+    let corrupt = sealed_branch("corrupt", "agent-7");
+    keyed.store_branch(&corrupt).await.unwrap();
+    write_before_invariants(
+        &raw,
+        &work,
+        &[],
+        &format!("DELETE FROM {work}.branch_read WHERE branch = 'corrupt' AND key = 'order:2'"),
+    )
+    .await;
+    assert_eq!(
+        keyed.load_branch(corrupt.id()).await.unwrap_err(),
+        PgError::CorruptBranch {
+            branch: "corrupt".into(),
+            error: BranchError::UnreadTarget {
+                key: "order:2".into(),
+            },
+        }
+    );
+    keyed.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_branch_stored_before_seal_tags_is_refused_under_a_key() {
+    let mut substrate = unmigrated_substrate_at(&dsn()).await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    work_schema_at(&raw, &substrate, 15).await;
+    // One read of order:1 and one Put of it, as a store at version 15 wrote
+    // them: its header has no seal tag column.
+    let open = SemanticValue::from("open");
+    let read = ValueDigest::of("order:1", Some(&open)).unwrap();
+    let inputs = InputsDigest::of("order:1", []);
+    let legacy = SealedBranch::from_parts(SealedBranchParts {
+        id: BranchId::from("legacy"),
+        author: PrincipalId::from("agent-7"),
+        base_revision: Revision(4),
+        reads: [("order:1".to_owned(), read)].into_iter().collect(),
+        scans: Default::default(),
+        relied: Default::default(),
+        touched_base: [("order:1".to_owned(), read)].into_iter().collect(),
+        touched_inputs: [("order:1".to_owned(), inputs)].into_iter().collect(),
+        ops: vec![BranchOp::Put {
+            key: "order:1".into(),
+            value: SemanticValue::from("shipped"),
+        }],
+    })
+    .unwrap();
+    let hex = |bytes: &[u8; 32]| -> String { bytes.iter().map(|b| format!("{b:02x}")).collect() };
+    raw.batch_execute(&format!(
+        "BEGIN; \
+         INSERT INTO {work}.branch (id, author, base_revision) VALUES ('legacy', 'agent-7', 4); \
+         INSERT INTO {work}.branch_read (branch, key, digest) \
+             VALUES ('legacy', 'order:1', decode('{read}', 'hex')); \
+         INSERT INTO {work}.branch_touched (branch, key, base_digest, inputs_digest) \
+             VALUES ('legacy', 'order:1', decode('{read}', 'hex'), decode('{inputs}', 'hex')); \
+         INSERT INTO {work}.branch_op (branch, ordinal, kind, key, value_kind, value_text) \
+             VALUES ('legacy', 0, 'put', 'order:1', 'text', 'shipped'); \
+         COMMIT;",
+        read = hex(read.as_bytes()),
+        inputs = hex(inputs.as_bytes()),
+    ))
+    .await
+    .unwrap();
+
+    let report = substrate.migrate().await.unwrap();
+    assert_eq!(report.work, vec![16]);
+    assert_eq!(stored_seal_tag(&raw, &work, "legacy").await, None);
+    // Without a key it loads as before.
+    assert_eq!(
+        substrate.load_branch(legacy.id()).await.unwrap(),
+        Some(legacy.clone())
+    );
+    // Under a key nothing tells it from rows written around store_branch.
+    let mut keyed = beside(&substrate, Some(seal_key())).await;
+    let error = keyed.load_branch(legacy.id()).await.unwrap_err();
+    assert_eq!(
+        error,
+        PgError::BranchWithoutSealTag {
+            branch: "legacy".into(),
+        }
+    );
+    assert_eq!(error.code(), "PTR_PG_BRANCH_WITHOUT_SEAL_TAG");
+    assert!(error.to_string().contains("stored again"), "{error}");
+    // Stored again by a substrate holding the key, it loads under it.
+    raw.batch_execute(&format!("DELETE FROM {work}.branch WHERE id = 'legacy'"))
+        .await
+        .unwrap();
+    keyed.store_branch(&legacy).await.unwrap();
+    assert_eq!(
+        keyed.load_branch(legacy.id()).await.unwrap(),
+        Some(legacy.clone())
+    );
+    assert_eq!(
+        stored_seal_tag(&raw, &work, "legacy").await,
+        Some(seal_tag([0x42; 32], legacy.seal_digest().unwrap()))
+    );
+    substrate.drop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn without_a_seal_key_branches_store_and_load_as_before() {
+    let mut substrate = substrate().await;
+    let raw = raw_client().await;
+    let work = substrate.schemas().work.clone();
+    let plain = sealed_branch("plain", "agent-7");
+    substrate.store_branch(&plain).await.unwrap();
+    assert_eq!(stored_seal_tag(&raw, &work, "plain").await, None);
+    assert_eq!(
+        substrate.load_branch(plain.id()).await.unwrap(),
+        Some(plain)
+    );
+
+    // A branch a keyed substrate stored carries the tag the key gives its
+    // seal digest, which a substrate without a key never checks.
+    let mut keyed = beside(&substrate, Some(seal_key())).await;
+    let tagged = sealed_branch("tagged", "agent-7");
+    keyed.store_branch(&tagged).await.unwrap();
+    assert_eq!(
+        stored_seal_tag(&raw, &work, "tagged").await,
+        Some(seal_tag([0x42; 32], tagged.seal_digest().unwrap()))
+    );
+    assert_eq!(
+        substrate.load_branch(tagged.id()).await.unwrap(),
+        Some(tagged.clone())
+    );
+    write_before_invariants(
+        &raw,
+        &work,
+        &[],
+        &format!("UPDATE {work}.branch SET seal_tag = decode(repeat('00', 32), 'hex') WHERE id = 'tagged'"),
+    )
+    .await;
+    assert_eq!(
+        substrate.load_branch(tagged.id()).await.unwrap(),
+        Some(tagged)
+    );
+
+    // The column holds a whole tag or nothing.
+    let sqlstate = refused_sqlstate(
+        &raw,
+        &format!(
+            "INSERT INTO {work}.branch (id, author, base_revision, seal_tag) \
+             VALUES ('short', 'agent-7', 4, decode(repeat('00', 31), 'hex'))"
+        ),
+    )
+    .await;
+    assert_eq!(sqlstate, "23514");
+    // A key never prints.
+    assert_eq!(format!("{:?}", seal_key()), "BranchSealKey(<redacted>)");
+    substrate.drop_all().await.unwrap();
+}
+
+/// A grant verifier that admits every change at the deterministic level.
+struct Admits;
+
+impl<'a> Verifier<SemanticChange<'a>> for Admits {
+    fn verify(&self, _: &SemanticChange<'a>) -> VerificationReport {
+        VerificationReport {
+            status: VerificationStatus::Pass,
+            level: VerificationLevel::Deterministic,
+            score: Probability::new(0.95).unwrap(),
+            findings: vec![],
+        }
+    }
+}
+
+impl<'a> NamedVerifier<SemanticChange<'a>> for Admits {
+    fn name(&self) -> &'static str {
+        "admits"
+    }
+}
+
+/// A runtime whose grant requires [`Admits`] and lists `reviewer-1`, with a
+/// price of 10 written by a host.
+fn pricing_runtime() -> PtrRuntime {
+    let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+    runtime
+        .install_semantic_grant(
+            SemanticGrant::new(RequiredVerification::Deterministic)
+                .with_verifier(Admits)
+                .allow_host_writes()
+                .with_reviewer(PrincipalId::from("reviewer-1")),
+        )
+        .unwrap();
+    let mut delta = ptr_semdb::SemanticDelta::default();
+    delta.upserts.insert("price:sku-1".into(), "10".into());
+    runtime
+        .apply_verified_semantic_delta(
+            runtime.revision(),
+            delta,
+            &PrincipalId::from("pipeline-operator"),
+        )
+        .unwrap();
+    runtime
+}
+
+#[tokio::test]
+async fn a_loaded_branch_merges_exactly_as_the_sealed_one() {
+    let mut substrate = substrate().await.with_branch_seal_key(seal_key());
+    // Two runtimes alike: one merges the branch as it was sealed, the other
+    // as it was loaded.
+    let mut as_sealed = pricing_runtime();
+    let mut as_loaded = pricing_runtime();
+    let mut work = Branch::open(
+        BranchId::from("reprice"),
+        PrincipalId::from("pricing-agent"),
+        as_sealed.snapshot(),
+    );
+    work.read("price:sku-1").unwrap();
+    work.put("price:sku-1", "11".into()).unwrap();
+    let sealed = work.seal().unwrap();
+
+    substrate.store_branch(&sealed).await.unwrap();
+    let loaded = substrate.load_branch(sealed.id()).await.unwrap().unwrap();
+    assert_eq!(loaded, sealed);
+    assert_eq!(loaded.seal_digest(), sealed.seal_digest());
+
+    let preview = as_loaded.preview_merge(&loaded).unwrap();
+    assert_eq!(preview, as_sealed.preview_merge(&sealed).unwrap());
+    let authority = || MergeAuthority::Reviewed {
+        plan_digest: preview.plan_digest,
+        reviewer: PrincipalId::from("reviewer-1"),
+    };
+    let MergeOutcome::Committed(from_loaded) =
+        as_loaded.merge_branch(&loaded, authority()).unwrap()
+    else {
+        panic!("the loaded branch is not merged");
+    };
+    let MergeOutcome::Committed(from_sealed) =
+        as_sealed.merge_branch(&sealed, authority()).unwrap()
+    else {
+        panic!("the sealed branch is not merged");
+    };
+    assert_eq!(from_loaded, from_sealed);
+    assert_eq!(from_loaded.seal_digest, sealed.seal_digest().unwrap());
+    assert_eq!(as_loaded.committed_events(), as_sealed.committed_events());
+
+    // The projection of that log holds the merge where the runtime committed
+    // it, so the outcome is recorded.
+    let log = as_loaded.committed_events().to_vec();
+    assert_eq!(
+        substrate.replay(&log).await.unwrap(),
+        log.last().unwrap().index.0
+    );
+    let index = from_loaded.commit.commit_index.unwrap();
+    substrate
+        .record_outcome(sealed.id(), BranchOutcome::Merged(index))
+        .await
+        .unwrap();
     substrate.drop_all().await.unwrap();
 }

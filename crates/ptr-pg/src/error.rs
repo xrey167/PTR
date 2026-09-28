@@ -166,6 +166,20 @@ pub enum PgError {
     /// rows written around `store_branch` that break only this rule. It
     /// cannot be certified and must be re-run on a current snapshot.
     BranchWithDerivedRemoval { branch: String, key: String },
+    /// A substrate holding a branch seal key loaded a branch whose rows keep
+    /// every sealing invariant but whose stored tag is not the one the key
+    /// gives the branch they rebuild into: they were written, or the tag
+    /// was, by someone other than a `store_branch` holding the key (a whole
+    /// branch deleted and written again, rows written with the triggers off,
+    /// a tag copied from another branch, or a branch tagged under another
+    /// key). No branch is returned.
+    BranchSealMismatch { branch: String },
+    /// A substrate holding a branch seal key loaded a branch that carries no
+    /// tag: it was stored before work migration 16, by a substrate without a
+    /// key, or by a writer around `store_branch`. Nothing tells which, so no
+    /// branch is returned: it must be stored again by a substrate holding
+    /// the key.
+    BranchWithoutSealTag { branch: String },
     /// A search document was refused because its capsule generation is
     /// already indexed from content with another digest. One generation has
     /// one content, so a second digest is a stale or erroneous indexing job,
@@ -248,6 +262,8 @@ impl PgError {
             Self::BranchWithoutInputSets { .. } => "PTR_PG_BRANCH_WITHOUT_INPUT_SETS",
             Self::BranchWithoutSetBase { .. } => "PTR_PG_BRANCH_WITHOUT_SET_BASE",
             Self::BranchWithDerivedRemoval { .. } => "PTR_PG_BRANCH_WITH_DERIVED_REMOVAL",
+            Self::BranchSealMismatch { .. } => "PTR_PG_BRANCH_SEAL_MISMATCH",
+            Self::BranchWithoutSealTag { .. } => "PTR_PG_BRANCH_WITHOUT_SEAL_TAG",
             Self::DocumentConflict { .. } => "PTR_PG_DOCUMENT_CONFLICT",
             Self::InvalidTriage { .. } => "PTR_PG_INVALID_TRIAGE",
             Self::InvalidOutcome { .. } => "PTR_PG_INVALID_OUTCOME",
@@ -367,6 +383,16 @@ impl fmt::Display for PgError {
                 "branch {branch:?} removes {key:?}, which was derived at its base: it was sealed \
                  before such removals were refused, or written around store_branch; it cannot be \
                  certified and must be re-run"
+            ),
+            Self::BranchSealMismatch { branch } => write!(
+                formatter,
+                "stored branch {branch:?} does not carry the seal tag of its rows under this \
+                 substrate's key: they were not stored by it"
+            ),
+            Self::BranchWithoutSealTag { branch } => write!(
+                formatter,
+                "stored branch {branch:?} carries no seal tag, which this substrate's key \
+                 requires; it must be stored again under the key"
             ),
             Self::DocumentConflict {
                 capsule,

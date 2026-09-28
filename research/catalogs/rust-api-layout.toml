@@ -282,7 +282,7 @@ notes = ["working model only; serving admission is out of scope until adapter pr
 [[crate]]
 id = "ptr-pg"
 current_shape = "modular"
-modules = ["config", "migrate", "capability", "event", "metric", "error", "adapters (feature postgres-backend)"]
-public_groups = ["SchemaSet/Identifier/PgConfig", "migration catalogs", "Capabilities", "LifecycleChange", "PgSubstrate and adapter types", "PgError"]
+modules = ["config", "migrate", "capability", "event", "metric", "seal", "error", "adapters (feature postgres-backend)"]
+public_groups = ["SchemaSet/Identifier/PgConfig", "migration catalogs", "Capabilities", "LifecycleChange", "BranchSealKey", "PgSubstrate and adapter types", "PgError"]
 function_groups = ["connect/migrate/rebuild", "apply/replay/check", "fenced reads", "index/search", "branch/journal storage", "metrics"]
-notes = ["driver types never leave the adapters module", "without the feature the crate is pure and server-free"]
+notes = ["driver types never leave the adapters module", "without the feature the crate is pure and server-free", "a branch seal key is the host's and is never stored; its tag is computed and checked only in Rust"]
