@@ -1302,6 +1302,42 @@ class ProvenanceWatchTests(GitTree, unittest.TestCase):
         self.stamp_directories()
         self.assertEqual(self.watch.changes(), ["src/lib.rs changed on disk"])
 
+    def test_a_reserved_file_the_pathspecs_leave_out_is_a_change_once_stamped_and_written_replaced_or_removed(self):
+        name = "experiments/L900-x/results/run-1-seed-1.json"
+        self.write(name, "{}\n")
+        os.utime(self.root / name, ns=(10**18, 10**18))
+        # Before it is stamped, the watch does not look at it.
+        self.write(name, "{ }\n")
+        self.assertEqual(self.watch.changes(), [])
+        os.utime(self.root / name, ns=(10**18, 10**18))
+        self.watch.stamp_reserved([name])
+        self.assertEqual(self.watch.changes(), [])
+
+        # An edit that is put back.
+        self.write(name, "{ }\n")
+        self.write(name, "{}\n")
+        self.assertEqual(self.watch.changes(), [f"{name} changed on disk"])
+
+        # Stamping again takes the file as it is then.
+        os.utime(self.root / name, ns=(10**18, 10**18))
+        self.watch.stamp_reserved([name])
+        self.assertEqual(self.watch.changes(), [])
+
+        # A copy of itself in its place, and a removal.
+        (self.root / name).unlink()
+        self.write(name, "{}\n")
+        self.assertEqual(self.watch.changes(), [f"{name} changed on disk"])
+        os.utime(self.root / name, ns=(10**18, 10**18))
+        self.watch.stamp_reserved([name])
+        (self.root / name).unlink()
+        self.assertEqual(self.watch.changes(), [f"{name} changed on disk"])
+
+        # It is one file among the changes the watch reports, in order.
+        self.write("src/lib.rs", "pub fn f() { g() }\n")
+        self.assertEqual(
+            self.watch.changes(), [f"{name}, src/lib.rs changed on disk", "HEAD does not hold src/lib.rs"]
+        )
+
     def test_a_directory_put_back_is_no_change_before_the_directories_are_stamped(self):
         self.move_aside_and_back("src")
         self.assertEqual(self.watch.directories, {})

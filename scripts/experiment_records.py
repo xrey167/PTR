@@ -836,6 +836,17 @@ class ProvenanceWatch:
         self.uncommitted = uncommitted_files(root, self.pathspecs)
         self.foreign: set[str] = set()
         self.directories: dict[str, Stamp | None] = {}
+        self.reserved: dict[str, Stamp | None] = {}
+
+    def stamp_reserved(self, names) -> None:
+        """Stamp, as they are now, the files `names` (paths relative to the
+        root) that the caller wrote itself after the watch looked and that
+        the pathspecs leave out, such as the record a run reserves before
+        its command starts, for `changes` to compare. The command can read
+        such a file, so an edit that is put back, or a file replaced by a
+        copy of itself, is a change like one to any watched file. Call it
+        right after the caller's last write to them."""
+        self.reserved = {name: file_stamp(self.root / name) for name in names}
 
     def stamp_directories(self) -> None:
         """Stamp, as they are now, the directories on the way from the root
@@ -872,7 +883,9 @@ class ProvenanceWatch:
         the watch sees nothing that differs. It sees HEAD at another commit,
         a file under the pathspecs that HEAD does not hold, and a file
         written, replaced, created or removed since the watch looked (other
-        than inside `rewriting`), even when its content was put back.
+        than inside `rewriting`), even when its content was put back, and
+        the same for a file `stamp_reserved` stamped, which the pathspecs
+        leave out.
 
         Once `stamp_directories` has stamped them, it sees a directory on
         the way to a watched file that was renamed, or had an entry added or
@@ -890,7 +903,7 @@ class ProvenanceWatch:
         now = file_stamps(self.root, self.pathspecs)
         written = self.foreign | {
             name for name in self.stamps.keys() | now.keys() if self.stamps.get(name) != now.get(name)
-        }
+        } | {name for name, stamp in self.reserved.items() if file_stamp(self.root / name) != stamp}
         if written:
             problems.append(f"{listed(sorted(written))} changed on disk")
         moved = [

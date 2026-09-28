@@ -2158,6 +2158,71 @@ class RunWatchTests(unittest.TestCase):
         status, records, stderr = self.run_seed(swap_sources_and_restore)
         self.assertEqual((status, stderr, [record["status"] for record in records]), (0, "", ["completed"]))
 
+    def test_a_listed_run_watches_its_own_reservation_from_the_moment_its_command_starts(self):
+        # The watch leaves the run's own record out, since the runner writes
+        # it after the watch looked, but a command can read it: an in-place
+        # edit that is put back, or a file replaced by a copy of itself,
+        # leaves the bytes the runner wrote and must still be seen.
+        self.preregister("running")
+        changed = "changed on disk; rerun from a working tree that stays at HEAD"
+
+        def reservation() -> Path:
+            return next(self.results.glob("run-*.json"))
+
+        def edit_and_restore():
+            path = reservation()
+            original = path.read_bytes()
+            time.sleep(0.05)
+            with path.open("r+b") as handle:
+                handle.write(b"{" + b" " * (len(original) - 2) + b"}")
+            with path.open("r+b") as handle:
+                handle.write(original)
+
+        status, records, stderr = self.run_seed(edit_and_restore)
+        name = next(self.results.glob("run-*.json")).relative_to(self.root).as_posix()
+        self.assertEqual((status, [record["status"] for record in records]), (2, ["started"]))
+        self.assertIn(f"; {name} {changed}", stderr)
+
+        # A file replaced by a copy of itself has another inode; the results
+        # directory, which lost and regained an entry, is a change too.
+        self.tearDown()
+        self.setUp()
+        self.preregister("running")
+
+        def replace_by_a_copy():
+            path = reservation()
+            original = path.read_bytes()
+            time.sleep(0.05)
+            path.unlink()
+            path.write_bytes(original)
+
+        status, records, stderr = self.run_seed(replace_by_a_copy)
+        name = next(self.results.glob("run-*.json")).relative_to(self.root).as_posix()
+        self.assertEqual((status, [record["status"] for record in records]), (2, ["started"]))
+        self.assertIn(f"; {name} changed on disk; ", stderr)
+
+        # A reservation the command removes is a change as well.
+        self.tearDown()
+        self.setUp()
+        self.preregister("running")
+        status, records, stderr = self.run_seed(lambda: reservation().unlink())
+        name = f"{self.results.relative_to(self.root).as_posix()}/{next(self.attempts().glob('run-*.json')).name}"
+        self.assertEqual((status, records), (2, []))
+        self.assertIn(f"; {name} changed on disk; ", stderr)
+
+        # A command that leaves it alone is recorded, as before.
+        self.tearDown()
+        self.setUp()
+        self.preregister("running")
+        status, records, stderr = self.run_seed(lambda: reservation().read_bytes())
+        self.assertEqual((status, stderr, [record["status"] for record in records]), (0, "", ["completed"]))
+
+        # An unlisted experiment writes no reservation and watches none.
+        self.tearDown()
+        self.setUp()
+        status, records, stderr = self.run_seed(lambda: time.sleep(0.05))
+        self.assertEqual((status, stderr, [record["status"] for record in records]), (0, "", ["completed"]))
+
     def test_cargo_configuration_outside_the_repository_refuses_a_listed_run(self):
         # Cargo reads its home's configuration and every .cargo directory
         # above the root, none of which the commit holds, and one could set

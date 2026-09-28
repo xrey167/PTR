@@ -462,9 +462,10 @@ def launch_watch(
     a tree that holds HEAD. A listed experiment's watch is on the whole
     repository, since its command may run or read any file there (a script
     under `scripts/`, say), and leaves out only the record the run itself
-    writes, so every earlier record and output, which a command could read,
-    is one HEAD holds. What git ignores (build output, caches) is no file
-    of the commit. A
+    writes, which the run stamps once it has reserved it
+    (`ProvenanceWatch.stamp_reserved`), so every earlier record and output,
+    which a command could read, is one HEAD holds. What git ignores (build
+    output, caches) is no file of the commit. A
     listed experiment also needs HEAD to hold it frozen as the tree launches
     it (`check_research_gates.launch_commit_errors`), each input a regular
     file HEAD holds, so the gate can find the freeze from HEAD alone; and
@@ -1371,8 +1372,11 @@ def launch_and_record(
             print(f"ERROR: cannot reserve {out.relative_to(ROOT)}: {problem}", file=sys.stderr)
             return 2
         # The command starts next, in the live tree, and the runner has made
-        # its last write there: a directory moved aside and put back while it
-        # runs keeps every file's stamp, so the directories are stamped too.
+        # its last write there. The watch leaves the reservation out, which
+        # the command can read, so its stamp is taken here; and a directory
+        # moved aside and put back while the command runs keeps every file's
+        # stamp, so the directories are stamped too.
+        watch.stamp_reserved([out.relative_to(ROOT).as_posix()])
         watch.stamp_directories()
     stays = f"; {out.relative_to(ROOT)} stays as the record that seed {seed} ran" if listed else ""
 
