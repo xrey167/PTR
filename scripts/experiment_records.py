@@ -437,16 +437,10 @@ def head_rules(root: Path) -> dict[str, bytes]:
             blobs[name] = blob
     if not blobs:
         return {}
-    try:
-        shown = subprocess.run(
-            ["git", "cat-file", "--batch"],
-            cwd=root,
-            input="".join(f"{blob}\n" for blob in blobs.values()).encode("ascii"),
-            capture_output=True,
-            check=False,
-        )
-    except OSError as error:
-        raise ProvenanceError(f"cannot run git: {error}") from error
+    # Read as the history holds them (`git`), so no replacement object
+    # stands in for a rule.
+    request = "".join(f"{blob}\n" for blob in blobs.values()).encode("ascii")
+    shown = git(root, "cat-file", "--batch", stdin=request, binary=True)
     if shown.returncode != 0:
         problem = shown.stderr.decode(errors="replace").strip()
         raise ProvenanceError(f"cannot read HEAD's ignore rules: {problem}")

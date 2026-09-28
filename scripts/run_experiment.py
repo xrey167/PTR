@@ -55,12 +55,22 @@ def utc_stamp() -> str:
     return dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
 
 
+def toml_time(value):
+    """A TOML date, time or datetime in `record`, as its ISO 8601 text."""
+    if isinstance(value, (dt.date, dt.time)):
+        return value.isoformat()
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
 def write_json_exclusive(path: Path, record: dict) -> None:
     """Write `record` to the new file `path`, whole or not at all: a write
-    that fails leaves no partial record for an aggregator to select. Raises
-    `FileExistsError` when `path` exists; a record never replaces another."""
+    that fails leaves no partial record for an aggregator to select. A TOML
+    date or time the manifest holds is written as its ISO 8601 text
+    (`toml_time`), so no manifest keeps the record of a run that ran from
+    being written. Raises `FileExistsError` when `path` exists; a record
+    never replaces another."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    experiment_records.write_exclusively(path, json.dumps(record, indent=2) + "\n")
+    experiment_records.write_exclusively(path, json.dumps(record, indent=2, default=toml_time) + "\n")
 
 
 def validate():
@@ -137,14 +147,14 @@ def results_directory(root: Path, data: dict) -> Path | None:
     directory to write the record into once the run had run."""
     named = data.get("results_dir", "results")
     relative = PurePosixPath(named) if isinstance(named, str) and named else None
-    if (
-        relative is None
-        or relative.is_absolute()
-        or not relative.parts
-        or ".." in relative.parts
-        or any(check_research_gates.is_git_administration(part) for part in relative.parts)
-    ):
+    if relative is None or relative.is_absolute() or not relative.parts or ".." in relative.parts:
         print(f"ERROR: results_dir {named!r} is not a directory below {root.relative_to(ROOT)}", file=sys.stderr)
+        return None
+    if any(check_research_gates.is_git_administration(part) for part in relative.parts):
+        print(
+            f"ERROR: results_dir {named!r} passes through git's own directory, where no record can be committed",
+            file=sys.stderr,
+        )
         return None
     step = root
     for part in relative.parts:
@@ -362,6 +372,14 @@ def run_experiment(
             f"ERROR: not recording the run (exit status {exit_code}): its sources changed while it ran, "
             f"so {watch.head} may not be the code it ran; {'; '.join(changes)}; "
             "rerun from a working tree that stays at HEAD",
+            file=sys.stderr,
+        )
+        return 2
+    # The command could have put a file or a link where the results
+    # directory is, which the watch leaves out.
+    if results_directory(root, data) is None:
+        print(
+            f"ERROR: not recording the run (exit status {exit_code}): its results directory changed while it ran",
             file=sys.stderr,
         )
         return 2

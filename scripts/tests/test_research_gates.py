@@ -1,4 +1,5 @@
 import contextlib
+import datetime
 import hashlib
 import importlib.util
 import io
@@ -480,7 +481,7 @@ class PreregistrationGateTests(unittest.TestCase):
         )
         # The path must name a file inside the repository.
         # Nor below git's own directory, whose files no commit holds.
-        for named in (path,"../PROTOCOL.md","/etc/hostname","experiments/semdb/X900-fixture",".git/config"):
+        for named in (path,"../PROTOCOL.md","/etc/hostname","experiments/semdb/X900-fixture",".git/config",path+"/"):
             with self.subTest(named=named):
                 content=None if named==path else text
                 self.assert_blocked(
@@ -1202,6 +1203,45 @@ class PreregistrationGateTests(unittest.TestCase):
                     f"X900 was frozen at {launchable[:12]}, whose config.toml holds another [preregistration] than the frozen one",
                     f"X900 was frozen at {launchable[:12]}, whose experiment.toml names other preregistration digests than the frozen ones",
                 )
+        # Nor did one the runner could not launch for its results
+        # directory: named `.git` or `.`, or not as git writes a path.
+        for results_dir in (".git",".","results/.GIT","results/"):
+            with self.subTest(results_dir=results_dir):
+                root=self.tree(status="running")
+                write(root,self.MANIFEST,(root/self.MANIFEST).read_text(encoding="utf-8")+f'results_dir = "{results_dir}"\n')
+                commit_all(root)
+                shutil.copyfile(full/self.MANIFEST,root/self.MANIFEST)
+                commit_all(root,"results below the experiment")
+                self.assertEqual(gate(root),(0,[]))
+        # The tree check names why for git's own directory.
+        root=self.tree(status="running")
+        write(root,self.MANIFEST,(root/self.MANIFEST).read_text(encoding="utf-8")+'results_dir = "results/.GIT"\n')
+        self.assert_blocked(root,"X900: results_dir 'results/.GIT' passes through git's own directory, where no record can be committed")
+        # Or one whose table froze a file in its results directory, whose
+        # files the runner does not hold to HEAD.
+        inside="experiments/semdb/X900-fixture/results/PROTOCOL.md"
+        outside="experiments/semdb/X900-fixture/PROTOCOL.md"
+        protocol_text="# Protocol\n"
+        digest=hashlib.sha256(protocol_text.encode("utf-8")).hexdigest()
+        required={**REQUIRED,"protocol":"file"}
+        root=self.tree(status="running",table={**TABLE,"protocol":inside,"protocol_sha256":digest},required=required)
+        write(root,inside,protocol_text)
+        commit_all(root)
+        moved=self.tree(status="running",table={**TABLE,"protocol":outside,"protocol_sha256":digest},required=required)
+        for relative in ("experiments/semdb/X900-fixture/config.toml",self.MANIFEST):
+            shutil.copyfile(moved/relative,root/relative)
+        (root/inside).unlink()
+        write(root,outside,protocol_text)
+        commit_all(root,"protocol outside the results")
+        self.assertEqual(gate(root),(0,[]))
+        # Or one that held a file where its results directory would be.
+        root=self.tree(status="running")
+        write(root,"experiments/semdb/X900-fixture/results","not a directory\n")
+        blocked=commit_all(root)
+        self.assertIsNone(mod.launchable_at(root,blocked,"X900","experiments/semdb/X900-fixture"))
+        (root/"experiments/semdb/X900-fixture/results").unlink()
+        cleared=commit_all(root,"results is a directory again")
+        self.assertIsNotNone(mod.launchable_at(root,cleared,"X900","experiments/semdb/X900-fixture"))
         # A commit that could not launch it did not freeze it: here the
         # table still held a placeholder.
         root=self.tree(status="running",table={**TABLE,"harness":"must-be-pinned-before-prepared"})
@@ -1281,7 +1321,7 @@ class PreregistrationGateTests(unittest.TestCase):
         self.assertTrue((root/self.RECORD).exists())
         self.assertEqual(gate(root),(0,[]))
 
-    def test_settings_are_compared_by_type_and_sign_and_nan_is_itself(self):
+    def test_settings_are_compared_by_type_sign_and_offset_and_nan_is_itself(self):
         name=self.RECORD.removeprefix("experiments/semdb/X900-fixture/")
         config="experiments/semdb/X900-fixture/config.toml"
         # A NaN setting, unchanged since the run, is unchanged.
@@ -1309,8 +1349,14 @@ class PreregistrationGateTests(unittest.TestCase):
                     f"X900 was frozen at {ran[:12]}, whose config.toml differs from the current one in loss_cap; after a run the configuration stays as it ran",
                 )
         # 0.0 and -0.0, which == takes as one, and nan and -nan differ in a
-        # sign that TOML holds and a run can read; +0.0 is 0.0.
-        for first,changed in (("loss_cap = 0.0","loss_cap = -0.0"),("loss_cap = nan","loss_cap = -nan"),("loss_cap = 0.0","loss_cap = +0.0")):
+        # sign that TOML holds and a run can read; +0.0 is 0.0. So do one
+        # instant at two offsets; Z is +00:00.
+        unchanged={"loss_cap = +0.0","loss_cap = 2026-01-01T00:00:00+00:00"}
+        for first,changed in (
+            ("loss_cap = 0.0","loss_cap = -0.0"),("loss_cap = nan","loss_cap = -nan"),("loss_cap = 0.0","loss_cap = +0.0"),
+            ("loss_cap = 2026-01-01T00:00:00Z","loss_cap = 2026-01-01T01:00:00+01:00"),
+            ("loss_cap = 2026-01-01T00:00:00Z","loss_cap = 2026-01-01T00:00:00+00:00"),
+        ):
             with self.subTest(first=first,changed=changed):
                 root=self.tree(status="running")
                 write(root,config,(root/config).read_text(encoding="utf-8").replace('tests_dir = "tests"',f'tests_dir = "tests"\n{first}'))
@@ -1318,7 +1364,7 @@ class PreregistrationGateTests(unittest.TestCase):
                 write(root,self.RECORD,json.dumps(self.record(root,ran)))
                 commit_all(root,"records")
                 self.edit(root,config,first,changed)
-                if changed=="loss_cap = +0.0":
+                if changed in unchanged:
                     self.assertEqual(gate(root),(0,[]))
                     continue
                 self.assert_blocked(
@@ -1326,10 +1372,34 @@ class PreregistrationGateTests(unittest.TestCase):
                     f"X900: {name} ran at {ran[:12]}, whose config.toml differs from the current one in loss_cap; after a run the configuration stays as it ran",
                     f"X900 was frozen at {ran[:12]}, whose config.toml differs from the current one in loss_cap; after a run the configuration stays as it ran",
                 )
+        # A freeze is told from another by the same rule: a commit that held
+        # -nan, or a date's text, between two that held nan, or the date,
+        # froze a state of its own.
+        for first,between in (("loss_cap = nan","loss_cap = -nan"),("loss_cap = 2026-01-02",'loss_cap = "2026-01-02"')):
+            with self.subTest(between=between):
+                root=self.tree(status="running")
+                write(root,config,(root/config).read_text(encoding="utf-8").replace('tests_dir = "tests"',f'tests_dir = "tests"\n{first}'))
+                commit_all(root)
+                self.edit(root,config,first,between)
+                held=commit_all(root,"between")
+                self.edit(root,config,between,first)
+                commit_all(root,"back")
+                self.assert_blocked(
+                    root,
+                    f"X900 was frozen at {held[:12]}, whose config.toml differs from the current one in loss_cap; after a run the configuration stays as it ran",
+                )
         nan=float("nan")
+
+        def at(hour: int, zone) -> datetime.datetime:
+            """2026-01-01 at `hour` in `zone` (None for a local datetime)."""
+            return datetime.datetime(2026,1,1,hour,tzinfo=zone)
+
         for then,now,same in (
             (0.0,-0.0,False),(-0.0,-0.0,True),(nan,nan,True),(nan,-nan,False),(1.5,1.5,True),(1.5,-1.5,False),
             ([0.0],[-0.0],False),({"cap":-0.0},{"cap":0.0},False),({"cap":[nan]},{"cap":[nan]},True),
+            (at(0,datetime.timezone.utc),at(1,datetime.timezone(datetime.timedelta(hours=1))),False),
+            (at(0,datetime.timezone.utc),at(0,datetime.timezone(datetime.timedelta(0))),True),
+            (at(0,None),at(0,datetime.timezone.utc),False),(datetime.time(1,2),datetime.time(1,2),True),
         ):
             with self.subTest(then=then,now=now):
                 self.assertEqual(mod.same_value(then,now),same)
@@ -1610,6 +1680,23 @@ class PreregistrationGateTests(unittest.TestCase):
         commit_all(root,"a file, not a link")
         self.assertEqual(gate(root),(0,[]))
 
+    def test_an_executable_file_is_frozen_as_a_regular_one(self):
+        # Git holds an executable file as mode 100755: a preregistered one,
+        # and one in a baseline's directory, freeze as any regular file does.
+        protocol="experiments/semdb/X900-fixture/run.sh"
+        script="#!/bin/sh\nexit 0\n"
+        helper="research/baselines/fixture/helper.sh"
+        baseline_text=(self.tree()/BASELINE_PATH).read_text(encoding="utf-8")
+        table={**TABLE,"protocol":protocol,"protocol_sha256":hashlib.sha256(script.encode("utf-8")).hexdigest(),
+               "baseline_fixture_sha256":baseline_digest({"config.toml":baseline_text,"helper.sh":script})}
+        root=self.tree(status="running",table=table,required={**REQUIRED,"protocol":"file"})
+        for relative in (protocol,helper):
+            write(root,relative,script)
+            (root/relative).chmod(0o755)
+        head=commit_all(root)
+        self.assertEqual(git(root,"ls-tree","HEAD","--",protocol).split()[0],"100755")
+        self.assertEqual((gate(root),mod.launch_commit_errors(root,"X900",head)),((0,[]),[]))
+
     def test_history_is_read_as_committed_whatever_replaces_it(self):
         # A replacement object (git replace) would show the gate another
         # content than the commit holds.
@@ -1618,6 +1705,21 @@ class PreregistrationGateTests(unittest.TestCase):
         commit=commit_all(root)
         write(root,"other.md","replaced\n")
         git(root,"replace",git(root,"rev-parse",f"{commit}:notes.md"),git(root,"hash-object","-w","other.md"))
+        self.assertEqual(git(root,"show",f"{commit}:notes.md"),"replaced")
+        self.assertEqual(mod.blob(root,commit,"notes.md"),b"committed\n")
+        # A commit's full name holds what it holds for good, so its reads are
+        # kept; HEAD is read afresh once it moves.
+        self.assertEqual(mod.blob(root,"HEAD","notes.md"),b"committed\n")
+        write(root,"notes.md","later\n")
+        commit_all(root,"later")
+        self.assertEqual((mod.blob(root,"HEAD","notes.md"),mod.blob(root,commit,"notes.md")),(b"later\n",b"committed\n"))
+        # Nor does a replaced tree.
+        root=self.tree()
+        write(root,"notes.md","committed\n")
+        commit=commit_all(root)
+        write(root,"notes.md","replaced\n")
+        other=commit_all(root,"other")
+        git(root,"replace",git(root,"rev-parse",f"{commit}^{{tree}}"),git(root,"rev-parse",f"{other}^{{tree}}"))
         self.assertEqual(git(root,"show",f"{commit}:notes.md"),"replaced")
         self.assertEqual(mod.blob(root,commit,"notes.md"),b"committed\n")
 
@@ -1630,6 +1732,124 @@ class PreregistrationGateTests(unittest.TestCase):
         for accepted in (".gitignore",".github/workflows/ci.yml","a/.gitkeep","x.git/y","git/config","a/git~2",".gitx/y"):
             with self.subTest(accepted=accepted):
                 self.assertTrue(mod.is_repository_path(accepted))
+
+    def test_a_history_git_cannot_read_fails_the_gate_rather_than_reading_as_empty(self):
+        # Read as empty, a history would hide every freeze and record in it.
+        root=self.tree(status="running")
+        first=commit_all(root)
+        write(root,"notes.md","later\n")
+        commit_all(root,"later")
+        (root/".git/objects"/first[:2]/first[2:]).unlink()
+        code,lines=gate(root)
+        self.assertEqual((code,len(lines)),(1,1),lines)
+        self.assertTrue(lines[0].startswith(f"HEAD's history cannot be read in {root}: "),lines)
+        refused=mod.launch_errors(root,"X900")
+        self.assertEqual(len(refused),1,refused)
+        self.assertTrue(refused[0].startswith(f"HEAD's history cannot be read in {root}: "),refused)
+        # Nor does one whose HEAD commit git cannot read.
+        root=self.tree(status="running")
+        head=commit_all(root)
+        (root/".git/objects"/head[:2]/head[2:]).unlink()
+        code,lines=gate(root)
+        self.assertEqual((code,len(lines)),(1,1),lines)
+        self.assertTrue(lines[0].startswith(f"HEAD's history cannot be read in {root}: "),lines)
+        # Without a commit at HEAD there is no history to hide.
+        self.assertEqual(mod.history(self.tree(),"--format=%H","HEAD"),[])
+        # A launch commit whose tree, a file of it or a baseline's subtree git
+        # cannot read refuses the launch, named, rather than reading as
+        # holding nothing.
+        baseline_text=(self.tree()/BASELINE_PATH).read_text(encoding="utf-8")
+        for lost in ("tree","config","baseline subtree"):
+            with self.subTest(lost=lost):
+                table={**TABLE,"baseline_fixture_sha256":baseline_digest({"config.toml":baseline_text,"lib/x.py":"x = 1\n"})}
+                root=self.tree(status="running",table=table)
+                write(root,"research/baselines/fixture/lib/x.py","x = 1\n")
+                head=commit_all(root)
+                self.assertEqual(mod.launch_commit_errors(root,"X900",head),[])
+                spelled={"tree":f"{head}^{{tree}}","config":f"{head}:experiments/semdb/X900-fixture/config.toml",
+                         "baseline subtree":f"{head}:research/baselines/fixture/lib"}[lost]
+                name=git(root,"rev-parse",spelled)
+                mod.listed_entry.cache_clear()
+                mod.object_bytes.cache_clear()
+                (root/".git/objects"/name[:2]/name[2:]).unlink()
+                refused=mod.launch_commit_errors(root,"X900",head)
+                self.assertEqual(len(refused),1,refused)
+                self.assertTrue(refused[0].startswith(f"HEAD's history cannot be read in {root}: "),refused)
+
+    def test_a_listed_experiment_is_reached_through_no_symlink(self):
+        # Git holds a link as its target's path, so the history of the
+        # directory the registry names would hold none of its files.
+        root=self.tree(status="running")
+        shutil.move(root/"experiments/semdb/X900-fixture",root/"experiments/real-X900")
+        self.link(Path("../real-X900"),root/"experiments/semdb/X900-fixture")
+        refusal=("X900: experiments/registry.toml places it in experiments/semdb/X900-fixture, which is reached through a "
+                 "symlink, so its runs and freezes there could not be found")
+        self.assert_blocked(root,refusal)
+        self.assertEqual(mod.launch_errors(root,"X900"),[refusal])
+
+    def test_a_repository_path_is_written_as_git_writes_it(self):
+        # git lists a directory's files for `dir/` and names no entry
+        # `./x`, so the tree and a commit read one entry only by the path
+        # git writes.
+        for refused in ("a/","./a","a//b","a/./b","a/b/","a/b/."):
+            with self.subTest(refused=refused):
+                self.assertFalse(mod.is_repository_path(refused))
+        for accepted in ("a","a/b","a.b/c.d"):
+            with self.subTest(accepted=accepted):
+                self.assertTrue(mod.is_repository_path(accepted))
+        # No checkout holds a longer path than PATH_MAX, and git could not be
+        # handed one as an argument.
+        self.assertTrue(mod.is_repository_path("a"*4096))
+        self.assertFalse(mod.is_repository_path("a"*4097))
+
+    def test_a_listed_experiment_lives_where_the_gate_can_search_its_history(self):
+        # The gate searches the directories the registry has given an
+        # experiment only where they are repository paths, so a listed one
+        # placed elsewhere is refused: a run there could not be found.
+        root=self.tree(status="running")
+        shutil.move(root/"experiments/semdb/X900-fixture",root/"experiments/semdb/X900[a]")
+        write(root,"experiments/registry.toml",'version = 1\n\n[[experiment]]\nid = "X900"\npath = "semdb/X900[a]"\nstatus = "running"\n')
+        refusal=("X900: experiments/registry.toml places it in 'experiments/semdb/X900[a]', which is not a repository "
+                 "path, so its runs and freezes there could not be found")
+        self.assert_blocked(root,refusal)
+        self.assertEqual(mod.launch_errors(root,"X900"),[refusal])
+        head=commit_all(root)
+        self.assertIsNone(mod.launchable_at(root,head,"X900","experiments/semdb/X900[a]"))
+        # A registry path with a trailing slash names the directory git
+        # names without it, and a freeze there is found after a move.
+        root=self.tree(status="running")
+        write(root,"experiments/registry.toml",'version = 1\n\n[[experiment]]\nid = "X900"\npath = "semdb/X900-fixture/"\nstatus = "running"\n')
+        self.assertEqual((gate(root),mod.launch_errors(root,"X900")),((0,[]),[]))
+        frozen=commit_all(root)
+        rewritten=self.tree(status="running",table={**TABLE,"schema":2})
+        shutil.move(root/"experiments/semdb/X900-fixture",root/"experiments/semdb/X900-moved")
+        for name in ("config.toml","experiment.toml"):
+            shutil.copyfile(rewritten/"experiments/semdb/X900-fixture"/name,root/"experiments/semdb/X900-moved"/name)
+        write(root,"experiments/registry.toml",'version = 1\n\n[[experiment]]\nid = "X900"\npath = "semdb/X900-moved"\nstatus = "running"\n')
+        commit_all(root,"moved and rewritten")
+        self.assert_blocked(
+            root,
+            f"X900 was frozen at {frozen[:12]}, where the registry placed it in experiments/semdb/X900-fixture, not in experiments/semdb/X900-moved",
+            f"X900 was frozen at {frozen[:12]}, whose config.toml holds another [preregistration] than the frozen one",
+            f"X900 was frozen at {frozen[:12]}, whose experiment.toml names other preregistration digests than the frozen ones",
+        )
+        # A registry path that leaves the repository at some commit does not
+        # take the directories it gave before out of the search, as a
+        # pathspec outside the repository would take all of them.
+        root=self.tree(status="running")
+        frozen=commit_all(root)
+        registry=(root/"experiments/registry.toml").read_text(encoding="utf-8")
+        write(root,"experiments/registry.toml",registry.replace('path = "semdb/X900-fixture"','path = "../../outside"'))
+        commit_all(root,"placed outside")
+        write(root,"experiments/registry.toml",registry)
+        for relative in ("experiments/semdb/X900-fixture/config.toml",self.MANIFEST):
+            shutil.copyfile(rewritten/relative,root/relative)
+        commit_all(root,"placed back and rewritten")
+        self.assert_blocked(
+            root,
+            f"X900 was frozen at {frozen[:12]}, whose config.toml holds another [preregistration] than the frozen one",
+            f"X900 was frozen at {frozen[:12]}, whose experiment.toml names other preregistration digests than the frozen ones",
+        )
 
     def test_a_launch_names_a_commit_that_holds_the_experiment_frozen(self):
         # The gate finds a freeze by what a commit holds, so a run may name
@@ -1654,18 +1874,25 @@ class PreregistrationGateTests(unittest.TestCase):
         head=commit_all(root)
         self.assertEqual(mod.launch_errors(root,"X900"),[])
         self.assertEqual(mod.launch_commit_errors(root,"X900",head),[refusal(head)])
-        # Nor may a registry that no longer places it launch it.
+        # The list and the registry are read as the commit holds them, so a
+        # list emptied in the tree after the runner looked changes nothing.
+        write(root,"experiments/preregistration.toml","version = 1\n")
+        self.assertEqual(mod.launch_commit_errors(root,"X900",head),[refusal(head)])
+        # Nor may a commit whose registry does not place it launch it.
+        root=self.tree(status="running")
         write(root,"experiments/registry.toml","version = 1\n")
+        head=commit_all(root)
         self.assertEqual(mod.launch_commit_errors(root,"X900",head),[refusal(head)])
         # An experiment the list does not name runs as before.
         root=self.tree(status="running",listed_text="version = 1\n")
         head=commit_all(root)
         self.assertEqual(mod.launch_commit_errors(root,"X900",head),[])
-        # A file it cannot read refuses the launch, named.
-        write(root,"experiments/registry.toml","version = 1\n[[experiment\n")
-        refused=mod.launch_commit_errors(root,"X900",head)
-        self.assertEqual(len(refused),1,refused)
-        self.assertTrue(refused[0].startswith("experiments/registry.toml cannot be read as TOML: "),refused)
+        # A list the commit does not hold readable refuses the launch.
+        write(root,"experiments/preregistration.toml","version = 1\n[experiment\n")
+        head=commit_all(root,"unreadable list")
+        self.assertEqual(mod.launch_commit_errors(root,"X900",head),[
+            f"experiments/preregistration.toml cannot be read as {head[:12]} holds it, so whether X900 preregisters is unknown",
+        ])
 
     def test_a_missing_list_fails_the_gate_and_refuses_every_launch(self):
         root=self.tree()

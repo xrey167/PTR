@@ -387,14 +387,19 @@ class RunWatchTests(unittest.TestCase):
         # The experiment's own directory would take all of it out of the
         # HEAD check, and one outside it is not the experiment's.
         # Nor may git's own directory hold it, where no record is committed.
-        for results_dir in (".", "../elsewhere", ".git", "results/.GIT"):
+        for results_dir, refusal in (
+            (".", "is not a directory below experiments/x/L900-x"),
+            ("../elsewhere", "is not a directory below experiments/x/L900-x"),
+            (".git", "passes through git's own directory, where no record can be committed"),
+            ("results/.GIT", "passes through git's own directory, where no record can be committed"),
+        ):
             with self.subTest(results_dir=results_dir):
                 self.write("experiments/x/L900-x/experiment.toml", manifest + f'results_dir = "{results_dir}"\n')
                 git(self.root, "commit", "-q", "--no-verify", "-am", f"results in {results_dir}")
                 ran = []
                 status, _, stderr = self.run_seed(lambda: ran.append(True))
                 self.assertEqual((status, ran), (2, []))
-                self.assertIn(f"results_dir {results_dir!r} is not a directory below experiments/x/L900-x", stderr)
+                self.assertIn(f"results_dir {results_dir!r} {refusal}", stderr)
         # A file on the way would leave no directory to write the record
         # into once the run had run.
         self.write("experiments/x/L900-x/notes", "a file\n")
@@ -419,6 +424,30 @@ class RunWatchTests(unittest.TestCase):
         status, _, stderr = self.run_seed(lambda: ran.append(True))
         self.assertEqual((status, ran), (2, []))
         self.assertIn("results directory experiments/x/L900-x/results is a symlink", stderr)
+
+    def test_a_results_directory_the_command_replaces_holds_no_record(self):
+        # The watch leaves the results directory out, so the command could
+        # put a file or a link where it is: the record is then not written
+        # through it, nor lost to a traceback.
+        outside = Path(self.enterContext(tempfile.TemporaryDirectory()))
+
+        def with_file():
+            shutil.rmtree(self.results)
+            self.results.write_text("a file\n", encoding="utf-8")
+
+        def with_link():
+            shutil.rmtree(self.results)
+            os.symlink(outside, self.results)
+
+        for during, problem in ((with_file, "is not a directory"), (with_link, "is a symlink")):
+            with self.subTest(problem=problem):
+                status, records, stderr = self.run_seed(during)
+                self.assertEqual((status, records), (2, []))
+                self.assertIn(f"results directory experiments/x/L900-x/results {problem}", stderr)
+                self.assertIn("its results directory changed while it ran", stderr)
+                self.assertEqual(list(outside.iterdir()), [])
+                self.results.unlink()
+                git(self.root, "checkout", "-q", "--", "experiments/x/L900-x/results")
 
     def test_prepare_holds_what_decides_a_launch_to_head(self):
         self.preregister("prepared")
@@ -484,6 +513,17 @@ class RunWatchTests(unittest.TestCase):
         git(self.root, "commit", "-q", "--no-verify", "-m", "protocol committed")
         status, records, stderr = self.run_seed()
         self.assertEqual((status, stderr, len(records)), (0, "", 1))
+
+    def test_a_manifest_date_is_recorded_as_its_iso_text(self):
+        # JSON has no date, so the record writes it as text rather than
+        # failing once the command has run.
+        manifest = self.root / "experiments/x/L900-x/experiment.toml"
+        self.write("experiments/x/L900-x/experiment.toml", manifest.read_text(encoding="utf-8") + "created = 2026-01-02\n")
+        git(self.root, "commit", "-q", "--no-verify", "-am", "dated")
+        self.head = git(self.root, "rev-parse", "HEAD")
+        status, records, stderr = self.run_seed()
+        self.assertEqual((status, stderr), (0, ""))
+        self.assertEqual(records[0]["manifest"]["created"], "2026-01-02")
 
     def test_a_record_the_results_hold_is_no_change_of_the_sources(self):
         # Records accumulate in results/, which the run writes into itself.

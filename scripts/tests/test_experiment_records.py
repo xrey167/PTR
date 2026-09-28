@@ -506,6 +506,18 @@ class SourceTreeTests(GitTree, unittest.TestCase):
             mod.uncommitted_files(self.root, self.pathspecs), [".gitignore", "crates/other/.gitignore"]
         )
 
+    def test_heads_ignore_rules_are_read_as_committed_whatever_replaces_them(self):
+        # A replacement object for HEAD's .gitignore would make every
+        # untracked source look ignored by HEAD's own rules.
+        self.write("everything", "*\n")
+        replacement = git(self.root, "hash-object", "-w", "everything")
+        (self.root / "everything").unlink()
+        git(self.root, "replace", git(self.root, "rev-parse", "HEAD:.gitignore"), replacement)
+        self.assertEqual(mod.head_rules(self.root), {".gitignore": b"__pycache__/\ntarget/\n"})
+        self.write("crates/other/.gitignore", "*.rs\n")
+        self.write("crates/other/src/lib.rs")
+        self.assertEqual(mod.uncommitted_files(self.root, self.pathspecs), ["crates/other/.gitignore"])
+
     def test_a_source_git_is_told_to_take_as_heads_is_reported(self):
         # git status and git diff do not look at an assume-unchanged or
         # skip-worktree file, so an edit to one is invisible to both.
