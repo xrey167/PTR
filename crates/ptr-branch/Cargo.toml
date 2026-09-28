@@ -21,8 +21,8 @@ sha2 = { version = "=0.11.0", default-features = false }
 [dev-dependencies]
 # The end-to-end test commits a certified plan through the runtime's certified
 # delta path, the path a caller must use: the runtime does not depend on this
-# crate and its unverified apply_semantic_delta is public, so the type system
-# does not enforce it.
+# crate and its apply_verified_semantic_delta, a host write that checks no relied
+# generation, is public, so the type system does not enforce it.
 ptr-runtime = { workspace = true }
 ptr-config = { workspace = true }
 ptr-ledger = { workspace = true }

@@ -17,10 +17,11 @@ use crate::ops::holds_member;
 /// committed with both: [`MergePlan::expected`], [`MergePlan::delta`] and
 /// [`MergePlan::relied`] are exactly the `expected`, `delta` and `relied`
 /// arguments of the runtime's `apply_certified_semantic_delta(expected,
-/// delta, relied, required, verify)`. That call refuses the plan unless the
+/// delta, relied, principal)`. That call refuses the plan unless the
 /// runtime's semantic revision is still `expected`, refuses it if any
 /// relied-on generation is no longer live when it would append, and appends
-/// it only after verification of the exact state it would publish.
+/// it only after every verifier of the host's installed grant has admitted
+/// the exact state it would publish.
 ///
 /// The revision and the reliance check are the plan's only freshness fences.
 /// The semantic revision moves only when a semantic delta that changes
@@ -44,9 +45,10 @@ use crate::ops::holds_member;
 /// again.
 ///
 /// Nothing enforces that path by type: the runtime does not depend on this
-/// crate, so a caller that drops `relied` or calls another commit path
-/// (`apply_verified_semantic_delta` checks no relied generation,
-/// `apply_semantic_delta` also verifies nothing) is not stopped here.
+/// crate, so a caller that drops `relied` and commits the delta as an
+/// ordinary host write (`apply_verified_semantic_delta`, which checks no
+/// relied generation, though the grant's verifiers still judge it) is not
+/// stopped here.
 ///
 /// Its fields are private and only [`certify`] builds one, so nothing
 /// [`MergePlan::digest`] covers can change between certification and

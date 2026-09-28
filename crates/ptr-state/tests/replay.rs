@@ -86,3 +86,55 @@ fn semantic_projection_contains_only_the_revision_and_never_payload_bytes() {
         Some("41")
     );
 }
+
+#[test]
+fn an_attested_record_projects_the_marker() {
+    let attested = [
+        ptr_ledger::SemanticOrigin::Request {
+            request: "r1".into(),
+        },
+        ptr_ledger::SemanticOrigin::PodOutput {
+            request: "r1".into(),
+            pod: "echo".into(),
+            level: ptr_types::VerificationLevel::SampleVerified,
+        },
+        ptr_ledger::SemanticOrigin::Host {
+            principal: "operator".into(),
+            verification: ptr_ledger::Attestation {
+                required: ptr_types::VerificationLevel::Deterministic,
+                level: ptr_types::VerificationLevel::Deterministic,
+                verifiers: vec!["schema".into()],
+                findings: Vec::new(),
+            },
+        },
+    ];
+    for origin in attested {
+        let committed = CommittedEvent {
+            index: CommitIndex(1),
+            event: LedgerEvent::SemanticDeltaCommitted {
+                base_revision: Revision(40),
+                revision: Revision(41),
+                encoded_delta: b"private payload".to_vec(),
+                origin,
+            },
+        };
+        // The revision, and the marker that a record with an origin exists;
+        // still never the payload.
+        assert_eq!(
+            projection_entries(&committed),
+            vec![
+                ("semdb:revision".into(), "41".into()),
+                (ptr_state::ATTESTED_MARKER.into(), "1".into()),
+            ]
+        );
+        let mut state = MaterializedState::default();
+        assert_eq!(state.try_apply(&committed), ApplyOutcome::Applied);
+        assert_eq!(
+            state
+                .values
+                .get(ptr_state::ATTESTED_MARKER)
+                .map(String::as_str),
+            Some("1")
+        );
+    }
+}

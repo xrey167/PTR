@@ -721,12 +721,19 @@ carries them lets the digest of the plan it merged be recomputed without the pla
 (`merge_plan_digest_is_the_plan_digest`).
 
 A plan is committed through `Runtime::apply_certified_semantic_delta` with exactly
-the `expected`, `delta` and `relied` that `MergePlan`'s accessors return. It prepares
-the delta, hands the verifier a view of the post-state, its values and its
-dependency sets (`a_verifier_sees_and_can_refuse_the_dependency_set_a_delta_would_install`),
-and appends only on a `Pass` at the required level with no hard finding
+the `expected`, `delta` and `relied` that `MergePlan`'s accessors return, as a host
+write by a principal (the branch's author, in the end-to-end tests). It prepares the
+delta and hands every verifier of the `SemanticGrant` the host installed a
+`SemanticChange`: the published state before, the post-state with its values and
+dependency sets, the delta, the invalidated keys and the principal
+(`a_verifier_sees_and_can_refuse_the_dependency_set_a_delta_would_install`,
+`a_verifier_sees_before_after_delta_affected_and_its_origin`). It appends only if
+every verifier passes, the weakest level any of them reports meets the grant's
+requirement and no report has a hard finding
 (`a_certified_and_verified_branch_reaches_semantic_state_only_through_the_runtime`,
-`no_score_or_shallow_level_or_hard_finding_gets_a_delta_past_verification`). A plan
+`no_score_or_shallow_level_or_hard_finding_gets_a_delta_past_verification`,
+`the_weakest_verifier_level_decides`), and the record names the principal, the
+verifiers, the weakest level and the soft findings. A plan
 certified before another semantic commit, a committed delta that changes semantic
 state, is refused by the runtime's revision check
 (`a_plan_certified_before_another_commit_is_refused_by_the_runtime`,
@@ -752,12 +759,15 @@ attempt is reconciled the same plan commits
 is still the live one (`a_revoked_generation_is_revoked_although_it_is_still_the_live_generation`).
 
 Using that path is the caller's obligation, not a type-level guarantee: the runtime
-does not depend on `ptr-branch`, `MergePlan::delta` returns the delta, and
-the runtime's `apply_verified_semantic_delta` (which checks no generation) and
-unverified `apply_semantic_delta` are public, so nothing stops a caller from
-committing a plan without verification or without its relied generations
-(`a_plan_committed_without_its_relied_generations_is_not_stopped_by_the_runtime`). Closing
-that gap (a plan consumable only by a verifying entry point) is listed in §7.
+does not depend on `ptr-branch`, `MergePlan::delta` returns the delta, and the
+runtime's `apply_verified_semantic_delta`, which checks no generation, is public, so
+nothing stops a caller from committing a plan's delta as an ordinary host write
+without its relied generations
+(`a_plan_committed_without_its_relied_generations_is_not_stopped_by_the_runtime`).
+Every such write is still judged by the grant's verifiers and names its principal:
+there is no public path that commits a semantic delta no verifier judged. Closing
+the rest of the gap (a plan consumable only by a verifying entry point) is listed in
+§7.
 
 ### The arbiter: verification first, calibration second
 
@@ -1320,8 +1330,8 @@ with Apache Iggy, NATS and Kafka as candidates behind it.
   logical-replication consumer.** Until TLS exists the substrate refuses remote hosts.
 - **A merge plan that can only be committed through verification.** Today it is the
   caller's obligation (§2): `MergePlan::delta` returns its delta, and the
-  runtime's `apply_verified_semantic_delta`, which checks no relied generation, and
-  its unverified `apply_semantic_delta` are public.
+  runtime's `apply_verified_semantic_delta`, which checks no relied generation, is
+  public, though, like every host write, it is judged by the installed grant.
 - **Strings containing NUL in the PostgreSQL substrate.** PostgreSQL `text` cannot
   hold them; they are refused with a typed error, and the PostgreSQL projection stops
   at a ledger record carrying one.

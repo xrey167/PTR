@@ -114,10 +114,10 @@ pub enum LedgerEvent {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SemanticOrigin {
     /// Tag 8, byte for byte as records were written before origins existed.
-    /// ptr-runtime records it on every semantic write until it can check
-    /// attributed origins, and replays it wherever it appears. Not the
-    /// unframed PTRLOG01 format that `migrate_legacy_log` reads: a record of
-    /// that format becomes a framed tag-8 record when it is migrated.
+    /// ptr-runtime never writes it, and replays it only before the first
+    /// record with an attributed origin. Not the unframed PTRLOG01 format that
+    /// `migrate_legacy_log` reads: a record of that format becomes a framed
+    /// tag-8 record when it is migrated.
     Legacy,
     /// The raw text of one request, written by ingest.
     Request { request: String },

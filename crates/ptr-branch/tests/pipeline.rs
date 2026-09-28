@@ -4,17 +4,19 @@ use ptr_branch::{
     calibration_draw, certify, AutoThreshold, Branch, BranchId, MergePlan, TriageDecision,
     TriagePolicy,
 };
+use std::sync::{Arc, Mutex};
+
 use ptr_config::PtrConfig;
 use ptr_ledger::LedgerEvent;
 use ptr_runtime::execution::RequiredVerification;
 use ptr_runtime::semantic::{StaleReliance, StaleTarget};
-use ptr_runtime::{PtrRuntime, RuntimeError};
+use ptr_runtime::{PtrRuntime, RuntimeError, SemanticChange, SemanticGrant};
 use ptr_semdb::SemanticDelta;
 use ptr_types::{
     CapabilityId, CapsuleId, Effect, Generation, PrincipalId, Probability, ProjectId, Validity,
     VerificationLevel,
 };
-use ptr_verifier::{VerificationReport, VerificationStatus};
+use ptr_verifier::{NamedVerifier, VerificationReport, VerificationStatus, Verifier};
 
 fn passing() -> VerificationReport {
     VerificationReport {
@@ -25,8 +27,45 @@ fn passing() -> VerificationReport {
     }
 }
 
-fn runtime_with_price() -> PtrRuntime {
+/// The grant verifier of these tests: passes every change at the
+/// deterministic level and remembers the price each change would publish.
+struct PriceWatch(Arc<Mutex<Vec<Option<String>>>>);
+
+impl<'a> Verifier<SemanticChange<'a>> for PriceWatch {
+    fn verify(&self, change: &SemanticChange<'a>) -> VerificationReport {
+        self.0
+            .lock()
+            .unwrap()
+            .push(change.after().get("price:sku-1").map(str::to_owned));
+        passing()
+    }
+}
+
+impl<'a> NamedVerifier<SemanticChange<'a>> for PriceWatch {
+    fn name(&self) -> &'static str {
+        "price-watch"
+    }
+}
+
+/// The author every branch here is sealed by, and so the principal its plan
+/// is committed as.
+fn agent() -> PrincipalId {
+    PrincipalId::from("pricing-agent")
+}
+
+/// A runtime with `pricing-policy` live at generation 1 and a price of 10,
+/// written as a host write under a [`PriceWatch`] grant whose record of
+/// published prices is returned.
+fn runtime_watching_prices() -> (PtrRuntime, Arc<Mutex<Vec<Option<String>>>>) {
+    let seen = Arc::new(Mutex::new(Vec::new()));
     let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+    runtime
+        .install_semantic_grant(
+            SemanticGrant::new(RequiredVerification::Deterministic)
+                .with_verifier(PriceWatch(seen.clone()))
+                .allow_host_writes(),
+        )
+        .unwrap();
     runtime
         .commit(LedgerEvent::CapsuleCommitted {
             project: ProjectId::from("shop"),
@@ -37,13 +76,19 @@ fn runtime_with_price() -> PtrRuntime {
     let mut delta = SemanticDelta::default();
     delta.upserts.insert("price:sku-1".into(), "10".into());
     let revision = runtime.revision();
-    runtime.apply_semantic_delta(revision, delta).unwrap();
     runtime
+        .apply_verified_semantic_delta(revision, delta, &PrincipalId::from("pipeline-operator"))
+        .unwrap();
+    (runtime, seen)
+}
+
+fn runtime_with_price() -> PtrRuntime {
+    runtime_watching_prices().0
 }
 
 #[test]
 fn a_certified_and_verified_branch_reaches_semantic_state_only_through_the_runtime() {
-    let mut runtime = runtime_with_price();
+    let (mut runtime, seen) = runtime_watching_prices();
     let mut work = Branch::open(
         BranchId::from("b1"),
         PrincipalId::from("pricing-agent"),
@@ -72,17 +117,10 @@ fn a_certified_and_verified_branch_reaches_semantic_state_only_through_the_runti
     let plan = certification.plan();
     let (expected, delta, relied) = (plan.expected(), plan.delta().clone(), plan.relied().clone());
     runtime
-        .apply_certified_semantic_delta(
-            expected,
-            delta,
-            &relied,
-            RequiredVerification::Deterministic,
-            |view| {
-                assert_eq!(view.get("price:sku-1"), Some("11"));
-                passing()
-            },
-        )
+        .apply_certified_semantic_delta(expected, delta, &relied, &agent())
         .unwrap();
+    // The grant's verifier judged the state the plan would publish.
+    assert_eq!(seen.lock().unwrap().last(), Some(&Some("11".to_owned())));
     assert_eq!(runtime.snapshot().get("price:sku-1"), Some("11"));
 }
 
@@ -133,13 +171,7 @@ fn a_revocation_or_supersession_after_certification_refuses_the_commit_and_appen
         let (expected, delta, relied) =
             (plan.expected(), plan.delta().clone(), plan.relied().clone());
         let refused = runtime
-            .apply_certified_semantic_delta(
-                expected,
-                delta,
-                &relied,
-                RequiredVerification::Deterministic,
-                |_| passing(),
-            )
+            .apply_certified_semantic_delta(expected, delta, &relied, &agent())
             .unwrap_err();
         let RuntimeError::StaleReliance(stale) = refused else {
             panic!("{refused:?}");
@@ -168,13 +200,7 @@ fn a_revocation_or_supersession_after_certification_refuses_the_commit_and_appen
     let events = runtime.committed_events().len();
     let (expected, delta, relied) = (plan.expected(), plan.delta().clone(), plan.relied().clone());
     let commit = runtime
-        .apply_certified_semantic_delta(
-            expected,
-            delta,
-            &relied,
-            RequiredVerification::Deterministic,
-            |_| passing(),
-        )
+        .apply_certified_semantic_delta(expected, delta, &relied, &agent())
         .unwrap();
     assert!(commit.commit_index.is_some());
     assert_eq!(runtime.committed_events().len(), events + 1);
@@ -211,13 +237,7 @@ fn a_commit_that_moves_neither_the_revision_nor_a_relied_generation_does_not_ref
     assert!(!plan.relied().contains_key("constraint:max-price"));
     let (expected, delta, relied) = (plan.expected(), plan.delta().clone(), plan.relied().clone());
     let commit = runtime
-        .apply_certified_semantic_delta(
-            expected,
-            delta,
-            &relied,
-            RequiredVerification::Deterministic,
-            |_| passing(),
-        )
+        .apply_certified_semantic_delta(expected, delta, &relied, &agent())
         .unwrap();
     assert!(commit.commit_index.is_some());
     assert_eq!(runtime.snapshot().get("price:sku-1"), Some("11"));
@@ -230,8 +250,9 @@ fn an_unsettled_effect_attempt_fences_the_plan_until_it_is_reconciled() {
     // the records that refuse nothing. But an attempt that is neither settled
     // nor reconciled fences every commit of the runtime, this plan's
     // included, until an operator or the dispatch settles it.
-    let mut runtime = runtime_with_price();
+    let (mut runtime, seen) = runtime_watching_prices();
     let plan = certified_repricing(&runtime);
+    let judged = seen.lock().unwrap().len();
     let attempt = runtime
         .commit(LedgerEvent::EffectAttempted {
             key: None,
@@ -255,16 +276,12 @@ fn an_unsettled_effect_attempt_fences_the_plan_until_it_is_reconciled() {
     let (expected, delta, relied) = (plan.expected(), plan.delta().clone(), plan.relied().clone());
     assert_eq!(
         runtime
-            .apply_certified_semantic_delta(
-                expected,
-                delta.clone(),
-                &relied,
-                RequiredVerification::Deterministic,
-                |_| unreachable!("verified while fenced"),
-            )
+            .apply_certified_semantic_delta(expected, delta.clone(), &relied, &agent())
             .unwrap_err(),
         RuntimeError::ExecutionFenced
     );
+    // Refused before the grant's verifier was asked.
+    assert_eq!(seen.lock().unwrap().len(), judged);
     assert_eq!(runtime.snapshot().get("price:sku-1"), Some("10"));
 
     // Reconciling the attempt lifts the fence without moving the revision,
@@ -274,13 +291,7 @@ fn an_unsettled_effect_attempt_fences_the_plan_until_it_is_reconciled() {
         .unwrap();
     assert_eq!(expected, runtime.revision());
     let commit = runtime
-        .apply_certified_semantic_delta(
-            expected,
-            delta,
-            &relied,
-            RequiredVerification::Deterministic,
-            |_| passing(),
-        )
+        .apply_certified_semantic_delta(expected, delta, &relied, &agent())
         .unwrap();
     assert!(commit.commit_index.is_some());
     assert_eq!(runtime.snapshot().get("price:sku-1"), Some("11"));
@@ -307,19 +318,11 @@ fn a_plan_committed_without_its_relied_generations_is_not_stopped_by_the_runtime
         BTreeMap::from([("pricing-policy".to_owned(), Generation(1))])
     );
     assert!(matches!(
-        runtime.apply_certified_semantic_delta(
-            expected,
-            delta.clone(),
-            &relied,
-            RequiredVerification::Deterministic,
-            |_| passing(),
-        ),
+        runtime.apply_certified_semantic_delta(expected, delta.clone(), &relied, &agent(),),
         Err(RuntimeError::StaleReliance(_))
     ));
     let commit = runtime
-        .apply_verified_semantic_delta(expected, delta, RequiredVerification::Deterministic, |_| {
-            passing()
-        })
+        .apply_verified_semantic_delta(expected, delta, &agent())
         .unwrap();
     assert!(commit.commit_index.is_some());
     assert_eq!(runtime.snapshot().get("price:sku-1"), Some("11"));
@@ -371,17 +374,13 @@ fn a_plan_certified_before_another_commit_is_refused_by_the_runtime() {
     let mut other = SemanticDelta::default();
     other.upserts.insert("unrelated".into(), "x".into());
     let revision = runtime.revision();
-    runtime.apply_semantic_delta(revision, other).unwrap();
+    runtime
+        .apply_verified_semantic_delta(revision, other, &PrincipalId::from("pipeline-operator"))
+        .unwrap();
 
     let (expected, delta, relied) = (plan.expected(), plan.delta().clone(), plan.relied().clone());
     assert!(matches!(
-        runtime.apply_certified_semantic_delta(
-            expected,
-            delta,
-            &relied,
-            RequiredVerification::Deterministic,
-            |_| passing()
-        ),
+        runtime.apply_certified_semantic_delta(expected, delta, &relied, &agent(),),
         Err(RuntimeError::Semantic(_))
     ));
 }

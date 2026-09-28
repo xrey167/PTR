@@ -1,8 +1,14 @@
 pub mod compacted;
 pub mod execution;
+pub mod merge;
 pub mod neural;
 pub mod persistence;
 pub mod semantic;
+
+pub use merge::{
+    ChangeOrigin, SemanticChange, SemanticGrant, SemanticGrantInfo, SemanticRefusal,
+    SemanticVerdict,
+};
 
 use ptr_config::PtrConfig;
 use ptr_core::action_head::ActionIr;
@@ -63,12 +69,44 @@ pub enum RuntimeError {
     PodVerificationFailed {
         pod: String,
     },
-    /// A verified semantic delta was refused before append: its verification
-    /// did not pass at the required level, or reported a hard finding.
-    DeltaVerificationRejected {
-        status: ptr_verifier::VerificationStatus,
-        level: ptr_types::VerificationLevel,
-        hard_findings: usize,
+    /// A host write was refused before append: the installed grant's
+    /// verifiers did not pass at the required level, or reported a hard
+    /// finding, named by code.
+    SemanticVerificationRejected(merge::SemanticRefusal),
+    /// A semantic write that needs a grant, on a runtime with none installed.
+    NoSemanticGrant,
+    /// A second grant; the first stays installed.
+    SemanticGrantInstalled,
+    /// A grant that cannot be installed, and why.
+    InvalidSemanticGrant {
+        reason: &'static str,
+    },
+    /// A host write under a grant that does not allow host writes.
+    HostWritesNotGranted,
+    /// Provenance text a record would carry, such as a host write's
+    /// principal, is not an identifier of at most
+    /// [`merge::MAX_PROVENANCE_TEXT`] bytes.
+    InvalidProvenanceText {
+        field: &'static str,
+    },
+    /// A host write that writes, removes or derives a key only ingress
+    /// writes.
+    ReservedSemanticNamespace {
+        key: String,
+    },
+    /// A verifier reported a finding code that is not an identifier of at
+    /// most [`merge::MAX_FINDING_CODE`] bytes, or soft findings past what a
+    /// record carries; the change fails closed.
+    InvalidVerificationReport {
+        verifier: String,
+    },
+    /// `commit` was handed a semantic record: those are written only by the
+    /// semantic write paths, which build and check them.
+    SemanticRecordOutsideSemanticPath,
+    /// A semantic record written before origins existed, replayed after a
+    /// record with an attributed origin (rule R1).
+    LegacySemanticRecord {
+        index: CommitIndex,
     },
     /// A certified semantic delta was refused before append because a
     /// lifecycle generation it relied on is no longer live.
@@ -121,11 +159,12 @@ pub enum RuntimeError {
     InconsistentEffectResponse {
         attempt: CommitIndex,
     },
-    /// A semantic record's origin is one this build does not accept, at the
-    /// index it was committed at, or at none when it was about to be written.
-    /// This build accepts only [`ptr_ledger::SemanticOrigin::Legacy`]: an
-    /// attributed origin decodes, but nothing here checks what it attests yet,
-    /// so it is refused rather than replayed unchecked.
+    /// A semantic record's origin breaks a rule every semantic record is
+    /// replayed under (and every writer checks before it appends): an
+    /// ingress record of another shape, a host write that touches an ingress
+    /// key or carries an attestation that does not hold, or a merge, which
+    /// this build does not make. `index` is where the record was committed,
+    /// or `None` for one about to be written; `reason` names the rule.
     InvalidSemanticOrigin {
         index: Option<CommitIndex>,
         reason: &'static str,
@@ -175,6 +214,10 @@ pub struct PtrRuntime {
     revoked_generations: BTreeSet<(String, Generation)>,
     events: Vec<EventEnvelope>,
     next_event_sequence: u64,
+    /// The host's policy for semantic writes that are not ingress; none until
+    /// the host installs one. Not history: a runtime rebuilt from its log
+    /// has none.
+    semantic_grant: Option<merge::SemanticGrant>,
 }
 
 impl PtrRuntime {
@@ -214,6 +257,7 @@ impl PtrRuntime {
             revoked_generations: BTreeSet::new(),
             events: Vec::new(),
             next_event_sequence: 1,
+            semantic_grant: None,
         })
     }
 
@@ -377,7 +421,9 @@ impl PtrRuntime {
                 .map_err(RuntimeError::Pod)?;
 
             let report = verifier.verify(&output);
-            let passed = report.status == VerificationStatus::Pass;
+            // A hard finding refuses the output whatever the status says.
+            let passed = report.status == VerificationStatus::Pass
+                && !report.findings.iter().any(|finding| finding.hard);
             self.emit(RuntimeEvent::VerifierResult {
                 verifier: "pod-output".into(),
                 passed,
@@ -388,7 +434,7 @@ impl PtrRuntime {
                 });
             }
 
-            self.promote_pod_output(&request_id, &pod.manifest().id, &output)?;
+            self.promote_pod_output(&request_id, &pod.manifest().id, &output, report.level)?;
             outputs.push(output);
         }
 
@@ -489,7 +535,9 @@ impl PtrRuntime {
                 .map_err(RuntimeError::Pod)?;
 
             let report = verifier.verify(&output);
-            let passed = report.status == VerificationStatus::Pass;
+            // A hard finding refuses the output whatever the status says.
+            let passed = report.status == VerificationStatus::Pass
+                && !report.findings.iter().any(|finding| finding.hard);
             self.emit(RuntimeEvent::VerifierResult {
                 verifier: "pod-output".into(),
                 passed,
@@ -500,7 +548,8 @@ impl PtrRuntime {
                 });
             }
 
-            let revision = self.promote_pod_output(&request_id, &pod.manifest().id, &output)?;
+            let revision =
+                self.promote_pod_output(&request_id, &pod.manifest().id, &output, report.level)?;
 
             let observation = ModelObservation {
                 revision,
@@ -859,7 +908,14 @@ impl PtrRuntime {
 /// identifier, of any length, and a log holding a longer one opened and failed
 /// only at export. Refusing it at replay would turn that into a runtime that
 /// cannot open after an upgrade.
+///
+/// A semantic record is refused outright
+/// ([`RuntimeError::SemanticRecordOutsideSemanticPath`]): only the semantic
+/// write paths build one, with the origin they checked.
 fn validate_new_record(event: &LedgerEvent) -> Result<(), RuntimeError> {
+    if matches!(event, LedgerEvent::SemanticDeltaCommitted { .. }) {
+        return Err(RuntimeError::SemanticRecordOutsideSemanticPath);
+    }
     if let LedgerEvent::EffectAttempted { key: Some(key), .. } = event {
         if !execution::valid_key(key) {
             return Err(RuntimeError::InvalidEffectKey { key: key.clone() });

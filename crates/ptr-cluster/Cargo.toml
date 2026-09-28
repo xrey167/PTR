@@ -35,6 +35,9 @@ tokio = { workspace = true }
 ptr-runtime = { workspace = true }
 ptr-config = { workspace = true }
 ptr-semdb = { workspace = true }
+# The runtime that exports the snapshot writes its value as a host write, which
+# only a grant's verifier admits.
+ptr-verifier = { workspace = true }
 
 [[test]]
 name = "wire"

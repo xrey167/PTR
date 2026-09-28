@@ -29,12 +29,18 @@ flowchart LR
     V --> S
 ```
 
-`apply_semantic_delta(expected_revision, delta)` checks optimistic concurrency,
-stages a complete validated update, then appends one record containing the base
-revision, result revision and canonical encoded delta. Publication occurs only
-after successful append. Generic `commit` cannot bypass semantic validation;
-replay validates the same transition before materializing it. An invalid schema,
-revision jump, wrong base or encoded no-op record fails closed.
+A semantic write checks optimistic concurrency, stages a complete validated
+update, then appends one record containing the base revision, result revision,
+canonical encoded delta and the origin that allowed it. Publication occurs only
+after successful append. There are two kinds of write. Ingress (`ingest_text`, and
+a verified Pod output) writes exactly the shape its origin fixes, with no
+verifier. A host write (`apply_verified_semantic_delta(expected, delta,
+principal)`) is admitted only by every verifier of the `SemanticGrant` the host
+installed, and never touches a key only ingress writes. Generic `commit` refuses
+semantic records outright (`SemanticRecordOutsideSemanticPath`). Replay validates
+the same transition, and the same origin rules, before materializing it. An
+invalid schema, revision jump, wrong base, encoded no-op record or origin that
+breaks a rule fails closed.
 
 A no-op through the high-level API writes no record and preserves pending P0.1
 permits. Real semantic commits invalidate the same authority epoch as other
@@ -91,9 +97,20 @@ tag 8 byte for byte, so every log and anchor written before origins existed keep
 its exact encoding. Every attributed origin (a request's text, a Pod's output, a
 host write, a merge) is tag 12, with the origin after the delta. The ledger checks
 only the origin's shape and bounds (`check_encodable`). What an origin attests is
-the runtime's to check, and until the runtime can check it, every semantic writer
-records `Legacy` and replay refuses an attributed origin (`InvalidSemanticOrigin`)
-rather than applying it unchecked.
+the runtime's to check, with the same rules on every write and every replay:
+
+- **R1.** A record without an origin replays only while no attributed record
+  precedes it, which the materialized `semdb:attested` marker records; after one it
+  is refused (`LegacySemanticRecord`). The runtime never writes one.
+- **R2.** A request's record holds exactly its raw text, and a Pod's output record
+  exactly that output, sourced from the Pod and derived from the request's text.
+- **R3.** A host write touches no ingress key, names a valid principal, and
+  carries an attestation whose weakest level meets its requirement, whose
+  verifiers are distinct valid names, and whose soft findings are sorted,
+  distinct, and each a recorded verifier's code.
+
+A merge record is refused (`InvalidSemanticOrigin`) until the runtime merges.
+Replay never runs a verifier again: a grant is not history.
 
 The ledger does not depend on the semantic crate: it preserves
 opaque transaction bytes, while runtime replay validates their meaning. The

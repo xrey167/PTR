@@ -1,20 +1,24 @@
 //! Compacted materialized snapshots: does state at a floor plus the retained
 //! journal reconstruct exactly what a full replay produces, and does a revocation
 //! below the floor still deny?
+#[path = "common/semantic.rs"]
+mod semantic_common;
 use ptr_config::PtrConfig;
 use ptr_core::action_head::ActionIr;
 use ptr_ledger::integrity::{self, LogAnchor};
-use ptr_ledger::LedgerEvent;
+use ptr_ledger::{CommittedEvent, LedgerEvent, SemanticOrigin};
 use ptr_runtime::compacted::{CompactedAnchor, CompactedError};
 use ptr_runtime::{PtrRuntime, RuntimeError};
 use ptr_security::{AuthorizationDecision, AuthorizationDenial};
 use ptr_semdb::{SemanticDelta, SemanticPayload};
 use ptr_types::{CapabilityId, CommitIndex, Effect, Generation, Revision, TypeId};
+use semantic_common::{granted, host_write, host_write_now};
 
 /// A runtime exercising semantic values with dependencies, payload bytes, capsule
 /// lifecycle, supersession, constraints, procedures and a revocation.
 fn fixture() -> PtrRuntime {
     let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+    granted(&mut runtime);
     let mut delta = SemanticDelta::default();
     delta
         .upserts
@@ -32,7 +36,7 @@ fn fixture() -> PtrRuntime {
     delta
         .dependencies
         .insert("derived".into(), ["source".into()].into());
-    runtime.apply_semantic_delta(Revision(0), delta).unwrap();
+    host_write(&mut runtime, Revision(0), delta).unwrap();
 
     runtime
         .commit(LedgerEvent::CapsuleCommitted {
@@ -80,9 +84,7 @@ fn fixture() -> PtrRuntime {
 fn append_above_floor(runtime: &mut PtrRuntime) {
     let mut delta = SemanticDelta::default();
     delta.removals.insert("source".into());
-    runtime
-        .apply_semantic_delta(runtime.revision(), delta)
-        .unwrap();
+    host_write_now(runtime, delta).unwrap();
     runtime
         .commit(LedgerEvent::ProcedureRevoked {
             id: "deploy".into(),
@@ -485,23 +487,20 @@ fn a_restored_runtime_rejects_semantic_work_against_a_stale_base_revision() {
         &[],
     )
     .unwrap();
+    granted(&mut restored);
 
     // Restoring installs an exact revision, so revision isolation still applies:
     // a delta based on an earlier revision is refused.
     let mut delta = SemanticDelta::default();
     delta.upserts.insert("fresh".into(), "value".into());
-    assert!(restored
-        .apply_semantic_delta(Revision(0), delta.clone())
-        .is_err());
-    assert!(restored
-        .apply_semantic_delta(restored.revision(), delta)
-        .is_ok());
+    assert!(host_write(&mut restored, Revision(0), delta.clone()).is_err());
+    assert!(host_write_now(&mut restored, delta).is_ok());
 
     // A derived value still requires its declared input to be supplied.
     let mut stale = SemanticDelta::default();
     stale.upserts.insert("derived".into(), "recomputed".into());
     let before = restored.revision();
-    assert!(restored.apply_semantic_delta(before, stale).is_ok());
+    assert!(host_write(&mut restored, before, stale).is_ok());
     assert!(restored.revision().0 > before.0);
 }
 
@@ -594,11 +593,42 @@ fn restore_error(bytes: &[u8], anchor: CompactedAnchor) -> Option<RuntimeError> 
     PtrRuntime::restore_compacted(PtrConfig::default(), bytes, anchor, &[]).err()
 }
 
+/// The fixture's history with every semantic record's origin removed,
+/// replayed: the same state, as a build from before attributed records
+/// wrote it, so its snapshot carries no attestation marker.
+fn legacy_fixture() -> PtrRuntime {
+    let history: Vec<CommittedEvent> = fixture()
+        .committed_events()
+        .iter()
+        .map(|committed| match &committed.event {
+            LedgerEvent::SemanticDeltaCommitted {
+                base_revision,
+                revision,
+                encoded_delta,
+                ..
+            } => CommittedEvent {
+                index: committed.index,
+                event: LedgerEvent::SemanticDeltaCommitted {
+                    base_revision: *base_revision,
+                    revision: *revision,
+                    encoded_delta: encoded_delta.clone(),
+                    origin: SemanticOrigin::Legacy,
+                },
+            },
+            _ => committed.clone(),
+        })
+        .collect();
+    let mut runtime = PtrRuntime::replay(PtrConfig::default(), &history).unwrap();
+    granted(&mut runtime);
+    runtime
+}
+
 #[test]
 fn a_snapshot_of_the_earlier_layout_restores_as_unattested() {
     // PTRCS003 with PTRLC001, as the build before attributed records wrote
-    // it: the same sections under the earlier magics.
-    let mut original = fixture();
+    // it: the sections of a history without origins under the earlier
+    // magics.
+    let mut original = legacy_fixture();
     let snapshot = original.export_compacted_snapshot().unwrap();
     assert_eq!(&snapshot.bytes()[..8], b"PTRCS004");
     let start = lifecycle_start(snapshot.bytes());
@@ -609,7 +639,22 @@ fn a_snapshot_of_the_earlier_layout_restores_as_unattested() {
         b"PTRCS003",
         b"PTRLC001",
     );
+    let unattested = |runtime: &PtrRuntime| {
+        let values = &runtime.materialized_state().values;
+        !values.contains_key(ptr_state::ATTESTED_MARKER)
+            && !values
+                .keys()
+                .any(|key| key.starts_with(ptr_state::MERGED_BRANCH_PREFIX))
+    };
 
+    // Alone, it restores the state at its floor, with no attestation key.
+    let at_floor =
+        PtrRuntime::restore_compacted(PtrConfig::default(), &earlier, anchor, &[]).unwrap();
+    assert_equivalent(&original, &at_floor);
+    assert!(unattested(&at_floor));
+
+    // With the records above its floor, among them a host write, it
+    // restores what a full replay does, marker included.
     append_above_floor(&mut original);
     let all_events = original.committed_events().to_vec();
     let above_floor = &all_events[snapshot.anchor().floor.index.0 as usize..];
@@ -617,16 +662,12 @@ fn a_snapshot_of_the_earlier_layout_restores_as_unattested() {
     let restored =
         PtrRuntime::restore_compacted(PtrConfig::default(), &earlier, anchor, above_floor).unwrap();
     assert_equivalent(&reference, &restored);
-    let values = &restored.materialized_state().values;
-    assert!(!values.contains_key(ptr_state::ATTESTED_MARKER));
-    assert!(!values
-        .keys()
-        .any(|key| key.starts_with(ptr_state::MERGED_BRANCH_PREFIX)));
+    assert!(!unattested(&restored));
 }
 
 #[test]
 fn an_earlier_lifecycle_section_carrying_attestation_keys_is_refused() {
-    let original = fixture();
+    let original = legacy_fixture();
     let snapshot = original.export_compacted_snapshot().unwrap();
     for (key, value) in [
         (ptr_state::ATTESTED_MARKER, "1"),
@@ -669,7 +710,7 @@ fn an_earlier_lifecycle_section_carrying_attestation_keys_is_refused() {
 
 #[test]
 fn mismatched_outer_and_lifecycle_versions_are_refused() {
-    let original = fixture();
+    let original = legacy_fixture();
     let snapshot = original.export_compacted_snapshot().unwrap();
     for (outer, lifecycle) in [(b"PTRCS004", b"PTRLC001"), (b"PTRCS003", b"PTRLC002")] {
         let (bytes, anchor) = with_magics(snapshot.bytes(), snapshot.anchor(), outer, lifecycle);

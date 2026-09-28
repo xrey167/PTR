@@ -6,6 +6,8 @@
 //! "the cache still works" is unproven. The negative direction has to cover every
 //! route back in, because a cache that denies on revocation but not on an edit is
 //! not a boundary.
+#[path = "common/semantic.rs"]
+mod semantic_common;
 use ptr_config::PtrConfig;
 use ptr_core::action_head::ActionIr;
 use ptr_ledger::integrity::{self, LogAnchor};
@@ -24,6 +26,7 @@ use ptr_types::{
     ProvenanceRef, Revision, TypeId, VerificationLevel,
 };
 use ptr_verifier::{VerificationReport, VerificationStatus, Verifier};
+use semantic_common::{granted, host_write_now};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -56,9 +59,7 @@ fn commit_history(runtime: &mut PtrRuntime) {
     let mut delta = SemanticDelta::default();
     delta.upserts.insert("plan".into(), "original plan".into());
     delta.upserts.insert("unrelated".into(), "keep".into());
-    runtime
-        .apply_semantic_delta(runtime.revision(), delta)
-        .unwrap();
+    host_write_now(runtime, delta).unwrap();
     runtime
         .commit(LedgerEvent::CapsuleCommitted {
             project: "p".into(),
@@ -77,6 +78,7 @@ fn commit_history(runtime: &mut PtrRuntime) {
 
 fn fixture() -> PtrRuntime {
     let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+    granted(&mut runtime);
     commit_history(&mut runtime);
     runtime
 }
@@ -146,6 +148,7 @@ fn an_admitted_state_reproduces_the_same_inference_after_a_restart() {
     let tmp = Temp::new();
     let (before, sealed, anchor, binding) = {
         let mut runtime = PtrRuntime::open_durable(PtrConfig::default(), tmp.log()).unwrap();
+        granted(&mut runtime);
         commit_history(&mut runtime);
         let held = state(&runtime);
         let sealed = held.seal().unwrap();
@@ -165,6 +168,8 @@ fn an_admitted_state_reproduces_the_same_inference_after_a_restart() {
     };
 
     let mut runtime = PtrRuntime::open_durable(PtrConfig::default(), tmp.log()).unwrap();
+
+    granted(&mut runtime);
     let reopened = NeuralState::open(&sealed, anchor).unwrap();
     // Exact state: the binding and the opaque payload survive byte-for-byte.
     assert_eq!(reopened.binding(), &binding);
@@ -189,6 +194,7 @@ fn a_revoked_generation_cannot_be_readmitted_after_a_restart() {
     let tmp = Temp::new();
     let (sealed, anchor) = {
         let mut runtime = PtrRuntime::open_durable(PtrConfig::default(), tmp.log()).unwrap();
+        granted(&mut runtime);
         commit_history(&mut runtime);
         let held = state(&runtime);
         assert!(runtime.admit(&held).is_ok());
@@ -265,18 +271,14 @@ fn an_edited_input_denies_while_an_unrelated_commit_does_not() {
 
     let mut delta = SemanticDelta::default();
     delta.upserts.insert("unrelated".into(), "changed".into());
-    runtime
-        .apply_semantic_delta(runtime.revision(), delta)
-        .unwrap();
+    host_write_now(&mut runtime, delta).unwrap();
     // Dependency-precise: a commit that touches nothing the state read leaves it
     // admissible. Denying here instead would make the whole mechanism useless.
     assert!(runtime.admit(&held).is_ok());
 
     let mut delta = SemanticDelta::default();
     delta.upserts.insert("plan".into(), "revised plan".into());
-    runtime
-        .apply_semantic_delta(runtime.revision(), delta)
-        .unwrap();
+    host_write_now(&mut runtime, delta).unwrap();
     assert_eq!(
         runtime.admit(&held).map(|_| ()),
         Err(Denial::EditedInput {
@@ -291,9 +293,7 @@ fn a_removed_input_denies() {
     let held = state(&runtime);
     let mut delta = SemanticDelta::default();
     delta.removals.insert("plan".into());
-    runtime
-        .apply_semantic_delta(runtime.revision(), delta)
-        .unwrap();
+    host_write_now(&mut runtime, delta).unwrap();
     // Removal commits a record; the value stops being current, and a state that
     // consumed it stops being admissible.
     assert_eq!(
@@ -382,12 +382,12 @@ fn a_foreign_history_with_the_same_counters_is_denied() {
     let held = state(&mine);
 
     let mut theirs = PtrRuntime::new(PtrConfig::default()).unwrap();
+
+    granted(&mut theirs);
     let mut delta = SemanticDelta::default();
     delta.upserts.insert("plan".into(), "original plan".into());
     delta.upserts.insert("unrelated".into(), "other".into());
-    theirs
-        .apply_semantic_delta(theirs.revision(), delta)
-        .unwrap();
+    host_write_now(&mut theirs, delta).unwrap();
     theirs
         .commit(LedgerEvent::CapsuleCommitted {
             project: "p".into(),

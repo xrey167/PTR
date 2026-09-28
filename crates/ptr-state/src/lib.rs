@@ -55,12 +55,13 @@ impl MaterializedState {
 }
 
 /// The materialized key that records that a history holds a semantic record
-/// with an attributed origin (ledger tag 12).
+/// with an attributed origin (ledger tag 12): every such record projects it,
+/// with the value `1`, and a record without an origin does not.
 ///
-/// No record projects it in this build, since the runtime refuses every
-/// attributed record. It is named here so that a compacted snapshot in the
-/// lifecycle layout from before attributed records (PTRLC001) that carries it
-/// is refused: no history that layout describes could have set it.
+/// ptr-runtime replays a record without an origin only while the marker is
+/// absent, and refuses a compacted snapshot in the lifecycle layout from
+/// before attributed records (PTRLC001) that carries it: no history that
+/// layout describes could have set it.
 pub const ATTESTED_MARKER: &str = "semdb:attested";
 
 /// The prefix of the materialized keys that record a merged branch, one key
@@ -79,8 +80,14 @@ pub fn projection_entries(committed: &CommittedEvent) -> Vec<(String, String)> {
     match &committed.event {
         // Lifecycle materialization records the position, not a second copy of
         // semantic payloads. Their authoritative replay belongs to ptr-semdb.
-        LedgerEvent::SemanticDeltaCommitted { revision, .. } => {
-            vec![("semdb:revision".into(), revision.0.to_string())]
+        LedgerEvent::SemanticDeltaCommitted {
+            revision, origin, ..
+        } => {
+            let mut entries = vec![("semdb:revision".into(), revision.0.to_string())];
+            if *origin != ptr_ledger::SemanticOrigin::Legacy {
+                entries.push((ATTESTED_MARKER.into(), "1".into()));
+            }
+            entries
         }
         LedgerEvent::CapsuleCommitted {
             project,

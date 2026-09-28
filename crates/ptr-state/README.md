@@ -10,12 +10,12 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-28  
-**Code footprint:** 1 Rust source files · 259 nonblank source lines · 3 integration-test files · 6 `#[test]` markers
+**Code footprint:** 1 Rust source files · 266 nonblank source lines · 3 integration-test files · 7 `#[test]` markers
 
 ### Implemented now
 
 - ATTESTED_MARKER (semdb:attested) and MERGED_BRANCH_PREFIX (branch-merge:) name the materialized keys that record attributed semantic records and merged branches; no record projects them in this build, and ptr-runtime refuses a compacted snapshot in the pre-attestation lifecycle layout (PTRLC001) that carries either
-- Semantic transaction position and revision materialization without duplicated payload ownership
+- Semantic transaction position and revision materialization without duplicated payload ownership; every semantic record with an attributed origin also projects the semdb:attested marker (value 1), which ptr-runtime replays a record without an origin only in the absence of
 - MaterializedState reference map with last_applied commit index
 - Application of Revoked and HardConstraintCommitted ledger events
 - Monotonic materialization with duplicate/out-of-order/gap detection
@@ -52,6 +52,7 @@
 
 ### Current automated checks
 
+- an attributed semantic record of each ingress and host kind projects the revision and the semdb:attested marker, never its payload
 - replay ordering/idempotency integration test
 - Turso reopen/monotonicity integration test behind turso-backend feature
 - workspace fmt/check/test/clippy

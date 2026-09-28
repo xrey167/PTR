@@ -3489,6 +3489,7 @@ dependencies = [
  "ptr-runtime",
  "ptr-semdb",
  "ptr-types",
+ "ptr-verifier",
  "tokio",
 ]
 
@@ -3787,6 +3788,7 @@ dependencies = [
  "ptr-runtime",
  "ptr-semdb",
  "ptr-types",
+ "ptr-verifier",
  "serde",
  "toml",
 ]
