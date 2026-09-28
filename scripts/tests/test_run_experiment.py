@@ -971,7 +971,10 @@ class RunWatchTests(unittest.TestCase):
             self.assertEqual(mod.run_lock("L900", directory), directory / "ptr-run-L900.lock")
             self.assertEqual(mod.run_lock("..", directory), directory / "ptr-run-...lock")
             self.assertIsNone(mod.run_lock("L901", directory / "missing"))
+            (directory / "file").write_text("", encoding="utf-8")
+            self.assertIsNone(mod.run_lock("L902", directory / "file"))
         self.assertIn(f"another run of team/trial holds {lock}", stderr.getvalue())
+        self.assertIn(f"cannot take the lock on runs of L902 in {directory / 'file' / 'ptr-run-L902.lock'}", stderr.getvalue())
         self.assertIn(
             f"cannot take the lock on runs of L901 in {directory / 'missing' / 'ptr-run-L901.lock'}", stderr.getvalue()
         )

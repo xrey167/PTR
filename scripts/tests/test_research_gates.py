@@ -2162,6 +2162,12 @@ class PreregistrationGateTests(unittest.TestCase):
             ("cargo -vC../elsewhere run -- <seed>",
              "X900: entrypoint gives Cargo -C ../elsewhere, outside the repository, whose sources no watch or record "
              "binds; name a path the repository holds"),
+            ("cargo run --manifest-path './../x/Cargo.toml' -- <seed>",
+             "X900: entrypoint gives Cargo --manifest-path ./../x/Cargo.toml, outside the repository, whose sources "
+             "no watch or record binds; name a path the repository holds"),
+            ("cargo run --manifest-path '..\\elsewhere\\Cargo.toml' -- <seed>",
+             "X900: entrypoint gives Cargo --manifest-path ..\\elsewhere\\Cargo.toml, outside the repository, whose "
+             "sources no watch or record binds; name a path the repository holds"),
             ("cargo run --target-dir target-old -- <seed>",
              "X900: entrypoint gives Cargo a target directory (--target-dir), which could hold a build made outside "
              "the commit; the runner builds a listed run into a fresh one"),
@@ -2208,6 +2214,7 @@ class PreregistrationGateTests(unittest.TestCase):
         for entrypoint in ("cargo run --manifest-path crates/bench/Cargo.toml -- <seed>",
                            "cargo run --manifest-path=./crates/../Cargo.toml -C crates -- <seed>",
                            "cargo run -FCuda -pbench -- --manifest-path /elsewhere <seed>",
+                           "cargo run -FCrate/../../feature -- <seed>",
                            "cargo run -- --config c.toml <seed>","python3 bench.py --config c.toml <seed>",
                            "rustup run stable python3 bench.py --config c.toml <seed>","rustup which cargo --config <seed>","rustup show stable cargo --config c.toml <seed>"):
             with self.subTest(entrypoint=entrypoint):
