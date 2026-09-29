@@ -896,8 +896,9 @@ def is_rustup_proxy(path: str, rustup: str) -> bool:
 def started_program(command: list[str]) -> list[str]:
     """The program `command` starts with its arguments, past rustup's own
     words when it is `rustup run <toolchain> <program> ...` (options and
-    `+<toolchain>` before `run`, the options of `run` and the toolchain
-    after it); `command` itself otherwise."""
+    `+<toolchain>` before `run`, the options of `run` on either side of the
+    toolchain, `--` among them, which ends them); `command` itself
+    otherwise."""
     program = experiment_records.program_name(command[0]) if command else ""
     if program != "rustup":
         return command
@@ -909,7 +910,10 @@ def started_program(command: list[str]) -> list[str]:
     rest = rest[1:]
     while rest and rest[0].startswith("-"):
         rest = rest[1:]
-    return rest[1:] or command
+    started = rest[1:]
+    while started and started[0].startswith("-"):
+        started = started[1:]
+    return started or command
 
 
 def starts_rust(command: list[str]) -> bool:
@@ -1148,7 +1152,9 @@ def shebang_words(path: str) -> list[str] | None:
     """The words of the first line of the file at `path` past its `#!`
     (`#!/usr/bin/env python3` is `['/usr/bin/env', 'python3']`), or None
     when it starts with none or cannot be read: a script, which the kernel
-    runs through the interpreter that line names."""
+    runs through the interpreter that line names. Raises
+    `ScriptInterpreterError` for one whose bytes this platform does not read
+    as a name."""
     try:
         with open(path, "rb") as handle:
             head = handle.read(256)
@@ -1161,7 +1167,14 @@ def shebang_words(path: str) -> list[str] | None:
     # they are: decoded as the file system encodes names (`os.fsdecode`), so
     # that a lookup encodes them back to the same bytes.
     line = head[2:].split(b"\n", 1)[0]
-    words = [os.fsdecode(word) for word in re.split(rb"[ \t]+", line) if word]
+    try:
+        words = [os.fsdecode(word) for word in re.split(rb"[ \t]+", line) if word]
+    except UnicodeDecodeError as error:
+        # Where the file system encoding keeps no such byte (Windows), a name
+        # this platform cannot spell cannot be looked up or named.
+        raise ScriptInterpreterError(
+            f"the first line of {path} holds bytes this platform does not read as the name of an interpreter"
+        ) from error
     return words or None
 
 

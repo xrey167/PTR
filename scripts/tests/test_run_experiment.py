@@ -3114,6 +3114,73 @@ class RunWatchTests(unittest.TestCase):
         self.assertEqual(records[0]["toolchain"]["rustc"]["path"], str((tools / "toolchains" / "pinned" / "bin" / "rustc").resolve()))
         self.assertEqual(records[0]["toolchain"]["cargo"], {"path": None, "sha256": None})
 
+    def test_rustup_run_starts_the_program_after_the_options_and_the_delimiter(self):
+        # The options of `rustup run` stand on either side of the toolchain,
+        # and `--` ends them: the program is the word after them, so a
+        # `cargo test` behind a delimiter is still Cargo, which needs its tools
+        # and runs documentation tests through rustdoc.
+        for command, started in (
+            (["rustup", "run", "pinned", "cargo", "test"], ["cargo", "test"]),
+            (["rustup", "run", "pinned", "--", "cargo", "test"], ["cargo", "test"]),
+            (["rustup", "run", "--", "pinned", "cargo", "test"], ["cargo", "test"]),
+            (["rustup", "run", "pinned", "--install", "cargo", "test"], ["cargo", "test"]),
+            (["rustup", "run", "pinned", "-v", "cargo", "test"], ["cargo", "test"]),
+            (["rustup", "run", "--install", "pinned", "--", "cargo", "test"], ["cargo", "test"]),
+            (["rustup", "-v", "+pinned", "run", "pinned", "--", "python3", "x.py"], ["python3", "x.py"]),
+            (["rustup.exe", "run", "pinned", "--", "cargo.exe"], ["cargo.exe"]),
+            (["rustup", "run", "pinned", "--", "--", "cargo"], ["cargo"]),
+            (["rustup", "run", "pinned"], ["rustup", "run", "pinned"]),
+            (["rustup", "run", "pinned", "--"], ["rustup", "run", "pinned", "--"]),
+            (["rustup", "run", "pinned", "--install"], ["rustup", "run", "pinned", "--install"]),
+            (["rustup", "show"], ["rustup", "show"]),
+            (["cargo", "test", "--", "--nocapture"], ["cargo", "test", "--", "--nocapture"]),
+            (["python3", "run", "pinned", "--", "cargo"], ["python3", "run", "pinned", "--", "cargo"]),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(mod.started_program(command), started)
+        tools = {"rustc": {"path": "/t/rustc", "sha256": "0" * 64}, "cargo": {"path": None, "sha256": None}}
+        for command in (
+            ["rustup", "run", "pinned", "--", "cargo", "run"],
+            ["rustup", "run", "pinned", "--install", "cargo", "run"],
+            ["rustup", "run", "--install", "pinned", "--", "cargo", "run"],
+        ):
+            with self.subTest(command=command):
+                self.assertFalse(mod.runs_other_program(command))
+                self.assertEqual(mod.missing_rust_tools(command, tools), ["cargo"])
+                self.assertFalse(mod.invokes_rustdoc(command))
+        for command in (
+            ["rustup", "run", "pinned", "--", "cargo", "test"],
+            ["rustup", "run", "pinned", "--install", "cargo", "test"],
+            ["rustup", "run", "pinned", "--", "cargo", "test", "--doc"],
+            ["rustup", "run", "pinned", "--", "rustdoc", "lib.rs"],
+        ):
+            with self.subTest(command=command):
+                self.assertTrue(mod.invokes_rustdoc(command))
+        self.assertFalse(mod.invokes_rustdoc(["rustup", "run", "pinned", "--", "cargo", "test", "--lib"]))
+        self.assertTrue(mod.runs_other_program(["rustup", "run", "pinned", "--", "python3", "x.py"]))
+        # A listed run behind a delimiter binds rustdoc and refuses a missing
+        # Cargo, as one without it does.
+        tools_directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        bin_directory = self.fake_rust(tools_directory)
+        search = os.pathsep.join((str(bin_directory), os.environ.get("PATH", os.defpath)))
+        self.preregister("running", entrypoint="rustup run pinned -- cargo test -- <seed>")
+        with mock.patch.dict(os.environ, {"PATH": search}):
+            status, records, stderr = self.run_seed()
+        self.assertEqual((status, stderr, [record["status"] for record in records]), (0, "", ["completed"]))
+        self.assertEqual(sorted(records[0]["toolchain"]), ["cargo", "rustc", "rustdoc"])
+        self.tearDown()
+        self.setUp()
+        tools_directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        bin_directory = self.fake_rust(tools_directory)
+        (tools_directory / "toolchains" / "pinned" / "bin" / "cargo").unlink()
+        search = os.pathsep.join((str(bin_directory), os.environ.get("PATH", os.defpath)))
+        self.preregister("running", entrypoint="rustup run pinned -- cargo run -- <seed>")
+        ran = []
+        with mock.patch.dict(os.environ, {"PATH": search}):
+            status, records, stderr = self.run_seed(lambda: ran.append(True))
+        self.assertEqual((status, records, ran), (2, [], []))
+        self.assertIn("rustup or the PATH resolves no cargo, which the Rust command would resolve again", stderr)
+
     def test_a_script_the_command_starts_binds_the_interpreter_its_shebang_names(self):
         # The kernel runs the interpreter a script's first line names, which
         # the record must name by content as it does the script: one replaced
@@ -3375,6 +3442,38 @@ class RunWatchTests(unittest.TestCase):
         # is not UTF-8 the bytes of a name must come back the same.
         with mock.patch.object(mod.os, "fsdecode", side_effect=lambda name: name.decode("latin-1")):
             self.assertEqual(words(b"#!/x\xc3\xa9 y\n"), ["/x\xc3\xa9", "y"])
+        # Where the encoding keeps no byte no encoding reads (Windows), such a
+        # name refuses the run cleanly instead of ending the runner in a
+        # traceback.
+        real_fsdecode = os.fsdecode
+
+        def windows_fsdecode(name: bytes) -> str:
+            if b"\xff" in name:
+                raise UnicodeDecodeError("utf-8", name, name.index(b"\xff"), name.index(b"\xff") + 1, "invalid start byte")
+            return real_fsdecode(name)
+
+        with mock.patch.object(mod.os, "fsdecode", side_effect=windows_fsdecode):
+            self.assertEqual(words(b"#!/x y\n"), ["/x", "y"])
+            with self.assertRaisesRegex(
+                mod.ScriptInterpreterError,
+                "the first line of .*script holds bytes this platform does not read as the name of an interpreter",
+            ):
+                words(b"#!/x\xff y\n")
+            with self.assertRaisesRegex(mod.ScriptInterpreterError, "holds bytes this platform does not read"):
+                mod.interpreters_of(str(directory / "script"), {"PATH": str(directory)}, None)
+            # A listed run of such a script is refused before its seed is spent.
+            script = directory / "bench"
+            script.write_bytes(b"#!/x\xff y\n")
+            script.chmod(0o755)
+            self.preregister("running", entrypoint=f"{script} <seed>")
+            ran = []
+            status, records, stderr = self.run_seed(lambda: ran.append(True))
+            self.assertEqual((status, records, ran), (2, [], []))
+            self.assertIn(
+                "ERROR: refusing to run L900: the first line of ", stderr
+            )
+            self.assertIn("holds bytes this platform does not read as the name of an interpreter", stderr)
+            self.assertEqual(list(self.attempts().glob("run-*.json")), [])
         for none in (b"", b"#", b"#!", b"#!\n", b"#! \t\nrest\n", b"# /x\n", b"\n#!/x\n", b"plain\n"):
             with self.subTest(content=none):
                 self.assertIsNone(words(none))
