@@ -918,10 +918,12 @@ def starts_rust(command: list[str]) -> bool:
     return bool(command) and experiment_records.program_name(command[0]) in {"rustup", *RUSTUP_PROXIES}
 
 
-# The target selection options of `cargo test` that leave out the library's
-# documentation tests, which run only without a selection or with `--doc`.
+# The options of `cargo test` that leave out the library's documentation
+# tests, which run only without a target selection or with `--doc`, and never
+# with `--no-run`, which only compiles.
 DOCTEST_EXCLUDING_OPTIONS = frozenset(
-    ("--lib", "--bins", "--bin", "--tests", "--test", "--examples", "--example", "--benches", "--bench", "--all-targets")
+    ("--lib", "--bins", "--bin", "--tests", "--test", "--examples", "--example", "--benches", "--bench", "--all-targets",
+     "--no-run")
 )
 
 
@@ -976,7 +978,7 @@ def toolchain(
     """The Rust toolchain `command`, run from the repository's root in
     `environment`, would build with, each of `rustc` and `cargo` (and
     `rustdoc`, for Cargo's `test`: `invokes_rustdoc`) named as
-    `resolved_executable` names a program (and stamped into `stamps` as it
+    `resolved_tool` names a program (and stamped into `stamps` as it
     does), by nothing when it cannot be resolved: as rustup resolves it
     there, after its overrides and `rust-toolchain.toml`, or for the
     toolchain the command names itself (`named_toolchain`: `cargo +stable
@@ -1000,7 +1002,7 @@ def toolchain(
     for tool in ("rustc", "cargo", *(("rustdoc",) if invokes_rustdoc(command) else ())):
         on_path = shutil.which(tool, path=search)
         if rustup is None or not (run_by_rustup or (on_path is not None and is_rustup_proxy(on_path, rustup))):
-            found[tool] = resolved_executable([tool], environment, stamps)
+            found[tool] = resolved_tool([tool], environment, stamps)
             continue
         try:
             which = subprocess.run(
@@ -1009,7 +1011,7 @@ def toolchain(
         except (OSError, subprocess.SubprocessError):
             which = None
         resolved = which.stdout.strip() if which is not None and which.returncode == 0 else ""
-        found[tool] = resolved_executable([resolved], environment, stamps) if os.path.isabs(resolved) else {
+        found[tool] = resolved_tool([resolved], environment, stamps) if os.path.isabs(resolved) else {
             "path": None, "sha256": None,
         }
         directory = toolchain_directory(resolved) if os.path.isabs(resolved) else None
@@ -1043,6 +1045,16 @@ def resolved_executable(
     repository's root in `environment` (`found_program`), named as
     `named_program` names it."""
     return named_program(found_program(command, environment), stamps)
+
+
+def resolved_tool(
+    command: list[str], environment: dict[str, str], stamps: dict[str, experiment_records.Stamp | None] | None = None
+) -> dict:
+    """The Rust tool `command` starts, as `resolved_executable` names it and,
+    where it is a script, with the interpreters it runs through
+    (`named_script`): Cargo runs a `rustc` that is a script through its
+    interpreter, which a record must name as it does the tool."""
+    return named_script(found_program(command, environment), environment, stamps)
 
 
 def has_slash(program: str) -> bool:
@@ -1178,8 +1190,11 @@ def interpreters_of(
     # the command starts in (the root) when it is relative, and looks up no
     # `PATH`; `env` does look its program up.
     interpreter = os.path.join(os.curdir, words[0])
-    named = [(named_interpreter(words[0], found_program([interpreter], environment), stamps), depth + 1, hops)]
-    if experiment_records.program_name(words[0]) == "env":
+    first = named_interpreter(words[0], found_program([interpreter], environment), stamps)
+    named = [(first, depth + 1, hops)]
+    # `env` by the name the line spells or by the program that name leads to,
+    # as a link of another name to it runs it as well.
+    if "env" in (experiment_records.program_name(words[0]), experiment_records.program_name(first["path"])):
         target = env_target(words[1:])
         if target is not None:
             if hops >= ENV_HOPS:
@@ -1539,7 +1554,15 @@ def launch_and_record(
             return 2
         selected: dict[str, str] = {}
         linked: list[str] = []
-        tools = toolchain(environment, command, stamps, selected, linked)
+        try:
+            tools = toolchain(environment, command, stamps, selected, linked)
+        except ScriptInterpreterError as error:
+            print(
+                f"ERROR: refusing to run {exp_id}: {error}, so its record could not name by its content what the "
+                "script runs through",
+                file=sys.stderr,
+            )
+            return 2
         # A Rust command's proxies resolve the tools again when they start:
         # one that resolves to nothing now could resolve to a program the
         # record never named by then, or fail after the seed is spent.
@@ -1580,7 +1603,13 @@ def launch_and_record(
         # such as a binary only executable, or that changed while it was
         # read, is refused.
         unread = list(dict.fromkeys(
-            program["path"] for program in (executable, *executable.get("interpreters", []), *tools.values())
+            program["path"]
+            for program in (
+                executable,
+                *executable.get("interpreters", []),
+                *tools.values(),
+                *(interpreter for tool in tools.values() for interpreter in tool.get("interpreters", [])),
+            )
             if program["path"] is not None and program["sha256"] is None
         ))
         if unread:
