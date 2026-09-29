@@ -918,15 +918,43 @@ def starts_rust(command: list[str]) -> bool:
     return bool(command) and experiment_records.program_name(command[0]) in {"rustup", *RUSTUP_PROXIES}
 
 
+# The target selection options of `cargo test` that leave out the library's
+# documentation tests, which run only without a selection or with `--doc`.
+DOCTEST_EXCLUDING_OPTIONS = frozenset(
+    ("--lib", "--bins", "--bin", "--tests", "--test", "--examples", "--example", "--benches", "--bench", "--all-targets")
+)
+
+
 def invokes_rustdoc(command: list[str]) -> bool:
-    """Whether `command` is Cargo's `test`, which runs `rustdoc` on a
-    library's documentation tests (`cargo test --doc` only those), past
+    """Whether `command` runs `rustdoc`: it is `rustdoc`, or Cargo's `test`
+    with the library's documentation tests, which Cargo runs through it (all
+    of them without a target selection, and with `--doc` only those; a
+    selection of other targets, `--lib` or `--all-targets`, runs none), past
     `+<toolchain>`; Cargo's other built-in commands do not."""
     started = started_program(command)
+    if started and experiment_records.program_name(started[0]) == "rustdoc":
+        return True
     if not started or experiment_records.program_name(started[0]) != "cargo":
         return False
-    subcommand = next((word for word in started[1:] if not word.startswith("+")), None)
-    return subcommand == "test"
+    words = started[1:]
+    arguments = words[: words.index("--")] if "--" in words else words
+    subcommand = next((word for word in arguments if not word.startswith("+")), None)
+    if subcommand != "test":
+        return False
+    options = {word.split("=", 1)[0] for word in arguments}
+    return "--doc" in options or not options & DOCTEST_EXCLUDING_OPTIONS
+
+
+def required_rust_tools(command: list[str], tools: dict) -> set[str]:
+    """The tools of `tools` (`toolchain`) that `command`, which starts rustup
+    or one of its proxies, needs: Cargo needs itself and `rustc` (and `rustdoc`
+    where it runs documentation tests), `rustc` and `rustdoc` themselves; every
+    tool the record names for rustup and its other proxies, which start
+    whichever they choose."""
+    started = started_program(command)
+    program = experiment_records.program_name(started[0]) if started else ""
+    needed = {"cargo": {"cargo", "rustc"}, "rustc": {"rustc"}, "rustdoc": {"rustdoc"}}.get(program, set(tools))
+    return needed | ({"rustdoc"} if invokes_rustdoc(command) else set())
 
 
 def is_linked_toolchain(directory: str) -> bool:
@@ -1071,13 +1099,7 @@ def named_program(found: str | None, stamps: dict[str, experiment_records.Stamp 
 
 
 SHEBANG_DEPTH = 4
-
-# The short options of `env` that take an operand, the rest of their word or the
-# word after it (`-u NAME`, `-C DIR`, `-a ARG`, `-P PATH`, `-S STRING`), and the
-# long ones that do so as `--option=OPERAND` or `--option OPERAND`.
-ENV_OPERAND_SHORT = frozenset("uCaPS")
-ENV_OPERAND_LONG = frozenset(("--unset", "--chdir", "--argv0", "--split-string"))
-
+ENV_HOPS = 4
 
 class ScriptInterpreterError(ValueError):
     """A script's interpreter cannot be named by its content: `env` would
@@ -1100,103 +1122,76 @@ def shebang_words(path: str) -> list[str] | None:
     return words or None
 
 
-def env_program(words: list[str], environment: dict[str, str]) -> tuple[str | None, str | None, dict[str, str]]:
-    """The program `env` runs, given the words that follow its name (split as
-    `-S` splits them) and the environment it starts in: the name it is given,
-    where it finds it, and the environment it runs it in. Read as `env`
-    reads them: options first (`-i`, `-u NAME`, `-C DIR`, `-P PATH`, `-a ARG`,
-    `-S STRING` and their long spellings, an operand the rest of the word or
-    the next), then `NAME=value` assignments, then the program, so an
-    assignment or an unset of `PATH` decides where the program is looked up
-    (its default path, `/bin:/usr/bin`, when `PATH` is unset), `-P` the
-    directories it is looked up in instead, and `-C` where a name with a
-    slash starts from. None for the name when `env` is given no program.
-    Raises `ScriptInterpreterError` when it would be looked up in a relative
-    or empty directory, which no record could name."""
-    changed = dict(environment)
-    searched: str | None = None
-    directory: str | None = None
-    queue = collections.deque(words)
-    while queue and queue[0].startswith("-") and queue[0] != "-":
-        word = queue.popleft()
-        if word == "--":
-            break
-        if word.startswith("--"):
-            name, equals, operand = word.partition("=")
-            if name in ENV_OPERAND_LONG and not equals:
-                operand = queue.popleft() if queue else ""
-            if name == "--ignore-environment":
-                changed = {}
-            elif name == "--unset":
-                changed.pop(operand, None)
-            elif name == "--chdir":
-                directory = operand
-            elif name == "--split-string" and operand:
-                queue.appendleft(operand)
-            continue
-        cluster = word[1:]
-        while cluster:
-            option, cluster = cluster[0], cluster[1:]
-            if option == "i":
-                changed = {}
-            elif option in ENV_OPERAND_SHORT:
-                operand = cluster or ("" if option == "S" or not queue else queue.popleft())
-                cluster = ""
-                if option == "u":
-                    changed.pop(operand, None)
-                elif option == "C":
-                    directory = operand
-                elif option == "P":
-                    searched = operand
-                elif option == "S" and operand:
-                    queue.appendleft(operand)
-    if queue and queue[0] == "-":
-        queue.popleft()
-        changed = {}
-    while queue and "=" in queue[0]:
-        name, _, value = queue.popleft().partition("=")
-        changed[name] = value
-    target = queue.popleft() if queue else None
-    if target is None:
-        return None, None, changed
-    lookup = changed if searched is None else {**changed, "PATH": searched}
-    if not has_slash(target) and any(
-        not os.path.isabs(entry) for entry in lookup.get("PATH", os.defpath).split(os.pathsep)
-    ):
+def env_target(words: list[str]) -> str | None:
+    """The program `env` runs when a shebang gives it just the program's name
+    (`#!/usr/bin/env python3`): that name, looked up on the `PATH` `env` runs
+    with, which is the runner's; None when it is given nothing. Raises
+    `ScriptInterpreterError` for any other form, an option, an assignment or
+    several words: a kernel hands `env` the words after its name as one
+    argument (Linux) or as several (elsewhere), and `env` reads them by rules
+    of its own (`-S` splits, quotes and escapes; `-i`, `-u`, `PATH=...`, `-P`
+    and `-C` change what it looks up and where), so no record could name by
+    content what a run of another platform's or version's `env` would run."""
+    if not words:
+        return None
+    if len(words) > 1 or words[0].startswith("-") or "=" in words[0]:
         raise ScriptInterpreterError(
-            f"env would look up {target} in a relative or empty directory of its PATH ({lookup['PATH']!r}), "
-            "which no record could name"
+            "a script's first line gives env more than a program's name (an option, an assignment or several words)"
         )
-    if directory is not None and has_slash(target):
-        target = os.path.join(directory, target)
-    return target, found_program([target], lookup), changed
+    return words[0]
+
+
+def named_interpreter(
+    name: str, found: str | None, stamps: dict[str, experiment_records.Stamp | None] | None
+) -> dict:
+    """The interpreter `name` a script's first line or `env` names, found at
+    `found`, as `named_program` names it. Raises `ScriptInterpreterError` when
+    it is found nowhere: the kernel or `env` would look it up again when the
+    command starts, and could run one no record names."""
+    if found is None:
+        raise ScriptInterpreterError(
+            f"the interpreter {name} of a script is found nowhere, and would be looked up again when the command starts"
+        )
+    return named_program(found, stamps)
 
 
 def interpreters_of(
-    found: str, environment: dict[str, str], stamps: dict[str, experiment_records.Stamp | None] | None, depth: int = 0
+    found: str,
+    environment: dict[str, str],
+    stamps: dict[str, experiment_records.Stamp | None] | None,
+    depth: int = 0,
+    hops: int = 0,
 ) -> list[dict]:
     """The programs the kernel runs to run the script at `found`, each named
     as `named_program` names it and stamped into `stamps`: the interpreter
-    its first line names, and where that is `env`, the program `env` runs
-    (`env_program`: looked up as `env` looks it up, on `environment`'s
-    `PATH` unless its words change that); and, for each of them that is a
-    script too, its own interpreters, in the environment it is started in,
-    to `SHEBANG_DEPTH` levels. Empty for a file that is no script."""
+    its first line names, read as the kernel reads it (a path, from the root
+    where it is relative), and where that is `env`, the program `env` runs
+    (`env_target`, looked up on `environment`'s `PATH`); and, for each of them
+    that is a script too, its own interpreters. The kernel follows
+    interpreters `SHEBANG_DEPTH` levels; a program `env` starts is a new
+    `exec`, so its levels start again, and `ENV_HOPS` such starts are
+    followed. Empty for a file that is no script."""
     words = shebang_words(os.path.realpath(found))
     if words is None or depth >= SHEBANG_DEPTH:
         return []
-    named = [(named_program(found_program([words[0]], environment), stamps), environment)]
+    # The kernel takes the interpreter's name as a path, from the directory
+    # the command starts in (the root) when it is relative, and looks up no
+    # `PATH`; `env` does look its program up.
+    interpreter = os.path.join(os.curdir, words[0])
+    named = [(named_interpreter(words[0], found_program([interpreter], environment), stamps), depth + 1, hops)]
     if experiment_records.program_name(words[0]) == "env":
-        target, located, inner = env_program(words[1:], environment)
+        target = env_target(words[1:])
         if target is not None:
-            named.append((named_program(located, stamps), inner))
+            if hops >= ENV_HOPS:
+                raise ScriptInterpreterError(f"scripts start one another through env more than {ENV_HOPS} deep")
+            named.append((named_interpreter(target, found_program([target], environment), stamps), 0, hops + 1))
     nested = [
         deeper
-        for program, started_in in named
+        for program, next_depth, next_hops in named
         if program["path"] is not None
-        for deeper in interpreters_of(program["path"], started_in, stamps, depth + 1)
+        for deeper in interpreters_of(program["path"], environment, stamps, next_depth, next_hops)
     ]
-    return [*(program for program, _ in named), *nested]
+    return [*(program for program, _, _ in named), *nested]
 
 
 def named_script(
@@ -1536,7 +1531,11 @@ def launch_and_record(
         try:
             executable = named_script(found, environment, stamps)
         except ScriptInterpreterError as error:
-            print(f"ERROR: refusing to run {exp_id}: {error}; the script's interpreter could not be named", file=sys.stderr)
+            print(
+                f"ERROR: refusing to run {exp_id}: {error}, so its record could not name by its content what the "
+                "script runs through",
+                file=sys.stderr,
+            )
             return 2
         selected: dict[str, str] = {}
         linked: list[str] = []
@@ -1544,7 +1543,8 @@ def launch_and_record(
         # A Rust command's proxies resolve the tools again when they start:
         # one that resolves to nothing now could resolve to a program the
         # record never named by then, or fail after the seed is spent.
-        unresolved = [tool for tool, program in tools.items() if program["path"] is None]
+        needed = required_rust_tools(command, tools)
+        unresolved = [tool for tool, program in tools.items() if tool in needed and program["path"] is None]
         if unresolved and starts_rust(command):
             print(
                 f"ERROR: refusing to run {exp_id}: rustup or the PATH resolves no {', '.join(unresolved)}, which the "
