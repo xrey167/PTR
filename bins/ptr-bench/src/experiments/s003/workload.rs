@@ -322,7 +322,7 @@ mod tests {
             assert_eq!(case.level, index % params::GROUPS_LADDER.len());
             assert_eq!(case.groups, params::GROUPS_LADDER[case.level]);
         }
-        assert_eq!(Case::new(17, 0).groups, 8);
+        assert_eq!(Case::new(17, 0).groups, 4);
     }
 
     #[test]

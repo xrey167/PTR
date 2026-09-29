@@ -9,7 +9,9 @@ tests_dir = "tests"
 # a compiled constant differs from this table). The canonical text of the table
 # is `json.dumps(table, sort_keys=True, separators=(",", ":"))`, every result
 # echoes it, and its SHA-256 is the manifest's `preregistration_sha256` once
-# the experiment is frozen. The pilot sets only `low_cells`.
+# the experiment is frozen. The pilot sets `low_cells` and, when it leaves fewer
+# than six cells on either side, replaces `groups_ladder` by the preregistered
+# `groups_ladder_fallback` once (pilot/README.md records which happened).
 [preregistration]
 schema = 1
 harness = "certified-branches"
@@ -18,7 +20,7 @@ pilot_seeds = [1, 2, 3]
 cases_per_seed = 48
 tasks_per_case = 128
 agents = [2, 4, 8, 16]
-groups_ladder = [8, 16, 32, 64, 128, 256]
+groups_ladder = [4, 8, 16, 64, 256, 1024]
 groups_ladder_fallback = [4, 8, 16, 64, 256, 1024]
 items_per_group = 8
 insert_cap = 12

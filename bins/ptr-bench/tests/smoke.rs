@@ -56,5 +56,5 @@ fn certified_branches_runs_one_case_clean() {
     assert!(stdout.contains(r#""probe_p26_exercised":1"#));
     assert!(stdout.contains(r#""canaries_run":9"#));
     assert!(stdout.contains(r#""durable_roundtrips":"#));
-    assert!(stdout.contains(r#""cases":[{"case":0,"level":0,"groups":8"#));
+    assert!(stdout.contains(r#""cases":[{"case":0,"level":0,"groups":4"#));
 }

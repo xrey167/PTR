@@ -316,7 +316,7 @@ mod tests {
             assert!(line.contains(&format!("\"{name}\":")), "{name}");
         }
         assert!(line.contains(r#""merge_wall_gt_10ms":"#));
-        assert!(line.contains(r#""cases":[{"case":0,"level":0,"groups":8,"serial_ticks":"#));
+        assert!(line.contains(r#""cases":[{"case":0,"level":0,"groups":4,"serial_ticks":"#));
         assert!(line.ends_with(r#""hard_failures":0}"#));
         assert!(line.contains(r#"{"arm":"certified","agents":2,"ticks":"#));
     }

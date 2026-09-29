@@ -1173,11 +1173,11 @@ impl World {
         occ: bool,
     ) -> Result<HostOutcome, String> {
         let hazards = oracle::hazards(&attempt.footprint, &self.model);
-        let before: BTreeMap<&String, Option<Val>> = attempt
+        let before: BTreeMap<&str, Option<Val>> = attempt
             .footprint
             .commutative
             .iter()
-            .map(|key| (key, self.model.value(key).cloned()))
+            .map(|key| (key.as_str(), self.model.value(key).cloned()))
             .collect();
         let outcome = self.host_write(delta, principal)?;
         if outcome == HostOutcome::Committed {
@@ -1189,7 +1189,7 @@ impl World {
                 self.metrics.lww_lost_updates += u64::from(hazards.lost_update);
                 let lost = oracle::lost_increments_with(
                     &attempt.footprint,
-                    |key| before.get(&key.to_string()).cloned().flatten(),
+                    |key| before.get(key).cloned().flatten(),
                     |key| self.model.value(key).cloned(),
                 );
                 self.metrics.lww_lost_increments += u64::from(lost);

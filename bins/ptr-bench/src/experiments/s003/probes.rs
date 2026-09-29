@@ -103,7 +103,7 @@ impl<'a> Verifier<SemanticChange<'a>> for Fixed {
     }
 }
 
-impl<'a> NamedVerifier<SemanticChange<'a>> for Fixed {
+impl NamedVerifier<SemanticChange<'_>> for Fixed {
     fn name(&self) -> &'static str {
         self.name
     }

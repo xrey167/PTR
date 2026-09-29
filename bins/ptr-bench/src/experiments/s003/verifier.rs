@@ -103,7 +103,7 @@ impl<'a> Verifier<SemanticChange<'a>> for Domain {
     }
 }
 
-impl<'a> NamedVerifier<SemanticChange<'a>> for Domain {
+impl NamedVerifier<SemanticChange<'_>> for Domain {
     fn name(&self) -> &'static str {
         params::VERIFIERS[0]
     }
@@ -139,7 +139,7 @@ impl<'a> Verifier<SemanticChange<'a>> for Diff {
     }
 }
 
-impl<'a> NamedVerifier<SemanticChange<'a>> for Diff {
+impl NamedVerifier<SemanticChange<'_>> for Diff {
     fn name(&self) -> &'static str {
         params::VERIFIERS[1]
     }

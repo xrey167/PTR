@@ -31,7 +31,7 @@ pub const PILOT_SEEDS: [u64; 3] = [1, 2, 3];
 pub const CASES_PER_SEED: usize = 48;
 pub const TASKS_PER_CASE: usize = 128;
 pub const AGENTS: [usize; 4] = [2, 4, 8, 16];
-pub const GROUPS_LADDER: [usize; 6] = [8, 16, 32, 64, 128, 256];
+pub const GROUPS_LADDER: [usize; 6] = [4, 8, 16, 64, 256, 1024];
 pub const GROUPS_LADDER_FALLBACK: [usize; 6] = [4, 8, 16, 64, 256, 1024];
 pub const ITEMS_PER_GROUP: usize = 8;
 pub const INSERT_CAP: usize = 12;
@@ -529,13 +529,17 @@ mod tests {
         // for as long as both tests pass.
         let mut frozen = frozen_table().expect("the preregistration table parses");
         frozen.retain(|(key, _)| key != "low_cells");
-        let digest: String = sha256(canonical_text(&frozen).as_bytes())
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect();
+        let digest = sha256(canonical_text(&frozen).as_bytes()).iter().fold(
+            String::new(),
+            |mut hex, byte| {
+                use std::fmt::Write as _;
+                write!(hex, "{byte:02x}").expect("writing to a string cannot fail");
+                hex
+            },
+        );
         assert_eq!(
             digest,
-            "470e3cd81360ab0ee7dcee090b9637a41cf2563fbbf2d88d7a6dae9bc52993a0"
+            "5cc981672b7939d7683223c2efbda2b0c5aec624e459935289c087df384e0fe8"
         );
     }
 
