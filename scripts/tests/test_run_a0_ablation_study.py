@@ -17,6 +17,91 @@ driver = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(driver)
 
 
+class CalibrationLadder(unittest.TestCase):
+    def test_r2_updates_all_rules_and_rebuilds_after_regeneration(self):
+        names = ["benchmarks/operator-routing/generator.py", "benchmarks/operator-routing/score.py",
+                 "model/burn-a0/examples/a0_ablation/rule.rs"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in names:
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text((ROOT / name).read_text())
+            study = root / "study"
+            study.mkdir()
+            def references(*args, **kwargs):
+                (study / "references.json").write_text(json.dumps({"all_bands_pass": False,
+                    "bands": [{"id": "confidence", "pass": False}]}))
+                return subprocess.CompletedProcess([], 1, "G0 failed", "")
+            with patch.multiple(driver, ROOT=root, STUDY_DIR=study, must=Mock(), run=references,
+                                data_fnv=Mock(return_value="new-data")):
+                result = driver.prepare_r2()
+                commands = [call.args[0] for call in driver.must.call_args_list]
+            self.assertFalse(result["all_bands_pass"])
+            self.assertEqual(result["data_fnv64"], "new-data")
+            self.assertIn("--update-lock", commands[0])
+            self.assertIn("--check", commands[1])
+            self.assertEqual(commands[2], driver.BUILD)
+            self.assertIn("self-test", commands[3])
+            self.assertIn("G = [0.0, 1.0, 1.0, 1.0, 1.0]", (root / names[0]).read_text())
+            self.assertIn("1: 1.0, 2: 1.0, 3: 1.0, 4: 1.0", (root / names[1]).read_text())
+            self.assertIn("EpistemicState::Hypothesis => (0.80, 0.0)", (root / names[2]).read_text())
+            codebook = root / "datasets/generated/codebook.json"
+            codebook.parent.mkdir(parents=True, exist_ok=True)
+            codebook.write_bytes((ROOT / "datasets/generated/codebook.json").read_bytes())
+            modules = []
+            for name in names[:2]:
+                spec = importlib.util.spec_from_file_location("r2_" + Path(name).stem, root / name)
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                modules.append(module)
+            generator, scorer = modules
+            data = root / "sampled-data"
+            data.mkdir()
+            for split in scorer.SPLIT_NAMES:
+                jsonl, tsv, _ = generator.render_split(split, 64)
+                (data / f"{split}.jsonl").write_bytes(jsonl)
+                (data / f"{split}.tsv").write_bytes(tsv)
+            checked, problems = scorer.agree(data, verbose=False)
+            self.assertEqual(checked, 512)
+            self.assertEqual(problems, [])
+            before = {name: (root / name).read_bytes() for name in names}
+            with patch.object(driver, "ROOT", root), self.assertRaises(SystemExit):
+                driver.prepare_r2()
+            self.assertEqual(before, {name: (root / name).read_bytes() for name in names})
+
+    def test_calibration_runs_r2_then_blocks_ablations_on_failed_data_bands(self):
+        rules = driver.config()
+        for reaches_target, bands_pass in [(True, True), (True, False), (False, True)]:
+            with self.subTest(reaches_target=reaches_target, bands_pass=bands_pass), tempfile.TemporaryDirectory() as directory:
+                study = Path(directory)
+                (study / "references.json").write_text(json.dumps({"all_bands_pass": True}))
+                (study / "budget.json").write_text("stale plan")
+                calls = []
+                def calibrate(width, steps, lr):
+                    calls.append((width, steps))
+                    return {"d_model": width, "steps": steps, "ms_per_step": 1,
+                            "final_val_accuracy": 0.9 if reaches_target and len(calls) > 6 else 0.1}
+                with patch.multiple(driver, STUDY_DIR=study, worktree_clean=Mock(return_value=True),
+                                    must=Mock(return_value=subprocess.CompletedProcess([], 0, "passed", "")),
+                                    data_fnv=Mock(return_value="aa"), calibrate=calibrate, say=Mock(),
+                                    prepare_r2=Mock(return_value={"all_bands_pass": bands_pass, "failed_bands": []})):
+                    if reaches_target and bands_pass:
+                        driver.prefreeze(None)
+                    else:
+                        with self.assertRaises(SystemExit):
+                            driver.prefreeze(None)
+                    driver.prepare_r2.assert_called_once()
+                evidence = json.loads((study / "calibration.json").read_text())
+                self.assertEqual(calls[:3], [(rules["model"]["d_model"], n) for n in rules["training"]["steps_candidates"]])
+                self.assertEqual(calls[3:6], [(48, n) for n in rules["training"]["steps_candidates"]])
+                self.assertEqual(evidence["attempts"][6]["rung"], "R2")
+                self.assertEqual((study / "budget.json").exists(), reaches_target and bands_pass)
+                if not reaches_target:
+                    self.assertIsNone(evidence["chosen"])
+                    self.assertEqual(len(calls), 9)
+
+
 class BudgetRule(unittest.TestCase):
     def test_projection_includes_one_rerun_and_overhead_for_every_arm_run(self):
         """Verify runtime arithmetic independently with a small synthetic design."""

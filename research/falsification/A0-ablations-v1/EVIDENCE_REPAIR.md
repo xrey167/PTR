@@ -63,7 +63,10 @@ Contingency decisions recheck every contrast arm's learnability, including a
 comparator that passed at the original step budget. Summary documents now agree
 with the INCONCLUSIVE gated verdicts. Archived raw records remain unchanged.
 
-The remaining R2 calibration fallback is not automated yet. Its changed label
-rule requires regenerating and independently checking the dataset, rebuilding
-the binary, recalibrating at width 48, and checking all data bands before any
-new freeze. Do not report the current base/R1-only driver as the complete ladder.
+The R2 fallback is now automated after base and R1 fail: it checks and revises
+all three independent rule implementations, regenerates and pins data, recomputes
+references, rebuilds and self-checks the binary, and calibrates width 48. Failed
+G0 bands prohibit an ablation plan even if calibration reaches its target. A
+failed calibration removes any old budget so it cannot be reused accidentally.
+This fallback has orchestration regression coverage; no new training or R2
+capacity finding is claimed here. Existing frozen rule files are unchanged.

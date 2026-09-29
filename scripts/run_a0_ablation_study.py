@@ -214,10 +214,69 @@ def budget(steps: int, ms_per_step: float) -> dict:
     }
 
 
+def prepare_r2() -> dict:
+    """Apply the declared pre-freeze rule revision to all independent implementations.
+
+    Match the complete old constants before changing any file. Unexpected source
+    requires review; never guess a replacement or silently use mixed rule versions.
+    This is only called after every base and R1 calibration candidate fails.
+    """
+    changes = {
+        "benchmarks/operator-routing/generator.py": [
+            ("G = [0.0, 0.5, 1.0, 1.0, 1.25]", "G = [0.0, 1.0, 1.0, 1.0, 1.0]"),
+            ('_U = {"unknown": 0.35, "assumed": 0.60, "hypothesis": 0.85, "observed": 0.0, "inferred": 0.0, "verified": 0.0}',
+             '_U = {"unknown": 0.0, "assumed": 0.0, "hypothesis": 0.0, "observed": 0.0, "inferred": 0.0, "verified": 0.0}'),
+        ],
+        "benchmarks/operator-routing/score.py": [
+            ("CONFIDENCE_GAIN = {0: 0.0, 1: 0.5, 2: 1.0, 3: 1.0, 4: 1.25}",
+             "CONFIDENCE_GAIN = {0: 0.0, 1: 1.0, 2: 1.0, 3: 1.0, 4: 1.0}"),
+            ('"unknown": 0.35, "assumed": 0.60, "hypothesis": 0.85,',
+             '"unknown": 0.0, "assumed": 0.0, "hypothesis": 0.0,'),
+        ],
+        "model/burn-a0/examples/a0_ablation/rule.rs": [
+            ("const GAIN: [f64; 5] = [0.0, 0.5, 1.0, 1.0, 1.25];",
+             "const GAIN: [f64; 5] = [0.0, 1.0, 1.0, 1.0, 1.0];"),
+            ("EpistemicState::Unknown => (0.30, 0.35)", "EpistemicState::Unknown => (0.30, 0.0)"),
+            ("EpistemicState::Assumed => (0.55, 0.60)", "EpistemicState::Assumed => (0.55, 0.0)"),
+            ("EpistemicState::Hypothesis => (0.80, 0.85)", "EpistemicState::Hypothesis => (0.80, 0.0)"),
+        ],
+    }
+    pending = {}
+    for name, replacements in changes.items():
+        path = ROOT / name
+        source = path.read_text(encoding="utf-8")
+        for old, new in replacements:
+            if source.count(old) != 1:
+                raise SystemExit(f"R2 refuses unexpected rule source: {name}: {old}")
+            source = source.replace(old, new)
+        pending[path] = source
+    for path, source in pending.items():
+        path.write_text(source, encoding="utf-8")
+    must([sys.executable, str(BENCHMARK / "generator.py"), "--update-lock"])
+    must([sys.executable, str(BENCHMARK / "generator.py"), "--check"])
+    # References may report failed G0 bands; retain that evidence and run only
+    # train/val calibration. A failed band still prohibits all ablation runs.
+    (STUDY_DIR / "references.json").unlink(missing_ok=True)
+    result = run([sys.executable, str(BENCHMARK / "references.py"), "--out", str(STUDY_DIR / "references.json")],
+                 capture_output=True)
+    (STUDY_DIR / "logs").mkdir(parents=True, exist_ok=True)
+    (STUDY_DIR / "logs/r2-references.log").write_text(result.stdout + result.stderr, encoding="utf-8")
+    if result.returncode not in (0, 1):
+        raise SystemExit("R2 reference computation failed")
+    references = json.loads((STUDY_DIR / "references.json").read_text(encoding="utf-8"))
+    must(BUILD)
+    must([str(BINARY), "--phase", "self-test", "--data", DATA, "--data-fnv64", data_fnv()])
+    return {"all_bands_pass": result.returncode == 0 and references["all_bands_pass"],
+            "failed_bands": [band["id"] for band in references["bands"] if not band["pass"]],
+            "data_fnv64": data_fnv()}
+
+
 def prefreeze(_args) -> None:
     """Generate and check data, calibrate training, and write a bounded study plan."""
     if not worktree_clean():
         raise SystemExit("prefreeze runs from a clean commit")
+    # A failed new calibration must not leave an older runnable plan behind.
+    (STUDY_DIR / "budget.json").unlink(missing_ok=True)
     must([sys.executable, str(BENCHMARK / "generator.py")])
     must([sys.executable, str(BENCHMARK / "generator.py"), "--check"])
     must([sys.executable, str(BENCHMARK / "references.py"), "--out", str(STUDY_DIR / "references.json")])
@@ -236,7 +295,10 @@ def prefreeze(_args) -> None:
     target = rules["calibration"]["target_val_accuracy"]
     attempts = []
     chosen = None
-    for rung, d_model in [("base", rules["model"]["d_model"]), ("R1", 48)]:
+    r2 = None
+    for rung, d_model in [("base", rules["model"]["d_model"]), ("R1", 48), ("R2", 48)]:
+        if rung == "R2":
+            r2 = prepare_r2()
         for steps in rules["training"]["steps_candidates"]:
             attempt = calibrate(d_model, steps, rules["learning_rate"]["calibration"])
             attempt["rung"] = rung
@@ -251,11 +313,14 @@ def prefreeze(_args) -> None:
         "target_val_accuracy": target,
         "attempts": attempts,
         "chosen": chosen,
-        "outcome": "calibrated" if chosen else "no rung reached the target; R2 needs a regenerated rule and is decided by hand",
+        "r2": r2,
+        "outcome": "calibrated" if chosen else "A0 does not learn operator-routing v1 within 3000 steps",
     }
     write_json(STUDY_DIR / "calibration.json", calibration)
     if not chosen:
-        raise SystemExit("calibration failed at base and R1; see calibration.json")
+        raise SystemExit("calibration failed at base, R1 and R2; see calibration.json")
+    if r2 and not r2["all_bands_pass"]:
+        raise SystemExit(f"R2 calibrated but G0 data bands failed: {r2['failed_bands']}; no ablation may run")
     worst = max(a["ms_per_step"] for a in attempts if a["ms_per_step"] is not None)
     plan = budget(chosen["steps"], worst)
     plan["d_model"] = chosen["d_model"]
