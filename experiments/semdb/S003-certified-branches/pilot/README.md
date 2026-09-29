@@ -36,4 +36,28 @@ changed in behaviour: the arms, probes and oracle are the code of round 1, plus 
 borrowed map key, a fold) that change no result. Round 1's outputs stay as
 they are, as the record of why the ladder changed.
 
-The second round follows below once it has run.
+## Round 2: the fallback ladder 4, 8, 16, 64, 256, 1024
+
+- Commit: `3fa8f05` (clean tree, release build, the commit that replaced the ladder).
+- Command, for s in 1, 2, 3, run three at a time: `./target/release/ptr-bench certified-branches 48 <s> > pilot/pilot-seed-<s>.json`.
+- Outputs: [`pilot-seed-1.json`](pilot-seed-1.json), [`-2`](pilot-seed-2.json), [`-3`](pilot-seed-3.json).
+  Each exited 0 with `hard_failures` 0 over 48 cases (1542 s, 1594 s and 1531 s of wall time with three running side by side).
+
+Pooled conflict rate of the certified arm (bold: at or above 100‰):
+
+| level | groups | N=2 | N=4 | N=8 | N=16 |
+|---:|---:|---:|---:|---:|---:|
+| 0 | 4 | **123‰** | **199‰** | **324‰** | **482‰** |
+| 1 | 8 | 64‰ | **109‰** | **186‰** | **302‰** |
+| 2 | 16 | 35‰ | 51‰ | 97‰ | **179‰** |
+| 3 | 64 | 14‰ | 18‰ | 34‰ | 59‰ |
+| 4 | 256 | 6‰ | 11‰ | 21‰ | 32‰ |
+| 5 | 1024 | 7‰ | 6‰ | 11‰ | 18‰ |
+
+Result: 8 cells at or above the threshold and 16 below, at least 6 on each side, and low
+cells for every N (5 for N=2, 4 for N=4, 4 for N=8, 3 for N=16). The pilot **met its minimum**. The rule
+allows the fallback once, so there is no third round. The low cells, written into `low_cells` of `config.toml` at the freeze:
+
+```toml
+low_cells = ["L1N2", "L2N2", "L2N4", "L2N8", "L3N2", "L3N4", "L3N8", "L3N16", "L4N2", "L4N4", "L4N8", "L4N16", "L5N2", "L5N4", "L5N8", "L5N16"]
+```
