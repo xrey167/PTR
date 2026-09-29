@@ -122,8 +122,9 @@ COVERAGE = [
     "durable_roundtrips",
     "compaction_roundtrips",
 ]
-# The trials of each hazard class of certification, each at least the
-# preregistered minimum in every seed.
+# The trials of each hazard class of certification the workload's own merges
+# run into, each at least the preregistered minimum in every seed. The fixed
+# probes are not trials: they repeat one construction in every case.
 HAZARDS = [
     "hazard_write",
     "hazard_read",
@@ -132,8 +133,25 @@ HAZARDS = [
     "hazard_inputs",
     "hazard_lifecycle",
     "hazard_rebase",
-    "hazard_negative",
-    "hazard_set_member",
+]
+# Two classes are refusals by a rule the workload does not have to reach: a
+# negative counter held by verification and a set operation that undoes a
+# concurrent one. Their evidence is the fixed probes P25 and P26 (coverage
+# counters above zero in every seed) and the mutation plan; the trials the
+# workload happened to make of them, and the probes' own repetitions, are
+# reported and gate nothing.
+RULE_CLASSES = ["negative", "set_member"]
+# The hazards the fixed probes ran into, one counter per class.
+PROBE_HAZARDS = [
+    "probe_hazard_write",
+    "probe_hazard_read",
+    "probe_hazard_scan_keys",
+    "probe_hazard_scan_values",
+    "probe_hazard_inputs",
+    "probe_hazard_lifecycle",
+    "probe_hazard_rebase",
+    "probe_hazard_negative",
+    "probe_hazard_set_member",
 ]
 # The merge-time histogram's buckets, with their upper bounds in microseconds.
 BUCKETS = [
@@ -201,6 +219,13 @@ def certified_runs(results: list[dict]):
                     yield case["level"], run["agents"], case["serial_ticks"], run
 
 
+def usable(serial_ticks: int, run: dict) -> bool:
+    """Whether a certified run and its case's serial run measure a makespan:
+    the run reached its end (a run that stopped on an error has a makespan
+    that means nothing) and both took time."""
+    return run.get("complete") is True and serial_ticks > 0 and run["ticks"] > 0
+
+
 def conflict_rate(runs: list[dict]) -> float | None:
     """Certification refusals (a conflict or a lifecycle change) over merge
     attempts, pooled over `runs`; verification holds are not conflicts."""
@@ -221,16 +246,22 @@ def cells(results: list[dict]) -> dict[str, dict]:
     for (level, agents), members in sorted(grouped.items()):
         runs = [run for _, run in members]
         attempts = sum(run["attempts"] for run in runs)
-        gain = sum(serial for serial, _ in members) / sum(run["ticks"] for run in runs)
+        measured = [(serial, run) for serial, run in members if usable(serial, run)]
+        gain = (
+            sum(serial for serial, _ in measured) / sum(run["ticks"] for _, run in measured)
+            if len(measured) == len(members)
+            else None
+        )
         table[cell_name(level, agents)] = {
             "level": level,
             "agents": agents,
             "cases": len(members),
+            "unusable_runs": len(members) - len(measured),
             "attempts": attempts,
             "conflict_rate": conflict_rate(runs),
             "merge_rate": sum(run["merged"] for run in runs) / attempts if attempts else None,
             "gain": gain,
-            "efficiency": gain / agents,
+            "efficiency": None if gain is None else gain / agents,
         }
     return table
 
@@ -279,8 +310,10 @@ def bootstrap_gain(pairs: list[tuple[int, int]], resamples: int, seed: int, inte
     return {
         "cases": count,
         "gain": sum(serial for serial, _ in pairs) / sum(certified for _, certified in pairs),
+        # Symmetric: the same number of resamples lie below the lower bound
+        # as above the upper one, `int(tail * resamples)` of them.
         "lower": gains[int(tail * resamples)],
-        "upper": gains[min(resamples - 1, int((1 - tail) * resamples))],
+        "upper": gains[resamples - 1 - int(tail * resamples)],
         "resamples": resamples,
     }
 
@@ -335,7 +368,16 @@ def descriptive(results: list[dict], totals: dict) -> dict:
             totals["lww_lost_updates"] + totals["lww_lost_increments"], by_arm.get("lww", {}).get("merged", 0)
         ),
         "occ_anomalies_per_commit": share(
-            totals["occ_undetected_phantoms"] + totals["occ_stale_input_commits"] + totals["occ_stale_reliance_commits"],
+            sum(
+                totals.get(name, 0)
+                for name in (
+                    "occ_lost_updates",
+                    "occ_stale_scan_commits",
+                    "occ_undetected_phantoms",
+                    "occ_stale_input_commits",
+                    "occ_stale_reliance_commits",
+                )
+            ),
             by_arm.get("occ", {}).get("merged", 0),
         ),
         "unnecessary_refusal_share": share(totals["unnecessary_refusals"], refusals),
@@ -345,6 +387,15 @@ def descriptive(results: list[dict], totals: dict) -> dict:
             name: {"trials": totals[name], "rule_of_three_bound": round(3 / totals[name], 6) if totals[name] else None}
             for name in HAZARDS
         },
+        "rule_class_trials": {
+            f"hazard_{name}": {
+                "workload_trials": totals.get(f"hazard_{name}", 0),
+                "probe_repetitions": totals.get(f"probe_hazard_{name}", 0),
+                "evidence": f"fixed probe {'P25' if name == 'negative' else 'P26'} and the mutation plan; no bound",
+            }
+            for name in RULE_CLASSES
+        },
+        "probe_hazard_repetitions": {name: totals.get(name, 0) for name in PROBE_HAZARDS},
     }
 
 
@@ -380,6 +431,13 @@ def analyse(seeds: list[dict], records: list[dict], table: dict, mutations: dict
     )
     coverage_ok = all(coverage.values())
     time_model = merge_time(seeds, table["merge_wall_budget_us_p99"])
+    incomplete = [
+        f"seed {result['seed']} case {case['case']}: {run['arm']} with {run['agents']}"
+        for result in seeds
+        for case in result["cases"]
+        for run in case["runs"]
+        if run.get("complete") is not True
+    ]
 
     low_cells = list(table["low_cells"])
     per_cell = cells(seeds)
@@ -397,13 +455,15 @@ def analyse(seeds: list[dict], records: list[dict], table: dict, mutations: dict
             for level, count, serial, run in certified_runs(seeds)
             if count == agents and cell_name(level, agents) in names
         ]
+        unusable = sum(1 for serial, run in members if not usable(serial, run))
         rate = conflict_rate([run for _, run in members])
         entry = {
             "low_cells": names,
             "conflict_rate": rate,
             "manipulation_ok": rate is not None and rate < threshold,
         }
-        if members:
+        entry["unusable_runs"] = unusable
+        if members and not unusable:
             entry["bootstrap"] = bootstrap_gain(
                 [(serial, run["ticks"]) for serial, run in members],
                 table["bootstrap_resamples"],
@@ -419,6 +479,7 @@ def analyse(seeds: list[dict], records: list[dict], table: dict, mutations: dict
 
     conditions = {
         "hard_pass": hard_pass,
+        "runs_complete": not incomplete and not any(entry["unusable_runs"] for entry in per_agents.values()),
         "coverage_ok": coverage_ok,
         "time_model_ok": time_model["ok"],
         "low_cells_ok": low_cells_ok,
@@ -451,6 +512,7 @@ def analyse(seeds: list[dict], records: list[dict], table: dict, mutations: dict
         "time_model": time_model,
         "cells": per_cell,
         "per_agent_count": per_agents,
+        "incomplete_runs": incomplete,
         "throughput_verdict": throughput,
         "efficiency_verdict": efficiency,
         "descriptive": descriptive(seeds, totals),
@@ -573,6 +635,21 @@ def pilot(paths: list[Path]) -> int:
         if result.get("benchmark") != BENCHMARK:
             raise SystemExit(f"S003: {path.name} is not a {BENCHMARK} result")
         results.append(result)
+    expected = {key: value for key, value in table.items() if key != "low_cells"}
+    for path, result in zip(files, results):
+        try:
+            echoed = json.loads(result.get("preregistration"))
+        except (TypeError, ValueError):
+            raise SystemExit(f"S003: {path.name} echoes no preregistration")
+        echoed = {key: value for key, value in echoed.items() if key != "low_cells"}
+        if echoed != expected:
+            differing = sorted(key for key in {*echoed, *expected} if echoed.get(key) != expected.get(key))
+            raise SystemExit(
+                f"S003: {path.name} ran under another preregistration than config.toml's table "
+                f"(differs in {', '.join(differing)}); its cells mean something else"
+            )
+        if result.get("iterations") != table["cases_per_seed"] or len(result.get("cases", [])) != table["cases_per_seed"]:
+            raise SystemExit(f"S003: {path.name} ran {result.get('iterations')!r} cases, not {table['cases_per_seed']}")
     seeds = sorted(result["seed"] for result in results)
     if seeds != sorted(table["pilot_seeds"]):
         raise SystemExit(f"S003: the pilot outputs are of seeds {seeds}, not {sorted(table['pilot_seeds'])}")

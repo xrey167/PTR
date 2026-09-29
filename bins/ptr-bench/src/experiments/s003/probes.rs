@@ -6,8 +6,12 @@
 //! A runtime that refuses for another reason than the one specified is
 //! counted in `refusal_kind_mismatches`. Each probe counts its own coverage
 //! counter when its decisive step ran, and P22 to P26 also run their
-//! situations through the world, so that every hazard class is a trial of
-//! certification in every case.
+//! situations through the world, so that certification is tried on a write
+//! skew, a phantom, a swapped input set, a counter that is negative once
+//! rebased and a set operation that undoes another in every case. What these
+//! run into is counted apart (`probe_hazard_*`): a fixed construction repeated
+//! in every case is coverage, not a trial. The workload alone samples the
+//! other classes (scan values, lifecycle, rebase).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
@@ -873,7 +877,7 @@ impl Probes {
         );
     }
 
-    // ---- P22 to P26: one deterministic case of every hazard class -------------------------------------
+    // ---- P22 to P26: one deterministic case of five hazard classes ------------------------------------
 
     fn hazards(&mut self) -> Result<(), String> {
         let triage = Authority::Triage { score: 1.0 };

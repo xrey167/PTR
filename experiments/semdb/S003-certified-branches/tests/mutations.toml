@@ -10,6 +10,10 @@
 # outcomes and a defect in one layer alone is caught by the other; each layer
 # has its own unit test. The last four mutations plant defects in the
 # harness itself, to show its oracle, model and cross-checks are not vacuous.
+# Every hard counter is expected by at least one mutation, so that
+# `killed == total` also shows each of the 28 can fire: the last seven
+# before those four (from `set-removals-not-applied` to `genesis-write-refused`)
+# are the ones no defect of the merge path names by itself.
 # The baselines' anomalies (last-writer-wins, OCC) are evidence, never hard
 # counters.
 
@@ -507,6 +511,104 @@ find = '''
 '''
 replace = '''
             let _ = origin;
+'''
+
+[[mutation]]
+name = "set-removals-not-applied"
+description = "A merge folds a set removal over the target as a no-op, so the state it publishes is not the serial one."
+expect = ["serialization_divergences"]
+file = "crates/ptr-branch/src/ops.rs"
+find = '''
+                let mut set = read_set(key, current.as_ref())?;
+                set.remove(member);
+                encode_set(key, &set).map(Some)
+'''
+replace = '''
+                let set = read_set(key, current.as_ref())?;
+                encode_set(key, &set).map(Some)
+'''
+
+[[mutation]]
+name = "negative-counter-check-removed"
+description = "The domain verifier lets a counter go negative."
+expect = ["invariant_violations"]
+file = "bins/ptr-bench/src/experiments/s003/verifier.rs"
+find = '''
+                    .is_some_and(|count| count < 0)
+'''
+replace = '''
+                    .is_some_and(|count| count < -1_000_000_000)
+'''
+
+[[mutation]]
+name = "rebased-plan-refused"
+description = "Certification refuses a plan that rebases a counter, which the oracle predicts to merge."
+expect = ["spurious_refusals"]
+file = "crates/ptr-branch/src/certify.rs"
+find = '''
+    let plan = MergePlan {
+        branch: branch.id().clone(),
+'''
+replace = '''
+    if !rebased.is_empty() {
+        return Err(BranchError::Conflict { keys: rebased });
+    }
+    let plan = MergePlan {
+        branch: branch.id().clone(),
+'''
+
+[[mutation]]
+name = "scan-conflict-names-the-prefix"
+description = "A conflict on a scanned prefix names the prefix without the star, so its key is none the branch declared."
+expect = ["conflict_key_errors"]
+file = "crates/ptr-branch/src/certify.rs"
+find = '''
+            conflicts.insert(format!("{prefix}*"));
+'''
+replace = '''
+            conflicts.insert(prefix.clone());
+'''
+
+[[mutation]]
+name = "merge-record-author-forged"
+description = "The merge record names another author than the branch's."
+expect = ["provenance_mismatches"]
+file = "crates/ptr-runtime/src/merge.rs"
+find = '''
+            author: sealed.author().0.clone(),
+'''
+replace = '''
+            author: "s003-forger".to_string(),
+'''
+
+[[mutation]]
+name = "workload-drawn-from-the-clock"
+description = "The workload's streams are mixed with the wall clock, so a case is not reproducible from its seed."
+expect = ["nondeterminism"]
+file = "bins/ptr-bench/src/experiments/s003/workload.rs"
+find = '''
+fn stream(root: u64, labels: &[u64]) -> Rng {
+    let mut state = root;
+'''
+replace = '''
+fn stream(root: u64, labels: &[u64]) -> Rng {
+    let mut state = root
+        ^ std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| u64::from(elapsed.subsec_nanos()))
+            .unwrap_or(0);
+'''
+
+[[mutation]]
+name = "genesis-write-refused"
+description = "The runtime refuses a case's genesis write, so no arm can start."
+expect = ["harness_errors"]
+file = "bins/ptr-bench/src/experiments/s003/world.rs"
+find = '''
+            HostOutcome::Committed => Ok(world),
+'''
+replace = '''
+            HostOutcome::Committed => Err(String::from("the genesis write was refused")),
 '''
 
 [[mutation]]

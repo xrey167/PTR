@@ -54,10 +54,40 @@ Pooled conflict rate of the certified arm (bold: at or above 100‰):
 | 4 | 256 | 6‰ | 11‰ | 21‰ | 32‰ |
 | 5 | 1024 | 7‰ | 6‰ | 11‰ | 18‰ |
 
-Result: 8 cells at or above the threshold and 16 below, at least 6 on each side, and low
-cells for every N (5 for N=2, 4 for N=4, 4 for N=8, 3 for N=16). The pilot **met its minimum**. The rule
-allows the fallback once, so there is no third round. The low cells, written into `low_cells` of `config.toml` at the freeze:
+Result: 8 cells at or above the threshold and 16 below, at least 6 on each side, and low cells for every N
+(5 for N=2, 4 for N=4, 4 for N=8, 3 for N=16): round 2 met the minimum.
 
-```toml
-low_cells = ["L1N2", "L2N2", "L2N4", "L2N8", "L3N2", "L3N4", "L3N8", "L3N16", "L4N2", "L4N4", "L4N8", "L4N16", "L5N2", "L5N4", "L5N8", "L5N16"]
-```
+## Why round 2 was not the last
+
+Review of the harness at this state (Codex, CodeRabbit and an independent read-only review of six dimensions
+with a skeptic per finding) found defects that change what a pilot measures, so its `low_cells` cannot be
+pinned:
+
+- **The time model failed at 1024 groups.** 11.6% of `merge_branch` calls of round 2 (41,784 of 359,018)
+  took more than 10 ms, the p99 bucket of the pooled histogram was `merge_wall_gt_10ms`, and the
+  preregistered check (`merge_wall_budget_us_p99` = 10000) would have failed every confirmatory run. The
+  cause is the reference host, not the harness: `SemanticHost::prepare_delta` clones the whole state, and a
+  case at 1024 groups holds about 12,000 keys. Round 1, whose largest level was 256 groups, had 0.02% of
+  its merges above 10 ms. The fallback's largest level, 1024 groups, is replaced by 32, so the ladder is
+  4, 8, 16, 32, 64, 256 (`groups_ladder_fallback` keeps the value the table preregistered).
+- **Attempt durations were not paired across arms** (Codex, P1): a task's duration came from the calls its
+  program made on the arm's own state. It is now the calls the program makes on the case's genesis state,
+  the same in every arm.
+- **Hazard trials counted more than certification tried** (Codex, P1, and the review): the fixed probes'
+  repetitions counted as trials of every class (the two rule classes, a negative counter held by
+  verification and a set operation that undoes a concurrent one, had 48 trials in each seed only from those
+  repetitions; the workload made none), and a hazard counted as a trial where certification stopped before
+  the check that looks for it. Trials are now the workload's own merges, counted only where the check ran;
+  the probes' repetitions are counted apart, and the two rule classes rest on the probes P25 and P26 and
+  the mutation plan.
+- **Verification holds were counted twice** in a certified run's statistics (Codex, P2), **key-level OCC's
+  stale-scan commits and lost updates were not counted among its anomalies** (Codex, P2), a run that stopped
+  on an error still contributed a makespan to the throughput (Codex, P1), and the pilot classification
+  accepted outputs of another preregistration (Codex, P1).
+
+These change durations, counts and the ladder, and with them conflict rates, so the cells are classified
+again on the final harness. The rule is unchanged (at least 6 cells on each side, a low cell for every N).
+The fallback ladder is spent: a round 3 that fails the minimum ends the pilot, and what to do then is a
+decision to record, not to make in advance.
+
+## Round 3: the final harness

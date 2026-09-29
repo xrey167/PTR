@@ -116,8 +116,6 @@ metrics! {
         hazard_inputs,
         hazard_lifecycle,
         hazard_rebase,
-        hazard_negative,
-        hazard_set_member,
         lww_lost_updates,
         lww_lost_increments,
         occ_undetected_phantoms,
@@ -161,6 +159,22 @@ metrics! {
         wasted_ticks,
         abandoned_tasks,
         review_voids,
+        occ_lost_updates,
+        occ_stale_scan_commits,
+        hazard_negative,
+        hazard_set_member,
+        probe_unnecessary_refusals,
+        probe_put_increment_conflicts,
+        probe_conflict_key_set_differs,
+        probe_hazard_write,
+        probe_hazard_read,
+        probe_hazard_scan_keys,
+        probe_hazard_scan_values,
+        probe_hazard_inputs,
+        probe_hazard_lifecycle,
+        probe_hazard_rebase,
+        probe_hazard_negative,
+        probe_hazard_set_member,
     }
 }
 
@@ -190,6 +204,30 @@ impl Metrics {
             state = fnv(Some(state), &count.to_le_bytes());
         }
         state
+    }
+
+    /// Add every counter of a case's probes to this one, but count the hazards
+    /// their fixed scenarios ran into as `probe_hazard_*`: a probe repeats the
+    /// same construction in every case, so it is coverage, and only what the
+    /// workload's own merges ran into (`hazard_*`) counts as trials of
+    /// certification. The refusals of a probe's world are counted apart too
+    /// (`probe_*`): the shares of refusals the result reports are shares of
+    /// the arms' refusals.
+    pub fn absorb_probes(&mut self, probes: &Metrics) {
+        let mut rest = probes.clone();
+        self.probe_unnecessary_refusals += std::mem::take(&mut rest.unnecessary_refusals);
+        self.probe_put_increment_conflicts += std::mem::take(&mut rest.put_increment_conflicts);
+        self.probe_conflict_key_set_differs += std::mem::take(&mut rest.conflict_key_set_differs);
+        self.probe_hazard_write += std::mem::take(&mut rest.hazard_write);
+        self.probe_hazard_read += std::mem::take(&mut rest.hazard_read);
+        self.probe_hazard_scan_keys += std::mem::take(&mut rest.hazard_scan_keys);
+        self.probe_hazard_scan_values += std::mem::take(&mut rest.hazard_scan_values);
+        self.probe_hazard_inputs += std::mem::take(&mut rest.hazard_inputs);
+        self.probe_hazard_lifecycle += std::mem::take(&mut rest.hazard_lifecycle);
+        self.probe_hazard_rebase += std::mem::take(&mut rest.hazard_rebase);
+        self.probe_hazard_negative += std::mem::take(&mut rest.hazard_negative);
+        self.probe_hazard_set_member += std::mem::take(&mut rest.hazard_set_member);
+        self.absorb(&rest);
     }
 
     /// The sum of the hard counters: zero for a run that supports the safety
@@ -242,6 +280,48 @@ mod tests {
             let name = format!("probe_p{probe}_exercised");
             assert!(COVERAGE.contains(&name.as_str()), "{name}");
         }
+    }
+
+    #[test]
+    fn a_probes_hazard_trials_are_probe_trials_and_nothing_else_moves() {
+        let probes = Metrics {
+            hazard_write: 2,
+            hazard_negative: 1,
+            hazard_set_member: 3,
+            probe_p1_exercised: 1,
+            replays: 4,
+            unnecessary_refusals: 5,
+            put_increment_conflicts: 6,
+            conflict_key_set_differs: 7,
+            ..Metrics::default()
+        };
+        let mut total = Metrics {
+            hazard_write: 10,
+            ..Metrics::default()
+        };
+        total.absorb_probes(&probes);
+        assert_eq!(
+            total.hazard_write, 10,
+            "a workload trial count is not the probes'"
+        );
+        assert_eq!(total.hazard_negative + total.hazard_set_member, 0);
+        assert_eq!(total.probe_hazard_write, 2);
+        assert_eq!(total.probe_hazard_negative, 1);
+        assert_eq!(total.probe_hazard_set_member, 3);
+        assert_eq!(total.probe_p1_exercised, 1);
+        assert_eq!(total.replays, 4);
+        assert_eq!(
+            (
+                total.unnecessary_refusals,
+                total.put_increment_conflicts,
+                total.conflict_key_set_differs
+            ),
+            (0, 0, 0),
+            "the refusals of a probe's world are no share of the arms' refusals"
+        );
+        assert_eq!(total.probe_unnecessary_refusals, 5);
+        assert_eq!(total.probe_put_increment_conflicts, 6);
+        assert_eq!(total.probe_conflict_key_set_differs, 7);
     }
 
     #[test]

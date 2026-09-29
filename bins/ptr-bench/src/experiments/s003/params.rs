@@ -31,7 +31,7 @@ pub const PILOT_SEEDS: [u64; 3] = [1, 2, 3];
 pub const CASES_PER_SEED: usize = 48;
 pub const TASKS_PER_CASE: usize = 128;
 pub const AGENTS: [usize; 4] = [2, 4, 8, 16];
-pub const GROUPS_LADDER: [usize; 6] = [4, 8, 16, 64, 256, 1024];
+pub const GROUPS_LADDER: [usize; 6] = [4, 8, 16, 32, 64, 256];
 pub const GROUPS_LADDER_FALLBACK: [usize; 6] = [4, 8, 16, 64, 256, 1024];
 pub const ITEMS_PER_GROUP: usize = 8;
 pub const INSERT_CAP: usize = 12;
@@ -469,22 +469,45 @@ mod tests {
             .find(|(key, _)| key == "low_cells")
             .expect("low_cells is in the table");
         match &low.1 {
-            Value::Strs(cells) => assert!(cells.iter().all(|cell| {
-                let mut parts = cell.strip_prefix('L').map(|rest| rest.splitn(2, 'N'));
-                parts
-                    .as_mut()
-                    .map(|parts| {
-                        parts.all(|part| {
-                            !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit())
-                        })
-                    })
-                    .unwrap_or(false)
-            })),
+            Value::Strs(cells) => {
+                // Each entry is a level of the ladder and an agent count of
+                // the table.
+                for cell in cells {
+                    let (level, agents) = low_cell(cell)
+                        .unwrap_or_else(|| panic!("low_cells holds L<level>N<agents>: {cell:?}"));
+                    assert!(
+                        level < GROUPS_LADDER.len() && AGENTS.contains(&agents),
+                        "low_cells names a cell the table has not: {cell:?}"
+                    );
+                }
+            }
             Value::Ints(cells) => assert!(
                 cells.is_empty(),
                 "low_cells holds L<level>N<agents> strings"
             ),
             other => panic!("low_cells is a list of strings, not {other:?}"),
+        }
+    }
+
+    /// `L<level>N<agents>`: two non-empty digit parts and nothing else.
+    fn low_cell(cell: &str) -> Option<(usize, usize)> {
+        let number = |part: &str| {
+            (!part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+                .then(|| part.parse::<usize>().ok())
+                .flatten()
+        };
+        let (level, agents) = cell.strip_prefix('L')?.split_once('N')?;
+        Some((number(level)?, number(agents)?))
+    }
+
+    #[test]
+    fn a_low_cell_is_a_level_and_an_agent_count_and_nothing_else() {
+        assert_eq!(low_cell("L1N16"), Some((1, 16)));
+        assert_eq!(low_cell("L0N2"), Some((0, 2)));
+        for malformed in [
+            "L3", "L3N", "LN4", "N4", "3N4", "L3N4x", "L-3N4", "L3N4N5", "", "l3n4",
+        ] {
+            assert_eq!(low_cell(malformed), None, "{malformed:?}");
         }
     }
 
@@ -539,7 +562,7 @@ mod tests {
         );
         assert_eq!(
             digest,
-            "5cc981672b7939d7683223c2efbda2b0c5aec624e459935289c087df384e0fe8"
+            "22d1f2bb43c251037219d040036c814a5e271b7f9964564c154225312a177126"
         );
     }
 

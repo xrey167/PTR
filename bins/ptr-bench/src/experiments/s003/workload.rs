@@ -6,12 +6,15 @@
 //! for the same thing get the same answer whatever else either has consumed.
 //! That is what makes the arms paired: same genesis, same tasks with the same
 //! attempt durations and scores, same background events at the same ticks.
+//! An attempt's duration is a property of its task: one tick per call the
+//! task's program makes on the case's genesis state, plus a think time, so no
+//! arm's own state can lengthen or shorten the same attempt.
 
 use std::collections::BTreeSet;
 
-use super::model::{Delta, Val};
+use super::model::{Delta, Model, Val};
 use super::params;
-use super::program::{keys, Program};
+use super::program::{keys, Program, RefView};
 use crate::experiments::rng::Rng;
 
 /// The genesis host write's source for counters and sets.
@@ -111,12 +114,20 @@ impl Case {
 
     /// The tasks of the case, in queue order.
     pub fn tasks(&self) -> Vec<Task> {
+        let genesis = self.genesis();
+        let mut state = Model::default();
+        state
+            .apply(&genesis.delta)
+            .expect("the genesis delta applies to an empty model");
+        for policy in &genesis.policies {
+            state.lifecycle.set_live(policy, 1);
+        }
         (0..params::TASKS_PER_CASE)
-            .map(|index| self.task(index))
+            .map(|index| self.task(index, &state))
             .collect()
     }
 
-    fn task(&self, index: usize) -> Task {
+    fn task(&self, index: usize, genesis: &Model) -> Task {
         let mut rng = stream(self.root, &[LABEL_TASK, index as u64]);
         let program = draw_program(&mut rng, self.groups, index);
         let rely = rng
@@ -134,10 +145,15 @@ impl Case {
                 attempt_rng.range(params::REVIEW_MIN_TICKS, params::REVIEW_MAX_TICKS);
             scores[attempt] = attempt_rng.unit() as f32;
         }
+        let mut view = RefView::open(genesis);
+        program.run(&mut view, rely);
+        let (log, _, _) = view.finish();
+        let steps = log.events.len() as u64 * params::STEP_TICKS;
         Task {
             index,
             program,
             rely,
+            steps,
             thinks,
             reviews,
             scores,
@@ -195,6 +211,9 @@ pub struct Task {
     pub program: Program,
     /// A policy the branch also relies on, when it is live at open.
     pub rely: Option<usize>,
+    /// The calls the program makes on the genesis state, one tick each: the
+    /// same in every arm, whatever state an arm's attempt opens on.
+    pub steps: u64,
     /// Think time in ticks, per attempt.
     pub thinks: [u64; params::MAX_ATTEMPTS],
     /// The reviewer's latency in ticks, per attempt.
@@ -313,6 +332,31 @@ mod tests {
         let base = format!("{:?}", Case::new(17, 3).tasks());
         assert_ne!(base, format!("{:?}", Case::new(29, 3).tasks()));
         assert_ne!(base, format!("{:?}", Case::new(17, 9).tasks()));
+    }
+
+    #[test]
+    fn a_tasks_steps_are_the_calls_of_its_program_on_the_genesis_state() {
+        let case = Case::new(17, 1);
+        let tasks = case.tasks();
+        let mut genesis = Model::default();
+        genesis
+            .apply(&case.genesis().delta)
+            .expect("the genesis applies");
+        for policy in &case.genesis().policies {
+            genesis.lifecycle.set_live(policy, 1);
+        }
+        for task in &tasks {
+            let mut view = RefView::open(&genesis);
+            task.program.run(&mut view, task.rely);
+            let (log, _, _) = view.finish();
+            assert!(task.steps >= 1);
+            assert_eq!(task.steps, log.events.len() as u64 * params::STEP_TICKS);
+        }
+        let again: Vec<u64> = case.tasks().iter().map(|task| task.steps).collect();
+        assert_eq!(
+            again,
+            tasks.iter().map(|task| task.steps).collect::<Vec<_>>()
+        );
     }
 
     #[test]

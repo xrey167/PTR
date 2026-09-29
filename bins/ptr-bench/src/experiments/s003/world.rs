@@ -112,8 +112,6 @@ pub struct Attempt {
     pub rely: Option<usize>,
     pub sealed: ptr_branch::SealedBranch,
     pub footprint: Footprint,
-    /// The number of calls the program made: one tick each.
-    pub steps: u64,
 }
 
 /// What a plan is, as a digest tells two plans apart: the revision it was
@@ -639,7 +637,6 @@ impl World {
                 "{id}: the sealed branch is not what it did: {differences:?}"
             ));
         }
-        let steps = opened.log.events.len() as u64 * params::STEP_TICKS;
         Ok(Attempt {
             id: BranchId(id.to_string()),
             author,
@@ -647,7 +644,6 @@ impl World {
             rely,
             sealed: opened.sealed,
             footprint: opened.footprint,
-            steps,
         })
     }
 
@@ -673,16 +669,27 @@ impl World {
 
     // ---- merging ------------------------------------------------------------------
 
-    /// Count the hazards a branch runs into, as trials of certification.
+    /// Count the hazards a branch runs into, as trials of certification. A
+    /// hazard is a trial of the check that looks for it only where that check
+    /// ran, and certification stops early: a stale reliance is refused before
+    /// any digest is compared, reads, scans, input sets and set members are
+    /// compared together, and the rebased keys are worked out only past every
+    /// conflict.
     fn count_trials(&mut self, judgement: &oracle::Judgement, rebased: bool) {
         let hazards = &judgement.hazards;
+        if hazards.stale_reliance {
+            self.metrics.hazard_lifecycle += 1;
+            return;
+        }
         self.metrics.hazard_write += u64::from(hazards.lost_update);
         self.metrics.hazard_read += u64::from(hazards.stale_read);
         self.metrics.hazard_scan_keys += u64::from(hazards.phantom);
         self.metrics.hazard_scan_values += u64::from(hazards.stale_scan);
         self.metrics.hazard_inputs += u64::from(hazards.stale_input);
-        self.metrics.hazard_lifecycle += u64::from(hazards.stale_reliance);
         self.metrics.hazard_set_member += u64::from(judgement.set_member_undo);
+        if matches!(judgement.predicted, Predicted::Conflict(_)) {
+            return;
+        }
         self.metrics.hazard_rebase += u64::from(rebased);
         self.metrics.hazard_negative += u64::from(matches!(
             judgement.predicted,
@@ -1182,6 +1189,8 @@ impl World {
         let outcome = self.host_write(delta, principal)?;
         if outcome == HostOutcome::Committed {
             if occ {
+                self.metrics.occ_lost_updates += u64::from(hazards.lost_update);
+                self.metrics.occ_stale_scan_commits += u64::from(hazards.stale_scan);
                 self.metrics.occ_undetected_phantoms += u64::from(hazards.phantom);
                 self.metrics.occ_stale_input_commits += u64::from(hazards.stale_input);
                 self.metrics.occ_stale_reliance_commits += u64::from(hazards.stale_reliance);
@@ -1830,6 +1839,90 @@ mod tests {
     }
 
     #[test]
+    fn a_stale_reliance_is_refused_before_any_digest_so_no_other_hazard_is_a_trial() {
+        // A branch that relies on a superseded generation is refused before
+        // any digest is compared, so the read it also has stale is no trial.
+        let mut world = world(GrantKind::Auto);
+        let relying = world
+            .open("b-1", 0, &rmw(0, 1), Some(1))
+            .expect("an attempt");
+        world
+            .background(
+                5,
+                &[Background::Lifecycle {
+                    policy: 1,
+                    revoke: false,
+                }],
+            )
+            .expect("a supersession");
+        assert_eq!(
+            host(&mut world, "item:0:0", Val::text("77")),
+            HostOutcome::Committed
+        );
+        assert!(matches!(
+            world.merge(&relying, &auto()),
+            Ok(Settled::LifecycleChanged)
+        ));
+        assert_eq!(world.metrics.hazard_lifecycle, 1);
+        assert_eq!(world.metrics.hazard_read + world.metrics.hazard_write, 0);
+        clean(&world);
+    }
+
+    #[test]
+    fn a_conflict_is_returned_before_the_rebased_keys_are_worked_out() {
+        // The decrement's stale read is a trial, its rebased counter is not.
+        let mut world = world(GrantKind::Auto);
+        let decrement = open(&mut world, "b-1", Program::GuardedDecrement { counter: 3 });
+        let add = open(
+            &mut world,
+            "b-2",
+            Program::CounterAdd {
+                counter: 3,
+                amount: 5,
+            },
+        );
+        assert!(matches!(world.merge(&add, &auto()), Ok(Settled::Committed)));
+        assert!(matches!(
+            world.merge(&decrement, &auto()),
+            Ok(Settled::Conflict)
+        ));
+        assert_eq!(world.metrics.hazard_read, 1);
+        assert_eq!(world.metrics.hazard_rebase, 0);
+        clean(&world);
+    }
+
+    #[test]
+    fn past_every_conflict_a_rebased_counter_is_a_trial() {
+        let mut world = world(GrantKind::Auto);
+        let first = open(
+            &mut world,
+            "b-1",
+            Program::CounterAdd {
+                counter: 4,
+                amount: 2,
+            },
+        );
+        let second = open(
+            &mut world,
+            "b-2",
+            Program::CounterAdd {
+                counter: 4,
+                amount: 3,
+            },
+        );
+        assert!(matches!(
+            world.merge(&first, &auto()),
+            Ok(Settled::Committed)
+        ));
+        assert!(matches!(
+            world.merge(&second, &auto()),
+            Ok(Settled::Committed)
+        ));
+        assert_eq!(world.metrics.hazard_rebase, 1);
+        clean(&world);
+    }
+
+    #[test]
     fn last_writer_wins_commits_a_stale_overlay_and_the_lost_update_is_evidence_not_failure() {
         let mut world = world(GrantKind::Auto);
         let first = open(&mut world, "b-1", rmw(0, 3));
@@ -1844,6 +1937,36 @@ mod tests {
             .expect("a commit");
         assert_eq!(outcome, HostOutcome::Committed);
         assert_eq!(world.metrics.lww_lost_updates, 1);
+        clean(&world);
+    }
+
+    #[test]
+    fn key_level_occ_commits_a_stale_scan_and_counts_it_beside_phantoms() {
+        let mut world = world(GrantKind::Auto);
+        // A first writer moves an item, so an audit opened now records a sum
+        // that differs from the audit key's value and has something to write.
+        let first = open(&mut world, "b-1", rmw(0, 3));
+        assert!(matches!(
+            world.merge(&first, &auto()),
+            Ok(Settled::Committed)
+        ));
+        let audit = open(&mut world, "b-2", Program::Audit { group: 0 });
+        let writer = open(&mut world, "b-3", rmw(1, 4));
+        assert!(matches!(
+            world.merge(&writer, &auto()),
+            Ok(Settled::Committed)
+        ));
+        // The audit read no value that moved and the scanned keys are the
+        // same, so key-level OCC has nothing to refuse: it commits a branch
+        // whose scanned values are stale.
+        let delta = oracle::merge_delta(&audit.footprint.ops, &world.model).expect("a delta");
+        let outcome = world
+            .baseline_commit(&audit, &delta, "s003-occ", true)
+            .expect("a commit");
+        assert_eq!(outcome, HostOutcome::Committed);
+        assert_eq!(world.metrics.occ_stale_scan_commits, 1);
+        assert_eq!(world.metrics.occ_undetected_phantoms, 0);
+        assert_eq!(world.metrics.occ_lost_updates, 0);
         clean(&world);
     }
 

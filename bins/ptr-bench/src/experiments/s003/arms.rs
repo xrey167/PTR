@@ -84,6 +84,9 @@ pub struct RunStats {
     pub wasted_ticks: u64,
     /// Refusals where merging would have given the serial state.
     pub unnecessary_refusals: u64,
+    /// Whether the run reached its end: a run that stopped on an error has a
+    /// makespan that means nothing, and no throughput is read from it.
+    pub complete: bool,
 }
 
 impl RunStats {
@@ -103,6 +106,7 @@ impl RunStats {
             abandoned: 0,
             wasted_ticks: 0,
             unnecessary_refusals: 0,
+            complete: false,
         }
     }
 
@@ -132,6 +136,9 @@ struct Flight {
     attempt: Attempt,
     opened_at: u64,
     due: u64,
+    /// Ticks the agent held the branch: from opening to its merge attempt,
+    /// which a reviewer's wait afterwards does not lengthen.
+    occupied: u64,
 }
 
 /// A branch waiting for the reviewer.
@@ -296,24 +303,25 @@ impl Simulation<'_> {
             self.lane_free_at = tick + params::MERGE_TICKS;
             match which {
                 Due::Agent(index) => self.settle_agent(tick, index)?,
-                Due::Review(id) => self.settle_review(tick, id)?,
+                Due::Review(id) => self.settle_review(id)?,
             }
         }
         Ok(())
     }
 
     fn settle_agent(&mut self, tick: u64, index: usize) -> Result<(), String> {
-        let flight = self.agents[index]
+        let mut flight = self.agents[index]
             .current
             .take()
             .ok_or("an agent with no branch was due")?;
+        flight.occupied = tick.saturating_sub(flight.opened_at);
         self.agents[index].idle_at = tick + params::MERGE_TICKS;
         match self.arm {
             Arm::Serial | Arm::Certified => {
                 let settled = self
                     .world
                     .merge(&flight.attempt, &Authority::Triage { score: 1.0 })?;
-                self.after_merge(tick, flight, settled);
+                self.after_merge(flight, settled);
             }
             Arm::CertifiedReview => {
                 let score = self.tasks[flight.task].scores[flight.number];
@@ -333,7 +341,7 @@ impl Simulation<'_> {
                         completes_at: start + latency,
                     });
                 } else {
-                    self.after_merge(tick, flight, settled);
+                    self.after_merge(flight, settled);
                 }
             }
             Arm::Lww => self.settle_lww(tick, flight)?,
@@ -342,7 +350,7 @@ impl Simulation<'_> {
         Ok(())
     }
 
-    fn settle_review(&mut self, tick: u64, id: u64) -> Result<(), String> {
+    fn settle_review(&mut self, id: u64) -> Result<(), String> {
         let position = self
             .reviews
             .iter()
@@ -359,13 +367,13 @@ impl Simulation<'_> {
             approved: plan,
         };
         let settled = self.world.merge(&flight.attempt, &authority)?;
-        self.after_merge(tick, flight, settled);
+        self.after_merge(flight, settled);
         Ok(())
     }
 
     /// Count what a certified merge settled to, and schedule what follows.
-    fn after_merge(&mut self, tick: u64, flight: Flight, settled: Settled) {
-        let wasted = tick.saturating_sub(flight.opened_at);
+    fn after_merge(&mut self, flight: Flight, settled: Settled) {
+        let wasted = flight.occupied;
         match settled {
             Settled::Committed => self.stats.merged += 1,
             Settled::NoChange => self.stats.no_change += 1,
@@ -466,13 +474,14 @@ impl Simulation<'_> {
             let id = format!("c{}-t{}-a{number}", self.case.index, spec.index);
             let attempt = self.world.open(&id, index, &spec.program, spec.rely)?;
             self.stats.attempts += 1;
-            let due = tick + attempt.steps + spec.thinks[number];
+            let due = tick + spec.steps + spec.thinks[number];
             self.agents[index].current = Some(Flight {
                 task,
                 number,
                 attempt,
                 opened_at: tick,
                 due,
+                occupied: 0,
             });
         }
         Ok(())
@@ -494,6 +503,7 @@ impl Simulation<'_> {
     // ---- end ------------------------------------------------------------------
 
     fn finish(mut self, failed: Option<String>) -> Run {
+        self.stats.complete = failed.is_none();
         if failed.is_some() {
             self.world.metrics.harness_errors += 1;
         }
@@ -502,9 +512,6 @@ impl Simulation<'_> {
         self.stats.lifecycle_refusals += metrics.lifecycle_refusals;
         self.stats.escalations += metrics.escalations;
         self.stats.unnecessary_refusals += metrics.unnecessary_refusals;
-        if self.arm.certifies() {
-            self.stats.verification_holds += metrics.verification_holds;
-        }
         self.world.metrics.abandoned_tasks += self.stats.abandoned;
         self.world.metrics.wasted_ticks += self.stats.wasted_ticks;
         self.world.metrics.review_voids += self.stats.review_voids;
@@ -556,6 +563,7 @@ fn digest(stats: &RunStats, world: &World) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::experiments::s003::program::Program;
 
     fn run(case_index: usize, arm: Arm, agents: usize) -> Run {
         let case = Case::new(17, case_index);
@@ -584,6 +592,38 @@ mod tests {
         assert_eq!(run.stats.review_voids, 0);
         assert!(run.stats.merged > 0);
         assert!(run.metrics.replays == 1 && run.metrics.compaction_roundtrips == 1);
+    }
+
+    #[test]
+    fn wasted_ticks_are_agent_ticks_and_a_reviewers_wait_is_none() {
+        let run = run(0, Arm::CertifiedReview, 4);
+        assert_eq!(run.failed, None);
+        assert!(run.stats.review_voids > 0, "the case must void approvals");
+        assert!(
+            run.stats.wasted_ticks <= 4 * run.stats.ticks,
+            "{} wasted of {} agent ticks",
+            run.stats.wasted_ticks,
+            4 * run.stats.ticks
+        );
+    }
+
+    #[test]
+    fn a_held_merge_is_counted_once_in_the_run_and_in_its_metrics() {
+        // The counter starts at 50, so taking 60 from it leaves it negative:
+        // the domain verifier holds the merge, in every arm that certifies.
+        let case = Case::new(17, 0);
+        let mut tasks = case.tasks();
+        tasks.truncate(1);
+        tasks[0].program = Program::CounterAdd {
+            counter: 0,
+            amount: -60,
+        };
+        for arm in [Arm::Serial, Arm::Certified, Arm::CertifiedReview] {
+            let run = run_arm(&case, &tasks, arm, 2, None);
+            assert_eq!(run.failed, None, "{arm:?}");
+            assert_eq!(run.stats.verification_holds, 1, "{arm:?}");
+            assert_eq!(run.metrics.verification_holds, 1, "{arm:?}");
+        }
     }
 
     #[test]

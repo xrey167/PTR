@@ -6,7 +6,11 @@ the pilot's classification of cells, which is `pilot_classification`. These
 tests give both results shaped to meet, or to miss, each preregistered
 condition, so that a verdict that stopped depending on one fails here."""
 
+import contextlib
 import importlib.util
+import io
+import json
+import tempfile
 import tomllib
 import unittest
 from pathlib import Path
@@ -41,6 +45,7 @@ def run(arm: str, agents: int, ticks: int, attempts: int = 128, conflicts: int =
         "abandoned": 0,
         "wasted_ticks": 0,
         "unnecessary_refusals": 0,
+        "complete": True,
     }
 
 
@@ -87,6 +92,14 @@ def seed_result(seed: int, ticks_of=None, conflicts_of=None, **overrides) -> dic
         result[name] = 3
     for name in aggregate.HAZARDS:
         result[name] = 40
+    # The fixed probes' repetitions and what the workload made of the two
+    # rule classes: reported, and no gate.
+    for name in aggregate.PROBE_HAZARDS:
+        result[name] = 48
+    result["hazard_negative"] = 0
+    result["hazard_set_member"] = 0
+    for name in ("occ_lost_updates", "occ_stale_scan_commits"):
+        result[name] = 0
     result.update(overrides)
     return result
 
@@ -172,10 +185,75 @@ class VerdictTests(unittest.TestCase):
     def test_a_hazard_class_with_too_few_trials_in_one_seed_is_not_coverage(self):
         minimum = TABLE["min_hazard_trials_per_class_per_seed"]
         results = five()
-        results[0]["hazard_set_member"] = minimum - 1
+        results[0]["hazard_read"] = minimum - 1
         self.assertFalse(analyse(results)["conditions"]["coverage_ok"])
-        results[0]["hazard_set_member"] = minimum
+        results[0]["hazard_read"] = minimum
         self.assertTrue(analyse(results)["conditions"]["coverage_ok"])
+
+    def test_the_fixed_probes_repetitions_are_no_trials_of_any_class(self):
+        # Every seed's probes ran each class 48 times, yet a class the
+        # workload's own merges never ran into has no trials.
+        results = five()
+        results[0]["hazard_write"] = 0
+        analysis = analyse(results)
+        self.assertFalse(analysis["conditions"]["coverage_ok"])
+        self.assertEqual(analysis["metrics"]["descriptive"]["probe_hazard_repetitions"]["probe_hazard_write"], 240)
+
+    def test_the_two_rule_classes_are_covered_by_their_probes_and_gate_nothing_else(self):
+        results = five()
+        for result in results:
+            result["hazard_negative"] = 0
+            result["hazard_set_member"] = 0
+        analysis = analyse(results)
+        self.assertTrue(analysis["conditions"]["coverage_ok"])
+        reported = analysis["metrics"]["descriptive"]["rule_class_trials"]
+        self.assertEqual(reported["hazard_negative"]["workload_trials"], 0)
+        self.assertEqual(reported["hazard_negative"]["probe_repetitions"], 240)
+        self.assertIn("P25", reported["hazard_negative"]["evidence"])
+        self.assertIn("P26", reported["hazard_set_member"]["evidence"])
+        for name in ("probe_p25_exercised", "probe_p26_exercised"):
+            results[2][name] = 0
+            self.assertFalse(analyse(results)["conditions"]["coverage_ok"], name)
+            results[2][name] = 3
+
+    def test_a_run_that_stopped_on_an_error_reads_no_throughput_and_the_aggregate_still_publishes(self):
+        results = five()
+        for index, case in enumerate(results[0]["cases"]):
+            for run_ in case["runs"]:
+                if run_["arm"] == "certified" and index % 2 == 0:
+                    run_["complete"] = False
+                    run_["ticks"] = 0
+        analysis = analyse(results)
+        self.assertFalse(analysis["conditions"]["runs_complete"])
+        self.assertEqual(analysis["throughput"], "inconclusive")
+        self.assertEqual(analysis["recommended"], "failed")
+        self.assertTrue(analysis["metrics"]["incomplete_runs"])
+        for entry in analysis["metrics"]["per_agent_count"].values():
+            self.assertNotIn("bootstrap", entry)
+
+    def test_every_run_of_a_cell_stopping_early_does_not_divide_by_zero(self):
+        results = [
+            seed_result(
+                seed,
+                ticks_of=lambda index, level, agents: 0,
+            )
+            for seed in TABLE["seeds"]
+        ]
+        for result in results:
+            for case in result["cases"]:
+                for run_ in case["runs"]:
+                    run_["complete"] = False
+        analysis = analyse(results)
+        self.assertEqual(analysis["recommended"], "failed")
+        self.assertIsNone(aggregate.cells(results)["L2N4"]["gain"])
+
+    def test_an_unusable_run_with_no_error_is_no_gain_either(self):
+        # A run that ended with a zero makespan measures nothing.
+        results = five()
+        results[1]["cases"][0]["runs"][1]["ticks"] = 0
+        analysis = analyse(results)
+        self.assertFalse(analysis["conditions"]["runs_complete"])
+        self.assertEqual(analysis["recommended"], "failed")
 
     def test_the_time_model_needs_the_99th_percentile_merge_within_the_budget(self):
         slow = {"merge_wall_le_10ms": 800, "merge_wall_gt_10ms": 200}
@@ -251,6 +329,7 @@ class VerdictTests(unittest.TestCase):
         self.assertEqual(descriptive["hazard_trials"]["hazard_write"]["trials"], 200)
         self.assertEqual(descriptive["hazard_trials"]["hazard_write"]["rule_of_three_bound"], round(3 / 200, 6))
         self.assertEqual(descriptive["review_void_share"], 0.8)
+        self.assertEqual(set(descriptive["hazard_trials"]), set(aggregate.HAZARDS))
         self.assertIn("certified", descriptive["arms"])
         self.assertEqual(analysis["totals"]["cases"], 5 * TABLE["cases_per_seed"])
 
@@ -333,6 +412,21 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(first, aggregate.bootstrap_gain(self.PAIRS, 2000, 20260926, 950))
         self.assertNotEqual(first, aggregate.bootstrap_gain(self.PAIRS, 2000, 1, 950))
 
+    def test_the_interval_is_the_2_5th_and_97_5th_percentile_of_the_sorted_resamples(self):
+        import random
+
+        generator = random.Random(20260926)
+        count = len(self.PAIRS)
+        gains = []
+        for _ in range(2000):
+            chosen = [self.PAIRS[generator.randrange(count)] for _ in range(count)]
+            gains.append(sum(serial for serial, _ in chosen) / sum(certified for _, certified in chosen))
+        gains.sort()
+        interval = aggregate.bootstrap_gain(self.PAIRS, 2000, 20260926, 950)
+        # Fifty resamples lie below the lower bound and fifty above the upper.
+        self.assertEqual(interval["lower"], gains[50])
+        self.assertEqual(interval["upper"], gains[1949])
+
     def test_a_wider_interval_contains_a_narrower_one_and_identical_cases_give_a_point(self):
         narrow = aggregate.bootstrap_gain(self.PAIRS, 2000, 7, 500)
         wide = aggregate.bootstrap_gain(self.PAIRS, 2000, 7, 950)
@@ -362,6 +456,54 @@ class NewestPerSeedTests(unittest.TestCase):
             reserved = record("run-20260102T000000Z-seed-1.json", 1, "started")
             failed = record("run-20260103T000000Z-seed-1.json", 1, "failed-to-launch")
             self.assertEqual(aggregate.newest_per_seed([failed, reserved, finished]), {1: finished})
+
+
+class OccAnomalyTests(unittest.TestCase):
+    def test_the_occ_baseline_counts_lost_updates_and_stale_scans_with_its_other_anomalies(self):
+        results = five()
+        for result in results:
+            result["occ_undetected_phantoms"] = 1
+            result["occ_stale_input_commits"] = 1
+            result["occ_stale_reliance_commits"] = 1
+            result["occ_lost_updates"] = 2
+            result["occ_stale_scan_commits"] = 3
+        analysis = analyse(results)
+        committed = analysis["metrics"]["descriptive"]["arms"]["occ"]["merged"]
+        self.assertEqual(analysis["metrics"]["descriptive"]["occ_anomalies_per_commit"], round(5 * (1 + 1 + 1 + 2 + 3) / committed, 4))
+
+
+class PilotInputTests(unittest.TestCase):
+    def write(self, directory: Path, seed: int, table: dict, cases=None) -> Path:
+        result = seed_result(seed)
+        result["preregistration"] = aggregate.experiment_records.preregistration_canonical(table)
+        if cases is not None:
+            result["cases"] = result["cases"][:cases]
+        path = directory / f"pilot-seed-{seed}.json"
+        path.write_text(json.dumps(result) + "\n", encoding="utf-8")
+        return path
+
+    def test_pilot_outputs_of_the_current_table_are_read_whatever_low_cells_held_then(self):
+        with tempfile.TemporaryDirectory() as directory:
+            paths = [self.write(Path(directory), seed, {**TABLE, "low_cells": []}) for seed in TABLE["pilot_seeds"]]
+            with contextlib.redirect_stdout(io.StringIO()) as printed:
+                aggregate.pilot(paths)
+        self.assertIn("low_cells = [", printed.getvalue())
+
+    def test_pilot_outputs_of_another_preregistration_are_refused_before_any_cell_is_named(self):
+        other = {**TABLE, "groups_ladder": [8, 16, 32, 64, 128, 256]}
+        with tempfile.TemporaryDirectory() as directory:
+            paths = [self.write(Path(directory), seed, other) for seed in TABLE["pilot_seeds"]]
+            with self.assertRaises(SystemExit) as raised:
+                aggregate.pilot(paths)
+        self.assertIn("another preregistration", str(raised.exception))
+        self.assertIn("groups_ladder", str(raised.exception))
+
+    def test_a_pilot_output_with_fewer_cases_than_the_table_says_is_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            paths = [self.write(Path(directory), seed, TABLE, cases=10) for seed in TABLE["pilot_seeds"]]
+            with self.assertRaises(SystemExit) as raised:
+                aggregate.pilot(paths)
+        self.assertIn("cases", str(raised.exception))
 
 
 if __name__ == "__main__":

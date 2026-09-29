@@ -81,7 +81,7 @@ fn run_case(seed: u64, index: usize, durable: Option<PathBuf>) -> CaseResult {
     match probes::run_all(&case, seed) {
         Ok(outcome) => {
             digest = outcome.metrics.digest_into(digest);
-            metrics.absorb(&outcome.metrics);
+            metrics.absorb_probes(&outcome.metrics);
             notes.extend(outcome.notes);
         }
         Err(error) => {
@@ -133,7 +133,8 @@ fn run_json(stats: &RunStats) -> String {
     format!(
         "{{\"arm\":{},\"agents\":{},\"ticks\":{},\"attempts\":{},\"merged\":{},\"no_change\":{},\
          \"conflicts\":{},\"lifecycle_refusals\":{},\"verification_holds\":{},\"escalations\":{},\
-         \"review_voids\":{},\"abandoned\":{},\"wasted_ticks\":{},\"unnecessary_refusals\":{}}}",
+         \"review_voids\":{},\"abandoned\":{},\"wasted_ticks\":{},\"unnecessary_refusals\":{},\
+         \"complete\":{}}}",
         json::json_string(stats.arm.name()),
         stats.agents,
         stats.ticks,
@@ -148,6 +149,7 @@ fn run_json(stats: &RunStats) -> String {
         stats.abandoned,
         stats.wasted_ticks,
         stats.unnecessary_refusals,
+        stats.complete,
     )
 }
 
