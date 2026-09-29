@@ -811,6 +811,7 @@ impl World {
     }
 
     fn require_unchanged(&mut self, from: usize, what: &str) {
+        self.cross_check();
         if self.ledger_len() != from {
             self.metrics.provenance_mismatches += 1;
             self.note(format!("{what} appended a record"));
@@ -1255,7 +1256,7 @@ impl World {
             .map(|key| (key.as_str(), self.model.value(key).cloned()))
             .collect();
         let outcome = self.host_write(delta, principal)?;
-        if outcome == HostOutcome::Committed || (!occ && outcome == HostOutcome::NoChange) {
+        if matches!(outcome, HostOutcome::Committed | HostOutcome::NoChange) {
             if occ {
                 self.metrics.occ_lost_updates += u64::from(hazards.lost_update);
                 self.metrics.occ_stale_scan_commits += u64::from(hazards.stale_scan);
@@ -2123,6 +2124,43 @@ mod tests {
                 Some(format!("inputs of {key}"))
             );
         }
+    }
+
+    #[test]
+    fn occ_no_change_still_counts_a_phantom() {
+        let mut world = world(GrantKind::Auto);
+        let audit = open(&mut world, "b-1", Program::Audit { group: 0 });
+        let insert = open(
+            &mut world,
+            "b-2",
+            Program::InsertCapped { group: 0, task: 1 },
+        );
+        assert!(matches!(
+            world.merge(&insert, &auto()),
+            Ok(Settled::Committed)
+        ));
+        let delta = oracle::merge_delta(&audit.footprint.ops, &world.model).expect("delta");
+        assert_eq!(
+            world
+                .baseline_commit(&audit, &delta, "s003-occ", true)
+                .unwrap(),
+            HostOutcome::NoChange
+        );
+        assert_eq!(world.metrics.occ_undetected_phantoms, 1);
+        assert_eq!(world.metrics.occ_stale_scan_commits, 0);
+        clean(&world);
+    }
+
+    #[test]
+    fn non_committing_outcomes_check_live_state_even_without_new_records() {
+        let mut world = world(GrantKind::Auto);
+        let from = world.ledger_len();
+        let mut delta = Delta::default();
+        delta.upserts.insert("item:0:0".into(), Val::text("999"));
+        world.model.apply(&delta).unwrap();
+        world.require_unchanged(from, "a non-committing merge");
+        assert_eq!(world.metrics.model_divergences, 1);
+        assert_eq!(world.metrics.provenance_mismatches, 0);
     }
 
     #[test]

@@ -227,6 +227,14 @@ impl Metrics {
         self.probe_hazard_rebase += std::mem::take(&mut rest.hazard_rebase);
         self.probe_hazard_negative += std::mem::take(&mut rest.hazard_negative);
         self.probe_hazard_set_member += std::mem::take(&mut rest.hazard_set_member);
+        // Probe runtimes are tiny fixtures, not tick-scheduled workload merges.
+        rest.merge_calls = 0;
+        rest.merge_wall_ns = 0;
+        rest.merge_wall_le_10us = 0;
+        rest.merge_wall_le_100us = 0;
+        rest.merge_wall_le_1ms = 0;
+        rest.merge_wall_le_10ms = 0;
+        rest.merge_wall_gt_10ms = 0;
         self.absorb(&rest);
     }
 
@@ -322,6 +330,25 @@ mod tests {
         assert_eq!(total.probe_unnecessary_refusals, 5);
         assert_eq!(total.probe_put_increment_conflicts, 6);
         assert_eq!(total.probe_conflict_key_set_differs, 7);
+    }
+
+    #[test]
+    fn probes_cannot_dilute_slow_workload_merges() {
+        let mut workload = Metrics::default();
+        workload.record_merge(Duration::from_millis(20));
+        let mut probes = Metrics {
+            conflicts: 2,
+            ..Metrics::default()
+        };
+        for _ in 0..1000 {
+            probes.record_merge(Duration::from_micros(1));
+        }
+        workload.absorb_probes(&probes);
+        assert_eq!(workload.merge_calls, 1);
+        assert_eq!(workload.merge_wall_gt_10ms, 1);
+        assert_eq!(workload.merge_wall_le_10us, 0);
+        assert_eq!(workload.merge_wall_ns, 20_000_000);
+        assert_eq!(workload.conflicts, 2);
     }
 
     #[test]

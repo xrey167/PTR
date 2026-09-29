@@ -44,7 +44,7 @@ def run(arm: str, agents: int, ticks: int, attempts: int = 128, conflicts: int =
         "verification_holds": 0,
         "escalations": 10 if arm == "certified-review" else 0,
         "review_voids": 8 if arm == "certified-review" else 0,
-        "abandoned": 0,
+        "abandoned": conflicts + lifecycle,
         "wasted_ticks": 0,
         "unnecessary_refusals": 0,
         "complete": True,
@@ -476,9 +476,13 @@ class OccAnomalyTests(unittest.TestCase):
             result["occ_stale_reliance_commits"] = 1
             result["occ_lost_updates"] = 2
             result["occ_stale_scan_commits"] = 3
+            for case in result["cases"]:
+                for run_ in case["runs"]:
+                    if run_["arm"] == "occ":
+                        run_.update(merged=0, no_change=TABLE["tasks_per_case"])
         analysis = analyse(results)
-        committed = analysis["metrics"]["descriptive"]["arms"]["occ"]["merged"]
-        self.assertEqual(analysis["metrics"]["descriptive"]["occ_anomalies_per_commit"], round(5 * (1 + 1 + 1 + 2 + 3) / committed, 4))
+        committed = analysis["metrics"]["descriptive"]["arms"]["occ"]["no_change"]
+        self.assertEqual(analysis["metrics"]["descriptive"]["occ_anomalies_per_settled_attempt"], round(5 * (1 + 1 + 1 + 2 + 3) / committed, 4))
 
 
 class PilotInputTests(unittest.TestCase):
@@ -496,7 +500,7 @@ class PilotInputTests(unittest.TestCase):
                     for case in result["cases"]:
                         for run_ in case["runs"]:
                             if case["level"] < 3 and run_["arm"] == "certified" and run_["agents"] in (8, 16):
-                                run_.update(attempts=attempts, conflicts=0, lifecycle_refusals=0, merged=0)
+                                run_.update(attempts=attempts, conflicts=0, lifecycle_refusals=0, merged=0, abandoned=TABLE["tasks_per_case"])
                     path.write_text(json.dumps(result), encoding="utf-8")
                 with contextlib.redirect_stdout(io.StringIO()) as printed:
                     with self.assertRaisesRegex(SystemExit, "no certified attempts"):
@@ -569,6 +573,10 @@ class LayoutTests(unittest.TestCase):
             "case groups": lambda case: case.update(groups=999),
             "serial ticks": lambda case: case.update(serial_ticks=99),
             "completion flag": lambda case: case["runs"][1].pop("complete"),
+            "missing task": lambda case: case["runs"][1].update(merged=127),
+            "extra task": lambda case: case["runs"][1].update(no_change=1),
+            "negative tasks": lambda case: case["runs"][1].update(merged=-1, no_change=129),
+            "boolean tasks": lambda case: case["runs"][1].update(no_change=False),
             "boolean agents": lambda case: case["runs"][0].update(agents=True),
         }
         for name, change in changes.items():
@@ -640,7 +648,7 @@ class PilotSourceEvidenceTests(unittest.TestCase):
         for case in result["cases"]:
             for run in case["runs"]:
                 if run["arm"] == "lww":
-                    run.update(merged=0, no_change=10)
+                    run.update(merged=0, no_change=TABLE["tasks_per_case"])
         result["lww_lost_updates"] = 1
         values = analyse([result])["metrics"]["descriptive"]
         self.assertGreater(values["lww_anomalies_per_settled_attempt"], 0)

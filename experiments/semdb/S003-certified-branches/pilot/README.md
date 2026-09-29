@@ -135,3 +135,11 @@ python3 experiments/semdb/S003-certified-branches/aggregate.py --record-pilot 1 
 Repeat for seeds 2 and 3, then pass the three new paths to `--pilot`. The recorder builds in a fresh temporary target directory, refuses failed runs and source changes, and creates rather than overwrites evidence. Classification requires the producing revision in the checkout's history and unchanged Rust, build and recording/aggregation sources. The echoed table still binds configuration, allowing only `low_cells` to change for the freeze.
 
 This revision also checks unexpected input sets on every runtime key and counts lost LWW operations when a successful write makes no state change. The descriptive rate is now `lww_anomalies_per_settled_attempt`, with committed and no-change attempts in its denominator. The old pilot cannot establish coverage or rates for these repaired checks.
+
+
+Further validation now requires every completed run to settle exactly all
+configured tasks, checks live semantic state after non-committing merges, and
+excludes small-fixture probe timings from the workload time model. OCC no-change
+settlements are included in anomaly counts and the `occ_anomalies_per_settled_attempt`
+denominator, matching the LWW treatment. These changes invalidate earlier pilot
+source identities; collect fresh pilots before attempting the freeze.

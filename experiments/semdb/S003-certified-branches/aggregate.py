@@ -244,6 +244,10 @@ def validate_layout(result: dict, table: dict) -> None:
             seen.add(key)
             if type(run.get("complete")) is not bool or type(run.get("ticks")) is not int or run["ticks"] < 0:
                 raise ValueError(f"case {index}: run {key} needs a completion flag and nonnegative ticks")
+            if run["complete"]:
+                settlements = [run.get(field) for field in ("merged", "no_change", "verification_holds", "abandoned")]
+                if any(type(value) is not int or value < 0 for value in settlements) or sum(settlements) != table["tasks_per_case"]:
+                    raise ValueError(f"case {index}: run {key} did not settle exactly {table['tasks_per_case']} tasks")
         serial = next(run for run in runs if run["arm"] == "serial")
         if type(case.get("serial_ticks")) is not int or case["serial_ticks"] != serial["ticks"]:
             raise ValueError(f"case {index}: serial_ticks differs from the serial run")
@@ -408,7 +412,7 @@ def descriptive(results: list[dict], totals: dict, hard_pass: bool) -> dict:
             totals["lww_lost_updates"] + totals["lww_lost_increments"],
             by_arm.get("lww", {}).get("merged", 0) + by_arm.get("lww", {}).get("no_change", 0)
         ),
-        "occ_anomalies_per_commit": share(
+        "occ_anomalies_per_settled_attempt": share(
             sum(
                 totals.get(name, 0)
                 for name in (
@@ -419,7 +423,7 @@ def descriptive(results: list[dict], totals: dict, hard_pass: bool) -> dict:
                     "occ_stale_reliance_commits",
                 )
             ),
-            by_arm.get("occ", {}).get("merged", 0),
+            by_arm.get("occ", {}).get("merged", 0) + by_arm.get("occ", {}).get("no_change", 0),
         ),
         "unnecessary_refusal_share": share(totals["unnecessary_refusals"], refusals),
         "put_increment_share": share(totals["put_increment_conflicts"], refusals),
