@@ -9,9 +9,11 @@
 #![allow(dead_code)]
 
 pub mod canary;
+pub mod metrics;
 pub mod model;
 pub mod oracle;
 pub mod params;
 pub mod program;
 pub mod verifier;
 pub mod workload;
+pub mod world;

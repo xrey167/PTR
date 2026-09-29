@@ -247,6 +247,32 @@ pub fn merge_delta(ops: &[Op], target: &Model) -> Result<Delta, OpRefusal> {
     Ok(delta)
 }
 
+/// The commutative keys of `footprint` whose value in `target` is not the one
+/// the branch's base held: what a merge rebases.
+pub fn rebased_keys(footprint: &Footprint, target: &Model) -> BTreeSet<String> {
+    footprint
+        .ops
+        .iter()
+        .filter(|op| op.commutes())
+        .filter(|op| {
+            footprint
+                .touched
+                .get(op.key())
+                .is_some_and(|touched| target.value(op.key()) != touched.base.as_ref())
+        })
+        .map(|op| op.key().to_string())
+        .collect()
+}
+
+/// The plan a certified merge of `footprint` into `target` would carry: the
+/// rebased keys and the delta, or `None` when an operation is refused. With
+/// the target's revision it is what a plan digest covers, so two calls that
+/// return equal values and revisions stand for the same plan.
+pub fn plan(footprint: &Footprint, target: &Model) -> Option<(BTreeSet<String>, Delta)> {
+    let delta = merge_delta(&footprint.ops, target).ok()?;
+    Some((rebased_keys(footprint, target), delta))
+}
+
 /// Judge `footprint` merged into `target`.
 pub fn judge(footprint: &Footprint, target: &Model) -> Judgement {
     let hazards = hazards(footprint, target);
@@ -257,18 +283,7 @@ pub fn judge(footprint: &Footprint, target: &Model) -> Judgement {
     } else if !conflict_keys.is_empty() {
         Predicted::Conflict(conflict_keys)
     } else {
-        let rebased: BTreeSet<String> = footprint
-            .ops
-            .iter()
-            .filter(|op| op.commutes())
-            .filter(|op| {
-                footprint
-                    .touched
-                    .get(op.key())
-                    .is_some_and(|touched| target.value(op.key()) != touched.base.as_ref())
-            })
-            .map(|op| op.key().to_string())
-            .collect();
+        let rebased = rebased_keys(footprint, target);
         match merge_delta(&footprint.ops, target) {
             Err(refusal) => Predicted::OperationRefused(refusal),
             Ok(delta) => {
