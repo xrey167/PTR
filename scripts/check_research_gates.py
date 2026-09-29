@@ -237,7 +237,7 @@ def names_an_entrypoint(manifest: dict) -> bool:
     entrypoint=manifest.get("entrypoint")
     return isinstance(entrypoint,str) and bool(entrypoint.strip())
 
-def command_errors(exp_id: str, manifest: dict, table: dict, read=None) -> list[str]:
+def command_errors(exp_id: str, manifest: dict, table: dict, read=None, names=None) -> list[str]:
     """What keeps the runner from building the command of `exp_id`, a listed
     experiment, from its manifest `manifest` and its `[preregistration]`
     table `table`: it splits the manifest's `entrypoint` as a shell would
@@ -256,7 +256,10 @@ def command_errors(exp_id: str, manifest: dict, table: dict, read=None) -> list[
     repository's own Cargo configuration, a file of the commit, name any of
     them, or a program Cargo runs (`cargo_configuration_errors`): the record
     names the compiler rustup or the `PATH` resolves, not one Cargo is told
-    to run instead, or a runner started in place of the built program. A commit
+    to run instead, or a runner started in place of the built program. Nor
+    does a `Cargo.toml` among the repository files `names` lists (a function
+    returning their names, `read` giving each one's text) name a path outside
+    the repository for Cargo to build from (`cargo_manifest_errors`). A commit
     whose command the runner cannot build could not launch and froze
     nothing (`launchable_at`); the tree check refuses it first."""
     if not names_an_entrypoint(manifest):
@@ -302,6 +305,8 @@ def command_errors(exp_id: str, manifest: dict, table: dict, read=None) -> list[
     # reads the repository's configuration there.
     if read is not None:
         errors.extend(cargo_configuration_errors(exp_id,read))
+        if names is not None:
+            errors.extend(cargo_manifest_errors(exp_id,names(),read))
     return errors
 
 # The Cargo commands a listed experiment's command may run: built into Cargo,
@@ -440,6 +445,100 @@ def cargo_invocation(tokens: list[str]) -> list[str] | None:
         program=experiment_records.program_name(rest[0]) if rest else ""
         rest=rest[1:]
     return rest if program=="cargo" else None
+
+# The tables of a Cargo manifest whose entries can name a dependency by path.
+CARGO_DEPENDENCY_TABLES=("dependencies","dev-dependencies","build-dependencies","dev_dependencies","build_dependencies")
+# The array tables of a manifest that name a target by the source file it is
+# built from.
+CARGO_TARGET_TABLES=("bin","example","test","bench")
+
+def cargo_manifest_paths(manifest: dict) -> list[str]:
+    """Every path a Cargo manifest names for Cargo to read or build from,
+    relative to its directory: a dependency's `path` (in `[dependencies]`,
+    `[dev-dependencies]`, `[build-dependencies]`, under `[target.<cfg>]` and
+    in `[workspace.dependencies]`), a `[patch]` or `[replace]` entry's, the
+    workspace's `members`, `default-members` and `exclude`, the package's
+    `workspace` root and `build` script, and the source file of `[lib]` and
+    of each `[[bin]]`, `[[example]]`, `[[test]]` and `[[bench]]`. What is not
+    a string or a table of the shape Cargo reads is skipped: Cargo refuses
+    it itself."""
+    found=[]
+
+    def specs(table):
+        for spec in table.values() if isinstance(table,dict) else ():
+            if isinstance(spec,dict) and isinstance(spec.get("path"),str):
+                found.append(spec["path"])
+
+    def dependencies(table):
+        for name in CARGO_DEPENDENCY_TABLES:
+            specs(table.get(name))
+
+    dependencies(manifest)
+    platforms=manifest.get("target")
+    for platform in platforms.values() if isinstance(platforms,dict) else ():
+        if isinstance(platform,dict):
+            dependencies(platform)
+    workspace=manifest.get("workspace")
+    if isinstance(workspace,dict):
+        specs(workspace.get("dependencies"))
+        for key in ("members","default-members","exclude"):
+            listed=workspace.get(key)
+            if isinstance(listed,list):
+                found.extend(member for member in listed if isinstance(member,str))
+    patches=manifest.get("patch")
+    for source in patches.values() if isinstance(patches,dict) else ():
+        specs(source)
+    specs(manifest.get("replace"))
+    package=manifest.get("package")
+    if isinstance(package,dict):
+        found.extend(value for value in (package.get("workspace"),package.get("build")) if isinstance(value,str))
+    library=manifest.get("lib")
+    if isinstance(library,dict) and isinstance(library.get("path"),str):
+        found.append(library["path"])
+    for kind in CARGO_TARGET_TABLES:
+        targets=manifest.get(kind)
+        for target in targets if isinstance(targets,list) else ():
+            if isinstance(target,dict) and isinstance(target.get("path"),str):
+                found.append(target["path"])
+    return found
+
+def resolves_outside(directory: str, path: str) -> bool:
+    """Whether `path`, as a manifest in the repository `directory` (`.` for
+    the root) names it, leaves what the repository's watch reads
+    (`outside_repository`): absolute on any platform, or climbing above the
+    root from `directory`, which a path like `../ptr-core` from `crates/x`
+    does not."""
+    normalized=path.replace("\\","/")
+    if normalized.startswith("/") or names_a_drive(normalized):
+        return True
+    return outside_repository(normalized if directory=="." else f"{directory}/{normalized}")
+
+def cargo_manifest_errors(exp_id: str, names, read) -> list[str]:
+    """Why a `Cargo.toml` among the repository files `names` names a path
+    Cargo builds from outside the repository (`cargo_manifest_paths`,
+    `resolves_outside`): `external = { path = "../../external" }` is a
+    source Cargo follows and that no watch or record binds, so it could
+    change between seeds while every record named one commit. Each must
+    parse as TOML, or the paths it names cannot be read. `read` returns a
+    repository file's text, or None where there is none."""
+    errors=[]
+    for name in sorted(names):
+        directory=PurePosixPath(name).parent.as_posix()
+        if PurePosixPath(name).name!="Cargo.toml":
+            continue
+        text=read(name)
+        if text is None:
+            continue
+        try:
+            manifest=tomllib.loads(text)
+        except tomllib.TOMLDecodeError as error:
+            errors.append(f"{exp_id}: {name} does not parse as TOML ({error}), so the paths it names cannot be read")
+            continue
+        for named in cargo_manifest_paths(manifest):
+            if resolves_outside(directory,named):
+                errors.append(f"{exp_id}: {name} names {named}, outside what the repository's watch reads, whose "
+                              "sources no watch or record binds; name a path the repository holds")
+    return errors
 
 # The names Cargo reads its configuration from in a `.cargo` directory, the
 # older first, which Cargo prefers where both are.
@@ -921,6 +1020,31 @@ def tree_text(root: Path, relative: str) -> str | None:
     except (OSError,UnicodeDecodeError):
         return None
 
+def commit_names(root: Path, commit: str) -> list[str]:
+    """The names of the files `commit` holds, as git writes them. Raises
+    `HistoryUnreadable` when git cannot tell."""
+    try:
+        listing=experiment_records.git(root,"--literal-pathspecs","ls-tree","-r","-z","--name-only",commit,binary=True)
+    except experiment_records.ProvenanceError as error:
+        raise HistoryUnreadable(str(error)) from error
+    if listing.returncode!=0:
+        raise HistoryUnreadable(listing.stderr.decode("utf-8","replace").strip() or f"git ls-tree exited {listing.returncode}")
+    return [name for name in listing.stdout.decode("utf-8","surrogateescape").split("\0") if name]
+
+def tree_names(root: Path) -> list[str]:
+    """The names of the files in the tree at `root` that git tracks or lists
+    as untracked and not ignored, as git writes them (a name that is not
+    UTF-8 reads as one no repository path is, rather than failing every
+    check). Raises `HistoryUnreadable` when git cannot list them."""
+    try:
+        listing=experiment_records.git(
+            root,"ls-files","-z","--cached","--others",experiment_records.PER_DIRECTORY,binary=True)
+    except experiment_records.ProvenanceError as error:
+        raise HistoryUnreadable(str(error)) from error
+    if listing.returncode!=0:
+        raise HistoryUnreadable(listing.stderr.decode("utf-8","replace").strip() or f"git ls-files exited {listing.returncode}")
+    return [name for name in listing.stdout.decode("utf-8","surrogateescape").split("\0") if name]
+
 def toml_at(root: Path, commit: str, relative: str) -> dict | None:
     """The TOML file `relative` at `commit`, or None when it is absent or
     does not parse."""
@@ -1121,7 +1245,8 @@ def launchable_at(root: Path, commit: str, exp_id: str, directory: str) -> tuple
     # The runner builds the command from the manifest and the table as the
     # tree check reads them, and a run under a runner changed to let another
     # through was never confirmatory.
-    if command_errors(exp_id,manifest,table,lambda name:blob_text(root,commit,name)):
+    if command_errors(exp_id,manifest,table,lambda name:blob_text(root,commit,name),
+                      lambda:commit_names(root,commit)):
         return None
     for key,kind in entry["required"].items():
         if key not in table or kind_problem(table[key],kind):
@@ -1660,7 +1785,8 @@ def frozen_errors(exp_id: str, entry: dict, manifest: dict, experiment: Path, ro
     if not names_an_entrypoint(manifest):
         errors.append(f"{exp_id}: experiment.toml names no entrypoint; a listed experiment names what it runs before "
                       "it leaves planned, since its manifest is frozen from then on")
-    errors.extend(command_errors(exp_id,manifest,table,lambda name:tree_text(root,name)))
+    errors.extend(command_errors(exp_id,manifest,table,lambda name:tree_text(root,name),
+                                 lambda:tree_names(root)))
     results_dir=manifest.get("results_dir","results")
     results=None
     if isinstance(results_dir,str) and any(is_git_administration(part) for part in PurePosixPath(results_dir).parts):

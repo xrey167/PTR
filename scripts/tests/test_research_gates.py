@@ -2920,6 +2920,127 @@ class PreregistrationGateTests(unittest.TestCase):
         commit=commit_all(root)
         self.assertIsNone(mod.launchable_at(root,commit,"X900","experiments/semdb/X900-fixture"))
 
+    def test_a_cargo_manifest_names_no_path_outside_the_repository(self):
+        # Cargo follows a path dependency wherever it points, and what lies
+        # outside the repository is bound by no watch or record: the sources
+        # could change between seeds while every record named one commit.
+        def errors(files,entrypoint="cargo run -- <seed>"):
+            return mod.command_errors("X900",{"entrypoint":entrypoint},{"seeds":[17]},files.get,lambda:list(files))
+
+        def refused(name,path):
+            return (f"X900: {name} names {path}, outside what the repository's watch reads, whose sources no watch or "
+                    "record binds; name a path the repository holds")
+
+        from_root=('[package]\nname = "x"\nbuild = "build.rs"\n[lib]\npath = "src/lib.rs"\n'
+                   '[[bin]]\nname = "b"\npath = "src/main.rs"\n[dependencies]\n'
+                   'core = { path = "crates/core" }\nlocal = "1.0"\n[workspace]\nmembers = ["crates/*"]\n')
+        from_crate=('[package]\nname = "x"\nworkspace = "../.."\n[dependencies]\n'
+                    'sibling = { path = "../y" }\nroot = { path = "../.." }\n')
+        # Each spelling that names a path, from the root and from a crate.
+        for text,path in (
+            ('[dependencies]\nexternal = { path = "../external" }\n',"../external"),
+            ('[dependencies.external]\npath = "../../external"\n',"../../external"),
+            ('[dev-dependencies]\nexternal = { path = "../external" }\n',"../external"),
+            ('[build-dependencies]\nexternal = { path = "../external" }\n',"../external"),
+            ("[target.'cfg(unix)'.dependencies]\nexternal = { path = \"../external\" }\n","../external"),
+            ("[target.x86_64-unknown-linux-gnu.build-dependencies]\nexternal = { path = \"../e\" }\n","../e"),
+            ('[workspace.dependencies]\nexternal = { path = "../external" }\n',"../external"),
+            ('[patch.crates-io]\nserde = { path = "../serde" }\n',"../serde"),
+            ('[replace]\n"serde:1.0.0" = { path = "../serde" }\n',"../serde"),
+            ('[workspace]\nmembers = ["../elsewhere"]\n',"../elsewhere"),
+            ('[workspace]\ndefault-members = ["../elsewhere"]\n',"../elsewhere"),
+            ('[workspace]\nexclude = ["../elsewhere"]\n',"../elsewhere"),
+            ('[package]\nname = "x"\nworkspace = "../outer"\n',"../outer"),
+            ('[package]\nname = "x"\nbuild = "../build.rs"\n',"../build.rs"),
+            ('[lib]\npath = "../lib.rs"\n',"../lib.rs"),
+            ('[[bin]]\nname = "b"\npath = "../main.rs"\n',"../main.rs"),
+            ('[[example]]\nname = "e"\npath = "../e.rs"\n',"../e.rs"),
+            ('[[test]]\nname = "t"\npath = "../t.rs"\n',"../t.rs"),
+            ('[[bench]]\nname = "b"\npath = "../b.rs"\n',"../b.rs"),
+            ('[dependencies]\nexternal = { path = "/opt/external" }\n',"/opt/external"),
+            ('[dependencies]\nexternal = { path = "C:/external" }\n',"C:/external"),
+            ('[dependencies]\nexternal = { path = "..\\\\external" }\n',"..\\external"),
+            ('[dependencies]\nexternal = { path = "crates/.git/x" }\n',"crates/.git/x"),
+            ('[dependencies]\nexternal = { path = "crates/x:stream" }\n',"crates/x:stream"),
+        ):
+            with self.subTest(root_manifest=text):
+                self.assertEqual(errors({"Cargo.toml":text}),[refused("Cargo.toml",path)])
+        # From a crate, a path climbs to the root and no further.
+        self.assertEqual(errors({"crates/x/Cargo.toml":'[dependencies]\nsibling = { path = "../y" }\n'}),[])
+        self.assertEqual(errors({"crates/x/Cargo.toml":'[dependencies]\nroot = { path = "../.." }\n'}),[])
+        self.assertEqual(errors({"crates/x/Cargo.toml":'[dependencies]\nout = { path = "../../.." }\n'}),
+                         [refused("crates/x/Cargo.toml","../../..")])
+        self.assertEqual(errors({"crates/x/Cargo.toml":'[dependencies]\nout = { path = "../../../external" }\n'}),
+                         [refused("crates/x/Cargo.toml","../../../external")])
+        self.assertEqual(errors({"a/Cargo.toml":'[dependencies]\nout = { path = "../../external" }\n'}),
+                         [refused("a/Cargo.toml","../../external")])
+        # The older spellings of the dependency tables, which Cargo reads.
+        for table in ("dev_dependencies","build_dependencies"):
+            with self.subTest(table=table):
+                self.assertEqual(errors({"Cargo.toml":f'[{table}]\nexternal = {{ path = "../external" }}\n'}),
+                                 [refused("Cargo.toml","../external")])
+        # An absolute path, on either platform's terms, is outside from any
+        # directory, not a name below it (a TOML literal string holds the
+        # backslashes as they are).
+        for absolute in ("/opt/external","C:/external",r"\\host\share\x"):
+            with self.subTest(absolute=absolute):
+                self.assertEqual(errors({"crates/x/Cargo.toml":f"[dependencies]\nx = {{ path = '{absolute}' }}\n"}),
+                                 [refused("crates/x/Cargo.toml",absolute)])
+        # What is not a string, or a table of the shape Cargo reads, is
+        # skipped rather than failing: Cargo refuses it itself.
+        self.assertEqual(errors({"Cargo.toml":'[dependencies]\nx = { path = 5 }\ny = "1"\n[workspace]\nmembers = "a"\n'
+                                              '[lib]\npath = 5\n[[bin]]\nname = "b"\n[package]\nbuild = 1\n'
+                                              '[target]\nx = 1\n[patch]\ncrates-io = 1\n'}),[])
+        # What names paths inside the repository, and other tables, pass.
+        self.assertEqual(errors({"Cargo.toml":from_root,"crates/x/Cargo.toml":from_crate}),[])
+        self.assertEqual(errors({"Cargo.toml":'[package]\nname = "x"\nbuild = false\n[dependencies]\nserde = "1"\n'
+                                              'git = { git = "https://example.invalid/x.git" }\n'
+                                              '[package.metadata.docs]\npath = "../not-cargo"\n'}),[])
+        # Only files named Cargo.toml, at any depth, are manifests; every
+        # one of them is read, each error in the order of the names.
+        self.assertEqual(errors({"Cargo.toml.bak":'[dependencies]\nx = { path = "../x" }\n',
+                                 "notes/Cargo.lock":"x = 1\n"}),[])
+        self.assertEqual(errors({"b/Cargo.toml":'[lib]\npath = "../../l.rs"\n',
+                                 "a/Cargo.toml":'[lib]\npath = "../../l.rs"\n'}),
+                         [refused("a/Cargo.toml","../../l.rs"),refused("b/Cargo.toml","../../l.rs")])
+        # A manifest that Python's TOML reader cannot parse is refused as
+        # unchecked, and a name git lists that holds no readable file is not.
+        unparsed=errors({"Cargo.toml":"[dependencies\n"})
+        self.assertEqual(len(unparsed),1,unparsed)
+        self.assertTrue(unparsed[0].startswith("X900: Cargo.toml does not parse as TOML ("),unparsed)
+        self.assertEqual(mod.cargo_manifest_errors("X900",["Cargo.toml","crates/x/Cargo.toml"],lambda name:None),[])
+        # A command that is no Cargo may start one, so the repository's
+        # manifests count for every listed experiment; a caller that gives no
+        # listing of names checks none, as before.
+        self.assertEqual(errors({"Cargo.toml":'[dependencies]\nx = { path = "../x" }\n'},"python3 bench.py <seed>"),
+                         [refused("Cargo.toml","../x")])
+        self.assertEqual(mod.command_errors("X900",{"entrypoint":"cargo run -- <seed>"},{"seeds":[17]},
+                                            {"Cargo.toml":'[dependencies]\nx = { path = "../x" }\n'}.get),[])
+        # The launch reads the manifests in the tree, and the history the
+        # manifests at each commit.
+        root=self.tree(status="running")
+        (root/"crates/x").mkdir(parents=True,exist_ok=True)
+        (root/"crates/x/Cargo.toml").write_text('[dependencies]\nexternal = { path = "../../../external" }\n',encoding="utf-8")
+        message=refused("crates/x/Cargo.toml","../../../external")
+        self.assert_blocked(root,message)
+        self.assertEqual(mod.launch_errors(root,"X900"),[message])
+        commit=commit_all(root)
+        self.assertIsNone(mod.launchable_at(root,commit,"X900","experiments/semdb/X900-fixture"))
+        # Committed, the manifest is still one the tree holds.
+        self.assertEqual(mod.launch_errors(root,"X900"),[message])
+        self.assertEqual(sorted(name for name in mod.commit_names(root,commit) if name.endswith("Cargo.toml")),
+                         ["crates/x/Cargo.toml"])
+        self.assertEqual(sorted(name for name in mod.tree_names(root) if name.endswith("Cargo.toml")),
+                         ["crates/x/Cargo.toml"])
+        with self.assertRaises(mod.HistoryUnreadable):
+            mod.commit_names(root,"0"*40)
+        with tempfile.TemporaryDirectory() as directory, self.assertRaises(mod.HistoryUnreadable):
+            mod.tree_names(Path(directory))
+        # Put right, the tree passes and the commit could launch.
+        (root/"crates/x/Cargo.toml").write_text('[dependencies]\nsibling = { path = "../y" }\n',encoding="utf-8")
+        self.assertEqual(mod.launch_errors(root,"X900"),[])
+        self.assertIsNotNone(mod.launchable_at(root,commit_all(root,"inside"),"X900","experiments/semdb/X900-fixture"))
+
     def test_a_name_that_is_not_utf8_is_no_repository_path(self):
         # Git holds a name's bytes as they are. One that is not UTF-8 is
         # refused in the tree, froze nothing at a commit, and fails no later
