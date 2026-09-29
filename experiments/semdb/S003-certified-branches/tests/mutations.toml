@@ -1,0 +1,563 @@
+# Defects the S003 harness must detect; run with
+# `python scripts/mutation_check.py S003`. Each `find` must occur exactly once
+# in its file (checked in CI), so the list cannot drift from the code silently.
+# `expect` names the hard counters that show the defect: a run that fails only
+# on others does not count as detecting it.
+#
+# Where a second layer backs up a check (the replay rule that repeats the
+# runtime's merge-once lookup, the verifier that repeats the ingress-key
+# check), the mutation removes every layer, because the harness checks
+# outcomes and a defect in one layer alone is caught by the other; each layer
+# has its own unit test. The last four mutations plant defects in the
+# harness itself, to show its oracle, model and cross-checks are not vacuous.
+# The baselines' anomalies (last-writer-wins, OCC) are evidence, never hard
+# counters.
+
+package = "ptr-bench"
+features = ""
+subcommand = "certified-branches"
+cases = 6
+seed = 17
+hard_counters = [
+    "lost_updates",
+    "stale_read_merges",
+    "undetected_phantoms",
+    "stale_scan_merges",
+    "stale_input_merges",
+    "stale_reliance_merges",
+    "lost_increments",
+    "serialization_divergences",
+    "invariant_violations",
+    "spurious_refusals",
+    "refusal_kind_mismatches",
+    "conflict_key_errors",
+    "rebase_classification_errors",
+    "ungated_commits",
+    "approval_bypasses",
+    "double_merges",
+    "bypass_commits_accepted",
+    "reserved_writes_accepted",
+    "seal_invariant_failures",
+    "undeclared_input_merges",
+    "forged_histories_accepted",
+    "provenance_mismatches",
+    "model_divergences",
+    "program_mirror_divergences",
+    "replay_divergences",
+    "canary_misses",
+    "nondeterminism",
+    "harness_errors",
+]
+
+[[mutation]]
+name = "value-digest-ignored"
+description = "Certification never compares a value the branch read with the target's."
+expect = ["lost_updates", "stale_read_merges"]
+file = "crates/ptr-branch/src/certify.rs"
+find = '''
+        if ValueDigest::of(key, target.value(key))? != *digest {
+'''
+replace = '''
+        if false && ValueDigest::of(key, target.value(key))? != *digest {
+'''
+
+[[mutation]]
+name = "range-digest-ignored"
+description = "Certification never compares a scanned prefix with the target's."
+expect = ["undetected_phantoms", "stale_scan_merges"]
+file = "crates/ptr-branch/src/certify.rs"
+find = '''
+        if now != *digest {
+'''
+replace = '''
+        if false && now != *digest {
+'''
+
+[[mutation]]
+name = "input-set-digest-ignored"
+description = "Certification accepts a touched key whose input set changed."
+expect = ["stale_input_merges"]
+file = "crates/ptr-branch/src/certify.rs"
+find = '''
+        if *inputs != InputsDigest::of(key, target.inputs(key)) {
+'''
+replace = '''
+        if false && *inputs != InputsDigest::of(key, target.inputs(key)) {
+'''
+
+[[mutation]]
+name = "unread-inputs-ignored"
+description = "Certification accepts a touched key with an input the branch did not read."
+expect = ["undeclared_input_merges"]
+file = "crates/ptr-branch/src/certify.rs"
+find = '''
+                    .filter(|input| !branch.reads().contains_key(*input))
+'''
+replace = '''
+                    .filter(|input| false && !branch.reads().contains_key(*input))
+'''
+
+[[mutation]]
+name = "lifecycle-ignored"
+description = "Certification accepts a relied generation that is not live."
+expect = ["stale_reliance_merges"]
+file = "crates/ptr-branch/src/certify.rs"
+find = '''
+        .filter(|(target, generation)| validity(target, **generation) != Some(Validity::Live))
+'''
+replace = '''
+        .filter(|(target, generation)| validity(target, **generation) != Some(Validity::Live) && false)
+'''
+
+[[mutation]]
+name = "rebase-on-absent"
+description = "A commutative operation is applied to nothing instead of the target's value, so an increment overwrites what another writer added."
+expect = ["lost_increments"]
+file = "crates/ptr-branch/src/certify.rs"
+find = '''
+            None => target.value(op.key()).cloned(),
+'''
+replace = '''
+            None => None,
+'''
+
+[[mutation]]
+name = "rebased-set-inverted"
+description = "The rebased keys are those whose value did not change."
+expect = ["rebase_classification_errors"]
+file = "crates/ptr-branch/src/certify.rs"
+find = '''
+            if ValueDigest::of(key, target.value(key))? != *base {
+'''
+replace = '''
+            if ValueDigest::of(key, target.value(key))? == *base {
+'''
+
+[[mutation]]
+name = "set-member-conflict-dropped"
+description = "Certification merges a set operation that would undo a concurrent insert or removal."
+expect = ["refusal_kind_mismatches"]
+file = "crates/ptr-branch/src/certify.rs"
+find = '''
+        if after == in_base && holds_member(target.value(key), member) != in_base {
+'''
+replace = '''
+        if false && after == in_base && holds_member(target.value(key), member) != in_base {
+'''
+
+[[mutation]]
+name = "range-digest-keys-only"
+description = "A range digest covers the keys under a prefix and not their values."
+expect = ["stale_scan_merges"]
+file = "crates/ptr-branch/src/digest.rs"
+find = '''
+            hasher.update(ValueDigest::of(key, Some(value))?.as_bytes());
+'''
+replace = '''
+            let _ = value;
+            hasher.update(ValueDigest::of(key, None)?.as_bytes());
+'''
+
+[[mutation]]
+name = "seal-reserved-check-dropped"
+description = "Sealing parts accepts an operation on an ingress key."
+expect = ["seal_invariant_failures"]
+file = "crates/ptr-branch/src/branch.rs"
+find = '''
+        if is_reserved(key) {
+            return Err(BranchError::ReservedNamespace {
+                key: key.to_owned(),
+            });
+        }
+        if !op.commutes() && !parts.reads.contains_key(key) {
+'''
+replace = '''
+        if false && is_reserved(key) {
+            return Err(BranchError::ReservedNamespace {
+                key: key.to_owned(),
+            });
+        }
+        if !op.commutes() && !parts.reads.contains_key(key) {
+'''
+
+[[mutation]]
+name = "seal-unread-target-dropped"
+description = "Sealing parts accepts an overwrite of a key the branch never read."
+expect = ["seal_invariant_failures"]
+file = "crates/ptr-branch/src/branch.rs"
+find = '''
+        if !op.commutes() && !parts.reads.contains_key(key) {
+'''
+replace = '''
+        if false && !op.commutes() && !parts.reads.contains_key(key) {
+'''
+
+[[mutation]]
+name = "merge-lifecycle-always-live"
+description = "The runtime certifies a branch as if every generation were live."
+expect = ["stale_reliance_merges"]
+file = "crates/ptr-runtime/src/merge.rs"
+find = '''
+        let certification = certify(sealed, &self.semdb.snapshot(), |target, generation| {
+            self.generation_validity(target, generation)
+        })
+'''
+replace = '''
+        let certification = certify(sealed, &self.semdb.snapshot(), |_target, _generation| {
+            Some(ptr_types::Validity::Live)
+        })
+'''
+
+[[mutation]]
+name = "merge-once-removed"
+description = "A branch id that was merged merges again: the runtime's lookup and the replay rule that backs it up are both removed."
+expect = ["double_merges"]
+file = "crates/ptr-runtime/src/merge.rs"
+find = '''
+        if let Some(at) = self.merged_at(sealed.id()) {
+'''
+replace = '''
+        if let Some(at) = self.merged_at(sealed.id()).filter(|_| false) {
+'''
+
+[[mutation.also]]
+file = "crates/ptr-runtime/src/semantic.rs"
+find = '''
+                if self
+                    .state
+                    .values
+                    .contains_key(&ptr_state::merged_branch_key(&merge.branch))
+                {
+'''
+replace = '''
+                if false
+                    && self
+                        .state
+                        .values
+                        .contains_key(&ptr_state::merged_branch_key(&merge.branch))
+                {
+'''
+
+[[mutation]]
+name = "merge-key-not-projected"
+description = "A merge is not projected at its branch's key, so no runtime rebuilt from the journal knows the branch was merged."
+expect = ["double_merges"]
+file = "crates/ptr-state/src/lib.rs"
+find = '''
+            if let ptr_ledger::SemanticOrigin::Merge(merge) = origin {
+'''
+replace = '''
+            if let Some(merge) = None::<&ptr_ledger::MergeRecord> {
+'''
+
+[[mutation]]
+name = "ingress-keys-unguarded"
+description = "A host write to an ingress key is admitted: the write path's two checks, the replay rule and the verifier's family rule are all removed."
+expect = ["reserved_writes_accepted"]
+file = "crates/ptr-runtime/src/semantic.rs"
+find = '''
+        if let Some(key) = written_ingress_key(&delta) {
+'''
+replace = '''
+        if let Some(key) = written_ingress_key(&delta).filter(|_| false) {
+'''
+
+[[mutation.also]]
+find = '''
+                if written_ingress_key(delta).is_some() {
+                    return Err(invalid(
+                        "a host write writes, removes or derives an ingress key",
+'''
+replace = '''
+                if false && written_ingress_key(delta).is_some() {
+                    return Err(invalid(
+                        "a host write writes, removes or derives an ingress key",
+'''
+
+[[mutation.also]]
+find = '''
+        if let Some(key) = evicted_ingress_key(&prepared) {
+'''
+replace = '''
+        if let Some(key) = evicted_ingress_key(&prepared).filter(|_| false) {
+'''
+
+[[mutation.also]]
+file = "bins/ptr-bench/src/experiments/s003/verifier.rs"
+find = '''
+            .filter(|key| !in_a_family(key))
+'''
+replace = '''
+            .filter(|key| !in_a_family(key) && false)
+'''
+
+[[mutation]]
+name = "verdict-level-strongest"
+description = "The verdict's level is the strongest a verifier reached, not the weakest."
+expect = ["ungated_commits"]
+file = "crates/ptr-runtime/src/merge.rs"
+find = '''
+            .map(|(_, report)| report.level)
+            .min_by_key(|level| level_rank(*level))
+'''
+replace = '''
+            .map(|(_, report)| report.level)
+            .max_by_key(|level| level_rank(*level))
+'''
+
+[[mutation]]
+name = "hard-findings-ignored"
+description = "A verdict that passes with a hard finding is admitted, and the policy's escalation of a hard finding beside a pass is removed too."
+expect = ["ungated_commits"]
+file = "crates/ptr-runtime/src/merge.rs"
+find = '''
+            && self.required.accepts(self.level)
+            && self.hard_findings().is_empty()
+'''
+replace = '''
+            && self.required.accepts(self.level)
+'''
+
+[[mutation.also]]
+file = "crates/ptr-branch/src/arbiter.rs"
+find = '''
+        if report.findings.iter().any(|finding| finding.hard) {
+'''
+replace = '''
+        if false && report.findings.iter().any(|finding| finding.hard) {
+'''
+
+[[mutation]]
+name = "triage-not-enforced"
+description = "A merge the policy does not auto-propose commits without a person."
+expect = ["ungated_commits"]
+file = "crates/ptr-runtime/src/merge.rs"
+find = '''
+        if triage
+            .as_ref()
+            .is_some_and(|triage| triage.decision() != TriageDecision::AutoPropose)
+'''
+replace = '''
+        if false
+            && triage
+                .as_ref()
+                .is_some_and(|triage| triage.decision() != TriageDecision::AutoPropose)
+'''
+
+[[mutation]]
+name = "approval-digest-unchecked"
+description = "An approval commits whatever plan the branch now has."
+expect = ["approval_bypasses"]
+file = "crates/ptr-runtime/src/merge.rs"
+find = '''
+            if *plan_digest != certified.plan_digest {
+'''
+replace = '''
+            if false && *plan_digest != certified.plan_digest {
+'''
+
+[[mutation]]
+name = "reviewer-unchecked"
+description = "An approval by anyone commits."
+expect = ["approval_bypasses"]
+file = "crates/ptr-runtime/src/merge.rs"
+find = '''
+                if !grant.lists_reviewer(&reviewer) {
+'''
+replace = '''
+                if false && !grant.lists_reviewer(&reviewer) {
+'''
+
+[[mutation]]
+name = "before-is-after"
+description = "A host write's verifiers are shown the state after the change as the state before it."
+expect = ["ungated_commits"]
+file = "crates/ptr-runtime/src/semantic.rs"
+find = '''
+                before: self
+                    .semdb
+                    .base_view(&prepared)
+                    .map_err(RuntimeError::Semantic)?,
+'''
+replace = '''
+                before: prepared.view(),
+'''
+
+[[mutation]]
+name = "host-writes-default-on"
+description = "A grant allows host writes unless told not to."
+expect = ["bypass_commits_accepted"]
+file = "crates/ptr-runtime/src/merge.rs"
+find = '''
+            verifiers: Vec::new(),
+            host_writes: false,
+'''
+replace = '''
+            verifiers: Vec::new(),
+            host_writes: true,
+'''
+
+[[mutation]]
+name = "grant-replaceable"
+description = "A second grant replaces the first."
+expect = ["bypass_commits_accepted"]
+file = "crates/ptr-runtime/src/merge.rs"
+find = '''
+        if self.semantic_grant.is_some() {
+            return Err(RuntimeError::SemanticGrantInstalled);
+        }
+'''
+replace = '''
+        if false && self.semantic_grant.is_some() {
+            return Err(RuntimeError::SemanticGrantInstalled);
+        }
+'''
+
+[[mutation]]
+name = "generic-commit-accepts-semantic"
+description = "`commit` accepts a semantic record."
+expect = ["bypass_commits_accepted"]
+file = "crates/ptr-runtime/src/lib.rs"
+find = '''
+    if matches!(event, LedgerEvent::SemanticDeltaCommitted { .. }) {
+        return Err(RuntimeError::SemanticRecordOutsideSemanticPath);
+    }
+'''
+replace = '''
+    if false && matches!(event, LedgerEvent::SemanticDeltaCommitted { .. }) {
+        return Err(RuntimeError::SemanticRecordOutsideSemanticPath);
+    }
+'''
+
+[[mutation]]
+name = "replay-plan-digest-unchecked"
+description = "Replay accepts a merge record whose plan digest is not the digest of its delta."
+expect = ["forged_histories_accepted"]
+file = "crates/ptr-runtime/src/semantic.rs"
+find = '''
+                if plan != merge.plan {
+'''
+replace = '''
+                if false && plan != merge.plan {
+'''
+
+[[mutation]]
+name = "replay-legacy-after-attested"
+description = "Replay accepts a record with no origin after one with an origin."
+expect = ["forged_histories_accepted"]
+file = "crates/ptr-runtime/src/semantic.rs"
+find = '''
+                if self.state.values.contains_key(ptr_state::ATTESTED_MARKER) {
+'''
+replace = '''
+                if false && self.state.values.contains_key(ptr_state::ATTESTED_MARKER) {
+'''
+
+[[mutation]]
+name = "ingress-shape-prefix-only"
+description = "Replay accepts a request record that writes any ingress keys."
+expect = ["forged_histories_accepted"]
+file = "crates/ptr-runtime/src/semantic.rs"
+find = '''
+                let shaped = delta.removals.is_empty()
+                    && delta.dependencies.is_empty()
+                    && delta.upserts.len() == 1
+                    && matches!(delta.upserts.get(&key), Some(SemanticValue::Text(_)));
+'''
+replace = '''
+                let shaped = delta.upserts.keys().all(|key| is_ingress_key(key));
+'''
+
+[[mutation]]
+name = "merge-dependencies-accepted"
+description = "Replay accepts a merge record that carries a dependency entry."
+expect = ["forged_histories_accepted"]
+file = "crates/ptr-runtime/src/semantic.rs"
+find = '''
+                if !delta.dependencies.is_empty() {
+                    return Err(invalid("a merge carries a dependency entry"));
+'''
+replace = '''
+                if false && !delta.dependencies.is_empty() {
+                    return Err(invalid("a merge carries a dependency entry"));
+'''
+
+[[mutation]]
+name = "origin-not-encoded"
+description = "The ledger writes every origin as a record with none, so a journal written to a file loses who wrote what."
+expect = ["replay_divergences", "double_merges"]
+file = "crates/ptr-ledger/src/lib.rs"
+find = '''
+            out.push(if *origin == SemanticOrigin::Legacy {
+                8
+            } else {
+                12
+            });
+'''
+replace = '''
+            out.push(8);
+'''
+
+[[mutation.also]]
+find = '''
+            put_origin(&mut out, origin);
+'''
+replace = '''
+            let _ = origin;
+'''
+
+[[mutation]]
+name = "oracle-ignores-scans"
+description = "The oracle predicts no conflict on a scanned prefix."
+expect = ["canary_misses"]
+file = "bins/ptr-bench/src/experiments/s003/oracle.rs"
+find = '''
+        if target.entries_under(prefix) != *entries {
+            keys.insert(format!("{prefix}*"));
+'''
+replace = '''
+        if false && target.entries_under(prefix) != *entries {
+            keys.insert(format!("{prefix}*"));
+'''
+
+[[mutation]]
+name = "oracle-lifecycle-live"
+description = "The oracle takes every relied generation for live."
+expect = ["canary_misses"]
+file = "bins/ptr-bench/src/experiments/s003/oracle.rs"
+find = '''
+            target.lifecycle.validity(subject, **generation) != Some(Validity::Live)
+'''
+replace = '''
+            target.lifecycle.validity(subject, **generation) != Some(Validity::Live) && false
+'''
+
+[[mutation]]
+name = "model-skips-evictions"
+description = "The model does not evict a derived key when an input changes."
+expect = ["model_divergences"]
+file = "bins/ptr-bench/src/experiments/s003/model.rs"
+find = '''
+            if !delta.upserts.contains_key(key) && self.values.contains_key(key) {
+'''
+replace = '''
+            if false && !delta.upserts.contains_key(key) && self.values.contains_key(key) {
+'''
+
+[[mutation]]
+name = "mirror-drops-reads"
+description = "The model's view of a program does not log what it reads."
+expect = ["program_mirror_divergences"]
+file = "bins/ptr-bench/src/experiments/s003/program.rs"
+find = '''
+        let value = self.shown(key);
+        self.log.events.push(Event::Read {
+            key: key.to_string(),
+            value: value.clone(),
+        });
+        value
+'''
+replace = '''
+        let value = self.shown(key);
+        value
+'''
