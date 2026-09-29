@@ -948,6 +948,16 @@ def invokes_rustdoc(command: list[str]) -> bool:
     return "--doc" in options or not options & DOCTEST_EXCLUDING_OPTIONS
 
 
+def runs_other_program(command: list[str]) -> bool:
+    """Whether `command` is `rustup run <toolchain> <program>` for a program
+    that is no proxy of rustup's, which runs it with the selected toolchain's
+    tools on its PATH and needs none of them itself."""
+    if not command or experiment_records.program_name(command[0]) != "rustup":
+        return False
+    program = experiment_records.program_name(started_program(command)[0])
+    return program != "rustup" and program not in RUSTUP_PROXIES
+
+
 def required_rust_tools(command: list[str], tools: dict) -> set[str]:
     """The tools of `tools` (`toolchain`) that `command`, which starts rustup
     or one of its proxies, needs: Cargo needs itself and `rustc` (and `rustdoc`
@@ -960,6 +970,19 @@ def required_rust_tools(command: list[str], tools: dict) -> set[str]:
     every = set(tools) if program == "rustup" or program in RUSTUP_PROXIES else set()
     needed = {"cargo": {"cargo", "rustc"}, "rustc": {"rustc"}, "rustdoc": {"rustdoc"}}.get(program, every)
     return needed | ({"rustdoc"} if invokes_rustdoc(command) else set())
+
+
+def missing_rust_tools(command: list[str], tools: dict) -> list[str]:
+    """The tools of `tools` that `command` needs and that resolve to nothing,
+    in the order of `tools`. A program `rustup run` starts that is no proxy of
+    rustup's needs no tool of its own, but the toolchain `rustup run` selects
+    to run it in: one that resolves no tool at all is absent, which `rustup
+    run` refuses (or installs, with `--install`, after the record named
+    nothing of it), so all of them are missing then."""
+    if runs_other_program(command):
+        return list(tools) if all(program["path"] is None for program in tools.values()) else []
+    needed = required_rust_tools(command, tools)
+    return [tool for tool, program in tools.items() if tool in needed and program["path"] is None]
 
 
 def is_linked_toolchain(directory: str) -> bool:
@@ -1578,8 +1601,7 @@ def launch_and_record(
         # A Rust command's proxies resolve the tools again when they start:
         # one that resolves to nothing now could resolve to a program the
         # record never named by then, or fail after the seed is spent.
-        needed = required_rust_tools(command, tools)
-        unresolved = [tool for tool, program in tools.items() if tool in needed and program["path"] is None]
+        unresolved = missing_rust_tools(command, tools)
         if unresolved and starts_rust(command):
             print(
                 f"ERROR: refusing to run {exp_id}: rustup or the PATH resolves no {', '.join(unresolved)}, which the "
