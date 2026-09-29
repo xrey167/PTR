@@ -283,6 +283,46 @@ def build_command(
     return command
 
 
+def cargo_lock_record(command: list[str]) -> dict:
+    """Ask the selected Cargo for its workspace lockfile, before launching a run.
+
+    Only Cargo's arguments before `--` select a manifest; arguments to the
+    experiment itself do not. Resolution failures refuse launch rather than
+    silently attributing the root workspace's dependencies to another build.
+    """
+    if not command or Path(command[0]).name not in {"cargo", "cargo.exe"}:
+        return {"cargo_lock_path": None, "cargo_lock_sha256": None}
+    arguments = command[1:command.index("--")] if "--" in command else command[1:]
+    query = [command[0]]
+    if arguments and arguments[0].startswith("+"):
+        query.append(arguments[0])
+    query.extend(["locate-project", "--workspace", "--message-format", "plain"])
+    manifests = []
+    for index, argument in enumerate(arguments):
+        if argument == "--manifest-path":
+            if index + 1 == len(arguments):
+                raise ValueError("Cargo --manifest-path requires a value")
+            manifests.append(arguments[index + 1])
+        elif argument.startswith("--manifest-path="):
+            manifests.append(argument.split("=", 1)[1])
+    if len(manifests) > 1 or manifests == [""]:
+        raise ValueError("Cargo requires one nonempty manifest path")
+    if manifests:
+        query.extend(["--manifest-path", manifests[0]])
+    try:
+        result = subprocess.run(query, cwd=ROOT, text=True, capture_output=True, check=True)
+        if not result.stdout.strip():
+            raise ValueError("Cargo returned no workspace manifest")
+        manifest = (ROOT / result.stdout.strip()).resolve()
+        lock = manifest.with_name("Cargo.lock")
+        relative = lock.relative_to(ROOT.resolve()).as_posix()
+        if not lock.is_file():
+            raise ValueError(f"Cargo workspace lockfile is missing: {relative}")
+        return {"cargo_lock_path": relative, "cargo_lock_sha256": sha(lock)}
+    except (OSError, subprocess.CalledProcessError, ValueError) as error:
+        raise ValueError(f"cannot bind Cargo workspace lockfile: {error}") from error
+
+
 def execute_command(command: list[str]) -> dict:
     started = time.perf_counter_ns()
     try:
@@ -328,6 +368,7 @@ def run_experiment(
         command = build_command(
             data, entrypoint=entrypoint, seed=seed, params=params or {}
         )
+        dependency = cargo_lock_record(command)
     except ValueError as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 2
@@ -337,6 +378,7 @@ def run_experiment(
     record = base_record(exp_id, data, root)
     record.update(
         {
+            **dependency,
             "status": "running",
             "started_at": timestamp,
             "entrypoint": entrypoint,
@@ -438,7 +480,8 @@ def aggregate(
 
     Refused, so nothing is written: records from more than one commit; records
     from a dirty or unrecorded worktree (unless `allow_dirty`, which the aggregate
-    then records); records that differ in manifest, parameters, toolchain or host,
+    then records; an explicitly dirty record must still carry a valid diff hash);
+    records that differ in manifest, parameters, dependency locks, toolchain or host,
     since their numbers do not measure the same thing; a seed the manifest does
     not declare; two completed records for one seed; one row name printed twice by
     one run; and a record that is not a well-formed run record.
@@ -470,6 +513,8 @@ def aggregate(
             continue
         if git_sha_filter and record.get("git_sha") != git_sha_filter:
             continue
+        if record.get("experiment_id") != exp_id:
+            raise ValueError(f"{path.name}: experiment_id must be {exp_id!r}, found {record.get('experiment_id')!r}")
         seed = record.get("seed")
         if isinstance(seed, bool) or not isinstance(seed, int):
             raise ValueError(f"{path.name}: seed must be an integer, found {seed!r}")
@@ -490,7 +535,13 @@ def aggregate(
             f"{len(unclean)} records come from a dirty or unrecorded worktree "
             f"({', '.join(unclean)}); pass --allow-dirty to aggregate them anyway"
         )
-    for key in ("manifest_sha256", "parameters", "rustc", "host", "git_tracked_diff_sha256"):
+    for path, record in records:
+        if record.get("git_dirty") is True:
+            digest = record.get("git_tracked_diff_sha256")
+            if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+                raise ValueError(f"{path.name}: dirty record requires a valid git_tracked_diff_sha256")
+    for key in ("manifest_sha256", "parameters", "rustc", "host", "git_tracked_diff_sha256",
+                "cargo_lock_path", "cargo_lock_sha256"):
         seen = sorted({canonical(record.get(key)) for _, record in records})
         if len(seen) > 1:
             raise ValueError(f"records differ in {key} ({' vs '.join(seen)}); they do not measure the same thing")

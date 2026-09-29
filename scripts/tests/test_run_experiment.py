@@ -4,11 +4,12 @@ import importlib.util
 import io
 import json
 import statistics
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location(
@@ -124,6 +125,53 @@ class ExperimentRunnerTests(unittest.TestCase):
 
 
 class Provenance(unittest.TestCase):
+    def test_cargo_lock_follows_selected_workspace_and_toolchain(self):
+        for manifest, suffix in (("Cargo.toml", []),
+                                 ("model/burn-a0/Cargo.toml", ["--manifest-path", "model/burn-a0/Cargo.toml"]),
+                                 ("model/burn-a0/Cargo.toml", ["--manifest-path=model/burn-a0/Cargo.toml"]),
+                                 ("Cargo.toml", ["--manifest-path", "crates/ptr-types/Cargo.toml"])):
+            with self.subTest(suffix=suffix), patch.object(mod.subprocess, "run", return_value=Mock(stdout=str(ROOT / manifest))) as query:
+                command = ["cargo", "+1.95.0", "run", *suffix, "--", "--manifest-path", "not-cargo.toml"]
+                result = mod.cargo_lock_record(command)
+                lock = Path(manifest).with_name("Cargo.lock")
+                self.assertEqual(result, {"cargo_lock_path": lock.as_posix(), "cargo_lock_sha256": mod.sha(ROOT / lock)})
+                argv = query.call_args.args[0]
+                self.assertEqual(argv[:5], ["cargo", "+1.95.0", "locate-project", "--workspace", "--message-format"])
+                self.assertNotIn("not-cargo.toml", argv)
+                if suffix:
+                    self.assertEqual(argv[-2:], ["--manifest-path", suffix[-1].split("=", 1)[-1]])
+
+    def test_cargo_lock_resolution_failures_refuse_launch(self):
+        _, root, data = mod.resolve("M001")
+        for error in (OSError("no Cargo"), subprocess.CalledProcessError(1, ["cargo"])):
+            with self.subTest(error=type(error).__name__), patch.object(mod, "resolve", return_value=({}, root, data)), patch.object(mod, "build_command", return_value=["cargo", "run"]), patch.object(mod.subprocess, "run", side_effect=error), patch.object(mod, "execute_command") as launch, patch.object(mod, "write_json_exclusive") as write, contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(mod.run_experiment("M001", entrypoint="entrypoint", seed=17), 2)
+                launch.assert_not_called()
+                write.assert_not_called()
+
+    def test_cargo_lock_missing_or_outside_repo_is_not_root_fallback(self):
+        for manifest in (ROOT / "missing/Cargo.toml", Path("/tmp/outside/Cargo.toml")):
+            with self.subTest(manifest=manifest), patch.object(mod.subprocess, "run", return_value=Mock(stdout=str(manifest))):
+                with self.assertRaisesRegex(ValueError, "cannot bind Cargo workspace lockfile"):
+                    mod.cargo_lock_record(["cargo", "run"])
+
+    def test_non_cargo_command_has_no_claimed_cargo_lock(self):
+        with patch.object(mod.subprocess, "run") as query:
+            self.assertEqual(mod.cargo_lock_record(["python3", "train.py"]),
+                             {"cargo_lock_path": None, "cargo_lock_sha256": None})
+            query.assert_not_called()
+
+    def test_run_persists_the_selected_a0_dependency_lock(self):
+        _, root, data = mod.resolve("M001")
+        dependency = {"cargo_lock_path": "model/burn-a0/Cargo.lock",
+                      "cargo_lock_sha256": mod.sha(ROOT / "model/burn-a0/Cargo.lock")}
+        with patch.object(mod, "resolve", return_value=({}, root, data)), patch.object(mod, "build_command", return_value=["cargo", "+1.95.0", "run"]), patch.object(mod, "cargo_lock_record", return_value=dependency), patch.object(mod, "toolchain", return_value="rustc test"), patch.object(mod, "execute_command", return_value={"exit_code": 0}), patch.object(mod, "write_json_exclusive") as write, contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(mod.run_experiment("M001", entrypoint="a0_ablation_entrypoint", seed=17), 0)
+            record = write.call_args.args[1]
+            self.assertEqual(record["cargo_lock_path"], dependency["cargo_lock_path"])
+            self.assertEqual(record["cargo_lock_sha256"], dependency["cargo_lock_sha256"])
+            self.assertNotEqual(record["cargo_lock_sha256"], mod.sha(ROOT / "Cargo.lock"))
+
     def test_dirty_state_binds_binary_diff_bytes_and_ignores_untracked_outputs(self):
         """Hash exact diff bytes and request tracked files only from Git."""
         for status, diff, dirty in [("", b"", False), (" M model.rs\n", b"diff\x00\xff\n", True)]:
@@ -414,6 +462,40 @@ class Aggregation(unittest.TestCase):
             mod.aggregate("X001", entrypoint="ablation", allow_dirty=True)
         self.assertEqual(list(self.results.glob("aggregate-*.json")), [])
 
+    def test_dirty_records_require_valid_diff_hashes_even_with_override(self):
+        for digest in (None, "", "not-a-hash", "a" * 63, 123, True):
+            with self.subTest(digest=digest):
+                for path in self.results.glob("*.json"):
+                    path.unlink()
+                for seed in SEEDS:
+                    self.write_run(seed, [{"a": 1}], dirty=True,
+                                   extra={"git_tracked_diff_sha256": digest})
+                with self.assertRaisesRegex(ValueError, "requires a valid git_tracked_diff_sha256"):
+                    mod.aggregate("X001", entrypoint="ablation", allow_dirty=True)
+                self.assertEqual(list(self.results.glob("aggregate-*.json")), [])
+
+    def test_foreign_or_missing_experiment_identity_is_rejected(self):
+        for identity in ("M001", None, ""):
+            with self.subTest(identity=identity):
+                for path in self.results.glob("*.json"):
+                    path.unlink()
+                self.write_run(1, [{"a": 1}], extra={"experiment_id": identity})
+                with self.assertRaisesRegex(ValueError, "experiment_id must be"):
+                    mod.aggregate("X001", entrypoint="ablation")
+                self.assertEqual(list(self.results.glob("aggregate-*.json")), [])
+
+    def test_legacy_unknown_worktree_remains_explicitly_opt_in(self):
+        for seed in SEEDS:
+            self.write_run(seed, [{"a": 1}], dirty=None)
+        code, summary = self.run_aggregate(allow_dirty=True)
+        self.assertEqual((code, summary["status"]), (0, "complete"))
+
+    def test_different_dependency_locks_are_rejected(self):
+        for seed in SEEDS:
+            self.write_run(seed, [{"a": 1}], extra={"cargo_lock_sha256": str(seed) * 64})
+        with self.assertRaisesRegex(ValueError, "records differ in cargo_lock_sha256"):
+            mod.aggregate("X001", entrypoint="ablation")
+
     def test_matching_tracked_diff_hashes_remain_compatible(self):
         for dirty, digest in ((False, hashlib.sha256(b"").hexdigest()), (True, "1" * 64)):
             with self.subTest(dirty=dirty):
@@ -463,7 +545,7 @@ class Aggregation(unittest.TestCase):
     def test_an_explicit_commit_and_allow_dirty_are_honoured_and_recorded(self):
         """Honor explicit commit and dirty-worktree overrides and record them in the summary."""
         self.write_run(1, [{"a": 1.0}], sha="a" * 40)
-        self.write_run(1, [{"a": 5.0}], sha="b" * 40, dirty=True)
+        self.write_run(1, [{"a": 5.0}], sha="b" * 40, dirty=True, extra={"git_tracked_diff_sha256": "1" * 64})
 
         code, summary = self.run_aggregate(git_sha_filter="b" * 40, allow_dirty=True)
 
