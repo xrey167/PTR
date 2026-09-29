@@ -46,14 +46,29 @@ Every arm sees the same genesis, tasks, attempt durations and background schedul
 
 ### Preregistered rules
 
-1. **Safety (exact).** Any hard counter above 0 in any seed rejects the hypothesis and fails the run. The generalisation is reported as the rule-of-three bound 3/n per sampled hazard class, over the workload's trials; the trials of one case's arms replay the same tasks in different interleavings and are not independent, which is why the bound is a report and not a proof.
+1. **Safety (exact).** Any hard counter above 0 in any seed rejects the hypothesis and fails the run. Only after a hard pass is the generalisation reported as the rule-of-three bound 3/n per sampled hazard class, over the workload's trials; after any hard failure or nonzero process exit the bounds are unavailable (`null`). The trials of one case's arms replay the same tasks in different interleavings and are not independent, which is why the bound is a report and not a proof.
 2. **Throughput, supported.** For every N, the 2.5th percentile of a paired case bootstrap (2000 resamples, seed 20260926) of `gain_N` = Σ serial makespan / Σ certified makespan over the low cells is above 1.0.
 3. **Throughput, rejected.** For some N the 97.5th percentile is at most 1.0.
 4. **Inconclusive, recorded as failed.** A coverage counter is 0 (the probes P25 and P26 of the two rule classes among them) or a sampled hazard class has fewer than 30 workload trials in some seed; a run stopped on an error or took no time; the merge time histogram's p99 bucket exceeds 10 ms; the manipulation check fails; some N has no low cell; some mutation is not killed; or neither rule 2 nor rule 3 holds.
 5. **Efficiency (secondary).** `gain_N / N` ≥ 0.5 at the point estimate for every N. Reported as met or missed; it does not decide the status.
-6. Reported with every result: hazard trials and 3/n per sampled class, the two rule classes' workload trials and probe repetitions apart, the LWW and OCC anomaly rates, the unnecessary-refusal share and the review-void share.
+6. Reported with every result: hazard trials and 3/n per sampled class (unavailable without a hard pass), the two rule classes' workload trials and probe repetitions apart, the LWW and OCC anomaly rates, the unnecessary-refusal share and the review-void share.
 
 A **cell** is (contention level, N). It is **low** if its pooled conflict rate over the pilot seeds (1, 2, 3; never confirmatory) is below 100‰, where the conflict rate is certification `Conflict` and `LifecycleChanged` refusals over merge attempts of the certified arm. The pilot must leave at least 6 of the 24 cells on each side and at least one low cell for every N; otherwise the preregistered fallback ladder replaces the ladder and the pilot runs once more. The list is written into `low_cells` before the freeze. The manipulation check requires each N's pooled conflict rate over its low cells to be below 100‰ in the confirmatory seeds.
+
+### Evidence validation
+
+Before calculating a verdict or classifying pilot cells, the aggregator requires
+every case index, its configured level and group count, and exactly one serial
+run plus the four other arms for every configured agent count. The serial
+makespan must agree with its run. Pilot outputs additionally require all hard
+counters present and zero and every run complete with positive ticks; rejected
+pilot input prints no classification. Confirmatory runs that failed remain
+negative evidence and can still produce a failed aggregate.
+
+The harness checks each requested lifecycle event and ingress request against
+its appended journal records before the model follows them. Its deterministic
+run digest includes semantic revision, live and revoked generations, and run
+completion as well as values, dependencies, statistics and counters.
 
 ### Limitations
 

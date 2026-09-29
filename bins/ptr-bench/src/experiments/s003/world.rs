@@ -292,7 +292,19 @@ impl World {
         self.runtime
             .commit(event.clone())
             .map_err(|error| format!("lifecycle {event:?}: {error:?}"))?;
+        self.check_lifecycle_record(from, &event);
         self.follow(from)
+    }
+
+    fn check_lifecycle_record(&mut self, from: usize, requested: &LedgerEvent) {
+        if self.ledger_len() != from + 1
+            || self.runtime.committed_events().get(from).map(|c| &c.event) != Some(requested)
+        {
+            self.metrics.provenance_mismatches += 1;
+            self.note(format!(
+                "the lifecycle journal does not record exactly {requested:?}"
+            ));
+        }
     }
 
     /// Supersede a policy, or revoke its live generation and commit the next
@@ -325,7 +337,52 @@ impl World {
         self.runtime
             .ingest_text(RequestId::from(request), text)
             .map_err(|error| format!("ingest {request}: {error:?}"))?;
+        self.check_ingress_record(from, request, text)?;
         self.follow(from)
+    }
+
+    fn check_ingress_record(
+        &mut self,
+        from: usize,
+        request: &str,
+        text: &str,
+    ) -> Result<(), String> {
+        let mut requested = Delta::default();
+        requested
+            .upserts
+            .insert(format!("request:{request}:raw"), Val::text(text));
+        let plan = self
+            .model
+            .plan(&requested)
+            .map_err(|error| format!("predict ingress {request}: {error:?}"))?;
+        if !plan.moved() {
+            if self.ledger_len() != from {
+                self.metrics.provenance_mismatches += 1;
+                self.note(format!("unchanged ingress {request} appended a record"));
+            }
+            return Ok(());
+        }
+        let good_origin = matches!(
+            self.runtime.committed_events().get(from).map(|c| &c.event),
+            Some(LedgerEvent::SemanticDeltaCommitted {
+                base_revision, revision, origin: SemanticOrigin::Request { request: recorded }, ..
+            }) if recorded == request
+                && base_revision.0 == self.model.revision()
+                && revision.0 == self.model.revision() + 1
+        );
+        if self.ledger_len() != from + 1 || !good_origin {
+            self.metrics.provenance_mismatches += 1;
+            self.note(format!(
+                "the ingress journal does not record exactly request {request}"
+            ));
+        }
+        if self.committed_net(from) != Some(plan.net) {
+            self.metrics.model_divergences += 1;
+            self.note(format!(
+                "the ingress journal changes something else than request {request}"
+            ));
+        }
+        Ok(())
     }
 
     // ---- host writes --------------------------------------------------------------
@@ -1454,6 +1511,72 @@ mod tests {
         // The four policy capsules and the genesis write.
         assert_eq!(world.runtime.committed_events().len(), params::POLICIES + 1);
         assert_eq!(world.model.lifecycle.live("policy-3"), Some(1));
+    }
+
+    #[test]
+    fn lifecycle_record_is_checked_before_the_model_learns_it() {
+        let mut world = world(GrantKind::Auto);
+        let from = world.ledger_len();
+        world
+            .runtime
+            .commit(LedgerEvent::CapsuleSuperseded {
+                capsule: CapsuleId::from("policy-0"),
+                old: Generation(1),
+                new: Generation(3),
+            })
+            .expect("a well-formed but wrong event");
+        world.check_lifecycle_record(
+            from,
+            &LedgerEvent::CapsuleSuperseded {
+                capsule: CapsuleId::from("policy-0"),
+                old: Generation(1),
+                new: Generation(2),
+            },
+        );
+        assert_eq!(world.metrics.provenance_mismatches, 1);
+        world.follow(from).expect("follow recorded lifecycle");
+        assert_eq!(state_difference(&world.runtime, &world.model), None);
+        assert!(world.metrics.hard().iter().any(|(_, count)| *count > 0));
+    }
+
+    #[test]
+    fn ingress_record_is_checked_against_requested_identity_and_content() {
+        for (recorded_request, recorded_text) in [("other", "expected"), ("r1", "wrong")] {
+            let mut world = world(GrantKind::Auto);
+            let from = world.ledger_len();
+            world
+                .runtime
+                .ingest_text(RequestId::from(recorded_request), recorded_text)
+                .expect("a well-formed but wrong ingress");
+            world
+                .check_ingress_record(from, "r1", "expected")
+                .expect("prediction");
+            assert_eq!(world.metrics.model_divergences, 1);
+            assert_eq!(
+                world.metrics.provenance_mismatches,
+                u64::from(recorded_request != "r1")
+            );
+            world.follow(from).expect("follow recorded ingress");
+            assert_eq!(state_difference(&world.runtime, &world.model), None);
+        }
+    }
+
+    #[test]
+    fn identical_ingress_is_a_clean_no_change_and_unexpected_records_are_counted() {
+        let mut world = world(GrantKind::Auto);
+        world.ingest("r1", "same").expect("first ingress");
+        let from = world.ledger_len();
+        world.ingest("r1", "same").expect("unchanged ingress");
+        assert_eq!(world.ledger_len(), from);
+        clean(&world);
+        world
+            .runtime
+            .ingest_text(RequestId::from("r2"), "unexpected")
+            .expect("extra record");
+        world
+            .check_ingress_record(from, "r1", "same")
+            .expect("prediction");
+        assert_eq!(world.metrics.provenance_mismatches, 1);
     }
 
     #[test]

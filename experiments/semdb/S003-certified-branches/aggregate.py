@@ -210,6 +210,44 @@ def cell_name(level: int, agents: int) -> str:
     return f"L{level}N{agents}"
 
 
+def validate_layout(result: dict, table: dict) -> None:
+    """Reject missing, duplicate or mislabeled measurements before pooling cells.
+
+    Failed runs remain valid evidence when their complete flag is false; the
+    confirmatory analysis must still be able to publish a negative result.
+    """
+    cases = result.get("cases")
+    count = table["cases_per_seed"]
+    if type(result.get("iterations")) is not int or result["iterations"] != count or not isinstance(cases, list) or len(cases) != count:
+        raise ValueError(f"expected {count} cases, got iterations={result.get('iterations')!r}")
+    expected = {("serial", 1)} | {
+        (arm, agents)
+        for agents in table["agents"]
+        for arm in ("certified", "certified-review", "lww", "occ")
+    }
+    for index, case in enumerate(cases):
+        level = index % len(table["groups_ladder"])
+        identity = {"case": index, "level": level, "groups": table["groups_ladder"][level]}
+        if not isinstance(case, dict) or any(type(case.get(key)) is not int or case[key] != value for key, value in identity.items()):
+            raise ValueError(f"case {index}: expected index, level and groups {identity}")
+        runs = case.get("runs")
+        if not isinstance(runs, list) or len(runs) != len(expected):
+            raise ValueError(f"case {index}: expected exactly {len(expected)} runs")
+        seen = set()
+        for run in runs:
+            if not isinstance(run, dict) or type(run.get("agents")) is not int or not isinstance(run.get("arm"), str):
+                raise ValueError(f"case {index}: invalid arm or agent count")
+            key = (run["arm"], run["agents"])
+            if key not in expected or key in seen:
+                raise ValueError(f"case {index}: unexpected or duplicate run {key}")
+            seen.add(key)
+            if type(run.get("complete")) is not bool or type(run.get("ticks")) is not int or run["ticks"] < 0:
+                raise ValueError(f"case {index}: run {key} needs a completion flag and nonnegative ticks")
+        serial = next(run for run in runs if run["arm"] == "serial")
+        if type(case.get("serial_ticks")) is not int or case["serial_ticks"] != serial["ticks"]:
+            raise ValueError(f"case {index}: serial_ticks differs from the serial run")
+
+
 def certified_runs(results: list[dict]):
     """(level, agents, serial ticks, certified run) for every case of every
     result and every agent count, in order."""
@@ -348,7 +386,7 @@ def share(numerator: int, denominator: int) -> float | None:
     return round(numerator / denominator, 4) if denominator else None
 
 
-def descriptive(results: list[dict], totals: dict) -> dict:
+def descriptive(results: list[dict], totals: dict, hard_pass: bool) -> dict:
     """What every result reports beside the verdict: the baselines'
     anomalies, the shares that trigger predicate digests and typed merge
     operators, the review voids, and the rule-of-three bound per hazard
@@ -385,7 +423,7 @@ def descriptive(results: list[dict], totals: dict) -> dict:
         "put_increment_share": share(totals["put_increment_conflicts"], refusals),
         "review_void_share": share(sum(run["review_voids"] for run in reviews), sum(run["escalations"] for run in reviews)),
         "hazard_trials": {
-            name: {"trials": totals[name], "rule_of_three_bound": round(3 / totals[name], 6) if totals[name] else None}
+            name: {"trials": totals[name], "rule_of_three_bound": round(3 / totals[name], 6) if hard_pass and totals[name] else None}
             for name in HAZARDS
         },
         "rule_class_trials": {
@@ -406,6 +444,8 @@ def analyse(seeds: list[dict], records: list[dict], table: dict, mutations: dict
     `table` and the mutation evidence `mutations` (None when there is none):
     the metrics, each condition, the throughput and efficiency verdicts and
     the status they recommend. Pure: it reads no file."""
+    for result in seeds:
+        validate_layout(result, table)
     counters = sorted(
         {
             key
@@ -516,7 +556,7 @@ def analyse(seeds: list[dict], records: list[dict], table: dict, mutations: dict
         "incomplete_runs": incomplete,
         "throughput_verdict": throughput,
         "efficiency_verdict": efficiency,
-        "descriptive": descriptive(seeds, totals),
+        "descriptive": descriptive(seeds, totals, hard_pass),
         "mutation_checks": mutations,
     }
     return {
@@ -577,8 +617,10 @@ def aggregate() -> None:
         result = harness[per_seed[seed].name]
         if result.get("preregistration") != canonical:
             raise SystemExit(f"S003: seed {seed} ran under another preregistration than config.toml's table")
-        if result.get("iterations") != table["cases_per_seed"] or len(result.get("cases", [])) != table["cases_per_seed"]:
-            raise SystemExit(f"S003: seed {seed} ran {result.get('iterations')!r} cases, not {table['cases_per_seed']}")
+        try:
+            validate_layout(result, table)
+        except ValueError as error:
+            raise SystemExit(f"S003: seed {seed}: {error}") from error
         seeds.append(result)
         records.append(
             {
@@ -649,8 +691,14 @@ def pilot(paths: list[Path]) -> int:
                 f"S003: {path.name} ran under another preregistration than config.toml's table "
                 f"(differs in {', '.join(differing)}); its cells mean something else"
             )
-        if result.get("iterations") != table["cases_per_seed"] or len(result.get("cases", [])) != table["cases_per_seed"]:
-            raise SystemExit(f"S003: {path.name} ran {result.get('iterations')!r} cases, not {table['cases_per_seed']}")
+        try:
+            validate_layout(result, table)
+        except ValueError as error:
+            raise SystemExit(f"S003: {path.name}: {error}") from error
+        if any(type(result.get(name)) is not int or result[name] != 0 for name in (*HARD, "hard_failures")):
+            raise SystemExit(f"S003: {path.name}: pilot needs every hard counter present and zero")
+        if any(run["complete"] is not True or run["ticks"] <= 0 for case in result["cases"] for run in case["runs"]):
+            raise SystemExit(f"S003: {path.name}: pilot needs every run complete with positive ticks")
     seeds = sorted(result["seed"] for result in results)
     if seeds != sorted(table["pilot_seeds"]):
         raise SystemExit(f"S003: the pilot outputs are of seeds {seeds}, not {sorted(table['pilot_seeds'])}")

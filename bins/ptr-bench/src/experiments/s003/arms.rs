@@ -544,11 +544,19 @@ fn digest(stats: &RunStats, world: &World) -> u64 {
         stats.abandoned,
         stats.wasted_ticks,
         stats.unnecessary_refusals,
+        u64::from(stats.complete),
     ];
     for number in numbers {
         state = fnv(Some(state), &number.to_le_bytes());
     }
     state = world.metrics.digest_into(state);
+    state = fnv(Some(state), &world.model.revision().to_le_bytes());
+    // Lifecycle uses ordered collections, so this includes every live and
+    // revoked generation deterministically, even beyond the workload policies.
+    state = fnv(
+        Some(state),
+        format!("{:?}", world.model.lifecycle).as_bytes(),
+    );
     for (key, value) in world.model.values() {
         state = fnv(Some(state), key.as_bytes());
         state = fnv(Some(state), format!("{value:?}").as_bytes());
@@ -563,6 +571,7 @@ fn digest(stats: &RunStats, world: &World) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::experiments::s003::model::{Delta, Val};
     use crate::experiments::s003::program::Program;
 
     fn run(case_index: usize, arm: Arm, agents: usize) -> Run {
@@ -653,6 +662,32 @@ mod tests {
         assert_eq!(first.stats, second.stats);
         assert_eq!(first.digest, second.digest);
         assert_ne!(first.digest, run(3, Arm::Certified, 4).digest);
+    }
+
+    #[test]
+    fn the_digest_covers_revision_lifecycle_and_completion() {
+        let mut world = World::new(&Case::new(17, 0), GrantKind::Auto).expect("world");
+        let mut stats = RunStats::new(Arm::Certified, 2);
+        let original = world.model.clone();
+        let initial = digest(&stats, &world);
+        world.model.lifecycle.set_live("policy-0", 2);
+        assert_ne!(digest(&stats, &world), initial);
+        world.model = original.clone();
+        world.model.lifecycle.revoke("policy-0", 1);
+        assert_ne!(digest(&stats, &world), initial);
+        world.model = original.clone();
+        let mut delta = Delta::default();
+        delta.upserts.insert("temporary".into(), Val::text("x"));
+        world.model.apply(&delta).expect("temporary insert");
+        delta.upserts.clear();
+        delta.removals.insert("temporary".into());
+        world.model.apply(&delta).expect("temporary removal");
+        assert_eq!(world.model.values(), original.values());
+        assert_eq!(world.model.dependencies(), original.dependencies());
+        assert_ne!(digest(&stats, &world), initial);
+        world.model = original;
+        stats.complete = true;
+        assert_ne!(digest(&stats, &world), initial);
     }
 
     #[test]

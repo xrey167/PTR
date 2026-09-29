@@ -122,6 +122,14 @@ def five(**kwargs) -> list[dict]:
 
 
 class VerdictTests(unittest.TestCase):
+    def test_rule_of_three_bounds_are_unavailable_after_any_hard_failure(self):
+        for changes, exits in (({"lost_updates": 1}, None), ({"canary_misses": 1}, None), ({"hard_failures": 1}, None), ({}, [1])):
+            with self.subTest(changes=changes, exits=exits):
+                analysis = analyse([seed_result(17, **changes)], exit_codes=exits)
+                for trial in analysis["metrics"]["descriptive"]["hazard_trials"].values():
+                    self.assertGreater(trial["trials"], 0)
+                    self.assertIsNone(trial["rule_of_three_bound"])
+
     def test_a_run_that_meets_every_condition_and_gains_over_serial_completes(self):
         analysis = analyse(five())
         self.assertEqual(analysis["conditions"], {name: True for name in analysis["conditions"]})
@@ -503,6 +511,54 @@ class PilotInputTests(unittest.TestCase):
             with self.assertRaises(SystemExit) as raised:
                 aggregate.pilot(paths)
         self.assertIn("cases", str(raised.exception))
+
+    def test_failed_incomplete_or_malformed_pilots_print_no_classification(self):
+        changes = {
+            "hard failure": lambda result: result.update(hard_failures=1),
+            "unreported hard failure": lambda result: result.update(canary_misses=1),
+            "missing hard counter": lambda result: result.pop("lost_updates"),
+            "incomplete baseline": lambda result: result["cases"][0]["runs"][-1].update(complete=False),
+            "zero duration": lambda result: result["cases"][0]["runs"][-1].update(ticks=0),
+            "missing run": lambda result: result["cases"][0]["runs"].pop(),
+        }
+        for name, change in changes.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                paths = [self.write(Path(directory), seed, TABLE) for seed in TABLE["pilot_seeds"]]
+                result = json.loads(paths[0].read_text(encoding="utf-8"))
+                change(result)
+                paths[0].write_text(json.dumps(result), encoding="utf-8")
+                with contextlib.redirect_stdout(io.StringIO()) as printed, self.assertRaises(SystemExit):
+                    aggregate.pilot(paths)
+                self.assertEqual(printed.getvalue(), "")
+
+
+class LayoutTests(unittest.TestCase):
+    def test_the_exact_matrix_is_required_even_outside_the_low_cells(self):
+        changes = {
+            "missing run": lambda case: case["runs"].pop(),
+            "duplicate run": lambda case: case["runs"].__setitem__(-1, case["runs"][1].copy()),
+            "extra run": lambda case: case["runs"].append(case["runs"][1].copy()),
+            "unknown arm": lambda case: case["runs"][1].update(arm="other"),
+            "wrong agents": lambda case: case["runs"][1].update(agents=3),
+            "serial agents": lambda case: case["runs"][0].update(agents=2),
+            "case index": lambda case: case.update(case=0),
+            "case level": lambda case: case.update(level=99),
+            "case groups": lambda case: case.update(groups=999),
+            "serial ticks": lambda case: case.update(serial_ticks=99),
+            "completion flag": lambda case: case["runs"][1].pop("complete"),
+            "boolean agents": lambda case: case["runs"][0].update(agents=True),
+        }
+        for name, change in changes.items():
+            with self.subTest(name=name):
+                result = seed_result(17)
+                change(result["cases"][5])
+                with self.assertRaisesRegex(ValueError, "case 5"):
+                    analyse([result], low_cells=[aggregate.cell_name(0, agents) for agents in AGENTS])
+
+    def test_complete_matrix_can_report_failed_runs_without_losing_negative_evidence(self):
+        result = seed_result(17)
+        result["cases"][0]["runs"][1].update(complete=False, ticks=0)
+        self.assertEqual(analyse([result])["recommended"], "failed")
 
 
 if __name__ == "__main__":
