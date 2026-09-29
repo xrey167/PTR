@@ -40,7 +40,7 @@ they are, as the record of why the ladder changed.
 
 - Commit: `3fa8f05` (clean tree, release build, the commit that replaced the ladder).
 - Command, for s in 1, 2, 3, run three at a time: `./target/release/ptr-bench certified-branches 48 <s> > pilot/pilot-seed-<s>.json`.
-- Outputs: [`pilot-seed-1.json`](pilot-seed-1.json), [`-2`](pilot-seed-2.json), [`-3`](pilot-seed-3.json).
+- Outputs: [`round-2/pilot-seed-1.json`](round-2/pilot-seed-1.json), [`-2`](round-2/pilot-seed-2.json), [`-3`](round-2/pilot-seed-3.json).
   Each exited 0 with `hard_failures` 0 over 48 cases (1542 s, 1594 s and 1531 s of wall time with three running side by side).
 
 Pooled conflict rate of the certified arm (bold: at or above 100‰):
@@ -91,3 +91,33 @@ The fallback ladder is spent: a round 3 that fails the minimum ends the pilot, a
 decision to record, not to make in advance.
 
 ## Round 3: the final harness
+
+- Commit: `50e50eb` (clean tree, release build; the round-2 outputs were moved to [`round-2/`](round-2/) after it).
+- Command, for s in 1, 2, 3, run three at a time: `./target/release/ptr-bench certified-branches 48 <s> > pilot/pilot-seed-<s>.json`.
+- Outputs: [`pilot-seed-1.json`](pilot-seed-1.json), [`-2`](pilot-seed-2.json), [`-3`](pilot-seed-3.json).
+  Each exited 0 with `hard_failures` 0 over 48 cases, every run complete (303 s, 314 s and 300 s of wall time with three running side by side).
+- Merge time: 22 of 360,175 `merge_branch` calls (0.006%) took more than 10 ms, so the p99 bucket of the pooled histogram is within the budget.
+- What the workload made of the two rule classes: no negative counter held by verification, and 4, 1 and 8 set operations undoing a concurrent one in the three seeds; their evidence stays the probes P25 and P26 and the mutation plan.
+
+Pooled conflict rate of the certified arm (bold: at or above 100‰):
+
+| level | groups | N=2 | N=4 | N=8 | N=16 |
+|---:|---:|---:|---:|---:|---:|
+| 0 | 4 | **121‰** | **199‰** | **324‰** | **479‰** |
+| 1 | 8 | 64‰ | **108‰** | **184‰** | **300‰** |
+| 2 | 16 | 33‰ | 52‰ | 97‰ | **179‰** |
+| 3 | 32 | 23‰ | 34‰ | 57‰ | **105‰** |
+| 4 | 64 | 14‰ | 21‰ | 38‰ | 66‰ |
+| 5 | 256 | 9‰ | 7‰ | 15‰ | 27‰ |
+
+Result: 9 cells at or above the threshold and 15 below, at least 6 on each side, and low cells for every
+N (5 for N=2, 4 for N=4, 4 for N=8, 2 for N=16). The pilot **met its minimum** on the final harness. `L3N16` is at
+105‰ and `L2N8` at 97‰, close to the threshold either way; the list is what the rule gives. The low cells, written into
+`low_cells` of `config.toml` at the freeze:
+
+```toml
+low_cells = ["L1N2", "L2N2", "L2N4", "L2N8", "L3N2", "L3N4", "L3N8", "L4N2", "L4N4", "L4N8", "L4N16", "L5N2", "L5N4", "L5N8", "L5N16"]
+```
+
+Round 2's outputs stay in `round-2/`, round 1's in `ladder-1/`, as the record of why the harness and the ladder changed; the
+aggregator refuses both as pilot inputs, since they ran under other preregistered tables and other code.
