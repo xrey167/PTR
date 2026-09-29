@@ -2301,6 +2301,33 @@ class RunWatchTests(unittest.TestCase):
         status, records, stderr = self.run_seed(lambda: time.sleep(0.05))
         self.assertEqual((status, stderr, [record["status"] for record in records]), (0, "", ["completed"]))
 
+    def test_a_reservation_edited_before_it_is_stamped_is_not_adopted(self):
+        # The stamp binds the reservation as it is when it is taken. A local
+        # actor who edits it between the write and the stamp would have the
+        # edit adopted, and the command would read it: the bytes are checked
+        # against the ones written, once stamped, and a run whose reservation
+        # is not those refuses before its command starts.
+        self.preregister("running")
+        stamp = mod.experiment_records.ProvenanceWatch.stamp_reserved
+
+        def edited_first(watch, names):
+            for name in names:
+                path = self.root / name
+                path.write_bytes(path.read_bytes().replace(b'"started"', b'"attacker"'))
+            stamp(watch, names)
+
+        ran = []
+        with mock.patch.object(mod.experiment_records.ProvenanceWatch, "stamp_reserved", edited_first):
+            status, records, stderr = self.run_seed(lambda: ran.append(True))
+        name = self.results.relative_to(self.root).as_posix()
+        self.assertEqual((status, ran, records), (2, [], []))
+        self.assertIn(f"ERROR: {name}/run-", stderr)
+        self.assertIn(" was changed between being written and stamped; nothing ran, and it is removed so its seed may run", stderr)
+        # Nothing ran: no reservation or copy stays, and the seed runs.
+        self.assertEqual(list(self.attempts().glob("run-*.json")), [])
+        status, records, stderr = self.run_seed(lambda: None)
+        self.assertEqual((status, stderr, [record["status"] for record in records]), (0, "", ["completed"]))
+
     def test_cargo_configuration_outside_the_repository_refuses_a_listed_run(self):
         # Cargo reads its home's configuration and every .cargo directory
         # above the root, none of which the commit holds, and one could set

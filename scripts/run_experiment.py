@@ -1443,6 +1443,24 @@ def launch_and_record(
         # moved aside and put back while the command runs keeps every file's
         # stamp, so the directories are stamped too.
         watch.stamp_reserved([out.relative_to(ROOT).as_posix()])
+        # The stamp binds the file as it is when it is taken, so an edit
+        # between the write and the stamp would be adopted, and the command
+        # would read it: the bytes are checked against the ones written,
+        # once stamped. An edit after the stamp is a change the watch sees.
+        try:
+            reserved = out.read_bytes()
+        except OSError:
+            reserved = None
+        if reserved != (json.dumps(record, indent=2, default=experiment_records.toml_time) + "\n").encode("utf-8"):
+            # Nothing ran: the reservation and its copy go, so the seed may run.
+            problem = f"{out.relative_to(ROOT)} was changed between being written and stamped; nothing ran, and it is removed so its seed may run"
+            for reservation in (out, kept):
+                try:
+                    reservation.unlink()
+                except OSError as removal:
+                    problem += f"; and {reservation}, which says seed {seed} ran, cannot be removed: {removal}"
+            print(f"ERROR: {problem}", file=sys.stderr)
+            return 2
         watch.stamp_directories()
     stays = f"; {out.relative_to(ROOT)} stays as the record that seed {seed} ran" if listed else ""
 
