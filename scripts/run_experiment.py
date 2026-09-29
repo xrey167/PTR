@@ -1071,6 +1071,11 @@ def named_program(found: str | None, stamps: dict[str, experiment_records.Stamp 
 
 SHEBANG_DEPTH = 4
 
+# The options of `env` that take the word after them as their operand
+# (`-u NAME`, `-C DIR`, `-a ARG`, `-P PATH`, and their long spellings), which
+# is no program.
+ENV_OPERAND_OPTIONS = frozenset(("-u", "--unset", "-C", "--chdir", "-a", "--argv0", "-P"))
+
 
 def shebang_words(path: str) -> list[str] | None:
     """The words of the first line of the file at `path` past its `#!`
@@ -1088,14 +1093,28 @@ def shebang_words(path: str) -> list[str] | None:
     return words or None
 
 
+def env_target(words: list[str]) -> str | None:
+    """The program `env` runs, given the words that follow its name: the
+    first that is no option, no operand of an option that takes one
+    (`ENV_OPERAND_OPTIONS`: `-u PYTHONPATH`) and no assignment (`A=1`); None
+    when there is none."""
+    remaining = iter(words)
+    for word in remaining:
+        if word in ENV_OPERAND_OPTIONS:
+            next(remaining, None)
+        elif not word.startswith("-") and "=" not in word:
+            return word
+    return None
+
+
 def interpreters_of(
     found: str, environment: dict[str, str], stamps: dict[str, experiment_records.Stamp | None] | None, depth: int = 0
 ) -> list[dict]:
     """The programs the kernel runs to run the script at `found`, each named
     as `named_program` names it and stamped into `stamps`: the interpreter
     its first line names, and where that is `env`, the program `env` looks up
-    on `environment`'s `PATH` (its first word that is no option or
-    assignment); and, for each of them that is a script too, its own
+    on `environment`'s `PATH` (`env_target`); and, for each of them that is a
+    script too, its own
     interpreters, to `SHEBANG_DEPTH` levels. Empty for a file that is no
     script."""
     words = shebang_words(os.path.realpath(found))
@@ -1103,7 +1122,7 @@ def interpreters_of(
         return []
     named = [named_program(found_program([words[0]], environment), stamps)]
     if experiment_records.program_name(words[0]) == "env":
-        target = next((word for word in words[1:] if not word.startswith("-") and "=" not in word), None)
+        target = env_target(words[1:])
         if target is not None:
             named.append(named_program(found_program([target], environment), stamps))
     nested = [

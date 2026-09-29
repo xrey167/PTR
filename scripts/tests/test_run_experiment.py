@@ -2954,7 +2954,24 @@ class RunWatchTests(unittest.TestCase):
             env = shutil.which("env")
             self.assertIsNotNone(env)
             fake = write("fake", f"#!{chain[1]}\n".encode("utf-8"))
-            for words in ("fake", "-i fake", "-S fake", "A=1 B=2 fake"):
+            for words in (
+                "fake",
+                "-i fake",
+                "-S fake",
+                "A=1 B=2 fake",
+                "-S -u PYTHONPATH fake",
+                "-u PYTHONPATH -i fake",
+                "--unset PYTHONPATH fake",
+                "--unset=PYTHONPATH fake",
+                "-uPYTHONPATH fake",
+                "-C /tmp fake",
+                "--chdir /tmp fake",
+                "-a name fake",
+                "--argv0 name fake",
+                "-P /bin fake",
+                "-u A -u B -C /tmp A=1 fake",
+                "-- fake",
+            ):
                 with self.subTest(words=words):
                     script = write("bench", f"#!{env} {words}\n".encode("utf-8"))
                     self.assertEqual(
@@ -2963,6 +2980,9 @@ class RunWatchTests(unittest.TestCase):
                     )
             # `env` with no program names none but itself.
             script = write("bench", f"#!{env} -i A=1\nfake\n".encode("utf-8"))
+            self.assertEqual(mod.interpreters_of(str(script), environment, None), [named(env)])
+            # Nor does one whose last option has no operand left.
+            script = write("bench", f"#!{env} -i -u\nfake\n".encode("utf-8"))
             self.assertEqual(mod.interpreters_of(str(script), environment, None), [named(env)])
             # A script naming itself ends at the bound.
             looping = write("looping", f"#!{outside / 'looping'}\n".encode("utf-8"))
