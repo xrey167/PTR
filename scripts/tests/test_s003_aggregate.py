@@ -480,6 +480,22 @@ class OccAnomalyTests(unittest.TestCase):
 
 
 class PilotInputTests(unittest.TestCase):
+    def test_unmeasured_cells_cannot_supply_the_pilots_high_cell_minimum(self):
+        for attempts in (0, -1):
+            with self.subTest(attempts=attempts), tempfile.TemporaryDirectory() as directory:
+                paths = [self.write(Path(directory), seed, TABLE) for seed in TABLE["pilot_seeds"]]
+                for path in paths:
+                    result = json.loads(path.read_text(encoding="utf-8"))
+                    for case in result["cases"]:
+                        for run_ in case["runs"]:
+                            if case["level"] < 3 and run_["arm"] == "certified" and run_["agents"] in (8, 16):
+                                run_.update(attempts=attempts, conflicts=0, lifecycle_refusals=0, merged=0)
+                    path.write_text(json.dumps(result), encoding="utf-8")
+                with contextlib.redirect_stdout(io.StringIO()) as printed:
+                    with self.assertRaisesRegex(SystemExit, "no certified attempts"):
+                        aggregate.pilot(paths)
+                self.assertEqual(printed.getvalue(), "")
+
     def write(self, directory: Path, seed: int, table: dict, cases=None) -> Path:
         result = seed_result(seed)
         result["preregistration"] = aggregate.experiment_records.preregistration_canonical(table)

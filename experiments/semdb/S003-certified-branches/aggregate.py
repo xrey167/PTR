@@ -703,6 +703,9 @@ def pilot(paths: list[Path]) -> int:
     if seeds != sorted(table["pilot_seeds"]):
         raise SystemExit(f"S003: the pilot outputs are of seeds {seeds}, not {sorted(table['pilot_seeds'])}")
     classification = pilot_classification(results, table)
+    unmeasured = [name for name, cell in classification["cells"].items() if cell["attempts"] <= 0]
+    if unmeasured:
+        raise SystemExit("S003: pilot cells have no certified attempts: " + ", ".join(unmeasured))
     summary = {key: classification[key] for key in ("low_cells", "high_cells", "ok", "reasons")}
     summary["conflict_rates"] = {
         name: None if cell["conflict_rate"] is None else round(cell["conflict_rate"], 4)
