@@ -59,6 +59,7 @@ import json
 import random
 import subprocess
 import sys
+import tempfile
 import tomllib
 from pathlib import Path
 
@@ -394,17 +395,18 @@ def descriptive(results: list[dict], totals: dict, hard_pass: bool) -> dict:
     runs = [run for result in results for case in result["cases"] for run in case["runs"]]
     by_arm = {}
     for run in runs:
-        totals_of = by_arm.setdefault(run["arm"], {"runs": 0, "attempts": 0, "merged": 0, "conflicts": 0})
+        totals_of = by_arm.setdefault(run["arm"], {"runs": 0, "attempts": 0, "merged": 0, "no_change": 0, "conflicts": 0})
         totals_of["runs"] += 1
-        for key in ("attempts", "merged", "conflicts"):
+        for key in ("attempts", "merged", "no_change", "conflicts"):
             totals_of[key] += run[key]
     certified = [run for run in runs if run["arm"] in ("certified", "serial", "certified-review")]
     refusals = sum(run["conflicts"] for run in certified)
     reviews = [run for run in runs if run["arm"] == "certified-review"]
     return {
         "arms": by_arm,
-        "lww_anomalies_per_commit": share(
-            totals["lww_lost_updates"] + totals["lww_lost_increments"], by_arm.get("lww", {}).get("merged", 0)
+        "lww_anomalies_per_settled_attempt": share(
+            totals["lww_lost_updates"] + totals["lww_lost_increments"],
+            by_arm.get("lww", {}).get("merged", 0) + by_arm.get("lww", {}).get("no_change", 0)
         ),
         "occ_anomalies_per_commit": share(
             sum(
@@ -666,6 +668,67 @@ def aggregate() -> None:
     )
 
 
+def pilot_source_paths() -> tuple[str, ...]:
+    """Source/build inputs; classification and freeze outputs are not source."""
+    return ("*.rs", "*.toml", "Cargo.lock", "scripts", ".cargo",
+            "experiments/semdb/S003-certified-branches/aggregate.py",
+            ":(exclude)experiments/semdb/S003-certified-branches/config.toml",
+            ":(exclude)experiments/semdb/S003-certified-branches/experiment.toml",
+            ":(exclude)experiments/preregistration.toml")
+
+
+def validate_pilot_provenance(result: dict) -> None:
+    """Refuse legacy/stale pilot results before they can choose frozen cells."""
+    evidence = result.get("pilot_provenance", {})
+    if (evidence.get("schema_version") != 1 or evidence.get("git_dirty") is not False
+            or type(evidence.get("exit_code")) is not int or evidence["exit_code"] != 0):
+        raise ValueError("pilot has no successful, clean producing-revision evidence; rerun with --record-pilot")
+    revision = evidence.get("git_sha")
+    if not isinstance(revision, str) or len(revision) != 40 or any(c not in "0123456789abcdef" for c in revision):
+        raise ValueError("pilot has no valid producing revision")
+    head = experiment_records.head_commit(ROOT)
+    ancestry = experiment_records.git(ROOT, "merge-base", "--is-ancestor", revision, head)
+    if ancestry.returncode:
+        raise ValueError("pilot producing revision is not in this checkout's history")
+    paths = pilot_source_paths()
+    changed = experiment_records.changes_after(revision, head, ROOT, paths)
+    changed += experiment_records.uncommitted_files(ROOT, list(paths))
+    if changed:
+        raise ValueError("pilot source differs from code being frozen: " + ", ".join(changed))
+
+
+def record_pilot(seed: int, output: Path) -> int:
+    """Build/run from watched clean source and bind the raw result before writing."""
+    table = tomllib.loads((HERE / "config.toml").read_text())["preregistration"]
+    if seed not in table["pilot_seeds"]:
+        raise SystemExit("S003: --record-pilot requires a declared pilot seed")
+    if output.exists():
+        raise SystemExit(f"S003: refusing to replace pilot evidence {output}")
+    watch = experiment_records.ProvenanceWatch(ROOT, list(pilot_source_paths()))
+    if watch.uncommitted:
+        raise SystemExit("S003: commit pilot source first: " + ", ".join(watch.uncommitted))
+    # A fresh external target directory cannot silently reuse an old harness.
+    with tempfile.TemporaryDirectory(prefix="ptr-s003-pilot-") as target:
+        command = ["cargo", "run", "--release", "--locked", "--target-dir", target,
+                   "-p", "ptr-bench", "--", BENCHMARK, str(table["cases_per_seed"]), str(seed)]
+        process = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
+    if process.returncode:
+        raise SystemExit(f"S003: pilot failed ({process.returncode}): {process.stderr[-2000:]}")
+    changed = watch.changes()
+    if changed:
+        raise SystemExit("S003: source changed during pilot: " + ", ".join(changed))
+    result = experiment_records.last_result_line(process.stdout)
+    if result.get("benchmark") != BENCHMARK or result.get("seed") != seed:
+        raise SystemExit("S003: pilot output does not match the requested run")
+    result["pilot_provenance"] = {"schema_version": 1, "git_sha": watch.head,
+                                  "git_dirty": False, "exit_code": process.returncode,
+                                  "command": command}
+    output.parent.mkdir(parents=True, exist_ok=True)
+    experiment_records.write_exclusively(output, json.dumps(result) + "\n")
+    print(output)
+    return 0
+
+
 def pilot(paths: list[Path]) -> int:
     config = tomllib.loads((HERE / "config.toml").read_text(encoding="utf-8"))
     table = config["preregistration"]
@@ -677,6 +740,10 @@ def pilot(paths: list[Path]) -> int:
         result = experiment_records.last_result_line(path.read_text(encoding="utf-8"))
         if result.get("benchmark") != BENCHMARK:
             raise SystemExit(f"S003: {path.name} is not a {BENCHMARK} result")
+        try:
+            validate_pilot_provenance(result)
+        except (ValueError, experiment_records.ProvenanceError) as error:
+            raise SystemExit(f"S003: {path.name}: {error}") from error
         results.append(result)
     expected = {key: value for key, value in table.items() if key != "low_cells"}
     for path, result in zip(files, results):
@@ -720,7 +787,15 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--pilot", action="store_true", help="classify the cells from the pilot outputs")
     parser.add_argument("inputs", nargs="*", type=Path, help="pilot outputs, for --pilot")
+    parser.add_argument("--record-pilot", type=int, metavar="SEED", help="record a source-bound pilot run")
+    parser.add_argument("--output", type=Path, help="new output file for --record-pilot")
     args = parser.parse_args()
+    if args.record_pilot is not None:
+        if args.pilot or args.inputs or args.output is None:
+            parser.error("--record-pilot requires --output and cannot be combined with --pilot or inputs")
+        raise SystemExit(record_pilot(args.record_pilot, args.output))
+    if args.output is not None:
+        parser.error("--output requires --record-pilot")
     if args.pilot:
         raise SystemExit(pilot(args.inputs))
     if args.inputs:

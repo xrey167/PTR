@@ -121,3 +121,17 @@ low_cells = ["L1N2", "L2N2", "L2N4", "L2N8", "L3N2", "L3N4", "L3N8", "L4N2", "L4
 
 Round 2's outputs stay in `round-2/`, round 1's in `ladder-1/`, as the record of why the harness and the ladder changed; the
 aggregator refuses both as pilot inputs, since they ran under other preregistered tables and other code.
+
+## Source-bound pilot evidence (2026-09-29)
+
+Historical raw JSON outputs are preserved for audit, but are no longer accepted by `--pilot`: they do not record the producing source revision, and the harness has changed since they ran. Do not add provenance retroactively. S003 remains planned and must run new pilots before freezing `low_cells`.
+
+From a committed clean source tree, record each declared pilot seed with:
+
+```sh
+python3 experiments/semdb/S003-certified-branches/aggregate.py --record-pilot 1 --output experiments/semdb/S003-certified-branches/pilot/source-bound/pilot-seed-1.json
+```
+
+Repeat for seeds 2 and 3, then pass the three new paths to `--pilot`. The recorder builds in a fresh temporary target directory, refuses failed runs and source changes, and creates rather than overwrites evidence. Classification requires the producing revision in the checkout's history and unchanged Rust, build and recording/aggregation sources. The echoed table still binds configuration, allowing only `low_cells` to change for the freeze.
+
+This revision also checks unexpected input sets on every runtime key and counts lost LWW operations when a successful write makes no state change. The descriptive rate is now `lww_anomalies_per_settled_attempt`, with committed and no-change attempts in its denominator. The old pilot cannot establish coverage or rates for these repaired checks.

@@ -1255,7 +1255,7 @@ impl World {
             .map(|key| (key.as_str(), self.model.value(key).cloned()))
             .collect();
         let outcome = self.host_write(delta, principal)?;
-        if outcome == HostOutcome::Committed {
+        if outcome == HostOutcome::Committed || (!occ && outcome == HostOutcome::NoChange) {
             if occ {
                 self.metrics.occ_lost_updates += u64::from(hazards.lost_update);
                 self.metrics.occ_stale_scan_commits += u64::from(hazards.stale_scan);
@@ -1417,19 +1417,11 @@ pub fn state_difference(runtime: &PtrRuntime, model: &Model) -> Option<String> {
             return Some(format!("inputs of {derived}"));
         }
     }
-    // The other direction, for the families that hold derived keys: the
-    // runtime records no input set that the model does not.
-    let families: BTreeSet<&str> = model
-        .dependencies()
-        .keys()
-        .filter_map(|key| key.split_once(':').map(|(family, _)| family))
-        .collect();
-    for family in families {
-        let prefix = format!("{family}:");
-        for key in snapshot.keys().filter(|key| key.starts_with(&prefix)) {
-            if !model.dependencies().contains_key(key) && snapshot.inputs(key).next().is_some() {
-                return Some(format!("inputs of {key}"));
-            }
+    // Every runtime key may acquire an unexpected input set, even when the
+    // model has never treated that key's family as derived.
+    for key in snapshot.keys() {
+        if !model.dependencies().contains_key(key) && snapshot.inputs(key).next().is_some() {
+            return Some(format!("inputs of {key}"));
         }
     }
     for policy in 0..params::POLICIES {
@@ -2082,6 +2074,55 @@ mod tests {
         assert_eq!(outcome, HostOutcome::Committed);
         assert_eq!(world.metrics.lww_lost_updates, 1);
         clean(&world);
+    }
+
+    #[test]
+    fn identical_lww_results_still_lose_a_logical_update() {
+        for program in [
+            rmw(0, 5),
+            Program::CounterAdd {
+                counter: 2,
+                amount: 5,
+            },
+        ] {
+            let mut world = world(GrantKind::Auto);
+            let first = open(&mut world, "b-1", program.clone());
+            let second = open(&mut world, "b-2", program);
+            assert!(matches!(
+                world.merge(&first, &auto()),
+                Ok(Settled::Committed)
+            ));
+            let delta = world.overlay(&second).expect("overlay");
+            assert_eq!(
+                world
+                    .baseline_commit(&second, &delta, "s003-lww", false)
+                    .expect("settled"),
+                HostOutcome::NoChange
+            );
+            assert_eq!(
+                world.metrics.lww_lost_updates + world.metrics.lww_lost_increments,
+                1
+            );
+            clean(&world);
+        }
+    }
+
+    #[test]
+    fn unexpected_dependencies_are_detected_on_ordinary_key_families() {
+        for key in ["item:0:0", "audit:0", "ctr:2", "set:0"] {
+            let ordinary = world(GrantKind::Auto);
+            let mut genesis = Case::new(17, 0).genesis();
+            genesis
+                .delta
+                .dependencies
+                .insert(key.into(), BTreeSet::from(["item:1:0".into()]));
+            let changed = World::with_genesis(&genesis, GrantKind::Auto)
+                .expect("world with extra dependency");
+            assert_eq!(
+                state_difference(&changed.runtime, &ordinary.model),
+                Some(format!("inputs of {key}"))
+            );
+        }
     }
 
     #[test]

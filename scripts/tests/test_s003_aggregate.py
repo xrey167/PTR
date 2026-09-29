@@ -11,9 +11,11 @@ import importlib.util
 import io
 import json
 import tempfile
+import subprocess
 import tomllib
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 HERE = ROOT / "experiments" / "semdb" / "S003-certified-branches"
@@ -480,6 +482,11 @@ class OccAnomalyTests(unittest.TestCase):
 
 
 class PilotInputTests(unittest.TestCase):
+    def setUp(self):
+        # Layout fixtures exercise classification independently of Git; source
+        # identity has separate real-repository regression cases below.
+        self.enterContext(mock.patch.object(aggregate, "validate_pilot_provenance"))
+
     def test_unmeasured_cells_cannot_supply_the_pilots_high_cell_minimum(self):
         for attempts in (0, -1):
             with self.subTest(attempts=attempts), tempfile.TemporaryDirectory() as directory:
@@ -576,6 +583,67 @@ class LayoutTests(unittest.TestCase):
         result["cases"][0]["runs"][1].update(complete=False, ticks=0)
         self.assertEqual(analyse([result])["recommended"], "failed")
 
+
+
+class PilotSourceEvidenceTests(unittest.TestCase):
+    def test_legacy_pilot_without_a_producing_revision_is_refused(self):
+        with self.assertRaisesRegex(ValueError, "producing-revision"):
+            aggregate.validate_pilot_provenance({"seed": 1})
+
+    def test_harness_changes_invalidate_pilot_even_with_the_same_configuration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            def git(*args):
+                return subprocess.check_output(["git", "-c", "user.name=PTR tests", "-c", "user.email=tests@example.invalid", *args], cwd=root, text=True).strip()
+            git("init", "-q")
+            (root / "harness.rs").write_text("fn original() {}\n")
+            git("add", ".")
+            git("commit", "-qm", "initial harness")
+            evidence = {"pilot_provenance": {"schema_version": 1, "git_sha": git("rev-parse", "HEAD"), "git_dirty": False, "exit_code": 0}}
+            with mock.patch.object(aggregate, "ROOT", root):
+                aggregate.validate_pilot_provenance(evidence)
+                # Adding the result itself is not a change to the producer.
+                (root / "pilot.json").write_text("{}")
+                git("add", ".")
+                git("commit", "-qm", "pilot output")
+                aggregate.validate_pilot_provenance(evidence)
+                (root / "harness.rs").write_text("fn changed() {}\n")
+                with self.assertRaisesRegex(ValueError, "source differs"):
+                    aggregate.validate_pilot_provenance(evidence)
+                git("add", ".")
+                git("commit", "-qm", "changed harness, same config")
+                with self.assertRaisesRegex(ValueError, "source differs"):
+                    aggregate.validate_pilot_provenance(evidence)
+
+    def test_collector_binds_a_successful_run_and_refuses_source_changes(self):
+        for changed in ([], ["harness.rs"]):
+            with self.subTest(changed=changed), tempfile.TemporaryDirectory() as directory:
+                output = Path(directory) / "pilot.json"
+                watch = mock.Mock(head="a" * 40, uncommitted=[], changes=mock.Mock(return_value=changed))
+                completed = subprocess.CompletedProcess([], 0, stdout=json.dumps(seed_result(1)), stderr="")
+                with mock.patch.object(aggregate.experiment_records, "ProvenanceWatch", return_value=watch), mock.patch.object(aggregate.subprocess, "run", return_value=completed), contextlib.redirect_stdout(io.StringIO()):
+                    if changed:
+                        with self.assertRaisesRegex(SystemExit, "source changed"):
+                            aggregate.record_pilot(1, output)
+                        self.assertFalse(output.exists())
+                    else:
+                        self.assertEqual(aggregate.record_pilot(1, output), 0)
+                        evidence = json.loads(output.read_text())["pilot_provenance"]
+                        self.assertEqual(evidence["git_sha"], "a" * 40)
+                        self.assertFalse(evidence["git_dirty"])
+                        self.assertEqual(evidence["exit_code"], 0)
+                        with self.assertRaisesRegex(SystemExit, "refusing to replace"):
+                            aggregate.record_pilot(1, output)
+
+    def test_no_change_lww_attempts_are_in_the_anomaly_denominator(self):
+        result = seed_result(17)
+        for case in result["cases"]:
+            for run in case["runs"]:
+                if run["arm"] == "lww":
+                    run.update(merged=0, no_change=10)
+        result["lww_lost_updates"] = 1
+        values = analyse([result])["metrics"]["descriptive"]
+        self.assertGreater(values["lww_anomalies_per_settled_attempt"], 0)
 
 if __name__ == "__main__":
     unittest.main()
