@@ -161,14 +161,17 @@ def decide(
     missing = [f"{arm}/{seed}/{split}" for arm in set(table) | {"full"}
                for seed in seeds for split in TEST_SPLITS
                if split not in table.get(arm, {}).get(seed, {})]
+    missing.extend(f"contingency/{arm}/{seed}/{split}" for arm in contingency or {}
+                   for seed in seeds for split in TEST_SPLITS
+                   if split not in contingency[arm].get(seed, {}))
     if missing or not gates.get("G3", {}).get("pass", False):
         result["gates"]["G3"] = {"pass": False, "detail": {"missing_scores": missing, "processes": gates.get("G3", {}).get("detail")}}
         result["gates"]["G1"] = {"pass": False, "detail": "not evaluated: incomplete scores"}
-        result["summary"] = "INCONCLUSIVE: evaluation scores are incomplete; no statistics or mechanism verdict computed."
+        result["summary"] = "INCONCLUSIVE: evaluation or contingency scores are incomplete; no statistics or mechanism verdict computed."
         for contrast in criteria["contrast"]:
             result["verdicts"][contrast["id"]] = {
                 "verdict": "NOT TESTED" if contrast["kind"] == "not-tested" else "INCONCLUSIVE",
-                "reason": contrast.get("note", "G3: incomplete evaluation scores"),
+                "reason": contrast.get("note", "G3: incomplete evaluation or contingency scores"),
             }
         return result
 
@@ -318,8 +321,8 @@ def decide(
             # outranks every other outcome, NOT EXERCISED included.
             if reason_block:
                 entry.update(verdict="INCONCLUSIVE", reason=reason_block)
-            elif c.get("requires_pass") and checks.get(c["requires_pass"]) == "FAIL":
-                entry.update(verdict="NOT EXERCISED", reason=f"{c['requires_pass']} failed")
+            elif c.get("requires_pass") and checks.get(c["requires_pass"]) != "PASS":
+                entry.update(verdict="NOT EXERCISED", reason=f"{c['requires_pass']} did not pass")
             elif "blindness_margin" in c and mean_over_seeds(table, c["ablated"], "test_iid", seeds) > refs["bound_additive"]["test_iid"] + c["blindness_margin"]:
                 entry.update(verdict="INCONCLUSIVE", reason="blindness failed: the blind arm exceeds the bound additive reference")
             else:
@@ -549,7 +552,7 @@ def chosen_contingencies(records: list[dict]) -> dict[tuple, dict]:
 
 
 def completeness(chosen: dict[str, dict[str, dict[int, dict]]], seeds: list[int],
-                 planned: dict[str, list[str]], table: dict) -> list[str]:
+                 planned: dict[str, list[str]], table: dict, contingency: dict | None = None) -> list[str]:
     """G3: every planned process completed with finite losses, and every arm the
     budget rule kept has scores for every seed. `chosen` is {kind: {experiment:
     {seed: record}}}; the evaluation must cover every experiment in `planned`, a
@@ -567,6 +570,11 @@ def completeness(chosen: dict[str, dict[str, dict[int, dict]]], seeds: list[int]
                         record = group.get(seed)
                         if record is None or has_nan(record):
                             problems.append(f"contingency {experiment}/{arms}/{seed}: missing or non-finite process")
+                    for arm in filter(None, arms.split(",")):
+                        for seed in seeds:
+                            for split in TEST_SPLITS:
+                                if split not in (contingency or {}).get(arm, {}).get(seed, {}):
+                                    problems.append(f"contingency {experiment}/{arm}/{seed}/{split}: missing scores")
                 continue
             wanted = seeds if kind != "rerun" else [RERUN_SEED]
             if kind == "rerun" and set(by_seed) - {RERUN_SEED}:
@@ -824,7 +832,7 @@ def main(argv: list[str] | None = None) -> int:
                               "full_lines_compared": reproduced["full_lines"]}}
 
     # G3: every planned process completed with finite losses, every kept arm scored.
-    incomplete = completeness(chosen, seeds, budget["arms"], table)
+    incomplete = completeness(chosen, seeds, budget["arms"], table, contingency)
     gates["G3"] = {"pass": not incomplete, "detail": incomplete}
 
     # G4: every record clean, one commit, descended from the tag, and between the
@@ -860,8 +868,6 @@ def main(argv: list[str] | None = None) -> int:
     g6 = json.loads(g6_path.read_text()) if g6_path.exists() else {}
     gates["G6"] = correctness_evidence(g6, sha, g6_path.parent, lock["data_fnv1a64"])
 
-    result = decide(table, references, criteria, gates, contingency)
-
     # Cross-check against the stock runner aggregate: per-arm mean accuracy per split,
     # for the evaluation and, where it ran, the contingency.
     stock_mismatch = []
@@ -878,21 +884,29 @@ def main(argv: list[str] | None = None) -> int:
                 out = subprocess.run([sys.executable, "scripts/run_experiment.py", "aggregate", experiment,
                                       "--entrypoint", entrypoint, *selection], cwd=ROOT, text=True, capture_output=True)
                 agg_path = ROOT / out.stdout.strip() if out.stdout.strip() else None
-                if agg_path is None or not agg_path.exists():
+                if out.returncode != 0 or agg_path is None or not agg_path.exists():
                     stock_mismatch.append(f"{experiment}/{entrypoint}: stock aggregate failed: {out.stderr.strip()[:200]}")
                     continue
                 stock = json.loads(agg_path.read_text())
-                for group in stock["groups"]:
+                if stock.get("status") != "complete":
+                    stock_mismatch.append(f"{experiment}/{entrypoint}: stock aggregate is incomplete")
+                    continue
+                final_groups = [group for group in stock["groups"] if group["key"].get("row") == "final"]
+                if not final_groups:
+                    stock_mismatch.append(f"{experiment}/{entrypoint}: stock aggregate has no final scores")
+                for group in final_groups:
                     key = group["key"]
-                    if key.get("row") != "final":
-                        continue
                     arm_scores = (scores_table or {}).get(key["arm"], {})
                     if any(key["split"] not in arm_scores.get(s, {}) for s in seeds):
                         stock_mismatch.append(f"{experiment}/{entrypoint}/{key['arm']}/{key['split']}: missing scores")
                         continue
                     ours = statistics.fmean(arm_scores[s][key["split"]]["accuracy"] for s in seeds)
-                    if abs(group["metrics"]["accuracy"]["mean"] - ours) > 1e-12:
+                    stock_mean = group["metrics"]["accuracy"]["mean"]
+                    if not isinstance(stock_mean, (int, float)) or not math.isfinite(stock_mean) or abs(stock_mean - ours) > 1e-12:
                         stock_mismatch.append(f"{experiment}/{entrypoint}/{key['arm']}/{key['split']}")
+    # The design requires agreement with the stock runner before any verdict.
+    gates["stock_aggregate_cross_check"] = {"pass": not stock_mismatch, "detail": stock_mismatch}
+    result = decide(table, references, criteria, gates, contingency)
     result["stock_aggregate_cross_check"] = {"pass": not stock_mismatch, "mismatches": stock_mismatch}
 
     def per_split(scores_table: dict, arm: str) -> dict:

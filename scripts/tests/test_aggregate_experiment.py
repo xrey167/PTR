@@ -243,6 +243,11 @@ class Aggregation(unittest.TestCase):
         cases = [
             ("parameters", {"parameters": {"iterations": "100"}}, {"parameters": {"iterations": "100000"}}),
             ("rustc", {"rustc": "rustc 1.95.0"}, {"rustc": "rustc 1.98.1"}),
+            ("python", {"python": "3.11"}, {"python": "3.13"}),
+            ("executable", {"executable": {"sha256": "a" * 64}}, {"executable": {"sha256": "b" * 64}}),
+            ("toolchain", {"toolchain": {"rustc": "1.85"}}, {"toolchain": {"rustc": "1.95"}}),
+            ("environment", {"environment": {"RUSTFLAGS": ""}}, {"environment": {"RUSTFLAGS": "-C opt-level=3"}}),
+            ("toolchain", {}, {"toolchain": {"rustc": "1.95"}}),
             ("host", {"host": {"cpu_model": "x"}}, {"host": {"cpu_model": "y"}}),
             ("manifest_sha256", {"manifest_sha256": "1" * 64}, {"manifest_sha256": "2" * 64}),
         ]

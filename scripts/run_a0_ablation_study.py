@@ -222,6 +222,9 @@ def prepare_r2() -> dict:
     This is only called after every base and R1 calibration candidate fails.
     """
     changes = {
+        "benchmarks/operator-routing/tests/test_operator_routing_rule.py": [
+            ('RULE_REVISION = "base"', 'RULE_REVISION = "R2"'),
+        ],
         "benchmarks/operator-routing/generator.py": [
             ("G = [0.0, 0.5, 1.0, 1.0, 1.25]", "G = [0.0, 1.0, 1.0, 1.0, 1.0]"),
             ('_U = {"unknown": 0.35, "assumed": 0.60, "hypothesis": 0.85, "observed": 0.0, "inferred": 0.0, "verified": 0.0}',

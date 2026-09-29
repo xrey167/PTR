@@ -99,3 +99,13 @@ the driver regression checks that the oracle changes with the rule. Scoring
 also rejects every non-finite logit before argmax, causing a nonzero process
 exit rather than emitting a fabricated operator code after a failed update.
 Regression coverage includes NaN and both infinities at every operator index.
+
+
+Further aggregation review makes a failed or incomplete stock aggregate block
+verdicts before they are issued. Contingency scores must cover every requested
+arm, seed and split; an unpassed manipulation prerequisite blocks its dependent
+contrast. Failed-G3 reports render missing and partial metric cells explicitly.
+Cross-seed aggregation now compares recorded Python, executable, toolchain and
+environment provenance as well. R2 preparation switches an independently
+hand-computed Python oracle along with its Rust counterpart; the revised Python
+rule and counterfactual cases run inside the calibration regression test.

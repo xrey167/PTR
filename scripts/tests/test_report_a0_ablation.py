@@ -42,6 +42,33 @@ class Report(unittest.TestCase):
         """Restore the report writer's repository and study paths after the fixture run."""
         report.ROOT, report.STUDY = self.saved
 
+    def test_incomplete_g3_report_renders_partial_and_empty_arms(self):
+        path = self.study / "results.json"
+        results = json.loads(path.read_text())
+        results["gates"]["G3"] = {"pass": False, "detail": "missing scores"}
+        results["verdicts"] = {cid: {"verdict": "INCONCLUSIVE", "reason": "G3: incomplete scores"}
+                               for cid in results["verdicts"]}
+        results.pop("learnability", None)
+        results["reported"] = {}
+        path.write_text(json.dumps(results))
+        for experiment in report.EXPERIMENTS.values():
+            metrics_path = self.tmp / "experiments" / experiment / "results/a0_internal_metrics.json"
+            document = json.loads(metrics_path.read_text())
+            for arm, seeds in document["arms"].items():
+                if arm == "full":
+                    del seeds[sorted(seeds)[0]]["ood_validity"]
+                    for splits in seeds.values():
+                        splits.pop("ood_payload")
+                else:
+                    document["arms"][arm] = {}
+            metrics_path.write_text(json.dumps(document))
+        self.assertEqual(report.main(), 0)
+        text = (self.study / "RESULTS.md").read_text()
+        self.assertIn("n=4/5", text)
+        self.assertIn("| no-semantic-slots | — | — |", text)
+        self.assertIn("| G3 | **NO**", text)
+        self.assertFalse(list(self.study.glob("FALSIFIED-*.md")))
+
     def test_every_verdict_is_reported_and_nulls_get_a_note(self):
         """Render every verdict and keep falsification notes only for FALSIFIES or HARMFUL outcomes."""
         self.assertEqual(report.main(), 0)

@@ -126,15 +126,22 @@ def main() -> int:
             w(f"| {arm} | {f(status['mean_test_iid'])} | {f(status['bar'])} | {'yes' if status['passes'] else '**no**'} | "
               f"{', '.join(f'{v:.3f}' for v in status['test_iid'])} | {statistics.fmean(status['composite_A']):.4f} |")
     w("")
-    w("## Accuracy by arm and split (mean over the five seeds, with the range)")
+    w("## Accuracy by arm and split (available seeds, mean and range)")
+    w("")
+    w("Missing cells are shown as —; partial cells show their seed count and do not establish a verdict.")
     w("")
     w("| Arm | " + " | ".join(SPLITS) + " |")
     w("|---|" + "---:|" * len(SPLITS))
     for arm, by_seed in metrics.items():
         cells = []
         for split in SPLITS:
-            values = [by_seed[s][split]["route_accuracy"] for s in by_seed]
-            cells.append(f"{statistics.fmean(values):.4f} ({min(values):.3f}-{max(values):.3f})")
+            values = [by_seed[str(seed)][split]["route_accuracy"] for seed in criteria["seeds"]
+                      if split in by_seed.get(str(seed), {})]
+            if not values:
+                cells.append("—")
+                continue
+            count = f"; n={len(values)}/{len(criteria['seeds'])}" if len(values) != len(criteria["seeds"]) else ""
+            cells.append(f"{statistics.fmean(values):.4f} ({min(values):.3f}-{max(values):.3f}{count})")
         w(f"| {arm} | " + " | ".join(cells) + " |")
     refs = references["references"]
     w("")

@@ -193,7 +193,8 @@ def aggregate(
             digest = record.get("git_tracked_diff_sha256")
             if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
                 raise ValueError(f"{path.name}: dirty record requires a valid git_tracked_diff_sha256")
-    for key in ("manifest_sha256", "parameters", "rustc", "host", "git_tracked_diff_sha256",
+    for key in ("manifest_sha256", "parameters", "rustc", "python", "executable", "toolchain", "environment",
+                "host", "git_tracked_diff_sha256",
                 "cargo_lock_path", "cargo_lock_sha256", "command_cargo_lock_path", "command_cargo_lock_sha256"):
         seen = sorted({canonical(record.get(key)) for _, record in records})
         if len(seen) > 1:

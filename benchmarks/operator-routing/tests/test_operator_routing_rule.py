@@ -23,6 +23,9 @@ import unittest
 
 from _support import gen, score
 
+# The guarded R2 preparation switches this independently hand-checked oracle.
+RULE_REVISION = "base"
+
 K_FOR_BUCKET = {0: 100, 1: 300, 2: 500, 3: 700, 4: 900}
 REGIME = {"tabular": 0, "temporal": 1, "interventional": 2, "textual": 3}
 
@@ -172,6 +175,23 @@ CASES = [
 ]
 
 
+# R2 uses G=1 for cb1..4 and U=0. These are hand-derived, not generated labels.
+# Resource/unknown: ext=.60, search=.27, prob=0; even B0 leaves ext=.10 > search=.07.
+# Constraint/assumed + action/observed: ext=2.60, opt=1.10, temporal=1.17;
+# at B0 ext=1.60 remains above temporal=.97 and symbolic=.495.
+# Claim/unknown + evidence/unknown: statistical=.87 > deductive=.60 > prob=.27.
+# Claim/observed + capability/inferred: deductive=2.60 > simulation=2.10 at B2.
+R2_WINNERS = [
+    "semantic", "search", "external_pod", "external_pod", "external_pod", "external_pod",
+    "causal", "symbolic", "search", "temporal", "semantic", "external_pod", "external_pod",
+    "statistical", "deductive", "deductive",
+]
+if RULE_REVISION == "R2":
+    assert len(CASES) == len(R2_WINNERS)
+    CASES = [(name + " (R2)", facts, regime, budget, expected)
+             for (name, facts, regime, budget, _), expected in zip(CASES, R2_WINNERS)]
+
+
 class HandCheckedRuleCases(unittest.TestCase):
     def test_there_are_at_least_twelve_cases(self):
         """Keep the hand-derived rule fixture above its minimum case count."""
@@ -268,8 +288,9 @@ class Counterfactuals(unittest.TestCase):
 
     def test_budget_tag(self):
         """Tag a case where changing the budget flips the resource fact's winner."""
-        # resource/unknown/cb1: external_pod at B=2, probabilistic at B=0 and B=1.
-        facts = [fact("resource", "unknown", 1)]
+        # At cb2 both rules give simulation 3.10 > deductive 2.60 at B2.
+        # At B0 two penalties reduce simulation to 2.30; deductive stays 2.60.
+        facts = [fact("claim", "observed", 2), fact("capability", "verified", 2)]
         self.assertIn("budget", self.gen_tags(facts, "textual", 2))
         self.assertIn("budget", self.score_tags(facts, "textual", 2))
 
@@ -283,23 +304,19 @@ class Counterfactuals(unittest.TestCase):
 
     def test_epistemic_tag(self):
         """Tag a case where removing epistemic weights and bonuses changes the winner."""
-        # The U-term case. With W = 1 and U = 0 the claim votes deductive 2.0 / statistical
-        # 0.9 and the evidence votes statistical 2.0 / probabilistic 0.9: statistical 2.9
-        # wins instead of probabilistic.
-        facts = [fact("claim", "unknown", 2), fact("evidence", "unknown", 2)]
+        # Both rules choose search 3.10 over causal .60. With W=1 and U=0,
+        # both score 2.0 and the equal-cost tie goes to causal's lower code.
+        facts = [fact("goal", "verified", 2), fact("relation", "unknown", 2)]
         self.assertIn("epistemic", self.gen_tags(facts, "tabular", 2))
         self.assertIn("epistemic", self.score_tags(facts, "tabular", 2))
 
     def test_heldout_tag(self):
         """Require the held-out tag only when removing held-out facts changes the label."""
         # (constraint, hypothesis) is held out.
-        # No tag: constraint/hypothesis/cb1 votes optimization .5*.8*2 = 0.8; goal/observed/cb4
-        # votes search 1.25*1.3*2 = 3.25 and optimization 1.25*1.3*.9 = 1.4625. search 3.25 beats
-        # optimization 2.2625, and without the held-out fact search still wins.
-        # Tag: constraint/hypothesis/cb4 votes optimization 1.25*.8*2 = 2.0 (probabilistic
-        # 1.0625); goal/unknown/cb2 votes search 0.6, optimization 0.27, probabilistic 0.35.
-        # optimization 2.27 wins; without the held-out fact search 0.6 wins.
-        no_tag = [fact("constraint", "hypothesis", 1), fact("goal", "observed", 4)]
+        # No tag under either rule: external_pod 3.10 > optimization 1.60.
+        # Tag: constraint/hypothesis and goal/unknown give optimization > search;
+        # removing the constraint leaves search .60 as winner under either rule.
+        no_tag = [fact("constraint", "hypothesis", 2), fact("action", "verified", 2)]
         tag = [fact("constraint", "hypothesis", 4), fact("goal", "unknown", 2)]
         self.assertNotIn("heldout", self.gen_tags(no_tag, "tabular", 2, "ood_compose_epi"))
         self.assertIn("heldout", self.gen_tags(tag, "tabular", 2, "ood_compose_epi"))

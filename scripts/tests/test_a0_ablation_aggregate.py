@@ -163,6 +163,39 @@ class StatisticsAndEndpoints(unittest.TestCase):
 
 
 class ChecksAndControls(unittest.TestCase):
+    def test_inconclusive_prerequisite_cannot_issue_a_mechanism_verdict(self):
+        result = run(table(raw_blind=0.1, no_typed_attention=0.8))
+        self.assertEqual(verdict(result, "M002-raw-blind-check"), "INCONCLUSIVE")
+        self.assertEqual(verdict(result, "M002-necessity"), "NOT EXERCISED")
+
+    def test_stock_mismatch_blocks_otherwise_decisive_contrasts(self):
+        gates = {**PASSING_GATES, "stock_aggregate_cross_check": {"pass": False, "detail": ["mismatch"]}}
+        result = run(table(no_typed_attention=0.8), gates=gates)
+        self.assertEqual(verdict(result, "M002-necessity"), "INCONCLUSIVE")
+        self.assertIn("stock_aggregate_cross_check", result["verdicts"]["M002-necessity"]["reason"])
+
+    def test_partial_contingency_produces_failed_g3_instead_of_statistics(self):
+        for absent in ("arm", "seed", "split"):
+            with self.subTest(absent=absent):
+                later = {"full": scores(0.9), "no-semantic-slots": scores(0.8)}
+                chosen = {"contingency": {"M001": {seed: {
+                    **record(seed), "parameters": {"arms": "full,no-semantic-slots"}}
+                    for seed in SEEDS}}}
+                if absent == "arm":
+                    del later["no-semantic-slots"]
+                elif absent == "seed":
+                    del later["no-semantic-slots"][SEEDS[0]]
+                else:
+                    del later["no-semantic-slots"][SEEDS[0]]["ood_validity"]
+                issues = agg.completeness(chosen, SEEDS, {}, {}, later)
+                self.assertTrue(any("missing scores" in issue for issue in issues))
+                gates = {**PASSING_GATES, "G3": {"pass": False, "detail": issues}}
+                result = run(table(no_semantic_slots=0.5), gates=gates, contingency=later)
+                self.assertFalse(result["gates"]["G3"]["pass"])
+                self.assertEqual(verdict(result, "M001-secondary"), "INCONCLUSIVE")
+                self.assertNotIn("stats", result["verdicts"]["M001-secondary"])
+
+
     def test_a_failed_raw_blind_check_makes_necessity_not_exercised(self):
         """Mark attention necessity NOT EXERCISED when raw-input use is insufficient without a leak."""
         # full - raw-blind = 0.02 < 0.03 fails the check, and 0.84 stays under the
@@ -364,7 +397,7 @@ class RecordGates(unittest.TestCase):
     def test_other_experiment_contingency_requires_full_comparator_at_every_seed(self):
         chosen = {"contingency": {"M002": {(17, "no-typed-attention"): {
             "seed": 17, "parameters": {"arms": "no-typed-attention"}, "stdout": ""}}}}
-        problems = agg.completeness(chosen, [17, 29], {}, {})
+        problems = agg.completeness(chosen, [17, 29], {}, {}, {arm: scores(0.9) for arm in ("full", "a", "b")})
         self.assertIn("contingency M001/full/17: missing paired comparator process", problems)
         self.assertIn("contingency M001/full/29: missing paired comparator process", problems)
 
@@ -586,7 +619,9 @@ class StockCrossCheck(unittest.TestCase):
                  ("missing seed", missing_seed, 0.9, ": missing scores"),
                  ("missing split", missing_split, 0.9, ": missing scores"),
                  ("matching", complete, 0.9, None),
-                 ("mismatch", complete, 0.8, "")]
+                 ("mismatch", complete, 0.8, ""),
+                 ("failed process", complete, 0.9, None),
+                 ("incomplete aggregate", complete, 0.9, None)]
         for kind in ("eval", "contingency"):
             for name, score_table, stock_mean, suffix in cases:
                 with self.subTest(kind=kind, case=name), tempfile.TemporaryDirectory() as directory:
@@ -608,7 +643,7 @@ class StockCrossCheck(unittest.TestCase):
                         "parameters": {"arms": "full"},
                     }))
                     stock_path = results / "stock.json"
-                    stock_path.write_text(json.dumps({"groups": [
+                    stock_path.write_text(json.dumps({"status": "incomplete" if name == "incomplete aggregate" else "complete", "groups": [
                         {"key": {"row": "meta"}},
                         {"key": {"row": "final", "arm": "full", "split": SPLITS[0]},
                          "metrics": {"accuracy": {"mean": stock_mean}}},
@@ -626,13 +661,18 @@ class StockCrossCheck(unittest.TestCase):
                         sweep_evidence=Mock(return_value={"pass": True}),
                         decide=Mock(return_value={"verdicts": {}}),
                     ), patch.object(agg.subprocess, "run", return_value=subprocess.CompletedProcess(
-                        [], 0, stdout=str(stock_path), stderr=""
+                        [], 1 if name == "failed process" else 0, stdout=str(stock_path), stderr="failure"
                     )), contextlib.redirect_stdout(io.StringIO()):
                         self.assertEqual(agg.main([]), 0)
+                        self.assertFalse(agg.decide.call_args.args[3]["stock_aggregate_cross_check"]["pass"])
                     check = json.loads((study / "results.json").read_text())["stock_aggregate_cross_check"]
                     prefix = f"M001/{agg.STUDY_KINDS[kind]}"
                     expected = [] if suffix is None else [f"{prefix}/full/{SPLITS[0]}{suffix}"]
                     expected.append(f"{prefix}/absent/{SPLITS[0]}: missing scores")
+                    if name == "failed process":
+                        expected = [f"{prefix}: stock aggregate failed: failure"]
+                    elif name == "incomplete aggregate":
+                        expected = [f"{prefix}: stock aggregate is incomplete"]
                     self.assertEqual(check, {"pass": False, "mismatches": expected})
 
 
@@ -652,7 +692,7 @@ class ContingencyRetention(unittest.TestCase):
         runs = [{"seed": s, "status": "completed", "parameters": {"arms": arms}}
                 for s, arms in [(17, "full,a"), (29, "full,a"), (17, "full,b")]]
         chosen = {"contingency": {"M001": agg.chosen_contingencies(runs)}, "rerun": {"M001": {17: {"seed": 17}}}}
-        problems = agg.completeness(chosen, [17, 29], {}, {})
+        problems = agg.completeness(chosen, [17, 29], {}, {}, {arm: scores(0.9) for arm in ("full", "a", "b")})
         self.assertEqual(problems, ["contingency M001/full,b/29: missing or non-finite process"])
 
     def test_repeated_comparators_must_have_identical_scored_evidence(self):

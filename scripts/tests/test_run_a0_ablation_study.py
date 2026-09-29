@@ -6,6 +6,7 @@ import copy
 import math
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -20,7 +21,8 @@ spec.loader.exec_module(driver)
 class CalibrationLadder(unittest.TestCase):
     def test_r2_updates_all_rules_and_rebuilds_after_regeneration(self):
         names = ["benchmarks/operator-routing/generator.py", "benchmarks/operator-routing/score.py",
-                 "model/burn-a0/examples/a0_ablation/rule.rs", "model/burn-a0/examples/a0_ablation/main.rs"]
+                 "model/burn-a0/examples/a0_ablation/rule.rs", "model/burn-a0/examples/a0_ablation/main.rs",
+                 "benchmarks/operator-routing/tests/test_operator_routing_rule.py"]
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for name in names:
@@ -50,6 +52,11 @@ class CalibrationLadder(unittest.TestCase):
             codebook = root / "datasets/generated/codebook.json"
             codebook.parent.mkdir(parents=True, exist_ok=True)
             codebook.write_bytes((ROOT / "datasets/generated/codebook.json").read_bytes())
+            support = root / "benchmarks/operator-routing/tests/_support.py"
+            support.write_bytes((ROOT / "benchmarks/operator-routing/tests/_support.py").read_bytes())
+            oracle = subprocess.run([sys.executable, str(root / names[4]), "-q"],
+                                    text=True, capture_output=True, cwd=root)
+            self.assertEqual(oracle.returncode, 0, oracle.stdout + oracle.stderr)
             modules = []
             for name in names[:2]:
                 spec = importlib.util.spec_from_file_location("r2_" + Path(name).stem, root / name)
