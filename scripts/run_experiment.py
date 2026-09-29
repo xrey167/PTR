@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import shlex
 import shutil
 import stat
@@ -892,23 +893,37 @@ def is_rustup_proxy(path: str, rustup: str) -> bool:
         return False
 
 
-def started_program(command: list[str]) -> list[str]:
-    """The program `command` starts with its arguments, past rustup's own
-    words when it is `rustup run <toolchain> <program> ...` (options and
-    `+<toolchain>` before `run`, the options of `run` and the toolchain
-    after it); `command` itself otherwise."""
+def rustup_run_child(command: list[str]) -> list[str] | None:
+    """The program `rustup run <toolchain> <program> ...` starts with its
+    arguments, past rustup's own words (options and `+<toolchain>` before
+    `run`, the options of `run` on either side of the toolchain, up to the
+    `--` that ends them: what follows it is the program, whatever it starts
+    with); None when `command` is no `rustup run` of a program."""
     program = experiment_records.program_name(command[0]) if command else ""
     if program != "rustup":
-        return command
+        return None
     rest = command[1:]
     while rest and rest[0].startswith(("-", "+")):
         rest = rest[1:]
     if not rest or rest[0] != "run":
-        return command
+        return None
     rest = rest[1:]
     while rest and rest[0].startswith("-"):
         rest = rest[1:]
-    return rest[1:] or command
+    started = rest[1:]
+    while started and started[0].startswith("-"):
+        delimiter = started[0] == "--"
+        started = started[1:]
+        if delimiter:
+            break
+    return started or None
+
+
+def started_program(command: list[str]) -> list[str]:
+    """The program `command` starts with its arguments, past rustup's own
+    words when it is `rustup run <toolchain> <program> ...`
+    (`rustup_run_child`); `command` itself otherwise."""
+    return rustup_run_child(command) or command
 
 
 def starts_rust(command: list[str]) -> bool:
@@ -947,15 +962,33 @@ def invokes_rustdoc(command: list[str]) -> bool:
     return "--doc" in options or not options & DOCTEST_EXCLUDING_OPTIONS
 
 
+# The programs `rustup run` starts that the record names: by their bare names
+# it starts the toolchain's own, which `toolchain` names by content.
+RUSTUP_RUN_NAMED = frozenset(("cargo", "rustc", "rustdoc"))
+
+
+def runs_other_program(command: list[str]) -> bool:
+    """Whether `command` is `rustup run <toolchain> <program>` for a program
+    the record does not name: any but `cargo`, `rustc` and `rustdoc` by their
+    bare names (`RUSTUP_RUN_NAMED`, which rustup starts from the selected
+    toolchain, and `toolchain` names by content). Rustup looks another up
+    itself, on a `PATH` it builds from that toolchain, or starts it by its
+    path (`/tmp/cargo`, `rustfmt`, `cargo.exe`, `rustup`)."""
+    child = rustup_run_child(command)
+    return child is not None and child[0] not in RUSTUP_RUN_NAMED
+
+
 def required_rust_tools(command: list[str], tools: dict) -> set[str]:
     """The tools of `tools` (`toolchain`) that `command`, which starts rustup
     or one of its proxies, needs: Cargo needs itself and `rustc` (and `rustdoc`
     where it runs documentation tests), `rustc` and `rustdoc` themselves; every
     tool the record names for rustup and its other proxies, which start
-    whichever they choose."""
+    whichever they choose; none for a program `rustup run` starts that is no
+    proxy of rustup's."""
     started = started_program(command)
     program = experiment_records.program_name(started[0]) if started else ""
-    needed = {"cargo": {"cargo", "rustc"}, "rustc": {"rustc"}, "rustdoc": {"rustdoc"}}.get(program, set(tools))
+    every = set(tools) if program == "rustup" or program in RUSTUP_PROXIES else set()
+    needed = {"cargo": {"cargo", "rustc"}, "rustc": {"rustc"}, "rustdoc": {"rustdoc"}}.get(program, every)
     return needed | ({"rustdoc"} if invokes_rustdoc(command) else set())
 
 
@@ -1110,7 +1143,7 @@ def named_program(found: str | None, stamps: dict[str, experiment_records.Stamp 
     return {"path": str(target), "sha256": digest}
 
 
-SHEBANG_DEPTH = 4
+SHEBANG_DEPTH = 8
 ENV_HOPS = 4
 
 class ScriptInterpreterError(ValueError):
@@ -1122,7 +1155,9 @@ def shebang_words(path: str) -> list[str] | None:
     """The words of the first line of the file at `path` past its `#!`
     (`#!/usr/bin/env python3` is `['/usr/bin/env', 'python3']`), or None
     when it starts with none or cannot be read: a script, which the kernel
-    runs through the interpreter that line names."""
+    runs through the interpreter that line names. Raises
+    `ScriptInterpreterError` for one whose bytes this platform does not read
+    as a name."""
     try:
         with open(path, "rb") as handle:
             head = handle.read(256)
@@ -1130,22 +1165,34 @@ def shebang_words(path: str) -> list[str] | None:
         return None
     if not head.startswith(b"#!"):
         return None
-    words = head[2:].split(b"\n", 1)[0].decode("utf-8", "replace").split()
+    # The kernel splits on a space or a tab only, so a carriage return or a
+    # byte no encoding reads stays part of a name, and it takes the bytes as
+    # they are: decoded as the file system encodes names (`os.fsdecode`), so
+    # that a lookup encodes them back to the same bytes.
+    line = head[2:].split(b"\n", 1)[0]
+    try:
+        words = [os.fsdecode(word) for word in re.split(rb"[ \t]+", line) if word]
+    except UnicodeDecodeError as error:
+        # Where the file system encoding keeps no such byte (Windows), a name
+        # this platform cannot spell cannot be looked up or named.
+        raise ScriptInterpreterError(
+            f"the first line of {path} holds bytes this platform does not read as the name of an interpreter"
+        ) from error
     return words or None
 
 
-def env_target(words: list[str]) -> str | None:
+def env_target(words: list[str]) -> str:
     """The program `env` runs when a shebang gives it just the program's name
     (`#!/usr/bin/env python3`): that name, looked up on the `PATH` `env` runs
-    with, which is the runner's; None when it is given nothing. Raises
-    `ScriptInterpreterError` for any other form, an option, an assignment or
-    several words: a kernel hands `env` the words after its name as one
+    with, which is the runner's. Raises `ScriptInterpreterError` for any other
+    form: nothing (the kernel then gives `env` the script itself, which starts
+    itself again), an option, an assignment or several words: a kernel hands `env` the words after its name as one
     argument (Linux) or as several (elsewhere), and `env` reads them by rules
     of its own (`-S` splits, quotes and escapes; `-i`, `-u`, `PATH=...`, `-P`
     and `-C` change what it looks up and where), so no record could name by
     content what a run of another platform's or version's `env` would run."""
     if not words:
-        return None
+        raise ScriptInterpreterError("a script's first line gives env no program, so it starts the script itself again")
     if len(words) > 1 or words[0].startswith("-") or "=" in words[0]:
         raise ScriptInterpreterError(
             "a script's first line gives env more than a program's name (an option, an assignment or several words)"
@@ -1179,13 +1226,18 @@ def interpreters_of(
     its first line names, read as the kernel reads it (a path, from the root
     where it is relative), and where that is `env`, the program `env` runs
     (`env_target`, looked up on `environment`'s `PATH`); and, for each of them
-    that is a script too, its own interpreters. The kernel follows
-    interpreters `SHEBANG_DEPTH` levels; a program `env` starts is a new
-    `exec`, so its levels start again, and `ENV_HOPS` such starts are
-    followed. Empty for a file that is no script."""
+    that is a script too, its own interpreters. The kernel follows them to a
+    depth of its own; `SHEBANG_DEPTH` is above it, and a script found at it
+    refuses. A program `env` starts is a new `exec`, so its levels start
+    again, and `ENV_HOPS` such starts are followed. Empty for a file that is
+    no script."""
     words = shebang_words(os.path.realpath(found))
-    if words is None or depth >= SHEBANG_DEPTH:
+    if words is None:
         return []
+    if depth >= SHEBANG_DEPTH:
+        # Past what any kernel follows (Linux allows about five), so it would
+        # not run; a script found here is refused rather than left unbound.
+        raise ScriptInterpreterError(f"scripts run through one another more than {SHEBANG_DEPTH} deep")
     # The kernel takes the interpreter's name as a path, from the directory
     # the command starts in (the root) when it is relative, and looks up no
     # `PATH`; `env` does look its program up.
@@ -1196,10 +1248,9 @@ def interpreters_of(
     # as a link of another name to it runs it as well.
     if "env" in (experiment_records.program_name(words[0]), experiment_records.program_name(first["path"])):
         target = env_target(words[1:])
-        if target is not None:
-            if hops >= ENV_HOPS:
-                raise ScriptInterpreterError(f"scripts start one another through env more than {ENV_HOPS} deep")
-            named.append((named_interpreter(target, found_program([target], environment), stamps), 0, hops + 1))
+        if hops >= ENV_HOPS:
+            raise ScriptInterpreterError(f"scripts start one another through env more than {ENV_HOPS} deep")
+        named.append((named_interpreter(target, found_program([target], environment), stamps), 0, hops + 1))
     nested = [
         deeper
         for program, next_depth, next_hops in named
@@ -1549,6 +1600,18 @@ def launch_and_record(
             print(
                 f"ERROR: refusing to run {exp_id}: {error}, so its record could not name by its content what the "
                 "script runs through",
+                file=sys.stderr,
+            )
+            return 2
+        # `rustup run <toolchain> <program>` starts the program itself, looked
+        # up on a `PATH` it builds from the toolchain it selects or by its
+        # path: the record names rustup and the toolchain's rustc, cargo and
+        # rustdoc, but no other program.
+        if runs_other_program(command):
+            print(
+                f"ERROR: refusing to run {exp_id}: rustup would start {rustup_run_child(command)[0]} itself when the "
+                "command starts, which the record, naming rustup and the toolchain's rustc, cargo and rustdoc, could "
+                "not name by its content; start the program directly, so that the record names it",
                 file=sys.stderr,
             )
             return 2
