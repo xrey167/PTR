@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "label-model"
+path = "evaluations/components/label-model"
+tests_dir = "tests"

@@ -1,0 +1,23 @@
+version = 1
+kind = "workspace-area"
+name = "Q003-postgres-hybrid"
+path = "experiments/retrieval/Q003-postgres-hybrid"
+tests_dir = "tests"
+
+# Frozen before Q003 leaves `planned` (experiments/preregistration.toml,
+# scripts/check_research_gates.py). A `must-be-pinned-…` value is still to be
+# chosen; the rag_reference and strong_rag baselines must be pinned too.
+[preregistration]
+# The confirmatory seeds, as experiment.toml declares them.
+seeds = [17, 29, 43, 71, 101]
+# How far recall@k may fall below the reference before Q003 is rejected as the
+# default.
+recall_margin_permille = "must-be-pinned-before-prepared"
+# recall@10 and nDCG@10, as the manifest's metrics name them.
+k = 10
+embedding_model = "must-be-pinned-before-prepared"
+embedding_revision = "must-be-pinned-before-prepared"
+# The digests of the baselines' directories, which freeze every setting and
+# the implementation of each with this table.
+baseline_rag_reference_sha256 = "must-be-pinned-before-prepared"
+baseline_strong_rag_sha256 = "must-be-pinned-before-prepared"

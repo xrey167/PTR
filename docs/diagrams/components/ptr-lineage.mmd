@@ -1,0 +1,6 @@
+flowchart LR
+    A["Adapter checkpoints and probe losses"] --> B["ptr-lineage\nAdapter Lineage, Forgetting and Replay"]
+    B --> C["Gated lineage, replay draws, consolidations"]
+    C --> D["Training orchestration"]
+    B -. "contracts" .-> T["ptr-types"]
+    L["ptr-ledger (authority)"] -. "never replaced" .-> B

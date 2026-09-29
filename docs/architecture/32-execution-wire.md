@@ -81,7 +81,7 @@ use means re-derived at use.
 | Outcome | What it means |
 |---|---|
 | `Applied` | the effect applied, and this is what it returned |
-| `AppliedWithoutResponse` | it applied and the bytes are not coming: either not retained, or too large for a frame |
+| `AppliedWithoutResponse` | it applied and the bytes are not coming: not retained, too large for a frame, or the host could not record its settlement |
 | `Uncertain` | it **may** have applied and the receiver does not know |
 | `Refused` | nothing was attempted |
 
@@ -96,6 +96,23 @@ A catch-all would quietly report a refusal a later build invents as "nothing was
 attempted", and if that new refusal happened to mean the opposite, a requester would
 retry something that had already happened. Adding a variant must break the build
 instead.
+
+That is not only about variants a later build adds. An effect the adapter applied
+whose settlement record the host then could not commit — no ledger index left, a
+failed durable write — reached the requester as `Refused`, because the runtime
+returned it as the same `Audit` error as an attempt record that failed before
+anything happened. The runtime now returns it as `SettlementNotRecorded`
+(`28-durable-execution-audit.md`) and the wire reports `AppliedWithoutResponse`:
+the effect applied, so a refusal would invite a retry under a fresh key that
+applies it again, and the response is not handed on because the host could not
+record it. The host stays fenced. After a failed durable write it is reopened,
+replays what it wrote and, if the attempt is still unsettled there, its operator
+reconciles it; when the ledger has no index left, reconciling fails the same way
+and the fence cannot be lifted in band
+(`an_effect_whose_settlement_the_host_cannot_record_is_reported_applied_not_refused`).
+An attempt record the host cannot commit is the other side: nothing was attempted,
+the adapter is never reached, and the requester is told `Refused`
+(`an_attempt_the_host_cannot_record_is_refused_and_reaches_no_adapter`).
 
 ## One refusal code for every reason of authority
 
@@ -114,11 +131,14 @@ The full reason still exists; it stays on the host, in `Serviced::refused`, for 
 operator. A diagnosis is a thing you give the person running the system, not the
 person asking it for something.
 
-**One thing an admitted peer can learn**, stated rather than glossed: because the
-request id is spent only after admission (step 5), a peer that replays its own frame
-gets "replayed" if it is admitted and "refused" if it is not. That is a fact about
-its own key. The alternative is spending window entries before admission, which
-makes a table anyone can fill, and availability is what a host owes.
+**Two things an admitted peer can learn**, stated rather than glossed. First,
+because the request id is spent only after admission (step 5), a peer that replays
+its own frame gets "replayed" if it is admitted and "refused" if it is not. That is
+a fact about its own key. The alternative is spending window entries before
+admission, which makes a table anyone can fill, and availability is what a host
+owes. Second, a refusal under an at-most-once key can tell it that another
+principal spent that key, which is a fact about somebody else's activity; the next
+section says how, and what a requester does about it.
 
 ## Two mechanisms against repetition, and neither stands in for the other
 
@@ -137,6 +157,26 @@ long as the attempt's record is retained, which is a retention obligation
 Therefore: **retrying an intent means a new `request_id` with the same `once_key`.**
 That is the only combination that says "this one again" rather than "do it once
 more", and it is why the two fields are separate.
+
+"This one again" means the same action from the same principal. The runtime binds a
+spent key to the project and principal of the attempt that spent it and to that
+attempt's action digest, compared at the revision and generation the attempt
+recorded — so a retry carrying the host's current revision and generation is still
+answered after either has moved. A request under that key for anything else —
+another payload, or the same action from a peer admitted as another principal — is
+`Refused` with the `Runtime` code: nothing was attempted for it, and answering it
+with the receipt of the request that spent the key would tell it that its own effect
+had applied.
+
+Keys are one namespace per host runtime, shared by every principal and project, and
+that has two consequences a requester has to know. A peer that sends an in-grant
+request under a key another principal spent is refused, where under a key nobody had
+spent the same request would have applied — so it can learn that a key it guessed
+was spent by somebody else, at the cost of spending that key when it was not. And
+whichever principal spends a key first makes it refused to every other principal and
+project for as long as the host remembers it. So a requester should choose keys
+nobody else can guess, such as random 128-bit values, and should not share a key
+space with another principal.
 
 ## A receipt, and what a receipt is not
 
@@ -176,7 +216,9 @@ not. A receipt is the answer to your own request, not a certificate.
   what happened to an effect.
 - **No position in the host's ledger crosses the wire.** How far that ledger has got
   is a fact about every other principal's activity too. A requester gets the outcome
-  of its own request and not a measure of the host's traffic.
+  of its own request and not a measure of the host's traffic — with the one
+  exception stated above: a refusal under an at-most-once key can say that another
+  principal spent that key.
 - **One connection per request**, which is correct and wasteful — the same open item
   `31-cluster-integrity.md` records.
 - **No discovery.** Which address belongs to an id nobody told you is a mechanism

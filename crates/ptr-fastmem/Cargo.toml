@@ -1,0 +1,16 @@
+[package]
+name = "ptr-fastmem"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+ptr-types = { workspace = true }
+# A readout is decoded into the same evidence-candidate type every other
+# retrieval path produces, so fast memory cannot enter reasoning at a higher
+# stage than a search hit.
+ptr-search = { workspace = true }
+# The same pin ptr-ledger, ptr-execwire and ptr-podwire use: one hash for every
+# digest the workspace takes over bytes.
+sha2 = { version = "=0.11.0", default-features = false }

@@ -1,0 +1,13 @@
+version = 1
+id = "M008"
+status = "planned"
+hypothesis = "Does a revocable fast-weight working memory improve recall of recent and updated facts within a session over a recency buffer and plain retrieval at an equal token budget?"
+metrics = "update-aware recall@1; Unknown rate; false recall rate; tokens; latency"
+baseline = "recency buffer of the last N facts; hybrid retrieval over the same facts (Q003 stack)"
+falsification = "No gain in update-aware recall at equal tokens, or a false recall rate above the recency baseline, rejects the memory as a default."
+hardware_profile = "hardware/default.toml"
+entrypoint = ""
+seeds = [17, 29, 43, 71, 101]
+results_dir = "results"
+required_artifacts = ["run.json", "metrics.json"]
+design = "../../../docs/architecture/35-agentic-substrate.md"

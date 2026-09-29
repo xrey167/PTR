@@ -30,5 +30,6 @@ evidence = []
 [[candidate]]
 id = "postgresql"
 source = "external"
-status = "to-evaluate"
-evidence = []
+status = "evaluating"
+command = "cargo test -p ptr-pg --features postgres-backend --test postgres --locked"
+evidence = ["../../../crates/ptr-pg/tests/postgres.rs"]

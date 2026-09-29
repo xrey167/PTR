@@ -1,0 +1,13 @@
+version = 1
+id = "Q003"
+status = "planned"
+hypothesis = "Does generation-joined hybrid retrieval in PostgreSQL match the recall of the reference retrieval stack while never returning a non-live generation?"
+metrics = "recall@10; nDCG@10; stale-generation hits; p50 and p99 latency; index build time"
+baseline = "research/baselines/rag_reference and strong_rag; BM25 reference"
+falsification = "Any stale-generation hit is a hard failure; recall below the reference by more than the preregistered margin rejects it as the default."
+hardware_profile = "hardware/default.toml"
+entrypoint = ""
+seeds = [17, 29, 43, 71, 101]
+results_dir = "results"
+required_artifacts = ["run.json", "metrics.json"]
+design = "../../../docs/architecture/35-agentic-substrate.md"

@@ -1,0 +1,13 @@
+version = 1
+id = "F003"
+status = "planned"
+hypothesis = "Does the calibrated arbiter keep the harm rate of auto-proposed branches at or below alpha on held-out adjudications while reducing human reviews?"
+metrics = "adjudicated harm rate of auto-proposals with its upper bound; escalation share; reviews saved; off-policy estimate error"
+baseline = "escalate every branch; fixed uncalibrated threshold"
+falsification = "An upper confidence bound above alpha on held-out adjudications, or any auto-proposal of an ineligible branch, is a hard failure."
+hardware_profile = "hardware/default.toml"
+entrypoint = ""
+seeds = [17, 29, 43, 71, 101]
+results_dir = "results"
+required_artifacts = ["run.json", "metrics.json"]
+design = "../../../docs/architecture/35-agentic-substrate.md"

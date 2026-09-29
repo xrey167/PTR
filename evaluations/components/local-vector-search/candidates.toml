@@ -31,3 +31,16 @@ id = "hnsw-library"
 source = "external"
 status = "to-evaluate"
 evidence = []
+
+[[candidate]]
+id = "pgvector-halfvec-hnsw"
+source = "external"
+status = "evaluating"
+command = "cargo test -p ptr-pg --features postgres-backend --test postgres --locked"
+evidence = ["../../../crates/ptr-pg/tests/postgres.rs"]
+
+[[candidate]]
+id = "vectorchord"
+source = "external"
+status = "to-evaluate"
+evidence = []

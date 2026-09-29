@@ -1,6 +1,8 @@
 //! Versioned, bounded SHA-256 chained records. Hashes detect corruption; only an
 //! independently trusted anchor detects a rewritten or rolled-back whole log.
-//! This is not a MAC, signature, distributed fence or secure-erasure mechanism.
+//! The chain is not a MAC, signature, distributed fence or secure-erasure
+//! mechanism; [`hmac_sha256`] and [`constant_time_eq`] are the keyed
+//! primitives the authenticated formats built on it use.
 use crate::{decode_event, encode_event, CommittedEvent, LedgerEvent};
 use ptr_types::CommitIndex;
 use sha2::{Digest, Sha256};
@@ -85,6 +87,7 @@ pub(crate) fn encode_record(
     if index > MAX_RECORDS as u64 {
         return Err(invalid("PTR_LOG_RECORD_LIMIT"));
     }
+    crate::check_origin_bounds(event)?;
     let payload = encode_event(event);
     if payload.is_empty() || payload.len() > MAX_RECORD_BYTES {
         return Err(invalid("PTR_LOG_PAYLOAD_LIMIT"));
@@ -337,6 +340,49 @@ pub fn decode_legacy_log(bytes: &[u8]) -> io::Result<Vec<CommittedEvent>> {
     Ok(events)
 }
 
+/// HMAC-SHA256 per RFC 2104, verified against the RFC 4231 vectors in this
+/// module's tests. Implemented here so authentication adds no dependency
+/// outside the vendor-patch policy. Anchor authentication
+/// ([`anchor`](crate::anchor)) and ptr-pg's branch seal tags use it; each
+/// prefixes its message with its own domain, so a tag of one kind never
+/// verifies as another.
+pub fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
+    const BLOCK_BYTES: usize = 64;
+    let mut block = [0u8; BLOCK_BYTES];
+    if key.len() > BLOCK_BYTES {
+        block[..32].copy_from_slice(&<[u8; 32]>::from(Sha256::digest(key)));
+    } else {
+        block[..key.len()].copy_from_slice(key);
+    }
+    let mut inner_key = [0u8; BLOCK_BYTES];
+    let mut outer_key = [0u8; BLOCK_BYTES];
+    for (index, byte) in block.iter().enumerate() {
+        inner_key[index] = byte ^ 0x36;
+        outer_key[index] = byte ^ 0x5c;
+    }
+    let mut inner = Sha256::new();
+    inner.update(inner_key);
+    inner.update(message);
+    let inner_digest = <[u8; 32]>::from(inner.finalize());
+    let mut outer = Sha256::new();
+    outer.update(outer_key);
+    outer.update(inner_digest);
+    <[u8; 32]>::from(outer.finalize())
+}
+
+/// Compare without an early exit, so a rejected MAC does not report how much of
+/// it matched.
+pub fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    let difference = left
+        .iter()
+        .zip(right)
+        .fold(0u8, |accumulated, (a, b)| accumulated | (a ^ b));
+    difference == 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -362,5 +408,57 @@ mod tests {
             }
         )
         .is_err());
+    }
+}
+
+#[cfg(test)]
+mod mac_tests {
+    use super::*;
+
+    fn decode_hex(text: &str) -> Vec<u8> {
+        text.as_bytes()
+            .chunks(2)
+            .map(|pair| {
+                let digits = std::str::from_utf8(pair).expect("ascii hex");
+                u8::from_str_radix(digits, 16).expect("hex byte")
+            })
+            .collect()
+    }
+
+    #[test]
+    fn hmac_matches_rfc_4231_vectors() {
+        // Cases 1, 2, 3 and 6; case 6 exercises the key-longer-than-block path.
+        let cases: [(Vec<u8>, Vec<u8>, &str); 4] = [
+            (
+                vec![0x0b; 20],
+                b"Hi There".to_vec(),
+                "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7",
+            ),
+            (
+                b"Jefe".to_vec(),
+                b"what do ya want for nothing?".to_vec(),
+                "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843",
+            ),
+            (
+                vec![0xaa; 20],
+                vec![0xdd; 50],
+                "773ea91e36800e46854db8ebd09181a72959098b3ef8c122d9635514ced565fe",
+            ),
+            (
+                vec![0xaa; 131],
+                b"Test Using Larger Than Block-Size Key - Hash Key First".to_vec(),
+                "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54",
+            ),
+        ];
+        for (key, message, expected) in cases {
+            assert_eq!(hmac_sha256(&key, &message).as_slice(), decode_hex(expected));
+        }
+    }
+
+    #[test]
+    fn constant_time_eq_rejects_length_and_content_differences() {
+        assert!(constant_time_eq(&[1, 2, 3], &[1, 2, 3]));
+        assert!(!constant_time_eq(&[1, 2, 3], &[1, 2, 4]));
+        assert!(!constant_time_eq(&[1, 2, 3], &[1, 2]));
     }
 }

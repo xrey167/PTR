@@ -1,0 +1,306 @@
+{
+  "experiment_id": "L003",
+  "git_sha": "4659cbfceec157ca592732a405a778fb794fff80",
+  "recorded_at": "2026-09-28T04:12:43.568599+00:00",
+  "subcommand": "fastmem-revocation",
+  "killed": 16,
+  "total": 16,
+  "mutations": [
+    {
+      "name": "tombstone-removes-other-generations",
+      "file": "crates/ptr-pg/src/adapters/projection.rs",
+      "cases": 4,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 122,
+      "expected": [
+        "journal_mismatches",
+        "removed_count_mismatches",
+        "bit_identity_failures"
+      ],
+      "counters": {
+        "bit_identity_failures": 18,
+        "false_denials": 18,
+        "journal_mismatches": 26,
+        "removed_count_mismatches": 5,
+        "checkpoint_false_refusals": 2,
+        "stale_checkpoints_accepted": 3,
+        "checkpoint_violations": 32,
+        "stale_checkpoint_rows": 14,
+        "race_violations": 3,
+        "read_failures": 1
+      }
+    },
+    {
+      "name": "supersession-removes-nothing",
+      "file": "crates/ptr-pg/src/adapters/projection.rs",
+      "cases": 4,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 60,
+      "expected": [
+        "journal_mismatches",
+        "removed_count_mismatches",
+        "stale_checkpoint_rows"
+      ],
+      "counters": {
+        "journal_mismatches": 22,
+        "removed_count_mismatches": 6,
+        "checkpoint_false_refusals": 1,
+        "checkpoint_violations": 20,
+        "stale_checkpoint_rows": 7,
+        "race_violations": 4
+      }
+    },
+    {
+      "name": "checkpoint-cascade-skipped",
+      "file": "crates/ptr-pg/src/adapters/projection.rs",
+      "cases": 4,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 2492,
+      "expected": [
+        "stale_checkpoint_rows",
+        "stale_checkpoints_accepted",
+        "checkpoint_violations"
+      ],
+      "counters": {
+        "stale_checkpoint_rows": 2492
+      }
+    },
+    {
+      "name": "checkpoint-cascade-off-by-one",
+      "file": "crates/ptr-pg/src/adapters/projection.rs",
+      "cases": 4,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 169,
+      "expected": [
+        "stale_checkpoint_rows",
+        "stale_checkpoints_accepted",
+        "checkpoint_violations"
+      ],
+      "counters": {
+        "stale_checkpoint_rows": 169
+      }
+    },
+    {
+      "name": "append-ignores-tombstone",
+      "file": "crates/ptr-pg/src/adapters/fastmem.rs",
+      "cases": 4,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 74,
+      "expected": [
+        "inadmissible_appends_accepted"
+      ],
+      "counters": {
+        "bit_identity_failures": 15,
+        "false_denials": 15,
+        "journal_mismatches": 18,
+        "removed_count_mismatches": 4,
+        "inadmissible_appends_accepted": 1,
+        "checkpoint_false_refusals": 2,
+        "stale_checkpoints_accepted": 1,
+        "checkpoint_violations": 9,
+        "stale_checkpoint_rows": 6,
+        "race_violations": 3
+      }
+    },
+    {
+      "name": "append-ignores-live-generation",
+      "file": "crates/ptr-pg/src/adapters/fastmem.rs",
+      "cases": 4,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 35,
+      "expected": [
+        "inadmissible_appends_accepted"
+      ],
+      "counters": {
+        "journal_mismatches": 22,
+        "removed_count_mismatches": 4,
+        "inadmissible_appends_accepted": 6,
+        "checkpoint_false_refusals": 1,
+        "race_violations": 2
+      }
+    },
+    {
+      "name": "append-without-row-lock",
+      "file": "crates/ptr-pg/src/adapters/fastmem.rs",
+      "cases": 10,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 187,
+      "expected": [
+        "race_violations"
+      ],
+      "counters": {
+        "bit_identity_failures": 28,
+        "false_denials": 28,
+        "journal_mismatches": 62,
+        "removed_count_mismatches": 14,
+        "checkpoint_false_refusals": 1,
+        "stale_checkpoints_accepted": 2,
+        "checkpoint_violations": 28,
+        "stale_checkpoint_rows": 10,
+        "race_violations": 14
+      }
+    },
+    {
+      "name": "checkpoint-prefix-without-lock",
+      "file": "crates/ptr-pg/src/adapters/fastmem.rs",
+      "cases": 10,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 278,
+      "expected": [
+        "stale_checkpoint_rows",
+        "race_violations"
+      ],
+      "counters": {
+        "stale_checkpoint_rows": 278
+      }
+    },
+    {
+      "name": "checkpoint-binding-unchecked",
+      "file": "crates/ptr-pg/src/adapters/fastmem.rs",
+      "cases": 4,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 63,
+      "expected": [
+        "stale_checkpoints_accepted",
+        "stale_checkpoint_rows"
+      ],
+      "counters": {
+        "stale_checkpoints_accepted": 20,
+        "stale_checkpoint_rows": 41,
+        "read_failures": 2
+      }
+    },
+    {
+      "name": "latest-checkpoint-skips-nothing",
+      "file": "crates/ptr-pg/src/adapters/fastmem.rs",
+      "cases": 4,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 76,
+      "expected": [
+        "checkpoint_violations"
+      ],
+      "counters": {
+        "checkpoint_violations": 76
+      }
+    },
+    {
+      "name": "journal-cells-lose-a-bit",
+      "file": "crates/ptr-pg/src/adapters/fastmem.rs",
+      "cases": 4,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 67,
+      "expected": [
+        "journal_mismatches"
+      ],
+      "counters": {
+        "bit_identity_failures": 22,
+        "readout_failures": 18,
+        "journal_mismatches": 22,
+        "checkpoint_violations": 5
+      }
+    },
+    {
+      "name": "refold-keeps-straddling-checkpoint",
+      "file": "crates/ptr-fastmem/src/memory.rs",
+      "cases": 4,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 268,
+      "expected": [
+        "bit_identity_failures",
+        "readout_failures"
+      ],
+      "counters": {
+        "bit_identity_failures": 118,
+        "readout_failures": 118,
+        "checkpoint_false_refusals": 4,
+        "checkpoint_violations": 28
+      }
+    },
+    {
+      "name": "read-admission-skipped",
+      "file": "crates/ptr-fastmem/src/memory.rs",
+      "cases": 4,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 138,
+      "expected": [
+        "resurrected_reads"
+      ],
+      "counters": {
+        "resurrected_reads": 138
+      }
+    },
+    {
+      "name": "append-commit-error-ignored",
+      "file": "crates/ptr-pg/src/adapters/fastmem.rs",
+      "cases": 12,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 52,
+      "expected": [
+        "commit_fault_failures"
+      ],
+      "counters": {
+        "atomicity_failures": 1,
+        "commit_fault_failures": 51
+      }
+    },
+    {
+      "name": "latest-checkpoint-oldest-first",
+      "file": "crates/ptr-pg/src/adapters/fastmem.rs",
+      "cases": 4,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 35,
+      "expected": [
+        "checkpoint_violations"
+      ],
+      "counters": {
+        "checkpoint_violations": 35
+      }
+    },
+    {
+      "name": "checkpoint-cascade-deletes-all",
+      "file": "crates/ptr-pg/src/adapters/projection.rs",
+      "cases": 4,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 103,
+      "expected": [
+        "checkpoints_lost"
+      ],
+      "counters": {
+        "checkpoint_violations": 48,
+        "checkpoints_lost": 55
+      }
+    }
+  ]
+}

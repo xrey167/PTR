@@ -1,5 +1,7 @@
+#[path = "common/semantic.rs"]
+mod semantic_common;
 use ptr_config::PtrConfig;
-use ptr_ledger::{CommittedEvent, FileLedger, LedgerEvent};
+use ptr_ledger::{Attestation, CommittedEvent, FileLedger, LedgerEvent, SemanticOrigin};
 use ptr_model_api::{
     InferenceBackend, ModelError, ModelEvent, ModelRequest, ModelResumeRequest,
     ResumableInferenceBackend,
@@ -15,6 +17,7 @@ use ptr_types::{
     CommitIndex, Generation, PodId, Probability, ProjectId, RequestId, Revision, VerificationLevel,
 };
 use ptr_verifier::{VerificationReport, VerificationStatus, Verifier};
+use semantic_common::{granted, host_write, host_write_now};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{
@@ -79,8 +82,9 @@ fn chain() -> SemanticDelta {
 fn reopen_restores_exact_contents_dependency_state_and_revision() {
     let tmp = Temp::new();
     let mut r = PtrRuntime::open_durable(PtrConfig::default(), tmp.log()).unwrap();
+    granted(&mut r);
     r.ingest_text("r1".into(), "München\n東京\0").unwrap();
-    r.apply_semantic_delta(r.revision(), chain()).unwrap();
+    host_write_now(&mut r, chain()).unwrap();
     r.commit(LedgerEvent::CapsuleCommitted {
         project: "p".into(),
         capsule: "a".into(),
@@ -92,15 +96,14 @@ fn reopen_restores_exact_contents_dependency_state_and_revision() {
     assert_eq!(before.revision, Revision(2));
     drop(r);
     let mut restored = PtrRuntime::open_durable(PtrConfig::default(), tmp.log()).unwrap();
+    granted(&mut restored);
     assert_eq!(entries(&before), entries(&restored.snapshot()));
     assert_eq!(before.revision, restored.revision());
     assert_eq!(restored.committed_events(), committed);
     assert_eq!(restored.live_generation("a"), Some(Generation(2)));
     assert!(!restored.snapshot_is_current(&before));
     assert!(restored.snapshot_is_current(&restored.snapshot()));
-    let changed = restored
-        .apply_semantic_delta(restored.revision(), delta("source", "new"))
-        .unwrap();
+    let changed = host_write_now(&mut restored, delta("source", "new")).unwrap();
     assert_eq!(
         changed.affected,
         ["source".into(), "derived".into(), "plan".into()].into()
@@ -110,12 +113,11 @@ fn reopen_restores_exact_contents_dependency_state_and_revision() {
     let after_edit = restored.snapshot();
     drop(restored);
     let mut restored = PtrRuntime::open_durable(PtrConfig::default(), tmp.log()).unwrap();
+    granted(&mut restored);
     assert_eq!(entries(&after_edit), entries(&restored.snapshot()));
     let mut remove = SemanticDelta::default();
     remove.removals.insert("source".into());
-    restored
-        .apply_semantic_delta(restored.revision(), remove)
-        .unwrap();
+    host_write_now(&mut restored, remove).unwrap();
     drop(restored);
     let restored = PtrRuntime::open_durable(PtrConfig::default(), tmp.log()).unwrap();
     assert_eq!(restored.revision(), Revision(4));
@@ -130,6 +132,7 @@ fn reopen_restores_exact_contents_dependency_state_and_revision() {
 fn decoded_in_memory_replay_and_file_replay_are_equivalent() {
     let tmp = Temp::new();
     let mut r = PtrRuntime::open_durable(PtrConfig::default(), tmp.log()).unwrap();
+    granted(&mut r);
     for i in 0..50 {
         let key = format!("input:{}", i % 7);
         let mut d = delta(&key, &i.to_string());
@@ -137,7 +140,7 @@ fn decoded_in_memory_replay_and_file_replay_are_equivalent() {
             d.upserts.clear();
             d.removals.insert(key);
         }
-        r.apply_semantic_delta(r.revision(), d).unwrap();
+        host_write_now(&mut r, d).unwrap();
     }
     let expected = r.snapshot();
     let history = r.committed_events().to_vec();
@@ -158,25 +161,27 @@ fn decoded_in_memory_replay_and_file_replay_are_equivalent() {
 fn invalid_and_stale_updates_never_enter_history_or_publish_partial_state() {
     let tmp = Temp::new();
     let mut r = PtrRuntime::open_durable(PtrConfig::default(), tmp.log()).unwrap();
-    r.apply_semantic_delta(Revision(0), chain()).unwrap();
+    granted(&mut r);
+    host_write(&mut r, Revision(0), chain()).unwrap();
     drop(r);
     let bytes = std::fs::read(tmp.log()).unwrap();
     let mut r = PtrRuntime::open_durable(PtrConfig::default(), tmp.log()).unwrap();
+    granted(&mut r);
     let original = r.snapshot();
     assert!(matches!(
-        r.apply_semantic_delta(Revision(0), delta("source", "wrong base")),
+        host_write(&mut r, Revision(0), delta("source", "wrong base")),
         Err(RuntimeError::Semantic(
             SemanticError::RevisionMismatch { .. }
         ))
     ));
     let mut conflict = delta("source", "must not publish");
     conflict.removals.insert("source".into());
-    assert!(r.apply_semantic_delta(r.revision(), conflict).is_err());
+    assert!(host_write_now(&mut r, conflict).is_err());
     let mut missing = delta("derived", "missing input");
     missing
         .dependencies
         .insert("derived".into(), ["absent".into()].into());
-    assert!(r.apply_semantic_delta(r.revision(), missing).is_err());
+    assert!(host_write_now(&mut r, missing).is_err());
     assert_eq!(r.committed_events().len(), 1);
     assert!(r.snapshot_is_current(&original));
     assert_eq!(entries(&r.snapshot()), entries(&original));
@@ -202,12 +207,14 @@ fn generic_commit_and_replay_reject_invalid_schema_base_result_revision_and_noop
             base_revision,
             revision,
             encoded_delta,
+            origin: ptr_ledger::SemanticOrigin::Legacy,
         };
         let mut r = PtrRuntime::new(PtrConfig::default()).unwrap();
-        assert!(matches!(
-            r.commit(event.clone()),
-            Err(RuntimeError::Semantic(_))
-        ));
+        // No caller commits a semantic record; replay still judges one.
+        assert_eq!(
+            r.commit(event.clone()).err(),
+            Some(RuntimeError::SemanticRecordOutsideSemanticPath)
+        );
         assert!(r.committed_events().is_empty());
         assert_eq!(r.revision(), Revision(0));
         let history = [CommittedEvent {
@@ -236,13 +243,12 @@ fn generic_commit_and_replay_reject_invalid_schema_base_result_revision_and_noop
 fn noop_ingestion_has_no_extra_record_and_survives_reopen() {
     let tmp = Temp::new();
     let mut r = PtrRuntime::open_durable(PtrConfig::default(), tmp.log()).unwrap();
+    granted(&mut r);
     assert_eq!(r.ingest_text("same".into(), "text").unwrap(), Revision(1));
     for _ in 0..3 {
         assert_eq!(r.ingest_text("same".into(), "text").unwrap(), Revision(1));
     }
-    let empty = r
-        .apply_semantic_delta(r.revision(), SemanticDelta::default())
-        .unwrap();
+    let empty = host_write_now(&mut r, SemanticDelta::default()).unwrap();
     assert_eq!(empty.commit_index, None);
     assert!(empty.affected.is_empty());
     assert_eq!(r.committed_events().len(), 1);
@@ -259,12 +265,13 @@ fn noop_ingestion_has_no_extra_record_and_survives_reopen() {
 fn all_incomplete_semantic_tail_prefixes_recover_only_prior_complete_transactions() {
     let tmp = Temp::new();
     let mut r = PtrRuntime::open_durable(PtrConfig::default(), tmp.log()).unwrap();
-    r.apply_semantic_delta(Revision(0), chain()).unwrap();
+    granted(&mut r);
+    host_write(&mut r, Revision(0), chain()).unwrap();
     drop(r);
     let prefix = std::fs::read(tmp.log()).unwrap();
     let mut r = PtrRuntime::open_durable(PtrConfig::default(), tmp.log()).unwrap();
-    r.apply_semantic_delta(r.revision(), delta("source", "new value"))
-        .unwrap();
+    granted(&mut r);
+    host_write_now(&mut r, delta("source", "new value")).unwrap();
     drop(r);
     let complete = std::fs::read(tmp.log()).unwrap();
     let tail = &complete[prefix.len()..];
@@ -304,6 +311,18 @@ fn semantic_append_then_exit_child() {
             base_revision: Revision(1),
             revision: Revision(2),
             encoded_delta: delta("source", "child committed").encode().unwrap(),
+            // After the parent's attested writes a record without an origin
+            // would be refused on replay, so the child writes what a host
+            // write under the fixture grant records.
+            origin: SemanticOrigin::Host {
+                principal: semantic_common::operator().0,
+                verification: Attestation {
+                    required: VerificationLevel::Deterministic,
+                    level: VerificationLevel::Deterministic,
+                    verifiers: vec![semantic_common::ACCEPT_ALL.into()],
+                    findings: Vec::new(),
+                },
+            },
         })
         .unwrap();
     std::process::exit(23);
@@ -313,7 +332,8 @@ fn semantic_append_then_exit_child() {
 fn process_exit_after_durable_append_before_materialization_is_replayed() {
     let tmp = Temp::new();
     let mut r = PtrRuntime::open_durable(PtrConfig::default(), tmp.log()).unwrap();
-    r.apply_semantic_delta(Revision(0), chain()).unwrap();
+    granted(&mut r);
+    host_write(&mut r, Revision(0), chain()).unwrap();
     drop(r);
     let output = Command::new(std::env::current_exe().unwrap())
         .args(["--exact", "semantic_append_then_exit_child", "--nocapture"])
@@ -391,6 +411,7 @@ fn same_type_changed_pod_bytes_advance_revision_and_resume_from_durable_observat
     let request = RequestId::from("r:separator");
     let pod = PodId::from("echo");
     let mut r = PtrRuntime::open_durable(PtrConfig::default(), tmp.log()).unwrap();
+    granted(&mut r);
     for (bytes, expected) in [
         (vec![0, 255, 1], 2),
         (vec![0, 255, 2], 3),
@@ -418,6 +439,7 @@ fn same_type_changed_pod_bytes_advance_revision_and_resume_from_durable_observat
     assert_eq!(r.committed_events().len(), 3);
     drop(r);
     let mut r = PtrRuntime::open_durable(PtrConfig::default(), tmp.log()).unwrap();
+    granted(&mut r);
     let snapshot = r.snapshot();
     let stored = snapshot.payload(&pod_output_key(&request, &pod)).unwrap();
     assert_eq!(stored.bytes, [0, 255, 2]);

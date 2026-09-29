@@ -778,3 +778,180 @@ fn action_digest_of(action: &ActionIr) -> [u8; 32] {
 fn response_digest_of(response: &[u8]) -> [u8; 32] {
     ptr_ledger::integrity::sha256(response)
 }
+
+#[test]
+fn only_an_attempt_made_through_an_admitted_session_records_a_validated_principal() {
+    // A session's principal is validated when the session is created, and the
+    // attempts it makes record that principal
+    // (an_applied_effect_commits_its_attempt_before_and_its_settlement_after).
+    let (mut runtime, action) = fixture();
+    let probe = Probe::default();
+    for refused in ["", " alice", "alice\n", "bell\u{7}"] {
+        assert!(
+            matches!(
+                runtime.register_execution_session(
+                    refused,
+                    vec![grant(
+                        scope(&action),
+                        &probe,
+                        RequiredVerification::FullSemantic,
+                        ExecutorMode::Success,
+                    )],
+                    TTL,
+                ),
+                Err(ExecutionError::InvalidSession)
+            ),
+            "{refused:?}"
+        );
+    }
+
+    // `commit` and replay check an attempt's key and nothing else it names:
+    // an EffectAttempted written through them records its principal as given,
+    // one no session admitted and one a session would refuse included.
+    for given in ["", " alice", "bell\u{7}", "mallory"] {
+        let mut attempt = attempt_with(None);
+        let LedgerEvent::EffectAttempted { principal, .. } = &mut attempt else {
+            unreachable!("attempt_with builds an attempt");
+        };
+        *principal = given.to_owned();
+        let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+        let index = runtime.commit(attempt.clone()).unwrap();
+        assert_eq!(
+            attempts(&runtime),
+            vec![(index, attempt.clone())],
+            "{given:?}"
+        );
+        let replayed = replayed(vec![attempt.clone()]).unwrap();
+        assert_eq!(
+            attempts(&replayed),
+            vec![(CommitIndex(1), attempt)],
+            "{given:?}"
+        );
+    }
+}
+
+#[test]
+fn an_effect_whose_settlement_cannot_be_recorded_is_reported_as_applied_and_fences_the_runtime() {
+    let (mut runtime, action) = one_record_below_the_index_ceiling();
+    let probe = Probe::default();
+    let session = session(&mut runtime, &action, &probe, "alice");
+    let permit = runtime
+        .prepare_execution_once(&session, &ProjectId::from("p"), &action, TTL, "invoice-7")
+        .unwrap();
+
+    // The attempt takes the last index the ledger has and the executor applies
+    // the effect; the settlement then finds no index left. That is reported as a
+    // settlement that was not recorded, not as a refusal: the effect applied, and
+    // a caller told that nothing was attempted could apply it a second time.
+    assert_eq!(
+        runtime.execute_prepared(&session, permit),
+        Err(ExecutionError::SettlementNotRecorded {
+            attempt: CommitIndex(u64::MAX),
+            error: Box::new(RuntimeError::Ledger(
+                "PTR_LEDGER_INDEX_EXHAUSTED".to_owned()
+            )),
+        })
+    );
+    assert_eq!(probe.executions(), 1);
+
+    // The runtime stays fenced: the failed append left this process's own last
+    // append ambiguous, so nothing more is prepared and a retry under the key
+    // reaches no executor, and the attempt is still unsettled, so no journal
+    // position is vouched for.
+    assert_eq!(
+        runtime
+            .unsettled_effects()
+            .iter()
+            .map(|effect| effect.attempt)
+            .collect::<Vec<_>>(),
+        vec![CommitIndex(u64::MAX)]
+    );
+    assert!(matches!(
+        runtime.prepare_execution_once(&session, &ProjectId::from("p"), &action, TTL, "invoice-7"),
+        Err(ExecutionError::RuntimeFenced)
+    ));
+    assert_eq!(runtime.journal_anchor(), Err(RuntimeError::ExecutionFenced));
+
+    // Nor can this process record the outcome another way: the ambiguity about
+    // its own last append blocks a reconciliation as it blocks every settlement.
+    assert_eq!(
+        runtime.reconcile_effect(CommitIndex(u64::MAX), true, "operator saw it applied"),
+        Err(ExecutionError::Audit(Box::new(
+            RuntimeError::ExecutionFenced
+        )))
+    );
+    assert_eq!(runtime.unsettled_effects().len(), 1);
+}
+
+#[test]
+fn a_settlement_lost_to_an_exhausted_ledger_fences_even_after_a_reopen() {
+    // Reopening clears the process's ambiguity and replays what was written: the
+    // attempt, and no settlement. The attempt then fences the reopened runtime
+    // until it is reconciled, and a reconciliation is an append of its own, which
+    // a ledger with no index left refuses. So the fence cannot be lifted in band.
+    let (bytes, trusted, action) = fixture_snapshot_at_floor(CommitIndex(u64::MAX - 1));
+    let mut runtime = restore_fixture(&bytes, trusted, &[], &action);
+    let probe = Probe::default();
+    let session = session(&mut runtime, &action, &probe, "alice");
+    let permit = runtime
+        .prepare_execution(&session, &ProjectId::from("p"), &action, TTL)
+        .unwrap();
+    assert!(matches!(
+        runtime.execute_prepared(&session, permit),
+        Err(ExecutionError::SettlementNotRecorded { .. })
+    ));
+    let written = runtime.committed_events().to_vec();
+
+    let mut reopened = restore_fixture(&bytes, trusted, &written, &action);
+    assert_eq!(
+        reopened
+            .unsettled_effects()
+            .iter()
+            .map(|effect| effect.attempt)
+            .collect::<Vec<_>>(),
+        vec![CommitIndex(u64::MAX)],
+        "the reopened runtime replays the attempt and no settlement"
+    );
+    assert_eq!(
+        reopened.reconcile_effect(CommitIndex(u64::MAX), true, "operator saw it applied"),
+        Err(ExecutionError::Audit(Box::new(RuntimeError::Ledger(
+            "PTR_LEDGER_INDEX_EXHAUSTED".to_owned()
+        ))))
+    );
+    assert_eq!(reopened.unsettled_effects().len(), 1);
+    assert_eq!(
+        reopened.journal_anchor(),
+        Err(RuntimeError::ExecutionFenced)
+    );
+    assert!(reopened.export_compacted_snapshot().is_err());
+    assert_eq!(probe.executions(), 1);
+}
+
+#[test]
+fn an_attempt_the_ledger_cannot_record_is_an_audit_failure_and_reaches_no_executor() {
+    // The other side of the boundary above. With no index left, the attempt
+    // record itself cannot be committed, so the executor is never called and no
+    // attempt is left unsettled: nothing was attempted, which is what `Audit`
+    // says and what the execution wire reports as refused. The failed append
+    // still leaves this process's own last append ambiguous, so the runtime is
+    // fenced until it is reopened.
+    let (mut runtime, action) = no_index_left();
+    let probe = Probe::default();
+    let session = session(&mut runtime, &action, &probe, "alice");
+    let permit = runtime
+        .prepare_execution_once(&session, &ProjectId::from("p"), &action, TTL, "invoice-7")
+        .unwrap();
+
+    assert_eq!(
+        runtime.execute_prepared(&session, permit),
+        Err(ExecutionError::Audit(Box::new(RuntimeError::Ledger(
+            "PTR_LEDGER_INDEX_EXHAUSTED".to_owned()
+        ))))
+    );
+    assert_eq!(probe.executions(), 0);
+    assert!(runtime.unsettled_effects().is_empty());
+    assert!(matches!(
+        runtime.prepare_execution_once(&session, &ProjectId::from("p"), &action, TTL, "invoice-7"),
+        Err(ExecutionError::RuntimeFenced)
+    ));
+}

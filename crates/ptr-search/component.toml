@@ -1,19 +1,23 @@
 version = 1
 id = "ptr-search"
 maturity = "prototype"
-last_reviewed = "2026-09-18"
+last_reviewed = "2026-09-27"
 
 implemented = [
   "EvidenceStage promotion states",
-  "SearchHit with private evidence stage and explicit promotion API",
+  "SearchHit with private evidence stage and explicit promotion API; its capsule and generation are private too, fixed by SearchHit::new and read through capsule() and generation(), so the generation promote_verified promotes is the one observe asked about and a hit observed live cannot be renamed to a revoked or superseded generation (promote_verified does not ask the lifecycle again); observe asks the lifecycle authority for the validity of the hit's own capsule and generation (as generation_validity answers it, the question retain_live asks) and moves the hit to Observed only on Validity::Live, so a revoked generation that is still the capsule's live one is refused (RevokedGeneration), as are superseded, disputed and unknown ones; every promotion refusal has a stable code",
   "SearchIndex contract",
   "Reciprocal-rank fusion implementation",
+  "weighted_rank_fusion and convex_score_fusion keyed by capsule and generation, so a stale generation never borrows the live one's rank, with deterministic tie-breaking and per-hit backend attribution",
+  "FusedHit is plain data, a search candidate that no function of the crate takes back: the bounds on its score are what the fusions compute, not what every value holds, and a candidate enters evidence promotion only as a SearchHit, which starts at SearchCandidate; WeightedList is validated by every fusion",
+  "retain_live keeps a hit only when the lifecycle answers Validity::Live for its capsule and generation (as generation_validity does), so a revoked generation that is still the capsule's live one is dropped; reciprocal_rank_fusion delegates to the weighted form and returns each entry's generation with its capsule and score, so two generations of one capsule stay two entries a caller can tell apart",
+  "Every fused score is finite and at most the total weight: fusion refuses (FusionError, stable codes) negative or nonfinite weights, weights summing beyond MAX_TOTAL_WEIGHT (f32::MAX), a negative or nonfinite rank constant, a list naming a capsule generation twice and, for score fusion, a nonfinite score, before accumulating anything; scores are accumulated and min-max normalised in f64, so scores spanning the whole f32 range normalise into [0, 1]; check_rank_fusion applies the parameter check on its own",
 ]
 
 missing = [
   "Typed query/search planner",
   "Tantivy/Zvec/cuVS/LanceDB/Havenask/GritQL adapters",
-  "Score normalization and backend-specific metadata",
+  "Backend-specific score metadata",
   "Backend-specific exact source resolver",
   "Verifier-report typed integration instead of boolean verification result",
 ]
@@ -46,6 +50,11 @@ decisions = [
 ]
 
 checks = [
-  "evidence promotion integration test blocks direct Known and stale generation",
+  "tests/evidence_promotion.rs: direct Known is blocked; a revoked generation that is still the live one is never observed (a_revoked_generation_is_never_observed_although_it_is_still_the_live_one); superseded, disputed and unknown generations are refused and only a live one is observed; a hit is promoted as the capsule and generation the lifecycle answered live for (a_hit_is_promoted_as_the_capsule_and_generation_the_lifecycle_answered_live_for); every promotion refusal has a stable code",
+  "compile_fail doctests on SearchHit: its capsule and generation cannot be assigned",
   "workspace fmt/check/test/clippy",
+  "fusion unit tests: two generations of one capsule are never merged, agreement across backends outranks a single first place, a zero-weight list contributes nothing, convex fusion normalises each list, stale, revoked and unknown generations are dropped",
+  "tests/fusion.rs: a revoked generation is dropped although it is still the live one; unweighted fusion returns each generation of a capsule with its own score (unweighted_fusion_returns_each_generation_of_a_capsule_with_its_own_score); weights whose total could overflow a fused score, invalid weights and rank constants, a repeated capsule generation and a nonfinite score are refused; scores spanning the whole f32 range normalise into [0, 1]; every refusal has a stable code",
+  "ptr-runtime tests/verified_delta.rs: search hits filtered by generation_validity drop a revoked live generation",
+  "ptr-pg postgres test fuses full-text and halfvec hits over live generations only",
 ]

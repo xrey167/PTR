@@ -1,8 +1,14 @@
 pub mod compacted;
 pub mod execution;
+pub mod merge;
 pub mod neural;
 pub mod persistence;
 pub mod semantic;
+
+pub use merge::{
+    ChangeOrigin, HoldReason, MergeAuthority, MergeHold, MergeOutcome, MergePreview, MergeReceipt,
+    SemanticChange, SemanticGrant, SemanticGrantInfo, SemanticRefusal, SemanticVerdict,
+};
 
 use ptr_config::PtrConfig;
 use ptr_core::action_head::ActionIr;
@@ -22,7 +28,7 @@ use ptr_security::{
 };
 use ptr_semdb::{PreparedDelta, SemanticError, SemanticHost, SemanticSnapshot};
 use ptr_state::MaterializedState;
-use ptr_types::{CommitIndex, Generation, ProjectId, RequestId, Revision};
+use ptr_types::{CommitIndex, Generation, ProjectId, RequestId, Revision, Validity};
 use ptr_verifier::{VerificationStatus, Verifier};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -63,6 +69,75 @@ pub enum RuntimeError {
     PodVerificationFailed {
         pod: String,
     },
+    /// A host write was refused before append: the installed grant's
+    /// verifiers did not pass at the required level, or reported a hard
+    /// finding, named by code.
+    SemanticVerificationRejected(merge::SemanticRefusal),
+    /// A semantic write that needs a grant, on a runtime with none installed.
+    NoSemanticGrant,
+    /// A second grant; the first stays installed.
+    SemanticGrantInstalled,
+    /// A grant that cannot be installed, and why.
+    InvalidSemanticGrant {
+        reason: &'static str,
+    },
+    /// A host write under a grant that does not allow host writes.
+    HostWritesNotGranted,
+    /// A merge under [`MergeAuthority::Triage`] with a grant that has no
+    /// merge policy.
+    NoMergePolicy,
+    /// A merge under [`MergeAuthority::Reviewed`] by a reviewer the grant
+    /// does not list.
+    UnknownReviewer {
+        reviewer: String,
+    },
+    /// Provenance text a record would carry (a host write's principal, a
+    /// merged branch's id or author) is not an identifier of at most
+    /// [`merge::MAX_PROVENANCE_TEXT`] bytes; `field` names it.
+    InvalidProvenanceText {
+        field: &'static str,
+    },
+    /// A branch that is already merged, and where.
+    BranchAlreadyMerged {
+        branch: String,
+        at: CommitIndex,
+    },
+    /// A branch that does not certify against the runtime's current state,
+    /// or whose sealed form is refused, as `ptr_branch` refuses it.
+    Certification(ptr_branch::BranchError),
+    /// A reviewed merge whose plan is no longer the one approved: the
+    /// approved digest, and the digest of the plan certification yields now.
+    MergePlanChanged {
+        approved: [u8; 32],
+        current: [u8; 32],
+    },
+    /// The grant's merge policy refused to triage, named by the arbiter's
+    /// code.
+    InvalidMergePolicy {
+        code: &'static str,
+    },
+    /// A merge whose record would be larger than the ledger frames; nothing
+    /// was appended.
+    MergeRecordTooLarge,
+    /// A host write or merge that writes, removes or derives a key only
+    /// ingress writes.
+    ReservedSemanticNamespace {
+        key: String,
+    },
+    /// A verifier reported a finding code that is not an identifier of at
+    /// most [`merge::MAX_FINDING_CODE`] bytes, or soft findings past what a
+    /// record carries; the change fails closed.
+    InvalidVerificationReport {
+        verifier: String,
+    },
+    /// `commit` was handed a semantic record: those are written only by the
+    /// semantic write paths, which build and check them.
+    SemanticRecordOutsideSemanticPath,
+    /// A semantic record written before origins existed, replayed after a
+    /// record with an attributed origin (rule R1).
+    LegacySemanticRecord {
+        index: CommitIndex,
+    },
     ModelResumeLimit {
         max_rounds: usize,
     },
@@ -89,7 +164,10 @@ pub enum RuntimeError {
         covers: CommitIndex,
         last_applied: CommitIndex,
     },
-    /// An at-most-once key is not a well-formed identifier.
+    /// An at-most-once key is not a well-formed identifier, or, in an attempt
+    /// being committed, is longer than [`execution::MAX_KEY_BYTES`], the most a
+    /// compacted snapshot carries. An attempt a log already holds is replayed
+    /// with a key of any length, as [`execution::MAX_KEY_BYTES`] explains.
     InvalidEffectKey {
         key: String,
     },
@@ -107,6 +185,17 @@ pub enum RuntimeError {
     /// the digest committed beside it.
     InconsistentEffectResponse {
         attempt: CommitIndex,
+    },
+    /// A semantic record's origin breaks a rule every semantic record is
+    /// replayed under (and every writer checks before it appends): an
+    /// ingress record of another shape, a host write or merge that touches
+    /// an ingress key or carries an attestation that does not hold, or a
+    /// merge whose plan digest does not match its delta or whose branch is
+    /// already merged. `index` is where the record was committed, or `None`
+    /// for one about to be written; `reason` names the rule.
+    InvalidSemanticOrigin {
+        index: Option<CommitIndex>,
+        reason: &'static str,
     },
 }
 
@@ -153,6 +242,10 @@ pub struct PtrRuntime {
     revoked_generations: BTreeSet<(String, Generation)>,
     events: Vec<EventEnvelope>,
     next_event_sequence: u64,
+    /// The host's policy for semantic writes that are not ingress; none until
+    /// the host installs one. Not history: a runtime rebuilt from its log
+    /// has none.
+    semantic_grant: Option<merge::SemanticGrant>,
 }
 
 impl PtrRuntime {
@@ -171,7 +264,8 @@ impl PtrRuntime {
         let mut runtime = Self::with_ledger(config, RuntimeLedger::File(ledger))?;
         for committed in &persisted {
             runtime.validate_lifecycle_event(&committed.event)?;
-            let semantic = runtime.prepare_semantic_event(&committed.event)?;
+            let semantic =
+                runtime.prepare_semantic_event(Some(committed.index), &committed.event)?;
             runtime.apply_committed(committed, semantic)?;
         }
         Ok(runtime)
@@ -191,6 +285,7 @@ impl PtrRuntime {
             revoked_generations: BTreeSet::new(),
             events: Vec::new(),
             next_event_sequence: 1,
+            semantic_grant: None,
         })
     }
 
@@ -198,7 +293,7 @@ impl PtrRuntime {
         let mut runtime = Self::new(config)?;
         for expected in events {
             runtime.validate_lifecycle_event(&expected.event)?;
-            let semantic = runtime.prepare_semantic_event(&expected.event)?;
+            let semantic = runtime.prepare_semantic_event(Some(expected.index), &expected.event)?;
             let actual = runtime.ledger.append(expected.event.clone())?;
             if actual != expected.index {
                 return Err(RuntimeError::ReplayIndexMismatch {
@@ -248,6 +343,30 @@ impl PtrRuntime {
 
     pub fn live_generation(&self, target: &str) -> Option<Generation> {
         self.live_generations.get(target).copied()
+    }
+
+    /// Whether `target` at `generation` may be used now, as the lifecycle
+    /// authority sees it.
+    ///
+    /// [`Self::live_generation`] alone cannot answer this: a revocation adds a
+    /// tombstone and leaves the live generation in place, so a revoked
+    /// generation still reads as live there. This combines the tombstone set
+    /// with generation equality, the way neural-state admission does, and is
+    /// the check every derived hit (search, fast memory, projection row) must
+    /// pass before it is used. `None` means the authority knows no such
+    /// generation: the target is unknown or the generation is ahead of it.
+    pub fn generation_validity(&self, target: &str, generation: Generation) -> Option<Validity> {
+        if self
+            .revoked_generations
+            .contains(&(target.to_owned(), generation))
+        {
+            return Some(Validity::Revoked);
+        }
+        match self.live_generations.get(target) {
+            Some(live) if *live == generation => Some(Validity::Live),
+            Some(live) if *live > generation => Some(Validity::Superseded),
+            Some(_) | None => None,
+        }
     }
 
     pub fn run_model_once<B: InferenceBackend>(
@@ -330,7 +449,9 @@ impl PtrRuntime {
                 .map_err(RuntimeError::Pod)?;
 
             let report = verifier.verify(&output);
-            let passed = report.status == VerificationStatus::Pass;
+            // A hard finding refuses the output whatever the status says.
+            let passed = report.status == VerificationStatus::Pass
+                && !report.findings.iter().any(|finding| finding.hard);
             self.emit(RuntimeEvent::VerifierResult {
                 verifier: "pod-output".into(),
                 passed,
@@ -341,7 +462,7 @@ impl PtrRuntime {
                 });
             }
 
-            self.promote_pod_output(&request_id, &pod.manifest().id, &output)?;
+            self.promote_pod_output(&request_id, &pod.manifest().id, &output, report.level)?;
             outputs.push(output);
         }
 
@@ -442,7 +563,9 @@ impl PtrRuntime {
                 .map_err(RuntimeError::Pod)?;
 
             let report = verifier.verify(&output);
-            let passed = report.status == VerificationStatus::Pass;
+            // A hard finding refuses the output whatever the status says.
+            let passed = report.status == VerificationStatus::Pass
+                && !report.findings.iter().any(|finding| finding.hard);
             self.emit(RuntimeEvent::VerifierResult {
                 verifier: "pod-output".into(),
                 passed,
@@ -453,7 +576,8 @@ impl PtrRuntime {
                 });
             }
 
-            let revision = self.promote_pod_output(&request_id, &pod.manifest().id, &output)?;
+            let revision =
+                self.promote_pod_output(&request_id, &pod.manifest().id, &output, report.level)?;
 
             let observation = ModelObservation {
                 revision,
@@ -527,8 +651,9 @@ impl PtrRuntime {
         if self.execution.is_fenced() {
             return Err(RuntimeError::ExecutionFenced);
         }
+        validate_new_record(&event)?;
         self.validate_lifecycle_event(&event)?;
-        let semantic = self.prepare_semantic_event(&event)?;
+        let semantic = self.prepare_semantic_event(None, &event)?;
         self.append_prepared(event, semantic)
     }
 
@@ -645,6 +770,9 @@ impl PtrRuntime {
             }
             LedgerEvent::EffectAttempted { key, .. } => {
                 let Some(key) = key else { return Ok(()) };
+                // Every build has held a key to this, so a log never holds one
+                // that is not an identifier. What a snapshot can carry is a
+                // bound on new records only (`validate_new_record`).
                 if !execution::valid_identifier(key) {
                     return Err(RuntimeError::InvalidEffectKey { key: key.clone() });
                 }
@@ -734,9 +862,14 @@ impl PtrRuntime {
             LedgerEvent::VerifierAttested { .. } | LedgerEvent::SnapshotCommitted { .. } => {}
             LedgerEvent::EffectAttempted {
                 key,
+                project,
+                principal,
                 target,
                 operation,
                 effect,
+                generation,
+                revision,
+                action_digest,
                 ..
             } => {
                 self.execution.record_attempt(execution::UnsettledEffect {
@@ -745,18 +878,20 @@ impl PtrRuntime {
                     target: target.clone(),
                     operation: operation.clone(),
                     effect: *effect,
+                    identity: execution::ActionIdentity {
+                        project: project.clone(),
+                        principal: principal.clone(),
+                        revision: *revision,
+                        generation: *generation,
+                        action_digest: *action_digest,
+                    },
                 });
             }
             LedgerEvent::EffectSettled {
                 attempt, response, ..
             } => {
-                let outcome = match response {
-                    Some(response) => execution::SettledOutcome::Applied {
-                        response: response.clone(),
-                    },
-                    None => execution::SettledOutcome::AppliedWithoutResponse,
-                };
-                self.execution.settle(*attempt, outcome);
+                self.execution
+                    .settle(*attempt, execution::Settlement::Applied(response.clone()));
             }
             LedgerEvent::EffectReconciled {
                 attempt, applied, ..
@@ -764,12 +899,12 @@ impl PtrRuntime {
                 // Reconciliation establishes whether the effect applied, never a
                 // response: the runtime that could have reproduced one would not
                 // have needed reconciling.
-                let outcome = if *applied {
-                    execution::SettledOutcome::AppliedWithoutResponse
+                let settlement = if *applied {
+                    execution::Settlement::Applied(None)
                 } else {
-                    execution::SettledOutcome::NotApplied
+                    execution::Settlement::NotApplied
                 };
-                self.execution.settle(*attempt, outcome);
+                self.execution.settle(*attempt, settlement);
             }
         }
 
@@ -785,4 +920,34 @@ impl PtrRuntime {
         });
         self.next_event_sequence = self.next_event_sequence.saturating_add(1);
     }
+}
+
+/// What a record must meet to be committed now, beyond the validation every
+/// record is replayed with: a keyed attempt names a key a compacted snapshot can
+/// carry.
+///
+/// A snapshot carries every settled key, whatever its outcome, as a string of 1
+/// to [`execution::MAX_KEY_BYTES`] bytes, so an attempt under a longer key would
+/// leave every export failing once it settled. It is refused before anything is
+/// appended. The project and principal an applied key carries are written at
+/// any length, so they are recorded as given.
+///
+/// Replay does not apply this. Earlier builds held a key only to being an
+/// identifier, of any length, and a log holding a longer one opened and failed
+/// only at export. Refusing it at replay would turn that into a runtime that
+/// cannot open after an upgrade.
+///
+/// A semantic record is refused outright
+/// ([`RuntimeError::SemanticRecordOutsideSemanticPath`]): only the semantic
+/// write paths build one, with the origin they checked.
+fn validate_new_record(event: &LedgerEvent) -> Result<(), RuntimeError> {
+    if matches!(event, LedgerEvent::SemanticDeltaCommitted { .. }) {
+        return Err(RuntimeError::SemanticRecordOutsideSemanticPath);
+    }
+    if let LedgerEvent::EffectAttempted { key: Some(key), .. } = event {
+        if !execution::valid_key(key) {
+            return Err(RuntimeError::InvalidEffectKey { key: key.clone() });
+        }
+    }
+    Ok(())
 }
