@@ -158,6 +158,20 @@ def decide(
     gate_rules = criteria["gates"]
     result: dict = {"gates": dict(gates), "verdicts": {}, "reported": {}}
 
+    missing = [f"{arm}/{seed}/{split}" for arm in set(table) | {"full"}
+               for seed in seeds for split in TEST_SPLITS
+               if split not in table.get(arm, {}).get(seed, {})]
+    if missing or not gates.get("G3", {}).get("pass", False):
+        result["gates"]["G3"] = {"pass": False, "detail": {"missing_scores": missing, "processes": gates.get("G3", {}).get("detail")}}
+        result["gates"]["G1"] = {"pass": False, "detail": "not evaluated: incomplete scores"}
+        result["summary"] = "INCONCLUSIVE: evaluation scores are incomplete; no statistics or mechanism verdict computed."
+        for contrast in criteria["contrast"]:
+            result["verdicts"][contrast["id"]] = {
+                "verdict": "NOT TESTED" if contrast["kind"] == "not-tested" else "INCONCLUSIVE",
+                "reason": contrast.get("note", "G3: incomplete evaluation scores"),
+            }
+        return result
+
     full_mean = mean_over_seeds(table, "full", "test_iid", seeds)
     competence_bar = max(gate_rules["competence_min"], ceiling + gate_rules["competence_margin"])
     result["gates"]["G1"] = {
@@ -241,6 +255,12 @@ def decide(
             entry["note"] = note
 
         if kind == "manipulation-check":
+            reason_block = blocked(arms)
+            if reason_block:
+                checks[cid] = "INCONCLUSIVE"
+                entry.update(verdict="INCONCLUSIVE", reason=reason_block)
+                result["verdicts"][cid] = entry
+                continue
             passed = stats["mean"] >= c["pass_min"] and stats["positive_seeds"] == len(seeds)
             checks[cid] = "PASS" if passed else "FAIL"
             entry.update(verdict=checks[cid], reason=f"mean >= {c['pass_min']} and every seed positive" if passed else "the raw path is not shown to be used")
@@ -557,6 +577,13 @@ def completeness(chosen: dict[str, dict[str, dict[int, dict]]], seeds: list[int]
                     problems.append(f"{kind} {experiment}/{seed}: no completed process")
                 elif has_nan(record):
                     problems.append(f"{kind} {experiment}/{seed}: a non-finite loss")
+    contingencies = chosen.get("contingency", {})
+    if any(records for experiment, records in contingencies.items() if experiment != "M001"):
+        comparators = {record["seed"]: record for record in contingencies.get("M001", {}).values()
+                       if "full" in record.get("parameters", {}).get("arms", "").split(",")}
+        for seed in seeds:
+            if seed not in comparators or has_nan(comparators[seed]):
+                problems.append(f"contingency M001/full/{seed}: missing paired comparator process")
     if "M001" not in chosen.get("rerun", {}):
         problems.append(f"rerun M001/{RERUN_SEED}: no completed process")
     for experiment in planned:
@@ -871,7 +898,7 @@ def main(argv: list[str] | None = None) -> int:
     def per_split(scores_table: dict, arm: str) -> dict:
         """Export per-seed test metrics for an arm, omitting absent seeds."""
         return {str(s): {split: {k: scores_table[arm][s][split][k] for k in ("n", "correct", "route_accuracy", "cost_adjusted_regret", "task_success", "subsets")}
-                         for split in TEST_SPLITS}
+                         for split in TEST_SPLITS if split in scores_table[arm][s]}
                 for s in seeds if s in scores_table.get(arm, {})}
 
     def arms_run(experiment: str, kind: str) -> list[str]:

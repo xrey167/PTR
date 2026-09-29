@@ -271,6 +271,25 @@ class GatesAndPreconditions(unittest.TestCase):
         self.assertEqual(verdict(result, "M001-primary"), "INCONCLUSIVE")
         self.assertIn("full is still below", result["verdicts"]["M001-primary"]["reason"])
 
+    def test_incomplete_scores_produce_a_gated_report_without_statistics(self):
+        for missing in ("all", "seed", "split"):
+            incomplete = table()
+            if missing == "all":
+                incomplete = {}
+            elif missing == "seed":
+                incomplete["full"].pop(CRITERIA["seeds"][0])
+            else:
+                incomplete["full"][CRITERIA["seeds"][0]].pop("test_iid")
+            result = run(incomplete)
+            self.assertFalse(result["gates"]["G3"]["pass"])
+            self.assertEqual(verdict(result, "M001-primary"), "INCONCLUSIVE")
+
+    def test_undertrained_raw_blind_arm_cannot_pass_manipulation(self):
+        result = run(table(raw_blind=0.10))
+        check = next(c["id"] for c in CRITERIA["contrast"] if c["kind"] == "manipulation-check")
+        self.assertEqual(verdict(result, check), "INCONCLUSIVE")
+        self.assertIn("failed to train", result["verdicts"][check]["reason"])
+
     def test_the_contingency_is_reported_beside_its_bar(self):
         """Report contingency steps, learnability thresholds, and per-seed composite scores together."""
         weak = table(no_semantic_slots=(0.60, SMALL))
@@ -341,6 +360,13 @@ class RecordGates(unittest.TestCase):
             invalid = record(17)
             invalid[field] = value
             self.assertFalse(agg.provenance({"invalid": invalid})["pass"])
+
+    def test_other_experiment_contingency_requires_full_comparator_at_every_seed(self):
+        chosen = {"contingency": {"M002": {(17, "no-typed-attention"): {
+            "seed": 17, "parameters": {"arms": "no-typed-attention"}, "stdout": ""}}}}
+        problems = agg.completeness(chosen, [17, 29], {}, {})
+        self.assertIn("contingency M001/full/17: missing paired comparator process", problems)
+        self.assertIn("contingency M001/full/29: missing paired comparator process", problems)
 
     def test_a_retry_replaces_a_failed_process_and_a_failure_never_enters_a_table(self):
         """Select successful retries while excluding seeds with only failed processes."""

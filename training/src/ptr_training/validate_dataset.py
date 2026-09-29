@@ -108,7 +108,7 @@ def _validate_epistemic_calibration(obj: dict[str, Any]) -> None:
 
 def validate_record(path: Path, obj: dict[str, Any]) -> None:
     match path.name:
-        case "operator_route.jsonl":
+        case "operator_route.jsonl" | "operator_route_v1.jsonl":
             _validate_operator_route(obj)
         case "epistemic_calibration.jsonl":
             _validate_epistemic_calibration(obj)

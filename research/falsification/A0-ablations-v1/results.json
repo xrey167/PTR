@@ -48,7 +48,8 @@
           "detail": "selected rates reproduce the archived frozen sweep",
           "pass": true
         },
-        "tag_is_ancestor": true
+        "tag_is_ancestor": true,
+        "unverified_clean_source": []
       },
       "pass": true
     },
@@ -425,7 +426,7 @@
     },
     "M002-raw-blind-check": {
       "endpoint": "split:test_iid",
-      "reason": "mean >= 0.03 and every seed positive",
+      "reason": "gates failed: G6",
       "stats": {
         "ci": [
           0.10702029014983128,
@@ -444,7 +445,7 @@
         "positive_seeds": 5,
         "sd": 0.012817956155331517
       },
-      "verdict": "PASS"
+      "verdict": "INCONCLUSIVE"
     },
     "M002-sufficiency": {
       "reason": "not run (budget rule)",

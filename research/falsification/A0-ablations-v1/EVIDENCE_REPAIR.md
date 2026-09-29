@@ -70,3 +70,23 @@ G0 bands prohibit an ablation plan even if calibration reaches its target. A
 failed calibration removes any old budget so it cannot be reused accidentally.
 This fallback has orchestration regression coverage; no new training or R2
 capacity finding is claimed here. Existing frozen rule files are unchanged.
+
+
+## Final review safeguards — 2026-09-29
+
+The manipulation contrast now obeys the same evidence and learnability gates as
+mechanism contrasts. Reaggregation therefore changes its archived status from
+PASS to INCONCLUSIVE as well; raw measurements and the stock cross-check are
+unchanged. Incomplete evaluation tables yield a failed G3 report without trying
+to compute missing statistics. Non-M001 contingencies require their separately
+scheduled full-arm comparator for every seed.
+
+The legacy v1 study entrypoints are now blocked from launching through the
+exploratory runner. They cannot attest an ambient build environment, and the
+admission fix already requires a new freeze. Historical artifacts can still be
+aggregated. New training must use a newly registered study and the hardened
+runner's frozen entrypoint, isolated target and recorded executable/toolchain;
+these repairs do not make the archived environment provenance stronger.
+
+The registered operator_route_v1 sample now uses the routing schema through the
+public training validator, including operator and codebook checks.

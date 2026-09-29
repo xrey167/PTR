@@ -1578,6 +1578,13 @@ def run_experiment(
     the way to it, changed (its stamp moved, `experiment_records.file_stamp`)
     is not recorded. The record is written whole or not at all
     (`write_json_exclusive`)."""
+    # Frozen A0 v1 used the exploratory runner. It cannot acquire hardened
+    # build provenance retrospectively, and fixed models require a new freeze.
+    # Refuse new study records instead of labeling an ambient build as frozen.
+    if exp_id in {"M001", "M002", "M003", "M004"} and entrypoint.startswith("a0_"):
+        print("ERROR: A0 v1 is archival: new model runs require a newly registered frozen study "
+              "using the hardened entrypoint runner; exploratory A0 study launches are disabled", file=sys.stderr)
+        return 2
     _, root, data = resolve(exp_id)
     if unrecordable_manifest(exp_id, data) or launch_refused(exp_id):
         return 2

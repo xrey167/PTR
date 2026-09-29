@@ -23,6 +23,15 @@ spec.loader.exec_module(mod)
 
 class CargoWorkspaceLockTests(unittest.TestCase):
 
+    def test_archived_a0_jobs_cannot_launch_through_the_exploratory_path(self):
+        with patch.object(mod, "resolve") as resolve, patch.object(mod, "execute_command") as execute:
+            with contextlib.redirect_stderr(io.StringIO()):
+                for experiment in ("M001", "M002", "M003", "M004"):
+                    for phase in ("a0_sweep_entrypoint", "a0_ablation_entrypoint", "a0_rerun_entrypoint", "a0_contingency_entrypoint"):
+                        self.assertEqual(mod.run_experiment(experiment, entrypoint=phase, seed=17, params={}), 2)
+            resolve.assert_not_called()
+            execute.assert_not_called()
+
     def test_cargo_lock_follows_selected_workspace_and_toolchain(self):
         for manifest, suffix in (("Cargo.toml", []),
                                  ("model/burn-a0/Cargo.toml", ["--manifest-path", "model/burn-a0/Cargo.toml"]),

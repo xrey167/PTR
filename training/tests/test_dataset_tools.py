@@ -27,6 +27,12 @@ class DatasetToolsTests(unittest.TestCase):
             ok, bad = validate(path)
             self.assertEqual((ok, bad), (0, 1))
 
+    def test_registered_v1_sample_uses_the_routing_schema(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "operator_route_v1.jsonl"
+            path.write_text('{"task":"x","routes":[{"operator":"invalid","target":1.0}]}\n')
+            self.assertEqual(validate(path), (0, 1))
+
     def test_operator_route_accepts_shared_reasoning_operator_taxonomy(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "operator_route.jsonl"
