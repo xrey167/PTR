@@ -891,6 +891,43 @@ def is_rustup_proxy(path: str, rustup: str) -> bool:
         return False
 
 
+def started_program(command: list[str]) -> list[str]:
+    """The program `command` starts with its arguments, past rustup's own
+    words when it is `rustup run <toolchain> <program> ...` (options and
+    `+<toolchain>` before `run`, the options of `run` and the toolchain
+    after it); `command` itself otherwise."""
+    program = experiment_records.program_name(command[0]) if command else ""
+    if program != "rustup":
+        return command
+    rest = command[1:]
+    while rest and rest[0].startswith(("-", "+")):
+        rest = rest[1:]
+    if not rest or rest[0] != "run":
+        return command
+    rest = rest[1:]
+    while rest and rest[0].startswith("-"):
+        rest = rest[1:]
+    return rest[1:] or command
+
+
+def starts_rust(command: list[str]) -> bool:
+    """Whether `command` starts one of rustup's proxies (`cargo`, `rustc`,
+    `rustdoc`, ...) or rustup itself (also as `rustup run <toolchain>
+    <program>`), which resolve the toolchain's tools again when they start."""
+    return bool(command) and experiment_records.program_name(command[0]) in {"rustup", *RUSTUP_PROXIES}
+
+
+def invokes_rustdoc(command: list[str]) -> bool:
+    """Whether `command` is Cargo's `test`, which runs `rustdoc` on a
+    library's documentation tests (`cargo test --doc` only those), past
+    `+<toolchain>`; Cargo's other built-in commands do not."""
+    started = started_program(command)
+    if not started or experiment_records.program_name(started[0]) != "cargo":
+        return False
+    subcommand = next((word for word in started[1:] if not word.startswith("+")), None)
+    return subcommand == "test"
+
+
 def is_linked_toolchain(directory: str) -> bool:
     """Whether the toolchain directory `directory` is a link, as rustup keeps
     a toolchain it was told to link (`rustup toolchain link`) under its home:
@@ -908,7 +945,8 @@ def toolchain(
     linked: list[str] | None = None,
 ) -> dict:
     """The Rust toolchain `command`, run from the repository's root in
-    `environment`, would build with, each of `rustc` and `cargo` named as
+    `environment`, would build with, each of `rustc` and `cargo` (and
+    `rustdoc`, for Cargo's `test`: `invokes_rustdoc`) named as
     `resolved_executable` names a program (and stamped into `stamps` as it
     does), by nothing when it cannot be resolved: as rustup resolves it
     there, after its overrides and `rust-toolchain.toml`, or for the
@@ -929,7 +967,8 @@ def toolchain(
     named = [] if name is None else ["--toolchain", name]
     run_by_rustup = bool(command) and experiment_records.program_name(command[0]) == "rustup"
     found = {}
-    for tool in ("rustc", "cargo"):
+    # `cargo test` runs rustdoc on documentation tests, so it is bound too.
+    for tool in ("rustc", "cargo", *(("rustdoc",) if invokes_rustdoc(command) else ())):
         on_path = shutil.which(tool, path=search)
         if rustup is None or not (run_by_rustup or (on_path is not None and is_rustup_proxy(on_path, rustup))):
             found[tool] = resolved_executable([tool], environment, stamps)
@@ -1028,6 +1067,68 @@ def named_program(found: str | None, stamps: dict[str, experiment_records.Stamp 
         for path, taken in before.items():
             stamps.setdefault(path, taken)
     return {"path": str(target), "sha256": digest}
+
+
+SHEBANG_DEPTH = 4
+
+
+def shebang_words(path: str) -> list[str] | None:
+    """The words of the first line of the file at `path` past its `#!`
+    (`#!/usr/bin/env python3` is `['/usr/bin/env', 'python3']`), or None
+    when it starts with none or cannot be read: a script, which the kernel
+    runs through the interpreter that line names."""
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(256)
+    except OSError:
+        return None
+    if not head.startswith(b"#!"):
+        return None
+    words = head[2:].split(b"\n", 1)[0].decode("utf-8", "replace").split()
+    return words or None
+
+
+def interpreters_of(
+    found: str, environment: dict[str, str], stamps: dict[str, experiment_records.Stamp | None] | None, depth: int = 0
+) -> list[dict]:
+    """The programs the kernel runs to run the script at `found`, each named
+    as `named_program` names it and stamped into `stamps`: the interpreter
+    its first line names, and where that is `env`, the program `env` looks up
+    on `environment`'s `PATH` (its first word that is no option or
+    assignment); and, for each of them that is a script too, its own
+    interpreters, to `SHEBANG_DEPTH` levels. Empty for a file that is no
+    script."""
+    words = shebang_words(os.path.realpath(found))
+    if words is None or depth >= SHEBANG_DEPTH:
+        return []
+    named = [named_program(found_program([words[0]], environment), stamps)]
+    if experiment_records.program_name(words[0]) == "env":
+        target = next((word for word in words[1:] if not word.startswith("-") and "=" not in word), None)
+        if target is not None:
+            named.append(named_program(found_program([target], environment), stamps))
+    nested = [
+        inner
+        for program in named
+        if program["path"] is not None
+        for inner in interpreters_of(program["path"], environment, stamps, depth + 1)
+    ]
+    return [*named, *nested]
+
+
+def named_script(
+    found: str | None, environment: dict[str, str], stamps: dict[str, experiment_records.Stamp | None] | None = None
+) -> dict:
+    """The program at `found` as `named_program` names it and, when it is a
+    script, the interpreters it runs through (`interpreters_of`) under
+    `interpreters`: the kernel runs the interpreter its first line names, so
+    one replaced between seeds would change what ran while every record
+    named the same script."""
+    executable = named_program(found, stamps)
+    if found is not None:
+        interpreters = interpreters_of(found, environment, stamps)
+        if interpreters:
+            executable = {**executable, "interpreters": interpreters}
+    return executable
 
 
 def scratch_directory(exp_id: str, environment: dict[str, str]) -> Path:
@@ -1348,10 +1449,22 @@ def launch_and_record(
         # file holds what its digest names, through the run.
         stamps: dict[str, experiment_records.Stamp | None] = {}
         found = found_program(command, environment)
-        executable = named_program(found, stamps)
+        executable = named_script(found, environment, stamps)
         selected: dict[str, str] = {}
         linked: list[str] = []
         tools = toolchain(environment, command, stamps, selected, linked)
+        # A Rust command's proxies resolve the tools again when they start:
+        # one that resolves to nothing now could resolve to a program the
+        # record never named by then, or fail after the seed is spent.
+        unresolved = [tool for tool, program in tools.items() if program["path"] is None]
+        if unresolved and starts_rust(command):
+            print(
+                f"ERROR: refusing to run {exp_id}: rustup or the PATH resolves no {', '.join(unresolved)}, which the "
+                "Rust command would resolve again when it starts, so its record could not name by its content what "
+                "ran; install the toolchain, or select an installed one, for the run",
+                file=sys.stderr,
+            )
+            return 2
         # A toolchain the command names itself is resolved anew by the proxy
         # or by `rustup run` when the command starts, whatever
         # `RUSTUP_TOOLCHAIN` says: a name that is a link could be pointed at
@@ -1379,7 +1492,7 @@ def launch_and_record(
         # such as a binary only executable, or that changed while it was
         # read, is refused.
         unread = list(dict.fromkeys(
-            program["path"] for program in (executable, *tools.values())
+            program["path"] for program in (executable, *executable.get("interpreters", []), *tools.values())
             if program["path"] is not None and program["sha256"] is None
         ))
         if unread:

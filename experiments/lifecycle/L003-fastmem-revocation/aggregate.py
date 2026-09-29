@@ -111,14 +111,16 @@ LIMITATIONS = [
 
 def newest_per_seed(paths: list[Path]) -> dict[int, Path]:
     """The record to aggregate for each seed: the newest by name of those
-    whose command started, and the newest whose launch failed only where
-    none started. A failed launch ran nothing, so one named later than its
-    retry, as a clock set back between them names it, is not the seed's run."""
+    whose run finished (`experiment_records.finished_run`), and the newest
+    of the others only where none finished. A failed launch ran nothing, so
+    one named later than its retry, as a clock set back between them names
+    it, is not the seed's run; nor is a reservation nothing finished, left
+    by a runner that died, which holds no outcome."""
     chosen: dict[int, tuple[bool, Path]] = {}
     for path in sorted(paths):
         record = json.loads(path.read_text(encoding="utf-8"))
         seed = int(record["seed"])
-        launched = record.get("status") != "failed-to-launch"
+        launched = experiment_records.finished_run(record)
         if launched or not chosen.get(seed, (False, path))[0]:
             chosen[seed] = (launched, path)
     return {seed: path for seed, (_, path) in chosen.items()}
