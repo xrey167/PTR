@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import collections
 import contextlib
 import datetime as dt
 import hashlib
@@ -891,6 +892,73 @@ def is_rustup_proxy(path: str, rustup: str) -> bool:
         return False
 
 
+def started_program(command: list[str]) -> list[str]:
+    """The program `command` starts with its arguments, past rustup's own
+    words when it is `rustup run <toolchain> <program> ...` (options and
+    `+<toolchain>` before `run`, the options of `run` and the toolchain
+    after it); `command` itself otherwise."""
+    program = experiment_records.program_name(command[0]) if command else ""
+    if program != "rustup":
+        return command
+    rest = command[1:]
+    while rest and rest[0].startswith(("-", "+")):
+        rest = rest[1:]
+    if not rest or rest[0] != "run":
+        return command
+    rest = rest[1:]
+    while rest and rest[0].startswith("-"):
+        rest = rest[1:]
+    return rest[1:] or command
+
+
+def starts_rust(command: list[str]) -> bool:
+    """Whether `command` starts one of rustup's proxies (`cargo`, `rustc`,
+    `rustdoc`, ...) or rustup itself (also as `rustup run <toolchain>
+    <program>`), which resolve the toolchain's tools again when they start."""
+    return bool(command) and experiment_records.program_name(command[0]) in {"rustup", *RUSTUP_PROXIES}
+
+
+# The options of `cargo test` that leave out the library's documentation
+# tests, which run only without a target selection or with `--doc`, and never
+# with `--no-run`, which only compiles.
+DOCTEST_EXCLUDING_OPTIONS = frozenset(
+    ("--lib", "--bins", "--bin", "--tests", "--test", "--examples", "--example", "--benches", "--bench", "--all-targets",
+     "--no-run")
+)
+
+
+def invokes_rustdoc(command: list[str]) -> bool:
+    """Whether `command` runs `rustdoc`: it is `rustdoc`, or Cargo's `test`
+    with the library's documentation tests, which Cargo runs through it (all
+    of them without a target selection, and with `--doc` only those; a
+    selection of other targets, `--lib` or `--all-targets`, runs none), past
+    `+<toolchain>`; Cargo's other built-in commands do not."""
+    started = started_program(command)
+    if started and experiment_records.program_name(started[0]) == "rustdoc":
+        return True
+    if not started or experiment_records.program_name(started[0]) != "cargo":
+        return False
+    words = started[1:]
+    arguments = words[: words.index("--")] if "--" in words else words
+    subcommand = next((word for word in arguments if not word.startswith("+")), None)
+    if subcommand != "test":
+        return False
+    options = {word.split("=", 1)[0] for word in arguments}
+    return "--doc" in options or not options & DOCTEST_EXCLUDING_OPTIONS
+
+
+def required_rust_tools(command: list[str], tools: dict) -> set[str]:
+    """The tools of `tools` (`toolchain`) that `command`, which starts rustup
+    or one of its proxies, needs: Cargo needs itself and `rustc` (and `rustdoc`
+    where it runs documentation tests), `rustc` and `rustdoc` themselves; every
+    tool the record names for rustup and its other proxies, which start
+    whichever they choose."""
+    started = started_program(command)
+    program = experiment_records.program_name(started[0]) if started else ""
+    needed = {"cargo": {"cargo", "rustc"}, "rustc": {"rustc"}, "rustdoc": {"rustdoc"}}.get(program, set(tools))
+    return needed | ({"rustdoc"} if invokes_rustdoc(command) else set())
+
+
 def is_linked_toolchain(directory: str) -> bool:
     """Whether the toolchain directory `directory` is a link, as rustup keeps
     a toolchain it was told to link (`rustup toolchain link`) under its home:
@@ -908,8 +976,9 @@ def toolchain(
     linked: list[str] | None = None,
 ) -> dict:
     """The Rust toolchain `command`, run from the repository's root in
-    `environment`, would build with, each of `rustc` and `cargo` named as
-    `resolved_executable` names a program (and stamped into `stamps` as it
+    `environment`, would build with, each of `rustc` and `cargo` (and
+    `rustdoc`, for Cargo's `test`: `invokes_rustdoc`) named as
+    `resolved_tool` names a program (and stamped into `stamps` as it
     does), by nothing when it cannot be resolved: as rustup resolves it
     there, after its overrides and `rust-toolchain.toml`, or for the
     toolchain the command names itself (`named_toolchain`: `cargo +stable
@@ -929,10 +998,11 @@ def toolchain(
     named = [] if name is None else ["--toolchain", name]
     run_by_rustup = bool(command) and experiment_records.program_name(command[0]) == "rustup"
     found = {}
-    for tool in ("rustc", "cargo"):
+    # `cargo test` runs rustdoc on documentation tests, so it is bound too.
+    for tool in ("rustc", "cargo", *(("rustdoc",) if invokes_rustdoc(command) else ())):
         on_path = shutil.which(tool, path=search)
         if rustup is None or not (run_by_rustup or (on_path is not None and is_rustup_proxy(on_path, rustup))):
-            found[tool] = resolved_executable([tool], environment, stamps)
+            found[tool] = resolved_tool([tool], environment, stamps)
             continue
         try:
             which = subprocess.run(
@@ -941,7 +1011,7 @@ def toolchain(
         except (OSError, subprocess.SubprocessError):
             which = None
         resolved = which.stdout.strip() if which is not None and which.returncode == 0 else ""
-        found[tool] = resolved_executable([resolved], environment, stamps) if os.path.isabs(resolved) else {
+        found[tool] = resolved_tool([resolved], environment, stamps) if os.path.isabs(resolved) else {
             "path": None, "sha256": None,
         }
         directory = toolchain_directory(resolved) if os.path.isabs(resolved) else None
@@ -975,6 +1045,16 @@ def resolved_executable(
     repository's root in `environment` (`found_program`), named as
     `named_program` names it."""
     return named_program(found_program(command, environment), stamps)
+
+
+def resolved_tool(
+    command: list[str], environment: dict[str, str], stamps: dict[str, experiment_records.Stamp | None] | None = None
+) -> dict:
+    """The Rust tool `command` starts, as `resolved_executable` names it and,
+    where it is a script, with the interpreters it runs through
+    (`named_script`): Cargo runs a `rustc` that is a script through its
+    interpreter, which a record must name as it does the tool."""
+    return named_script(found_program(command, environment), environment, stamps)
 
 
 def has_slash(program: str) -> bool:
@@ -1028,6 +1108,121 @@ def named_program(found: str | None, stamps: dict[str, experiment_records.Stamp 
         for path, taken in before.items():
             stamps.setdefault(path, taken)
     return {"path": str(target), "sha256": digest}
+
+
+SHEBANG_DEPTH = 4
+ENV_HOPS = 4
+
+class ScriptInterpreterError(ValueError):
+    """A script's interpreter cannot be named by its content: `env` would
+    look its program up in a directory no record could name."""
+
+
+def shebang_words(path: str) -> list[str] | None:
+    """The words of the first line of the file at `path` past its `#!`
+    (`#!/usr/bin/env python3` is `['/usr/bin/env', 'python3']`), or None
+    when it starts with none or cannot be read: a script, which the kernel
+    runs through the interpreter that line names."""
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(256)
+    except OSError:
+        return None
+    if not head.startswith(b"#!"):
+        return None
+    words = head[2:].split(b"\n", 1)[0].decode("utf-8", "replace").split()
+    return words or None
+
+
+def env_target(words: list[str]) -> str | None:
+    """The program `env` runs when a shebang gives it just the program's name
+    (`#!/usr/bin/env python3`): that name, looked up on the `PATH` `env` runs
+    with, which is the runner's; None when it is given nothing. Raises
+    `ScriptInterpreterError` for any other form, an option, an assignment or
+    several words: a kernel hands `env` the words after its name as one
+    argument (Linux) or as several (elsewhere), and `env` reads them by rules
+    of its own (`-S` splits, quotes and escapes; `-i`, `-u`, `PATH=...`, `-P`
+    and `-C` change what it looks up and where), so no record could name by
+    content what a run of another platform's or version's `env` would run."""
+    if not words:
+        return None
+    if len(words) > 1 or words[0].startswith("-") or "=" in words[0]:
+        raise ScriptInterpreterError(
+            "a script's first line gives env more than a program's name (an option, an assignment or several words)"
+        )
+    return words[0]
+
+
+def named_interpreter(
+    name: str, found: str | None, stamps: dict[str, experiment_records.Stamp | None] | None
+) -> dict:
+    """The interpreter `name` a script's first line or `env` names, found at
+    `found`, as `named_program` names it. Raises `ScriptInterpreterError` when
+    it is found nowhere: the kernel or `env` would look it up again when the
+    command starts, and could run one no record names."""
+    if found is None:
+        raise ScriptInterpreterError(
+            f"the interpreter {name} of a script is found nowhere, and would be looked up again when the command starts"
+        )
+    return named_program(found, stamps)
+
+
+def interpreters_of(
+    found: str,
+    environment: dict[str, str],
+    stamps: dict[str, experiment_records.Stamp | None] | None,
+    depth: int = 0,
+    hops: int = 0,
+) -> list[dict]:
+    """The programs the kernel runs to run the script at `found`, each named
+    as `named_program` names it and stamped into `stamps`: the interpreter
+    its first line names, read as the kernel reads it (a path, from the root
+    where it is relative), and where that is `env`, the program `env` runs
+    (`env_target`, looked up on `environment`'s `PATH`); and, for each of them
+    that is a script too, its own interpreters. The kernel follows
+    interpreters `SHEBANG_DEPTH` levels; a program `env` starts is a new
+    `exec`, so its levels start again, and `ENV_HOPS` such starts are
+    followed. Empty for a file that is no script."""
+    words = shebang_words(os.path.realpath(found))
+    if words is None or depth >= SHEBANG_DEPTH:
+        return []
+    # The kernel takes the interpreter's name as a path, from the directory
+    # the command starts in (the root) when it is relative, and looks up no
+    # `PATH`; `env` does look its program up.
+    interpreter = os.path.join(os.curdir, words[0])
+    first = named_interpreter(words[0], found_program([interpreter], environment), stamps)
+    named = [(first, depth + 1, hops)]
+    # `env` by the name the line spells or by the program that name leads to,
+    # as a link of another name to it runs it as well.
+    if "env" in (experiment_records.program_name(words[0]), experiment_records.program_name(first["path"])):
+        target = env_target(words[1:])
+        if target is not None:
+            if hops >= ENV_HOPS:
+                raise ScriptInterpreterError(f"scripts start one another through env more than {ENV_HOPS} deep")
+            named.append((named_interpreter(target, found_program([target], environment), stamps), 0, hops + 1))
+    nested = [
+        deeper
+        for program, next_depth, next_hops in named
+        if program["path"] is not None
+        for deeper in interpreters_of(program["path"], environment, stamps, next_depth, next_hops)
+    ]
+    return [*(program for program, _, _ in named), *nested]
+
+
+def named_script(
+    found: str | None, environment: dict[str, str], stamps: dict[str, experiment_records.Stamp | None] | None = None
+) -> dict:
+    """The program at `found` as `named_program` names it and, when it is a
+    script, the interpreters it runs through (`interpreters_of`) under
+    `interpreters`: the kernel runs the interpreter its first line names, so
+    one replaced between seeds would change what ran while every record
+    named the same script."""
+    executable = named_program(found, stamps)
+    if found is not None:
+        interpreters = interpreters_of(found, environment, stamps)
+        if interpreters:
+            executable = {**executable, "interpreters": interpreters}
+    return executable
 
 
 def scratch_directory(exp_id: str, environment: dict[str, str]) -> Path:
@@ -1348,10 +1543,39 @@ def launch_and_record(
         # file holds what its digest names, through the run.
         stamps: dict[str, experiment_records.Stamp | None] = {}
         found = found_program(command, environment)
-        executable = named_program(found, stamps)
+        try:
+            executable = named_script(found, environment, stamps)
+        except ScriptInterpreterError as error:
+            print(
+                f"ERROR: refusing to run {exp_id}: {error}, so its record could not name by its content what the "
+                "script runs through",
+                file=sys.stderr,
+            )
+            return 2
         selected: dict[str, str] = {}
         linked: list[str] = []
-        tools = toolchain(environment, command, stamps, selected, linked)
+        try:
+            tools = toolchain(environment, command, stamps, selected, linked)
+        except ScriptInterpreterError as error:
+            print(
+                f"ERROR: refusing to run {exp_id}: {error}, so its record could not name by its content what the "
+                "script runs through",
+                file=sys.stderr,
+            )
+            return 2
+        # A Rust command's proxies resolve the tools again when they start:
+        # one that resolves to nothing now could resolve to a program the
+        # record never named by then, or fail after the seed is spent.
+        needed = required_rust_tools(command, tools)
+        unresolved = [tool for tool, program in tools.items() if tool in needed and program["path"] is None]
+        if unresolved and starts_rust(command):
+            print(
+                f"ERROR: refusing to run {exp_id}: rustup or the PATH resolves no {', '.join(unresolved)}, which the "
+                "Rust command would resolve again when it starts, so its record could not name by its content what "
+                "ran; install the toolchain, or select an installed one, for the run",
+                file=sys.stderr,
+            )
+            return 2
         # A toolchain the command names itself is resolved anew by the proxy
         # or by `rustup run` when the command starts, whatever
         # `RUSTUP_TOOLCHAIN` says: a name that is a link could be pointed at
@@ -1379,7 +1603,13 @@ def launch_and_record(
         # such as a binary only executable, or that changed while it was
         # read, is refused.
         unread = list(dict.fromkeys(
-            program["path"] for program in (executable, *tools.values())
+            program["path"]
+            for program in (
+                executable,
+                *executable.get("interpreters", []),
+                *tools.values(),
+                *(interpreter for tool in tools.values() for interpreter in tool.get("interpreters", [])),
+            )
             if program["path"] is not None and program["sha256"] is None
         ))
         if unread:
