@@ -1570,7 +1570,13 @@ def mutation_summary(path: Path) -> dict:
     carries (`mutation_evidence`): its counts, the commit it ran at and the
     SHA-256 of the whole file, which binds each outcome it lists. Raises
     OSError, ValueError or AttributeError when it cannot be read."""
-    data = path.read_bytes()
+    return mutation_summary_of(path.read_bytes())
+
+
+def mutation_summary_of(data: bytes) -> dict:
+    """The summary of the mutation evidence whose bytes are `data`
+    (`mutation_summary`), as a commit holds it. Raises ValueError or
+    AttributeError when it cannot be read."""
     evidence = json.loads(data.decode("utf-8"))
     summary = {key: evidence.get(key) for key in ("killed", "total", "git_sha")}
     return {**summary, "sha256": hashlib.sha256(data).hexdigest()}

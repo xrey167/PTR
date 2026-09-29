@@ -1250,7 +1250,9 @@ def launchable_at(root: Path, commit: str, exp_id: str, directory: str) -> tuple
     everything frozen there (the manifest, the configuration, the entry,
     the files' and baselines' digests and the directory), or None when it
     does not: the list names it with a well-formed entry, its manifest is past
-    `planned`, its `[preregistration]` table holds every required key,
+    `planned` and holds no value a run record could not tell from another
+    (`experiment_records.manifest_problems`), its `[preregistration]` table
+    holds every required key,
     pinned and of its type, and no placeholder, the table's seeds are the
     manifest's, each named once, the manifest names the digests of the table and of the
     entry, every file and baseline the table freezes has the frozen
@@ -1262,6 +1264,10 @@ def launchable_at(root: Path, commit: str, exp_id: str, directory: str) -> tuple
     commit that held less could not launch it, and does not freeze it."""
     manifest=toml_at(root,commit,f"{directory}/experiment.toml")
     if not isinstance(manifest,dict) or status_of(manifest) not in FROZEN or not names_an_entrypoint(manifest):
+        return None
+    # The runner refuses a manifest a run record could not tell from another
+    # (a TOML date or time, a NaN) before it launches anything.
+    if experiment_records.manifest_problems(manifest):
         return None
     if placed_directories(root,commit,exp_id)!=[directory] or not is_repository_path(directory):
         return None
@@ -1684,8 +1690,11 @@ def aggregate_version_errors(exp_id: str, version: str, earlier: dict, root: Pat
     the metrics (`metrics_sha256`) and, where it carries mutation checks,
     that of the whole evidence (`mutation_checks.sha256`), which every
     aggregator of a listed experiment writes (`experiment_records.
-    publish_aggregate`). A version whose artifacts do not match, replaced
-    with a valid pair later, is one whose outcome nothing bound."""
+    publish_aggregate`), and what it reports of that evidence (`killed`,
+    `total`, `git_sha`) is what the evidence says, as `experiment_records.
+    aggregate_problems` asks of the aggregate on disk. A version whose
+    artifacts do not match, replaced with a valid pair later, is one whose
+    outcome nothing bound."""
     directory=PurePosixPath(path).parent
     errors=[]
 
@@ -1701,8 +1710,27 @@ def aggregate_version_errors(exp_id: str, version: str, earlier: dict, root: Pat
 
     check("metrics_sha256",experiment_records.METRICS,earlier.get("metrics_sha256"),"metrics")
     carried=earlier.get("mutation_checks")
+    evidence=blob(root,commit,(directory/experiment_records.MUTATIONS).as_posix())
     if isinstance(carried,dict):
         check("mutation_checks.sha256",experiment_records.MUTATIONS,carried.get("sha256"),"mutation evidence")
+        # The digest binds the evidence a version names, and what it reports
+        # of it is what that evidence says, as `aggregate_problems` asks of
+        # the aggregate on disk: counts the evidence does not hold, replaced
+        # later by the right summary, were still reported where committed.
+        if evidence is not None and hashlib.sha256(evidence).hexdigest()==carried.get("sha256"):
+            try:
+                summary=experiment_records.mutation_summary_of(evidence)
+            except (ValueError,AttributeError) as error:
+                errors.append(f"{exp_id}: {version} names mutation checks over the {experiment_records.MUTATIONS} committed "
+                              f"beside it, which cannot be read: {error}")
+            else:
+                if summary!=carried:
+                    errors.append(f"{exp_id}: {version} carries mutation_checks {json.dumps(carried,sort_keys=True)}, but the "
+                                  f"{experiment_records.MUTATIONS} committed beside it sums up to "
+                                  f"{json.dumps(summary,sort_keys=True)}")
+    elif carried is not None:
+        errors.append(f"{exp_id}: {version} carries mutation_checks that is no object, so nothing binds it to the "
+                      f"{experiment_records.MUTATIONS} committed beside it")
     return errors
 
 def recorded_command_errors(where: str, record: dict, manifest, table, commit: str) -> list[str]:
@@ -1903,8 +1931,13 @@ def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path,
                 trees.append((str(record.get("started_at","")),name,record.get("git_sha")))
         if aggregate:
             # Written again, an aggregate keeps every version it was
-            # committed in: each saw the outcome of the runs it names.
-            for commit in history(root,"--format=%H","HEAD","--",path):
+            # committed in: each saw the outcome of the runs it names. It is
+            # run.json with the metrics.json and mutations.json beside it, so
+            # a commit that changes only one of the two is a state it was in
+            # too, and a corruption restored by the next commit is seen.
+            beside=PurePosixPath(path).parent
+            for commit in history(root,"--format=%H","HEAD","--",path,
+                                  *((beside/name).as_posix() for name in (experiment_records.METRICS,experiment_records.MUTATIONS))):
                 if tree_entry(root,commit,path) is None:
                     # The commit removed it.
                     continue

@@ -1908,7 +1908,7 @@ class PreregistrationGateTests(unittest.TestCase):
         self.seeded(root,ran)
         (root/f"{directory}/results/mutations.json").parent.mkdir(parents=True,exist_ok=True)
         (root/f"{directory}/results/mutations.json").write_bytes(evidence)
-        checked=self.aggregate(root,ran,mutation_checks={"sha256":held,"killed":2,"total":2})
+        checked=self.aggregate(root,ran,mutation_checks={"sha256":held,"killed":2,"total":2,"git_sha":None})
         self.publish(root,checked)
         commit_all(root,"aggregate with evidence")
         self.publish(root,{**checked,"note":"again"})
@@ -1943,13 +1943,21 @@ class PreregistrationGateTests(unittest.TestCase):
         # Metrics replaced after the supersession are not the ones the
         # aggregate names.
         write(root,self.METRICS,"[]")
-        commit_all(root,"metrics replaced")
+        replaced=commit_all(root,"metrics replaced")
         code,lines=gate_with_aggregates(root)
         self.assertEqual(code,1)
-        self.assertEqual(len(lines),1,lines)
-        self.assertTrue(lines[0].startswith(
-            f"X900: {directory}/results/metrics.json is not the metrics run.json was aggregated with"),lines)
-        # An experiment that was never completed is not asked.
+        # The metrics on disk, and the state the aggregate was in at the
+        # commit that replaced them (a commit that changes one artifact of
+        # the pair is a version of it).
+        self.assertEqual(len(lines),2,lines)
+        self.assertEqual(len([line for line in lines if line.startswith(
+            f"X900: {directory}/results/metrics.json is not the metrics run.json was aggregated with")]),1,lines)
+        self.assertEqual(len([line for line in lines if line.startswith(
+            f"X900: results/run.json as committed at {replaced[:12]} names metrics_sha256 ")]),1,lines)
+        # An experiment that was never completed is not asked for the
+        # integrity of the files on disk, but every state its aggregate was
+        # in stays a version of it: the commit that replaced the metrics is
+        # named, and nothing else.
         for then in ("prepared","running","failed"):
             with self.subTest(then=then):
                 root=self.tree(status=then)
@@ -1960,9 +1968,14 @@ class PreregistrationGateTests(unittest.TestCase):
                 for relative in (self.MANIFEST,"experiments/registry.toml"):
                     self.edit(root,relative,f'status = "{then}"','status = "superseded"')
                 commit_all(root,"superseded")
-                write(root,self.METRICS,"[]")
-                commit_all(root,"metrics replaced")
                 self.assertEqual(gate_with_aggregates(root),(0,[]))
+                write(root,self.METRICS,"[]")
+                replaced=commit_all(root,"metrics replaced")
+                code,lines=gate_with_aggregates(root)
+                self.assertEqual(code,1)
+                self.assertEqual(len(lines),1,lines)
+                self.assertTrue(lines[0].startswith(
+                    f"X900: results/run.json as committed at {replaced[:12]} names metrics_sha256 "),lines)
 
     def test_a_commit_that_holds_a_symlink_or_a_gitlink_anywhere_freezes_nothing(self):
         # The runner watches the whole repository of a listed experiment and
@@ -2037,6 +2050,177 @@ class PreregistrationGateTests(unittest.TestCase):
         self.publish(root,self.aggregate(root,ran))
         commit_all(root,"aggregate with its metrics")
         self.assertEqual(gate(root),(0,[]))
+
+    def test_an_aggregate_version_reports_what_the_evidence_beside_it_says(self):
+        # The digest binds the evidence a version names, but what run.json
+        # reports of it (`killed`, `total`, `git_sha`) is compared with what
+        # the evidence says, as the aggregate on disk is: a version that
+        # reported other counts, replaced later by the right summary, still
+        # reported them where it was committed.
+        directory="experiments/semdb/X900-fixture"
+        evidence=b'{"killed": 2, "total": 2, "git_sha": "' + b"a"*40 + b'"}\n'
+        held=hashlib.sha256(evidence).hexdigest()
+        summary={"killed":2,"total":2,"git_sha":"a"*40,"sha256":held}
+
+        def sums_up(first,carried):
+            return (f"X900: results/run.json as committed at {first[:12]} carries mutation_checks "
+                    f"{json.dumps(carried,sort_keys=True)}, but the mutations.json committed beside it sums up to "
+                    f"{json.dumps(summary,sort_keys=True)}")
+
+        cases=[
+            ("killed",{**summary,"killed":999}),
+            ("total",{**summary,"total":999}),
+            ("commit",{**summary,"git_sha":"b"*40}),
+            ("no commit",{key:value for key,value in summary.items() if key!="git_sha"}),
+            ("another key",{**summary,"extra":1}),
+        ]
+        for label,carried in cases:
+            with self.subTest(label=label):
+                root=self.tree(status="running")
+                ran=commit_all(root)
+                self.seeded(root,ran)
+                (root/f"{directory}/results/mutations.json").write_bytes(evidence)
+                bound=self.aggregate(root,ran)
+                self.publish(root,{**bound,"mutation_checks":carried})
+                first=commit_all(root,"aggregate that reports other counts")
+                self.publish(root,{**bound,"mutation_checks":summary,"note":"the right summary"})
+                commit_all(root,"the right summary")
+                self.assert_blocked(root,sums_up(first,carried))
+        # A version that carries no object, or evidence that cannot be read.
+        # One that carries none at all reports nothing about the evidence,
+        # which an aggregator that finds it inconclusive leaves out.
+        root=self.tree(status="running")
+        ran=commit_all(root)
+        self.seeded(root,ran)
+        (root/f"{directory}/results/mutations.json").write_bytes(evidence)
+        bound=self.aggregate(root,ran)
+        self.publish(root,{**bound,"mutation_checks":"passed"})
+        first=commit_all(root,"aggregate with no usable checks")
+        self.publish(root,{**bound,"mutation_checks":summary,"note":"the right summary"})
+        commit_all(root,"the right summary")
+        self.assert_blocked(
+            root,
+            f"X900: results/run.json as committed at {first[:12]} carries mutation_checks that is no object, so nothing "
+            "binds it to the mutations.json committed beside it")
+        root=self.tree(status="running")
+        ran=commit_all(root)
+        self.seeded(root,ran)
+        (root/f"{directory}/results/mutations.json").write_bytes(evidence)
+        self.publish(root,self.aggregate(root,ran))
+        commit_all(root,"aggregate that reports nothing of the evidence")
+        self.assertEqual(gate(root),(0,[]))
+        for label,unreadable,reason in (
+            ("not JSON",b"not json",lambda: str(self.json_error("not json"))),
+            ("not an object",b"[]",lambda: "'list' object has no attribute 'get'"),
+        ):
+            with self.subTest(label=label):
+                root=self.tree(status="running")
+                ran=commit_all(root)
+                self.seeded(root,ran)
+                (root/f"{directory}/results/mutations.json").write_bytes(unreadable)
+                digest=hashlib.sha256(unreadable).hexdigest()
+                bound=self.aggregate(root,ran)
+                self.publish(root,{**bound,"mutation_checks":{"sha256":digest,"killed":2,"total":2}})
+                first=commit_all(root,"aggregate over unreadable evidence")
+                (root/f"{directory}/results/mutations.json").write_bytes(evidence)
+                self.publish(root,{**bound,"mutation_checks":summary,"note":"the right summary"})
+                commit_all(root,"evidence and summary that agree")
+                self.assert_blocked(
+                    root,
+                    f"X900: results/run.json as committed at {first[:12]} names mutation checks over the mutations.json "
+                    f"committed beside it, which cannot be read: {reason()}")
+        # Reporting what the evidence says passes.
+        root=self.tree(status="running")
+        ran=commit_all(root)
+        self.seeded(root,ran)
+        (root/f"{directory}/results/mutations.json").write_bytes(evidence)
+        self.publish(root,self.aggregate(root,ran,mutation_checks=summary))
+        commit_all(root,"aggregate that reports what the evidence says")
+        self.assertEqual(gate(root),(0,[]))
+
+    @staticmethod
+    def json_error(text: str) -> ValueError:
+        try:
+            json.loads(text)
+        except ValueError as error:
+            return error
+        raise AssertionError("valid JSON")
+
+    def test_a_commit_that_changes_only_an_artifact_of_an_aggregate_is_one_of_its_versions(self):
+        # An aggregate is run.json with the metrics.json and mutations.json
+        # beside it. A commit that corrupts one of the two and leaves run.json
+        # alone, restored by the next, is a state the aggregate was in, and
+        # is checked as the commits that change run.json are.
+        directory="experiments/semdb/X900-fixture"
+        right=hashlib.sha256(b"{}").hexdigest()
+        other=hashlib.sha256(b"[]").hexdigest()
+        evidence=b'{"killed": 2, "total": 2}\n'
+        held=hashlib.sha256(evidence).hexdigest()
+        corrupt=b'{"killed": 9, "total": 9}\n'
+        broken=hashlib.sha256(corrupt).hexdigest()
+
+        def valid_pair():
+            root=self.tree(status="running")
+            ran=commit_all(root)
+            self.seeded(root,ran)
+            (root/f"{directory}/results/mutations.json").write_bytes(evidence)
+            self.publish(root,self.aggregate(root,ran,mutation_checks={"sha256":held,"killed":2,"total":2,"git_sha":None}))
+            commit_all(root,"valid pair")
+            self.assertEqual(gate(root),(0,[]))
+            return root
+
+        root=valid_pair()
+        write(root,self.METRICS,"[]")
+        corrupted=commit_all(root,"metrics only")
+        write(root,self.METRICS,"{}")
+        commit_all(root,"metrics restored")
+        self.assert_blocked(
+            root,
+            f"X900: results/run.json as committed at {corrupted[:12]} names metrics_sha256 {right}, not {other}, the "
+            "SHA-256 of the metrics.json committed beside it")
+        root=valid_pair()
+        (root/f"{directory}/results/mutations.json").write_bytes(corrupt)
+        corrupted=commit_all(root,"evidence only")
+        (root/f"{directory}/results/mutations.json").write_bytes(evidence)
+        commit_all(root,"evidence restored")
+        self.assert_blocked(
+            root,
+            f"X900: results/run.json as committed at {corrupted[:12]} names mutation_checks.sha256 {held}, not {broken}, "
+            "the SHA-256 of the mutations.json committed beside it")
+        # A restored pair, and an artifact removed and put back, leave no
+        # other state than the ones checked.
+        root=valid_pair()
+        (root/self.METRICS).unlink()
+        removed=commit_all(root,"metrics removed")
+        write(root,self.METRICS,"{}")
+        commit_all(root,"metrics restored")
+        self.assert_blocked(
+            root,
+            f"X900: results/run.json as committed at {removed[:12]} names metrics_sha256 {right}, but that commit holds no "
+            "metrics.json beside it")
+
+    def test_a_manifest_no_record_can_hold_is_no_freeze(self):
+        # The runner refuses a manifest holding a TOML date or time, or a NaN,
+        # before it launches, so a commit that holds one could not launch and
+        # freezes nothing: a repair after it is no rewrite of a freeze.
+        directory="experiments/semdb/X900-fixture"
+        for label,line in (("date","held_on = 2026-01-01\n"),("time","held_at = 07:32:00\n"),("nan","ratio = nan\n")):
+            with self.subTest(label=label):
+                root=self.tree(status="running")
+                write(root,self.MANIFEST,(root/self.MANIFEST).read_text(encoding="utf-8")+line)
+                unrecordable=commit_all(root,"a manifest no record can hold")
+                self.assertIsNone(mod.launchable_at(root,unrecordable,"X900",directory))
+                self.assertEqual([commit for commit,held in mod.launch_listing(root,"X900",[directory]) if held is not None],[])
+                # Repaired, and the preregistration completed at the same
+                # time: that commit is the first that could launch it.
+                rewritten=self.tree(status="running",table={**TABLE,"schema":2})
+                for relative in (f"{directory}/config.toml",self.MANIFEST):
+                    shutil.copyfile(rewritten/relative,root/relative)
+                repair=commit_all(root,"repaired")
+                self.assertIsNotNone(mod.launchable_at(root,repair,"X900",directory))
+                self.assertEqual(
+                    [commit for commit,held in mod.launch_listing(root,"X900",[directory]) if held is not None],[repair])
+                self.assertEqual(gate(root),(0,[]))
 
     def test_a_commit_that_only_removes_a_link_is_listed_as_the_first_that_could_launch(self):
         # Removing a symlink or gitlink changes nothing a launch path holds,
