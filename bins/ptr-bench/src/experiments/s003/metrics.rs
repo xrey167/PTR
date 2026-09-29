@@ -161,7 +161,34 @@ metrics! {
     }
 }
 
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+/// FNV-1a over `bytes`, continuing `state`; `None` starts a new digest.
+pub fn fnv(state: Option<u64>, bytes: &[u8]) -> u64 {
+    bytes
+        .iter()
+        .fold(state.unwrap_or(FNV_OFFSET), |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(FNV_PRIME)
+        })
+}
+
 impl Metrics {
+    /// `state` continued over every counter's name and value, and over
+    /// nothing that depends on the wall clock.
+    pub fn digest_into(&self, mut state: u64) -> u64 {
+        for (name, count) in self
+            .hard()
+            .into_iter()
+            .chain(self.coverage())
+            .chain(self.descriptive())
+        {
+            state = fnv(Some(state), name.as_bytes());
+            state = fnv(Some(state), &count.to_le_bytes());
+        }
+        state
+    }
+
     /// The sum of the hard counters: zero for a run that supports the safety
     /// claim.
     pub fn hard_failures(&self) -> u64 {
@@ -212,6 +239,26 @@ mod tests {
             let name = format!("probe_p{probe}_exercised");
             assert!(COVERAGE.contains(&name.as_str()), "{name}");
         }
+    }
+
+    #[test]
+    fn the_digest_follows_the_counters_and_ignores_the_clock() {
+        let mut metrics = Metrics::default();
+        let empty = metrics.digest_into(fnv(None, b"x"));
+        metrics.record_merge(Duration::from_millis(3));
+        assert_eq!(
+            metrics.digest_into(fnv(None, b"x")),
+            empty,
+            "wall time is not in it"
+        );
+        metrics.conflicts = 1;
+        assert_ne!(metrics.digest_into(fnv(None, b"x")), empty);
+        assert_eq!(fnv(None, b""), 0xcbf2_9ce4_8422_2325);
+        assert_eq!(
+            fnv(None, b"a"),
+            0xaf63_dc4c_8601_ec8c,
+            "the FNV-1a of one byte"
+        );
     }
 
     #[test]

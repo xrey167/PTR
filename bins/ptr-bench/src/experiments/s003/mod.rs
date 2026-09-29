@@ -14,6 +14,7 @@ pub mod metrics;
 pub mod model;
 pub mod oracle;
 pub mod params;
+pub mod probes;
 pub mod program;
 pub mod verifier;
 pub mod workload;

@@ -19,7 +19,7 @@
 use std::collections::VecDeque;
 use std::path::Path;
 
-use super::metrics::Metrics;
+use super::metrics::{fnv, Metrics};
 use super::oracle;
 use super::params;
 use super::workload::{Background, Case, Task};
@@ -527,20 +527,10 @@ impl Simulation<'_> {
     }
 }
 
-const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
-
-/// FNV-1a over `bytes`, continuing `state`.
-fn fnv(state: u64, bytes: &[u8]) -> u64 {
-    bytes.iter().fold(state, |hash, byte| {
-        (hash ^ u64::from(*byte)).wrapping_mul(FNV_PRIME)
-    })
-}
-
 /// The digest of a run: its arm, its statistics, every counter and the final
 /// state, with no wall-clock value in it.
 fn digest(stats: &RunStats, world: &World) -> u64 {
-    let mut state = fnv(FNV_OFFSET, stats.arm.name().as_bytes());
+    let mut state = fnv(None, stats.arm.name().as_bytes());
     let numbers = [
         stats.agents as u64,
         stats.ticks,
@@ -557,25 +547,16 @@ fn digest(stats: &RunStats, world: &World) -> u64 {
         stats.unnecessary_refusals,
     ];
     for number in numbers {
-        state = fnv(state, &number.to_le_bytes());
+        state = fnv(Some(state), &number.to_le_bytes());
     }
-    let metrics = &world.metrics;
-    for (name, count) in metrics
-        .hard()
-        .into_iter()
-        .chain(metrics.coverage())
-        .chain(metrics.descriptive())
-    {
-        state = fnv(state, name.as_bytes());
-        state = fnv(state, &count.to_le_bytes());
-    }
+    state = world.metrics.digest_into(state);
     for (key, value) in world.model.values() {
-        state = fnv(state, key.as_bytes());
-        state = fnv(state, format!("{value:?}").as_bytes());
+        state = fnv(Some(state), key.as_bytes());
+        state = fnv(Some(state), format!("{value:?}").as_bytes());
     }
     for (key, inputs) in world.model.dependencies() {
-        state = fnv(state, key.as_bytes());
-        state = fnv(state, format!("{inputs:?}").as_bytes());
+        state = fnv(Some(state), key.as_bytes());
+        state = fnv(Some(state), format!("{inputs:?}").as_bytes());
     }
     state
 }
