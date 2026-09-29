@@ -62,6 +62,14 @@ struct CaseResult {
     digest: u64,
 }
 
+impl CaseResult {
+    /// Bind every deterministic case counter, including canary outcomes, to
+    /// the run/probe digest compared with the independent rerun.
+    fn deterministic_digest(&self) -> u64 {
+        self.metrics.digest_into(self.digest)
+    }
+}
+
 /// Run one case: the canaries, the probes and every arm. `durable` names the
 /// file of the durable round trip, when this case makes one.
 fn run_case(seed: u64, index: usize, durable: Option<PathBuf>) -> CaseResult {
@@ -257,11 +265,13 @@ pub fn run(iterations: usize, seed: u64) {
             scratch.as_ref().map(|s| s.file("journal.log")),
         );
         drop(scratch);
-        if again.digest != first.digest {
+        if again.deterministic_digest() != first.deterministic_digest() {
             metrics.nondeterminism += 1;
             eprintln!(
                 "case {} is not reproducible: digest {:016x}, then {:016x}",
-                first.index, first.digest, again.digest
+                first.index,
+                first.deterministic_digest(),
+                again.deterministic_digest()
             );
         }
     }
@@ -288,7 +298,7 @@ mod tests {
 
     #[test]
     fn a_case_runs_every_arm_and_is_reproducible() {
-        let first = run_case(17, 0, None);
+        let mut first = run_case(17, 0, None);
         assert_eq!(first.notes, Vec::<String>::new());
         assert_eq!(first.metrics.hard(), Metrics::default().hard());
         // The serial run and, for each of the four agent counts, the four other arms.
@@ -297,8 +307,13 @@ mod tests {
         assert!(first.serial_ticks > 0);
         assert_eq!(first.metrics.canaries_run, 9);
         let second = run_case(17, 0, None);
-        assert_eq!(first.digest, second.digest);
-        assert_ne!(first.digest, run_case(29, 0, None).digest);
+        assert_eq!(first.deterministic_digest(), second.deterministic_digest());
+        assert_ne!(
+            first.deterministic_digest(),
+            run_case(29, 0, None).deterministic_digest()
+        );
+        first.metrics.canary_misses += 1;
+        assert_ne!(first.deterministic_digest(), second.deterministic_digest());
     }
 
     #[test]

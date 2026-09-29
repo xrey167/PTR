@@ -674,7 +674,7 @@ def aggregate() -> None:
 
 def pilot_source_paths() -> tuple[str, ...]:
     """Source/build inputs; classification and freeze outputs are not source."""
-    return ("*.rs", "*.toml", "Cargo.lock", "scripts", ".cargo",
+    return (*experiment_records.CODE_PATHS, "*.toml", "scripts", ".cargo",
             "experiments/semdb/S003-certified-branches/aggregate.py",
             ":(exclude)experiments/semdb/S003-certified-branches/config.toml",
             ":(exclude)experiments/semdb/S003-certified-branches/experiment.toml",

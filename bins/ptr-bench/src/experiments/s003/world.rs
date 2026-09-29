@@ -479,11 +479,8 @@ impl World {
             if oracle::negative_counter(&self.model) {
                 self.metrics.invariant_violations += 1;
             }
-        } else if self.ledger_len() != from {
-            self.metrics.provenance_mismatches += 1;
-            self.note(format!(
-                "a host write that was {outcome:?} appended a record"
-            ));
+        } else {
+            self.require_unchanged(from, &format!("a host write that was {outcome:?}"));
         }
         Ok(outcome)
     }
@@ -1418,9 +1415,9 @@ pub fn state_difference(runtime: &PtrRuntime, model: &Model) -> Option<String> {
             return Some(format!("inputs of {derived}"));
         }
     }
-    // Every runtime key may acquire an unexpected input set, even when the
-    // model has never treated that key's family as derived.
-    for key in snapshot.keys() {
+    // Dependency declarations survive eviction of a derived value, so inspect
+    // dependency keys independently of the set of currently held values.
+    for key in snapshot.derived_keys() {
         if !model.dependencies().contains_key(key) && snapshot.inputs(key).next().is_some() {
             return Some(format!("inputs of {key}"));
         }
@@ -2124,6 +2121,44 @@ mod tests {
                 Some(format!("inputs of {key}"))
             );
         }
+    }
+
+    #[test]
+    fn unexpected_dependencies_without_a_value_are_detected() {
+        let mut ordinary = world(GrantKind::Auto);
+        let mut genesis = Case::new(17, 0).genesis();
+        genesis
+            .delta
+            .dependencies
+            .insert("audit:999".into(), BTreeSet::from(["item:1:0".into()]));
+        genesis
+            .delta
+            .upserts
+            .insert("audit:999".into(), Val::text("derived"));
+        let mut changed = World::with_genesis(&genesis, GrantKind::Auto).unwrap();
+        // Both worlds reach identical ground values and revisions; only the
+        // changed runtime retains the dependency of its now-evicted value.
+        host(&mut ordinary, "item:1:0", Val::text("333"));
+        host(&mut changed, "item:1:0", Val::text("333"));
+        assert_eq!(
+            state_difference(&changed.runtime, &ordinary.model),
+            Some("inputs of audit:999".into())
+        );
+    }
+
+    #[test]
+    fn a_host_no_change_checks_live_state_without_new_records() {
+        let mut world = world(GrantKind::Auto);
+        let from = world.ledger_len();
+        let mut changed = Delta::default();
+        changed.upserts.insert("item:0:0".into(), Val::text("999"));
+        world.model.apply(&changed).unwrap();
+        assert_eq!(
+            world.host_write(&Delta::default(), "s003-occ").unwrap(),
+            HostOutcome::NoChange
+        );
+        assert_eq!(world.ledger_len(), from);
+        assert_eq!(world.metrics.model_divergences, 1);
     }
 
     #[test]

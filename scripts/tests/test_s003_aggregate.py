@@ -599,29 +599,31 @@ class PilotSourceEvidenceTests(unittest.TestCase):
             aggregate.validate_pilot_provenance({"seed": 1})
 
     def test_harness_changes_invalidate_pilot_even_with_the_same_configuration(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            def git(*args):
-                return subprocess.check_output(["git", "-c", "user.name=PTR tests", "-c", "user.email=tests@example.invalid", *args], cwd=root, text=True).strip()
-            git("init", "-q")
-            (root / "harness.rs").write_text("fn original() {}\n")
-            git("add", ".")
-            git("commit", "-qm", "initial harness")
-            evidence = {"pilot_provenance": {"schema_version": 1, "git_sha": git("rev-parse", "HEAD"), "git_dirty": False, "exit_code": 0}}
-            with mock.patch.object(aggregate, "ROOT", root):
-                aggregate.validate_pilot_provenance(evidence)
-                # Adding the result itself is not a change to the producer.
-                (root / "pilot.json").write_text("{}")
+        for name in ("harness.rs", "schema.proto", "rust-toolchain", "migration.sql"):
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                def git(*args):
+                    return subprocess.check_output(["git", "-c", "user.name=PTR tests", "-c", "user.email=tests@example.invalid", *args], cwd=root, text=True).strip()
+                git("init", "-q")
+                (root / name).write_text("fn original() {}\n")
                 git("add", ".")
-                git("commit", "-qm", "pilot output")
-                aggregate.validate_pilot_provenance(evidence)
-                (root / "harness.rs").write_text("fn changed() {}\n")
-                with self.assertRaisesRegex(ValueError, "source differs"):
+                git("commit", "-qm", "initial harness")
+                evidence = {"pilot_provenance": {"schema_version": 1, "git_sha": git("rev-parse", "HEAD"), "git_dirty": False, "exit_code": 0}}
+                with mock.patch.object(aggregate, "ROOT", root):
                     aggregate.validate_pilot_provenance(evidence)
-                git("add", ".")
-                git("commit", "-qm", "changed harness, same config")
-                with self.assertRaisesRegex(ValueError, "source differs"):
+                    # Adding the result itself is not a change to the producer.
+                    (root / "pilot.json").write_text("{}")
+                    git("add", ".")
+                    git("commit", "-qm", "pilot output")
                     aggregate.validate_pilot_provenance(evidence)
+                    (root / name).write_text("fn changed() {}\n")
+                    with self.assertRaisesRegex(ValueError, "source differs"):
+                        aggregate.validate_pilot_provenance(evidence)
+                    git("add", ".")
+                    git("commit", "-qm", "changed harness, same config")
+                    with self.assertRaisesRegex(ValueError, "source differs"):
+                        aggregate.validate_pilot_provenance(evidence)
+
 
     def test_collector_binds_a_successful_run_and_refuses_source_changes(self):
         for changed in ([], ["harness.rs"]):

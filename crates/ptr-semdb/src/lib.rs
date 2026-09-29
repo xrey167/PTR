@@ -267,6 +267,11 @@ impl SemanticSnapshot {
     pub fn keys(&self) -> impl Iterator<Item = &str> {
         self.state.ground.keys().map(String::as_str)
     }
+    /// Keys with dependency declarations, including derivations whose values
+    /// were evicted. `keys()` only lists currently held values.
+    pub fn derived_keys(&self) -> impl Iterator<Item = &str> {
+        self.state.dependencies.inputs.keys().map(String::as_str)
+    }
     pub fn inputs(&self, key: &str) -> impl Iterator<Item = &str> {
         self.state
             .dependencies

@@ -23,6 +23,21 @@ fn chain() -> SemanticDelta {
 }
 
 #[test]
+fn snapshots_enumerate_dependencies_of_evicted_values() {
+    let mut host = SemanticHost::default();
+    host.apply_delta(chain()).unwrap();
+    host.apply_delta(delta("source", "changed")).unwrap();
+    let snapshot = host.snapshot();
+    assert_eq!(snapshot.value("derived"), None);
+    assert_eq!(snapshot.value("plan"), None);
+    assert_eq!(
+        snapshot.derived_keys().collect::<Vec<_>>(),
+        ["derived", "plan"]
+    );
+    assert_eq!(snapshot.inputs("derived").collect::<Vec<_>>(), ["source"]);
+}
+
+#[test]
 fn prepared_views_include_removals_invalidations_and_payloads_without_publishing() {
     let mut host = SemanticHost::default();
     host.apply_delta(chain()).unwrap();
