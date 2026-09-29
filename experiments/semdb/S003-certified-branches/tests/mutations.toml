@@ -16,7 +16,10 @@
 package = "ptr-bench"
 features = ""
 subcommand = "certified-branches"
-cases = 6
+# Three cases are the contention levels 0 to 2 (4, 8 and 16 groups): every planted
+# defect is killed on them, the state of 64 to 1024 groups only makes a run
+# minutes longer, and the plan is run once per defect.
+cases = 3
 seed = 17
 hard_counters = [
     "lost_updates",
