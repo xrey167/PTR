@@ -1380,8 +1380,7 @@ fn same_value(value: &SemanticValue, expected: &Val) -> bool {
 }
 
 /// How a runtime's state differs from a model's: its revision, every value
-/// and input set, and the validity of every generation up to one past each
-/// live one.
+/// and input set, every live lifecycle target and every revocation tombstone.
 pub fn state_difference(runtime: &PtrRuntime, model: &Model) -> Option<String> {
     if runtime.revision().0 != model.revision() {
         return Some(format!(
@@ -1422,6 +1421,21 @@ pub fn state_difference(runtime: &PtrRuntime, model: &Model) -> Option<String> {
             return Some(format!("inputs of {key}"));
         }
     }
+    if !runtime
+        .live_generations()
+        .map(|(target, generation)| (target, generation.0))
+        .eq(model.lifecycle.live_entries())
+    {
+        return Some("the live lifecycle generations".into());
+    }
+    if !runtime
+        .revoked_generations()
+        .map(|(target, generation)| (target, generation.0))
+        .eq(model.lifecycle.revoked_entries())
+    {
+        return Some("the revoked lifecycle generations".into());
+    }
+    // Also verify the public validity query over every scheduled policy generation.
     for policy in 0..params::POLICIES {
         let target = keys::policy(policy);
         let live = model.lifecycle.live(&target);
@@ -2103,6 +2117,45 @@ mod tests {
             );
             clean(&world);
         }
+    }
+
+    #[test]
+    fn lifecycle_comparison_covers_unexpected_targets_and_distant_tombstones() {
+        let mut world = world(GrantKind::Auto);
+        let original = world.model.clone();
+        // Lifecycle commits do not move the semantic revision, so the mismatch
+        // must be detected from the lifecycle collections themselves.
+        world
+            .commit_lifecycle(LedgerEvent::CapsuleCommitted {
+                project: ProjectId::from("s003"),
+                capsule: CapsuleId::from("unexpected-policy"),
+                generation: Generation(7),
+            })
+            .unwrap();
+        assert_eq!(
+            state_difference(&world.runtime, &original),
+            Some("the live lifecycle generations".into())
+        );
+        let before_revoke = world.model.clone();
+        world
+            .commit_lifecycle(LedgerEvent::Revoked {
+                subject: "policy-0".into(),
+                generation: Generation(999),
+            })
+            .unwrap();
+        assert_eq!(
+            state_difference(&world.runtime, &before_revoke),
+            Some("the revoked lifecycle generations".into())
+        );
+        world
+            .commit_lifecycle(LedgerEvent::Revoked {
+                subject: "unknown-target".into(),
+                generation: Generation(0),
+            })
+            .unwrap();
+        assert_eq!(state_difference(&world.runtime, &world.model), None);
+        world.round_trips(None).unwrap();
+        clean(&world);
     }
 
     #[test]

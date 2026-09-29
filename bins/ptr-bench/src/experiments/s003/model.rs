@@ -274,6 +274,18 @@ impl Lifecycle {
         self.live.get(target).copied()
     }
 
+    pub fn live_entries(&self) -> impl Iterator<Item = (&str, u64)> {
+        self.live
+            .iter()
+            .map(|(target, generation)| (target.as_str(), *generation))
+    }
+
+    pub fn revoked_entries(&self) -> impl Iterator<Item = (&str, u64)> {
+        self.revoked
+            .iter()
+            .map(|(target, generation)| (target.as_str(), *generation))
+    }
+
     /// `None` means the authority knows no such generation: the target is
     /// unknown or the generation is ahead of it.
     pub fn validity(&self, target: &str, generation: u64) -> Option<Validity> {
