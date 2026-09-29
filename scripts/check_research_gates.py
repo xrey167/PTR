@@ -1233,15 +1233,17 @@ def committed_records(root: Path, directories: list[str]) -> list[str]:
         if (is_run_record(name) or is_aggregate(name)) and PurePosixPath(name).parent.as_posix() in results
     })
 
-def committed_blobs(root: Path, relative: str) -> set[str]:
-    """The distinct contents, as blob names, that the repository path
-    `relative` has had at the commits of HEAD's full history that change it,
-    on every side of every merge."""
+def committed_blobs(root: Path, relative: str) -> set[tuple[str, str]]:
+    """The distinct entries, as a mode and a blob name, that the repository
+    path `relative` has had at the commits of HEAD's full history that change
+    it, on every side of every merge. A symlink holds its target's text as
+    its blob, so the link and the regular file with that text are two
+    entries, told apart by mode."""
     found=set()
     for commit in history(root,"--format=%H","HEAD","--",relative):
-        held=experiment_records.git(root,"rev-parse","--verify","--quiet",f"{commit}:{relative}")
-        if held.returncode==0:
-            found.add(held.stdout.strip())
+        held=tree_entry(root,commit,relative)
+        if held is not None:
+            found.add((held[0],held[2]))
     return found
 
 def launchable_at(root: Path, commit: str, exp_id: str, directory: str) -> tuple[str, str] | None:
@@ -1731,6 +1733,10 @@ def aggregate_version_errors(exp_id: str, version: str, earlier: dict, root: Pat
     elif carried is not None:
         errors.append(f"{exp_id}: {version} carries mutation_checks that is no object, so nothing binds it to the "
                       f"{experiment_records.MUTATIONS} committed beside it")
+    elif evidence is not None:
+        # `aggregate_problems` refuses the same pair for the aggregate on disk.
+        errors.append(f"{exp_id}: {version} carries no mutation_checks, but that commit holds a "
+                      f"{experiment_records.MUTATIONS} beside it")
     return errors
 
 def recorded_command_errors(where: str, record: dict, manifest, table, commit: str) -> list[str]:
@@ -1877,8 +1883,12 @@ def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path,
                 exp_id,root,experiment/results_dir,STANDARD_ARTIFACTS,
                 f"experiment, completed at {completed[0][:12]} and now {status_of(manifest)!r},"))
             # What it was completed with stays what it was: the metrics and
-            # the mutation evidence are the ones its aggregate names.
+            # the mutation evidence are the ones its aggregate names, and the
+            # results still describe the code (`staleness_errors`, which a
+            # superseding status moves nothing of): its command may have read
+            # any file of the repository.
             errors.extend(experiment_records.aggregate_errors(exp_id,experiment,experiment/results_dir,root))
+            errors.extend(experiment_records.staleness_errors(exp_id,experiment,experiment/results_dir,root,True))
     runs={}
     programs={}
     trees=[]

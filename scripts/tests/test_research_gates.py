@@ -2086,9 +2086,29 @@ class PreregistrationGateTests(unittest.TestCase):
                 self.publish(root,{**bound,"mutation_checks":summary,"note":"the right summary"})
                 commit_all(root,"the right summary")
                 self.assert_blocked(root,sums_up(first,carried))
-        # A version that carries no object, or evidence that cannot be read.
-        # One that carries none at all reports nothing about the evidence,
-        # which an aggregator that finds it inconclusive leaves out.
+        # A version that carries no object, or none beside evidence its own
+        # commit holds (which `aggregate_problems` refuses for the aggregate
+        # on disk), or evidence that cannot be read.
+        root=self.tree(status="running")
+        ran=commit_all(root)
+        self.seeded(root,ran)
+        (root/f"{directory}/results/mutations.json").write_bytes(evidence)
+        bound=self.aggregate(root,ran)
+        self.publish(root,bound)
+        first=commit_all(root,"aggregate that reports nothing of the evidence")
+        self.publish(root,{**bound,"mutation_checks":summary,"note":"the right summary"})
+        commit_all(root,"the right summary")
+        self.assert_blocked(
+            root,
+            f"X900: results/run.json as committed at {first[:12]} carries no mutation_checks, but that commit holds a "
+            "mutations.json beside it")
+        # Beside no evidence, none is reported: nothing to say.
+        root=self.tree(status="running")
+        ran=commit_all(root)
+        self.seeded(root,ran)
+        self.publish(root,self.aggregate(root,ran))
+        commit_all(root,"aggregate with no mutation evidence")
+        self.assertEqual(gate(root),(0,[]))
         root=self.tree(status="running")
         ran=commit_all(root)
         self.seeded(root,ran)
@@ -2102,13 +2122,6 @@ class PreregistrationGateTests(unittest.TestCase):
             root,
             f"X900: results/run.json as committed at {first[:12]} carries mutation_checks that is no object, so nothing "
             "binds it to the mutations.json committed beside it")
-        root=self.tree(status="running")
-        ran=commit_all(root)
-        self.seeded(root,ran)
-        (root/f"{directory}/results/mutations.json").write_bytes(evidence)
-        self.publish(root,self.aggregate(root,ran))
-        commit_all(root,"aggregate that reports nothing of the evidence")
-        self.assertEqual(gate(root),(0,[]))
         for label,unreadable,reason in (
             ("not JSON",b"not json",lambda: str(self.json_error("not json"))),
             ("not an object",b"[]",lambda: "'list' object has no attribute 'get'"),
@@ -2221,6 +2234,80 @@ class PreregistrationGateTests(unittest.TestCase):
                 self.assertEqual(
                     [commit for commit,held in mod.launch_listing(root,"X900",[directory]) if held is not None],[repair])
                 self.assertEqual(gate(root),(0,[]))
+
+    def test_a_run_record_once_committed_as_a_symlink_is_a_version_of_it_whatever_its_bytes(self):
+        # A symlink holds its target's text as its content, so a record
+        # first committed as a link whose target is the record's own text has
+        # the blob of the regular file that replaces it: the two are told
+        # apart by mode, not by blob name alone.
+        directory="experiments/semdb/X900-fixture"
+        root=self.tree(status="running")
+        ran=commit_all(root)
+        name=f"{directory}/results/run-20260101T000000.000000Z-seed-17.json"
+        text=json.dumps(self.record(root,ran,seed=17,status="completed"))
+        (root/name).parent.mkdir(parents=True,exist_ok=True)
+        self.link(Path(text),root/name)
+        linked=commit_all(root,"the record as a symlink")
+        self.assertEqual(git(root,"ls-tree",linked,"--",name).split()[0],"120000")
+        (root/name).unlink()
+        (root/name).write_bytes(text.encode("utf-8"))
+        regular=commit_all(root,"the record as a regular file with the same bytes")
+        self.assertEqual(git(root,"ls-tree",regular,"--",name).split()[0],"100644")
+        self.assertEqual(git(root,"rev-parse",f"{linked}:{name}"),git(root,"rev-parse",f"{regular}:{name}"))
+        code,lines=gate(root)
+        self.assertEqual(code,1)
+        self.assertIn(
+            "X900: results/run-20260101T000000.000000Z-seed-17.json was changed after it was committed "
+            "(2 versions of it were committed)",lines)
+        # A record committed once, and left alone, is one version.
+        root=self.tree(status="running")
+        ran=commit_all(root)
+        write(root,name,json.dumps(self.record(root,ran,seed=17,status="completed")))
+        commit_all(root,"the record")
+        self.assertEqual(gate(root),(0,[]))
+
+    def test_an_experiment_once_completed_is_stale_when_the_code_changes_after_it_is_superseded(self):
+        # The archived results of a completed experiment describe the code at
+        # their git_sha. Superseding it moves its status only, which stays
+        # no change after the runs, but any other file that changes makes
+        # them stale as it does while the experiment is completed: rerun, or
+        # say since when in STALE.toml.
+        directory="experiments/semdb/X900-fixture"
+
+        def real_gate(root):
+            output=io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code=mod.main(root)
+            return code,[line.removeprefix("ERROR: ") for line in output.getvalue().splitlines() if line.startswith("ERROR: ")]
+
+        root=self.tree(status="completed")
+        ran=commit_all(root)
+        self.seeded(root,ran)
+        self.publish(root,self.aggregate(root,ran))
+        commit_all(root,"archive")
+        self.assertEqual(real_gate(root),(0,[]))
+        for relative in (self.MANIFEST,"experiments/registry.toml"):
+            self.edit(root,relative,'status = "completed"','status = "superseded"')
+        commit_all(root,"superseded")
+        self.assertEqual(real_gate(root),(0,[]))
+        write(root,"notes/changed-after.md","a file the command could have read\n")
+        commit_all(root,"a repository file changes")
+        code,lines=real_gate(root)
+        self.assertEqual(code,1)
+        self.assertEqual(len(lines),1,lines)
+        self.assertTrue(lines[0].startswith(
+            f"X900: {directory}/results/run.json ran at {ran}, and the code has changed since, in "),lines)
+        # An experiment that was never completed is not asked.
+        root=self.tree(status="running")
+        ran=commit_all(root)
+        self.seeded(root,ran)
+        self.publish(root,self.aggregate(root,ran))
+        commit_all(root,"aggregate")
+        for relative in (self.MANIFEST,"experiments/registry.toml"):
+            self.edit(root,relative,'status = "running"','status = "superseded"')
+        write(root,"notes/changed-after.md","a file the command could have read\n")
+        commit_all(root,"superseded, and a repository file changes")
+        self.assertEqual(real_gate(root),(0,[]))
 
     def test_a_commit_that_only_removes_a_link_is_listed_as_the_first_that_could_launch(self):
         # Removing a symlink or gitlink changes nothing a launch path holds,
@@ -3299,7 +3386,8 @@ class PreregistrationGateTests(unittest.TestCase):
         self.assertEqual(gate(root),(0,[]))
         # The tools' other outputs are written once the seeds have run.
         for output in ("metrics.json","mutations.json","run.json"):
-            write(root,f"{results}/{output}","{}" if output!="run.json" else json.dumps(self.aggregate(root,first)))
+            write(root,f"{results}/{output}","{}" if output!="run.json" else json.dumps(self.aggregate(
+                root,first,mutation_checks=mod.experiment_records.mutation_summary_of(b"{}"))))
         commit_all(root,"aggregated")
         self.assertEqual(gate(root),(0,[]))
         # One committed between two seeds is an input the later seed could
