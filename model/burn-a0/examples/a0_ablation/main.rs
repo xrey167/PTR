@@ -285,6 +285,7 @@ fn rule_cases() -> Result<(), String> {
         validity,
     };
     let code = |op| usize::from(ptr_types::Codebook::V1.code_of(op).expect("v1 op").index());
+    let unknown_bonus_winner = O::Probabilistic;
     let cases: Vec<(&str, Vec<RuleFact>, usize, usize, O)> = vec![
         // Goal/Verified, cb 4: Search 1.25*1.55*2 = 3.875, Optimization 1.74375.
         (
@@ -349,7 +350,7 @@ fn rule_cases() -> Result<(), String> {
             vec![fact(R::Evidence, E::Unknown, 2, V::Live)],
             0,
             2,
-            O::Probabilistic,
+            unknown_bonus_winner,
         ),
         // Claim under interventional: Deductive 2*1.3 = 2.6, Causal 0.9*1.3 = 1.17.
         (
@@ -450,5 +451,13 @@ fn main() {
             eprintln!("a0_ablation: {error}");
             std::process::exit(2);
         }
+    }
+}
+
+#[cfg(test)]
+mod rule_case_tests {
+    #[test]
+    fn fixed_rule_cases_hold() {
+        super::rule_cases().expect("T8 hand-computed rule cases");
     }
 }

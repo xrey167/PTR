@@ -90,3 +90,12 @@ these repairs do not make the archived environment provenance stronger.
 
 The registered operator_route_v1 sample now uses the routing schema through the
 public training validator, including operator and codebook checks.
+
+
+The R2 rewrite now updates T8's independent hand-computed winner for the
+Evidence/Unknown case: without the uncertainty bonus, Statistical beats
+Probabilistic. Both original and rewritten Rust rule cases were executed, and
+the driver regression checks that the oracle changes with the rule. Scoring
+also rejects every non-finite logit before argmax, causing a nonzero process
+exit rather than emitting a fabricated operator code after a failed update.
+Regression coverage includes NaN and both infinities at every operator index.

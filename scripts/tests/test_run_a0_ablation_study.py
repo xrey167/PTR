@@ -20,7 +20,7 @@ spec.loader.exec_module(driver)
 class CalibrationLadder(unittest.TestCase):
     def test_r2_updates_all_rules_and_rebuilds_after_regeneration(self):
         names = ["benchmarks/operator-routing/generator.py", "benchmarks/operator-routing/score.py",
-                 "model/burn-a0/examples/a0_ablation/rule.rs"]
+                 "model/burn-a0/examples/a0_ablation/rule.rs", "model/burn-a0/examples/a0_ablation/main.rs"]
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for name in names:
@@ -46,6 +46,7 @@ class CalibrationLadder(unittest.TestCase):
             self.assertIn("G = [0.0, 1.0, 1.0, 1.0, 1.0]", (root / names[0]).read_text())
             self.assertIn("1: 1.0, 2: 1.0, 3: 1.0, 4: 1.0", (root / names[1]).read_text())
             self.assertIn("EpistemicState::Hypothesis => (0.80, 0.0)", (root / names[2]).read_text())
+            self.assertIn("let unknown_bonus_winner = O::Statistical;", (root / names[3]).read_text())
             codebook = root / "datasets/generated/codebook.json"
             codebook.parent.mkdir(parents=True, exist_ok=True)
             codebook.write_bytes((ROOT / "datasets/generated/codebook.json").read_bytes())

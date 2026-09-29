@@ -233,6 +233,11 @@ def prepare_r2() -> dict:
             ('"unknown": 0.35, "assumed": 0.60, "hypothesis": 0.85,',
              '"unknown": 0.0, "assumed": 0.0, "hypothesis": 0.0,'),
         ],
+        "model/burn-a0/examples/a0_ablation/main.rs": [
+            ("let unknown_bonus_winner = O::Probabilistic;", "let unknown_bonus_winner = O::Statistical;"),
+            ("// Evidence/Unknown: Statistical 0.6 loses to Probabilistic 0.27 + 0.35 = 0.62.",
+             "// R2 removes U: Statistical 0.6 beats Probabilistic 0.27."),
+        ],
         "model/burn-a0/examples/a0_ablation/rule.rs": [
             ("const GAIN: [f64; 5] = [0.0, 0.5, 1.0, 1.0, 1.25];",
              "const GAIN: [f64; 5] = [0.0, 1.0, 1.0, 1.0, 1.0];"),

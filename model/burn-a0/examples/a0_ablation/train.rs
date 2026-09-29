@@ -267,12 +267,7 @@ pub fn score(model: &PtrA0, arm: &Arm, split: &Split, payloads: &Payloads) -> Sc
             .try_to_vec::<f32>()
             .expect("f32 logits");
         for (example, row) in chosen.iter().zip(logits.chunks(OPERATORS)) {
-            let mut best = 0;
-            for k in 1..OPERATORS {
-                if row[k] > row[best] {
-                    best = k;
-                }
-            }
+            let best = checked_argmax(row);
             let max = f64::from(row[best]);
             let normalizer: f64 = row.iter().map(|&v| (f64::from(v) - max).exp()).sum();
             let log_probability = f64::from(row[example.label]) - max - normalizer.ln();
@@ -323,4 +318,48 @@ pub fn evaluate(trained: &Trained, arm: &Arm, data: &Dataset, payloads: &Payload
         out.push(format!("PRED {} {name} {}", arm.name, result.predictions));
     }
     out
+}
+
+/// Refuse numerical failures before converting logits to valid operator codes.
+/// A panic makes the process fail, including a failure after its final update.
+fn checked_argmax(row: &[f32]) -> usize {
+    assert_eq!(row.len(), OPERATORS, "one logit per operator");
+    assert!(
+        row.iter().all(|value| value.is_finite()),
+        "non-finite router logit; refusing to emit predictions"
+    );
+    let mut best = 0;
+    for k in 1..OPERATORS {
+        if row[k] > row[best] {
+            best = k;
+        }
+    }
+    best
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn non_finite_logits_never_become_operator_predictions() {
+        for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            for position in 0..OPERATORS {
+                let mut row = [0.0; OPERATORS];
+                row[position] = invalid;
+                assert!(std::panic::catch_unwind(|| checked_argmax(&row)).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn finite_argmax_keeps_the_lowest_code_on_ties() {
+        let mut row = [0.0; OPERATORS];
+        assert_eq!(checked_argmax(&row), 0);
+        row[3] = 2.0;
+        row[7] = 2.0;
+        assert_eq!(checked_argmax(&row), 3);
+        row[7] = 3.0;
+        assert_eq!(checked_argmax(&row), 7);
+    }
 }
