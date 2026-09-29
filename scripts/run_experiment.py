@@ -877,11 +877,21 @@ def is_rustup_proxy(path: str, rustup: str) -> bool:
         return False
 
 
+def is_linked_toolchain(directory: str) -> bool:
+    """Whether the toolchain directory `directory` is a link, as rustup keeps
+    a toolchain it was told to link (`rustup toolchain link`) under its home:
+    a name that can be pointed at another toolchain without changing a file
+    of the one it led to."""
+    isjunction = getattr(os.path, "isjunction", lambda _: False)
+    return os.path.islink(directory) or isjunction(directory)
+
+
 def toolchain(
     environment: dict[str, str],
     command: list[str],
     stamps: dict[str, experiment_records.Stamp | None] | None = None,
     selected: dict[str, str] | None = None,
+    linked: list[str] | None = None,
 ) -> dict:
     """The Rust toolchain `command`, run from the repository's root in
     `environment`, would build with, each of `rustc` and `cargo` named as
@@ -895,7 +905,10 @@ def toolchain(
     before rustup's proxies, which runs whatever rustup would resolve.
     rustup keeps its toolchains outside the repository, where the commit
     holds none. Given `selected`, the directory of the toolchain rustup
-    resolved each tool from goes in under the tool (`toolchain_directory`)."""
+    resolved each tool from goes in under the tool (`toolchain_directory`),
+    where it is a link (`is_linked_toolchain`) as the directory it leads to,
+    which a link pointed elsewhere later does not change; given `linked`, each
+    such link is added to it."""
     search = os.pathsep.join(os.get_exec_path(environment))
     rustup = shutil.which("rustup", path=search)
     name = named_toolchain(command)
@@ -918,7 +931,12 @@ def toolchain(
             "path": None, "sha256": None,
         }
         directory = toolchain_directory(resolved) if os.path.isabs(resolved) else None
-        if selected is not None and directory is not None:
+        if directory is not None and is_linked_toolchain(directory):
+            if linked is not None and directory not in linked:
+                linked.append(directory)
+            if selected is not None:
+                selected[tool] = os.path.realpath(directory)
+        elif selected is not None and directory is not None:
             selected[tool] = directory
     return found
 
@@ -1312,7 +1330,24 @@ def launch_and_record(
         found = found_program(command, environment)
         executable = named_program(found, stamps)
         selected: dict[str, str] = {}
-        tools = toolchain(environment, command, stamps, selected)
+        linked: list[str] = []
+        tools = toolchain(environment, command, stamps, selected, linked)
+        # A toolchain the command names itself is resolved anew by the proxy
+        # or by `rustup run` when the command starts, whatever
+        # `RUSTUP_TOOLCHAIN` says: a name that is a link could be pointed at
+        # another toolchain since, while every stamp of the one the record
+        # names stays as it was.
+        chosen = named_toolchain(command)
+        if chosen is not None and linked:
+            print(
+                f"ERROR: refusing to run {exp_id}: the command selects toolchain {chosen!r} itself, and rustup would "
+                f"resolve that name again when it starts, from a link ({', '.join(linked)}) that could be pointed at "
+                "another toolchain meanwhile, so the record could not say which one ran; leave the selector out, "
+                "which lets the launch pin the toolchain it resolved by its directory, or select the toolchain by "
+                "the directory it leads to",
+                file=sys.stderr,
+            )
+            return 2
         # rustup's proxies resolve the toolchain anew each time they run, from
         # overrides outside the repository: the one resolved here is the one
         # every proxy the command starts runs (`RUSTUP_TOOLCHAIN`), and the

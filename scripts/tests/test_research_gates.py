@@ -177,6 +177,14 @@ def unarchived(status: str) -> list[str]:
         return []
     return [f"X900: completed experiment missing {name}" for name in ("run.json","metrics.json")]
 
+def superseded_unarchived(completed: str, now: str = "superseded") -> list[str]:
+    """What a fixture that was completed at `completed`, holds no archive and
+    has the status `now` adds to the gate's errors."""
+    at=f"experiment, completed at {completed[:12]} and now '{now}',"
+    return [f"X900: {at} missing {name}" for name in ("run.json","metrics.json")]
+
+ONCE_COMPLETED=re.compile(r"X900: experiment, completed at [0-9a-f]{12} and now '\w+', missing (run|metrics)\.json")
+
 class PreregistrationGateTests(unittest.TestCase):
     """The preregistration gate on fixture trees holding one listed
     experiment, X900, and one baseline."""
@@ -1026,6 +1034,7 @@ class PreregistrationGateTests(unittest.TestCase):
                             f"X900 was frozen at {ran[:12]}, where it was {then!r}; it cannot be {now!r} after that, "
                             "since a status moves only from prepared to running to completed or failed, or to superseded",
                             *unarchived(now),
+                            *(superseded_unarchived(ran,now) if then=="completed" and now!="completed" else []),
                         )
         # Back at planned, the experiment is not gated as frozen, but it has
         # run: its committed records keep it from hiding as never run.
@@ -1068,7 +1077,10 @@ class PreregistrationGateTests(unittest.TestCase):
                 self.edit(root,self.MANIFEST,f'status = "{then}"','status = "superseded"')
                 self.edit(root,"experiments/registry.toml",f'status = "{then}"','status = "superseded"')
                 commit_all(root,"superseded")
-                self.assertEqual(gate(root),(0,[]))
+                # One that was completed keeps the aggregate it was completed
+                # with, which this fixture never had.
+                lost=superseded_unarchived(ran) if then=="completed" else []
+                self.assertEqual(gate(root),(1 if lost else 0,lost))
                 (root/self.RECORD).unlink()
                 rewritten=self.tree(status="superseded",table={**TABLE,"schema":2})
                 for relative in ("experiments/semdb/X900-fixture/config.toml",self.MANIFEST):
@@ -1607,6 +1619,70 @@ class PreregistrationGateTests(unittest.TestCase):
             with self.subTest(status=status):
                 self.assertEqual(gate(self.tree(status=status)),(0,[]))
 
+    def test_an_experiment_that_was_completed_keeps_the_aggregate_it_was_completed_with(self):
+        # A commit that held it completed declared it complete: superseding
+        # it afterwards does not excuse the aggregate, whose absence the gate
+        # asks of a completed one, or the run of every preregistered seed.
+        directory="experiments/semdb/X900-fixture"
+
+        def supersede(root):
+            for relative in (self.MANIFEST,"experiments/registry.toml"):
+                self.edit(root,relative,'status = "completed"','status = "superseded"')
+            return commit_all(root,"superseded")
+
+        root=self.tree(status="completed")
+        completed=commit_all(root)
+        supersede(root)
+        self.assert_blocked(root,*superseded_unarchived(completed))
+        # Kept, with a run of every seed, it passes.
+        root=self.tree(status="completed")
+        ran=commit_all(root)
+        self.seeded(root,ran)
+        write(root,self.AGGREGATE,json.dumps(self.aggregate(root,ran)))
+        write(root,f"{directory}/results/metrics.json","{}")
+        commit_all(root,"archive")
+        self.assertEqual(gate(root),(0,[]))
+        supersede(root)
+        self.assertEqual(gate(root),(0,[]))
+        # Deleted afterwards, the archive is missing again.
+        (root/self.AGGREGATE).unlink()
+        (root/directory/"results/metrics.json").unlink()
+        code,lines=gate(root)
+        self.assertEqual(code,1)
+        for name in ("run.json","metrics.json"):
+            self.assertIn(f"X900: experiment, completed at {ran[:12]} and now 'superseded', missing {name}",lines)
+        # An experiment that was never completed needs none, whatever it was
+        # before it was superseded.
+        for then in ("prepared","running","failed"):
+            with self.subTest(then=then):
+                root=self.tree(status=then)
+                commit_all(root)
+                for relative in (self.MANIFEST,"experiments/registry.toml"):
+                    self.edit(root,relative,f'status = "{then}"','status = "superseded"')
+                commit_all(root,"superseded")
+                self.assertEqual(gate(root),(0,[]))
+        # A results directory that is no repository path is named as that by
+        # its own check, and no artifact is looked for beyond the repository
+        # (a status that went back from completed is named too).
+        root=self.tree(status="completed")
+        self.edit(root,self.MANIFEST,"required_artifacts = []",'required_artifacts = []\nresults_dir = "../elsewhere"')
+        commit_all(root)
+        for relative in (self.MANIFEST,"experiments/registry.toml"):
+            self.edit(root,relative,'status = "completed"','status = "running"')
+        commit_all(root,"back to running")
+        code,lines=gate(root)
+        self.assertEqual(code,1)
+        self.assertTrue(any("results_dir '../elsewhere' is not a directory below the experiment's directory" in line for line in lines),lines)
+        self.assertFalse(any(" missing " in line for line in lines),lines)
+        # The commit that completed it is the one the error names.
+        root=self.tree(status="running")
+        commit_all(root)
+        for relative in (self.MANIFEST,"experiments/registry.toml"):
+            self.edit(root,relative,'status = "running"','status = "completed"')
+        first=commit_all(root,"completed")
+        supersede(root)
+        self.assert_blocked(root,*superseded_unarchived(first))
+
     def test_an_artifact_of_a_completed_experiment_is_a_file_no_symlink_stands_for(self):
         # A link reads the content of another file, which no commit holds at
         # the artifact's own path.
@@ -2098,7 +2174,7 @@ class PreregistrationGateTests(unittest.TestCase):
         code,lines=gate(root)
         found=[]
         for line in lines:
-            if line in unarchived("completed"):
+            if line in unarchived("completed") or ONCE_COMPLETED.fullmatch(line):
                 continue
             named=re.fullmatch(
                 r"X900 was '(\w+)' at ([0-9a-f]{12}) and is '(\w+)' at ([0-9a-f]{12}), a commit after it; .*",line,
@@ -3354,6 +3430,100 @@ class PreregistrationGateTests(unittest.TestCase):
         self.assert_blocked(root,*nul)
         commit=commit_all(root)
         self.assertIsNone(mod.launchable_at(root,commit,"X900","experiments/semdb/X900-fixture"))
+
+    def test_a_commit_that_changes_only_cargo_metadata_can_be_the_freeze(self):
+        # The launch check reads the repository's Cargo configuration and
+        # every Cargo.toml, so a commit that repairs one of them can be the
+        # first the runner could launch the experiment at, whatever else it
+        # holds: a run made there, seen and discarded, must not go unseen
+        # when the preregistration is rewritten after it.
+        directory="experiments/semdb/X900-fixture"
+        def outside(name):
+            """A manifest at `name` naming a path above the repository's root."""
+            climb="../"*len(name.split("/"))
+            return f'[package]\nname = "x"\n[dependencies]\nexternal = {{ path = "{climb}external" }}\n'
+
+        inside='[package]\nname = "x"\n[dependencies]\n'
+        wrapper='[build]\nrustc-wrapper = "/usr/bin/sccache"\n'
+        allowed='[alias]\nok = "run --release"\n'
+        for name,blocked,repaired in (
+            (".cargo/config.toml",wrapper,allowed),
+            (".cargo/config",wrapper,allowed),
+            ("Cargo.toml",None,inside),
+            ("crates/inner/Cargo.toml",None,inside),
+            ("crates/deep/er/Cargo.toml",None,inside),
+        ):
+            with self.subTest(name=name):
+                root=self.tree(status="running")
+                self.edit(root,self.MANIFEST,'entrypoint = "bench <seed>"\n','entrypoint = "cargo run -- <seed>"\n')
+                write(root,name,outside(name) if blocked is None else blocked)
+                first=commit_all(root)
+                self.assertIsNone(mod.launchable_at(root,first,"X900",directory))
+                self.assertEqual([commit for commit,held in mod.launch_listing(root,"X900",[directory]) if held is not None],[])
+                write(root,name,repaired)
+                freeze=commit_all(root,"cargo metadata repaired")
+                self.assertIsNotNone(mod.launchable_at(root,freeze,"X900",directory))
+                # The commit changes no file of the experiment, the list or
+                # the registry, and is still listed as the freeze.
+                self.assertEqual(git(root,"show","--format=","--name-only",freeze).split(),[name])
+                self.assertEqual(
+                    [commit for commit,held in mod.launch_listing(root,"X900",[directory]) if held is not None],[freeze])
+                self.assertEqual(gate(root),(0,[]))
+                # The preregistration rewritten afterwards is a rewrite of what
+                # the runner could have launched at the freeze.
+                rewritten=self.tree(status="running",table={**TABLE,"schema":2})
+                for relative in (f"{directory}/config.toml",self.MANIFEST):
+                    shutil.copyfile(rewritten/relative,root/relative)
+                self.edit(root,self.MANIFEST,'entrypoint = "bench <seed>"\n','entrypoint = "cargo run -- <seed>"\n')
+                commit_all(root,"rewrite")
+                code,lines=gate(root)
+                self.assertEqual(code,1)
+                for line in (
+                    f"X900 was frozen at {freeze[:12]}, whose config.toml holds another [preregistration] than the frozen one",
+                    f"X900 was frozen at {freeze[:12]}, whose experiment.toml names other preregistration digests than the frozen ones",
+                ):
+                    self.assertIn(line,lines)
+        # A repair of a file no Cargo reads is not one that freezes: only
+        # the names the check reads are listed.
+        root=self.tree(status="running")
+        self.edit(root,self.MANIFEST,'entrypoint = "bench <seed>"\n','entrypoint = "cargo run -- <seed>"\n')
+        write(root,".cargo/config.toml",wrapper)
+        commit_all(root)
+        write(root,"notes/Cargo.toml.txt","x\n")
+        write(root,".cargo/other.toml","x\n")
+        commit_all(root,"unrelated")
+        self.assertEqual([commit for commit,held in mod.launch_listing(root,"X900",[directory]) if held is not None],[])
+
+    def test_a_history_names_its_paths_literally_unless_it_asks_for_magic(self):
+        # A path is a path, whatever characters it holds, so the commits of
+        # `notes/a[1].txt` are not those of `notes/a1.txt`; only a caller that
+        # names magic gets it.
+        root=self.tree(status="running")
+        write(root,"notes/a1.txt","one\n")
+        first=commit_all(root)
+        write(root,"notes/a[1].txt","bracket\n")
+        second=commit_all(root,"bracket")
+        write(root,"notes/b.txt","b\n")
+        third=commit_all(root,"other")
+        self.assertEqual(mod.history(root,"--format=%H","HEAD","--","notes/a[1].txt"),[second])
+        self.assertEqual(mod.history(root,"--format=%H","HEAD","--","notes/a[1].txt",literal=True),[second])
+        self.assertEqual(mod.history(root,"--format=%H","HEAD","--","notes/a[1].txt",literal=False),[second,first])
+        self.assertEqual(mod.history(root,"--format=%H","HEAD","--",":(glob)notes/*.txt",literal=False),[third,second,first])
+        self.assertEqual(mod.history(root,"--format=%H","HEAD","--",":(literal)notes/a[1].txt",literal=False),[second])
+        self.assertEqual(mod.history(root,"--format=%H","HEAD","--",":(glob)notes/*.txt"),[])
+
+    def test_the_launch_listing_names_the_experiments_directory_literally(self):
+        # A registry path with a wildcard in it is that name, which no commit
+        # holds, and not the file or directory it would match.
+        root=self.tree(status="running")
+        first=commit_all(root)
+        write(root,"experiments/semdb/X900-fixture/results/notes.txt","x\n")
+        commit_all(root,"a file of the directory")
+        for named in ("experiments/semdb/X900-fixture/results/n?tes.txt","experiments/semdb/X9?0-fixture/results",
+                      "experiments/semdb/X900-fixture/results/n[o]tes.txt"):
+            with self.subTest(named=named):
+                self.assertEqual([commit for commit,_ in mod.launch_listing(root,"X900",[named])],[first])
+        self.assertEqual(len(mod.launch_listing(root,"X900",["experiments/semdb/X900-fixture"])),2)
 
     def test_a_listed_runs_cargo_configuration_names_no_program_source_or_flags(self):
         # Cargo runs the compiler, wrapper, linker or runner its configuration

@@ -2518,6 +2518,101 @@ class RunWatchTests(unittest.TestCase):
         self.assertEqual((status, stderr), (0, ""))
         self.assertNotIn("RUSTUP_TOOLCHAIN", records[0]["environment"])
 
+    def test_a_linked_toolchain_is_pinned_by_the_directory_it_leads_to(self):
+        # rustup keeps a toolchain it was told to link as a link, which can
+        # be pointed at another toolchain without changing a file of the one
+        # it led to: the launch pins the directory, not the name of the link,
+        # and refuses a command that selects the toolchain by that name
+        # itself, which `RUSTUP_TOOLCHAIN` does not override.
+        tools = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        for name in ("first", "second"):
+            (tools / "toolchains" / name / "bin").mkdir(parents=True)
+            for tool in ("rustc", "cargo"):
+                (tools / "toolchains" / name / "bin" / tool).write_text(f"#!/bin/sh\necho {name} {tool}\n", encoding="utf-8")
+                (tools / "toolchains" / name / "bin" / tool).chmod(0o755)
+        try:
+            (tools / "toolchains" / "pick").symlink_to(tools / "toolchains" / "first", target_is_directory=True)
+        except (OSError, NotImplementedError) as error:
+            self.skipTest(f"cannot create a symlink: {error}")
+        bin_directory = tools / "bin"
+        bin_directory.mkdir()
+        rustup = bin_directory / "rustup"
+        rustup.write_text(
+            '#!/bin/sh\n[ "$1" = which ] || exit 1\nshift\nname="${FAKE_TOOLCHAIN:-second}"\n'
+            'if [ "$1" = --toolchain ]; then name="$2"; shift 2; fi\n'
+            f'path="{tools}/toolchains/$name/bin/$1"\n[ -e "$path" ] && echo "$path" && exit 0\nexit 1\n',
+            encoding="utf-8",
+        )
+        rustup.chmod(0o755)
+        for tool in ("rustc", "cargo"):
+            (bin_directory / tool).symlink_to("rustup")
+        first = str((tools / "toolchains" / "first").resolve())
+        second = str(tools / "toolchains" / "second")
+        link = str(tools / "toolchains" / "pick")
+        with mock.patch.object(mod, "ROOT", self.root):
+            # The link resolved from the root, or named by the command, is
+            # pinned as the directory it leads to now.
+            for command, environment in (
+                (["cargo", "run"], {"PATH": str(bin_directory), "FAKE_TOOLCHAIN": "pick"}),
+                (["cargo", "+pick", "run"], {"PATH": str(bin_directory)}),
+                (["rustup", "run", "pick", "cargo", "run"], {"PATH": str(bin_directory)}),
+            ):
+                with self.subTest(command=command):
+                    selected, linked = {}, []
+                    mod.toolchain(environment, command, None, selected, linked)
+                    self.assertEqual(selected, {"rustc": first, "cargo": first})
+                    self.assertEqual(linked, [link])
+            # A toolchain rustup installed is no link: its directory is its name.
+            selected, linked = {}, []
+            mod.toolchain({"PATH": str(bin_directory)}, ["cargo", "+second", "run"], None, selected, linked)
+            self.assertEqual((selected, linked), ({"rustc": second, "cargo": second}, []))
+            self.assertFalse(mod.is_linked_toolchain(second))
+            self.assertTrue(mod.is_linked_toolchain(link))
+            self.assertFalse(mod.is_linked_toolchain(str(tools / "toolchains" / "absent")))
+            # Given no `linked`, the tools are named as before.
+            selected = {}
+            mod.toolchain({"PATH": str(bin_directory), "FAKE_TOOLCHAIN": "pick"}, ["cargo", "run"], None, selected)
+            self.assertEqual(selected, {"rustc": first, "cargo": first})
+
+        # A listed run refuses a command that selects a toolchain by the name
+        # of a link, before it reserves anything, and runs one that does not.
+        self.preregister("running")
+        unresolved = {"rustc": {"path": None, "sha256": None}, "cargo": {"path": None, "sha256": None}}
+
+        def resolved(*arguments):
+            arguments[4].append(link)
+            arguments[3].update({"rustc": first, "cargo": first})
+            return unresolved
+
+        with mock.patch.object(mod, "toolchain", side_effect=resolved):
+            with mock.patch.object(mod, "named_toolchain", return_value="pick"):
+                status, records, stderr = self.run_seed()
+            self.assertEqual((status, records), (2, []))
+            self.assertIn(
+                f"refusing to run L900: the command selects toolchain 'pick' itself, and rustup would resolve that "
+                f"name again when it starts, from a link ({link}) that could be pointed at another toolchain "
+                "meanwhile",
+                stderr,
+            )
+            self.assertEqual(list(self.attempts().glob("run-*.json")), [])
+            with mock.patch.object(mod, "named_toolchain", return_value=None):
+                status, records, stderr = self.run_seed()
+            self.assertEqual((status, stderr), (0, ""))
+            self.assertEqual(records[0]["environment"]["RUSTUP_TOOLCHAIN"], first)
+        # One that selects an installed toolchain, which is no link, runs.
+        for record in (*self.results.glob("run-*.json"), *self.attempts().glob("run-*.json")):
+            record.unlink()
+
+        def installed(*arguments):
+            arguments[3].update({"rustc": second, "cargo": second})
+            return unresolved
+
+        with mock.patch.object(mod, "toolchain", side_effect=installed):
+            with mock.patch.object(mod, "named_toolchain", return_value="second"):
+                status, records, stderr = self.run_seed()
+        self.assertEqual((status, stderr), (0, ""))
+        self.assertEqual(records[0]["environment"]["RUSTUP_TOOLCHAIN"], second)
+
     def test_a_listed_experiment_reads_no_output_the_tools_left_uncommitted(self):
         # An output could be an input: what a listed experiment's command
         # could read in its results is held to HEAD like any other file, all

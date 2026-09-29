@@ -1066,14 +1066,16 @@ def has_head(root: Path) -> bool:
     except experiment_records.ProvenanceError:
         return False
 
-def history(root: Path, *args: str) -> list[str]:
+def history(root: Path, *args: str, literal: bool = True) -> list[str]:
     """The NUL- or newline-separated names `git log --full-history *args`
     prints in `root`, side branches merged into HEAD included; empty where
-    HEAD has no commit yet. Raises `HistoryUnreadable` when git cannot read
-    it otherwise: a history read as empty would hide every freeze and record
-    in it."""
+    HEAD has no commit yet. Every pathspec is a literal path unless `literal`
+    is false, when each carries the magic it names (`:(literal)`, `:(glob)`).
+    Raises `HistoryUnreadable` when git cannot read it otherwise: a history
+    read as empty would hide every freeze and record in it."""
     try:
-        listing=experiment_records.git(root,"--literal-pathspecs","log","--full-history",*args,binary=True)
+        flags=("--literal-pathspecs",) if literal else ()
+        listing=experiment_records.git(root,*flags,"log","--full-history",*args,binary=True)
     except experiment_records.ProvenanceError as error:
         raise HistoryUnreadable(str(error)) from error
     if listing.returncode!=0:
@@ -1330,13 +1332,22 @@ def typed(value):
         return [type(value).__name__,value.isoformat()]
     return [type(value).__name__,value]
 
+# The Cargo metadata `command_errors` reads at a commit (`cargo_configuration_errors`
+# at the root, `cargo_manifest_errors` in every directory): a commit that changes
+# one can be the first the runner could launch an experiment at, whatever else it
+# holds.
+CARGO_METADATA_PATHS=tuple(f".cargo/{name}" for name in CARGO_CONFIGURATION_NAMES)
+CARGO_METADATA_GLOBS=("**/Cargo.toml",)
+
 def launch_paths(root: Path, exp_id: str, directories: list[str]) -> set[str]:
     """Every repository path whose content can decide whether `exp_id` may
     launch at a commit on HEAD's history: its `directories`, the list, the
     registry, the directory of every baseline any version of its entry has
-    named, and every file any version of its table has named under a key
-    of type `file`."""
-    paths=set(directories)|{PREREGISTRATION,REGISTRY}
+    named, every file any version of its table has named under a key of type
+    `file`, and the Cargo configuration at the root (`CARGO_METADATA_PATHS`).
+    So can any `Cargo.toml` (`CARGO_METADATA_GLOBS`), which is no path known
+    beforehand and is named to git as a glob (`launch_listing`)."""
+    paths=set(directories)|{PREREGISTRATION,REGISTRY,*CARGO_METADATA_PATHS}
     file_keys=set()
     for _,listed in versions(root,PREREGISTRATION):
         entries=listed.get("experiment")
@@ -1364,13 +1375,16 @@ def launch_listing(root: Path, exp_id: str, directories: list[str]) -> list[tupl
     """Every commit on HEAD's history that changes a path that can decide
     whether the experiment may launch (`launch_paths`: its manifest and
     configuration in any of `directories`, the list, the registry, its
-    baselines and its files), newest first, with what it holds there
+    baselines and its files, and the Cargo metadata the command check reads,
+    `CARGO_METADATA_GLOBS` too), newest first, with what it holds there
     (`launchable_at`, in the first of `directories` that holds it frozen) or
     None where it does not hold it frozen as the runner launches it. A merge
     is listed where it differs from any one of its parents, so the state of
     the experiment on any line of history changes only at a listed commit."""
     listing=[]
-    for commit in history(root,"--format=%H","HEAD","--",*sorted(launch_paths(root,exp_id,directories))):
+    specs=[f":(literal){path}" for path in sorted(launch_paths(root,exp_id,directories))]
+    specs+=[f":(glob){pattern}" for pattern in CARGO_METADATA_GLOBS]
+    for commit in history(root,"--format=%H","HEAD","--",*specs,literal=False):
         held=None
         for directory in directories:
             held=launchable_at(root,commit,exp_id,directory)
@@ -1670,6 +1684,17 @@ def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path,
             held=path.relative_to(root).as_posix()
             if is_aggregate(held) or is_run_record(held):
                 records.add(held)
+    # A commit that held the experiment completed declared it complete: what
+    # it was completed with, the aggregate that binds a finished run of each
+    # preregistered seed, stays after it is superseded, whatever its manifest
+    # lists (a completed one is asked for by `gate_errors`).
+    if status_of(manifest)!="completed" and isinstance(results_dir,str) and is_repository_path(results_dir):
+        completed=[commit for directory in directories
+                   for commit,held in versions(root,f"{directory}/experiment.toml") if status_of(held)=="completed"]
+        if completed:
+            errors.extend(artifact_errors(
+                exp_id,root,experiment/results_dir,STANDARD_ARTIFACTS,
+                f"experiment, completed at {completed[0][:12]} and now {status_of(manifest)!r},"))
     runs={}
     programs={}
     trees=[]
@@ -2197,6 +2222,20 @@ def reached_through_symlink(root: Path, path: Path) -> bool:
         return True
     return any(root.joinpath(*parts[:depth]).is_symlink() for depth in range(1,len(parts)+1))
 
+def artifact_errors(exp_id: str, root: Path, results: Path, required, what: str) -> list[str]:
+    """Why an artifact of `required` is not there in `results`, the results
+    directory of the experiment `what` describes ("completed experiment"), or
+    is not the file a commit holds at its own path: a link reads another
+    file's content, which no commit holds there."""
+    errors=[]
+    for artifact in required:
+        if not (results/artifact).exists():
+            errors.append(f"{exp_id}: {what} missing {artifact}")
+        elif reached_through_symlink(root,results/artifact):
+            errors.append(f"{exp_id}: {what} {artifact} is a symlink or lies below one; an artifact is the file a "
+                          "commit holds at its own path")
+    return errors
+
 def gate_errors(root: Path) -> list[str]:
     """Every error of every gate on the repository at `root` (`main`),
     raising `Unreadable` for a file it cannot read outside the listed
@@ -2229,14 +2268,7 @@ def gate_errors(root: Path) -> list[str]:
                 # (`archived_errors`); that it is there does not rest on the
                 # list its manifest names, which is written by its author.
                 required=[*required,*(name for name in STANDARD_ARTIFACTS if name not in required)]
-            for artifact in required:
-                if not (results/artifact).exists():
-                    errors.append(f'{item["id"]}: completed experiment missing {artifact}')
-                elif reached_through_symlink(root,results/artifact):
-                    # A link reads another file's content, which no commit
-                    # holds at this path.
-                    errors.append(f'{item["id"]}: completed experiment {artifact} is a symlink or lies below one; an artifact '
-                                  "is the file a commit holds at its own path")
+            errors.extend(artifact_errors(item["id"],root,results,required,"completed experiment"))
             # A listed experiment's command may run or read any file of the
             # repository: its results are stale once any of them changes.
             errors.extend(experiment_records.staleness_errors(item["id"],experiment,results,root,item["id"] in listed))
