@@ -158,6 +158,19 @@ class ExperimentRunnerTests(unittest.TestCase):
         self.assertIsNone(result["launch_error"])
         self.assertGreaterEqual(result["duration_ns"], 0)
 
+    def test_output_no_encoding_reads_is_captured_and_leaves_no_seed_reserved(self):
+        # A byte the encoding does not read is the command's output, not an
+        # error of the runner: raised after the command ran, it would leave
+        # the reservation the only record of a seed that saw its outcome.
+        script = "import sys; sys.stdout.buffer.write(b'a\\xffb\\n'); sys.stderr.buffer.write(b'\\xfe\\xfdok')"
+        result = mod.execute_command([sys.executable, "-c", script])
+        self.assertEqual((result["exit_code"], result["launch_error"]), (0, None))
+        self.assertEqual(result["stdout"], "a\\xffb\n")
+        self.assertEqual(result["stderr"], "\\xfe\\xfdok")
+        # Text it can read is read as it is, whatever the runner's locale.
+        result = mod.execute_command([sys.executable, "-c", "import sys; sys.stdout.buffer.write('\u00e9\\n'.encode('utf-8'))"])
+        self.assertEqual(result["stdout"], "\u00e9\n")
+
     def test_python_in_the_command_reads_no_bytecode_cache_the_tree_holds(self):
         # A __pycache__ entry, which git ignores and HEAD does not hold, could
         # run in place of a tracked source: the command's Python keeps its
@@ -685,8 +698,8 @@ class RunWatchTests(unittest.TestCase):
         # Nor a name Windows trims to a step: `.. ` and `...` would climb out
         # of the experiment's directory there, and `. ` stay in it as another
         # spelling of it.
-        stepping = ("passes through a name Windows reads as a step (a dot or two with trailing dots or spaces), "
-                    "which could climb out of the experiment's directory")
+        stepping = ("passes through a name Windows spells otherwise (trailing dots and spaces are trimmed, and a dot or two "
+                    "with them is a step), which could climb out of the experiment's directory or name another directory")
         for results_dir, refusal in (
             (".", "is not a directory below experiments/x/L900-x"),
             ("../elsewhere", "is not a directory below experiments/x/L900-x"),
@@ -697,6 +710,13 @@ class RunWatchTests(unittest.TestCase):
             ("results/. /x", stepping),
             ("results/..:stream", stepping),
             ("results/ ", stepping),
+            # And a name Windows trims to another: `archive.` is `archive`
+            # there, and the record the history holds is under the first.
+            ("results/archive.", stepping),
+            ("a../results", stepping),
+            ("results/.a.", stepping),
+            ("archive./x", stepping),
+            ("results/archive ", stepping),
             # Windows reads a backslash as a step and a drive letter with a
             # colon as another drive, and no path holds a NUL.
             ("..\\elsewhere", "is not a directory below experiments/x/L900-x"),
@@ -712,11 +732,11 @@ class RunWatchTests(unittest.TestCase):
                 status, _, stderr = self.run_seed(lambda: ran.append(True))
                 self.assertEqual((status, ran), (2, []))
                 self.assertIn(f"results_dir {results_dir!r} {refusal}", stderr)
-        # A name that merely starts or ends with dots, or holds a space, is a
+        # A name that merely starts with dots, or holds a space inside, is a
         # name of its own on every platform, and is no step.
         experiment = self.root / "experiments/x/L900-x"
         with mock.patch.object(mod, "ROOT", self.root):
-            for accepted in ("..x/results", "...x", "a../results", ".hidden/results", "a b", "results/.a.", "results/C:x", "ab:c/results"):
+            for accepted in ("..x/results", "...x", ".hidden/results", "a b", "results/C:x", "ab:c/results"):
                 with self.subTest(accepted=accepted):
                     self.assertEqual(mod.results_directory(experiment, {"results_dir": accepted}), experiment / accepted)
         # A file on the way would leave no directory to write the record

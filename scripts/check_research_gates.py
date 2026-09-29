@@ -699,13 +699,16 @@ def names_a_drive(path: str) -> bool:
     return re.match(r"[A-Za-z]:",path) is not None
 
 def is_windows_dot_name(part: str) -> bool:
-    """Whether the path component `part` is a name Windows reads as a step it
-    is not written as: `.` or `..` with trailing dots or spaces (`. `, `.. `),
-    a name of dots and spaces only (`...`), or one of them with an NTFS
-    stream (`..:x`), all of which Windows trims to `.`, `..` or nothing. The
-    exact `.` and `..` and the empty name are not: every platform reads them
-    as the steps they are."""
-    return part not in ("",".","..") and not part.split(":",1)[0].rstrip(". ")
+    """Whether the path component `part` is spelled otherwise on Windows than
+    it is written: with trailing dots or spaces before any NTFS stream, which
+    Windows trims (`archive.` is `archive`; `. `, `.. ` and `...` are `.`,
+    `..` and nothing, steps or no name at all), or with nothing before the
+    stream (`:x`). What the runner writes there is under a spelling the
+    history does not hold, and a step climbs out of the repository. The exact
+    `.` and `..` and the empty name are not: every platform reads them as the
+    steps they are."""
+    stem=part.split(":",1)[0]
+    return part not in ("",".","..") and (not stem or stem!=stem.rstrip(". "))
 
 def is_repository_path(value) -> bool:
     """A relative path of printable ASCII that names no parent, so it stays
@@ -719,9 +722,9 @@ def is_repository_path(value) -> bool:
     an argument. No part of it is git's own directory
     (`is_git_administration`): git refuses to add a path through it and
     reports no file there as tracked or untracked, so a file frozen there
-    would be one no commit made by `git add` holds. Nor is a part one Windows
-    reads as a step it is not written as (`is_windows_dot_name`: `.. `,
-    `...`), which would climb out of the repository or name another entry.
+    would be one no commit made by `git add` holds. Nor is a part Windows
+    spells otherwise (`is_windows_dot_name`: `.. `, `...`, `archive.`), which
+    would climb out of the repository or name another entry.
     Nor does it begin with a drive letter and a colon (`C:x`, `C:/x`), which
     Windows reads as a path on that drive, outside the repository."""
     if not isinstance(value,str) or not value or len(value)>MAX_PATH or not experiment_records.is_printable_ascii(value):

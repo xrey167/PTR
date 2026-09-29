@@ -4016,6 +4016,10 @@ class PreregistrationGateTests(unittest.TestCase):
                 ("cargo run --manifest-path 'crates/..:stream/Cargo.toml' -- <seed>","--manifest-path",
                  "crates/..:stream/Cargo.toml"),
                 ("cargo run --manifest-path 'crates/ /Cargo.toml' -- <seed>","--manifest-path","crates/ /Cargo.toml"),
+                # A name Windows trims to another (`crates.` is `crates`), so
+                # the path leaves the tree the watch reads.
+                ("cargo run --manifest-path 'crates./Cargo.toml' -- <seed>","--manifest-path","crates./Cargo.toml"),
+                ("cargo run --manifest-path crates/a../Cargo.toml -- <seed>","--manifest-path","crates/a../Cargo.toml"),
                 # rustup takes the options of `run` on either side of the
                 # toolchain, and runs Cargo all the same.
                 ("rustup run stable --install cargo run --manifest-path /tmp/external/Cargo.toml -- <seed>","--manifest-path",
@@ -4091,7 +4095,6 @@ class PreregistrationGateTests(unittest.TestCase):
                            "cargo run --manifest-path crates/...x/Cargo.toml -- <seed>",
                            "cargo run --manifest-path crates/a.b/../Cargo.toml -- <seed>",
                            "cargo run --manifest-path crates/.hidden/Cargo.toml -- <seed>",
-                           "cargo run --manifest-path crates/a../Cargo.toml -- <seed>",
                            "cargo +nightly run -Zunstable-options -- /tmp <seed>",
                            "cargo build --target x86_64-unknown-linux-gnu --target=targets/custom.json -- <seed>",
                            "cargo run -- --config c.toml <seed>","python3 bench.py --config c.toml <seed>",
@@ -4609,9 +4612,15 @@ class PreregistrationGateTests(unittest.TestCase):
         # A name with anything else in it is a name of its own on every
         # platform, and a colon after the first component is a stream's name
         # inside the directory it names, one of the files in the repository.
-        for accepted in ("...x/y","a../b",".a./b","a b/c","..x/y","a/.x./b",".hidden/y","a.b/c","a/x ../y","x/C:y","ab:c/d","1:x/y"):
+        for accepted in ("...x/y","a b/c","..x/y",".hidden/y","a.b/c","x/C:y","ab:c/d","1:x/y"):
             with self.subTest(accepted=accepted):
                 self.assertTrue(mod.is_repository_path(accepted))
+        # A name with trailing dots or spaces is another name on Windows
+        # (`archive.` is `archive`), so the history would hold what the
+        # runner wrote under a spelling this path does not have.
+        for trimmed in ("a../b",".a./b","a/.x./b","a/x ../y","archive.","results/archive ","x./y"):
+            with self.subTest(trimmed=trimmed):
+                self.assertFalse(mod.is_repository_path(trimmed))
         # The gate's two predicates and the runner's read the same names as a
         # drive, so none of them can accept what another refuses.
         for drive in ("C:x","C:/x","c:/x","z:","Z:y/z","C:..","a:b","C:\\x"):
@@ -4624,9 +4633,13 @@ class PreregistrationGateTests(unittest.TestCase):
         for stepping in (".. ","...","."," ",". ",".. ..","..:x",":x"):
             with self.subTest(stepping=stepping):
                 self.assertEqual(mod.is_windows_dot_name(stepping),stepping not in (".",".."))
-        for name in ("","..","a..","...x",".a.","a b","..x",".git"):
+        for name in ("","..","...x","a b","..x",".git","a.b","a:b"):
             with self.subTest(name=name):
                 self.assertFalse(mod.is_windows_dot_name(name))
+        # Trailing dots or spaces, before any stream, change the spelling.
+        for name in ("a..",".a.","archive.","archive ","a. :x","x.:y"):
+            with self.subTest(name=name):
+                self.assertTrue(mod.is_windows_dot_name(name))
 
     def test_a_history_git_cannot_read_fails_the_gate_rather_than_reading_as_empty(self):
         # Read as empty, a history would hide every freeze and record in it.

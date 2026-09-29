@@ -369,8 +369,9 @@ def results_directory(root: Path, data: dict) -> Path | None:
         return None
     if any(check_research_gates.is_windows_dot_name(part) for part in relative.parts):
         print(
-            f"ERROR: results_dir {named!r} passes through a name Windows reads as a step (a dot or two with trailing "
-            "dots or spaces), which could climb out of the experiment's directory",
+            f"ERROR: results_dir {named!r} passes through a name Windows spells otherwise (trailing dots and spaces are "
+            "trimmed, and a dot or two with them is a step), which could climb out of the experiment's directory or "
+            "name another directory",
             file=sys.stderr,
         )
         return None
@@ -1117,7 +1118,13 @@ def execute_command(
                 command,
                 executable=program,
                 cwd=ROOT,
-                text=True,
+                # The output is read as UTF-8 whatever the runner's locale,
+                # and a byte that is not text is written as its escape
+                # (`\xff`): the command has run, and strict decoding would
+                # raise after it and leave the reservation the only record of
+                # a seed that saw its outcome.
+                encoding="utf-8",
+                errors="backslashreplace",
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 env={
