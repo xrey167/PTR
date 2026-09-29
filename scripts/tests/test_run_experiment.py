@@ -1183,7 +1183,13 @@ class RunWatchTests(unittest.TestCase):
                 status, records, stderr = self.run_seed()
                 self.assertEqual(status, 2)
                 self.assertNotIn("put back", stderr)
-                self.assertIn("seed 17 of L900 already ran", stderr)
+                # A record rewritten to another seed than the preregistered
+                # ones is refused as that, before the seed's record is asked.
+                self.assertIn(
+                    "ran seed 29, which is not one of the preregistered seeds" if "seed" in rewritten
+                    else "seed 17 of L900 already ran",
+                    stderr,
+                )
 
         # A runner stopped between writing the whole record to the copy and
         # to the results leaves the whole record in the copy.

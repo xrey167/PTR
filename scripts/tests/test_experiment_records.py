@@ -1250,7 +1250,7 @@ class ProvenanceWatchTests(GitTree, unittest.TestCase):
         their modification times are set long ago, so that a rename in one
         moves them whatever the clock's resolution."""
         watch = watch or self.watch
-        for directory in mod.directories_above(watch.stamps):
+        for directory in mod.directories_above([*watch.stamps, *watch.reserved]):
             os.utime(self.root / directory, ns=(10**18, 10**18))
         watch.stamp_directories()
         return watch
@@ -1337,6 +1337,26 @@ class ProvenanceWatchTests(GitTree, unittest.TestCase):
         self.assertEqual(
             self.watch.changes(), [f"{name}, src/lib.rs changed on disk", "HEAD does not hold src/lib.rs"]
         )
+
+    def test_a_directory_holding_only_a_reserved_file_is_stamped_too(self):
+        # The first seed of a listed experiment can create its results
+        # directory, where no other watched file lies: the reservation is
+        # left out of the watch's own stamps, and its directory is not one
+        # the stamps of the files name.
+        name = "fresh/results/run-1-seed-1.json"
+        self.write(name, "{}\n")
+        self.watch.stamp_reserved([name])
+        self.stamp_directories()
+        self.assertLessEqual({".", "fresh", "fresh/results"}, set(self.watch.directories))
+        self.assertEqual(self.watch.changes(), [])
+        # A file added beside it and removed again is a change to it.
+        self.write("fresh/results/scratch.txt")
+        (self.root / "fresh/results/scratch.txt").unlink()
+        self.assertEqual(self.watch.changes(), [f"fresh/results {self.DIRECTORY_CHANGE}"])
+        # So is the directory renamed aside and put back.
+        self.stamp_directories()
+        self.move_aside_and_back("fresh/results")
+        self.assertEqual(self.watch.changes(), [f"fresh, fresh/results {self.DIRECTORY_CHANGE}"])
 
     def test_a_directory_put_back_is_no_change_before_the_directories_are_stamped(self):
         self.move_aside_and_back("src")

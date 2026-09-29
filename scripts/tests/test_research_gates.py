@@ -1017,6 +1017,7 @@ class PreregistrationGateTests(unittest.TestCase):
         # Superseded, another experiment replaced it: it is not launched, and
         # it stays as it ran.
         self.edit(root,self.MANIFEST,'status = "planned"','status = "superseded"')
+        self.edit(root,"experiments/registry.toml",'status = "running"','status = "superseded"')
         self.assertEqual(gate(root),(0,[]))
         self.assertEqual(mod.launch_errors(root,"X900"),[
             "X900 preregisters (experiments/preregistration.toml) and is 'superseded': it runs only once its "
@@ -1026,8 +1027,10 @@ class PreregistrationGateTests(unittest.TestCase):
         # did not come from the runner, which refuses to launch it there.
         root=self.tree(status="running")
         self.edit(root,self.MANIFEST,'status = "running"','status = "planned"')
+        self.edit(root,"experiments/registry.toml",'status = "running"','status = "planned"')
         early=commit_all(root)
         self.edit(root,self.MANIFEST,'status = "planned"','status = "running"')
+        self.edit(root,"experiments/registry.toml",'status = "planned"','status = "running"')
         commit_all(root,"prepared")
         write(root,self.RECORD,json.dumps(self.record(root,early)))
         self.assert_blocked(root,f"X900: {name} ran at {early[:12]}, where it was 'planned'; a listed experiment runs only once it is prepared")
@@ -1384,6 +1387,94 @@ class PreregistrationGateTests(unittest.TestCase):
         self.assertTrue(any("seed 17 ran more than once" in line for line in lines),lines)
         self.assertFalse(any("names seed_records[17]" in line for line in lines),lines)
         self.assertTrue(any(line.startswith("X900: results/run.json names seed_records[29] ") for line in lines),lines)
+
+    def test_a_run_record_of_a_seed_outside_the_preregistration_is_refused(self):
+        # A seed added once an outcome is seen could count towards what is
+        # reported: only the seeds the table froze may have run.
+        root=self.tree(status="running")
+        ran=commit_all(root)
+        runs=self.seeded(root,ran)
+        results="experiments/semdb/X900-fixture/results"
+        outside=f"results/run-20260301T000000.000000Z-seed-31.json"
+
+        def refused(shown,seed):
+            return (f"X900: {shown} ran seed {seed}, which is not one of the preregistered seeds; a listed "
+                    "experiment runs only those it froze")
+
+        self.assertEqual(gate(root),(0,[]))
+        write(root,f"experiments/semdb/X900-fixture/{outside}",json.dumps(self.record(root,ran,seed=31,status="completed")))
+        self.assert_blocked(root,refused(outside,31))
+        # A status that saw an outcome is enough, whatever it names.
+        for status in ("failed","completed","started","unknown"):
+            with self.subTest(status=status):
+                write(root,f"experiments/semdb/X900-fixture/{outside}",json.dumps(self.record(root,ran,seed=31,status=status)))
+                self.assert_blocked(root,refused(outside,31))
+        # A command that failed to launch saw no outcome, and a prepared
+        # record names no seed.
+        write(root,f"experiments/semdb/X900-fixture/{outside}",json.dumps(self.record(root,ran,seed=31,status="failed-to-launch")))
+        self.assertEqual(gate(root),(0,[]))
+        # Exactly one of the preregistered integers: another spelling of one
+        # is another value.
+        for seed,shown in ((17.0,"17.0"),("17",'"17"'),(True,"true"),(None,"null"),([17],"[17]"),(-17,"-17")):
+            with self.subTest(seed=seed):
+                write(root,f"experiments/semdb/X900-fixture/{outside}",json.dumps(self.record(root,ran,seed=seed,status="completed")))
+                lines=gate(root)[1]
+                self.assertIn(refused(outside,shown),lines)
+        # The preregistered seeds themselves pass, in any results directory
+        # the experiment has had.
+        (root/f"experiments/semdb/X900-fixture/{outside}").unlink()
+        self.assertEqual(gate(root),(0,[]))
+        self.assertEqual(sorted(name.removeprefix("results/run-2026010").split("T")[0] for name in runs),["2","8"])
+
+    def test_the_registry_holds_the_status_the_manifest_holds_for_a_run(self):
+        # A harness reads the registry as it reads the manifest: a run under
+        # a registry that says another status ran under other state than the
+        # archived one.
+        registry="experiments/registry.toml"
+        disagreement=lambda held,manifest:(f"X900: the registry holds status {held} for it and experiment.toml "
+                                           f"{manifest!r}; a listed experiment holds the same status in both")
+        for manifest,held in (("running","planned"),("running","completed"),("prepared","running"),("completed","failed"),
+                              ("failed","running")):
+            with self.subTest(manifest=manifest,registry=held):
+                root=self.tree(status=manifest)
+                self.edit(root,registry,f'status = "{manifest}"',f'status = "{held}"')
+                message=disagreement(repr(held),manifest)
+                self.assert_blocked(root,message)
+                self.assertEqual(mod.launch_errors(root,"X900"),[message])
+                commit=commit_all(root)
+                self.assertIsNone(mod.launchable_at(root,commit,"X900","experiments/semdb/X900-fixture"))
+        # A registry entry that holds no status disagrees as well.
+        root=self.tree(status="running")
+        self.edit(root,registry,'status = "running"\n','')
+        self.assert_blocked(root,disagreement("None","running"))
+        # An experiment the registry names twice holds two statuses, of which
+        # one agreeing is not enough.
+        root=self.tree(status="running")
+        text=(root/registry).read_text(encoding="utf-8")
+        write(root,registry,text+text.split("\n\n",1)[1].replace('status = "running"','status = "planned"'))
+        twice=commit_all(root)
+        self.assertIsNone(mod.launchable_at(root,twice,"X900","experiments/semdb/X900-fixture"))
+        write(root,registry,text+text.split("\n\n",1)[1])
+        same=commit_all(root,"twice, alike")
+        self.assertIsNone(mod.launchable_at(root,same,"X900","experiments/semdb/X900-fixture"))
+        # Where they agree, the commit could launch, and a run at a commit
+        # where they did not is named by the commit it ran at.
+        root=self.tree(status="running")
+        agreed=commit_all(root)
+        self.assertIsNotNone(mod.launchable_at(root,agreed,"X900","experiments/semdb/X900-fixture"))
+        self.assertEqual(mod.launch_errors(root,"X900"),[])
+        self.edit(root,registry,'status = "running"','status = "planned"')
+        split=commit_all(root,"registry moved alone")
+        self.assertIsNone(mod.launchable_at(root,split,"X900","experiments/semdb/X900-fixture"))
+        self.edit(root,registry,'status = "planned"','status = "running"')
+        commit_all(root,"registry restored")
+        write(root,self.RECORD,json.dumps(self.record(root,split)))
+        name=self.RECORD.removeprefix("experiments/semdb/X900-fixture/")
+        self.assert_blocked(
+            root,
+            f"X900: {name} ran at {split[:12]}, where the registry holds status 'planned' for it and experiment.toml "
+            "'running'; a listed experiment holds the same status in both",
+        )
 
     def test_a_run_record_reached_through_a_symlink_is_refused(self):
         name=self.RECORD.removeprefix("experiments/semdb/X900-fixture/")
@@ -2839,6 +2930,16 @@ class PreregistrationGateTests(unittest.TestCase):
                 ("cargo run --manifest-path 'crates/..:stream/Cargo.toml' -- <seed>","--manifest-path",
                  "crates/..:stream/Cargo.toml"),
                 ("cargo run --manifest-path 'crates/ /Cargo.toml' -- <seed>","--manifest-path","crates/ /Cargo.toml"),
+                # rustup takes the options of `run` on either side of the
+                # toolchain, and runs Cargo all the same.
+                ("rustup run stable --install cargo run --manifest-path /tmp/external/Cargo.toml -- <seed>","--manifest-path",
+                 "/tmp/external/Cargo.toml"),
+                ("rustup run --install stable cargo run --manifest-path /tmp/external/Cargo.toml -- <seed>","--manifest-path",
+                 "/tmp/external/Cargo.toml"),
+                ("rustup run --install stable --install cargo run --lockfile-path ../x/Cargo.lock -- <seed>","--lockfile-path",
+                 "../x/Cargo.lock"),
+                ("rustup run stable -- cargo run --manifest-path /tmp/external/Cargo.toml -- <seed>","--manifest-path",
+                 "/tmp/external/Cargo.toml"),
                 # A colon in a component is an NTFS stream of the name before
                 # it on Windows, a file no scan of the tree lists: a target
                 # specification, a manifest or a lockfile could hide there.

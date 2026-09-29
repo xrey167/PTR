@@ -442,6 +442,8 @@ def cargo_invocation(tokens: list[str]) -> list[str] | None:
         while rest and rest[0].startswith("-"):
             rest=rest[1:]
         rest=rest[1:]
+        while rest and rest[0].startswith("-"):
+            rest=rest[1:]
         program=experiment_records.program_name(rest[0]) if rest else ""
         rest=rest[1:]
     return rest if program=="cargo" else None
@@ -1140,6 +1142,25 @@ def registered_directories(registry, exp_id: str) -> list[str]:
         if isinstance(item,dict) and item.get("id")==exp_id and isinstance(item.get("path"),str)
     })
 
+def registered_statuses(registry, exp_id: str) -> list:
+    """The statuses the parsed `registry` (None or any other value where it is
+    absent or unreadable) gives `exp_id`, one for each entry naming it, in
+    the registry's order."""
+    items=registry.get("experiment") if isinstance(registry,dict) else None
+    return [item.get("status") for item in (items if isinstance(items,list) else ())
+            if isinstance(item,dict) and item.get("id")==exp_id]
+
+def status_disagreement(exp_id: str, registry, manifest_status) -> str | None:
+    """Why the registry's status for `exp_id` is not the manifest's, or None
+    when it is: a harness reads the registry as it reads the manifest, so a
+    run needs the two to say the same."""
+    held=registered_statuses(registry,exp_id)
+    if held==[manifest_status]:
+        return None
+    shown=", ".join(repr(status) for status in held) or "none"
+    return (f"the registry holds status {shown} for it and experiment.toml {manifest_status!r}; a listed "
+            "experiment holds the same status in both")
+
 def placed_directories(root: Path, commit: str, exp_id: str) -> list[str]:
     """`registered_directories` of the registry as `commit` holds it."""
     return registered_directories(toml_at(root,commit,REGISTRY),exp_id)
@@ -1217,12 +1238,15 @@ def launchable_at(root: Path, commit: str, exp_id: str, directory: str) -> tuple
     entry, every file and baseline the table freezes has the frozen
     content there, each baseline pinned and not blocked, the runner can
     build its command from the manifest and the table (`command_errors`),
-    and the registry places the experiment in `directory`. A commit that
-    held less could not launch it, and does not freeze it."""
+    and the registry places the experiment in `directory` and holds the
+    status the manifest does. A commit that held less could not launch it,
+    and does not freeze it."""
     manifest=toml_at(root,commit,f"{directory}/experiment.toml")
     if not isinstance(manifest,dict) or status_of(manifest) not in FROZEN or not names_an_entrypoint(manifest):
         return None
     if placed_directories(root,commit,exp_id)!=[directory] or not is_repository_path(directory):
+        return None
+    if status_disagreement(exp_id,toml_at(root,commit,REGISTRY),status_of(manifest)) is not None:
         return None
     listed=toml_at(root,commit,PREREGISTRATION)
     entries=listed.get("experiment") if isinstance(listed,dict) else None
@@ -1531,6 +1555,9 @@ def history_errors(exp_id: str, name: str, named, root: Path, experiment: Path, 
             errors.append(f"{at}, whose experiment.toml differs from the current one in {', '.join(changed)}; "
                           "after a run only its status changes")
         then_status,now_status=status_of(manifest),status_of(now_manifest)
+        problem=status_disagreement(exp_id,toml_at(root,commit,REGISTRY),then_status)
+        if problem is not None:
+            errors.append(f"{at}, where {problem}")
         if then_status not in RANK:
             errors.append(f"{at}, where it was {then_status!r}; a listed experiment runs only once it is prepared")
         elif not may_follow(then_status,now_status):
@@ -1644,6 +1671,8 @@ def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path,
     trees=[]
     digests={}
     aggregates=[]
+    seeds=table.get("seeds")
+    preregistered=[json.dumps(seed,sort_keys=True) for seed in seeds] if isinstance(seeds,list) else []
     for path in sorted(records):
         name=shown(path)
         where=f"{exp_id}: {name}"
@@ -1671,6 +1700,11 @@ def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path,
             if not aggregate and isinstance(record,dict) and "seed" in record and record.get("status")!="failed-to-launch":
                 runs.setdefault(json.dumps(record["seed"],sort_keys=True),[]).append(name)
                 digests[json.dumps(record["seed"],sort_keys=True)]=hashlib.sha256(data).hexdigest()
+                # A seed outside the frozen list could be added once an outcome
+                # is seen, and count towards what is reported.
+                if json.dumps(record["seed"],sort_keys=True) not in preregistered:
+                    errors.append(f"{where} ran seed {json.dumps(record['seed'])}, which is not one of the "
+                                  "preregistered seeds; a listed experiment runs only those it froze")
                 # The program, the toolchain and the environment lie outside
                 # the commit: the seeds of one experiment ran one of each.
                 programs.setdefault(json.dumps(
@@ -1723,8 +1757,6 @@ def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path,
     # `experiment_records.seed_record_digests` writes it): outcomes committed
     # beside no run, or beside records rewritten since, would pass on the
     # digests it carries alone.
-    seeds=table.get("seeds")
-    preregistered=[json.dumps(seed,sort_keys=True) for seed in seeds] if isinstance(seeds,list) else []
     for name,report in aggregates:
         bound=report.get("seed_records")
         if not isinstance(bound,dict):
@@ -1811,6 +1843,9 @@ def frozen_errors(exp_id: str, entry: dict, manifest: dict, experiment: Path, ro
     if not isinstance(table,dict):
         return [f"{exp_id}: config.toml has no [preregistration] table"]
     errors=[]
+    problem=status_disagreement(exp_id,load(root/REGISTRY),status_of(manifest))
+    if problem is not None:
+        errors.append(f"{exp_id}: {problem}")
     if not names_an_entrypoint(manifest):
         errors.append(f"{exp_id}: experiment.toml names no entrypoint; a listed experiment names what it runs before "
                       "it leaves planned, since its manifest is frozen from then on")

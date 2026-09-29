@@ -850,16 +850,16 @@ class ProvenanceWatch:
 
     def stamp_directories(self) -> None:
         """Stamp, as they are now, the directories on the way from the root
-        to every file the watch holds (`directory_stamps`), for `changes` to
-        compare. A file's stamp does not show that the directory it is in
-        was renamed aside, a prepared one put in its place for the run to
-        read, and the original put back: every file in it is the one the
-        watch stamped. Call it right before the run starts, once the caller
-        has made every write of its own to the tree; from then on a run that
-        adds an entry to one of them, or takes one out, even a file it
-        removes again, is a change too, so it is for a run that writes
-        nothing into the tree."""
-        self.directories = directory_stamps(self.root, self.stamps)
+        to every file the watch holds and every file `stamp_reserved`
+        stamped (`directory_stamps`), for `changes` to compare. A file's
+        stamp does not show that the directory it is in was renamed aside, a
+        prepared one put in its place for the run to read, and the original
+        put back: every file in it is the one the watch stamped. Call it
+        right before the run starts, once the caller has made every write
+        of its own to the tree; from then on a run that adds an entry to one
+        of them, or takes one out, even a file it removes again, is a change
+        too, so it is for a run that writes nothing into the tree."""
+        self.directories = directory_stamps(self.root, [*self.stamps, *self.reserved])
 
     @contextmanager
     def rewriting(self, files):
