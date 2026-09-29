@@ -6,8 +6,9 @@ metrics = "lost updates; undetected phantoms; certified merge rate; conflict rat
 baseline = "serial execution; last-writer-wins branches; key-level optimistic locking without range digests"
 falsification = "Any lost update or undetected phantom is a hard failure; no throughput gain over serial execution at conflict rates below 10% rejects the default."
 hardware_profile = "hardware/default.toml"
-entrypoint = ""
+# Every placeholder but <seed> is a key of the preregistered table in config.toml.
+entrypoint = "cargo run --release --locked -p ptr-bench -- certified-branches <cases_per_seed> <seed>"
 seeds = [17, 29, 43, 71, 101]
 results_dir = "results"
-required_artifacts = ["run.json", "metrics.json"]
+required_artifacts = ["run.json", "metrics.json", "mutations.json"]
 design = "../../../docs/architecture/35-agentic-substrate.md"
