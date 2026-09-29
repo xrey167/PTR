@@ -44,3 +44,26 @@ The merge with main at `07241fb` resolves all 19 conflicts. Main's execution saf
 The candidate merge passes research gates, metadata freshness, notices, registry and generated-document checks. All 61 benchmark tests, 77 affected root Rust tests and 59 A0 Rust tests pass. The built debug A0 binary agrees with all 12 configured arms. The full Python scripts suite has 672 passes, one release-binary comparison skipped, and one environment-blocked test: this sandbox denies creation of AF_UNIX sockets. That test is unchanged and must pass in GitHub CI; no skip or weaker assertion was added. The standalone debug comparison separately covers the skipped configuration check.
 
 Re-aggregation still passes G0–G5 and the stock cross-check. G6 remains false because historical correctness provenance was never recorded; model hypotheses remain INCONCLUSIVE. These code and integration repairs do not retroactively certify the old study or perform a new training run.
+
+
+## Admission and review follow-up — 2026-09-29
+
+Admission-aware batches now replace raw attribute tokens of non-live facts with
+PAD, using encoded slot identities even when tokens are shuffled. Previously,
+admitted slots could attend to those attributes through the raw stream. The
+unmasked control retains its raw input. This changes future training behavior;
+it does not repair the archived model runs or justify a historical hard-admission
+claim. A new frozen study must train the corrected implementation.
+
+Evaluation now stages correctness logs outside the source tree until every model
+process (including retries) finishes. G4 requires versioned empty-diff evidence,
+checks both learning-rate artifacts and actual per-arm metadata, and compares
+measured hosts, toolchains and frozen hardware profiles across sweeps and runs.
+Contingency decisions recheck every contrast arm's learnability, including a
+comparator that passed at the original step budget. Summary documents now agree
+with the INCONCLUSIVE gated verdicts. Archived raw records remain unchanged.
+
+The remaining R2 calibration fallback is not automated yet. Its changed label
+rule requires regenerating and independently checking the dataset, rebuilding
+the binary, recalibrating at width 48, and checking all data bands before any
+new freeze. Do not report the current base/R1-only driver as the complete ladder.

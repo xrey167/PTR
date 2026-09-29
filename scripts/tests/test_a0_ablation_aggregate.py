@@ -264,6 +264,13 @@ class GatesAndPreconditions(unittest.TestCase):
         self.assertEqual(verdict(result, "M001-primary"), "INCONCLUSIVE")
         self.assertIn("still below its learnability bar at 4000 steps", result["verdicts"]["M001-primary"]["reason"])
 
+    def test_contingency_rechecks_previously_passing_comparator(self):
+        weak = table(no_semantic_slots_masked=(0.60, SMALL))
+        regressed = {"full": scores(0.40), "no-semantic-slots-masked": scores(0.86, SMALL)}
+        result = run(weak, contingency=regressed)
+        self.assertEqual(verdict(result, "M001-primary"), "INCONCLUSIVE")
+        self.assertIn("full is still below", result["verdicts"]["M001-primary"]["reason"])
+
     def test_the_contingency_is_reported_beside_its_bar(self):
         """Report contingency steps, learnability thresholds, and per-seed composite scores together."""
         weak = table(no_semantic_slots=(0.60, SMALL))
@@ -321,12 +328,19 @@ DATA_ROW = '{"row":"data","data_fnv64":"aa","label_fnv64_test_iid":"bb"}'
 
 def record(seed, status="completed", stdout=DATA_ROW, sha="c" * 40, dirty=False):
     """Build a synthetic run record with configurable outcome, stdout, and Git provenance."""
-    return {"seed": seed, "status": status, "stdout": stdout, "git_sha": sha, "git_dirty": dirty}
+    return {"schema_version": 2, "git_tracked_diff_sha256": __import__("hashlib").sha256(b"").hexdigest(), "seed": seed, "status": status, "stdout": stdout, "git_sha": sha, "git_dirty": dirty}
 
 
 class RecordGates(unittest.TestCase):
     """The gate conditions on run records, which cover the evaluation, the G2
     rerun and the contingency alike."""
+
+    def test_clean_flag_requires_versioned_empty_diff_evidence(self):
+        for field, value in [("schema_version", None), ("schema_version", True),
+                             ("git_tracked_diff_sha256", None), ("git_tracked_diff_sha256", "f" * 64)]:
+            invalid = record(17)
+            invalid[field] = value
+            self.assertFalse(agg.provenance({"invalid": invalid})["pass"])
 
     def test_a_retry_replaces_a_failed_process_and_a_failure_never_enters_a_table(self):
         """Select successful retries while excluding seeds with only failed processes."""

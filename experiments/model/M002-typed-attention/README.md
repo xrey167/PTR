@@ -22,10 +22,9 @@ study's measured host (`hardware/a0-cpu-4core.toml`); when the baseline
 comparison gets its `entrypoint`, the manifest must name the profile of the host
 that runs it.
 
-**Result, 2026-09-25 (A0-internal evidence only; [RESULTS.md](../../../research/falsification/A0-ablations-v1/RESULTS.md)).** The raw-blind
-manipulation check PASSES (+0.123 on test_iid, 5 of 5 seeds), so the raw path is
-used. M002-necessity FALSIFIES: a benefit of 2 points or more from the rank-1
-typed bias on composite B is excluded in A0 (mean -0.005, interval [-0.021,
-+0.011]); see `FALSIFIED-M002-necessity.md`. M002-sufficiency was not run: the
-preregistered budget rule dropped the blind-query pair.
-
+**Corrected status, 2026-09-29.** Gated mechanism hypotheses are **INCONCLUSIVE**:
+archived G6 logs lack the required binding to the evaluated commit. Raw measurements
+remain descriptive only; see [RESULTS.md](../../../research/falsification/A0-ablations-v1/RESULTS.md).
+The historical implementation also left non-live attributes visible through raw
+tokens. Fixing admission requires a new frozen study and new training; it does not
+validate the archived runs. The matched baseline comparison remains planned.

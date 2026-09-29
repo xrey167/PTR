@@ -48,7 +48,8 @@ pub struct Inputs {
 ///
 /// Content-free slots carry their index, fixed role/state, and zero confidence;
 /// their admission mask is retained only when requested. Raw-blind batches replace
-/// tokens with PAD and keep typed slots. Other variants keep the original tokens.
+/// tokens with PAD and keep typed slots. Admission-aware variants also remove raw
+/// attribute tokens belonging to non-live facts, including shuffled tokens.
 ///
 /// # Panics
 ///
@@ -70,10 +71,7 @@ pub fn build(examples: &[&Example], kind: Batch, payloads: &Payloads, device: &D
             length,
             "one split, one sequence length"
         );
-        match kind {
-            Batch::RawBlind => tokens.extend(std::iter::repeat_n(0_i64, length)),
-            _ => tokens.extend_from_slice(&example.tokens),
-        }
+        tokens.extend(admitted_tokens(example, kind));
         let content_free = matches!(kind, Batch::ContentFree { .. });
         roles.push(
             example
@@ -154,4 +152,73 @@ pub fn labels(examples: &[&Example], device: &Device) -> Tensor<1, Int> {
         .map(|example| example.label as i64)
         .collect();
     Tensor::<1, Int>::from_data(TensorData::new(labels, [examples.len()]), device)
+}
+
+/// Attribute token identities encode the slot, independent of sequence position.
+/// Keep this mapping synchronized with operator-routing v1's generator.
+fn admitted_tokens(example: &Example, kind: Batch) -> Vec<i64> {
+    example
+        .tokens
+        .iter()
+        .map(|&token| {
+            if kind == Batch::RawBlind {
+                return 0;
+            }
+            if kind != (Batch::ContentFree { masked: false }) && (1..=144).contains(&token) {
+                let slot = ((token - 1) / 24) as usize;
+                if example.facts[slot].validity != Validity::Live {
+                    return 0;
+                }
+            }
+            token
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::data::Fact;
+
+    #[test]
+    fn admission_removes_non_live_attributes_from_shuffled_raw_tokens() {
+        let mut example = Example {
+            label: 0,
+            tokens: vec![145, 25, 1, 48, 24, 149, 152, 0],
+            facts: vec![
+                Fact {
+                    role: SemanticRole::Goal,
+                    epistemic: EpistemicState::Unknown,
+                    confidence: 0.5,
+                    bucket: 1,
+                    validity: Validity::Live,
+                    entity: 0,
+                };
+                SLOTS
+            ],
+        };
+        example.facts[1].validity = crate::data::tables()
+            .validities
+            .into_iter()
+            .find(|v| *v != Validity::Live)
+            .unwrap();
+        for kind in [Batch::Typed, Batch::ContentFree { masked: true }] {
+            let original = admitted_tokens(&example, kind);
+            assert_eq!(original, vec![145, 0, 1, 0, 24, 149, 152, 0]);
+            let mut changed = example.clone();
+            changed.tokens[1] = 30;
+            changed.tokens[3] = 40;
+            assert_eq!(admitted_tokens(&changed, kind), original);
+            changed.tokens[2] = 2;
+            assert_ne!(admitted_tokens(&changed, kind), original);
+        }
+        assert_eq!(
+            admitted_tokens(&example, Batch::ContentFree { masked: false }),
+            example.tokens
+        );
+        assert_eq!(
+            admitted_tokens(&example, Batch::RawBlind),
+            vec![0; example.tokens.len()]
+        );
+    }
 }

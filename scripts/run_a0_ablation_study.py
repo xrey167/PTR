@@ -33,6 +33,8 @@ import importlib.util
 import json
 import math
 import shlex
+import shutil
+import tempfile
 import re
 import subprocess
 import sys
@@ -513,11 +515,11 @@ def require_eval_commit() -> None:
         raise SystemExit("no lr_selection.tsv: run select and commit it first")
 
 
-def correctness() -> dict:
+def correctness(logs: Path | None = None) -> dict:
     """Gate G6 at the evaluation commit: the A0 tests (T1-T6), the binary's
     self-test (T7, T8), and the benchmark, aggregator and config test suites.
     Each log is kept under logs/ for the results commit."""
-    logs = STUDY_DIR / "logs"
+    logs = logs if logs is not None else STUDY_DIR / "logs"
     logs.mkdir(parents=True, exist_ok=True)
     checks = {
         "cargo_test": ["cargo", TOOLCHAIN, "test", "--locked", "--manifest-path", "model/burn-a0/Cargo.toml"],
@@ -555,22 +557,32 @@ def eval_phase(_args) -> None:
     """Check correctness, run every evaluation seed and the rerun, and retry failures once."""
     require_eval_commit()
     must(BUILD)
-    outcome = correctness()
-    if any(value != "pass" for value in outcome.values()):
-        raise SystemExit(f"G6 failed before evaluation: {outcome}")
-    plan = json.loads((STUDY_DIR / "budget.json").read_text(encoding="utf-8"))
-    seeds = config()["seeds"]["declared"]
-    # Longest first: the experiments with the most arms.
-    order = sorted(EXPERIMENTS, key=lambda e: -len(plan["arms"][e]))
-    jobs = [(experiment, "a0_ablation_entrypoint", seed, {}) for experiment in order for seed in seeds]
-    jobs.append(("M001", "a0_rerun_entrypoint", 17, {}))
-    codes = parallel(jobs, config()["budget"]["workers"])
-    failed = [job for job, code in zip(jobs, codes) if code != 0]
-    if failed:
-        say(f"retrying once (G3): {failed}")
-        retry = parallel(failed, config()["budget"]["workers"])
-        if any(retry):
-            raise SystemExit(f"evaluation failed twice: {failed}")
+    # Keep tracked G6 artifacts unchanged until every model process has recorded
+    # its clean source identity. Preserve failed-check logs for diagnosis too.
+    with tempfile.TemporaryDirectory(prefix="a0-correctness-") as directory:
+        pending = Path(directory)
+        try:
+            outcome = correctness(pending)
+            if any(value != "pass" for value in outcome.values()):
+                raise SystemExit(f"G6 failed before evaluation: {outcome}")
+            plan = json.loads((STUDY_DIR / "budget.json").read_text(encoding="utf-8"))
+            seeds = config()["seeds"]["declared"]
+            # Longest first: the experiments with the most arms.
+            order = sorted(EXPERIMENTS, key=lambda e: -len(plan["arms"][e]))
+            jobs = [(experiment, "a0_ablation_entrypoint", seed, {}) for experiment in order for seed in seeds]
+            jobs.append(("M001", "a0_rerun_entrypoint", 17, {}))
+            codes = parallel(jobs, config()["budget"]["workers"])
+            failed = [job for job, code in zip(jobs, codes) if code != 0]
+            if failed:
+                say(f"retrying once (G3): {failed}")
+                retry = parallel(failed, config()["budget"]["workers"])
+                if any(retry):
+                    raise SystemExit(f"evaluation failed twice: {failed}")
+        finally:
+            destination = STUDY_DIR / "logs"
+            destination.mkdir(parents=True, exist_ok=True)
+            for path in pending.iterdir():
+                shutil.copyfile(path, destination / path.name)
 
 
 def contingency(args) -> None:

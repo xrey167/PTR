@@ -192,24 +192,20 @@ def decide(
             return "HOLD: the raw-blind leak alarm is active"
         if failed_gates:
             return f"gates failed: {', '.join(sorted(failed_gates))}"
-        for arm in arms:
-            status = learn.get(arm)
-            if status and not status["passes"]:
-                if status["kind"] == "restricted":
+        needs_contingency = any(learn.get(a) and not learn[a]["passes"]
+                                and learn[a]["kind"] == "complete-path" for a in arms)
+        if needs_contingency:
+            if not contingency or any(a not in contingency for a in arms):
+                return "below learnability bar; the complete 4000-step contingency decides"
+            for arm in arms:
+                status = learn.get(arm)
+                if status and mean_over_seeds(contingency, arm, "test_iid", seeds) < status["bar"]:
+                    return f"{arm} is still below its learnability bar at 4000 steps: an optimisation failure"
+        else:
+            for arm in arms:
+                status = learn.get(arm)
+                if status and not status["passes"]:
                     return f"{arm} failed to train (below its learnability bar)"
-                if not (contingency and arm in contingency):
-                    return f"{arm} is below its learnability bar; the 4000-step contingency decides"
-                # DESIGN.md (learnability, "Inconclusive if"): "If the arm is still
-                # below the bar, the contrast is INCONCLUSIVE: an optimisation
-                # failure, not evidence that the mechanism is needed." criteria.toml
-                # sets contingency_steps; the bar is the same, only the steps differ.
-                rerun = mean_over_seeds(contingency, arm, "test_iid", seeds)
-                if rerun < status["bar"]:
-                    return (
-                        f"{arm} is still below its learnability bar at 4000 steps "
-                        f"({rerun:.4f} < {status['bar']:.4f}): an optimisation failure, "
-                        "not evidence that the mechanism is needed"
-                    )
         return None
 
     def source(arms: list[str]) -> tuple[dict, str]:
@@ -588,7 +584,11 @@ def provenance(records: dict[str, dict]) -> dict:
     """G4's record condition: one commit, and a clean worktree for every record."""
     shas = sorted({str(r.get("git_sha")) for r in records.values()})
     dirty = sorted(name for name, r in records.items() if r.get("git_dirty") is not False)
-    return {"shas": shas, "dirty": dirty, "pass": len(shas) == 1 and not dirty}
+    unverified = sorted(name for name, r in records.items()
+                        if type(r.get("schema_version")) is not int or r["schema_version"] < 2
+                        or r.get("git_tracked_diff_sha256") != hashlib.sha256(b"").hexdigest())
+    return {"shas": shas, "dirty": dirty, "unverified_clean_source": unverified,
+            "pass": len(shas) == 1 and not dirty and not unverified}
 
 
 def data_identity(records: dict[str, dict], lock: dict) -> dict:
@@ -668,7 +668,7 @@ def correctness_evidence(evidence: dict, evaluated_commit: str | None, logs: Pat
     return {"pass": not problems, "detail": problems}
 
 
-def sweep_evidence(evaluated_commit: str | None) -> dict:
+def sweep_evidence(evaluated_commit: str | None, records: dict[str, dict] | None = None) -> dict:
     """Check selected rates against frozen sweeps archived at the evaluated commit."""
     try:
         if not evaluated_commit:
@@ -680,6 +680,37 @@ def sweep_evidence(evaluated_commit: str | None) -> dict:
         archived = json.loads(git("show", f"{evaluated_commit}:research/falsification/A0-ablations-v1/lr_selection.json"))
         if selected != archived:
             raise ValueError("selected learning rates differ from validated frozen sweep")
+        lines = ["arm\tlr\tval_accuracy\tflag"]
+        lines += [f"{row['arm']}\t{row['lr']}\t{row['val_accuracy']}\t{row['flag']}" for row in selected]
+        tsv = git("show", f"{evaluated_commit}:research/falsification/A0-ablations-v1/lr_selection.tsv")
+        if tsv.rstrip("\n") != "\n".join(lines):
+            raise ValueError("TSV learning rates differ from validated frozen sweep")
+        rates = {row["arm"]: row["lr"] for row in selected}
+        sweep_records = {f"{experiment}/{i}": record
+                         for experiment in driver.EXPERIMENTS
+                         for i, record in enumerate(driver.records(experiment, "a0_sweep_entrypoint"))
+                         if record.get("status") == "completed"}
+        checked = dict(sweep_records)
+        checked.update({"eval/" + name: record for name, record in (records or {}).items()})
+        host_identity = None
+        for name, record in checked.items():
+            host = record.get("host")
+            if not isinstance(host, dict) or not all(host.get(k) for k in
+                    ("system", "release", "machine", "cpu_model", "logical_cpus", "memory_bytes")):
+                raise ValueError(f"{name}: missing measured host")
+            identity = (json.dumps(host, sort_keys=True), record.get("rustc"))
+            if not identity[1] or (host_identity is not None and identity != host_identity):
+                raise ValueError(f"{name}: evaluation and sweep host/toolchain differ")
+            host_identity = identity
+            manifest = tomllib.loads(at_tag(f"experiments/{driver.EXPERIMENTS[record['experiment_id']]}/experiment.toml").decode())
+            profile = manifest["hardware_profile"]
+            if record.get("hardware_profile") != profile or record.get("hardware_profile_record", {}).get("sha256") != hashlib.sha256(at_tag(profile)).hexdigest():
+                raise ValueError(f"{name}: hardware profile differs from freeze")
+        for name, record in (records or {}).items():
+            meta = [row for row in driver.rows(record.get("stdout", "")) if row.get("row") == "meta"]
+            if not meta or any(row.get("arm") not in rates or row.get("lr") != rates[row["arm"]] for row in meta):
+                raise ValueError(f"{name}: evaluated learning rates differ from frozen selection")
+
     except (ValueError, KeyError, TypeError, OSError, subprocess.CalledProcessError, SystemExit) as error:
         return {"pass": False, "detail": str(error)}
     return {"pass": True, "detail": "selected rates reproduce the archived frozen sweep"}
@@ -785,9 +816,9 @@ def main(argv: list[str] | None = None) -> int:
                 return None  # deleted, or not a record: not a sweep record either
         stray = freeze_violations(changed, entrypoint_at)
     prereg_unchanged = at_tag("research/falsification/A0-ablations-v1/PREREGISTRATION.md") == (STUDY_DIR / "PREREGISTRATION.md").read_bytes()
-    sweep = sweep_evidence(sha)
+    sweep = sweep_evidence(sha, records)
     gates["G4"] = {"pass": origin["pass"] and ancestor and not stray and prereg_unchanged and sweep["pass"],
-                   "detail": {"records": len(records), "shas": origin["shas"], "dirty": origin["dirty"],
+                   "detail": {"records": len(records), "shas": origin["shas"], "dirty": origin["dirty"], "unverified_clean_source": origin["unverified_clean_source"],
                               "tag_is_ancestor": ancestor, "changed_beyond_lr_selection_and_sweep": stray,
                               "preregistration_unchanged": prereg_unchanged, "sweep": sweep}}
 

@@ -141,6 +141,24 @@ class CorrectnessWriter(unittest.TestCase):
             self.assertTrue(all(value == "pass" for value in outcome.values()))
             self.assertTrue(driver.aggregator().correctness_evidence(evidence, "c" * 40, study / "logs", "aa")["pass"])
 
+    def test_eval_publishes_correctness_logs_only_after_model_processes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            study = Path(directory)
+            (study / "budget.json").write_text(json.dumps({"arms": {e: ["full"] for e in driver.EXPERIMENTS}}))
+            (study / "logs").mkdir()
+            (study / "logs/g6.json").write_text("original")
+            def checks(destination):
+                (destination / "g6.json").write_text("new evidence")
+                return {"check": "pass"}
+            def launch(jobs, workers):
+                self.assertEqual((study / "logs/g6.json").read_text(), "original")
+                return [0] * len(jobs)
+            with patch.multiple(driver, STUDY_DIR=study, require_eval_commit=Mock(), must=Mock(),
+                                correctness=checks, parallel=launch,
+                                config=Mock(return_value={"seeds": {"declared": [17]}, "budget": {"workers": 1}})):
+                driver.eval_phase(None)
+            self.assertEqual((study / "logs/g6.json").read_text(), "new evidence")
+
     def test_source_changes_during_checks_prevent_evaluation(self):
         with tempfile.TemporaryDirectory() as directory:
             with patch.multiple(driver, STUDY_DIR=Path(directory), worktree_clean=Mock(side_effect=[True, False]),
@@ -154,6 +172,32 @@ class CorrectnessWriter(unittest.TestCase):
 class FrozenSweepEvidence(unittest.TestCase):
     def setUp(self):
         self.archived = {e: driver.records(e, "a0_sweep_entrypoint") for e in driver.EXPERIMENTS}
+
+    def test_eval_rates_and_hosts_are_bound_to_frozen_selection(self):
+        aggregate = driver.aggregator()
+        records = {str(path): value for path in ROOT.glob("experiments/model/*/results/run-*.json")
+                   if (value := json.loads(path.read_text())).get("entrypoint") == "a0_ablation_entrypoint"
+                   and value.get("status") == "completed"}
+        revision = next(iter(records.values()))["git_sha"]
+        self.assertTrue(aggregate.sweep_evidence(revision, records)["pass"])
+        name = next(iter(records))
+        for field, value in [("host", None), ("host", {**records[name]["host"], "cpu_model": "other CPU"}),
+                             ("hardware_profile", "hardware/default.toml")]:
+            invalid = copy.deepcopy(records)
+            invalid[name][field] = value
+            self.assertFalse(aggregate.sweep_evidence(revision, invalid)["pass"])
+        invalid = copy.deepcopy(records)
+        rows = driver.rows(invalid[name]["stdout"])
+        meta = next(row for row in rows if row.get("row") == "meta")
+        meta["lr"] = 123.0
+        invalid[name]["stdout"] = "\n".join(json.dumps(row) for row in rows)
+        self.assertFalse(aggregate.sweep_evidence(revision, invalid)["pass"])
+        original = aggregate.git
+        def changed_tsv(*args):
+            result = original(*args)
+            return result.replace("0.0125", "0.1") if args[-1].endswith("lr_selection.tsv") else result
+        with patch.object(aggregate, "git", side_effect=changed_tsv):
+            self.assertFalse(aggregate.sweep_evidence(revision, records)["pass"])
 
     def test_archived_selection_reproduces_committed_rates(self):
         expected = json.loads((driver.STUDY_DIR / "lr_selection.json").read_text())
