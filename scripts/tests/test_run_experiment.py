@@ -3035,6 +3035,8 @@ class RunWatchTests(unittest.TestCase):
             ["rustup.exe", "run", "pinned", "./script"],
             ["rustup", "run", "pinned", "--", "python3", "x.py"],
             ["rustup", "run", "pinned", "--install", "python3"],
+            ["rustup", "run", "pinned", "--", "-evil"],
+            ["rustup", "run", "pinned", "--", "--", "cargo"],
             ["/opt/rust/bin/rustup", "run", "pinned", "rustfmt-not-a-proxy"],
         ):
             with self.subTest(command=command):
@@ -3063,6 +3065,7 @@ class RunWatchTests(unittest.TestCase):
             ("rustup run --install pinned python3 <seed>", True),
             ("rustup +pinned run pinned sh -c true <seed>", True),
             ("rustup run pinned -- python3 <seed>", True),
+            ("rustup run pinned -- -evil <seed>", True),
         ):
             with self.subTest(entrypoint=entrypoint, resolves=resolves):
                 self.tearDown()
@@ -3128,10 +3131,15 @@ class RunWatchTests(unittest.TestCase):
             (["rustup", "run", "--", "pinned", "cargo", "test"], ["cargo", "test"]),
             (["rustup", "run", "pinned", "--install", "cargo", "test"], ["cargo", "test"]),
             (["rustup", "run", "pinned", "-v", "cargo", "test"], ["cargo", "test"]),
+            (["rustup", "run", "pinned", "--install", "-v", "cargo", "test"], ["cargo", "test"]),
             (["rustup", "run", "--install", "pinned", "--", "cargo", "test"], ["cargo", "test"]),
             (["rustup", "-v", "+pinned", "run", "pinned", "--", "python3", "x.py"], ["python3", "x.py"]),
             (["rustup.exe", "run", "pinned", "--", "cargo.exe"], ["cargo.exe"]),
-            (["rustup", "run", "pinned", "--", "--", "cargo"], ["cargo"]),
+            (["rustup", "run", "pinned", "--", "--", "cargo"], ["--", "cargo"]),
+            (["rustup", "run", "pinned", "--", "-evil"], ["-evil"]),
+            (["rustup", "run", "pinned", "--", "-evil", "--", "x"], ["-evil", "--", "x"]),
+            (["rustup", "run", "pinned", "-v", "--", "-evil"], ["-evil"]),
+            (["rustup", "run", "--install", "pinned", "--", "-evil", "-v"], ["-evil", "-v"]),
             (["rustup", "run", "pinned"], ["rustup", "run", "pinned"]),
             (["rustup", "run", "pinned", "--"], ["rustup", "run", "pinned", "--"]),
             (["rustup", "run", "pinned", "--install"], ["rustup", "run", "pinned", "--install"]),

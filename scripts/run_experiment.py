@@ -897,8 +897,8 @@ def started_program(command: list[str]) -> list[str]:
     """The program `command` starts with its arguments, past rustup's own
     words when it is `rustup run <toolchain> <program> ...` (options and
     `+<toolchain>` before `run`, the options of `run` on either side of the
-    toolchain, `--` among them, which ends them); `command` itself
-    otherwise."""
+    toolchain, up to the `--` that ends them: what follows it is the program,
+    whatever it starts with); `command` itself otherwise."""
     program = experiment_records.program_name(command[0]) if command else ""
     if program != "rustup":
         return command
@@ -912,7 +912,10 @@ def started_program(command: list[str]) -> list[str]:
         rest = rest[1:]
     started = rest[1:]
     while started and started[0].startswith("-"):
+        delimiter = started[0] == "--"
         started = started[1:]
+        if delimiter:
+            break
     return started or command
 
 
