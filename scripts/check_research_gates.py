@@ -1393,12 +1393,38 @@ def launch_paths(root: Path, exp_id: str, directories: list[str]) -> set[str]:
                     paths.add(table[key])
     return paths
 
+@functools.lru_cache(maxsize=16)
+def link_changes_at(root: str, head: str) -> frozenset[str]:
+    """The commits on the history of `head` in the repository at `root` that
+    add, remove or change a symlink or a gitlink anywhere, against any one of
+    their parents. Raises `HistoryUnreadable` when git cannot tell."""
+    try:
+        listing=experiment_records.git(
+            Path(root),"--literal-pathspecs","log","--full-history","-m","--raw","--no-abbrev","--no-renames",
+            "--format=commit:%H",head,binary=True)
+    except experiment_records.ProvenanceError as error:
+        raise HistoryUnreadable(str(error)) from error
+    if listing.returncode!=0:
+        raise HistoryUnreadable(listing.stderr.decode("utf-8","replace").strip() or f"git log exited {listing.returncode}")
+    found=set()
+    current=None
+    for line in listing.stdout.decode("utf-8","surrogateescape").split("\n"):
+        if line.startswith("commit:"):
+            current=line[len("commit:"):]
+        elif line.startswith(":") and current is not None:
+            modes=line[1:].split(" ",2)[:2]
+            if any(mode in experiment_records.LINK_MODES for mode in modes):
+                found.add(current)
+    return frozenset(found)
+
 def launch_listing(root: Path, exp_id: str, directories: list[str]) -> list[tuple[str, tuple[str, str] | None]]:
     """Every commit on HEAD's history that changes a path that can decide
     whether the experiment may launch (`launch_paths`: its manifest and
     configuration in any of `directories`, the list, the registry, its
     baselines and its files, and the Cargo metadata the command check reads,
-    `CARGO_METADATA_GLOBS` too), newest first, with what it holds there
+    `CARGO_METADATA_GLOBS` too) or adds or removes a symlink or gitlink
+    anywhere (`link_changes_at`, which decides whether a commit could launch
+    it at all), newest first, with what it holds there
     (`launchable_at`, in the first of `directories` that holds it frozen) or
     None where it does not hold it frozen as the runner launches it. A merge
     is listed where it differs from any one of its parents, so the state of
@@ -1406,7 +1432,14 @@ def launch_listing(root: Path, exp_id: str, directories: list[str]) -> list[tupl
     listing=[]
     specs=[f":(literal){path}" for path in sorted(launch_paths(root,exp_id,directories))]
     specs+=[f":(glob){pattern}" for pattern in CARGO_METADATA_GLOBS]
-    for commit in history(root,"--format=%H","HEAD","--",*specs,literal=False):
+    selected=history(root,"--format=%H","HEAD","--",*specs,literal=False)
+    if has_head(root):
+        moved=link_changes_at(str(root),experiment_records.head_commit(root))-set(selected)
+        if moved:
+            # In the order of the whole history, which the others keep.
+            keep=moved|set(selected)
+            selected=[commit for commit in history(root,"--format=%H","HEAD") if commit in keep]
+    for commit in selected:
         held=None
         for directory in directories:
             held=launchable_at(root,commit,exp_id,directory)
@@ -1619,6 +1652,31 @@ def history_errors(exp_id: str, name: str, named, root: Path, experiment: Path, 
             errors.append(f"{at}, where baseline {baseline['name']} is not the frozen one: its directory holds other files")
     return errors,commit
 
+def committed_seed_records(root: Path, commit: str, directory: str, shown=lambda name:name) -> tuple[dict, dict]:
+    """The run records `commit` holds directly in `directory`, as
+    `archived_errors` reads the ones on disk: by the seed as JSON writes it,
+    the names of the records that run it (a command that failed to launch saw
+    no outcome and is left out), and the SHA-256 of the record of each seed
+    whose run finished (`experiment_records.finished_run`); `shown` writes a
+    record's path as an error names it."""
+    runs={}
+    digests={}
+    for name in sorted(commit_names(root,commit)):
+        if PurePosixPath(name).parent.as_posix()!=directory or not is_run_record(name):
+            continue
+        data=blob(root,commit,name)
+        try:
+            record=json.loads(data.decode("utf-8")) if data is not None else None
+        except (UnicodeDecodeError,json.JSONDecodeError):
+            continue
+        if not isinstance(record,dict) or "seed" not in record or record.get("status")=="failed-to-launch":
+            continue
+        seed=json.dumps(record["seed"],sort_keys=True)
+        runs.setdefault(seed,[]).append(shown(name))
+        if experiment_records.finished_run(record):
+            digests[seed]=hashlib.sha256(data).hexdigest()
+    return runs,digests
+
 def aggregate_version_errors(exp_id: str, version: str, earlier: dict, root: Path, commit: str, path: str) -> list[str]:
     """Why `earlier`, the aggregate the repository path `path` held at
     `commit` (named `version`), is not bound to the `metrics.json` and
@@ -1821,7 +1879,7 @@ def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path,
         if record is not MISSING:
             errors.extend(record_errors(exp_id,name,record,aggregate,root,experiment,entry,table,frozen,current))
             if aggregate and isinstance(record,dict):
-                aggregates.append((name,record))
+                aggregates.append((name,record,None))
             # A prepared record names no seed, and a command that failed to
             # launch saw no outcome.
             if not aggregate and isinstance(record,dict) and "seed" in record and record.get("status")!="failed-to-launch":
@@ -1857,6 +1915,12 @@ def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path,
                     errors.append(f"{exp_id}: {version} is not a regular file")
                     continue
                 if held==data:
+                    # The aggregate now on disk is checked as such; what that
+                    # commit holds beside it is its own, and may differ from
+                    # what is beside it now.
+                    if isinstance(record,dict):
+                        errors.extend(aggregate_version_errors(exp_id,version,record,root,commit,path))
+                        aggregates.append((version,record,(commit,PurePosixPath(path).parent.as_posix())))
                     continue
                 try:
                     earlier=json.loads(held.decode("utf-8"))
@@ -1868,7 +1932,7 @@ def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path,
                 # records below as the aggregate now on disk is, and to the
                 # metrics and mutation evidence committed beside it.
                 if isinstance(earlier,dict):
-                    aggregates.append((version,earlier))
+                    aggregates.append((version,earlier,(commit,PurePosixPath(path).parent.as_posix())))
                     errors.extend(aggregate_version_errors(exp_id,version,earlier,root,commit,path))
             continue
         # Every commit that holds the record, on every side of every merge,
@@ -1895,24 +1959,31 @@ def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path,
     # `experiment_records.seed_record_digests` writes it): outcomes committed
     # beside no run, or beside records rewritten since, would pass on the
     # digests it carries alone.
-    for name,report in aggregates:
+    for name,report,version_of in aggregates:
+        # The aggregate now on disk names the records of the checkout; an
+        # earlier version, those its own commit held beside it, which a
+        # record committed after it does not stand in for.
+        if version_of is None:
+            seen_runs,seen_digests=runs,digests
+        else:
+            seen_runs,seen_digests=committed_seed_records(root,*version_of,shown)
         bound=report.get("seed_records")
         if not isinstance(bound,dict):
             errors.append(f"{exp_id}: {name} names no seed_records, the SHA-256 of the run record of each preregistered "
                           "seed, so nothing binds the outcome it reports to the runs")
             continue
         for seed in preregistered:
-            if seed not in runs:
+            if seed not in seen_runs:
                 errors.append(f"{exp_id}: {name} reports on seed {seed}, which has no run record")
-            elif seed not in digests:
-                errors.append(f"{exp_id}: {name} reports on seed {seed}, whose run record ({', '.join(runs[seed])}) holds no "
+            elif seed not in seen_digests:
+                errors.append(f"{exp_id}: {name} reports on seed {seed}, whose run record ({', '.join(seen_runs[seed])}) holds no "
                               "outcome; a run that finished has status completed or failed with its exit_code, finished_at, "
                               "stdout and stderr, and a reservation nothing finished saw none")
-            elif len(runs[seed])>1:
+            elif len(seen_runs[seed])>1:
                 # Two records of one seed are named as such: none is the record.
                 continue
-            elif bound.get(seed)!=digests[seed]:
-                errors.append(f"{exp_id}: {name} names seed_records[{seed}] {bound.get(seed)!r}, not {digests[seed]}, "
+            elif bound.get(seed)!=seen_digests[seed]:
+                errors.append(f"{exp_id}: {name} names seed_records[{seed}] {bound.get(seed)!r}, not {seen_digests[seed]}, "
                               f"the SHA-256 of the run record of seed {seed}")
         for seed in sorted(set(bound)-set(preregistered)):
             errors.append(f"{exp_id}: {name} names a record for seed {seed}, which is not preregistered")
