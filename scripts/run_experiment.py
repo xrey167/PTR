@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import shlex
 import shutil
 import stat
@@ -952,10 +953,12 @@ def required_rust_tools(command: list[str], tools: dict) -> set[str]:
     or one of its proxies, needs: Cargo needs itself and `rustc` (and `rustdoc`
     where it runs documentation tests), `rustc` and `rustdoc` themselves; every
     tool the record names for rustup and its other proxies, which start
-    whichever they choose."""
+    whichever they choose; none for a program `rustup run` starts that is no
+    proxy of rustup's."""
     started = started_program(command)
     program = experiment_records.program_name(started[0]) if started else ""
-    needed = {"cargo": {"cargo", "rustc"}, "rustc": {"rustc"}, "rustdoc": {"rustdoc"}}.get(program, set(tools))
+    every = set(tools) if program == "rustup" or program in RUSTUP_PROXIES else set()
+    needed = {"cargo": {"cargo", "rustc"}, "rustc": {"rustc"}, "rustdoc": {"rustdoc"}}.get(program, every)
     return needed | ({"rustdoc"} if invokes_rustdoc(command) else set())
 
 
@@ -1110,7 +1113,7 @@ def named_program(found: str | None, stamps: dict[str, experiment_records.Stamp 
     return {"path": str(target), "sha256": digest}
 
 
-SHEBANG_DEPTH = 4
+SHEBANG_DEPTH = 8
 ENV_HOPS = 4
 
 class ScriptInterpreterError(ValueError):
@@ -1130,22 +1133,25 @@ def shebang_words(path: str) -> list[str] | None:
         return None
     if not head.startswith(b"#!"):
         return None
-    words = head[2:].split(b"\n", 1)[0].decode("utf-8", "replace").split()
+    # The kernel splits on a space or a tab only, so a carriage return or a
+    # byte no encoding reads stays part of a name.
+    line = head[2:].split(b"\n", 1)[0]
+    words = [word.decode("utf-8", "surrogateescape") for word in re.split(rb"[ \t]+", line) if word]
     return words or None
 
 
-def env_target(words: list[str]) -> str | None:
+def env_target(words: list[str]) -> str:
     """The program `env` runs when a shebang gives it just the program's name
     (`#!/usr/bin/env python3`): that name, looked up on the `PATH` `env` runs
-    with, which is the runner's; None when it is given nothing. Raises
-    `ScriptInterpreterError` for any other form, an option, an assignment or
-    several words: a kernel hands `env` the words after its name as one
+    with, which is the runner's. Raises `ScriptInterpreterError` for any other
+    form: nothing (the kernel then gives `env` the script itself, which starts
+    itself again), an option, an assignment or several words: a kernel hands `env` the words after its name as one
     argument (Linux) or as several (elsewhere), and `env` reads them by rules
     of its own (`-S` splits, quotes and escapes; `-i`, `-u`, `PATH=...`, `-P`
     and `-C` change what it looks up and where), so no record could name by
     content what a run of another platform's or version's `env` would run."""
     if not words:
-        return None
+        raise ScriptInterpreterError("a script's first line gives env no program, so it starts the script itself again")
     if len(words) > 1 or words[0].startswith("-") or "=" in words[0]:
         raise ScriptInterpreterError(
             "a script's first line gives env more than a program's name (an option, an assignment or several words)"
@@ -1179,13 +1185,18 @@ def interpreters_of(
     its first line names, read as the kernel reads it (a path, from the root
     where it is relative), and where that is `env`, the program `env` runs
     (`env_target`, looked up on `environment`'s `PATH`); and, for each of them
-    that is a script too, its own interpreters. The kernel follows
-    interpreters `SHEBANG_DEPTH` levels; a program `env` starts is a new
-    `exec`, so its levels start again, and `ENV_HOPS` such starts are
-    followed. Empty for a file that is no script."""
+    that is a script too, its own interpreters. The kernel follows them to a
+    depth of its own; `SHEBANG_DEPTH` is above it, and a script found at it
+    refuses. A program `env` starts is a new `exec`, so its levels start
+    again, and `ENV_HOPS` such starts are followed. Empty for a file that is
+    no script."""
     words = shebang_words(os.path.realpath(found))
-    if words is None or depth >= SHEBANG_DEPTH:
+    if words is None:
         return []
+    if depth >= SHEBANG_DEPTH:
+        # Past what any kernel follows (Linux allows about five), so it would
+        # not run; a script found here is refused rather than left unbound.
+        raise ScriptInterpreterError(f"scripts run through one another more than {SHEBANG_DEPTH} deep")
     # The kernel takes the interpreter's name as a path, from the directory
     # the command starts in (the root) when it is relative, and looks up no
     # `PATH`; `env` does look its program up.
@@ -1196,10 +1207,9 @@ def interpreters_of(
     # as a link of another name to it runs it as well.
     if "env" in (experiment_records.program_name(words[0]), experiment_records.program_name(first["path"])):
         target = env_target(words[1:])
-        if target is not None:
-            if hops >= ENV_HOPS:
-                raise ScriptInterpreterError(f"scripts start one another through env more than {ENV_HOPS} deep")
-            named.append((named_interpreter(target, found_program([target], environment), stamps), 0, hops + 1))
+        if hops >= ENV_HOPS:
+            raise ScriptInterpreterError(f"scripts start one another through env more than {ENV_HOPS} deep")
+        named.append((named_interpreter(target, found_program([target], environment), stamps), 0, hops + 1))
     nested = [
         deeper
         for program, next_depth, next_hops in named

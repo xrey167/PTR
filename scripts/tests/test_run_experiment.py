@@ -2890,6 +2890,9 @@ class RunWatchTests(unittest.TestCase):
             (["rustc", "lib.rs"], {"rustc"}),
             (["rustdoc", "lib.rs"], {"rustdoc"}),
             (["rustup", "run", "pinned", "rustc", "lib.rs"], {"rustc"}),
+            (["rustup", "run", "pinned", "python3", "bench.py"], set()),
+            (["rustup", "+pinned", "run", "--install", "pinned", "sh", "-c", "cargo test"], set()),
+            (["python3", "bench.py"], set()),
             (["rustup", "run", "pinned", "cargo", "test"], everything),
             (["rustup", "show"], everything),
             (["rustfmt", "lib.rs"], everything),
@@ -3129,19 +3132,23 @@ class RunWatchTests(unittest.TestCase):
 
         binary = write("binary", b"binary\n")
         chain = [binary]
-        for index in range(6):
+        for index in range(10):
             chain.append(write(f"s{index}", f"#!{chain[-1]}\n".encode("utf-8")))
         environment = {"PATH": str(outside)}
         with mock.patch.object(mod, "ROOT", self.root):
             self.assertEqual(mod.interpreters_of(str(binary), environment, None), [])
             self.assertEqual(mod.interpreters_of(str(chain[1]), environment, None), [named(binary)])
             self.assertEqual(mod.interpreters_of(str(chain[2]), environment, None), [named(chain[1]), named(binary)])
-            # As far as `SHEBANG_DEPTH` levels.
-            self.assertEqual(mod.SHEBANG_DEPTH, 4)
+            # As far as `SHEBANG_DEPTH` levels, above what any kernel follows;
+            # a script found at the bound refuses, so no interpreter behind a
+            # chain of scripts is left unbound.
+            self.assertEqual(mod.SHEBANG_DEPTH, 8)
             self.assertEqual(
-                mod.interpreters_of(str(chain[6]), environment, None),
-                [named(chain[5]), named(chain[4]), named(chain[3]), named(chain[2])],
+                mod.interpreters_of(str(chain[8]), environment, None),
+                [named(path) for path in reversed(chain[:8])],
             )
+            with self.assertRaisesRegex(mod.ScriptInterpreterError, "more than 8 deep"):
+                mod.interpreters_of(str(chain[9]), environment, None)
             # The program `env` runs is followed too, and a script `env` starts
             # is a new `exec`, whose interpreters the kernel follows anew.
             env = shutil.which("env")
@@ -3175,16 +3182,19 @@ class RunWatchTests(unittest.TestCase):
                 mod.interpreters_of(str(script), environment, None),
                 [named(spelled / "env"), named(fake), named(chain[1]), named(binary)],
             )
-            # `env` given no program names none but itself.
+            # `env` given no program is given the script itself by the kernel,
+            # which starts itself again: refused.
             script = write("bench", f"#!{env}\nfake\n".encode("utf-8"))
-            self.assertEqual(mod.interpreters_of(str(script), environment, None), [named(env)])
-            # The kernel's levels start again for what `env` starts: a chain of
-            # four scripts behind it is followed to its end, as far as it runs.
+            with self.assertRaisesRegex(mod.ScriptInterpreterError, "gives env no program"):
+                mod.interpreters_of(str(script), environment, None)
+            # The kernel's levels start again for what `env` starts: a script
+            # and seven behind it are followed to the end, which counted from
+            # the top would pass the bound.
             top = write("top", f"#!{env} chain\n".encode("utf-8"))
-            write("chain", f"#!{chain[4]}\n".encode("utf-8"))
+            write("chain", f"#!{chain[7]}\n".encode("utf-8"))
             self.assertEqual(
                 mod.interpreters_of(str(top), environment, None),
-                [named(env), named(outside / "chain"), named(chain[4]), named(chain[3]), named(chain[2]), named(chain[1])],
+                [named(env), named(outside / "chain"), *[named(path) for path in reversed(chain[:8])]],
             )
             # Four such starts are followed, a fifth is not.
             for index in range(1, 6):
@@ -3223,9 +3233,10 @@ class RunWatchTests(unittest.TestCase):
                     script = write("bench", f"#!{env} {words}\n".encode("utf-8"))
                     with self.assertRaisesRegex(mod.ScriptInterpreterError, "gives env more than a program's name"):
                         mod.interpreters_of(str(script), environment, None)
-            # A script naming itself ends at the bound.
+            # A script naming itself ends at the bound, refused.
             looping = write("looping", f"#!{outside / 'looping'}\n".encode("utf-8"))
-            self.assertEqual(mod.interpreters_of(str(looping), environment, None), [named(looping)] * 4)
+            with self.assertRaisesRegex(mod.ScriptInterpreterError, "more than 8 deep"):
+                mod.interpreters_of(str(looping), environment, None)
             # An interpreter found nowhere refuses, as the kernel or `env` would
             # look it up again when the command starts, and so does one whose
             # first line no encoding reads (it names a file no one has).
@@ -3250,6 +3261,42 @@ class RunWatchTests(unittest.TestCase):
             mod.interpreters_of(str(chain[3]), environment, stamps)
             for interpreter in (chain[2], chain[1], binary):
                 self.assertIn(str(interpreter.resolve()), stamps)
+
+    def test_a_shebang_is_split_as_the_kernel_splits_it(self):
+        # The kernel splits a first line on a space or a tab only, so a
+        # carriage return, another whitespace byte or a byte no encoding reads
+        # stays part of a name: a CRLF file's `python3\r` is not `python3`.
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+
+        def words(content: bytes):
+            path = directory / "script"
+            path.write_bytes(content)
+            return mod.shebang_words(str(path))
+
+        self.assertEqual(words(b"#!/usr/bin/env python3\n"), ["/usr/bin/env", "python3"])
+        self.assertEqual(words(b"#!/usr/bin/env python3\r\n"), ["/usr/bin/env", "python3\r"])
+        self.assertEqual(words(b"#!/x\r\n"), ["/x\r"])
+        self.assertEqual(words(b"#!\t /a \t b \t\nrest\n"), ["/a", "b"])
+        self.assertEqual(words(b"#!/a\x0bb\x0cc\n"), ["/a\x0bb\x0cc"])
+        self.assertEqual(words("#!/a\u00a0b c\n".encode("utf-8")), ["/a\u00a0b", "c"])
+        self.assertEqual(words(b"#!/x\xff\xfe y\n"), ["/x\udcff\udcfe", "y"])
+        self.assertEqual(os.fsencode(words(b"#!/x\xff\xfe y\n")[0]), b"/x\xff\xfe")
+        for none in (b"", b"#", b"#!", b"#!\n", b"#! \t\nrest\n", b"# /x\n", b"\n#!/x\n", b"plain\n"):
+            with self.subTest(content=none):
+                self.assertIsNone(words(none))
+        # A carriage return in a name found nowhere refuses the run.
+        outside = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        program = outside / "python3"
+        program.write_bytes(b"python\n")
+        program.chmod(0o755)
+        env = shutil.which("env")
+        script = outside / "bench"
+        script.write_bytes(f"#!{env} python3\r\n".encode("utf-8"))
+        script.chmod(0o755)
+        with mock.patch.object(mod, "ROOT", self.root), self.assertRaisesRegex(
+            mod.ScriptInterpreterError, "the interpreter python3\r of a script is found nowhere"
+        ):
+            mod.interpreters_of(str(script), {"PATH": str(outside)}, None)
 
     def test_env_in_a_shebang_looks_its_program_up_on_the_runners_path(self):
         # `#!/usr/bin/env prog` runs the `prog` of the PATH `env` starts with,
