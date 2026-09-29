@@ -39,6 +39,7 @@ use ptr_types::{
 };
 use tokio_postgres::Client;
 
+use super::json;
 use super::pg::{self, Instance};
 use super::rng::Rng;
 
@@ -246,7 +247,7 @@ pub fn run(iterations: usize, seed: u64) {
     let mut line = format!(
         "{{\"benchmark\":\"projection-equivalence\",\"iterations\":{iterations},\"seed\":{seed},\
          \"server\":{},\"turso_oracle\":{},\"elapsed_ns\":{}",
-        pg::json_string(&server),
+        json::json_string(&server),
         cfg!(feature = "turso-oracle"),
         elapsed.as_nanos()
     );

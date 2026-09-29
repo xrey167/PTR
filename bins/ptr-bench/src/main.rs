@@ -11,7 +11,6 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Instant;
 
-#[cfg(feature = "postgres-experiments")]
 mod experiments;
 
 fn main() {

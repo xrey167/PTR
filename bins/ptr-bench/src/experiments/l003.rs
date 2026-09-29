@@ -41,6 +41,7 @@ use ptr_state::ApplyOutcome;
 use ptr_types::{CapsuleId, CommitIndex, Generation, PrincipalId, ProjectId, Validity};
 use tokio_postgres::Client;
 
+use super::json;
 use super::pg::{self, Instance};
 use super::rng::Rng;
 
@@ -264,7 +265,7 @@ pub fn run(iterations: usize, seed: u64) {
     let mut line = format!(
         "{{\"benchmark\":\"fastmem-revocation\",\"iterations\":{iterations},\"seed\":{seed},\
          \"server\":{},\"elapsed_ns\":{}",
-        pg::json_string(&server),
+        json::json_string(&server),
         elapsed.as_nanos()
     );
     for (name, value) in metrics.fields() {
