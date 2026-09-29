@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-22  
-**Code footprint:** 3 Rust source files · 1447 nonblank source lines · 1 integration-test files · 27 test markers (`#[test]`, `#[tokio::test]`)
+**Last reviewed:** 2026-09-27  
+**Code footprint:** 3 Rust source files · 1461 nonblank source lines · 1 integration-test files · 30 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -19,7 +19,7 @@
 - A request names the endpoint it is for, so a request that was legitimate at one runtime is refused when relayed to another rather than being indistinguishable from one composed for it
 - A receipt names its own author and is bound to a digest of the exact bytes that arrived; a requester checks the author against the peer the connection authenticated before reading anything else, then the request id, then the digest
 - Four outcomes rather than two: applied, applied without a response, uncertain, refused — because a wire that reported an unknown outcome as a refusal would invite a retry of an effect that had already applied and throw the runtime's fence away at the last step
-- The mapping from runtime refusals onto wire outcomes is an exhaustive match, so a refusal a later build adds breaks the build rather than being reported as nothing having happened
+- The mapping from runtime refusals onto wire outcomes is an exhaustive match, so a refusal a later build adds breaks the build rather than being reported as nothing having happened; a request under an at-most-once key spent on another action, project or principal (KeyBoundToAnotherAction) is reported as refused with the Runtime code, since nothing was attempted for it; an effect the adapter applied whose settlement the host could not commit (SettlementNotRecorded) is reported as applied without a response, since a refusal would invite a retry that applies it again; the action is compared at the revision and generation its attempt recorded, so a retry carrying the host's current ones is answered rather than refused
 - Every refusal of authority crosses the wire as one code, so a requester cannot tell a peer it never admitted from an action outside its grant; the full reason stays on the host for an operator
 - A bounded per-peer replay window refuses a frame sent twice before the runtime is asked anything, spent only after the peer is admitted so an admitted peer's request is treated the same way whatever the runtime then decides
 - The window and the at-most-once key are separate and neither stands in for the other: retrying an intent means a new request id with the same key, which is the only combination that says this one again rather than do it once more
@@ -36,6 +36,7 @@
 - Signed receipts, and therefore any third-party evidence: inside one exchange the connection vouches for a receipt's author and outside it nothing does, so this crate offers no way to verify one rather than producing an artifact that looks like evidence and is not
 - A peer identity that is unforgeable at the type level, constructible only from an authenticated connection the way VerifiedDispatch is constructible only inside the runtime; that needs a ptr-runtime dependency on ptr-net and is recorded as an open decision
 - Detached work over the wire: a detached grant is audited by an attempt that stays unsettled until the adapter reports back, and there is no channel here for that report, so it is refused before the attempt is committed
+- At-most-once keys scoped per principal or project: they are one namespace per host runtime, so a peer refused under a key it sent learns that another principal spent that key, and a principal that spends a key first makes it refused to every other; a requester has to choose keys nobody else can guess
 - Reconciliation: an uncertain outcome is reported and then belongs to the host's operator, because a remote peer must not be able to declare what happened to an effect
 - An accept loop a deployment would run, including backpressure toward a peer that asks faster than the runtime can answer
 - Session reuse: every request opens a connection, which is correct and wasteful
@@ -68,9 +69,12 @@
 - a peer that was never admitted is refused identically to an admitted peer asking outside its grant, on the first request and on a replay
 - the same frame sent twice is refused by the window and the effect applies once
 - a retry under a new request id with the same at-most-once key is answered from the record rather than executed again
+- a key spent by one peer is refused to another peer admitted as another principal, with the same action under the same key, rather than answered with the first peer's receipt; nothing is executed or recorded for it, and the peer that spent the key is still answered on a retry
 - a damaged frame arriving on a real connection is refused before it reaches the runtime, writes no record, and is still answered with a receipt bound to the bytes that arrived
 - a detached grant is refused over the wire, before the adapter is reached, and leaves the runtime unfenced
 - an adapter that cannot say whether it applied yields an uncertain outcome rather than a refusal, the fence stands, and the next request is refused rather than reported as a second uncertainty
+- an effect the adapter applied whose settlement the host cannot commit, because its ledger has no index left, is reported to the requester as applied without a response rather than refused, the adapter is reached once, and the attempt still fences the host
+- an attempt record the host cannot commit, because its ledger has no index left at all, is reported as refused, the adapter is never reached and no attempt is left unsettled
 - withdrawing a peer takes effect on its very next request over the wire
 - two runtimes audit the same peer's requests independently: an at-most-once key spent at one says nothing at the other
 - compile-fail doctest: a bare endpoint address is not an argument to request, verified against a positive control so it fails on the type rather than on a path
@@ -104,6 +108,13 @@ cheaply, and it survives neither a restart nor the window's own bound. An
 **at-most-once key** is the runtime's, recorded in the ledger, and it is what makes a
 retry apply once. So retrying an intent means a *new* `request_id` with the *same*
 key — the only combination that says "this one again" rather than "do it once more".
+"This one" is the action the key was spent on, from the principal that spent it,
+compared at the revision and generation its attempt recorded, so a retry carrying
+the host's current ones is still answered: a request under the key for anything
+else is refused, not answered with that receipt. Keys are one namespace per host
+runtime, not one per principal, so that refusal tells a peer another principal
+spent the key, and whoever spends a key first blocks it for everyone else; choose
+keys nobody else can guess.
 
 ## What a receipt is not
 

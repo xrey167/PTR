@@ -1,0 +1,6 @@
+flowchart LR
+    A["Committed events with ledger anchors"] --> B["ptr-pg\nPostgreSQL Projection Substrate"]
+    B --> C["Projection, live-only caches, working state"]
+    C --> D["Fenced readers and search"]
+    B -. "contracts" .-> T["ptr-types"]
+    L["ptr-ledger (authority)"] -. "never replaced" .-> B

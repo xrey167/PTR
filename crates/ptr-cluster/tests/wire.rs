@@ -461,9 +461,30 @@ async fn a_member_that_cannot_be_reached_is_reported_rather_than_failing_the_wri
     follower.close().await;
 }
 
+/// Admits every change: the fixture's host write needs a grant, and what it
+/// writes is not under test.
+struct AcceptFixture;
+
+impl<'a> ptr_verifier::Verifier<ptr_runtime::SemanticChange<'a>> for AcceptFixture {
+    fn verify(&self, _: &ptr_runtime::SemanticChange<'a>) -> ptr_verifier::VerificationReport {
+        ptr_verifier::VerificationReport {
+            status: ptr_verifier::VerificationStatus::Pass,
+            level: ptr_types::VerificationLevel::Deterministic,
+            score: ptr_types::Probability::new(1.0).unwrap(),
+            findings: Vec::new(),
+        }
+    }
+}
+
+impl<'a> ptr_verifier::NamedVerifier<ptr_runtime::SemanticChange<'a>> for AcceptFixture {
+    fn name(&self) -> &'static str {
+        "test-accept-all"
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_ptrcs002_snapshot_travels_as_the_payload_and_restores_on_the_far_side() {
-    // "Reusing PTRCS002 rather than inventing a second artifact" is the requirement,
+async fn a_ptrcs004_snapshot_travels_as_the_payload_and_restores_on_the_far_side() {
+    // "Reusing PTRCS004 rather than inventing a second artifact" is the requirement,
     // so the payload here is a real compacted snapshot exported by a real runtime,
     // and the far side restores a runtime from the bytes that arrived.
     //
@@ -476,7 +497,7 @@ async fn a_ptrcs002_snapshot_travels_as_the_payload_and_restores_on_the_far_side
     use ptr_runtime::PtrRuntime;
     use ptr_semdb::SemanticDelta;
 
-    let temp = Temp::new("ptrcs002");
+    let temp = Temp::new("ptrcs004");
     const THREE: [u64; 3] = [1, 2, 3];
 
     // The application state the snapshot describes.
@@ -486,14 +507,24 @@ async fn a_ptrcs002_snapshot_travels_as_the_payload_and_restores_on_the_far_side
         .upserts
         .insert("plan".into(), "carried by raft".into());
     runtime
-        .apply_semantic_delta(runtime.revision(), delta)
+        .install_semantic_grant(
+            ptr_runtime::SemanticGrant::new(
+                ptr_runtime::execution::RequiredVerification::Deterministic,
+            )
+            .with_verifier(AcceptFixture)
+            .allow_host_writes(),
+        )
+        .unwrap();
+    let revision = runtime.revision();
+    runtime
+        .apply_verified_semantic_delta(revision, delta, &"test-operator".into())
         .unwrap();
     let exported = runtime.export_compacted_snapshot().unwrap();
     let payload = exported.bytes().to_vec();
     let anchor = exported.anchor();
     assert_eq!(
         &payload[..8],
-        b"PTRCS002",
+        b"PTRCS004",
         "the payload is the artifact itself"
     );
 

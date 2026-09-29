@@ -366,7 +366,7 @@ class RecordGates(unittest.TestCase):
         problems = agg.completeness(
             {"eval": {"M001": full, "M003": nan}, "rerun": {"M001": {}}, "contingency": {"M001": short}},
             SEEDS, dict(planned, M004=["frozen-router"]), scores_for)
-        self.assertIn("contingency M001/43: no completed process", problems)
+        self.assertIn("contingency M001//43: missing or non-finite process", problems)
         self.assertIn("eval M003/71: a non-finite loss", problems)
         self.assertIn("rerun M001/17: no completed process", problems)
         self.assertIn("eval M004: no records", problems)
@@ -565,6 +565,7 @@ class StockCrossCheck(unittest.TestCase):
                     run_path.write_text(json.dumps({
                         **record(SEEDS[0], stdout=""),
                         "entrypoint": agg.STUDY_KINDS[kind],
+                        "parameters": {"arms": "full"},
                     }))
                     stock_path = results / "stock.json"
                     stock_path.write_text(json.dumps({"groups": [
@@ -582,6 +583,7 @@ class StockCrossCheck(unittest.TestCase):
                         build_table=Mock(return_value=(score_table, [], [], "aa")),
                         preregistration_ref=Mock(return_value="c" * 40),
                         frozen_input_violations=Mock(return_value=[]),
+                        sweep_evidence=Mock(return_value={"pass": True}),
                         decide=Mock(return_value={"verdicts": {}}),
                     ), patch.object(agg.subprocess, "run", return_value=subprocess.CompletedProcess(
                         [], 0, stdout=str(stock_path), stderr=""
@@ -593,6 +595,33 @@ class StockCrossCheck(unittest.TestCase):
                     expected.append(f"{prefix}/absent/{SPLITS[0]}: missing scores")
                     self.assertEqual(check, {"pass": False, "mismatches": expected})
 
+
+
+class ContingencyRetention(unittest.TestCase):
+    def test_separate_arms_and_retries_are_retained_by_seed_and_arm_set(self):
+        first = {"seed": 17, "status": "completed", "parameters": {"arms": "full,a"}}
+        second = {"seed": 17, "status": "completed", "parameters": {"arms": "full,b"}}
+        failed = {**first, "status": "failed"}
+        retry = {**first, "stdout": "retry"}
+        chosen = agg.chosen_contingencies([first, second, failed, retry])
+        self.assertEqual(len(chosen), 2)
+        self.assertIn(second, chosen.values())
+        self.assertIn(retry, chosen.values())
+
+    def test_each_contingency_arm_set_requires_every_seed(self):
+        runs = [{"seed": s, "status": "completed", "parameters": {"arms": arms}}
+                for s, arms in [(17, "full,a"), (29, "full,a"), (17, "full,b")]]
+        chosen = {"contingency": {"M001": agg.chosen_contingencies(runs)}, "rerun": {"M001": {17: {"seed": 17}}}}
+        problems = agg.completeness(chosen, [17, 29], {}, {})
+        self.assertEqual(problems, ["contingency M001/full,b/29: missing or non-finite process"])
+
+    def test_repeated_comparators_must_have_identical_scored_evidence(self):
+        entry = {"arm": "full", "seed": 17, "split": "test_iid", "record": "one", "route_accuracy": 0.9}
+        for accuracy, allowed in [(0.9, True), (0.8, False)]:
+            with self.subTest(accuracy=accuracy):
+                scorer = Mock(score_records=Mock(return_value=({"results": [entry, {**entry, "record": "two", "route_accuracy": accuracy}], "data_fnv1a64": "aa"}, [])))
+                _, problems, _, _ = agg.build_table([], scorer, repeated_comparators=True)
+                self.assertEqual(not problems, allowed)
 
 if __name__ == "__main__":
     unittest.main()

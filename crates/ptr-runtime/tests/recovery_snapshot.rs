@@ -1,3 +1,5 @@
+#[path = "common/semantic.rs"]
+mod semantic_common;
 use ptr_config::PtrConfig;
 use ptr_ledger::{
     integrity::{self, LogAnchor},
@@ -9,6 +11,7 @@ use ptr_runtime::{
 };
 use ptr_semdb::{SemanticDelta, SemanticPayload, SemanticValue};
 use ptr_types::{Generation, Revision};
+use semantic_common::{granted, host_write, host_write_now};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -35,6 +38,7 @@ impl Drop for Temp {
 }
 fn fixture() -> PtrRuntime {
     let mut r = PtrRuntime::new(PtrConfig::default()).unwrap();
+    granted(&mut r);
     let mut d = SemanticDelta::default();
     d.upserts.insert("source".into(), "München\n東京\0".into());
     d.upserts.insert("derived".into(), "cached".into());
@@ -49,7 +53,7 @@ fn fixture() -> PtrRuntime {
     );
     d.dependencies
         .insert("derived".into(), ["source".into()].into());
-    r.apply_semantic_delta(Revision(0), d).unwrap();
+    host_write(&mut r, Revision(0), d).unwrap();
     r.commit(LedgerEvent::CapsuleCommitted {
         project: "p".into(),
         capsule: "a".into(),
@@ -63,7 +67,7 @@ fn fixture() -> PtrRuntime {
     .unwrap();
     let mut d = SemanticDelta::default();
     d.removals.insert("source".into());
-    r.apply_semantic_delta(r.revision(), d).unwrap();
+    host_write_now(&mut r, d).unwrap();
     r
 }
 fn compare(left: &PtrRuntime, right: &PtrRuntime) {
@@ -99,6 +103,7 @@ fn snapshot_restores_exact_state_dependencies_tombstones_and_append_position() {
         snapshot.anchor(),
     )
     .unwrap();
+    granted(&mut restored);
     compare(&original, &restored);
     assert_eq!(
         restored.snapshot().inputs("derived").collect::<Vec<_>>(),
@@ -106,9 +111,7 @@ fn snapshot_restores_exact_state_dependencies_tombstones_and_append_position() {
     );
     let mut d = SemanticDelta::default();
     d.upserts.insert("derived".into(), "stale".into());
-    assert!(restored
-        .apply_semantic_delta(restored.revision(), d)
-        .is_err());
+    assert!(host_write_now(&mut restored, d).is_err());
     assert!(restored
         .commit(LedgerEvent::CapsuleCommitted {
             project: "p".into(),
@@ -124,6 +127,7 @@ fn snapshot_restores_exact_state_dependencies_tombstones_and_append_position() {
         tmp.path("log"),
     )
     .unwrap();
+    granted(&mut disk);
     compare(&original, &disk);
     disk.ingest_text("new".into(), "next").unwrap();
     let next_anchor = disk.journal_anchor().unwrap();

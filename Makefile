@@ -1,6 +1,6 @@
 .PHONY: check test fmt a0 a0-stable a0-msrv repo-check docs docs-check meta-check experiments-check evals-check msrv python-test manifest tree \
 	ci-local ci-quality ci-rust-stable ci-rust-msrv ci-python-training ci-repository-invariants \
-	ci-lifecycle-failpoints ci-ledger-raft-engine ci-ledger-raft-rs ci-state-turso \
+	ci-lifecycle-failpoints ci-ledger-raft-engine ci-ledger-raft-rs ci-state-turso ci-state-postgres \
 	ci-network-iroh ci-cluster-wire ci-execution-wire ci-pod-wire
 
 # `model/burn-a0` is its own workspace, excluded from the root one, so every
@@ -91,7 +91,7 @@ tree:
 # and security.yml, which needs cargo-audit and cargo-deny. `make a0` is the
 # burn-a0 workflow, which runs only when A0 or what it depends on changes.
 ci-local: ci-quality ci-rust-stable ci-rust-msrv ci-python-training ci-repository-invariants \
-	ci-lifecycle-failpoints ci-ledger-raft-engine ci-ledger-raft-rs ci-state-turso \
+	ci-lifecycle-failpoints ci-ledger-raft-engine ci-ledger-raft-rs ci-state-turso ci-state-postgres \
 	ci-network-iroh ci-cluster-wire ci-execution-wire ci-pod-wire
 
 ci-quality:
@@ -184,3 +184,16 @@ ci-pod-wire:
 	cargo +stable clippy -p ptr-podwire --features podwire-backend --all-targets --locked -- -D warnings
 	rustup toolchain install 1.91.0 --profile minimal
 	cargo +1.91.0 test -p ptr-podwire --features podwire-backend --locked
+
+# Start a local PostgreSQL 16+ / pgvector service first. These defaults match CI's
+# disposable container; override them for your local disposable test database.
+ci-state-postgres: export PTR_PG_TEST_DSN ?= host=127.0.0.1 port=5432 user=postgres password=postgres dbname=postgres
+ci-state-postgres: export PTR_PG_EXPERIMENT_DSN ?= host=127.0.0.1 port=5432 user=postgres password=postgres dbname=postgres
+ci-state-postgres:
+	cargo +stable test -p ptr-pg --features postgres-backend --locked
+	cargo +stable clippy -p ptr-pg --features postgres-backend --all-targets --locked -- -D warnings
+	rustup toolchain install 1.85.0 --profile minimal
+	cargo +1.85.0 test -p ptr-pg --features postgres-backend --locked
+	cargo +stable clippy -p ptr-bench --features turso-oracle --all-targets --locked -- -D warnings
+	cargo +stable run -p ptr-bench --features turso-oracle --locked -- projection-equivalence 2 17
+	cargo +stable run -p ptr-bench --features postgres-experiments --locked -- fastmem-revocation 2 17

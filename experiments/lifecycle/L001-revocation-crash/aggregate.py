@@ -1,8 +1,23 @@
+"""Aggregate L001 ledger-recovery results into results/metrics.json and results/run.json.
+
+metrics.json and run.json are published as one aggregate
+(`experiment_records.publish_aggregate`): run.json names the SHA-256 of the
+metrics.json written with it, a failure while writing leaves the previous pair,
+and an interruption while publishing leaves no run.json rather than the previous
+one beside new metrics. `scripts/check_research_gates.py` asks a completed
+experiment's current run.json for that binding.
+"""
+
 from __future__ import annotations
-import argparse, datetime as dt, json, subprocess
+import argparse, datetime as dt, json, subprocess, sys
 from pathlib import Path
 
-ROOT=Path(__file__).resolve().parents[3]
+HERE=Path(__file__).resolve().parent
+ROOT=HERE.parents[2]
+RESULTS=HERE/"results"
+
+sys.path.insert(0,str(ROOT/"scripts"))
+import experiment_records  # noqa: E402
 
 def main():
     ap=argparse.ArgumentParser()
@@ -16,9 +31,7 @@ def main():
       "recovery_errors":sum(r["recovery_errors"] for r in records),
       "tail_trim_errors":sum(r["tail_trim_errors"] for r in records),
     }
-    results=Path(__file__).resolve().parent/"results"
     metrics={"scope":"reference FileLedger partial-tail crash injection","seeds":records,"totals":totals}
-    (results/"metrics.json").write_text(json.dumps(metrics,indent=2)+"\n",encoding="utf-8")
     try:
         sha=subprocess.check_output(["git","rev-parse","HEAD"],cwd=ROOT,text=True).strip()
     except Exception:
@@ -35,7 +48,10 @@ def main():
         "not yet process-kill/fail-rs/raft-engine/partition coverage",
       ],
     }
-    (results/"run.json").write_text(json.dumps(run,indent=2)+"\n",encoding="utf-8")
+    try:
+        experiment_records.publish_aggregate(RESULTS,metrics,run)
+    except experiment_records.ProvenanceError as error:
+        raise SystemExit(f"L001: {error}")
 
 if __name__=="__main__":
     main()

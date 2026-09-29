@@ -17,23 +17,80 @@
 //! Like every other artifact here it restores committed state only: no
 //! permissions, sessions, permits, registrations, external-effect outcomes or
 //! neural/KV state. Those are not history and cannot be replayed.
-use super::execution::{SettledOutcome, UnsettledEffect};
+use super::execution::{ActionIdentity, SettledOutcome, UnsettledEffect};
 use super::{PtrRuntime, RuntimeError, RuntimeLedger};
 use ptr_config::PtrConfig;
 use ptr_ledger::integrity::{self, LogAnchor};
 use ptr_ledger::{CommittedEvent, InMemoryLedger, MAX_RETAINED_RESPONSE};
 use ptr_semdb::{SemanticDelta, SemanticHost};
 use ptr_state::MaterializedState;
-use ptr_types::{CommitIndex, Effect, Generation, Revision};
+use ptr_types::{CommitIndex, Effect, Generation, ProjectId, Revision};
 use std::collections::{BTreeMap, BTreeSet};
 
-const MAGIC: &[u8; 8] = b"PTRCS002";
-const EXECUTION_MAGIC: &[u8; 8] = b"PTREX001";
-const LIFECYCLE_MAGIC: &[u8; 8] = b"PTRLC001";
+/// PTRCS004 is the layout this build writes: its lifecycle section is
+/// PTRLC002, the first that may carry [`ptr_state::ATTESTED_MARKER`] and the
+/// merged-branch keys ([`ptr_state::MERGED_BRANCH_PREFIX`]).
+///
+/// The magic moved so that a build from before attributed records stops here.
+/// Reading a snapshot of a history that holds attributed records, such a
+/// build would ignore the marker, then append records that history's replay
+/// refuses, or merge a branch the history already merged.
+const MAGIC: &[u8; 8] = b"PTRCS004";
+/// PTRCS003, the layout before attributed records: still read, never written,
+/// and only with a PTRLC001 lifecycle section. Such a snapshot describes a
+/// history of tag-8 semantic records only, so the absence of the marker it
+/// implies is true, and a PTRLC001 section that holds the marker or a
+/// merged-branch key is refused by version. Its execution section is
+/// PTREX002, as in PTRCS004. PTRCS003 was the first layout with PTREX002: a
+/// PTRCS002 or PTRCS001 snapshot is refused by version rather than read with
+/// the weaker meaning its older execution section had.
+const PRE_ATTESTATION_MAGIC: &[u8; 8] = b"PTRCS003";
+/// PTREX002 binds every applied key to the attempt that settled it and to the
+/// project, principal, revision, generation and action digest that attempt
+/// recorded, and carries the same five for every unsettled attempt. PTREX001
+/// carried none of them, so a key restored from it could be neither held to its
+/// action nor named by its attempt, and a section in that layout is refused by
+/// version.
+const EXECUTION_MAGIC: &[u8; 8] = b"PTREX002";
+const LIFECYCLE_MAGIC: &[u8; 8] = b"PTRLC002";
+/// The lifecycle section of a PTRCS003 snapshot, read only inside one.
+const PRE_ATTESTATION_LIFECYCLE_MAGIC: &[u8; 8] = b"PTRLC001";
+
+/// Which of the two readable layouts a snapshot is in, as its outer magic
+/// says. The lifecycle section must be the one that layout pairs with.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Layout {
+    /// PTRCS004 with PTRLC002.
+    Attested,
+    /// PTRCS003 with PTRLC001.
+    PreAttestation,
+}
 const HEADER: usize = 80;
 const DIGEST_BYTES: usize = 32;
 const MAX_SECTION_ITEMS: usize = 65_536;
-const MAX_STRING_BYTES: usize = 4096;
+/// The bound on each string the lifecycle section writes, and on each
+/// at-most-once key and each unsettled attempt's target and operation the
+/// execution section writes: 1 to this many bytes, as in every earlier layout.
+/// A key in an attempt being committed is held to it
+/// ([`MAX_KEY_BYTES`](crate::execution::MAX_KEY_BYTES)). A longer key, which a
+/// log written by an earlier build may hold, is replayed, and export then fails
+/// with [`CompactedError::SectionLimit`] once it has settled, as it did before.
+/// The project and principal an attempt recorded are written at any length, the
+/// empty string included, since no build has bounded them.
+///
+/// That bounds each string, not the section. Every settled key, with an
+/// applied one's project, principal and retained response of up to
+/// [`MAX_RETAINED_RESPONSE`](ptr_ledger::MAX_RETAINED_RESPONSE), is written
+/// into the one execution section, which [`MAX_SECTION_BYTES`] and
+/// `MAX_SECTION_ITEMS` bound, and nothing removes a settled key. So eight keys
+/// each retaining a full-size response, or more than `MAX_SECTION_ITEMS`
+/// settled keys, make every later export fail with
+/// [`CompactedError::SectionLimit`] although no string is out of bounds.
+/// PTREX002 writes each applied key with 64 bytes more than PTREX001 did (the
+/// settling attempt, revision, generation, action digest and two lengths) plus
+/// its project and principal, so a history whose execution section came close
+/// to the bound in the previous layout can pass it in this one.
+pub(crate) const MAX_STRING_BYTES: usize = 4096;
 /// Bound on one encoded section, checked before any allocation driven by a count.
 pub const MAX_SECTION_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_COMPACTED_BYTES: usize = HEADER + 3 * MAX_SECTION_BYTES + DIGEST_BYTES;
@@ -166,7 +223,6 @@ impl Writer {
         self.raw(&(value.len() as u32).to_le_bytes())?;
         self.raw(value.as_bytes())
     }
-    /// Encode one little-endian unsigned integer.
     /// Encode one bounded byte string.
     ///
     /// Separate from `count`, which bounds a *collection's cardinality* at
@@ -182,8 +238,33 @@ impl Writer {
         self.raw(value)
     }
 
+    /// Encode one little-endian unsigned integer.
     fn number(&mut self, value: u64) -> Result<(), RuntimeError> {
         self.raw(&value.to_le_bytes())
+    }
+
+    /// Encode one UTF-8 string of any length the section has room for, the
+    /// empty one included.
+    ///
+    /// For what an attempt recorded, which no build has bounded: a snapshot
+    /// must not refuse a string a log it compacts could hold. The section as a
+    /// whole is still bounded ([`MAX_STRING_BYTES`] says by how much more an
+    /// applied key weighs here than in the previous layout).
+    fn field(&mut self, value: &str) -> Result<(), RuntimeError> {
+        let length =
+            u32::try_from(value.len()).map_err(|_| invalid(CompactedError::SectionLimit))?;
+        self.raw(&length.to_le_bytes())?;
+        self.raw(value.as_bytes())
+    }
+
+    /// Encode what an attempt recorded: project, principal, revision,
+    /// generation, then the fixed-width action digest.
+    fn identity(&mut self, identity: &ActionIdentity) -> Result<(), RuntimeError> {
+        self.field(&identity.project.0)?;
+        self.field(&identity.principal)?;
+        self.number(identity.revision.0)?;
+        self.number(identity.generation.0)?;
+        self.raw(&identity.action_digest)
     }
 }
 
@@ -224,7 +305,6 @@ impl<'a> Reader<'a> {
         String::from_utf8(self.take(length)?.to_vec())
             .map_err(|_| invalid(CompactedError::NoncanonicalSection))
     }
-    /// Decode one little-endian unsigned integer.
     /// Decode one bounded byte string, with the same bound the writer used.
     fn blob(&mut self) -> Result<Vec<u8>, RuntimeError> {
         let length = u32::from_le_bytes(self.take(4)?.try_into().expect("length bytes")) as usize;
@@ -234,10 +314,30 @@ impl<'a> Reader<'a> {
         Ok(self.take(length)?.to_vec())
     }
 
+    /// Decode one little-endian unsigned integer.
     fn number(&mut self) -> Result<u64, RuntimeError> {
         Ok(u64::from_le_bytes(
             self.take(8)?.try_into().expect("fixed number"),
         ))
+    }
+
+    /// Decode one string `Writer::field` wrote. Its length is checked against
+    /// the bytes that remain before anything is allocated for it.
+    fn field(&mut self) -> Result<String, RuntimeError> {
+        let length = u32::from_le_bytes(self.take(4)?.try_into().expect("fixed length")) as usize;
+        String::from_utf8(self.take(length)?.to_vec())
+            .map_err(|_| invalid(CompactedError::NoncanonicalSection))
+    }
+
+    /// Decode what an attempt recorded, in the order the writer put it.
+    fn identity(&mut self) -> Result<ActionIdentity, RuntimeError> {
+        Ok(ActionIdentity {
+            project: ProjectId(self.field()?),
+            principal: self.field()?,
+            revision: Revision(self.number()?),
+            generation: Generation(self.number()?),
+            action_digest: self.take(DIGEST_BYTES)?.try_into().expect("fixed digest"),
+        })
     }
     /// Whether the section has no trailing bytes.
     fn finished(&self) -> bool {
@@ -276,12 +376,24 @@ impl LifecycleState {
     /// Decoding enforces strict ascending key order per section, so each state has
     /// exactly one encoding and a reordered or duplicated entry fails closed
     /// rather than resolving to whichever entry happens to come last.
-    fn decode(bytes: &[u8]) -> Result<Self, RuntimeError> {
+    ///
+    /// The section must be the one `layout` pairs with, and a PTRLC001 section
+    /// must hold neither [`ptr_state::ATTESTED_MARKER`] nor a key under
+    /// [`ptr_state::MERGED_BRANCH_PREFIX`]: both are refused by version. In a
+    /// PTRLC002 section every key under that prefix must be exactly a
+    /// [`ptr_state::merged_branch_key`] holding exactly a
+    /// [`ptr_state::merged_branch_entry`], as a merge projects them, or the
+    /// section is refused as noncanonical.
+    fn decode(bytes: &[u8], layout: Layout) -> Result<Self, RuntimeError> {
         if bytes.len() > MAX_SECTION_BYTES {
             return Err(invalid(CompactedError::SizeLimit));
         }
         let mut reader = Reader { bytes, offset: 0 };
-        if reader.take(8)? != LIFECYCLE_MAGIC {
+        let magic = match layout {
+            Layout::Attested => LIFECYCLE_MAGIC,
+            Layout::PreAttestation => PRE_ATTESTATION_LIFECYCLE_MAGIC,
+        };
+        if reader.take(8)? != magic {
             return Err(invalid(CompactedError::UnsupportedVersion));
         }
         let mut state = Self::default();
@@ -290,6 +402,18 @@ impl LifecycleState {
             let key = reader.text()?;
             let value = reader.text()?;
             check_ascending(&mut previous, &key)?;
+            if layout == Layout::PreAttestation
+                && (key == ptr_state::ATTESTED_MARKER
+                    || key.starts_with(ptr_state::MERGED_BRANCH_PREFIX))
+            {
+                return Err(invalid(CompactedError::UnsupportedVersion));
+            }
+            if key.starts_with(ptr_state::MERGED_BRANCH_PREFIX)
+                && (ptr_state::merged_branch_of(&key).is_none()
+                    || ptr_state::parse_merged_branch_entry(&value).is_none())
+            {
+                return Err(invalid(CompactedError::NoncanonicalSection));
+            }
             state.materialized.insert(key, value);
         }
         let mut previous: Option<String> = None;
@@ -340,6 +464,11 @@ fn check_ascending(previous: &mut Option<String>, key: &str) -> Result<(), Runti
 /// there, so it came back with an empty fence and no memory of which
 /// at-most-once keys had been spent — and a retry under a spent key executed the
 /// effect a second time. That is the whole reason the section exists.
+///
+/// A spent key travels with the attempt that settled it and with what that
+/// attempt recorded, because the records that held both are below the floor: a
+/// restored runtime still refuses another action under the key, and still names
+/// the settling attempt when it answers or refuses a retry.
 #[derive(Debug, Default, Eq, PartialEq)]
 struct ExecutionObligations {
     unsettled: BTreeMap<CommitIndex, UnsettledEffect>,
@@ -391,16 +520,30 @@ impl ExecutionObligations {
             out.text(&effect.target)?;
             out.text(&effect.operation)?;
             out.number(effect_tag(effect.effect))?;
+            out.identity(&effect.identity)?;
         }
         out.count(self.settled.len())?;
         for (key, outcome) in &self.settled {
             out.text(key)?;
+            // The tag comes first because it decides which fields follow: an
+            // outcome that applied names its attempt and what it recorded, and
+            // one that did not binds nothing, so it carries nothing.
             match outcome {
-                SettledOutcome::Applied { response } => {
+                SettledOutcome::Applied {
+                    attempt,
+                    identity,
+                    response,
+                } => {
                     out.number(0)?;
+                    out.number(attempt.0)?;
+                    out.identity(identity)?;
                     out.blob(response)?;
                 }
-                SettledOutcome::AppliedWithoutResponse => out.number(1)?,
+                SettledOutcome::AppliedWithoutResponse { attempt, identity } => {
+                    out.number(1)?;
+                    out.number(attempt.0)?;
+                    out.identity(identity)?;
+                }
                 SettledOutcome::NotApplied => out.number(2)?,
             }
         }
@@ -438,6 +581,7 @@ impl ExecutionObligations {
             let target = reader.text()?;
             let operation = reader.text()?;
             let effect = effect_from_tag(reader.number()?)?;
+            let identity = reader.identity()?;
             state.unsettled.insert(
                 CommitIndex(attempt),
                 UnsettledEffect {
@@ -446,6 +590,7 @@ impl ExecutionObligations {
                     target,
                     operation,
                     effect,
+                    identity,
                 },
             );
         }
@@ -459,9 +604,14 @@ impl ExecutionObligations {
             previous = Some(key.clone());
             let outcome = match reader.number()? {
                 0 => SettledOutcome::Applied {
+                    attempt: CommitIndex(reader.number()?),
+                    identity: reader.identity()?,
                     response: reader.blob()?,
                 },
-                1 => SettledOutcome::AppliedWithoutResponse,
+                1 => SettledOutcome::AppliedWithoutResponse {
+                    attempt: CommitIndex(reader.number()?),
+                    identity: reader.identity()?,
+                },
                 2 => SettledOutcome::NotApplied,
                 _ => return Err(invalid(CompactedError::UnknownTag)),
             };
@@ -550,18 +700,25 @@ impl PtrRuntime {
     /// `above_floor` must be the records a checked log holds above `trusted.floor`
     /// — in practice
     /// [`AcknowledgedLedger::events`](ptr_ledger::AcknowledgedLedger::events) for a
-    /// log whose anchor carries that same floor. Each one goes through the ordinary
-    /// lifecycle and semantic validation path, so a restored runtime cannot reach a
-    /// state a live run would have refused.
+    /// log whose anchor carries that same floor. Each one goes through the
+    /// validation replay applies, the ordinary lifecycle and semantic path, so a
+    /// restored runtime cannot reach a state a replay of the whole log would have
+    /// refused. That is the validation a live commit applies to the record
+    /// itself, with two exceptions: the bound on a new attempt's key, which a
+    /// log written by an earlier build may exceed, and the refusal of every
+    /// semantic record, which only the semantic write paths may write and
+    /// which replay judges by the origin rules they check instead. The fence a
+    /// live commit also checks is the runtime's state, not the record's, and
+    /// replay rebuilds it.
     pub fn restore_compacted(
         config: PtrConfig,
         bytes: &[u8],
         trusted: CompactedAnchor,
         above_floor: &[CommittedEvent],
     ) -> Result<Self, RuntimeError> {
-        let (semantic, lifecycle, execution) = compacted_sections(bytes, trusted)?;
+        let (layout, (semantic, lifecycle, execution)) = compacted_sections(bytes, trusted)?;
         let semantic = SemanticDelta::decode(semantic).map_err(RuntimeError::Semantic)?;
-        let lifecycle = LifecycleState::decode(lifecycle)?;
+        let lifecycle = LifecycleState::decode(lifecycle, layout)?;
         let semdb =
             SemanticHost::restore(trusted.revision, semantic).map_err(RuntimeError::Semantic)?;
 
@@ -590,7 +747,7 @@ impl PtrRuntime {
                 return Err(invalid(CompactedError::JournalNotAboveFloor));
             }
             runtime.validate_lifecycle_event(&expected.event)?;
-            let semantic = runtime.prepare_semantic_event(&expected.event)?;
+            let semantic = runtime.prepare_semantic_event(Some(expected.index), &expected.event)?;
             let actual = runtime.ledger.append(expected.event.clone())?;
             if actual != expected.index {
                 return Err(RuntimeError::ReplayIndexMismatch {
@@ -610,22 +767,25 @@ impl PtrRuntime {
     }
 }
 
-/// Validate framing, bounds, digest and trusted identity, then hand back the two
-/// sections. Nothing is decoded before the whole artifact is accounted for.
 /// The three body sections of a verified snapshot: semantic, lifecycle and
 /// execution, in the order they are written.
 type CompactedSections<'a> = (&'a [u8], &'a [u8], &'a [u8]);
 
+/// Validate framing, bounds, digest and trusted identity, then hand back the
+/// layout and the sections. Nothing is decoded before the whole artifact is
+/// accounted for.
 fn compacted_sections(
     bytes: &[u8],
     trusted: CompactedAnchor,
-) -> Result<CompactedSections<'_>, RuntimeError> {
+) -> Result<(Layout, CompactedSections<'_>), RuntimeError> {
     if bytes.len() < HEADER + DIGEST_BYTES || bytes.len() > MAX_COMPACTED_BYTES {
         return Err(invalid(CompactedError::SizeLimit));
     }
-    if &bytes[..8] != MAGIC {
-        return Err(invalid(CompactedError::UnsupportedVersion));
-    }
+    let layout = match &bytes[..8] {
+        magic if magic == MAGIC => Layout::Attested,
+        magic if magic == PRE_ATTESTATION_MAGIC => Layout::PreAttestation,
+        _ => return Err(invalid(CompactedError::UnsupportedVersion)),
+    };
     let revision = Revision(u64::from_le_bytes(
         bytes[8..16].try_into().expect("revision"),
     ));
@@ -635,9 +795,10 @@ fn compacted_sections(
     };
     let semantic_len = u64::from_le_bytes(bytes[56..64].try_into().expect("semantic length"));
     let lifecycle_len = u64::from_le_bytes(bytes[64..72].try_into().expect("lifecycle length"));
-    // What was a reserved field in PTRCS001 is the execution section's length in
-    // PTRCS002. An older build reading a newer snapshot stops at the magic above
-    // rather than here, which is why the magic moved rather than the field alone.
+    // What was a reserved field in PTRCS001 is the execution section's length
+    // from PTRCS002 on. An older build reading a newer snapshot stops at the magic
+    // above rather than here, which is why the magic moved rather than the field
+    // alone.
     let execution_len = u64::from_le_bytes(bytes[72..80].try_into().expect("execution length"));
     if semantic_len > MAX_SECTION_BYTES as u64
         || lifecycle_len > MAX_SECTION_BYTES as u64
@@ -665,8 +826,11 @@ fn compacted_sections(
     let semantic_end = HEADER + semantic_len as usize;
     let lifecycle_end = semantic_end + lifecycle_len as usize;
     Ok((
-        &bytes[HEADER..semantic_end],
-        &bytes[semantic_end..lifecycle_end],
-        &bytes[lifecycle_end..end],
+        layout,
+        (
+            &bytes[HEADER..semantic_end],
+            &bytes[semantic_end..lifecycle_end],
+            &bytes[lifecycle_end..end],
+        ),
     ))
 }

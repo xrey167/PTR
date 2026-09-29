@@ -61,6 +61,7 @@ fn carrying(base: u64, value: &[u8]) -> LedgerEvent {
         base_revision: Revision(base),
         revision: Revision(base + 1),
         encoded_delta: value.to_vec(),
+        origin: ptr_ledger::SemanticOrigin::Legacy,
     }
 }
 

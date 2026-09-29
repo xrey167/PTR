@@ -44,6 +44,10 @@
         "shas": [
           "4b0ad160a19058da999113329887343c6cc3381d"
         ],
+        "sweep": {
+          "detail": "selected rates reproduce the archived frozen sweep",
+          "pass": true
+        },
         "tag_is_ancestor": true
       },
       "pass": true

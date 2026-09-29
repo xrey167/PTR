@@ -1,0 +1,20 @@
+version = 1
+kind = "workspace-area"
+name = "M008-fast-weight-memory"
+path = "experiments/model/M008-fast-weight-memory"
+tests_dir = "tests"
+
+# Frozen before M008 leaves `planned` (experiments/preregistration.toml,
+# scripts/check_research_gates.py). A `must-be-pinned-…` value is still to be
+# chosen. Neither baseline has a configuration in research/baselines/, so
+# each is pinned here.
+[preregistration]
+# The confirmatory seeds, as experiment.toml declares them.
+seeds = [17, 29, 43, 71, 101]
+# The equal token budget of every arm.
+token_budget = "must-be-pinned-before-prepared"
+# N, the facts the recency buffer keeps.
+recency_window = "must-be-pinned-before-prepared"
+recency_buffer_baseline = "must-be-pinned-before-prepared"
+# Hybrid retrieval over the same facts (the Q003 stack).
+hybrid_retrieval_baseline = "must-be-pinned-before-prepared"

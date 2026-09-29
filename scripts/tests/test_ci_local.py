@@ -215,7 +215,10 @@ class CiLocalMirrorsCi(unittest.TestCase):
         # Only step-level env is carried into the recipes; anything wider would
         # change every command without appearing in any of them.
         self.assertFalse(self.workflow["env"])
-        self.assertEqual([job for job, data in self.jobs.items() if data["env"]], [])
+        self.assertEqual([job for job, data in self.jobs.items() if data["env"]], ["state-postgres"])
+        makefile = (ROOT / "Makefile").read_text()
+        for name in ("PTR_PG_TEST_DSN", "PTR_PG_EXPERIMENT_DSN"):
+            self.assertIn(f"ci-state-postgres: export {name} ?= host=127.0.0.1 port=5432 user=postgres password=postgres dbname=postgres", makefile)
 
     def test_every_job_has_a_target_and_ci_local_runs_them_all(self):
         """Require one Makefile target per CI job and include them all in ci-local."""

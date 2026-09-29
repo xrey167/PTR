@@ -18,3 +18,20 @@ hard-invariant counters (`false_accepts`, `recovery_errors`, `tail_trim_errors`,
 and for the process probe `child_exit_errors`) is nonzero, after printing the
 JSON line. `scripts/run_experiment.py` records a run as `completed` from the exit
 status, so a violating run is now recorded as `failed` with its counters intact.
+## PostgreSQL experiment harnesses
+
+With the `postgres-experiments` feature the binary also runs the harnesses of
+[L003](../../experiments/lifecycle/L003-fastmem-revocation/README.md) and
+[L004](../../experiments/lifecycle/L004-projection-equivalence/README.md) against a
+loopback PostgreSQL 16+ server with pgvector 0.8+ named by `PTR_PG_EXPERIMENT_DSN`:
+
+```sh
+export PTR_PG_EXPERIMENT_DSN="host=127.0.0.1 port=5432 user=postgres"
+cargo run --release -p ptr-bench --features postgres-experiments -- fastmem-revocation 30 17
+cargo +stable run --release -p ptr-bench --features turso-oracle -- projection-equivalence 40 17
+```
+
+Each prints one JSON line and exits 1 on any hard failure. Every case gets its own
+schemas, tagged with the case so a crash can terminate exactly its sessions, and
+drops them when it ends. The feature stays out of default builds, so the default
+binary keeps its dependencies and toolchain.

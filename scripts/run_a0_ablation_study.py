@@ -32,6 +32,7 @@ import hashlib
 import importlib.util
 import json
 import math
+import shlex
 import re
 import subprocess
 import sys
@@ -393,28 +394,86 @@ def choose_lr(arm: str, by_lr: dict[float, dict], grid: list[float], tolerance: 
     return lr, flag, eligible
 
 
-def select(_args) -> None:
-    """Write per-arm learning rates selected from completed sweeps or the budget fallback."""
-    grid = config()["learning_rate"]["grid"]
-    tolerance = config()["learning_rate"]["selection_tolerance"]
-    plan = json.loads((STUDY_DIR / "budget.json").read_text(encoding="utf-8"))
+def selection_table(record_commit: str | None = None) -> list[dict]:
+    """Reproduce selection from the frozen sweep; never overwrite duplicate cells."""
+    frozen = aggregator()
+    reference = frozen.preregistration_ref()
+    rules = tomllib.loads(frozen.at_tag(CONFIG.relative_to(ROOT).as_posix()).decode())
+    plan = json.loads(frozen.at_tag("research/falsification/A0-ablations-v1/budget.json"))
+    lock = json.loads(frozen.at_tag("benchmarks/operator-routing/splits.lock.json"))
+    grid = rules["learning_rate"]["grid"]
+    tolerance = rules["learning_rate"]["selection_tolerance"]
     table = []
-    for experiment in EXPERIMENTS:
-        results: dict[str, dict[float, dict]] = {}
-        for record in records(experiment, "a0_sweep_entrypoint"):
+    hosts = set()
+    toolchains = set()
+    for experiment, directory in EXPERIMENTS.items():
+        manifest_bytes = frozen.at_tag(f"experiments/{directory}/experiment.toml")
+        manifest = tomllib.loads(manifest_bytes.decode())
+        results = {}
+        for record in records(experiment, "a0_sweep_entrypoint") if plan["sweep"] else []:
             if record.get("status") != "completed":
                 continue
-            for row in rows(record["stdout"]):
-                if row.get("row") == "sweep":
-                    results.setdefault(row["arm"], {})[row["lr"]] = row
+            label = record.get("_path", experiment)
+            def refuse(reason):
+                raise ValueError(f"{label}: invalid frozen sweep: {reason}")
+            if record_commit is not None:
+                archived = json.loads(frozen.git("show", f"{record_commit}:{label}"))
+                if archived != {k: v for k, v in record.items() if k != "_path"}:
+                    refuse("record differs from evaluation commit")
+            if record.get("experiment_id") != experiment or record.get("git_sha") != reference or record.get("git_dirty") is not False:
+                refuse("experiment, commit or clean source identity")
+            if record.get("seed") != 17 or record.get("exit_code") != 0:
+                refuse("seed or exit status")
+            if record.get("manifest_sha256") != hashlib.sha256(manifest_bytes).hexdigest():
+                refuse("manifest identity")
+            params = record.get("parameters", {})
+            try:
+                lr = float(params["lr"])
+            except (KeyError, TypeError, ValueError):
+                refuse("missing learning rate")
+            if set(params) != {"lr"} or lr not in grid:
+                refuse("learning rate outside grid")
+            expected = [token.replace("<seed>", "17").replace("<lr>", str(params["lr"]))
+                        for token in shlex.split(manifest["a0_sweep_entrypoint"])]
+            if record.get("command") != expected:
+                refuse("command differs from frozen step count, width, arms or data")
+            host = record.get("host")
+            if not isinstance(host, dict) or not all(host.get(k) for k in ("system", "release", "machine", "cpu_model", "logical_cpus", "memory_bytes")):
+                refuse("missing measured host")
+            hosts.add(json.dumps(host, sort_keys=True))
+            toolchains.add(record.get("rustc"))
+            if len(hosts) != 1 or len(toolchains) != 1 or not record.get("rustc"):
+                refuse("mixed host or missing/mixed toolchain")
+            profile = record.get("hardware_profile_record", {})
+            profile_path = manifest["hardware_profile"]
+            if record.get("hardware_profile") != profile_path or profile.get("sha256") != hashlib.sha256(frozen.at_tag(profile_path)).hexdigest():
+                refuse("hardware profile differs from freeze")
+            parsed = rows(record.get("stdout", ""))
+            data_rows = [row for row in parsed if row.get("row") == "data"]
+            if len(data_rows) != 1 or data_rows[0].get("data_fnv64") != lock["data_fnv1a64"]:
+                refuse("dataset identity")
+            sweep_rows = [row for row in parsed if row.get("row") == "sweep"]
+            if sorted(row.get("arm", "") for row in sweep_rows) != sorted(plan["arms"][experiment]):
+                refuse("missing, extra or duplicate arm rows")
+            for row in sweep_rows:
+                arm = row["arm"]
+                if row.get("lr") != lr or lr in results.get(arm, {}):
+                    refuse("conflicting or duplicate arm/rate cell")
+                results.setdefault(arm, {})[lr] = row
         for arm in plan["arms"][experiment]:
             if not plan["sweep"]:
-                table.append({"arm": arm, "lr": config()["learning_rate"]["calibration"],
+                table.append({"arm": arm, "lr": rules["learning_rate"]["calibration"],
                               "flag": "no per-arm lr selection", "val_accuracy": None})
                 continue
             lr, flag, eligible = choose_lr(arm, results.get(arm, {}), grid, tolerance)
             table.append({"arm": arm, "lr": lr, "flag": flag, "val_accuracy": eligible[lr],
                           "by_lr": {str(k): v for k, v in sorted(eligible.items())}})
+    return table
+
+
+def select(_args) -> None:
+    """Validate all sweep provenance before writing either selection artifact."""
+    table = selection_table()
     lines = ["arm\tlr\tval_accuracy\tflag"]
     lines += [f"{row['arm']}\t{row['lr']}\t{row['val_accuracy']}\t{row['flag']}" for row in table]
     (STUDY_DIR / "lr_selection.tsv").write_text("\n".join(lines) + "\n", encoding="utf-8")

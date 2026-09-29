@@ -30,6 +30,16 @@ The axes must not be collapsed into one enum: semantic role, epistemic state, un
 | SemanticCapsule | memory | search/core | generation, claims, provenance, validity |
 | EvidenceCandidate | search | verifier | source ref, index generation, score, method |
 | FlowSignature | core/runtime | observe/verifier | selected operators and transitions |
+| CommittedEvent + LogAnchor | ledger | pg projector | commit index, anchor digest recomputed from the stored anchor |
+| SealedBranch | branch | pg branch store/certifier | base revision, value/range digests, touched keys' base values and input-set digests, relied generations, typed ops; private, built only through `SealedBranch::from_parts`, which checks every sealing invariant |
+| MergePlan | branch | runtime (`preview_merge`, `merge_branch`) | certified revision, one SemanticDelta, rebased keys, plan digest; a read-only what-if: only `merge_branch` commits a sealed branch, certifying it again against the runtime's own state (ADR-0020) |
+| SemanticGrant | host | runtime | 1–16 verifiers judging a `SemanticChange`, required level (the weakest report must meet it), host writes on or off, merge policy (its calibration seed never recorded, returned or printed), listed reviewers; installed once, never journaled |
+| SemanticOrigin | runtime | ledger/state/pg/replay | why a semantic record was allowed: `Legacy` (tag 8), `Request`, `PodOutput`, `Host { principal, verification }` or `Merge(MergeRecord)` (tag 12): branch, author, seal, plan and dependency digests, rebased keys, verification attestation, authority; replay checks it (R1–R4) |
+| MergeReceipt | runtime | host, pg (`record_triage`, `record_outcome`) | branch, seal and plan digests, certification kind, rebased keys, commit (index always set), verdict, recorded authority, triage and its policy version to log |
+| TriageOutcome | branch | pg/analytics | decision, eligibility, calibration slice, score, propensity, policy version |
+| PolicyRecord | branch | pg policy store, F003 | version, threshold rule and levels, threshold, calibration rate, calibration branches (held out: every other adjudication) |
+| WriteRequest/SourceRef | fastmem | pg journal | source key, generation, input digest, raw key/value cells, gates |
+| MetricSpec/MetricRow | analytics | pg (compiled SQL) | metric, grouping, window of days, numerator, denominator |
 
 ## Compatibility
 

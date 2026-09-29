@@ -31,3 +31,10 @@ id = "redpanda-kafka"
 source = "external"
 status = "to-evaluate"
 evidence = []
+
+[[candidate]]
+id = "postgres-projection-event-log"
+source = "external"
+status = "evaluating"
+command = "cargo test -p ptr-pg --features postgres-backend --test postgres --locked"
+evidence = ["../../../crates/ptr-pg/tests/postgres.rs"]

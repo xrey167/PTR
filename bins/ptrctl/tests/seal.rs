@@ -71,15 +71,46 @@ impl Drop for Temp {
     }
 }
 
+/// Admits every change: the fixture's host write needs a grant, and what it
+/// writes is not under test.
+struct AcceptFixture;
+
+impl<'a> ptr_verifier::Verifier<ptr_runtime::SemanticChange<'a>> for AcceptFixture {
+    fn verify(&self, _: &ptr_runtime::SemanticChange<'a>) -> ptr_verifier::VerificationReport {
+        ptr_verifier::VerificationReport {
+            status: ptr_verifier::VerificationStatus::Pass,
+            level: ptr_types::VerificationLevel::Deterministic,
+            score: ptr_types::Probability::new(1.0).unwrap(),
+            findings: Vec::new(),
+        }
+    }
+}
+
+impl<'a> ptr_verifier::NamedVerifier<ptr_runtime::SemanticChange<'a>> for AcceptFixture {
+    fn name(&self) -> &'static str {
+        "test-accept-all"
+    }
+}
+
 /// A journal committing the one semantic value and the one generation the
 /// declaration names.
 fn journal(temp: &Temp) -> PathBuf {
     let path = temp.at("log");
     let mut runtime = PtrRuntime::open_durable(PtrConfig::default(), &path).expect("open journal");
+    runtime
+        .install_semantic_grant(
+            ptr_runtime::SemanticGrant::new(
+                ptr_runtime::execution::RequiredVerification::Deterministic,
+            )
+            .with_verifier(AcceptFixture)
+            .allow_host_writes(),
+        )
+        .unwrap();
     let mut delta = SemanticDelta::default();
     delta.upserts.insert("plan".into(), "original plan".into());
+    let revision = runtime.revision();
     runtime
-        .apply_semantic_delta(runtime.revision(), delta)
+        .apply_verified_semantic_delta(revision, delta, &"test-operator".into())
         .expect("commit the semantic value the trainer read");
     runtime
         .commit(LedgerEvent::CapsuleCommitted {

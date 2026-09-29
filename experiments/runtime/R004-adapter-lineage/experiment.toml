@@ -1,0 +1,13 @@
+version = 1
+id = "R004"
+status = "planned"
+hypothesis = "Does gated adapter lineage with forgetting-driven replay and consolidation retain earlier domains better than a naive adapter chain at equal compute?"
+metrics = "backward transfer; per-domain forgetting; public-suite regression; serving latency; subspace overlap against chance"
+baseline = "naive sequential LoRA chain; single joint retrain; uniform replay"
+falsification = "No backward-transfer improvement over the naive chain, or public regression beyond the gate, rejects the lineage policy."
+hardware_profile = "hardware/default.toml"
+entrypoint = ""
+seeds = [17, 29, 43, 71, 101]
+results_dir = "results"
+required_artifacts = ["run.json", "metrics.json"]
+design = "../../../docs/architecture/35-agentic-substrate.md"

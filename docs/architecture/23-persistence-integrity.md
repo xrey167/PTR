@@ -12,10 +12,20 @@ monotonic index, payload length, previous record digest, header SHA-256), the
 existing event payload, and a 40-byte trailer (record SHA-256 and final marker).
 Header and record hashes use distinct domain prefixes. The first previous digest
 is SHA-256 of the file magic. Event tags 0–8 remain unchanged inside the new frame.
+Tags 9–11 (`28-durable-execution-audit.md`) and 12 (`22-durable-semantic-state.md`)
+were added later, inside the same frame.
 Hashes use pinned RustCrypto `sha2 = 0.11.0`, already present in the root lockfile;
 no package version, scanner rule or license allowance is changed.
 
 Bounds are 8 MiB per event payload, 128 MiB per reference log and 100,000 records.
+`ptr_ledger::check_encodable` applies the payload bound, and every rule the
+decoder applies to an attributed semantic origin (the attestation's required
+level and counts, the number of rebased keys), before anything is encoded. Each
+of those rules is one function that both the check and the decoder call, so the
+two cannot drift apart. The framed log,
+the raft-engine adapter and a raft proposal all call it, so none of them writes a
+record that no decoder reads back. The in-memory ledger encodes nothing, so a
+writer that appends there checks the event itself.
 The scanner validates header/order/length before payload decoding and allocation
 based on input counts. Partial known header coordinates must agree with the next
 expected record. Complete bad hashes, unknown versions, invalid encodings, broken

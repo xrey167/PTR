@@ -1,0 +1,151 @@
+# ptr-labeling — Weak Supervision with Verifier Precedence
+
+> **Role:** Turns labeling-function votes into calibrated probabilistic labels in which verifiers veto and are never outvoted.  
+> **Maturity:** prototype; claims beyond the automated checks must be proven by the linked experiments and component evaluations.
+
+<!-- PTR:STATUS:BEGIN -->
+## Current implementation status
+
+> **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
+
+**Maturity:** `prototype`  
+**Last reviewed:** 2026-09-27  
+**Code footprint:** 6 Rust source files · 1888 nonblank source lines · 1 integration-test files · 36 test markers (`#[test]`, `#[tokio::test]`)
+
+### Implemented now
+
+- Label schemas, labeling functions by kind (verifier, heuristic, model, agent) and a vote matrix with abstention; function names are non-empty and distinct (DuplicateFunction), so no function's votes count twice
+- A fitted LabelModel is bound to its vote matrix by VoteMatrix::digest (SHA-256 of schema, functions and votes, set only by fit_label_model); resolve refuses any other matrix, even one of the same shape, with MatrixMismatch
+- Everything a LabelModel holds (priors, confusion matrices, posteriors, iteration count, warnings) is private, set only by fit_label_model and read through accessors that lend it out immutably, so the posteriors resolve reads are the ones the fit computed for the matrix the digest names and cannot be replaced by another fit's or any other distributions; resolve still checks them as a guard against a defect in the fit
+- Verifier-backed functions cast vetoes only; a verifier class vote is refused
+- Dawid-Skene EM label model with configurable iterations and a tolerance in [0, 1) (refused outside it, so a vacuous tolerance cannot hide non-convergence) and identifiability warnings for fewer than three modelled functions; smoothing too small for every smoothed probability to stay a positive normal number is refused, larger smoothing up to f64::MAX is normalized without overflow, and every fitted probability is finite
+- Resolution to Determined (every other class vetoed), Estimated at or above a required probability, Unknown (also when the classes left carry less posterior mass than f64::MIN_POSITIVE, none included: stored subnormal posteriors have lost their ratio to underflow, so no share is computed from them), or Disputed when every class is vetoed; a posterior that is not a probability distribution over the schema (an entry outside [0, 1], checked on its own whatever the 1e-6 tolerance on the total) is refused before any item is resolved
+- Gold labels record source (oracle or human with annotator) and sampling (uniform or active); an evaluation set holds one resolved gold label per item and refuses a second; only uniform gold estimates population accuracy and calibration, while active gold reports accuracy on the sampled items and no calibration
+- Evaluation with Brier score and expected calibration error from ptr-analytics; every scoring path refuses a gold class outside the scored classes, and evaluation a scored posterior that is not a probability distribution, before scoring and whatever the sampling; a gold item at usize::MAX is reported missing without overflow
+- A model labeling function may name the adapter that produced its votes (refused on any other kind); function_accuracy scores each function's class votes (never abstentions or vetoes) against uniform gold with a Wilson interval and refuses an invalid z whatever the votes, so labeling quality is measured per adapter
+- resolve returns a Resolution (private fields, made only by resolve) that pairs each item's outcome with the posterior it was resolved from: the model's posterior renormalized over the classes no verifier vetoed, uniform over them where no share is computed, a point mass for Determined and none for Disputed
+- Public-field records are plain data: no function takes back an EvaluationReport, Calibration, FunctionAccuracy or LabelOutcome (annotation ranking reads outcomes only from a Resolution), and their docs state what evaluate, function_accuracy and resolve guarantee rather than what every value holds; no function builds a GoldLabel from a prediction, and what scoring relies on in a gold label is checked where it is used (EvaluationSet::push, evaluate, function_accuracy)
+- Acquisition ranking by posterior entropy or margin over one Resolution only, so outcomes and posteriors cannot be mispaired, reordered, truncated or replaced; each item is ranked on the posterior its outcome was resolved from, never on the model's raw posterior, so mass on a vetoed class neither hides an unresolved item nor promotes a resolved one; it never proposes an item verifiers already determined and always proposes disputed items first
+
+### Missing for the target architecture
+
+- Annotator agreement over multi-annotator gold (ptr_analytics::krippendorff_alpha_nominal exists; this crate does not call it yet)
+- A dependency-aware model for correlated labeling functions
+- Annotator reliability modelling
+- Label snapshot registration and a labeling adapter through ptr-pg (the work schema already carries the model-to-adapter link)
+- A labeling-function runner outside this crate that records the adapter of each model function, the admitted principal behind each agent function and the input generation of each item (which component owns it is open)
+
+### Next milestones
+
+- Run F002 against majority vote on uniform gold
+- Add a labeling adapter to ptr-pg over the existing work schema
+
+### Linked experiments
+
+- [F002](../../experiments/feedback/F002-weak-supervision/README.md) — `planned`
+
+### Technology evaluations
+
+- [label-model](../../evaluations/components/label-model/README.md) — `open`
+
+### Decision records
+
+- [ADR-0019-adapter-lineage-and-weak-supervision.md](../../research/decisions/ADR-0019-adapter-lineage-and-weak-supervision.md)
+
+### Current automated checks
+
+- tests/label_model.rs recovery, veto, dispute and identifiability cases, and gold-set, gold-class, z, tolerance, smoothing and evaluated-posterior refusals
+- src/model.rs unit tests, which set a model's posteriors directly as only the crate can: resolve refuses a posterior that is not a distribution over the schema (including an entry above one within the total's tolerance) and a posterior missing or added, resolves posterior mass left below f64::MIN_POSITIVE by vetoes to Unknown (whether a fit leaves it or the test sets it), pairs every outcome with the posterior it was resolved from, and hands annotation ranking outcomes and posteriors only from one resolution, so a posterior that is not a distribution never reaches ranking
+- tests/label_model.rs: an item is ranked on its posterior after vetoes and not on the model's, and a model lends out one posterior per item and one confusion entry per function (None for a verifier); compile_fail doctests show that no field of a LabelModel (posteriors, confusion, priors, warnings, iterations) can be assigned, that its posteriors cannot be changed through posteriors(), and that a Resolution cannot be built outside resolve
+- tests/label_model.rs: empty and duplicate function names are refused; a model is refused with any matrix but the one it was fitted on (other votes, functions or schema of the same shape) and accepted with an equal rebuilt one
+- workspace fmt/check/test/clippy
+
+<!-- PTR:STATUS:END -->
+
+## Position in PTR
+
+```mermaid
+flowchart LR
+    A["Labeling-function votes"] --> B["ptr-labeling\nWeak Supervision with Verifier Precedence"]
+    B --> C["Probabilistic labels, Unknown, Disputed"]
+    C --> D["Training datasets"]
+    B -. "contracts" .-> T["ptr-types"]
+    L["ptr-ledger (authority)"] -. "never replaced" .-> B
+```
+
+Dedicated diagram source: [`docs/diagrams/components/ptr-labeling.mmd`](../../docs/diagrams/components/ptr-labeling.mmd)
+
+**Upstream:** ptr-types, ptr-analytics  
+**Downstream:** training datasets, ptr-pg (work schema tables)
+
+## Mission
+
+Produce labels whose confidence can be trusted and whose conflicts with verifiers are impossible.
+
+PTR keeps this responsibility in its own crate so the semantics remain stable even when an external library or implementation is replaced.
+
+## Responsibilities
+
+- vote representation
+- label model fitting
+- resolution with verifier precedence
+- gold-based evaluation
+- annotation ranking
+
+## Explicit non-responsibilities
+
+- running labeling functions (a runner in another component will record each model function's adapter, the admitted principal behind each agent function and each item's input generation)
+- storing datasets
+- training models
+
+## Data flow
+
+| Direction | Contract |
+|---|---|
+| Input | LabelSchema, labeling functions (a model function may name the adapter that produced its votes), VoteMatrix, gold labels |
+| Output | LabelModel, a Resolution (a LabelOutcome per item, each with the posterior it was resolved from), EvaluationReport, FunctionAccuracy per function and adapter on uniform gold, annotation ranking of one Resolution |
+| Failure | Explicit typed error / rejected state; no silent fallback that changes semantics |
+| Observability | Standard PTR tracing fields and a stable component span |
+
+## Technical approach
+
+- Dawid-Skene expectation maximisation
+- asymmetric verifier vetoes
+- uniform-versus-active gold separation
+- entropy or margin acquisition
+
+External projects are **candidates**, not architectural authority. The PTR-owned types must remain usable with a replacement backend.
+
+## Core invariants
+
+1. A verifier veto is never outvoted.
+2. Unknown and Disputed are valid outcomes, not errors.
+3. A predicted label is never read back as gold.
+
+These invariants are executable through the unit and integration tests listed in the status block.
+
+## Failure model
+
+The component fails closed for semantic or effect-safety violations. Infrastructure failures surface as typed errors that preserve revision, generation and provenance context. Retries must be idempotent whenever the operation may cross a process or network boundary.
+
+## Security and privacy
+
+- Treat external inputs and backend outputs as untrusted until validated.
+- Do not put raw secrets or private evidence into generic tracing or inspection.
+- Derived artifacts are as sensitive as the inputs they were derived from.
+- External effects pass through `ptr-security` even if this component already performed local validation.
+
+## Experiments
+
+- [F002](../../experiments/feedback/F002-weak-supervision/README.md)
+
+## Technology evaluation
+
+- [label-model](../../evaluations/components/label-model/README.md)
+
+## Related architecture
+
+- [35 — Agentic substrate](../../docs/architecture/35-agentic-substrate.md)
+- [System architecture](../../docs/architecture/00-system.md)
+- [Component contracts](../../docs/COMPONENT_CONTRACTS.md)
+- [Global invariants](../../docs/INVARIANTS.md)

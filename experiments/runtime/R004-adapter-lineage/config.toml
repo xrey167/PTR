@@ -1,0 +1,17 @@
+version = 1
+kind = "workspace-area"
+name = "R004-adapter-lineage"
+path = "experiments/runtime/R004-adapter-lineage"
+tests_dir = "tests"
+
+# Frozen before R004 leaves `planned` (experiments/preregistration.toml,
+# scripts/check_research_gates.py). A `must-be-pinned-…` value is still to be
+# chosen.
+[preregistration]
+# The confirmatory seeds, as experiment.toml declares them.
+seeds = [17, 29, 43, 71, 101]
+# The largest public-suite regression the lineage policy may cause.
+public_regression_gate_permille = "must-be-pinned-before-prepared"
+# The smallest backward-transfer improvement over the naive chain that
+# counts as one.
+backward_transfer_min_permille = "must-be-pinned-before-prepared"

@@ -2,6 +2,7 @@
 what runs, checked against the design's own worked numbers."""
 
 import importlib.util
+import copy
 import math
 import json
 import subprocess
@@ -148,6 +149,48 @@ class CorrectnessWriter(unittest.TestCase):
                     patch.object(driver.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, stdout="c" * 40, stderr="")):
                 self.assertEqual(driver.correctness()["source_provenance"], "fail")
 
+
+
+class FrozenSweepEvidence(unittest.TestCase):
+    def setUp(self):
+        self.archived = {e: driver.records(e, "a0_sweep_entrypoint") for e in driver.EXPERIMENTS}
+
+    def test_archived_selection_reproduces_committed_rates(self):
+        expected = json.loads((driver.STUDY_DIR / "lr_selection.json").read_text())
+        self.assertEqual(driver.selection_table(), expected)
+
+    def test_invalid_or_duplicate_sweeps_cannot_choose_rates(self):
+        mutations = {
+            "commit": lambda r: r.update(git_sha="f" * 40),
+            "dirty": lambda r: r.update(git_dirty=True),
+            "experiment": lambda r: r.update(experiment_id="M004"),
+            "seed": lambda r: r.update(seed=29),
+            "manifest": lambda r: r.update(manifest_sha256="f" * 64),
+            "host": lambda r: r["host"].update(logical_cpus=999),
+            "width": lambda r: r["command"].__setitem__(-1, "32"),
+            "steps": lambda r: r["command"].__setitem__(r["command"].index("--steps") + 1, "100"),
+            "grid": lambda r: r.update(parameters={"lr": "0.9"}),
+            "data": lambda r: r.update(stdout=r["stdout"].replace('"data_fnv64":"0ad71688f09b0d0d"', '"data_fnv64":"bad"')),
+            "profile": lambda r: r["hardware_profile_record"].update(sha256="f" * 64),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name=name):
+                inputs = copy.deepcopy(self.archived)
+                mutate(inputs["M001"][0])
+                with patch.object(driver, "records", side_effect=lambda e, _: inputs[e]):
+                    with self.assertRaisesRegex(ValueError, "invalid frozen sweep"):
+                        driver.selection_table()
+        inputs = copy.deepcopy(self.archived)
+        inputs["M001"].append(copy.deepcopy(inputs["M001"][0]))
+        with patch.object(driver, "records", side_effect=lambda e, _: inputs[e]):
+            with self.assertRaisesRegex(ValueError, "duplicate arm/rate"):
+                driver.selection_table()
+
+    def test_invalid_selection_writes_no_artifacts(self):
+        with patch.object(driver, "selection_table", side_effect=ValueError("bad sweep")), patch.object(driver, "write_json") as write:
+            with self.assertRaisesRegex(ValueError, "bad sweep"):
+                driver.select(None)
+            write.assert_not_called()
 
 if __name__ == "__main__":
     unittest.main()

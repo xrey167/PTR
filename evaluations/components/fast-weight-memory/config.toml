@@ -1,0 +1,5 @@
+version = 1
+kind = "workspace-area"
+name = "fast-weight-memory"
+path = "evaluations/components/fast-weight-memory"
+tests_dir = "tests"

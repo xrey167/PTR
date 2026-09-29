@@ -457,7 +457,7 @@ def frozen_input_violations() -> list[str]:
             if not path.is_file() or at_tag(path.relative_to(ROOT).as_posix()) != path.read_bytes()]
 
 
-def build_table(paths: list[Path], score) -> tuple[dict, list[str], list[dict], str | None]:
+def build_table(paths: list[Path], score, *, repeated_comparators: bool = False) -> tuple[dict, list[str], list[dict], str | None]:
     """Index independently scored records by arm, seed, and split, reporting duplicates."""
     document, problems = score.score_records(paths, DATA_DIR)
     table: dict = {}
@@ -466,6 +466,12 @@ def build_table(paths: list[Path], score) -> tuple[dict, list[str], list[dict], 
         entry["accuracy"] = entry["route_accuracy"]
         cell = table.setdefault(entry["arm"], {}).setdefault(entry["seed"], {})
         if entry["split"] in cell:
+            previous = cell[entry["split"]]
+            # Separate contingency jobs may repeat the full-arm comparator.
+            # Only exactly matching independently scored evidence may coalesce.
+            comparable = lambda row: {k: v for k, v in row.items() if k != "record"}
+            if repeated_comparators and comparable(previous) == comparable(entry):
+                continue
             problems.append(f"{entry['record']}: a second score for {entry['arm']}/{entry['seed']}/{entry['split']}")
         cell[entry["split"]] = entry
     return table, problems, document["results"], document.get("data_fnv1a64")
@@ -513,6 +519,19 @@ def chosen_per_seed(records: list[dict]) -> dict[int, dict]:
     return chosen
 
 
+def chosen_contingencies(records: list[dict]) -> dict[tuple, dict]:
+    """Keep the latest completed retry for each seed and requested arm set."""
+    chosen = {}
+    for record in records:
+        if record.get("status") == "completed":
+            arms = record.get("parameters", {}).get("arms")
+            if not isinstance(arms, str) or not arms.strip():
+                raise ValueError("contingency record lacks its requested arms")
+            key = (record["seed"], tuple(sorted(arms.split(","))))
+            chosen[key] = record
+    return chosen
+
+
 def completeness(chosen: dict[str, dict[str, dict[int, dict]]], seeds: list[int],
                  planned: dict[str, list[str]], table: dict) -> list[str]:
     """G3: every planned process completed with finite losses, and every arm the
@@ -522,6 +541,17 @@ def completeness(chosen: dict[str, dict[str, dict[int, dict]]], seeds: list[int]
     problems = []
     for kind, by_experiment in chosen.items():
         for experiment, by_seed in by_experiment.items():
+            if kind == "contingency":
+                groups = {}
+                for record in by_seed.values():
+                    arms = record.get("parameters", {}).get("arms", "")
+                    groups.setdefault(arms, {})[record["seed"]] = record
+                for arms, group in groups.items():
+                    for seed in seeds:
+                        record = group.get(seed)
+                        if record is None or has_nan(record):
+                            problems.append(f"contingency {experiment}/{arms}/{seed}: missing or non-finite process")
+                continue
             wanted = seeds if kind != "rerun" else [RERUN_SEED]
             if kind == "rerun" and set(by_seed) - {RERUN_SEED}:
                 problems.append(f"rerun {experiment}: unexpected seeds {sorted(set(by_seed) - {RERUN_SEED})}")
@@ -638,6 +668,23 @@ def correctness_evidence(evidence: dict, evaluated_commit: str | None, logs: Pat
     return {"pass": not problems, "detail": problems}
 
 
+def sweep_evidence(evaluated_commit: str | None) -> dict:
+    """Check selected rates against frozen sweeps archived at the evaluated commit."""
+    try:
+        if not evaluated_commit:
+            raise ValueError("no evaluation commit")
+        spec = importlib.util.spec_from_file_location("a0_study_driver", ROOT / "scripts/run_a0_ablation_study.py")
+        driver = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(driver)
+        selected = driver.selection_table(record_commit=evaluated_commit)
+        archived = json.loads(git("show", f"{evaluated_commit}:research/falsification/A0-ablations-v1/lr_selection.json"))
+        if selected != archived:
+            raise ValueError("selected learning rates differ from validated frozen sweep")
+    except (ValueError, KeyError, TypeError, OSError, subprocess.CalledProcessError, SystemExit) as error:
+        return {"pass": False, "detail": str(error)}
+    return {"pass": True, "detail": "selected rates reproduce the archived frozen sweep"}
+
+
 def main(argv: list[str] | None = None) -> int:
     """Verify frozen criteria, score study records, and write gates, verdicts, and metrics."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -673,7 +720,8 @@ def main(argv: list[str] | None = None) -> int:
         out = {}
         for experiment, ps in paths[kind].items():
             if ps:
-                out[experiment] = chosen_per_seed([records[str(p.relative_to(ROOT))] for p in ps])
+                selector = chosen_contingencies if kind == "contingency" else chosen_per_seed
+                out[experiment] = selector([records[str(p.relative_to(ROOT))] for p in ps])
         return out
 
     chosen = {kind: chosen_of(kind) for kind in STUDY_KINDS}
@@ -687,7 +735,7 @@ def main(argv: list[str] | None = None) -> int:
     all_problems = []
     for kind in ("eval", "contingency", "rerun"):
         tables[kind], problems, scored[kind], fingerprint = (
-            build_table(chosen_paths[kind], score)
+            (build_table(chosen_paths[kind], score, repeated_comparators=True) if kind == "contingency" else build_table(chosen_paths[kind], score))
             if kind == "eval" or chosen_paths[kind] else (None, [], [], None)
         )
         if kind == "eval" or chosen_paths[kind]:
@@ -737,10 +785,11 @@ def main(argv: list[str] | None = None) -> int:
                 return None  # deleted, or not a record: not a sweep record either
         stray = freeze_violations(changed, entrypoint_at)
     prereg_unchanged = at_tag("research/falsification/A0-ablations-v1/PREREGISTRATION.md") == (STUDY_DIR / "PREREGISTRATION.md").read_bytes()
-    gates["G4"] = {"pass": origin["pass"] and ancestor and not stray and prereg_unchanged,
+    sweep = sweep_evidence(sha)
+    gates["G4"] = {"pass": origin["pass"] and ancestor and not stray and prereg_unchanged and sweep["pass"],
                    "detail": {"records": len(records), "shas": origin["shas"], "dirty": origin["dirty"],
                               "tag_is_ancestor": ancestor, "changed_beyond_lr_selection_and_sweep": stray,
-                              "preregistration_unchanged": prereg_unchanged}}
+                              "preregistration_unchanged": prereg_unchanged, "sweep": sweep}}
 
     # G5: the binary's counts equal score.py's, on every scored process.
     disagree = [f"{e['arm']}/{e['seed']}/{e['split']}" + (f" ({kind})" if kind != "eval" else "")
@@ -763,24 +812,29 @@ def main(argv: list[str] | None = None) -> int:
         for experiment in EXPERIMENTS:
             if not paths[kind][experiment]:
                 continue
-            out = subprocess.run([sys.executable, "scripts/run_experiment.py", "aggregate", experiment,
-                                  "--entrypoint", entrypoint], cwd=ROOT, text=True, capture_output=True)
-            agg_path = ROOT / out.stdout.strip() if out.stdout.strip() else None
-            if agg_path is None or not agg_path.exists():
-                stock_mismatch.append(f"{experiment}/{entrypoint}: stock aggregate failed: {out.stderr.strip()[:200]}")
-                continue
-            stock = json.loads(agg_path.read_text())
-            for group in stock["groups"]:
-                key = group["key"]
-                if key.get("row") != "final":
+            selections = [[]]
+            if kind == "contingency":
+                arm_sets = sorted({r["parameters"]["arms"] for r in chosen[kind][experiment].values()})
+                selections = [["--set", f"arms={arms}"] for arms in arm_sets]
+            for selection in selections:
+                out = subprocess.run([sys.executable, "scripts/run_experiment.py", "aggregate", experiment,
+                                      "--entrypoint", entrypoint, *selection], cwd=ROOT, text=True, capture_output=True)
+                agg_path = ROOT / out.stdout.strip() if out.stdout.strip() else None
+                if agg_path is None or not agg_path.exists():
+                    stock_mismatch.append(f"{experiment}/{entrypoint}: stock aggregate failed: {out.stderr.strip()[:200]}")
                     continue
-                arm_scores = (scores_table or {}).get(key["arm"], {})
-                if any(key["split"] not in arm_scores.get(s, {}) for s in seeds):
-                    stock_mismatch.append(f"{experiment}/{entrypoint}/{key['arm']}/{key['split']}: missing scores")
-                    continue
-                ours = statistics.fmean(arm_scores[s][key["split"]]["accuracy"] for s in seeds)
-                if abs(group["metrics"]["accuracy"]["mean"] - ours) > 1e-12:
-                    stock_mismatch.append(f"{experiment}/{entrypoint}/{key['arm']}/{key['split']}")
+                stock = json.loads(agg_path.read_text())
+                for group in stock["groups"]:
+                    key = group["key"]
+                    if key.get("row") != "final":
+                        continue
+                    arm_scores = (scores_table or {}).get(key["arm"], {})
+                    if any(key["split"] not in arm_scores.get(s, {}) for s in seeds):
+                        stock_mismatch.append(f"{experiment}/{entrypoint}/{key['arm']}/{key['split']}: missing scores")
+                        continue
+                    ours = statistics.fmean(arm_scores[s][key["split"]]["accuracy"] for s in seeds)
+                    if abs(group["metrics"]["accuracy"]["mean"] - ours) > 1e-12:
+                        stock_mismatch.append(f"{experiment}/{entrypoint}/{key['arm']}/{key['split']}")
     result["stock_aggregate_cross_check"] = {"pass": not stock_mismatch, "mismatches": stock_mismatch}
 
     def per_split(scores_table: dict, arm: str) -> dict:

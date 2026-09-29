@@ -7,9 +7,10 @@
 //! that forgets its vote can vote twice in one term, and a node that forgets
 //! committed entries can acknowledge a history it no longer has.
 
+use ptr_ledger::integrity::MAX_RECORD_BYTES;
 use ptr_ledger::raft_storage::FileRaftStorage;
-use ptr_ledger::{LedgerEvent, SingleNodeRaftConsensus};
-use ptr_types::{CapsuleId, Generation, ProjectId};
+use ptr_ledger::{Attestation, LedgerEvent, SemanticOrigin, SingleNodeRaftConsensus};
+use ptr_types::{CapsuleId, Generation, ProjectId, Revision, VerificationLevel};
 use raft::prelude::{Entry, HardState};
 use raft::Storage;
 use std::path::PathBuf;
@@ -394,4 +395,61 @@ fn prost_codec_preserves_entry_wire_bytes_and_rejects_malformed_payloads() {
         let mut decoded = raft::eraftpb::Entry::default();
         assert!(decoded.merge_from_bytes(&malformed).is_err());
     }
+}
+
+fn host_write(required: VerificationLevel, verifiers: &[&str]) -> LedgerEvent {
+    LedgerEvent::SemanticDeltaCommitted {
+        base_revision: Revision(0),
+        revision: Revision(1),
+        encoded_delta: vec![1, 2, 3],
+        origin: SemanticOrigin::Host {
+            principal: "operator".into(),
+            verification: Attestation {
+                required,
+                level: VerificationLevel::FullSemantic,
+                verifiers: verifiers.iter().map(|name| (*name).to_owned()).collect(),
+                findings: Vec::new(),
+            },
+        },
+    }
+}
+
+#[test]
+fn an_origin_the_decoder_refuses_is_never_proposed() {
+    // Proposed, it would be a committed entry no member can apply, on every
+    // member and after every restart.
+    let temp = Temp::new("origin-bound");
+    let accepted = host_write(VerificationLevel::FullSemantic, &["schema"]);
+    let refused = [
+        (
+            host_write(VerificationLevel::FullSemantic, &[]),
+            "PTR_LEDGER_ATTESTATION_LIMIT",
+        ),
+        (
+            host_write(VerificationLevel::SampleVerified, &["schema"]),
+            "PTR_LEDGER_ATTESTATION_REQUIREMENT",
+        ),
+        (
+            // The tag, both revisions and the delta's length take 21 bytes.
+            LedgerEvent::SemanticDeltaCommitted {
+                base_revision: Revision(0),
+                revision: Revision(1),
+                encoded_delta: vec![0; MAX_RECORD_BYTES - 20],
+                origin: SemanticOrigin::Legacy,
+            },
+            "PTR_LOG_PAYLOAD_LIMIT",
+        ),
+    ];
+    {
+        let mut consensus = SingleNodeRaftConsensus::open(&temp.dir(), 1).unwrap();
+        for (event, code) in refused {
+            assert_eq!(consensus.propose(event).unwrap_err(), code);
+            assert!(consensus.committed_events().is_empty());
+        }
+        let receipt = consensus.propose(accepted.clone()).unwrap();
+        assert_eq!(receipt.commit_index.0, 1);
+    }
+    let reopened = SingleNodeRaftConsensus::open(&temp.dir(), 1).unwrap();
+    assert_eq!(reopened.committed_events().len(), 1);
+    assert_eq!(reopened.committed_events()[0].event, accepted);
 }

@@ -1,0 +1,284 @@
+{
+  "experiment_id": "L004",
+  "git_sha": "4659cbfceec157ca592732a405a778fb794fff80",
+  "recorded_at": "2026-09-28T04:20:50.375250+00:00",
+  "subcommand": "projection-equivalence",
+  "killed": 17,
+  "total": 17,
+  "mutations": [
+    {
+      "name": "anchor-chain-check-removed",
+      "file": "crates/ptr-pg/src/adapters/projection.rs",
+      "cases": 4,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 38,
+      "expected": [
+        "foreign_histories_accepted"
+      ],
+      "counters": {
+        "state_divergences": 3,
+        "extra_or_missing_keys": 4,
+        "lifecycle_divergences": 9,
+        "revision_divergences": 2,
+        "event_log_divergences": 4,
+        "foreign_histories_accepted": 8,
+        "false_refusals": 8
+      }
+    },
+    {
+      "name": "redelivery-anchor-check-removed",
+      "file": "crates/ptr-pg/src/adapters/projection.rs",
+      "cases": 4,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 4,
+      "expected": [
+        "foreign_histories_accepted"
+      ],
+      "counters": {
+        "foreign_histories_accepted": 4
+      }
+    },
+    {
+      "name": "ledger-head-digest-ignored",
+      "file": "crates/ptr-pg/src/adapters/projection.rs",
+      "cases": 4,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 4,
+      "expected": [
+        "foreign_histories_accepted"
+      ],
+      "counters": {
+        "foreign_histories_accepted": 4
+      }
+    },
+    {
+      "name": "anchor-index-check-removed",
+      "file": "crates/ptr-pg/src/adapters/projection.rs",
+      "cases": 4,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 4,
+      "expected": [
+        "foreign_histories_accepted"
+      ],
+      "counters": {
+        "foreign_histories_accepted": 4
+      }
+    },
+    {
+      "name": "state-value-not-updated",
+      "file": "crates/ptr-pg/src/adapters/projection.rs",
+      "cases": 4,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 5,
+      "expected": [
+        "state_divergences"
+      ],
+      "counters": {
+        "state_divergences": 4,
+        "rebuild_divergences": 1
+      }
+    },
+    {
+      "name": "live-generation-not-updated",
+      "file": "crates/ptr-pg/src/adapters/projection.rs",
+      "cases": 4,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 4,
+      "expected": [
+        "lifecycle_divergences"
+      ],
+      "counters": {
+        "lifecycle_divergences": 4
+      }
+    },
+    {
+      "name": "tombstone-off-by-one",
+      "file": "crates/ptr-pg/src/adapters/projection.rs",
+      "cases": 4,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 4,
+      "expected": [
+        "lifecycle_divergences"
+      ],
+      "counters": {
+        "lifecycle_divergences": 4
+      }
+    },
+    {
+      "name": "revision-map-off-by-one",
+      "file": "crates/ptr-pg/src/adapters/projection.rs",
+      "cases": 4,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 186,
+      "expected": [
+        "revision_divergences"
+      ],
+      "counters": {
+        "revision_divergences": 182,
+        "catchup_divergences": 4
+      }
+    },
+    {
+      "name": "nul-check-removed",
+      "file": "crates/ptr-pg/src/adapters/projection.rs",
+      "cases": 4,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 4,
+      "expected": [
+        "nul_failures"
+      ],
+      "counters": {
+        "nul_failures": 4
+      }
+    },
+    {
+      "name": "watermark-in-second-transaction",
+      "file": "crates/ptr-pg/src/adapters/projection.rs",
+      "cases": 10,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 15,
+      "expected": [
+        "crash_recovery_failures",
+        "commit_fault_failures",
+        "duel_failures"
+      ],
+      "counters": {
+        "crash_recovery_failures": 1,
+        "commit_fault_failures": 9,
+        "duel_failures": 5
+      }
+    },
+    {
+      "name": "rebuild-leaves-state-residue",
+      "file": "crates/ptr-pg/src/adapters/mod.rs",
+      "cases": 4,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 390,
+      "expected": [
+        "extra_or_missing_keys",
+        "rebuild_divergences"
+      ],
+      "counters": {
+        "extra_or_missing_keys": 390
+      }
+    },
+    {
+      "name": "projection-commit-error-ignored",
+      "file": "crates/ptr-pg/src/adapters/projection.rs",
+      "cases": 12,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 11,
+      "expected": [
+        "commit_fault_failures"
+      ],
+      "counters": {
+        "commit_fault_failures": 11
+      }
+    },
+    {
+      "name": "state-committed-before-watermark",
+      "file": "crates/ptr-pg/src/adapters/projection.rs",
+      "cases": 12,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 15,
+      "expected": [
+        "crash_recovery_failures",
+        "commit_fault_failures",
+        "duel_failures"
+      ],
+      "counters": {
+        "crash_recovery_failures": 5,
+        "commit_fault_failures": 7,
+        "duel_failures": 3
+      }
+    },
+    {
+      "name": "project-overwritten-on-supersede",
+      "file": "crates/ptr-pg/src/adapters/projection.rs",
+      "cases": 4,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 4,
+      "expected": [
+        "lifecycle_divergences"
+      ],
+      "counters": {
+        "lifecycle_divergences": 4
+      }
+    },
+    {
+      "name": "event-subject-wrong",
+      "file": "crates/ptr-pg/src/event.rs",
+      "cases": 4,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 130,
+      "expected": [
+        "event_log_divergences"
+      ],
+      "counters": {
+        "event_log_divergences": 126,
+        "catchup_divergences": 4
+      }
+    },
+    {
+      "name": "event-topics-swapped",
+      "file": "crates/ptr-pg/src/event.rs",
+      "cases": 4,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 279,
+      "expected": [
+        "event_log_divergences"
+      ],
+      "counters": {
+        "event_log_divergences": 275,
+        "catchup_divergences": 4
+      }
+    },
+    {
+      "name": "redelivery-record-unchecked",
+      "file": "crates/ptr-pg/src/adapters/projection.rs",
+      "cases": 4,
+      "seed": 17,
+      "result": "killed",
+      "exit_code": 1,
+      "hard_failures": 4,
+      "expected": [
+        "foreign_histories_accepted"
+      ],
+      "counters": {
+        "foreign_histories_accepted": 4
+      }
+    }
+  ]
+}

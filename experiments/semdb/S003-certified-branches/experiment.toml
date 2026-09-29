@@ -1,0 +1,13 @@
+version = 1
+id = "S003"
+status = "planned"
+hypothesis = "Do dependency-certified agent branches avoid lost updates and phantoms while merging more concurrent work than serial execution?"
+metrics = "lost updates; undetected phantoms; certified merge rate; conflict rate; merge latency"
+baseline = "serial execution; last-writer-wins branches; key-level optimistic locking without range digests"
+falsification = "Any lost update or undetected phantom is a hard failure; no throughput gain over serial execution at conflict rates below 10% rejects the default."
+hardware_profile = "hardware/default.toml"
+entrypoint = ""
+seeds = [17, 29, 43, 71, 101]
+results_dir = "results"
+required_artifacts = ["run.json", "metrics.json"]
+design = "../../../docs/architecture/35-agentic-substrate.md"

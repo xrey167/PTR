@@ -1,0 +1,170 @@
+# ptr-branch — Certified Agent Branches and Calibrated Triage
+
+> **Role:** Lets agents speculate on private overlays of an immutable semantic snapshot and merges their work only as certified, verified semantic deltas.  
+> **Maturity:** prototype; claims beyond the automated checks must be proven by the linked experiments and component evaluations.
+
+<!-- PTR:STATUS:BEGIN -->
+## Current implementation status
+
+> **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
+
+**Maturity:** `prototype`  
+**Last reviewed:** 2026-09-28  
+**Code footprint:** 7 Rust source files · 3799 nonblank source lines · 3 integration-test files · 112 test markers (`#[test]`, `#[tokio::test]`)
+
+### Implemented now
+
+- RESERVED_PREFIXES is ptr_semdb::INGRESS_PREFIXES re-exported, so the branch checks (staging, SealedBranch::from_parts, certification) and the runtime share one list of keys reserved to ingress
+- Branch overlay on one SemanticSnapshot recording value digests of every read, range digests of every scanned prefix, input-set digests of every touched key and every relied-on lifecycle generation
+- Value digests hash the canonical journal bytes neural-state admission digests, so a branch and an admitted neural state never disagree about whether an input changed
+- Put and Remove only on keys the branch read, and Remove only of a key that is not derived (DerivedRemoval), since a merged removal would drop the key's dependency entry; commutative counter additions and set insertions/removals rebase onto the target value at merge time; a refused operation records nothing, not even the reads of its key's inputs; a set whose encoding is longer than the journal's MAX_DELTA_BYTES is refused (InvalidValue, set_value returns None) rather than encoded with truncated lengths; staging checks the set alone, and a merge delta longer than that limit with its keys and framing is refused by MergePlan::digest and by the runtime's merge, never truncated
+- A branch relies on at most one generation of a lifecycle target: declaring another is refused (ConflictingReliance) and keeps the first, since two generations are never live together
+- Reserved request: and pod-output: namespaces cannot be written by a branch: staging, SealedBranch::from_parts and certification each refuse an operation on one (ReservedNamespace), however well the declared digests match the store
+- SealedBranch has private fields and is built only by Branch::seal and SealedBranch::from_parts (sealing goes through it, storage rebuilds with it); the constructor refuses an operation on a reserved key (ReservedNamespace), a Put or Remove of an unread key (UnreadTarget), a set operation with an empty member (InvalidMember), a Put of a value the journal cannot encode (InvalidValue: ptr_semdb::canonical_input_bytes refuses it, as for a payload with an empty type or source or text over MAX_DELTA_BYTES; Branch::put refuses it too and records nothing, so every SealedBranch has a seal_digest and a keyed and a keyless ptr-pg store the same branches), a Remove whose recorded input set is not empty (DerivedRemoval, reported only when the parts break no other invariant, since sealing once produced such removals and broke nothing else, so a store tells that branch from parts no sealing produced), and an operated key without a recorded base value or input set, a base value or input set for a key no operation touches, a touched key whose base value differs from its read, two set operations on one member that record different base presences, or a set operation that records its member present where its key's base value is the digest of absence (MalformedSeal); relied holds one generation per target by type; any other base presence is taken as declared, since the base value hides behind its digest
+- Each SetInsert and SetRemove records in_base, whether its member was in the base's set (staging sets it from the base, replacing what the op carried); certification rebases set operations member by member and refuses as a Conflict on the set's key a branch whose last operation on a member leaves it as the base had it while the target has it the other way, which would undo a concurrent insert (a lost insert) or a concurrent removal (a resurrection); a concurrent change of the member in the same direction is kept
+- Branch::read shows what merging the branch onto its unchanged base leaves: a key with no operation of its own is absent once the branch changes a key it is derived from, directly or transitively, as the merge evicts it; a key the branch writes shows the written value; Branch::scan_prefix shows the same view, every key under the prefix as Branch::read shows it (the branch's own inserts, updates and removals applied and the keys its changes evict left out), while the range digest it records is of the base, which is what certification checks; a commutative operation never builds on an evicted derived value: staging refuses an addition or set operation on a key the branch reads as evicted and, in the other order, a Put or Remove or commutative operation that would change an input, direct or transitive, of a key the branch changes only commutatively (EvictedOperand naming that input, recording nothing), and one on a derived key the base holds no value for, evicted earlier or never computed (EvictedOperand naming no input); certification refuses a touched key whose operations all commute when the plan changes a key it is derived from in the target's dependency graph, and when the target holds no value for it while its input set there is not empty, as after a concurrent commit evicted it with every value the branch read and every input set as the base had them; staging judges by the base, so a staged branch meets these refusals after such a concurrent eviction, when the target's graph links two keys the base's did not, or when its commutative operations change an input against the target though not against the base (the same count under another payload source); a Put of the recomputed value is what the branch stages instead, and operations after it apply to it
+- Digest types keep public constructors, which storage needs to rebuild them: a digest commits to data anyone who can read it can compute and authenticates nothing, so what a sealed branch may write is bounded by the sealing invariants and certification, not by keeping digests hard to make
+- Certification refuses a changed read, a phantom under a scanned prefix, a touched key whose input set changed (a merge keeps the target's dependency set, so a value never stands under inputs it was not computed from), a revoked or superseded relied-on generation, or a snapshot older than the base; it rechecks every sealing invariant (SealedBranch::recheck) before consulting the target, so a branch that skipped the constructor is still refused, and refuses an unread input of an operated key (Conflict); otherwise it yields one SemanticDelta plus the revision it was certified against and the generations the branch relied on; the delta also writes a touched key whose value is unchanged when the plan changes a key it is derived from, which a commit would otherwise evict; MergePlan has private fields with read accessors, and MergePlan::digest (merge-plan/v3) binds the branch id, the expected revision, the delta, every declared dependency (dependencies/v3: reads, scans, relied generations, touched keys' input sets and set operations' base presences) and the ordered rebased keys, so an approval cannot be replayed for another branch or survive a different rebase
+- Only the runtime merges a branch: PtrRuntime::merge_branch takes the SealedBranch, not a plan, and certifies it with certify against its own state in the same call, with every relied generation checked against its lifecycle state then, so a revocation or supersession after sealing or after a preview refuses the merge (Certification(LifecycleChanged)); certify stays public for what-if checks and previews; the plan's revision and relied generations are what certification checks against: only a committed semantic delta that changes semantic state moves the revision, so an unrelated hard constraint, capsule or verifier attestation leaves the plan and its digest unchanged, while an effect attempt that is neither settled nor reconciled fences every runtime commit, a merge included (ExecutionFenced); a plan's delta written by a host through apply_verified_semantic_delta is a host write, recorded with its principal, and the branch stays unmerged
+- Verifier-bounded triage: only a Pass at full-semantic or deterministic level with no hard finding is eligible for auto-proposal; TriageDecision::AutoPropose is not authorisation over verification: the runtime asks a policy to triage only a merge its grant's verifiers admitted, and holds one they did not admit with a triage verification decided
+- Uniform calibration slice of eligible branches with a deterministic per-branch draw, logged auto-propose propensities and adjudication samples; a draw outside [0, 1) is refused
+- A calibration rate is zero or lowers the logged propensity 1 - rate below one: TriagePolicy::new, and so every recorded or rebuilt policy, refuses a positive rate of at most 2^-54 (InvalidExploration), for which 1 - rate rounds to one and a slice triage would be logged as if escalating it were impossible, so explains, storage and off-policy evaluation agree on every triage a policy makes
+- Threshold selection on a fixed grid by conformal risk control or by Learn-then-Test with Clopper-Pearson bounds; Learn-then-Test skips exactly the thresholds its own bound cannot pass with no harm, so it never certifies nothing because a closed-form start fell one sample short
+- Every policy, including one rebuilt from storage by PolicyRecord::from_parts, holds a threshold that is a finite score in [0, 1]; NaN, infinite or out-of-range thresholds are refused (InvalidThreshold) rather than silently never or always auto-proposing
+- PolicyRecord names a policy's version, threshold rule and levels and the adjudicated calibration-slice branches its threshold is attributed to: PolicyRecord::calibrate runs the rule on the samples it is given and names their branches, while PolicyRecord::from_parts, which storage rebuilds records with, takes the threshold and the branches as given and cannot show that the rule chose one from the other (ptr-pg's record_policy reruns the rule on the stored adjudications); held_out returns the adjudications it was not calibrated on, the only ones its harm rate may be estimated from
+- TriageOutcome has private fields with read accessors and is built only by TriagePolicy::triage and TriageOutcome::from_parts, which storage rebuilds a logged triage with and which refuses (ImpossibleOutcome, PTR_ARBITER_IMPOSSIBLE_OUTCOME, naming the rule) parts no policy produces for any report, score and draw: a score or auto-propose propensity that is not a probability, a positive propensity that is 1 - r for no calibration rate r, an ineligible triage that is auto-proposed, in the calibration slice or has a nonzero propensity, an eligible one that is discarded, a slice triage that is not escalated or has propensity one, and an eligible one outside the slice auto-proposed with propensity zero or escalated with a positive one; parts that pass are exactly what some policy returns; TriageOutcome::adjudicate checks those rules again and refuses any triage outside the calibration slice (NotCalibrationSlice, PTR_ARBITER_NOT_CALIBRATION_SLICE), so every CalibrationSample, which only adjudicate builds, carries the score of an eligible slice triage, a finite number in [0, 1]; which policy made a triage is not part of it, and TriagePolicy::explains checks the one a log cites
+- TriagePolicy::explains says whether a policy can have produced a triage for some report, score and draw: a verification-decided triage is discarded or escalated outside the slice with propensity zero; an eligible one is never discarded, carries exactly the propensity the threshold gives its score, is escalated in the slice (which only a positive rate has) and otherwise auto-proposed exactly when the threshold admits its score; a score that is not a probability is refused (UnexplainedTriage names the rule); ptr-pg refuses to log a triage its cited policy does not explain
+- Off-policy evaluation by IPS, SNIPS and doubly robust estimates with a positivity check; a log with a propensity outside [0, 1], a propensity so small that its importance weight is infinite, a score that is not a finite number in [0, 1] (InvalidScore, checked before any target probability is computed from it), a nonfinite reward, or a record no triage policy can produce (ImpossibleTriage, PTR_ARBITER_IMPOSSIBLE_TRIAGE: an ineligible record that is auto-proposed or has a nonzero propensity, or an eligible one that is discarded, auto-proposed with propensity zero or escalated with propensity one, each checked before the record is reweighted) is refused rather than estimated; a LoggedTriage names no policy, so the estimators do not check that its propensity is the one its policy logs (explains checks that when a triage is recorded); SNIPS and the effective sample size are computed on weights divided by the largest, the doubly robust estimate on weights divided by the largest and residuals divided by twice the log's length before any product, so no intermediate overflows an estimate that is itself finite, and an estimate that is still not finite is refused (NonFiniteEstimate) rather than returned, including SNIPS on a log where the evaluated policy gives every logged action probability zero (0 / 0), which is refused rather than reported as a reward of zero; doubly_robust calls its reward model (FnMut) exactly once per record and action, in log order, and uses the logged action's prediction both in the direct term and in the residual, so the two cancel even for a stochastic or stateful model
+- MergePlan does not come apart: it has no into_parts, and a struct expression over a certified plan does not compile, each shown by a compile-fail doctest beside a compiling twin that differs only in the forbidden line
+- merge_plan_digest computes MergePlan::digest (ptr-branch/merge-plan/v3) from the parts a merge record carries (branch id, expected revision, encoded delta, dependency digest and rebased keys), so whoever holds the record can recompute the digest of the plan it merged without the plan; MergePlan::digest calls it
+- Certification::kind reads a CertificationKind from the plan's rebased keys, which the plan digest covers, never from the variant that wraps the plan, and Certification::into_plan returns the plan whichever variant wraps it
+- SealedBranch::seal_digest hashes every part of a sealed branch under ptr-branch/sealed-branch/v1: id, author and base revision, the reads, scans, relied, touched_base and touched_inputs maps as counted sections, and every operation's kind, key and payload, a set operation's in_base included, so two sealed branches share a digest only if they share every part
+- certify labels a plan Clean exactly when its rebased keys are empty and Rebased otherwise; the Certification variants are public and outside MergePlan::digest, so the label is a convenience and MergePlan::rebased, which only certify sets and the digest covers, is the record of what was rebased
+
+### Missing for the target architecture
+
+- Removing a derived key's value through a branch: the semantic delta has no removal that keeps the key's dependency entry, so a Remove of a derived key is refused (DerivedRemoval) rather than merged
+- Opening a branch only through an entry point that takes its author from the admitted execution session; Branch::open records whatever PrincipalId its caller passes, so naming the admitted principal is a caller obligation
+- Branch leases, expiry and garbage collection
+- Typed merge operators beyond counters and sets
+- Predicate digests beyond key prefixes
+- An optional intent per sealed branch, written by its agent and shown to whoever reviews an escalated or calibration-slice branch; certification, triage and verification never read it
+- The reason behind a verification-decided triage (status, level, hard-finding codes) and behind a certification refusal (conflicting keys, changed lifecycle targets, an unread overwritten key), stored as structured fields with the triage row and the outcome rather than as free text
+
+### Next milestones
+
+- Run S003 against serial execution and last-writer-wins baselines
+- Run F003 on adjudicated calibration slices
+
+### Linked experiments
+
+- [S003](../../experiments/semdb/S003-certified-branches/README.md) — `planned`
+- [F003](../../experiments/feedback/F003-calibrated-arbiter/README.md) — `planned`
+
+### Technology evaluations
+
+- None recorded.
+
+### Decision records
+
+- [ADR-0017-certified-agent-branches.md](../../research/decisions/ADR-0017-certified-agent-branches.md)
+- [ADR-0020-only-the-runtime-merges-an-agent-branch.md](../../research/decisions/ADR-0020-only-the-runtime-merges-an-agent-branch.md)
+- [ADR-0002-authority-hierarchy.md](../../research/decisions/ADR-0002-authority-hierarchy.md)
+
+### Current automated checks
+
+- tests/certification.rs conflict, phantom, input-set and lifecycle cases; opposing set operations on one member (a_set_operation_that_would_undo_a_concurrent_change_of_its_member_is_a_conflict) and same-direction ones (concurrent_set_operations_that_move_a_member_the_same_way_both_merge); an unchanged write of a derived key whose input the plan changes is published (an_unchanged_write_of_a_derived_key_whose_input_the_plan_changes_is_published_not_evicted); reads show the plan's own evictions (a_branch_read_shows_a_derived_key_its_own_write_to_an_input_evicts) and prefix scans show the branch's own work while recording the base's range (a_prefix_scan_shows_the_branch_s_own_work_while_its_range_digest_stays_the_base); commutative operations never build on an evicted derived value, in either staging order (a_commutative_operation_never_builds_on_a_derived_value_the_branch_s_own_change_evicts), from rebuilt parts (certification_refuses_a_commutative_operation_on_a_key_its_own_plan_evicts), on a key evicted before the base (a_commutative_operation_on_a_derived_key_evicted_before_the_base_is_refused) or by a concurrent commit (a_commutative_operation_never_builds_on_a_derived_value_a_concurrent_commit_evicts), and a staged branch whose operations change an input only against the target is refused (certification_refuses_a_staged_operation_whose_input_changes_only_against_the_target); derived keys are not removed (a_derived_key_cannot_be_removed_so_a_merge_never_drops_its_dependency_set); the plan digest covers the rebased keys (the_plan_digest_changes_with_which_keys_were_rebased) and the Certification label is a convenience over them (certify_labels_a_plan_clean_exactly_when_it_rebased_nothing_and_the_plan_keeps_the_record)
+- tests/sealing.rs and certify unit tests: every sealing invariant refused by the constructor and by certification on its own, a derived removal reported only when nothing else is broken (a_derived_removal_is_reported_only_when_the_parts_break_no_other_invariant), and a Put the journal cannot encode refused when put and by the constructor (a_put_of_a_value_the_journal_cannot_encode_is_refused_when_put_and_by_the_constructor)
+- The end-to-end merge, from sealing through certification, verification, triage or review and the ledger record to replay, is tested in ptr-runtime (tests/branch_merge.rs), which depends on this crate; this crate's own tests need no runtime
+- tests/triage.rs eligibility, calibration, which triages a policy explains, calibration rates too small to lower the propensity (a_calibration_rate_too_small_to_lower_the_propensity_is_refused_wherever_a_policy_is_built) and off-policy evaluation, including a log the target takes no logged action on (a_log_on_which_the_target_takes_no_logged_action_is_refused_rather_than_scored_zero), records no policy can produce (a_logged_triage_no_policy_can_produce_is_refused_before_any_reweighting) and the control that every triage a policy produces is accepted (every_triage_a_policy_produces_is_accepted_by_both_off_policy_estimates); triage parts are rebuilt exactly when some policy produces them (a_triage_is_rebuilt_from_parts_exactly_when_some_policy_produces_it, triage_parts_no_policy_produces_are_refused_naming_the_rule_they_break), so no calibration sample hides harm behind a NaN score or comes from an auto-proposed triage (no_calibration_sample_hides_harm_behind_a_score_no_triage_sees), and adjudicate and explains check a triage built around the constructor again (arbiter unit tests adjudication_checks_the_triage_again_rather_than_trusting_its_constructor and explains_checks_again_every_rule_the_constructor_enforces); the doubly robust estimate consults the reward model once per record and action (doubly_robust_consults_the_reward_model_once_per_record_and_action_and_reuses_the_logged_prediction); a record rebuilt from parts names its calibration branches without proving them (a_record_rebuilt_from_parts_names_its_calibration_branches_without_proving_them)
+- workspace fmt/check/test/clippy
+- merge_plan_digest equals MergePlan::digest and the v3 layout written out, for a clean and a rebased plan, and each of its five parts moves it; Certification::kind follows the rebased keys under either variant; seal_digest changes with every part and operation (an in_base flip, the operation order and the same digest moved from reads to scans included) and matches its documented layout written out byte by byte
+
+<!-- PTR:STATUS:END -->
+
+## Position in PTR
+
+```mermaid
+flowchart LR
+    A["Snapshot and agent work"] --> B["ptr-branch\nCertified Agent Branches and Calibrated Triage"]
+    B --> C["SealedBranch"]
+    C --> D["ptr-runtime merge_branch: certify, verify, triage or review"]
+    B -. "contracts" .-> T["ptr-types"]
+    L["ptr-ledger (authority)"] -. "never replaced" .-> B
+```
+
+Dedicated diagram source: [`docs/diagrams/components/ptr-branch.mmd`](../../docs/diagrams/components/ptr-branch.mmd)
+
+**Upstream:** ptr-semdb, ptr-verifier, ptr-analytics, ptr-types  
+**Downstream:** ptr-runtime (merge_branch, the only way a branch is merged), ptr-pg (branch store)
+
+## Mission
+
+Let many agents work concurrently without any of them writing state: each proposes, certification decides whether the proposal still applies, verification decides whether it is correct, and the runtime, which runs both, publishes it.
+
+PTR keeps this responsibility in its own crate so the semantics remain stable even when an external library or implementation is replaced.
+
+## Responsibilities
+
+- branch overlays and dependency declarations
+- certification against newer snapshots
+- merge plans
+- triage, calibration and off-policy evaluation
+
+## Explicit non-responsibilities
+
+- publishing semantic state
+- producing verification reports
+- storage of branches (ptr-pg)
+
+## Data flow
+
+| Direction | Contract |
+|---|---|
+| Input | SemanticSnapshot, staged operations, VerificationReport, adjudications |
+| Output | SealedBranch, Certification, MergePlan, TriageOutcome, calibrated thresholds |
+| Failure | Explicit typed error / rejected state; no silent fallback that changes semantics |
+| Observability | Standard PTR tracing fields and a stable component span |
+
+## Technical approach
+
+- optimistic certification over value, range and lifecycle digests
+- commutative rebase for counters, and member-wise rebase for sets that refuses to undo a concurrent insert or removal of a member
+- finite-sample calibrated thresholds with a uniform audit slice
+
+External projects are **candidates**, not architectural authority. The PTR-owned types must remain usable with a replacement backend.
+
+## Core invariants
+
+1. A branch never writes semantic state.
+2. Only the runtime merges a branch. `PtrRuntime::merge_branch` takes the sealed branch, certifies it against its own state in the same call, which checks the generations the branch relied on as they are then, verifies the state it would publish under the host's grant, and commits it under the grant's merge policy or a listed reviewer's approval of the plan digest, once per branch id. A plan this crate certifies is a what-if the runtime never takes on trust; its delta written by a host as an ordinary host write is recorded as that, not as a merge. A new hard constraint or a capsule the branch did not rely on does not refuse the merge; only the grant's verifiers can take it into account.
+3. Triage never moves a branch past verification.
+
+These invariants are executable through the unit and integration tests listed in the status block.
+
+## Failure model
+
+The component fails closed for semantic or effect-safety violations. Infrastructure failures surface as typed errors that preserve revision, generation and provenance context. Retries must be idempotent whenever the operation may cross a process or network boundary.
+
+## Security and privacy
+
+- Treat external inputs and backend outputs as untrusted until validated.
+- Do not put raw secrets or private evidence into generic tracing or inspection.
+- Derived artifacts are as sensitive as the inputs they were derived from.
+- External effects pass through `ptr-security` even if this component already performed local validation.
+
+## Experiments
+
+- [S003](../../experiments/semdb/S003-certified-branches/README.md)
+- [F003](../../experiments/feedback/F003-calibrated-arbiter/README.md)
+
+## Technology evaluation
+
+- No backend slot of its own; the algorithm is PTR-owned and measured by its experiments.
+
+## Related architecture
+
+- [35 — Agentic substrate](../../docs/architecture/35-agentic-substrate.md)
+- [System architecture](../../docs/architecture/00-system.md)
+- [Component contracts](../../docs/COMPONENT_CONTRACTS.md)
+- [Global invariants](../../docs/INVARIANTS.md)

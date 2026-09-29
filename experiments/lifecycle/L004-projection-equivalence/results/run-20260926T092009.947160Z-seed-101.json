@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "experiment_id": "L004",
+  "git_sha": "08882ac423697f8366cebb023dad5f85944cdc5c",
+  "python": "3.11.15 (main, Mar  3 2026, 09:26:23) [GCC 13.3.0]",
+  "platform": "Linux-6.18.44-fc-v37-x86_64-with-glibc2.39",
+  "manifest": {
+    "version": 1,
+    "id": "L004",
+    "status": "running",
+    "hypothesis": "Is a PostgreSQL projection rebuilt by replay always equal to the reference projection, and does it refuse every foreign or rolled-back history?",
+    "metrics": "state and lifecycle divergence count; foreign histories accepted; rebuild time per 100k commits",
+    "baseline": "ptr-state MaterializedState reference and the Turso backend",
+    "falsification": "Any divergence from the reference or any accepted foreign or rolled-back history is a hard failure.",
+    "hardware_profile": "hardware/default.toml",
+    "entrypoint": "cargo +stable run --release --locked -p ptr-bench --features turso-oracle -- projection-equivalence <iterations> <seed>",
+    "postgres_entrypoint": "cargo run --release --locked -p ptr-bench --features postgres-experiments -- projection-equivalence <iterations> <seed>",
+    "server_environment": "PTR_PG_EXPERIMENT_DSN",
+    "iterations": 40,
+    "seeds": [
+      17,
+      29,
+      43,
+      71,
+      101
+    ],
+    "results_dir": "results",
+    "required_artifacts": [
+      "run.json",
+      "metrics.json"
+    ],
+    "design": "../../../docs/architecture/35-agentic-substrate.md"
+  },
+  "manifest_sha256": "293a2a891d1c078191e5b1c9992de6488bff097b0f9bf166f80db08770e2442d",
+  "cargo_lock_sha256": "38f7ea90686a4f461b838b985d2e56ea2bf35368bf323139b4cd393c16aae59c",
+  "uv_lock_sha256": "cb972d8f7f5c918b4b307a570ebf373d4a163d93776e3ef3ee865234ff30a1c0",
+  "hardware_profile": "hardware/default.toml",
+  "status": "completed",
+  "started_at": "20260926T092009.947160Z",
+  "entrypoint": "entrypoint",
+  "seed": 101,
+  "parameters": {
+    "iterations": "40"
+  },
+  "command": [
+    "cargo",
+    "+stable",
+    "run",
+    "--release",
+    "--locked",
+    "-p",
+    "ptr-bench",
+    "--features",
+    "turso-oracle",
+    "--",
+    "projection-equivalence",
+    "40",
+    "101"
+  ],
+  "finished_at": "2026-09-26T09:21:33.751400+00:00",
+  "exit_code": 0,
+  "stdout": "{\"benchmark\":\"projection-equivalence\",\"iterations\":40,\"seed\":101,\"server\":\"18.6 (Ubuntu 18.6-1.pgdg24.04+2) / pgvector 0.8.6\",\"turso_oracle\":true,\"elapsed_ns\":83460024607,\"records\":3780,\"invalid_logs\":0,\"state_divergences\":0,\"extra_or_missing_keys\":0,\"lifecycle_checks\":57162,\"lifecycle_divergences\":0,\"revision_divergences\":0,\"event_log_divergences\":0,\"watermark_divergences\":0,\"crash_injections\":225,\"client_aborts\":113,\"server_kills\":112,\"crashes_committed\":163,\"crashes_rolled_back\":62,\"crash_recovery_failures\":0,\"commit_faults\":144,\"commit_fault_failures\":0,\"redeliveries\":203,\"redelivery_failures\":0,\"gap_probes\":90,\"gap_failures\":0,\"duel_probes\":128,\"duel_failures\":0,\"foreign_probes\":359,\"foreign_histories_accepted\":0,\"false_refusals\":0,\"backup_catchups\":40,\"catchup_divergences\":0,\"rebuild_divergences\":0,\"rebuild_ns\":10745405151,\"rebuild_commits\":4064,\"apply_ns\":14913711693,\"apply_commits\":3780,\"long_replay_ns\":4290906264,\"long_replay_commits\":2000,\"turso_divergences\":0,\"read_failures\":0,\"nul_probes\":40,\"nul_failures\":0,\"hard_failures\":0}\n",
+  "stderr": "    Finished `release` profile [optimized] target(s) in 0.28s\n     Running `target/release/ptr-bench projection-equivalence 40 101`\n",
+  "launch_error": null,
+  "duration_ns": 83796023228
+}

@@ -117,7 +117,9 @@ pub enum WireOutcome {
     /// refusal: a retry without an at-most-once key could apply it a second time.
     Uncertain,
     /// Nothing was attempted. The code says only as much as a requester is entitled
-    /// to know.
+    /// to know, with one exception: at-most-once keys are one namespace per host
+    /// runtime, so a `Runtime` refusal under a key can tell a requester that another
+    /// principal spent it.
     Refused {
         /// Why, at the coarseness the wire allows.
         code: RefusalCode,
