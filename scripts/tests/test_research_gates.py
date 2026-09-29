@@ -697,9 +697,25 @@ class PreregistrationGateTests(unittest.TestCase):
         return record
 
     def aggregate(self, root: Path, commit: str, **changes) -> dict:
-        """An aggregate run.json of the runs at `commit`."""
+        """An aggregate run.json of the runs at `commit`, naming the SHA-256
+        of the record of each seed the results directory holds a run of."""
         digest,rules=self.frozen(root)
-        return {"git_sha":commit,"preregistration_sha256":digest,"preregistration_rules_sha256":rules,**changes}
+        results=root/"experiments/semdb/X900-fixture/results"
+        bound=mod.experiment_records.seed_record_digests(results) if results.is_dir() else {}
+        return {"git_sha":commit,"preregistration_sha256":digest,"preregistration_rules_sha256":rules,
+                "seed_records":bound,**changes}
+
+    def seeded(self, root: Path, commit: str) -> list[str]:
+        """Write the run record of each preregistered seed at `commit` into
+        the results directory, as the runner writes them, for an aggregate to
+        bind; their names, as the gate shows them."""
+        names=[]
+        for seed in TABLE["seeds"]:
+            name=f"results/run-2026010{seed % 9}T000000.000000Z-seed-{seed}.json"
+            write(root,f"experiments/semdb/X900-fixture/{name}",
+                  json.dumps(self.record(root,commit,seed=seed,status="completed")))
+            names.append(name)
+        return names
 
     def test_archived_runs_must_name_the_frozen_digests_and_a_commit_that_holds_them(self):
         name=self.RECORD.removeprefix("experiments/semdb/X900-fixture/")
@@ -710,6 +726,7 @@ class PreregistrationGateTests(unittest.TestCase):
                 short=commit[:12]
                 digest,rules=self.frozen(root)
                 write(root,self.RECORD,json.dumps(self.record(root,commit)))
+                self.seeded(root,commit)
                 write(root,self.AGGREGATE,json.dumps(self.aggregate(root,commit)))
                 # Files other than run records are not run records.
                 write(root,"experiments/semdb/X900-fixture/results/metrics.json","{}")
@@ -843,6 +860,9 @@ class PreregistrationGateTests(unittest.TestCase):
             f"X900 was frozen at {short}, whose experiment.toml names other preregistration digests than the frozen ones",
             f"X900: results/run.json ran at {short}, whose config.toml holds another [preregistration] than the frozen one",
             f"X900: results/run.json ran at {short}, whose experiment.toml names other preregistration digests than the frozen ones",
+            # It reports on seeds no run record holds.
+            "X900: results/run.json reports on seed 17, which has no run record",
+            "X900: results/run.json reports on seed 29, which has no run record",
             # The aggregate as it was first committed saw the outcome under
             # the old preregistration.
             f"X900: results/run.json as committed at {recorded[:12]} names preregistration_sha256 {before[0]!r}, not {after[0]}, "
@@ -905,12 +925,12 @@ class PreregistrationGateTests(unittest.TestCase):
         (root/self.RECORD).unlink()
         self.assertEqual(gate(root),(0,[]))
 
-    def ran(self, status="running", **tree) -> tuple[Path, str]:
-        """A fixture tree at `status` with one run record committed, and the
-        commit the record names."""
+    def ran(self, status="running", seed=None, **tree) -> tuple[Path, str]:
+        """A fixture tree at `status` with one run record committed (of
+        `seed`, when given), and the commit the record names."""
         root=self.tree(status=status,**tree)
         ran=commit_all(root)
-        write(root,self.RECORD,json.dumps(self.record(root,ran)))
+        write(root,self.RECORD,json.dumps(self.record(root,ran,**({} if seed is None else {"seed":seed}))))
         commit_all(root,"records")
         self.assertEqual(gate(root),(0,[]))
         return root,ran
@@ -946,8 +966,9 @@ class PreregistrationGateTests(unittest.TestCase):
             f"{at}, whose config.toml differs from the current one in tests_dir; after a run the configuration stays as it ran",
             f"X900 was frozen at {ran[:12]}, whose config.toml differs from the current one in tests_dir; after a run the configuration stays as it ran",
         )
-        # The aggregate is bound the same way.
-        root,ran=self.ran()
+        # The aggregate is bound the same way; it names the record of the
+        # one seed the experiment preregisters.
+        root,ran=self.ran(table={**TABLE,"seeds":[17]},seeds=(17,),seed=17)
         at=f"X900: {name} ran at {ran[:12]}"
         write(root,self.AGGREGATE,json.dumps(self.aggregate(root,ran)))
         commit_all(root,"aggregate")
@@ -1183,9 +1204,10 @@ class PreregistrationGateTests(unittest.TestCase):
         self.assertEqual(gate(root),(0,[]))
 
     def test_an_aggregate_is_bound_in_every_version_it_was_committed_in(self):
-        # Only the aggregate was committed; it shows the outcome.
+        # The aggregate was committed after the runs; it shows the outcome.
         root=self.tree(status="running")
         ran=commit_all(root)
+        runs=self.seeded(root,ran)
         write(root,self.AGGREGATE,json.dumps(self.aggregate(root,ran)))
         recorded=commit_all(root,"aggregate")
         self.assertEqual(gate(root),(0,[]))
@@ -1207,6 +1229,13 @@ class PreregistrationGateTests(unittest.TestCase):
             f"X900 was frozen at {ran[:12]}, whose config.toml holds another [preregistration] than the frozen one",
             f"X900 was frozen at {ran[:12]}, whose experiment.toml names other preregistration digests than the frozen ones",
         ]
+        # The runs it reports on were made under the old preregistration too.
+        for run in runs:
+            earlier+=[
+                f"X900: {run} names preregistration_sha256 {before[0]!r}, not {after[0]}, the digest the experiment is frozen at",
+                f"X900: {run} ran at {ran[:12]}, whose config.toml holds another [preregistration] than the frozen one",
+                f"X900: {run} ran at {ran[:12]}, whose experiment.toml names other preregistration digests than the frozen ones",
+            ]
         self.assert_blocked(root,*earlier)
         # Written again in a new results directory instead, the old
         # aggregate is still checked where it was committed.
@@ -1231,6 +1260,9 @@ class PreregistrationGateTests(unittest.TestCase):
             f"{froze}, whose config.toml holds another [preregistration] than the frozen one",
             f"{froze}, whose experiment.toml names other preregistration digests than the frozen ones",
             f"{froze}, whose experiment.toml differs from the current one in results_dir; after a run only its status changes",
+            # Neither aggregate has a run record to name.
+            *(f"X900: {aggregate} reports on seed {seed}, which has no run record"
+              for aggregate in ("results/run.json","new-results/run.json") for seed in TABLE["seeds"]),
         )
         # And a committed aggregate stays.
         (root/self.AGGREGATE).unlink()
@@ -1242,6 +1274,7 @@ class PreregistrationGateTests(unittest.TestCase):
         # the aggregate passes in every version.
         root=self.tree(status="running")
         ran=commit_all(root)
+        self.seeded(root,ran)
         write(root,self.AGGREGATE,json.dumps(self.aggregate(root,ran)))
         commit_all(root,"aggregate")
         write(root,self.AGGREGATE,json.dumps(self.aggregate(root,ran,metrics_sha256="0"*64)))
@@ -1257,6 +1290,7 @@ class PreregistrationGateTests(unittest.TestCase):
         # through it; git holds only the link's target path.
         root=self.tree(status="running")
         ran=commit_all(root)
+        self.seeded(root,ran)
         write(root,"experiments/semdb/X900-fixture/elsewhere.json",json.dumps(self.aggregate(root,ran)))
         self.link(Path("../elsewhere.json"),root/self.AGGREGATE)
         linked=commit_all(root,"aggregate linked")
@@ -1264,6 +1298,92 @@ class PreregistrationGateTests(unittest.TestCase):
         write(root,self.AGGREGATE,json.dumps(self.aggregate(root,ran)))
         commit_all(root,"aggregate")
         self.assert_blocked(root,f"X900: results/run.json as committed at {linked[:12]} is not a regular file")
+
+    def test_an_aggregate_names_the_run_record_of_each_preregistered_seed(self):
+        # Fabricated outcomes, committed beside no run or beside records
+        # rewritten since, would pass on the digests an aggregate carries
+        # alone: it binds each preregistered seed's record by its SHA-256.
+        def missing(seed):
+            return f"X900: results/run.json reports on seed {seed}, which has no run record"
+
+        def refused(seed,named,held):
+            return (f"X900: results/run.json names seed_records[{seed}] {named!r}, not {held}, the SHA-256 of the run "
+                    f"record of seed {seed}")
+
+        # A completed experiment whose aggregate is all there is: no run
+        # record holds any seed the aggregate reports on.
+        root=self.tree(status="completed")
+        ran=commit_all(root)
+        write(root,self.AGGREGATE,json.dumps(self.aggregate(root,ran)))
+        write(root,"experiments/semdb/X900-fixture/results/metrics.json","{}")
+        self.assert_blocked(root,missing(17),missing(29))
+        # Named by the runs that happened, it passes, whatever the status.
+        for status in ("prepared","running","completed","failed"):
+            with self.subTest(status=status):
+                root=self.tree(status=status)
+                ran=commit_all(root)
+                runs=self.seeded(root,ran)
+                write(root,self.AGGREGATE,json.dumps(self.aggregate(root,ran)))
+                self.assertEqual(gate(root),(0,[]))
+        digest_17=hashlib.sha256((root/f"experiments/semdb/X900-fixture/{runs[0]}").read_bytes()).hexdigest()
+        digest_29=hashlib.sha256((root/f"experiments/semdb/X900-fixture/{runs[1]}").read_bytes()).hexdigest()
+        held={"17":digest_17,"29":digest_29}
+        # The aggregate may not leave the binding out, or write it as
+        # anything but an object.
+        names_none=("X900: results/run.json names no seed_records, the SHA-256 of the run record of each "
+                    "preregistered seed, so nothing binds the outcome it reports to the runs")
+        for report in ({"git_sha":ran,**dict(zip(("preregistration_sha256","preregistration_rules_sha256"),self.frozen(root)))},
+                       {**self.aggregate(root,ran),"seed_records":[digest_17,digest_29]},
+                       {**self.aggregate(root,ran),"seed_records":"none"},
+                       {**self.aggregate(root,ran),"seed_records":None}):
+            with self.subTest(report=report):
+                write(root,self.AGGREGATE,json.dumps(report))
+                self.assert_blocked(root,names_none)
+        # Each seed's digest is that of its record; a wrong one, one left out
+        # and one for a seed that was not preregistered are each named.
+        wrong="0"*64
+        write(root,self.AGGREGATE,json.dumps(self.aggregate(root,ran,seed_records={**held,"17":wrong})))
+        self.assert_blocked(root,refused(17,wrong,digest_17))
+        write(root,self.AGGREGATE,json.dumps(self.aggregate(root,ran,seed_records={"29":digest_29})))
+        self.assert_blocked(root,refused(17,None,digest_17))
+        write(root,self.AGGREGATE,json.dumps(self.aggregate(root,ran,seed_records={**held,"41":digest_17})))
+        self.assert_blocked(root,"X900: results/run.json names a record for seed 41, which is not preregistered")
+        write(root,self.AGGREGATE,json.dumps(self.aggregate(root,ran,seed_records={**held,"17":digest_29,"29":digest_17})))
+        self.assert_blocked(root,refused(17,digest_29,digest_17),refused(29,digest_17,digest_29))
+        # A record rewritten after the aggregate named it is not the one it
+        # named, and the record itself is one committed as it was.
+        write(root,self.AGGREGATE,json.dumps(self.aggregate(root,ran)))
+        commit_all(root,"aggregate")
+        self.assertEqual(gate(root),(0,[]))
+        rewritten=self.record(root,ran,seed=17,status="completed")
+        rewritten["stdout"]="another outcome"
+        write(root,f"experiments/semdb/X900-fixture/{runs[0]}",json.dumps(rewritten))
+        code,lines=gate(root)
+        self.assertEqual(code,1)
+        self.assertIn(f"X900: {runs[0]} differs from the record committed as it",lines)
+        self.assertTrue(any(line.startswith("X900: results/run.json names seed_records[17] ") for line in lines),lines)
+        # A run whose command failed to launch saw no outcome, and so is no
+        # run record to name; two records of one seed are named as that, not
+        # as a record no aggregate could name.
+        root=self.tree(status="running")
+        ran=commit_all(root)
+        runs=self.seeded(root,ran)
+        results="experiments/semdb/X900-fixture/results"
+        write(root,f"{results}/{runs[1].removeprefix('results/')}",json.dumps(self.record(root,ran,seed=29,status="failed-to-launch")))
+        write(root,self.AGGREGATE,json.dumps(self.aggregate(root,ran)))
+        self.assert_blocked(root,missing(29))
+        root=self.tree(status="running")
+        ran=commit_all(root)
+        self.seeded(root,ran)
+        write(root,f"{results}/run-20260201T000000.000000Z-seed-17.json",json.dumps(self.record(root,ran,seed=17,status="completed")))
+        digest,rules=self.frozen(root)
+        write(root,self.AGGREGATE,json.dumps({"git_sha":ran,"preregistration_sha256":digest,"preregistration_rules_sha256":rules,
+                                              "seed_records":{"17":"0"*64,"29":"0"*64}}))
+        code,lines=gate(root)
+        self.assertEqual(code,1)
+        self.assertTrue(any("seed 17 ran more than once" in line for line in lines),lines)
+        self.assertFalse(any("names seed_records[17]" in line for line in lines),lines)
+        self.assertTrue(any(line.startswith("X900: results/run.json names seed_records[29] ") for line in lines),lines)
 
     def test_a_run_record_reached_through_a_symlink_is_refused(self):
         name=self.RECORD.removeprefix("experiments/semdb/X900-fixture/")

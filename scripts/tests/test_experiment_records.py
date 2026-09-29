@@ -2163,6 +2163,76 @@ class AggregateBindingTests(unittest.TestCase):
         self.assertTrue((self.results / "STALE.toml").exists())
 
 
+class SeedRecordDigestTests(unittest.TestCase):
+    """`seed_record_digests` names each seed's run record by its SHA-256, for
+    an aggregate of a listed experiment to carry as `seed_records`."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.results = Path(self.directory.name)
+
+    def write(self, name: str, content) -> bytes:
+        data = json.dumps(content).encode("utf-8") if not isinstance(content, bytes) else content
+        (self.results / name).write_bytes(data)
+        return data
+
+    def test_each_seed_is_named_by_the_sha256_of_its_record_as_written(self):
+        # The bytes as written, whatever spacing they hold.
+        first = self.write("run-20260101T000000.000000Z-seed-17.json", b'{"seed":  17,\n "status": "completed"}\n')
+        second = self.write("run-20260102T000000.000000Z-seed-29.json", {"seed": 29, "status": "failed"})
+        self.assertEqual(
+            mod.seed_record_digests(self.results),
+            {"17": hashlib.sha256(first).hexdigest(), "29": hashlib.sha256(second).hexdigest()},
+        )
+        # No record is no seed, and an empty directory holds none.
+        self.assertEqual(mod.seed_record_digests(self.results / "elsewhere"), {})
+        (self.results / "run-20260101T000000.000000Z-seed-17.json").unlink()
+        (self.results / "run-20260102T000000.000000Z-seed-29.json").unlink()
+        self.assertEqual(mod.seed_record_digests(self.results), {})
+
+    def test_a_seed_is_named_as_json_writes_it(self):
+        data = self.write("run-20260101T000000.000000Z-seed-17.json", {"seed": 17, "status": "completed"})
+        self.write("run-20260101T000001.000000Z-seed-x.json", {"seed": "x", "status": "completed"})
+        self.assertEqual(
+            mod.seed_record_digests(self.results),
+            {"17": hashlib.sha256(data).hexdigest(), '"x"': hashlib.sha256(json.dumps({"seed": "x", "status": "completed"}).encode()).hexdigest()},
+        )
+
+    def test_a_record_that_saw_no_outcome_names_no_seed(self):
+        # A command that failed to launch, a prepared record with no seed, a
+        # file that is no run record and a record that is no object.
+        kept = self.write("run-20260101T000000.000000Z-seed-17.json", {"seed": 17, "status": "completed"})
+        self.write("run-20260102T000000.000000Z-seed-17.json", {"seed": 17, "status": "failed-to-launch"})
+        self.write("run-20260103T000000.000000Z-seed-29.json", {"seed": 29, "status": "failed-to-launch"})
+        self.write("run-20251231T000000.000000Z.json", {"status": "prepared"})
+        self.write("run-20260104T000000.000000Z-seed-41.json", [1, 2])
+        self.write("run-20260105T000000.000000Z-seed-5.json", b"5")
+        self.write("run-20260105T000001.000000Z-seed-6.json", b'"seed"')
+        self.write("run.json", {"seed": 99, "status": "completed"})
+        self.write("metrics.json", {"seed": 98})
+        self.assertEqual(mod.seed_record_digests(self.results), {"17": hashlib.sha256(kept).hexdigest()})
+
+    def test_a_record_that_cannot_be_read_or_a_seed_run_twice_is_an_error(self):
+        self.write("run-20260101T000000.000000Z-seed-17.json", {"seed": 17, "status": "completed"})
+        self.write("run-20260102T000000.000000Z-seed-17.json", {"seed": 17, "status": "completed"})
+        with self.assertRaisesRegex(mod.ProvenanceError, r"^seed 17 has more than one run record in "):
+            mod.seed_record_digests(self.results)
+        (self.results / "run-20260102T000000.000000Z-seed-17.json").unlink()
+        for unreadable in (b"{", b"\xff\xfe", b""):
+            with self.subTest(unreadable=unreadable):
+                self.write("run-20260103T000000.000000Z-seed-29.json", unreadable)
+                with self.assertRaisesRegex(
+                    mod.ProvenanceError, r"^run-20260103T000000\.000000Z-seed-29\.json cannot be read: "
+                ):
+                    mod.seed_record_digests(self.results)
+        # A path that is no file cannot be read either.
+        (self.results / "run-20260103T000000.000000Z-seed-29.json").unlink()
+        (self.results / "run-20260106T000000.000000Z-seed-7.json").mkdir()
+        with self.assertRaisesRegex(mod.ProvenanceError, r"^run-20260106T000000\.000000Z-seed-7\.json cannot be read: "):
+            mod.seed_record_digests(self.results)
+
+
 class BindingAggregatorTests(unittest.TestCase):
     """The gate asks a current run.json to name the SHA-256 of its metrics and
     tells a completed experiment to rerun its aggregate.py to get one, so

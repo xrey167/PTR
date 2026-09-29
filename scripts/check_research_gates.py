@@ -1642,6 +1642,8 @@ def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path,
     runs={}
     programs={}
     trees=[]
+    digests={}
+    aggregates=[]
     for path in sorted(records):
         name=shown(path)
         where=f"{exp_id}: {name}"
@@ -1662,10 +1664,13 @@ def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path,
             record=MISSING
         if record is not MISSING:
             errors.extend(record_errors(exp_id,name,record,aggregate,root,experiment,entry,table,frozen,current))
+            if aggregate and isinstance(record,dict):
+                aggregates.append((name,record))
             # A prepared record names no seed, and a command that failed to
             # launch saw no outcome.
             if not aggregate and isinstance(record,dict) and "seed" in record and record.get("status")!="failed-to-launch":
                 runs.setdefault(json.dumps(record["seed"],sort_keys=True),[]).append(name)
+                digests[json.dumps(record["seed"],sort_keys=True)]=hashlib.sha256(data).hexdigest()
                 # The program, the toolchain and the environment lie outside
                 # the commit: the seeds of one experiment ran one of each.
                 programs.setdefault(json.dumps(
@@ -1713,6 +1718,30 @@ def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path,
         if len(names)>1:
             errors.append(f"{exp_id}: seed {seed} ran more than once ({', '.join(names)}); a listed experiment runs each "
                           "seed once, so no run of it is chosen by its outcome")
+    # An aggregate reports on the runs, so it names the SHA-256 of the record
+    # of each preregistered seed (`seed_records`, as
+    # `experiment_records.seed_record_digests` writes it): outcomes committed
+    # beside no run, or beside records rewritten since, would pass on the
+    # digests it carries alone.
+    seeds=table.get("seeds")
+    preregistered=[json.dumps(seed,sort_keys=True) for seed in seeds] if isinstance(seeds,list) else []
+    for name,report in aggregates:
+        bound=report.get("seed_records")
+        if not isinstance(bound,dict):
+            errors.append(f"{exp_id}: {name} names no seed_records, the SHA-256 of the run record of each preregistered "
+                          "seed, so nothing binds the outcome it reports to the runs")
+            continue
+        for seed in preregistered:
+            if seed not in digests:
+                errors.append(f"{exp_id}: {name} reports on seed {seed}, which has no run record")
+            elif len(runs[seed])>1:
+                # Two records of one seed are named as such: none is the record.
+                continue
+            elif bound.get(seed)!=digests[seed]:
+                errors.append(f"{exp_id}: {name} names seed_records[{seed}] {bound.get(seed)!r}, not {digests[seed]}, "
+                              f"the SHA-256 of the run record of seed {seed}")
+        for seed in sorted(set(bound)-set(preregistered)):
+            errors.append(f"{exp_id}: {name} names a record for seed {seed}, which is not preregistered")
     if len(programs)>1:
         errors.append(f"{exp_id}: its runs name {len(programs)} programs, toolchains or environments ("
                       + "; ".join(", ".join(names) for _,names in sorted(programs.items()))

@@ -1519,6 +1519,29 @@ def publish_aggregate(results_dir: Path, metrics: dict, run: dict) -> None:
     clear_stale_marker(results_dir)
 
 
+def seed_record_digests(results_dir: Path) -> dict[str, str]:
+    """The SHA-256 of each seed's run record in `results_dir`, by the seed as
+    JSON writes it (`"17"`), which an aggregate of a listed experiment carries
+    as `seed_records` (`check_research_gates.py` binds it to the records): a
+    record of a command that failed to launch saw no outcome and is left out.
+    Raises `ProvenanceError` when a record cannot be read or two are of one
+    seed, which a listed experiment does not run twice."""
+    digests: dict[str, str] = {}
+    for path in sorted(results_dir.glob("run-*.json")):
+        try:
+            data = path.read_bytes()
+            record = json.loads(data.decode("utf-8"))
+        except (OSError, UnicodeDecodeError, ValueError) as error:
+            raise ProvenanceError(f"{path.name} cannot be read: {error}") from error
+        if not isinstance(record, dict) or "seed" not in record or record.get("status") == "failed-to-launch":
+            continue
+        seed = json.dumps(record["seed"], sort_keys=True)
+        if seed in digests:
+            raise ProvenanceError(f"seed {seed} has more than one run record in {results_dir}")
+        digests[seed] = hashlib.sha256(data).hexdigest()
+    return digests
+
+
 def mutation_summary(path: Path) -> dict:
     """The summary of the mutation evidence at `path` that an aggregate
     carries (`mutation_evidence`): its counts, the commit it ran at and the
