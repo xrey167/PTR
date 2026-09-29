@@ -406,6 +406,17 @@ impl World {
                 self.metrics.provenance_mismatches += 1;
                 self.note("a committed host write did not append exactly one record".into());
             }
+            // What the record changes, against the state before it, must be
+            // what the request changes: the model follows the journal next, so
+            // this is the one place a record of another change would show.
+            let requested = self.model.plan(delta).ok().map(|plan| plan.net);
+            let recorded = self.committed_net(from);
+            if requested.is_none() || recorded != requested {
+                self.metrics.model_divergences += 1;
+                self.note(format!(
+                    "the record of a host write by {principal} changes something else than was requested"
+                ));
+            }
             self.follow(from)?;
             self.check_host_record(from, principal);
             if oracle::negative_counter(&self.model) {
@@ -1245,9 +1256,7 @@ impl World {
         }
         if let Some(path) = durable {
             self.metrics.durable_roundtrips += 1;
-            let outcome = self.durable_round_trip(path, &events);
-            let _ = std::fs::remove_file(path);
-            outcome?;
+            self.durable_round_trip(path, &events)?;
         }
         Ok(())
     }
@@ -1262,6 +1271,9 @@ impl World {
             FileLedger::create_from_log(path, &bytes, anchor)
                 .map_err(|error| format!("durable ledger: {error}"))?,
         );
+        // The file is this call's from here on, and only then is it removed:
+        // a path that was already taken made the creation above fail.
+        let _created = Unlink(path);
         match PtrRuntime::open_durable(PtrConfig::default(), path) {
             Ok(reopened) => self.compare_rebuilt(&reopened, "durable reopen"),
             Err(error) => {
@@ -1388,6 +1400,15 @@ pub fn state_difference(runtime: &PtrRuntime, model: &Model) -> Option<String> {
         }
     }
     None
+}
+
+/// Removes the file at its path when dropped: made only for a file this run created.
+struct Unlink<'a>(&'a Path);
+
+impl Drop for Unlink<'_> {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(self.0);
+    }
 }
 
 #[cfg(test)]

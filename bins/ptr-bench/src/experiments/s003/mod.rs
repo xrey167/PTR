@@ -19,6 +19,7 @@ pub mod oracle;
 pub mod params;
 pub mod probes;
 pub mod program;
+pub mod scratch;
 pub mod verifier;
 pub mod workload;
 pub mod world;
@@ -28,18 +29,20 @@ use std::time::Instant;
 
 use arms::{Arm, Run, RunStats};
 use metrics::{fnv, Metrics};
+use scratch::Scratch;
 use workload::Case;
 
 use super::json;
 
-/// The file of the durable round trip of case `index`, for the cases that make
-/// one; `label` tells a case from its rerun.
-fn durable_path(seed: u64, index: usize, label: &str) -> Option<PathBuf> {
+/// The private directory of the durable round trip of case `index`, for the
+/// cases that make one; `label` tells a case from its rerun. It is removed when
+/// dropped.
+fn durable_scratch(seed: u64, index: usize, label: &str) -> Option<Scratch> {
     (index % params::DURABLE_ROUNDTRIP_EVERY_CASES == 0).then(|| {
-        std::env::temp_dir().join(format!(
-            "ptr-s003-{}-{seed}-{index}-{label}.log",
-            std::process::id()
-        ))
+        Scratch::create(&format!("{seed}-{index}-{label}")).unwrap_or_else(|error| {
+            eprintln!("no scratch directory for a durable round trip: {error}");
+            std::process::exit(2);
+        })
     })
 }
 
@@ -224,7 +227,9 @@ pub fn run(iterations: usize, seed: u64) {
     let mut metrics = Metrics::default();
     let mut cases: Vec<CaseResult> = Vec::with_capacity(iterations);
     for index in 0..iterations {
-        let case = run_case(seed, index, durable_path(seed, index, "first"));
+        let scratch = durable_scratch(seed, index, "first");
+        let case = run_case(seed, index, scratch.as_ref().map(|s| s.file("journal.log")));
+        drop(scratch);
         eprintln!(
             "case {index} level {} groups {}: serial {} ticks, {} hard, {} notes",
             case.level,
@@ -245,7 +250,13 @@ pub fn run(iterations: usize, seed: u64) {
         .iter()
         .find(|case| case.index == params::NONDETERMINISM_RERUN_CASE)
     {
-        let again = run_case(seed, first.index, durable_path(seed, first.index, "again"));
+        let scratch = durable_scratch(seed, first.index, "again");
+        let again = run_case(
+            seed,
+            first.index,
+            scratch.as_ref().map(|s| s.file("journal.log")),
+        );
+        drop(scratch);
         if again.digest != first.digest {
             metrics.nondeterminism += 1;
             eprintln!(
@@ -292,8 +303,8 @@ mod tests {
 
     #[test]
     fn a_durable_case_reopens_its_journal_and_leaves_no_file() {
-        let path =
-            std::env::temp_dir().join(format!("ptr-s003-mod-test-{}.log", std::process::id()));
+        let scratch = Scratch::create("mod-test").expect("a scratch directory");
+        let path = scratch.file("journal.log");
         let case = run_case(17, 0, Some(path.clone()));
         assert_eq!(case.metrics.hard(), Metrics::default().hard());
         assert_eq!(case.metrics.durable_roundtrips, 1);

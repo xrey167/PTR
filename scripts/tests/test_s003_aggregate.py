@@ -98,8 +98,7 @@ def seed_result(seed: int, ticks_of=None, conflicts_of=None, **overrides) -> dic
         result[name] = 48
     result["hazard_negative"] = 0
     result["hazard_set_member"] = 0
-    for name in ("occ_lost_updates", "occ_stale_scan_commits"):
-        result[name] = 0
+    result["occ_lost_updates"] = 0
     result.update(overrides)
     return result
 

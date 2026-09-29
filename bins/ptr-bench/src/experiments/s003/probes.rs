@@ -15,8 +15,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use ptr_branch::{
     merge_plan_digest, Branch, BranchError, BranchId, BranchOp, InputsDigest, SealedBranch,
@@ -43,6 +41,7 @@ use super::metrics::Metrics;
 use super::model::{Delta, Val, OP_SOURCE};
 use super::params;
 use super::program::{keys, Program};
+use super::scratch::Scratch;
 use super::verifier::Domain;
 use super::workload::{Background, Case, Genesis};
 use super::world::{grant, policy_record, Authority, GrantKind, HostOutcome, Settled, World};
@@ -220,19 +219,11 @@ impl Probes {
         }
     }
 
-    /// A file name of this probe's own, so that two runs in one process, or a
-    /// run that died, never meet.
-    fn durable_path(&self, label: &str) -> PathBuf {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let path = std::env::temp_dir().join(format!(
-            "ptr-s003-{label}-{}-{}-{}-{}.log",
-            std::process::id(),
-            self.seed,
-            self.case,
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        let _ = std::fs::remove_file(&path);
-        path
+    /// A private directory of this probe's own, created here and removed with
+    /// the returned value: two runs in one process, or a run that died, never
+    /// meet, and nothing that is already there is ever removed.
+    fn scratch(&self, label: &str) -> Result<Scratch, String> {
+        Scratch::create(&format!("{label}-{}-{}", self.seed, self.case))
     }
 
     // ---- P1 to P4: a branch merges once, however the runtime came back --------------
@@ -267,7 +258,8 @@ impl Probes {
         self.resubmit("P3", restored, &attempt.sealed, |m| m.double_merges += 1)?;
 
         self.metrics.probe_p4_exercised += 1;
-        let path = self.durable_path("p4");
+        let scratch = self.scratch("p4").map_err(|error| format!("P4: {error}"))?;
+        let path = scratch.file("journal.log");
         let bytes = integrity::encode_log(&events).map_err(|error| format!("P4: {error}"))?;
         let anchor = integrity::decode_log(&bytes)
             .map_err(|error| format!("P4: {error}"))?
@@ -276,10 +268,9 @@ impl Probes {
             FileLedger::create_from_log(&path, &bytes, anchor)
                 .map_err(|error| format!("P4: {error}"))?,
         );
-        let reopened = PtrRuntime::open_durable(config(), &path);
-        let _ = std::fs::remove_file(&path);
-        let reopened =
-            reopened.map_err(|error| format!("P4: the journal does not reopen: {error:?}"))?;
+        let reopened = PtrRuntime::open_durable(config(), &path)
+            .map_err(|error| format!("P4: the journal does not reopen: {error:?}"))?;
+        drop(scratch);
         self.resubmit("P4", reopened, &attempt.sealed, |m| m.double_merges += 1)?;
         self.absorb(world);
         Ok(())

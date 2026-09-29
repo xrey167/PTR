@@ -612,6 +612,30 @@ replace = '''
 '''
 
 [[mutation]]
+name = "host-write-records-less-than-asked"
+description = "The runtime commits a host write without the first key it was asked to write, and records, applies and replays that."
+expect = ["model_divergences"]
+file = "crates/ptr-runtime/src/semantic.rs"
+find = '''
+        let encoded_delta = delta.encode().map_err(RuntimeError::Semantic)?;
+        let prepared = self
+            .semdb
+            .prepare_delta(delta)
+            .map_err(RuntimeError::Semantic)?;
+        if let Some(key) = evicted_ingress_key(&prepared) {
+'''
+replace = '''
+        let mut delta = delta;
+        let _ = delta.upserts.pop_first();
+        let encoded_delta = delta.encode().map_err(RuntimeError::Semantic)?;
+        let prepared = self
+            .semdb
+            .prepare_delta(delta)
+            .map_err(RuntimeError::Semantic)?;
+        if let Some(key) = evicted_ingress_key(&prepared) {
+'''
+
+[[mutation]]
 name = "oracle-ignores-scans"
 description = "The oracle predicts no conflict on a scanned prefix."
 expect = ["canary_misses"]

@@ -114,6 +114,7 @@ COVERAGE = [
     "lww_lost_updates",
     "lww_lost_increments",
     "occ_undetected_phantoms",
+    "occ_stale_scan_commits",
     "occ_stale_input_commits",
     "occ_stale_reliance_commits",
     *(f"probe_p{number}_exercised" for number in range(1, 27)),
