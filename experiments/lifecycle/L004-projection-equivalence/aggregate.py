@@ -2,8 +2,9 @@
 
 Inputs are the run records `scripts/run_experiment.py run L004 --seed <s>
 --set iterations=<n>` writes (results/run-<timestamp>-seed-<s>.json); by
-default the newest record of every declared seed. Every declared seed must be
-present. The records must be of one configuration and have run the checkout's
+default the newest record of every declared seed whose command started, one
+whose launch failed only where none did (`newest_per_seed`). Every declared
+seed must be present. The records must be of one configuration and have run the checkout's
 code, this script included, HEAD must hold every provenance file of the
 checkout (none untracked, modified or hidden from git), and each record's
 harness result must report the benchmark, seed and iteration count its wrapper
@@ -113,11 +114,20 @@ LIMITATIONS = [
 
 
 def newest_per_seed(paths: list[Path]) -> dict[int, Path]:
-    chosen: dict[int, Path] = {}
+    """The record to aggregate for each seed: the newest by name of those
+    whose run finished (`experiment_records.finished_run`), and the newest
+    of the others only where none finished. A failed launch ran nothing, so
+    one named later than its retry, as a clock set back between them names
+    it, is not the seed's run; nor is a reservation nothing finished, left
+    by a runner that died, which holds no outcome."""
+    chosen: dict[int, tuple[bool, Path]] = {}
     for path in sorted(paths):
         record = json.loads(path.read_text(encoding="utf-8"))
-        chosen[int(record["seed"])] = path
-    return chosen
+        seed = int(record["seed"])
+        launched = experiment_records.finished_run(record)
+        if launched or not chosen.get(seed, (False, path))[0]:
+            chosen[seed] = (launched, path)
+    return {seed: path for seed, (_, path) in chosen.items()}
 
 
 def git_sha() -> str:

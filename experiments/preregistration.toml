@@ -1,0 +1,152 @@
+# What an experiment preregisters before it leaves `planned`.
+#
+# scripts/check_research_gates.py fails CI on a listed experiment whose status
+# is `prepared`, `running`, `completed` or `failed` unless its config.toml
+# holds a [preregistration] table with every key under `required`, each a
+# pinned value of the type named there, the manifest's `preregistration_sha256`
+# is that table's digest (scripts/experiment_records.py,
+# preregistration_digest), its `preregistration_rules_sha256` is the digest of
+# the experiment's entry below, every `baseline` is pinned at each of its
+# `keys` and not `blocked-*` at its `status_key`, and every run record the
+# experiment has committed and its aggregate name those digests and a commit on
+# HEAD's history that holds the same preregistration, manifest and
+# configuration, the status alone having moved forward since.
+# scripts/run_experiment.py runs or prepares a listed experiment only once all
+# of this holds. An experiment this list has named stays listed.
+#
+# Types: "int", "str", "bool", "int-list", "str-list" and "file"; a required
+# list must not be empty, and strings are printable ASCII. A "file" is a path
+# in the repository whose content is frozen too: the table's `<key>_sha256`
+# must be its digest (preregistered_file_digest). A baseline's directory, its
+# configuration and the implementation beside it, is frozen the same way: the
+# table's `baseline_<name>_sha256` must be the digest of every file in it, so
+# every setting and every line of the baseline is frozen, not only the `keys`
+# that must be pinned.
+# A value still to be chosen is a `must-be-pinned-…` string and an owner
+# decision still to be taken a `must-be-signed-…` string; either blocks
+# whatever the key's type, and in a key this list does not require too. A
+# baseline that has no configuration of its own in research/baselines/ is a
+# required key of the experiment's own table.
+version = 1
+
+# Design: docs/architecture/35-agentic-substrate.md. The pilot fills
+# low_cells before the freeze; nothing else changes then.
+[experiment.S003.required]
+schema = "int"
+harness = "str"
+seeds = "int-list"
+pilot_seeds = "int-list"
+cases_per_seed = "int"
+tasks_per_case = "int"
+agents = "int-list"
+groups_ladder = "int-list"
+groups_ladder_fallback = "int-list"
+items_per_group = "int"
+insert_cap = "int"
+counters = "int"
+counter_start = "int"
+sets = "int"
+set_members = "int"
+policies = "int"
+tick_us = "int"
+think_min_ticks = "int"
+think_max_ticks = "int"
+step_ticks = "int"
+merge_ticks = "int"
+max_attempts = "int"
+review_min_ticks = "int"
+review_max_ticks = "int"
+programs = "str-list"
+program_weights_permille = "int-list"
+rmw_delta_max = "int"
+counter_add_max = "int"
+guard_amount = "int"
+rely_permille = "int"
+ingress_permille_per_tick = "int"
+external_write_permille_per_tick = "int"
+lifecycle_permille_per_tick = "int"
+rewire_permille_per_tick = "int"
+rewire_swap_min_ticks = "int"
+rewire_swap_max_ticks = "int"
+required_verification = "str"
+verifiers = "str-list"
+host_counter_jump_max = "int"
+auto_policy = "str"
+auto_threshold_permille = "int"
+auto_calibration_permille = "int"
+review_policy = "str"
+review_threshold_permille = "int"
+review_calibration_permille = "int"
+calibration_seed = "int"
+reviewer = "str"
+conflict_threshold_permille = "int"
+efficiency_floor_permille = "int"
+bootstrap_resamples = "int"
+bootstrap_seed = "int"
+bootstrap_interval_permille = "int"
+min_hazard_trials_per_class_per_seed = "int"
+min_cells_per_side = "int"
+merge_wall_budget_us_p99 = "int"
+durable_roundtrip_every_cases = "int"
+nondeterminism_rerun_case = "int"
+low_cells = "str-list"
+
+# The four owner decisions (calibration_set_rule, adjudicators_see_intent,
+# harm_breakdown_namespaces, adjudication_protocol) block until signed.
+[experiment.F003.required]
+seeds = "int-list"
+alpha_permille = "int"
+delta_permille = "int"
+threshold_rule = "str"
+threshold_grid_steps = "int"
+min_adjudications_per_policy = "int"
+uncalibrated_threshold_permille = "int"
+calibration_set_rule = "str"
+adjudicators_see_intent = "bool"
+harm_breakdown_namespaces = "str"
+adjudication_protocol = "file"
+
+[experiment.Q003.required]
+seeds = "int-list"
+recall_margin_permille = "int"
+k = "int"
+embedding_model = "str"
+embedding_revision = "str"
+
+# rag_reference's reranker is "not-configured", a decided value rather than a
+# placeholder, so the keys are named one by one.
+[[experiment.Q003.baseline]]
+name = "rag_reference"
+path = "research/baselines/rag_reference/config.toml"
+keys = ["hybrid.embedding_model"]
+status_key = "status"
+
+[[experiment.Q003.baseline]]
+name = "strong_rag"
+path = "research/baselines/strong_rag/config.toml"
+keys = ["dense.revision", "reranker.revision", "answer.generator", "answer.revision"]
+status_key = "status"
+
+[experiment.R004.required]
+seeds = "int-list"
+public_regression_gate_permille = "int"
+backward_transfer_min_permille = "int"
+
+[experiment.M008.required]
+seeds = "int-list"
+token_budget = "int"
+recency_window = "int"
+recency_buffer_baseline = "str"
+hybrid_retrieval_baseline = "str"
+
+[experiment.E005.required]
+seeds = "int-list"
+token_budget = "int"
+full_context_baseline = "str"
+agent_memory_baselines = "str-list"
+
+[[experiment.E005.baseline]]
+name = "strong_rag"
+path = "research/baselines/strong_rag/config.toml"
+keys = ["dense.revision", "reranker.revision", "answer.generator", "answer.revision"]
+status_key = "status"

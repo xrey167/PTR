@@ -981,8 +981,9 @@ verification:
   A policy's harm rate may only be estimated on adjudications it was not calibrated on
   (`PolicyRecord::held_out`), the disjointness F003 needs. Disjointness is not
   sufficient: the calibration subset, rule and levels must be fixed before the
-  held-out outcomes are looked at, as F003's pre-registration requires, and nothing
-  in the record can check that. A policy calibrated on a branch nobody adjudicated, or
+  held-out outcomes are looked at, as F003's preregistration requires (the
+  `[preregistration]` table of its `config.toml`, §8), and nothing in the record
+  can check that. A policy calibrated on a branch nobody adjudicated, or
   whose rule, rerun on the stored adjudications of its calibration branches, chooses
   another threshold, is refused
   (`a_recorded_policy_names_its_calibration_branches_and_holds_out_the_rest`,
@@ -1544,13 +1545,63 @@ another by idea.
 | [F002](../../experiments/feedback/F002-weak-supervision/README.md) | Is the verifier-precedence label model better calibrated than majority vote? | any label contradicting a verifier veto |
 | [E005](../../experiments/system/E005-agent-memory-benchmark/README.md) | Does the combined stack beat current agent-memory systems on LongMemEval and LoCoMo? | no category improvement at equal budget |
 
+S003, F003, Q003, R004, M008 and E005 preregister (`experiments/preregistration.toml`), and an experiment the
+list has named stays listed (`test_a_listed_experiment_stays_listed`). Each leaves `planned` only once the
+`[preregistration]` table of its `config.toml` holds every key the list requires, pinned and of its declared
+type, and no placeholder in any other key, its manifest names the SHA-256 of the table's canonical text and of
+its entry in the list, every baseline the list names is pinned and not blocked, the table freezes every file of
+each baseline's directory (its configuration and implementation) and the content of every file it names by
+their digests, and every run record the experiment has committed, wherever it was kept, and its aggregate name
+those digests and a commit on HEAD's history that holds the same preregistration, entry, files, baselines,
+manifest and configuration, the status alone having moved forward since, and no commit after a freeze holding
+it at an earlier status on any line of history (`status_regressions`); `scripts/check_research_gates.py`
+fails CI otherwise, whether the experiment is prepared, running, completed or failed, and one whose runs were
+committed cannot go back to `planned` (`test_a_missing_required_key_keeps_an_experiment_from_leaving_planned`,
+`test_a_placeholder_or_wrongly_typed_value_blocks`, `test_a_digest_mismatch_blocks`,
+`test_an_unpinned_or_blocked_baseline_blocks`, `test_a_baseline_is_frozen_by_every_file_of_its_directory`,
+`test_a_file_the_preregistration_names_is_frozen_by_its_content`,
+`test_archived_runs_must_name_the_frozen_digests_and_a_commit_that_holds_them`,
+`test_a_preregistration_rewritten_after_its_runs_fails_whatever_else_is_rewritten`,
+`test_rules_changed_after_the_runs_fail`, `test_a_run_record_deleted_or_renamed_after_it_was_committed_fails`,
+`test_after_a_run_the_manifest_and_configuration_change_only_in_status`,
+`test_after_a_run_the_status_only_moves_forward`, `test_run_records_are_found_wherever_the_experiment_kept_them`,
+`test_a_run_record_names_a_commit_on_heads_history`,
+`test_an_aggregate_is_bound_in_every_version_it_was_committed_in`,
+`test_a_run_record_reached_through_a_symlink_is_refused`,
+`test_what_the_preregistration_freezes_lies_outside_the_results_directory`,
+`test_a_record_rewritten_on_one_side_of_a_merge_fails`,
+`test_a_committed_freeze_binds_whether_or_not_its_runs_were_kept`,
+`test_a_commit_freezes_only_what_it_holds_as_regular_files`).
+Every digest reads a file's bytes as they are: line endings are content, not formatting, and a checkout that
+converts them (`core.autocrlf`) holds another file than the one that was frozen, whose digest differs and which
+the runner's watch names as changed content (`content_changes` compares git blob ids, and never reads HEAD's
+blob back). The repository's `.gitattributes` pins its files to LF (`* text=auto eol=lf`), so a clone checks out
+the committed bytes whatever that setting says
+(`test_a_preregistered_file_is_digested_byte_for_byte`,
+`test_a_converting_checkouts_crlf_copy_is_not_the_content_head_holds`,
+`test_a_file_committed_with_crlf_is_its_own_content`, `test_the_watch_reads_a_blob_by_its_id_alone`,
+`test_the_repository_pins_line_endings_to_lf`).
+`scripts/run_experiment.py` runs or prepares a listed experiment only once this holds, and holds the files that
+decision reads to HEAD while it runs, so no outcome is seen before its preregistration is frozen
+(`test_a_listed_experiment_is_not_run_or_prepared_before_its_preregistration_is_frozen`,
+`test_what_decides_a_launch_is_held_to_head_before_and_while_the_run`); and it runs one only from a commit that
+holds that freeze, every frozen input a regular file the commit holds, so the gate can find the freeze from the
+commit its record names (`test_a_launch_names_a_commit_that_holds_the_experiment_frozen`,
+`test_a_listed_experiment_runs_only_from_a_commit_that_holds_what_froze_it`). A value still to be chosen and an owner decision still to be
+taken, such as whether F003's adjudicators see a branch's intent, are placeholder strings that pass as no type.
+S003 has no `[preregistration]` table yet and the other five hold such placeholders, so none of the six can
+leave `planned` yet (`test_the_enrolled_experiments_are_held_until_their_placeholders_are_pinned`).
+
 L004 and L003 are completed for PostgreSQL 18 (2026-09-28, on T1-2's final code at 039beff): over five seeds
 each, with crashes, commits the server failed and races, no projection diverged from the reference, no
 foreign history was accepted, no refold differed by a bit and no revoked input was read; every planted defect
 of their mutation lists was detected (17 of 17 and 16 of 16). L004's logs carry semantic records of every
 origin, merges included, and every seed projected each. Their seed records ran at 039beff and their mutation
 checks at 4659cbf, which adds only those records, and earlier runs at ad2f8d1, dcfbb3e, 7b60216, ed52931,
-ff96ce0 and 5f71d84 also passed. Results and limitations are in each experiment's `results/`.
+ff96ce0 and 5f71d84 also passed. Results and limitations are in each experiment's `results/`. They are stale
+since 56d19ab, the first change of T1-3 (preregistration as a research gate), which changes
+`scripts/experiment_records.py`, a script that judges their records, as each experiment's `results/STALE.toml`
+records until both are rerun once in T1-4 (S003).
 `scripts/check_research_gates.py` fails CI on a completed experiment whose archived
 `run.json`
 or `mutations.json` ran at code, aggregation scripts or mutation plan HEAD has changed without a
