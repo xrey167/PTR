@@ -7,6 +7,11 @@
 **/target-*/
 __pycache__/
 *.pyc
+# Caches that write their own `.gitignore`, which HEAD does not hold: the
+# runner would count one as a rule hiding files from a listed experiment's run.
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
 .venv/
 .env
 .DS_Store

@@ -15,5 +15,7 @@ No gain in update-aware recall at equal tokens, or a false recall rate above the
 ## Design
 Mechanism and threat model: [35 — Agentic substrate](../../../docs/architecture/35-agentic-substrate.md).
 
+The `[preregistration]` table of `config.toml` is frozen before M008 leaves `planned` (`experiments/preregistration.toml`, `scripts/check_research_gates.py`): the token budget, the recency window and both baselines, which have no configuration in `research/baselines/`. All are still placeholders, so the gate holds M008 in `planned`.
+
 ## Rule
 Record matched baselines, hardware, seeds and negative results. Do not change success criteria after observing results.

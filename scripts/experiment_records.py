@@ -34,7 +34,9 @@ bound the same way (`mutation_evidence`): it is refused, not omitted, unless
 it is this experiment's evidence for this benchmark and its commit has the
 checkout's code, mutation checker, aggregator and mutation plan
 (`mutation_record_paths`), which HEAD holds. A refused file is rerun or
-removed; an aggregate never carries mutation counts of other code.
+removed; an aggregate never carries mutation counts of other code, and the
+summary it carries names the SHA-256 of the whole file, so no outcome it
+lists is replaced under the same counts (`aggregate_problems`).
 
 `run_experiment.py` and `mutation_check.py` refuse to record from a working
 tree with uncommitted or untracked provenance files (`uncommitted_files`,
@@ -70,12 +72,19 @@ The archived run.json must also be one aggregate with the metrics.json and
 mutations.json beside it (`aggregate_errors`, run there too); one aggregated
 before run.json bound its metrics passes only while it is stale and beside
 the metrics.json committed with it.
+
+An experiment's preregistration, the `[preregistration]` table of its
+`config.toml`, has one canonical text and digest
+(`preregistration_canonical`, `preregistration_digest`), which the research
+gate compares with the manifest's `preregistration_sha256`.
 """
 
 from __future__ import annotations
 
+import datetime
 import hashlib
 import json
+import math
 import os
 import posixpath
 import re
@@ -114,6 +123,10 @@ SYMLINK_MODE = "120000"
 GITLINK_MODE = "160000"
 LINK_MODES = (SYMLINK_MODE, GITLINK_MODE)
 EXCLUDE = ":(exclude)"
+# A placeholder in an entrypoint, `<name>`, which the runner fills with a
+# value (`scripts/run_experiment.py`); the gate reads a listed experiment's
+# entrypoint by the same rule.
+PLACEHOLDER = re.compile(r"<([A-Za-z][A-Za-z0-9_-]*)>")
 WILDCARD = re.compile(r"[*?\[]")
 # The scripts that decide what a record says and how it is judged.
 JUDGE = "scripts/experiment_records.py"
@@ -125,11 +138,34 @@ AGREED = (
     ("cargo_lock_sha256", "Cargo.lock"),
     ("parameters", "parameters"),
     ("entrypoint", "entrypoint"),
+    # A listed experiment's run names the program it started, the Rust
+    # toolchain and the environment it ran in, which lie outside the
+    # commit: its seeds ran one of each, and a program the command starts
+    # by name is found through that environment's PATH.
+    ("executable", "program"),
+    ("toolchain", "toolchain"),
+    ("environment", "environment"),
 )
 
 
 class ProvenanceError(Exception):
     """The run records cannot be published as one result of the current code."""
+
+
+class NotUTF8(ProvenanceError):
+    """Git printed what is not UTF-8, such as a file name, which no check
+    can read as a repository path."""
+
+
+def program_name(token: str) -> str:
+    """The name of the program `token` starts, as a command's first token or
+    the program `rustup run` starts names it: its last path component,
+    either slash a separator, in lower case and without an `.exe` suffix,
+    as Windows runs `C:\\Rust\\Cargo.EXE` for `cargo`. A check of a command
+    reads its programs so on every platform, so no spelling one of them
+    accepts hides the program from it."""
+    name = re.split(r"[\\/]", token)[-1].lower()
+    return name[: -len(".exe")] if name.endswith(".exe") else name
 
 
 def relative_to_root(path: Path, root: Path) -> str:
@@ -159,13 +195,72 @@ def mutation_record_paths(experiment_dir: Path, root: Path) -> tuple[str, ...]:
     )
 
 
-def tree_pathspecs(experiment_dir: Path, results_dir: Path, root: Path, paths: tuple[str, ...]) -> list[str]:
+# The seed records the runner writes into a results directory, as a glob
+# pattern within it.
+SEED_RECORDS = "run-*.json"
+# The files the runner, the aggregators and the mutation checker write into
+# a results directory, as glob patterns within it: records accumulate there
+# uncommitted while runs go on.
+RESULT_OUTPUTS = (SEED_RECORDS, "run.json", "metrics.json", "mutations.json")
+
+
+def listed_record_paths(results: str) -> tuple[str, ...]:
+    """The provenance of a listed experiment's seed records, as pathspecs:
+    the whole repository but the seed records in its results directory
+    `results` (a repository path, `SEED_RECORDS`). A listed experiment's
+    command may run or read any file of the repository (a script under
+    `scripts/`, say, or an aggregate or mutation evidence committed in its
+    results), so its seeds ran one tree only if their commits differ in
+    nothing else: between them, only their seed records are committed, and
+    the other outputs of the tools, which a later seed could read, once the
+    seeds have run."""
+    return (".", f":(exclude,glob){results}/{SEED_RECORDS}")
+
+
+# The files completing a listed experiment changes once its seeds have run:
+# its manifest and the registry, each in the status it names for it, moving
+# forward. Its command may read either whole, so any other change to them is
+# a change after its runs (`completion_changes`).
+AFTER_THE_RUNS = ("experiment.toml", "experiments/registry.toml")
+# A line naming a status, whose value is all completing an experiment
+# changes in its manifest and in the registry's entry for it.
+STATUS_LINE = re.compile(r'^(\s*status\s*=\s*)"[^"\\]*"')
+
+
+def listed_staleness_paths(results: str, experiment: str) -> tuple[str, ...]:
+    """The provenance of a listed experiment's archived results against the
+    checkout, as pathspecs: the whole repository but what the tools write
+    into its results directory `results` (a repository path,
+    `RESULT_OUTPUTS`) and its stale marker (`STALE_MARKER`), which are
+    committed once the seeds have run, and the files completing it changes
+    (`AFTER_THE_RUNS`: the manifest in its directory `experiment` and the
+    registry), which `completion_changes` compares but for the status it
+    changes in them. Its command may run or read any other file of the
+    repository, the list of preregistrations included, so a change to one
+    after the results makes them stale (`staleness_errors`), and one in the
+    checkout keeps them from being aggregated there (`source_revision`)."""
+    return (
+        ".",
+        *(f":(exclude,glob){results}/{pattern}" for pattern in (*RESULT_OUTPUTS, STALE_MARKER)),
+        f":(exclude,literal){experiment}/{AFTER_THE_RUNS[0]}",
+        *(f":(exclude,literal){name}" for name in AFTER_THE_RUNS[1:]),
+    )
+
+
+def tree_pathspecs(
+    experiment_dir: Path, results_dir: Path, root: Path, paths: tuple[str, ...], outputs: tuple[str, ...] = RESULT_OUTPUTS
+) -> list[str]:
     """The pathspecs a run must find committed: the provenance `paths` and the
-    whole experiment directory except its results, where records accumulate."""
+    whole experiment directory but the `outputs` the tools write into its
+    results, as glob patterns within it (`RESULT_OUTPUTS`, or a run's own
+    record). Every other file there, code or input a command could read,
+    must be one HEAD holds, as anywhere in the experiment: one changed
+    between runs would leave records naming one commit for different code."""
+    results = relative_to_root(results_dir, root)
     return [
         *paths,
         relative_to_root(experiment_dir, root),
-        f":(exclude){relative_to_root(results_dir, root)}",
+        *(f":(exclude,glob){results}/{pattern}" for pattern in outputs),
     ]
 
 
@@ -174,11 +269,67 @@ def without_status(manifest: dict) -> dict:
     return {key: value for key, value in manifest.items() if key != "status"}
 
 
+def toml_time(value):
+    """A TOML date, time or datetime as its ISO 8601 text (`json.dumps`'s
+    `default`): JSON has no such type. A manifest holding one is refused
+    (`unrecordable_keys`); this only keeps such a value from failing a write
+    or a comparison that reports it."""
+    if isinstance(value, (datetime.date, datetime.time)):
+        return value.isoformat()
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
+def unrecordable_keys(value, where: str = "") -> list[tuple[str, str, str]]:
+    """The key paths in `value`, a manifest as TOML reads it, that hold a
+    value a run record cannot keep apart from another, in any table or
+    array, each with what it holds and what the record would take it for.
+    A run record holds the manifest as JSON, which has no date or time, so
+    a TOML date, time or datetime and the string of its text would be one
+    manifest; and which writes a NaN as `NaN` whatever its sign, so `nan`
+    and `-nan`, which a run can tell apart (`math.copysign`), would be one
+    manifest. The runner, `validate` and aggregation refuse a manifest that
+    holds one (`manifest_problems`)."""
+    if isinstance(value, (datetime.date, datetime.time)):
+        return [(where, "a TOML date or time", "a string")]
+    if isinstance(value, float) and math.isnan(value):
+        return [(where, "a NaN", "a NaN of the other sign")]
+    if isinstance(value, dict):
+        return [
+            found for key, item in value.items() for found in unrecordable_keys(item, f"{where}.{key}" if where else str(key))
+        ]
+    if isinstance(value, list):
+        return [found for index, item in enumerate(value) for found in unrecordable_keys(item, f"{where}[{index}]")]
+    return []
+
+
+def manifest_problems(manifest: dict) -> list[str]:
+    """Why a run record could not hold `manifest` apart from another
+    manifest, one line for each value it holds that a record cannot keep
+    apart (`unrecordable_keys`); empty when it can."""
+    return [
+        f"experiment.toml holds {held} at {key}, which a run record, holding the manifest as JSON, cannot tell from "
+        f"{taken}; write it as a string"
+        for key, held, taken in unrecordable_keys(manifest)
+    ]
+
+
+def recorded_text(value) -> str:
+    """`value` as the JSON text a run record holds it as, keys sorted, so a
+    manifest compares with the one a record names as the record holds it:
+    `1`, `1.0` and `true` are three values, and so are `0.0` and `-0.0`. A
+    date or time, which no manifest may hold, is written as its text
+    (`toml_time`), and a NaN, which no manifest may hold either, as `NaN`
+    (`unrecordable_keys`)."""
+    return json.dumps(value, sort_keys=True, default=toml_time)
+
+
 def agreement_errors(experiment_id: str, manifest: dict, records: dict[str, dict]) -> list[str]:
     """Why `records` (file name -> run record) cannot be seeds of one run of
     `experiment_id`, whose manifest is now `manifest`; empty when they can.
-    This compares the records alone; `source_revision` also compares code."""
-    errors = []
+    This compares the records alone; `source_revision` also compares code.
+    A manifest holding a TOML date or time, or a NaN, is refused
+    (`manifest_problems`)."""
+    errors = manifest_problems(manifest)
     for name, record in records.items():
         if record.get("experiment_id") != experiment_id:
             errors.append(f"{name} is a record of {record.get('experiment_id')!r}, not {experiment_id!r}")
@@ -193,9 +344,9 @@ def agreement_errors(experiment_id: str, manifest: dict, records: dict[str, dict
                 f"the records disagree on {label}: "
                 + "; ".join(f"{value} in {', '.join(names)}" for value, names in groups.items())
             )
-    current = without_status(manifest)
+    current = recorded_text(without_status(manifest))
     for name, record in records.items():
-        if without_status(record.get("manifest") or {}) != current:
+        if recorded_text(without_status(record.get("manifest") or {})) != current:
             errors.append(f"{name} ran under an experiment.toml that differs from the current one")
         entrypoint = record.get("entrypoint")
         if not isinstance(entrypoint, str) or not str(manifest.get(entrypoint, "")).strip():
@@ -204,16 +355,62 @@ def agreement_errors(experiment_id: str, manifest: dict, records: dict[str, dict
 
 
 def git(
-    root: Path, *args: str, stdin: str | None = None, env: dict[str, str] | None = None
+    root: Path,
+    *args: str,
+    stdin: str | bytes | None = None,
+    env: dict[str, str] | None = None,
+    binary: bool = False,
+    work_tree: bool = True,
 ) -> subprocess.CompletedProcess:
     """Run git in `root`, given `stdin` and in `env` when named; raises
-    `ProvenanceError` when git cannot start."""
+    `ProvenanceError` when git cannot start. Without `env`, git runs in this
+    process's environment less every `GIT_*` variable, which could point it
+    at another work tree, index or object store or change how it reads
+    pathspecs, and with replacement objects off, so what it reports is the
+    repository at `root` as its history holds it. Its work tree is `root`
+    whatever `core.worktree` names, but for a command that makes a
+    repository (`work_tree` false), which git refuses one without its own
+    directory named. With `binary`, what git prints is kept as the bytes it
+    wrote, as a file's content must be, and `stdin` is bytes too. Without
+    it, what git prints is read as UTF-8 whatever the locale, and read as
+    it is: a carriage return in a name git prints with `-z` stays one, as no
+    translation of line endings would leave it. Output that is not UTF-8 (a
+    file name, say) raises `NotUTF8`, a `ProvenanceError`, as what git
+    cannot name as text no check can compare; so does an argument no
+    process can be given (one holding a NUL character)."""
+    if env is None:
+        env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        env["GIT_NO_REPLACE_OBJECTS"] = "1"
     try:
-        return subprocess.run(
-            ["git", *args], cwd=root, input=stdin, env=env, capture_output=True, text=True, check=False
+        ran = subprocess.run(
+            # Git reads the tree itself: no file system monitor a clone's own
+            # configuration names answers for it, no hook of the clone's runs
+            # when git refreshes its index, no name is taken for another that
+            # differs from it in case, which a clone told to ignore case
+            # would do on a file system that does not, and the work tree is
+            # `root`, where commands run, not one `core.worktree` names.
+            [
+                "git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.ignoreCase=false",
+                *((f"--work-tree={root}",) if work_tree else ()), *args,
+            ],
+            cwd=root, input=stdin.encode("utf-8") if isinstance(stdin, str) else stdin, env=env,
+            capture_output=True, check=False,
         )
-    except OSError as error:
+    except (OSError, ValueError) as error:
         raise ProvenanceError(f"cannot run git: {error}") from error
+    if binary:
+        return ran
+    # Git prints paths as UTF-8 bytes. The locale's encoding could read bytes
+    # that are not UTF-8 as text, or a UTF-8 name as another name, which
+    # names no file of the tree, and text mode would turn a carriage return
+    # into a newline.
+    try:
+        stdout = ran.stdout.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise NotUTF8(
+            f"git {' '.join(args[:2])} printed what is not UTF-8, such as a file name, which no check can read: {error}"
+        ) from error
+    return subprocess.CompletedProcess(ran.args, ran.returncode, stdout, ran.stderr.decode("utf-8", "replace"))
 
 
 def code_changes(base: str, head: str | None, root: Path, paths: tuple[str, ...] = CODE_PATHS) -> list[str]:
@@ -226,14 +423,19 @@ def code_changes(base: str, head: str | None, root: Path, paths: tuple[str, ...]
     Raises `ProvenanceError` when git cannot compare them (say a commit is
     missing)."""
     revisions = [base] if head is None else [base, head]
-    files = git(root, "diff", "--name-only", "--no-renames", *revisions, "--", *paths)
-    entries = git(root, "diff", "--raw", "-z", "--no-renames", *revisions)
+    # Read as bytes: a name that is not UTF-8 keeps its bytes, so a file of
+    # such a name that differs is a difference like any other, named by its
+    # escapes, rather than one no comparison reports.
+    files = git(root, "diff", "--name-only", "-z", "--no-renames", *revisions, "--", *paths, binary=True)
+    entries = git(root, "diff", "--raw", "-z", "--no-renames", *revisions, binary=True)
     for diff in (files, entries):
         if diff.returncode != 0:
             against = "the checkout" if head is None else head
-            raise ProvenanceError(f"cannot compare {base} with {against}: {diff.stderr.strip()}")
-    links = links_within_reach(link_paths(entries.stdout.split("\0")), root, paths)
-    return sorted({*files.stdout.splitlines(), *links})
+            problem = diff.stderr.decode("utf-8", "replace").strip()
+            raise ProvenanceError(f"cannot compare {base} with {against}: {problem}")
+    names = files.stdout.decode("utf-8", "surrogateescape")
+    links = links_within_reach(link_paths(entries.stdout.decode("utf-8", "surrogateescape").split("\0")), root, paths)
+    return sorted({*(name for name in names.split("\0") if name), *links})
 
 
 def link_paths(fields: list[str]) -> list[str]:
@@ -334,7 +536,11 @@ def uncommitted_files(root: Path, pathspecs: list[str]) -> list[str]:
     it. So does a directory git does not look into where the build reads
     (`unseen_trees`): a symlink to a directory, a nested repository or a
     submodule, such as a `crates/ptr-*` crate linked or cloned in, which git
-    lists as one path no file pathspec matches. Raises `ProvenanceError` when
+    lists as one path no file pathspec matches. And so does a tracked file
+    whose bytes on disk are not HEAD's (`content_changes`), whatever git
+    status says of it: a clone's own configuration (a file system monitor, a
+    clean filter its own attributes name, a stat cache it trusts) could have
+    it report a rewritten file as unchanged. Raises `ProvenanceError` when
     git cannot list the tree."""
     found = {
         entry[3:]
@@ -342,7 +548,8 @@ def uncommitted_files(root: Path, pathspecs: list[str]) -> list[str]:
             root, "status", "--porcelain=v1", "-z", "--untracked-files=no", "--no-renames", "--", *pathspecs
         )
     }
-    found.update(untracked_files(root, pathspecs))
+    # A nested repository is listed as `name/`; `unseen_trees` names it too.
+    found.update(name.rstrip("/") for name in untracked_files(root, pathspecs))
     found.update(hiding_rules(root, pathspecs))
     tracked = []
     for entry in listed_names(root, "ls-files", "-z", "--stage", "-v", "--", *pathspecs):
@@ -351,8 +558,51 @@ def uncommitted_files(root: Path, pathspecs: list[str]) -> list[str]:
         tracked.append(name)
         if tag.islower() or tag.upper() == "S" or mode == SYMLINK_MODE:
             found.add(name)
+    found.update(content_changes(root, tracked))
     found.update(unseen_trees(root, pathspecs, provenance_directories(tracked)))
     return sorted(found)
+
+
+def content_changes(root: Path, names: list[str]) -> list[str]:
+    """Those of the tracked files `names` whose bytes in the working tree of
+    `root` are not the blob HEAD holds for them, sorted, read from disk as
+    they are, so no clean filter, file system monitor or stat cache that a
+    clone's own configuration names answers for them, and those whose
+    executable bit is not HEAD's. The bytes are compared as they are, line
+    endings included: a checkout that writes text with CRLF line endings
+    (`core.autocrlf`, an `eol` attribute) holds other bytes than the blob,
+    which a command reading them could tell apart, and two checkouts of one
+    commit that converted differently would have run on different inputs
+    under one commit; the repository's `.gitattributes` pin one form, LF. A
+    name HEAD does not hold as a regular file, or the working tree does not
+    hold as one, is git status's to report. Raises `ProvenanceError` when
+    git cannot read HEAD."""
+    wanted = set(names)
+    if not wanted:
+        return []
+    held = {}
+    for entry in listed_names(root, "ls-tree", "-r", "-z", "--full-tree", "HEAD"):
+        fields, _, name = entry.partition("\t")
+        mode, kind, blob = fields.split(" ")
+        if name in wanted and kind == "blob" and mode in ("100644", "100755"):
+            held[name] = (mode, blob)
+    changed = []
+    for name, (mode, blob) in sorted(held.items()):
+        path = root / name
+        try:
+            info = path.lstat()
+            if not stat.S_ISREG(info.st_mode):
+                continue
+            data = path.read_bytes()
+        except OSError:
+            continue
+        if os.name == "posix" and bool(info.st_mode & stat.S_IXUSR) != (mode == "100755"):
+            changed.append(name)
+            continue
+        hashed = (hashlib.sha256 if len(blob) == 64 else hashlib.sha1)(b"blob %d\0" % len(data) + data).hexdigest()
+        if hashed != blob:
+            changed.append(name)
+    return sorted(changed)
 
 
 def hiding_rules(root: Path, pathspecs: list[str]) -> list[str]:
@@ -386,30 +636,52 @@ def hiding_rules(root: Path, pathspecs: list[str]) -> list[str]:
 def ignored_by_head_rules(root: Path, names: list[str]) -> set[str]:
     """Those of the untracked files `names` that the `.gitignore` files as
     HEAD holds them ignore, as git decides it: in a scratch repository
-    holding only those rules and an empty file at each name. Raises
-    `ProvenanceError` when git cannot read HEAD's rules or decide."""
+    holding only those rules and an empty file at each name. A top-level
+    directory those rules ignore as a whole, as `/target/` does a build's
+    output, decides every name below it at once, since git cannot show a
+    file again below an ignored directory; only the others are placed in
+    the scratch repository one by one. Raises `ProvenanceError` when git
+    cannot read HEAD's rules or decide."""
     rules = head_rules(root)
     # The scratch repository is git's own, whatever repository the caller's
     # environment points git at.
     env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
     with tempfile.TemporaryDirectory() as scratch:
         mirror = Path(scratch)
-        created = git(mirror, "init", "-q", env=env)
+        created = git(mirror, "init", "-q", env=env, work_tree=False)
         if created.returncode != 0:
             raise ProvenanceError(
                 f"cannot create a repository to read HEAD's ignore rules in: {created.stderr.strip()}"
             )
-        for name in [*rules, *names]:
+        for name, rule in rules.items():
             path = mirror / name
             path.parent.mkdir(parents=True, exist_ok=True)
-            if name in rules:
-                path.write_bytes(rules[name])
-            elif not path.exists():
+            path.write_bytes(rule)
+        tops = sorted({name.split("/", 1)[0] for name in names if "/" in name} - set(rules))
+        for top in tops:
+            (mirror / top).mkdir(parents=True, exist_ok=True)
+        # Each named without a trailing slash, as an existing directory: a
+        # rule such as `target/*` matches `target/` but not the directory
+        # `target`, whose files it may show again (`!target/keep`).
+        decided = git(
+            mirror, "check-ignore", "-z", "--no-index", "--stdin", env=env,
+            stdin="".join(f"{top}\0" for top in tops),
+        )
+        # check-ignore exits 1 when it ignores none of them.
+        if decided.returncode not in (0, 1):
+            raise ProvenanceError(f"cannot apply HEAD's ignore rules: {decided.stderr.strip()}")
+        ignored_tops = {entry for entry in decided.stdout.split("\0") if entry}
+        below = {name for name in names if name.split("/", 1)[0] in ignored_tops and "/" in name}
+        rest = [name for name in names if name not in below]
+        for name in rest:
+            path = mirror / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if name not in rules and not path.exists():
                 path.touch()
         listing = git(mirror, "ls-files", "-z", "--others", "--ignored", PER_DIRECTORY, env=env)
         if listing.returncode != 0:
             raise ProvenanceError(f"cannot apply HEAD's ignore rules: {listing.stderr.strip()}")
-        return (set(listing.stdout.split("\0")) & set(names)) - set(rules)
+        return below | ((set(listing.stdout.split("\0")) & set(rest)) - set(rules))
 
 
 def head_rules(root: Path) -> dict[str, bytes]:
@@ -423,16 +695,10 @@ def head_rules(root: Path) -> dict[str, bytes]:
             blobs[name] = blob
     if not blobs:
         return {}
-    try:
-        shown = subprocess.run(
-            ["git", "cat-file", "--batch"],
-            cwd=root,
-            input="".join(f"{blob}\n" for blob in blobs.values()).encode("ascii"),
-            capture_output=True,
-            check=False,
-        )
-    except OSError as error:
-        raise ProvenanceError(f"cannot run git: {error}") from error
+    # Read as the history holds them (`git`), so no replacement object
+    # stands in for a rule.
+    request = "".join(f"{blob}\n" for blob in blobs.values()).encode("ascii")
+    shown = git(root, "cat-file", "--batch", stdin=request, binary=True)
     if shown.returncode != 0:
         problem = shown.stderr.decode(errors="replace").strip()
         raise ProvenanceError(f"cannot read HEAD's ignore rules: {problem}")
@@ -448,25 +714,39 @@ def head_rules(root: Path) -> dict[str, bytes]:
 
 
 def unseen_trees(root: Path, pathspecs: list[str], directories: set[str]) -> list[str]:
-    """The paths git does not look into that lie within reach of the build
-    (`within_reach`, judged by `directories`): an untracked or tracked
-    symlink to anything but a file (a directory, or nothing yet), an
-    untracked nested repository and a submodule. Git lists each as one path,
-    which no file pathspec matches, and holds none of what is read through
-    it. Raises `ProvenanceError` when git cannot list the tree."""
+    """The paths git does not look into that `pathspecs` name themselves or
+    that lie within reach of the build (`within_reach`, judged by
+    `directories`): an untracked or tracked symlink to anything but a file
+    (a directory, or nothing yet), an untracked nested repository and a
+    submodule. Git lists each as one path and holds none of what is read
+    through it. A file pathspec (`*.rs`) names no such path, but `.`, a
+    listed experiment's whole repository (`listed_record_paths`), names
+    every one, a submodule or a linked directory at the root included.
+    Raises `ProvenanceError` when git cannot list the tree."""
+    named = set(unseen_paths(root, pathspecs))
+    return [
+        name for name in unseen_paths(root, []) if name in named or within_reach(name, pathspecs, directories)
+    ]
+
+
+def unseen_paths(root: Path, pathspecs: list[str]) -> list[str]:
+    """The paths under `pathspecs` (every path when there are none) that git
+    does not look into, as `unseen_trees` names them, matched by git's own
+    rules for pathspecs. Raises `ProvenanceError` when git cannot list the
+    tree."""
     found = []
-    for entry in listed_names(root, "ls-files", "-z", "--others", PER_DIRECTORY):
+    for entry in listed_names(root, "ls-files", "-z", "--others", PER_DIRECTORY, "--", *pathspecs):
         # Without --directory git lists every untracked file, and only a
         # repository it will not enter as a directory of its own.
         name = entry.rstrip("/")
         if entry.endswith("/") or links_to_no_file(root / name):
             found.append(name)
-    for entry in listed_names(root, "ls-files", "-z", "--stage"):
+    for entry in listed_names(root, "ls-files", "-z", "--stage", "--", *pathspecs):
         fields, _, name = entry.partition("\t")
         mode = fields.split(" ")[0]
         if mode == GITLINK_MODE or (mode == SYMLINK_MODE and links_to_no_file(root / name)):
             found.append(name)
-    return [name for name in found if within_reach(name, pathspecs, directories)]
+    return found
 
 
 def links_to_no_file(path: Path) -> bool:
@@ -489,10 +769,11 @@ Stamp = tuple[int, int, int, int]
 
 
 def file_stamp(path: Path) -> Stamp | None:
-    """The stamp of `path`, or None when there is no such file."""
+    """The stamp of `path`, or None when there is no such file, a directory
+    on its way having been replaced by a file included."""
     try:
         status = path.lstat()
-    except FileNotFoundError:
+    except (FileNotFoundError, NotADirectoryError):
         return None
     return (status.st_ino, status.st_size, status.st_mtime_ns, status.st_ctime_ns)
 
@@ -508,6 +789,29 @@ def file_stamps(root: Path, pathspecs: list[str]) -> dict[str, Stamp | None]:
     files."""
     tracked = listed_names(root, "ls-files", "-z", "--cached", "--", *pathspecs)
     return {name: file_stamp(root / name) for name in [*tracked, *untracked_files(root, pathspecs)]}
+
+
+def directories_above(names) -> list[str]:
+    """The repository root (`.`) and every directory that holds one of the
+    paths `names`, or holds a directory that does, sorted."""
+    found = {"."}
+    for name in names:
+        parent = posixpath.dirname(name)
+        while parent and parent not in found:
+            found.add(parent)
+            parent = posixpath.dirname(parent)
+    return sorted(found)
+
+
+def directory_stamps(root: Path, names) -> dict[str, Stamp | None]:
+    """The stamp of every directory on the way from `root` to the paths
+    `names` (`directories_above`), by path relative to `root`; None for one
+    that is gone. A directory's status-change time moves when it is renamed
+    and when an entry is added to it, removed from it or renamed in it, so
+    the stamps show a directory that was moved aside and put back, which the
+    stamps of the files in it do not: it keeps its inode and every file in
+    it keeps theirs. The directory it is in, stamped as well, moves too."""
+    return {directory: file_stamp(root / directory) for directory in directories_above(names)}
 
 
 class ProvenanceWatch:
@@ -531,6 +835,31 @@ class ProvenanceWatch:
         self.stamps = file_stamps(root, self.pathspecs)
         self.uncommitted = uncommitted_files(root, self.pathspecs)
         self.foreign: set[str] = set()
+        self.directories: dict[str, Stamp | None] = {}
+        self.reserved: dict[str, Stamp | None] = {}
+
+    def stamp_reserved(self, names) -> None:
+        """Stamp, as they are now, the files `names` (paths relative to the
+        root) that the caller wrote itself after the watch looked and that
+        the pathspecs leave out, such as the record a run reserves before
+        its command starts, for `changes` to compare. The command can read
+        such a file, so an edit that is put back, or a file replaced by a
+        copy of itself, is a change like one to any watched file. Call it
+        right after the caller's last write to them."""
+        self.reserved = {name: file_stamp(self.root / name) for name in names}
+
+    def stamp_directories(self) -> None:
+        """Stamp, as they are now, the directories on the way from the root
+        to every file the watch holds and every file `stamp_reserved`
+        stamped (`directory_stamps`), for `changes` to compare. A file's
+        stamp does not show that the directory it is in was renamed aside, a
+        prepared one put in its place for the run to read, and the original
+        put back: every file in it is the one the watch stamped. Call it
+        right before the run starts, once the caller has made every write
+        of its own to the tree; from then on a run that adds an entry to one
+        of them, or takes one out, even a file it removes again, is a change
+        too, so it is for a run that writes nothing into the tree."""
+        self.directories = directory_stamps(self.root, [*self.stamps, *self.reserved])
 
     @contextmanager
     def rewriting(self, files):
@@ -554,11 +883,17 @@ class ProvenanceWatch:
         the watch sees nothing that differs. It sees HEAD at another commit,
         a file under the pathspecs that HEAD does not hold, and a file
         written, replaced, created or removed since the watch looked (other
-        than inside `rewriting`), even when its content was put back.
+        than inside `rewriting`), even when its content was put back, and
+        the same for a file `stamp_reserved` stamped, which the pathspecs
+        leave out.
 
-        It does not see a file created and removed again between its two
-        looks, a write that keeps a file's inode and size and lands within
-        the filesystem's timestamp resolution of the stamp before it, what
+        Once `stamp_directories` has stamped them, it sees a directory on
+        the way to a watched file that was renamed, or had an entry added or
+        removed, since. Without that it does not see a file created and
+        removed again between its two looks, nor a directory moved aside and
+        put back; and it never sees a write that keeps a file's inode and
+        size and lands within the filesystem's timestamp resolution of the
+        stamp before it, a rename of a directory above the root, what
         `uncommitted_files` cannot see, or anything outside the pathspecs.
         Raises `ProvenanceError` when git cannot tell."""
         problems = []
@@ -568,9 +903,19 @@ class ProvenanceWatch:
         now = file_stamps(self.root, self.pathspecs)
         written = self.foreign | {
             name for name in self.stamps.keys() | now.keys() if self.stamps.get(name) != now.get(name)
-        }
+        } | {name for name, stamp in self.reserved.items() if file_stamp(self.root / name) != stamp}
         if written:
             problems.append(f"{listed(sorted(written))} changed on disk")
+        moved = [
+            directory
+            for directory, stamp in self.directories.items()
+            if file_stamp(self.root / directory) != stamp
+        ]
+        if moved:
+            problems.append(
+                f"{listed(moved)} changed on disk, a directory holding watched files that was renamed, or had an "
+                "entry added or removed, since the run started"
+            )
         uncommitted = uncommitted_files(self.root, self.pathspecs)
         if uncommitted:
             problems.append(f"HEAD does not hold {listed(uncommitted)}")
@@ -599,12 +944,16 @@ def changes_after(base: str, head: str, root: Path, paths: tuple[str, ...]) -> l
     merge CI checks, changed files the results at `base` never ran, but it
     is not a change after them; the merge that brings it to their line is.
     Raises `ProvenanceError` when git cannot list them."""
+    # Read as bytes, so a name that is not UTF-8 a commit once held keeps its
+    # bytes rather than failing every later check.
     history = git(
-        root, "log", "-z", "--raw", "--no-renames", "-m", "--format=", "--ancestry-path", f"{base}..{head}"
+        root, "log", "-z", "--raw", "--no-renames", "-m", "--format=", "--ancestry-path", f"{base}..{head}",
+        binary=True,
     )
     if history.returncode != 0:
-        raise ProvenanceError(f"cannot list the commits after {base}: {history.stderr.strip()}")
-    links = links_within_reach(link_paths(history.stdout.split("\0")), root, paths)
+        problem = history.stderr.decode("utf-8", "replace").strip()
+        raise ProvenanceError(f"cannot list the commits after {base}: {problem}")
+    links = links_within_reach(link_paths(history.stdout.decode("utf-8", "surrogateescape").split("\0")), root, paths)
     literal = [f":(literal){name}" for name in sorted(set(links))]
     listed_commits = git(
         root, "rev-list", "--reverse", "--topo-order", "--ancestry-path", f"{base}..{head}",
@@ -615,26 +964,158 @@ def changes_after(base: str, head: str, root: Path, paths: tuple[str, ...]) -> l
     return listed_commits.stdout.split()
 
 
+def changes_after_results(
+    base: str, head: str, root: Path, paths: tuple[str, ...], experiment_id: str, experiment: str | None
+) -> list[str]:
+    """The commits `changes_after` names, and for a listed experiment (in the
+    repository directory `experiment`, None for another) also those after
+    `base` that left its manifest or the registry other than `base` holds
+    them but for the status completing it moves (`completion_changes`,
+    judged against `base`), in one order, parents before children. Raises
+    `ProvenanceError` when git cannot list them."""
+    found = changes_after(base, head, root, paths)
+    if experiment is None:
+        return found
+    names = [f":(literal){experiment}/{AFTER_THE_RUNS[0]}", *(f":(literal){name}" for name in AFTER_THE_RUNS[1:])]
+    touched = git(root, "rev-list", "--reverse", "--topo-order", "--ancestry-path", f"{base}..{head}", "--", *names)
+    if touched.returncode != 0:
+        raise ProvenanceError(f"cannot list the commits after {base}: {touched.stderr.strip()}")
+    moved = {
+        commit for commit in touched.stdout.split() if completion_changes(experiment_id, experiment, base, commit, root)
+    }
+    if not moved:
+        return found
+    every = git(root, "rev-list", "--reverse", "--topo-order", "--ancestry-path", f"{base}..{head}")
+    if every.returncode != 0:
+        raise ProvenanceError(f"cannot list the commits after {base}: {every.stderr.strip()}")
+    counted = {*found, *moved}
+    return [commit for commit in every.stdout.split() if commit in counted]
+
+
+def completion_changes(
+    experiment_id: str, experiment: str, base: str, head: str | None, root: Path
+) -> list[str]:
+    """The files completing the listed experiment `experiment_id` (in the
+    repository directory `experiment`) changes (`AFTER_THE_RUNS`: its
+    manifest and the registry) whose text at `head`, or in the checkout of
+    `root` when None, is not their text at commit `base` but for the status
+    completing it moves: the one its manifest names and the one the
+    registry's entry for it names, each on its own line, every other line
+    and value as it was (`status_moved_only`). Its command may read either
+    file whole, so another experiment's entry, a comment or a key added is
+    a change after its runs, as a change to any other file of the
+    repository is. Raises `ProvenanceError` when git cannot read them."""
+    changed = []
+    for name in (f"{experiment}/{AFTER_THE_RUNS[0]}", *AFTER_THE_RUNS[1:]):
+        before, after = text_at(root, base, name), text_at(root, head, name)
+        if before == after:
+            continue
+        if before is None or after is None or not status_moved_only(
+            before, after, experiment_id if name in AFTER_THE_RUNS[1:] else None
+        ):
+            changed.append(name)
+    return changed
+
+
+def text_at(root: Path, commit: str | None, name: str) -> str | None:
+    """The UTF-8 text of the regular file `name` (a repository path) at
+    `commit` in `root`, or in its checkout when None; None when there is
+    none there, it is no regular file (a symlink, whose target path is all
+    git holds of it), or it is not UTF-8. Raises `ProvenanceError` when git
+    cannot read the commit."""
+    if commit is None:
+        path = root / name
+        if path.is_symlink() or not path.is_file():
+            return None
+        try:
+            data = path.read_bytes()
+        except OSError:
+            return None
+    else:
+        listing = git(root, "ls-tree", "-z", commit, "--", f":(literal){name}")
+        if listing.returncode != 0:
+            raise ProvenanceError(f"cannot read {name} at {commit}: {listing.stderr.strip()}")
+        entry = listing.stdout.split("\0")[0]
+        fields, _, _ = entry.partition("\t")
+        if not entry or fields.split(" ")[:2] not in (["100644", "blob"], ["100755", "blob"]):
+            return None
+        shown = git(root, "cat-file", "blob", fields.split(" ")[2], binary=True)
+        if shown.returncode != 0:
+            raise ProvenanceError(f"cannot read {name} at {commit}: {shown.stderr.decode(errors='replace').strip()}")
+        data = shown.stdout
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def status_moved_only(before: str, after: str, experiment_id: str | None) -> bool:
+    """Whether the TOML text `after` is `before` with only a status moved:
+    the registry's entry for `experiment_id`, or the manifest's own when
+    None. Every line is as it was but for the value of a status line
+    (`STATUS_LINE`), and read as TOML the two are equal once that status is
+    set aside, so no other entry's status, no status in another table and
+    no line of a multi-line string moved."""
+    lines, moved = before.split("\n"), after.split("\n")
+    if len(lines) != len(moved):
+        return False
+    for line, other in zip(lines, moved):
+        if line != other and not (
+            STATUS_LINE.match(line)
+            and STATUS_LINE.match(other)
+            and STATUS_LINE.sub(r'\1""', line) == STATUS_LINE.sub(r'\1""', other)
+        ):
+            return False
+    try:
+        documents = [tomllib.loads(before), tomllib.loads(after)]
+    except tomllib.TOMLDecodeError:
+        return False
+    for document in documents:
+        if experiment_id is None:
+            document.pop("status", None)
+            continue
+        entries = document.get("experiment")
+        for entry in entries if isinstance(entries, list) else []:
+            if isinstance(entry, dict) and entry.get("id") == experiment_id:
+                entry.pop("status", None)
+    return documents[0] == documents[1]
+
+
 def listed(paths: list[str], limit: int = 5) -> str:
     more = f" and {len(paths) - limit} more" if len(paths) > limit else ""
     return ", ".join(paths[:limit]) + more
 
 
 def source_revision(
-    experiment_id: str, manifest: dict, records: dict[str, dict], root: Path, experiment_dir: Path
+    experiment_id: str,
+    manifest: dict,
+    records: dict[str, dict],
+    root: Path,
+    experiment_dir: Path,
+    paths: tuple[str, ...] | None = None,
+    checkout_paths: tuple[str, ...] | None = None,
+    listed_experiment: bool = False,
 ) -> str:
     """The commit the results in `records` were produced at: the earliest
     record's `git_sha`, once every record agrees (`agreement_errors`),
-    every record's commit and the checkout in `root` have the same
-    provenance files (`seed_record_paths` of `experiment_dir`), and HEAD
-    holds each of them as the checkout does (`checkout_problem`). Raises
+    every record's commit has the same provenance files (`paths`:
+    `seed_record_paths` of `experiment_dir` unless named, and for a listed
+    experiment the whole repository but its seed records,
+    `listed_record_paths`), the checkout in `root` has them too
+    (`checkout_paths`, `paths` unless named, and for a listed experiment
+    `listed_staleness_paths`, which leaves out what the tools write once the
+    seeds have run and what completing it changes), and HEAD holds each of
+    them as the checkout does (`checkout_problem`); for a listed experiment
+    (`listed_experiment`), its manifest and the registry, in the checkout
+    and at HEAD, differ from their text at that commit in no more than the
+    status completing it moves (`completion_changes`). Raises
     `ProvenanceError` naming what disagrees."""
     if not records:
         raise ProvenanceError("no run records")
     errors = agreement_errors(experiment_id, manifest, records)
     if errors:
         raise ProvenanceError("; ".join(errors))
-    paths = seed_record_paths(experiment_dir, root)
+    paths = seed_record_paths(experiment_dir, root) if paths is None else paths
     ordered = sorted(records.items(), key=lambda item: (str(item[1].get("started_at", "")), item[0]))
     revision = ordered[0][1]["git_sha"]
     for name, record in ordered[1:]:
@@ -644,13 +1125,19 @@ def source_revision(
                 errors.append(f"{name} ran at {record['git_sha']}, whose code differs in {listed(changed)}")
     if errors:
         raise ProvenanceError(f"the records ran different code from {revision}: " + "; ".join(errors))
-    changed = code_changes(revision, None, root, paths)
+    checkout_paths = paths if checkout_paths is None else checkout_paths
+    changed = code_changes(revision, None, root, checkout_paths)
+    if listed_experiment:
+        experiment = relative_to_root(experiment_dir, root)
+        for head in (None, "HEAD"):
+            moved = completion_changes(experiment_id, experiment, revision, head, root)
+            changed.extend(name for name in moved if name not in changed)
     if changed:
         raise ProvenanceError(
             f"the records ran at {revision}, and the checkout's code has changed since, "
             f"in {listed(changed)}; rerun the seeds or aggregate at that commit"
         )
-    unheld = checkout_problem(root, paths)
+    unheld = checkout_problem(root, checkout_paths)
     if unheld:
         raise ProvenanceError(
             f"the records ran at {revision}, but {unheld}; commit or remove them and aggregate again"
@@ -733,8 +1220,9 @@ def harness_results(
 def mutation_evidence(
     experiment_id: str, path: Path, subcommand: str, root: Path, experiment_dir: Path
 ) -> dict | None:
-    """The mutation check summary (`killed`, `total`, `git_sha`) of `path`,
-    or None when there is no such file. The evidence must be of
+    """The mutation check summary (`killed`, `total`, `git_sha` and the
+    SHA-256 of the whole file, `sha256`, which binds each outcome it lists)
+    of `path`, or None when there is no such file. The evidence must be of
     `experiment_id`, have mutated `subcommand`, count its own outcomes, and
     have run at a commit whose provenance files (`mutation_record_paths`) are
     the checkout's, which HEAD holds as the checkout does (`checkout_problem`);
@@ -744,7 +1232,8 @@ def mutation_evidence(
         return None
     name = path.name
     try:
-        evidence = json.loads(path.read_text(encoding="utf-8"))
+        data = path.read_bytes()
+        evidence = json.loads(data.decode("utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ProvenanceError(f"{name} cannot be read: {error}") from error
     if not isinstance(evidence, dict):
@@ -777,7 +1266,7 @@ def mutation_evidence(
     unheld = checkout_problem(root, paths)
     if unheld:
         raise ProvenanceError(f"{name} ran at {sha}, but {unheld}; commit or remove them, or remove {name}")
-    return {"killed": killed, "total": total, "git_sha": sha}
+    return {"killed": killed, "total": total, "git_sha": sha, "sha256": hashlib.sha256(data).hexdigest()}
 
 
 def clear_stale_marker(results_dir: Path) -> None:
@@ -863,6 +1352,118 @@ def json_text(value) -> str:
     return json.dumps(value, indent=2, ensure_ascii=False) + "\n"
 
 
+def is_printable_ascii(text: str) -> bool:
+    """Every character of `text` is one of the 95 printable ASCII
+    characters, space included."""
+    return all(" " <= character <= "~" for character in text)
+
+
+OUTSIDE_ASCII = "holds a character outside printable ASCII, whose escape depends on who serializes it"
+# The largest magnitude an integer of the canonical text may have: RFC 8785
+# writes numbers as IEEE-754 doubles, which hold every integer only up to it.
+MAX_CANONICAL_INTEGER = 2**53 - 1
+OUTSIDE_RANGE = f"is an integer beyond +-{MAX_CANONICAL_INTEGER}, which RFC 8785 cannot write exactly"
+
+
+def canonical_value_problem(value) -> str | None:
+    """Why `value` has no canonical preregistration text, or None when it
+    has one: a boolean, an integer of magnitude at most
+    `MAX_CANONICAL_INTEGER`, a string of printable ASCII, or a list holding
+    only such integers or only such strings. A float, a date, a table, any
+    other list, a larger integer, and a string holding a control or non-ASCII
+    character (which one JSON writer escapes and another writes raw) have a
+    text that depends on who serializes them."""
+    if type(value) is bool:
+        return None
+    if type(value) is int:
+        return None if abs(value) <= MAX_CANONICAL_INTEGER else OUTSIDE_RANGE
+    if type(value) is str:
+        return None if is_printable_ascii(value) else f"is a string that {OUTSIDE_ASCII}"
+    if isinstance(value, list):
+        kinds = {type(element) for element in value}
+        if kinds <= {int}:
+            for index, element in enumerate(value):
+                if abs(element) > MAX_CANONICAL_INTEGER:
+                    return f"has element {index} that {OUTSIDE_RANGE}"
+            return None
+        if kinds <= {str}:
+            for index, element in enumerate(value):
+                if not is_printable_ascii(element):
+                    return f"has element {index} that {OUTSIDE_ASCII}"
+            return None
+        return "is a list that holds anything but only integers or only strings"
+    return f"is a {type(value).__name__}, which has no canonical text"
+
+
+def canonical_text(value) -> str:
+    """The canonical text of a value `canonical_value_problem` accepts, or of
+    a table of them: `true` or `false`; an integer in decimal, with a leading
+    `-` when negative and no leading zeros; a string between double quotes,
+    in which `\\` is written `\\\\` and `"` is written `\\"` and every other
+    character as itself (no other escape, `/` included); a list as `[`, its
+    elements joined by `,`, `]`; a table as `{`, its entries `"key":value` in
+    ascending order of their keys' bytes joined by `,`, `}`. No whitespace
+    anywhere. On this domain it is exactly the JSON Canonicalization Scheme of
+    RFC 8785, and what Python's `json.dumps` writes with sorted keys and the
+    separators `,` and `:`."""
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    if type(value) is int:
+        return str(value)
+    if type(value) is str:
+        return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    if isinstance(value, list):
+        return "[" + ",".join(canonical_text(element) for element in value) + "]"
+    if isinstance(value, dict):
+        entries = sorted(value.items(), key=lambda item: item[0].encode("ascii"))
+        return "{" + ",".join(canonical_text(key) + ":" + canonical_text(item) for key, item in entries) + "}"
+    raise ValueError(f"no canonical text for {type(value).__name__}")
+
+
+def canonical_digest(value) -> str:
+    """The SHA-256, in hex, of the UTF-8 bytes of `canonical_text(value)`."""
+    return hashlib.sha256(canonical_text(value).encode("utf-8")).hexdigest()
+
+
+def preregistration_canonical(table: dict) -> str:
+    """The canonical text (`canonical_text`) of an experiment's
+    `[preregistration]` table, which a harness in another language reproduces
+    byte for byte. Raises `ValueError`, naming the key, for a key outside
+    printable ASCII or a value `canonical_value_problem` refuses."""
+    for key, value in table.items():
+        if not is_printable_ascii(key):
+            raise ValueError(f"preregistration key {key!r} {OUTSIDE_ASCII}")
+        problem = canonical_value_problem(value)
+        if problem:
+            raise ValueError(f"preregistration key {key} {problem}")
+    return canonical_text(table)
+
+
+def preregistration_digest(table: dict) -> str:
+    """The SHA-256, in hex, of the UTF-8 bytes of
+    `preregistration_canonical(table)`: the `preregistration_sha256` an
+    experiment's manifest names once it leaves `planned`
+    (`scripts/check_research_gates.py`)."""
+    preregistration_canonical(table)
+    return canonical_digest(table)
+
+
+def preregistered_bytes_digest(data: bytes) -> str:
+    """The SHA-256, in hex, of `data`, the content of a file a
+    preregistration names, byte for byte: line endings are content, so a
+    checkout that converts them holds another file than the one frozen, and
+    the gate names it as such rather than reading two forms alike."""
+    return hashlib.sha256(data).hexdigest()
+
+
+def preregistered_file_digest(path: Path) -> str:
+    """`preregistered_bytes_digest` of the file at `path`, such as an
+    adjudication protocol."""
+    return preregistered_bytes_digest(path.read_bytes())
+
+
 RUN = "run.json"
 METRICS = "metrics.json"
 MUTATIONS = "mutations.json"
@@ -881,7 +1482,15 @@ def publish_aggregate(results_dir: Path, metrics: dict, run: dict) -> None:
     missing artifact, never a run.json beside metrics it was not aggregated
     with. The marker is cleared only once both files read back as written
     and the mutation evidence beside them is the one `run` carries
-    (`aggregate_problems`). Raises `ProvenanceError` otherwise."""
+    (`aggregate_problems`), whole: mutation checks that name no SHA-256 of
+    it (`mutation_evidence`) are refused before anything is written. Raises
+    `ProvenanceError` otherwise."""
+    carried = run.get("mutation_checks")
+    if isinstance(carried, dict) and "sha256" not in carried:
+        raise ProvenanceError(
+            f"the mutation checks {RUN} would carry name no sha256 of {MUTATIONS}, so nothing would bind the "
+            "outcomes it lists; read it with mutation_evidence"
+        )
     metrics_data = json_text(metrics).encode("utf-8")
     run = {**run, "metrics_sha256": hashlib.sha256(metrics_data).hexdigest()}
     run_data = json_text(run).encode("utf-8")
@@ -910,12 +1519,67 @@ def publish_aggregate(results_dir: Path, metrics: dict, run: dict) -> None:
     clear_stale_marker(results_dir)
 
 
+def finished_run(record) -> bool:
+    """Whether `record`, a parsed run record, saw an outcome: its command ran
+    to an exit code, and the record says so with a status that agrees with it
+    (`completed` exactly when the code is 0, `failed` for any other), the time
+    it finished and the output it wrote. A reservation a runner left when it
+    died or was refused (`started`), a record of a command that failed to
+    launch and a record that names a status without holding the outcome saw
+    none, and no aggregate's outcome is bound to them."""
+    if not isinstance(record, dict):
+        return False
+    code = record.get("exit_code")
+    if isinstance(code, bool) or not isinstance(code, int):
+        return False
+    if record.get("status") != ("completed" if code == 0 else "failed"):
+        return False
+    return all(isinstance(record.get(key), str) for key in ("finished_at", "stdout", "stderr"))
+
+
+def seed_record_digests(results_dir: Path) -> dict[str, str]:
+    """The SHA-256 of each seed's run record in `results_dir` that saw an
+    outcome (`finished_run`), by the seed as JSON writes it (`"17"`), which an
+    aggregate of a listed experiment carries as `seed_records`
+    (`check_research_gates.py` binds it to the records): a record of a command
+    that failed to launch and a reservation nothing finished are left out.
+    Raises `ProvenanceError` when a record cannot be read or two are of one
+    seed, which a listed experiment does not run twice: a reservation is a
+    run of its seed as much as a finished record is."""
+    digests: dict[str, str] = {}
+    reserved: set[str] = set()
+    for path in sorted(results_dir.glob("run-*.json")):
+        try:
+            data = path.read_bytes()
+            record = json.loads(data.decode("utf-8"))
+        except (OSError, UnicodeDecodeError, ValueError) as error:
+            raise ProvenanceError(f"{path.name} cannot be read: {error}") from error
+        if not isinstance(record, dict) or "seed" not in record or record.get("status") == "failed-to-launch":
+            continue
+        seed = json.dumps(record["seed"], sort_keys=True)
+        if seed in reserved:
+            raise ProvenanceError(f"seed {seed} has more than one run record in {results_dir}")
+        reserved.add(seed)
+        if finished_run(record):
+            digests[seed] = hashlib.sha256(data).hexdigest()
+    return digests
+
+
 def mutation_summary(path: Path) -> dict:
     """The summary of the mutation evidence at `path` that an aggregate
-    carries. Raises OSError, ValueError or AttributeError when it cannot be
-    read."""
-    evidence = json.loads(path.read_text(encoding="utf-8"))
-    return {key: evidence.get(key) for key in ("killed", "total", "git_sha")}
+    carries (`mutation_evidence`): its counts, the commit it ran at and the
+    SHA-256 of the whole file, which binds each outcome it lists. Raises
+    OSError, ValueError or AttributeError when it cannot be read."""
+    return mutation_summary_of(path.read_bytes())
+
+
+def mutation_summary_of(data: bytes) -> dict:
+    """The summary of the mutation evidence whose bytes are `data`
+    (`mutation_summary`), as a commit holds it. Raises ValueError or
+    AttributeError when it cannot be read."""
+    evidence = json.loads(data.decode("utf-8"))
+    summary = {key: evidence.get(key) for key in ("killed", "total", "git_sha")}
+    return {**summary, "sha256": hashlib.sha256(data).hexdigest()}
 
 
 def aggregate_problems(run: dict, results_dir: Path) -> list[str]:
@@ -925,12 +1589,24 @@ def aggregate_problems(run: dict, results_dir: Path) -> list[str]:
 
     metrics.json must hash to the `metrics_sha256` run.json names, when it
     names one (`publish_aggregate`). mutations.json must be there exactly
-    when run.json carries `mutation_checks`, and have that summary: the
-    mutation checker rewrites it on its own, after or while the aggregate is
-    written."""
+    when run.json carries `mutation_checks`, and have that summary, the
+    SHA-256 of the whole file included: the mutation checker rewrites it on
+    its own, after or while the aggregate is written, and outcomes replaced
+    under the same counts would be other evidence. A summary aggregated
+    before it named that SHA-256 is compared by its counts and commit alone,
+    which `aggregate_errors` accepts only while the aggregate is stale. Each
+    of the two is a file a commit holds at its own path: a symlink reads
+    another file's content, which matches a digest whatever the commit holds
+    here, so one is a problem of its own and is not read."""
     problems = []
+    linked = {name for name in (METRICS, MUTATIONS) if (results_dir / name).is_symlink()}
+    for name in sorted(linked):
+        problems.append(
+            f"{name} is a symlink, which reads the content of another file, not the one a commit holds at "
+            f"{name}; commit the file itself"
+        )
     bound = run.get("metrics_sha256")
-    if bound is not None:
+    if bound is not None and METRICS not in linked:
         try:
             digest = hashlib.sha256((results_dir / METRICS).read_bytes()).hexdigest()
         except OSError as error:
@@ -943,7 +1619,9 @@ def aggregate_problems(run: dict, results_dir: Path) -> list[str]:
                 )
     carried = run.get("mutation_checks")
     evidence = results_dir / MUTATIONS
-    if carried is None:
+    if MUTATIONS in linked:
+        pass
+    elif carried is None:
         if evidence.exists():
             problems.append(f"{RUN} carries no mutation checks, but {MUTATIONS} is there")
     else:
@@ -952,6 +1630,8 @@ def aggregate_problems(run: dict, results_dir: Path) -> list[str]:
         except (OSError, ValueError, AttributeError) as error:
             problems.append(f"{MUTATIONS}, whose checks {RUN} carries, cannot be read: {error}")
         else:
+            if isinstance(carried, dict) and "sha256" not in carried:
+                summary.pop("sha256")
             if summary != carried:
                 problems.append(
                     f"{MUTATIONS} is not the evidence {RUN} carries: it sums up to "
@@ -972,7 +1652,10 @@ def aggregate_errors(experiment_id: str, experiment_dir: Path, results_dir: Path
     results ran HEAD's aggregator, whose `publish_aggregate` binds them
     (every `aggregate.py` publishes through it), and only while it and the
     metrics.json beside it are the pair archived together
-    (`unbound_pair_problems`)."""
+    (`unbound_pair_problems`). So does one whose mutation checks name no
+    SHA-256 of mutations.json, only while it is stale and the mutations.json
+    beside it is the one committed with it (`unbound_evidence_problems`):
+    its counts alone would pass outcomes replaced under them."""
     shown = relative_to_root(results_dir, root)
     try:
         run = json.loads((results_dir / RUN).read_text(encoding="utf-8"))
@@ -990,6 +1673,15 @@ def aggregate_errors(experiment_id: str, experiment_dir: Path, results_dir: Path
             )
         else:
             problems[0:0] = unbound_pair_problems(results_dir, root)
+    carried = run.get("mutation_checks")
+    if isinstance(carried, dict) and "sha256" not in carried and os.path.lexists(results_dir / MUTATIONS):
+        if is_current(run.get("git_sha"), seed_record_paths(experiment_dir, root), root):
+            problems.append(
+                f"{RUN} carries mutation checks that name no sha256 of {MUTATIONS}, so nothing binds the "
+                "outcomes it lists; rerun its aggregate.py"
+            )
+        else:
+            problems.extend(unbound_evidence_problems(results_dir, root))
     return [f"{experiment_id}: {shown}/{problem}" for problem in problems]
 
 
@@ -1009,24 +1701,70 @@ def unbound_pair_problems(results_dir: Path, root: Path) -> list[str]:
             f"{RUN} names no metrics_sha256, and no commit holds it, so nothing binds it to the "
             f"{METRICS} beside it; rerun its aggregate.py"
         ]
-    committed = {}
-    for entry in listed_names(root, "ls-tree", "-z", "--full-name", commit, "--", run_path, metrics_path):
-        fields, _, name = entry.partition("\t")
-        committed[name] = fields.split(" ")[2]
-    present = [name for name in (run_path, metrics_path) if (root / name).is_file()]
-    hashed = git(root, "hash-object", "--", *present)
-    current = dict(zip(present, hashed.stdout.split())) if hashed.returncode == 0 else {}
-    if current.get(run_path) != committed.get(run_path):
+    if not holds_committed(root, commit, run_path):
         return [
             f"{RUN} names no metrics_sha256 and is not the run.json committed at {commit}, so nothing "
             f"binds it to the {METRICS} beside it; restore it or rerun its aggregate.py"
         ]
-    if metrics_path in present and current.get(metrics_path) != committed.get(metrics_path):
+    if os.path.lexists(root / metrics_path) and not holds_committed(root, commit, metrics_path):
         return [
             f"{METRICS} is not the metrics.json committed with {RUN}, which names no metrics_sha256, "
             f"at {commit}; restore it or rerun its aggregate.py"
         ]
     return []
+
+
+def unbound_evidence_problems(results_dir: Path, root: Path) -> list[str]:
+    """Why the mutations.json of `results_dir`, whose summary the run.json
+    beside it carries without its SHA-256, is not the one the last commit
+    that changed run.json holds, as evidence aggregated before an aggregate
+    bound it whole is; empty when it is. Outcomes replaced under the same
+    counts, committed or not, are not that evidence. Each problem starts
+    with the name of the file it is about."""
+    run_path, evidence_path = (relative_to_root(results_dir / name, root) for name in (RUN, MUTATIONS))
+    last = git(root, "log", "-1", "--format=%H", "--", run_path)
+    commit = last.stdout.strip()
+    if last.returncode != 0 or not COMMIT.fullmatch(commit):
+        return [
+            f"{RUN} carries mutation checks that name no sha256 of {MUTATIONS}, and no commit holds it, so "
+            f"nothing binds the outcomes {MUTATIONS} lists; rerun its aggregate.py"
+        ]
+    if not holds_committed(root, commit, evidence_path):
+        return [
+            f"{MUTATIONS} is not the evidence committed with {RUN}, whose mutation checks name no sha256 of "
+            f"it, at {commit}; restore it or rerun its aggregate.py"
+        ]
+    return []
+
+
+def holds_committed(root: Path, commit: str, relative: str) -> bool:
+    """Whether the working tree of `root` holds, as a regular file at
+    `relative`, the content `commit` holds there as one, its bytes read
+    from disk as they are, so no clean filter or attribute of the clone's
+    own answers for them as it could for git hash-object, and a copy that
+    differs from the blob in its line endings is another file. False when
+    either holds no regular file there or git cannot read the commit's."""
+    listing = git(root, "--literal-pathspecs", "ls-tree", "-z", "--full-name", commit, "--", relative)
+    held = None
+    for entry in listing.stdout.split("\0") if listing.returncode == 0 else ():
+        fields, _, name = entry.partition("\t")
+        parts = fields.split(" ")
+        if name == relative and len(parts) == 3 and parts[1] == "blob" and parts[0] in ("100644", "100755"):
+            held = parts[2]
+    if held is None:
+        return False
+    path = root / relative
+    try:
+        if not stat.S_ISREG(path.lstat().st_mode):
+            return False
+        data = path.read_bytes()
+    except OSError:
+        return False
+    shown = git(root, "cat-file", "blob", held, binary=True)
+    if shown.returncode != 0:
+        return False
+    content = shown.stdout
+    return data == content
 
 
 def is_current(sha, paths: tuple[str, ...], root: Path) -> bool:
@@ -1044,16 +1782,25 @@ def is_current(sha, paths: tuple[str, ...], root: Path) -> bool:
 ARCHIVED = (("run.json", seed_record_paths), ("mutations.json", mutation_record_paths))
 
 
-def staleness_errors(experiment_id: str, experiment_dir: Path, results_dir: Path, root: Path) -> list[str]:
+def staleness_errors(
+    experiment_id: str, experiment_dir: Path, results_dir: Path, root: Path, listed_experiment: bool = False
+) -> list[str]:
     """Why the archived results of `experiment_id` misdescribe HEAD's code;
     empty when they do not. `results/run.json` and `results/mutations.json`
     are stale when HEAD's provenance files (`seed_record_paths`,
-    `mutation_record_paths`) differ from those at their `git_sha`. Stale
-    results pass only with a `results/STALE.toml` marker that names them, the
+    `mutation_record_paths`) differ from those at their `git_sha`; for an
+    experiment the list names (`listed_experiment`), whose command may run
+    or read any file of the repository, when HEAD's repository does, but
+    for the tools' outputs in its results and its stale marker
+    (`listed_staleness_paths`), or when its manifest or the registry
+    differs from its text there in more than the status completing it
+    moves (`completion_changes`). Stale results pass only with a
+    `results/STALE.toml` marker that names them, the
     first commit after them that changed a provenance file (`stale_since`)
     and a `reason` (`marker_errors`); a marker next to current results is an
     error too, so none outlives the rerun that replaces them."""
     results = relative_to_root(results_dir, root)
+    experiment = relative_to_root(experiment_dir, root)
     errors = []
     stale: dict[str, tuple[str, tuple[str, ...], list[str]]] = {}
     for name, paths_of in ARCHIVED:
@@ -1068,9 +1815,11 @@ def staleness_errors(experiment_id: str, experiment_dir: Path, results_dir: Path
         if not COMMIT.fullmatch(str(sha or "")):
             errors.append(f"{experiment_id}: {results}/{name} names no commit it ran at: {sha!r}")
             continue
-        paths = paths_of(experiment_dir, root)
+        paths = listed_staleness_paths(results, experiment) if listed_experiment else paths_of(experiment_dir, root)
         try:
             changed = code_changes(sha, "HEAD", root, paths)
+            if listed_experiment:
+                changed = [*changed, *completion_changes(experiment_id, experiment, sha, "HEAD", root)]
         except ProvenanceError as error:
             errors.append(f"{experiment_id}: {results}/{name}: {error}")
             continue
@@ -1092,7 +1841,9 @@ def staleness_errors(experiment_id: str, experiment_dir: Path, results_dir: Path
                 "remove it"
             )
         return errors
-    return errors + marker_errors(experiment_id, f"{results}/{STALE_MARKER}", marker, stale, root)
+    return errors + marker_errors(
+        experiment_id, f"{results}/{STALE_MARKER}", marker, stale, root, experiment if listed_experiment else None
+    )
 
 
 def marker_errors(
@@ -1101,9 +1852,13 @@ def marker_errors(
     marker: Path,
     stale: dict[str, tuple[str, tuple[str, ...], list[str]]],
     root: Path,
+    experiment: str | None = None,
 ) -> list[str]:
     """Why the stale marker `marker` (shown as `shown`) does not honestly
-    describe the `stale` results; empty when it does.
+    describe the `stale` results; empty when it does. For a listed
+    experiment (in the repository directory `experiment`), a change to its
+    manifest or the registry beyond the status completing it moves counts
+    as a change of a provenance file (`completion_changes`).
 
     `results_git_sha` names the results: a commit on HEAD's history at which
     every stale file's provenance files are those at its own `git_sha`. When
@@ -1137,6 +1892,8 @@ def marker_errors(
     others = []
     for name, (sha, name_paths, _) in stale.items():
         differing = code_changes(sha, marked, root, name_paths)
+        if experiment is not None:
+            differing = [*differing, *completion_changes(experiment_id, experiment, sha, marked, root)]
         if differing:
             others.append(f"{name} ran at {sha}, whose provenance files differ there in {listed(differing)}")
     if others:
@@ -1146,11 +1903,13 @@ def marker_errors(
     paths: list[str] = []
     for _, name_paths, _ in stale.values():
         paths.extend(path for path in name_paths if path not in paths)
-    changes = changes_after(marked, "HEAD", root, tuple(paths))
+    changes = changes_after_results(marked, "HEAD", root, tuple(paths), experiment_id, experiment)
     # A first change is one no other change after the results precedes. Two
     # lines of history leaving the results each have their own; the marker
     # may name either.
-    if since not in changes or changes_after(marked, since, root, tuple(paths)) != [since]:
+    if since not in changes or changes_after_results(
+        marked, since, root, tuple(paths), experiment_id, experiment
+    ) != [since]:
         first = changes[0] if changes else None
         errors.append(
             f"{experiment_id}: {shown} says stale since {since}, but the first commit after {marked} "

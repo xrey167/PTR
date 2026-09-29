@@ -15,6 +15,8 @@ No backward-transfer improvement over the naive chain, or public regression beyo
 ## Design
 Mechanism and threat model: [35 — Agentic substrate](../../../docs/architecture/35-agentic-substrate.md).
 
+The `[preregistration]` table of `config.toml` is frozen before R004 leaves `planned` (`experiments/preregistration.toml`, `scripts/check_research_gates.py`): the public regression gate and the smallest backward-transfer improvement that counts. Both are still placeholders, so the gate holds R004 in `planned`.
+
 Each arm is its own training chain with its own training clock, even on a shared base model. Until the work schema records adapter runs, each run's `run.json` names its chain, the run manifest's input fingerprint and the data fingerprint of each adapter it trains (two different digests), and the number of samples drawn from the replay pool and of new examples, since the arms are compared at equal compute.
 
 ## Rule

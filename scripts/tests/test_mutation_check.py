@@ -215,7 +215,9 @@ class MutationCheckTests(unittest.TestCase):
         )
         for spec in ("*.rs", "scripts/mutation_check.py", f"{experiment}/tests/mutations.toml", experiment):
             self.assertIn(spec, specs)
-        self.assertIn(f":(exclude){experiment}/results", specs)
+        for output in ("run-*.json", "run.json", "metrics.json", "mutations.json"):
+            self.assertIn(f":(exclude,glob){experiment}/results/{output}", specs)
+        self.assertNotIn(f":(exclude){experiment}/results", specs)
 
 
 def files(directory: Path) -> dict[str, str]:

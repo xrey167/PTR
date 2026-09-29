@@ -1,10 +1,14 @@
 import contextlib
+import datetime
 import errno
 import hashlib
 import importlib.util
 import io
 import json
+import math
 import os
+import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -106,6 +110,108 @@ class AgreementTests(unittest.TestCase):
         # The manifest's status changes when the experiment completes.
         records = {"a.json": record("a" * 40), "b.json": record("b" * 40, seed=2)}
         self.assertEqual(mod.agreement_errors("L900", {**MANIFEST, "status": "completed"}, records), [])
+
+    def test_a_manifest_agrees_with_the_record_as_json_holds_it(self):
+        # The manifest is compared as the JSON text a record holds it as:
+        # 1.0, 1 and true are equal in Python and three values to a run, and
+        # so are 0.0 and -0.0.
+        manifest = {**MANIFEST, "loss_cap": 1.0, "floor": -0.0}
+        held = json.loads(json.dumps(manifest))
+        records = {"a.json": record("a" * 40, manifest=held)}
+        self.assertEqual(mod.agreement_errors("L900", manifest, records), [])
+        for key, value in (("loss_cap", 1), ("loss_cap", True), ("loss_cap", 2.0), ("floor", 0.0)):
+            with self.subTest(key=key, value=value):
+                changed = {"b.json": record("b" * 40, manifest={**held, key: value})}
+                self.assertEqual(
+                    mod.agreement_errors("L900", manifest, changed),
+                    ["b.json ran under an experiment.toml that differs from the current one"],
+                )
+
+    def test_records_that_ran_another_program_toolchain_or_environment_disagree(self):
+        # A listed run's record names the program it started, the Rust
+        # toolchain and the environment, which lie outside the commit: the
+        # seeds of one result ran one of each, and a program the command
+        # starts by name is found through the environment's PATH.
+        program = {"path": "/usr/bin/bench", "sha256": "a" * 64}
+        toolchain = {"rustc": {"path": "/toolchains/pinned/bin/rustc", "sha256": "b" * 64}}
+        environment = {"PATH": "/a:/usr/bin", "PYTHONNOUSERSITE": "1"}
+        ran = {"executable": program, "toolchain": toolchain, "environment": environment}
+        records = {"a.json": {**record("a" * 40), **ran}, "b.json": {**record("b" * 40, seed=2), **ran}}
+        self.assertEqual(mod.agreement_errors("L900", MANIFEST, records), [])
+        for key, label, changed in (
+            ("executable", "program", {**program, "sha256": "c" * 64}),
+            ("toolchain", "toolchain", {"rustc": {**toolchain["rustc"], "path": "/toolchains/other/bin/rustc"}}),
+            ("environment", "environment", {**environment, "PATH": "/b:/usr/bin"}),
+        ):
+            with self.subTest(key=key):
+                other = {**records, "b.json": {**records["b.json"], key: changed}}
+                self.assertEqual(
+                    mod.agreement_errors("L900", MANIFEST, other),
+                    [
+                        f"the records disagree on {label}: {json.dumps(ran[key], sort_keys=True)} in a.json; "
+                        f"{json.dumps(changed, sort_keys=True)} in b.json"
+                    ],
+                )
+        # Records of runs that name neither agree, as those of unlisted
+        # experiments do.
+        self.assertEqual(
+            mod.agreement_errors("L900", MANIFEST, {"a.json": record("a" * 40), "b.json": record("b" * 40, seed=2)}), []
+        )
+
+    def test_a_manifest_holding_a_nan_is_refused(self):
+        # JSON writes a NaN as NaN whatever its sign, which a run can read:
+        # nan and -nan would be one manifest to the records.
+        refusal = (
+            "experiment.toml holds a NaN at {}, which a run record, holding the manifest as JSON, cannot tell from a "
+            "NaN of the other sign; write it as a string"
+        )
+        negative = -float("nan")
+        self.assertEqual(math.copysign(1.0, negative), -1.0)
+        manifest = tomllib.loads('loss_cap = -nan\nfloor = 0.5\n[limits]\nsteps = [1.0, nan, +nan]\n')
+        manifest = {**MANIFEST, **manifest}
+        self.assertEqual(math.copysign(1.0, manifest["loss_cap"]), -1.0)
+        self.assertEqual(json.dumps(manifest["loss_cap"]), json.dumps(float("nan")))
+        keys = ["loss_cap", "limits.steps[1]", "limits.steps[2]"]
+        self.assertEqual([key for key, _, _ in mod.unrecordable_keys(manifest)], keys)
+        held = json.loads(json.dumps(manifest))
+        self.assertEqual(
+            mod.agreement_errors("L900", manifest, {"a.json": record("a" * 40, manifest=held)}),
+            [refusal.format(key) for key in keys],
+        )
+        self.assertEqual(mod.manifest_problems(manifest), [refusal.format(key) for key in keys])
+        # An infinity keeps its sign in JSON, as a zero does.
+        bounded = {**MANIFEST, "ceiling": float("inf"), "floor": -float("inf"), "zero": -0.0}
+        self.assertEqual(mod.unrecordable_keys(bounded), [])
+        self.assertEqual(json.loads(json.dumps(-float("inf"))), -float("inf"))
+
+    def test_a_manifest_holding_a_date_or_time_is_refused(self):
+        # JSON has no date: a record holds one as its text, so a date and
+        # the string of its text would be one manifest.
+        refusal = (
+            "experiment.toml holds a TOML date or time at {}, which a run record, holding the manifest as JSON, "
+            "cannot tell from a string; write it as a string"
+        )
+        dated = {
+            **MANIFEST,
+            "created": datetime.date(2026, 1, 2),
+            "window": {"start": datetime.datetime(2026, 1, 2, 3, 4, tzinfo=datetime.timezone.utc)},
+            "slots": [datetime.time(7, 32), "07:33"],
+        }
+        held = json.loads(json.dumps(dated, default=mod.toml_time))
+        self.assertEqual(held["created"], "2026-01-02")
+        self.assertEqual(
+            mod.unrecordable_keys(dated),
+            [(key, "a TOML date or time", "a string") for key in ("created", "window.start", "slots[0]")],
+        )
+        self.assertEqual(
+            mod.agreement_errors("L900", dated, {"a.json": record("a" * 40, manifest=held)}),
+            [refusal.format(key) for key in ("created", "window.start", "slots[0]")],
+        )
+        # The string of its text is no date.
+        self.assertEqual(mod.unrecordable_keys(held), [])
+        self.assertEqual(mod.agreement_errors("L900", held, {"a.json": record("a" * 40, manifest=held)}), [])
+        with self.assertRaises(TypeError):
+            mod.toml_time(object())
 
     def test_a_record_of_another_experiment_or_of_no_commit_is_refused(self):
         records = {
@@ -212,6 +318,118 @@ class RevisionTests(unittest.TestCase):
         with self.assertRaisesRegex(mod.ProvenanceError, r"run-1\.json ran at .* differs in src/lib\.rs"):
             self.revision(self.records(self.first, changed))
 
+    def test_a_listed_experiments_records_ran_one_repository(self):
+        # A listed experiment's command may run any file of the repository,
+        # a script outside the provenance files say: its seeds ran one tree
+        # only if their commits differ in nothing but the results' seed
+        # records: an aggregate or mutation evidence committed between two
+        # seeds is an input the later one could read.
+        paths = mod.listed_record_paths("experiments/L900-x/results")
+        self.assertEqual(paths, (".", ":(exclude,glob)experiments/L900-x/results/run-*.json"))
+        recorded = commit(self.root, {"experiments/L900-x/results/run-0.json": "{}\n"}, "record")
+        records = self.records(self.first, recorded)
+        # The archive the fixture made between them commits a file that is no
+        # record or output of the tools.
+        with self.assertRaisesRegex(
+            mod.ProvenanceError, r"run-1\.json ran at .* differs in experiments/L900-x/results/b\.json"
+        ):
+            mod.source_revision("L900", MANIFEST, records, self.root, self.experiment, paths)
+        git(self.root, "rm", "-q", "experiments/L900-x/results/b.json")
+        git(self.root, "commit", "-q", "--no-verify", "-m", "no archive")
+        clean = git(self.root, "rev-parse", "HEAD")
+        records = self.records(clean, commit(self.root, {"experiments/L900-x/results/run-1.json": "{}\n"}, "record"))
+        self.assertEqual(mod.source_revision("L900", MANIFEST, records, self.root, self.experiment, paths), clean)
+        harness = commit(self.root, {"scripts/harness.py": "print('changed')\n"}, "harness")
+        changed = self.records(clean, harness)
+        # The provenance files alone do not see it; the whole repository does.
+        self.assertEqual(self.revision(changed), clean)
+        with self.assertRaisesRegex(mod.ProvenanceError, r"run-1\.json ran at .* differs in .*scripts/harness\.py"):
+            mod.source_revision("L900", MANIFEST, changed, self.root, self.experiment, paths)
+
+    def test_a_listed_experiment_is_aggregated_beside_what_the_tools_wrote_after_its_seeds(self):
+        # Its seeds ran one tree but for their records; the checkout it is
+        # aggregated from also holds what the tools wrote once they ran (the
+        # mutation evidence the aggregate carries, an earlier aggregate) and
+        # what completing it changed, which are no change of what they ran.
+        git(self.root, "rm", "-q", "experiments/L900-x/results/b.json", "experiments/L900-x/results/a.json")
+        git(self.root, "commit", "-q", "--no-verify", "-m", "no archive")
+        clean = git(self.root, "rev-parse", "HEAD")
+        records = self.records(clean, commit(self.root, {"experiments/L900-x/results/run-0.json": "{}\n"}, "seed 0"))
+        paths = mod.listed_record_paths("experiments/L900-x/results")
+        checkout = mod.listed_staleness_paths("experiments/L900-x/results", "experiments/L900-x")
+        outputs = {
+            "experiments/L900-x/results/mutations.json": "{}\n",
+            "experiments/L900-x/results/run.json": "{}\n",
+            "experiments/L900-x/results/metrics.json": "{}\n",
+            "experiments/L900-x/experiment.toml": 'status = "completed"\n',
+        }
+        for relative, text in outputs.items():
+            with self.subTest(relative=relative):
+                self.write_file(relative, text)
+                # Not yet committed, as the aggregator writes it, and then
+                # committed.
+                self.assertEqual(
+                    mod.source_revision("L900", MANIFEST, records, self.root, self.experiment, paths, checkout), clean
+                )
+                git(self.root, "add", "-A")
+                git(self.root, "commit", "-q", "--no-verify", "-m", relative)
+                self.assertEqual(
+                    mod.source_revision("L900", MANIFEST, records, self.root, self.experiment, paths, checkout), clean
+                )
+                # Compared by the records' own paths, it would be a change.
+                with self.assertRaisesRegex(mod.ProvenanceError, f"code has changed since, in .*{relative}"):
+                    mod.source_revision("L900", MANIFEST, records, self.root, self.experiment, paths)
+        # Anything else is still one.
+        commit(self.root, {"scripts/harness.py": "print('changed')\n"}, "harness")
+        with self.assertRaisesRegex(mod.ProvenanceError, "code has changed since, in scripts/harness.py"):
+            mod.source_revision("L900", MANIFEST, records, self.root, self.experiment, paths, checkout)
+
+    def test_a_listed_experiment_is_aggregated_only_where_completing_it_moved_no_more_than_its_status(self):
+        # Its command may read its manifest and the registry whole: the
+        # checkout, and HEAD, may differ from the records' commit in the status
+        # completing it moves, and in nothing else of them.
+        manifest = 'id = "L900"\nstatus = "{}"\n'
+        registry = '[[experiment]]\nid = "L900"\nstatus = "{}"\n\n[[experiment]]\nid = "L901"\nstatus = "planned"\n'
+        ran = commit(
+            self.root,
+            {
+                "experiments/L900-x/experiment.toml": manifest.format("running"),
+                "experiments/registry.toml": registry.format("running"),
+            },
+            "listed",
+        )
+        records = self.records(ran)
+        paths = mod.listed_record_paths("experiments/L900-x/results")
+        checkout = mod.listed_staleness_paths("experiments/L900-x/results", "experiments/L900-x")
+
+        def revision(listed_experiment: bool = True) -> str:
+            return mod.source_revision(
+                "L900", MANIFEST, records, self.root, self.experiment, paths, checkout, listed_experiment
+            )
+
+        self.assertEqual(revision(), ran)
+        # Completed in the checkout, and then committed.
+        self.write_file("experiments/L900-x/experiment.toml", manifest.format("completed"))
+        self.write_file("experiments/registry.toml", registry.format("completed"))
+        self.assertEqual(revision(), ran)
+        git(self.root, "commit", "-q", "--no-verify", "-am", "completed")
+        self.assertEqual(revision(), ran)
+        # Another entry's status moved in the checkout.
+        self.write_file("experiments/registry.toml", registry.format("completed").replace('"planned"', '"running"'))
+        with self.assertRaisesRegex(mod.ProvenanceError, "code has changed since, in experiments/registry.toml;"):
+            revision()
+        # A comment at HEAD that the checkout does not hold.
+        commit(self.root, {"experiments/registry.toml": "# read by the harness\n" + registry.format("completed")}, "note")
+        self.write_file("experiments/registry.toml", registry.format("completed"))
+        with self.assertRaisesRegex(mod.ProvenanceError, "code has changed since, in experiments/registry.toml;"):
+            revision()
+        # Another experiment's aggregate compares them by its own paths.
+        self.assertEqual(revision(listed_experiment=False), ran)
+
+    def write_file(self, relative: str, text: str) -> None:
+        (self.root / relative).parent.mkdir(parents=True, exist_ok=True)
+        (self.root / relative).write_text(text, encoding="utf-8")
+
     def test_a_checkout_whose_code_changed_since_the_records_is_refused(self):
         records = self.records(self.first, self.archived)
         for relative in ("src/lib.rs", "Cargo.lock", "migrations/0001.sql", "crates/x/Cargo.toml"):
@@ -259,7 +477,11 @@ class RevisionTests(unittest.TestCase):
             encoding="utf-8",
         )
         summary = mod.mutation_evidence("L900", evidence, "bench", self.root, self.experiment)
-        self.assertEqual(summary, {"killed": 1, "total": 1, "git_sha": self.first})
+        # The summary binds the whole file, each outcome it lists included.
+        self.assertEqual(
+            summary,
+            {"killed": 1, "total": 1, "git_sha": self.first, "sha256": hashlib.sha256(evidence.read_bytes()).hexdigest()},
+        )
         (self.root / "crates/ptr-new/src").mkdir(parents=True)
         (self.root / "crates/ptr-new/src/lib.rs").write_text("pub fn g() {}\n", encoding="utf-8")
         with self.assertRaisesRegex(
@@ -506,6 +728,228 @@ class SourceTreeTests(GitTree, unittest.TestCase):
             mod.uncommitted_files(self.root, self.pathspecs), [".gitignore", "crates/other/.gitignore"]
         )
 
+    def test_a_clones_own_configuration_hides_no_rewritten_source(self):
+        # A clone's own configuration could have git status report a
+        # rewritten source as unchanged: a clean filter its own attributes
+        # name, a file system monitor, a file mode git is told to ignore.
+        # The bytes on disk are compared with HEAD's blob.
+        original = (self.root / "src/lib.rs").read_bytes()
+        (self.root / ".git/info").mkdir(parents=True, exist_ok=True)
+        (self.root / ".git/info/attributes").write_text("*.rs filter=hide\n", encoding="utf-8")
+        git(self.root, "config", "filter.hide.clean", "git show HEAD:src/lib.rs")
+        # Of one size, so git asks the filter rather than the stat.
+        self.assertEqual(len("pub fn g() {}\n"), len(original))
+        self.write("src/lib.rs", "pub fn g() {}\n")
+        self.assertEqual(git(self.root, "status", "--porcelain", "--", "src/lib.rs"), "")
+        self.assertEqual(mod.uncommitted_files(self.root, self.pathspecs), ["src/lib.rs"])
+        (self.root / ".git/info/attributes").unlink()
+        git(self.root, "config", "--unset", "filter.hide.clean")
+        (self.root / "src/lib.rs").write_bytes(original)
+        self.assertEqual(mod.uncommitted_files(self.root, self.pathspecs), [])
+        # A monitor that reports nothing changed since the last status hides
+        # a rewritten source and a deleted one from git status.
+        hook = self.root / ".git/quiet-monitor"
+        hook.write_text("#!/bin/sh\nprintf 'token\\0'\n", encoding="utf-8")
+        hook.chmod(0o755)
+        git(self.root, "config", "core.fsmonitor", str(hook))
+        git(self.root, "status", "--porcelain")
+        git(self.root, "status", "--porcelain")
+        self.write("src/lib.rs", "pub fn f() { rewritten() }\n")
+        (self.root / "Cargo.toml").unlink()
+        self.assertEqual(git(self.root, "status", "--porcelain", "--untracked-files=no"), "")
+        self.write("src/new.rs", "pub fn new() {}\n")
+        self.assertEqual(
+            mod.uncommitted_files(self.root, self.pathspecs), ["Cargo.toml", "src/lib.rs", "src/new.rs"]
+        )
+        git(self.root, "config", "--unset", "core.fsmonitor")
+        (self.root / "src/new.rs").unlink()
+        (self.root / "src/lib.rs").write_bytes(original)
+        git(self.root, "checkout", "--", "Cargo.toml")
+        self.assertEqual(mod.uncommitted_files(self.root, self.pathspecs), [])
+        # An executable bit git is told not to see.
+        git(self.root, "config", "core.fileMode", "false")
+        (self.root / "src/lib.rs").chmod(0o755)
+        self.assertEqual(git(self.root, "status", "--porcelain", "--", "src/lib.rs"), "")
+        self.assertEqual(mod.uncommitted_files(self.root, self.pathspecs), ["src/lib.rs"])
+        (self.root / "src/lib.rs").chmod(0o644)
+        self.assertEqual(mod.uncommitted_files(self.root, self.pathspecs), [])
+        git(self.root, "config", "--unset", "core.fileMode")
+        # A file HEAD holds as executable is read as well.
+        (self.root / "scripts/run_experiment.py").chmod(0o755)
+        self.assertTrue(commit(self.root, {}, "an executable recorder"))
+        self.write("scripts/run_experiment.py", "# rewritten\n")
+        self.assertEqual(mod.content_changes(self.root, ["scripts/run_experiment.py"]), ["scripts/run_experiment.py"])
+
+    def test_a_clone_told_to_ignore_case_hides_no_source(self):
+        # On a file system that tells names apart by case, a clone told to
+        # ignore it would take a new src/LIB.rs for the tracked src/lib.rs
+        # and list it nowhere.
+        git(self.root, "config", "core.ignorecase", "true")
+        self.write("src/LIB.rs", "pub fn g() {}\n")
+        if (self.root / "src/lib.rs").read_text(encoding="utf-8") == "pub fn g() {}\n":
+            self.skipTest("the file system does not tell names apart by case")
+        self.assertEqual(git(self.root, "ls-files", "--others", "--", "src"), "")
+        self.assertEqual(mod.uncommitted_files(self.root, self.pathspecs), ["src/LIB.rs"])
+
+    def test_a_clones_own_work_tree_setting_points_git_at_no_other_tree(self):
+        # core.worktree could point git at a clean copy while commands run in
+        # the checkout, which then holds a source git never looked at.
+        copy = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        for relative in git(self.root, "ls-files").splitlines():
+            (copy / relative).parent.mkdir(parents=True, exist_ok=True)
+            (copy / relative).write_bytes((self.root / relative).read_bytes())
+        git(self.root, "config", "core.worktree", str(copy))
+        self.write("src/new.rs", "pub fn new() {}\n")
+        (self.root / "Cargo.toml").unlink()
+        self.assertEqual(git(self.root, "status", "--porcelain"), "")
+        self.assertEqual(mod.uncommitted_files(self.root, self.pathspecs), ["Cargo.toml", "src/new.rs"])
+
+    def test_no_hook_of_the_clones_runs_while_the_tree_is_read(self):
+        # Git runs a clone's post-index-change hook when a status refreshes
+        # its index; no code the commit does not hold runs in the watch.
+        marker = self.root / ".git/hook-ran"
+        hook = self.root / ".git/hooks/post-index-change"
+        hook.parent.mkdir(parents=True, exist_ok=True)
+        hook.write_text(f"#!/bin/sh\ntouch '{marker}'\n", encoding="utf-8")
+        hook.chmod(0o755)
+        os.utime(self.root / "src/lib.rs", (1577836800, 1577836800))
+        git(self.root, "status", "--porcelain")
+        self.assertTrue(marker.exists())
+        marker.unlink()
+        os.utime(self.root / "src/lib.rs", (1609459200, 1609459200))
+        self.assertEqual(mod.uncommitted_files(self.root, self.pathspecs), [])
+        self.assertFalse(marker.exists())
+
+    def test_a_converting_checkouts_crlf_copy_is_not_the_content_head_holds(self):
+        # A checkout that writes text with CRLF line endings holds other
+        # bytes than the LF blob HEAD holds: a command reading them tells the
+        # two apart, so git status calling the copy clean does not make it
+        # the committed content. Line endings are content.
+        git(self.root, "config", "core.autocrlf", "true")
+        originals = {}
+        for name in ("Cargo.toml", "src/lib.rs"):
+            originals[name] = (self.root / name).read_bytes()
+            (self.root / name).unlink()
+        git(self.root, "checkout", "--", "Cargo.toml", "src/lib.rs")
+        for name, original in originals.items():
+            self.assertEqual((self.root / name).read_bytes(), original.replace(b"\n", b"\r\n"))
+        # Git's own status reads the converting checkout as clean.
+        self.assertEqual(git(self.root, "status", "--porcelain"), "")
+        self.assertEqual(mod.content_changes(self.root, ["Cargo.toml", "src/lib.rs"]), ["Cargo.toml", "src/lib.rs"])
+        self.assertEqual(mod.uncommitted_files(self.root, self.pathspecs), ["Cargo.toml", "src/lib.rs"])
+        # One copy restored to the blob's bytes is the content again.
+        (self.root / "src/lib.rs").write_bytes(originals["src/lib.rs"])
+        self.assertEqual(mod.content_changes(self.root, ["Cargo.toml", "src/lib.rs"]), ["Cargo.toml"])
+        (self.root / "Cargo.toml").write_bytes(originals["Cargo.toml"])
+        self.assertEqual(mod.content_changes(self.root, ["Cargo.toml", "src/lib.rs"]), [])
+        # Git's index keeps the size of the CRLF copy it wrote, so it calls
+        # the LF copy modified until the index is refreshed under settings
+        # that no longer convert.
+        git(self.root, "config", "--unset", "core.autocrlf")
+        git(self.root, "add", "-A")
+        self.assertEqual(git(self.root, "status", "--porcelain"), "")
+        self.assertEqual(mod.uncommitted_files(self.root, self.pathspecs), [])
+        # Carriage returns the blob holds are content as they stand, and a
+        # copy that ends its lines another way is another file.
+        self.assertTrue(commit(self.root, {"src/cr.rs": "a\rb\r\n"}, "carriage returns"))
+        self.assertEqual(mod.content_changes(self.root, ["src/cr.rs"]), [])
+        (self.root / "src/cr.rs").write_bytes(b"a\rb\n")
+        self.assertEqual(mod.content_changes(self.root, ["src/cr.rs"]), ["src/cr.rs"])
+        (self.root / "src/cr.rs").write_bytes(b"a\rb\r\r\n")
+        self.assertEqual(mod.content_changes(self.root, ["src/cr.rs"]), ["src/cr.rs"])
+        # A name HEAD does not hold, or the tree does not hold as a file, is
+        # git status's to report.
+        (self.root / "src/cr.rs").unlink()
+        self.assertEqual(mod.content_changes(self.root, ["src/cr.rs", "src/absent.rs"]), [])
+        self.assertEqual(mod.content_changes(self.root, []), [])
+
+    def test_a_file_committed_with_crlf_is_its_own_content(self):
+        # HEAD may hold CRLF text (`-text` keeps git from converting it): the
+        # blob's bytes are the content, LF copies of it are another file, and
+        # the copy holding the blob's bytes is clean.
+        commit(self.root, {".gitattributes": "*.txt -text\n"}, "attributes")
+        (self.root / "notes.txt").write_bytes(b"one\r\ntwo\r\n")
+        git(self.root, "add", "notes.txt")
+        git(self.root, "commit", "-m", "crlf text")
+        self.assertEqual(mod.content_changes(self.root, ["notes.txt"]), [])
+        (self.root / "notes.txt").write_bytes(b"one\ntwo\n")
+        self.assertEqual(mod.content_changes(self.root, ["notes.txt"]), ["notes.txt"])
+
+    def test_the_watch_reads_a_blob_by_its_id_alone(self):
+        # HEAD's copy of a changed file is never read back: the working
+        # tree's bytes hash to the blob id or they do not, so a blob gone
+        # from the object store leaves the answer for a rewrite unchanged.
+        blob = git(self.root, "rev-parse", "HEAD:src/lib.rs")
+        self.write("src/lib.rs", "pub fn f() { rewritten() }\n")
+        (self.root / ".git/objects" / blob[:2] / blob[2:]).unlink()
+        self.assertEqual(mod.content_changes(self.root, ["src/lib.rs"]), ["src/lib.rs"])
+
+    def test_a_repository_of_the_sha256_object_format_names_its_blobs_by_sha256(self):
+        # A blob's id is the hash of its bytes in the repository's own object
+        # format, so the same bytes are 64 hexadecimal digits under sha256:
+        # hashed as sha1 they would be called changed while they are clean.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            git(root, "init", "-q", "--object-format=sha256")
+            commit(root, {"src/lib.rs": "pub fn f() {}\n", "Cargo.toml": "[workspace]\n"}, "code")
+            blob = git(root, "rev-parse", "HEAD:src/lib.rs")
+            self.assertEqual(len(blob), 64)
+            self.assertEqual(mod.content_changes(root, ["Cargo.toml", "src/lib.rs"]), [])
+            (root / "src/lib.rs").write_text("pub fn f() { rewritten() }\n", encoding="utf-8")
+            self.assertEqual(mod.content_changes(root, ["Cargo.toml", "src/lib.rs"]), ["src/lib.rs"])
+
+    def test_the_repository_pins_line_endings_to_lf(self):
+        # A checkout with `core.autocrlf=true` writes LF anyway where the
+        # repository's `.gitattributes` say `eol=lf`, so a preregistered
+        # file's bytes are the same on every clone.
+        attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8").splitlines()
+        self.assertIn("* text=auto eol=lf", [line.strip() for line in attributes])
+        pinned = git(ROOT, "check-attr", "eol", "--", "experiments/README.md", "scripts/check_research_gates.py")
+        self.assertEqual(
+            pinned.splitlines(),
+            ["experiments/README.md: eol: lf", "scripts/check_research_gates.py: eol: lf"],
+        )
+        commit(self.root, {".gitattributes": "* text=auto eol=lf\n"}, "pin line endings")
+        git(self.root, "config", "core.autocrlf", "true")
+        (self.root / "src/lib.rs").unlink()
+        git(self.root, "checkout", "--", "src/lib.rs")
+        self.assertNotIn(b"\r", (self.root / "src/lib.rs").read_bytes())
+        self.assertEqual(mod.content_changes(self.root, ["src/lib.rs"]), [])
+
+    def test_a_directory_heads_rules_ignore_decides_every_file_below_it(self):
+        # Git cannot show a file again below a directory its rules ignore, so
+        # one such top-level directory decides all its files at once; one its
+        # rules do not ignore as a whole, as `build/*` does not ignore
+        # `build`, is decided file by file, a file shown again included.
+        commit(self.root, {".gitignore": "__pycache__/\ntarget/\nbuild/*\n!build/keep.rs\n"}, "rules")
+        for index in range(40):
+            self.write(f"target/debug/build/out{index}.rs")
+        self.write("build/other.rs")
+        self.assertEqual(mod.uncommitted_files(self.root, self.pathspecs), [])
+        self.write("build/keep.rs")
+        self.assertEqual(mod.uncommitted_files(self.root, self.pathspecs), ["build/keep.rs"])
+        # This clone's own rule hiding the whole directory hides nothing HEAD
+        # shows.
+        (self.root / ".git/info").mkdir(parents=True, exist_ok=True)
+        (self.root / ".git/info/exclude").write_text("build/\ntarget/\n", encoding="utf-8")
+        self.assertEqual(mod.uncommitted_files(self.root, self.pathspecs), ["build/keep.rs"])
+        self.assertEqual(
+            mod.ignored_by_head_rules(self.root, ["target/debug/build/out1.rs", "build/other.rs", "build/keep.rs"]),
+            {"target/debug/build/out1.rs", "build/other.rs"},
+        )
+
+    def test_heads_ignore_rules_are_read_as_committed_whatever_replaces_them(self):
+        # A replacement object for HEAD's .gitignore would make every
+        # untracked source look ignored by HEAD's own rules.
+        self.write("everything", "*\n")
+        replacement = git(self.root, "hash-object", "-w", "everything")
+        (self.root / "everything").unlink()
+        git(self.root, "replace", git(self.root, "rev-parse", "HEAD:.gitignore"), replacement)
+        self.assertEqual(mod.head_rules(self.root), {".gitignore": b"__pycache__/\ntarget/\n"})
+        self.write("crates/other/.gitignore", "*.rs\n")
+        self.write("crates/other/src/lib.rs")
+        self.assertEqual(mod.uncommitted_files(self.root, self.pathspecs), ["crates/other/.gitignore"])
+
     def test_a_source_git_is_told_to_take_as_heads_is_reported(self):
         # git status and git diff do not look at an assume-unchanged or
         # skip-worktree file, so an edit to one is invisible to both.
@@ -585,6 +1029,101 @@ class SourceTreeTests(GitTree, unittest.TestCase):
         (elsewhere / "config.toml").write_text("[build]\n", encoding="utf-8")
         self.link(elsewhere, ".cargo")
         self.assertEqual(mod.uncommitted_files(self.root, self.pathspecs), [".cargo"])
+
+    def test_a_name_git_prints_that_is_not_utf8_is_a_provenance_error(self):
+        # Git prints a name's bytes as they are; one that is not UTF-8 names
+        # no path a check can compare, and refuses the run cleanly.
+        try:
+            with open(os.path.join(os.fsencode(self.root), b"notes\xff.md"), "wb") as handle:
+                handle.write(b"x\n")
+        except OSError as error:
+            self.skipTest(f"cannot name a file with bytes that are not UTF-8: {error}")
+        with self.assertRaisesRegex(mod.NotUTF8, "printed what is not UTF-8, such as a file name"):
+            mod.uncommitted_files(self.root, ["."])
+        self.assertTrue(issubclass(mod.NotUTF8, mod.ProvenanceError))
+
+    def test_git_output_is_read_as_it_is_printed(self):
+        # A carriage return in a name git prints with -z stays one, so a
+        # tracked file of that name rewritten while git status trusts its
+        # stat cache is still compared with HEAD's blob.
+        try:
+            commit(self.root, {"data\r": "threshold = 1\n"}, "a name ending in a carriage return")
+        except (OSError, subprocess.CalledProcessError) as error:
+            self.skipTest(f"cannot name a file with a carriage return: {error}")
+        self.assertIn("data\r", mod.listed_names(self.root, "ls-files", "-z"))
+        path = self.root / "data\r"
+        stamp = path.stat()
+        git(self.root, "config", "core.checkStat", "minimal")
+        git(self.root, "config", "core.trustctime", "false")
+        git(self.root, "update-index", "--refresh")
+        path.write_text("threshold = 9\n", encoding="utf-8")
+        os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        self.assertIn("data\r", mod.uncommitted_files(self.root, ["."]))
+        # An argument no process can be given is refused as git failing to
+        # run, not raised as another error.
+        with self.assertRaisesRegex(mod.ProvenanceError, "cannot run git"):
+            mod.git(self.root, "ls-files", "--", "a\0b")
+
+    def test_a_name_that_is_not_utf8_is_a_difference_like_any_other(self):
+        # Between two commits, or after one in a history, a file whose name
+        # is not UTF-8 is compared by its bytes: it differs, and a later
+        # commit that once held it fails no check that reads the history.
+        try:
+            with open(os.path.join(os.fsencode(self.root), b"notes\xff.md"), "wb") as handle:
+                handle.write(b"x\n")
+        except OSError as error:
+            self.skipTest(f"cannot name a file with bytes that are not UTF-8: {error}")
+        base = git(self.root, "rev-parse", "HEAD")
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-q", "--no-verify", "-m", "a name that is not UTF-8")
+        head = git(self.root, "rev-parse", "HEAD")
+        self.assertEqual(mod.code_changes(base, head, self.root, (".",)), [os.fsdecode(b"notes\xff.md")])
+        os.remove(os.path.join(os.fsencode(self.root), b"notes\xff.md"))
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-q", "--no-verify", "-m", "gone again")
+        self.assertEqual(len(mod.changes_after(base, "HEAD", self.root, (".",))), 2)
+
+    def test_git_prints_names_as_utf8_whatever_the_locale(self):
+        # Git prints a name's UTF-8 bytes as they are. Read in the locale's
+        # encoding, an ASCII or Latin-1 one, a UTF-8 name would be refused
+        # or read as another name, which names no file of the tree.
+        self.write("notes-\u00e9.md", "x\n")
+        script = (
+            "import json, sys\n"
+            f"sys.path.insert(0, {str(ROOT / 'scripts')!r})\n"
+            "import experiment_records\n"
+            f"print(json.dumps(experiment_records.untracked_files(__import__('pathlib').Path({str(self.root)!r}), ['.'])))\n"
+        )
+        environment = {**os.environ, "LC_ALL": "POSIX", "LANG": "POSIX", "PYTHONUTF8": "0", "PYTHONCOERCECLOCALE": "0"}
+        ran = subprocess.run(
+            [sys.executable, "-B", "-c", script], env=environment, capture_output=True, check=False
+        )
+        self.assertEqual(ran.returncode, 0, ran.stderr.decode(errors="replace"))
+        self.assertIn("notes-\u00e9.md", json.loads(ran.stdout))
+
+    def test_the_whole_repository_holds_what_git_does_not_look_into_at_its_root(self):
+        # A listed experiment's command may run or read any path of the
+        # repository (`listed_record_paths`), a submodule at the root among
+        # them: git holds only the commit its entry names, while its checkout
+        # can hold anything between two seeds.
+        whole = list(mod.listed_record_paths("experiments/L900-x/results"))
+        before = git(self.root, "rev-parse", "HEAD")
+        git(self.root, "update-index", "--add", "--cacheinfo", f"160000,{before},payload")
+        git(self.root, "commit", "-q", "--no-verify", "-m", "a submodule at the root")
+        self.write("payload/harness.py", "print('another')\n")
+        self.assertEqual(mod.uncommitted_files(self.root, self.pathspecs), [])
+        self.assertEqual(mod.uncommitted_files(self.root, whole), ["payload"])
+        # So is a nested repository or a linked directory there, each named once.
+        git(self.crate("vendored"), "init", "-q")
+        self.link(self.outside_crate(), "linked")
+        self.assertEqual(mod.uncommitted_files(self.root, whole), ["linked", "payload", "vendored"])
+        # What a pathspec leaves out stays out.
+        self.assertEqual(
+            mod.uncommitted_files(
+                self.root, [".", ":(exclude)payload", ":(exclude,literal)vendored", ":(exclude,glob)link*"]
+            ),
+            [],
+        )
 
     def test_an_ignore_rule_that_hides_no_source_is_not_reported(self):
         # JetBrains IDEs write .idea/.gitignore, tools write rules into the
@@ -701,10 +1240,230 @@ class ProvenanceWatchTests(GitTree, unittest.TestCase):
             with self.assertRaisesRegex(mod.ProvenanceError, "cannot name the commit HEAD is at"):
                 mod.ProvenanceWatch(Path(directory), self.pathspecs)
 
+    DIRECTORY_CHANGE = (
+        "changed on disk, a directory holding watched files that was renamed, or had an entry added or removed, "
+        "since the run started"
+    )
+
+    def stamp_directories(self, watch=None):
+        """Stamp the directories of `watch` (this test's own by default), after
+        their modification times are set long ago, so that a rename in one
+        moves them whatever the clock's resolution."""
+        watch = watch or self.watch
+        for directory in mod.directories_above([*watch.stamps, *watch.reserved]):
+            os.utime(self.root / directory, ns=(10**18, 10**18))
+        watch.stamp_directories()
+        return watch
+
+    def move_aside_and_back(self, relative: str) -> None:
+        """Rename the directory `relative` and rename it back, as a run that
+        swaps in a prepared tree for the sources does, and restores them."""
+        path = self.root / relative
+        aside = path.with_name(path.name + ".aside")
+        path.rename(aside)
+        aside.rename(path)
+
+    def test_the_directories_above_files_are_the_root_and_every_one_on_the_way(self):
+        self.assertEqual(mod.directories_above([]), ["."])
+        self.assertEqual(mod.directories_above(["Cargo.toml"]), ["."])
+        self.assertEqual(
+            mod.directories_above(["src/lib.rs", "crates/ptr-a/src/lib.rs", "Cargo.toml", "crates/ptr-a/Cargo.toml"]),
+            [".", "crates", "crates/ptr-a", "crates/ptr-a/src", "src"],
+        )
+        self.assertEqual(mod.directories_above({"a/b/c": None}), [".", "a", "a/b"])
+
+    def test_the_directory_stamps_are_those_of_each_directory_above_the_files(self):
+        names = ["src/lib.rs", "Cargo.toml"]
+        stamps = mod.directory_stamps(self.root, names)
+        self.assertEqual(sorted(stamps), [".", "src"])
+        for directory, stamp in stamps.items():
+            self.assertIsNotNone(stamp)
+            self.assertEqual(stamp, mod.file_stamp(self.root / directory))
+        self.assertNotEqual(stamps["."], stamps["src"])
+
+    def test_a_stamp_holds_the_inode_size_and_both_times_of_the_file_and_is_none_for_no_file(self):
+        path = self.root / "src/lib.rs"
+        status = os.lstat(path)
+        self.assertEqual(
+            mod.file_stamp(path),
+            (status.st_ino, status.st_size, status.st_mtime_ns, status.st_ctime_ns),
+        )
+        self.assertIsNone(mod.file_stamp(self.root / "missing.rs"))
+        # A directory on the way that is a file leaves nothing below it.
+        self.assertIsNone(mod.file_stamp(path / "below.rs"))
+
+    def test_stamping_the_directories_does_not_forgive_a_file_written_since_the_watch_looked(self):
+        # Only the directories are stamped afresh: the files keep the stamps
+        # they had when the watch looked, so an edit made in between, though
+        # undone, is still a change.
+        self.write("src/lib.rs", "pub fn f() { g() }\n")
+        self.write("src/lib.rs", "pub fn f() {}\n")
+        self.assertEqual(mod.uncommitted_files(self.root, self.pathspecs), [])
+        self.stamp_directories()
+        self.assertEqual(self.watch.changes(), ["src/lib.rs changed on disk"])
+
+    def test_a_reserved_file_the_pathspecs_leave_out_is_a_change_once_stamped_and_written_replaced_or_removed(self):
+        name = "experiments/L900-x/results/run-1-seed-1.json"
+        self.write(name, "{}\n")
+        os.utime(self.root / name, ns=(10**18, 10**18))
+        # Before it is stamped, the watch does not look at it.
+        self.write(name, "{ }\n")
+        self.assertEqual(self.watch.changes(), [])
+        os.utime(self.root / name, ns=(10**18, 10**18))
+        self.watch.stamp_reserved([name])
+        self.assertEqual(self.watch.changes(), [])
+
+        # An edit that is put back.
+        self.write(name, "{ }\n")
+        self.write(name, "{}\n")
+        self.assertEqual(self.watch.changes(), [f"{name} changed on disk"])
+
+        # Stamping again takes the file as it is then.
+        os.utime(self.root / name, ns=(10**18, 10**18))
+        self.watch.stamp_reserved([name])
+        self.assertEqual(self.watch.changes(), [])
+
+        # A copy of itself in its place, and a removal.
+        (self.root / name).unlink()
+        self.write(name, "{}\n")
+        self.assertEqual(self.watch.changes(), [f"{name} changed on disk"])
+        os.utime(self.root / name, ns=(10**18, 10**18))
+        self.watch.stamp_reserved([name])
+        (self.root / name).unlink()
+        self.assertEqual(self.watch.changes(), [f"{name} changed on disk"])
+
+        # It is one file among the changes the watch reports, in order.
+        self.write("src/lib.rs", "pub fn f() { g() }\n")
+        self.assertEqual(
+            self.watch.changes(), [f"{name}, src/lib.rs changed on disk", "HEAD does not hold src/lib.rs"]
+        )
+
+    def test_a_directory_holding_only_a_reserved_file_is_stamped_too(self):
+        # The first seed of a listed experiment can create its results
+        # directory, where no other watched file lies: the reservation is
+        # left out of the watch's own stamps, and its directory is not one
+        # the stamps of the files name.
+        name = "fresh/results/run-1-seed-1.json"
+        self.write(name, "{}\n")
+        self.watch.stamp_reserved([name])
+        self.stamp_directories()
+        self.assertLessEqual({".", "fresh", "fresh/results"}, set(self.watch.directories))
+        self.assertEqual(self.watch.changes(), [])
+        # A file added beside it and removed again is a change to it.
+        self.write("fresh/results/scratch.txt")
+        (self.root / "fresh/results/scratch.txt").unlink()
+        self.assertEqual(self.watch.changes(), [f"fresh/results {self.DIRECTORY_CHANGE}"])
+        # So is the directory renamed aside and put back.
+        self.stamp_directories()
+        self.move_aside_and_back("fresh/results")
+        self.assertEqual(self.watch.changes(), [f"fresh, fresh/results {self.DIRECTORY_CHANGE}"])
+
+    def test_a_directory_put_back_is_no_change_before_the_directories_are_stamped(self):
+        self.move_aside_and_back("src")
+        self.assertEqual(self.watch.directories, {})
+        self.assertEqual(self.watch.changes(), [])
+
+    def test_a_directory_moved_aside_and_put_back_is_a_change_once_stamped(self):
+        self.stamp_directories()
+        self.assertEqual(self.watch.changes(), [])
+        self.move_aside_and_back("src")
+        self.assertEqual(mod.uncommitted_files(self.root, self.pathspecs), [])
+        self.assertEqual(self.watch.changes(), [f"., src {self.DIRECTORY_CHANGE}"])
+
+    def test_a_directory_above_the_directory_of_a_file_is_watched_too(self):
+        self.crate("crates/ptr-a")
+        commit(self.root, {}, "a crate")
+        watch = self.stamp_directories(mod.ProvenanceWatch(self.root, self.pathspecs))
+        self.assertEqual(watch.changes(), [])
+        # Neither the crate's own directory nor the one holding its files moves.
+        self.move_aside_and_back("crates")
+        self.assertEqual(watch.changes(), [f"., crates {self.DIRECTORY_CHANGE}"])
+        self.stamp_directories(watch)
+        self.move_aside_and_back("crates/ptr-a")
+        self.assertEqual(watch.changes(), [f"crates, crates/ptr-a {self.DIRECTORY_CHANGE}"])
+        self.stamp_directories(watch)
+        self.move_aside_and_back("crates/ptr-a/src")
+        self.assertEqual(watch.changes(), [f"crates/ptr-a, crates/ptr-a/src {self.DIRECTORY_CHANGE}"])
+
+    def test_a_file_created_and_removed_in_a_watched_directory_is_a_change_once_stamped(self):
+        self.stamp_directories()
+        self.write("scratch.txt")
+        (self.root / "scratch.txt").unlink()
+        self.write("src/scratch.txt")
+        (self.root / "src/scratch.txt").unlink()
+        self.assertEqual(self.watch.changes(), [f"., src {self.DIRECTORY_CHANGE}"])
+
+    def test_the_root_is_watched_when_the_run_adds_and_removes_an_entry_there(self):
+        self.stamp_directories()
+        self.write("scratch.txt")
+        (self.root / "scratch.txt").unlink()
+        self.assertEqual(self.watch.changes(), [f". {self.DIRECTORY_CHANGE}"])
+
+    def test_a_directory_holding_no_watched_file_is_not_watched(self):
+        self.write("docs/notes.md")
+        self.stamp_directories()
+        self.write("docs/more.md")
+        (self.root / "docs/notes.md").unlink()
+        self.assertEqual(self.watch.changes(), [])
+
+    def test_what_happened_before_the_directories_were_stamped_is_no_change(self):
+        # The caller's own writes to the tree, before the run starts.
+        self.write("scratch.txt")
+        (self.root / "scratch.txt").unlink()
+        self.move_aside_and_back("src")
+        self.stamp_directories()
+        self.assertEqual(self.watch.changes(), [])
+        self.stamp_directories()
+        self.move_aside_and_back("scripts")
+        self.assertEqual(self.watch.changes(), [f"., scripts {self.DIRECTORY_CHANGE}"])
+
+    def test_a_directory_that_is_gone_is_a_change_once_stamped(self):
+        self.stamp_directories()
+        shutil.rmtree(self.root / "scripts")
+        problems = self.watch.changes()
+        self.assertIn(f"., scripts {self.DIRECTORY_CHANGE}", problems)
+        self.assertIn("scripts/run_experiment.py changed on disk", problems)
+
+    def test_directories_are_reported_beside_the_files_written_and_head_moved(self):
+        self.stamp_directories()
+        before = self.watch.head
+        self.write("src/lib.rs", "pub fn f() { g() }\n")
+        self.move_aside_and_back("scripts")
+        git(self.root, "commit", "-q", "--no-verify", "--allow-empty", "-m", "moved")
+        after = git(self.root, "rev-parse", "HEAD")
+        self.assertEqual(
+            self.watch.changes(),
+            [
+                f"HEAD moved from {before} to {after}",
+                "src/lib.rs changed on disk",
+                f"., scripts {self.DIRECTORY_CHANGE}",
+                "HEAD does not hold src/lib.rs",
+            ],
+        )
+
+    def test_the_directories_are_named_up_to_five_with_a_count_of_the_rest(self):
+        for name in "abcdefg":
+            self.write(f"crates/{name}/x.rs", "pub fn x() {}\n")
+        commit(self.root, {}, "seven directories")
+        watch = self.stamp_directories(mod.ProvenanceWatch(self.root, self.pathspecs))
+        for name in "abcdefg":
+            (self.root / f"crates/{name}/x.rs").unlink()
+            (self.root / f"crates/{name}/x.rs").write_text("pub fn x() {}\n", encoding="utf-8")
+        self.assertIn(
+            f"crates/a, crates/b, crates/c, crates/d, crates/e and 2 more {self.DIRECTORY_CHANGE}",
+            watch.changes(),
+        )
+
 
 class StalenessTests(unittest.TestCase):
     """`staleness_errors`: archived results must describe HEAD's code or say
     since when they no longer do."""
+
+    MANIFEST = 'id = "L900"\nstatus = "{status}"\n'
+    REGISTRY = (
+        'version = 1\n\n[[experiment]]\nid = "L900"\npath = "L900-x"\nstatus = "{status}"\n\n'
+        '[[experiment]]\nid = "L901"\npath = "L901-y"\nstatus = "{other}"\n'
+    )
 
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -719,6 +1478,9 @@ class StalenessTests(unittest.TestCase):
                 "src/lib.rs": "pub fn f() {}\n",
                 "experiments/L900-x/aggregate.py": "HARD = ['a']\n",
                 "experiments/L900-x/tests/mutations.toml": "[[mutation]]\n",
+                "experiments/L900-x/experiment.toml": self.MANIFEST.format(status="running"),
+                "experiments/registry.toml": self.REGISTRY.format(status="running", other="planned"),
+                "experiments/preregistration.toml": "version = 1\n",
             },
             "code",
         )
@@ -762,6 +1524,128 @@ class StalenessTests(unittest.TestCase):
                     self.assertIn(f"results/{name} ran at {self.code}", error)
                     self.assertIn(f"changed since, in {relative}", error)
                 git(self.root, "reset", "-q", "--hard", self.archived)
+
+    def test_a_listed_experiments_results_are_stale_once_any_file_changes(self):
+        # A listed experiment's command may run or read any file of the
+        # repository, a harness outside the provenance files say: its results
+        # are stale once one changes, but for the tools' outputs and the stale
+        # marker in its results, which are committed once the seeds ran.
+        def listed() -> list[str]:
+            return mod.staleness_errors("L900", self.experiment, self.results, self.root, True)
+
+        commit(
+            self.root,
+            {"experiments/L900-x/results/metrics.json": "{}\n", "experiments/L900-x/results/run-1.json": "{}\n"},
+            "outputs",
+        )
+        self.assertEqual(listed(), [])
+        harness = commit(self.root, {"scripts/harness.py": "print('changed')\n"}, "harness")
+        # The provenance files alone do not see it; the whole repository does.
+        self.assertEqual(self.errors(), [])
+        errors = listed()
+        self.assertEqual(len(errors), 2, errors)
+        for name, error in zip(("run.json", "mutations.json"), errors):
+            self.assertIn(f"results/{name} ran at {self.code}", error)
+            self.assertIn("changed since, in scripts/harness.py", error)
+        # A marker naming that first change passes, and is itself no change.
+        self.mark(stale_since=harness)
+        self.assertEqual(listed(), [])
+        self.assertEqual(
+            mod.listed_staleness_paths("experiments/L900-x/results", "experiments/L900-x"),
+            (".", *(f":(exclude,glob)experiments/L900-x/results/{name}" for name in (
+                "run-*.json", "run.json", "metrics.json", "mutations.json", "STALE.toml"
+            )), ":(exclude,literal)experiments/L900-x/experiment.toml",
+             ":(exclude,literal)experiments/registry.toml"),
+        )
+
+    def test_completing_a_listed_experiment_leaves_its_results_current(self):
+        # Completing it moves the status its manifest names and the one the
+        # registry's entry for it names, each on its line.
+        def listed() -> list[str]:
+            return mod.staleness_errors("L900", self.experiment, self.results, self.root, True)
+
+        completed = commit(
+            self.root,
+            {
+                "experiments/L900-x/experiment.toml": self.MANIFEST.format(status="completed"),
+                "experiments/registry.toml": self.REGISTRY.format(status="completed", other="planned"),
+            },
+            "completed",
+        )
+        self.assertEqual(listed(), [])
+        # Its command may read the registry, its manifest and the list whole:
+        # any other change to them is one after its runs, as another
+        # experiment's manifest is.
+        registry = self.REGISTRY.format(status="completed", other="planned")
+        for label, files, name in (
+            ("another entry's status", {"experiments/registry.toml": self.REGISTRY.format(status="completed", other="running")},
+             "experiments/registry.toml"),
+            ("a comment", {"experiments/registry.toml": "# read by the harness\n" + registry}, "experiments/registry.toml"),
+            ("a comment at the end", {"experiments/registry.toml": registry + "\n# read by the harness"},
+             "experiments/registry.toml"),
+            ("a comment on the status line", {"experiments/registry.toml": registry.replace(
+                'status = "completed"', 'status = "completed" # done')}, "experiments/registry.toml"),
+            ("a key beside the status", {"experiments/L900-x/experiment.toml": self.MANIFEST.format(status="completed")
+                                         + 'note = "x"\n'}, "experiments/L900-x/experiment.toml"),
+            ("a status in a table", {"experiments/L900-x/experiment.toml": self.MANIFEST.format(status="completed")
+                                     + '\n[run]\nstatus = "x"\n'}, "experiments/L900-x/experiment.toml"),
+            ("the list", {"experiments/preregistration.toml": "version = 1\n\n[experiment.L901.required]\n"},
+             "experiments/preregistration.toml"),
+            ("another manifest", {"experiments/L901-y/experiment.toml": 'id = "L901"\n'},
+             "experiments/L901-y/experiment.toml"),
+        ):
+            with self.subTest(change=label):
+                changed = commit(self.root, files, label)
+                errors = listed()
+                self.assertEqual(len(errors), 2, errors)
+                for archived, error in zip(("run.json", "mutations.json"), errors):
+                    self.assertIn(f"results/{archived} ran at {self.code}, and the code has changed since, in {name};", error)
+                # A marker naming that first change passes; one naming a
+                # later commit does not.
+                self.mark(stale_since=changed)
+                self.assertEqual(listed(), [])
+                git(self.root, "rm", "-q", "experiments/L900-x/results/STALE.toml")
+                # Nor does the change itself hold the results' code.
+                self.mark(stale_since=changed, results_git_sha=changed)
+                errors = listed()
+                self.assertEqual(len(errors), 1, errors)
+                self.assertIn(f"names results of {changed}, but run.json ran at {self.code}, whose provenance files "
+                              f"differ there in {name}", errors[0])
+                git(self.root, "rm", "-q", "experiments/L900-x/results/STALE.toml")
+                later = commit(self.root, {"src/lib.rs": "pub fn f() { g() }\n"}, "later")
+                self.mark(stale_since=later)
+                errors = listed()
+                self.assertEqual(len(errors), 1, errors)
+                self.assertIn(f"the first commit after {self.code} that changed a provenance file is {changed}", errors[0])
+                git(self.root, "reset", "-q", "--hard", completed)
+        # A status put back is its text again.
+        commit(self.root, {"experiments/registry.toml": self.REGISTRY.format(status="running", other="planned")}, "back")
+        self.assertEqual(listed(), [])
+        # The text the comparison reads: a commit's, or the checkout's.
+        self.assertEqual(
+            mod.completion_changes("L900", "experiments/L900-x", self.code, "HEAD", self.root), []
+        )
+        (self.root / "experiments/registry.toml").write_text(registry + "# local\n", encoding="utf-8")
+        self.assertEqual(
+            mod.completion_changes("L900", "experiments/L900-x", self.code, None, self.root),
+            ["experiments/registry.toml"],
+        )
+        (self.root / "experiments/registry.toml").unlink()
+        self.assertEqual(
+            mod.completion_changes("L900", "experiments/L900-x", self.code, None, self.root),
+            ["experiments/registry.toml"],
+        )
+        # A symlink holds its target's path, not the text read through it.
+        elsewhere = Path(self.enterContext(tempfile.TemporaryDirectory())) / "registry.toml"
+        elsewhere.write_text(self.REGISTRY.format(status="running", other="planned"), encoding="utf-8")
+        try:
+            os.symlink(elsewhere, self.root / "experiments/registry.toml")
+        except (OSError, NotImplementedError) as error:
+            self.skipTest(f"cannot create a symlink: {error}")
+        self.assertEqual(
+            mod.completion_changes("L900", "experiments/L900-x", self.code, None, self.root),
+            ["experiments/registry.toml"],
+        )
 
     def test_an_honest_marker_names_the_results_and_the_first_change(self):
         first = commit(self.root, {"src/lib.rs": "pub fn f() { g() }\n"}, "first change")
@@ -1086,6 +1970,49 @@ class AggregateBindingTests(unittest.TestCase):
         self.assertEqual(len(errors), 1, errors)
         self.assertIn("metrics.json, which run.json binds, cannot be read", errors[0])
 
+    def test_a_symlinked_metrics_or_mutation_evidence_is_refused_whatever_it_hashes_to(self):
+        # A link reads the content of another file, which matches the digest
+        # run.json names whatever the commit holds at the link's own path: it
+        # is a problem of its own, and the file behind it is not read.
+        self.write("mutations.json", self.evidence())
+        carried = mod.mutation_summary(self.results / "mutations.json")
+        mod.publish_aggregate(self.results, self.metrics, {**self.run, "mutation_checks": carried})
+        self.assertEqual(self.errors(), [])
+        for name in ("metrics.json", "mutations.json"):
+            kept = (self.results / name).read_bytes()
+            # The file behind the link holds the bytes run.json names, or
+            # others, which are not compared either.
+            for content in (kept, b"{}\n"):
+                with self.subTest(name=name, content=content == kept):
+                    target = self.experiment / f"other-{name}"
+                    target.write_bytes(content)
+                    (self.results / name).unlink()
+                    (self.results / name).symlink_to(f"../other-{name}")
+                    errors = self.errors()
+                    self.assertEqual(len(errors), 1, errors)
+                    self.assertTrue(
+                        errors[0].startswith(
+                            f"L900: experiments/L900-x/results/{name} is a symlink, which reads the content of "
+                        ),
+                        errors,
+                    )
+                    # Put back as the file itself, it passes again.
+                    (self.results / name).unlink()
+                    (self.results / name).write_bytes(kept)
+                    target.unlink()
+                    self.assertEqual(self.errors(), [])
+
+    def test_a_symlink_where_no_evidence_is_carried_is_refused_too(self):
+        # run.json carries no mutation checks and a link stands where the
+        # evidence would be: the link is named, not read as evidence.
+        mod.publish_aggregate(self.results, self.metrics, self.run)
+        (self.experiment / "other.json").write_text(json.dumps(self.evidence()) + "\n", encoding="utf-8")
+        (self.results / "mutations.json").symlink_to("../other.json")
+        errors = self.errors()
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("mutations.json is a symlink", errors[0])
+        self.assertNotIn("carries no mutation checks", errors[0])
+
     def test_a_current_run_json_that_binds_no_metrics_is_refused_until_it_is_stale(self):
         # Only aggregates written before run.json bound its metrics lack the
         # binding, and those ran at code HEAD has changed since.
@@ -1122,6 +2049,37 @@ class AggregateBindingTests(unittest.TestCase):
                 )
         (self.results / "metrics.json").write_text(archived, encoding="utf-8")
         self.assertEqual(self.errors(), [])
+        # Read from disk, not through a clean filter the clone's own
+        # attributes name, which git hash-object would apply.
+        (self.results / "kept").write_text(archived, encoding="utf-8")
+        git(self.root, "config", "filter.same.clean", f"cat {shlex.quote(str(self.results / 'kept'))}")
+        info = Path(git(self.root, "rev-parse", "--absolute-git-dir")) / "info"
+        info.mkdir(exist_ok=True)
+        (info / "attributes").write_text("metrics.json filter=same\n", encoding="utf-8")
+        self.write("metrics.json", {**self.metrics, "totals": {"cases": 999}})
+        errors = self.errors()
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("results/metrics.json is not the metrics.json committed with run.json", errors[0])
+        (info / "attributes").unlink()
+        (self.results / "kept").unlink()
+        (self.results / "metrics.json").write_text(archived, encoding="utf-8")
+        self.assertEqual(self.errors(), [])
+        # A converting checkout writes both files with CRLF line endings: the
+        # bytes are not the ones committed with LF line endings, so each copy
+        # is another file, as is one whose line endings are carriage returns.
+        run_archived = (self.results / "run.json").read_bytes()
+        for name, kept in (("metrics.json", archived.encode("utf-8")), ("run.json", run_archived)):
+            for spelling, other in (("CRLF", b"\r\n"), ("CR", b"\r")):
+                with self.subTest(crlf=name, endings=spelling):
+                    self.assertTrue(kept.endswith(b"\n"))
+                    path = self.results / name
+                    path.write_bytes(kept.replace(b"\n", other))
+                    errors = self.errors()
+                    self.assertEqual(len(errors), 1, errors)
+                    self.assertIn(f"results/{name}", errors[0])
+                    path.write_bytes(kept)
+                    self.assertEqual(self.errors(), [])
+        self.assertEqual(self.errors(), [])
         # A run.json no commit holds binds nothing either.
         self.write("run.json", {**self.run, "verdict": "hard-pass"})
         errors = self.errors()
@@ -1130,11 +2088,19 @@ class AggregateBindingTests(unittest.TestCase):
 
     def test_mutation_evidence_run_json_does_not_carry_is_refused(self):
         self.write("mutations.json", self.evidence())
-        carried = {"mutation_checks": self.summary}
+        carried = {"mutation_checks": mod.mutation_summary(self.results / "mutations.json")}
         mod.publish_aggregate(self.results, {**self.metrics, **carried}, {**self.run, **carried})
         self.assertEqual(self.errors(), [])
         # A mutation check rerun after the aggregate, with another outcome.
         self.write("mutations.json", self.evidence(killed=1))
+        errors = self.errors()
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("results/mutations.json is not the evidence run.json carries", errors[0])
+        # Outcomes replaced under the same counts and commit are other
+        # evidence too: the aggregate binds the whole file.
+        swapped = self.evidence()
+        swapped["mutations"] = [{**outcome, "name": outcome["name"] + "-other"} for outcome in swapped["mutations"]]
+        self.write("mutations.json", swapped)
         errors = self.errors()
         self.assertEqual(len(errors), 1, errors)
         self.assertIn("results/mutations.json is not the evidence run.json carries", errors[0])
@@ -1149,12 +2115,289 @@ class AggregateBindingTests(unittest.TestCase):
         self.assertEqual(len(errors), 1, errors)
         self.assertIn("run.json carries no mutation checks, but mutations.json is there", errors[0])
 
+    def test_mutation_checks_that_bind_no_whole_file_pass_only_while_stale_beside_the_evidence_committed_with_them(self):
+        # Aggregates written before the mutation checks named the SHA-256 of
+        # mutations.json carry its counts and commit alone, which outcomes
+        # replaced under them would keep.
+        self.write("mutations.json", self.evidence())
+        carried = {"mutation_checks": self.summary}
+        with self.assertRaisesRegex(mod.ProvenanceError, "name no sha256 of mutations.json"):
+            mod.publish_aggregate(self.results, {**self.metrics, **carried}, {**self.run, **carried})
+        self.assertFalse((self.results / "run.json").exists())
+        self.write("metrics.json", {**self.metrics, **carried})
+        metrics = hashlib.sha256((self.results / "metrics.json").read_bytes()).hexdigest()
+        self.write("run.json", {**self.run, **carried, "metrics_sha256": metrics})
+        # A current aggregate is one HEAD's aggregator wrote, which names it.
+        self.assertEqual(self.errors(), [
+            "L900: experiments/L900-x/results/run.json carries mutation checks that name no sha256 of mutations.json, "
+            "so nothing binds the outcomes it lists; rerun its aggregate.py"
+        ])
+        commit(self.root, {}, "archive")
+        commit(self.root, {"src/lib.rs": "pub fn f() { g() }\n"}, "change")
+        self.assertEqual(self.errors(), [])
+        archived = (self.results / "mutations.json").read_bytes()
+        swapped = self.evidence()
+        swapped["mutations"] = [{**outcome, "name": outcome["name"] + "-other"} for outcome in swapped["mutations"]]
+        self.write("mutations.json", swapped)
+        for state in ("uncommitted", "committed on their own"):
+            with self.subTest(evidence=state):
+                if state != "uncommitted":
+                    commit(self.root, {}, "new outcomes")
+                errors = self.errors()
+                self.assertEqual(len(errors), 1, errors)
+                self.assertIn(
+                    "L900: experiments/L900-x/results/mutations.json is not the evidence committed with run.json, "
+                    "whose mutation checks name no sha256 of it",
+                    errors[0],
+                )
+        (self.results / "mutations.json").write_bytes(archived)
+        self.assertEqual(self.errors(), [])
+        # A converting checkout's CRLF copy is not the evidence committed
+        # with LF line endings, and neither is a copy with carriage returns
+        # for line endings: the bytes are the evidence.
+        self.assertTrue(archived.endswith(b"\n"))
+        for spelling, other in (("CRLF", b"\r\n"), ("CR", b"\r")):
+            with self.subTest(evidence_endings=spelling):
+                (self.results / "mutations.json").write_bytes(archived.replace(b"\n", other))
+                errors = self.errors()
+                self.assertEqual(len(errors), 1, errors)
+                self.assertIn("mutations.json is not the evidence committed with run.json", errors[0])
+        (self.results / "mutations.json").write_bytes(archived)
+        self.assertEqual(self.errors(), [])
+        # Read from disk, not through a clean filter the clone's own
+        # attributes name, which git hash-object would apply.
+        git(self.root, "config", "filter.same.clean", f"cat {shlex.quote(str(self.results / 'kept'))}")
+        (self.results / "kept").write_bytes(archived)
+        info = Path(git(self.root, "rev-parse", "--absolute-git-dir")) / "info"
+        info.mkdir(exist_ok=True)
+        (info / "attributes").write_text("*.json filter=same\n", encoding="utf-8")
+        self.write("mutations.json", swapped)
+        errors = self.errors()
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("mutations.json is not the evidence committed with run.json", errors[0])
+
+    def test_a_file_holds_a_commits_content_only_as_a_regular_file_beside_a_regular_blob(self):
+        self.write("metrics.json", self.metrics)
+        relative = "experiments/L900-x/results/metrics.json"
+        path = self.root / relative
+        bytes_held = path.read_bytes()
+        held = commit(self.root, {}, "metrics")
+        self.assertTrue(mod.holds_committed(self.root, held, relative))
+        # A commit that does not hold the name, or that git does not hold.
+        self.assertFalse(mod.holds_committed(self.root, held, relative + ".absent"))
+        self.assertFalse(mod.holds_committed(self.root, "f" * 40, relative))
+        # A link that reads as the same bytes is a link, not the file.
+        (self.results / "copy.json").write_bytes(bytes_held)
+        path.unlink()
+        try:
+            os.symlink("copy.json", path)
+        except (OSError, NotImplementedError) as error:
+            self.skipTest(f"cannot create a symlink: {error}")
+        self.assertEqual(path.read_bytes(), bytes_held)
+        self.assertFalse(mod.holds_committed(self.root, held, relative))
+        path.unlink()
+        self.assertFalse(mod.holds_committed(self.root, held, relative))
+        path.write_bytes(bytes_held)
+        self.assertTrue(mod.holds_committed(self.root, held, relative))
+        # Another mode of a regular blob is still a regular blob.
+        path.chmod(0o755)
+        executable = commit(self.root, {}, "executable")
+        self.assertIn("100755", git(self.root, "ls-tree", executable, "--", relative))
+        self.assertTrue(mod.holds_committed(self.root, executable, relative))
+        # A commit that holds a symlink there holds its target's path, which
+        # a regular file of those bytes is not.
+        link = "experiments/L900-x/results/link.json"
+        try:
+            os.symlink("metrics.json", self.root / link)
+        except (OSError, NotImplementedError) as error:
+            self.skipTest(f"cannot create a symlink: {error}")
+        linked = commit(self.root, {}, "link")
+        self.assertIn("120000", git(self.root, "ls-tree", linked, "--", link))
+        self.assertTrue(mod.holds_committed(self.root, linked, relative))
+        (self.root / link).unlink()
+        (self.root / link).write_bytes(b"metrics.json")
+        self.assertFalse(mod.holds_committed(self.root, linked, link))
+
     def test_a_publish_that_finds_other_evidence_beside_it_keeps_the_stale_marker(self):
         (self.results / "STALE.toml").write_text('reason = "old"\n', encoding="utf-8")
         self.write("mutations.json", self.evidence())
         with self.assertRaisesRegex(mod.ProvenanceError, "run.json carries no mutation checks"):
             mod.publish_aggregate(self.results, self.metrics, self.run)
         self.assertTrue((self.results / "STALE.toml").exists())
+
+
+class FinishedRunTests(unittest.TestCase):
+    """`finished_run` tells a run record that saw an outcome from a
+    reservation nothing finished and from a record naming an outcome it does
+    not hold."""
+
+    @staticmethod
+    def finished(seed: int = 17, status: str = "completed", **changes) -> dict:
+        """A run record as the runner writes one once its command has run."""
+        record = {
+            "seed": seed,
+            "status": status,
+            "exit_code": 0 if status == "completed" else 1,
+            "finished_at": "2026-01-01T00:00:00+00:00",
+            "stdout": "",
+            "stderr": "",
+            "launch_error": None,
+            "duration_ns": 1,
+        }
+        record.update(changes)
+        return record
+
+    def test_a_record_of_a_command_that_ran_to_an_exit_code_saw_an_outcome(self):
+        self.assertTrue(mod.finished_run(self.finished()))
+        self.assertTrue(mod.finished_run(self.finished(status="failed")))
+        # A signal is an exit code too: subprocess reports it as a negative one.
+        self.assertTrue(mod.finished_run(self.finished(status="failed", exit_code=-9)))
+        self.assertTrue(mod.finished_run(self.finished(stdout="out", stderr="err")))
+
+    def test_a_reservation_or_a_command_that_failed_to_launch_saw_none(self):
+        started = {"seed": 17, "status": "started", "started_at": "2026-01-01T00:00:00+00:00"}
+        self.assertFalse(mod.finished_run(started))
+        self.assertFalse(mod.finished_run({"seed": 17, "status": "prepared"}))
+        self.assertFalse(mod.finished_run(self.finished(status="failed-to-launch", exit_code=None)))
+        # Not a record at all.
+        for held in (None, [], "completed", 0, {}):
+            with self.subTest(held=held):
+                self.assertFalse(mod.finished_run(held))
+
+    def test_a_status_without_the_outcome_it_names_saw_none(self):
+        for key in ("exit_code", "finished_at", "stdout", "stderr"):
+            with self.subTest(missing=key):
+                record = self.finished()
+                del record[key]
+                self.assertFalse(mod.finished_run(record))
+        for changes in (
+            {"exit_code": None},
+            {"exit_code": "0"},
+            {"exit_code": 0.0},
+            {"exit_code": False},
+            {"exit_code": True, "status": "failed"},
+            {"finished_at": None},
+            {"finished_at": 20260101},
+            {"stdout": None},
+            {"stdout": ["out"]},
+            {"stderr": None},
+            {"stderr": 0},
+        ):
+            with self.subTest(changes=changes):
+                self.assertFalse(mod.finished_run(self.finished(**changes)))
+
+    def test_the_status_agrees_with_the_exit_code(self):
+        # A run that exited 0 completed and any other failed: a record that
+        # says otherwise was written by hand or rewritten.
+        self.assertFalse(mod.finished_run(self.finished(status="completed", exit_code=1)))
+        self.assertFalse(mod.finished_run(self.finished(status="failed", exit_code=0)))
+        self.assertFalse(mod.finished_run(self.finished(status="running")))
+        self.assertFalse(mod.finished_run(self.finished(status="started")))
+        self.assertFalse(mod.finished_run(self.finished(status="Completed")))
+        self.assertFalse(mod.finished_run(self.finished(status=None)))
+
+
+class SeedRecordDigestTests(unittest.TestCase):
+    """`seed_record_digests` names each seed's run record by its SHA-256, for
+    an aggregate of a listed experiment to carry as `seed_records`."""
+
+    finished = staticmethod(FinishedRunTests.finished)
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.results = Path(self.directory.name)
+
+    def write(self, name: str, content) -> bytes:
+        data = json.dumps(content).encode("utf-8") if not isinstance(content, bytes) else content
+        (self.results / name).write_bytes(data)
+        return data
+
+    def test_each_seed_is_named_by_the_sha256_of_its_record_as_written(self):
+        # The bytes as written, whatever spacing they hold.
+        first = self.write(
+            "run-20260101T000000.000000Z-seed-17.json",
+            b'{"seed":  17,\n "status": "completed", "exit_code": 0, "finished_at": "t", "stdout": "", "stderr": ""}\n',
+        )
+        second = self.write("run-20260102T000000.000000Z-seed-29.json", self.finished(29, "failed"))
+        self.assertEqual(
+            mod.seed_record_digests(self.results),
+            {"17": hashlib.sha256(first).hexdigest(), "29": hashlib.sha256(second).hexdigest()},
+        )
+        # No record is no seed, and an empty directory holds none.
+        self.assertEqual(mod.seed_record_digests(self.results / "elsewhere"), {})
+        (self.results / "run-20260101T000000.000000Z-seed-17.json").unlink()
+        (self.results / "run-20260102T000000.000000Z-seed-29.json").unlink()
+        self.assertEqual(mod.seed_record_digests(self.results), {})
+
+    def test_a_seed_is_named_as_json_writes_it(self):
+        data = self.write("run-20260101T000000.000000Z-seed-17.json", self.finished(17))
+        other = self.write("run-20260101T000001.000000Z-seed-x.json", self.finished("x"))
+        self.assertEqual(
+            mod.seed_record_digests(self.results),
+            {"17": hashlib.sha256(data).hexdigest(), '"x"': hashlib.sha256(other).hexdigest()},
+        )
+
+    def test_a_record_that_saw_no_outcome_names_no_seed(self):
+        # A command that failed to launch, a prepared record with no seed, a
+        # file that is no run record and a record that is no object.
+        kept = self.write("run-20260101T000000.000000Z-seed-17.json", self.finished(17))
+        self.write(
+            "run-20260102T000000.000000Z-seed-17.json",
+            self.finished(17, "failed-to-launch", exit_code=None),
+        )
+        self.write(
+            "run-20260103T000000.000000Z-seed-29.json",
+            self.finished(29, "failed-to-launch", exit_code=None),
+        )
+        self.write("run-20251231T000000.000000Z.json", {"status": "prepared"})
+        self.write("run-20260104T000000.000000Z-seed-41.json", [1, 2])
+        self.write("run-20260105T000000.000000Z-seed-5.json", b"5")
+        self.write("run-20260105T000001.000000Z-seed-6.json", b'"seed"')
+        self.write("run.json", self.finished(99))
+        self.write("metrics.json", {"seed": 98})
+        self.assertEqual(mod.seed_record_digests(self.results), {"17": hashlib.sha256(kept).hexdigest()})
+
+    def test_a_reservation_nothing_finished_names_no_seed(self):
+        # A runner that died or was refused after it reserved its seed left a
+        # record with no exit code and no output: no outcome to bind, whatever
+        # the aggregate says.
+        kept = self.write("run-20260101T000000.000000Z-seed-17.json", self.finished(17))
+        self.write(
+            "run-20260102T000000.000000Z-seed-29.json",
+            {"seed": 29, "status": "started", "started_at": "2026-01-02T00:00:00+00:00"},
+        )
+        # A status that names an outcome the record does not hold is the same.
+        self.write("run-20260103T000000.000000Z-seed-41.json", {"seed": 41, "status": "completed"})
+        self.write("run-20260104T000000.000000Z-seed-43.json", self.finished(43, "completed", exit_code=1))
+        self.assertEqual(mod.seed_record_digests(self.results), {"17": hashlib.sha256(kept).hexdigest()})
+
+    def test_a_reservation_is_a_run_of_its_seed_as_a_finished_record_is(self):
+        # A seed reserved and run again is two runs of one seed, which a
+        # listed experiment does not have: the aggregate is not written over it.
+        self.write("run-20260101T000000.000000Z-seed-17.json", {"seed": 17, "status": "started"})
+        self.write("run-20260102T000000.000000Z-seed-17.json", self.finished(17))
+        with self.assertRaisesRegex(mod.ProvenanceError, r"^seed 17 has more than one run record in "):
+            mod.seed_record_digests(self.results)
+
+    def test_a_record_that_cannot_be_read_or_a_seed_run_twice_is_an_error(self):
+        self.write("run-20260101T000000.000000Z-seed-17.json", self.finished(17))
+        self.write("run-20260102T000000.000000Z-seed-17.json", self.finished(17))
+        with self.assertRaisesRegex(mod.ProvenanceError, r"^seed 17 has more than one run record in "):
+            mod.seed_record_digests(self.results)
+        (self.results / "run-20260102T000000.000000Z-seed-17.json").unlink()
+        for unreadable in (b"{", b"\xff\xfe", b""):
+            with self.subTest(unreadable=unreadable):
+                self.write("run-20260103T000000.000000Z-seed-29.json", unreadable)
+                with self.assertRaisesRegex(
+                    mod.ProvenanceError, r"^run-20260103T000000\.000000Z-seed-29\.json cannot be read: "
+                ):
+                    mod.seed_record_digests(self.results)
+        # A path that is no file cannot be read either.
+        (self.results / "run-20260103T000000.000000Z-seed-29.json").unlink()
+        (self.results / "run-20260106T000000.000000Z-seed-7.json").mkdir()
+        with self.assertRaisesRegex(mod.ProvenanceError, r"^run-20260106T000000\.000000Z-seed-7\.json cannot be read: "):
+            mod.seed_record_digests(self.results)
 
 
 class BindingAggregatorTests(unittest.TestCase):
@@ -1420,7 +2663,11 @@ class AggregatorTests(unittest.TestCase):
         for exp_id in AGGREGATORS:
             with self.subTest(experiment=exp_id):
                 run = self.aggregate(exp_id, mutations=self.mutations(exp_id))
-                self.assertEqual(run["mutation_checks"], {"killed": 2, "total": 2, "git_sha": "3333333"})
+                self.assertEqual(
+                    {key: value for key, value in run["mutation_checks"].items() if key != "sha256"},
+                    {"killed": 2, "total": 2, "git_sha": "3333333"},
+                )
+                self.assertRegex(run["mutation_checks"]["sha256"], "^[0-9a-f]{64}$")
                 relative = AGGREGATORS[exp_id].relative_to(ROOT).as_posix()
                 evidence = [paths for base, _, paths in run["_code_change_calls"] if base == "3333333"]
                 self.assertTrue(evidence)
@@ -1572,6 +2819,151 @@ class AggregatorTests(unittest.TestCase):
                 with self.assertRaisesRegex(SystemExit, f"{exp_id}: .*changed while they were published"):
                     self.aggregate(exp_id, results=results, marker=True, during=raced, refused_untouched=False)
                 self.assertEqual((results / "STALE.toml").read_text(encoding="utf-8"), self.MARKER)
+
+
+class PreregistrationTests(unittest.TestCase):
+    TABLE = tomllib.loads(
+        "schema = 1\n"
+        'harness = "fixture"\n'
+        "seeds = [17, 29]\n"
+        'programs = ["rmw", "set_op"]\n'
+        "see_intent = false\n"
+        "low_cells = []\n"
+        'note = "say \\"hi\\" \\\\ bye ~"\n'
+    )
+
+    def test_the_preregistration_canonical_text_is_sorted_compact_json_and_its_digest_is_sha256(self):
+        text = (
+            '{"harness":"fixture","low_cells":[],"note":"say \\"hi\\" \\\\ bye ~","programs":["rmw","set_op"],'
+            '"schema":1,"see_intent":false,"seeds":[17,29]}'
+        )
+        self.assertEqual(mod.preregistration_canonical(self.TABLE), text)
+        self.assertEqual(mod.preregistration_digest(self.TABLE), hashlib.sha256(text.encode("utf-8")).hexdigest())
+        # The order the table was written in does not move the text.
+        reordered = dict(reversed(list(self.TABLE.items())))
+        self.assertEqual(mod.preregistration_canonical(reordered), text)
+        # Every value moves the digest, a list's order included.
+        for key, value in (("schema", 2), ("seeds", [29, 17]), ("see_intent", True), ("low_cells", ["L0N2"])):
+            with self.subTest(key=key):
+                changed = {**self.TABLE, key: value}
+                self.assertNotEqual(mod.preregistration_digest(changed), mod.preregistration_digest(self.TABLE))
+
+    def test_a_value_without_a_canonical_text_is_refused(self):
+        refused = tomllib.loads(
+            "rate = 0.1\n"
+            "day = 2026-09-28\n"
+            "nested = { a = 1 }\n"
+            'mixed = [1, "a"]\n'
+            "flags = [true, false]\n"
+            "lists = [[1], [2]]\n"
+            'accented = "Grüße"\n'
+            'tab = "a\\tb"\n'
+            'newline = "a\\nb"\n'
+            'delete = "a\\u007fb"\n'
+            'names = ["ok", "Grüße"]\n'
+        )
+        for key, value in refused.items():
+            with self.subTest(key=key):
+                self.assertIsNotNone(mod.canonical_value_problem(value))
+                with self.assertRaisesRegex(ValueError, f"preregistration key {key} "):
+                    mod.preregistration_canonical({**self.TABLE, key: value})
+                with self.assertRaisesRegex(ValueError, f"preregistration key {key} "):
+                    mod.preregistration_digest({**self.TABLE, key: value})
+        for value in self.TABLE.values():
+            self.assertIsNone(mod.canonical_value_problem(value))
+        # A key outside printable ASCII is refused as well.
+        for key in ("Größe", "a\tb"):
+            with self.subTest(key=key):
+                with self.assertRaisesRegex(ValueError, "outside printable ASCII"):
+                    mod.preregistration_canonical({**self.TABLE, key: 1})
+        # Every printable ASCII character is accepted, and only the quote and
+        # the backslash are escaped.
+        printable = "".join(chr(code) for code in range(0x20, 0x7F))
+        self.assertIsNone(mod.canonical_value_problem(printable))
+        self.assertEqual(
+            mod.preregistration_canonical({"all": printable}),
+            '{"all":"' + printable.replace("\\", "\\\\").replace('"', '\\"') + '"}',
+        )
+        # Integers are held to what RFC 8785 writes exactly.
+        bound = 2**53 - 1
+        for value in (bound, -bound, 0, [bound, -bound]):
+            self.assertIsNone(mod.canonical_value_problem(value))
+        for value, problem in (
+            (bound + 1, "is an integer beyond"),
+            (-bound - 1, "is an integer beyond"),
+            ([1, bound + 1], "has element 1 that is an integer beyond"),
+        ):
+            with self.subTest(value=value):
+                self.assertTrue(mod.canonical_value_problem(value).startswith(problem))
+                with self.assertRaisesRegex(ValueError, f"preregistration key big {problem}"):
+                    mod.preregistration_canonical({"big": value})
+
+    def test_the_canonical_text_is_spelled_exactly_and_is_rfc_8785_on_its_domain(self):
+        # Every rule of the spelling, written out: keys in byte order ("B" <
+        # "_" < "a"), no whitespace, only the quote and the backslash escaped
+        # ("/" is not), booleans and integers as JSON writes them.
+        table = {"a": 'p/q "r" \\ s', "_": [-1, 0, 9007199254740991], "B": ["x/y", ""], "b": True, "c": False}
+        text = '{"B":["x/y",""],"_":[-1,0,9007199254740991],"a":"p/q \\"r\\" \\\\ s","b":true,"c":false}'
+        self.assertEqual(mod.canonical_text(table), text)
+        self.assertEqual(mod.preregistration_canonical(table), text)
+        self.assertEqual(mod.canonical_digest(table), hashlib.sha256(text.encode("utf-8")).hexdigest())
+        self.assertEqual(mod.preregistration_digest(table), mod.canonical_digest(table))
+        # It is what Python's json module writes with sorted keys and no
+        # whitespace, for every table the domain allows.
+        for sample in (table, self.TABLE, {"all": "".join(chr(code) for code in range(0x20, 0x7F))}, {}):
+            with self.subTest(sample=sample):
+                self.assertEqual(mod.canonical_text(sample), json.dumps(sample, sort_keys=True, separators=(",", ":")))
+        # Nothing outside the domain has a text.
+        with self.assertRaises(ValueError):
+            mod.canonical_text(0.5)
+
+    def test_a_preregistered_file_is_digested_byte_for_byte(self):
+        # Line endings are content: a CRLF copy is another file than the LF
+        # one, so a checkout that converts them digests differently and the
+        # gate names it, where a digest reading the two alike would let two
+        # forms of one commit run on different inputs.
+        with tempfile.TemporaryDirectory() as directory:
+            unix = Path(directory) / "unix.md"
+            windows = Path(directory) / "windows.md"
+            unix.write_bytes(b"# Protocol\nline\n")
+            windows.write_bytes(b"# Protocol\r\nline\r\n")
+            self.assertEqual(mod.preregistered_file_digest(unix), hashlib.sha256(b"# Protocol\nline\n").hexdigest())
+            self.assertEqual(mod.preregistered_file_digest(windows), hashlib.sha256(b"# Protocol\r\nline\r\n").hexdigest())
+            self.assertNotEqual(mod.preregistered_file_digest(unix), mod.preregistered_file_digest(windows))
+            # A lone CR is content too, and differs from both.
+            windows.write_bytes(b"# Protocol\rline\n")
+            self.assertNotIn(
+                mod.preregistered_file_digest(windows),
+                (mod.preregistered_file_digest(unix), hashlib.sha256(b"# Protocol\r\nline\r\n").hexdigest()),
+            )
+            # Text or not, every file is digested as the bytes it holds.
+            for content in (b"# Protocol\r\nline\r\n", b"\x00\x01\r\n\x02", b"\xff\xfe\r\n"):
+                with self.subTest(content=content):
+                    self.assertEqual(mod.preregistered_bytes_digest(content), hashlib.sha256(content).hexdigest())
+                    self.assertNotEqual(
+                        mod.preregistered_bytes_digest(content), mod.preregistered_bytes_digest(content.replace(b"\r\n", b"\n"))
+                    )
+
+    def test_git_reads_the_repository_it_is_given_whatever_the_environment_says(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ours, other = Path(directory) / "ours", Path(directory) / "other"
+            heads = {}
+            for root in (ours, other):
+                root.mkdir()
+                (root / "file.txt").write_text(root.name, encoding="utf-8")
+                for args in (("init", "-q"), ("add", "-A"),
+                             ("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "-m", root.name)):
+                    subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
+                heads[root.name] = subprocess.run(
+                    ["git", "rev-parse", "HEAD"], cwd=root, check=True, capture_output=True, text=True
+                ).stdout.strip()
+            # Variables that would point git at the other repository, or make
+            # it read pathspecs as globs, are not passed on.
+            with mock.patch.dict(os.environ, {
+                "GIT_DIR": str(other / ".git"), "GIT_WORK_TREE": str(other), "GIT_GLOB_PATHSPECS": "1",
+            }):
+                self.assertEqual(mod.git(ours, "rev-parse", "HEAD").stdout.strip(), heads["ours"])
+                self.assertEqual(mod.git(ours, "ls-files", "--", "file.txt").stdout.strip(), "file.txt")
 
 
 if __name__ == "__main__":
