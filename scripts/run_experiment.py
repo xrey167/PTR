@@ -1134,9 +1134,11 @@ def shebang_words(path: str) -> list[str] | None:
     if not head.startswith(b"#!"):
         return None
     # The kernel splits on a space or a tab only, so a carriage return or a
-    # byte no encoding reads stays part of a name.
+    # byte no encoding reads stays part of a name, and it takes the bytes as
+    # they are: decoded as the file system encodes names (`os.fsdecode`), so
+    # that a lookup encodes them back to the same bytes.
     line = head[2:].split(b"\n", 1)[0]
-    words = [word.decode("utf-8", "surrogateescape") for word in re.split(rb"[ \t]+", line) if word]
+    words = [os.fsdecode(word) for word in re.split(rb"[ \t]+", line) if word]
     return words or None
 
 

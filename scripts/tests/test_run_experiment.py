@@ -3281,6 +3281,10 @@ class RunWatchTests(unittest.TestCase):
         self.assertEqual(words("#!/a\u00a0b c\n".encode("utf-8")), ["/a\u00a0b", "c"])
         self.assertEqual(words(b"#!/x\xff\xfe y\n"), ["/x\udcff\udcfe", "y"])
         self.assertEqual(os.fsencode(words(b"#!/x\xff\xfe y\n")[0]), b"/x\xff\xfe")
+        # Decoded as the file system encodes names, whatever that is: where it
+        # is not UTF-8 the bytes of a name must come back the same.
+        with mock.patch.object(mod.os, "fsdecode", side_effect=lambda name: name.decode("latin-1")):
+            self.assertEqual(words(b"#!/x\xc3\xa9 y\n"), ["/x\xc3\xa9", "y"])
         for none in (b"", b"#", b"#!", b"#!\n", b"#! \t\nrest\n", b"# /x\n", b"\n#!/x\n", b"plain\n"):
             with self.subTest(content=none):
                 self.assertIsNone(words(none))
