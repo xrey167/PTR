@@ -8,4 +8,8 @@
 // build has nothing that calls into it.
 #![allow(dead_code)]
 
+pub mod canary;
+pub mod model;
+pub mod oracle;
 pub mod params;
+pub mod program;
