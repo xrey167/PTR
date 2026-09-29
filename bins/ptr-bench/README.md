@@ -13,6 +13,19 @@ anchor derived from its independently known fixture. It does not derive trust
 from the damaged file. Ordinary open rejects incomplete tails without rewriting.
 Old v1 recovery timings are not comparable to v2 integrity/anchor validation.
 
+## S003 certified branches
+
+`cargo run --release -p ptr-bench -- certified-branches [cases=48] [seed=17]` runs the
+harness of [S003](../../experiments/semdb/S003-certified-branches/README.md). It needs no
+PostgreSQL and is built in every configuration: it drives a real `PtrRuntime` in memory,
+beside an independent reference model, under five arms (serial, certified,
+certified-review, last-writer-wins, key-level OCC) at four agent counts and six contention
+levels, and runs twenty-six adversarial probes and nine canaries in every case. Its
+parameters are the preregistered table in the experiment's `config.toml`, echoed in the
+result. It prints one JSON line on stdout, progress and notes on stderr, and exits 1 on any
+hard failure. A case takes seconds at the small contention levels and about a minute at the
+largest state, in a release build; a debug build is much slower.
+
 ## PostgreSQL experiment harnesses
 
 With the `postgres-experiments` feature the binary also runs the harnesses of

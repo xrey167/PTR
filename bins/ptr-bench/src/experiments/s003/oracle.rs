@@ -31,15 +31,6 @@ pub struct Hazards {
 }
 
 impl Hazards {
-    pub fn any(&self) -> bool {
-        self.lost_update
-            || self.stale_read
-            || self.phantom
-            || self.stale_scan
-            || self.stale_input
-            || self.stale_reliance
-    }
-
     /// The names of the hazards that hold, in a fixed order.
     pub fn names(&self) -> Vec<&'static str> {
         [

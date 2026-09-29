@@ -13,6 +13,11 @@
 //! reads the list. The drift test fails when a compiled constant differs from
 //! any other key of the file.
 
+// The constants complete the compiled table that the drift test compares with
+// the file; the harness reads some of them, and the aggregator reads the rest
+// (the seeds, the bootstrap, the thresholds of the verdicts).
+#![cfg_attr(not(test), allow(dead_code))]
+
 use crate::experiments::json::json_string;
 
 /// The experiment's configuration file, read at compile time.

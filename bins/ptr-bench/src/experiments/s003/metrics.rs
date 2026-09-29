@@ -30,10 +30,13 @@ macro_rules! metrics {
         }
 
         /// The hard counters' names, in the order the result lists them.
+        #[cfg(test)]
         pub const HARD: &[&str] = &[$(stringify!($hard)),*];
         /// The coverage counters' names.
+        #[cfg(test)]
         pub const COVERAGE: &[&str] = &[$(stringify!($coverage)),*];
         /// The descriptive counters' names.
+        #[cfg(test)]
         pub const DESCRIPTIVE: &[&str] = &[$(stringify!($descriptive)),*];
 
         impl Metrics {

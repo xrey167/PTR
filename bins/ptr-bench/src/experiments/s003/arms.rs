@@ -39,14 +39,6 @@ pub enum Arm {
 }
 
 impl Arm {
-    pub const ALL: [Arm; 5] = [
-        Arm::Serial,
-        Arm::Certified,
-        Arm::CertifiedReview,
-        Arm::Lww,
-        Arm::Occ,
-    ];
-
     /// The arm's name in the result.
     pub fn name(self) -> &'static str {
         match self {
@@ -115,6 +107,7 @@ impl RunStats {
     }
 
     /// Tasks that reached a final state.
+    #[cfg(test)]
     pub fn settled_tasks(&self) -> u64 {
         self.merged + self.no_change + self.verification_holds + self.abandoned
     }
@@ -470,7 +463,7 @@ impl Simulation<'_> {
                 self.world.background(tick, &events)?;
             }
             let spec = &self.tasks[task];
-            let id = format!("c{}-t{task}-a{number}", self.case.index);
+            let id = format!("c{}-t{}-a{number}", self.case.index, spec.index);
             let attempt = self.world.open(&id, index, &spec.program, spec.rely)?;
             self.stats.attempts += 1;
             let due = tick + attempt.steps + spec.thinks[number];
@@ -501,9 +494,8 @@ impl Simulation<'_> {
     // ---- end ------------------------------------------------------------------
 
     fn finish(mut self, failed: Option<String>) -> Run {
-        if let Some(error) = &failed {
+        if failed.is_some() {
             self.world.metrics.harness_errors += 1;
-            self.world.note(format!("the run stopped: {error}"));
         }
         let metrics = &self.world.metrics;
         self.stats.conflicts += metrics.conflicts;

@@ -37,6 +37,10 @@ fn main() {
             bench_semdb(iterations);
             bench_mailbox(iterations);
         }
+        "certified-branches" => experiments::s003::run(
+            parse_usize(&args, 2, experiments::s003::params::CASES_PER_SEED),
+            parse_u64(&args, 3, experiments::s003::params::SEEDS[0]),
+        ),
         #[cfg(feature = "postgres-experiments")]
         "fastmem-revocation" => {
             experiments::l003::run(parse_usize(&args, 2, 20), parse_u64(&args, 3, 17))
@@ -55,12 +59,12 @@ fn main() {
     }
 }
 
-/// The PostgreSQL experiment subcommands, listed in the usage line only when
+/// The experiment subcommands: S003 always, and the PostgreSQL ones only when
 /// they are compiled in.
 #[cfg(feature = "postgres-experiments")]
-const EXPERIMENT_COMMANDS: &str = "|fastmem-revocation|projection-equivalence";
+const EXPERIMENT_COMMANDS: &str = "|certified-branches|fastmem-revocation|projection-equivalence";
 #[cfg(not(feature = "postgres-experiments"))]
-const EXPERIMENT_COMMANDS: &str = "";
+const EXPERIMENT_COMMANDS: &str = "|certified-branches";
 
 fn parse_usize(args: &[String], index: usize, default: usize) -> usize {
     args.get(index)

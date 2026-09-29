@@ -967,6 +967,7 @@ fn number(value: Option<Val>) -> Option<i64> {
 
 impl Program {
     /// The program's name in the preregistered list.
+    #[cfg(test)]
     pub fn name(&self) -> &'static str {
         match self {
             Self::Rmw { .. } => "rmw",
