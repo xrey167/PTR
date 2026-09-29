@@ -696,6 +696,7 @@ class PreregistrationGateTests(unittest.TestCase):
 
     RECORD="experiments/semdb/X900-fixture/results/run-20260101T000000.000000Z-seed-17.json"
     AGGREGATE="experiments/semdb/X900-fixture/results/run.json"
+    METRICS="experiments/semdb/X900-fixture/results/metrics.json"
     MANIFEST="experiments/semdb/X900-fixture/experiment.toml"
 
     def frozen(self, root: Path) -> tuple[str, str]:
@@ -714,6 +715,11 @@ class PreregistrationGateTests(unittest.TestCase):
             "manifest_sha256":hashlib.sha256(git(root,"show",f"{commit}:{self.MANIFEST}").encode("utf-8")+b"\n").hexdigest(),
         }
         record.update(changes)
+        seed=record.get("seed")
+        if not isinstance(seed,bool) and isinstance(seed,int):
+            # What the runner builds from the fixture's entrypoint, `bench <seed>`.
+            record.setdefault("command",["bench",str(seed)])
+            record.setdefault("parameters",{})
         if record.get("status") in ("completed","failed"):
             record.setdefault("exit_code",0 if record["status"]=="completed" else 1)
             record.setdefault("finished_at","2026-01-01T00:00:00+00:00")
@@ -723,12 +729,20 @@ class PreregistrationGateTests(unittest.TestCase):
 
     def aggregate(self, root: Path, commit: str, **changes) -> dict:
         """An aggregate run.json of the runs at `commit`, naming the SHA-256
-        of the record of each seed the results directory holds a run of."""
+        of the record of each seed the results directory holds a run of and
+        of the `{}` its metrics.json holds (`METRICS`)."""
         digest,rules=self.frozen(root)
         results=root/"experiments/semdb/X900-fixture/results"
+        changes.setdefault("metrics_sha256",hashlib.sha256(b"{}").hexdigest())
         if "seed_records" not in changes:
             changes["seed_records"]=mod.experiment_records.seed_record_digests(results) if results.is_dir() else {}
         return {"git_sha":commit,"preregistration_sha256":digest,"preregistration_rules_sha256":rules,**changes}
+
+    def publish(self, root: Path, report: dict) -> None:
+        """Write `report`, an aggregate, and the `{}` its metrics.json holds,
+        as one aggregate (`aggregate` names that content's digest)."""
+        write(root,self.METRICS,"{}")
+        write(root,self.AGGREGATE,json.dumps(report))
 
     def seeded(self, root: Path, commit: str) -> list[str]:
         """Write the run record of each preregistered seed at `commit` into
@@ -859,7 +873,7 @@ class PreregistrationGateTests(unittest.TestCase):
         root=self.tree(status="running")
         ran=commit_all(root)
         write(root,self.RECORD,json.dumps(self.record(root,ran)))
-        write(root,self.AGGREGATE,json.dumps(self.aggregate(root,ran)))
+        self.publish(root,self.aggregate(root,ran))
         recorded=commit_all(root,"records")
         before=self.frozen(root)
         # The table, the manifest and both records are rewritten to a new
@@ -872,7 +886,7 @@ class PreregistrationGateTests(unittest.TestCase):
         record=self.record(root,ran)
         record["manifest"]={**record["manifest"],"preregistration_sha256":after[0]}
         write(root,self.RECORD,json.dumps(record))
-        write(root,self.AGGREGATE,json.dumps({**self.aggregate(root,ran),"preregistration_sha256":after[0]}))
+        self.publish(root,{**self.aggregate(root,ran),"preregistration_sha256":after[0]})
         commit_all(root,"rewrite")
         short=ran[:12]
         self.assert_blocked(
@@ -1245,7 +1259,7 @@ class PreregistrationGateTests(unittest.TestCase):
         root=self.tree(status="running")
         ran=commit_all(root)
         runs=self.seeded(root,ran)
-        write(root,self.AGGREGATE,json.dumps(self.aggregate(root,ran)))
+        self.publish(root,self.aggregate(root,ran))
         recorded=commit_all(root,"aggregate")
         self.assertEqual(gate(root),(0,[]))
         before=self.frozen(root)
@@ -1256,7 +1270,7 @@ class PreregistrationGateTests(unittest.TestCase):
             shutil.copyfile(rewritten/relative,root/relative)
         after=self.frozen(root)
         rewrite=commit_all(root,"rewrite")
-        write(root,self.AGGREGATE,json.dumps(self.aggregate(root,rewrite)))
+        self.publish(root,self.aggregate(root,rewrite))
         commit_all(root,"aggregate again")
         at=f"X900: results/run.json as committed at {recorded[:12]}"
         earlier=[
@@ -1278,7 +1292,7 @@ class PreregistrationGateTests(unittest.TestCase):
         # aggregate is still checked where it was committed.
         root=self.tree(status="running")
         ran=commit_all(root)
-        write(root,self.AGGREGATE,json.dumps(self.aggregate(root,ran)))
+        self.publish(root,self.aggregate(root,ran))
         commit_all(root,"aggregate")
         for relative in ("experiments/semdb/X900-fixture/config.toml",self.MANIFEST):
             shutil.copyfile(rewritten/relative,root/relative)
@@ -1312,15 +1326,15 @@ class PreregistrationGateTests(unittest.TestCase):
         root=self.tree(status="running")
         ran=commit_all(root)
         self.seeded(root,ran)
-        write(root,self.AGGREGATE,json.dumps(self.aggregate(root,ran)))
+        self.publish(root,self.aggregate(root,ran))
         commit_all(root,"aggregate")
-        write(root,self.AGGREGATE,json.dumps(self.aggregate(root,ran,metrics_sha256="0"*64)))
+        self.publish(root,self.aggregate(root,ran,note="again"))
         commit_all(root,"aggregate again")
         self.assertEqual(gate(root),(0,[]))
         # Deleted and put back as it was, it is the aggregate committed.
         (root/self.AGGREGATE).unlink()
         commit_all(root,"aggregate deleted")
-        write(root,self.AGGREGATE,json.dumps(self.aggregate(root,ran,metrics_sha256="0"*64)))
+        self.publish(root,self.aggregate(root,ran,note="again"))
         commit_all(root,"aggregate restored")
         self.assertEqual(gate(root),(0,[]))
         # A version committed as a link was another file's content, read
@@ -1332,7 +1346,7 @@ class PreregistrationGateTests(unittest.TestCase):
         self.link(Path("../elsewhere.json"),root/self.AGGREGATE)
         linked=commit_all(root,"aggregate linked")
         (root/self.AGGREGATE).unlink()
-        write(root,self.AGGREGATE,json.dumps(self.aggregate(root,ran)))
+        self.publish(root,self.aggregate(root,ran))
         commit_all(root,"aggregate")
         self.assert_blocked(root,f"X900: results/run.json as committed at {linked[:12]} is not a regular file")
 
@@ -1532,9 +1546,9 @@ class PreregistrationGateTests(unittest.TestCase):
         ran=commit_all(root)
         self.seeded(root,ran)
         bound=self.aggregate(root,ran)
-        write(root,self.AGGREGATE,json.dumps(bound))
+        self.publish(root,bound)
         commit_all(root,"aggregate")
-        write(root,self.AGGREGATE,json.dumps({**bound,"metrics_sha256":wrong}))
+        self.publish(root,{**bound,"note":"again"})
         commit_all(root,"aggregate again")
         self.assertEqual(gate(root),(0,[]))
         # Each of these, committed first and replaced by a bound aggregate,
@@ -1567,9 +1581,9 @@ class PreregistrationGateTests(unittest.TestCase):
                 bound=self.aggregate(root,ran)
                 held=bound["seed_records"]
                 self.assertEqual(sorted(held),["17","29"])
-                write(root,self.AGGREGATE,json.dumps(fabricate(bound,held)))
+                self.publish(root,fabricate(bound,held))
                 first=commit_all(root,"fabricated aggregate")
-                write(root,self.AGGREGATE,json.dumps(bound))
+                self.publish(root,bound)
                 commit_all(root,"aggregate")
                 self.assert_blocked(root,*expected(first,held))
         # A version between the first and the last is bound the same.
@@ -1577,11 +1591,11 @@ class PreregistrationGateTests(unittest.TestCase):
         ran=commit_all(root)
         self.seeded(root,ran)
         bound=self.aggregate(root,ran)
-        write(root,self.AGGREGATE,json.dumps(bound))
+        self.publish(root,bound)
         commit_all(root,"aggregate")
-        write(root,self.AGGREGATE,json.dumps({**bound,"seed_records":{}}))
+        self.publish(root,{**bound,"seed_records":{}})
         middle=commit_all(root,"emptied")
-        write(root,self.AGGREGATE,json.dumps({**bound,"metrics_sha256":wrong}))
+        self.publish(root,{**bound,"note":"again"})
         commit_all(root,"aggregate again")
         self.assert_blocked(root,*(refused(middle,int(seed),None,held) for seed,held in bound["seed_records"].items()))
 
@@ -1736,6 +1750,252 @@ class PreregistrationGateTests(unittest.TestCase):
         self.assertTrue(mod.reached_through_symlink(root,root/"top"))
         # A path outside the root is not one the commit holds.
         self.assertTrue(mod.reached_through_symlink(root,root.parent/"elsewhere"))
+
+    def test_a_run_record_names_the_command_its_commits_frozen_values_give_its_seed(self):
+        # The runner builds the command from the manifest and the table as
+        # the commit holds them: a record of another program, or of other
+        # values, is no run of what was frozen, whatever the launch read.
+        directory="experiments/semdb/X900-fixture"
+        root=self.tree(status="running")
+        ran=commit_all(root)
+        names=self.seeded(root,ran)
+        self.assertEqual(gate(root),(0,[]))
+
+        def wrong(name,seed,command,parameters):
+            return [f"X900: {name} names command {command!r}, not {['bench',str(seed)]!r}, the command the manifest and "
+                    f"[preregistration] table at {ran[:12]} give seed {seed}",
+                    f"X900: {name} names parameters {parameters!r}, not {{}}, the values the [preregistration] table at "
+                    f"{ran[:12]} freezes for the command's placeholders"]
+
+        first=names[0]
+        held=self.record(root,ran,seed=17,status="completed")
+        # A program the table did not freeze, another seed's value, no command.
+        for changes,expected in (
+            ({"command":["/tmp/attacker","17"]},wrong(first,17,["/tmp/attacker","17"],{})[:1]),
+            ({"command":["bench","29"]},wrong(first,17,["bench","29"],{})[:1]),
+            ({"command":["bench","17","--x"]},wrong(first,17,["bench","17","--x"],{})[:1]),
+            ({"command":"bench 17"},wrong(first,17,"bench 17",{})[:1]),
+            ({"parameters":{"iterations":"30"}},wrong(first,17,["bench","17"],{"iterations":"30"})[1:]),
+            ({"parameters":None},wrong(first,17,["bench","17"],None)[1:]),
+        ):
+            with self.subTest(changes=changes):
+                write(root,f"{directory}/{first}",json.dumps({**held,**changes}))
+                write(root,self.AGGREGATE,json.dumps(self.aggregate(root,ran)))
+                self.assert_blocked(root,*expected)
+        # Nor may either be left out.
+        without={key:value for key,value in held.items() if key not in ("command","parameters")}
+        write(root,f"{directory}/{first}",json.dumps(without))
+        write(root,self.AGGREGATE,json.dumps(self.aggregate(root,ran)))
+        self.assert_blocked(root,*wrong(first,17,None,None))
+        # A command that failed to launch was built the same way.
+        write(root,f"{directory}/{first}",json.dumps({**held,"status":"failed-to-launch","exit_code":None,
+                                                     "command":["/tmp/attacker","17"]}))
+        write(root,self.AGGREGATE,json.dumps(self.aggregate(root,ran,seed_records={"29":"0"*64})))
+        code,lines=gate(root)
+        self.assertEqual(code,1)
+        self.assertIn(wrong(first,17,["/tmp/attacker","17"],{})[0],lines)
+        # A record naming no seed is a prepared one: no command was built.
+        write(root,f"{directory}/{first}",json.dumps({key:value for key,value in without.items() if key!="seed"}))
+        code,lines=gate(root)
+        self.assertFalse(any("names command" in line for line in lines),lines)
+        # A seed that is no integer is refused as a seed the table did not
+        # freeze, and no command is derived from it.
+        for seed in (True,17.0,"17",None,[17]):
+            with self.subTest(seed=seed):
+                write(root,f"{directory}/{first}",json.dumps({**held,"seed":seed,"command":["bench","17"]}))
+                code,lines=gate(root)
+                self.assertFalse(any("names command" in line for line in lines),lines)
+
+    def test_the_values_a_records_command_takes_are_those_its_commits_table_freezes(self):
+        directory="experiments/semdb/X900-fixture"
+        table={**TABLE,"iterations":30,"verbose":True,"name":"alpha beta"}
+        root=self.tree(status="running",table=table)
+        self.edit(root,self.MANIFEST,'entrypoint = "bench <seed>"\n',
+                  'entrypoint = "bench <seed> <iterations> <verbose> \'<name>\'"\n')
+        ran=commit_all(root)
+        command=lambda seed:["bench",str(seed),"30","true","alpha beta"]
+        values={"iterations":"30","verbose":"true","name":"alpha beta"}
+        for seed in TABLE["seeds"]:
+            name=f"results/run-2026010{seed % 9}T000000.000000Z-seed-{seed}.json"
+            write(root,f"{directory}/{name}",json.dumps(
+                self.record(root,ran,seed=seed,status="completed",command=command(seed),parameters=values)))
+        write(root,self.AGGREGATE,json.dumps(self.aggregate(root,ran)))
+        self.assertEqual(gate(root),(0,[]))
+        # Another value of any placeholder is another command.
+        seventeen=f"{directory}/results/run-20260108T000000.000000Z-seed-17.json"
+        for label,changes in (
+            ("integer",{"command":["bench","17","31","true","alpha beta"],"parameters":{**values,"iterations":"31"}}),
+            ("boolean",{"command":["bench","17","30","false","alpha beta"],"parameters":{**values,"verbose":"false"}}),
+            ("string",{"command":["bench","17","30","true","other"],"parameters":{**values,"name":"other"}}),
+            ("parameters alone",{"parameters":{**values,"iterations":"31"}}),
+        ):
+            with self.subTest(label=label):
+                write(root,seventeen,json.dumps(self.record(root,ran,seed=17,status="completed",
+                                                           **{"command":command(17),"parameters":values,**changes})))
+                write(root,self.AGGREGATE,json.dumps(self.aggregate(root,ran)))
+                code,lines=gate(root)
+                self.assertEqual(code,1)
+                self.assertTrue(any(" names command " in line or " names parameters " in line for line in lines),lines)
+
+    def test_an_aggregate_version_is_bound_to_the_metrics_and_evidence_committed_beside_it(self):
+        # An aggregate written again keeps every version it was committed
+        # in: one that named other metrics, or none, replaced by a valid pair
+        # later, still saw what it was committed with.
+        directory="experiments/semdb/X900-fixture"
+        right=hashlib.sha256(b"{}").hexdigest()
+        other=hashlib.sha256(b"[]").hexdigest()
+        evidence=b'{"killed": 2, "total": 2}\n'
+        held=hashlib.sha256(evidence).hexdigest()
+
+        def problem(first,field,detail):
+            return f"X900: results/run.json as committed at {first[:12]} names {detail}"
+
+        wrong_metrics=lambda first:problem(first,"metrics_sha256",f"metrics_sha256 {other}, not {right}, the SHA-256 of the metrics.json committed beside it")
+        cases=[
+            ("other metrics",{"metrics_sha256":other},None,lambda first:[wrong_metrics(first)]),
+            ("no metrics digest",{"metrics_sha256":None},None,lambda first:[
+                f"X900: results/run.json as committed at {first[:12]} names no metrics_sha256, so nothing binds it to the "
+                "metrics.json committed beside it"]),
+            ("a digest that is no text",{"metrics_sha256":5},None,lambda first:[
+                f"X900: results/run.json as committed at {first[:12]} names no metrics_sha256, so nothing binds it to the "
+                "metrics.json committed beside it"]),
+            ("no metrics file",{},"no-metrics",lambda first:[
+                f"X900: results/run.json as committed at {first[:12]} names metrics_sha256 {right}, but that commit holds "
+                "no metrics.json beside it"]),
+            ("other evidence",{"mutation_checks":{"sha256":other,"killed":2,"total":2}},"evidence",lambda first:[
+                f"X900: results/run.json as committed at {first[:12]} names mutation_checks.sha256 {other}, not {held}, "
+                "the SHA-256 of the mutations.json committed beside it"]),
+            ("evidence with no digest",{"mutation_checks":{"killed":2,"total":2}},"evidence",lambda first:[
+                f"X900: results/run.json as committed at {first[:12]} names no mutation_checks.sha256, so nothing binds it "
+                "to the mutations.json committed beside it"]),
+            ("evidence that is not there",{"mutation_checks":{"sha256":held,"killed":2,"total":2}},None,lambda first:[
+                f"X900: results/run.json as committed at {first[:12]} names mutation_checks.sha256 {held}, but that commit "
+                "holds no mutations.json beside it"]),
+        ]
+        for label,changes,files,expected in cases:
+            with self.subTest(label=label):
+                root=self.tree(status="running")
+                ran=commit_all(root)
+                self.seeded(root,ran)
+                bound=self.aggregate(root,ran)
+                write(root,self.METRICS,"{}")
+                if files=="no-metrics":
+                    (root/self.METRICS).unlink()
+                if files=="evidence":
+                    (root/f"{directory}/results/mutations.json").write_bytes(evidence)
+                report={**bound,"metrics_sha256":right,**changes}
+                if report["metrics_sha256"] is None:
+                    del report["metrics_sha256"]
+                write(root,self.AGGREGATE,json.dumps(report))
+                first=commit_all(root,"aggregate that names what it should not")
+                # Replaced by a valid pair, it is still named where it was committed.
+                (root/f"{directory}/results/mutations.json").unlink(missing_ok=True)
+                self.publish(root,{**bound,"note":"valid pair"})
+                commit_all(root,"valid pair")
+                self.assert_blocked(root,*expected(first))
+        # A version whose artifacts are the ones it names passes, mutation
+        # evidence included.
+        root=self.tree(status="running")
+        ran=commit_all(root)
+        self.seeded(root,ran)
+        (root/f"{directory}/results/mutations.json").parent.mkdir(parents=True,exist_ok=True)
+        (root/f"{directory}/results/mutations.json").write_bytes(evidence)
+        checked=self.aggregate(root,ran,mutation_checks={"sha256":held,"killed":2,"total":2})
+        self.publish(root,checked)
+        commit_all(root,"aggregate with evidence")
+        self.publish(root,{**checked,"note":"again"})
+        commit_all(root,"aggregate again")
+        self.assertEqual(gate(root),(0,[]))
+
+    def test_the_aggregate_of_an_experiment_once_completed_stays_the_one_it_was(self):
+        # The metrics and the mutation evidence an archived aggregate names
+        # are checked while the experiment is completed; superseding it does
+        # not free them to be replaced.
+        directory="experiments/semdb/X900-fixture"
+
+        def gate_with_aggregates(root):
+            def archived(exp_id,experiment,results,given_root,listed_experiment=False):
+                return []
+
+            output=io.StringIO()
+            with mock.patch.object(mod.experiment_records,"staleness_errors",side_effect=archived),contextlib.redirect_stdout(output):
+                code=mod.main(root)
+            return code,[line.removeprefix("ERROR: ") for line in output.getvalue().splitlines() if line.startswith("ERROR: ")]
+
+        root=self.tree(status="completed")
+        ran=commit_all(root)
+        self.seeded(root,ran)
+        self.publish(root,self.aggregate(root,ran))
+        commit_all(root,"archive")
+        self.assertEqual(gate_with_aggregates(root),(0,[]))
+        for relative in (self.MANIFEST,"experiments/registry.toml"):
+            self.edit(root,relative,'status = "completed"','status = "superseded"')
+        commit_all(root,"superseded")
+        self.assertEqual(gate_with_aggregates(root),(0,[]))
+        # Metrics replaced after the supersession are not the ones the
+        # aggregate names.
+        write(root,self.METRICS,"[]")
+        commit_all(root,"metrics replaced")
+        code,lines=gate_with_aggregates(root)
+        self.assertEqual(code,1)
+        self.assertEqual(len(lines),1,lines)
+        self.assertTrue(lines[0].startswith(
+            f"X900: {directory}/results/metrics.json is not the metrics run.json was aggregated with"),lines)
+        # An experiment that was never completed is not asked.
+        for then in ("prepared","running","failed"):
+            with self.subTest(then=then):
+                root=self.tree(status=then)
+                ran=commit_all(root)
+                self.seeded(root,ran)
+                self.publish(root,self.aggregate(root,ran,metrics_sha256="0"*64))
+                for relative in (self.MANIFEST,"experiments/registry.toml"):
+                    self.edit(root,relative,f'status = "{then}"','status = "superseded"')
+                commit_all(root,"superseded")
+                self.assertEqual(gate_with_aggregates(root),(0,[]))
+
+    def test_a_commit_that_holds_a_symlink_or_a_gitlink_anywhere_freezes_nothing(self):
+        # The runner watches the whole repository of a listed experiment and
+        # refuses one that holds either, which git holds as a path and not
+        # as content: a commit that holds one could not launch, and is no
+        # freeze whatever its preregistration holds, so a later repair is no
+        # rewrite of one.
+        directory="experiments/semdb/X900-fixture"
+        for kind in ("symlink","gitlink"):
+            with self.subTest(kind=kind):
+                root=self.tree(status="running")
+                if kind=="symlink":
+                    self.link(Path("README.md"),root/"unrelated-link")
+                    linked=commit_all(root)
+                else:
+                    git(root,"init","-q")
+                    git(root,"add","-A")
+                    git(root,"update-index","--add","--cacheinfo",f"160000,{'a'*40},vendored")
+                    git(root,"commit","-q","--no-verify","-m","tree with a gitlink")
+                    linked=git(root,"rev-parse","HEAD")
+                self.assertEqual(mod.commit_links(root,linked),["unrelated-link" if kind=="symlink" else "vendored"])
+                self.assertIsNone(mod.launchable_at(root,linked,"X900",directory))
+                self.assertEqual([commit for commit,held in mod.launch_listing(root,"X900",[directory]) if held is not None],[])
+                # Repaired: the link goes and the preregistration is
+                # completed. That commit is the first that could launch it.
+                if kind=="symlink":
+                    (root/"unrelated-link").unlink()
+                else:
+                    git(root,"update-index","--force-remove","vendored")
+                rewritten=self.tree(status="running",table={**TABLE,"schema":2})
+                for relative in (f"{directory}/config.toml",self.MANIFEST):
+                    shutil.copyfile(rewritten/relative,root/relative)
+                repair=commit_all(root,"repaired")
+                self.assertEqual(mod.commit_links(root,repair),[])
+                self.assertIsNotNone(mod.launchable_at(root,repair,"X900",directory))
+                self.assertEqual(
+                    [commit for commit,held in mod.launch_listing(root,"X900",[directory]) if held is not None],[repair])
+                self.assertEqual(gate(root),(0,[]))
+        # A link inside the tree that is no link (a file named like one) is no link.
+        root=self.tree(status="running")
+        write(root,"notes/unrelated-link","not a link\n")
+        held=commit_all(root)
+        self.assertEqual(mod.commit_links(root,held),[])
+        self.assertIsNotNone(mod.launchable_at(root,held,"X900",directory))
 
     def test_a_run_record_of_a_seed_outside_the_preregistration_is_refused(self):
         # A seed added once an outcome is seen could count towards what is

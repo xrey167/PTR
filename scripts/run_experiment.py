@@ -585,10 +585,10 @@ def launch_watch(
                 file=sys.stderr,
             )
             return None
-    try:
-        held = load(root / "experiment.toml")
-    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
-        held = None
+    # As the commit the watch holds the tree to has it: the file read again
+    # from a directory replaced meanwhile, and put back, would be one no
+    # commit holds.
+    held = check_research_gates.toml_at(ROOT, watch.head, (root / "experiment.toml").relative_to(ROOT).as_posix())
     if held is None or not check_research_gates.same_value(held, data):
         print(
             "ERROR: experiment.toml changed while the launch was checked; rerun from a tree that holds HEAD",
@@ -702,13 +702,19 @@ def token_text(name: str, value) -> str:
     raise ValueError(f"<{name}> is preregistered as a {type(value).__name__}, which no command token takes")
 
 
-def command_parameters(exp_id: str, root: Path, data: dict, entrypoint: str, params: dict[str, str]) -> dict[str, str]:
+def command_parameters(
+    exp_id: str, root: Path, data: dict, entrypoint: str, params: dict[str, str], head: str | None = None
+) -> dict[str, str]:
     """The values the placeholders other than `<seed>` take in the command
     the manifest `data` of `exp_id`, whose directory is `root`, names at
     `entrypoint`. An experiment the list names runs only through
     `entrypoint`, the manifest's own command, and takes each value from its
-    frozen `[preregistration]` table (`token_text`), a `--set` value only
-    repeating it: a command or a value chosen at launch could be chosen
+    frozen `[preregistration]` table (`token_text`), read from the commit
+    `head` names as the file that commit holds where it is given, and from
+    the tree otherwise: a directory replaced while the launch reads the
+    tree, and put back before the watch stamps it, would supply a table no
+    commit holds. A `--set` value only
+    repeats it: a command or a value chosen at launch could be chosen
     after an outcome was seen, the runs made with the others discarded. A
     variant of its command is a placeholder the table fixes. Any other
     experiment runs through any `entrypoint` with the `--set` values
@@ -724,7 +730,14 @@ def command_parameters(exp_id: str, root: Path, data: dict, entrypoint: str, par
             f"--entrypoint {entrypoint}: a listed experiment runs only through its manifest's entrypoint; a variant "
             "of its command is a placeholder its frozen [preregistration] table fixes"
         )
-    table = load(root / "config.toml").get("preregistration", {})
+    if head is None:
+        table = load(root / "config.toml").get("preregistration", {})
+    else:
+        relative = (root / "config.toml").relative_to(ROOT).as_posix()
+        held = check_research_gates.toml_at(ROOT, head, relative)
+        if held is None:
+            raise ValueError(f"{relative} at {head[:12]} is not a TOML file that commit holds, so it freezes no values")
+        table = held.get("preregistration", {})
     template = str(data.get(entrypoint, ""))
     names = sorted({name for token in shlex.split(template) for name in PLACEHOLDER.findall(token)} - {"seed"})
     values = {}
@@ -1257,7 +1270,7 @@ def launch_and_record(
     # Built once the watch holds the tree to HEAD, so a listed experiment's
     # preregistered values are the ones HEAD holds.
     try:
-        params = command_parameters(exp_id, root, data, entrypoint, params or {})
+        params = command_parameters(exp_id, root, data, entrypoint, params or {}, watch.head)
         command = build_command(data, entrypoint=entrypoint, seed=seed, params=params)
         # A listed experiment runs each seed once: every run of it is
         # evidence, so none can be chosen by its outcome. The results

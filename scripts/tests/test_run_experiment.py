@@ -2745,6 +2745,74 @@ class RunWatchTests(unittest.TestCase):
                         mod.command_parameters("L900", self.root / "experiments/x/L900-x", data, "entrypoint", {})
                 self.assertIn(refusal, str(caught.exception))
 
+    def test_the_frozen_values_of_a_launch_are_read_from_the_commit_the_watch_holds(self):
+        # A directory replaced while the launch reads it, and put back before
+        # the watch stamps it, would supply a table no commit holds: the
+        # values come from the commit's own blob, whatever the tree holds
+        # when they are read.
+        self.preregister("running", "schema = 1\nprogram = \"bench\"\n", entrypoint="<program> <seed>")
+        directory = self.root / "experiments/x/L900-x"
+        data = tomllib.loads((directory / "experiment.toml").read_text(encoding="utf-8"))
+        self.write(
+            "experiments/x/L900-x/config.toml",
+            'version = 1\n\n[preregistration]\nseeds = [17]\nschema = 1\nprogram = "/tmp/attacker"\n',
+        )
+        with mock.patch.object(mod, "ROOT", self.root):
+            self.assertEqual(mod.command_parameters("L900", directory, data, "entrypoint", {}), {"program": "/tmp/attacker"})
+            self.assertEqual(
+                mod.command_parameters("L900", directory, data, "entrypoint", {}, self.head), {"program": "bench"}
+            )
+            # A repeated --set value is compared with the commit's, not the tree's.
+            with self.assertRaises(ValueError) as caught:
+                mod.command_parameters("L900", directory, data, "entrypoint", {"program": "/tmp/attacker"}, self.head)
+            self.assertIn("--set program=/tmp/attacker is not the preregistered value bench", str(caught.exception))
+            # A commit that holds no such file freezes no values.
+            with self.assertRaises(ValueError) as caught:
+                mod.command_parameters("L900", directory / "elsewhere", data, "entrypoint", {}, self.head)
+            self.assertIn("is not a TOML file that commit holds, so it freezes no values", str(caught.exception))
+        # The launch passes the commit its watch holds.
+        git(self.root, "checkout", "-q", "--", "experiments/x/L900-x/config.toml")
+        seen = []
+        real = mod.command_parameters
+
+        def recording(*arguments):
+            seen.append(arguments[5:])
+            return real(*arguments)
+
+        with mock.patch.object(mod, "command_parameters", side_effect=recording):
+            status, records, stderr = self.run_seed()
+        self.assertEqual((status, seen), (0, [(self.head,)]))
+        self.assertEqual(records[0]["command"], ["bench", "17"])
+        # The manifest the command was built from is compared with the one
+        # the commit holds, not with what the tree holds when it is read.
+        for record in (*self.results.glob("run-*.json"), *self.attempts().glob("run-*.json")):
+            record.unlink()
+        real_toml_at = mod.check_research_gates.toml_at
+        real_launch_errors = mod.check_research_gates.launch_errors
+        decided = []
+
+        def after_decision(*arguments):
+            problems = real_launch_errors(*arguments)
+            decided.append(True)
+            return problems
+
+        def replaced(root, commit, relative):
+            held = real_toml_at(root, commit, relative)
+            # Once the launch has been decided twice (before the watch and
+            # by it), what the watch reads last is replaced.
+            if len(decided) >= 2 and relative.endswith("experiment.toml") and held is not None:
+                return {**held, "entrypoint": "other <seed>"}
+            return held
+
+        ran = []
+        with (
+            mock.patch.object(mod.check_research_gates, "launch_errors", side_effect=after_decision),
+            mock.patch.object(mod.check_research_gates, "toml_at", side_effect=replaced),
+        ):
+            status, records, stderr = self.run_seed(lambda: ran.append(True))
+        self.assertEqual((status, records, ran), (2, [], []))
+        self.assertIn("experiment.toml changed while the launch was checked", stderr)
+
     def test_a_manifest_changed_before_the_watch_looked_is_refused(self):
         # The command is built from the manifest read first; one committed
         # in its place before the watch looked would leave the watch holding

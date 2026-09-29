@@ -1033,6 +1033,22 @@ def commit_names(root: Path, commit: str) -> list[str]:
         raise HistoryUnreadable(listing.stderr.decode("utf-8","replace").strip() or f"git ls-tree exited {listing.returncode}")
     return [name for name in listing.stdout.decode("utf-8","surrogateescape").split("\0") if name]
 
+def commit_links(root: Path, commit: str) -> list[str]:
+    """The names of the symlinks and gitlinks `commit` holds anywhere, as git
+    writes them. Raises `HistoryUnreadable` when git cannot tell."""
+    try:
+        listing=experiment_records.git(root,"--literal-pathspecs","ls-tree","-r","-z",commit,binary=True)
+    except experiment_records.ProvenanceError as error:
+        raise HistoryUnreadable(str(error)) from error
+    if listing.returncode!=0:
+        raise HistoryUnreadable(listing.stderr.decode("utf-8","replace").strip() or f"git ls-tree exited {listing.returncode}")
+    found=[]
+    for entry in listing.stdout.decode("utf-8","surrogateescape").split("\0"):
+        fields,_,name=entry.partition("\t")
+        if name and fields.split(" ")[0] in experiment_records.LINK_MODES:
+            found.append(name)
+    return found
+
 def tree_names(root: Path) -> list[str]:
     """The names of the files in the tree at `root` that git tracks or lists
     as untracked and not ignored, as git writes them (a name that is not
@@ -1241,12 +1257,18 @@ def launchable_at(root: Path, commit: str, exp_id: str, directory: str) -> tuple
     content there, each baseline pinned and not blocked, the runner can
     build its command from the manifest and the table (`command_errors`),
     and the registry places the experiment in `directory` and holds the
-    status the manifest does. A commit that held less could not launch it,
-    and does not freeze it."""
+    status the manifest does, and no symlink or gitlink lies anywhere in the
+    commit, which the runner's watch of the whole repository refuses. A
+    commit that held less could not launch it, and does not freeze it."""
     manifest=toml_at(root,commit,f"{directory}/experiment.toml")
     if not isinstance(manifest,dict) or status_of(manifest) not in FROZEN or not names_an_entrypoint(manifest):
         return None
     if placed_directories(root,commit,exp_id)!=[directory] or not is_repository_path(directory):
+        return None
+    # The runner watches the whole repository of a listed experiment and
+    # refuses one that holds a symlink or a gitlink anywhere, which git holds
+    # as a path and not as content: a commit that holds one could not launch.
+    if commit_links(root,commit):
         return None
     if status_disagreement(exp_id,toml_at(root,commit,REGISTRY),status_of(manifest)) is not None:
         return None
@@ -1597,6 +1619,72 @@ def history_errors(exp_id: str, name: str, named, root: Path, experiment: Path, 
             errors.append(f"{at}, where baseline {baseline['name']} is not the frozen one: its directory holds other files")
     return errors,commit
 
+def aggregate_version_errors(exp_id: str, version: str, earlier: dict, root: Path, commit: str, path: str) -> list[str]:
+    """Why `earlier`, the aggregate the repository path `path` held at
+    `commit` (named `version`), is not bound to the `metrics.json` and
+    `mutations.json` that commit holds beside it: it names the SHA-256 of
+    the metrics (`metrics_sha256`) and, where it carries mutation checks,
+    that of the whole evidence (`mutation_checks.sha256`), which every
+    aggregator of a listed experiment writes (`experiment_records.
+    publish_aggregate`). A version whose artifacts do not match, replaced
+    with a valid pair later, is one whose outcome nothing bound."""
+    directory=PurePosixPath(path).parent
+    errors=[]
+
+    def check(field: str, name: str, named, subject: str) -> None:
+        held=blob(root,commit,(directory/name).as_posix())
+        if not isinstance(named,str):
+            errors.append(f"{exp_id}: {version} names no {field}, so nothing binds it to the {name} committed beside it")
+        elif held is None:
+            errors.append(f"{exp_id}: {version} names {field} {named}, but that commit holds no {name} beside it")
+        elif hashlib.sha256(held).hexdigest()!=named:
+            errors.append(f"{exp_id}: {version} names {field} {named}, not {hashlib.sha256(held).hexdigest()}, the "
+                          f"SHA-256 of the {name} committed beside it")
+
+    check("metrics_sha256",experiment_records.METRICS,earlier.get("metrics_sha256"),"metrics")
+    carried=earlier.get("mutation_checks")
+    if isinstance(carried,dict):
+        check("mutation_checks.sha256",experiment_records.MUTATIONS,carried.get("sha256"),"mutation evidence")
+    return errors
+
+def recorded_command_errors(where: str, record: dict, manifest, table, commit: str) -> list[str]:
+    """Why the `command` and `parameters` a run record names are not those
+    the manifest and the `[preregistration]` table `table` (as `commit`
+    holds them) give the seed it names, as the runner builds them
+    (`run_experiment.command_parameters`, `build_command`): a record of
+    another command (a program chosen from a directory that was replaced while
+    the launch read it, and put back) is no run of what was frozen. Empty for
+    a record naming no seed, and where the frozen command cannot be built
+    (`command_errors` names that)."""
+    seed=record.get("seed")
+    if isinstance(seed,bool) or not isinstance(seed,int):
+        return []
+    if not isinstance(manifest,dict) or not isinstance(table,dict) or not names_an_entrypoint(manifest):
+        return []
+    try:
+        tokens=shlex.split(manifest["entrypoint"])
+    except ValueError:
+        return []
+    values={}
+    for placeholder in sorted({name for token in tokens for name in experiment_records.PLACEHOLDER.findall(token)}-{"seed"}):
+        value=table.get(placeholder,MISSING)
+        if isinstance(value,bool):
+            values[placeholder]="true" if value else "false"
+        elif isinstance(value,(int,str)):
+            values[placeholder]=str(value)
+        else:
+            return []
+    filled={**values,"seed":str(seed)}
+    command=[experiment_records.PLACEHOLDER.sub(lambda match:filled[match.group(1)],token) for token in tokens]
+    errors=[]
+    if record.get("command")!=command:
+        errors.append(f"{where} names command {record.get('command')!r}, not {command!r}, the command the manifest and "
+                      f"[preregistration] table at {commit[:12]} give seed {seed}")
+    if record.get("parameters")!=values:
+        errors.append(f"{where} names parameters {record.get('parameters')!r}, not {values!r}, the values the "
+                      f"[preregistration] table at {commit[:12]} freezes for the command's placeholders")
+    return errors
+
 def record_errors(exp_id: str, name: str, record, aggregate: bool, root: Path, experiment: Path, entry: dict,
                   table: dict, frozen: tuple[str, str], current: tuple[dict, dict]) -> list[str]:
     """What keeps `record`, the parsed run record or aggregate the error
@@ -1624,6 +1712,13 @@ def record_errors(exp_id: str, name: str, record, aggregate: bool, root: Path, e
         named_manifest=record.get("manifest_sha256")
         if held is None or not isinstance(named_manifest,str) or named_manifest!=hashlib.sha256(held).hexdigest():
             errors.append(f"{where} names manifest_sha256 {record.get('manifest_sha256')!r}, not the SHA-256 of experiment.toml at {commit[:12]}")
+        # The command it ran is the one the manifest and the table frozen at
+        # that commit give its seed.
+        relative=experiment.relative_to(root).as_posix()
+        then=toml_at(root,commit,f"{relative}/config.toml")
+        errors.extend(recorded_command_errors(
+            where,record,toml_at(root,commit,f"{relative}/experiment.toml"),
+            then.get("preregistration") if isinstance(then,dict) else None,commit))
     return errors
 
 def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path, root: Path, entry: dict, table: dict,
@@ -1695,6 +1790,9 @@ def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path,
             errors.extend(artifact_errors(
                 exp_id,root,experiment/results_dir,STANDARD_ARTIFACTS,
                 f"experiment, completed at {completed[0][:12]} and now {status_of(manifest)!r},"))
+            # What it was completed with stays what it was: the metrics and
+            # the mutation evidence are the ones its aggregate names.
+            errors.extend(experiment_records.aggregate_errors(exp_id,experiment,experiment/results_dir,root))
     runs={}
     programs={}
     trees=[]
@@ -1767,9 +1865,11 @@ def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path,
                     continue
                 errors.extend(record_errors(exp_id,version,earlier,True,root,experiment,entry,table,frozen,current))
                 # Each version saw the runs it names: it is bound to their
-                # records below as the aggregate now on disk is.
+                # records below as the aggregate now on disk is, and to the
+                # metrics and mutation evidence committed beside it.
                 if isinstance(earlier,dict):
                     aggregates.append((version,earlier))
+                    errors.extend(aggregate_version_errors(exp_id,version,earlier,root,commit,path))
             continue
         # Every commit that holds the record, on every side of every merge,
         # holds the same content: a record rewritten on one side of a merge
