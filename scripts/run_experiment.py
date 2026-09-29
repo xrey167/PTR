@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import collections
 import contextlib
 import datetime as dt
 import hashlib
@@ -1071,10 +1072,16 @@ def named_program(found: str | None, stamps: dict[str, experiment_records.Stamp 
 
 SHEBANG_DEPTH = 4
 
-# The options of `env` that take the word after them as their operand
-# (`-u NAME`, `-C DIR`, `-a ARG`, `-P PATH`, and their long spellings), which
-# is no program.
-ENV_OPERAND_OPTIONS = frozenset(("-u", "--unset", "-C", "--chdir", "-a", "--argv0", "-P"))
+# The short options of `env` that take an operand, the rest of their word or the
+# word after it (`-u NAME`, `-C DIR`, `-a ARG`, `-P PATH`, `-S STRING`), and the
+# long ones that do so as `--option=OPERAND` or `--option OPERAND`.
+ENV_OPERAND_SHORT = frozenset("uCaPS")
+ENV_OPERAND_LONG = frozenset(("--unset", "--chdir", "--argv0", "--split-string"))
+
+
+class ScriptInterpreterError(ValueError):
+    """A script's interpreter cannot be named by its content: `env` would
+    look its program up in a directory no record could name."""
 
 
 def shebang_words(path: str) -> list[str] | None:
@@ -1093,18 +1100,76 @@ def shebang_words(path: str) -> list[str] | None:
     return words or None
 
 
-def env_target(words: list[str]) -> str | None:
-    """The program `env` runs, given the words that follow its name: the
-    first that is no option, no operand of an option that takes one
-    (`ENV_OPERAND_OPTIONS`: `-u PYTHONPATH`) and no assignment (`A=1`); None
-    when there is none."""
-    remaining = iter(words)
-    for word in remaining:
-        if word in ENV_OPERAND_OPTIONS:
-            next(remaining, None)
-        elif not word.startswith("-") and "=" not in word:
-            return word
-    return None
+def env_program(words: list[str], environment: dict[str, str]) -> tuple[str | None, str | None, dict[str, str]]:
+    """The program `env` runs, given the words that follow its name (split as
+    `-S` splits them) and the environment it starts in: the name it is given,
+    where it finds it, and the environment it runs it in. Read as `env`
+    reads them: options first (`-i`, `-u NAME`, `-C DIR`, `-P PATH`, `-a ARG`,
+    `-S STRING` and their long spellings, an operand the rest of the word or
+    the next), then `NAME=value` assignments, then the program, so an
+    assignment or an unset of `PATH` decides where the program is looked up
+    (its default path, `/bin:/usr/bin`, when `PATH` is unset), `-P` the
+    directories it is looked up in instead, and `-C` where a name with a
+    slash starts from. None for the name when `env` is given no program.
+    Raises `ScriptInterpreterError` when it would be looked up in a relative
+    or empty directory, which no record could name."""
+    changed = dict(environment)
+    searched: str | None = None
+    directory: str | None = None
+    queue = collections.deque(words)
+    while queue and queue[0].startswith("-") and queue[0] != "-":
+        word = queue.popleft()
+        if word == "--":
+            break
+        if word.startswith("--"):
+            name, equals, operand = word.partition("=")
+            if name in ENV_OPERAND_LONG and not equals:
+                operand = queue.popleft() if queue else ""
+            if name == "--ignore-environment":
+                changed = {}
+            elif name == "--unset":
+                changed.pop(operand, None)
+            elif name == "--chdir":
+                directory = operand
+            elif name == "--split-string" and operand:
+                queue.appendleft(operand)
+            continue
+        cluster = word[1:]
+        while cluster:
+            option, cluster = cluster[0], cluster[1:]
+            if option == "i":
+                changed = {}
+            elif option in ENV_OPERAND_SHORT:
+                operand = cluster or ("" if option == "S" or not queue else queue.popleft())
+                cluster = ""
+                if option == "u":
+                    changed.pop(operand, None)
+                elif option == "C":
+                    directory = operand
+                elif option == "P":
+                    searched = operand
+                elif option == "S" and operand:
+                    queue.appendleft(operand)
+    if queue and queue[0] == "-":
+        queue.popleft()
+        changed = {}
+    while queue and "=" in queue[0]:
+        name, _, value = queue.popleft().partition("=")
+        changed[name] = value
+    target = queue.popleft() if queue else None
+    if target is None:
+        return None, None, changed
+    lookup = changed if searched is None else {**changed, "PATH": searched}
+    if not has_slash(target) and any(
+        not os.path.isabs(entry) for entry in lookup.get("PATH", os.defpath).split(os.pathsep)
+    ):
+        raise ScriptInterpreterError(
+            f"env would look up {target} in a relative or empty directory of its PATH ({lookup['PATH']!r}), "
+            "which no record could name"
+        )
+    if directory is not None and has_slash(target):
+        target = os.path.join(directory, target)
+    return target, found_program([target], lookup), changed
 
 
 def interpreters_of(
@@ -1112,26 +1177,26 @@ def interpreters_of(
 ) -> list[dict]:
     """The programs the kernel runs to run the script at `found`, each named
     as `named_program` names it and stamped into `stamps`: the interpreter
-    its first line names, and where that is `env`, the program `env` looks up
-    on `environment`'s `PATH` (`env_target`); and, for each of them that is a
-    script too, its own
-    interpreters, to `SHEBANG_DEPTH` levels. Empty for a file that is no
-    script."""
+    its first line names, and where that is `env`, the program `env` runs
+    (`env_program`: looked up as `env` looks it up, on `environment`'s
+    `PATH` unless its words change that); and, for each of them that is a
+    script too, its own interpreters, in the environment it is started in,
+    to `SHEBANG_DEPTH` levels. Empty for a file that is no script."""
     words = shebang_words(os.path.realpath(found))
     if words is None or depth >= SHEBANG_DEPTH:
         return []
-    named = [named_program(found_program([words[0]], environment), stamps)]
+    named = [(named_program(found_program([words[0]], environment), stamps), environment)]
     if experiment_records.program_name(words[0]) == "env":
-        target = env_target(words[1:])
+        target, located, inner = env_program(words[1:], environment)
         if target is not None:
-            named.append(named_program(found_program([target], environment), stamps))
+            named.append((named_program(located, stamps), inner))
     nested = [
-        inner
-        for program in named
+        deeper
+        for program, started_in in named
         if program["path"] is not None
-        for inner in interpreters_of(program["path"], environment, stamps, depth + 1)
+        for deeper in interpreters_of(program["path"], started_in, stamps, depth + 1)
     ]
-    return [*named, *nested]
+    return [*(program for program, _ in named), *nested]
 
 
 def named_script(
@@ -1468,7 +1533,11 @@ def launch_and_record(
         # file holds what its digest names, through the run.
         stamps: dict[str, experiment_records.Stamp | None] = {}
         found = found_program(command, environment)
-        executable = named_script(found, environment, stamps)
+        try:
+            executable = named_script(found, environment, stamps)
+        except ScriptInterpreterError as error:
+            print(f"ERROR: refusing to run {exp_id}: {error}; the script's interpreter could not be named", file=sys.stderr)
+            return 2
         selected: dict[str, str] = {}
         linked: list[str] = []
         tools = toolchain(environment, command, stamps, selected, linked)

@@ -2903,6 +2903,18 @@ class RunWatchTests(unittest.TestCase):
                 status, records, stderr = self.run_seed()
                 self.assertEqual((status, stderr, records[0]["executable"]), (0, "", named(outside / "bench")))
                 clear()
+        # An `env` that would look its program up in a relative directory
+        # refuses the run: no record could name that directory.
+        program(f"#!{env} -S PATH=relative fake")
+        with mock.patch.dict(os.environ, {"PATH": search}):
+            ran = []
+            status, records, stderr = self.run_seed(lambda: ran.append(True))
+        self.assertEqual((status, records, ran), (2, [], []))
+        self.assertIn(
+            "ERROR: refusing to run L900: env would look up fake in a relative or empty directory of its PATH "
+            "('relative'), which no record could name; the script's interpreter could not be named",
+            stderr,
+        )
         # An interpreter replaced for the run and put back leaves it unrecorded.
         program(f"#!{interpreter}")
         time.sleep(0.05)
@@ -2949,18 +2961,20 @@ class RunWatchTests(unittest.TestCase):
                 mod.interpreters_of(str(chain[6]), environment, None),
                 [named(chain[5]), named(chain[4]), named(chain[3]), named(chain[2])],
             )
-            # The program `env` looks up is followed too, whichever line it is
-            # on, and `env` and its options are not taken for it.
+            # The program `env` runs is followed too, and `env`, its options and
+            # their operands are not taken for it.
             env = shutil.which("env")
             self.assertIsNotNone(env)
             fake = write("fake", f"#!{chain[1]}\n".encode("utf-8"))
             for words in (
                 "fake",
-                "-i fake",
                 "-S fake",
+                "-Sfake",
+                "--split-string=fake",
+                "--split-string fake",
+                "--split-string= fake",
                 "A=1 B=2 fake",
                 "-S -u PYTHONPATH fake",
-                "-u PYTHONPATH -i fake",
                 "--unset PYTHONPATH fake",
                 "--unset=PYTHONPATH fake",
                 "-uPYTHONPATH fake",
@@ -2968,8 +2982,8 @@ class RunWatchTests(unittest.TestCase):
                 "--chdir /tmp fake",
                 "-a name fake",
                 "--argv0 name fake",
-                "-P /bin fake",
                 "-u A -u B -C /tmp A=1 fake",
+                "-vu A fake",
                 "-- fake",
             ):
                 with self.subTest(words=words):
@@ -2984,6 +2998,10 @@ class RunWatchTests(unittest.TestCase):
             # Nor does one whose last option has no operand left.
             script = write("bench", f"#!{env} -i -u\nfake\n".encode("utf-8"))
             self.assertEqual(mod.interpreters_of(str(script), environment, None), [named(env)])
+            # Options end at the first assignment, so a word like an option
+            # after one is the program's name, as `env` reads it.
+            script = write("bench", f"#!{env} A=1 -i fake\n".encode("utf-8"))
+            self.assertEqual(mod.interpreters_of(str(script), environment, None), [named(env), {"path": None, "sha256": None}])
             # A script naming itself ends at the bound.
             looping = write("looping", f"#!{outside / 'looping'}\n".encode("utf-8"))
             self.assertEqual(mod.interpreters_of(str(looping), environment, None), [named(looping)] * 4)
@@ -3002,6 +3020,110 @@ class RunWatchTests(unittest.TestCase):
             mod.interpreters_of(str(chain[3]), environment, stamps)
             for interpreter in (chain[2], chain[1], binary):
                 self.assertIn(str(interpreter.resolve()), stamps)
+
+    def test_env_in_a_shebang_runs_the_program_its_words_and_environment_select(self):
+        # `env` looks its program up as `execvp` does, on the PATH it runs
+        # with: one its words assign, or unset (the default path then), or
+        # `-P` names, so a record that named the program on the runner's PATH
+        # named another than the one that ran.
+        outside = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        first, second = outside / "first", outside / "second"
+        first.mkdir()
+        second.mkdir()
+
+        def write(path: Path, content: bytes) -> Path:
+            path.write_bytes(content)
+            path.chmod(0o755)
+            return path
+
+        def named(path) -> dict:
+            path = Path(path)
+            return {"path": str(path.resolve()), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+
+        env = shutil.which("env")
+        self.assertIsNotNone(env)
+        default_shell = shutil.which("sh", path=os.defpath)
+        self.assertIsNotNone(default_shell)
+        for directory in (first, second):
+            write(directory / "prog", f"{directory.name}\n".encode("utf-8"))
+        write(first / "sh", b"shadow\n")
+        environment = {"PATH": str(first), "HOME": "/home/runner"}
+        missing = {"path": None, "sha256": None}
+
+        def interpreters(words: str, start: dict[str, str] = environment) -> list[dict]:
+            script = write(outside / "bench", f"#!{env} {words}\n".encode("utf-8"))
+            return mod.interpreters_of(str(script), start, None)
+
+        with mock.patch.object(mod, "ROOT", self.root):
+            for words, chosen in (
+                ("prog", first / "prog"),
+                ("-- prog", first / "prog"),
+                (f"PATH={second} prog", second / "prog"),
+                (f"-S PATH={second} prog", second / "prog"),
+                (f"A=1 PATH={second} B=2 prog", second / "prog"),
+                (f"PATH={second} PATH={first} prog", first / "prog"),
+                (f"PATH={second}:{first} prog", second / "prog"),
+                (f"PATH={first}:{second} prog", first / "prog"),
+                (f"-i PATH={second} prog", second / "prog"),
+                (f"-u PATH PATH={second} prog", second / "prog"),
+                (f"-P {second} prog", second / "prog"),
+                (f"--default-signal -P {second} prog", second / "prog"),
+                (f"-C {outside} PATH={second} prog", second / "prog"),
+                ("sh", first / "sh"),
+            ):
+                with self.subTest(words=words):
+                    self.assertEqual(interpreters(words), [named(env), named(chosen)])
+            # `--` ends the options, so a word like one after it is the program's
+            # name, and an assignment is read up to its first `=`.
+            self.assertEqual(interpreters("-- -x"), [named(env), missing])
+            self.assertEqual(interpreters(f"PATH={second}=x prog"), [named(env), missing])
+            # An assignment after the program is the program's.
+            self.assertEqual(interpreters(f"prog PATH={second}"), [named(env), named(first / "prog")])
+            # Where PATH is unset, or the environment ignored, the default path.
+            for words in (
+                "-i sh",
+                "- sh",
+                "-S -i sh",
+                "-u PATH sh",
+                "--unset PATH sh",
+                "--unset=PATH sh",
+                "-uPATH sh",
+                "-iu PATH sh",
+                "-iuPATH sh",
+                "--ignore-environment sh",
+                "-i A=1 sh",
+            ):
+                with self.subTest(words=words):
+                    self.assertEqual(interpreters(words), [named(env), named(default_shell)])
+            self.assertEqual(interpreters("prog", {}), [named(env), missing])
+            # `-P` searches the directories it names and leaves PATH as it is
+            # for what the program runs.
+            write(second / "inner", f"#!{env} prog2\n".encode("utf-8"))
+            write(second / "prog2", b"prog2\n")
+            self.assertEqual(
+                interpreters(f"PATH={second} inner"),
+                [named(env), named(second / "inner"), named(env), named(second / "prog2")],
+            )
+            self.assertEqual(
+                interpreters(f"-P {second} inner"),
+                [named(env), named(second / "inner"), named(env), missing],
+            )
+            # A name with a slash starts from the root, or from what `-C` names.
+            (self.root / "rel").mkdir()
+            write(self.root / "rel" / "tool", b"tool\n")
+            write(second / "tool", b"other\n")
+            self.assertEqual(interpreters("./tool"), [named(env), missing])
+            self.assertEqual(interpreters("-C rel ./tool"), [named(env), named(self.root / "rel" / "tool")])
+            self.assertEqual(interpreters(f"--chdir {second} ./tool"), [named(env), named(second / "tool")])
+            self.assertEqual(interpreters(f"-C rel {second}/tool"), [named(env), named(second / "tool")])
+            # A program looked up in a relative or empty directory is one no
+            # record could name.
+            for words in ("PATH= prog", "PATH=relative prog", f"PATH={first}:relative prog", "PATH=: prog", "-P relative prog"):
+                with self.subTest(words=words), self.assertRaises(mod.ScriptInterpreterError):
+                    interpreters(words)
+            # Not one given by a path, nor where no program is run.
+            self.assertEqual(interpreters(f"PATH=relative {second}/prog"), [named(env), named(second / "prog")])
+            self.assertEqual(interpreters("PATH=relative"), [named(env)])
 
     def test_a_listed_experiment_reads_no_output_the_tools_left_uncommitted(self):
         # An output could be an input: what a listed experiment's command
