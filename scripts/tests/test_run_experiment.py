@@ -3024,11 +3024,13 @@ class RunWatchTests(unittest.TestCase):
             status, records, stderr = self.run_seed()
         self.assertEqual((status, stderr, [record["status"] for record in records]), (0, "", ["completed"]))
 
-    def test_a_program_rustup_runs_that_is_no_proxy_is_refused(self):
-        # `rustup run <toolchain> <program>` looks the program up itself, on a
-        # `PATH` it builds from the toolchain it selects: the record names
-        # rustup and the toolchain's tools, but not that program, which could
-        # be replaced between seeds while every record agreed.
+    def test_a_program_rustup_runs_that_the_record_does_not_name_is_refused(self):
+        # `rustup run <toolchain> <program>` starts the program itself: by its
+        # bare name from the toolchain it selects, or by its path. The record
+        # names rustup and the toolchain's rustc, cargo and rustdoc, but no
+        # other program, which could be replaced between seeds while every
+        # record agreed, whatever it is called: a path that ends in `cargo`,
+        # another proxy such as `rustfmt`, `cargo.exe`.
         for command in (
             ["rustup", "run", "pinned", "python3", "bench.py"],
             ["rustup", "+pinned", "run", "--install", "pinned", "sh", "-c", "cargo test"],
@@ -3037,35 +3039,73 @@ class RunWatchTests(unittest.TestCase):
             ["rustup", "run", "pinned", "--install", "python3"],
             ["rustup", "run", "pinned", "--", "-evil"],
             ["rustup", "run", "pinned", "--", "--", "cargo"],
-            ["/opt/rust/bin/rustup", "run", "pinned", "rustfmt-not-a-proxy"],
+            ["rustup", "run", "pinned", "/tmp/cargo"],
+            ["rustup", "run", "pinned", "./rustc", "lib.rs"],
+            ["rustup", "run", "pinned", "bin/rustdoc", "lib.rs"],
+            ["rustup", "run", "pinned", "C:\\Rust\\cargo.exe", "test"],
+            ["rustup", "run", "pinned", "cargo.exe", "test"],
+            ["rustup", "run", "pinned", "CARGO", "test"],
+            ["rustup", "run", "pinned", "rustfmt", "lib.rs"],
+            ["rustup", "run", "pinned", "cargo-clippy"],
+            ["rustup", "run", "pinned", "clippy-driver", "lib.rs"],
+            ["rustup", "run", "pinned", "rust-gdb"],
+            ["rustup", "run", "pinned", "rustup", "show"],
+            ["/opt/rust/bin/rustup", "run", "pinned", "cargo-fmt"],
         ):
             with self.subTest(command=command):
                 self.assertTrue(mod.runs_other_program(command))
+        # The programs the record names are not refused, nor is a command that
+        # is no `rustup run` of a program.
         for command in (
             [],
             ["python3", "bench.py"],
             ["python3", "run", "pinned", "bench.py"],
             ["cargo", "run"],
             ["rustc", "lib.rs"],
+            ["rustfmt", "lib.rs"],
             ["rustup"],
             ["rustup", "show"],
+            ["rustup", "toolchain", "install", "stable", "cargo"],
             ["rustup", "run", "pinned"],
+            ["rustup", "run", "pinned", "--"],
+            ["rustup", "run", "pinned", "--install"],
             ["rustup", "run", "pinned", "cargo", "run"],
-            ["rustup", "run", "pinned", "rustup", "show"],
+            ["rustup", "run", "pinned", "rustc", "lib.rs"],
             ["rustup", "run", "pinned", "rustdoc", "lib.rs"],
-            ["rustup", "run", "pinned", "rustfmt", "lib.rs"],
+            ["rustup", "run", "pinned", "--", "cargo", "test"],
+            ["rustup", "run", "--install", "pinned", "cargo", "+pinned", "test"],
+            ["rustup.exe", "run", "pinned", "cargo", "test"],
         ):
             with self.subTest(command=command):
                 self.assertFalse(mod.runs_other_program(command))
+        self.assertEqual(mod.rustup_run_child(["rustup", "run", "pinned", "cargo", "run"]), ["cargo", "run"])
+        self.assertEqual(mod.rustup_run_child(["rustup", "run", "pinned", "--", "-evil"]), ["-evil"])
+        for command in (
+            [],
+            ["cargo", "run"],
+            ["rustup"],
+            ["rustup", "show"],
+            ["rustup", "toolchain", "install", "stable", "cargo"],
+            ["rustup", "run", "pinned"],
+            ["rustup", "run", "pinned", "--"],
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(mod.rustup_run_child(command))
         # A listed run of one is refused before its seed is spent, whether the
-        # toolchain is there or not, with or without `--install`.
-        for entrypoint, resolves in (
-            ("rustup run pinned python3 <seed>", True),
-            ("rustup run pinned python3 <seed>", False),
-            ("rustup run --install pinned python3 <seed>", True),
-            ("rustup +pinned run pinned sh -c true <seed>", True),
-            ("rustup run pinned -- python3 <seed>", True),
-            ("rustup run pinned -- -evil <seed>", True),
+        # toolchain is there or not, with or without `--install`, naming the
+        # program as the command gives it.
+        for entrypoint, resolves, named in (
+            ("rustup run pinned python3 <seed>", True, "python3"),
+            ("rustup run pinned python3 <seed>", False, "python3"),
+            ("rustup run --install pinned python3 <seed>", True, "python3"),
+            ("rustup +pinned run pinned sh -c true <seed>", True, "sh"),
+            ("rustup run pinned -- python3 <seed>", True, "python3"),
+            ("rustup run pinned -- -evil <seed>", True, "-evil"),
+            ("rustup run pinned /opt/tools/Python3.EXE <seed>", True, "/opt/tools/Python3.EXE"),
+            ("rustup run pinned /tmp/cargo run -- <seed>", True, "/tmp/cargo"),
+            ("rustup run pinned ./rustc <seed>", True, "./rustc"),
+            ("rustup run pinned rustfmt <seed>", True, "rustfmt"),
+            ("rustup run pinned cargo-clippy <seed>", True, "cargo-clippy"),
         ):
             with self.subTest(entrypoint=entrypoint, resolves=resolves):
                 self.tearDown()
@@ -3078,36 +3118,26 @@ class RunWatchTests(unittest.TestCase):
                 with mock.patch.dict(os.environ, {"PATH": search}):
                     status, records, stderr = self.run_seed(lambda: ran.append(True))
                 self.assertEqual((status, records, ran), (2, [], []))
-                self.assertIn("ERROR: refusing to run L900: rustup would look up ", stderr)
+                self.assertIn(f"ERROR: refusing to run L900: rustup would start {named} itself when the command starts", stderr)
                 self.assertIn(
-                    " itself when the command starts, on a PATH it builds from the toolchain it selects, so its record "
-                    "could not name by its content what ran; start the program directly, so that the record names it",
+                    "which the record, naming rustup and the toolchain's rustc, cargo and rustdoc, could not name by "
+                    "its content; start the program directly, so that the record names it",
                     stderr,
                 )
                 self.assertEqual(list(self.attempts().glob("run-*.json")), [])
-        # The program is named in the message, as a platform spells it.
-        self.tearDown()
-        self.setUp()
-        tools = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        bin_directory = self.fake_rust(tools)
-        search = os.pathsep.join((str(bin_directory), os.environ.get("PATH", os.defpath)))
-        self.preregister("running", entrypoint="rustup run pinned /opt/tools/Python3.EXE <seed>")
-        with mock.patch.dict(os.environ, {"PATH": search}):
-            status, records, stderr = self.run_seed()
-        self.assertEqual((status, records), (2, []))
-        self.assertIn("rustup would look up python3 itself", stderr)
-        # A program that is one of rustup's proxies is not refused: the record
-        # names the tools it resolves, and a toolchain that is missing refuses
-        # as before.
-        self.tearDown()
-        self.setUp()
-        tools = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        bin_directory = self.fake_rust(tools)
-        search = os.pathsep.join((str(bin_directory), os.environ.get("PATH", os.defpath)))
-        self.preregister("running", entrypoint="rustup run pinned cargo run -- <seed>")
-        with mock.patch.dict(os.environ, {"PATH": search}):
-            status, records, stderr = self.run_seed()
-        self.assertEqual((status, stderr, [record["status"] for record in records]), (0, "", ["completed"]))
+        # The programs the record names run: their tools are recorded, and a
+        # toolchain that is missing refuses as before.
+        for entrypoint in ("rustup run pinned cargo run -- <seed>", "rustup run pinned rustc -- <seed>"):
+            with self.subTest(entrypoint=entrypoint):
+                self.tearDown()
+                self.setUp()
+                tools = Path(self.enterContext(tempfile.TemporaryDirectory()))
+                bin_directory = self.fake_rust(tools)
+                search = os.pathsep.join((str(bin_directory), os.environ.get("PATH", os.defpath)))
+                self.preregister("running", entrypoint=entrypoint)
+                with mock.patch.dict(os.environ, {"PATH": search}):
+                    status, records, stderr = self.run_seed()
+                self.assertEqual((status, stderr, [record["status"] for record in records]), (0, "", ["completed"]))
         self.tearDown()
         self.setUp()
         tools = Path(self.enterContext(tempfile.TemporaryDirectory()))

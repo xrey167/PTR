@@ -893,20 +893,20 @@ def is_rustup_proxy(path: str, rustup: str) -> bool:
         return False
 
 
-def started_program(command: list[str]) -> list[str]:
-    """The program `command` starts with its arguments, past rustup's own
-    words when it is `rustup run <toolchain> <program> ...` (options and
-    `+<toolchain>` before `run`, the options of `run` on either side of the
-    toolchain, up to the `--` that ends them: what follows it is the program,
-    whatever it starts with); `command` itself otherwise."""
+def rustup_run_child(command: list[str]) -> list[str] | None:
+    """The program `rustup run <toolchain> <program> ...` starts with its
+    arguments, past rustup's own words (options and `+<toolchain>` before
+    `run`, the options of `run` on either side of the toolchain, up to the
+    `--` that ends them: what follows it is the program, whatever it starts
+    with); None when `command` is no `rustup run` of a program."""
     program = experiment_records.program_name(command[0]) if command else ""
     if program != "rustup":
-        return command
+        return None
     rest = command[1:]
     while rest and rest[0].startswith(("-", "+")):
         rest = rest[1:]
     if not rest or rest[0] != "run":
-        return command
+        return None
     rest = rest[1:]
     while rest and rest[0].startswith("-"):
         rest = rest[1:]
@@ -916,7 +916,14 @@ def started_program(command: list[str]) -> list[str]:
         started = started[1:]
         if delimiter:
             break
-    return started or command
+    return started or None
+
+
+def started_program(command: list[str]) -> list[str]:
+    """The program `command` starts with its arguments, past rustup's own
+    words when it is `rustup run <toolchain> <program> ...`
+    (`rustup_run_child`); `command` itself otherwise."""
+    return rustup_run_child(command) or command
 
 
 def starts_rust(command: list[str]) -> bool:
@@ -955,15 +962,20 @@ def invokes_rustdoc(command: list[str]) -> bool:
     return "--doc" in options or not options & DOCTEST_EXCLUDING_OPTIONS
 
 
+# The programs `rustup run` starts that the record names: by their bare names
+# it starts the toolchain's own, which `toolchain` names by content.
+RUSTUP_RUN_NAMED = frozenset(("cargo", "rustc", "rustdoc"))
+
+
 def runs_other_program(command: list[str]) -> bool:
     """Whether `command` is `rustup run <toolchain> <program>` for a program
-    that is no proxy of rustup's, which rustup looks up itself, on a `PATH` it
-    builds from the selected toolchain, and runs with that toolchain's tools
-    on it."""
-    if not command or experiment_records.program_name(command[0]) != "rustup":
-        return False
-    program = experiment_records.program_name(started_program(command)[0])
-    return program != "rustup" and program not in RUSTUP_PROXIES
+    the record does not name: any but `cargo`, `rustc` and `rustdoc` by their
+    bare names (`RUSTUP_RUN_NAMED`, which rustup starts from the selected
+    toolchain, and `toolchain` names by content). Rustup looks another up
+    itself, on a `PATH` it builds from that toolchain, or starts it by its
+    path (`/tmp/cargo`, `rustfmt`, `cargo.exe`, `rustup`)."""
+    child = rustup_run_child(command)
+    return child is not None and child[0] not in RUSTUP_RUN_NAMED
 
 
 def required_rust_tools(command: list[str], tools: dict) -> set[str]:
@@ -1591,15 +1603,15 @@ def launch_and_record(
                 file=sys.stderr,
             )
             return 2
-        # `rustup run <toolchain> <program>` looks the program up itself, on a
-        # `PATH` it builds from the toolchain it selects: the record names
-        # rustup and the toolchain's tools, but not a program that is neither.
+        # `rustup run <toolchain> <program>` starts the program itself, looked
+        # up on a `PATH` it builds from the toolchain it selects or by its
+        # path: the record names rustup and the toolchain's rustc, cargo and
+        # rustdoc, but no other program.
         if runs_other_program(command):
             print(
-                f"ERROR: refusing to run {exp_id}: rustup would look up "
-                f"{experiment_records.program_name(started_program(command)[0])} itself when the command starts, on a "
-                "PATH it builds from the toolchain it selects, so its record could not name by its content what "
-                "ran; start the program directly, so that the record names it",
+                f"ERROR: refusing to run {exp_id}: rustup would start {rustup_run_child(command)[0]} itself when the "
+                "command starts, which the record, naming rustup and the toolchain's rustc, cargo and rustdoc, could "
+                "not name by its content; start the program directly, so that the record names it",
                 file=sys.stderr,
             )
             return 2
