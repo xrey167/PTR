@@ -405,13 +405,22 @@ def score_predictions(items: list[Item], predictions: list[int]) -> dict:
 
 
 def rust_final_row(rows: list[dict], arm: str, split: str):
-    """The binary's final row for (arm, split): any JSON row whose `arm` and
-    `split` fields name them and that carries a numeric `correct`."""
-    for row in rows:
-        if row.get("arm") == arm and row.get("split") == split and isinstance(row.get("correct"), (int, float)) \
-                and not isinstance(row.get("correct"), bool):
-            return row
-    return None
+    """Return the unique final row, refusing ambiguous or invalid final counts.
+
+    Legacy rows without a row tag still qualify when they carry a numeric
+    correct count. Explicit final rows cannot hide behind a malformed count.
+    """
+    matching = [row for row in rows if row.get("arm") == arm and row.get("split") == split
+                and (row.get("row") == "final" or ("row" not in row
+                     and type(row.get("correct")) in (int, float)))]
+    if len(matching) > 1:
+        raise ValueError(f"{arm}/{split}: expected one final row, found {len(matching)} (gate G5)")
+    if not matching:
+        return None
+    final = matching[0]
+    if type(final.get("correct")) is not int or final["correct"] < 0:
+        raise ValueError(f"{arm}/{split}: final correct count is not a nonnegative integer (gate G5)")
+    return final
 
 
 def score_records(paths: list[Path], data_dir: Path) -> tuple[dict, list[str]]:
@@ -453,10 +462,14 @@ def score_records(paths: list[Path], data_dir: Path) -> tuple[dict, list[str]]:
                 "split": split,
                 **report,
             }
-            final = rust_final_row(rows, arm, split)
+            try:
+                final = rust_final_row(rows, arm, split)
+            except ValueError as error:
+                problems.append(f"{path}: {error}")
+                final = None
             if final is not None:
                 entry["rust"] = {k: final.get(k) for k in ("n", "correct", "accuracy", "nll", "ece15")}
-                entry["rust_count_agrees"] = final.get("n") == report["n"] and final.get("correct") == report["correct"]
+                entry["rust_count_agrees"] = type(final.get("n")) is int and final.get("n") == report["n"] and final.get("correct") == report["correct"]
                 if not entry["rust_count_agrees"]:
                     problems.append(
                         f"{path}: {arm}/{split}: Rust counts {final.get('correct')}/{final.get('n')} "

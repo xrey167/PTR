@@ -31,6 +31,11 @@ ROOT = Path(__file__).resolve().parents[1]
 STUDY_DIR = ROOT / "research/falsification/A0-ablations-v1"
 CRITERIA = STUDY_DIR / "criteria.toml"
 PREREG_TAG = "a0-ablation-prereg-v1"
+# The preregistration commit is part of the branch history; a fresh clone need
+# not reconstruct a tag by hand. A present tag must name this same commit.
+PREREG_COMMIT = "45b2d5491e40171dd242d0bac6cf7d78d9c70746"
+RERUN_SEED = 17
+G6_CHECKS = frozenset({"cargo_test", "self_test", "benchmark_tests", "aggregator_tests", "config_tests"})
 DATA_DIR = ROOT / "datasets/generated/operator_routing_v1"
 LOCK = ROOT / "benchmarks/operator-routing/splits.lock.json"
 EXPERIMENTS = {
@@ -418,16 +423,41 @@ def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def at_tag(relative: str) -> bytes | None:
-    """Read a file at the preregistration tag, returning None if Git cannot find it."""
+def preregistration_ref() -> str:
+    """Resolve the in-tree frozen identity and reject a conflicting tag."""
     try:
-        return subprocess.run(["git", "show", f"{PREREG_TAG}:{relative}"], cwd=ROOT,
+        commit = git("rev-parse", "--verify", f"{PREREG_COMMIT}^{{commit}}").strip()
+    except subprocess.CalledProcessError as error:
+        raise ValueError(f"preregistration commit {PREREG_COMMIT} is missing; fetch the branch history") from error
+    try:
+        tagged = git("rev-parse", "--verify", f"{PREREG_TAG}^{{commit}}").strip()
+    except subprocess.CalledProcessError:
+        tagged = None
+    if tagged is not None and tagged != commit:
+        raise ValueError(f"{PREREG_TAG} names {tagged}, not frozen commit {commit}")
+    return commit
+
+
+def at_tag(relative: str) -> bytes | None:
+    """Read the frozen commit (the tag, when present, must agree with it)."""
+    reference = preregistration_ref()
+    try:
+        return subprocess.run(["git", "show", f"{reference}:{relative}"], cwd=ROOT,
                               capture_output=True, check=True).stdout
     except subprocess.CalledProcessError:
         return None
 
 
-def build_table(paths: list[Path], score) -> tuple[dict, list[str], list[dict]]:
+def frozen_input_violations() -> list[str]:
+    """Bind every current decision/data-contract input to its pre-run bytes."""
+    paths = [CRITERIA, STUDY_DIR / "references.json", STUDY_DIR / "budget.json",
+             STUDY_DIR / "PREREGISTRATION.md", STUDY_DIR / "DESIGN.md", LOCK,
+             ROOT / "datasets/generated/codebook.json"]
+    return [str(path.relative_to(ROOT)) for path in paths
+            if not path.is_file() or at_tag(path.relative_to(ROOT).as_posix()) != path.read_bytes()]
+
+
+def build_table(paths: list[Path], score) -> tuple[dict, list[str], list[dict], str | None]:
     """Index independently scored records by arm, seed, and split, reporting duplicates."""
     document, problems = score.score_records(paths, DATA_DIR)
     table: dict = {}
@@ -438,7 +468,15 @@ def build_table(paths: list[Path], score) -> tuple[dict, list[str], list[dict]]:
         if entry["split"] in cell:
             problems.append(f"{entry['record']}: a second score for {entry['arm']}/{entry['seed']}/{entry['split']}")
         cell[entry["split"]] = entry
-    return table, problems, document["results"]
+    return table, problems, document["results"], document.get("data_fnv1a64")
+
+
+def scored_data_identity(fingerprints: dict[str, str | None], lock: dict) -> bool:
+    """Every scored phase must use exactly the dataset named by the lock."""
+    expected = lock.get("data_fnv1a64")
+    return bool(fingerprints) and isinstance(expected, str) and bool(expected) and all(
+        fingerprint == expected for fingerprint in fingerprints.values()
+    )
 
 
 # ------------------------------------------------------------------------ record gates
@@ -484,13 +522,17 @@ def completeness(chosen: dict[str, dict[str, dict[int, dict]]], seeds: list[int]
     problems = []
     for kind, by_experiment in chosen.items():
         for experiment, by_seed in by_experiment.items():
-            wanted = seeds if kind != "rerun" else sorted(by_seed) or [seeds[0]]
+            wanted = seeds if kind != "rerun" else [RERUN_SEED]
+            if kind == "rerun" and set(by_seed) - {RERUN_SEED}:
+                problems.append(f"rerun {experiment}: unexpected seeds {sorted(set(by_seed) - {RERUN_SEED})}")
             for seed in wanted:
                 record = by_seed.get(seed)
                 if record is None:
                     problems.append(f"{kind} {experiment}/{seed}: no completed process")
                 elif has_nan(record):
                     problems.append(f"{kind} {experiment}/{seed}: a non-finite loss")
+    if "M001" not in chosen.get("rerun", {}):
+        problems.append(f"rerun M001/{RERUN_SEED}: no completed process")
     for experiment in planned:
         if experiment not in chosen.get("eval", {}):
             problems.append(f"eval {experiment}: no records")
@@ -546,18 +588,67 @@ def rerun_reproduces(original: dict | None, rerun: dict | None) -> dict:
             return []
         return [l for l in record.get("stdout", "").splitlines() if '"arm":"full"' in l or l.startswith("PRED full ")]
     ours, theirs = full_lines(original), full_lines(rerun)
-    return {"full_lines": len(ours), "pass": bool(ours) and ours == theirs}
+    expected_seed = original is not None and rerun is not None and original.get("seed") == rerun.get("seed") == RERUN_SEED
+    return {"full_lines": len(ours), "pass": expected_seed and bool(ours) and ours == theirs}
+
+
+def correctness_evidence(evidence: dict, evaluated_commit: str | None, logs: Path, data_fnv: str) -> dict:
+    """G6 requires the exact check set, tested commit, commands and bound logs.
+
+    Legacy pass/fail dictionaries lack that provenance and fail closed. This
+    binds recorded evidence, not an independently signed test attestation.
+    """
+    problems = []
+    if evidence.get("schema_version") != 1:
+        problems.append("missing versioned correctness evidence")
+    if not evaluated_commit or evidence.get("git_sha") != evaluated_commit or evidence.get("git_sha_after") != evaluated_commit:
+        problems.append("correctness checks were not bound to the evaluation commit")
+    if evidence.get("git_dirty") is not False or evidence.get("git_dirty_after") is not False:
+        problems.append("correctness checks require a recorded clean source tree before and after")
+    checks = evidence.get("checks", {})
+    if not isinstance(checks, dict) or set(checks) != G6_CHECKS:
+        problems.append("correctness evidence does not contain the exact required check set")
+        checks = checks if isinstance(checks, dict) else {}
+    tails = {
+        "cargo_test": ["+1.95.0", "test", "--locked", "--manifest-path", "model/burn-a0/Cargo.toml"],
+        "self_test": ["--phase", "self-test", "--data", "datasets/generated/operator_routing_v1", "--data-fnv64", data_fnv],
+        "benchmark_tests": ["-m", "unittest", "discover", "-s", "benchmarks/operator-routing/tests"],
+        "aggregator_tests": ["-m", "unittest", "scripts/tests/test_a0_ablation_aggregate.py"],
+        "config_tests": ["-m", "unittest", "scripts/tests/test_a0_ablation_config.py"],
+    }
+    for name in sorted(G6_CHECKS & set(checks)):
+        check = checks[name]
+        if not isinstance(check, dict):
+            problems.append(f"{name}: malformed check evidence")
+            continue
+        argv = check.get("argv")
+        command_ok = isinstance(argv, list) and bool(argv) and all(isinstance(arg, str) for arg in argv) and argv[1:] == tails[name]
+        if command_ok:
+            program = Path(argv[0]).name
+            command_ok = (program == "cargo" if name == "cargo_test" else
+                          argv[0].endswith("model/burn-a0/target-a0-study/release/examples/a0_ablation") if name == "self_test" else
+                          re.fullmatch(r"python(?:3(?:\.\d+)?)?", program) is not None)
+        if not command_ok:
+            problems.append(f"{name}: command is not the required correctness check")
+        if type(check.get("exit_code")) is not int or check["exit_code"] != 0:
+            problems.append(f"{name}: check did not exit successfully")
+        path = logs / f"g6-{name}.log"
+        if not path.is_file() or not path.stat().st_size or check.get("log_sha256") != sha256(path):
+            problems.append(f"{name}: log is missing, empty or changed")
+    return {"pass": not problems, "detail": problems}
 
 
 def main(argv: list[str] | None = None) -> int:
     """Verify frozen criteria, score study records, and write gates, verdicts, and metrics."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.parse_args(argv)
-    frozen = at_tag("research/falsification/A0-ablations-v1/criteria.toml")
-    if frozen is None:
-        raise SystemExit(f"no {PREREG_TAG} tag: there is nothing preregistered to apply")
-    if hashlib.sha256(frozen).hexdigest() != sha256(CRITERIA):
-        raise SystemExit("criteria.toml differs from the preregistered file; refusing")
+    try:
+        frozen_ref = preregistration_ref()
+        changed_inputs = frozen_input_violations()
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
+    if changed_inputs:
+        raise SystemExit("inputs differ from the preregistration: " + ", ".join(changed_inputs))
     criteria = tomllib.loads(CRITERIA.read_text(encoding="utf-8"))
     references = json.loads((STUDY_DIR / "references.json").read_text(encoding="utf-8"))
     budget = json.loads((STUDY_DIR / "budget.json").read_text(encoding="utf-8"))
@@ -592,12 +683,15 @@ def main(argv: list[str] | None = None) -> int:
 
     tables = {}
     scored = {}
+    fingerprints = {}
     all_problems = []
     for kind in ("eval", "contingency", "rerun"):
-        tables[kind], problems, scored[kind] = (
+        tables[kind], problems, scored[kind], fingerprint = (
             build_table(chosen_paths[kind], score)
-            if kind == "eval" or chosen_paths[kind] else (None, [], [])
+            if kind == "eval" or chosen_paths[kind] else (None, [], [], None)
         )
+        if kind == "eval" or chosen_paths[kind]:
+            fingerprints[kind] = fingerprint
         all_problems.extend(problems)
     table = tables["eval"]
     contingency = tables["contingency"]
@@ -606,15 +700,17 @@ def main(argv: list[str] | None = None) -> int:
     # G0: data identity and label agreement, for every process a verdict rests on.
     identity = data_identity(chosen_records, lock)
     agreement, disagreements = score.agree(DATA_DIR, verbose=False)
-    gates["G0"] = {"pass": identity["pass"] and not disagreements and references["all_bands_pass"],
+    gates["G0"] = {"pass": identity["pass"] and scored_data_identity(fingerprints, lock) and not disagreements and references["all_bands_pass"],
                    "detail": {"records": len(chosen_records),
+                              "scored_data_fnv1a64": fingerprints,
+                              "scored_data_matches_lock": scored_data_identity(fingerprints, lock),
                               "records_without_data_row": identity["records_without_data_row"],
                               "records_with_other_data": identity["records_with_other_data"],
                               "score_generator_disagreements": len(disagreements),
                               "bands_pass": references["all_bands_pass"]}}
 
     # G2: the rerun reproduces the full arm's rows and PRED lines byte for byte.
-    rerun_seed = next(iter(chosen["rerun"].get("M001", {})), None)
+    rerun_seed = RERUN_SEED
     reproduced = rerun_reproduces(chosen["eval"].get("M001", {}).get(rerun_seed),
                                   chosen["rerun"].get("M001", {}).get(rerun_seed))
     gates["G2"] = {"pass": reproduced["pass"],
@@ -629,10 +725,10 @@ def main(argv: list[str] | None = None) -> int:
     # tag and that commit only the lr selection and the sweep records changed.
     origin = provenance(records)
     sha = origin["shas"][0] if len(origin["shas"]) == 1 else None
-    ancestor = sha is not None and subprocess.run(["git", "merge-base", "--is-ancestor", PREREG_TAG, sha], cwd=ROOT).returncode == 0
+    ancestor = sha is not None and subprocess.run(["git", "merge-base", "--is-ancestor", frozen_ref, sha], cwd=ROOT).returncode == 0
     stray = ["(no single commit)"]
     if ancestor:
-        changed = git("diff", "--name-only", f"{PREREG_TAG}..{sha}").split()
+        changed = git("diff", "--name-only", f"{frozen_ref}..{sha}").split()
         def entrypoint_at(path: str) -> str | None:
             """Read a record's entrypoint at the evaluation commit, or None on lookup failure."""
             try:
@@ -655,7 +751,7 @@ def main(argv: list[str] | None = None) -> int:
     # G6: the correctness logs the driver wrote at the evaluation commit.
     g6_path = STUDY_DIR / "logs/g6.json"
     g6 = json.loads(g6_path.read_text()) if g6_path.exists() else {}
-    gates["G6"] = {"pass": bool(g6) and all(v == "pass" for v in g6.values()), "detail": g6}
+    gates["G6"] = correctness_evidence(g6, sha, g6_path.parent, lock["data_fnv1a64"])
 
     result = decide(table, references, criteria, gates, contingency)
 

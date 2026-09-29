@@ -6,7 +6,13 @@
         "records": 26,
         "records_with_other_data": [],
         "records_without_data_row": [],
-        "score_generator_disagreements": 0
+        "score_generator_disagreements": 0,
+        "scored_data_fnv1a64": {
+          "contingency": "0ad71688f09b0d0d",
+          "eval": "0ad71688f09b0d0d",
+          "rerun": "0ad71688f09b0d0d"
+        },
+        "scored_data_matches_lock": true
       },
       "pass": true
     },
@@ -50,14 +56,13 @@
       "pass": true
     },
     "G6": {
-      "detail": {
-        "aggregator_tests": "pass",
-        "benchmark_tests": "pass",
-        "cargo_test": "pass",
-        "config_tests": "pass",
-        "self_test": "pass"
-      },
-      "pass": true
+      "detail": [
+        "missing versioned correctness evidence",
+        "correctness checks were not bound to the evaluation commit",
+        "correctness checks require a recorded clean source tree before and after",
+        "correctness evidence does not contain the exact required check set"
+      ],
+      "pass": false
     }
   },
   "leak_alarm": {
@@ -344,7 +349,7 @@
   "verdicts": {
     "M001-primary": {
       "endpoint": "composite:A",
-      "reason": "typed slot content improves OOD routing over index-tagged raw binding in A0",
+      "reason": "gates failed: G6",
       "stats": {
         "ci": [
           0.0595248712381084,
@@ -363,14 +368,14 @@
         "positive_seeds": 5,
         "sd": 0.04733441574140586
       },
-      "verdict": "SUPPORTS"
+      "verdict": "INCONCLUSIVE"
     },
     "M001-secondary": {
       "endpoint": "composite:A",
       "mask_share": 0.0932888888888889,
       "mask_share_budget": "S*",
       "note": "decided at 4000 steps",
-      "reason": "neither SUPPORTS nor FALSIFIES holds",
+      "reason": "gates failed: G6",
       "stats": {
         "ci": [
           -0.026233140984377346,
@@ -393,7 +398,7 @@
     },
     "M002-necessity": {
       "endpoint": "composite:B",
-      "reason": "the rank-1 typed bias adds nothing measurable beyond QK over metadata-bearing slots in A0",
+      "reason": "gates failed: G6",
       "stats": {
         "ci": [
           -0.021346087021436734,
@@ -412,7 +417,7 @@
         "positive_seeds": 3,
         "sd": 0.013059372964358665
       },
-      "verdict": "FALSIFIES"
+      "verdict": "INCONCLUSIVE"
     },
     "M002-raw-blind-check": {
       "endpoint": "split:test_iid",
@@ -444,7 +449,7 @@
     "M003-depth": {
       "dose_response": "not run (budget rule)",
       "endpoint": "composite:C",
-      "reason": "applying the tied refinement a second time gives no measurable benefit at equal parameters",
+      "reason": "gates failed: G6",
       "stats": {
         "ci": [
           -0.017210594864316683,
@@ -463,7 +468,7 @@
         "positive_seeds": 3,
         "sd": 0.014614934016145768
       },
-      "verdict": "FALSIFIES"
+      "verdict": "INCONCLUSIVE"
     },
     "M003-nonlinearity": {
       "attribution_stats": {
@@ -485,12 +490,12 @@
         "sd": 0.011891640387730862
       },
       "component_verdicts": {
-        "latent-0": "SUPPORTS",
-        "latent-linear": "SUPPORTS"
+        "latent-0": "INCONCLUSIVE",
+        "latent-linear": "INCONCLUSIVE"
       },
       "endpoint": "split:test_iid",
       "linear_minus_zero": 0.015066666666666673,
-      "reason": "the per-slot gelu, not the extra affine parameters, carries the per-fact gating in A0",
+      "reason": "gates failed: G6",
       "stats": {
         "ci": [
           0.06855110601803842,
@@ -509,7 +514,7 @@
         "positive_seeds": 5,
         "sd": 0.008953584012375533
       },
-      "verdict": "SUPPORTS-NONLINEARITY"
+      "verdict": "INCONCLUSIVE"
     },
     "M004-negative-control": {
       "deterministic_reference": {
@@ -519,7 +524,7 @@
         "learned_beats_deterministic": "holds"
       },
       "endpoint": "split:test_iid",
-      "reason": "neither EQUIVALENT, SUPPORTS nor HARMFUL",
+      "reason": "gates failed: G6",
       "stats": {
         "ci": [
           -0.014428445246319449,

@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import hashlib
 import importlib.util
 import json
 import math
@@ -336,11 +337,11 @@ def parallel(jobs: list[tuple[str, str, int, dict]], workers: int) -> list[int]:
 
 
 def require_frozen() -> None:
-    """Require the preregistration tag and a clean tracked worktree."""
-    tag = subprocess.run(["git", "rev-parse", "--verify", "--quiet", PREREG_TAG],
-                         cwd=ROOT, text=True, capture_output=True)
-    if tag.returncode != 0:
-        raise SystemExit(f"no {PREREG_TAG} tag: commit and tag the preregistration first")
+    """Require the recorded preregistration identity and a clean tracked tree."""
+    try:
+        aggregator().preregistration_ref()
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
     if not worktree_clean():
         raise SystemExit("the worktree must be clean")
 
@@ -436,7 +437,8 @@ def aggregator():
 def require_eval_commit() -> None:
     """Reject changes outside the freeze allowance or a missing learning-rate table."""
     require_frozen()
-    changed = subprocess.run(["git", "diff", "--name-only", f"{PREREG_TAG}..HEAD"],
+    frozen_ref = aggregator().preregistration_ref()
+    changed = subprocess.run(["git", "diff", "--name-only", f"{frozen_ref}..HEAD"],
                              cwd=ROOT, text=True, capture_output=True, check=True).stdout.split()
 
     def entrypoint_of(path: str) -> str | None:
@@ -465,12 +467,28 @@ def correctness() -> dict:
         "aggregator_tests": [sys.executable, "-m", "unittest", "scripts/tests/test_a0_ablation_aggregate.py"],
         "config_tests": [sys.executable, "-m", "unittest", "scripts/tests/test_a0_ablation_config.py"],
     }
+    def revision() -> str:
+        return subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True,
+                              capture_output=True, check=True).stdout.strip()
+
+    evidence = {"schema_version": 1, "git_sha": revision(), "git_dirty": not worktree_clean(), "checks": {}}
     outcome = {}
+    pending_logs = {}
     for name, command in checks.items():
         result = run(command, capture_output=True)
-        (logs / f"g6-{name}.log").write_text(result.stdout + result.stderr, encoding="utf-8")
+        log = (result.stdout + result.stderr).encode("utf-8")
+        pending_logs[name] = log
+        evidence["checks"][name] = {"argv": command, "exit_code": result.returncode,
+                                    "log_sha256": hashlib.sha256(log).hexdigest()}
         outcome[name] = "pass" if result.returncode == 0 else "fail"
-    write_json(logs / "g6.json", outcome)
+    evidence.update(git_sha_after=revision(), git_dirty_after=not worktree_clean())
+    # Writing tracked evidence must not make the measured source tree dirty
+    # before the post-check snapshot is taken.
+    for name, log in pending_logs.items():
+        (logs / f"g6-{name}.log").write_bytes(log)
+    write_json(logs / "g6.json", evidence)
+    if evidence["git_dirty"] or evidence["git_dirty_after"] or evidence["git_sha"] != evidence["git_sha_after"]:
+        outcome["source_provenance"] = "fail"
     return outcome
 
 

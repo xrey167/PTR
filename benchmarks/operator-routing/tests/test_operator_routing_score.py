@@ -110,6 +110,23 @@ class Scoring(unittest.TestCase):
         _document, problems = score.score_records([path], self.data)
         self.assertTrue(any("G5" in p for p in problems))
 
+    def test_duplicate_final_rows_are_rejected_even_when_the_first_agrees(self):
+        labels = "".join(format(i.label, "x") for i in self.items["test_iid"])
+        final = {"row": "final", "arm": "full", "split": "test_iid", "n": N, "correct": N}
+        for correct in (N, N - 1, True, "invalid"):
+            with self.subTest(second_correct=correct):
+                stdout = "\n".join([json.dumps(final), json.dumps({**final, "correct": correct}),
+                                    f"PRED full test_iid {labels}"])
+                document, problems = score.score_records([self.write("duplicate.json", run_record(stdout))], self.data)
+                self.assertTrue(any("expected one final row" in problem and "G5" in problem for problem in problems))
+                self.assertIsNot(document["results"][0]["rust_count_agrees"], True)
+
+    def test_progress_rows_cannot_supply_or_duplicate_final_evidence(self):
+        final = {"row": "final", "arm": "full", "split": "test_iid", "correct": N}
+        progress = {**final, "row": "progress"}
+        self.assertIsNone(score.rust_final_row([progress], "full", "test_iid"))
+        self.assertEqual(score.rust_final_row([progress, final], "full", "test_iid"), final)
+
     def test_wrong_length_and_bad_code_are_errors(self):
         """Reject prediction strings with the wrong length or unknown operator codes."""
         short = "0" * (N - 1)

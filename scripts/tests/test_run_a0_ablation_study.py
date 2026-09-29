@@ -3,9 +3,12 @@ what runs, checked against the design's own worked numbers."""
 
 import importlib.util
 import math
+import json
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location("run_a0_ablation_study", ROOT / "scripts/run_a0_ablation_study.py")
@@ -118,6 +121,32 @@ class LearningRateSelection(unittest.TestCase):
             driver.choose_lr("a", sweep(lr_0_002=(0.70, False)), GRID, 0.005)
         with self.assertRaises(SystemExit):
             driver.choose_lr("a", sweep(lr_0_002=(0.7, True), lr_0_005=(0.7, True), lr_0_0125=(0.7, True)), GRID, 0.005)
+
+
+class CorrectnessWriter(unittest.TestCase):
+    def test_writer_binds_all_checks_before_publishing_logs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            study = Path(directory)
+            def clean():
+                self.assertEqual(list(study.glob("logs/g6-*.log")), [])
+                return True
+            with patch.multiple(driver, STUDY_DIR=study, worktree_clean=clean,
+                                data_fnv=Mock(return_value="aa"),
+                                run=Mock(return_value=subprocess.CompletedProcess([], 0, stdout="tests passed\n", stderr=""))), \
+                    patch.object(driver.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, stdout="c" * 40, stderr="")):
+                outcome = driver.correctness()
+            evidence = json.loads((study / "logs/g6.json").read_text())
+            self.assertEqual(set(outcome), driver.aggregator().G6_CHECKS)
+            self.assertTrue(all(value == "pass" for value in outcome.values()))
+            self.assertTrue(driver.aggregator().correctness_evidence(evidence, "c" * 40, study / "logs", "aa")["pass"])
+
+    def test_source_changes_during_checks_prevent_evaluation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.multiple(driver, STUDY_DIR=Path(directory), worktree_clean=Mock(side_effect=[True, False]),
+                                data_fnv=Mock(return_value="aa"),
+                                run=Mock(return_value=subprocess.CompletedProcess([], 0, stdout="passed", stderr=""))), \
+                    patch.object(driver.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, stdout="c" * 40, stderr="")):
+                self.assertEqual(driver.correctness()["source_provenance"], "fail")
 
 
 if __name__ == "__main__":

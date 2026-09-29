@@ -10,6 +10,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import hashlib
 import math
 import subprocess
 import tempfile
@@ -405,6 +406,114 @@ class RecordGates(unittest.TestCase):
         changed = lines.replace("0123", "0124")
         self.assertFalse(agg.rerun_reproduces(record(17, stdout=lines), record(17, stdout=changed))["pass"])
 
+    def test_an_identical_rerun_of_another_seed_does_not_satisfy_preregistration(self):
+        lines = '{"row":"final","arm":"full","correct":3}\nPRED full test_iid 0123'
+        self.assertFalse(agg.rerun_reproduces(record(29, stdout=lines), record(29, stdout=lines))["pass"])
+        for reruns in ({}, {"M001": {29: record(29)}}, {"M001": {17: record(17), 29: record(29)}}):
+            with self.subTest(reruns=reruns):
+                problems = agg.completeness({"rerun": reruns}, SEEDS, {}, {})
+                self.assertTrue(any("rerun M001" in problem for problem in problems))
+
+    def test_scoring_data_must_match_the_locked_data_for_every_phase(self):
+        self.assertTrue(agg.scored_data_identity({"eval": "aa", "rerun": "aa", "contingency": "aa"}, LOCK))
+        for fingerprints in ({}, {"eval": None}, {"eval": "ff"}, {"eval": "aa", "rerun": "ff"},
+                             {"eval": "aa", "contingency": "ff"}):
+            with self.subTest(fingerprints=fingerprints):
+                self.assertFalse(agg.scored_data_identity(fingerprints, LOCK))
+        self.assertFalse(agg.scored_data_identity({"eval": None}, {}))
+
+    def test_build_table_preserves_the_fingerprint_of_the_data_actually_scored(self):
+        scorer = Mock(score_records=Mock(return_value=({"data_fnv1a64": "changed", "results": []}, [])))
+        table_, problems, entries, fingerprint = agg.build_table([], scorer)
+        self.assertEqual((table_, problems, entries, fingerprint), ({}, [], [], "changed"))
+
+
+class FrozenInputs(unittest.TestCase):
+    def test_each_decision_input_is_compared_with_its_frozen_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            study = root / "research/falsification/A0-ablations-v1"
+            paths = [study / name for name in ("criteria.toml", "references.json", "budget.json", "PREREGISTRATION.md", "DESIGN.md")]
+            lock = root / "benchmarks/operator-routing/splits.lock.json"
+            paths += [lock, root / "datasets/generated/codebook.json"]
+            frozen = {}
+            for path in paths:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"frozen")
+                frozen[path.relative_to(root).as_posix()] = b"frozen"
+            with patch.multiple(agg, ROOT=root, STUDY_DIR=study, CRITERIA=paths[0], LOCK=lock,
+                                at_tag=Mock(side_effect=frozen.get)):
+                self.assertEqual(agg.frozen_input_violations(), [])
+                for path in paths:
+                    with self.subTest(path=path.name):
+                        path.write_bytes(b"edited after evaluation")
+                        self.assertEqual(agg.frozen_input_violations(), [str(path.relative_to(root))])
+                        path.unlink()
+                        self.assertEqual(agg.frozen_input_violations(), [str(path.relative_to(root))])
+                        path.write_bytes(b"frozen")
+
+    def test_a_clone_needs_no_tag_but_a_conflicting_tag_is_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            def git(*args):
+                return subprocess.check_output(["git", "-C", str(root), *args], text=True, stderr=subprocess.DEVNULL).strip()
+            git("init")
+            (root / "frozen.txt").write_text("frozen", encoding="utf-8")
+            git("add", "frozen.txt")
+            git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "freeze")
+            commit = git("rev-parse", "HEAD")
+            with patch.multiple(agg, ROOT=root, PREREG_COMMIT=commit):
+                self.assertEqual(agg.preregistration_ref(), commit)
+                self.assertEqual(agg.at_tag("frozen.txt"), b"frozen")
+                git("tag", agg.PREREG_TAG)
+                self.assertEqual(agg.preregistration_ref(), commit)
+                git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "later")
+                git("tag", "-f", agg.PREREG_TAG)
+                with self.assertRaisesRegex(ValueError, "not frozen commit"):
+                    agg.preregistration_ref()
+
+
+class CorrectnessEvidence(unittest.TestCase):
+    def test_legacy_stale_partial_or_changed_test_evidence_cannot_pass_g6(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logs = Path(directory)
+            sha = "c" * 40
+            commands = {
+                "cargo_test": ["cargo", "+1.95.0", "test", "--locked", "--manifest-path", "model/burn-a0/Cargo.toml"],
+                "self_test": ["/repo/model/burn-a0/target-a0-study/release/examples/a0_ablation", "--phase", "self-test",
+                              "--data", "datasets/generated/operator_routing_v1", "--data-fnv64", "aa"],
+                "benchmark_tests": ["python3", "-m", "unittest", "discover", "-s", "benchmarks/operator-routing/tests"],
+                "aggregator_tests": ["python3", "-m", "unittest", "scripts/tests/test_a0_ablation_aggregate.py"],
+                "config_tests": ["python3", "-m", "unittest", "scripts/tests/test_a0_ablation_config.py"],
+            }
+            evidence = {"schema_version": 1, "git_sha": sha, "git_sha_after": sha,
+                        "git_dirty": False, "git_dirty_after": False, "checks": {}}
+            for name, command in commands.items():
+                (logs / f"g6-{name}.log").write_bytes(b"tests passed\n")
+                evidence["checks"][name] = {"argv": command, "exit_code": 0,
+                                            "log_sha256": hashlib.sha256(b"tests passed\n").hexdigest()}
+            self.assertTrue(agg.correctness_evidence(evidence, sha, logs, "aa")["pass"])
+            for change in (
+                lambda e: e.update(git_sha="d" * 40),
+                lambda e: e.update(git_sha_after="d" * 40),
+                lambda e: e.update(git_dirty=True),
+                lambda e: e.update(git_dirty_after=True),
+                lambda e: e["checks"].pop("self_test"),
+                lambda e: e["checks"].update(extra={}),
+                lambda e: e["checks"]["cargo_test"].update(exit_code=1),
+                lambda e: e["checks"]["self_test"].update(argv=["true"]),
+                lambda e: e["checks"]["benchmark_tests"].update(log_sha256="0" * 64),
+            ):
+                invalid = copy.deepcopy(evidence)
+                change(invalid)
+                self.assertFalse(agg.correctness_evidence(invalid, sha, logs, "aa")["pass"])
+            self.assertFalse(agg.correctness_evidence({name: "pass" for name in commands}, sha, logs, "aa")["pass"])
+            self.assertFalse(agg.correctness_evidence(evidence, None, logs, "aa")["pass"])
+            (logs / "g6-cargo_test.log").write_bytes(b"edited")
+            self.assertFalse(agg.correctness_evidence(evidence, sha, logs, "aa")["pass"])
+            (logs / "g6-cargo_test.log").unlink()
+            self.assertFalse(agg.correctness_evidence(evidence, sha, logs, "aa")["pass"])
+
 
 class StockCrossCheck(unittest.TestCase):
     def test_load_records_keeps_all_study_phases_and_failures_in_filename_order(self):
@@ -448,7 +557,7 @@ class StockCrossCheck(unittest.TestCase):
                     (study / "criteria.toml").write_bytes(criteria)
                     (study / "references.json").write_text('{"all_bands_pass": true}')
                     (study / "budget.json").write_text('{"arms": {}}')
-                    (study / "lock.json").write_text('{}')
+                    (study / "lock.json").write_text('{"data_fnv1a64": "aa"}')
                     (study / "PREREGISTRATION.md").write_bytes(b"preregistered")
                     results = root / "experiments/model/fixture/results"
                     results.mkdir(parents=True)
@@ -470,7 +579,9 @@ class StockCrossCheck(unittest.TestCase):
                         LOCK=study / "lock.json", EXPERIMENTS={"M001": "model/fixture"},
                         at_tag=Mock(side_effect=lambda p: criteria if p.endswith("criteria.toml") else b"preregistered"),
                         load_score_module=Mock(return_value=Mock(agree=Mock(return_value=(True, [])))),
-                        build_table=Mock(return_value=(score_table, [], [])),
+                        build_table=Mock(return_value=(score_table, [], [], "aa")),
+                        preregistration_ref=Mock(return_value="c" * 40),
+                        frozen_input_violations=Mock(return_value=[]),
                         decide=Mock(return_value={"verdicts": {}}),
                     ), patch.object(agg.subprocess, "run", return_value=subprocess.CompletedProcess(
                         [], 0, stdout=str(stock_path), stderr=""

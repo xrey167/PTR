@@ -62,6 +62,7 @@ class Report(unittest.TestCase):
         results = json.loads(path.read_text(encoding="utf-8"))
         results["verdicts"]["M002-necessity"]["verdict"] = "SUPPORTS"
         results["verdicts"]["M001-primary"]["verdict"] = "FALSIFIES"
+        results["verdicts"]["M003-depth"]["verdict"] = "FALSIFIES"
         results["verdicts"]["M004-negative-control"]["verdict"] = "EQUIVALENT"
         path.write_text(json.dumps(results), encoding="utf-8")
         self.assertEqual(report.main(), 0)
