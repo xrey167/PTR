@@ -1628,7 +1628,11 @@ def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path,
     file reached through no symlink. Every run record and aggregate must
     pass `record_errors`; a run record must also be unchanged since it was
     committed, and an aggregate, which an aggregator may write again, must
-    pass `record_errors` in every version committed. No two run records are
+    pass `record_errors` in every version committed and, in each, name the
+    SHA-256 of the record of each preregistered seed's finished run
+    (`seed_records`, `experiment_records.finished_run`): an earlier version
+    that named none saw an outcome the runs were not bound to, which a later
+    one that does hides no more. No two run records are
     of one seed, bar those whose command failed to launch: a seed run again
     after its outcome was seen could keep whichever run came out best. And
     they all name one program, one Rust toolchain and one environment
@@ -1699,7 +1703,12 @@ def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path,
             # launch saw no outcome.
             if not aggregate and isinstance(record,dict) and "seed" in record and record.get("status")!="failed-to-launch":
                 runs.setdefault(json.dumps(record["seed"],sort_keys=True),[]).append(name)
-                digests[json.dumps(record["seed"],sort_keys=True)]=hashlib.sha256(data).hexdigest()
+                # A reservation nothing finished (`started`, left by a runner
+                # that died or was refused) is a run of its seed all the same,
+                # which no other may follow, but it holds no outcome for an
+                # aggregate to report on.
+                if experiment_records.finished_run(record):
+                    digests[json.dumps(record["seed"],sort_keys=True)]=hashlib.sha256(data).hexdigest()
                 # A seed outside the frozen list could be added once an outcome
                 # is seen, and count towards what is reported.
                 if json.dumps(record["seed"],sort_keys=True) not in preregistered:
@@ -1732,6 +1741,10 @@ def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path,
                     errors.append(f"{exp_id}: {version} cannot be read: {error}")
                     continue
                 errors.extend(record_errors(exp_id,version,earlier,True,root,experiment,entry,table,frozen,current))
+                # Each version saw the runs it names: it is bound to their
+                # records below as the aggregate now on disk is.
+                if isinstance(earlier,dict):
+                    aggregates.append((version,earlier))
             continue
         # Every commit that holds the record, on every side of every merge,
         # holds the same content: a record rewritten on one side of a merge
@@ -1764,8 +1777,12 @@ def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path,
                           "seed, so nothing binds the outcome it reports to the runs")
             continue
         for seed in preregistered:
-            if seed not in digests:
+            if seed not in runs:
                 errors.append(f"{exp_id}: {name} reports on seed {seed}, which has no run record")
+            elif seed not in digests:
+                errors.append(f"{exp_id}: {name} reports on seed {seed}, whose run record ({', '.join(runs[seed])}) holds no "
+                              "outcome; a run that finished has status completed or failed with its exit_code, finished_at, "
+                              "stdout and stderr, and a reservation nothing finished saw none")
             elif len(runs[seed])>1:
                 # Two records of one seed are named as such: none is the record.
                 continue

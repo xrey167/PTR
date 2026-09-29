@@ -686,7 +686,9 @@ class PreregistrationGateTests(unittest.TestCase):
         return manifest["preregistration_sha256"],manifest["preregistration_rules_sha256"]
 
     def record(self, root: Path, commit: str, **changes) -> dict:
-        """A run record as run_experiment.py writes one at `commit`."""
+        """A run record as run_experiment.py writes one at `commit`; a
+        `completed` or `failed` one holds the outcome such a run writes
+        (`experiment_records.finished_run`) unless `changes` name another."""
         digest,rules=self.frozen(root)
         record={
             "git_sha":commit,
@@ -694,6 +696,11 @@ class PreregistrationGateTests(unittest.TestCase):
             "manifest_sha256":hashlib.sha256(git(root,"show",f"{commit}:{self.MANIFEST}").encode("utf-8")+b"\n").hexdigest(),
         }
         record.update(changes)
+        if record.get("status") in ("completed","failed"):
+            record.setdefault("exit_code",0 if record["status"]=="completed" else 1)
+            record.setdefault("finished_at","2026-01-01T00:00:00+00:00")
+            record.setdefault("stdout","")
+            record.setdefault("stderr","")
         return record
 
     def aggregate(self, root: Path, commit: str, **changes) -> dict:
@@ -701,9 +708,9 @@ class PreregistrationGateTests(unittest.TestCase):
         of the record of each seed the results directory holds a run of."""
         digest,rules=self.frozen(root)
         results=root/"experiments/semdb/X900-fixture/results"
-        bound=mod.experiment_records.seed_record_digests(results) if results.is_dir() else {}
-        return {"git_sha":commit,"preregistration_sha256":digest,"preregistration_rules_sha256":rules,
-                "seed_records":bound,**changes}
+        if "seed_records" not in changes:
+            changes["seed_records"]=mod.experiment_records.seed_record_digests(results) if results.is_dir() else {}
+        return {"git_sha":commit,"preregistration_sha256":digest,"preregistration_rules_sha256":rules,**changes}
 
     def seeded(self, root: Path, commit: str) -> list[str]:
         """Write the run record of each preregistered seed at `commit` into
@@ -869,6 +876,9 @@ class PreregistrationGateTests(unittest.TestCase):
             "the digest the experiment is frozen at",
             f"X900: results/run.json as committed at {recorded[:12]} ran at {short}, whose config.toml holds another [preregistration] than the frozen one",
             f"X900: results/run.json as committed at {recorded[:12]} ran at {short}, whose experiment.toml names other preregistration digests than the frozen ones",
+            # And it reported on the same seeds, which no run record holds.
+            f"X900: results/run.json as committed at {recorded[:12]} reports on seed 17, which has no run record",
+            f"X900: results/run.json as committed at {recorded[:12]} reports on seed 29, which has no run record",
         )
 
     def test_a_run_record_deleted_or_renamed_after_it_was_committed_fails(self):
@@ -927,10 +937,11 @@ class PreregistrationGateTests(unittest.TestCase):
 
     def ran(self, status="running", seed=None, **tree) -> tuple[Path, str]:
         """A fixture tree at `status` with one run record committed (of
-        `seed`, when given), and the commit the record names."""
+        `seed`, when given, whose run finished), and the commit the record
+        names."""
         root=self.tree(status=status,**tree)
         ran=commit_all(root)
-        write(root,self.RECORD,json.dumps(self.record(root,ran,**({} if seed is None else {"seed":seed}))))
+        write(root,self.RECORD,json.dumps(self.record(root,ran,**({} if seed is None else {"seed":seed,"status":"completed"}))))
         commit_all(root,"records")
         self.assertEqual(gate(root),(0,[]))
         return root,ran
@@ -1387,6 +1398,168 @@ class PreregistrationGateTests(unittest.TestCase):
         self.assertTrue(any("seed 17 ran more than once" in line for line in lines),lines)
         self.assertFalse(any("names seed_records[17]" in line for line in lines),lines)
         self.assertTrue(any(line.startswith("X900: results/run.json names seed_records[29] ") for line in lines),lines)
+
+    def test_a_reservation_nothing_finished_is_no_run_an_aggregate_reports_on(self):
+        # A runner that died or was refused after it reserved a seed leaves
+        # its record at `started`, with no exit code and no output: it is a
+        # run of its seed, which no other may follow, but holds no outcome
+        # for an aggregate to bind, however its digest is named.
+        record="results/run-20260101T000000.000000Z-seed-17.json"
+        other="results/run-20260108T000000.000000Z-seed-29.json"
+        directory="experiments/semdb/X900-fixture"
+
+        def unfinished(seed,held):
+            return (f"X900: results/run.json reports on seed {seed}, whose run record ({held}) holds no outcome; a run that "
+                    "finished has status completed or failed with its exit_code, finished_at, stdout and stderr, and a "
+                    "reservation nothing finished saw none")
+
+        def named(root):
+            """The aggregate a hand would write: the SHA-256 of each file."""
+            return {str(seed):hashlib.sha256((root/directory/name).read_bytes()).hexdigest()
+                    for seed,name in zip(TABLE["seeds"],(record,other))}
+
+        root=self.tree(status="running")
+        ran=commit_all(root)
+        for seed,name in zip(TABLE["seeds"],(record,other)):
+            write(root,f"{directory}/{name}",json.dumps(self.record(root,ran,seed=seed,status="started")))
+        write(root,self.AGGREGATE,json.dumps(self.aggregate(root,ran,seed_records=named(root))))
+        self.assert_blocked(root,unfinished(17,record),unfinished(29,other))
+        # The aggregate the aggregator would write names none of them.
+        write(root,self.AGGREGATE,json.dumps(self.aggregate(root,ran)))
+        self.assertEqual(json.loads((root/self.AGGREGATE).read_text(encoding="utf-8"))["seed_records"],{})
+        self.assert_blocked(root,unfinished(17,record),unfinished(29,other))
+        # One seed finished and the other reserved: only the reservation is named.
+        finished=self.record(root,ran,seed=17,status="completed")
+        write(root,f"{directory}/{record}",json.dumps(finished))
+        write(root,self.AGGREGATE,json.dumps(self.aggregate(root,ran,seed_records=named(root))))
+        self.assert_blocked(root,unfinished(29,other))
+        # Both finished, the aggregate passes.
+        write(root,f"{directory}/{other}",json.dumps(self.record(root,ran,seed=29,status="failed")))
+        write(root,self.AGGREGATE,json.dumps(self.aggregate(root,ran)))
+        self.assertEqual(gate(root),(0,[]))
+
+        # A status is not an outcome: the record must hold the exit code, the
+        # time it finished and the output, and the status must agree with the
+        # code.
+        def without(key):
+            return lambda held:held.pop(key)
+
+        def setting(**changes):
+            return lambda held:held.update(changes)
+
+        cases=[
+            ("no exit code",without("exit_code")),
+            ("no finish time",without("finished_at")),
+            ("no stdout",without("stdout")),
+            ("no stderr",without("stderr")),
+            ("a null exit code",setting(exit_code=None)),
+            ("a text exit code",setting(exit_code="0")),
+            ("a boolean exit code",setting(exit_code=False)),
+            ("a float exit code",setting(exit_code=0.0)),
+            ("a null finish time",setting(finished_at=None)),
+            ("a number for stdout",setting(stdout=0)),
+            ("a list for stderr",setting(stderr=[])),
+            ("completed with a failing code",setting(exit_code=1)),
+            ("failed with a passing code",setting(status="failed",exit_code=0)),
+            ("running",setting(status="running")),
+            ("an unknown status",setting(status="unknown")),
+            ("another case",setting(status="Completed")),
+        ]
+        for label,change in cases:
+            with self.subTest(label=label):
+                held=self.record(root,ran,seed=17,status="completed")
+                change(held)
+                write(root,f"{directory}/{record}",json.dumps(held))
+                write(root,self.AGGREGATE,json.dumps(self.aggregate(root,ran,seed_records=named(root))))
+                self.assert_blocked(root,unfinished(17,record))
+        # A reservation beside a finished record of its seed is two runs of
+        # one seed, named as that; the finished record is the outcome, so the
+        # seed is not also named as one with none.
+        write(root,f"{directory}/{record}",json.dumps(finished))
+        again="results/run-20260201T000000.000000Z-seed-17.json"
+        write(root,f"{directory}/{again}",json.dumps(self.record(root,ran,seed=17,status="started")))
+        write(root,self.AGGREGATE,json.dumps(self.aggregate(root,ran,seed_records=named(root))))
+        code,lines=gate(root)
+        self.assertEqual(code,1)
+        self.assertTrue(any(f"seed 17 ran more than once ({record}, {again})" in line for line in lines),lines)
+        self.assertFalse(any("holds no outcome" in line for line in lines),lines)
+        # Two reservations of one seed hold no outcome either.
+        write(root,f"{directory}/{record}",json.dumps(self.record(root,ran,seed=17,status="started")))
+        code,lines=gate(root)
+        self.assertEqual(code,1)
+        self.assertTrue(any("seed 17 ran more than once" in line for line in lines),lines)
+        self.assertIn(unfinished(17,f"{record}, {again}"),lines)
+
+    def test_an_aggregate_replaced_by_a_bound_one_is_bound_in_the_version_it_was_first_committed_in(self):
+        # An aggregate written again keeps every version it was committed in:
+        # a fabricated one replaced by an aggregate that names the records is
+        # still the outcome its commit showed.
+        def refused(at,seed,named,held):
+            return (f"X900: results/run.json as committed at {at[:12]} names seed_records[{seed}] {named!r}, not {held}, "
+                    f"the SHA-256 of the run record of seed {seed}")
+
+        def names_none(at):
+            return (f"X900: results/run.json as committed at {at[:12]} names no seed_records, the SHA-256 of the run record "
+                    "of each preregistered seed, so nothing binds the outcome it reports to the runs")
+
+        wrong="0"*64
+        # A version that names the records, and one written over it, pass.
+        root=self.tree(status="running")
+        ran=commit_all(root)
+        self.seeded(root,ran)
+        bound=self.aggregate(root,ran)
+        write(root,self.AGGREGATE,json.dumps(bound))
+        commit_all(root,"aggregate")
+        write(root,self.AGGREGATE,json.dumps({**bound,"metrics_sha256":wrong}))
+        commit_all(root,"aggregate again")
+        self.assertEqual(gate(root),(0,[]))
+        # Each of these, committed first and replaced by a bound aggregate,
+        # is found where it was committed.
+        cases=[
+            ("no binding",
+             lambda bound,held:{key:value for key,value in bound.items() if key!="seed_records"},
+             lambda first,held:[names_none(first)]),
+            ("a list",
+             lambda bound,held:{**bound,"seed_records":list(held.values())},
+             lambda first,held:[names_none(first)]),
+            ("wrong digests",
+             lambda bound,held:{**bound,"seed_records":{"17":wrong,"29":wrong}},
+             lambda first,held:[refused(first,17,wrong,held["17"]),refused(first,29,wrong,held["29"])]),
+            # Committed before the last seed ran, the aggregate showed the
+            # outcome of the others, by which what ran next could be chosen.
+            ("one seed only",
+             lambda bound,held:{**bound,"seed_records":{"17":held["17"]}},
+             lambda first,held:[refused(first,29,None,held["29"])]),
+            ("a record for a seed not preregistered",
+             lambda bound,held:{**bound,"seed_records":{**held,"41":wrong}},
+             lambda first,held:[f"X900: results/run.json as committed at {first[:12]} names a record for seed 41, which is "
+                                "not preregistered"]),
+        ]
+        for label,fabricate,expected in cases:
+            with self.subTest(label=label):
+                root=self.tree(status="running")
+                ran=commit_all(root)
+                self.seeded(root,ran)
+                bound=self.aggregate(root,ran)
+                held=bound["seed_records"]
+                self.assertEqual(sorted(held),["17","29"])
+                write(root,self.AGGREGATE,json.dumps(fabricate(bound,held)))
+                first=commit_all(root,"fabricated aggregate")
+                write(root,self.AGGREGATE,json.dumps(bound))
+                commit_all(root,"aggregate")
+                self.assert_blocked(root,*expected(first,held))
+        # A version between the first and the last is bound the same.
+        root=self.tree(status="running")
+        ran=commit_all(root)
+        self.seeded(root,ran)
+        bound=self.aggregate(root,ran)
+        write(root,self.AGGREGATE,json.dumps(bound))
+        commit_all(root,"aggregate")
+        write(root,self.AGGREGATE,json.dumps({**bound,"seed_records":{}}))
+        middle=commit_all(root,"emptied")
+        write(root,self.AGGREGATE,json.dumps({**bound,"metrics_sha256":wrong}))
+        commit_all(root,"aggregate again")
+        self.assert_blocked(root,*(refused(middle,int(seed),None,held) for seed,held in bound["seed_records"].items()))
 
     def test_a_run_record_of_a_seed_outside_the_preregistration_is_refused(self):
         # A seed added once an outcome is seen could count towards what is

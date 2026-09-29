@@ -1519,14 +1519,35 @@ def publish_aggregate(results_dir: Path, metrics: dict, run: dict) -> None:
     clear_stale_marker(results_dir)
 
 
+def finished_run(record) -> bool:
+    """Whether `record`, a parsed run record, saw an outcome: its command ran
+    to an exit code, and the record says so with a status that agrees with it
+    (`completed` exactly when the code is 0, `failed` for any other), the time
+    it finished and the output it wrote. A reservation a runner left when it
+    died or was refused (`started`), a record of a command that failed to
+    launch and a record that names a status without holding the outcome saw
+    none, and no aggregate's outcome is bound to them."""
+    if not isinstance(record, dict):
+        return False
+    code = record.get("exit_code")
+    if isinstance(code, bool) or not isinstance(code, int):
+        return False
+    if record.get("status") != ("completed" if code == 0 else "failed"):
+        return False
+    return all(isinstance(record.get(key), str) for key in ("finished_at", "stdout", "stderr"))
+
+
 def seed_record_digests(results_dir: Path) -> dict[str, str]:
-    """The SHA-256 of each seed's run record in `results_dir`, by the seed as
-    JSON writes it (`"17"`), which an aggregate of a listed experiment carries
-    as `seed_records` (`check_research_gates.py` binds it to the records): a
-    record of a command that failed to launch saw no outcome and is left out.
+    """The SHA-256 of each seed's run record in `results_dir` that saw an
+    outcome (`finished_run`), by the seed as JSON writes it (`"17"`), which an
+    aggregate of a listed experiment carries as `seed_records`
+    (`check_research_gates.py` binds it to the records): a record of a command
+    that failed to launch and a reservation nothing finished are left out.
     Raises `ProvenanceError` when a record cannot be read or two are of one
-    seed, which a listed experiment does not run twice."""
+    seed, which a listed experiment does not run twice: a reservation is a
+    run of its seed as much as a finished record is."""
     digests: dict[str, str] = {}
+    reserved: set[str] = set()
     for path in sorted(results_dir.glob("run-*.json")):
         try:
             data = path.read_bytes()
@@ -1536,9 +1557,11 @@ def seed_record_digests(results_dir: Path) -> dict[str, str]:
         if not isinstance(record, dict) or "seed" not in record or record.get("status") == "failed-to-launch":
             continue
         seed = json.dumps(record["seed"], sort_keys=True)
-        if seed in digests:
+        if seed in reserved:
             raise ProvenanceError(f"seed {seed} has more than one run record in {results_dir}")
-        digests[seed] = hashlib.sha256(data).hexdigest()
+        reserved.add(seed)
+        if finished_run(record):
+            digests[seed] = hashlib.sha256(data).hexdigest()
     return digests
 
 

@@ -2183,9 +2183,82 @@ class AggregateBindingTests(unittest.TestCase):
         self.assertTrue((self.results / "STALE.toml").exists())
 
 
+class FinishedRunTests(unittest.TestCase):
+    """`finished_run` tells a run record that saw an outcome from a
+    reservation nothing finished and from a record naming an outcome it does
+    not hold."""
+
+    @staticmethod
+    def finished(seed: int = 17, status: str = "completed", **changes) -> dict:
+        """A run record as the runner writes one once its command has run."""
+        record = {
+            "seed": seed,
+            "status": status,
+            "exit_code": 0 if status == "completed" else 1,
+            "finished_at": "2026-01-01T00:00:00+00:00",
+            "stdout": "",
+            "stderr": "",
+            "launch_error": None,
+            "duration_ns": 1,
+        }
+        record.update(changes)
+        return record
+
+    def test_a_record_of_a_command_that_ran_to_an_exit_code_saw_an_outcome(self):
+        self.assertTrue(mod.finished_run(self.finished()))
+        self.assertTrue(mod.finished_run(self.finished(status="failed")))
+        # A signal is an exit code too: subprocess reports it as a negative one.
+        self.assertTrue(mod.finished_run(self.finished(status="failed", exit_code=-9)))
+        self.assertTrue(mod.finished_run(self.finished(stdout="out", stderr="err")))
+
+    def test_a_reservation_or_a_command_that_failed_to_launch_saw_none(self):
+        started = {"seed": 17, "status": "started", "started_at": "2026-01-01T00:00:00+00:00"}
+        self.assertFalse(mod.finished_run(started))
+        self.assertFalse(mod.finished_run({"seed": 17, "status": "prepared"}))
+        self.assertFalse(mod.finished_run(self.finished(status="failed-to-launch", exit_code=None)))
+        # Not a record at all.
+        for held in (None, [], "completed", 0, {}):
+            with self.subTest(held=held):
+                self.assertFalse(mod.finished_run(held))
+
+    def test_a_status_without_the_outcome_it_names_saw_none(self):
+        for key in ("exit_code", "finished_at", "stdout", "stderr"):
+            with self.subTest(missing=key):
+                record = self.finished()
+                del record[key]
+                self.assertFalse(mod.finished_run(record))
+        for changes in (
+            {"exit_code": None},
+            {"exit_code": "0"},
+            {"exit_code": 0.0},
+            {"exit_code": False},
+            {"exit_code": True, "status": "failed"},
+            {"finished_at": None},
+            {"finished_at": 20260101},
+            {"stdout": None},
+            {"stdout": ["out"]},
+            {"stderr": None},
+            {"stderr": 0},
+        ):
+            with self.subTest(changes=changes):
+                self.assertFalse(mod.finished_run(self.finished(**changes)))
+
+    def test_the_status_agrees_with_the_exit_code(self):
+        # A run that exited 0 completed and any other failed: a record that
+        # says otherwise was written by hand or rewritten.
+        self.assertFalse(mod.finished_run(self.finished(status="completed", exit_code=1)))
+        self.assertFalse(mod.finished_run(self.finished(status="failed", exit_code=0)))
+        self.assertFalse(mod.finished_run(self.finished(status="running")))
+        self.assertFalse(mod.finished_run(self.finished(status="started")))
+        self.assertFalse(mod.finished_run(self.finished(status="Completed")))
+        self.assertFalse(mod.finished_run(self.finished(status=None)))
+
+
 class SeedRecordDigestTests(unittest.TestCase):
     """`seed_record_digests` names each seed's run record by its SHA-256, for
     an aggregate of a listed experiment to carry as `seed_records`."""
+
+    finished = staticmethod(FinishedRunTests.finished)
 
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -2199,8 +2272,11 @@ class SeedRecordDigestTests(unittest.TestCase):
 
     def test_each_seed_is_named_by_the_sha256_of_its_record_as_written(self):
         # The bytes as written, whatever spacing they hold.
-        first = self.write("run-20260101T000000.000000Z-seed-17.json", b'{"seed":  17,\n "status": "completed"}\n')
-        second = self.write("run-20260102T000000.000000Z-seed-29.json", {"seed": 29, "status": "failed"})
+        first = self.write(
+            "run-20260101T000000.000000Z-seed-17.json",
+            b'{"seed":  17,\n "status": "completed", "exit_code": 0, "finished_at": "t", "stdout": "", "stderr": ""}\n',
+        )
+        second = self.write("run-20260102T000000.000000Z-seed-29.json", self.finished(29, "failed"))
         self.assertEqual(
             mod.seed_record_digests(self.results),
             {"17": hashlib.sha256(first).hexdigest(), "29": hashlib.sha256(second).hexdigest()},
@@ -2212,30 +2288,58 @@ class SeedRecordDigestTests(unittest.TestCase):
         self.assertEqual(mod.seed_record_digests(self.results), {})
 
     def test_a_seed_is_named_as_json_writes_it(self):
-        data = self.write("run-20260101T000000.000000Z-seed-17.json", {"seed": 17, "status": "completed"})
-        self.write("run-20260101T000001.000000Z-seed-x.json", {"seed": "x", "status": "completed"})
+        data = self.write("run-20260101T000000.000000Z-seed-17.json", self.finished(17))
+        other = self.write("run-20260101T000001.000000Z-seed-x.json", self.finished("x"))
         self.assertEqual(
             mod.seed_record_digests(self.results),
-            {"17": hashlib.sha256(data).hexdigest(), '"x"': hashlib.sha256(json.dumps({"seed": "x", "status": "completed"}).encode()).hexdigest()},
+            {"17": hashlib.sha256(data).hexdigest(), '"x"': hashlib.sha256(other).hexdigest()},
         )
 
     def test_a_record_that_saw_no_outcome_names_no_seed(self):
         # A command that failed to launch, a prepared record with no seed, a
         # file that is no run record and a record that is no object.
-        kept = self.write("run-20260101T000000.000000Z-seed-17.json", {"seed": 17, "status": "completed"})
-        self.write("run-20260102T000000.000000Z-seed-17.json", {"seed": 17, "status": "failed-to-launch"})
-        self.write("run-20260103T000000.000000Z-seed-29.json", {"seed": 29, "status": "failed-to-launch"})
+        kept = self.write("run-20260101T000000.000000Z-seed-17.json", self.finished(17))
+        self.write(
+            "run-20260102T000000.000000Z-seed-17.json",
+            self.finished(17, "failed-to-launch", exit_code=None),
+        )
+        self.write(
+            "run-20260103T000000.000000Z-seed-29.json",
+            self.finished(29, "failed-to-launch", exit_code=None),
+        )
         self.write("run-20251231T000000.000000Z.json", {"status": "prepared"})
         self.write("run-20260104T000000.000000Z-seed-41.json", [1, 2])
         self.write("run-20260105T000000.000000Z-seed-5.json", b"5")
         self.write("run-20260105T000001.000000Z-seed-6.json", b'"seed"')
-        self.write("run.json", {"seed": 99, "status": "completed"})
+        self.write("run.json", self.finished(99))
         self.write("metrics.json", {"seed": 98})
         self.assertEqual(mod.seed_record_digests(self.results), {"17": hashlib.sha256(kept).hexdigest()})
 
+    def test_a_reservation_nothing_finished_names_no_seed(self):
+        # A runner that died or was refused after it reserved its seed left a
+        # record with no exit code and no output: no outcome to bind, whatever
+        # the aggregate says.
+        kept = self.write("run-20260101T000000.000000Z-seed-17.json", self.finished(17))
+        self.write(
+            "run-20260102T000000.000000Z-seed-29.json",
+            {"seed": 29, "status": "started", "started_at": "2026-01-02T00:00:00+00:00"},
+        )
+        # A status that names an outcome the record does not hold is the same.
+        self.write("run-20260103T000000.000000Z-seed-41.json", {"seed": 41, "status": "completed"})
+        self.write("run-20260104T000000.000000Z-seed-43.json", self.finished(43, "completed", exit_code=1))
+        self.assertEqual(mod.seed_record_digests(self.results), {"17": hashlib.sha256(kept).hexdigest()})
+
+    def test_a_reservation_is_a_run_of_its_seed_as_a_finished_record_is(self):
+        # A seed reserved and run again is two runs of one seed, which a
+        # listed experiment does not have: the aggregate is not written over it.
+        self.write("run-20260101T000000.000000Z-seed-17.json", {"seed": 17, "status": "started"})
+        self.write("run-20260102T000000.000000Z-seed-17.json", self.finished(17))
+        with self.assertRaisesRegex(mod.ProvenanceError, r"^seed 17 has more than one run record in "):
+            mod.seed_record_digests(self.results)
+
     def test_a_record_that_cannot_be_read_or_a_seed_run_twice_is_an_error(self):
-        self.write("run-20260101T000000.000000Z-seed-17.json", {"seed": 17, "status": "completed"})
-        self.write("run-20260102T000000.000000Z-seed-17.json", {"seed": 17, "status": "completed"})
+        self.write("run-20260101T000000.000000Z-seed-17.json", self.finished(17))
+        self.write("run-20260102T000000.000000Z-seed-17.json", self.finished(17))
         with self.assertRaisesRegex(mod.ProvenanceError, r"^seed 17 has more than one run record in "):
             mod.seed_record_digests(self.results)
         (self.results / "run-20260102T000000.000000Z-seed-17.json").unlink()
