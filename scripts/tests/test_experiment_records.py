@@ -1970,6 +1970,49 @@ class AggregateBindingTests(unittest.TestCase):
         self.assertEqual(len(errors), 1, errors)
         self.assertIn("metrics.json, which run.json binds, cannot be read", errors[0])
 
+    def test_a_symlinked_metrics_or_mutation_evidence_is_refused_whatever_it_hashes_to(self):
+        # A link reads the content of another file, which matches the digest
+        # run.json names whatever the commit holds at the link's own path: it
+        # is a problem of its own, and the file behind it is not read.
+        self.write("mutations.json", self.evidence())
+        carried = mod.mutation_summary(self.results / "mutations.json")
+        mod.publish_aggregate(self.results, self.metrics, {**self.run, "mutation_checks": carried})
+        self.assertEqual(self.errors(), [])
+        for name in ("metrics.json", "mutations.json"):
+            kept = (self.results / name).read_bytes()
+            # The file behind the link holds the bytes run.json names, or
+            # others, which are not compared either.
+            for content in (kept, b"{}\n"):
+                with self.subTest(name=name, content=content == kept):
+                    target = self.experiment / f"other-{name}"
+                    target.write_bytes(content)
+                    (self.results / name).unlink()
+                    (self.results / name).symlink_to(f"../other-{name}")
+                    errors = self.errors()
+                    self.assertEqual(len(errors), 1, errors)
+                    self.assertTrue(
+                        errors[0].startswith(
+                            f"L900: experiments/L900-x/results/{name} is a symlink, which reads the content of "
+                        ),
+                        errors,
+                    )
+                    # Put back as the file itself, it passes again.
+                    (self.results / name).unlink()
+                    (self.results / name).write_bytes(kept)
+                    target.unlink()
+                    self.assertEqual(self.errors(), [])
+
+    def test_a_symlink_where_no_evidence_is_carried_is_refused_too(self):
+        # run.json carries no mutation checks and a link stands where the
+        # evidence would be: the link is named, not read as evidence.
+        mod.publish_aggregate(self.results, self.metrics, self.run)
+        (self.experiment / "other.json").write_text(json.dumps(self.evidence()) + "\n", encoding="utf-8")
+        (self.results / "mutations.json").symlink_to("../other.json")
+        errors = self.errors()
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("mutations.json is a symlink", errors[0])
+        self.assertNotIn("carries no mutation checks", errors[0])
+
     def test_a_current_run_json_that_binds_no_metrics_is_refused_until_it_is_stale(self):
         # Only aggregates written before run.json bound its metrics lack the
         # binding, and those ran at code HEAD has changed since.

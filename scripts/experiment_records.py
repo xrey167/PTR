@@ -1588,10 +1588,19 @@ def aggregate_problems(run: dict, results_dir: Path) -> list[str]:
     its own, after or while the aggregate is written, and outcomes replaced
     under the same counts would be other evidence. A summary aggregated
     before it named that SHA-256 is compared by its counts and commit alone,
-    which `aggregate_errors` accepts only while the aggregate is stale."""
+    which `aggregate_errors` accepts only while the aggregate is stale. Each
+    of the two is a file a commit holds at its own path: a symlink reads
+    another file's content, which matches a digest whatever the commit holds
+    here, so one is a problem of its own and is not read."""
     problems = []
+    linked = {name for name in (METRICS, MUTATIONS) if (results_dir / name).is_symlink()}
+    for name in sorted(linked):
+        problems.append(
+            f"{name} is a symlink, which reads the content of another file, not the one a commit holds at "
+            f"{name}; commit the file itself"
+        )
     bound = run.get("metrics_sha256")
-    if bound is not None:
+    if bound is not None and METRICS not in linked:
         try:
             digest = hashlib.sha256((results_dir / METRICS).read_bytes()).hexdigest()
         except OSError as error:
@@ -1604,7 +1613,9 @@ def aggregate_problems(run: dict, results_dir: Path) -> list[str]:
                 )
     carried = run.get("mutation_checks")
     evidence = results_dir / MUTATIONS
-    if carried is None:
+    if MUTATIONS in linked:
+        pass
+    elif carried is None:
         if evidence.exists():
             problems.append(f"{RUN} carries no mutation checks, but {MUTATIONS} is there")
     else:

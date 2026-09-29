@@ -169,6 +169,14 @@ def gate(root: Path) -> tuple[int, list[str]]:
     lines=output.getvalue().splitlines()
     return code,[line.removeprefix("ERROR: ") for line in lines if line.startswith("ERROR: ")]
 
+def unarchived(status: str) -> list[str]:
+    """What a fixture at `status` that holds no archive adds to the gate's
+    errors: a listed experiment that is completed needs its aggregate,
+    run.json, and the metrics.json beside it, whatever its manifest lists."""
+    if status!="completed":
+        return []
+    return [f"X900: completed experiment missing {name}" for name in ("run.json","metrics.json")]
+
 class PreregistrationGateTests(unittest.TestCase):
     """The preregistration gate on fixture trees holding one listed
     experiment, X900, and one baseline."""
@@ -261,7 +269,7 @@ class PreregistrationGateTests(unittest.TestCase):
         for status in ("prepared","running","completed","failed"):
             with self.subTest(status=status):
                 code,lines=gate(self.tree(status=status))
-                self.assertEqual((code,lines),(0,[]))
+                self.assertEqual((code,lines),(1 if unarchived(status) else 0,unarchived(status)))
         # A key the list does not require is preregistered too, empty lists
         # included; only required lists must hold something.
         self.assertEqual(gate(self.tree(table={**TABLE,"low_cells":[],"note":"x"})),(0,[]))
@@ -272,14 +280,16 @@ class PreregistrationGateTests(unittest.TestCase):
         for status in ("prepared","running","completed","failed"):
             with self.subTest(status=status):
                 without={key:value for key,value in TABLE.items() if key!="harness"}
-                self.assert_blocked(self.tree(status=status,table=without),"X900: preregistration key harness is missing")
+                self.assert_blocked(self.tree(status=status,table=without),"X900: preregistration key harness is missing",
+                                    *unarchived(status))
                 self.assert_blocked(
                     self.tree(status=status,table=None,digest="0"*64),
                     "X900: config.toml has no [preregistration] table",
+                    *unarchived(status),
                 )
                 root=self.tree(status=status)
                 (root/"experiments/semdb/X900-fixture/config.toml").unlink()
-                self.assert_blocked(root,"X900: config.toml does not exist")
+                self.assert_blocked(root,"X900: config.toml does not exist",*unarchived(status))
 
     def test_a_placeholder_or_wrongly_typed_value_blocks(self):
         cases=[
@@ -812,7 +822,7 @@ class PreregistrationGateTests(unittest.TestCase):
         name=self.RECORD.removeprefix("experiments/semdb/X900-fixture/")
         for ending,other in ((b"\r\n",b"\n"),(b"\n",b"\r\n")):
             with self.subTest(committed=ending):
-                root=self.tree(status="completed")
+                root=self.tree(status="running")
                 converted=(root/self.MANIFEST).read_bytes().replace(b"\r\n",b"\n").replace(b"\n",ending)
                 (root/self.MANIFEST).write_bytes(converted)
                 commit=commit_all(root)
@@ -943,7 +953,7 @@ class PreregistrationGateTests(unittest.TestCase):
         ran=commit_all(root)
         write(root,self.RECORD,json.dumps(self.record(root,ran,**({} if seed is None else {"seed":seed,"status":"completed"}))))
         commit_all(root,"records")
-        self.assertEqual(gate(root),(0,[]))
+        self.assertEqual(gate(root),(1 if unarchived(status) else 0,unarchived(status)))
         return root,ran
 
     def edit(self, root: Path, relative: str, old: str, new: str) -> None:
@@ -1007,7 +1017,7 @@ class PreregistrationGateTests(unittest.TestCase):
                     self.edit(root,self.MANIFEST,f'status = "{then}"',f'status = "{now}"')
                     self.edit(root,"experiments/registry.toml",f'status = "{then}"',f'status = "{now}"') if now!=then else None
                     if now in allowed:
-                        self.assertEqual(gate(root),(0,[]))
+                        self.assertEqual(gate(root),(1 if unarchived(now) else 0,unarchived(now)))
                     else:
                         self.assert_blocked(
                             root,
@@ -1015,6 +1025,7 @@ class PreregistrationGateTests(unittest.TestCase):
                             "since a status moves only from prepared to running to completed or failed, or to superseded",
                             f"X900 was frozen at {ran[:12]}, where it was {then!r}; it cannot be {now!r} after that, "
                             "since a status moves only from prepared to running to completed or failed, or to superseded",
+                            *unarchived(now),
                         )
         # Back at planned, the experiment is not gated as frozen, but it has
         # run: its committed records keep it from hiding as never run.
@@ -1338,6 +1349,7 @@ class PreregistrationGateTests(unittest.TestCase):
                 ran=commit_all(root)
                 runs=self.seeded(root,ran)
                 write(root,self.AGGREGATE,json.dumps(self.aggregate(root,ran)))
+                write(root,"experiments/semdb/X900-fixture/results/metrics.json","{}")
                 self.assertEqual(gate(root),(0,[]))
         digest_17=hashlib.sha256((root/f"experiments/semdb/X900-fixture/{runs[0]}").read_bytes()).hexdigest()
         digest_29=hashlib.sha256((root/f"experiments/semdb/X900-fixture/{runs[1]}").read_bytes()).hexdigest()
@@ -1561,6 +1573,94 @@ class PreregistrationGateTests(unittest.TestCase):
         commit_all(root,"aggregate again")
         self.assert_blocked(root,*(refused(middle,int(seed),None,held) for seed,held in bound["seed_records"].items()))
 
+    def test_a_completed_listed_experiment_holds_its_aggregate_whatever_its_manifest_lists(self):
+        # `required_artifacts` is written by the experiment's author: a
+        # completed experiment that lists none, with no run record and no
+        # aggregate, would otherwise pass though none of its seeds ran.
+        directory="experiments/semdb/X900-fixture"
+        root=self.tree(status="completed")
+        commit_all(root)
+        self.assert_blocked(root,*unarchived("completed"))
+        # Naming them in the manifest names them once.
+        root=self.tree(status="completed")
+        self.edit(root,self.MANIFEST,"required_artifacts = []",'required_artifacts = ["run.json", "metrics.json"]')
+        commit_all(root)
+        self.assert_blocked(root,*unarchived("completed"))
+        # What the manifest lists beyond them is needed as well.
+        root=self.tree(status="completed")
+        self.edit(root,self.MANIFEST,"required_artifacts = []",'required_artifacts = ["plot.png", "run.json"]')
+        commit_all(root)
+        self.assert_blocked(root,"X900: completed experiment missing plot.png",*unarchived("completed"))
+        # The aggregate, with a run of every seed and its metrics, is enough.
+        root=self.tree(status="completed")
+        ran=commit_all(root)
+        self.seeded(root,ran)
+        write(root,self.AGGREGATE,json.dumps(self.aggregate(root,ran)))
+        self.assert_blocked(root,"X900: completed experiment missing metrics.json")
+        write(root,f"{directory}/results/metrics.json","{}")
+        self.assertEqual(gate(root),(0,[]))
+        # Metrics without the aggregate leave the runs unbound.
+        (root/self.AGGREGATE).unlink()
+        self.assert_blocked(root,"X900: completed experiment missing run.json")
+        # An experiment that has not completed needs neither.
+        for status in ("prepared","running","failed"):
+            with self.subTest(status=status):
+                self.assertEqual(gate(self.tree(status=status)),(0,[]))
+
+    def test_an_artifact_of_a_completed_experiment_is_a_file_no_symlink_stands_for(self):
+        # A link reads the content of another file, which no commit holds at
+        # the artifact's own path.
+        directory="experiments/semdb/X900-fixture"
+        root=self.tree(status="completed")
+        ran=commit_all(root)
+        self.seeded(root,ran)
+        write(root,self.AGGREGATE,json.dumps(self.aggregate(root,ran)))
+        write(root,f"{directory}/results/metrics.json","{}")
+        self.assertEqual(gate(root),(0,[]))
+        message=lambda name:(f"X900: completed experiment {name} is a symlink or lies below one; an artifact is the file a "
+                             "commit holds at its own path")
+        for name in ("run.json","metrics.json"):
+            with self.subTest(name=name):
+                artifact=root/directory/"results"/name
+                kept=artifact.read_bytes()
+                artifact.unlink()
+                write(root,f"{directory}/elsewhere.json",kept.decode("utf-8"))
+                self.link(Path("../elsewhere.json"),artifact)
+                code,lines=gate(root)
+                self.assertEqual(code,1)
+                self.assertIn(message(name),lines)
+                artifact.unlink()
+                artifact.write_bytes(kept)
+                (root/directory/"elsewhere.json").unlink()
+                self.assertEqual(gate(root),(0,[]))
+        # So is an artifact below a linked directory.
+        results=root/directory/"results"
+        moved=root/directory/"moved"
+        results.rename(moved)
+        self.link(Path("moved"),results)
+        code,lines=gate(root)
+        self.assertEqual(code,1)
+        for name in ("run.json","metrics.json"):
+            self.assertIn(message(name),lines)
+
+    def test_a_path_is_reached_through_a_symlink_at_any_step_from_the_root_down(self):
+        root=Path(self.enterContext(tempfile.TemporaryDirectory()))/"root"
+        (root/"real/deep").mkdir(parents=True)
+        (root/"real/deep/file").write_text("x",encoding="utf-8")
+        self.assertFalse(mod.reached_through_symlink(root,root/"real/deep/file"))
+        # The first step, one between, and the file itself.
+        self.link(Path("real"),root/"top")
+        self.assertTrue(mod.reached_through_symlink(root,root/"top/deep/file"))
+        self.link(Path("deep"),root/"real/mid")
+        self.assertTrue(mod.reached_through_symlink(root,root/"real/mid/file"))
+        self.link(Path("file"),root/"real/deep/alias")
+        self.assertTrue(mod.reached_through_symlink(root,root/"real/deep/alias"))
+        # The first step of a path is checked as the others are.
+        self.assertFalse(mod.reached_through_symlink(root,root/"real/deep"))
+        self.assertTrue(mod.reached_through_symlink(root,root/"top"))
+        # A path outside the root is not one the commit holds.
+        self.assertTrue(mod.reached_through_symlink(root,root.parent/"elsewhere"))
+
     def test_a_run_record_of_a_seed_outside_the_preregistration_is_refused(self):
         # A seed added once an outcome is seen could count towards what is
         # reported: only the seeds the table froze may have run.
@@ -1612,7 +1712,7 @@ class PreregistrationGateTests(unittest.TestCase):
                 root=self.tree(status=manifest)
                 self.edit(root,registry,f'status = "{manifest}"',f'status = "{held}"')
                 message=disagreement(repr(held),manifest)
-                self.assert_blocked(root,message)
+                self.assert_blocked(root,message,*unarchived(manifest))
                 self.assertEqual(mod.launch_errors(root,"X900"),[message])
                 commit=commit_all(root)
                 self.assertIsNone(mod.launchable_at(root,commit,"X900","experiments/semdb/X900-fixture"))
@@ -1993,16 +2093,19 @@ class PreregistrationGateTests(unittest.TestCase):
 
     def regressions(self, root: Path) -> list[tuple[str, str, str, str]]:
         """The (then, anchor, now, commit) of each regression the gate names
-        on `root`, in any order; anything else the gate names fails the test."""
+        on `root`, in any order; anything else the gate names fails the test,
+        but for the archive a completed fixture does not hold."""
         code,lines=gate(root)
         found=[]
         for line in lines:
+            if line in unarchived("completed"):
+                continue
             named=re.fullmatch(
                 r"X900 was '(\w+)' at ([0-9a-f]{12}) and is '(\w+)' at ([0-9a-f]{12}), a commit after it; .*",line,
             )
             self.assertIsNotNone(named,line)
             found.append(named.groups())
-        self.assertEqual(code,1 if found else 0)
+        self.assertEqual(code,1 if lines else 0)
         return found
 
     def test_a_status_that_went_back_after_a_freeze_is_named_though_a_later_commit_restores_it(self):

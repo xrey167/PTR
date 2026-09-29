@@ -2185,6 +2185,18 @@ def listed_now(root: Path) -> set[str]:
         return set()
     return set(entries) if isinstance(entries,dict) else set()
 
+STANDARD_ARTIFACTS=(experiment_records.RUN,experiment_records.METRICS)
+
+def reached_through_symlink(root: Path, path: Path) -> bool:
+    """Whether `path` is a symlink or lies below one, from `root` down, which
+    a commit holds as its target's path and not as the content read through
+    it; a path not under `root` is reached through one."""
+    try:
+        parts=path.relative_to(root).parts
+    except ValueError:
+        return True
+    return any(root.joinpath(*parts[:depth]).is_symlink() for depth in range(1,len(parts)+1))
+
 def gate_errors(root: Path) -> list[str]:
     """Every error of every gate on the repository at `root` (`main`),
     raising `Unreadable` for a file it cannot read outside the listed
@@ -2210,9 +2222,21 @@ def gate_errors(root: Path) -> list[str]:
                 errors.append(f'{item["id"]}: results_dir {results_dir!r} is not a path')
                 continue
             results=experiment/results_dir
-            for artifact in manifest.get("required_artifacts",[]):
+            required=manifest.get("required_artifacts",[])
+            if item["id"] in listed:
+                # What a listed experiment reports is its aggregate, bound to
+                # the finished run of each preregistered seed
+                # (`archived_errors`); that it is there does not rest on the
+                # list its manifest names, which is written by its author.
+                required=[*required,*(name for name in STANDARD_ARTIFACTS if name not in required)]
+            for artifact in required:
                 if not (results/artifact).exists():
                     errors.append(f'{item["id"]}: completed experiment missing {artifact}')
+                elif reached_through_symlink(root,results/artifact):
+                    # A link reads another file's content, which no commit
+                    # holds at this path.
+                    errors.append(f'{item["id"]}: completed experiment {artifact} is a symlink or lies below one; an artifact '
+                                  "is the file a commit holds at its own path")
             # A listed experiment's command may run or read any file of the
             # repository: its results are stale once any of them changes.
             errors.extend(experiment_records.staleness_errors(item["id"],experiment,results,root,item["id"] in listed))
