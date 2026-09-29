@@ -10,7 +10,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::model::{Delta, Model, Op, OpRefusal, Refusal, Val, Validity};
+use super::model::{Delta, Model, Net, Op, OpRefusal, Refusal, Val, Validity};
 use super::program::Footprint;
 
 /// The hazards a merge would commit if certification did not refuse it.
@@ -98,9 +98,7 @@ fn holds_member(value: Option<&Val>, member: &str) -> bool {
 
 /// Whether any counter of `model` is negative.
 pub fn negative_counter(model: &Model) -> bool {
-    model.values().iter().any(|(key, value)| {
-        key.starts_with("ctr:") && value.as_counter().is_some_and(|count| count < 0)
-    })
+    model.negative_counter()
 }
 
 /// The hazards `footprint` runs into merged into `target`.
@@ -286,17 +284,14 @@ pub fn judge(footprint: &Footprint, target: &Model) -> Judgement {
         let rebased = rebased_keys(footprint, target);
         match merge_delta(&footprint.ops, target) {
             Err(refusal) => Predicted::OperationRefused(refusal),
-            Ok(delta) => {
-                let mut after = target.clone();
-                match after.apply(&delta) {
-                    Err(refusal) => Predicted::DeltaRefused(refusal),
-                    Ok(_) if negative_counter(&after) => {
-                        Predicted::VerificationRejected { rebased }
-                    }
-                    Ok(applied) if !applied.moved => Predicted::NoChange { rebased },
-                    Ok(_) => Predicted::Merge { rebased, delta },
+            Ok(delta) => match target.plan(&delta) {
+                Err(refusal) => Predicted::DeltaRefused(refusal),
+                Ok(plan) if target.negative_counter_after(&plan.net) => {
+                    Predicted::VerificationRejected { rebased }
                 }
-            }
+                Ok(plan) if !plan.moved() => Predicted::NoChange { rebased },
+                Ok(_) => Predicted::Merge { rebased, delta },
+            },
         }
     };
     Judgement {
@@ -308,18 +303,40 @@ pub fn judge(footprint: &Footprint, target: &Model) -> Judgement {
 
 /// Whether a commutative key of the branch holds, after the merge, other than
 /// what its operations make of what the target held before it: an increment
-/// or a set change was lost.
-pub fn lost_increments(footprint: &Footprint, before: &Model, after: &Model) -> bool {
+/// or a set change was lost. `before` and `after` say what a key held.
+pub fn lost_increments_with(
+    footprint: &Footprint,
+    before: impl Fn(&str) -> Option<Val>,
+    after: impl Fn(&str) -> Option<Val>,
+) -> bool {
     footprint.commutative.iter().any(|key| {
-        let mut expected = before.value(key).cloned();
+        let mut expected = before(key);
         for op in footprint.ops.iter().filter(|op| op.key() == key) {
             match op.apply(expected.as_ref()) {
                 Ok(next) => expected = next,
                 Err(_) => return true,
             }
         }
-        after.value(key) != expected.as_ref()
+        after(key) != expected
     })
+}
+
+/// [`lost_increments_with`] over the state before and the state after.
+pub fn lost_increments(footprint: &Footprint, before: &Model, after: &Model) -> bool {
+    lost_increments_with(
+        footprint,
+        |key| before.value(key).cloned(),
+        |key| after.value(key).cloned(),
+    )
+}
+
+/// [`lost_increments_with`] over the state before and what a merge changed.
+pub fn lost_increments_net(footprint: &Footprint, before: &Model, net: &Net) -> bool {
+    lost_increments_with(
+        footprint,
+        |key| before.value(key).cloned(),
+        |key| net.value_after(key, before.value(key)),
+    )
 }
 
 #[cfg(test)]

@@ -22,6 +22,7 @@
 //! dependencies changed.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Bound;
 
 /// The payload type of a counter.
 pub const COUNTER_TYPE: &str = "ptr.counter.i64";
@@ -293,7 +294,52 @@ pub struct Model {
     revision: u64,
     values: BTreeMap<String, Val>,
     dependencies: BTreeMap<String, BTreeSet<String>>,
+    /// The graph the other way round, so that what a change invalidates is
+    /// found without walking every entry: each input to the derived keys
+    /// that list it. Always what `dependencies` implies.
+    dependents: BTreeMap<String, BTreeSet<String>>,
     pub lifecycle: Lifecycle,
+}
+
+/// What applying a delta changes, and nothing of the state it applies to:
+/// each key whose value is different afterwards with the value it then has
+/// (`None` for a key that no longer holds one), and each derived key whose
+/// input set is different afterwards with the set it then has (empty for
+/// none). Two deltas applied to one state leave the same state exactly when
+/// their nets are equal.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Net {
+    pub values: BTreeMap<String, Option<Val>>,
+    pub dependencies: BTreeMap<String, BTreeSet<String>>,
+}
+
+impl Net {
+    /// The value `key` holds after the change, given what it holds now.
+    pub fn value_after(&self, key: &str, now: Option<&Val>) -> Option<Val> {
+        match self.values.get(key) {
+            Some(value) => value.clone(),
+            None => now.cloned(),
+        }
+    }
+}
+
+/// What applying a delta to a state would do, worked out without doing it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Plan {
+    pub net: Net,
+    /// Every key the change invalidates, changed keys included.
+    pub affected: BTreeSet<String>,
+}
+
+impl Plan {
+    /// Whether values or dependencies change, which moves the revision.
+    pub fn moved(&self) -> bool {
+        !self.net.values.is_empty() || !self.net.dependencies.is_empty()
+    }
+}
+
+fn negative(value: &Val) -> bool {
+    value.as_counter().is_some_and(|count| count < 0)
 }
 
 impl Model {
@@ -309,11 +355,16 @@ impl Model {
         &self.values
     }
 
+    /// The entries whose key starts with `prefix`, in key order.
+    fn under<'a>(&'a self, prefix: &'a str) -> impl Iterator<Item = (&'a String, &'a Val)> {
+        self.values
+            .range::<str, _>((Bound::Included(prefix), Bound::Unbounded))
+            .take_while(move |(key, _)| key.starts_with(prefix))
+    }
+
     /// The keys with a value under `prefix`, with their values, in key order.
     pub fn entries_under(&self, prefix: &str) -> Vec<(String, Val)> {
-        self.values
-            .iter()
-            .filter(|(key, _)| key.starts_with(prefix))
+        self.under(prefix)
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect()
     }
@@ -327,8 +378,35 @@ impl Model {
         &self.dependencies
     }
 
+    /// Whether any counter holds a negative value.
+    pub fn negative_counter(&self) -> bool {
+        self.negative_counter_after(&Net::default())
+    }
+
+    /// Whether any counter would hold a negative value after `net`.
+    pub fn negative_counter_after(&self, net: &Net) -> bool {
+        let held = self
+            .under("ctr:")
+            .any(|(key, value)| match net.values.get(key) {
+                Some(after) => after.as_ref().is_some_and(negative),
+                None => negative(value),
+            });
+        held || net.values.iter().any(|(key, after)| {
+            key.starts_with("ctr:")
+                && !self.values.contains_key(key)
+                && after.as_ref().is_some_and(negative)
+        })
+    }
+
     /// Apply `delta`, or refuse it and change nothing.
     pub fn apply(&mut self, delta: &Delta) -> Result<Applied, Refusal> {
+        let plan = self.plan(delta)?;
+        Ok(self.commit(plan))
+    }
+
+    /// What applying `delta` would do, or why it would be refused, without
+    /// changing anything.
+    pub fn plan(&self, delta: &Delta) -> Result<Plan, Refusal> {
         if delta
             .removals
             .iter()
@@ -336,117 +414,166 @@ impl Model {
         {
             return Err(Refusal::Conflicting);
         }
-        let mut values = self.values.clone();
-        let mut dependencies = self.dependencies.clone();
-        let mut changed: BTreeSet<String> = BTreeSet::new();
+        // The keys that change, and each derived key whose input set does.
+        let mut changed: BTreeSet<&str> = BTreeSet::new();
+        let mut new_inputs: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
         for key in &delta.removals {
-            if values.remove(key).is_some() {
-                changed.insert(key.clone());
+            if self.values.contains_key(key) {
+                changed.insert(key);
             }
-            if dependencies.remove(key).is_some() {
-                changed.insert(key.clone());
+            if self.dependencies.contains_key(key) {
+                changed.insert(key);
+                new_inputs.insert(key, BTreeSet::new());
             }
         }
         for (key, value) in &delta.upserts {
-            if values.get(key) != Some(value) {
-                values.insert(key.clone(), value.clone());
-                changed.insert(key.clone());
+            if self.values.get(key) != Some(value) {
+                changed.insert(key);
             }
         }
         for (key, inputs) in &delta.dependencies {
-            let old = dependencies.get(key);
+            let old = self.dependencies.get(key);
             if old != Some(inputs) && !(old.is_none() && inputs.is_empty()) {
-                if inputs.is_empty() {
-                    dependencies.remove(key);
-                } else {
-                    dependencies.insert(key.clone(), inputs.clone());
+                changed.insert(key);
+                new_inputs.insert(key, inputs.clone());
+            }
+        }
+        let inputs_after = |key: &str| -> BTreeSet<String> {
+            match new_inputs.get(key) {
+                Some(inputs) => inputs.clone(),
+                None => self.inputs(key),
+            }
+        };
+        // A cycle in the new graph runs through an input set that changed,
+        // since the old graph has none.
+        for (derived, inputs) in &new_inputs {
+            let mut pending: Vec<String> = inputs.iter().cloned().collect();
+            let mut seen: BTreeSet<String> = BTreeSet::new();
+            while let Some(key) = pending.pop() {
+                if key == *derived {
+                    return Err(Refusal::Cyclic);
                 }
-                changed.insert(key.clone());
+                if seen.insert(key.clone()) {
+                    pending.extend(inputs_after(&key));
+                }
             }
         }
-        if has_cycle(&dependencies) {
-            return Err(Refusal::Cyclic);
+        // What the change invalidates: the changed keys and everything
+        // derived from them, in the old graph and in the new one.
+        let mut affected: BTreeSet<String> = BTreeSet::new();
+        let mut pending: Vec<String> = changed.iter().map(|key| (*key).to_string()).collect();
+        while let Some(key) = pending.pop() {
+            if affected.insert(key.clone()) {
+                pending.extend(self.dependents.get(&key).into_iter().flatten().cloned());
+            }
         }
-        let mut affected = closure(&self.dependencies, &changed);
-        affected.extend(closure(&dependencies, &changed));
+        let mut in_new_graph: BTreeSet<String> = BTreeSet::new();
+        let mut pending: Vec<String> = changed.iter().map(|key| (*key).to_string()).collect();
+        while let Some(key) = pending.pop() {
+            if in_new_graph.insert(key.clone()) {
+                let kept = self
+                    .dependents
+                    .get(&key)
+                    .into_iter()
+                    .flatten()
+                    .filter(|derived| {
+                        new_inputs
+                            .get(derived.as_str())
+                            .is_none_or(|inputs| inputs.contains(&key))
+                    })
+                    .cloned();
+                let gained = new_inputs
+                    .iter()
+                    .filter(|(_, inputs)| inputs.contains(&key))
+                    .map(|(derived, _)| (*derived).to_string());
+                pending.extend(kept.chain(gained));
+            }
+        }
+        affected.extend(in_new_graph);
+        // The values that differ afterwards.
+        let mut values: BTreeMap<String, Option<Val>> = BTreeMap::new();
+        for key in &delta.removals {
+            if self.values.contains_key(key) {
+                values.insert(key.clone(), None);
+            }
+        }
         for key in &affected {
-            if !delta.upserts.contains_key(key) {
-                values.remove(key);
+            if !delta.upserts.contains_key(key) && self.values.contains_key(key) {
+                values.insert(key.clone(), None);
             }
         }
+        for (key, value) in &delta.upserts {
+            if self.values.get(key) != Some(value) {
+                values.insert(key.clone(), Some(value.clone()));
+            }
+        }
+        let holds = |key: &str| match values.get(key) {
+            Some(after) => after.is_some(),
+            None => self.values.contains_key(key),
+        };
         for key in delta.upserts.keys() {
-            for input in dependencies.get(key).into_iter().flatten() {
-                if !values.contains_key(input) {
+            for input in inputs_after(key) {
+                if !holds(&input) {
                     return Err(Refusal::MissingInput {
                         derived: key.clone(),
-                        input: input.clone(),
+                        input,
                     });
                 }
             }
         }
-        let moved = values != self.values || dependencies != self.dependencies;
-        self.values = values;
-        self.dependencies = dependencies;
+        let dependencies = new_inputs
+            .into_iter()
+            .map(|(key, inputs)| (key.to_string(), inputs))
+            .collect();
+        Ok(Plan {
+            net: Net {
+                values,
+                dependencies,
+            },
+            affected,
+        })
+    }
+
+    /// Make a plan worked out against this state the state.
+    pub fn commit(&mut self, plan: Plan) -> Applied {
+        let moved = plan.moved();
+        for (key, value) in plan.net.values {
+            match value {
+                Some(value) => {
+                    self.values.insert(key, value);
+                }
+                None => {
+                    self.values.remove(&key);
+                }
+            }
+        }
+        for (derived, inputs) in plan.net.dependencies {
+            for input in self.dependencies.remove(&derived).into_iter().flatten() {
+                if let Some(derived_keys) = self.dependents.get_mut(&input) {
+                    derived_keys.remove(&derived);
+                    if derived_keys.is_empty() {
+                        self.dependents.remove(&input);
+                    }
+                }
+            }
+            for input in &inputs {
+                self.dependents
+                    .entry(input.clone())
+                    .or_default()
+                    .insert(derived.clone());
+            }
+            if !inputs.is_empty() {
+                self.dependencies.insert(derived, inputs);
+            }
+        }
         if moved {
             self.revision += 1;
         }
-        Ok(Applied { moved, affected })
-    }
-}
-
-/// `changed` and every key derived from one of them, directly or through
-/// other derived keys, in the graph `inputs` (derived key to its inputs).
-fn closure(
-    inputs: &BTreeMap<String, BTreeSet<String>>,
-    changed: &BTreeSet<String>,
-) -> BTreeSet<String> {
-    let mut derived_from: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-    for (derived, set) in inputs {
-        for input in set {
-            derived_from.entry(input).or_default().push(derived);
+        Applied {
+            moved,
+            affected: plan.affected,
         }
     }
-    let mut out: BTreeSet<String> = BTreeSet::new();
-    let mut pending: Vec<String> = changed.iter().cloned().collect();
-    while let Some(key) = pending.pop() {
-        if out.insert(key.clone()) {
-            if let Some(children) = derived_from.get(key.as_str()) {
-                pending.extend(children.iter().map(|child| (*child).to_string()));
-            }
-        }
-    }
-    out
-}
-
-/// Whether the graph has a cycle: some key that is, through its inputs, its
-/// own input.
-fn has_cycle(inputs: &BTreeMap<String, BTreeSet<String>>) -> bool {
-    #[derive(Clone, Copy, PartialEq)]
-    enum Mark {
-        Open,
-        Done,
-    }
-    fn visit<'a>(
-        key: &'a str,
-        inputs: &'a BTreeMap<String, BTreeSet<String>>,
-        marks: &mut BTreeMap<&'a str, Mark>,
-    ) -> bool {
-        match marks.get(key) {
-            Some(Mark::Done) => return false,
-            Some(Mark::Open) => return true,
-            None => {}
-        }
-        marks.insert(key, Mark::Open);
-        for input in inputs.get(key).into_iter().flatten() {
-            if visit(input, inputs, marks) {
-                return true;
-            }
-        }
-        marks.insert(key, Mark::Done);
-        false
-    }
-    let mut marks = BTreeMap::new();
-    inputs.keys().any(|key| visit(key, inputs, &mut marks))
 }
 
 #[cfg(test)]
@@ -717,5 +844,261 @@ mod tests {
         lifecycle.set_live("policy-0", 3);
         assert_eq!(lifecycle.validity("policy-0", 3), Some(Validity::Live));
         assert_eq!(lifecycle.validity("policy-0", 2), Some(Validity::Revoked));
+    }
+
+    /// The implementation `plan` replaced, kept to show they agree: it copies
+    /// both maps and walks the whole graph for every delta.
+    mod reference {
+        use super::super::*;
+
+        pub struct State {
+            pub values: BTreeMap<String, Val>,
+            pub dependencies: BTreeMap<String, BTreeSet<String>>,
+        }
+
+        pub fn apply(state: &mut State, delta: &Delta) -> Result<Applied, Refusal> {
+            if delta
+                .removals
+                .iter()
+                .any(|key| delta.upserts.contains_key(key) || delta.dependencies.contains_key(key))
+            {
+                return Err(Refusal::Conflicting);
+            }
+            let mut values = state.values.clone();
+            let mut dependencies = state.dependencies.clone();
+            let mut changed: BTreeSet<String> = BTreeSet::new();
+            for key in &delta.removals {
+                if values.remove(key).is_some() {
+                    changed.insert(key.clone());
+                }
+                if dependencies.remove(key).is_some() {
+                    changed.insert(key.clone());
+                }
+            }
+            for (key, value) in &delta.upserts {
+                if values.get(key) != Some(value) {
+                    values.insert(key.clone(), value.clone());
+                    changed.insert(key.clone());
+                }
+            }
+            for (key, inputs) in &delta.dependencies {
+                let old = dependencies.get(key);
+                if old != Some(inputs) && !(old.is_none() && inputs.is_empty()) {
+                    if inputs.is_empty() {
+                        dependencies.remove(key);
+                    } else {
+                        dependencies.insert(key.clone(), inputs.clone());
+                    }
+                    changed.insert(key.clone());
+                }
+            }
+            if has_cycle(&dependencies) {
+                return Err(Refusal::Cyclic);
+            }
+            let mut affected = closure(&state.dependencies, &changed);
+            affected.extend(closure(&dependencies, &changed));
+            for key in &affected {
+                if !delta.upserts.contains_key(key) {
+                    values.remove(key);
+                }
+            }
+            for key in delta.upserts.keys() {
+                for input in dependencies.get(key).into_iter().flatten() {
+                    if !values.contains_key(input) {
+                        return Err(Refusal::MissingInput {
+                            derived: key.clone(),
+                            input: input.clone(),
+                        });
+                    }
+                }
+            }
+            let moved = values != state.values || dependencies != state.dependencies;
+            state.values = values;
+            state.dependencies = dependencies;
+            Ok(Applied { moved, affected })
+        }
+
+        /// `changed` and every key derived from one of them, directly or through
+        /// other derived keys, in the graph `inputs` (derived key to its inputs).
+        fn closure(
+            inputs: &BTreeMap<String, BTreeSet<String>>,
+            changed: &BTreeSet<String>,
+        ) -> BTreeSet<String> {
+            let mut derived_from: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+            for (derived, set) in inputs {
+                for input in set {
+                    derived_from.entry(input).or_default().push(derived);
+                }
+            }
+            let mut out: BTreeSet<String> = BTreeSet::new();
+            let mut pending: Vec<String> = changed.iter().cloned().collect();
+            while let Some(key) = pending.pop() {
+                if out.insert(key.clone()) {
+                    if let Some(children) = derived_from.get(key.as_str()) {
+                        pending.extend(children.iter().map(|child| (*child).to_string()));
+                    }
+                }
+            }
+            out
+        }
+
+        /// Whether the graph has a cycle: some key that is, through its inputs, its
+        /// own input.
+        fn has_cycle(inputs: &BTreeMap<String, BTreeSet<String>>) -> bool {
+            #[derive(Clone, Copy, PartialEq)]
+            enum Mark {
+                Open,
+                Done,
+            }
+            fn visit<'a>(
+                key: &'a str,
+                inputs: &'a BTreeMap<String, BTreeSet<String>>,
+                marks: &mut BTreeMap<&'a str, Mark>,
+            ) -> bool {
+                match marks.get(key) {
+                    Some(Mark::Done) => return false,
+                    Some(Mark::Open) => return true,
+                    None => {}
+                }
+                marks.insert(key, Mark::Open);
+                for input in inputs.get(key).into_iter().flatten() {
+                    if visit(input, inputs, marks) {
+                        return true;
+                    }
+                }
+                marks.insert(key, Mark::Done);
+                false
+            }
+            let mut marks = BTreeMap::new();
+            inputs.keys().any(|key| visit(key, inputs, &mut marks))
+        }
+    }
+
+    fn random_delta(rng: &mut crate::experiments::rng::Rng) -> Delta {
+        let keys: Vec<String> = (0..7).map(|index| format!("k{index}")).collect();
+        let mut delta = Delta::default();
+        for key in &keys {
+            match rng.below(8) {
+                0 | 1 => {
+                    delta
+                        .upserts
+                        .insert(key.clone(), Val::text(format!("v{}", rng.below(3))));
+                }
+                2 => {
+                    delta.removals.insert(key.clone());
+                }
+                3 | 4 => {
+                    let inputs: BTreeSet<String> =
+                        keys.iter().filter(|_| rng.below(3) == 0).cloned().collect();
+                    delta.dependencies.insert(key.clone(), inputs);
+                    if rng.below(2) == 0 {
+                        delta
+                            .upserts
+                            .insert(key.clone(), Val::text(format!("v{}", rng.below(3))));
+                    }
+                }
+                _ => {}
+            }
+        }
+        delta
+    }
+
+    #[test]
+    fn planning_and_committing_agree_with_the_whole_copy_implementation_on_random_deltas() {
+        let mut rng = crate::experiments::rng::Rng::new(20_260_929);
+        let (mut accepted, mut refused, mut moved) = (0u32, 0u32, 0u32);
+        for _ in 0..1_500 {
+            let mut model = Model::default();
+            let mut state = reference::State {
+                values: BTreeMap::new(),
+                dependencies: BTreeMap::new(),
+            };
+            for _ in 0..30 {
+                let delta = random_delta(&mut rng);
+                let expected = reference::apply(&mut state, &delta);
+                let planned = model.plan(&delta);
+                let got = planned.map(|plan| {
+                    let net_moved = plan.moved();
+                    let applied = model.commit(plan);
+                    assert_eq!(applied.moved, net_moved);
+                    applied
+                });
+                assert_eq!(got, expected, "delta {delta:?}");
+                assert_eq!(model.values(), &state.values, "delta {delta:?}");
+                assert_eq!(model.dependencies(), &state.dependencies, "delta {delta:?}");
+                let mut index: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+                for (derived, inputs) in &state.dependencies {
+                    for input in inputs {
+                        index
+                            .entry(input.clone())
+                            .or_default()
+                            .insert(derived.clone());
+                    }
+                }
+                assert_eq!(model.dependents, index, "the index follows the graph");
+                match got {
+                    Ok(applied) => {
+                        accepted += 1;
+                        moved += u32::from(applied.moved);
+                    }
+                    Err(_) => refused += 1,
+                }
+            }
+        }
+        // The deltas reach every branch: accepted, refused and moving.
+        assert!(
+            accepted > 10_000 && refused > 5_000 && moved > 5_000,
+            "{accepted} {refused} {moved}"
+        );
+    }
+
+    #[test]
+    fn a_plan_leaves_the_model_alone_and_its_net_says_what_changed() {
+        let model = model_with_total();
+        let before = model.clone();
+        let plan = model.plan(&delta(&[("a", "5")], &[], &[])).expect("plans");
+        assert_eq!(model, before);
+        assert!(plan.moved());
+        assert_eq!(plan.net.values.get("a"), Some(&Some(Val::text("5"))));
+        assert_eq!(
+            plan.net.values.get("total"),
+            Some(&None),
+            "the derived value is evicted"
+        );
+        assert!(plan.net.dependencies.is_empty());
+        // The same state through two different deltas has one net.
+        let twice = model
+            .plan(&delta(&[("a", "5"), ("a", "5")], &[], &[]))
+            .expect("plans");
+        assert_eq!(plan.net, twice.net);
+    }
+
+    #[test]
+    fn a_counter_that_would_go_negative_is_seen_in_the_net_and_only_there() {
+        let mut model = Model::default();
+        model
+            .apply(&Delta {
+                upserts: [("ctr:0".to_string(), Val::counter(5, "g"))].into(),
+                ..Delta::default()
+            })
+            .expect("applies");
+        assert!(!model.negative_counter());
+        let down = Delta {
+            upserts: [("ctr:0".to_string(), Val::counter(-2, "g"))].into(),
+            ..Delta::default()
+        };
+        let plan = model.plan(&down).expect("plans");
+        assert!(model.negative_counter_after(&plan.net));
+        assert!(!model.negative_counter(), "planning changed nothing");
+        let fresh = Delta {
+            upserts: [("ctr:9".to_string(), Val::counter(-1, "g"))].into(),
+            ..Delta::default()
+        };
+        assert!(model.negative_counter_after(&model.plan(&fresh).expect("plans").net));
+        let removal = Delta {
+            removals: ["ctr:0".to_string()].into(),
+            ..Delta::default()
+        };
+        assert!(!model.negative_counter_after(&model.plan(&removal).expect("plans").net));
     }
 }

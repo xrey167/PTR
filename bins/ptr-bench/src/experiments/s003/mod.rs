@@ -8,6 +8,7 @@
 // build has nothing that calls into it.
 #![allow(dead_code)]
 
+pub mod arms;
 pub mod canary;
 pub mod metrics;
 pub mod model;

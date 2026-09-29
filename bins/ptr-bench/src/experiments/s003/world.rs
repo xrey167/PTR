@@ -31,19 +31,19 @@ use ptr_runtime::{
     HoldReason, MergeAuthority, MergeHold, MergeOutcome, MergeReceipt, PtrRuntime, RuntimeError,
     SemanticGrant,
 };
-use ptr_semdb::{SemanticDelta, SemanticSnapshot};
+use ptr_semdb::{SemanticDelta, SemanticSnapshot, SemanticValue};
 use ptr_types::{
     CapsuleId, Generation, PrincipalId, Probability, ProjectId, RequestId, Revision,
     Validity as RuntimeValidity, VerificationLevel,
 };
 
 use super::metrics::Metrics;
-use super::model::{Delta, Model, OpRefusal, Val, Validity};
+use super::model::{Delta, Model, Net, OpRefusal, Val, Validity};
 use super::oracle::{self, Predicted};
 use super::params;
 use super::program::{
-    from_semantic, from_semantic_delta, keys, sealed_differences, to_semantic_delta, BranchView,
-    Footprint, Program, RefView,
+    from_semantic_delta, keys, sealed_differences, to_semantic_delta, BranchView, Footprint,
+    Program, RefView,
 };
 use super::verifier::{Diff, Domain};
 use super::workload::{Background, Case, Genesis, PROJECT};
@@ -345,11 +345,10 @@ impl World {
         if stray {
             return Predicted3::Refused;
         }
-        let mut after = self.model.clone();
-        let Ok(applied) = after.apply(delta) else {
+        let Ok(plan) = self.model.plan(delta) else {
             return Predicted3::Refused;
         };
-        if oracle::negative_counter(&after) {
+        if self.model.negative_counter_after(&plan.net) {
             return Predicted3::Refused;
         }
         let jumps = delta
@@ -357,14 +356,18 @@ impl World {
             .keys()
             .filter(|key| key.starts_with("ctr:"))
             .any(|key| {
-                let before = self.model.value(key).and_then(Val::as_counter);
-                let now = after.value(key).and_then(Val::as_counter);
+                let held = self.model.value(key);
+                let before = held.and_then(Val::as_counter);
+                let now = plan
+                    .net
+                    .value_after(key, held)
+                    .and_then(|value| value.as_counter());
                 matches!((before, now), (Some(before), Some(now))
                 if before.abs_diff(now) > params::HOST_COUNTER_JUMP_MAX as u64)
             });
         if jumps {
             Predicted3::Refused
-        } else if applied.moved {
+        } else if plan.moved() {
             Predicted3::Committed
         } else {
             Predicted3::NoChange
@@ -648,15 +651,15 @@ impl World {
         })
     }
 
-    /// What the program leaves when it is run again on the model as it is.
-    fn serial_state(&self, attempt: &Attempt, before: &Model) -> Option<Model> {
-        let mut view = RefView::open(before);
+    /// What changes when the program is run again on the model as it is and
+    /// its operations are merged at once: the serial execution the merge must
+    /// be equivalent to.
+    fn serial_net(&self, attempt: &Attempt) -> Option<Net> {
+        let mut view = RefView::open(&self.model);
         attempt.program.run(&mut view, attempt.rely);
         let (_, footprint, _) = view.finish();
-        let delta = oracle::merge_delta(&footprint.ops, before).ok()?;
-        let mut state = before.clone();
-        state.apply(&delta).ok()?;
-        Some(state)
+        let delta = oracle::merge_delta(&footprint.ops, &self.model).ok()?;
+        Some(self.model.plan(&delta).ok()?.net)
     }
 
     fn plan_key(&self, attempt: &Attempt) -> Option<PlanKey> {
@@ -696,7 +699,7 @@ impl World {
         if matches!(authority, Authority::Triage { .. }) {
             self.count_trials(&judgement, !rebased.is_empty());
         }
-        let before_model = self.model.clone();
+        let before_revision = self.model.revision();
         let from = self.ledger_len();
         let runtime_authority = match authority {
             Authority::Triage { score } => MergeAuthority::Triage {
@@ -719,7 +722,7 @@ impl World {
                 &judgement,
                 &rebased,
                 &now,
-                &before_model,
+                before_revision,
                 from,
                 &receipt,
             )?,
@@ -727,15 +730,7 @@ impl World {
             Ok(MergeOutcome::Held(hold)) => {
                 self.held(attempt, authority, &judgement, now, from, &hold)
             }
-            Err(error) => self.refused(
-                attempt,
-                authority,
-                &judgement,
-                &now,
-                &before_model,
-                from,
-                error,
-            )?,
+            Err(error) => self.refused(attempt, authority, &judgement, &now, from, error)?,
         };
         Ok(settled)
     }
@@ -769,7 +764,7 @@ impl World {
         judgement: &oracle::Judgement,
         rebased: &BTreeSet<String>,
         now: &Option<PlanKey>,
-        before: &Model,
+        before_revision: u64,
         from: usize,
         receipt: &MergeReceipt,
     ) -> Result<Settled, String> {
@@ -798,26 +793,27 @@ impl World {
             self.metrics.provenance_mismatches += 1;
             self.note("a committed merge did not append exactly one record".into());
         }
-        self.follow(from)?;
-        self.check_merge_record(attempt, authority, rebased, before, from, receipt);
-        if oracle::lost_increments(&attempt.footprint, before, &self.model) {
-            self.metrics.lost_increments += 1;
-            self.note(format!("{}: an increment was lost", attempt.id.0));
+        // What the record changes, and what serial execution would change,
+        // both against the state before the merge.
+        let committed = self.committed_net(from);
+        let serial = self.serial_net(attempt);
+        if let Some(net) = &committed {
+            if oracle::lost_increments_net(&attempt.footprint, &self.model, net) {
+                self.metrics.lost_increments += 1;
+                self.note(format!("{}: an increment was lost", attempt.id.0));
+            }
         }
+        if committed.is_none() || committed != serial {
+            self.metrics.serialization_divergences += 1;
+            self.note(format!(
+                "{}: the merged state is not the serial state",
+                attempt.id.0
+            ));
+        }
+        self.follow(from)?;
+        self.check_merge_record(attempt, authority, rebased, before_revision, from, receipt);
         if oracle::negative_counter(&self.model) {
             self.metrics.invariant_violations += 1;
-        }
-        match self.serial_state(attempt, before) {
-            Some(serial)
-                if serial.values() == self.model.values()
-                    && serial.dependencies() == self.model.dependencies() => {}
-            _ => {
-                self.metrics.serialization_divergences += 1;
-                self.note(format!(
-                    "{}: the merged state is not the serial state",
-                    attempt.id.0
-                ));
-            }
         }
         let expected_kind = if rebased.is_empty() {
             CertificationKind::Clean
@@ -839,12 +835,26 @@ impl World {
         Ok(Settled::Committed)
     }
 
+    /// What the record appended at `from` changes in the model as it is now,
+    /// read back from the journal.
+    fn committed_net(&self, from: usize) -> Option<Net> {
+        let Some(CommittedEvent {
+            event: LedgerEvent::SemanticDeltaCommitted { encoded_delta, .. },
+            ..
+        }) = self.runtime.committed_events().get(from)
+        else {
+            return None;
+        };
+        let delta = from_semantic_delta(&SemanticDelta::decode(encoded_delta).ok()?);
+        Some(self.model.plan(&delta).ok()?.net)
+    }
+
     fn check_merge_record(
         &mut self,
         attempt: &Attempt,
         authority: &Authority,
         rebased: &BTreeSet<String>,
-        before: &Model,
+        before_revision: u64,
         from: usize,
         receipt: &MergeReceipt,
     ) {
@@ -861,7 +871,7 @@ impl World {
                         origin: SemanticOrigin::Merge(record),
                     },
             }) => {
-                if base_revision.0 != before.revision() || revision.0 != self.model.revision() {
+                if base_revision.0 != before_revision || revision.0 != self.model.revision() {
                     faults.push("the record's revisions are not the model's".into());
                 }
                 if record.branch != attempt.id.0 || record.author != attempt.author {
@@ -1011,7 +1021,6 @@ impl World {
         authority: &Authority,
         judgement: &oracle::Judgement,
         now: &Option<PlanKey>,
-        before: &Model,
         from: usize,
         error: RuntimeError,
     ) -> Result<Settled, String> {
@@ -1030,7 +1039,7 @@ impl World {
                     _ => self.mismatch(judgement, "a merge conflicted"),
                 }
                 self.metrics.conflicts += 1;
-                self.describe_refusal(attempt, &keys, before);
+                self.describe_refusal(attempt, &keys);
                 Ok(Settled::Conflict)
             }
             RuntimeError::Certification(BranchError::LifecycleChanged { targets }) => {
@@ -1109,23 +1118,12 @@ impl World {
     /// Descriptive counters of a certification refusal: whether merging it
     /// anyway would have given the serial state, and whether it was a
     /// refused increment written as a value.
-    fn describe_refusal(
-        &mut self,
-        attempt: &Attempt,
-        conflicting: &BTreeSet<String>,
-        before: &Model,
-    ) {
-        let merged = oracle::merge_delta(&attempt.footprint.ops, before)
+    fn describe_refusal(&mut self, attempt: &Attempt, conflicting: &BTreeSet<String>) {
+        let merged = oracle::merge_delta(&attempt.footprint.ops, &self.model)
             .ok()
-            .and_then(|delta| {
-                let mut state = before.clone();
-                state.apply(&delta).ok()?;
-                Some(state)
-            });
-        let serial = self.serial_state(attempt, before);
-        if let (Some(merged), Some(serial)) = (merged, serial) {
-            if merged.values() == serial.values() && merged.dependencies() == serial.dependencies()
-            {
+            .and_then(|delta| Some(self.model.plan(&delta).ok()?.net));
+        if let (Some(merged), Some(serial)) = (merged, self.serial_net(attempt)) {
+            if merged == serial {
                 self.metrics.unnecessary_refusals += 1;
             }
         }
@@ -1175,7 +1173,12 @@ impl World {
         occ: bool,
     ) -> Result<HostOutcome, String> {
         let hazards = oracle::hazards(&attempt.footprint, &self.model);
-        let before = self.model.clone();
+        let before: BTreeMap<&String, Option<Val>> = attempt
+            .footprint
+            .commutative
+            .iter()
+            .map(|key| (key, self.model.value(key).cloned()))
+            .collect();
         let outcome = self.host_write(delta, principal)?;
         if outcome == HostOutcome::Committed {
             if occ {
@@ -1184,11 +1187,12 @@ impl World {
                 self.metrics.occ_stale_reliance_commits += u64::from(hazards.stale_reliance);
             } else {
                 self.metrics.lww_lost_updates += u64::from(hazards.lost_update);
-                self.metrics.lww_lost_increments += u64::from(oracle::lost_increments(
+                let lost = oracle::lost_increments_with(
                     &attempt.footprint,
-                    &before,
-                    &self.model,
-                ));
+                    |key| before.get(&key.to_string()).cloned().flatten(),
+                    |key| self.model.value(key).cloned(),
+                );
+                self.metrics.lww_lost_increments += u64::from(lost);
             }
         }
         Ok(outcome)
@@ -1283,6 +1287,22 @@ impl World {
     }
 }
 
+/// Whether the runtime holds `value` where the model holds `expected`.
+fn same_value(value: &SemanticValue, expected: &Val) -> bool {
+    match (value, expected) {
+        (SemanticValue::Text(text), Val::Text(expected)) => text == expected,
+        (
+            SemanticValue::Payload(payload),
+            Val::Payload {
+                type_id,
+                source,
+                bytes,
+            },
+        ) => payload.type_id.0 == *type_id && payload.source == *source && payload.bytes == *bytes,
+        _ => false,
+    }
+}
+
 /// How a runtime's state differs from a model's: its revision, every value
 /// and input set, and the validity of every generation up to one past each
 /// live one.
@@ -1295,26 +1315,43 @@ pub fn state_difference(runtime: &PtrRuntime, model: &Model) -> Option<String> {
         ));
     }
     let snapshot: SemanticSnapshot = runtime.snapshot();
-    let held: BTreeMap<String, Val> = snapshot
-        .keys()
-        .filter_map(|key| {
-            snapshot
-                .value(key)
-                .map(|value| (key.to_string(), from_semantic(value)))
-        })
-        .collect();
-    if &held != model.values() {
-        let differing = held
-            .keys()
-            .chain(model.values().keys())
-            .find(|key| held.get(*key) != model.values().get(*key));
-        return Some(format!("value of {differing:?}"));
+    let mut expected = model.values().iter();
+    for key in snapshot.keys() {
+        let Some((model_key, model_value)) = expected.next() else {
+            return Some(format!("the runtime holds {key}, the model does not"));
+        };
+        if model_key != key {
+            return Some(format!("the runtime holds {key}, the model {model_key}"));
+        }
+        let held = snapshot.value(key).expect("a listed key holds a value");
+        if !same_value(held, model_value) {
+            return Some(format!("value of {key}"));
+        }
     }
-    let candidates: BTreeSet<&String> = held.keys().chain(model.dependencies().keys()).collect();
-    for key in candidates {
-        let inputs: BTreeSet<String> = snapshot.inputs(key).map(str::to_string).collect();
-        if inputs != model.inputs(key) {
-            return Some(format!("inputs of {key}"));
+    if let Some((model_key, _)) = expected.next() {
+        return Some(format!("the model holds {model_key}, the runtime does not"));
+    }
+    for (derived, inputs) in model.dependencies() {
+        if !snapshot
+            .inputs(derived)
+            .eq(inputs.iter().map(String::as_str))
+        {
+            return Some(format!("inputs of {derived}"));
+        }
+    }
+    // The other direction, for the families that hold derived keys: the
+    // runtime records no input set that the model does not.
+    let families: BTreeSet<&str> = model
+        .dependencies()
+        .keys()
+        .filter_map(|key| key.split_once(':').map(|(family, _)| family))
+        .collect();
+    for family in families {
+        let prefix = format!("{family}:");
+        for key in snapshot.keys().filter(|key| key.starts_with(&prefix)) {
+            if !model.dependencies().contains_key(key) && snapshot.inputs(key).next().is_some() {
+                return Some(format!("inputs of {key}"));
+            }
         }
     }
     for policy in 0..params::POLICIES {
