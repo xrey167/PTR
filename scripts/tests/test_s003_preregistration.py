@@ -15,7 +15,7 @@ REGISTRY = ROOT / "experiments" / "preregistration.toml"
 # The SHA-256 of the canonical text without `low_cells`, which the pilot fills.
 # `s003::params::tests::the_canonical_text_of_the_frozen_table_matches_the_python_digest`
 # in bins/ptr-bench holds the same digest: a change to the table changes both.
-DIGEST_WITHOUT_LOW_CELLS = "2511af8d2f9708fef79a0f37d811820e7cfcbce3bf9ef849204f2d8e345a267a"
+DIGEST_WITHOUT_LOW_CELLS = "470e3cd81360ab0ee7dcee090b9637a41cf2563fbbf2d88d7a6dae9bc52993a0"
 
 
 class S003PreregistrationTests(unittest.TestCase):

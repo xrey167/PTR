@@ -3462,6 +3462,7 @@ dependencies = [
  "ptr-semdb",
  "ptr-state",
  "ptr-types",
+ "ptr-verifier",
  "tokio",
  "tokio-postgres",
 ]

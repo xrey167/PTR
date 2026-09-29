@@ -66,7 +66,7 @@ pub const REWIRE_PERMILLE_PER_TICK: u64 = 10;
 pub const REWIRE_SWAP_MIN_TICKS: u64 = 5;
 pub const REWIRE_SWAP_MAX_TICKS: u64 = 30;
 pub const REQUIRED_VERIFICATION: &str = "deterministic";
-pub const VERIFIERS: [&str; 2] = ["s003-domain/v1", "s003-diff/v1"];
+pub const VERIFIERS: [&str; 2] = ["s003-domain-v1", "s003-diff-v1"];
 pub const HOST_COUNTER_JUMP_MAX: i64 = 100;
 pub const AUTO_POLICY: &str = "s003-auto/v1";
 pub const AUTO_THRESHOLD_PERMILLE: u64 = 0;
@@ -509,7 +509,7 @@ mod tests {
             "{echoed}"
         );
         assert!(
-            echoed.ends_with(r#""verifiers":["s003-domain/v1","s003-diff/v1"]}"#),
+            echoed.ends_with(r#""verifiers":["s003-domain-v1","s003-diff-v1"]}"#),
             "{echoed}"
         );
         assert!(!echoed.contains(' ') && !echoed.contains('\n'));
@@ -530,7 +530,7 @@ mod tests {
             .collect();
         assert_eq!(
             digest,
-            "2511af8d2f9708fef79a0f37d811820e7cfcbce3bf9ef849204f2d8e345a267a"
+            "470e3cd81360ab0ee7dcee090b9637a41cf2563fbbf2d88d7a6dae9bc52993a0"
         );
     }
 
