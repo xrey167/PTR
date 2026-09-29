@@ -4951,7 +4951,9 @@ class EnrolledExperimentTests(unittest.TestCase):
         pinned="'must-be-pinned-before-prepared'"
         signed="'must-be-signed-by-owner'"
         expected=[
-            "S003: config.toml has no [preregistration] table",
+            "S003: preregistration key low_cells is an empty list",
+            "S003: experiment.toml names no preregistration_sha256",
+            "S003: experiment.toml names no preregistration_rules_sha256",
             f"F003: preregistration key uncalibrated_threshold_permille is a placeholder ({pinned})",
             f"F003: preregistration key calibration_set_rule is a placeholder ({signed})",
             f"F003: preregistration key adjudicators_see_intent is a placeholder ({signed})",
