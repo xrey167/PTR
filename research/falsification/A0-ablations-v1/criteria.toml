@@ -1,0 +1,168 @@
+# Preregistered decision criteria for the A0 mechanism ablation study v1.
+#
+# Fixed before any declared-seed run. After the preregistration commit (tag
+# a0-ablation-prereg-v1) this file cannot change: scripts/aggregate_a0_ablation.py
+# refuses to run if its SHA-256 differs from the file at that tag. Every
+# comparison is exact (>=, >, <) on float64 values computed from exact counts;
+# nothing is rounded before comparison. The design and its reasoning are in
+# PREREGISTRATION.md next to this file.
+version = 1
+study = "A0-ablations-v1"
+seeds = [17, 29, 43, 71, 101]
+# Two-sided 95% t quantile with 4 degrees of freedom.
+t_critical = 2.776
+delta_min_default = 0.02
+
+# COMMON DECISION RULE, for every contrast of kind "mechanism".
+# delta_s = accuracy(comparator) - accuracy(ablated) on the endpoint, paired on seed.
+# m = mean(delta), sd = sample SD, CI = m +/- t_critical * sd / sqrt(5).
+# SUPPORTS    if m >= delta_min, CI lower > 0, delta_s > 0 for every seed, both arms
+#             learnable, and no gate or leak alarm blocks the verdict.
+# FALSIFIES   if CI upper < delta_min, both arms learnable and no gate blocks;
+#             also HARMFUL when CI upper < 0.
+# INCONCLUSIVE otherwise, with the reason recorded.
+
+[composites]
+A = ["ood_compose_epi", "ood_compose_regime", "ood_distractors"]
+B = ["ood_distractors", "ood_compose_regime"]
+C = ["test_iid", "ood_compose_epi", "ood_compose_regime"]
+
+[gates]
+# G1: the full arm's 5-seed mean test_iid >= max(competence_min, raw-blind exact
+# Bayes ceiling on test_iid + competence_margin).
+competence_min = 0.85
+competence_margin = 0.03
+# Leak alarm: raw-blind's 5-seed mean test_iid > its exact ceiling + this puts
+# every verdict on HOLD.
+leak_alarm_margin = 0.02
+
+[learnability]
+# 5-seed mean test_iid must reach the recomputed bound additive reference.
+complete_path = [
+    "full", "no-semantic-slots", "no-semantic-slots-masked", "no-typed-attention",
+    "latent-1", "latent-4", "frozen-router",
+]
+# 5-seed mean test_iid must reach train-majority + restricted_margin.
+restricted = [
+    "latent-0", "latent-linear", "blind-query-k0", "blind-query-k0-no-typed-attention",
+    "raw-blind",
+]
+restricted_margin = 0.25
+contingency_steps = 4000
+
+[[contrast]]
+id = "M001-primary"
+kind = "mechanism"
+comparator = "full"
+ablated = "no-semantic-slots-masked"
+endpoint = "composite:A"
+delta_min = 0.02
+supports = "typed slot content improves OOD routing over index-tagged raw binding in A0"
+falsifies = "a benefit of 2 points or more from typed slot content on the OOD composite is excluded in A0"
+prior = { supports = 0.35, falsifies = 0.30, inconclusive = 0.35 }
+
+[[contrast]]
+id = "M001-secondary"
+kind = "mechanism"
+comparator = "full"
+ablated = "no-semantic-slots"
+endpoint = "composite:A"
+delta_min = 0.02
+supports = "typed slot content plus admission improves OOD routing over index-tagged raw binding in A0"
+falsifies = "a benefit of 2 points or more from typed content plus admission on the OOD composite is excluded in A0"
+# Reported beside the verdict: (full - no-semantic-slots) - (full - no-semantic-slots-masked) on composite A.
+report_mask_share = true
+prior = { supports = 0.45 }
+
+[[contrast]]
+id = "M002-raw-blind-check"
+kind = "manipulation-check"
+comparator = "full"
+ablated = "raw-blind"
+endpoint = "split:test_iid"
+# PASS if m >= pass_min and every seed's delta > 0; FAIL otherwise.
+pass_min = 0.03
+
+[[contrast]]
+id = "M002-necessity"
+kind = "mechanism"
+comparator = "full"
+ablated = "no-typed-attention"
+endpoint = "composite:B"
+delta_min = 0.02
+requires_pass = "M002-raw-blind-check"
+supports = "the rank-1 typed bias improves robustness to distractors and regime composition beyond QK in A0"
+falsifies = "the rank-1 typed bias adds nothing measurable beyond QK over metadata-bearing slots in A0"
+prior = { falsifies = 0.55 }
+
+[[contrast]]
+id = "M002-sufficiency"
+kind = "mechanism"
+tier = 2
+comparator = "blind-query-k0"
+ablated = "blind-query-k0-no-typed-attention"
+endpoint = "subset:test_iid:regime"
+delta_min = 0.03
+supports = "when it is the only metadata-dependent read, the typed bias learns role-gated reading"
+falsifies = "when it is the only metadata-dependent read, the typed bias does not learn role-gated reading to 3 points"
+# Blindness check: if the ablated arm's 5-seed mean test_iid exceeds the bound
+# additive reference by more than this, blindness failed and the verdict is INCONCLUSIVE.
+blindness_margin = 0.05
+prior = { supports = 0.40 }
+
+[[contrast]]
+id = "M003-nonlinearity"
+kind = "mechanism-pair"
+comparator = "full"
+ablated = "latent-0"
+attribution_ablated = "latent-linear"
+endpoint = "split:test_iid"
+delta_min = 0.02
+supports = "the per-slot gelu, not the extra affine parameters, carries the per-fact gating in A0"
+falsifies = "attention alone implements the per-fact gating at this scale"
+prior = { supports = 0.65 }
+
+[[contrast]]
+id = "M003-depth"
+kind = "mechanism"
+comparator = "full"
+ablated = "latent-1"
+endpoint = "composite:C"
+delta_min = 0.02
+supports = "applying the tied refinement a second time improves A0 at equal parameters"
+falsifies = "applying the tied refinement a second time gives no measurable benefit at equal parameters"
+# Tier 2, no verdict: 'monotone' if latent-4 - full >= 0 on composite C in at least this many seeds.
+dose_response_arm = "latent-4"
+dose_response_min_seeds = 4
+prior = { supports = 0.20 }
+
+[[contrast]]
+id = "M004-negative-control"
+kind = "negative-control"
+comparator = "full"
+ablated = "frozen-router"
+endpoint = "split:test_iid"
+delta_min = 0.02
+# EQUIVALENT if the CI lies strictly inside (-equivalence, equivalence).
+equivalence = 0.02
+supports = "learning the readout matters (probable optimisation artefact, not evidence for routing)"
+prior = { equivalent = 0.70 }
+# Secondary: learned routing beats the designer's deterministic router on IID if the
+# full arm's minimum over seeds on test_iid >= hand_weighted + margin; the claim
+# fails if its maximum is below hand_weighted.
+deterministic_reference = "hand_weighted"
+deterministic_margin = 0.05
+
+[[contrast]]
+id = "no-verifier-head"
+kind = "not-tested"
+note = "not tested: no such module in PtrA0"
+
+[transfer]
+# Descriptive only, never a verdict. An arm 'transfers to the new role x regime
+# cell' if its 5-seed minimum on the strict transfer subset of ood_compose_regime
+# is >= strict_transfer_min; 'does not transfer' if its maximum is below.
+strict_transfer_min = 0.30
+# 'transfers to held-out role x epistemic pairs' if its 5-seed minimum on the
+# heldout subset of ood_compose_epi >= the heldout-as-Inferred reference there.
+heldout_reference = "heldout_as_inferred_on_heldout_subset"

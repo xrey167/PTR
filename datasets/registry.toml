@@ -30,3 +30,13 @@ path = "bundles/own_code_corpus_v0_1.zip"
 status = "planned"
 provenance = "User's own repositories plus optional permissively-licensed public code datasets, near-deduplicated via MinHash+LSH before import"
 card = "cards/own_code_corpus_v0_1.md"
+
+[[dataset]]
+name = "operator_routing_v1"
+path = "generated/operator_routing_v1/"
+lock = "../benchmarks/operator-routing/splits.lock.json"
+sample = "samples/operator_route_v1.jsonl"
+schema = "schemas/operator_route.schema.json"
+provenance = "Synthetic; regenerated deterministically by benchmarks/operator-routing/generator.py (generator_version 1, benchmark seed 20260925, Python standard library only)"
+card = "cards/operator_routing_v1.md"
+status = "generated"

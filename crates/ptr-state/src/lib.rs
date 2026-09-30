@@ -209,24 +209,6 @@ pub fn projection_entries(committed: &CommittedEvent) -> Vec<(String, String)> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn only_the_exact_next_index_is_applicable() {
-        assert_eq!(classify_next(4, 5), None);
-        assert_eq!(classify_next(4, 4), Some(ApplyOutcome::Duplicate));
-        assert_eq!(classify_next(4, 2), Some(ApplyOutcome::OutOfOrder));
-        assert_eq!(classify_next(4, 7), Some(ApplyOutcome::Gap));
-        assert_eq!(classify_next(0, 1), None);
-        assert_eq!(
-            classify_next(u64::MAX, u64::MAX),
-            Some(ApplyOutcome::Duplicate)
-        );
-    }
-}
-
 #[cfg(feature = "turso-backend")]
 pub struct TursoMaterializedState {
     _database: turso::Database,
@@ -342,5 +324,23 @@ impl TursoMaterializedState {
         tx.commit().await.map_err(|error| error.to_string())?;
         self.last_applied = index;
         Ok(ApplyOutcome::Applied)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_exact_next_index_is_applicable() {
+        assert_eq!(classify_next(4, 5), None);
+        assert_eq!(classify_next(4, 4), Some(ApplyOutcome::Duplicate));
+        assert_eq!(classify_next(4, 2), Some(ApplyOutcome::OutOfOrder));
+        assert_eq!(classify_next(4, 7), Some(ApplyOutcome::Gap));
+        assert_eq!(classify_next(0, 1), None);
+        assert_eq!(
+            classify_next(u64::MAX, u64::MAX),
+            Some(ApplyOutcome::Duplicate)
+        );
     }
 }

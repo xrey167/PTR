@@ -6,18 +6,30 @@ tests_dir = "tests"
 
 [framework]
 name = "burn"
-version = "0.18.0"
-backend_for_ci = "ndarray"
-msrv = "1.85"
+version = "0.22.0-pre.3"
+backend_for_ci = "flex"
+msrv = "1.95"
 
 [architecture]
 family = "PTR-A0"
 raw_typed_cross_attention = true
 typed_slot_embeddings = true
 epistemic_embeddings = true
-validity_embeddings = true
+# Validity is admission (a -inf attention bias and the router's admitted mean),
+# not a learned embedding; see README.md.
+validity_embeddings = false
+validity_admission = true
 provenance_embeddings = true
 confidence_projection = true
 typed_attention_bias = true
 operator_router = true
 latent_recurrence = true
+
+# Switches on PtrA0Config, and their defaults. Off (or on, for frozen_router) is
+# an ablation arm; see README.md "Ablation switches".
+[ablation_switches]
+typed_attention = true
+typed_query = true
+latent_nonlinearity = true
+frozen_router = false
+latent_steps = 0

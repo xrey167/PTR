@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-28  
-**Code footprint:** 1 Rust source files · 321 nonblank source lines · 3 integration-test files · 9 `#[test]` markers
+**Last reviewed:** 2026-09-29  
+**Code footprint:** 1 Rust source files · 321 nonblank source lines · 3 integration-test files · 10 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -58,6 +58,7 @@
 - a merge projects its branch's key with its index and plan digest (a_merge_projects_its_branch_key_with_its_index_and_plan), and merge keys are length-delimited: ids that share a character prefix or a length written into them project distinct keys, and merged_branch_of and parse_merged_branch_entry refuse every other spelling (branch_merge_keys_are_length_delimited)
 - replay ordering/idempotency integration test
 - Turso reopen/monotonicity integration test behind turso-backend feature
+- clippy -D warnings over the turso-backend build in the state-turso CI job
 - workspace fmt/check/test/clippy
 - unit test that only the exact next index is applicable and every other index is classified as duplicate, out-of-order or gap
 - ptr-pg postgres test replays a mixed log and compares every entry with MaterializedState

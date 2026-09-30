@@ -10,7 +10,7 @@
 
 **Maturity:** `research-scaffold`  
 **Last reviewed:** 2026-09-19  
-**Code footprint:** 13 Rust source files · 211 nonblank source lines · 1 integration-test files · 1 `#[test]` markers
+**Code footprint:** 13 Rust source files · 211 nonblank source lines · 1 integration-test files · 1 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 

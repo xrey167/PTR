@@ -82,6 +82,9 @@ A PTR system keeps **raw language and typed semantics in parallel**, reasons ove
 | [ptr-search](crates/ptr-search/README.md) | Routes queries across lexical, semantic, GPU, multimodal, distributed and structural search backends while keeping retrieval non-authoritative. |
 | [ptr-storage](crates/ptr-storage/README.md) | Provides typed, content-addressed artifact references while abstracting physical storage locations. |
 | [ptr-net](crates/ptr-net/README.md) | Connects PTR nodes and remote Pods with authenticated transport while leaving protocol semantics to ptr-protocol. |
+| [ptr-cluster](crates/ptr-cluster/README.md) | Carries raft messages between authenticated PTR endpoints on `ALPN_RAFT`, composing `ptr-ledger`'s consensus with `ptr-net`'s transport. |
+| [ptr-execwire](crates/ptr-execwire/README.md) | Carries one execution request and its receipt between authenticated PTR endpoints on `ALPN_EXEC`, composing `ptr-runtime`'s execution authority with `ptr-net`'s transport. |
+| [ptr-podwire](crates/ptr-podwire/README.md) | Carries one Pod invocation and its answer between authenticated PTR endpoints on `ALPN_PODWIRE`, composing `ptr-pods`' registry with `ptr-net`'s transport. |
 | [ptr-events](crates/ptr-events/README.md) | Projects committed and runtime events into scalable streams for analytics, materializers, telemetry and training collectors. |
 | [ptr-observe](crates/ptr-observe/README.md) | Records structured runtime execution without requiring natural-language chain-of-thought logging. |
 | [ptr-inspect](crates/ptr-inspect/README.md) | Allows generic inspection and rendering of typed Rust values without collapsing the runtime into untyped JSON. |

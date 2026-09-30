@@ -1,0 +1,33 @@
+{
+  "arms": {
+    "M001": [
+      "full",
+      "no-semantic-slots",
+      "no-semantic-slots-masked"
+    ],
+    "M002": [
+      "no-typed-attention",
+      "raw-blind"
+    ],
+    "M003": [
+      "latent-0",
+      "latent-1",
+      "latent-linear"
+    ],
+    "M004": [
+      "frozen-router"
+    ]
+  },
+  "d_model": 48,
+  "ladder_applied": [
+    "drop latent-4",
+    "drop the blind-query pair"
+  ],
+  "ms_per_step_used": 27.724,
+  "projected_minutes": 18.487655555555556,
+  "steps": 1500,
+  "sweep": true,
+  "sweep_steps": 1500,
+  "within_hard_cap": true,
+  "within_limit": true
+}

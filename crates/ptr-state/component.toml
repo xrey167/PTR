@@ -1,7 +1,7 @@
 version = 1
 id = "ptr-state"
 maturity = "prototype"
-last_reviewed = "2026-09-28"
+last_reviewed = "2026-09-29"
 
 implemented = [
   "ATTESTED_MARKER (semdb:attested) and MERGED_BRANCH_PREFIX (branch-merge:) name the materialized keys that record attributed semantic records and merged branches: every attributed semantic record projects the marker and every merge record its branch's key, and ptr-runtime refuses a compacted snapshot in the pre-attestation lifecycle layout (PTRLC001) that carries either",
@@ -49,6 +49,7 @@ checks = [
   "a merge projects its branch's key with its index and plan digest (a_merge_projects_its_branch_key_with_its_index_and_plan), and merge keys are length-delimited: ids that share a character prefix or a length written into them project distinct keys, and merged_branch_of and parse_merged_branch_entry refuse every other spelling (branch_merge_keys_are_length_delimited)",
   "replay ordering/idempotency integration test",
   "Turso reopen/monotonicity integration test behind turso-backend feature",
+  "clippy -D warnings over the turso-backend build in the state-turso CI job",
   "workspace fmt/check/test/clippy",
   "unit test that only the exact next index is applicable and every other index is classified as duplicate, out-of-order or gap",
   "ptr-pg postgres test replays a mixed log and compares every entry with MaterializedState",

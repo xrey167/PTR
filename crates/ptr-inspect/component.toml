@@ -1,12 +1,12 @@
 version = 1
 id = "ptr-inspect"
 maturity = "scaffold"
-last_reviewed = "2026-09-18"
+last_reviewed = "2026-09-25"
 
 implemented = [
   "Generic InspectNode tree",
   "Inspectable trait",
-  "Secret<T> that always renders Redacted",
+  "Secret<T> that always renders Redacted, prints Secret([redacted]) through Debug for any T, and keeps its value in a private field reached only through expose/into_inner",
 ]
 
 missing = [
@@ -37,5 +37,6 @@ decisions = [
 ]
 
 checks = [
+  "Debug and alternate Debug of a Secret, alone and nested in a derived Debug, never contain the value",
   "workspace fmt/check/test/clippy",
 ]
