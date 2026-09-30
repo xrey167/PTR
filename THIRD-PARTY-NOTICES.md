@@ -14,9 +14,9 @@ notices the licences require to travel with redistributed software; deciding
 whether a particular distribution satisfies them is not something a generator
 can do.
 
-`Package-set-digest: sha256:6f65ffb801ab7f2be933ff9836d10927ea1830f3bfeefc3c36878913dd38cb82`
+`Package-set-digest: sha256:b4e62b20cd55eb952845860bdf1f43c1a7a3e74a69b6567600bb56e65333c92e`
 
-**922 third-party packages · 459 distinct licence texts**
+**916 third-party packages · 459 distinct licence texts**
 
 ## MPL-2.0 source availability
 
@@ -702,8 +702,7 @@ available under the same terms; PTR has made none.
 | serde_json | 1.0.151 | MIT OR Apache-2.0 | crates.io | ., model/burn-a0 | [LICENSE-APACHE](#text-179), [LICENSE-MIT](#text-083) |
 | serde_path_to_error | 0.1.20 | MIT OR Apache-2.0 | crates.io | . | [LICENSE-APACHE](#text-179), [LICENSE-MIT](#text-083) |
 | serde_repr | 0.1.21 | MIT OR Apache-2.0 | crates.io | . | [LICENSE-APACHE](#text-179), [LICENSE-MIT](#text-083) |
-| serde_spanned | 0.6.9 | MIT OR Apache-2.0 | crates.io | . | [LICENSE-APACHE](#text-354), [LICENSE-MIT](#text-197) |
-| serde_spanned | 1.1.1 | MIT OR Apache-2.0 | crates.io | model/burn-a0 | [LICENSE-APACHE](#text-354), [LICENSE-MIT](#text-197) |
+| serde_spanned | 1.1.1 | MIT OR Apache-2.0 | crates.io | ., model/burn-a0 | [LICENSE-APACHE](#text-354), [LICENSE-MIT](#text-197) |
 | serde_urlencoded | 0.7.1 | MIT/Apache-2.0 | crates.io | ., model/burn-a0 | [LICENSE-APACHE](#text-179), [LICENSE-MIT](#text-338) |
 | serdect | 0.4.3 | Apache-2.0 OR MIT | crates.io | . | [LICENSE-APACHE](#text-376), [LICENSE-MIT](#text-098) |
 | sha1 | 0.10.7 | MIT OR Apache-2.0 | crates.io | model/burn-a0 | [LICENSE-APACHE](#text-305), [LICENSE-MIT](#text-332) |
@@ -787,15 +786,11 @@ available under the same terms; PTR has made none.
 | tokio-stream | 0.1.19 | MIT | crates.io | . | [LICENSE](#text-087) |
 | tokio-util | 0.7.19 | MIT | crates.io | ., model/burn-a0 | [LICENSE](#text-087) |
 | tokio-websockets | 0.13.3 | MIT | crates.io | . | [LICENSE](#text-237) |
-| toml | 0.8.23 | MIT OR Apache-2.0 | crates.io | . | [LICENSE-APACHE](#text-354), [LICENSE-MIT](#text-197) |
-| toml | 1.1.6+spec-1.1.0 | MIT OR Apache-2.0 | crates.io | model/burn-a0 | [LICENSE-APACHE](#text-354), [LICENSE-MIT](#text-197) |
-| toml_datetime | 0.6.11 | MIT OR Apache-2.0 | crates.io | . | [LICENSE-APACHE](#text-354), [LICENSE-MIT](#text-197) |
+| toml | 1.1.6+spec-1.1.0 | MIT OR Apache-2.0 | crates.io | ., model/burn-a0 | [LICENSE-APACHE](#text-354), [LICENSE-MIT](#text-197) |
 | toml_datetime | 1.1.1+spec-1.1.0 | MIT OR Apache-2.0 | crates.io | ., model/burn-a0 | [LICENSE-APACHE](#text-354), [LICENSE-MIT](#text-197) |
-| toml_edit | 0.22.27 | MIT OR Apache-2.0 | crates.io | . | [LICENSE-APACHE](#text-354), [LICENSE-MIT](#text-197) |
 | toml_edit | 0.25.15+spec-1.1.0 | MIT OR Apache-2.0 | crates.io | . | [LICENSE-APACHE](#text-354), [LICENSE-MIT](#text-197) |
 | toml_parser | 1.1.3+spec-1.1.0 | MIT OR Apache-2.0 | crates.io | ., model/burn-a0 | [LICENSE-APACHE](#text-354), [LICENSE-MIT](#text-197) |
-| toml_write | 0.1.2 | MIT OR Apache-2.0 | crates.io | . | [LICENSE-APACHE](#text-354), [LICENSE-MIT](#text-197) |
-| toml_writer | 1.1.2+spec-1.1.0 | MIT OR Apache-2.0 | crates.io | model/burn-a0 | [LICENSE-APACHE](#text-354), [LICENSE-MIT](#text-197) |
+| toml_writer | 1.1.2+spec-1.1.0 | MIT OR Apache-2.0 | crates.io | ., model/burn-a0 | [LICENSE-APACHE](#text-354), [LICENSE-MIT](#text-197) |
 | torch-sys | 0.22.0 | MIT/Apache-2.0 | crates.io | model/burn-a0 | _none shipped_ |
 | tower | 0.5.3 | MIT | crates.io | ., model/burn-a0 | [LICENSE](#text-131) |
 | tower-http | 0.6.11 | MIT | crates.io | ., model/burn-a0 | [LICENSE](#text-153) |
@@ -922,7 +917,6 @@ available under the same terms; PTR has made none.
 | windows_x86_64_gnullvm | 0.52.6 | MIT OR Apache-2.0 | crates.io | ., model/burn-a0 | [license-apache-2.0](#text-348), [license-mit](#text-350) |
 | windows_x86_64_msvc | 0.42.2 | MIT OR Apache-2.0 | crates.io | . | [license-apache-2.0](#text-348), [license-mit](#text-350) |
 | windows_x86_64_msvc | 0.52.6 | MIT OR Apache-2.0 | crates.io | ., model/burn-a0 | [license-apache-2.0](#text-348), [license-mit](#text-350) |
-| winnow | 0.7.15 | MIT | crates.io | . | [LICENSE-MIT](#text-368) |
 | winnow | 1.0.4 | MIT | crates.io | ., model/burn-a0 | [LICENSE-MIT](#text-368) |
 | wit-bindgen | 0.57.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | crates.io | ., model/burn-a0 | [LICENSE-APACHE](#text-299), [LICENSE-Apache-2.0_WITH_LLVM-exception](#text-089), [LICENSE-MIT](#text-083) |
 | wmi | 0.18.4 | MIT OR Apache-2.0 | crates.io | . | [LICENSE-APACHE](#text-225), [LICENSE-MIT](#text-112) |
@@ -11906,7 +11900,7 @@ APPENDIX: How to apply the Apache License to your work.
 
 ### <a id="text-197"></a>Text 197
 
-Carried by: env_filter 2.0.0, env_logger 0.11.11, serde_spanned 0.6.9, serde_spanned 1.1.1, toml 0.8.23, toml 1.1.6+spec-1.1.0, toml_datetime 0.6.11, toml_datetime 1.1.1+spec-1.1.0, toml_edit 0.22.27, toml_edit 0.25.15+spec-1.1.0, toml_parser 1.1.3+spec-1.1.0, toml_write 0.1.2, toml_writer 1.1.2+spec-1.1.0
+Carried by: env_filter 2.0.0, env_logger 0.11.11, serde_spanned 1.1.1, toml 1.1.6+spec-1.1.0, toml_datetime 1.1.1+spec-1.1.0, toml_edit 0.25.15+spec-1.1.0, toml_parser 1.1.3+spec-1.1.0, toml_writer 1.1.2+spec-1.1.0
 
 `sha256:6efb0476a1cc085077ed49357026d8c173bf33017278ef440f222fb9cbcb66e6`
 
@@ -24156,7 +24150,7 @@ SOFTWARE.
 
 ### <a id="text-354"></a>Text 354
 
-Carried by: cobs 0.3.0, crc32fast 1.5.2, enum-as-inner 0.6.1, env_filter 2.0.0, env_logger 0.11.11, fallible-iterator 0.2.0, fallible-iterator 0.3.0, fallible-streaming-iterator 0.1.9, float-ord 0.3.2, hex 0.4.3, jni-sys 0.3.1, jni-sys 0.4.1, no_std_io2 0.9.4, quick-error 2.0.1, serde_spanned 0.6.9, serde_spanned 1.1.1, stringprep 0.1.5, toml 0.8.23, toml 1.1.6+spec-1.1.0, toml_datetime 0.6.11, toml_datetime 1.1.1+spec-1.1.0, toml_edit 0.22.27, toml_edit 0.25.15+spec-1.1.0, toml_parser 1.1.3+spec-1.1.0, toml_write 0.1.2, toml_writer 1.1.2+spec-1.1.0
+Carried by: cobs 0.3.0, crc32fast 1.5.2, enum-as-inner 0.6.1, env_filter 2.0.0, env_logger 0.11.11, fallible-iterator 0.2.0, fallible-iterator 0.3.0, fallible-streaming-iterator 0.1.9, float-ord 0.3.2, hex 0.4.3, jni-sys 0.3.1, jni-sys 0.4.1, no_std_io2 0.9.4, quick-error 2.0.1, serde_spanned 1.1.1, stringprep 0.1.5, toml 1.1.6+spec-1.1.0, toml_datetime 1.1.1+spec-1.1.0, toml_edit 0.25.15+spec-1.1.0, toml_parser 1.1.3+spec-1.1.0, toml_writer 1.1.2+spec-1.1.0
 
 `sha256:c6596eb7be8581c18be736c846fb9173b69eccf6ef94c5135893ec56bd92ba08`
 
@@ -24954,7 +24948,7 @@ THE SOFTWARE.
 
 ### <a id="text-368"></a>Text 368
 
-Carried by: winnow 0.7.15, winnow 1.0.4
+Carried by: winnow 1.0.4
 
 `sha256:cb5aedb296c5246d1f22e9099f925a65146f9f0d6b4eebba97fd27a6cdbbab2d`
 
