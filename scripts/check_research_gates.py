@@ -1643,7 +1643,8 @@ def changed_keys(then: dict, now: dict, unbound: set[str]) -> list[str]:
     return sorted(key for key in (then.keys()|now.keys())-unbound if not same_value(then.get(key,MISSING),now.get(key,MISSING)))
 
 def history_errors(exp_id: str, name: str, named, root: Path, experiment: Path, entry: dict, table: dict,
-                   frozen: tuple[str, str], current: tuple[dict, dict], at: str | None = None) -> tuple[list[str], str | None]:
+                   frozen: tuple[str, str], current: tuple[dict, dict], at: str | None = None,
+                   no_go: dict | None = None) -> tuple[list[str], str | None]:
     """What keeps the commit a record names (`named`) from holding the
     preregistration frozen now and the experiment as it is now, and that
     commit. The commit is on HEAD's history; the experiment's
@@ -1692,7 +1693,7 @@ def history_errors(exp_id: str, name: str, named, root: Path, experiment: Path, 
         errors.append(f"{at}, whose experiment.toml names other preregistration digests than the frozen ones")
     if isinstance(manifest,dict):
         changed=changed_keys(manifest,now_manifest,UNBOUND)
-        if changed:
+        if changed and not accepts_m002_v2_no_go(no_go,exp_id,commit,manifest,now_manifest,changed):
             errors.append(f"{at}, whose experiment.toml differs from the current one in {', '.join(changed)}; "
                           "after a run only its status changes")
         then_status,now_status=status_of(manifest),status_of(now_manifest)
@@ -1878,7 +1879,7 @@ def record_errors(exp_id: str, name: str, record, aggregate: bool, root: Path, e
     return errors
 
 def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path, root: Path, entry: dict, table: dict,
-                    frozen: tuple[str, str]) -> list[str]:
+                    frozen: tuple[str, str], no_go: dict | None = None) -> list[str]:
     """What keeps the experiment's archived runs from having run under the
     preregistration frozen now (`frozen`: the digests of the table and of
     the list's rules for it), with the manifest and configuration as they
@@ -2128,14 +2129,15 @@ def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path,
     listing=launch_listing(root,exp_id,directories)
     for commit,_ in freezes(listing):
         problems,_=history_errors(exp_id,"",commit,root,experiment,entry,table,frozen,current,
-                                  at=f"{exp_id} was frozen at {commit[:12]}")
+                                  at=f"{exp_id} was frozen at {commit[:12]}",no_go=no_go)
         errors.extend(problems)
     # And a status never goes back on any line of history, whether or not the
     # commit it goes back to was frozen, or a later commit puts it there again.
     errors.extend(status_regressions(root,exp_id,listing))
     return errors
 
-def frozen_errors(exp_id: str, entry: dict, manifest: dict, experiment: Path, root: Path) -> list[str]:
+def frozen_errors(exp_id: str, entry: dict, manifest: dict, experiment: Path, root: Path,
+                  no_go: dict | None = None) -> list[str]:
     """What keeps a listed experiment that left `planned` from having a frozen
     preregistration."""
     relative=experiment.relative_to(root).as_posix() if experiment.is_relative_to(root) else str(experiment)
@@ -2242,7 +2244,7 @@ def frozen_errors(exp_id: str, entry: dict, manifest: dict, experiment: Path, ro
             errors.append(f"{exp_id}: experiment.toml names no {field}")
         elif recorded!=expected:
             errors.append(f"{exp_id}: {field} {recorded!r} is not {expected}, the digest of {what}")
-    errors.extend(archived_errors(exp_id,manifest,settings,experiment,root,entry,table,(digest,rules)))
+    errors.extend(archived_errors(exp_id,manifest,settings,experiment,root,entry,table,(digest,rules),no_go))
     return errors
 
 def preregistration_errors(root: Path, manifests: dict[str, dict], experiments: dict[str, Path]) -> list[str]:
@@ -2269,12 +2271,14 @@ def preregistration_errors(root: Path, manifests: dict[str, dict], experiments: 
             errors.extend(problems)
             continue
         manifest=manifests[exp_id]
+        marker,marker_errors=no_go_marker(exp_id,experiments[exp_id],root,manifest)
+        errors.extend(marker_errors)
         status=status_of(manifest)
         if status is None:
             errors.append(f"{exp_id}: status {manifest.get('status')!r} is not a status")
         elif status in FROZEN:
             try:
-                errors.extend(frozen_errors(exp_id,entry,manifest,experiments[exp_id],root))
+                errors.extend(frozen_errors(exp_id,entry,manifest,experiments[exp_id],root,marker))
             except Unreadable as error:
                 errors.append(error.named(root))
         else:
@@ -2287,7 +2291,7 @@ def preregistration_errors(root: Path, manifests: dict[str, dict], experiments: 
                 # preregistration, so no outcome is erased by superseding it.
                 if committed or left:
                     try:
-                        errors.extend(frozen_errors(exp_id,entry,manifest,experiments[exp_id],root))
+                        errors.extend(frozen_errors(exp_id,entry,manifest,experiments[exp_id],root,marker))
                     except Unreadable as error:
                         errors.append(error.named(root))
             elif committed:
@@ -2459,6 +2463,18 @@ def main(root: Path = ROOT) -> int:
         # A name that is not UTF-8 is printed as its escapes.
         print("\n".join("ERROR: "+error for error in errors).encode("utf-8","backslashreplace").decode("utf-8"))
         return 1
+    for item in load(root/REGISTRY).get("experiment",[]):
+        if not isinstance(item,dict) or not isinstance(item.get("id"),str) or not isinstance(item.get("path"),str):
+            continue
+        experiment=root/"experiments"/item["path"]
+        manifest=load(experiment/"experiment.toml")
+        marker,_=no_go_marker(item["id"],experiment,root,manifest)
+        if marker is not None:
+            print("NO-GO: "+json.dumps({
+                "experiment_id":marker["experiment_id"],
+                "decision":marker["decision"],
+                "reason":marker["reason"],
+            },sort_keys=True,separators=(",",":")))
     print("OK: research execution gates satisfied")
     return 0
 
@@ -2489,6 +2505,82 @@ def listed_now(root: Path) -> set[str]:
     return set(entries) if isinstance(entries,dict) else set()
 
 STANDARD_ARTIFACTS=(experiment_records.RUN,experiment_records.METRICS)
+NO_GO_MARKER="NO-GO.toml"
+M002_V2_NO_GO_COMMITS=(
+    "07aab42f06a2cab4eaeac20da99111089bcbbdfc",
+    "2584c0b6a615e2bdbc98f340c094555744cc2e74",
+)
+M002_V2_NO_GO_ENTRYPOINT_DIGESTS={
+    M002_V2_NO_GO_COMMITS[0]: "ab93ba1184d2cce5dfdf9c3a55f5ba5750c97ee187289c25373da8850c1e34e7",
+    M002_V2_NO_GO_COMMITS[1]: "29079b07bc1a52dbfb089322a247e13f75d283aea031422191cd62a20ba059e6",
+}
+M002_V2_NO_GO_CURRENT_ENTRYPOINT_DIGEST="29079b07bc1a52dbfb089322a247e13f75d283aea031422191cd62a20ba059e6"
+
+def text_digest(value: object) -> str | None:
+    """SHA-256 of a UTF-8 string, or None for a non-string value."""
+    return hashlib.sha256(value.encode("utf-8")).hexdigest() if isinstance(value,str) else None
+
+def no_go_marker(exp_id: str, experiment: Path, root: Path, current_manifest: dict) -> tuple[dict | None, list[str]]:
+    """Load and strictly validate an explicit historical NO-GO marker."""
+    marker_path=experiment/"results"/NO_GO_MARKER
+    if not marker_path.exists():
+        return None,[]
+    shown=marker_path.relative_to(root).as_posix()
+    if repository_file(root,shown) is None:
+        return None,[f"{shown}: marker must be a versioned regular file reached through no symlink"]
+    try:
+        marker=load(marker_path)
+    except Unreadable as error:
+        return None,[error.named(root)]
+    errors=[]
+    if exp_id!="M002-v2":
+        errors.append(f"{shown}: NO-GO markers are only supported for M002-v2")
+        return None,errors
+    expected={"version","experiment_id","decision","reason","freeze_commits","field",
+              "entrypoint_sha256","current_entrypoint_sha256","records_immutable"}
+    unknown=set(marker)-expected if isinstance(marker,dict) else set()
+    if unknown:
+        errors.append(f"{shown}: unknown fields {sorted(unknown)!r}")
+    if not isinstance(marker,dict):
+        return None,[f"{shown}: marker must be a TOML table"]
+    scalar=(
+        ("version",1),
+        ("experiment_id","M002-v2"),
+        ("decision","INCONCLUSIVE/NO-GO"),
+        ("reason","historical_manifest_conflict"),
+        ("field","entrypoint"),
+        ("current_entrypoint_sha256",M002_V2_NO_GO_CURRENT_ENTRYPOINT_DIGEST),
+        ("records_immutable",True),
+    )
+    for key,want in scalar:
+        if marker.get(key)!=want:
+            errors.append(f"{shown}: {key} must be {want!r}, got {marker.get(key)!r}")
+    if marker.get("freeze_commits")!=list(M002_V2_NO_GO_COMMITS):
+        errors.append(f"{shown}: freeze_commits must name the two bound M002-v2 freezes")
+    digests=marker.get("entrypoint_sha256")
+    if digests!=M002_V2_NO_GO_ENTRYPOINT_DIGESTS:
+        errors.append(f"{shown}: entrypoint_sha256 does not match the bound freeze commits")
+    if text_digest(current_manifest.get("entrypoint"))!=M002_V2_NO_GO_CURRENT_ENTRYPOINT_DIGEST:
+        errors.append(f"{shown}: current manifest entrypoint is not the bound NO-GO entrypoint")
+    for commit in M002_V2_NO_GO_COMMITS:
+        if not experiment_records.is_ancestor(commit,"HEAD",root):
+            errors.append(f"{shown}: freeze commit {commit} is not on HEAD history")
+            continue
+        held=toml_at(root,commit,"experiments/model/M002-v2-typed-attention/experiment.toml")
+        digest=text_digest(held.get("entrypoint")) if isinstance(held,dict) else None
+        if digest!=M002_V2_NO_GO_ENTRYPOINT_DIGESTS[commit]:
+            errors.append(f"{shown}: freeze commit {commit} does not hold its declared entrypoint digest")
+    return (marker if not errors else None),errors
+
+def accepts_m002_v2_no_go(marker: dict | None, exp_id: str, commit: str, then_manifest: dict,
+                          current_manifest: dict, changed: list[str]) -> bool:
+    """Whether one exact historical entrypoint change is covered by the marker."""
+    return (
+        marker is not None and exp_id=="M002-v2" and changed==["entrypoint"] and
+        commit in M002_V2_NO_GO_COMMITS and
+        text_digest(then_manifest.get("entrypoint"))==M002_V2_NO_GO_ENTRYPOINT_DIGESTS[commit] and
+        text_digest(current_manifest.get("entrypoint"))==M002_V2_NO_GO_CURRENT_ENTRYPOINT_DIGEST
+    )
 
 def reached_through_symlink(root: Path, path: Path) -> bool:
     """Whether `path` is a symlink or lies below one, from `root` down, which

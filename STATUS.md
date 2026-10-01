@@ -45,6 +45,9 @@ PTR is a **compiling architecture/research prototype**, not yet a complete model
 - The v4 artifacts are reproducibility evidence for the paired runner and
   frozen configuration, not a claim of model superiority. Any missing or
   failing evidence gate remains `INCONCLUSIVE/NO-GO`.
+- The research gate now accepts the historical M002-v2 conflict only through
+  its exact commit- and digest-bound `results/NO-GO.toml` marker. The marker
+  does not permit positive completion or alter any historical run record.
 
 ## Current research/implementation gap
 

@@ -23,6 +23,39 @@ class ResearchGateTests(unittest.TestCase):
     def test_current_repository_satisfies_gates(self):
         self.assertEqual(mod.main(),0)
 
+    def test_bound_m002_v2_no_go_marker_accepts_only_the_two_exact_freezes(self):
+        experiment=ROOT/"experiments/model/M002-v2-typed-attention"
+        manifest=mod.load(experiment/"experiment.toml")
+        marker,errors=mod.no_go_marker("M002-v2",experiment,ROOT,manifest)
+        self.assertEqual(errors,[])
+        self.assertIsNotNone(marker)
+        current=manifest
+        for commit in mod.M002_V2_NO_GO_COMMITS:
+            then=mod.toml_at(ROOT,commit,"experiments/model/M002-v2-typed-attention/experiment.toml")
+            self.assertTrue(mod.accepts_m002_v2_no_go(marker,"M002-v2",commit,then,current,["entrypoint"]))
+            self.assertFalse(mod.accepts_m002_v2_no_go(marker,"M002-v2",commit,then,current,["entrypoint","hypothesis"]))
+        then=mod.toml_at(ROOT,mod.M002_V2_NO_GO_COMMITS[0],"experiments/model/M002-v2-typed-attention/experiment.toml")
+        self.assertFalse(mod.accepts_m002_v2_no_go(marker,"M002-v2","0"*40,then,current,["entrypoint"]))
+
+    def test_m002_v2_no_go_marker_rejects_tampering_and_never_completes_study(self):
+        experiment=ROOT/"experiments/model/M002-v2-typed-attention"
+        manifest=mod.load(experiment/"experiment.toml")
+        marker_path=experiment/"results/NO-GO.toml"
+        original=mod.load(marker_path)
+        for field,value in (
+            ("experiment_id","M001-v4"),
+            ("decision","completed"),
+            ("field","hypothesis"),
+            ("current_entrypoint_sha256","0"*64),
+        ):
+            tampered=dict(original)
+            tampered[field]=value
+            with self.subTest(field=field), mock.patch.object(mod,"load",side_effect=lambda path, tampered=tampered: tampered if Path(path)==marker_path else original):
+                accepted,errors=mod.no_go_marker("M002-v2",experiment,ROOT,manifest)
+                self.assertIsNone(accepted)
+                self.assertTrue(errors)
+        self.assertNotEqual(manifest.get("status"),"completed")
+
     def test_stale_results_of_a_completed_experiment_fail_the_gate(self):
         completed=[
             item["id"]

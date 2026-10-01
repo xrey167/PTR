@@ -1,0 +1,15 @@
+version = 1
+experiment_id = "M002-v2"
+decision = "INCONCLUSIVE/NO-GO"
+reason = "historical_manifest_conflict"
+freeze_commits = [
+  "07aab42f06a2cab4eaeac20da99111089bcbbdfc",
+  "2584c0b6a615e2bdbc98f340c094555744cc2e74",
+]
+field = "entrypoint"
+current_entrypoint_sha256 = "29079b07bc1a52dbfb089322a247e13f75d283aea031422191cd62a20ba059e6"
+records_immutable = true
+
+[entrypoint_sha256]
+07aab42f06a2cab4eaeac20da99111089bcbbdfc = "ab93ba1184d2cce5dfdf9c3a55f5ba5750c97ee187289c25373da8850c1e34e7"
+2584c0b6a615e2bdbc98f340c094555744cc2e74 = "29079b07bc1a52dbfb089322a247e13f75d283aea031422191cd62a20ba059e6"
