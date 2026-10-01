@@ -11,6 +11,16 @@ path = "model/M002-typed-attention"
 status = "planned"
 
 [[experiment]]
+id = "M001-v2"
+path = "model/M001-v2-semantic-slots"
+status = "prepared"
+
+[[experiment]]
+id = "M002-v2"
+path = "model/M002-v2-typed-attention"
+status = "prepared"
+
+[[experiment]]
 id = "M003"
 path = "model/M003-latent-recurrence"
 status = "planned"

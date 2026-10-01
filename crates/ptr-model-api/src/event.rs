@@ -1,4 +1,4 @@
-use ptr_types::{CandidateId, CapabilityId, Probability, ReasoningOperator, TypeId};
+use ptr_types::{ActionIr, CandidateId, CapabilityId, Probability, ReasoningOperator, TypeId};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ModelEvent {
@@ -23,9 +23,7 @@ pub enum ModelEvent {
         payload: Vec<u8>,
     },
     CandidateReady(CandidateId),
-    ActionReady {
-        operation: String,
-    },
+    ActionReady(ActionIr),
     Token(String),
     Finished,
 }

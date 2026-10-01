@@ -5,6 +5,8 @@ use std::path::Path;
 pub struct CliOverrides {
     pub config_path: Option<String>,
     pub bind: Option<String>,
+    pub data_dir: Option<String>,
+    pub model_backend: Option<String>,
     pub runtime_mode: Option<String>,
     pub mailbox_capacity: Option<usize>,
     pub max_parallel_candidates: Option<usize>,
@@ -34,6 +36,8 @@ impl CliOverrides {
             match key.as_str() {
                 "--config" => out.config_path = Some(value()?),
                 "--bind" => out.bind = Some(value()?),
+                "--data-dir" => out.data_dir = Some(value()?),
+                "--backend" => out.model_backend = Some(value()?),
                 "--mode" => out.runtime_mode = Some(value()?),
                 "--mailbox-capacity" => {
                     let v = value()?;
@@ -67,6 +71,12 @@ impl CliOverrides {
         if let Some(bind) = &self.bind {
             config.server.bind = bind.clone();
         }
+        if let Some(data_dir) = &self.data_dir {
+            config.server.data_dir = data_dir.clone();
+        }
+        if let Some(backend) = &self.model_backend {
+            config.model.backend = backend.clone();
+        }
         if let Some(mode) = &self.runtime_mode {
             config.runtime.mode = mode.clone();
         }
@@ -95,6 +105,7 @@ pub struct PtrConfig {
     pub action_boundary: ActionBoundaryConfig,
     pub observability: ObservabilityConfig,
     pub research: ResearchConfig,
+    pub model: ModelConfig,
 }
 
 impl PtrConfig {
@@ -118,6 +129,8 @@ impl PtrConfig {
             let value = value.as_ref();
             match key {
                 "PTR_BIND" => self.server.bind = value.to_owned(),
+                "PTR_DATA_DIR" => self.server.data_dir = value.to_owned(),
+                "PTR_MODEL_BACKEND" => self.model.backend = value.to_owned(),
                 "PTR_RUNTIME_MODE" => self.runtime.mode = value.to_owned(),
                 "PTR_MAILBOX_CAPACITY" => {
                     self.runtime.mailbox_capacity = parse_usize(key, value)?;
@@ -173,6 +186,39 @@ impl PtrConfig {
             other => Err(format!("unsupported runtime.mode: {other}")),
         }
     }
+
+    /// Validation for the standalone daemon boundary. Library defaults remain
+    /// usable for in-memory tests, but the daemon must never silently widen its
+    /// deployment mode or invent persistence.
+    pub fn validate_daemon(&self) -> Result<(), String> {
+        self.validate()?;
+        if self.runtime.mode != "standalone" {
+            return Err("ptrd only permits standalone mode in this milestone".into());
+        }
+        if !is_loopback_bind(&self.server.bind) {
+            return Err("ptrd only permits loopback server.bind".into());
+        }
+        if self.server.data_dir.trim().is_empty() {
+            return Err("server.data_dir must be explicit".into());
+        }
+        if !std::path::Path::new(&self.server.data_dir).is_dir() {
+            return Err(format!(
+                "server.data_dir does not exist: {}",
+                self.server.data_dir
+            ));
+        }
+        if self.model.backend.trim().is_empty() {
+            return Err("model.backend must be explicit".into());
+        }
+        Ok(())
+    }
+}
+
+fn is_loopback_bind(bind: &str) -> bool {
+    let Ok(address) = bind.parse::<std::net::SocketAddr>() else {
+        return false;
+    };
+    address.ip().is_loopback()
 }
 
 fn parse_usize(key: &str, value: &str) -> Result<usize, String> {
@@ -191,11 +237,26 @@ fn parse_bool(key: &str, value: &str) -> Result<bool, String> {
 #[serde(default)]
 pub struct ServerConfig {
     pub bind: String,
+    pub data_dir: String,
 }
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             bind: "127.0.0.1:8080".into(),
+            data_dir: "data".into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(default)]
+pub struct ModelConfig {
+    pub backend: String,
+}
+impl Default for ModelConfig {
+    fn default() -> Self {
+        Self {
+            backend: "reference-echo".into(),
         }
     }
 }

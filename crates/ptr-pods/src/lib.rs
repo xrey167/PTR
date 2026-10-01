@@ -73,6 +73,25 @@ impl PodRegistry {
             .map(|(_, pod)| pod.clone())
     }
 
+    /// Return only project-owned candidates, in canonical PodId order.
+    pub fn candidates(
+        &self,
+        project: &ProjectId,
+        capability: &CapabilityId,
+        input_type: &TypeId,
+    ) -> Vec<PodId> {
+        self.pods
+            .iter()
+            .filter(|((pod_project, _), pod)| {
+                let manifest = pod.manifest();
+                pod_project == project
+                    && manifest.capabilities.contains(capability)
+                    && manifest.accepts.contains(input_type)
+            })
+            .map(|((_, pod_id), _)| pod_id.clone())
+            .collect()
+    }
+
     pub fn len(&self) -> usize {
         self.pods.len()
     }

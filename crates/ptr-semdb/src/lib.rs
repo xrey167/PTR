@@ -249,6 +249,33 @@ pub struct SemanticSnapshot {
     owner: Arc<()>,
 }
 impl SemanticSnapshot {
+    /// Export the exact snapshot contents as an owned model boundary value.
+    /// Keys are already ordered by the canonical SemDB map and no internal
+    /// ownership handle crosses the boundary.
+    pub fn semantic_context(&self) -> ptr_types::SemanticContext {
+        ptr_types::SemanticContext {
+            revision: self.revision,
+            entries: self
+                .state
+                .ground
+                .iter()
+                .map(|(key, value)| ptr_types::SemanticEntry {
+                    key: key.clone(),
+                    value: match value {
+                        SemanticValue::Text(text) => ptr_types::SemanticValue::Text(text.clone()),
+                        SemanticValue::Payload(payload) => {
+                            ptr_types::SemanticValue::Payload(ptr_types::SemanticPayload {
+                                type_id: payload.type_id.clone(),
+                                source: payload.source.clone(),
+                                bytes: payload.bytes.clone(),
+                            })
+                        }
+                    },
+                })
+                .collect(),
+        }
+    }
+
     pub fn get(&self, key: &str) -> Option<&str> {
         match self.value(key)? {
             SemanticValue::Text(text) => Some(text),
@@ -584,5 +611,42 @@ mod tests {
         ));
         assert!(host.snapshot().keys().next().is_none());
         assert_eq!(host.revision(), Revision(u64::MAX));
+    }
+
+    #[test]
+    fn semantic_context_exports_sorted_exact_values_without_handles() {
+        let mut host = SemanticHost::default();
+        let mut delta = SemanticDelta::default();
+        delta
+            .upserts
+            .insert("zeta".into(), SemanticValue::from("last"));
+        delta.upserts.insert(
+            "alpha".into(),
+            SemanticValue::Payload(SemanticPayload {
+                type_id: TypeId::from("ptr.demo.v1"),
+                source: "pod-1".into(),
+                bytes: vec![1, 2, 3],
+            }),
+        );
+        host.apply_delta(delta).unwrap();
+
+        let context = host.snapshot().semantic_context();
+        assert_eq!(context.revision, Revision(1));
+        assert_eq!(
+            context
+                .entries
+                .iter()
+                .map(|entry| entry.key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alpha", "zeta"]
+        );
+        assert_eq!(
+            context.entries[0].value,
+            ptr_types::SemanticValue::Payload(ptr_types::SemanticPayload {
+                type_id: TypeId::from("ptr.demo.v1"),
+                source: "pod-1".into(),
+                bytes: vec![1, 2, 3],
+            })
+        );
     }
 }

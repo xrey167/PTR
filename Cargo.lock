@@ -3684,6 +3684,8 @@ dependencies = [
 name = "ptr-router"
 version = "0.1.0"
 dependencies = [
+ "ptr-pods",
+ "ptr-protocol",
  "ptr-types",
 ]
 
@@ -3700,6 +3702,7 @@ dependencies = [
  "ptr-model-api",
  "ptr-pods",
  "ptr-protocol",
+ "ptr-router",
  "ptr-search",
  "ptr-security",
  "ptr-semdb",
@@ -3736,9 +3739,14 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "ptr-config",
+ "ptr-ledger",
  "ptr-model-api",
+ "ptr-pods",
+ "ptr-protocol",
+ "ptr-router",
  "ptr-runtime",
  "ptr-types",
+ "ptr-verifier",
  "serde",
  "serde_json",
  "tokio",
@@ -3800,8 +3808,13 @@ name = "ptrd"
 version = "0.1.0"
 dependencies = [
  "ptr-config",
+ "ptr-ledger",
+ "ptr-model-api",
+ "ptr-pods",
+ "ptr-router",
  "ptr-runtime",
  "ptr-server",
+ "ptr-types",
  "tokio",
 ]
 

@@ -1,0 +1,15 @@
+version = 1
+kind = "workspace-area"
+name = "M002-v2-typed-attention"
+path = "experiments/model/M002-v2-typed-attention"
+tests_dir = "tests"
+
+[preregistration]
+seeds = [17, 29, 43, 71, 101]
+steps = 1500
+lr_file = "research/falsification/A0-ablations-v1/lr_selection.tsv"
+data = "datasets/generated/operator_routing_v1"
+data_fnv64 = "0ad71688f09b0d0d"
+d_model = 48
+lr_file_sha256 = "90fd69ace19c4fd1b04244567a7e7b5113d5896c33c0d235e544dad3b1d93cd5"
+baseline_plain_model_sha256 = "585b1bb85f5343633b0877c6fdd6e85bb64519ae3fd2effe813018e28a561166"

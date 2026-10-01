@@ -89,6 +89,47 @@ string_id!(
     PrincipalId
 );
 
+/// The typed action contract shared by model, routing, runtime and security.
+/// `ptr-core::action_head` re-exports this type for compatibility.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ActionIr {
+    pub operation: String,
+    pub target: String,
+    pub capability: CapabilityId,
+    pub effect: Effect,
+    pub input_type: TypeId,
+    pub generation: Generation,
+    pub revision: Revision,
+    pub payload: Vec<u8>,
+}
+
+/// Exact semantic payload contents exposed to a model backend.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SemanticPayload {
+    pub type_id: TypeId,
+    pub source: String,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SemanticValue {
+    Text(String),
+    Payload(SemanticPayload),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SemanticEntry {
+    pub key: String,
+    pub value: SemanticValue,
+}
+
+/// Owned, deterministic snapshot contents supplied to a model backend.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SemanticContext {
+    pub revision: Revision,
+    pub entries: Vec<SemanticEntry>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
 pub struct Probability(f32);
 

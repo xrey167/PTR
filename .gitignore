@@ -35,6 +35,9 @@ __pycache__/
 !/datasets/processed/.gitkeep
 /datasets/generated/*
 !/datasets/generated/.gitkeep
+# The operator-routing v1 bundle is the frozen public study dataset.
+!/datasets/generated/operator_routing_v1/
+!/datasets/generated/operator_routing_v1/**
 # datasets/README.md: private/ is "never committed if it contains sensitive
 # material". That promise needs a rule behind it, not only a sentence: anything
 # dropped here is ignored, and only the area's own scaffolding stays tracked.

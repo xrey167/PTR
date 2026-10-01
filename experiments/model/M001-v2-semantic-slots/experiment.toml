@@ -1,0 +1,14 @@
+version = 1
+id = "M001-v2"
+status = "prepared"
+hypothesis = "Do typed semantic slots improve OOD semantic fidelity under matched compute?"
+metrics = "semantic-slot accuracy; hard-constraint fidelity; token efficiency"
+baseline = "matched plain backbone"
+falsification = "Reject if slots do not improve target fidelity at matched compute."
+hardware_profile = "hardware/a0-cpu-4core.toml"
+entrypoint = "cargo +1.95.0-x86_64-pc-windows-gnu run --release --locked --quiet --jobs 1 --manifest-path model/burn-a0/Cargo.toml --example a0_ablation -- --phase paired --experiment M001 --arms full --seed <seed> --steps <steps> --lr-file <lr_file> --data <data> --data-fnv64 <data_fnv64> --d-model <d_model>"
+seeds = [17, 29, 43, 71, 101]
+results_dir = "results"
+required_artifacts = ["run.json", "metrics.json"]
+preregistration_sha256 = "c7237639d62e9b45210825777b8249e40bbfb2d651bcb30c1e137df70ccecf55"
+preregistration_rules_sha256 = "52c605595f9e5471a2532fc110d79dc907d83398bf1deca4f0cb1b6ad7724272"
