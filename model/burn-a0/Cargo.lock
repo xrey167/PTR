@@ -3978,6 +3978,7 @@ dependencies = [
  "burn",
  "bytemuck",
  "ptr-types",
+ "sha2",
 ]
 
 [[package]]

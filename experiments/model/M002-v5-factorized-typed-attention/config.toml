@@ -1,0 +1,30 @@
+version = 1
+kind = "workspace-area"
+name = "M002-v5-factorized-typed-attention"
+path = "experiments/model/M002-v5-factorized-typed-attention"
+tests_dir = "tests"
+
+# Pilot-selected values intentionally block transition from planned to prepared.
+[preregistration]
+seeds = [17, 29, 43, 71, 101]
+steps = 1500
+batch = 128
+d_model = 48
+learning_rate = "0.005"
+data = "datasets/generated/operator_routing_v2"
+folds = "must-be-pinned-from-splits-lock"
+rank = "must-be-pinned-after-pilot"
+bias_limit = "must-be-pinned-after-pilot"
+metadata_dropout = "must-be-pinned-after-pilot"
+dataset_lock = "benchmarks/operator-routing-v2/splits.lock.json"
+dataset_lock_sha256 = "must-be-pinned-after-generator-freeze"
+criteria = "experiments/model/M002-v5-factorized-typed-attention/PLAN.toml"
+criteria_sha256 = "must-be-pinned-after-protocol-freeze"
+decision_script = "scripts/aggregate_m002_v5.py"
+decision_script_sha256 = "must-be-pinned-after-protocol-freeze"
+pilot_selection_script = "scripts/select_m002_v5_pilot.py"
+pilot_selection_script_sha256 = "must-be-pinned-before-pilot"
+pilot_runner = "scripts/run_m002_v5_pilot.py"
+pilot_runner_sha256 = "must-be-pinned-before-pilot"
+pilot_selection = "experiments/model/M002-v5-factorized-typed-attention/pilot-selection.json"
+pilot_selection_sha256 = "must-be-pinned-after-pilot"

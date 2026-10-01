@@ -1,0 +1,30 @@
+version = 1
+experiment_id = "M002-v4"
+decision = "INCONCLUSIVE/NO-GO"
+verdict = "INCONCLUSIVE"
+go = false
+claim = "typed attention improves model quality"
+accuracy_role = "descriptive-only"
+accuracy_is_descriptive_only = true
+records_immutable = true
+paired_ci_sha256 = "807de68f7f952559847a9a798bcd77b4d7c02e98f3d58cbbea4e61b3dfd24b8d"
+
+[grounds]
+complete_run_records_are_positive_evidence = false
+typed_attention_isolated = false
+reason = "The recorded comparison is no-typed-attention versus plain-transformer; it does not isolate the typed-attention factor from the other architecture differences."
+
+[evidence.ood_compose_regime]
+accuracy_mean_delta = 0.09413333333333333
+accuracy_ci95 = [0.059556217280596756, 0.1287104493860699]
+ece15_mean_delta = 0.24917382661160317
+ece15_ci95 = [0.18177506832106965, 0.3165725849021367]
+nll_mean_delta = 6.776057214742376
+nll_ci95 = [6.035877187686832, 7.51623724179792]
+interpretation = "Accuracy improves, while positive lower-is-better ECE15 and NLL deltas establish calibration degradation; the contrast still does not isolate typed attention."
+
+[reporting]
+allow_accuracy_as_decision_metric = false
+allow_typed_attention_claim = false
+allow_model_superiority_claim = false
+required_label = "INCONCLUSIVE/NO-GO"

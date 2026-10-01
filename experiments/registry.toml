@@ -36,6 +36,11 @@ path = "model/M001-v4-semantic-slots"
 status = "prepared"
 
 [[experiment]]
+id = "M002-v5"
+path = "model/M002-v5-factorized-typed-attention"
+status = "planned"
+
+[[experiment]]
 id = "M003"
 path = "model/M003-latent-recurrence"
 status = "planned"

@@ -23,6 +23,63 @@ class ResearchGateTests(unittest.TestCase):
     def test_current_repository_satisfies_gates(self):
         self.assertEqual(mod.main(),0)
 
+    def test_v4_no_go_decisions_are_bound_to_their_complete_ci_artifacts(self):
+        for exp_id in mod.V4_NO_GO:
+            with self.subTest(experiment=exp_id):
+                self.assertEqual(mod.v4_no_go_errors(exp_id,ROOT),[])
+
+    def test_m009_is_locked_before_a_completed_m002_v5_pass(self):
+        for status in ("prepared", "running", "completed"):
+            experiments={"M009":{"status":status},"M002-v5":{"status":"planned"}}
+            self.assertEqual(
+                mod.m009_lock_errors(ROOT,experiments,{}),
+                ["M009: locked until M002-v5 is completed with PASS"],
+            )
+        self.assertEqual(mod.m009_lock_errors(ROOT,{"M009":{"status":"planned"}},{}),[])
+
+    def test_m009_recomputes_the_bound_decision_instead_of_trusting_a_pass_label(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            experiment=root/"experiments/model/M002-v5-factorized-typed-attention"
+            results=experiment/"results"
+            scripts=root/"scripts"
+            results.mkdir(parents=True)
+            scripts.mkdir()
+            sources=[]
+            for seed in (17,29,43,71,101):
+                path=results/f"run-{seed}.json"
+                record={"seed":seed,"value":"bound"}
+                path.write_text(json.dumps(record),encoding="utf-8",newline="\n")
+                relative=path.relative_to(root).as_posix()
+                sources.append({
+                    "path":relative,
+                    "canonical_sha256":hashlib.sha256(mod.canonical_json(record).encode("utf-8")).hexdigest(),
+                })
+            expected={
+                "decision":"PASS",
+                "gates":{"all":True},
+                "provenance":{"source_records":sources},
+            }
+            (root/"expected.json").write_text(json.dumps(expected),encoding="utf-8",newline="\n")
+            (scripts/"aggregate_m002_v5.py").write_text(
+                "import json\n"
+                "def decide(records, root):\n"
+                "    return json.loads((root / 'expected.json').read_text(encoding='utf-8'))\n",
+                encoding="utf-8",newline="\n",
+            )
+            decision_path=results/"m002-v5-decision.json"
+            decision_path.write_text(json.dumps(expected),encoding="utf-8",newline="\n")
+            visible=lambda checkout,path: checkout/path if (checkout/path).is_file() else None
+            with mock.patch.object(mod,"committed_regular_file",side_effect=visible):
+                self.assertEqual(mod.bound_m002_v5_pass_errors(root,experiment),[])
+                forged=dict(expected)
+                forged["claim"]="self-asserted"
+                decision_path.write_text(json.dumps(forged),encoding="utf-8",newline="\n")
+                self.assertEqual(
+                    mod.bound_m002_v5_pass_errors(root,experiment),
+                    ["M009: M002-v5 decision does not equal the canonical recomputation"],
+                )
+
     def test_bound_m002_v2_no_go_marker_accepts_only_the_two_exact_freezes(self):
         experiment=ROOT/"experiments/model/M002-v2-typed-attention"
         manifest=mod.load(experiment/"experiment.toml")

@@ -1,0 +1,28 @@
+version = 1
+experiment_id = "M001-v4"
+decision = "INCONCLUSIVE/NO-GO"
+verdict = "INCONCLUSIVE"
+go = false
+claim = "semantic slots improve model quality"
+accuracy_role = "descriptive-only"
+accuracy_is_descriptive_only = true
+records_immutable = true
+paired_ci_sha256 = "fb53d98343db7b71a010a81a85e41349f510b3b22fdf9c5de6ad22ebcd209d99"
+
+[grounds]
+complete_run_records_are_positive_evidence = false
+reason = "The v4 records demonstrate reproducible execution, but they do not satisfy every evidence gate required for a mechanism claim."
+
+[evidence.ood_compose_regime]
+accuracy_mean_delta = 0.0868
+accuracy_ci95 = [0.06549662540265144, 0.10810337459734856]
+ece15_mean_delta = 0.2610458701499881
+ece15_ci95 = [0.19556675074432162, 0.32652498955565457]
+nll_mean_delta = 7.117969857084587
+nll_ci95 = [6.400785517252984, 7.835154196916189]
+interpretation = "Accuracy improves, while positive lower-is-better ECE15 and NLL deltas establish calibration degradation."
+
+[reporting]
+allow_accuracy_as_decision_metric = false
+allow_model_superiority_claim = false
+required_label = "INCONCLUSIVE/NO-GO"

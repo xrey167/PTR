@@ -1,0 +1,82 @@
+version = 1
+experiment_id = "M002-v5"
+status = "planned"
+claim = "Factorized Typed Pair Attention improves on operator_routing_v2 compositional routing accuracy at matched compute without measurable calibration degradation."
+failure_verdict = "INCONCLUSIVE/NO-GO"
+historical_records_immutable = true
+
+[architecture]
+treatment = "FactorizedV2"
+control = "Off"
+legacy_mode = "LegacyScalarV1"
+rank_candidate = 16
+bias_limit_candidate = 2
+router = "layernorm-pooled-cosine"
+router_logit_scale = 5
+label_smoothing_basis_points = 500
+metadata_dropout_basis_points_candidate = 1000
+consistency_loss_basis_points = 1000
+off_rule = "compute the identical factorized pair branch, then multiply only its bias by zero"
+
+[pilot]
+claimable = false
+seeds = [7, 13]
+folds = ["evidence-interventional", "claim-temporal-development"]
+steps = 1500
+d_model = 48
+learning_rate = "0.005"
+ranks = [8, 16]
+bias_limits = [1, 2]
+metadata_dropout_basis_points = [0, 1000]
+ece_regression_max_basis_points = 200
+selection = "discard candidates whose mean treatment-minus-Off ECE exceeds 0.02; maximize the minimum mean accuracy delta across the two folds; then minimize NLL delta, rank, bias limit, and metadata dropout"
+
+[confirmatory]
+seeds = [17, 29, 43, 71, 101]
+folds = ["evidence-temporal", "evidence-tabular", "claim-interventional"]
+diagnostic_fold = "evidence-interventional"
+d_model = 48
+batch = 128
+steps = 1500
+pairing = "same seed, optimizer, learning rate, data order, batch order, parameters and operations"
+replicate = "average folds within each seed before the paired 95-percent Student-t interval"
+
+[[gate]]
+id = "G0"
+rule = "All five seeds and all three folds are present; records and commit, manifest, dataset and configuration digests agree; every metric is finite; hard validity violations are zero."
+
+[[gate]]
+id = "G1"
+rule = "OOD accuracy mean treatment-minus-Off delta is at least 0.02 and its paired 95-percent Student-t lower bound is greater than zero."
+
+[[gate]]
+id = "G2"
+rule = "Mean OOD accuracy delta is positive in every confirmatory fold."
+
+[[gate]]
+id = "G3"
+rule = "OOD NLL treatment-minus-Off upper paired 95-percent Student-t bound is at most zero."
+
+[[gate]]
+id = "G4"
+rule = "OOD ECE15 treatment-minus-Off mean is at most zero and its upper paired 95-percent Student-t bound is at most 0.02."
+
+[[gate]]
+id = "G5"
+rule = "IID accuracy treatment-minus-Off lower paired 95-percent Student-t bound is at least -0.01."
+
+[[gate]]
+id = "G6"
+rule = "Both arms retain at least 0.90 IID and 0.80 OOD coverage in every seed/fold cell, and the treatment mean selective-error delta is at most zero."
+
+[[gate]]
+id = "G7"
+rule = "Total parameter counts are exactly equal, FLOP ratio is at most 1.01, and treatment p95 inference latency is at most 1.10 times Off in every seed/fold cell."
+
+[[gate]]
+id = "G8"
+rule = "PASS requires every gate. Any failed, missing, malformed, non-finite or unevaluable gate yields INCONCLUSIVE/NO-GO."
+
+[downstream]
+M009 = "locked"
+unlock_rule = "M009 may start only from a commit-bound M002-v5 PASS and must use the exact frozen FactorizedV2 architecture. A NO-GO requires a new study version."

@@ -11,6 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 EXTERNAL_OR_GENERATED = {".git", "target", "vendor", ".venv", "node_modules"}
 EXPECTED = {"Cargo.toml", "model/burn-a0/Cargo.toml", "fuzz/Cargo.toml", "templates/rust-crate/Cargo.toml"}
+TEXT_OUTPUT = {"encoding": "utf-8", "errors": "replace"}
 
 
 def workspaces(root: Path) -> list[Path]:
@@ -45,11 +46,21 @@ def scanner_command(kind: str, manifest: Path, root: Path) -> list[str]:
         return ["cargo", "+stable", "audit", "--file",
                 str(manifest.with_name("Cargo.lock")), "--json"]
     if kind == "deny":
-        # cargo-deny 0.20: --config is a root option, before the subcommand.
+        # cargo-deny 0.20 accepts the policy after `check`; putting it before
+        # the subcommand is rejected as an unknown root option.
         return ["cargo", "+stable", "deny", "--format", "json",
-                "--manifest-path", str(manifest), "--config",
-                str(root / "deny.toml"), "check"]
+                "--manifest-path", str(manifest), "check", "--config",
+                str(root / "deny.toml")]
     raise ValueError(f"unsupported security scanner: {kind}")
+
+
+def workspace_name(relative: Path) -> str:
+    """Stable flat evidence prefix for a workspace manifest."""
+    return (
+        "workspace"
+        if relative.parent == Path(".")
+        else relative.parent.as_posix().replace("/", "-")
+    )
 
 
 def scan(kind: str, output: Path, root: Path = ROOT) -> int:
@@ -57,13 +68,13 @@ def scan(kind: str, output: Path, root: Path = ROOT) -> int:
     records = []
     failed = False
     for relative in workspaces(root):
-        name = str(relative.parent).replace("/", "-") if relative.parent != Path(".") else "workspace"
+        name = workspace_name(relative)
         manifest = root / relative
         lock = manifest.with_name("Cargo.lock")
         if not lock.is_file():
             raise ValueError(f"missing committed lockfile: {lock.relative_to(root)}")
         subprocess.run(["git", "ls-files", "--error-unmatch", str(lock.relative_to(root))], cwd=root,
-                       check=True, capture_output=True, text=True)
+                       check=True, capture_output=True, **TEXT_OUTPUT)
         before = hashlib.sha256(lock.read_bytes()).hexdigest()
         commands = {
             "metadata": ["cargo", "+stable", "metadata", "--manifest-path", str(manifest), "--all-features", "--locked", "--format-version", "1"],
@@ -71,17 +82,17 @@ def scan(kind: str, output: Path, root: Path = ROOT) -> int:
         }
         statuses = {}
         for stage, command in commands.items():
-            result = subprocess.run(command, cwd=root, capture_output=True, text=True)
+            result = subprocess.run(command, cwd=root, capture_output=True, **TEXT_OUTPUT)
             (output / f"{name}-{stage}.stdout").write_text(result.stdout, encoding="utf-8")
             (output / f"{name}-{stage}.stderr").write_text(result.stderr, encoding="utf-8")
             statuses[stage] = result.returncode
             failed |= result.returncode != 0
         after = hashlib.sha256(lock.read_bytes()).hexdigest()
         failed |= before != after
-        records.append({"manifest": str(relative), "lock_sha256": before,
+        records.append({"manifest": relative.as_posix(), "lock_sha256": before,
                         "lock_unchanged": before == after, "exit_codes": statuses})
     def version(command: list[str]) -> str:
-        return subprocess.check_output(command, cwd=root, text=True).strip()
+        return subprocess.check_output(command, cwd=root, **TEXT_OUTPUT).strip()
     report = {"source_sha": version(["git", "rev-parse", "HEAD"]), "rust": version(["rustc", "+stable", "-Vv"]),
               "scanner": version(["cargo", "+stable", kind, "--version"]), "workspaces": records}
     database = Path.home() / ".cargo/advisory-db"

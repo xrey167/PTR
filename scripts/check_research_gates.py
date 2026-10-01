@@ -120,6 +120,7 @@ from __future__ import annotations
 import datetime
 import functools
 import hashlib
+import importlib.util
 import json
 import math
 import re
@@ -2351,7 +2352,19 @@ def launch_decision(root: Path, exp_id: str) -> list[str]:
             f"{exp_id} preregisters ({PREREGISTRATION}) and is {manifest.get('status')!r}: it runs only once its "
             "preregistration is frozen and it is prepared, running, completed or failed"
         ]
-    return frozen_errors(exp_id,entries[exp_id],manifest,experiment,root)
+    problems = frozen_errors(exp_id,entries[exp_id],manifest,experiment,root)
+    if exp_id == "M009":
+        manifests = {}
+        directories = {}
+        for dependency in ("M002-v5", "M009"):
+            item = items.get(dependency)
+            if not isinstance(item, dict) or not isinstance(item.get("path"), str):
+                continue
+            directory = root / "experiments" / item["path"]
+            directories[dependency] = directory
+            manifests[dependency] = load(directory / "experiment.toml")
+        problems.extend(m009_lock_errors(root, manifests, directories))
+    return problems
 
 def launch_commit_errors(root: Path, exp_id: str, commit: str) -> list[str]:
     """Why `commit`, the commit a run of `exp_id` launched from the tree
@@ -2475,6 +2488,12 @@ def main(root: Path = ROOT) -> int:
                 "decision":marker["decision"],
                 "reason":marker["reason"],
             },sort_keys=True,separators=(",",":")))
+    for exp_id in V4_NO_GO:
+        print("NO-GO: "+json.dumps({
+            "experiment_id":exp_id,
+            "decision":"INCONCLUSIVE/NO-GO",
+            "reason":"v4_accuracy_calibration_conflict",
+        },sort_keys=True,separators=(",",":")))
     print("OK: research execution gates satisfied")
     return 0
 
@@ -2515,10 +2534,242 @@ M002_V2_NO_GO_ENTRYPOINT_DIGESTS={
     M002_V2_NO_GO_COMMITS[1]: "29079b07bc1a52dbfb089322a247e13f75d283aea031422191cd62a20ba059e6",
 }
 M002_V2_NO_GO_CURRENT_ENTRYPOINT_DIGEST="29079b07bc1a52dbfb089322a247e13f75d283aea031422191cd62a20ba059e6"
+V4_NO_GO={
+    "M001-v4": {
+        "path":"model/M001-v4-semantic-slots",
+        "target":"full",
+        "baseline":"plain-transformer",
+        "paired_ci_sha256":"fb53d98343db7b71a010a81a85e41349f510b3b22fdf9c5de6ad22ebcd209d99",
+    },
+    "M002-v4": {
+        "path":"model/M002-v4-typed-attention",
+        "target":"no-typed-attention",
+        "baseline":"plain-transformer",
+        "paired_ci_sha256":"807de68f7f952559847a9a798bcd77b4d7c02e98f3d58cbbea4e61b3dfd24b8d",
+    },
+}
 
 def text_digest(value: object) -> str | None:
     """SHA-256 of a UTF-8 string, or None for a non-string value."""
     return hashlib.sha256(value.encode("utf-8")).hexdigest() if isinstance(value,str) else None
+
+def v4_no_go_errors(exp_id: str, root: Path) -> list[str]:
+    """Validate the immutable v4 negative decision against its CI artifact.
+
+    This is a decision binding, not a history exception: it permits no manifest
+    drift, completed status, positive claim, or suppression of another gate.
+    """
+    expected=V4_NO_GO[exp_id]
+    directory=root/"experiments"/expected["path"]
+    decision_path=directory/"DECISION.toml"
+    ci_path=directory/"results/paired-ci-95.json"
+    errors=[]
+    if repository_file(root,decision_path.relative_to(root).as_posix()) is None:
+        return [f"{exp_id}: DECISION.toml is not a regular repository file"]
+    if repository_file(root,ci_path.relative_to(root).as_posix()) is None:
+        return [f"{exp_id}: paired-ci-95.json is not a regular repository file"]
+    decision=load(decision_path)
+    required={
+        "version":1,
+        "experiment_id":exp_id,
+        "decision":"INCONCLUSIVE/NO-GO",
+        "verdict":"INCONCLUSIVE",
+        "go":False,
+        "accuracy_role":"descriptive-only",
+        "accuracy_is_descriptive_only":True,
+        "records_immutable":True,
+        "paired_ci_sha256":expected["paired_ci_sha256"],
+    }
+    for key,value in required.items():
+        if decision.get(key)!=value:
+            errors.append(f"{exp_id}: DECISION.toml {key} must be {value!r}")
+    reporting=decision.get("reporting",{})
+    if not isinstance(reporting,dict) or reporting.get("required_label")!="INCONCLUSIVE/NO-GO":
+        errors.append(f"{exp_id}: DECISION.toml does not require the NO-GO label")
+    if not isinstance(reporting,dict) or any(value is not False for key,value in reporting.items() if key.startswith("allow_")):
+        errors.append(f"{exp_id}: DECISION.toml permits a positive report")
+    digest=hashlib.sha256(ci_path.read_bytes()).hexdigest()
+    if digest!=expected["paired_ci_sha256"]:
+        errors.append(f"{exp_id}: paired-ci-95.json digest {digest} is not the decision-bound digest")
+        return errors
+    try:
+        ci=json.loads(ci_path.read_text(encoding="utf-8"))
+    except (OSError,UnicodeDecodeError,json.JSONDecodeError) as error:
+        return errors+[f"{exp_id}: paired-ci-95.json is unreadable: {error}"]
+    if ci.get("status")!="complete" or ci.get("target_arm")!=expected["target"] or ci.get("baseline_arm")!=expected["baseline"]:
+        errors.append(f"{exp_id}: paired CI identity is not the bound complete contrast")
+    evidence=decision.get("evidence",{}).get("ood_compose_regime",{}) if isinstance(decision.get("evidence"),dict) else {}
+    endpoints={row.get("metric"):row for row in ci.get("endpoints",[]) if isinstance(row,dict) and row.get("split")=="ood_compose_regime"}
+    for metric,field in (("accuracy","accuracy"),("ece15","ece15"),("nll","nll")):
+        row=endpoints.get(metric)
+        if not isinstance(row,dict) or evidence.get(field+"_mean_delta")!=row.get("mean") or evidence.get(field+"_ci95")!=row.get("ci95"):
+            errors.append(f"{exp_id}: DECISION.toml does not reproduce the bound {metric} endpoint")
+    return errors
+
+def canonical_json(value: object) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def committed_regular_file(root: Path, relative: str) -> Path | None:
+    """A regular, non-symlink file whose bytes equal the file at HEAD."""
+    path = repository_file(root, relative)
+    if path is None:
+        return None
+    try:
+        held = blob(root, "HEAD", relative)
+        return path if held is not None and held == path.read_bytes() else None
+    except (OSError, HistoryUnreadable):
+        return None
+
+
+def bound_m002_v5_pass_errors(root: Path, directory: Path | None) -> list[str]:
+    """Verify and recompute the committed M002-v5 decision used by M009."""
+    decision_path = directory / "results/m002-v5-decision.json" if directory is not None else None
+    if decision_path is None:
+        return ["M009: locked because M002-v5 has no decision directory"]
+    try:
+        relative = decision_path.relative_to(root).as_posix()
+    except ValueError:
+        return ["M009: locked because the M002-v5 decision is outside the repository"]
+    if committed_regular_file(root, relative) is None:
+        return ["M009: locked because M002-v5 has no committed decision artifact"]
+    try:
+        decision = json.loads(decision_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        return [f"M009: M002-v5 decision artifact is unreadable: {error}"]
+    provenance = decision.get("provenance")
+    sources = provenance.get("source_records") if isinstance(provenance, dict) else None
+    if not isinstance(sources, list) or len(sources) != 5:
+        return ["M009: M002-v5 decision does not bind exactly five source records"]
+    records = []
+    seen = set()
+    for item in sources:
+        if not isinstance(item, dict) or set(item) != {"path", "canonical_sha256"}:
+            return ["M009: M002-v5 decision has malformed source-record provenance"]
+        path_text = item.get("path")
+        if not isinstance(path_text, str) or path_text in seen or committed_regular_file(root, path_text) is None:
+            return ["M009: M002-v5 decision names an uncommitted or duplicate source record"]
+        seen.add(path_text)
+        path = root / path_text
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            return [f"M009: M002-v5 source record {path_text} is unreadable: {error}"]
+        digest = hashlib.sha256(canonical_json(record).encode("utf-8")).hexdigest()
+        if item.get("canonical_sha256") != digest:
+            return [f"M009: M002-v5 source record {path_text} does not match its decision digest"]
+        records.append((path_text, record))
+    script = root / "scripts/aggregate_m002_v5.py"
+    try:
+        spec = importlib.util.spec_from_file_location("_m002_v5_gate_aggregate", script)
+        if spec is None or spec.loader is None:
+            raise ImportError("no Python loader")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        recomputed = module.decide(records, root)
+    except Exception as error:  # fail closed on malformed or unevaluable evidence
+        return [f"M009: M002-v5 decision cannot be recomputed: {error}"]
+    if canonical_json(recomputed) != canonical_json(decision):
+        return ["M009: M002-v5 decision does not equal the canonical recomputation"]
+    gates = recomputed.get("gates")
+    if recomputed.get("decision") != "PASS" or not isinstance(gates, dict) or not gates or not all(
+        value is True for value in gates.values()
+    ):
+        return ["M009: locked because M002-v5 did not pass every recomputed gate"]
+    return []
+
+
+def m002_v5_pilot_freeze_errors(root: Path, experiment: Path, manifest: dict) -> list[str]:
+    """Prove that a frozen M002-v5 config is the output of the full fixed pilot."""
+    if status_of(manifest) not in FROZEN:
+        return []
+    selection_relative = "experiments/model/M002-v5-factorized-typed-attention/pilot-selection.json"
+    selection_path = committed_regular_file(root, selection_relative)
+    if selection_path is None:
+        return ["M002-v5: frozen study has no committed pilot-selection.json"]
+    raw = experiment / "pilot" / "raw"
+    stdout_paths = sorted(raw.glob("*.stdout")) if raw.is_dir() else []
+    if len(stdout_paths) != 16:
+        return [f"M002-v5: pilot archive must contain exactly 16 stdout cells, found {len(stdout_paths)}"]
+    for stdout in stdout_paths:
+        for path in (stdout, stdout.with_suffix(".stderr"), stdout.with_suffix(".json")):
+            try:
+                relative = path.relative_to(root).as_posix()
+            except ValueError:
+                return ["M002-v5: pilot archive escaped the repository"]
+            if committed_regular_file(root, relative) is None:
+                return [f"M002-v5: pilot artifact {relative} is not committed unchanged"]
+    selector_path = root / "scripts/select_m002_v5_pilot.py"
+    try:
+        spec = importlib.util.spec_from_file_location("_m002_v5_gate_selector", selector_path)
+        if spec is None or spec.loader is None:
+            raise ImportError("no Python loader")
+        selector = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(selector)
+        outputs, provenance = selector.load_provenanced_outputs(stdout_paths, root)
+        recomputed = selector.select(outputs)
+        recomputed.update(provenance)
+        recorded = json.loads(selection_path.read_text(encoding="utf-8"))
+    except Exception as error:
+        return [f"M002-v5: pilot selection cannot be recomputed: {error}"]
+    if canonical_json(recomputed) != canonical_json(recorded):
+        return ["M002-v5: pilot-selection.json does not equal the canonical recomputation"]
+    source = recorded.get("source_sha")
+    if not isinstance(source, str) or not re.fullmatch(r"[0-9a-f]{40}", source):
+        return ["M002-v5: pilot selection has no exact source commit"]
+    if not experiment_records.is_ancestor(source, "HEAD", root):
+        return ["M002-v5: pilot source commit is not on HEAD history"]
+    critical_directories = (
+        "model/burn-a0",
+        "crates/ptr-types",
+        "benchmarks/operator-routing-v2",
+        "datasets/generated/operator_routing_v2",
+    )
+    for directory in critical_directories:
+        problems, current = directory_digest(root, directory)
+        held = directory_digest_at(root, source, directory)
+        if problems or current is None or held != current:
+            return [f"M002-v5: {directory} differs from the pilot source commit"]
+    for relative in ("scripts/run_m002_v5_pilot.py", "scripts/select_m002_v5_pilot.py"):
+        path = committed_regular_file(root, relative)
+        if path is None or blob(root, source, relative) != path.read_bytes():
+            return [f"M002-v5: {relative} differs from the pilot source commit"]
+    selection = recorded.get("selection")
+    config = load(experiment / "config.toml").get("preregistration", {})
+    try:
+        # Preregistration placeholders and their pinned replacements are TOML
+        # strings so the generic runner can interpolate them verbatim.  The
+        # selector deliberately records numeric values.  Compare their typed
+        # meanings rather than rejecting the canonical TOML representation.
+        actual = (
+            int(config.get("rank")),
+            float(config.get("bias_limit")),
+            float(config.get("metadata_dropout")),
+        )
+        expected = (
+            int(selection.get("rank")),
+            float(selection.get("bias_limit")),
+            float(selection.get("metadata_dropout")),
+        )
+    except (TypeError, ValueError, AttributeError):
+        return ["M002-v5: frozen architecture has invalid pilot-selected values"]
+    if (
+        recorded.get("decision") != "SELECTED"
+        or actual[0] != expected[0]
+        or not math.isclose(actual[1], expected[1], rel_tol=0.0, abs_tol=1e-12)
+        or not math.isclose(actual[2], expected[2], rel_tol=0.0, abs_tol=1e-12)
+    ):
+        return ["M002-v5: frozen architecture does not exactly match the pilot selection"]
+    return []
+
+
+def m009_lock_errors(root: Path, experiments: dict, directories: dict) -> list[str]:
+    """M009 cannot be prepared or run until a recomputed M002-v5 PASS."""
+    if status_of(experiments.get("M009",{})) not in {"prepared","running","completed"}:
+        return []
+    if status_of(experiments.get("M002-v5",{}))!="completed":
+        return ["M009: locked until M002-v5 is completed with PASS"]
+    return bound_m002_v5_pass_errors(root, directories.get("M002-v5"))
 
 def no_go_marker(exp_id: str, experiment: Path, root: Path, current_manifest: dict) -> tuple[dict | None, list[str]]:
     """Load and strictly validate an explicit historical NO-GO marker."""
@@ -2675,6 +2926,11 @@ def gate_errors(root: Path) -> list[str]:
         if str(rag.get("status","")).startswith("blocked-"):
             errors.append("E002: strong RAG baseline is still blocked")
 
+    for exp_id in V4_NO_GO:
+        errors.extend(v4_no_go_errors(exp_id,root))
+    if "M002-v5" in experiments and "M002-v5" in directories:
+        errors.extend(m002_v5_pilot_freeze_errors(root,directories["M002-v5"],experiments["M002-v5"]))
+    errors.extend(m009_lock_errors(root,experiments,directories))
     errors.extend(preregistration_errors(root,experiments,directories))
     return errors
 

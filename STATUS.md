@@ -39,15 +39,24 @@ PTR is a **compiling architecture/research prototype**, not yet a complete model
   records or silently change its entrypoint.
 - `M001-v4` and `M002-v4` each have complete paired five-seed aggregate records
   for seeds `17, 29, 43, 71, 101`, finite metrics, and paired 95% confidence
-  interval artifacts. Their registry status remains `prepared` until the full
-  repository research gate is clean; this is deliberately not reported as a
-  completed scientific claim.
-- The v4 artifacts are reproducibility evidence for the paired runner and
-  frozen configuration, not a claim of model superiority. Any missing or
-  failing evidence gate remains `INCONCLUSIVE/NO-GO`.
+  interval artifacts. Both decisions are now explicitly bound as
+  `INCONCLUSIVE/NO-GO`: on `ood_compose_regime`, accuracy improves but the
+  lower-is-better NLL and ECE15 deltas are significantly positive. M002-v4 also
+  compares `no-typed-attention` with the plain Transformer and therefore does
+  not isolate Typed Attention. Their registry status remains `prepared` to
+  preserve the frozen lifecycle history; `DECISION.toml` is the scientific
+  decision and permits no positive claim.
 - The research gate now accepts the historical M002-v2 conflict only through
   its exact commit- and digest-bound `results/NO-GO.toml` marker. The marker
   does not permit positive completion or alter any historical run record.
+- `M002-v5` is registered as `planned`, not evidence. The direct
+  FactorizedV2/Off runner, versioned `operator_routing_v2` bundle,
+  non-claimable 16-cell pilot archive, and conjunctive five-seed checker are
+  ready. A freeze is accepted only when the selector recomputes from the
+  committed pilot triples and exactly matches the pinned architecture. Every
+  confirmatory coverage and latency cell is gated individually; M009
+  recomputes the committed decision from its five bound records and remains
+  locked until that result is a PASS.
 
 ## Current research/implementation gap
 
@@ -55,7 +64,7 @@ PTR is a **compiling architecture/research prototype**, not yet a complete model
 - bounded model resume after verified Pod observations is now wired and revision-advancing; opaque backend checkpoints, async streaming and router-driven operator selection remain open
 - hard ActionIR authorization has diagnostic typed decisions plus a scoped synchronous execution gateway with opaque host-issued sessions, exact capsule/project grants and registered verifiers/executors; network authentication, scoped Pod access and durable audit/idempotency remain open
 - feature-gated raft-engine, single-node raft-rs, Turso and direct Iroh adapters now exist and are under evaluation; multi-node consensus/network sessions and real search-backend adapters remain incomplete
-- 19 architecture experiments remain planned; L001 is the only running experiment and now has two executed scoped crash/recovery evidence slices
+- M002-v5 and the other planned architecture experiments are not positive evidence; L001 remains the only running experiment and has two executed scoped crash/recovery evidence slices
 - external component candidates mostly lack comparative benchmark evidence
 - strong RAG/GraphRAG/editable-memory and matched plain-model comparative runs are not yet executed
 - GitHub main-branch ruleset/repository-admin settings still require manual completion; recommendations are documented in `docs/GITHUB_SETTINGS.md`
@@ -68,7 +77,8 @@ PTR is a **compiling architecture/research prototype**, not yet a complete model
 - `rust-toolchain.toml` declares Rust 1.85.0 as MSRV/default
 - CI separately tests MSRV and current stable on Linux and current stable on Windows
 - experiment preparation/execution records git SHA, hardware profile, lockfile hashes, exact argv, duration, exit status and process output
-- small JSON/TOML/Markdown result artifacts are versioned; large datasets/checkpoints remain out of Git
+- small JSON/TOML/Markdown result artifacts and the frozen operator-routing v1/v2
+  datasets are versioned; model checkpoints remain out of Git
 
 See [docs/components/STATUS.md](docs/components/STATUS.md) for per-component maturity and [experiments/lifecycle/L001-revocation-crash/results/](experiments/lifecycle/L001-revocation-crash/results/) for the first lifecycle evidence.
 

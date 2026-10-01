@@ -10,7 +10,7 @@
 
 **Maturity:** `foundation`  
 **Last reviewed:** 2026-09-27  
-**Code footprint:** 6 Rust source files · 2178 nonblank source lines · 6 integration-test files · 69 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 6 Rust source files · 2266 nonblank source lines · 6 integration-test files · 71 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -39,7 +39,7 @@
 - Epistemic<T>, TypedValue<T>, provenance refs and semantic issues
 - Strong identifiers for projects, capsules, artifacts, capabilities, types, Pods, candidates, requests, nodes and evidence
 - Unit checks for probability bounds, lifecycle separation and independent cognitive axes
-- checkpoint format 2 carries the slot-encoding version, a format-1 header is refused rather than read with its table count taken as an encoding, and a header recording another encoding is refused with the intact header as the control
+- checkpoint format 3 adds opaque model-owned architecture bytes while format 2 remains readable only as explicitly unbound legacy; format 1, unknown formats, incompatible encodings and malformed architecture lengths are refused
 - Slot-encoding checks: the V1 values pinned exactly, the same payload stable, one-byte differences separated, the type part of the payload with the type-length collision covered, every vector finite bounded and of unit norm, every position a different function of the payload, the domain separated from the undomained arithmetic by a helper that first proves it reproduces the real function, and a zero width, an over-wide width, an over-large payload and an unknown version each refused rather than clamped or truncated
 - ConfidenceTarget and ConfidenceEstimate with target-checked access and diagnostic ConfidenceTargetMismatch errors
 - Compile-fail documentation rejects implicit confidence-to-verification/effect conversion and unqualified estimate ordering

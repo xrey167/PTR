@@ -11,6 +11,7 @@ license = "MIT OR Apache-2.0"
 # dependencies of its own, so sharing it costs this workspace nothing.
 ptr-types = { path = "../../crates/ptr-types" }
 bytemuck = "1.23.1"
+sha2 = "0.10.9"
 burn = { version = "=0.22.0-pre.3", default-features = false, features = ["std", "flex", "autodiff", "optim"] }
 
 [workspace]

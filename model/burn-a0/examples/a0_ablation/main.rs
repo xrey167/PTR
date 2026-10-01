@@ -109,6 +109,62 @@ fn load(args: &Args) -> Result<Dataset, String> {
     Ok(dataset)
 }
 
+/// Parse the ordered `fold=digest` list used by M002-v5.
+fn v2_folds(args: &Args) -> Result<Vec<(String, u64)>, String> {
+    let mut folds = Vec::new();
+    for item in args.get("folds")?.split(',') {
+        let (fold, digest) = item
+            .split_once('=')
+            .ok_or_else(|| format!("--folds item {item:?} must be fold=fnv64"))?;
+        if fold.is_empty() || folds.iter().any(|(seen, _)| seen == fold) {
+            return Err(format!(
+                "--folds contains an empty or duplicate fold {fold:?}"
+            ));
+        }
+        let digest = u64::from_str_radix(digest, 16)
+            .map_err(|_| format!("--folds digest for {fold} is not hexadecimal"))?;
+        folds.push((fold.to_owned(), digest));
+    }
+    if folds.is_empty() {
+        return Err("--folds must contain at least one fold".to_owned());
+    }
+    Ok(folds)
+}
+
+/// Load one operator-routing v2 fold and emit its bound identity.
+fn load_v2(args: &Args, fold: &str, fnv: u64) -> Result<Dataset, String> {
+    let directory = PathBuf::from(args.get("data")?).join(fold);
+    let dataset = data::load_v2_fold(&directory, fnv)?;
+    let mut row = format!(
+        r#"{{"row":"data-v2","fold":"{fold}","data_fnv64":"{:016x}","hard_validity_violations":0"#,
+        dataset.fnv64
+    );
+    for split in &dataset.splits {
+        row.push_str(&format!(
+            r#", "label_fnv64_{}":"{:016x}""#,
+            split.name, split.label_fnv64
+        ));
+    }
+    row.push('}');
+    emit(&row);
+    Ok(dataset)
+}
+
+/// Attach the fold identity to every JSON evidence row emitted by a training
+/// run. Prediction strings remain human/debug evidence and receive an explicit
+/// trailing fold label instead.
+fn emit_fold(line: &str, fold: &str) {
+    if line.starts_with('{') && line.ends_with('}') {
+        emit(&format!(
+            r#"{},"fold":"{}"}}"#,
+            &line[..line.len() - 1],
+            fold
+        ));
+    } else {
+        emit(&format!("{line} FOLD {fold}"));
+    }
+}
+
 /// Arms named by `--arms`, every one of which must belong to `--experiment`.
 /// If `--arms` is absent, selects all arms for the experiment. Returns an error
 /// for a missing experiment, unknown arm, mismatched experiment, or empty selection.
@@ -363,6 +419,67 @@ fn paired(args: &Args) -> Result<bool, String> {
     Ok(finite)
 }
 
+/// Run both M002-v5 arms and every requested fold atomically for one seed.
+fn paired_v5(args: &Args) -> Result<bool, String> {
+    let d_model = args.number_or("d-model", DEFAULT_D_MODEL)?;
+    let payloads = Payloads::new(d_model);
+    let seed: u64 = args.number("seed")?;
+    let schedule = Schedule {
+        steps: args.number("steps")?,
+        peak: args.number("lr")?,
+    };
+    let rank = args.number_or("rank", 16usize)?;
+    let bias_limit = args.number_or("bias-limit", 2.0f32)?;
+    let metadata_dropout = args.number_or("metadata-dropout", 0.10f32)?;
+    let mut arms = arms_of(args)?;
+    let names: Vec<&str> = arms.iter().map(|arm| arm.name).collect();
+    if names != ["factorized-v2", "factorized-v2-off"] {
+        return Err(format!(
+            "paired-v5 requires arms factorized-v2,factorized-v2-off in that order, got {}",
+            names.join(",")
+        ));
+    }
+    if rank == 0 || rank > d_model || !bias_limit.is_finite() || bias_limit <= 0.0 {
+        return Err("rank must be in 1..=d-model and bias-limit must be positive".to_owned());
+    }
+    if !metadata_dropout.is_finite() || !(0.0..=1.0).contains(&metadata_dropout) {
+        return Err("metadata-dropout must be in [0,1]".to_owned());
+    }
+    for arm in &mut arms {
+        arm.typed_attention_rank = rank;
+        arm.typed_attention_limit = bias_limit;
+        arm.metadata_dropout = metadata_dropout;
+    }
+    emit(&format!(
+        r#"{{"row":"run-v5","seed":{seed},"rank":{rank},"bias_limit":{bias_limit},"metadata_dropout":{metadata_dropout}}}"#
+    ));
+    let mut finite = true;
+    for (fold, digest) in v2_folds(args)? {
+        let data = load_v2(args, &fold, digest)?;
+        for arm in &arms {
+            let trained = train::train(
+                arm,
+                &data,
+                &payloads,
+                d_model,
+                &schedule,
+                &Seeds {
+                    init: seed,
+                    order: seed ^ ORDER_SALT,
+                },
+                true,
+            );
+            timing("paired-v5", arm, &trained);
+            finite &= !trained.nan;
+            trained.rows.iter().for_each(|row| emit_fold(row, &fold));
+            train::evaluate_v5(&trained, arm, &data, &payloads)
+                .iter()
+                .for_each(|line| emit_fold(line, &fold));
+        }
+    }
+    Ok(finite)
+}
+
 /// T8: the rule on cases whose labels were worked out by hand (the working is in
 /// each case's comment), independent of the generator.
 fn rule_cases() -> Result<(), String> {
@@ -533,6 +650,7 @@ fn main() {
         "eval" => eval(&args),
         "plain" => plain(&args),
         "paired" => paired(&args),
+        "paired-v5" => paired_v5(&args),
         other => Err(format!("unknown phase {other:?}")),
     });
     match result {

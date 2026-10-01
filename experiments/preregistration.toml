@@ -195,3 +195,6 @@ name = "plain_model"
 path = "research/baselines/plain_model/config.toml"
 keys = ["model.backend", "model.model", "model.implementation", "model.architecture", "model.d_model", "model.latent_slots", "model.sequence_length", "model.batch_size", "model.optimizer"]
 status_key = "status"
+
+[experiment.M002-v5]
+required = { seeds = "int-list", steps = "int", batch = "int", d_model = "int", learning_rate = "str", data = "str", folds = "str", rank = "int", bias_limit = "int", metadata_dropout = "str", dataset_lock = "file", criteria = "file", decision_script = "file", pilot_selection_script = "file", pilot_runner = "file", pilot_selection = "file" }

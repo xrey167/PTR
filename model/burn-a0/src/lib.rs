@@ -2,7 +2,7 @@ use burn::{
     nn::{Embedding, EmbeddingConfig, Linear, LinearConfig},
     prelude::*,
     tensor::{
-        activation::{gelu, softmax},
+        activation::{gelu, sigmoid, softmax, tanh},
         Int,
     },
 };
@@ -14,6 +14,62 @@ use ptr_types::{
     CodeFamily, Codebook, CodebookError, CodebookVersion, CognitiveType, EncodingVersion,
     EpistemicState, ReasoningOperator, SemanticRole, SlotEncoding, SlotVector, ValidityMask,
 };
+
+/// How typed metadata changes cross-attention.
+///
+/// `LegacyScalarV1` preserves the historical M001/M002 mechanism byte-for-byte.
+/// `FactorizedV2` is the bounded compositional mechanism evaluated by M002-v5.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum TypedAttentionMode {
+    Off = 0,
+    LegacyScalarV1 = 1,
+    FactorizedV2 = 2,
+}
+
+impl TypedAttentionMode {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::LegacyScalarV1 => "legacy-scalar-v1",
+            Self::FactorizedV2 => "factorized-v2",
+        }
+    }
+
+    fn from_code(code: u8) -> Self {
+        match code {
+            0 => Self::Off,
+            1 => Self::LegacyScalarV1,
+            2 => Self::FactorizedV2,
+            _ => panic!("invalid typed-attention mode {code}"),
+        }
+    }
+}
+
+/// Router computation used after admitted-slot pooling.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum RouterMode {
+    LegacyMeanLinear = 0,
+    CalibratedCosineV2 = 1,
+}
+
+impl RouterMode {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::LegacyMeanLinear => "legacy-mean-linear",
+            Self::CalibratedCosineV2 => "calibrated-cosine-v2",
+        }
+    }
+
+    fn from_code(code: u8) -> Self {
+        match code {
+            0 => Self::LegacyMeanLinear,
+            1 => Self::CalibratedCosineV2,
+            _ => panic!("invalid router mode {code}"),
+        }
+    }
+}
 
 /// Why a batch of codes could not be built.
 ///
@@ -320,28 +376,25 @@ pub struct PtrA0Config {
     pub provenance_bucket_count: usize,
     pub d_model: usize,
     pub latent_steps: usize,
-    /// Whether typed metadata biases attention between slots and raw tokens: the
-    /// M002 mechanism. On by default. Switched off, the pair bias is zero in both
-    /// directions and `metadata_bias` takes no part in the forward pass, which is
-    /// the only difference; every parameter is still built, from the same random
-    /// draws, so two arms of one seed start from identical weights.
-    ///
-    /// Like `latent_steps`, this is an architecture choice that the checkpoint
-    /// header does not record: a checkpoint is loaded under whatever the config
-    /// passed to [`load`] says.
-    pub typed_attention: bool,
+    /// Exact typed-attention mechanism. The format-3 checkpoint architecture
+    /// binding records this mode together with rank, limit and router choices.
+    pub typed_attention: TypedAttentionMode,
+    /// Width used by the factorized metadata/raw pair score.
+    pub typed_attention_rank: usize,
+    /// Absolute upper bound of the factorized pair bias.
+    pub typed_attention_limit: f32,
     /// Whether the slot->raw attention query reads the typed slot state (payload
     /// plus role, epistemic state, provenance and confidence) or the payload hash
     /// alone. On by default. Switched off, metadata can still steer which raw
     /// tokens a slot reads, but only through the typed attention bias, which is
-    /// what the study's sufficiency pair isolates. Not recorded in the
-    /// checkpoint header, like `typed_attention`.
+    /// what the historical study's sufficiency pair isolates. Format-3
+    /// checkpoints bind this choice.
     pub typed_query: bool,
     /// Whether each latent refinement step applies `gelu`. On by default.
     /// Switched off, the step is `slots + latent_refine(slots)`: the same
     /// parameters and depth with no nonlinearity, which separates "the per-slot
-    /// nonlinearity is used" from "the extra parameters are used". Not recorded
-    /// in the checkpoint header.
+    /// nonlinearity is used" from "the extra parameters are used". Format-3
+    /// checkpoints bind this choice.
     pub latent_nonlinearity: bool,
     /// Whether the operator router is excluded from training. Off by default.
     /// It is applied by [`PtrA0Config::init`] after every parameter has been
@@ -350,6 +403,16 @@ pub struct PtrA0Config {
     /// the router still produces the logits, from fixed weights. A training-time
     /// choice, not recorded in the checkpoint.
     pub frozen_router: bool,
+    /// Router computation; legacy remains the default for historical studies.
+    pub router_mode: RouterMode,
+    /// Fixed, bounded scale used by the cosine router.
+    pub router_logit_scale: f32,
+    /// Explicit opt-in required for format-2 checkpoints without an architecture
+    /// binding. It is deliberately not inferred from the attention mode.
+    /// Architecture digest explicitly attested when legacy loading was enabled.
+    /// A later config mutation invalidates the opt-in instead of silently
+    /// applying unbound weights to a different graph.
+    pub(crate) legacy_v2_architecture: Option<Vec<u8>>,
     codebook: Codebook,
     /// The slot-encoding definition this model's inputs are produced by.
     ///
@@ -492,10 +555,15 @@ impl PtrA0Config {
             provenance_bucket_count: PROVENANCE_BUCKET_COUNT,
             d_model,
             latent_steps: 0,
-            typed_attention: true,
+            typed_attention: TypedAttentionMode::LegacyScalarV1,
+            typed_attention_rank: d_model.min(16),
+            typed_attention_limit: 2.0,
             typed_query: true,
             latent_nonlinearity: true,
             frozen_router: false,
+            router_mode: RouterMode::LegacyMeanLinear,
+            router_logit_scale: 5.0,
+            legacy_v2_architecture: None,
             codebook,
             encoding: SlotEncoding::V1,
         }
@@ -538,7 +606,32 @@ impl PtrA0Config {
 
     /// Enable or disable the metadata bias in both cross-attention directions.
     pub fn with_typed_attention(mut self, typed_attention: bool) -> Self {
-        self.typed_attention = typed_attention;
+        self.typed_attention = if typed_attention {
+            TypedAttentionMode::LegacyScalarV1
+        } else {
+            TypedAttentionMode::Off
+        };
+        self
+    }
+
+    /// Select the exact typed-attention mechanism.
+    pub fn with_typed_attention_mode(mut self, mode: TypedAttentionMode) -> Self {
+        self.typed_attention = mode;
+        self
+    }
+
+    /// Configure the factorized pair rank and its absolute bias limit.
+    pub fn with_factorized_attention(mut self, rank: usize, limit: f32) -> Self {
+        assert!(
+            rank > 0 && rank <= self.d_model,
+            "rank must be in 1..=d_model"
+        );
+        assert!(
+            limit.is_finite() && limit > 0.0,
+            "bias limit must be finite and positive"
+        );
+        self.typed_attention_rank = rank;
+        self.typed_attention_limit = limit;
         self
     }
 
@@ -559,6 +652,27 @@ impl PtrA0Config {
     /// This option does not affect checkpoint loading or forward computations.
     pub fn with_frozen_router(mut self, frozen_router: bool) -> Self {
         self.frozen_router = frozen_router;
+        self
+    }
+
+    /// Use the normalized bounded router shared by both M002-v5 arms.
+    pub fn with_router_mode(mut self, mode: RouterMode) -> Self {
+        self.router_mode = mode;
+        self
+    }
+
+    /// Set the fixed cosine-router scale, constrained by the preregistered range.
+    pub fn with_router_logit_scale(mut self, scale: f32) -> Self {
+        assert!(scale.is_finite() && (1.0..=20.0).contains(&scale));
+        self.router_logit_scale = scale;
+        self
+    }
+
+    /// Explicitly allow loading a format-2 legacy checkpoint with no architecture
+    /// binding. Only the exact legacy architecture accepts such an artifact.
+    pub fn allow_legacy_v2_checkpoint(mut self, allow: bool) -> Self {
+        self.legacy_v2_architecture =
+            allow.then(|| crate::checkpoint::config_architecture_digest(&self));
         self
     }
 
@@ -604,9 +718,13 @@ impl PtrA0Config {
             d_model: self.d_model,
             operator_count: self.operator_count(),
             latent_steps: self.latent_steps,
-            typed_attention: self.typed_attention,
+            typed_attention_mode: self.typed_attention as u8,
+            typed_attention_rank: self.typed_attention_rank,
+            typed_attention_limit: self.typed_attention_limit,
             typed_query: self.typed_query,
             latent_nonlinearity: self.latent_nonlinearity,
+            router_mode: self.router_mode as u8,
+            router_logit_scale: self.router_logit_scale,
             codebook_version: self.codebook.version().0,
             encoding_version: self.encoding.version().0,
         }
@@ -634,9 +752,13 @@ pub struct PtrA0 {
     d_model: usize,
     operator_count: usize,
     latent_steps: usize,
-    typed_attention: bool,
+    typed_attention_mode: u8,
+    typed_attention_rank: usize,
+    typed_attention_limit: f32,
     typed_query: bool,
     latent_nonlinearity: bool,
+    router_mode: u8,
+    router_logit_scale: f32,
     /// Codebook version the tables were sized by. Burn records constants as empty,
     /// so this does **not** survive a saved record: an artifact that has to carry
     /// the identity carries it in its own header.
@@ -711,12 +833,54 @@ impl PtrA0 {
         self.operator_count
     }
 
+    pub fn typed_attention_mode(&self) -> TypedAttentionMode {
+        TypedAttentionMode::from_code(self.typed_attention_mode)
+    }
+
+    pub fn typed_attention_rank(&self) -> usize {
+        self.typed_attention_rank
+    }
+
+    pub fn typed_attention_limit(&self) -> f32 {
+        self.typed_attention_limit
+    }
+
+    pub fn typed_query(&self) -> bool {
+        self.typed_query
+    }
+
+    pub fn latent_steps(&self) -> usize {
+        self.latent_steps
+    }
+
+    pub fn latent_nonlinearity(&self) -> bool {
+        self.latent_nonlinearity
+    }
+
+    pub fn router_mode(&self) -> RouterMode {
+        RouterMode::from_code(self.router_mode)
+    }
+
+    pub fn router_logit_scale(&self) -> f32 {
+        self.router_logit_scale
+    }
+
     /// Rows in the slot-type table, read from the weights.
     ///
     /// Not the number the config asked for: what a checkpoint has to record is
     /// what the tensors actually are.
     pub fn slot_type_rows(&self) -> usize {
         self.slot_type_embedding.weight.dims()[0]
+    }
+
+    /// Rows in the raw-token embedding table.
+    pub fn vocabulary_size(&self) -> usize {
+        self.token_embedding.weight.dims()[0]
+    }
+
+    /// Rows in the provenance embedding table.
+    pub fn provenance_rows(&self) -> usize {
+        self.provenance_embedding.weight.dims()[0]
     }
 
     /// Rows in the epistemic table, read from the weights.
@@ -916,7 +1080,8 @@ impl PtrA0 {
 
         // Validity is deliberately absent from this sum. It is admission, not a
         // feature, and it is applied below where it cannot be weighed.
-        let typed_metadata = slot_type + epistemic + provenance + confidence;
+        let typed_metadata =
+            slot_type.clone() + epistemic.clone() + provenance.clone() + confidence.clone();
         let slots = slot_values.values() + typed_metadata.clone();
 
         // The typed query reads the whole slot state; the blind one only the
@@ -929,10 +1094,35 @@ impl PtrA0 {
         let raw_key = self.raw_key.forward(raw.clone());
         // Switched off, the pair bias is zero in both directions below and
         // `metadata_bias` is never applied, so it receives no gradient.
-        let cross_bias = if self.typed_attention {
-            typed_cross_bias(self.metadata_bias.forward(typed_metadata), raw_key.clone())
-        } else {
-            Tensor::<3>::zeros([batch, slot_count, sequence], &raw_key.device())
+        let cross_bias = match self.typed_attention_mode() {
+            TypedAttentionMode::LegacyScalarV1 => {
+                typed_cross_bias(self.metadata_bias.forward(typed_metadata), raw_key.clone())
+            }
+            TypedAttentionMode::FactorizedV2 => factorized_cross_bias(
+                &self.metadata_bias,
+                slot_type,
+                epistemic,
+                confidence,
+                provenance,
+                raw_key.clone(),
+                self.typed_attention_rank,
+                self.typed_attention_limit,
+            ),
+            TypedAttentionMode::Off => {
+                // Compute the exact v2 mechanism and zero only its result. The
+                // paired M002-v5 arms therefore have identical parameter and FLOP
+                // budgets while gradients into this branch are exactly zero.
+                factorized_cross_bias(
+                    &self.metadata_bias,
+                    slot_type,
+                    epistemic,
+                    confidence,
+                    provenance,
+                    raw_key.clone(),
+                    self.typed_attention_rank,
+                    self.typed_attention_limit,
+                ) * 0.0
+            }
         };
         let raw_value = self.raw_value.forward(raw.clone());
         let slot_scores = slot_query
@@ -1001,13 +1191,30 @@ impl PtrA0 {
         // and divide by the admitted count rather than by every slot.
         let admitted = admitted.float().reshape([batch, slot_count, 1]);
         let admitted_count = admitted.clone().sum_dim(1).clamp_min(1.0);
-        let router_logits = (self.router.forward(slots.clone())
-            * admitted.expand([batch, slot_count, self.operator_count]))
-        .sum_dim(1)
-        .reshape([batch, self.operator_count])
-            / admitted_count
-                .reshape([batch, 1])
-                .expand([batch, self.operator_count]);
+        let router_logits = match self.router_mode() {
+            RouterMode::LegacyMeanLinear => {
+                (self.router.forward(slots.clone())
+                    * admitted.expand([batch, slot_count, self.operator_count]))
+                .sum_dim(1)
+                .reshape([batch, self.operator_count])
+                    / admitted_count
+                        .reshape([batch, 1])
+                        .expand([batch, self.operator_count])
+            }
+            RouterMode::CalibratedCosineV2 => {
+                let normalized_slots = layer_normalize_last(slots.clone());
+                let pooled = (normalized_slots
+                    * admitted.expand([batch, slot_count, self.d_model]))
+                .sum_dim(1)
+                .reshape([batch, self.d_model])
+                    / admitted_count
+                        .reshape([batch, 1])
+                        .expand([batch, self.d_model]);
+                let pooled = l2_normalize_rows(pooled);
+                let weights = l2_normalize_columns(self.router.weight.val());
+                pooled.matmul(weights) * self.router_logit_scale
+            }
+        };
 
         PtrA0Output {
             raw,
@@ -1022,6 +1229,72 @@ impl PtrA0 {
 // each raw key's summary so this rank-one bias actually varies across keys.
 fn typed_cross_bias(slot_bias: Tensor<3>, raw_keys: Tensor<3>) -> Tensor<3> {
     slot_bias.matmul(raw_keys.mean_dim(2).transpose())
+}
+
+/// Bounded metadata/raw pair score used by M002-v5.
+fn factorized_cross_bias(
+    gate_projection: &Linear,
+    role: Tensor<3>,
+    epistemic: Tensor<3>,
+    confidence: Tensor<3>,
+    provenance: Tensor<3>,
+    raw_keys: Tensor<3>,
+    rank: usize,
+    limit: f32,
+) -> Tensor<3> {
+    let [batch, slots, width] = role.dims();
+    let [raw_batch, sequence, raw_width] = raw_keys.dims();
+    assert_eq!(batch, raw_batch);
+    assert_eq!(width, raw_width);
+    assert!(rank > 0 && rank <= width);
+
+    // The embedding tables and confidence projection are four independent
+    // learned axis projections. Normalize each before combining so one axis
+    // cannot win solely by increasing its norm.
+    let query = layer_normalize_last(role)
+        + layer_normalize_last(epistemic.clone())
+        + layer_normalize_last(confidence.clone())
+        + layer_normalize_last(provenance);
+    let query = query.slice([0..batch, 0..slots, 0..rank]);
+    let key = layer_normalize_last(raw_keys).slice([0..batch, 0..sequence, 0..rank]);
+    let pair = query
+        .matmul(key.transpose())
+        .div_scalar((rank as f32).sqrt());
+
+    // Reuse the historical scalar projection as the learned confidence/
+    // epistemic gate. Subtracting two initializes the sigmoid near zero without
+    // adding a parameter that would invalidate legacy checkpoint records.
+    let gate = sigmoid(gate_projection.forward(epistemic + confidence) - 2.0)
+        .expand([batch, slots, sequence]);
+    tanh(pair) * gate * limit
+}
+
+fn layer_normalize_last(tensor: Tensor<3>) -> Tensor<3> {
+    let [batch, rows, width] = tensor.dims();
+    let mean = tensor.clone().mean_dim(2);
+    let centered = tensor - mean.expand([batch, rows, width]);
+    let variance = (centered.clone() * centered.clone()).mean_dim(2);
+    centered / (variance + 1.0e-5).sqrt().expand([batch, rows, width])
+}
+
+fn l2_normalize_rows(tensor: Tensor<2>) -> Tensor<2> {
+    let [rows, width] = tensor.dims();
+    let norm = (tensor.clone() * tensor.clone())
+        .sum_dim(1)
+        .sqrt()
+        .clamp_min(1.0e-6)
+        .expand([rows, width]);
+    tensor / norm
+}
+
+fn l2_normalize_columns(tensor: Tensor<2>) -> Tensor<2> {
+    let [rows, columns] = tensor.dims();
+    let norm = (tensor.clone() * tensor.clone())
+        .sum_dim(0)
+        .sqrt()
+        .clamp_min(1.0e-6)
+        .expand([rows, columns]);
+    tensor / norm
 }
 
 #[cfg(test)]
@@ -1131,7 +1404,7 @@ mod typed_attention_switch_tests {
             .with_initializer(Initializer::Zeros)
             .init(&device);
         let mut off = on.clone();
-        off.typed_attention = false;
+        off.typed_attention_mode = TypedAttentionMode::Off as u8;
 
         let (a, b) = (run(&on, &device), run(&off, &device));
         assert!(largest_difference(a.router_logits, b.router_logits) < 1.0e-6);
@@ -1148,7 +1421,7 @@ mod typed_attention_switch_tests {
         // and make the two differ for a reason that is not the switch.
         let on = config().init(&device);
         let mut off = on.clone();
-        off.typed_attention = false;
+        off.typed_attention_mode = TypedAttentionMode::Off as u8;
 
         let difference = largest_difference(
             run(&on, &device).router_logits,
@@ -1168,11 +1441,18 @@ mod typed_attention_switch_tests {
             let model = config().with_typed_attention(typed_attention).init(&device);
             let gradients = run(&model, &device).router_logits.sum().backward();
             let bias = model.metadata_bias.weight.grad(&gradients);
-            assert_eq!(
-                bias.is_some(),
-                typed_attention,
-                "metadata_bias gradient with typed_attention={typed_attention}"
-            );
+            match (typed_attention, bias) {
+                (true, Some(gradient)) => {
+                    let magnitude: f32 = gradient.abs().sum().into_scalar();
+                    assert!(magnitude > 0.0);
+                }
+                (false, None) => {}
+                (false, Some(gradient)) => {
+                    let magnitude: f32 = gradient.abs().sum().into_scalar();
+                    assert_eq!(magnitude, 0.0, "the computed off branch is zeroed");
+                }
+                (true, None) => panic!("enabled metadata bias has no gradient"),
+            }
             let router = model
                 .router
                 .weight
@@ -1185,7 +1465,98 @@ mod typed_attention_switch_tests {
 
     #[test]
     fn it_is_on_by_default() {
-        assert!(PtrA0Config::new(16, WIDTH).typed_attention);
+        assert_eq!(
+            PtrA0Config::new(16, WIDTH).typed_attention,
+            TypedAttentionMode::LegacyScalarV1
+        );
+    }
+}
+
+#[cfg(test)]
+mod factorized_attention_tests {
+    use super::*;
+    use burn::nn::Initializer;
+
+    fn axes(device: &Device) -> (Tensor<3>, Tensor<3>, Tensor<3>, Tensor<3>, Tensor<3>) {
+        (
+            Tensor::from_data([[[1.0, -1.0, 0.5, 2.0], [0.2, 0.8, -0.4, 1.2]]], device),
+            Tensor::from_data([[[0.1, 0.7, -0.2, 1.5], [1.0, -0.5, 0.3, 0.2]]], device),
+            Tensor::from_data([[[0.9, 0.0, 0.1, 0.4], [0.2, 0.6, 0.8, 0.1]]], device),
+            Tensor::from_data([[[0.3, 1.1, -0.7, 0.5], [0.4, -0.2, 1.3, 0.9]]], device),
+            Tensor::from_data(
+                [[
+                    [0.1, 0.2, 0.3, 0.4],
+                    [1.0, -1.0, 0.5, 0.2],
+                    [-0.4, 0.8, 1.2, 0.1],
+                ]],
+                device,
+            ),
+        )
+    }
+
+    #[test]
+    fn factorized_pair_bias_is_bounded_and_the_gate_starts_near_zero() {
+        let device = Device::flex();
+        let gate = LinearConfig::new(4, 1)
+            .with_initializer(Initializer::Zeros)
+            .init(&device);
+        let (role, epistemic, confidence, provenance, raw) = axes(&device);
+        let bias =
+            factorized_cross_bias(&gate, role, epistemic, confidence, provenance, raw, 4, 2.0);
+        let maximum: f32 = bias.clone().abs().max().into_scalar();
+        assert!(maximum <= 2.0, "tanh bound was exceeded: {maximum}");
+        // sigmoid(-2) is the zero-initialized gate. The pair score itself is
+        // tanh-bounded, so the initial absolute bias cannot exceed this value.
+        let near_zero_limit = 2.0 / (1.0 + 2.0_f32.exp());
+        assert!(maximum <= near_zero_limit + 1.0e-6);
+    }
+
+    #[test]
+    fn factorized_gate_has_gradient_but_off_zeroing_has_none() {
+        let device = Device::flex().autodiff();
+        device.seed(17);
+        let gate = LinearConfig::new(4, 1).init(&device);
+        let (role, epistemic, confidence, provenance, raw) = axes(&device);
+        let bias = factorized_cross_bias(
+            &gate,
+            role.clone(),
+            epistemic.clone(),
+            confidence.clone(),
+            provenance.clone(),
+            raw.clone(),
+            4,
+            2.0,
+        );
+        let gradients = bias.sum().backward();
+        let gradient = gate.weight.grad(&gradients).expect("enabled gate learns");
+        let magnitude: f32 = gradient.abs().sum().into_scalar();
+        assert!(magnitude > 0.0, "enabled gate gradient is zero");
+
+        let zeroed =
+            factorized_cross_bias(&gate, role, epistemic, confidence, provenance, raw, 4, 2.0)
+                * 0.0;
+        let gradients = zeroed.sum().backward();
+        if let Some(gradient) = gate.weight.grad(&gradients) {
+            let magnitude: f32 = gradient.abs().sum().into_scalar();
+            assert_eq!(magnitude, 0.0, "Off must zero the entire pair branch");
+        }
+    }
+
+    #[test]
+    fn factorized_and_off_have_exactly_the_same_parameter_count() {
+        let device = Device::flex();
+        let base = PtrA0Config::new(32, 16)
+            .with_provenance_buckets(8)
+            .with_factorized_attention(16, 2.0)
+            .with_router_mode(RouterMode::CalibratedCosineV2);
+        let on = base
+            .clone()
+            .with_typed_attention_mode(TypedAttentionMode::FactorizedV2)
+            .init(&device);
+        let off = base
+            .with_typed_attention_mode(TypedAttentionMode::Off)
+            .init(&device);
+        assert_eq!(on.num_params(), off.num_params());
     }
 }
 

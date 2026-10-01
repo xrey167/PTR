@@ -3,7 +3,7 @@
 //! agree with this table; scripts/tests/test_a0_ablation_config.py checks that
 //! against `--phase list-arms`.
 
-use ptr_burn_a0::PtrA0Config;
+use ptr_burn_a0::{PtrA0Config, RouterMode, TypedAttentionMode};
 
 /// What the slots of a batch carry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,10 +36,18 @@ pub struct Arm {
     /// 1: always run. 2: dropped first by the budget rule.
     pub tier: u8,
     pub typed_attention: bool,
+    pub typed_attention_mode: TypedAttentionMode,
+    pub typed_attention_rank: usize,
+    pub typed_attention_limit: f32,
     pub typed_query: bool,
     pub latent_steps: usize,
     pub latent_nonlinearity: bool,
     pub frozen_router: bool,
+    pub router_mode: RouterMode,
+    pub router_logit_scale: f32,
+    pub label_smoothing: f32,
+    pub metadata_dropout: f32,
+    pub consistency_weight: f32,
     pub batch: Batch,
 }
 
@@ -48,13 +56,23 @@ const FULL: Arm = Arm {
     experiment: "M001",
     tier: 1,
     typed_attention: true,
+    typed_attention_mode: TypedAttentionMode::LegacyScalarV1,
+    typed_attention_rank: 16,
+    typed_attention_limit: 2.0,
     typed_query: true,
     latent_steps: 2,
     latent_nonlinearity: true,
     frozen_router: false,
+    router_mode: RouterMode::LegacyMeanLinear,
+    router_logit_scale: 5.0,
+    label_smoothing: 0.0,
+    metadata_dropout: 0.0,
+    consistency_weight: 0.0,
     batch: Batch::Typed,
 };
 
+/// Historical A0-v1 arms. Keep this table and its list-arms wire format stable;
+/// M002-v5 is a separate study below.
 pub const ARMS: [Arm; 12] = [
     FULL,
     Arm {
@@ -71,6 +89,7 @@ pub const ARMS: [Arm; 12] = [
         name: "no-typed-attention",
         experiment: "M002",
         typed_attention: false,
+        typed_attention_mode: TypedAttentionMode::Off,
         ..FULL
     },
     Arm {
@@ -94,6 +113,7 @@ pub const ARMS: [Arm; 12] = [
         typed_query: false,
         latent_steps: 0,
         typed_attention: false,
+        typed_attention_mode: TypedAttentionMode::Off,
         ..FULL
     },
     Arm {
@@ -129,9 +149,35 @@ pub const ARMS: [Arm; 12] = [
     },
 ];
 
+pub const V5_ARMS: [Arm; 2] = [
+    Arm {
+        name: "factorized-v2",
+        experiment: "M002-v5",
+        typed_attention: true,
+        typed_attention_mode: TypedAttentionMode::FactorizedV2,
+        router_mode: RouterMode::CalibratedCosineV2,
+        label_smoothing: 0.05,
+        metadata_dropout: 0.10,
+        consistency_weight: 0.10,
+        ..FULL
+    },
+    Arm {
+        name: "factorized-v2-off",
+        experiment: "M002-v5",
+        typed_attention: false,
+        typed_attention_mode: TypedAttentionMode::Off,
+        router_mode: RouterMode::CalibratedCosineV2,
+        label_smoothing: 0.05,
+        metadata_dropout: 0.10,
+        consistency_weight: 0.10,
+        ..FULL
+    },
+];
+
 /// Look up an arm by its exact study name, returning an error if it is unknown.
 pub fn find(name: &str) -> Result<Arm, String> {
     ARMS.iter()
+        .chain(V5_ARMS.iter())
         .copied()
         .find(|arm| arm.name == name)
         .ok_or_else(|| format!("unknown arm {name:?}"))
@@ -146,9 +192,15 @@ impl Arm {
         PtrA0Config::new(VOCABULARY, d_model)
             .with_provenance_buckets(PROVENANCE_BUCKETS)
             .with_latent_steps(self.latent_steps)
-            .with_typed_attention(self.typed_attention)
+            .with_typed_attention_mode(self.typed_attention_mode)
+            .with_factorized_attention(
+                self.typed_attention_rank.min(d_model),
+                self.typed_attention_limit,
+            )
             .with_typed_query(self.typed_query)
             .with_latent_nonlinearity(self.latent_nonlinearity)
+            .with_router_mode(self.router_mode)
+            .with_router_logit_scale(self.router_logit_scale)
             .with_frozen_router(self.frozen_router)
     }
 
