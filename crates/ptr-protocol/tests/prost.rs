@@ -29,18 +29,22 @@ fn call_fixture() -> PodCall {
     }
 }
 
-fn assert_wire<M: Message + Default + PartialEq + Debug>(message: M, wire: &[u8]) {
-    assert_eq!(message.encode_to_vec(), wire);
+#[track_caller]
+fn assert_roundtrip<M: Message + Default + PartialEq + Debug>(message: M) -> Vec<u8> {
+    let wire = message.encode_to_vec();
     assert_eq!(message.encoded_len(), wire.len());
-    assert_eq!(M::decode(wire).expect("decode schema fixture"), message);
+    assert_eq!(M::decode(wire.as_slice()).expect("decode message"), message);
+    wire
+}
+
+#[track_caller]
+fn assert_wire<M: Message + Default + PartialEq + Debug>(message: M, wire: &[u8]) {
+    assert_eq!(assert_roundtrip(message), wire);
 }
 
 #[test]
 fn generated_podwire_roundtrips() {
-    let call = call_fixture();
-    let bytes = call.encode_to_vec();
-    let decoded = PodCall::decode(bytes.as_slice()).expect("decode complete call");
-    assert_eq!(decoded, call);
+    assert_roundtrip(call_fixture());
 }
 
 #[test]
@@ -111,19 +115,14 @@ fn unicode_and_binary_payloads_survive_length_boundaries() {
         let call = PodCall {
             call_id: "呼び出し\0".into(),
             capability: "prédire".into(),
+            generation: Some(7),
+            revision: 11,
             payload: Some(TypedPayload {
                 type_id: "入力".into(),
                 payload: (0..=255).cycle().take(length).collect(),
             }),
-            ..call_fixture()
         };
-        let wire = call.encode_to_vec();
-        assert_eq!(call.encoded_len(), wire.len());
-        assert_eq!(
-            PodCall::decode(wire.as_slice()).expect("decode arbitrary payload bytes"),
-            call,
-            "payload length {length}"
-        );
+        assert_roundtrip(call);
     }
 }
 
