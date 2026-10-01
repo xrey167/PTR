@@ -26,6 +26,11 @@ path = "model/M002-v3-typed-attention"
 status = "prepared"
 
 [[experiment]]
+id = "M002-v4"
+path = "model/M002-v4-typed-attention"
+status = "prepared"
+
+[[experiment]]
 id = "M003"
 path = "model/M003-latent-recurrence"
 status = "planned"
