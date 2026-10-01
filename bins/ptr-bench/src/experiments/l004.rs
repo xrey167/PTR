@@ -224,6 +224,12 @@ fn diverged(counter: &mut u64, message: String) {
     *counter += 1;
 }
 
+/// Run seeded projection-equivalence cases and one long replay against PostgreSQL
+/// and print one JSON result line. `iterations` counts the randomized cases.
+///
+/// Uses `PTR_PG_EXPERIMENT_DSN` and creates and drops experiment schemas.
+/// Exits with status 1 for hard failures or 2 when the connection string is
+/// missing or blank; runtime creation and database setup failures panic.
 pub fn run(iterations: usize, seed: u64) {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

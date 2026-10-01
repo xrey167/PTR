@@ -13,6 +13,8 @@ use std::time::Instant;
 
 mod experiments;
 
+/// Dispatch the requested benchmark; without a command, run semdb and mailbox.
+/// Unknown commands print usage and exit with status 2.
 fn main() {
     let args = std::env::args().collect::<Vec<_>>();
     let command = args.get(1).map(String::as_str).unwrap_or("all");

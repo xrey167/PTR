@@ -183,6 +183,11 @@ impl Op {
     }
 
     /// What `current` becomes under the operation; `None` is absent.
+    /// An absent operand starts at zero for addition or at an empty set.
+    ///
+    /// # Errors
+    /// Refuses incompatible or malformed counter/set values, empty set members,
+    /// and counter overflow. Addition and set operations use `OP_SOURCE`.
     pub fn apply(&self, current: Option<&Val>) -> Result<Option<Val>, OpRefusal> {
         match self {
             Self::Put { value, .. } => Ok(Some(value.clone())),
@@ -270,16 +275,20 @@ impl Lifecycle {
         self.revoked.insert((target.to_string(), generation));
     }
 
+    /// The latest recorded generation, even if revoked; `None` for an unknown target.
     pub fn live(&self, target: &str) -> Option<u64> {
         self.live.get(target).copied()
     }
 
+    /// Yield every recorded live generation in target order, including revoked ones.
     pub fn live_entries(&self) -> impl Iterator<Item = (&str, u64)> {
         self.live
             .iter()
             .map(|(target, generation)| (target.as_str(), *generation))
     }
 
+    /// Yield all revocation tombstones in target/generation order, including
+    /// targets with no live generation.
     pub fn revoked_entries(&self) -> impl Iterator<Item = (&str, u64)> {
         self.revoked
             .iter()
@@ -287,7 +296,8 @@ impl Lifecycle {
     }
 
     /// `None` means the authority knows no such generation: the target is
-    /// unknown or the generation is ahead of it.
+    /// unknown or the generation is ahead of it. An explicit revocation takes
+    /// precedence, even without a live generation or for a future generation.
     pub fn validity(&self, target: &str, generation: u64) -> Option<Validity> {
         if self.revoked.contains(&(target.to_string(), generation)) {
             return Some(Validity::Revoked);
@@ -386,16 +396,17 @@ impl Model {
         self.dependencies.get(key).cloned().unwrap_or_default()
     }
 
+    /// The declared input sets, including derivations whose values were evicted.
     pub fn dependencies(&self) -> &BTreeMap<String, BTreeSet<String>> {
         &self.dependencies
     }
 
-    /// Whether any counter holds a negative value.
+    /// Whether any valid counter under `ctr:` holds a negative value.
     pub fn negative_counter(&self) -> bool {
         self.negative_counter_after(&Net::default())
     }
 
-    /// Whether any counter would hold a negative value after `net`.
+    /// Whether any valid counter under `ctr:` would be negative after `net`.
     pub fn negative_counter_after(&self, net: &Net) -> bool {
         let held = self
             .under("ctr:")
@@ -411,6 +422,9 @@ impl Model {
     }
 
     /// Apply `delta`, or refuse it and change nothing.
+    /// Returns the affected keys and whether the revision advanced.
+    /// Propagates the conflicting-change, cycle and missing-input refusals
+    /// from [`Self::plan`].
     pub fn apply(&mut self, delta: &Delta) -> Result<Applied, Refusal> {
         let plan = self.plan(delta)?;
         Ok(self.commit(plan))
@@ -418,6 +432,11 @@ impl Model {
 
     /// What applying `delta` would do, or why it would be refused, without
     /// changing anything.
+    ///
+    /// # Errors
+    /// Refuses removals that also upsert or declare inputs for the same key,
+    /// dependency cycles, and upserted derivations with inputs absent after
+    /// the change and its evictions.
     pub fn plan(&self, delta: &Delta) -> Result<Plan, Refusal> {
         if delta
             .removals

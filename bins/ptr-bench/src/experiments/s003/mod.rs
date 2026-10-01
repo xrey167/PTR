@@ -36,7 +36,7 @@ use super::json;
 
 /// The private directory of the durable round trip of case `index`, for the
 /// cases that make one; `label` tells a case from its rerun. It is removed when
-/// dropped.
+/// dropped, with cleanup errors ignored. Exits with status 2 if creation fails.
 fn durable_scratch(seed: u64, index: usize, label: &str) -> Option<Scratch> {
     (index % params::DURABLE_ROUNDTRIP_EVERY_CASES == 0).then(|| {
         Scratch::create(&format!("{seed}-{index}-{label}")).unwrap_or_else(|error| {
@@ -140,6 +140,7 @@ fn run_case(seed: u64, index: usize, durable: Option<PathBuf>) -> CaseResult {
     }
 }
 
+/// Serialize one arm's statistics as a JSON object, including completion state.
 fn run_json(stats: &RunStats) -> String {
     format!(
         "{{\"arm\":{},\"agents\":{},\"ticks\":{},\"attempts\":{},\"merged\":{},\"no_change\":{},\
@@ -222,7 +223,9 @@ fn result_line(
 }
 
 /// Run `iterations` cases of seed `seed`, print the result line, and exit 1
-/// if any hard counter is above zero.
+/// if any hard counter is above zero. Zero iterations reports no cases.
+/// Exits with status 2 if the embedded preregistration cannot be parsed or a
+/// temporary directory for a durable check cannot be created.
 pub fn run(iterations: usize, seed: u64) {
     let preregistration = match params::echo() {
         Ok(text) => text,

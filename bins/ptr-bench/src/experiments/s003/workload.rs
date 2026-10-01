@@ -50,6 +50,8 @@ pub struct Case {
 }
 
 impl Case {
+    /// Choose the contention level by cycling through the ladder with the
+    /// zero-based case index, and derive a repeatable stream from seed and index.
     pub fn new(seed: u64, index: usize) -> Self {
         let level = index % params::GROUPS_LADDER.len();
         Self {
@@ -127,6 +129,8 @@ impl Case {
             .collect()
     }
 
+    /// Draw a task and its per-attempt think/review times in ticks.
+    /// Measure program steps against `genesis` so durations are shared by all arms.
     fn task(&self, index: usize, genesis: &Model) -> Task {
         let mut rng = stream(self.root, &[LABEL_TASK, index as u64]);
         let program = draw_program(&mut rng, self.groups, index);
@@ -255,6 +259,8 @@ fn signed(rng: &mut Rng, max: i64) -> i64 {
     }
 }
 
+/// Draw a program using the preregistered weights and operand ranges.
+/// `groups` bounds group selection; `task` identifies a capped insertion's key.
 fn draw_program(rng: &mut Rng, groups: usize, task: usize) -> Program {
     let mut pick = rng.below(1000);
     let mut which = params::PROGRAM_WEIGHTS_PERMILLE.len() - 1;

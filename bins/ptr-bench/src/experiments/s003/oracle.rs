@@ -87,7 +87,7 @@ fn holds_member(value: Option<&Val>, member: &str) -> bool {
         .is_some_and(|members| members.contains(member))
 }
 
-/// Whether any counter of `model` is negative.
+/// Whether any valid counter under `ctr:` in `model` is negative.
 pub fn negative_counter(model: &Model) -> bool {
     model.negative_counter()
 }
@@ -191,7 +191,8 @@ fn conflicts(footprint: &Footprint, target: &Model) -> (BTreeSet<String>, bool) 
 /// documents: each key's operations folded over the target's value, and a key
 /// left out when its value is unchanged unless the merge changes a key it is
 /// derived from, directly or through other derived keys of the target's
-/// graph.
+/// graph. Propagates the first type, empty-member or overflow
+/// refusal without changing `target`.
 pub fn merge_delta(ops: &[Op], target: &Model) -> Result<Delta, OpRefusal> {
     let mut finals: BTreeMap<&str, Option<Val>> = BTreeMap::new();
     for op in ops {
@@ -295,6 +296,7 @@ pub fn judge(footprint: &Footprint, target: &Model) -> Judgement {
 /// Whether a commutative key of the branch holds, after the merge, other than
 /// what its operations make of what the target held before it: an increment
 /// or a set change was lost. `before` and `after` say what a key held.
+/// Also returns true when an operation cannot be applied to its operand.
 pub fn lost_increments_with(
     footprint: &Footprint,
     before: impl Fn(&str) -> Option<Val>,
