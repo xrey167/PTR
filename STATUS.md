@@ -31,6 +31,21 @@ PTR is a **compiling architecture/research prototype**, not yet a complete model
 - Internal component smoke evidence exists for the custom SemDB and PTR isolate/mailbox path; both candidates remain `evaluating`, not selected.
 - A runnable BM25 + caller-supplied dense-vector RRF reference baseline exists, but no claim against strong RAG is valid until a pinned embedding/reranking baseline is executed.
 
+### M001/M002 paired evidence freeze
+
+- Historical `M001-v2` and `M002-v2` records remain immutable and are not used as
+  positive evidence claims. The current research-gate failure for `M002-v2` is
+  an intentional historical-manifest mismatch, not a reason to rewrite its
+  records or silently change its entrypoint.
+- `M001-v4` and `M002-v4` each have complete paired five-seed aggregate records
+  for seeds `17, 29, 43, 71, 101`, finite metrics, and paired 95% confidence
+  interval artifacts. Their registry status remains `prepared` until the full
+  repository research gate is clean; this is deliberately not reported as a
+  completed scientific claim.
+- The v4 artifacts are reproducibility evidence for the paired runner and
+  frozen configuration, not a claim of model superiority. Any missing or
+  failing evidence gate remains `INCONCLUSIVE/NO-GO`.
+
 ## Current research/implementation gap
 
 - PTR-Core now has a separate trainable Burn A0 research package with typed metadata, bidirectional cross-attention, recurrent latent refinement and a router; it is still a small architecture probe rather than a pretrained language model
