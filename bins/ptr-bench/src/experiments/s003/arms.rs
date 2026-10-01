@@ -178,7 +178,10 @@ struct Simulation<'a> {
 
 /// Run `arm` over `tasks` with `agents` agents. A run of an arm that
 /// certifies ends with the replay, compaction and (given `durable`) durable
-/// round trips.
+/// round trips. The serial arm always uses one agent.
+///
+/// Setup, execution, tick-limit and round-trip errors are returned in
+/// `Run::failed` with `stats.complete` false and a harness error counted.
 pub fn run_arm(
     case: &Case,
     tasks: &[Task],
@@ -241,7 +244,9 @@ fn failed_before_start(stats: RunStats, error: String) -> Run {
 }
 
 impl Simulation<'_> {
-    /// Tick until every task is settled; the makespan.
+    /// Run until all tasks settle and return the makespan in ticks.
+    /// Returns background, merge or branch-opening errors, or an error when
+    /// the tick limit is exceeded.
     fn execute(&mut self) -> Result<u64, String> {
         let mut tick = 0u64;
         loop {
@@ -280,6 +285,8 @@ impl Simulation<'_> {
 
     // ---- merges ---------------------------------------------------------------
 
+    /// Settle due work while the merge lane is free, oldest first.
+    /// Completed reviews precede agent merges of the same age; settlement errors propagate.
     fn merges(&mut self, tick: u64) -> Result<(), String> {
         // Reviews that completed come before merges of the same age.
         let mut due: Vec<(u64, u8, u64, Due)> = Vec::new();
@@ -408,6 +415,8 @@ impl Simulation<'_> {
 
     // ---- baselines ------------------------------------------------------------
 
+    /// Commit the branch's base-relative overlay as a host write.
+    /// Abandon an unbuildable overlay; propagate host-write errors.
     fn settle_lww(&mut self, tick: u64, flight: Flight) -> Result<(), String> {
         let Some(delta) = self.world.overlay(&flight.attempt) else {
             self.stats.abandoned += 1;
@@ -420,6 +429,9 @@ impl Simulation<'_> {
         Ok(())
     }
 
+    /// Retry when a declared read changed; otherwise merge operations onto the
+    /// current state as a host write. Abandon refused operations and propagate
+    /// host-write errors. Scans, dependencies and lifecycle are not certified.
     fn settle_occ(&mut self, tick: u64, flight: Flight) -> Result<(), String> {
         let moved = flight
             .attempt
@@ -458,6 +470,9 @@ impl Simulation<'_> {
 
     // ---- opening --------------------------------------------------------------
 
+    /// Assign queued work to available agents and schedule its merge in ticks.
+    /// Apply deferred background events before serial work; propagate background
+    /// and branch-opening errors.
     fn opens(&mut self, tick: u64) -> Result<(), String> {
         for index in 0..self.agents.len() {
             if self.agents[index].current.is_some() || self.agents[index].idle_at > tick {
@@ -502,6 +517,8 @@ impl Simulation<'_> {
 
     // ---- end ------------------------------------------------------------------
 
+    /// Collect statistics and a deterministic digest, marking the run incomplete
+    /// and counting a harness error when `failed` contains a reason.
     fn finish(mut self, failed: Option<String>) -> Run {
         self.stats.complete = failed.is_none();
         if failed.is_some() {

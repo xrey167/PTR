@@ -65,18 +65,32 @@ const RESERVED_PREFIXES: [&str; 2] = ["request:", "pod-output:"];
 /// the view and returns an empty answer, so a program has no error paths of
 /// its own; a refusal a view records in its log is part of what it observed.
 pub trait View {
+    /// Read and record the visible value, including staged writes; absence or
+    /// a failed read returns `None`, with the failure retained by the view.
     fn read(&mut self, key: &str) -> Option<Val>;
+    /// Read and record visible entries whose keys start with `prefix`, in key
+    /// order. A failed branch scan is retained as an error and returns no entries.
     fn scan(&mut self, prefix: &str) -> Vec<(String, Val)>;
     /// The input set `key` declares in the base.
     fn inputs(&mut self, key: &str) -> BTreeSet<String>;
     /// The live generation of `target` when the branch was opened, if it is
     /// live and not revoked.
     fn live(&mut self, target: &str) -> Option<u64>;
+    /// Record reliance on a generation; a conflicting prior reliance is logged
+    /// as a refusal without replacing it.
     fn rely(&mut self, target: &str, generation: u64);
+    /// Stage an overwrite of a previously read key, or log its refusal.
     fn put(&mut self, key: &str, value: Val);
+    /// Stage removal of a previously read, non-derived key, or log its refusal.
     fn remove(&mut self, key: &str);
+    /// Stage a signed counter increment, treating an absent operand as zero.
+    /// Log refusals such as incompatible values, overflow or an evicted operand.
     fn add(&mut self, key: &str, amount: i64);
+    /// Stage insertion of a nonempty set member, or log its refusal.
+    /// An absent operand starts as an empty set.
     fn set_insert(&mut self, key: &str, member: &str);
+    /// Stage removal of a nonempty set member, or log its refusal.
+    /// An absent operand starts as an empty set.
     fn set_remove(&mut self, key: &str, member: &str);
 }
 
@@ -120,8 +134,11 @@ pub struct Log {
 
 /// The state a branch is opened on, as a footprint is made from it.
 pub trait Base {
+    /// The base value, or `None` if the key holds no value.
     fn value(&self, key: &str) -> Option<Val>;
+    /// The base entries whose keys start with `prefix`, in key order.
     fn entries_under(&self, prefix: &str) -> Vec<(String, Val)>;
+    /// The base input set, including declarations retained after value eviction.
     fn inputs(&self, key: &str) -> BTreeSet<String>;
 }
 
@@ -249,6 +266,7 @@ pub struct RefView<'m> {
 }
 
 impl<'m> RefView<'m> {
+    /// Open an empty observation log and staged overlay over the borrowed model.
     pub fn open(base: &'m Model) -> Self {
         Self {
             base,
@@ -656,6 +674,8 @@ impl BranchView {
     }
 
     /// Seal the branch and return it with its log and footprint.
+    /// Propagates sealing errors from [`Branch::seal`]. Earlier read/scan
+    /// failures remain in `Opened::error`; staging refusals remain in the log.
     pub fn finish(self) -> Result<Opened, BranchError> {
         let footprint = footprint(&self.log, &self.base);
         let sealed = self.branch.seal()?;

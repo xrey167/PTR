@@ -18,7 +18,11 @@ pub struct Scratch {
 
 impl Scratch {
     /// A new directory `ptr-s003-<label>-<process>-<n>` under the temporary
-    /// directory, created by this call (mode 0700 where the platform has modes).
+    /// directory, created by this call (mode 0700 on Unix).
+    /// Removal is attempted on drop; cleanup errors are ignored.
+    ///
+    /// # Errors
+    /// Returns a directory-creation error or fails after 16 occupied names.
     pub fn create(label: &str) -> Result<Self, String> {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         Self::create_in(&std::env::temp_dir(), label, || {
@@ -27,7 +31,8 @@ impl Scratch {
     }
 
     /// The same under `base`, numbering by `next`: a name that exists is
-    /// skipped, whatever it is.
+    /// skipped, whatever it is. Returns other creation errors immediately,
+    /// or an error after 16 occupied names.
     fn create_in(base: &Path, label: &str, mut next: impl FnMut() -> u64) -> Result<Self, String> {
         for _ in 0..ATTEMPTS {
             let dir = base.join(format!(

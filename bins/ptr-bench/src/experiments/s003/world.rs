@@ -193,13 +193,17 @@ pub struct World {
 
 impl World {
     /// A runtime with the grant of `kind` and the genesis of `case`, and a
-    /// model that agrees with it.
+    /// model following its journal. Propagates [`Self::with_genesis`] setup
+    /// errors; state disagreements are counted as divergences.
     pub fn new(case: &Case, kind: GrantKind) -> Result<Self, String> {
         let genesis = case.genesis();
         Self::with_genesis(&genesis, kind)
     }
 
     /// A runtime with the grant of `kind` and `genesis`.
+    /// Returns errors creating the runtime, installing the grant, committing
+    /// lifecycle events, applying genesis or decoding committed deltas, or if
+    /// genesis is not committed.
     pub fn with_genesis(genesis: &Genesis, kind: GrantKind) -> Result<Self, String> {
         let mut runtime =
             PtrRuntime::new(PtrConfig::default()).map_err(|error| format!("runtime: {error:?}"))?;
@@ -431,6 +435,9 @@ impl World {
 
     /// A host write of `delta` under `principal`, compared with what the
     /// model predicts. An outcome that differs is a model divergence.
+    /// Semantic and verification errors become `HostOutcome::Refused`; other
+    /// runtime errors and failures decoding committed deltas propagate as strings.
+    /// Successful commits advance the model from the journal.
     pub fn host_write(&mut self, delta: &Delta, principal: &str) -> Result<HostOutcome, String> {
         let predicted = self.predict_host(delta);
         let from = self.ledger_len();
@@ -653,7 +660,9 @@ impl World {
 
     /// Open a branch on the runtime's current snapshot, run `program` on it,
     /// seal it, and require what it declares to be what the reference model
-    /// says the program does.
+    /// says the program does. `rely` identifies an optional workload policy.
+    /// Sealing failures return an error; disagreements with the model are
+    /// counted while still returning the attempt.
     pub fn open(
         &mut self,
         id: &str,
@@ -1212,7 +1221,8 @@ impl World {
 
     /// The delta of a last-writer-wins commit of `attempt`: each key's
     /// operations folded over the value the branch's base held, written
-    /// whatever the target holds now.
+    /// whatever the target holds now. Returns `None` if a touched-key entry
+    /// is missing from the footprint or an operation is refused.
     pub fn overlay(&self, attempt: &Attempt) -> Option<Delta> {
         let mut finals: BTreeMap<&str, Option<Val>> = BTreeMap::new();
         for op in &attempt.footprint.ops {
@@ -1237,7 +1247,9 @@ impl World {
     }
 
     /// Commit `delta` for a baseline arm and count the hazards it ran into
-    /// as evidence, when the commit was not refused.
+    /// as evidence when not refused, including no-change outcomes. `occ` selects OCC counters
+    /// when true and last-writer-wins counters otherwise. Propagates errors
+    /// from [`Self::host_write`].
     pub fn baseline_commit(
         &mut self,
         attempt: &Attempt,
@@ -1277,7 +1289,10 @@ impl World {
 
     /// Rebuild the runtime from its journal, from a compacted snapshot and
     /// (when `durable` names a path) from a file, and compare each with the
-    /// live runtime.
+    /// live runtime. Replay, restore and reopen failures count as divergences.
+    /// Returns an error only when the durable log cannot be encoded, decoded
+    /// or created. The durable path must be unused; removal of the file this
+    /// call creates is attempted afterward, with cleanup errors ignored.
     pub fn round_trips(&mut self, durable: Option<&Path>) -> Result<(), String> {
         let events: Vec<CommittedEvent> = self.runtime.committed_events().to_vec();
         self.metrics.replays += 1;

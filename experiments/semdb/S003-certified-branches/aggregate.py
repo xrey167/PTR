@@ -201,6 +201,7 @@ def newest_per_seed(paths: list[Path]) -> dict[int, Path]:
 
 
 def git_sha() -> str:
+    """Return HEAD's commit ID, or "unknown" if invoking Git fails."""
     try:
         return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
     except Exception:
@@ -208,6 +209,7 @@ def git_sha() -> str:
 
 
 def cell_name(level: int, agents: int) -> str:
+    """Name a cell using its zero-based ladder level and agent count."""
     return f"L{level}N{agents}"
 
 
@@ -216,6 +218,8 @@ def validate_layout(result: dict, table: dict) -> None:
 
     Failed runs remain valid evidence when their complete flag is false; the
     confirmatory analysis must still be able to publish a negative result.
+    Raises ValueError for an invalid case/run matrix, timing, completion flag
+    or completed-run settlement count.
     """
     cases = result.get("cases")
     count = table["cases_per_seed"]
@@ -272,7 +276,8 @@ def usable(serial_ticks: int, run: dict) -> bool:
 
 def conflict_rate(runs: list[dict]) -> float | None:
     """Certification refusals (a conflict or a lifecycle change) over merge
-    attempts, pooled over `runs`; verification holds are not conflicts."""
+    attempts, pooled over `runs`; verification holds are not conflicts.
+    Returns None when the pooled attempt count is zero."""
     attempts = sum(run["attempts"] for run in runs)
     if not attempts:
         return None
@@ -282,7 +287,9 @@ def conflict_rate(runs: list[dict]) -> float | None:
 def cells(results: list[dict]) -> dict[str, dict]:
     """Per (level, agents) cell of the certified arm: cases, attempts, the
     pooled conflict rate and certified merge rate, and the gain and its
-    efficiency over serial execution at the point estimate."""
+    efficiency over serial execution at the point estimate. Gain and efficiency
+    are None if any member has incomplete or nonpositive timing; rates are
+    None when the pooled attempt count is zero."""
     grouped: dict[tuple[int, int], list[tuple[int, dict]]] = {}
     for level, agents, serial, run in certified_runs(results):
         grouped.setdefault((level, agents), []).append((serial, run))
@@ -342,7 +349,10 @@ def bootstrap_gain(pairs: list[tuple[int, int]], resamples: int, seed: int, inte
     """The point estimate of gain (the sum of serial makespans over the sum
     of certified ones) over `pairs` of (serial, certified) makespans of one
     case each, and the percentile interval of `resamples` resamples of the
-    cases with replacement, drawn from `random.Random(seed)`."""
+    cases with replacement, drawn from `random.Random(seed)`.
+    `interval_permille` is the central interval width in thousandths (950 is
+    95%). Callers must supply nonempty pairs with positive certified times,
+    and positive resamples."""
     generator = random.Random(seed)
     count = len(pairs)
     gains = []
@@ -388,6 +398,7 @@ def merge_time(results: list[dict], budget_us: int) -> dict:
 
 
 def share(numerator: int, denominator: int) -> float | None:
+    """Return the ratio rounded to four decimals, or None for a zero denominator."""
     return round(numerator / denominator, 4) if denominator else None
 
 
@@ -449,7 +460,8 @@ def analyse(seeds: list[dict], records: list[dict], table: dict, mutations: dict
     run records they came from (`records`) show, under the preregistered
     `table` and the mutation evidence `mutations` (None when there is none):
     the metrics, each condition, the throughput and efficiency verdicts and
-    the status they recommend. Pure: it reads no file."""
+    the status they recommend. Pure: it reads no file.
+    Propagates ValueError from validate_layout for malformed measurements."""
     for result in seeds:
         validate_layout(result, table)
     counters = sorted(
@@ -577,6 +589,12 @@ def analyse(seeds: list[dict], records: list[dict], table: dict, mutations: dict
 
 
 def aggregate() -> None:
+    """Validate the declared seed records and publish metrics.json and run.json.
+
+    Print the recommended status without changing the manifest. Failed runs
+    can yield a negative verdict; missing records or rejected preregistration,
+    provenance, layout or publication checks raise SystemExit. File access
+    and TOML/JSON decoding errors propagate."""
     manifest = tomllib.loads((HERE / "experiment.toml").read_text(encoding="utf-8"))
     config = tomllib.loads((HERE / "config.toml").read_text(encoding="utf-8"))
     table = config["preregistration"]
@@ -682,7 +700,12 @@ def pilot_source_paths() -> tuple[str, ...]:
 
 
 def validate_pilot_provenance(result: dict) -> None:
-    """Refuse legacy/stale pilot results before they can choose frozen cells."""
+    """Refuse legacy/stale pilot results before they can choose frozen cells.
+
+    Raise ValueError for missing/invalid producing evidence, a revision outside
+    HEAD's ancestry, or changed source. Git provenance errors propagate as
+    experiment_records.ProvenanceError.
+    """
     evidence = result.get("pilot_provenance", {})
     if (evidence.get("schema_version") != 1 or evidence.get("git_dirty") is not False
             or type(evidence.get("exit_code")) is not int or evidence["exit_code"] != 0):
@@ -702,7 +725,13 @@ def validate_pilot_provenance(result: dict) -> None:
 
 
 def record_pilot(seed: int, output: Path) -> int:
-    """Build/run from watched clean source and bind the raw result before writing."""
+    """Build/run from watched clean source and bind the raw result before writing.
+
+    Create output and its parent directories, print its path and return 0.
+    Raise SystemExit for an undeclared seed, existing output, dirty/changed
+    source, a failed process or a mismatched result. File/configuration,
+    process-launch and provenance errors propagate.
+    """
     table = tomllib.loads((HERE / "config.toml").read_text())["preregistration"]
     if seed not in table["pilot_seeds"]:
         raise SystemExit("S003: --record-pilot requires a declared pilot seed")
@@ -734,6 +763,12 @@ def record_pilot(seed: int, output: Path) -> int:
 
 
 def pilot(paths: list[Path]) -> int:
+    """Validate pilot evidence and print cell classifications plus low_cells TOML.
+
+    Empty paths selects the configured pilot files. Return 0 when the cell
+    split meets the preregistered rule, otherwise 1. Missing, stale, mismatched
+    or incomplete evidence raises SystemExit; file access, configuration
+    parsing and result-line parsing errors propagate. No files are written."""
     config = tomllib.loads((HERE / "config.toml").read_text(encoding="utf-8"))
     table = config["preregistration"]
     files = paths or [PILOT / f"pilot-seed-{seed}.json" for seed in table["pilot_seeds"]]
@@ -788,6 +823,10 @@ def pilot(paths: list[Path]) -> int:
 
 
 def main() -> None:
+    """Dispatch aggregation, pilot classification or pilot recording from CLI arguments.
+
+    Invalid arguments exit via SystemExit. Pilot modes exit with their return
+    code; aggregation returns after publishing, even for a negative verdict."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--pilot", action="store_true", help="classify the cells from the pilot outputs")
     parser.add_argument("inputs", nargs="*", type=Path, help="pilot outputs, for --pilot")

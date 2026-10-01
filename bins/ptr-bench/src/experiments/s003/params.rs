@@ -240,6 +240,10 @@ pub fn compiled() -> Vec<(&'static str, Value)> {
 /// `key = value` per line, where a value is an integer, a printable ASCII
 /// string without a quote or backslash, or a list of either, and a `#` outside
 /// a string starts a comment. The order of the file is kept.
+///
+/// # Errors
+/// Returns an error for a missing table, invalid or duplicate keys, malformed
+/// entries, unsupported values or integers outside the signed 64-bit range.
 pub fn parse_table(source: &str) -> Result<Vec<(String, Value)>, String> {
     let mut in_table = false;
     let mut found = false;
@@ -297,6 +301,8 @@ fn strip_comment(line: &str) -> &str {
     line
 }
 
+/// Parse one supported scalar or homogeneous list; an empty list is `Ints`.
+/// Return an error for malformed values, mixed lists or out-of-range integers.
 fn parse_value(value: &str) -> Result<Value, String> {
     if let Some(inner) = value.strip_prefix('[') {
         let inner = inner
@@ -329,6 +335,8 @@ fn parse_value(value: &str) -> Result<Value, String> {
     parse_int(value).map(Value::Int)
 }
 
+/// Split a list interior on unquoted commas and trim each element.
+/// Reject unclosed strings and empty elements, including trailing commas.
 fn split_elements(inner: &str) -> Result<Vec<String>, String> {
     let mut elements = Vec::new();
     let mut current = String::new();
@@ -356,6 +364,8 @@ fn split_elements(inner: &str) -> Result<Vec<String>, String> {
     Ok(elements)
 }
 
+/// Remove double quotes from a printable ASCII string.
+/// Reject missing quotes, embedded quotes, backslashes and nonprintable bytes.
 fn parse_string(element: &str) -> Result<String, String> {
     let inner = element
         .strip_prefix('"')
@@ -372,6 +382,8 @@ fn parse_string(element: &str) -> Result<String, String> {
     Ok(inner.to_string())
 }
 
+/// Parse decimal digits with an optional leading minus.
+/// Reject other syntax and values outside the signed 64-bit range.
 fn parse_int(element: &str) -> Result<i64, String> {
     let digits = element.strip_prefix('-').unwrap_or(element);
     if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
@@ -416,12 +428,13 @@ fn value_text(value: &Value) -> String {
 }
 
 /// The table of the configuration file this binary was built with.
+/// Propagates [`parse_table`] errors from the embedded configuration.
 pub fn frozen_table() -> Result<Vec<(String, Value)>, String> {
     parse_table(CONFIG_TOML)
 }
 
 /// The canonical text every result echoes: that of the table in the file,
-/// `low_cells` included.
+/// `low_cells` included. Propagates errors parsing the embedded table.
 pub fn echo() -> Result<String, String> {
     frozen_table().map(|table| canonical_text(&table))
 }
