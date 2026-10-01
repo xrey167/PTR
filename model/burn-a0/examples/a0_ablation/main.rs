@@ -11,6 +11,8 @@
 //! - `eval`: listed arms of one experiment, each at its selected learning rate,
 //!   with validation checkpoints, then every test split, with seeds init = seed and
 //!   order = seed ^ 0x0BA7C4.
+//! - `paired`: one selected A0 arm and the matched plain baseline at the same
+//!   seed, step count and learning rate, for the frozen M001/M002 comparison.
 //!
 //! Stdout carries one JSON object per line (string fields name the row, numeric
 //! fields are its metrics) and `PRED <arm> <split> <hex digit per example>` lines.
@@ -271,6 +273,96 @@ fn eval(args: &Args) -> Result<bool, String> {
     Ok(finite)
 }
 
+/// Run the matched token-only baseline. This shares the frozen data loader,
+/// schedule, batch order and output schema with the A0 arms, but its model has
+/// no typed input path and no PTR-specific recurrence/router.
+fn plain(args: &Args) -> Result<bool, String> {
+    let data = load(args)?;
+    let d_model = args.number_or("d-model", DEFAULT_D_MODEL)?;
+    let seed: u64 = args.number("seed")?;
+    let schedule = Schedule {
+        steps: args.number("steps")?,
+        peak: args.number("lr")?,
+    };
+    let trained = train::train_plain(
+        &data,
+        d_model,
+        &schedule,
+        &Seeds {
+            init: seed,
+            order: seed ^ ORDER_SALT,
+        },
+        true,
+    );
+    eprintln!(
+        "timing phase=plain arm=plain-transformer ms_per_step={:.3}",
+        trained.milliseconds_per_step
+    );
+    trained.rows.iter().for_each(|row| emit(row));
+    train::evaluate_plain(&trained, &data, d_model)
+        .iter()
+        .for_each(|line| emit(line));
+    Ok(!trained.nan)
+}
+
+/// Run one frozen A0 arm beside the matched plain baseline. The command keeps
+/// both arms in one process so the runner records one atomic paired outcome.
+fn paired(args: &Args) -> Result<bool, String> {
+    let data = load(args)?;
+    let d_model = args.number_or("d-model", DEFAULT_D_MODEL)?;
+    let payloads = Payloads::new(d_model);
+    let seed: u64 = args.number("seed")?;
+    let steps: usize = args.number("steps")?;
+    let rates = learning_rates(args.get("lr-file")?)?;
+    let arm = arms_of(args)?
+        .into_iter()
+        .next()
+        .ok_or("paired requires one A0 arm")?;
+    let lr = *rates
+        .get(arm.name)
+        .ok_or_else(|| format!("the lr file names no rate for {}", arm.name))?;
+    let schedule = Schedule { steps, peak: lr };
+    let trained = train::train(
+        &arm,
+        &data,
+        &payloads,
+        d_model,
+        &schedule,
+        &Seeds {
+            init: seed,
+            order: seed ^ ORDER_SALT,
+        },
+        true,
+    );
+    timing("paired", &arm, &trained);
+    let mut finite = !trained.nan;
+    trained.rows.iter().for_each(|row| emit(row));
+    train::evaluate(&trained, &arm, &data, &payloads)
+        .iter()
+        .for_each(|line| emit(line));
+
+    let plain = train::train_plain(
+        &data,
+        d_model,
+        &schedule,
+        &Seeds {
+            init: seed,
+            order: seed ^ ORDER_SALT,
+        },
+        true,
+    );
+    eprintln!(
+        "timing phase=paired arm=plain-transformer ms_per_step={:.3}",
+        plain.milliseconds_per_step
+    );
+    finite &= !plain.nan;
+    plain.rows.iter().for_each(|row| emit(row));
+    train::evaluate_plain(&plain, &data, d_model)
+        .iter()
+        .for_each(|line| emit(line));
+    Ok(finite)
+}
+
 /// T8: the rule on cases whose labels were worked out by hand (the working is in
 /// each case's comment), independent of the generator.
 fn rule_cases() -> Result<(), String> {
@@ -439,6 +531,8 @@ fn main() {
         "calibrate" => calibrate(&args),
         "sweep" => sweep(&args),
         "eval" => eval(&args),
+        "plain" => plain(&args),
+        "paired" => paired(&args),
         other => Err(format!("unknown phase {other:?}")),
     });
     match result {

@@ -23,6 +23,7 @@ use ptr_model_api::{
 };
 use ptr_pods::PodRegistry;
 use ptr_protocol::TypedPayload;
+use ptr_router::PodRouter;
 use ptr_security::{
     ActionAuthorization, AuthorizationDecision, AuthorizationDenial, PermissionSet,
 };
@@ -145,6 +146,10 @@ pub enum RuntimeError {
     MultiplePodRequests {
         count: usize,
     },
+    MultipleControlEvents {
+        count: usize,
+    },
+    MixedControlEvents,
     PermissionDenied,
     ExecutionFenced,
     InvalidLifecycleTransition {
@@ -203,6 +208,7 @@ pub enum RuntimeError {
 pub struct ResumableRun {
     pub model_events: Vec<ModelEvent>,
     pub observations: Vec<TypedPayload>,
+    pub action: Option<ActionIr>,
 }
 
 enum RuntimeLedger {
@@ -369,18 +375,18 @@ impl PtrRuntime {
         }
     }
 
-    pub fn run_model_once<B: InferenceBackend>(
+    pub fn run_model_once<B: InferenceBackend + ?Sized>(
         &mut self,
         request_id: RequestId,
         raw_text: impl Into<String>,
         backend: &B,
     ) -> Result<Vec<ModelEvent>, RuntimeError> {
         let raw_text = raw_text.into();
-        let revision = self.ingest_text(request_id.clone(), raw_text.clone())?;
+        let _revision = self.ingest_text(request_id.clone(), raw_text.clone())?;
         let events = backend
             .infer(&ModelRequest {
                 request_id: request_id.clone(),
-                revision,
+                semantic_context: self.snapshot().semantic_context(),
                 raw_text,
             })
             .map_err(|error| RuntimeError::Model(error.0))?;
@@ -403,8 +409,8 @@ impl PtrRuntime {
         verifier: &V,
     ) -> Result<Vec<TypedPayload>, RuntimeError>
     where
-        B: InferenceBackend,
-        V: Verifier<TypedPayload>,
+        B: InferenceBackend + ?Sized,
+        V: Verifier<TypedPayload> + ?Sized,
     {
         let model_events = self.run_model_once(request_id.clone(), raw_text, backend)?;
         let mut outputs = Vec::new();
@@ -422,8 +428,9 @@ impl PtrRuntime {
             // A Pod in another project is unavailable in exactly the same
             // words as a Pod that does not exist. Saying which it was would
             // answer, across the boundary, whether that Pod exists.
-            let pod = pods
-                .resolve(project, &capability, &input_type)
+            let pod = PodRouter::default()
+                .select(pods, project, &capability, &input_type)
+                .and_then(|route| pods.get(project, &route.pod_id))
                 .ok_or_else(|| RuntimeError::PodUnavailable {
                     capability: capability.to_string(),
                     input_type: input_type.to_string(),
@@ -480,14 +487,41 @@ impl PtrRuntime {
         max_rounds: usize,
     ) -> Result<ResumableRun, RuntimeError>
     where
-        B: ResumableInferenceBackend,
-        V: Verifier<TypedPayload>,
+        B: ResumableInferenceBackend + ?Sized,
+        V: Verifier<TypedPayload> + ?Sized,
+    {
+        self.run_resumable_with_pods_using_router(
+            request_id,
+            project,
+            raw_text,
+            backend,
+            pods,
+            &PodRouter::default(),
+            verifier,
+            max_rounds,
+        )
+    }
+
+    pub fn run_resumable_with_pods_using_router<B, V>(
+        &mut self,
+        request_id: RequestId,
+        project: &ProjectId,
+        raw_text: impl Into<String>,
+        backend: &B,
+        pods: &PodRegistry,
+        router: &PodRouter,
+        verifier: &V,
+        max_rounds: usize,
+    ) -> Result<ResumableRun, RuntimeError>
+    where
+        B: ResumableInferenceBackend + ?Sized,
+        V: Verifier<TypedPayload> + ?Sized,
     {
         let raw_text = raw_text.into();
-        let revision = self.ingest_text(request_id.clone(), raw_text.clone())?;
+        let _revision = self.ingest_text(request_id.clone(), raw_text.clone())?;
         let mut request = ModelRequest {
             request_id: request_id.clone(),
-            revision,
+            semantic_context: self.snapshot().semantic_context(),
             raw_text,
         };
         let mut pending = backend
@@ -511,18 +545,34 @@ impl PtrRuntime {
                     _ => None,
                 })
                 .collect::<Vec<_>>();
+            let actions = pending
+                .iter()
+                .filter_map(|event| match event {
+                    ModelEvent::ActionReady(action) => Some(action.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
 
             run.model_events.extend(pending);
 
-            if finished && pod_requests.is_empty() {
+            let control_count = pod_requests.len() + actions.len();
+            if control_count > 1 {
+                if !pod_requests.is_empty() && !actions.is_empty() {
+                    return Err(RuntimeError::MixedControlEvents);
+                }
+                return Err(RuntimeError::MultipleControlEvents {
+                    count: control_count,
+                });
+            }
+
+            if finished && control_count == 0 {
                 self.emit(RuntimeEvent::RequestFinished(request_id));
                 return Ok(run);
             }
 
-            if pod_requests.len() > 1 {
-                return Err(RuntimeError::MultiplePodRequests {
-                    count: pod_requests.len(),
-                });
+            if let Some(action) = actions.into_iter().next() {
+                run.action = Some(action);
+                return Ok(run);
             }
 
             let Some((capability, input_type, payload)) = pod_requests.into_iter().next() else {
@@ -536,8 +586,9 @@ impl PtrRuntime {
             // A Pod in another project is unavailable in exactly the same
             // words as a Pod that does not exist. Saying which it was would
             // answer, across the boundary, whether that Pod exists.
-            let pod = pods
-                .resolve(project, &capability, &input_type)
+            let pod = router
+                .select(pods, project, &capability, &input_type)
+                .and_then(|route| pods.get(project, &route.pod_id))
                 .ok_or_else(|| RuntimeError::PodUnavailable {
                     capability: capability.to_string(),
                     input_type: input_type.to_string(),
@@ -587,11 +638,11 @@ impl PtrRuntime {
             };
             run.observations.push(output);
 
-            request.revision = revision;
+            request.semantic_context = self.snapshot().semantic_context();
             pending = backend
                 .resume(&ModelResumeRequest {
                     request_id: request_id.clone(),
-                    revision,
+                    semantic_context: request.semantic_context.clone(),
                     round: round as u32 + 1,
                     observation,
                 })

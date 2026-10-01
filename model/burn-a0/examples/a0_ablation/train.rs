@@ -2,7 +2,7 @@
 //! deterministic function of the data, the arm, the seeds and the step count;
 //! timing goes to stderr, so two runs can be compared byte for byte.
 
-use crate::arms::Arm;
+use crate::arms::{Arm, Batch};
 use crate::batch::{self, Payloads};
 use crate::data::{Dataset, Example, Split, TEST_SPLITS};
 use crate::rng::{permutation, splitmix64, SplitMix64};
@@ -13,7 +13,7 @@ use burn::{
     prelude::*,
     tensor::Gradients,
 };
-use ptr_burn_a0::PtrA0;
+use ptr_burn_a0::{PlainTransformer, PlainTransformerConfig, PtrA0};
 use std::time::Instant;
 
 pub const BATCH: usize = 128;
@@ -54,6 +54,17 @@ pub struct Seeds {
 /// What training one arm produced, besides the model.
 pub struct Trained {
     pub model: PtrA0,
+    pub rows: Vec<String>,
+    pub nan: bool,
+    pub milliseconds_per_step: f64,
+}
+
+/// Output of the token-only matched baseline. It deliberately uses the same
+/// schedule, batch order and scoring contract as the PTR arms, while exposing a
+/// separate model type so the comparison cannot accidentally consume typed
+/// metadata.
+pub struct PlainTrained {
+    pub model: PlainTransformer,
     pub rows: Vec<String>,
     pub nan: bool,
     pub milliseconds_per_step: f64,
@@ -224,6 +235,107 @@ pub fn train(
     }
 }
 
+/// Train the token-only one-layer Transformer baseline on the identical raw
+/// token stream. `Batch::ContentFree { masked: false }` is used only as the
+/// shared token loader; no slot or metadata tensor reaches the model.
+pub fn train_plain(
+    data: &Dataset,
+    d_model: usize,
+    schedule: &Schedule,
+    seeds: &Seeds,
+    validate: bool,
+) -> PlainTrained {
+    let device = Device::flex().autodiff();
+    device.seed(seeds.init);
+    let mut model = PlainTransformerConfig::new(216, d_model, OPERATORS).init(&device);
+    let payloads = Payloads::new(d_model);
+    let total_params = model.num_params();
+    let mut optimizer = AdamConfig::new().init();
+    let loss_fn = CrossEntropyLossConfig::new().init(&device);
+    let examples = &data.split("train").examples;
+    let per_epoch = examples.len() / BATCH;
+    let eval_every = (schedule.steps / 10).max(1);
+    let mut rows = Vec::new();
+    let mut order = Vec::new();
+    let mut window_loss = 0.0_f64;
+    let mut window_steps = 0usize;
+    let mut last_loss = f64::NAN;
+    let mut nan = false;
+    let started = Instant::now();
+
+    for step in 0..schedule.steps {
+        let epoch = step / per_epoch;
+        let position = step % per_epoch;
+        if position == 0 {
+            let mut rng = SplitMix64::new(splitmix64(seeds.order ^ epoch as u64));
+            order = permutation(examples.len(), &mut rng);
+        }
+        let chosen: Vec<&Example> = order[position * BATCH..(position + 1) * BATCH]
+            .iter()
+            .map(|&i| &examples[i])
+            .collect();
+        let inputs = batch::build(
+            &chosen,
+            Batch::ContentFree { masked: false },
+            &payloads,
+            &device,
+        );
+        let loss = loss_fn.forward(
+            model.forward(inputs.tokens),
+            batch::labels(&chosen, &device),
+        );
+        let value: f32 = loss.clone().into_scalar();
+        let value = f64::from(value);
+        nan |= !value.is_finite();
+        window_loss += value;
+        window_steps += 1;
+        last_loss = value;
+        let gradients = loss.backward();
+        let gradients = GradientsParams::from_grads(gradients, &model);
+        model = optimizer.step(schedule.at(step), model, gradients);
+        if validate && (step + 1) % eval_every == 0 {
+            let checkpoint = (step + 1) / eval_every;
+            let score = score_plain(&model.valid(), data.split("val"), d_model);
+            rows.push(format!(
+                r#"{{"row":"val","arm":"plain-transformer","checkpoint":"{checkpoint}","val_accuracy":{},"train_loss":{}}}"#,
+                score.accuracy(),
+                window_loss / window_steps.max(1) as f64
+            ));
+            window_loss = 0.0;
+            window_steps = 0;
+        }
+    }
+    let elapsed = started.elapsed().as_secs_f64() * 1000.0;
+    let sequence = 72_u64;
+    let latent_slots = 6_u64;
+    let model_flops = 4 * sequence * 2 * d_model as u64 * d_model as u64
+        + 6 * latent_slots * 2 * d_model as u64 * d_model as u64
+        + 4 * 2 * sequence * latent_slots * d_model as u64
+        + 2 * latent_slots * d_model as u64 * OPERATORS as u64;
+    rows.insert(
+        0,
+        format!(
+            r#"{{"row":"meta","arm":"plain-transformer","architecture":"token-to-six-latent-cross-attention","sequence":{},"d_model":{},"latent_slots":{},"batch":{},"lr":{},"steps":{},"total_params":{},"estimated_flops_per_example":{},"final_train_loss":{},"nan":{}}}"#,
+            sequence,
+            d_model,
+            latent_slots,
+            BATCH,
+            schedule.peak,
+            schedule.steps,
+            total_params,
+            model_flops,
+            if last_loss.is_finite() { last_loss } else { -1.0 },
+            u8::from(nan),
+        ),
+    );
+    PlainTrained {
+        model,
+        rows,
+        nan,
+        milliseconds_per_step: elapsed / schedule.steps.max(1) as f64,
+    }
+}
+
 /// Counts over one split.
 pub struct Score {
     pub n: usize,
@@ -232,6 +344,61 @@ pub struct Score {
     pub ece: f64,
     /// One lowercase hex digit per example: the predicted operator code.
     pub predictions: String,
+}
+
+/// Forward-only scoring for the plain Transformer using the same metrics and
+/// prediction encoding as the PTR arms.
+pub fn score_plain(model: &PlainTransformer, split: &Split, d_model: usize) -> Score {
+    let device = Device::flex();
+    let payloads = Payloads::new(d_model);
+    let mut correct = 0;
+    let mut nll = 0.0_f64;
+    let mut predictions = String::with_capacity(split.examples.len());
+    let mut bins = [(0usize, 0.0_f64, 0usize); ECE_BINS];
+    for chunk in split.examples.chunks(EVAL_BATCH) {
+        let chosen: Vec<&Example> = chunk.iter().collect();
+        let inputs = batch::build(
+            &chosen,
+            Batch::ContentFree { masked: false },
+            &payloads,
+            &device,
+        );
+        let logits: Vec<f32> = model
+            .forward(inputs.tokens)
+            .into_data()
+            .try_to_vec::<f32>()
+            .expect("f32 logits");
+        for (example, row) in chosen.iter().zip(logits.chunks(OPERATORS)) {
+            let best = checked_argmax(row);
+            let max = f64::from(row[best]);
+            let normalizer: f64 = row.iter().map(|&v| (f64::from(v) - max).exp()).sum();
+            nll -= f64::from(row[example.label]) - max - normalizer.ln();
+            let confidence = 1.0 / normalizer;
+            let hit = best == example.label;
+            correct += usize::from(hit);
+            let bin = ((confidence * ECE_BINS as f64) as usize).min(ECE_BINS - 1);
+            bins[bin].0 += 1;
+            bins[bin].1 += confidence;
+            bins[bin].2 += usize::from(hit);
+            predictions.push(char::from_digit(best as u32, 16).expect("a hex digit"));
+        }
+    }
+    let n = split.examples.len();
+    let ece = bins
+        .iter()
+        .filter(|bin| bin.0 > 0)
+        .map(|&(count, confidence, hits)| {
+            let count_f = count as f64;
+            (count_f / n as f64) * (hits as f64 / count_f - confidence / count_f).abs()
+        })
+        .sum();
+    Score {
+        n,
+        correct,
+        nll: nll / n.max(1) as f64,
+        ece,
+        predictions,
+    }
 }
 
 impl Score {
@@ -318,6 +485,28 @@ pub fn evaluate(trained: &Trained, arm: &Arm, data: &Dataset, payloads: &Payload
         out.push(format!("PRED {} {name} {}", arm.name, result.predictions));
     }
     out
+}
+
+/// Final rows and prediction strings for every held-out split of the baseline.
+pub fn evaluate_plain(trained: &PlainTrained, data: &Dataset, d_model: usize) -> Vec<String> {
+    let model = trained.model.valid();
+    TEST_SPLITS
+        .iter()
+        .flat_map(|name| {
+            let result = score_plain(&model, data.split(name), d_model);
+            [
+                format!(
+                    r#"{{"row":"final","arm":"plain-transformer","split":"{name}","n":{} ,"correct":{},"accuracy":{},"nll":{},"ece15":{}}}"#,
+                    result.n,
+                    result.correct,
+                    result.accuracy(),
+                    result.nll,
+                    result.ece
+                ),
+                format!("PRED plain-transformer {name} {}", result.predictions),
+            ]
+        })
+        .collect()
 }
 
 /// Refuse numerical failures before converting logits to valid operator codes.

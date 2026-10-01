@@ -38,7 +38,7 @@ PLACEHOLDER = experiment_records.PLACEHOLDER
 # the command, so no `PYTHONPATH`, `LD_PRELOAD`, `RUSTC_WRAPPER`,
 # `RUSTUP_TOOLCHAIN` or `RUSTFLAGS` loads code the commit does not hold,
 # and no credential or network setting reaches it.
-COMMAND_ENVIRONMENT = ("PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "CARGO_HOME", "RUSTUP_HOME")
+COMMAND_ENVIRONMENT = ("PATH", "HOME", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "LC_CTYPE", "CARGO_HOME", "RUSTUP_HOME")
 # What the runner sets in that environment whatever the runner's holds:
 # Python reads no packages from the user's own site directory under `HOME`,
 # which the commit does not hold, and hashes strings the same way in every

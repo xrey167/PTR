@@ -4,11 +4,23 @@ status = "contract-ready"
 tests_dir = "tests"
 
 [model]
-backend = "must-be-pinned-before-run"
-model = "must-be-pinned-before-run"
+backend = "burn-cpu"
+model = "ptr-burn-a0@matched-cross-attention-v1"
+implementation = "model/burn-a0/examples/a0_ablation --phase plain"
+architecture = "token-to-six-latent-cross-attention"
+d_model = 48
+latent_slots = 6
+sequence_length = 72
+batch_size = 128
+optimizer = "Adam"
 
 [reasoning]
 typed_slots = false
 latent_recurrence = false
 operator_router = false
 external_memory = false
+
+[compute_gate]
+parameter_tolerance = 0.01
+flop_tolerance = 0.01
+status = "matched"

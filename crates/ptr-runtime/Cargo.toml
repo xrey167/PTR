@@ -14,6 +14,7 @@ ptr-core = { workspace = true }
 ptr-model-api = { workspace = true }
 ptr-exec = { workspace = true }
 ptr-pods = { workspace = true }
+ptr-router = { workspace = true }
 ptr-verifier = { workspace = true }
 ptr-ledger = { workspace = true }
 ptr-state = { workspace = true }

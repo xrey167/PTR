@@ -358,6 +358,121 @@ pub struct PtrA0Config {
     encoding: SlotEncoding,
 }
 
+/// A deliberately plain, token-only cross-attention encoder used as the matched
+/// baseline for M001/M002. It has no typed slots, validity admission or
+/// operator-specific semantic router. Six ordinary learned latent tokens make
+/// the attention topology (and therefore the FLOP budget) comparable to A0;
+/// the 26 initializer rows are pooled into those six tokens so every parameter
+/// is used and the parameter budget is also matched.
+#[derive(Clone, Debug)]
+pub struct PlainTransformerConfig {
+    pub vocab_size: usize,
+    pub d_model: usize,
+    pub operator_count: usize,
+}
+
+impl PlainTransformerConfig {
+    pub fn new(vocab_size: usize, d_model: usize, operator_count: usize) -> Self {
+        Self {
+            vocab_size,
+            d_model,
+            operator_count,
+        }
+    }
+
+    pub fn init(&self, device: &Device) -> PlainTransformer {
+        let linear = |input, output| LinearConfig::new(input, output).init(device);
+        PlainTransformer {
+            token_embedding: EmbeddingConfig::new(self.vocab_size, self.d_model).init(device),
+            latent_init_0: EmbeddingConfig::new(5, self.d_model).init(device),
+            latent_init_1: EmbeddingConfig::new(5, self.d_model).init(device),
+            latent_init_2: EmbeddingConfig::new(4, self.d_model).init(device),
+            latent_init_3: EmbeddingConfig::new(4, self.d_model).init(device),
+            latent_init_4: EmbeddingConfig::new(4, self.d_model).init(device),
+            latent_init_5: EmbeddingConfig::new(4, self.d_model).init(device),
+            latent_query: linear(self.d_model, self.d_model),
+            raw_key: linear(self.d_model, self.d_model),
+            raw_value: linear(self.d_model, self.d_model),
+            latent_output: linear(self.d_model, self.d_model),
+            raw_query: linear(self.d_model, self.d_model),
+            latent_key: linear(self.d_model, self.d_model),
+            latent_value: linear(self.d_model, self.d_model),
+            raw_output: linear(self.d_model, self.d_model),
+            latent_refine: linear(self.d_model, self.d_model),
+            classifier: linear(self.d_model, self.operator_count),
+            d_model: self.d_model,
+        }
+    }
+}
+
+#[derive(Module, Debug)]
+pub struct PlainTransformer {
+    token_embedding: Embedding,
+    latent_init_0: Embedding,
+    latent_init_1: Embedding,
+    latent_init_2: Embedding,
+    latent_init_3: Embedding,
+    latent_init_4: Embedding,
+    latent_init_5: Embedding,
+    latent_query: Linear,
+    raw_key: Linear,
+    raw_value: Linear,
+    latent_output: Linear,
+    raw_query: Linear,
+    latent_key: Linear,
+    latent_value: Linear,
+    raw_output: Linear,
+    latent_refine: Linear,
+    classifier: Linear,
+    d_model: usize,
+}
+
+impl PlainTransformer {
+    pub fn forward(&self, token_ids: Tensor<2, Int>) -> Tensor<2> {
+        let [batch, _sequence] = token_ids.dims();
+        let device = token_ids.device();
+        let raw = self.token_embedding.forward(token_ids);
+        let indices = |n: i64| Tensor::<1, Int>::arange(0..n, &device).unsqueeze_dim::<2>(0);
+        let latent = Tensor::cat(
+            vec![
+                self.latent_init_0.forward(indices(5)).mean_dim(1),
+                self.latent_init_1.forward(indices(5)).mean_dim(1),
+                self.latent_init_2.forward(indices(4)).mean_dim(1),
+                self.latent_init_3.forward(indices(4)).mean_dim(1),
+                self.latent_init_4.forward(indices(4)).mean_dim(1),
+                self.latent_init_5.forward(indices(4)).mean_dim(1),
+            ],
+            1,
+        )
+        .expand([batch, 6, self.d_model]);
+        let latent_weights = softmax(
+            self.latent_query
+                .forward(latent.clone())
+                .matmul(self.raw_key.forward(raw.clone()).transpose())
+                .div_scalar((self.d_model as f32).sqrt()),
+            2,
+        );
+        let latent = latent
+            + self
+                .latent_output
+                .forward(latent_weights.matmul(self.raw_value.forward(raw.clone())));
+        let raw_weights = softmax(
+            self.raw_query
+                .forward(raw.clone())
+                .matmul(self.latent_key.forward(latent.clone()).transpose())
+                .div_scalar((self.d_model as f32).sqrt()),
+            2,
+        );
+        let _raw = raw
+            + self
+                .raw_output
+                .forward(raw_weights.matmul(self.latent_value.forward(latent.clone())));
+        let latent = latent.clone() + gelu(self.latent_refine.forward(latent));
+        self.classifier
+            .forward(latent.mean_dim(1).reshape([batch, self.d_model]))
+    }
+}
+
 impl PtrA0Config {
     /// Size the typed tables from the current frozen codebook.
     pub fn new(vocab_size: usize, d_model: usize) -> Self {

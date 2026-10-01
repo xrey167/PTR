@@ -150,3 +150,21 @@ name = "strong_rag"
 path = "research/baselines/strong_rag/config.toml"
 keys = ["dense.revision", "reranker.revision", "answer.generator", "answer.revision"]
 status_key = "status"
+
+[experiment.M001-v2]
+required = { seeds = "int-list", steps = "int", lr_file = "file", data = "str", data_fnv64 = "str", d_model = "int" }
+
+[[experiment.M001-v2.baseline]]
+name = "plain_model"
+path = "research/baselines/plain_model/config.toml"
+keys = ["model.backend", "model.model", "model.implementation", "model.architecture", "model.d_model", "model.latent_slots", "model.sequence_length", "model.batch_size", "model.optimizer"]
+status_key = "status"
+
+[experiment.M002-v2]
+required = { seeds = "int-list", steps = "int", lr_file = "file", data = "str", data_fnv64 = "str", d_model = "int" }
+
+[[experiment.M002-v2.baseline]]
+name = "plain_model"
+path = "research/baselines/plain_model/config.toml"
+keys = ["model.backend", "model.model", "model.implementation", "model.architecture", "model.d_model", "model.latent_slots", "model.sequence_length", "model.batch_size", "model.optimizer"]
+status_key = "status"
