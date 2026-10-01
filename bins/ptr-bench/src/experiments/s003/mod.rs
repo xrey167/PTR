@@ -179,12 +179,7 @@ fn result_line(
          \"server\":\"in-memory\",\"preregistration\":{},\"elapsed_ns\":{elapsed_ns}",
         json::json_string(preregistration),
     );
-    for (name, value) in metrics
-        .hard()
-        .into_iter()
-        .chain(metrics.coverage())
-        .chain(metrics.descriptive())
-    {
+    for (name, value) in metrics.counters() {
         line.push_str(&format!(",\"{name}\":{value}"));
     }
     line.push_str(&format!(

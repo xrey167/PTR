@@ -30,26 +30,23 @@ macro_rules! metrics {
         }
 
         /// The hard counters' names, in the order the result lists them.
-        #[cfg(test)]
         pub const HARD: &[&str] = &[$(stringify!($hard)),*];
         /// The coverage counters' names.
-        #[cfg(test)]
         pub const COVERAGE: &[&str] = &[$(stringify!($coverage)),*];
         /// The descriptive counters' names.
-        #[cfg(test)]
         pub const DESCRIPTIVE: &[&str] = &[$(stringify!($descriptive)),*];
 
         impl Metrics {
-            pub fn hard(&self) -> Vec<(&'static str, u64)> {
-                vec![$((stringify!($hard), self.$hard)),*]
+            pub fn hard(&self) -> [(&'static str, u64); HARD.len()] {
+                [$((stringify!($hard), self.$hard)),*]
             }
 
-            pub fn coverage(&self) -> Vec<(&'static str, u64)> {
-                vec![$((stringify!($coverage), self.$coverage)),*]
+            pub fn coverage(&self) -> [(&'static str, u64); COVERAGE.len()] {
+                [$((stringify!($coverage), self.$coverage)),*]
             }
 
-            pub fn descriptive(&self) -> Vec<(&'static str, u64)> {
-                vec![$((stringify!($descriptive), self.$descriptive)),*]
+            pub fn descriptive(&self) -> [(&'static str, u64); DESCRIPTIVE.len()] {
+                [$((stringify!($descriptive), self.$descriptive)),*]
             }
 
             /// Add every counter of `other` to this one.
@@ -191,15 +188,18 @@ pub fn fnv(state: Option<u64>, bytes: &[u8]) -> u64 {
 }
 
 impl Metrics {
-    /// `state` continued over every counter's name and value, and over
-    /// nothing that depends on the wall clock.
-    pub fn digest_into(&self, mut state: u64) -> u64 {
-        for (name, count) in self
-            .hard()
+    /// Every deterministic counter, in result and digest order.
+    pub fn counters(&self) -> impl Iterator<Item = (&'static str, u64)> {
+        self.hard()
             .into_iter()
             .chain(self.coverage())
             .chain(self.descriptive())
-        {
+    }
+
+    /// `state` continued over every counter's name and value, and over
+    /// nothing that depends on the wall clock.
+    pub fn digest_into(&self, mut state: u64) -> u64 {
+        for (name, count) in self.counters() {
             state = fnv(Some(state), name.as_bytes());
             state = fnv(Some(state), &count.to_le_bytes());
         }

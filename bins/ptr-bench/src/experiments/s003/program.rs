@@ -675,33 +675,29 @@ impl BranchView {
         });
     }
 
-    fn stage(&mut self, call: &'static str, op: BranchOp, staged: Op) {
-        let key = op.key().to_string();
+    fn stage(&mut self, call: &'static str, op: BranchOp) {
+        let mut staged = op_from_branch(&op);
         match self.branch.stage_commutative(op) {
             Ok(()) => {
-                // The branch records whether the member was in the base.
-                let staged = match staged {
-                    Op::SetInsert { key, member, .. } => {
-                        let in_base = holds(self.base.value(&key).as_ref(), &member);
-                        Op::SetInsert {
-                            key,
-                            member,
-                            in_base,
-                        }
+                // Compute base membership independently of the branch's record.
+                match &mut staged {
+                    Op::SetInsert {
+                        key,
+                        member,
+                        in_base,
                     }
-                    Op::SetRemove { key, member, .. } => {
-                        let in_base = holds(self.base.value(&key).as_ref(), &member);
-                        Op::SetRemove {
-                            key,
-                            member,
-                            in_base,
-                        }
+                    | Op::SetRemove {
+                        key,
+                        member,
+                        in_base,
+                    } => {
+                        *in_base = holds(self.base.value(key).as_ref(), member);
                     }
-                    other => other,
-                };
+                    _ => {}
+                }
                 self.log.events.push(Event::Staged(staged));
             }
-            Err(error) => self.refused(call, &key, &error),
+            Err(error) => self.refused(call, staged.key(), &error),
         }
     }
 }
@@ -796,10 +792,6 @@ impl View for BranchView {
                 key: key.to_string(),
                 amount,
             },
-            Op::Add {
-                key: key.to_string(),
-                amount,
-            },
         );
     }
 
@@ -811,11 +803,6 @@ impl View for BranchView {
                 member: member.to_string(),
                 in_base: false,
             },
-            Op::SetInsert {
-                key: key.to_string(),
-                member: member.to_string(),
-                in_base: false,
-            },
         );
     }
 
@@ -823,11 +810,6 @@ impl View for BranchView {
         self.stage(
             "set_remove",
             BranchOp::SetRemove {
-                key: key.to_string(),
-                member: member.to_string(),
-                in_base: false,
-            },
-            Op::SetRemove {
                 key: key.to_string(),
                 member: member.to_string(),
                 in_base: false,
