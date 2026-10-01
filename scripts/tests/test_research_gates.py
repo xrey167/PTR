@@ -4249,6 +4249,23 @@ class PreregistrationGateTests(unittest.TestCase):
         self.assertEqual(mod.history(root,"--format=%H","HEAD","--",":(literal)notes/a[1].txt",literal=False),[second])
         self.assertEqual(mod.history(root,"--format=%H","HEAD","--",":(glob)notes/*.txt"),[])
 
+    def test_identical_history_queries_are_cached_within_a_gate_run(self):
+        root=self.tree(status="running")
+        commit_all(root)
+        mod._history_cached.cache_clear()
+        asked=[]
+        original=mod.experiment_records.git
+        def counting(where,*arguments,**options):
+            asked.append(arguments)
+            return original(where,*arguments,**options)
+        with mock.patch.object(mod.experiment_records,"git",side_effect=counting):
+            first=mod.history(root,"--format=%H","HEAD","--","experiments/registry.toml")
+            second=mod.history(root,"--format=%H","HEAD","--","experiments/registry.toml")
+        self.assertEqual(first,second)
+        self.assertEqual([arguments for arguments in asked if "log" in arguments],[
+            ("--literal-pathspecs","log","--full-history","--format=%H","HEAD","--","experiments/registry.toml")
+        ])
+
     def test_the_launch_listing_names_the_experiments_directory_literally(self):
         # A registry path with a wildcard in it is that name, which no commit
         # holds, and not the file or directory it would match.

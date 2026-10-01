@@ -1069,6 +1069,19 @@ def tree_names(root: Path) -> list[str]:
 def toml_at(root: Path, commit: str, relative: str) -> dict | None:
     """The TOML file `relative` at `commit`, or None when it is absent or
     does not parse."""
+    if FULL_COMMIT.fullmatch(commit):
+        return _toml_at_cached(root,commit,relative)
+    data=blob(root,commit,relative)
+    if data is None:
+        return None
+    try:
+        return tomllib.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError,tomllib.TOMLDecodeError):
+        return None
+
+@functools.lru_cache(maxsize=4096)
+def _toml_at_cached(root: Path, commit: str, relative: str) -> dict | None:
+    """Cached form for the immutable, full-name commit queries in a gate."""
     data=blob(root,commit,relative)
     if data is None:
         return None
@@ -1085,6 +1098,31 @@ def has_head(root: Path) -> bool:
     except experiment_records.ProvenanceError:
         return False
 
+@functools.lru_cache(maxsize=512)
+def _history_cached(root: str, args: tuple[str, ...], literal: bool) -> tuple[str, ...]:
+    """Run one immutable history query at most once per gate process.
+
+    The gate asks the same path-scoped history questions from several
+    independent checks.  Keeping the result as a tuple makes the cache safe
+    to share between callers while still allowing ``history`` to preserve its
+    historical list-returning API.
+    """
+    repository=Path(root)
+    try:
+        flags=("--literal-pathspecs",) if literal else ()
+        listing=experiment_records.git(repository,*flags,"log","--full-history",*args,binary=True)
+    except experiment_records.ProvenanceError as error:
+        raise HistoryUnreadable(str(error)) from error
+    if listing.returncode!=0:
+        if not has_head(repository):
+            return ()
+        raise HistoryUnreadable(listing.stderr.decode("utf-8","replace").strip() or f"git log exited {listing.returncode}")
+    # A name that is not UTF-8 keeps its bytes (and so names its file), and
+    # fails every check that asks for a repository path, rather than
+    # failing every later gate on the commit that once held it.
+    names=listing.stdout.decode("utf-8","surrogateescape")
+    return tuple(name for name in names.replace("\0","\n").split("\n") if name)
+
 def history(root: Path, *args: str, literal: bool = True) -> list[str]:
     """The NUL- or newline-separated names `git log --full-history *args`
     prints in `root`, side branches merged into HEAD included; empty where
@@ -1092,20 +1130,7 @@ def history(root: Path, *args: str, literal: bool = True) -> list[str]:
     is false, when each carries the magic it names (`:(literal)`, `:(glob)`).
     Raises `HistoryUnreadable` when git cannot read it otherwise: a history
     read as empty would hide every freeze and record in it."""
-    try:
-        flags=("--literal-pathspecs",) if literal else ()
-        listing=experiment_records.git(root,*flags,"log","--full-history",*args,binary=True)
-    except experiment_records.ProvenanceError as error:
-        raise HistoryUnreadable(str(error)) from error
-    if listing.returncode!=0:
-        if not has_head(root):
-            return []
-        raise HistoryUnreadable(listing.stderr.decode("utf-8","replace").strip() or f"git log exited {listing.returncode}")
-    # A name that is not UTF-8 keeps its bytes (and so names its file), and
-    # fails every check that asks for a repository path, rather than
-    # failing every later gate on the commit that once held it.
-    names=listing.stdout.decode("utf-8","surrogateescape")
-    return [name for name in names.replace("\0","\n").split("\n") if name]
+    return list(_history_cached(str(root), tuple(args), literal))
 
 def versions(root: Path, relative: str, start: str = "HEAD") -> list[tuple[str, dict]]:
     """Every commit on the history of `start` (HEAD unless named) that
@@ -1267,6 +1292,15 @@ def launchable_at(root: Path, commit: str, exp_id: str, directory: str) -> tuple
     status the manifest does, and no symlink or gitlink lies anywhere in the
     commit, which the runner's watch of the whole repository refuses. A
     commit that held less could not launch it, and does not freeze it."""
+    if FULL_COMMIT.fullmatch(commit):
+        return _launchable_at_cached(root,commit,exp_id,directory)
+    return _launchable_at_uncached(root,commit,exp_id,directory)
+
+@functools.lru_cache(maxsize=4096)
+def _launchable_at_cached(root: Path, commit: str, exp_id: str, directory: str) -> tuple[str, str] | None:
+    return _launchable_at_uncached(root,commit,exp_id,directory)
+
+def _launchable_at_uncached(root: Path, commit: str, exp_id: str, directory: str) -> tuple[str, str] | None:
     manifest=toml_at(root,commit,f"{directory}/experiment.toml")
     if not isinstance(manifest,dict) or status_of(manifest) not in FROZEN or not names_an_entrypoint(manifest):
         return None
@@ -1487,6 +1521,15 @@ def statuses_at(root: Path, commit: str, exp_id: str) -> list[str | None]:
     string. A directory that is no repository path, or holds no readable
     manifest, adds none; what the commit does not hold says nothing of a
     status."""
+    if FULL_COMMIT.fullmatch(commit):
+        return list(_statuses_at_cached(root,commit,exp_id))
+    return _statuses_at_uncached(root,commit,exp_id)
+
+@functools.lru_cache(maxsize=4096)
+def _statuses_at_cached(root: Path, commit: str, exp_id: str) -> tuple[str | None, ...]:
+    return tuple(_statuses_at_uncached(root,commit,exp_id))
+
+def _statuses_at_uncached(root: Path, commit: str, exp_id: str) -> list[str | None]:
     found=[]
     for directory in placed_directories(root,commit,exp_id):
         if not is_repository_path(directory):
@@ -1501,6 +1544,15 @@ def descendants_of(root: Path, commit: str) -> set[str]:
     name, `commit` itself not among them: one listing of git's for the
     commit, and none for each commit that might descend from it. Raises
     `HistoryUnreadable` when git cannot list them."""
+    if FULL_COMMIT.fullmatch(commit):
+        return set(_descendants_of_cached(root,commit))
+    return _descendants_of_uncached(root,commit)
+
+@functools.lru_cache(maxsize=4096)
+def _descendants_of_cached(root: Path, commit: str) -> frozenset[str]:
+    return frozenset(_descendants_of_uncached(root,commit))
+
+def _descendants_of_uncached(root: Path, commit: str) -> set[str]:
     try:
         listing=experiment_records.git(root,"rev-list","--ancestry-path",f"{commit}..HEAD","--")
     except experiment_records.ProvenanceError as error:
@@ -1554,6 +1606,15 @@ def directory_digest_at(root: Path, commit: str, directory: str) -> str | None:
     file named as no repository path (`is_repository_path`), a name that is
     not UTF-8 included. None is no digest, so it matches no frozen one.
     Raises `HistoryUnreadable` when git cannot tell."""
+    if FULL_COMMIT.fullmatch(commit):
+        return _directory_digest_at_cached(root,commit,directory)
+    return _directory_digest_at_uncached(root,commit,directory)
+
+@functools.lru_cache(maxsize=4096)
+def _directory_digest_at_cached(root: Path, commit: str, directory: str) -> str | None:
+    return _directory_digest_at_uncached(root,commit,directory)
+
+def _directory_digest_at_uncached(root: Path, commit: str, directory: str) -> str | None:
     try:
         listing=experiment_records.git(root,"--literal-pathspecs","ls-tree","-r","-z",commit,"--",directory,binary=True)
     except experiment_records.ProvenanceError as error:
@@ -2457,6 +2518,18 @@ def gate_errors(root: Path) -> list[str]:
     """Every error of every gate on the repository at `root` (`main`),
     raising `Unreadable` for a file it cannot read outside the listed
     experiments, whose unreadable files are errors of their own."""
+    # A gate run must observe one repository snapshot.  Clear the process
+    # cache at its boundary so a caller that reuses a temporary checkout path
+    # after changing or replacing that checkout cannot receive old history.
+    _history_cached.cache_clear()
+    listed_entry.cache_clear()
+    object_bytes.cache_clear()
+    _toml_at_cached.cache_clear()
+    _launchable_at_cached.cache_clear()
+    _directory_digest_at_cached.cache_clear()
+    _statuses_at_cached.cache_clear()
+    _descendants_of_cached.cache_clear()
+    link_changes_at.cache_clear()
     errors=[]
     experiments={}
     directories={}
