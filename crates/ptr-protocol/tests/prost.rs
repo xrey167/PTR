@@ -172,11 +172,76 @@ fn repeated_payload_messages_merge_their_fields() {
 }
 
 #[test]
+fn fields_decode_independently_of_wire_order() {
+    // Reverse both the outer field order and the nested payload field order.
+    let wire = b"\x32\x08\x12\x03\x00\x80\xff\x0a\x01T\x28\x0b\x20\x07\x1a\x07predict\x12\x02c1";
+    let decoded = PodCall::decode(wire.as_slice()).expect("decode reordered fields");
+    assert_eq!(decoded, call_fixture());
+    assert_eq!(decoded.encode_to_vec(), CALL_WIRE);
+}
+
+#[test]
+fn repeated_payload_bytes_replace_instead_of_append() {
+    for bytes in [&b"\x01\x02"[..], &b""[..]] {
+        // A second payload message supplies only its bytes field, including an
+        // explicit empty value. The omitted type_id must survive the merge.
+        let mut wire = CALL_WIRE.to_vec();
+        wire.extend_from_slice(&[0x32, (bytes.len() + 2) as u8, 0x12, bytes.len() as u8]);
+        wire.extend_from_slice(bytes);
+        assert_eq!(
+            PodCall::decode(wire.as_slice()).expect("replace singular payload bytes"),
+            PodCall {
+                payload: Some(TypedPayload {
+                    type_id: "T".into(),
+                    payload: bytes.to_vec(),
+                }),
+                ..call_fixture()
+            }
+        );
+    }
+}
+
+#[test]
+fn empty_repeated_payload_does_not_erase_existing_fields() {
+    let wire = [CALL_WIRE, b"\x32\x00"].concat();
+    assert_eq!(
+        PodCall::decode(wire.as_slice()).expect("merge empty payload message"),
+        call_fixture()
+    );
+}
+
+#[test]
+fn unknown_nested_fields_cannot_modify_outer_call_fields() {
+    // Fields 4 and 6 belong to PodCall, but are unknown inside TypedPayload.
+    // Their values must be skipped within the nested message's boundary.
+    let wire = [CALL_WIRE, b"\x32\x07\x20\x00\x32\x03\x00\x80\xff"].concat();
+    let decoded = PodCall::decode(wire.as_slice()).expect("skip nested unknown fields");
+    assert_eq!(decoded, call_fixture());
+    assert_eq!(decoded.encode_to_vec(), CALL_WIRE);
+}
+
+#[test]
+fn generated_messages_accept_empty_input_and_omit_default_fields() {
+    assert_wire(PodCall::default(), b"");
+    assert_wire(TypedPayload::default(), b"");
+    assert_wire(PodReturn::default(), b"");
+    assert_wire(PodError::default(), b"");
+    assert_wire(Revoke::default(), b"");
+    assert_wire(ModelRequest::default(), b"");
+    assert_wire(ModelEvent::default(), b"");
+    assert_wire(RuntimeEvent::default(), b"");
+    assert_wire(RaftEnvelope::default(), b"");
+}
+
+#[test]
 fn malformed_calls_are_rejected_without_panicking() {
     let cases: &[(&str, &[u8])] = &[
         ("zero field number", b"\x00"),
         ("invalid wire type", b"\x16"),
         ("string with varint wire type", b"\x10\x01"),
+        ("generation with bytes wire type", b"\x22\x00"),
+        ("revision with fixed32 wire type", b"\x2d\x00\x00\x00\x00"),
+        ("payload with varint wire type", b"\x30\x00"),
         ("truncated field key", b"\x80"),
         ("truncated string length", b"\x12\x80"),
         ("truncated string", b"\x12\x02c"),
@@ -189,7 +254,19 @@ fn malformed_calls_are_rejected_without_panicking() {
         ("truncated nested payload", b"\x32\x03\x0a\x02T"),
         ("invalid nested UTF-8", b"\x32\x03\x0a\x01\xff"),
         ("truncated nested bytes", b"\x32\x03\x12\x02\xff"),
+        ("nested bytes with varint wire type", b"\x32\x02\x10\x00"),
+        // The byte following the nested message cannot satisfy its inner length.
+        (
+            "nested bytes exceeding message boundary",
+            b"\x32\x02\x12\x01\x00",
+        ),
         ("truncated unknown field", b"\x62\x02x"),
+        (
+            "truncated unknown fixed64",
+            b"\x59\x00\x00\x00\x00\x00\x00\x00",
+        ),
+        ("truncated unknown fixed32", b"\x6d\x00\x00\x00"),
+        ("truncated unknown varint", b"\x50\x80"),
     ];
     for (name, wire) in cases {
         assert!(PodCall::decode(*wire).is_err(), "accepted {name}");
