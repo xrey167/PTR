@@ -18,6 +18,7 @@ __pycache__/
 *.profraw
 *.flamegraph.svg
 *.heap
+.omx/
 /model/checkpoints/*
 !/model/checkpoints/.gitkeep
 /training/runs/*
