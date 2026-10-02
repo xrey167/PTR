@@ -249,8 +249,14 @@ def toolchain_binary(name: str, environment: dict[str, str]) -> str:
 
 def execution_provenance(snapshot: Path, source: str, environment: dict[str, str]) -> dict[str, object]:
     """Bind the exact binaries and environment that Cargo will receive."""
+    if environment.get("RUSTC_WRAPPER"):
+        raise PilotError("refusing a pilot run through an external RUSTC_WRAPPER")
     cargo_path = toolchain_binary("cargo", environment)
     rustc_path = toolchain_binary("rustc", environment)
+    # A toolchain's cargo binary otherwise resolves `rustc` through PATH.  Pin
+    # the compiler it will actually execute before hashing the final child
+    # environment, rather than merely reporting an available toolchain.
+    environment["RUSTC"] = rustc_path
     cargo = executable_identity(cargo_path, [cargo_path, "--version"], environment)
     rustc = executable_identity(rustc_path, [rustc_path, "-Vv"], environment)
     try:
