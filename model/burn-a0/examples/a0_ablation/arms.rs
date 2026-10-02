@@ -174,10 +174,49 @@ pub const V5_ARMS: [Arm; 2] = [
     },
 ];
 
+/// The v7 successor has a distinct runner identity.  The model switches are
+/// deliberately identical to v5's selected pair, but a new study must not
+/// borrow v5's arm names: `arms_of` rejects cross-study selection before any
+/// dataset is read or training begins.
+pub const V7_ARMS: [Arm; 2] = [
+    Arm {
+        name: "factorized-v2-v7",
+        experiment: "M002-v7",
+        typed_attention: true,
+        typed_attention_mode: TypedAttentionMode::FactorizedV2,
+        router_mode: RouterMode::CalibratedCosineV2,
+        label_smoothing: 0.05,
+        metadata_dropout: 0.10,
+        consistency_weight: 0.10,
+        ..FULL
+    },
+    Arm {
+        name: "factorized-v2-off-v7",
+        experiment: "M002-v7",
+        typed_attention: false,
+        typed_attention_mode: TypedAttentionMode::Off,
+        router_mode: RouterMode::CalibratedCosineV2,
+        label_smoothing: 0.05,
+        metadata_dropout: 0.10,
+        consistency_weight: 0.10,
+        ..FULL
+    },
+];
+
+/// The sole ordered matched pair admitted by each FactorizedV2 study.
+pub fn paired_names(experiment: &str) -> Option<[&'static str; 2]> {
+    match experiment {
+        "M002-v5" => Some(["factorized-v2", "factorized-v2-off"]),
+        "M002-v7" => Some(["factorized-v2-v7", "factorized-v2-off-v7"]),
+        _ => None,
+    }
+}
+
 /// Look up an arm by its exact study name, returning an error if it is unknown.
 pub fn find(name: &str) -> Result<Arm, String> {
     ARMS.iter()
         .chain(V5_ARMS.iter())
+        .chain(V7_ARMS.iter())
         .copied()
         .find(|arm| arm.name == name)
         .ok_or_else(|| format!("unknown arm {name:?}"))

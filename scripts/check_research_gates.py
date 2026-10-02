@@ -2934,6 +2934,68 @@ def m002_v6_successor_freeze_errors(root: Path, experiment: Path, manifest: dict
     return errors
 
 
+M002_V7_ARM_PAIR = "factorized-v2-v7,factorized-v2-off-v7"
+
+
+def m002_v7_runner_binding_errors(root: Path, config: dict, manifest: dict) -> list[str]:
+    """Require the v7 command to select runner-owned, versioned pair arms."""
+    errors = []
+    if config.get("arm_pair") != M002_V7_ARM_PAIR:
+        errors.append("M002-v7: arm_pair must be the exact registered versioned pair")
+    entrypoint = manifest.get("entrypoint")
+    required_command = f"--experiment M002-v7 --arms {M002_V7_ARM_PAIR}"
+    if not isinstance(entrypoint, str) or required_command not in entrypoint:
+        errors.append("M002-v7: entrypoint must select its exact versioned runner pair")
+    sources = {}
+    for key in ("runner_arm_table", "runner_main"):
+        relative = config.get(key)
+        digest = config.get(f"{key}_sha256")
+        path = root / relative if isinstance(relative, str) else None
+        if (
+            path is None
+            or not isinstance(digest, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", digest)
+            or committed_regular_file(root, relative) is None
+        ):
+            errors.append(f"M002-v7: {key} is not a committed file with a pinned SHA-256")
+            continue
+        data = path.read_bytes()
+        if hashlib.sha256(data).hexdigest() != digest:
+            errors.append(f"M002-v7: {key} does not match its pinned SHA-256")
+            continue
+        sources[key] = data.decode("utf-8", "replace")
+    arm_table = sources.get("runner_arm_table", "")
+    for name, mode in (("factorized-v2-v7", "TypedAttentionMode::FactorizedV2"), ("factorized-v2-off-v7", "TypedAttentionMode::Off")):
+        marker = f'name: "{name}",\n        experiment: "M002-v7",'
+        if marker not in arm_table or mode not in arm_table:
+            errors.append(f"M002-v7: runner arm table does not bind {name} to M002-v7")
+    runner_main = sources.get("runner_main", "")
+    if '"M002-v7" => Some(["factorized-v2-v7", "factorized-v2-off-v7"])' not in runner_main:
+        errors.append("M002-v7: runner does not admit only the registered v7 pair")
+    return errors
+
+
+def m002_v7_successor_freeze_errors(root: Path, experiment: Path, manifest: dict) -> list[str]:
+    """Bind v7 to v5's immutable selection and its own executable arm pair."""
+    if status_of(manifest) not in FROZEN:
+        return []
+    # v7 carries the exact v6 successor protocol unchanged except for its new
+    # arm identity.  Reuse that strict source/selection/file validation, then
+    # add the runner-level contract that v6 was missing.
+    errors = [
+        error.replace("M002-v6", "M002-v7")
+        for error in m002_v6_successor_freeze_errors(root, experiment, manifest)
+    ]
+    try:
+        config = load(experiment / "config.toml").get("preregistration", {})
+    except Unreadable as error:
+        return [*errors, error.named(root)]
+    if not isinstance(config, dict):
+        return [*errors, "M002-v7: config.toml has no preregistration table"]
+    errors.extend(m002_v7_runner_binding_errors(root, config, manifest))
+    return errors
+
+
 def m002_v5_factorized_contract(root: Path, directory: Path | None) -> tuple[dict | None, list[str]]:
     """The architecture an M009 learned backend is permitted to instantiate."""
     if directory is None:
@@ -3242,6 +3304,8 @@ def gate_errors(root: Path) -> list[str]:
         errors.extend(m002_v5_pilot_freeze_errors(root,directories["M002-v5"],experiments["M002-v5"]))
     if "M002-v6" in experiments and "M002-v6" in directories:
         errors.extend(m002_v6_successor_freeze_errors(root,directories["M002-v6"],experiments["M002-v6"]))
+    if "M002-v7" in experiments and "M002-v7" in directories:
+        errors.extend(m002_v7_successor_freeze_errors(root,directories["M002-v7"],experiments["M002-v7"]))
     errors.extend(m009_lock_errors(root,experiments,directories))
     errors.extend(preregistration_errors(root,experiments,directories))
     return errors

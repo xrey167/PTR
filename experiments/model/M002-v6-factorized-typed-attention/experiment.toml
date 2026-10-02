@@ -1,6 +1,6 @@
 version = 1
 id = "M002-v6"
-status = "prepared"
+status = "superseded"
 hypothesis = "Does bounded factorized typed pair attention improve compositional routing accuracy over an operation- and parameter-matched Off control without calibration degradation?"
 metrics = "IID/OOD accuracy; NLL; ECE15; coverage; selective error; parameters; FLOPs; p95 latency"
 baseline = "the identical FactorizedV2 architecture with the computed pair bias multiplied by zero"

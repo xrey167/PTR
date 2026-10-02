@@ -433,9 +433,13 @@ fn paired_v5(args: &Args) -> Result<bool, String> {
     let metadata_dropout = args.number_or("metadata-dropout", 0.10f32)?;
     let mut arms = arms_of(args)?;
     let names: Vec<&str> = arms.iter().map(|arm| arm.name).collect();
-    if names != ["factorized-v2", "factorized-v2-off"] {
+    let experiment = args.get("experiment")?;
+    let expected_names = arms::paired_names(experiment)
+        .ok_or_else(|| format!("paired-v5 has no registered matched pair for {experiment}"))?;
+    if names.as_slice() != expected_names {
         return Err(format!(
-            "paired-v5 requires arms factorized-v2,factorized-v2-off in that order, got {}",
+            "paired-v5 requires arms {} in that order, got {}",
+            expected_names.join(","),
             names.join(",")
         ));
     }
@@ -481,6 +485,51 @@ fn paired_v5(args: &Args) -> Result<bool, String> {
         }
     }
     Ok(finite)
+}
+
+#[cfg(test)]
+mod paired_arm_tests {
+    use super::*;
+
+    fn arguments(experiment: &str, arms: &str) -> Args {
+        Args {
+            values: BTreeMap::from([
+                ("experiment".to_owned(), experiment.to_owned()),
+                ("arms".to_owned(), arms.to_owned()),
+            ]),
+        }
+    }
+
+    #[test]
+    fn v7_has_its_own_explicit_matched_pair() {
+        let selected = arms_of(&arguments(
+            "M002-v7",
+            "factorized-v2-v7,factorized-v2-off-v7",
+        ))
+        .expect("v7 pair selects before dataset loading");
+        assert_eq!(
+            selected.iter().map(|arm| arm.name).collect::<Vec<_>>(),
+            arms::paired_names("M002-v7").expect("v7 is registered")
+        );
+        assert!(selected.iter().all(|arm| arm.experiment == "M002-v7"));
+        assert_eq!(
+            selected[0].typed_attention_mode,
+            ptr_burn_a0::TypedAttentionMode::FactorizedV2
+        );
+        assert_eq!(
+            selected[1].typed_attention_mode,
+            ptr_burn_a0::TypedAttentionMode::Off
+        );
+    }
+
+    #[test]
+    fn v7_cannot_borrow_v5_or_v6_identity() {
+        let v5_names = arms_of(&arguments("M002-v7", "factorized-v2,factorized-v2-off"))
+            .expect_err("v7 must not select v5 arms");
+        assert!(v5_names.contains("belongs to M002-v5"));
+        let unsupported = arms::paired_names("M002-v6");
+        assert!(unsupported.is_none(), "superseded v6 has no runner pair");
+    }
 }
 
 /// T8: the rule on cases whose labels were worked out by hand (the working is in

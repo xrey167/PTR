@@ -57,10 +57,15 @@ PTR is a **compiling architecture/research prototype**, not yet a complete model
   replaced, it is superseded rather than patched. A successor must bind the
   exact fold digests before it can be prepared; M009 remains locked and no
   learned backend is authorized.
-- `M002-v6` is the prepared successor. It reuses v5's immutable development
-  selection without retuning and corrects only the actual confirmatory command
-  binding to `fold=FNV64`. It has no seed records or scientific claim until a
-  fresh, commit-bound freeze and the full five-seed evidence run succeed.
+- `M002-v6` is superseded before scientific evidence. Its one committed
+  Seed-17 preflight proved a second interface mismatch: the Rust arm catalog
+  bound the selected arm names only to M002-v5. It emitted no dataset row,
+  metric, checkpoint, or completed record. The failure is preserved in v6's
+  committed runner record and `SUPERSEDED.md`; v6 is not patched in place.
+- `M002-v7` is the prepared successor. It keeps v5's immutable development
+  selection and v6's FNV fold binding but uses a separately registered,
+  versioned FactorizedV2/Off arm pair. It has no scientific result until its
+  own commit-bound freeze and full five-seed series complete.
 
 ## Current research/implementation gap
 
