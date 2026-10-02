@@ -73,6 +73,11 @@ PTR is a **compiling architecture/research prototype**, not yet a complete model
   artifacts compared to a code-source commit). It has no run record, metric,
   checkpoint, or claim. M002-v9 will only be registered after its corrected
   gate passes against a committed unregistered candidate.
+- `M002-v9` is prepared only after its complete freeze gate passed against a
+  prior committed, unregistered candidate. It binds the immutable v5 pilot
+  archive, FNV folds, versioned runner arms and their source files, and the
+  complete tracked `model/burn-a0` Git tree. No seed has run and no positive
+  claim, M009 unlock, or Learned Backend authorization exists.
 
 ## Current research/implementation gap
 

@@ -1,0 +1,14 @@
+version = 1
+id = "M002-v9"
+status = "prepared"
+hypothesis = "Does bounded factorized typed pair attention improve compositional routing accuracy over an operation- and parameter-matched Off control without calibration degradation?"
+metrics = "IID/OOD accuracy; NLL; ECE15; coverage; selective error; parameters; FLOPs; p95 latency"
+baseline = "the identical FactorizedV2 architecture with the computed pair bias multiplied by zero"
+falsification = "Any missing gate, OOD accuracy below the bound, fold sign reversal, NLL/ECE regression, IID harm, inadequate coverage, selective-error harm or compute mismatch yields INCONCLUSIVE/NO-GO."
+hardware_profile = "hardware/a0-cpu-12core-windows.toml"
+preregistration_sha256 = "0add0c375bd29a5eb4c7cb0cc3d5d3b547b201b66053a5a5d6fdfc62df329c80"
+preregistration_rules_sha256 = "d163aa5299c0b663bcbe9e1e3ce65de3bff5920e1d17aed1972a881cbb3a1c3d"
+entrypoint = "cargo +1.95.0-x86_64-pc-windows-gnu run --release --locked --quiet --jobs 1 --manifest-path model/burn-a0/Cargo.toml --example a0_ablation -- --phase paired-v5 --experiment M002-v9 --arms factorized-v2-v9,factorized-v2-off-v9 --seed <seed> --steps <steps> --lr <learning_rate> --data <data> --folds <folds> --d-model <d_model> --rank <rank> --bias-limit <bias_limit> --metadata-dropout <metadata_dropout>"
+seeds = [17, 29, 43, 71, 101]
+results_dir = "results"
+required_artifacts = ["run.json", "metrics.json", "m002-v9-decision.json"]
