@@ -19,9 +19,9 @@ def load_module(name, path):
 
 
 class M002V6ContractTests(unittest.TestCase):
-    def test_successor_is_prepared_and_uses_only_the_matched_pair(self):
+    def test_successor_is_superseded_without_a_positive_claim(self):
         manifest = tomllib.loads((EXPERIMENT / "experiment.toml").read_text(encoding="utf-8"))
-        self.assertEqual((manifest["id"], manifest["status"]), ("M002-v6", "prepared"))
+        self.assertEqual((manifest["id"], manifest["status"]), ("M002-v6", "superseded"))
         self.assertIn("--experiment M002-v6", manifest["entrypoint"])
         self.assertIn("--arms factorized-v2,factorized-v2-off", manifest["entrypoint"])
 
@@ -33,10 +33,12 @@ class M002V6ContractTests(unittest.TestCase):
         invalid["folds"] = "evidence-temporal,evidence-tabular,claim-interventional"
         self.assertEqual(len(gates.m002_v6_fold_binding_errors(ROOT, invalid)), 1)
 
-    def test_prepared_successor_freeze_accepts_only_the_immutable_pilot_source(self):
-        gates = load_module("m002_v6_successor_gate", ROOT / "scripts/check_research_gates.py")
-        manifest = tomllib.loads((EXPERIMENT / "experiment.toml").read_text(encoding="utf-8"))
-        self.assertEqual(gates.m002_v6_successor_freeze_errors(ROOT, EXPERIMENT, manifest), [])
+    def test_failed_preflight_is_immutable_and_not_an_aggregate_input(self):
+        record = next((EXPERIMENT / "results").glob("run-*-seed-17.json"))
+        data = json.loads(record.read_text(encoding="utf-8"))
+        self.assertEqual((data["status"], data["exit_code"]), ("failed", 2))
+        self.assertIn("belongs to M002-v5", data["stderr"])
+        self.assertFalse((EXPERIMENT / "results" / "m002-v6-decision.json").exists())
 
     def test_adapter_preserves_v6_identity_and_rejects_other_studies(self):
         v5_tests = load_module("m002_v5_fixture", ROOT / "scripts/tests/test_aggregate_m002_v5.py")

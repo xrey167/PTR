@@ -27,26 +27,14 @@ def v7_labels(stdout):
 
 
 class M002V7ContractTests(unittest.TestCase):
-    def test_successor_is_prepared_and_uses_its_own_matched_pair(self):
+    def test_successor_is_superseded_without_execution(self):
         manifest = tomllib.loads((EXPERIMENT / "experiment.toml").read_text(encoding="utf-8"))
-        self.assertEqual((manifest["id"], manifest["status"]), ("M002-v7", "prepared"))
+        self.assertEqual((manifest["id"], manifest["status"]), ("M002-v7", "superseded"))
         self.assertIn("--experiment M002-v7", manifest["entrypoint"])
         self.assertIn("--arms factorized-v2-v7,factorized-v2-off-v7", manifest["entrypoint"])
 
-    def test_confirmatory_command_and_runner_bind_the_exact_pair(self):
-        gates = load_module("m002_v7_gate", ROOT / "scripts/check_research_gates.py")
-        config = tomllib.loads((EXPERIMENT / "config.toml").read_text(encoding="utf-8"))["preregistration"]
-        manifest = tomllib.loads((EXPERIMENT / "experiment.toml").read_text(encoding="utf-8"))
-        self.assertEqual(gates.m002_v6_fold_binding_errors(ROOT, config), [])
-        self.assertEqual(gates.m002_v7_runner_binding_errors(ROOT, config, manifest), [])
-        invalid = dict(config)
-        invalid["arm_pair"] = "factorized-v2,factorized-v2-off"
-        self.assertTrue(gates.m002_v7_runner_binding_errors(ROOT, invalid, manifest))
-
-    def test_successor_freeze_accepts_the_immutable_selection_and_runner(self):
-        gates = load_module("m002_v7_successor_gate", ROOT / "scripts/check_research_gates.py")
-        manifest = tomllib.loads((EXPERIMENT / "experiment.toml").read_text(encoding="utf-8"))
-        self.assertEqual(gates.m002_v7_successor_freeze_errors(ROOT, EXPERIMENT, manifest), [])
+    def test_superseded_study_has_no_runner_records(self):
+        self.assertEqual(list((EXPERIMENT / "results").glob("run-*.json")), [])
 
     def test_adapter_restores_v7_identity_and_maps_only_versioned_labels(self):
         v5_tests = load_module("m002_v5_fixture", ROOT / "scripts/tests/test_aggregate_m002_v5.py")
@@ -75,7 +63,7 @@ class M002V7ContractTests(unittest.TestCase):
         with self.assertRaisesRegex(adapter.EvidenceError, "unrecognized v7 arm label"):
             adapter.decide(malformed, protocol=core.fixture_protocol())
 
-    def test_v6_remains_superseded_and_does_not_unlock_downstream(self):
+    def test_v6_and_v7_remain_superseded_and_do_not_unlock_downstream(self):
         v6 = tomllib.loads(
             (ROOT / "experiments/model/M002-v6-factorized-typed-attention/experiment.toml").read_text(encoding="utf-8")
         )

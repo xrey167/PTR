@@ -530,6 +530,34 @@ mod paired_arm_tests {
         let unsupported = arms::paired_names("M002-v6");
         assert!(unsupported.is_none(), "superseded v6 has no runner pair");
     }
+
+    #[test]
+    fn v8_has_its_own_explicit_matched_pair() {
+        let selected = arms_of(&arguments(
+            "M002-v8",
+            "factorized-v2-v8,factorized-v2-off-v8",
+        ))
+        .expect("v8 pair selects before dataset loading");
+        assert_eq!(
+            selected.iter().map(|arm| arm.name).collect::<Vec<_>>(),
+            arms::paired_names("M002-v8").expect("v8 is registered")
+        );
+        assert!(selected.iter().all(|arm| arm.experiment == "M002-v8"));
+        assert_eq!(
+            selected[0].typed_attention_mode,
+            ptr_burn_a0::TypedAttentionMode::FactorizedV2
+        );
+        assert_eq!(
+            selected[1].typed_attention_mode,
+            ptr_burn_a0::TypedAttentionMode::Off
+        );
+        let cross_study = arms_of(&arguments(
+            "M002-v8",
+            "factorized-v2-v7,factorized-v2-off-v7",
+        ))
+        .expect_err("v8 must not select v7 arms");
+        assert!(cross_study.contains("belongs to M002-v7"));
+    }
 }
 
 /// T8: the rule on cases whose labels were worked out by hand (the working is in

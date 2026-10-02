@@ -62,10 +62,11 @@ PTR is a **compiling architecture/research prototype**, not yet a complete model
   bound the selected arm names only to M002-v5. It emitted no dataset row,
   metric, checkpoint, or completed record. The failure is preserved in v6's
   committed runner record and `SUPERSEDED.md`; v6 is not patched in place.
-- `M002-v7` is the prepared successor. It keeps v5's immutable development
-  selection and v6's FNV fold binding but uses a separately registered,
-  versioned FactorizedV2/Off arm pair. It has no scientific result until its
-  own commit-bound freeze and full five-seed series complete.
+- `M002-v7` is superseded before execution. Its versioned runner pair is
+  retained, but the already-prepared v7 protocol lacked a complete Git-tree
+  binding for the executable A0 implementation. It has no run record,
+  checkpoint, metric, or claim. The immutable status record explains why it
+  is not amended in place; M009 remains locked.
 
 ## Current research/implementation gap
 
