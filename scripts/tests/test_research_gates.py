@@ -151,11 +151,27 @@ class ResearchGateTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (m009 / "experiment.toml").write_text(
-                "entrypoint = \"cargo run --release --locked --manifest-path model/burn-a0/Cargo.toml --example m009_learned_backend -- --m002-v5-contract <runtime_contract> --m002-v5-contract-sha256 <runtime_contract_sha256>\"\n",
+                "entrypoint = \"cargo +1.95.0-x86_64-pc-windows-gnu run --release --locked --quiet --jobs 1 --manifest-path model/burn-a0/Cargo.toml --example m009_learned_backend -- --m002-v5-contract <runtime_contract> --m002-v5-contract-sha256 <runtime_contract_sha256>\"\n",
                 encoding="utf-8",
             )
             with mock.patch.object(mod, "m002_v5_factorized_contract", return_value=(contract, [])):
                 self.assertEqual(mod.m009_architecture_binding_errors(root, root / "M002", m009), [])
+                (m009 / "experiment.toml").write_text(
+                    (m009 / "experiment.toml").read_text(encoding="utf-8").replace(
+                        "--example m009_learned_backend", "--example unrelated_program"
+                    ),
+                    encoding="utf-8",
+                )
+                self.assertEqual(
+                    mod.m009_architecture_binding_errors(root, root / "M002", m009),
+                    ["M009: entrypoint does not pass the frozen runtime contract to model construction"],
+                )
+                (m009 / "experiment.toml").write_text(
+                    (m009 / "experiment.toml").read_text(encoding="utf-8").replace(
+                        "unrelated_program", "m009_learned_backend"
+                    ),
+                    encoding="utf-8",
+                )
                 (m009 / "config.toml").write_text(
                     (m009 / "config.toml").read_text(encoding="utf-8").replace("rank = 16", "rank = 8"),
                     encoding="utf-8",

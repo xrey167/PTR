@@ -2927,15 +2927,30 @@ def m009_architecture_binding_errors(root: Path, m002_directory: Path | None, m0
         entrypoint = load(m009_directory / "experiment.toml")["entrypoint"]
     except (Unreadable, KeyError):
         return ["M009: experiment.toml must bind the runtime contract arguments"]
-    required_tokens = (
-        "--manifest-path model/burn-a0/Cargo.toml",
-        "--example m009_learned_backend",
+    expected_entrypoint = [
+        "cargo",
+        "+1.95.0-x86_64-pc-windows-gnu",
+        "run",
+        "--release",
+        "--locked",
+        "--quiet",
+        "--jobs",
+        "1",
+        "--manifest-path",
+        "model/burn-a0/Cargo.toml",
+        "--example",
+        "m009_learned_backend",
+        "--",
         "--m002-v5-contract",
         "<runtime_contract>",
         "--m002-v5-contract-sha256",
         "<runtime_contract_sha256>",
-    )
-    if not isinstance(entrypoint, str) or any(token not in entrypoint for token in required_tokens):
+    ]
+    try:
+        tokens = shlex.split(entrypoint) if isinstance(entrypoint, str) else None
+    except ValueError:
+        tokens = None
+    if tokens != expected_entrypoint:
         return ["M009: entrypoint does not pass the frozen runtime contract to model construction"]
     return []
 
