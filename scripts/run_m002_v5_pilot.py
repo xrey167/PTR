@@ -11,6 +11,7 @@ import math
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -378,11 +379,7 @@ def resumable(output: Path, name: str, expected: dict[str, object]) -> bool:
     if not isinstance(expected_execution, dict) or not isinstance(actual_execution, dict):
         raise PilotError(f"{name}: existing artifacts do not match this exact cell")
     actual_environment = actual_execution.get("environment_sha256")
-    if not isinstance(actual_environment, str) or len(actual_environment) != 64:
-        raise PilotError(f"{name}: existing artifacts do not match this exact cell")
-    try:
-        int(actual_environment, 16)
-    except ValueError:
+    if not isinstance(actual_environment, str) or re.fullmatch(r"[0-9a-f]{64}", actual_environment) is None:
         raise PilotError(f"{name}: existing artifacts do not match this exact cell") from None
     expected_binding = {key: value for key, value in expected_execution.items() if key != "environment_sha256"}
     actual_binding = {key: value for key, value in actual_execution.items() if key != "environment_sha256"}

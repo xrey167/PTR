@@ -247,6 +247,12 @@ class M002V5PilotTests(unittest.TestCase):
             }
             metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
             self.assertTrue(MOD.resumable(output, name, expected))
+            for malformed in ("+" + "a" * 63, "-" + "a" * 63, "_" + "a" * 63, "A" * 64):
+                metadata["execution_provenance"]["environment_sha256"] = malformed
+                metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+                with self.subTest(malformed=malformed), self.assertRaisesRegex(MOD.PilotError, "do not match"):
+                    MOD.resumable(output, name, expected)
+            metadata["execution_provenance"]["environment_sha256"] = "c" * 64
             metadata["execution_provenance"]["resume_environment_sha256"] = "d" * 64
             metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
             with self.assertRaisesRegex(MOD.PilotError, "do not match"):
