@@ -227,6 +227,36 @@ def execution_environment(isolated: Path) -> dict[str, str]:
     return environment
 
 
+def stable_environment_fingerprint(environment: dict[str, str]) -> dict[str, str]:
+    """Normalize this runner's fresh scratch paths for resumable provenance.
+
+    Every invocation must have a new private Cargo cache and temporary
+    directory.  Their absolute parent directory is deliberately ephemeral,
+    while their role is fixed by ``execution_environment``.  Recording the
+    parent would make a valid restart disagree with its own completed cells.
+    Retain every inherited and toolchain input verbatim, but bind these four
+    controlled scratch locations to their fixed roles.
+    """
+    expected = {
+        "CARGO_HOME": "cargo-home",
+        "CARGO_TARGET_DIR": "cargo-target",
+        "TEMP": "temp",
+        "TMP": "temp",
+    }
+    try:
+        cargo_home = Path(environment["CARGO_HOME"])
+        isolated = cargo_home.parent
+        actual = {name: Path(environment[name]) for name in expected}
+    except (KeyError, TypeError) as error:
+        raise PilotError(f"cannot normalize required isolated environment path: {error}") from None
+    for name, suffix in expected.items():
+        if actual[name] != isolated / suffix:
+            raise PilotError(f"cannot normalize unexpected {name} path for resumable provenance")
+    stable = dict(environment)
+    stable.update({name: f"<isolated>/{suffix}" for name, suffix in expected.items()})
+    return stable
+
+
 def command_output(
     command: list[str], *, cwd: Path | None = None, environment: dict[str, str] | None = None
 ) -> str:
@@ -290,7 +320,7 @@ def execution_provenance(snapshot: Path, source: str, environment: dict[str, str
         "cargo": cargo,
         "rustc": rustc,
         "environment_sha256": sha256(
-            json.dumps(environment, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            json.dumps(stable_environment_fingerprint(environment), sort_keys=True, separators=(",", ":")).encode("utf-8")
         ),
         "host": host,
         "hardware_profile": {

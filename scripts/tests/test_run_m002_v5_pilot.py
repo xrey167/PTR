@@ -107,7 +107,7 @@ class M002V5PilotTests(unittest.TestCase):
         self.assertNotIn("RUSTC_WRAPPER", environment)
         self.assertNotIn("SECRET", environment)
 
-    def test_execution_provenance_hashes_the_final_child_environment(self):
+    def test_execution_provenance_hashes_the_final_child_environment_stably_across_fresh_scratch_dirs(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             profile = root / MOD.HARDWARE_PROFILE
@@ -116,17 +116,30 @@ class M002V5PilotTests(unittest.TestCase):
             environment = {
                 "PATH": "C:/toolchain",
                 "SystemRoot": "C:/Windows",
-                "CARGO_HOME": "C:/isolated/cargo",
-                "CARGO_TARGET_DIR": "C:/isolated/target",
-                "TEMP": "C:/isolated/temp",
-                "TMP": "C:/isolated/temp",
+                "CARGO_HOME": "C:/isolated-a/cargo-home",
+                "CARGO_TARGET_DIR": "C:/isolated-a/cargo-target",
+                "TEMP": "C:/isolated-a/temp",
+                "TMP": "C:/isolated-a/temp",
+            }
+            resumed_environment = {
+                **environment,
+                "CARGO_HOME": "C:/isolated-b/cargo-home",
+                "CARGO_TARGET_DIR": "C:/isolated-b/cargo-target",
+                "TEMP": "C:/isolated-b/temp",
+                "TMP": "C:/isolated-b/temp",
             }
             with (
-                mock.patch.object(MOD, "toolchain_binary", side_effect=["C:/cargo.exe", "C:/rustc.exe"]),
+                mock.patch.object(
+                    MOD,
+                    "toolchain_binary",
+                    side_effect=["C:/cargo.exe", "C:/rustc.exe", "C:/cargo.exe", "C:/rustc.exe"],
+                ),
                 mock.patch.object(
                     MOD,
                     "executable_identity",
                     side_effect=[
+                        {"path": "C:/cargo.exe", "sha256": "a" * 64, "version": "cargo"},
+                        {"path": "C:/rustc.exe", "sha256": "b" * 64, "version": "rustc"},
                         {"path": "C:/cargo.exe", "sha256": "a" * 64, "version": "cargo"},
                         {"path": "C:/rustc.exe", "sha256": "b" * 64, "version": "rustc"},
                     ],
@@ -135,13 +148,22 @@ class M002V5PilotTests(unittest.TestCase):
                 mock.patch.dict(MOD.os.environ, {"PATH": "different-parent"}, clear=True),
             ):
                 provenance = MOD.execution_provenance(root, "d" * 40, environment)
+                resumed = MOD.execution_provenance(root, "d" * 40, resumed_environment)
             expected = dict(environment)
             expected["RUSTC"] = "C:/rustc.exe"
+            expected.update({
+                "CARGO_HOME": "<isolated>/cargo-home",
+                "CARGO_TARGET_DIR": "<isolated>/cargo-target",
+                "TEMP": "<isolated>/temp",
+                "TMP": "<isolated>/temp",
+            })
             digest = hashlib.sha256(
                 MOD.json.dumps(expected, sort_keys=True, separators=(",", ":")).encode("utf-8")
             ).hexdigest()
             self.assertEqual(provenance["environment_sha256"], digest)
+            self.assertEqual(resumed["environment_sha256"], digest)
             self.assertEqual(environment["RUSTC"], "C:/rustc.exe")
+            self.assertEqual(resumed_environment["RUSTC"], "C:/rustc.exe")
 
     def test_resume_accepts_only_complete_exact_success_and_rejects_mismatch(self):
         with tempfile.TemporaryDirectory() as directory:
