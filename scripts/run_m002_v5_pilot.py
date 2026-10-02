@@ -200,21 +200,31 @@ def require_clean_detached_worktree(output: Path, root: Path = ROOT) -> str:
     return sha
 
 
-def provenance_environment() -> dict[str, str]:
-    """Digest only build-relevant environment values; never archive secrets."""
+def execution_environment(isolated: Path) -> dict[str, str]:
+    """A minimal, reproducible child environment with no inherited wrappers."""
+    inherited = os.environ
     names = (
+        "ComSpec",
+        "NUMBER_OF_PROCESSORS",
+        "OS",
         "PATH",
-        "CARGO_BUILD_TARGET",
-        "CARGO_ENCODED_RUSTFLAGS",
-        "CARGO_INCREMENTAL",
-        "CC",
-        "CFLAGS",
-        "RUSTC",
-        "RUSTC_WRAPPER",
-        "RUSTDOCFLAGS",
-        "RUSTFLAGS",
+        "PATHEXT",
+        "PROCESSOR_ARCHITECTURE",
+        "SystemRoot",
+        "WINDIR",
     )
-    return {name: os.environ.get(name, "") for name in names}
+    environment = {name: inherited[name] for name in names if name in inherited}
+    if "PATH" not in environment or "SystemRoot" not in environment:
+        raise PilotError("cannot construct a minimal Windows build environment")
+    environment.update(
+        {
+            "CARGO_HOME": str(isolated / "cargo-home"),
+            "CARGO_TARGET_DIR": str(isolated / "cargo-target"),
+            "TEMP": str(isolated / "temp"),
+            "TMP": str(isolated / "temp"),
+        }
+    )
+    return environment
 
 
 def command_output(
@@ -249,8 +259,8 @@ def toolchain_binary(name: str, environment: dict[str, str]) -> str:
 
 def execution_provenance(snapshot: Path, source: str, environment: dict[str, str]) -> dict[str, object]:
     """Bind the exact binaries and environment that Cargo will receive."""
-    if environment.get("RUSTC_WRAPPER"):
-        raise PilotError("refusing a pilot run through an external RUSTC_WRAPPER")
+    if any(name in environment for name in ("RUSTC_WRAPPER", "CARGO_BUILD_RUSTC_WRAPPER")):
+        raise PilotError("refusing a pilot run through an external Rust compiler wrapper")
     cargo_path = toolchain_binary("cargo", environment)
     rustc_path = toolchain_binary("rustc", environment)
     # A toolchain's cargo binary otherwise resolves `rustc` through PATH.  Pin
@@ -495,15 +505,7 @@ def execute(output: Path, dry_run: bool, root: Path = ROOT) -> int:
     with immutable_snapshot(root, source) as snapshot:
         with tempfile.TemporaryDirectory(prefix="m002-v5-pilot-", dir=root.parent) as isolated:
             isolated_path = Path(isolated)
-            environment = os.environ.copy()
-            environment.update(
-                {
-                    "CARGO_HOME": str(isolated_path / "cargo-home"),
-                    "CARGO_TARGET_DIR": str(isolated_path / "cargo-target"),
-                    "TEMP": str(isolated_path / "temp"),
-                    "TMP": str(isolated_path / "temp"),
-                }
-            )
+            environment = execution_environment(isolated_path)
             for path in (environment["CARGO_HOME"], environment["CARGO_TARGET_DIR"], environment["TEMP"]):
                 Path(path).mkdir(parents=True, exist_ok=True)
             execution = execution_provenance(snapshot, source, environment)

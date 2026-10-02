@@ -86,6 +86,26 @@ class M002V5PilotTests(unittest.TestCase):
             with self.assertRaisesRegex(MOD.PilotError, "not clean and committed"):
                 MOD.require_clean_detached_worktree(Path("repo/output"), Path("repo"))
 
+    def test_execution_environment_is_minimal_and_drops_inherited_compiler_overrides(self):
+        with mock.patch.dict(
+            MOD.os.environ,
+            {
+                "PATH": "C:/toolchain",
+                "SystemRoot": "C:/Windows",
+                "RUSTC": "C:/unbound-rustc.exe",
+                "RUSTC_WRAPPER": "C:/wrapper.exe",
+                "SECRET": "not-an-input",
+            },
+            clear=True,
+        ):
+            environment = MOD.execution_environment(Path("C:/isolated"))
+        self.assertEqual(environment["PATH"], "C:/toolchain")
+        self.assertEqual(environment["SystemRoot"], "C:/Windows")
+        self.assertEqual(environment["CARGO_HOME"], str(Path("C:/isolated") / "cargo-home"))
+        self.assertNotIn("RUSTC", environment)
+        self.assertNotIn("RUSTC_WRAPPER", environment)
+        self.assertNotIn("SECRET", environment)
+
     def test_resume_accepts_only_complete_exact_success_and_rejects_mismatch(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)

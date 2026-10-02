@@ -152,6 +152,19 @@ impl M002V5Contract {
         self.digest
     }
 
+    /// The only A0 configuration a learned M009 backend may construct from
+    /// this contract.  Callers do not receive an unbound rank/mode builder.
+    pub fn config(&self, vocabulary: usize) -> PtrA0Config {
+        PtrA0Config::new(vocabulary, self.d_model)
+            .with_latent_steps(2)
+            .with_typed_attention_mode(TypedAttentionMode::FactorizedV2)
+            .with_factorized_attention(self.rank, self.bias_limit)
+            .with_typed_query(true)
+            .with_latent_nonlinearity(true)
+            .with_router_mode(RouterMode::CalibratedCosineV2)
+            .with_router_logit_scale(5.0)
+    }
+
     /// Construct only the FactorizedV2 graph the contract describes.
     pub fn init(
         &self,

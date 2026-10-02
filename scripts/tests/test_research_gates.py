@@ -151,7 +151,7 @@ class ResearchGateTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (m009 / "experiment.toml").write_text(
-                "entrypoint = \"model --m002-v5-contract <runtime_contract> --m002-v5-contract-sha256 <runtime_contract_sha256>\"\n",
+                "entrypoint = \"cargo run --release --locked --manifest-path model/burn-a0/Cargo.toml --example m009_learned_backend -- --m002-v5-contract <runtime_contract> --m002-v5-contract-sha256 <runtime_contract_sha256>\"\n",
                 encoding="utf-8",
             )
             with mock.patch.object(mod, "m002_v5_factorized_contract", return_value=(contract, [])):

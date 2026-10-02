@@ -2928,6 +2928,8 @@ def m009_architecture_binding_errors(root: Path, m002_directory: Path | None, m0
     except (Unreadable, KeyError):
         return ["M009: experiment.toml must bind the runtime contract arguments"]
     required_tokens = (
+        "--manifest-path model/burn-a0/Cargo.toml",
+        "--example m009_learned_backend",
         "--m002-v5-contract",
         "<runtime_contract>",
         "--m002-v5-contract-sha256",
