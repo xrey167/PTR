@@ -38,7 +38,7 @@ status = "prepared"
 [[experiment]]
 id = "M002-v5"
 path = "model/M002-v5-factorized-typed-attention"
-status = "planned"
+status = "prepared"
 
 [[experiment]]
 id = "M003"

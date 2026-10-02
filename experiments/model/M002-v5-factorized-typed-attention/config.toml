@@ -4,7 +4,7 @@ name = "M002-v5-factorized-typed-attention"
 path = "experiments/model/M002-v5-factorized-typed-attention"
 tests_dir = "tests"
 
-# Pilot-selected values intentionally block transition from planned to prepared.
+# Values below are bound by the complete, committed pilot archive.
 [preregistration]
 seeds = [17, 29, 43, 71, 101]
 steps = 1500
@@ -12,21 +12,21 @@ batch = 128
 d_model = 48
 learning_rate = "0.005"
 data = "datasets/generated/operator_routing_v2"
-folds = "must-be-pinned-from-splits-lock"
-rank = "must-be-pinned-after-pilot"
-bias_limit = "must-be-pinned-after-pilot"
-metadata_dropout = "must-be-pinned-after-pilot"
+folds = "evidence-temporal,evidence-tabular,claim-interventional"
+rank = 8
+bias_limit = 1
+metadata_dropout = "0"
 dataset_lock = "benchmarks/operator-routing-v2/splits.lock.json"
-dataset_lock_sha256 = "must-be-pinned-after-generator-freeze"
+dataset_lock_sha256 = "6a001b37e4adb81bae66f8abc50c9a461f07eea918c905179300cc8d353266a1"
 criteria = "experiments/model/M002-v5-factorized-typed-attention/PLAN.toml"
-criteria_sha256 = "must-be-pinned-after-protocol-freeze"
+criteria_sha256 = "da96f6368e2295987b00ce6e5da85db8ca9dc7d7307a2c1caa9be8b528eccb3b"
 decision_script = "scripts/aggregate_m002_v5.py"
-decision_script_sha256 = "must-be-pinned-after-protocol-freeze"
+decision_script_sha256 = "8ee9539a790f44c57eaa751fa56dfa07bb0342d636bf65230650ad4f6fddb957"
 pilot_selection_script = "scripts/select_m002_v5_pilot.py"
-pilot_selection_script_sha256 = "must-be-pinned-before-pilot"
+pilot_selection_script_sha256 = "1112f13592bbaa1c9284bd8bc476ac6471e64de82b6d6579305468242ed0c9aa"
 pilot_runner = "scripts/run_m002_v5_pilot.py"
-pilot_runner_sha256 = "must-be-pinned-before-pilot"
+pilot_runner_sha256 = "32575874837a370fdc755ec2a179de2562b26106cc45d8639b116ddb262ca8a5"
 pilot_selection = "experiments/model/M002-v5-factorized-typed-attention/pilot-selection.json"
-pilot_selection_sha256 = "must-be-pinned-after-pilot"
-factorized_contract_sha256 = "must-be-pinned-after-pilot"
+pilot_selection_sha256 = "605e2272c107e4cab646be1f4ef9024a0e9b9fee4188be781a680aa73aa45dfc"
+factorized_contract_sha256 = "b76a21bbde937505729de8c3bc04490ae30c199e243183a4e62dee403ddcd67a"
 factorized_contract = "experiments/model/M002-v5-factorized-typed-attention/factorized-v2-contract.txt"

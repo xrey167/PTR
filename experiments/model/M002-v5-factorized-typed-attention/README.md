@@ -1,6 +1,6 @@
 # M002-v5 — factorized typed pair attention
 
-M002-v5 is a planned confirmatory component study. It directly compares the
+M002-v5 is a prepared confirmatory component study. It directly compares the
 same repaired A0 architecture with `FactorizedV2` versus `Off`; the control
 executes the same pair-attention operations and zeros only the resulting bias.
 It therefore fixes M002-v4's attribution failure without rewriting any v4
@@ -9,10 +9,10 @@ record.
 The non-claimable pilot uses seeds 7 and 13 on `evidence-interventional` and the
 separate `claim-temporal-development` fold. It evaluates rank 8/16, bias limit
 1/2, and metadata dropout 0/0.1 at the pre-pilot learning rate `0.005`. The
-selection rule in `PLAN.toml` is fixed, but its selected architecture values
-remain deliberately unpinned while the experiment is `planned`. M002-v5 cannot become `prepared` until the pilot
-selection, dataset lock, criteria, code and entrypoint are committed and their
-digests are recorded in `config.toml` and `experiment.toml`.
+selection rule in `PLAN.toml` selected rank 8, bias limit 1, and metadata
+dropout 0. The complete archived pilot binds this choice, the dataset lock,
+criteria, code and entrypoint through digests in `config.toml` and
+`experiment.toml`. Pilot values remain development-only evidence.
 
 From a clean **detached** development commit, run the resumable pilot into its
 versioned archive and then apply the frozen selector to the complete raw set:
