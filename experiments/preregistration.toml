@@ -204,3 +204,6 @@ required = { seeds = "int-list", steps = "int", batch = "int", d_model = "int", 
 
 [experiment.M002-v7]
 required = { seeds = "int-list", steps = "int", batch = "int", d_model = "int", learning_rate = "str", data = "str", folds = "str", arm_pair = "str", rank = "int", bias_limit = "int", metadata_dropout = "str", dataset_lock = "file", criteria = "file", decision_script = "file", decision_core = "file", pilot_source_experiment = "str", pilot_selection = "file", factorized_contract = "file", runner_arm_table = "file", runner_main = "file" }
+
+[experiment.M002-v8]
+required = { seeds = "int-list", steps = "int", batch = "int", d_model = "int", learning_rate = "str", data = "str", folds = "str", arm_pair = "str", rank = "int", bias_limit = "int", metadata_dropout = "str", dataset_lock = "file", criteria = "file", decision_script = "file", decision_core = "file", pilot_source_experiment = "str", pilot_selection = "file", factorized_contract = "file", runner_arm_table = "file", runner_main = "file", implementation_tree = "str", implementation_tree_git_digest = "str" }

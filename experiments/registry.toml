@@ -51,6 +51,11 @@ path = "model/M002-v7-factorized-typed-attention"
 status = "superseded"
 
 [[experiment]]
+id = "M002-v8"
+path = "model/M002-v8-factorized-typed-attention"
+status = "prepared"
+
+[[experiment]]
 id = "M003"
 path = "model/M003-latent-recurrence"
 status = "planned"
