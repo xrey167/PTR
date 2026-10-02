@@ -558,6 +558,34 @@ mod paired_arm_tests {
         .expect_err("v8 must not select v7 arms");
         assert!(cross_study.contains("belongs to M002-v7"));
     }
+
+    #[test]
+    fn v9_has_its_own_explicit_matched_pair() {
+        let selected = arms_of(&arguments(
+            "M002-v9",
+            "factorized-v2-v9,factorized-v2-off-v9",
+        ))
+        .expect("v9 pair selects before dataset loading");
+        assert_eq!(
+            selected.iter().map(|arm| arm.name).collect::<Vec<_>>(),
+            arms::paired_names("M002-v9").expect("v9 is registered")
+        );
+        assert!(selected.iter().all(|arm| arm.experiment == "M002-v9"));
+        assert_eq!(
+            selected[0].typed_attention_mode,
+            ptr_burn_a0::TypedAttentionMode::FactorizedV2
+        );
+        assert_eq!(
+            selected[1].typed_attention_mode,
+            ptr_burn_a0::TypedAttentionMode::Off
+        );
+        let cross_study = arms_of(&arguments(
+            "M002-v9",
+            "factorized-v2-v8,factorized-v2-off-v8",
+        ))
+        .expect_err("v9 must not select v8 arms");
+        assert!(cross_study.contains("belongs to M002-v8"));
+    }
 }
 
 /// T8: the rule on cases whose labels were worked out by hand (the working is in

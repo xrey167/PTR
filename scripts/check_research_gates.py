@@ -2887,12 +2887,14 @@ def m002_v5_pilot_archive_errors(root: Path, config: dict, prefix: str) -> tuple
     archived = [selection_relative]
     for stdout in stdout_paths:
         archived.extend(path.relative_to(root).as_posix() for path in (stdout, stdout.with_suffix(".stderr"), stdout.with_suffix(".json")))
-    archived.extend((
+    for relative in archived:
+        if committed_regular_file(root, relative) is None:
+            return None, [f"{prefix}: {relative} is not a committed immutable M002-v5 pilot artifact"]
+    source_bound = (
         "scripts/run_m002_v5_pilot.py",
         "scripts/select_m002_v5_pilot.py",
-        "experiments/model/M002-v5-factorized-typed-attention/factorized-v2-contract.txt",
-    ))
-    for relative in archived:
+    )
+    for relative in source_bound:
         path = committed_regular_file(root, relative)
         if path is None or blob(root, source, relative) != path.read_bytes():
             return None, [f"{prefix}: {relative} differs from the immutable M002-v5 pilot source"]
@@ -3039,9 +3041,11 @@ def m002_versioned_runner_binding_errors(
         marker = f'name: "{name}",\n        experiment: "{experiment_id}",'
         if marker not in arm_table or mode not in arm_table:
             errors.append(f"{experiment_id}: runner arm table does not bind {name} to {experiment_id}")
+    if f'"{experiment_id}" => Some(["{treatment}", "{control}"])' not in arm_table:
+        errors.append(f"{experiment_id}: runner arm table does not admit only the registered pair")
     runner_main = sources.get("runner_main", "")
-    if f'"{experiment_id}" => Some(["{treatment}", "{control}"])' not in runner_main:
-        errors.append(f"{experiment_id}: runner does not admit only the registered pair")
+    if "arms::paired_names(experiment)" not in runner_main:
+        errors.append(f"{experiment_id}: paired runner does not consult the registered pair table")
     implementation_tree = config.get("implementation_tree")
     expected_tree = config.get("implementation_tree_git_digest")
     if implementation_tree != "model/burn-a0" or not isinstance(expected_tree, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_tree):
@@ -3165,6 +3169,71 @@ def m002_v8_successor_freeze_errors(root: Path, experiment: Path, manifest: dict
         elif hashlib.sha256(path.read_bytes()).hexdigest() != digest:
             errors.append(f"M002-v8: {key} does not match its pinned SHA-256")
     errors.extend(m002_versioned_runner_binding_errors(root, config, manifest, "M002-v8", M002_V8_ARM_PAIR))
+    return errors
+
+
+M002_V9_ARM_PAIR = "factorized-v2-v9,factorized-v2-off-v9"
+
+
+def m002_v9_fold_binding_errors(root: Path, config: dict) -> list[str]:
+    """Require v9 to bind each confirmatory fold's identity in the command."""
+    try:
+        lock = json.loads((root / "benchmarks/operator-routing-v2/splits.lock.json").read_text(encoding="utf-8"))
+        expected = ",".join(
+            f"{fold}={lock['folds'][fold]['data_fnv1a64']}" for fold in M002_V6_FOLDS
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError) as error:
+        return [f"M002-v9: cannot load the confirmatory fold lock: {error}"]
+    if config.get("folds") != expected:
+        return [
+            "M002-v9: folds must bind the exact canonical "
+            "evidence-temporal,evidence-tabular,claim-interventional FNV64 values"
+        ]
+    return []
+
+
+def m002_v9_successor_freeze_errors(root: Path, experiment: Path, manifest: dict) -> list[str]:
+    """Bind v9 to the historical pilot and every executable implementation byte."""
+    if status_of(manifest) not in FROZEN:
+        return []
+    try:
+        config = load(experiment / "config.toml").get("preregistration", {})
+    except Unreadable as error:
+        return [error.named(root)]
+    if not isinstance(config, dict):
+        return ["M002-v9: config.toml has no preregistration table"]
+    errors = m002_v9_fold_binding_errors(root, config)
+    if config.get("pilot_source_experiment") != "M002-v5":
+        errors.append("M002-v9: pilot_source_experiment must be the immutable M002-v5 pilot")
+        return errors
+    selection, archive_errors = m002_v5_pilot_archive_errors(root, config, "M002-v9")
+    errors.extend(archive_errors)
+    if selection is not None:
+        chosen = selection.get("selection")
+        try:
+            actual = (int(config["rank"]), float(config["bias_limit"]), float(config["metadata_dropout"]))
+            expected = (int(chosen["rank"]), float(chosen["bias_limit"]), float(chosen["metadata_dropout"]))
+        except (KeyError, TypeError, ValueError):
+            errors.append("M002-v9: selected architecture fields are malformed")
+            chosen = None
+        if chosen is not None and (selection.get("decision") != "SELECTED" or actual != expected):
+            errors.append("M002-v9: frozen architecture does not exactly reuse the M002-v5 pilot selection")
+        if isinstance(chosen, dict):
+            errors.extend(error.replace("M002-v5", "M002-v9") for error in m002_v5_factorized_contract_errors(root, config, chosen))
+    for key in ("dataset_lock", "criteria", "decision_script", "decision_core", "factorized_contract"):
+        relative = config.get(key)
+        digest = config.get(f"{key}_sha256")
+        path = root / relative if isinstance(relative, str) else None
+        if (
+            path is None
+            or not isinstance(digest, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", digest)
+            or committed_regular_file(root, relative) is None
+        ):
+            errors.append(f"M002-v9: {key} is not a committed file with a pinned SHA-256")
+        elif hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+            errors.append(f"M002-v9: {key} does not match its pinned SHA-256")
+    errors.extend(m002_versioned_runner_binding_errors(root, config, manifest, "M002-v9", M002_V9_ARM_PAIR))
     return errors
 
 
@@ -3480,6 +3549,8 @@ def gate_errors(root: Path) -> list[str]:
         errors.extend(m002_v7_successor_freeze_errors(root,directories["M002-v7"],experiments["M002-v7"]))
     if "M002-v8" in experiments and "M002-v8" in directories:
         errors.extend(m002_v8_successor_freeze_errors(root,directories["M002-v8"],experiments["M002-v8"]))
+    if "M002-v9" in experiments and "M002-v9" in directories:
+        errors.extend(m002_v9_successor_freeze_errors(root,directories["M002-v9"],experiments["M002-v9"]))
     errors.extend(m009_lock_errors(root,experiments,directories))
     errors.extend(preregistration_errors(root,experiments,directories))
     return errors

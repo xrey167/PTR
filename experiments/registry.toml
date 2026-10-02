@@ -53,7 +53,7 @@ status = "superseded"
 [[experiment]]
 id = "M002-v8"
 path = "model/M002-v8-factorized-typed-attention"
-status = "prepared"
+status = "superseded"
 
 [[experiment]]
 id = "M003"

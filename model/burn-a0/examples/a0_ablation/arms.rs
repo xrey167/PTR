@@ -230,12 +230,40 @@ pub const V8_ARMS: [Arm; 2] = [
     },
 ];
 
+/// M002-v9 uses a separately registered pair after the complete v8 gate
+/// implementation was independently exercised before this study is enrolled.
+pub const V9_ARMS: [Arm; 2] = [
+    Arm {
+        name: "factorized-v2-v9",
+        experiment: "M002-v9",
+        typed_attention: true,
+        typed_attention_mode: TypedAttentionMode::FactorizedV2,
+        router_mode: RouterMode::CalibratedCosineV2,
+        label_smoothing: 0.05,
+        metadata_dropout: 0.10,
+        consistency_weight: 0.10,
+        ..FULL
+    },
+    Arm {
+        name: "factorized-v2-off-v9",
+        experiment: "M002-v9",
+        typed_attention: false,
+        typed_attention_mode: TypedAttentionMode::Off,
+        router_mode: RouterMode::CalibratedCosineV2,
+        label_smoothing: 0.05,
+        metadata_dropout: 0.10,
+        consistency_weight: 0.10,
+        ..FULL
+    },
+];
+
 /// The sole ordered matched pair admitted by each FactorizedV2 study.
 pub fn paired_names(experiment: &str) -> Option<[&'static str; 2]> {
     match experiment {
         "M002-v5" => Some(["factorized-v2", "factorized-v2-off"]),
         "M002-v7" => Some(["factorized-v2-v7", "factorized-v2-off-v7"]),
         "M002-v8" => Some(["factorized-v2-v8", "factorized-v2-off-v8"]),
+        "M002-v9" => Some(["factorized-v2-v9", "factorized-v2-off-v9"]),
         _ => None,
     }
 }
@@ -246,6 +274,7 @@ pub fn find(name: &str) -> Result<Arm, String> {
         .chain(V5_ARMS.iter())
         .chain(V7_ARMS.iter())
         .chain(V8_ARMS.iter())
+        .chain(V9_ARMS.iter())
         .copied()
         .find(|arm| arm.name == name)
         .ok_or_else(|| format!("unknown arm {name:?}"))

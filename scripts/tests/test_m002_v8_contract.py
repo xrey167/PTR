@@ -26,35 +26,14 @@ def v8_labels(stdout):
 
 
 class M002V8ContractTests(unittest.TestCase):
-    def test_successor_is_prepared_with_its_own_matched_pair(self):
+    def test_successor_is_superseded_without_execution(self):
         manifest = tomllib.loads((EXPERIMENT / "experiment.toml").read_text(encoding="utf-8"))
-        self.assertEqual((manifest["id"], manifest["status"]), ("M002-v8", "prepared"))
+        self.assertEqual((manifest["id"], manifest["status"]), ("M002-v8", "superseded"))
         self.assertIn("--experiment M002-v8", manifest["entrypoint"])
         self.assertIn("--arms factorized-v2-v8,factorized-v2-off-v8", manifest["entrypoint"])
 
-    def test_command_runner_and_complete_implementation_tree_are_bound(self):
-        gates = load_module("m002_v8_gate", ROOT / "scripts/check_research_gates.py")
-        config = tomllib.loads((EXPERIMENT / "config.toml").read_text(encoding="utf-8"))["preregistration"]
-        manifest = tomllib.loads((EXPERIMENT / "experiment.toml").read_text(encoding="utf-8"))
-        self.assertEqual(gates.m002_v8_fold_binding_errors(ROOT, config), [])
-        self.assertEqual(
-            gates.m002_versioned_runner_binding_errors(
-                ROOT, config, manifest, "M002-v8", "factorized-v2-v8,factorized-v2-off-v8"
-            ),
-            [],
-        )
-        invalid = dict(config)
-        invalid["implementation_tree_git_digest"] = "0" * 64
-        self.assertTrue(
-            gates.m002_versioned_runner_binding_errors(
-                ROOT, invalid, manifest, "M002-v8", "factorized-v2-v8,factorized-v2-off-v8"
-            )
-        )
-
-    def test_successor_freeze_accepts_only_the_immutable_pilot_archive(self):
-        gates = load_module("m002_v8_successor_gate", ROOT / "scripts/check_research_gates.py")
-        manifest = tomllib.loads((EXPERIMENT / "experiment.toml").read_text(encoding="utf-8"))
-        self.assertEqual(gates.m002_v8_successor_freeze_errors(ROOT, EXPERIMENT, manifest), [])
+    def test_superseded_study_has_no_runner_records(self):
+        self.assertEqual(list((EXPERIMENT / "results").glob("run-*.json")), [])
 
     def test_adapter_restores_v8_identity_and_rejects_unknown_labels(self):
         v5_tests = load_module("m002_v5_fixture", ROOT / "scripts/tests/test_aggregate_m002_v5.py")

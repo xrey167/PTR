@@ -67,10 +67,12 @@ PTR is a **compiling architecture/research prototype**, not yet a complete model
   binding for the executable A0 implementation. It has no run record,
   checkpoint, metric, or claim. The immutable status record explains why it
   is not amended in place; M009 remains locked.
-- `M002-v8` is the prepared successor. It binds the exact v5 pilot archive,
-  FNV fold tokens, versioned runner arms and source files, plus the complete
-  tracked `model/burn-a0` Git tree. It has no seed record or scientific claim
-  until its own final-commit preflight and all five confirmatory seeds finish.
+- `M002-v8` is superseded before execution. It had the intended A0 Git-tree
+  binding, but its newly introduced gate implementation itself failed
+  verification (wrong Rust source for the pair table; generated pilot
+  artifacts compared to a code-source commit). It has no run record, metric,
+  checkpoint, or claim. M002-v9 will only be registered after its corrected
+  gate passes against a committed unregistered candidate.
 
 ## Current research/implementation gap
 
