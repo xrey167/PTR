@@ -451,7 +451,10 @@ fn paired_v5(args: &Args) -> Result<bool, String> {
         arm.metadata_dropout = metadata_dropout;
     }
     emit(&format!(
-        r#"{{"row":"run-v5","seed":{seed},"rank":{rank},"bias_limit":{bias_limit},"metadata_dropout":{metadata_dropout}}}"#
+        r#"{{"row":"run-v5","seed":{seed},"d_model":{d_model},"batch_size":{},"steps":{},"lr":{},"rank":{rank},"bias_limit":{bias_limit},"metadata_dropout":{metadata_dropout}}}"#,
+        train::BATCH,
+        schedule.steps,
+        schedule.peak,
     ));
     let mut finite = true;
     for (fold, digest) in v2_folds(args)? {

@@ -51,9 +51,11 @@ def artifact_grid(directory: Path, source_sha: str = "a" * 40):
         ]
         raw = ("\n".join(json.dumps(row) for row in records) + "\n").encode()
         path = directory / f"cell-{index:02}.stdout"
+        stderr = path.with_suffix(".stderr")
         path.write_bytes(raw)
+        stderr.write_bytes(b"timing\n")
         metadata = {
-            "schema_version": 1,
+            "schema_version": 2,
             "source_sha": source_sha,
             "command": mod.command_for(candidate, seed, digests),
             "candidate": candidate,
@@ -62,6 +64,16 @@ def artifact_grid(directory: Path, source_sha: str = "a" * 40):
             "exit_code": 0,
             "stdout_file": path.name,
             "stdout_sha256": mod.sha256(raw),
+            "stderr_file": stderr.name,
+            "stderr_sha256": mod.sha256(stderr.read_bytes()),
+            "execution_provenance": {
+                "source_tree_sha": "b" * 40,
+                "cargo": {"path": "C:/cargo.exe", "sha256": "c" * 64, "version": "cargo test"},
+                "rustc_version": "rustc test",
+                "environment_sha256": "d" * 64,
+                "host": {"system": "test"},
+                "hardware_profile": {"path": "hardware/test.toml", "sha256": "e" * 64},
+            },
         }
         path.with_suffix(".json").write_text(
             json.dumps(metadata, sort_keys=True), encoding="utf-8"
@@ -115,6 +127,10 @@ class PilotSelectionTests(unittest.TestCase):
                 list(decision["input_stdout_sha256"]),
                 sorted(path.name for path in paths),
             )
+            self.assertEqual(
+                list(decision["input_stderr_sha256"]),
+                sorted(path.with_suffix(".stderr").name for path in paths),
+            )
             for path in paths:
                 self.assertEqual(
                     decision["input_stdout_sha256"][path.name], mod.sha256(path.read_bytes())
@@ -132,6 +148,18 @@ class PilotSelectionTests(unittest.TestCase):
             paths = artifact_grid(Path(directory))
             paths[0].with_suffix(".json").unlink()
             with self.assertRaisesRegex(mod.PilotError, "missing sibling metadata"):
+                mod.load_provenanced_outputs(paths)
+
+    def test_cli_rejects_missing_or_tampered_stderr(self):
+        with tempfile.TemporaryDirectory() as directory:
+            paths = artifact_grid(Path(directory))
+            paths[0].with_suffix(".stderr").unlink()
+            with self.assertRaisesRegex(mod.PilotError, "missing sibling stderr"):
+                mod.load_provenanced_outputs(paths)
+        with tempfile.TemporaryDirectory() as directory:
+            paths = artifact_grid(Path(directory))
+            paths[0].with_suffix(".stderr").write_bytes(b"tampered\n")
+            with self.assertRaisesRegex(mod.PilotError, "stderr SHA256"):
                 mod.load_provenanced_outputs(paths)
 
     def test_cli_rejects_mixed_commits(self):

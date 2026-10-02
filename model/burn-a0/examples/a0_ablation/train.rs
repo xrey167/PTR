@@ -275,7 +275,7 @@ pub fn train(
     rows.insert(
         0,
         format!(
-            r#"{{"row":"meta","arm":"{}","typed_attention":"{}","typed_attention_mode":"{}","typed_attention_rank":{},"typed_attention_limit":{},"typed_query":"{}","latent_steps":"{}","latent_nonlinearity":"{}","frozen_router":"{}","router_mode":"{}","router_logit_scale":{},"label_smoothing":{},"metadata_dropout":{},"consistency_weight":{},"batch":"{}","lr":{},"steps":{},"total_params":{},"estimated_flops_per_example":{},"effective_params":{},"final_train_loss":{},"nan":{}}}"#,
+            r#"{{"row":"meta","arm":"{}","typed_attention":"{}","typed_attention_mode":"{}","typed_attention_rank":{},"typed_attention_limit":{},"typed_query":"{}","latent_steps":"{}","latent_nonlinearity":"{}","frozen_router":"{}","router_mode":"{}","router_logit_scale":{},"label_smoothing":{},"metadata_dropout":{},"consistency_weight":{},"batch":"{}","batch_size":{},"d_model":{},"lr":{},"steps":{},"total_params":{},"estimated_flops_per_example":{},"effective_params":{},"final_train_loss":{},"nan":{}}}"#,
             arm.name,
             on(arm.typed_attention),
             arm.typed_attention_mode.name(),
@@ -291,6 +291,8 @@ pub fn train(
             arm.metadata_dropout,
             arm.consistency_weight,
             arm.batch.name(),
+            BATCH,
+            d_model,
             schedule.peak,
             schedule.steps,
             total_params,

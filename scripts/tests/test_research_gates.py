@@ -37,6 +37,18 @@ class ResearchGateTests(unittest.TestCase):
             )
         self.assertEqual(mod.m009_lock_errors(ROOT,{"M009":{"status":"planned"}},{}),[])
 
+    def test_unlisted_m009_cannot_bypass_the_m002_v5_dependency_lock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            experiments = root / "experiments"
+            experiments.mkdir()
+            (experiments / "preregistration.toml").write_text("[experiment]\n", encoding="utf-8")
+            (experiments / "registry.toml").write_text("experiment = []\n", encoding="utf-8")
+            self.assertEqual(
+                mod.launch_errors(root, "M009"),
+                ["M009: locked until M002-v5 is completed with PASS"],
+            )
+
     def test_m009_recomputes_the_bound_decision_instead_of_trusting_a_pass_label(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory)
@@ -70,7 +82,10 @@ class ResearchGateTests(unittest.TestCase):
             decision_path=results/"m002-v5-decision.json"
             decision_path.write_text(json.dumps(expected),encoding="utf-8",newline="\n")
             visible=lambda checkout,path: checkout/path if (checkout/path).is_file() else None
-            with mock.patch.object(mod,"committed_regular_file",side_effect=visible):
+            with (
+                mock.patch.object(mod,"committed_regular_file",side_effect=visible),
+                mock.patch.object(mod,"m002_v5_archived_evidence_errors",return_value=[]),
+            ):
                 self.assertEqual(mod.bound_m002_v5_pass_errors(root,experiment),[])
                 forged=dict(expected)
                 forged["claim"]="self-asserted"
@@ -78,6 +93,59 @@ class ResearchGateTests(unittest.TestCase):
                 self.assertEqual(
                     mod.bound_m002_v5_pass_errors(root,experiment),
                     ["M009: M002-v5 decision does not equal the canonical recomputation"],
+                )
+
+    def test_m009_refuses_a_pass_when_immutable_record_history_is_invalid(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "experiments/model/M002-v5-factorized-typed-attention"
+            path.mkdir(parents=True)
+            with mock.patch.object(mod, "m002_v5_archived_evidence_errors", return_value=["forged git_sha"]):
+                self.assertEqual(
+                    mod.bound_m002_v5_pass_errors(root, path),
+                    ["M009: locked because M002-v5 archived evidence is invalid: forged git_sha"],
+                )
+
+    def test_m009_requires_the_exact_factorized_config_and_checkpoint_contract(self):
+        contract = {
+            "source_experiment": "M002-v5",
+            "attention_mode": "factorized-v2",
+            "d_model": 48,
+            "rank": 16,
+            "bias_limit": 2.0,
+            "metadata_dropout": 0.1,
+            "router": {
+                "mode": "calibrated-cosine-v2",
+                "logit_scale": 5.0,
+                "label_smoothing": 0.05,
+                "consistency_weight": 0.1,
+            },
+        }
+        digest = hashlib.sha256(mod.canonical_json(contract).encode("utf-8")).hexdigest()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            m009 = root / "experiments/model/M009"
+            m009.mkdir(parents=True)
+            (m009 / "config.toml").write_text(
+                "[m002_v5_binding]\n"
+                "source_experiment = \"M002-v5\"\n"
+                "attention_mode = \"factorized-v2\"\n"
+                "d_model = 48\nrank = 16\nbias_limit = 2.0\nmetadata_dropout = 0.1\n"
+                f"architecture_contract_sha256 = \"{digest}\"\n"
+                f"checkpoint_architecture_contract_sha256 = \"{digest}\"\n"
+                "[m002_v5_binding.router]\n"
+                "mode = \"calibrated-cosine-v2\"\nlogit_scale = 5.0\nlabel_smoothing = 0.05\nconsistency_weight = 0.1\n",
+                encoding="utf-8",
+            )
+            with mock.patch.object(mod, "m002_v5_factorized_contract", return_value=(contract, [])):
+                self.assertEqual(mod.m009_architecture_binding_errors(root, root / "M002", m009), [])
+                (m009 / "config.toml").write_text(
+                    (m009 / "config.toml").read_text(encoding="utf-8").replace("rank = 16", "rank = 8"),
+                    encoding="utf-8",
+                )
+                self.assertEqual(
+                    mod.m009_architecture_binding_errors(root, root / "M002", m009),
+                    ["M009: rank does not bind the frozen M002-v5 FactorizedV2 contract"],
                 )
 
     def test_bound_m002_v2_no_go_marker_accepts_only_the_two_exact_freezes(self):

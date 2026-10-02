@@ -2334,6 +2334,12 @@ def launch_decision(root: Path, exp_id: str) -> list[str]:
         item["id"]:item for item in load(root/REGISTRY).get("experiment",[])
         if isinstance(item,dict) and isinstance(item.get("id"),str)
     }
+    if exp_id == "M009":
+        dependency_errors = m009_dependency_errors(root, items)
+        if dependency_errors:
+            return dependency_errors
+        if exp_id not in entries:
+            return ["M009: must be preregistered and frozen with its bound FactorizedV2 configuration"]
     if exp_id not in entries:
         commit=enrolled(root,set(items)).get(exp_id)
         return [] if commit is None else [delisted_error(exp_id,commit)]
@@ -2353,17 +2359,6 @@ def launch_decision(root: Path, exp_id: str) -> list[str]:
             "preregistration is frozen and it is prepared, running, completed or failed"
         ]
     problems = frozen_errors(exp_id,entries[exp_id],manifest,experiment,root)
-    if exp_id == "M009":
-        manifests = {}
-        directories = {}
-        for dependency in ("M002-v5", "M009"):
-            item = items.get(dependency)
-            if not isinstance(item, dict) or not isinstance(item.get("path"), str):
-                continue
-            directory = root / "experiments" / item["path"]
-            directories[dependency] = directory
-            manifests[dependency] = load(directory / "experiment.toml")
-        problems.extend(m009_lock_errors(root, manifests, directories))
     return problems
 
 def launch_commit_errors(root: Path, exp_id: str, commit: str) -> list[str]:
@@ -2622,8 +2617,35 @@ def committed_regular_file(root: Path, relative: str) -> Path | None:
         return None
 
 
+def m002_v5_archived_evidence_errors(root: Path, directory: Path | None) -> list[str]:
+    """Reuse the normal immutable-record validator before M009 reads a PASS."""
+    if directory is None:
+        return ["M009: locked because M002-v5 has no registered experiment directory"]
+    try:
+        registry = load(root / REGISTRY)
+        entries = load(root / PREREGISTRATION).get("experiment", {})
+    except Unreadable as error:
+        return [error.named(root)]
+    if not isinstance(entries, dict) or "M002-v5" not in entries:
+        return ["M009: locked because M002-v5 is not preregistered"]
+    item = next(
+        (item for item in registry.get("experiment", []) if isinstance(item, dict) and item.get("id") == "M002-v5"),
+        None,
+    )
+    if not isinstance(item, dict):
+        return ["M009: locked because M002-v5 is not registered"]
+    try:
+        manifest = load(directory / "experiment.toml")
+        return frozen_errors("M002-v5", entries["M002-v5"], manifest, directory, root)
+    except (Unreadable, HistoryUnreadable) as error:
+        return [error.named(root)]
+
+
 def bound_m002_v5_pass_errors(root: Path, directory: Path | None) -> list[str]:
     """Verify and recompute the committed M002-v5 decision used by M009."""
+    immutable_errors = m002_v5_archived_evidence_errors(root, directory)
+    if immutable_errors:
+        return [f"M009: locked because M002-v5 archived evidence is invalid: {immutable_errors[0]}"]
     decision_path = directory / "results/m002-v5-decision.json" if directory is not None else None
     if decision_path is None:
         return ["M009: locked because M002-v5 has no decision directory"]
@@ -2763,13 +2785,114 @@ def m002_v5_pilot_freeze_errors(root: Path, experiment: Path, manifest: dict) ->
     return []
 
 
-def m009_lock_errors(root: Path, experiments: dict, directories: dict) -> list[str]:
-    """M009 cannot be prepared or run until a recomputed M002-v5 PASS."""
-    if status_of(experiments.get("M009",{})) not in {"prepared","running","completed"}:
-        return []
-    if status_of(experiments.get("M002-v5",{}))!="completed":
+def m002_v5_factorized_contract(root: Path, directory: Path | None) -> tuple[dict | None, list[str]]:
+    """The architecture an M009 learned backend is permitted to instantiate."""
+    if directory is None:
+        return None, ["M009: locked because M002-v5 has no registered directory"]
+    try:
+        config = load(directory / "config.toml").get("preregistration", {})
+        selection = json.loads((directory / "pilot-selection.json").read_text(encoding="utf-8"))
+    except (Unreadable, OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        return None, [f"M009: locked because the M002-v5 freeze is unreadable: {error}"]
+    if not isinstance(selection, dict):
+        return None, ["M009: locked because M002-v5 pilot selection is malformed"]
+    chosen = selection.get("selection")
+    if selection.get("decision") != "SELECTED" or not isinstance(chosen, dict):
+        return None, ["M009: locked because M002-v5 has no selected factorized architecture"]
+    try:
+        contract = {
+            "source_experiment": "M002-v5",
+            "attention_mode": "factorized-v2",
+            "d_model": int(config["d_model"]),
+            "rank": int(config["rank"]),
+            "bias_limit": float(config["bias_limit"]),
+            "metadata_dropout": float(config["metadata_dropout"]),
+            "router": {
+                "mode": "calibrated-cosine-v2",
+                "logit_scale": 5.0,
+                "label_smoothing": 0.05,
+                "consistency_weight": 0.10,
+            },
+        }
+        selected = (int(chosen["rank"]), float(chosen["bias_limit"]), float(chosen["metadata_dropout"]))
+    except (KeyError, TypeError, ValueError) as error:
+        return None, [f"M009: locked because M002-v5 factorized contract is malformed: {error}"]
+    if (contract["rank"], contract["bias_limit"], contract["metadata_dropout"]) != selected:
+        return None, ["M009: locked because M002-v5 config differs from its selected architecture"]
+    return contract, []
+
+
+def m009_architecture_binding_errors(root: Path, m002_directory: Path | None, m009_directory: Path | None) -> list[str]:
+    """Require M009 to bind both its config and checkpoint contract to M002-v5."""
+    contract, errors = m002_v5_factorized_contract(root, m002_directory)
+    if errors or contract is None:
+        return errors
+    if m009_directory is None:
+        return ["M009: blocked until it is registered with a bound FactorizedV2 configuration"]
+    config_path = m009_directory / "config.toml"
+    try:
+        binding = load(config_path).get("m002_v5_binding", {})
+    except Unreadable as error:
+        return [error.named(root)]
+    if not isinstance(binding, dict):
+        return ["M009: config.toml must contain an [m002_v5_binding] table"]
+    expected_digest = hashlib.sha256(canonical_json(contract).encode("utf-8")).hexdigest()
+    required = {
+        **contract,
+        "architecture_contract_sha256": expected_digest,
+        "checkpoint_architecture_contract_sha256": expected_digest,
+    }
+    for field, expected in required.items():
+        actual = binding.get(field)
+        if isinstance(expected, float):
+            try:
+                matches = math.isclose(float(actual), expected, rel_tol=0.0, abs_tol=1e-12)
+            except (TypeError, ValueError):
+                matches = False
+        else:
+            matches = actual == expected
+        if not matches:
+            return [f"M009: {field} does not bind the frozen M002-v5 FactorizedV2 contract"]
+    return []
+
+
+def m009_dependency_errors(root: Path, items: dict) -> list[str]:
+    """M009 is never an unlisted escape hatch around M002-v5 evidence."""
+    m002_item = items.get("M002-v5")
+    m009_item = items.get("M009")
+    m002_directory = (
+        root / "experiments" / m002_item["path"]
+        if isinstance(m002_item, dict) and isinstance(m002_item.get("path"), str)
+        else None
+    )
+    m009_directory = (
+        root / "experiments" / m009_item["path"]
+        if isinstance(m009_item, dict) and isinstance(m009_item.get("path"), str)
+        else None
+    )
+    if m002_directory is None:
         return ["M009: locked until M002-v5 is completed with PASS"]
-    return bound_m002_v5_pass_errors(root, directories.get("M002-v5"))
+    try:
+        m002_manifest = load(m002_directory / "experiment.toml")
+    except Unreadable as error:
+        return [error.named(root)]
+    if status_of(m002_manifest) != "completed":
+        return ["M009: locked until M002-v5 is completed with PASS"]
+    errors = bound_m002_v5_pass_errors(root, m002_directory)
+    if errors:
+        return errors
+    return m009_architecture_binding_errors(root, m002_directory, m009_directory)
+
+
+def m009_lock_errors(root: Path, experiments: dict, directories: dict) -> list[str]:
+    """M009 cannot become active until the exact M002-v5 contract is bound."""
+    if status_of(experiments.get("M009", {})) not in {"prepared", "running", "completed"}:
+        return []
+    items = {
+        key: {"path": directory.relative_to(root / "experiments").as_posix()}
+        for key, directory in directories.items()
+    }
+    return m009_dependency_errors(root, items)
 
 def no_go_marker(exp_id: str, experiment: Path, root: Path, current_manifest: dict) -> tuple[dict | None, list[str]]:
     """Load and strictly validate an explicit historical NO-GO marker."""

@@ -25,8 +25,10 @@ CANDIDATES = tuple(
 RANKS = (8, 16)
 BIAS_LIMITS = (1, 2)
 METADATA_DROPOUTS = (0.0, 0.1)
+TOOLCHAIN = "1.95.0-x86_64-pc-windows-gnu"
 SOURCE_SHA = re.compile(r"[0-9a-f]{40}")
 DIGEST = re.compile(r"[0-9a-f]{16}")
+SHA256 = re.compile(r"[0-9a-f]{64}")
 
 
 class PilotError(ValueError):
@@ -56,7 +58,7 @@ def fixed_protocol() -> dict:
 def command_for(candidate: dict, seed: int, digests: dict[str, str]) -> list[str]:
     folds = ",".join(f"{name}={digests[name]}" for name in FOLDS)
     return [
-        "cargo", "+1.95.0-x86_64-pc-windows-gnu", "run", "--release",
+        "cargo", f"+{TOOLCHAIN}", "run", "--release",
         "--locked", "--quiet", "--jobs", "1", "--manifest-path",
         "model/burn-a0/Cargo.toml", "--example", "a0_ablation", "--",
         "--phase", "paired-v5", "--experiment", "M002-v5", "--arms",
@@ -135,9 +137,12 @@ def load_provenanced_outputs(
     seen_paths: set[Path] = set()
     seen_names: set[str] = set()
     outputs: list[tuple[str, str]] = []
-    input_hashes: dict[str, str] = {}
+    stdout_hashes: dict[str, str] = {}
+    stderr_hashes: dict[str, str] = {}
+    metadata_hashes: dict[str, str] = {}
     sources: set[str] = set()
     digest_sets: set[tuple[tuple[str, str], ...]] = set()
+    executions: set[str] = set()
 
     for supplied in paths:
         path = supplied.resolve()
@@ -148,19 +153,25 @@ def load_provenanced_outputs(
         seen_paths.add(path)
         seen_names.add(supplied.name)
         sidecar = supplied.with_suffix(".json")
+        stderr = supplied.with_suffix(".stderr")
         if not sidecar.is_file():
             raise PilotError(f"{supplied}: missing sibling metadata {sidecar.name}")
+        if not stderr.is_file():
+            raise PilotError(f"{supplied}: missing sibling stderr {stderr.name}")
         raw = supplied.read_bytes()
         digest = sha256(raw)
+        stderr_raw = stderr.read_bytes()
+        stderr_digest = sha256(stderr_raw)
+        metadata_raw = sidecar.read_bytes()
         text = raw.decode("utf-8")
         try:
-            metadata = json.loads(sidecar.read_text(encoding="utf-8"))
+            metadata = json.loads(metadata_raw.decode("utf-8"))
         except json.JSONDecodeError as error:
             raise PilotError(f"{sidecar}: invalid JSON: {error}") from None
         if not isinstance(metadata, dict):
             raise PilotError(f"{sidecar}: metadata is not an object")
-        if type(metadata.get("schema_version")) is not int or metadata["schema_version"] != 1:
-            raise PilotError(f"{sidecar}: schema_version must be integer 1")
+        if type(metadata.get("schema_version")) is not int or metadata["schema_version"] != 2:
+            raise PilotError(f"{sidecar}: schema_version must be integer 2")
         source = metadata.get("source_sha")
         if not isinstance(source, str) or not SOURCE_SHA.fullmatch(source):
             raise PilotError(f"{sidecar}: source_sha is not a lowercase 40-hex commit")
@@ -183,15 +194,43 @@ def load_provenanced_outputs(
             raise PilotError(f"{sidecar}: stdout_file does not bind this artifact")
         if metadata.get("stdout_sha256") != digest:
             raise PilotError(f"{supplied}: stdout SHA256 does not match metadata")
+        if metadata.get("stderr_file") != stderr.name:
+            raise PilotError(f"{sidecar}: stderr_file does not bind this artifact")
+        if metadata.get("stderr_sha256") != stderr_digest:
+            raise PilotError(f"{supplied}: stderr SHA256 does not match metadata")
+        execution = metadata.get("execution_provenance")
+        if not isinstance(execution, dict):
+            raise PilotError(f"{sidecar}: execution provenance is missing")
+        try:
+            source_tree = execution["source_tree_sha"]
+            cargo = execution["cargo"]
+            profile = execution["hardware_profile"]
+            environment = execution["environment_sha256"]
+            rustc = execution["rustc_version"]
+        except KeyError as error:
+            raise PilotError(f"{sidecar}: execution provenance lacks {error.args[0]}") from None
+        if (
+            not isinstance(source_tree, str) or not SOURCE_SHA.fullmatch(source_tree)
+            or not isinstance(cargo, dict) or not isinstance(cargo.get("sha256"), str) or not SHA256.fullmatch(cargo["sha256"])
+            or not isinstance(profile, dict) or not isinstance(profile.get("sha256"), str) or not SHA256.fullmatch(profile["sha256"])
+            or not isinstance(environment, str) or not SHA256.fullmatch(environment)
+            or not isinstance(rustc, str) or not rustc
+        ):
+            raise PilotError(f"{sidecar}: execution provenance is malformed")
         sources.add(source)
         digest_sets.add(tuple(digests.items()))
+        executions.add(json.dumps(execution, sort_keys=True, separators=(",", ":")))
         outputs.append((supplied.name, text))
-        input_hashes[supplied.name] = digest
+        stdout_hashes[supplied.name] = digest
+        stderr_hashes[stderr.name] = stderr_digest
+        metadata_hashes[sidecar.name] = sha256(metadata_raw)
 
     if len(sources) != 1:
         raise PilotError("pilot artifacts contain mixed source commits")
     if len(digest_sets) != 1:
         raise PilotError("pilot artifacts contain mixed fold digests")
+    if len(executions) != 1:
+        raise PilotError("pilot artifacts contain mixed execution provenance")
     digests = dict(next(iter(digest_sets)))
     if digests != locked_fold_digests(root):
         raise PilotError("pilot fold digests do not match splits.lock.json")
@@ -199,7 +238,10 @@ def load_provenanced_outputs(
         "source_sha": next(iter(sources)),
         "fold_digests": digests,
         "fixed_protocol": fixed_protocol(),
-        "input_stdout_sha256": dict(sorted(input_hashes.items())),
+        "execution_provenance": json.loads(next(iter(executions))),
+        "input_stdout_sha256": dict(sorted(stdout_hashes.items())),
+        "input_stderr_sha256": dict(sorted(stderr_hashes.items())),
+        "input_metadata_sha256": dict(sorted(metadata_hashes.items())),
     }
 
 

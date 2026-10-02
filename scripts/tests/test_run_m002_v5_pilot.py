@@ -81,10 +81,11 @@ class M002V5PilotTests(unittest.TestCase):
 
     def test_dirty_worktree_refuses_real_run(self):
         clean_sha = subprocess.CompletedProcess([], 0, "a" * 40 + "\n", "")
+        detached = subprocess.CompletedProcess([], 1, "", "")
         dirty = subprocess.CompletedProcess([], 0, " M other-agent.py\n", "")
-        with mock.patch.object(MOD.subprocess, "run", side_effect=[clean_sha, dirty]):
+        with mock.patch.object(MOD.subprocess, "run", side_effect=[clean_sha, detached, dirty]):
             with self.assertRaisesRegex(MOD.PilotError, "not clean and committed"):
-                MOD.require_clean_worktree(Path("repo"))
+                MOD.require_clean_detached_worktree(Path("repo/output"), Path("repo"))
 
     def test_resume_accepts_only_complete_exact_success_and_rejects_mismatch(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -92,7 +93,7 @@ class M002V5PilotTests(unittest.TestCase):
             candidate = {"rank": 8, "bias_limit": 1, "metadata_dropout": 0.0}
             digests = {name: str(index) * 16 for index, name in enumerate(MOD.FOLDS, 1)}
             command = MOD.command_for(candidate, 7, digests)
-            expected = MOD.expected_identity("a" * 40, command, candidate, 7, digests)
+            expected = MOD.expected_identity("a" * 40, command, candidate, 7, digests, {"test": True})
             name = MOD.cell_name(candidate, 7)
             stdout_path, stderr_path, metadata_path = MOD.artifact_paths(output, name)
             stdout_path.write_bytes(b"out\n")
@@ -122,7 +123,7 @@ class M002V5PilotTests(unittest.TestCase):
             candidate = {"rank": 8, "bias_limit": 1, "metadata_dropout": 0.0}
             digests = {name: str(index) * 16 for index, name in enumerate(MOD.FOLDS, 1)}
             command = MOD.command_for(candidate, 7, digests)
-            expected = MOD.expected_identity("a" * 40, command, candidate, 7, digests)
+            expected = MOD.expected_identity("a" * 40, command, candidate, 7, digests, {"test": True})
             name = MOD.cell_name(candidate, 7)
             completed = subprocess.CompletedProcess(command, 0, b"raw\x00stdout", b"raw\xffstderr")
             with (

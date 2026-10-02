@@ -52,11 +52,13 @@ PTR is a **compiling architecture/research prototype**, not yet a complete model
 - `M002-v5` is registered as `planned`, not evidence. The direct
   FactorizedV2/Off runner, versioned `operator_routing_v2` bundle,
   non-claimable 16-cell pilot archive, and conjunctive five-seed checker are
-  ready. A freeze is accepted only when the selector recomputes from the
-  committed pilot triples and exactly matches the pinned architecture. Every
-  confirmatory coverage and latency cell is gated individually; M009
-  recomputes the committed decision from its five bound records and remains
-  locked until that result is a PASS.
+  ready. The pilot executes from a private detached source snapshot and binds
+  toolchain, environment, host and Windows hardware-profile provenance. A
+  freeze is accepted only when the selector recomputes all committed pilot
+  triples and exactly matches the pinned architecture. Every confirmatory
+  coverage and latency cell is gated individually; M009 recomputes immutable
+  record history and the committed decision, then requires a matching
+  FactorizedV2 checkpoint/configuration contract before it can run.
 
 ## Current research/implementation gap
 

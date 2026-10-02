@@ -4,11 +4,14 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import math
 import os
 from pathlib import Path
+import platform
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -24,6 +27,8 @@ SEEDS = (7, 13)
 RANKS = (8, 16)
 BIAS_LIMITS = (1, 2)
 METADATA_DROPOUTS = (0.0, 0.1)
+TOOLCHAIN = "1.95.0-x86_64-pc-windows-gnu"
+HARDWARE_PROFILE = Path("hardware/a0-cpu-12core-windows.toml")
 DEFAULT_OUTPUT = ROOT.parent / f"{ROOT.name}-m002-v5-pilot-output"
 
 
@@ -95,7 +100,7 @@ def command_for(
     folds = ",".join(f"{name}={digests[name]}" for name in FOLDS)
     return [
         "cargo",
-        "+1.95.0-x86_64-pc-windows-gnu",
+        f"+{TOOLCHAIN}",
         "run",
         "--release",
         "--locked",
@@ -147,8 +152,35 @@ def source_sha(root: Path = ROOT) -> str:
     return result.stdout.strip()
 
 
-def require_clean_worktree(root: Path = ROOT) -> str:
+def _inside(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve().relative_to(parent.resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def require_clean_detached_worktree(output: Path, root: Path = ROOT) -> str:
+    """Refuse mutable source inputs, while permitting verified own output.
+
+    A completed cell is immutable evidence and intentionally lives below
+    ``output``.  It is the only untracked content a resumed invocation may
+    observe; every other modified, staged, or untracked path is a refusal.
+    The actual subprocesses run from a second detached worktree created from
+    this SHA, so the archive cannot change their inputs.
+    """
     sha = source_sha(root)
+    branch = subprocess.run(
+        ["git", "symbolic-ref", "--quiet", "HEAD"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if branch.returncode == 0:
+        raise PilotError("refusing real pilot run: source worktree must be detached at a commit")
+    if branch.returncode not in (0, 1):
+        raise PilotError(f"cannot inspect source HEAD attachment: {branch.stderr.strip()}")
     status = subprocess.run(
         ["git", "status", "--porcelain=v1", "--untracked-files=all"],
         cwd=root,
@@ -158,9 +190,82 @@ def require_clean_worktree(root: Path = ROOT) -> str:
     )
     if status.returncode:
         raise PilotError(f"cannot inspect working tree: {status.stderr.strip()}")
-    if status.stdout:
-        raise PilotError("refusing real pilot run: working tree is not clean and committed")
+    root_resolved = root.resolve()
+    output_resolved = output.resolve()
+    for line in status.stdout.splitlines():
+        if not line.startswith("?? "):
+            raise PilotError("refusing real pilot run: working tree is not clean and committed")
+        candidate = root_resolved / line[3:]
+        if not _inside(candidate, output_resolved):
+            raise PilotError("refusing real pilot run: working tree is not clean and committed")
     return sha
+
+
+def provenance_environment() -> dict[str, str]:
+    """Digest only build-relevant environment values; never archive secrets."""
+    names = (
+        "PATH",
+        "CARGO_BUILD_TARGET",
+        "CARGO_ENCODED_RUSTFLAGS",
+        "CARGO_INCREMENTAL",
+        "CC",
+        "CFLAGS",
+        "RUSTC",
+        "RUSTC_WRAPPER",
+        "RUSTDOCFLAGS",
+        "RUSTFLAGS",
+    )
+    return {name: os.environ.get(name, "") for name in names}
+
+
+def command_output(command: list[str], *, cwd: Path | None = None) -> str:
+    completed = subprocess.run(command, cwd=cwd, capture_output=True, text=True, check=False)
+    if completed.returncode:
+        raise PilotError(f"cannot identify {' '.join(command)}: {completed.stderr.strip()}")
+    return completed.stdout.strip()
+
+
+def execution_provenance(root: Path, source: str) -> dict[str, object]:
+    """Bound toolchain, environment, host and source-tree identity for every cell."""
+    cargo = shutil.which("cargo")
+    if cargo is None:
+        raise PilotError("cannot resolve cargo executable")
+    cargo_path = Path(cargo).resolve()
+    try:
+        cargo_digest = sha256(cargo_path.read_bytes())
+        profile_bytes = (root / HARDWARE_PROFILE).read_bytes()
+    except OSError as error:
+        raise PilotError(f"cannot read execution provenance input: {error}") from None
+    tree = command_output(["git", "rev-parse", f"{source}^{{tree}}"], cwd=root)
+    if len(tree) != 40:
+        raise PilotError("cannot resolve source tree identity")
+    environment = provenance_environment()
+    host = {
+        "machine": platform.machine(),
+        "processor": platform.processor(),
+        "python_implementation": platform.python_implementation(),
+        "python_version": platform.python_version(),
+        "release": platform.release(),
+        "system": platform.system(),
+        "cpu_count": os.cpu_count(),
+    }
+    return {
+        "source_tree_sha": tree,
+        "cargo": {
+            "path": str(cargo_path),
+            "sha256": cargo_digest,
+            "version": command_output(["cargo", f"+{TOOLCHAIN}", "--version"]),
+        },
+        "rustc_version": command_output(["rustc", f"+{TOOLCHAIN}", "-Vv"]),
+        "environment_sha256": sha256(
+            json.dumps(environment, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ),
+        "host": host,
+        "hardware_profile": {
+            "path": HARDWARE_PROFILE.as_posix(),
+            "sha256": sha256(profile_bytes),
+        },
+    }
 
 
 def expected_identity(
@@ -169,14 +274,16 @@ def expected_identity(
     candidate: dict[str, int | float],
     seed: int,
     digests: dict[str, str],
+    execution: dict[str, object],
 ) -> dict[str, object]:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "source_sha": source,
         "command": command,
         "candidate": candidate,
         "seed": seed,
         "fold_digests": digests,
+        "execution_provenance": execution,
     }
 
 
@@ -232,6 +339,79 @@ def write_exclusive(path: Path, data: bytes) -> None:
         raise PilotError(f"refusing to overwrite existing artifact {path}") from None
 
 
+def validate_existing_archive(
+    output: Path,
+    cells: list[tuple[str, dict[str, int | float], int, list[str]]],
+    source: str,
+    digests: dict[str, str],
+    execution: dict[str, object],
+) -> None:
+    """Allow resumable, complete evidence only; reject stray or partial files."""
+    if not output.exists():
+        return
+    if not output.is_dir():
+        raise PilotError(f"pilot output is not a directory: {output}")
+    expected_paths = set()
+    for name, candidate, seed, command in cells:
+        expected = expected_identity(source, command, candidate, seed, digests, execution)
+        expected_paths.update(artifact_paths(output, name))
+        resumable(output, name, expected)
+    for path in output.rglob("*"):
+        if path.is_file() and path not in expected_paths:
+            raise PilotError(f"pilot archive has an unexpected artifact: {path.name}")
+        if path.is_dir() and path != output:
+            raise PilotError(f"pilot archive has an unexpected directory: {path.name}")
+
+
+def snapshot_status(root: Path, source: str) -> None:
+    head = source_sha(root)
+    if head != source:
+        raise PilotError("immutable execution snapshot moved away from its source commit")
+    status = subprocess.run(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if status.returncode or status.stdout:
+        raise PilotError("immutable execution snapshot was modified")
+
+
+@contextlib.contextmanager
+def immutable_snapshot(root: Path, source: str) -> Iterable[Path]:
+    """Materialize a private detached worktree from exactly ``source``.
+
+    The source checkout may retain its versioned archive while a run resumes.
+    Cargo receives this private detached checkout instead, so it cannot consume
+    an edit made in the archival checkout after provenance was captured.
+    """
+    with tempfile.TemporaryDirectory(prefix="m002-v5-source-", dir=root.parent) as parent:
+        snapshot = Path(parent) / "source"
+        created = subprocess.run(
+            ["git", "worktree", "add", "--detach", str(snapshot), source],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if created.returncode:
+            raise PilotError(f"cannot create immutable execution snapshot: {created.stderr.strip()}")
+        try:
+            snapshot_status(snapshot, source)
+            yield snapshot
+        finally:
+            removed = subprocess.run(
+                ["git", "worktree", "remove", "--force", str(snapshot)],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if removed.returncode:
+                raise PilotError(f"cannot remove immutable execution snapshot: {removed.stderr.strip()}")
+
+
 def run_cell(
     root: Path,
     output: Path,
@@ -284,33 +464,37 @@ def execute(output: Path, dry_run: bool, root: Path = ROOT) -> int:
             print(json.dumps({"cell": name, "command": command}, sort_keys=True))
         return 0
 
-    source = require_clean_worktree(root)
+    output = output if output.is_absolute() else root / output
+    source = require_clean_detached_worktree(output, root)
     digests = fold_digests(root)
     cells = list(plan(digests))
-    output = output if output.is_absolute() else root / output
+    execution = execution_provenance(root, source)
+    validate_existing_archive(output, cells, source, digests, execution)
     output.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="m002-v5-pilot-", dir=root.parent) as isolated:
-        isolated_path = Path(isolated)
-        environment = os.environ.copy()
-        environment.update(
-            {
-                "CARGO_HOME": str(isolated_path / "cargo-home"),
-                "CARGO_TARGET_DIR": str(isolated_path / "cargo-target"),
-                "TEMP": str(isolated_path / "temp"),
-                "TMP": str(isolated_path / "temp"),
-            }
-        )
-        for path in (environment["CARGO_HOME"], environment["CARGO_TARGET_DIR"], environment["TEMP"]):
-            Path(path).mkdir(parents=True, exist_ok=True)
-        for name, candidate, seed, command in cells:
-            expected = expected_identity(source, command, candidate, seed, digests)
-            if resumable(output, name, expected):
-                print(f"resume {name}")
-                continue
-            print(f"run {name}", flush=True)
-            exit_code = run_cell(root, output, name, command, expected, environment)
-            if exit_code:
-                raise PilotError(f"{name}: cargo exited with {exit_code}; immutable evidence retained")
+    with immutable_snapshot(root, source) as snapshot:
+        with tempfile.TemporaryDirectory(prefix="m002-v5-pilot-", dir=root.parent) as isolated:
+            isolated_path = Path(isolated)
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "CARGO_HOME": str(isolated_path / "cargo-home"),
+                    "CARGO_TARGET_DIR": str(isolated_path / "cargo-target"),
+                    "TEMP": str(isolated_path / "temp"),
+                    "TMP": str(isolated_path / "temp"),
+                }
+            )
+            for path in (environment["CARGO_HOME"], environment["CARGO_TARGET_DIR"], environment["TEMP"]):
+                Path(path).mkdir(parents=True, exist_ok=True)
+            for name, candidate, seed, command in cells:
+                expected = expected_identity(source, command, candidate, seed, digests, execution)
+                if resumable(output, name, expected):
+                    print(f"resume {name}")
+                    continue
+                print(f"run {name}", flush=True)
+                exit_code = run_cell(snapshot, output, name, command, expected, environment)
+                snapshot_status(snapshot, source)
+                if exit_code:
+                    raise PilotError(f"{name}: cargo exited with {exit_code}; immutable evidence retained")
     return 0
 
 

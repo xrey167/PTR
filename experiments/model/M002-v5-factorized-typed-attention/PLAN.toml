@@ -79,4 +79,4 @@ rule = "PASS requires every gate. Any failed, missing, malformed, non-finite or 
 
 [downstream]
 M009 = "locked"
-unlock_rule = "M009 may start only from a commit-bound M002-v5 PASS and must use the exact frozen FactorizedV2 architecture. A NO-GO requires a new study version."
+unlock_rule = "M009 may start only from a commit-bound M002-v5 PASS and must use the exact frozen FactorizedV2 architecture. Its preregistration and checkpoint contract bind source_experiment=M002-v5, factorized-v2 mode, selected rank/bias/dropout, repaired router and the canonical architecture-contract digest. An unlisted M009 is blocked. A NO-GO requires a new study version."

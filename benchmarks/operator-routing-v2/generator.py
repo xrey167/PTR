@@ -433,10 +433,12 @@ def check_on_disk(out: Path, lock: dict) -> list[str]:
             entry = lock["folds"][fold.name]["splits"][split]
             for kind in ("jsonl", "tsv"):
                 path = out / fold.name / f"{split}.{kind}"
-                if path.is_file():
-                    digest = hashlib.sha256(path.read_bytes()).hexdigest()
-                    if digest != entry[f"{kind}_sha256"]:
-                        problems.append(f"{path}: sha256 {digest} != lock {entry[f'{kind}_sha256']}")
+                if not path.is_file():
+                    problems.append(f"{path}: required versioned dataset file is missing")
+                    continue
+                digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                if digest != entry[f"{kind}_sha256"]:
+                    problems.append(f"{path}: sha256 {digest} != lock {entry[f'{kind}_sha256']}")
     return problems
 
 

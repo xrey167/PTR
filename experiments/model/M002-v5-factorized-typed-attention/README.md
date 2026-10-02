@@ -14,8 +14,8 @@ remain deliberately unpinned while the experiment is `planned`. M002-v5 cannot b
 selection, dataset lock, criteria, code and entrypoint are committed and their
 digests are recorded in `config.toml` and `experiment.toml`.
 
-From a clean development commit, run the resumable pilot into its versioned
-archive and then apply the frozen selector to the complete raw stdout set:
+From a clean **detached** development commit, run the resumable pilot into its
+versioned archive and then apply the frozen selector to the complete raw set:
 
 ```sh
 python scripts/run_m002_v5_pilot.py --output-dir experiments/model/M002-v5-factorized-typed-attention/pilot/raw
@@ -23,12 +23,19 @@ python scripts/select_m002_v5_pilot.py experiments/model/M002-v5-factorized-type
   --output experiments/model/M002-v5-factorized-typed-attention/pilot-selection.json
 ```
 
+The runner creates a second, private detached worktree at the exact source
+commit and runs Cargo there. Each cell binds that source tree, the resolved
+Cargo/Rust toolchain, a build-environment digest, host facts and the measured
+Windows hardware profile. It permits only verified complete triples already
+below `pilot/raw` on a resumed invocation; partial or extra artifacts refuse
+instead of being overwritten.
+
 `pilot-selection.json` is development evidence only. It records the fixed
 rule's choice for the freeze and can never contribute a confirmatory metric.
 Before the study may become `prepared`, the research gate recomputes it from
-all 16 committed stdout/sidecar/stderr triples, checks their source commit and
-dataset lock, and requires the frozen rank, bias limit and dropout to match
-exactly.
+all 16 committed stdout/sidecar/stderr triples, including all three artifact
+digests and execution provenance, checks their source commit and dataset lock,
+and requires the frozen rank, bias limit and dropout to match exactly.
 
 The confirmatory unit is a seed, not a fold. Each of the five declared seeds
 runs both arms over the three confirmatory folds in one process. Fold metrics
@@ -47,4 +54,7 @@ gate is `INCONCLUSIVE/NO-GO`. The only permitted positive wording is:
 > degradation.
 
 M009 remains locked until such a commit-bound PASS exists. The planned state in
-this directory is not evidence and does not authorize Learned Backend use.
+this directory is not evidence and does not authorize Learned Backend use. A
+future M009 must additionally bind its configuration and checkpoint contract
+to the selected FactorizedV2 rank, bias limit, dropout and repaired router; an
+unlisted M009 cannot bypass this lock.

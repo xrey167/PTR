@@ -197,4 +197,4 @@ keys = ["model.backend", "model.model", "model.implementation", "model.architect
 status_key = "status"
 
 [experiment.M002-v5]
-required = { seeds = "int-list", steps = "int", batch = "int", d_model = "int", learning_rate = "str", data = "str", folds = "str", rank = "int", bias_limit = "int", metadata_dropout = "str", dataset_lock = "file", criteria = "file", decision_script = "file", pilot_selection_script = "file", pilot_runner = "file", pilot_selection = "file" }
+required = { seeds = "int-list", steps = "int", batch = "int", d_model = "int", learning_rate = "str", data = "str", folds = "str", rank = "int", bias_limit = "int", metadata_dropout = "str", dataset_lock = "file", criteria = "file", decision_script = "file", pilot_selection_script = "file", pilot_runner = "file", pilot_selection = "file", factorized_contract_sha256 = "str" }

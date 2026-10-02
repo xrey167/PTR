@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import tempfile
 import unittest
+from pathlib import Path
 
 from _support import gen, lock
 
@@ -40,6 +42,12 @@ class DigestTests(unittest.TestCase):
     def test_repeated_render_is_byte_identical(self):
         first = gen.render_split("claim-interventional", "test_ood", 40)
         self.assertEqual(first, gen.render_split("claim-interventional", "test_ood", 40))
+
+    def test_check_rejects_a_missing_versioned_dataset_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            problems = gen.check_on_disk(Path(directory), lock())
+        self.assertEqual(len(problems), len(gen.FOLDS) * len(gen.SPLITS) * 2)
+        self.assertTrue(all("required versioned dataset file is missing" in problem for problem in problems))
 
 
 if __name__ == "__main__":

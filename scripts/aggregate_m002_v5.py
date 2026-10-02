@@ -14,6 +14,7 @@ import json
 import math
 import statistics
 import sys
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,6 +36,18 @@ IDENTITY_FIELDS = (
     "cargo_lock_sha256",
     "uv_lock_sha256",
 )
+STUDY_DIRECTORY = Path("experiments/model/M002-v5-factorized-typed-attention")
+ROUTER_PROTOCOL = {
+    "typed_query": "on",
+    "latent_steps": "2",
+    "latent_nonlinearity": "on",
+    "frozen_router": "off",
+    "router_mode": "calibrated-cosine-v2",
+    "router_logit_scale": 5.0,
+    "label_smoothing": 0.05,
+    "consistency_weight": 0.1,
+    "batch": "typed",
+}
 
 
 class EvidenceError(ValueError):
@@ -52,6 +65,79 @@ def finite_number(value: object, where: str) -> float:
     if not math.isfinite(number):
         raise EvidenceError(f"{where} is not finite")
     return number
+
+
+def require_close(value: object, expected: float, where: str) -> None:
+    actual = finite_number(value, where)
+    if not math.isclose(actual, expected, rel_tol=0.0, abs_tol=1e-12):
+        raise EvidenceError(f"{where} is {actual!r}, expected {expected!r}")
+
+
+def frozen_protocol(root: Path = ROOT) -> dict:
+    """Load the only architecture/protocol a confirmatory record may claim.
+
+    This is intentionally read by the decider, not only by the outer research
+    gate.  A standalone aggregation therefore cannot turn a mismatched command
+    or a manually altered protocol row into a PASS.
+    """
+    config_path = root / STUDY_DIRECTORY / "config.toml"
+    selection_path = root / STUDY_DIRECTORY / "pilot-selection.json"
+    try:
+        config = tomllib.loads(config_path.read_text(encoding="utf-8")).get("preregistration", {})
+        selection_document = json.loads(selection_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError, json.JSONDecodeError) as error:
+        raise EvidenceError(f"cannot load frozen M002-v5 protocol: {error}") from None
+    if not isinstance(config, dict) or not isinstance(selection_document, dict):
+        raise EvidenceError("frozen M002-v5 configuration or pilot selection is malformed")
+    selection = selection_document.get("selection")
+    if selection_document.get("decision") != "SELECTED" or not isinstance(selection, dict):
+        raise EvidenceError("M002-v5 pilot did not select a confirmatory architecture")
+    try:
+        candidate = (
+            int(config["rank"]),
+            float(config["bias_limit"]),
+            float(config["metadata_dropout"]),
+        )
+        selected = (
+            int(selection["rank"]),
+            float(selection["bias_limit"]),
+            float(selection["metadata_dropout"]),
+        )
+        protocol = {
+            "candidate": candidate,
+            "d_model": int(config["d_model"]),
+            "batch_size": int(config["batch"]),
+            "steps": int(config["steps"]),
+            "lr": float(config["learning_rate"]),
+            "data": str(config["data"]),
+            "folds": tuple(str(config["folds"]).split(",")),
+            "router": ROUTER_PROTOCOL,
+        }
+    except (KeyError, TypeError, ValueError) as error:
+        raise EvidenceError(f"frozen M002-v5 configuration has invalid protocol values: {error}") from None
+    if candidate != selected:
+        raise EvidenceError("frozen M002-v5 configuration does not equal the pilot selection")
+    if protocol["d_model"] != 48 or protocol["batch_size"] != 128 or protocol["steps"] != 1500:
+        raise EvidenceError("M002-v5 frozen dimensions, batch, or steps are not the preregistered values")
+    if not math.isclose(protocol["lr"], 0.005, rel_tol=0.0, abs_tol=1e-12):
+        raise EvidenceError("M002-v5 frozen learning rate is not 0.005")
+    if protocol["data"] != "datasets/generated/operator_routing_v2" or protocol["folds"] != FOLDS:
+        raise EvidenceError("M002-v5 frozen dataset or folds do not equal the confirmatory protocol")
+    return protocol
+
+
+def fixture_protocol() -> dict:
+    """Fixed fixture protocol for unit tests; production callers use ``frozen_protocol``."""
+    return {
+        "candidate": (16, 2.0, 0.1),
+        "d_model": 48,
+        "batch_size": 128,
+        "steps": 1500,
+        "lr": 0.005,
+        "data": "datasets/generated/operator_routing_v2",
+        "folds": FOLDS,
+        "router": ROUTER_PROTOCOL,
+    }
 
 
 def metric_rows(stdout: object, record: str) -> list[dict]:
@@ -86,7 +172,8 @@ def expected_fold_digests(root: Path = ROOT) -> dict[str, str]:
     return {fold: lock["folds"][fold]["data_fnv1a64"] for fold in FOLDS}
 
 
-def index_records(records: list[tuple[str, dict]], root: Path = ROOT) -> dict:
+def index_records(records: list[tuple[str, dict]], root: Path = ROOT, protocol: dict | None = None) -> dict:
+    protocol = frozen_protocol(root) if protocol is None else protocol
     if len(records) != len(SEEDS):
         raise EvidenceError(f"expected exactly {len(SEEDS)} run records, found {len(records)}")
     by_seed: dict[int, tuple[str, dict]] = {}
@@ -137,12 +224,20 @@ def index_records(records: list[tuple[str, dict]], root: Path = ROOT) -> dict:
         protocols = [row for row in rows if row.get("row") == "run-v5"]
         if len(protocols) != 1 or protocols[0].get("seed") != seed:
             raise EvidenceError(f"{name}: expected one matching run-v5 protocol row")
-        protocol = protocols[0]
+        protocol_row = protocols[0]
         candidate = (
-            int(finite_number(protocol.get("rank"), f"{name}: rank")),
-            finite_number(protocol.get("bias_limit"), f"{name}: bias_limit"),
-            finite_number(protocol.get("metadata_dropout"), f"{name}: metadata_dropout"),
+            int(finite_number(protocol_row.get("rank"), f"{name}: rank")),
+            finite_number(protocol_row.get("bias_limit"), f"{name}: bias_limit"),
+            finite_number(protocol_row.get("metadata_dropout"), f"{name}: metadata_dropout"),
         )
+        if candidate != protocol["candidate"]:
+            raise EvidenceError(f"{name}: run-v5 candidate does not equal the frozen pilot selection")
+        for field in ("d_model", "batch_size", "steps"):
+            if protocol_row_value := protocol.get(field):
+                value = protocol_row.get(field)
+                if value != protocol_row_value:
+                    raise EvidenceError(f"{name}: run-v5 {field} does not equal the frozen protocol")
+        require_close(protocol_row.get("lr"), protocol["lr"], f"{name}: run-v5 lr")
         candidates.add(candidate)
         cells: dict[tuple, dict] = {}
         for row in rows:
@@ -177,6 +272,16 @@ def index_records(records: list[tuple[str, dict]], root: Path = ROOT) -> dict:
                     raise EvidenceError(f"{name}: {fold}/{arm} reported NaN training")
                 for field in ("total_params", "estimated_flops_per_example", "final_train_loss"):
                     finite_number(meta.get(field), f"{name}: {fold}/{arm}/{field}")
+                for field in ("d_model", "batch_size", "steps"):
+                    if meta.get(field) != protocol[field]:
+                        raise EvidenceError(f"{name}: {fold}/{arm}/{field} does not equal the frozen protocol")
+                require_close(meta.get("lr"), protocol["lr"], f"{name}: {fold}/{arm}/lr")
+                for field, expected in protocol["router"].items():
+                    value = meta.get(field)
+                    if isinstance(expected, float):
+                        require_close(value, expected, f"{name}: {fold}/{arm}/{field}")
+                    elif value != expected:
+                        raise EvidenceError(f"{name}: {fold}/{arm}/{field} does not equal the frozen router")
                 finite_number(performance.get("latency_p95_ms"), f"{name}: {fold}/{arm}/latency_p95_ms")
                 finite_number(calibration.get("temperature"), f"{name}: {fold}/{arm}/temperature")
                 finite_number(calibration.get("confidence_threshold"), f"{name}: {fold}/{arm}/threshold")
@@ -215,6 +320,8 @@ def index_records(records: list[tuple[str, dict]], root: Path = ROOT) -> dict:
             )
             if meta_candidate != candidate:
                 raise EvidenceError(f"{name}: {fold} treatment does not match the protocol candidate")
+            if meta_candidate != protocol["candidate"]:
+                raise EvidenceError(f"{name}: {fold} treatment does not match the frozen pilot selection")
             for field in (
                 "typed_attention_rank", "typed_attention_limit", "typed_query", "latent_steps",
                 "latent_nonlinearity", "frozen_router", "router_mode", "router_logit_scale",
@@ -228,9 +335,9 @@ def index_records(records: list[tuple[str, dict]], root: Path = ROOT) -> dict:
     return indexed
 
 
-def decide(records: list[tuple[str, dict]], root: Path = ROOT) -> dict:
+def decide(records: list[tuple[str, dict]], root: Path = ROOT, protocol: dict | None = None) -> dict:
     """Apply every preregistered gate; malformed evidence is a hard refusal."""
-    table = index_records(records, root)
+    table = index_records(records, root, protocol)
 
     def value(seed: int, fold: str, arm: str, split: str, metric: str) -> float:
         return float(table[seed][("final-v5", fold, arm, split)][metric])
