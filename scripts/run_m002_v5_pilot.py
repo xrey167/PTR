@@ -276,7 +276,6 @@ def execution_provenance(snapshot: Path, source: str, environment: dict[str, str
     tree = command_output(["git", "rev-parse", f"{source}^{{tree}}"], cwd=snapshot)
     if len(tree) != 40:
         raise PilotError("cannot resolve source tree identity")
-    environment = provenance_environment()
     host = {
         "machine": platform.machine(),
         "processor": platform.processor(),
