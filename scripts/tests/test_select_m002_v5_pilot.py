@@ -54,10 +54,18 @@ def artifact_grid(directory: Path, source_sha: str = "a" * 40):
         stderr = path.with_suffix(".stderr")
         path.write_bytes(raw)
         stderr.write_bytes(b"timing\n")
+        execution = {
+            "source_tree_sha": "b" * 40,
+            "cargo": {"path": "C:/cargo.exe", "sha256": "c" * 64, "version": "cargo test"},
+            "rustc": {"path": "C:/rustc.exe", "sha256": "f" * 64, "version": "rustc test"},
+            "environment_sha256": "d" * 64,
+            "host": {"system": "test"},
+            "hardware_profile": {"path": "hardware/test.toml", "sha256": "e" * 64},
+        }
         metadata = {
             "schema_version": 2,
             "source_sha": source_sha,
-            "command": mod.command_for(candidate, seed, digests),
+            "command": mod.command_for(candidate, seed, digests, execution["cargo"]["path"]),
             "candidate": candidate,
             "seed": seed,
             "fold_digests": digests,
@@ -66,14 +74,7 @@ def artifact_grid(directory: Path, source_sha: str = "a" * 40):
             "stdout_sha256": mod.sha256(raw),
             "stderr_file": stderr.name,
             "stderr_sha256": mod.sha256(stderr.read_bytes()),
-            "execution_provenance": {
-                "source_tree_sha": "b" * 40,
-                "cargo": {"path": "C:/cargo.exe", "sha256": "c" * 64, "version": "cargo test"},
-                "rustc_version": "rustc test",
-                "environment_sha256": "d" * 64,
-                "host": {"system": "test"},
-                "hardware_profile": {"path": "hardware/test.toml", "sha256": "e" * 64},
-            },
+            "execution_provenance": execution,
         }
         path.with_suffix(".json").write_text(
             json.dumps(metadata, sort_keys=True), encoding="utf-8"
@@ -187,7 +188,10 @@ class PilotSelectionTests(unittest.TestCase):
             raw = ("\n".join(json.dumps(row) for row in rows) + "\n").encode()
             path.write_bytes(raw)
             metadata["fold_digests"] = changed
-            metadata["command"] = mod.command_for(metadata["candidate"], metadata["seed"], changed)
+            metadata["command"] = mod.command_for(
+                metadata["candidate"], metadata["seed"], changed,
+                metadata["execution_provenance"]["cargo"]["path"],
+            )
             metadata["stdout_sha256"] = mod.sha256(raw)
             sidecar.write_text(json.dumps(metadata, sort_keys=True), encoding="utf-8")
             with self.assertRaisesRegex(mod.PilotError, "mixed fold digests"):

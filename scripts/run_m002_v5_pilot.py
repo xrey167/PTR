@@ -95,12 +95,11 @@ def cell_name(candidate: dict[str, int | float], seed: int) -> str:
 
 
 def command_for(
-    candidate: dict[str, int | float], seed: int, digests: dict[str, str]
+    candidate: dict[str, int | float], seed: int, digests: dict[str, str], cargo: str = "cargo"
 ) -> list[str]:
     folds = ",".join(f"{name}={digests[name]}" for name in FOLDS)
     return [
-        "cargo",
-        f"+{TOOLCHAIN}",
+        cargo,
         "run",
         "--release",
         "--locked",
@@ -218,25 +217,47 @@ def provenance_environment() -> dict[str, str]:
     return {name: os.environ.get(name, "") for name in names}
 
 
-def command_output(command: list[str], *, cwd: Path | None = None) -> str:
-    completed = subprocess.run(command, cwd=cwd, capture_output=True, text=True, check=False)
+def command_output(
+    command: list[str], *, cwd: Path | None = None, environment: dict[str, str] | None = None
+) -> str:
+    completed = subprocess.run(command, cwd=cwd, env=environment, capture_output=True, text=True, check=False)
     if completed.returncode:
         raise PilotError(f"cannot identify {' '.join(command)}: {completed.stderr.strip()}")
     return completed.stdout.strip()
 
 
-def execution_provenance(root: Path, source: str) -> dict[str, object]:
-    """Bound toolchain, environment, host and source-tree identity for every cell."""
-    cargo = shutil.which("cargo")
-    if cargo is None:
-        raise PilotError("cannot resolve cargo executable")
-    cargo_path = Path(cargo).resolve()
+def executable_identity(path: str, version_command: list[str], environment: dict[str, str]) -> dict[str, str]:
+    executable = Path(path).resolve()
     try:
-        cargo_digest = sha256(cargo_path.read_bytes())
-        profile_bytes = (root / HARDWARE_PROFILE).read_bytes()
+        digest = sha256(executable.read_bytes())
     except OSError as error:
-        raise PilotError(f"cannot read execution provenance input: {error}") from None
-    tree = command_output(["git", "rev-parse", f"{source}^{{tree}}"], cwd=root)
+        raise PilotError(f"cannot read toolchain executable {executable}: {error}") from None
+    version = command_output(version_command, cwd=None, environment=environment)
+    return {"path": str(executable), "sha256": digest, "version": version}
+
+
+def toolchain_binary(name: str, environment: dict[str, str]) -> str:
+    rustup = shutil.which("rustup", path=environment.get("PATH"))
+    if rustup is None:
+        raise PilotError("cannot resolve rustup needed to bind the selected toolchain")
+    return command_output(
+        [str(Path(rustup).resolve()), "which", "--toolchain", TOOLCHAIN, name],
+        cwd=None,
+        environment=environment,
+    )
+
+
+def execution_provenance(snapshot: Path, source: str, environment: dict[str, str]) -> dict[str, object]:
+    """Bind the exact binaries and environment that Cargo will receive."""
+    cargo_path = toolchain_binary("cargo", environment)
+    rustc_path = toolchain_binary("rustc", environment)
+    cargo = executable_identity(cargo_path, [cargo_path, "--version"], environment)
+    rustc = executable_identity(rustc_path, [rustc_path, "-Vv"], environment)
+    try:
+        profile_bytes = (snapshot / HARDWARE_PROFILE).read_bytes()
+    except OSError as error:
+        raise PilotError(f"cannot read execution hardware profile from snapshot: {error}") from None
+    tree = command_output(["git", "rev-parse", f"{source}^{{tree}}"], cwd=snapshot)
     if len(tree) != 40:
         raise PilotError("cannot resolve source tree identity")
     environment = provenance_environment()
@@ -251,12 +272,8 @@ def execution_provenance(root: Path, source: str) -> dict[str, object]:
     }
     return {
         "source_tree_sha": tree,
-        "cargo": {
-            "path": str(cargo_path),
-            "sha256": cargo_digest,
-            "version": command_output(["cargo", f"+{TOOLCHAIN}", "--version"]),
-        },
-        "rustc_version": command_output(["rustc", f"+{TOOLCHAIN}", "-Vv"]),
+        "cargo": cargo,
+        "rustc": rustc,
         "environment_sha256": sha256(
             json.dumps(environment, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ),
@@ -450,10 +467,12 @@ def run_cell(
     return completed.returncode
 
 
-def plan(digests: dict[str, str]) -> Iterable[tuple[str, dict[str, int | float], int, list[str]]]:
+def plan(
+    digests: dict[str, str], cargo: str = "cargo"
+) -> Iterable[tuple[str, dict[str, int | float], int, list[str]]]:
     for candidate in candidates():
         for seed in SEEDS:
-            yield cell_name(candidate, seed), candidate, seed, command_for(candidate, seed, digests)
+            yield cell_name(candidate, seed), candidate, seed, command_for(candidate, seed, digests, cargo)
 
 
 def execute(output: Path, dry_run: bool, root: Path = ROOT) -> int:
@@ -467,10 +486,6 @@ def execute(output: Path, dry_run: bool, root: Path = ROOT) -> int:
     output = output if output.is_absolute() else root / output
     source = require_clean_detached_worktree(output, root)
     digests = fold_digests(root)
-    cells = list(plan(digests))
-    execution = execution_provenance(root, source)
-    validate_existing_archive(output, cells, source, digests, execution)
-    output.mkdir(parents=True, exist_ok=True)
     with immutable_snapshot(root, source) as snapshot:
         with tempfile.TemporaryDirectory(prefix="m002-v5-pilot-", dir=root.parent) as isolated:
             isolated_path = Path(isolated)
@@ -485,6 +500,10 @@ def execute(output: Path, dry_run: bool, root: Path = ROOT) -> int:
             )
             for path in (environment["CARGO_HOME"], environment["CARGO_TARGET_DIR"], environment["TEMP"]):
                 Path(path).mkdir(parents=True, exist_ok=True)
+            execution = execution_provenance(snapshot, source, environment)
+            cells = list(plan(digests, execution["cargo"]["path"]))
+            validate_existing_archive(output, cells, source, digests, execution)
+            output.mkdir(parents=True, exist_ok=True)
             for name, candidate, seed, command in cells:
                 expected = expected_identity(source, command, candidate, seed, digests, execution)
                 if resumable(output, name, expected):

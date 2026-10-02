@@ -2663,6 +2663,21 @@ def bound_m002_v5_pass_errors(root: Path, directory: Path | None) -> list[str]:
     sources = provenance.get("source_records") if isinstance(provenance, dict) else None
     if not isinstance(sources, list) or len(sources) != 5:
         return ["M009: M002-v5 decision does not bind exactly five source records"]
+    results = directory / "results"
+    expected_paths = []
+    if results.is_dir():
+        for path in sorted(results.glob("run-*.json")):
+            try:
+                relative = path.relative_to(root).as_posix()
+            except ValueError:
+                return ["M009: M002-v5 run records escaped the repository"]
+            if committed_regular_file(root, relative) is not None:
+                expected_paths.append(relative)
+    if len(expected_paths) != 5:
+        return ["M009: locked because M002-v5 has no exact committed five-seed run archive"]
+    source_paths = [item.get("path") for item in sources if isinstance(item, dict)]
+    if sorted(source_paths) != expected_paths:
+        return ["M009: M002-v5 decision does not bind exactly the immutable five-seed run archive"]
     records = []
     seen = set()
     for item in sources:
@@ -2698,6 +2713,52 @@ def bound_m002_v5_pass_errors(root: Path, directory: Path | None) -> list[str]:
         value is True for value in gates.values()
     ):
         return ["M009: locked because M002-v5 did not pass every recomputed gate"]
+    return []
+
+
+def m002_v5_factorized_contract_errors(root: Path, config: dict, selection: dict) -> list[str]:
+    """The M009 runtime artifact must encode, not merely repeat, the selection."""
+    relative = config.get("factorized_contract")
+    expected_digest = config.get("factorized_contract_sha256")
+    if not isinstance(relative, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_digest or ""):
+        return ["M002-v5: frozen factorized contract path or digest is invalid"]
+    path = committed_regular_file(root, relative)
+    if path is None or hashlib.sha256(path.read_bytes()).hexdigest() != expected_digest:
+        return ["M002-v5: factorized runtime contract is not committed with its pinned digest"]
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError) as error:
+        return [f"M002-v5: factorized runtime contract is unreadable: {error}"]
+    if not lines or lines[0] != "M002-V5-CONTRACT/1":
+        return ["M002-v5: factorized runtime contract has an unknown format"]
+    fields = {}
+    for line in lines[1:]:
+        if "=" not in line:
+            return ["M002-v5: factorized runtime contract has invalid syntax"]
+        key, value = line.split("=", 1)
+        if not key or not value or key in fields:
+            return ["M002-v5: factorized runtime contract has duplicate or empty fields"]
+        fields[key] = value
+    required = {
+        "attention_mode": "factorized-v2",
+        "d_model": "48",
+        "rank": str(selection.get("rank")),
+        "bias_limit": str(selection.get("bias_limit")).rstrip("0").rstrip("."),
+        "metadata_dropout": str(selection.get("metadata_dropout")).rstrip("0").rstrip("."),
+        "router_mode": "calibrated-cosine-v2",
+        "router_logit_scale": "5",
+        "label_smoothing": "0.05",
+        "consistency_weight": "0.1",
+        "latent_steps": "2",
+        "typed_query": "true",
+        "latent_nonlinearity": "true",
+    }
+    # The string spelling of zero must remain valid while the other floats have
+    # their canonical decimal form.
+    if required["metadata_dropout"] == "":
+        required["metadata_dropout"] = "0"
+    if set(fields) != set(required) or any(fields[key] != value for key, value in required.items()):
+        return ["M002-v5: factorized runtime contract does not equal the selected architecture and router"]
     return []
 
 
@@ -2782,7 +2843,7 @@ def m002_v5_pilot_freeze_errors(root: Path, experiment: Path, manifest: dict) ->
         or not math.isclose(actual[2], expected[2], rel_tol=0.0, abs_tol=1e-12)
     ):
         return ["M002-v5: frozen architecture does not exactly match the pilot selection"]
-    return []
+    return m002_v5_factorized_contract_errors(root, config, selection)
 
 
 def m002_v5_factorized_contract(root: Path, directory: Path | None) -> tuple[dict | None, list[str]]:
@@ -2800,6 +2861,13 @@ def m002_v5_factorized_contract(root: Path, directory: Path | None) -> tuple[dic
     if selection.get("decision") != "SELECTED" or not isinstance(chosen, dict):
         return None, ["M009: locked because M002-v5 has no selected factorized architecture"]
     try:
+        contract_relative = config["factorized_contract"]
+        contract_digest = config["factorized_contract_sha256"]
+        if not isinstance(contract_relative, str) or not re.fullmatch(r"[0-9a-f]{64}", contract_digest):
+            raise ValueError("factorized contract path or digest")
+        contract_path = committed_regular_file(root, contract_relative)
+        if contract_path is None or hashlib.sha256(contract_path.read_bytes()).hexdigest() != contract_digest:
+            raise ValueError("factorized contract artifact")
         contract = {
             "source_experiment": "M002-v5",
             "attention_mode": "factorized-v2",
@@ -2813,6 +2881,8 @@ def m002_v5_factorized_contract(root: Path, directory: Path | None) -> tuple[dic
                 "label_smoothing": 0.05,
                 "consistency_weight": 0.10,
             },
+            "architecture_contract_sha256": contract_digest,
+            "contract_path": contract_relative,
         }
         selected = (int(chosen["rank"]), float(chosen["bias_limit"]), float(chosen["metadata_dropout"]))
     except (KeyError, TypeError, ValueError) as error:
@@ -2836,11 +2906,11 @@ def m009_architecture_binding_errors(root: Path, m002_directory: Path | None, m0
         return [error.named(root)]
     if not isinstance(binding, dict):
         return ["M009: config.toml must contain an [m002_v5_binding] table"]
-    expected_digest = hashlib.sha256(canonical_json(contract).encode("utf-8")).hexdigest()
     required = {
         **contract,
-        "architecture_contract_sha256": expected_digest,
-        "checkpoint_architecture_contract_sha256": expected_digest,
+        "runtime_contract": contract["contract_path"],
+        "runtime_contract_sha256": contract["architecture_contract_sha256"],
+        "checkpoint_architecture_contract_sha256": contract["architecture_contract_sha256"],
     }
     for field, expected in required.items():
         actual = binding.get(field)
@@ -2853,6 +2923,18 @@ def m009_architecture_binding_errors(root: Path, m002_directory: Path | None, m0
             matches = actual == expected
         if not matches:
             return [f"M009: {field} does not bind the frozen M002-v5 FactorizedV2 contract"]
+    try:
+        entrypoint = load(m009_directory / "experiment.toml")["entrypoint"]
+    except (Unreadable, KeyError):
+        return ["M009: experiment.toml must bind the runtime contract arguments"]
+    required_tokens = (
+        "--m002-v5-contract",
+        "<runtime_contract>",
+        "--m002-v5-contract-sha256",
+        "<runtime_contract_sha256>",
+    )
+    if not isinstance(entrypoint, str) or any(token not in entrypoint for token in required_tokens):
+        return ["M009: entrypoint does not pass the frozen runtime contract to model construction"]
     return []
 
 

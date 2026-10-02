@@ -5,7 +5,9 @@
 //! record therefore travels inside a [`CheckpointHeader`], and a build whose
 //! codebook has moved refuses to load it rather than reading the weights under a
 //! taxonomy they never saw.
-use crate::{PtrA0, PtrA0Config, RouterMode, TypedAttentionMode};
+use crate::{
+    M002V5Contract, M002V5ContractError, PtrA0, PtrA0Config, RouterMode, TypedAttentionMode,
+};
 use burn::{
     prelude::*,
     store::{ModuleRecord, RecordError},
@@ -45,6 +47,9 @@ pub enum CheckpointIoError {
     /// Format-2 artifacts have no architecture binding and require an explicit,
     /// exact legacy opt-in.
     LegacyArchitectureUnbound,
+    /// A commit-bound M002-v5 contract does not match the graph or training
+    /// contract the caller attempted to use.
+    Contract(M002V5ContractError),
 }
 
 impl From<CheckpointError> for CheckpointIoError {
@@ -70,7 +75,14 @@ impl core::fmt::Display for CheckpointIoError {
             Self::WrongModel { .. } => f.write_str("PTR_A0_CKPT_WRONG_MODEL"),
             Self::ArchitectureMismatch => f.write_str("PTR_A0_CKPT_ARCHITECTURE"),
             Self::LegacyArchitectureUnbound => f.write_str("PTR_A0_CKPT_LEGACY_UNBOUND"),
+            Self::Contract(error) => error.fmt(f),
         }
+    }
+}
+
+impl From<M002V5ContractError> for CheckpointIoError {
+    fn from(error: M002V5ContractError) -> Self {
+        Self::Contract(error)
     }
 }
 
@@ -143,6 +155,13 @@ pub(crate) fn config_architecture_digest(config: &PtrA0Config) -> Vec<u8> {
     )
 }
 
+fn bound_architecture_digest(config: &PtrA0Config, contract: &M002V5Contract) -> Vec<u8> {
+    let mut bytes = b"ptr-a0-m002-v5-bound-architecture-v1\0".to_vec();
+    bytes.extend_from_slice(&config_architecture_digest(config));
+    bytes.extend_from_slice(&contract.digest());
+    Sha256::digest(bytes).to_vec()
+}
+
 #[allow(clippy::too_many_arguments)]
 fn architecture_digest(
     vocab_size: usize,
@@ -196,6 +215,25 @@ pub fn save(model: &PtrA0) -> Result<Vec<u8>, CheckpointIoError> {
     Ok(header(model).write(&record))
 }
 
+/// Serialize only after the supplied frozen M002-v5 contract has constructed
+/// the same graph.  The contract digest becomes part of the header's opaque
+/// architecture binding, so a later reader must present the same bytes too.
+pub fn save_bound(
+    model: &PtrA0,
+    config: &PtrA0Config,
+    contract: &M002V5Contract,
+) -> Result<Vec<u8>, CheckpointIoError> {
+    contract.verify_config(config)?;
+    let header = header(model);
+    if header.architecture != config_architecture_digest(config) {
+        return Err(CheckpointIoError::ArchitectureMismatch);
+    }
+    let record = model.clone().into_record().into_bytes()?;
+    Ok(header
+        .with_architecture(bound_architecture_digest(config, contract))
+        .write(&record))
+}
+
 /// Read a checkpoint into a model built from `config`.
 ///
 /// Order matters. The identity is checked first, because if the assignment has
@@ -237,4 +275,27 @@ pub fn load(
     }
     let record = ModuleRecord::from_bytes(Bytes::from_bytes_vec(payload.to_vec()))?;
     Ok(config.init_lazy(device).try_load_record(record)?)
+}
+
+/// Load a learned-backend checkpoint only when the exact M002-v5 contract
+/// binds both the requested config and the serialized header.
+pub fn load_bound(
+    bytes: &[u8],
+    config: &PtrA0Config,
+    contract: &M002V5Contract,
+    device: &Device,
+) -> Result<PtrA0, CheckpointIoError> {
+    contract.verify_config(config)?;
+    let (header, payload) = CheckpointHeader::read(bytes)?;
+    if header.model != MODEL {
+        return Err(CheckpointIoError::WrongModel {
+            found: header.model,
+        });
+    }
+    header.verify(&config.codebook(), config.encoding(), &EMBEDDED_FAMILIES)?;
+    if header.architecture != bound_architecture_digest(config, contract) {
+        return Err(CheckpointIoError::ArchitectureMismatch);
+    }
+    let record = ModuleRecord::from_bytes(Bytes::from_bytes_vec(payload.to_vec()))?;
+    Ok(contract.init(config, device)?.try_load_record(record)?)
 }

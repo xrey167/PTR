@@ -1,4 +1,5 @@
 import contextlib
+import copy
 import datetime
 import hashlib
 import importlib.util
@@ -87,6 +88,13 @@ class ResearchGateTests(unittest.TestCase):
                 mock.patch.object(mod,"m002_v5_archived_evidence_errors",return_value=[]),
             ):
                 self.assertEqual(mod.bound_m002_v5_pass_errors(root,experiment),[])
+                forged_source = copy.deepcopy(expected)
+                forged_source["provenance"]["source_records"][0]["path"] = "forged/evidence-17.json"
+                decision_path.write_text(json.dumps(forged_source),encoding="utf-8",newline="\n")
+                self.assertEqual(
+                    mod.bound_m002_v5_pass_errors(root,experiment),
+                    ["M009: M002-v5 decision does not bind exactly the immutable five-seed run archive"],
+                )
                 forged=dict(expected)
                 forged["claim"]="self-asserted"
                 decision_path.write_text(json.dumps(forged),encoding="utf-8",newline="\n")
@@ -120,8 +128,10 @@ class ResearchGateTests(unittest.TestCase):
                 "label_smoothing": 0.05,
                 "consistency_weight": 0.1,
             },
+            "architecture_contract_sha256": "a" * 64,
+            "contract_path": "experiments/model/M002-v5-factorized-typed-attention/factorized-v2-contract.txt",
         }
-        digest = hashlib.sha256(mod.canonical_json(contract).encode("utf-8")).hexdigest()
+        digest = contract["architecture_contract_sha256"]
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             m009 = root / "experiments/model/M009"
@@ -131,10 +141,17 @@ class ResearchGateTests(unittest.TestCase):
                 "source_experiment = \"M002-v5\"\n"
                 "attention_mode = \"factorized-v2\"\n"
                 "d_model = 48\nrank = 16\nbias_limit = 2.0\nmetadata_dropout = 0.1\n"
+                f"contract_path = \"{contract['contract_path']}\"\n"
                 f"architecture_contract_sha256 = \"{digest}\"\n"
+                f"runtime_contract = \"{contract['contract_path']}\"\n"
+                f"runtime_contract_sha256 = \"{digest}\"\n"
                 f"checkpoint_architecture_contract_sha256 = \"{digest}\"\n"
                 "[m002_v5_binding.router]\n"
                 "mode = \"calibrated-cosine-v2\"\nlogit_scale = 5.0\nlabel_smoothing = 0.05\nconsistency_weight = 0.1\n",
+                encoding="utf-8",
+            )
+            (m009 / "experiment.toml").write_text(
+                "entrypoint = \"model --m002-v5-contract <runtime_contract> --m002-v5-contract-sha256 <runtime_contract_sha256>\"\n",
                 encoding="utf-8",
             )
             with mock.patch.object(mod, "m002_v5_factorized_contract", return_value=(contract, [])):

@@ -7,7 +7,11 @@ use burn::{
     },
 };
 mod checkpoint;
-pub use checkpoint::{header, load, save, CheckpointIoError, EMBEDDED_FAMILIES, MODEL};
+mod m002_v5_contract;
+pub use checkpoint::{
+    header, load, load_bound, save, save_bound, CheckpointIoError, EMBEDDED_FAMILIES, MODEL,
+};
+pub use m002_v5_contract::{M002V5Contract, M002V5ContractError};
 
 use core::marker::PhantomData;
 use ptr_types::{

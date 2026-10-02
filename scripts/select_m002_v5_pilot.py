@@ -55,10 +55,10 @@ def fixed_protocol() -> dict:
     }
 
 
-def command_for(candidate: dict, seed: int, digests: dict[str, str]) -> list[str]:
+def command_for(candidate: dict, seed: int, digests: dict[str, str], cargo: str = "cargo") -> list[str]:
     folds = ",".join(f"{name}={digests[name]}" for name in FOLDS)
     return [
-        "cargo", f"+{TOOLCHAIN}", "run", "--release",
+        cargo, "run", "--release",
         "--locked", "--quiet", "--jobs", "1", "--manifest-path",
         "model/burn-a0/Cargo.toml", "--example", "a0_ablation", "--",
         "--phase", "paired-v5", "--experiment", "M002-v5", "--arms",
@@ -186,8 +186,6 @@ def load_provenanced_outputs(
         )
         if row_seed != seed or row_candidate != expected_row_candidate or row_digests != digests:
             raise PilotError(f"{supplied}: metadata and stdout row identity disagree")
-        if metadata.get("command") != command_for(candidate, seed, digests):
-            raise PilotError(f"{sidecar}: command does not exactly match the fixed protocol")
         if type(metadata.get("exit_code")) is not int or metadata["exit_code"] != 0:
             raise PilotError(f"{sidecar}: cell did not exit successfully")
         if metadata.get("stdout_file") != supplied.name:
@@ -206,17 +204,19 @@ def load_provenanced_outputs(
             cargo = execution["cargo"]
             profile = execution["hardware_profile"]
             environment = execution["environment_sha256"]
-            rustc = execution["rustc_version"]
+            rustc = execution["rustc"]
         except KeyError as error:
             raise PilotError(f"{sidecar}: execution provenance lacks {error.args[0]}") from None
         if (
             not isinstance(source_tree, str) or not SOURCE_SHA.fullmatch(source_tree)
-            or not isinstance(cargo, dict) or not isinstance(cargo.get("sha256"), str) or not SHA256.fullmatch(cargo["sha256"])
+            or not isinstance(cargo, dict) or not isinstance(cargo.get("path"), str) or not isinstance(cargo.get("sha256"), str) or not SHA256.fullmatch(cargo["sha256"])
+            or not isinstance(rustc, dict) or not isinstance(rustc.get("path"), str) or not isinstance(rustc.get("sha256"), str) or not SHA256.fullmatch(rustc["sha256"])
             or not isinstance(profile, dict) or not isinstance(profile.get("sha256"), str) or not SHA256.fullmatch(profile["sha256"])
             or not isinstance(environment, str) or not SHA256.fullmatch(environment)
-            or not isinstance(rustc, str) or not rustc
         ):
             raise PilotError(f"{sidecar}: execution provenance is malformed")
+        if metadata.get("command") != command_for(candidate, seed, digests, cargo["path"]):
+            raise PilotError(f"{sidecar}: command does not exactly match the fixed protocol")
         sources.add(source)
         digest_sets.add(tuple(digests.items()))
         executions.add(json.dumps(execution, sort_keys=True, separators=(",", ":")))

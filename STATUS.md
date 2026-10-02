@@ -58,7 +58,9 @@ PTR is a **compiling architecture/research prototype**, not yet a complete model
   triples and exactly matches the pinned architecture. Every confirmatory
   coverage and latency cell is gated individually; M009 recomputes immutable
   record history and the committed decision, then requires a matching
-  FactorizedV2 checkpoint/configuration contract before it can run.
+  FactorizedV2 checkpoint/configuration contract before it can run. The
+  contract is consumed by model construction and bound checkpoint I/O, rather
+  than being a configuration-only assertion.
 
 ## Current research/implementation gap
 

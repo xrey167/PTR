@@ -58,3 +58,9 @@ this directory is not evidence and does not authorize Learned Backend use. A
 future M009 must additionally bind its configuration and checkpoint contract
 to the selected FactorizedV2 rank, bias limit, dropout and repaired router; an
 unlisted M009 cannot bypass this lock.
+
+At freeze the selector also produces the digest-bound
+`factorized-v2-contract.txt` artifact. A learned backend must consume it with
+`ptr_burn_a0::M002V5Contract` before constructing the model and must use
+`save_bound`/`load_bound` for its checkpoints. Repeating the digest in a TOML
+file alone is not accepted by the M009 gate.

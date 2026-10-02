@@ -47,9 +47,8 @@ class M002V5PilotTests(unittest.TestCase):
             ],
         )
         command = cells[0][3]
-        self.assertEqual(command[:8], [
-            "cargo", "+1.95.0-x86_64-pc-windows-gnu", "run", "--release",
-            "--locked", "--quiet", "--jobs", "1",
+        self.assertEqual(command[:7], [
+            "cargo", "run", "--release", "--locked", "--quiet", "--jobs", "1",
         ])
         self.assertIn("factorized-v2,factorized-v2-off", command)
         self.assertEqual(command[command.index("--folds") + 1],
