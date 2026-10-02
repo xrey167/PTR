@@ -2846,6 +2846,94 @@ def m002_v5_pilot_freeze_errors(root: Path, experiment: Path, manifest: dict) ->
     return m002_v5_factorized_contract_errors(root, config, selection)
 
 
+M002_V6_FOLDS = ("evidence-temporal", "evidence-tabular", "claim-interventional")
+
+
+def m002_v6_fold_binding_errors(root: Path, config: dict) -> list[str]:
+    """Require the v6 command token to bind each confirmatory fold's bytes."""
+    try:
+        lock = json.loads((root / "benchmarks/operator-routing-v2/splits.lock.json").read_text(encoding="utf-8"))
+        expected = ",".join(
+            f"{fold}={lock['folds'][fold]['data_fnv1a64']}" for fold in M002_V6_FOLDS
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError) as error:
+        return [f"M002-v6: cannot load the confirmatory fold lock: {error}"]
+    actual = config.get("folds")
+    if actual != expected:
+        return [
+            "M002-v6: folds must bind the exact canonical "
+            "evidence-temporal,evidence-tabular,claim-interventional FNV64 values"
+        ]
+    return []
+
+
+def m002_v6_successor_freeze_errors(root: Path, experiment: Path, manifest: dict) -> list[str]:
+    """Bind v6 to the immutable v5 development selection before it can run."""
+    if status_of(manifest) not in FROZEN:
+        return []
+    try:
+        config = load(experiment / "config.toml").get("preregistration", {})
+    except Unreadable as error:
+        return [error.named(root)]
+    if not isinstance(config, dict):
+        return ["M002-v6: config.toml has no preregistration table"]
+    errors = m002_v6_fold_binding_errors(root, config)
+    if config.get("pilot_source_experiment") != "M002-v5":
+        errors.append("M002-v6: pilot_source_experiment must be the immutable M002-v5 pilot")
+        return errors
+    source = root / "experiments/model/M002-v5-factorized-typed-attention"
+    try:
+        source_manifest = load(source / "experiment.toml")
+    except Unreadable as error:
+        return [*errors, error.named(root)]
+    # The source pilot remains usable development evidence after v5 was
+    # superseded; validate the original frozen pilot under its historical
+    # prepared lifecycle without reviving or altering that study.
+    source_errors = m002_v5_pilot_freeze_errors(root, source, {**source_manifest, "status": "prepared"})
+    if source_errors:
+        return [*errors, f"M002-v6: immutable M002-v5 pilot source is invalid: {source_errors[0]}"]
+
+    selection_relative = config.get("pilot_selection")
+    selection_digest = config.get("pilot_selection_sha256")
+    selection_path = root / selection_relative if isinstance(selection_relative, str) else None
+    if selection_path is None or selection_path != source / "pilot-selection.json":
+        return [*errors, "M002-v6: pilot_selection must name the immutable M002-v5 selector artifact"]
+    if not isinstance(selection_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", selection_digest):
+        return [*errors, "M002-v6: pilot_selection_sha256 is invalid"]
+    try:
+        selection_bytes = selection_path.read_bytes()
+        selection = json.loads(selection_bytes.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        return [*errors, f"M002-v6: pilot selection is unreadable: {error}"]
+    if committed_regular_file(root, selection_relative) is None or hashlib.sha256(selection_bytes).hexdigest() != selection_digest:
+        return [*errors, "M002-v6: pilot selection is not a committed file with its pinned digest"]
+    chosen = selection.get("selection") if isinstance(selection, dict) else None
+    try:
+        actual = (int(config["rank"]), float(config["bias_limit"]), float(config["metadata_dropout"]))
+        expected = (int(chosen["rank"]), float(chosen["bias_limit"]), float(chosen["metadata_dropout"]))
+    except (KeyError, TypeError, ValueError):
+        return [*errors, "M002-v6: selected architecture fields are malformed"]
+    if selection.get("decision") != "SELECTED" or actual != expected:
+        return [*errors, "M002-v6: frozen architecture does not exactly reuse the M002-v5 pilot selection"]
+
+    for key in ("dataset_lock", "criteria", "decision_script", "decision_core", "factorized_contract"):
+        relative = config.get(key)
+        digest = config.get(f"{key}_sha256")
+        path = root / relative if isinstance(relative, str) else None
+        if (
+            path is None
+            or not isinstance(digest, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", digest)
+            or committed_regular_file(root, relative) is None
+        ):
+            errors.append(f"M002-v6: {key} is not a committed file with a pinned SHA-256")
+        elif hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+            errors.append(f"M002-v6: {key} does not match its pinned SHA-256")
+    contract_errors = m002_v5_factorized_contract_errors(root, config, chosen)
+    errors.extend(error.replace("M002-v5", "M002-v6") for error in contract_errors)
+    return errors
+
+
 def m002_v5_factorized_contract(root: Path, directory: Path | None) -> tuple[dict | None, list[str]]:
     """The architecture an M009 learned backend is permitted to instantiate."""
     if directory is None:
@@ -3152,6 +3240,8 @@ def gate_errors(root: Path) -> list[str]:
         errors.extend(v4_no_go_errors(exp_id,root))
     if "M002-v5" in experiments and "M002-v5" in directories:
         errors.extend(m002_v5_pilot_freeze_errors(root,directories["M002-v5"],experiments["M002-v5"]))
+    if "M002-v6" in experiments and "M002-v6" in directories:
+        errors.extend(m002_v6_successor_freeze_errors(root,directories["M002-v6"],experiments["M002-v6"]))
     errors.extend(m009_lock_errors(root,experiments,directories))
     errors.extend(preregistration_errors(root,experiments,directories))
     return errors

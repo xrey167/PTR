@@ -57,6 +57,10 @@ PTR is a **compiling architecture/research prototype**, not yet a complete model
   replaced, it is superseded rather than patched. A successor must bind the
   exact fold digests before it can be prepared; M009 remains locked and no
   learned backend is authorized.
+- `M002-v6` is the prepared successor. It reuses v5's immutable development
+  selection without retuning and corrects only the actual confirmatory command
+  binding to `fold=FNV64`. It has no seed records or scientific claim until a
+  fresh, commit-bound freeze and the full five-seed evidence run succeed.
 
 ## Current research/implementation gap
 
