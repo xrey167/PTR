@@ -143,6 +143,7 @@ def load_provenanced_outputs(
     sources: set[str] = set()
     digest_sets: set[tuple[tuple[str, str], ...]] = set()
     executions: set[str] = set()
+    environment_hashes: dict[str, str] = {}
 
     for supplied in paths:
         path = supplied.resolve()
@@ -170,8 +171,8 @@ def load_provenanced_outputs(
             raise PilotError(f"{sidecar}: invalid JSON: {error}") from None
         if not isinstance(metadata, dict):
             raise PilotError(f"{sidecar}: metadata is not an object")
-        if type(metadata.get("schema_version")) is not int or metadata["schema_version"] != 2:
-            raise PilotError(f"{sidecar}: schema_version must be integer 2")
+        if type(metadata.get("schema_version")) is not int or metadata["schema_version"] != 3:
+            raise PilotError(f"{sidecar}: schema_version must be integer 3")
         source = metadata.get("source_sha")
         if not isinstance(source, str) or not SOURCE_SHA.fullmatch(source):
             raise PilotError(f"{sidecar}: source_sha is not a lowercase 40-hex commit")
@@ -204,6 +205,7 @@ def load_provenanced_outputs(
             cargo = execution["cargo"]
             profile = execution["hardware_profile"]
             environment = execution["environment_sha256"]
+            resume_environment = execution["resume_environment_sha256"]
             rustc = execution["rustc"]
         except KeyError as error:
             raise PilotError(f"{sidecar}: execution provenance lacks {error.args[0]}") from None
@@ -213,13 +215,16 @@ def load_provenanced_outputs(
             or not isinstance(rustc, dict) or not isinstance(rustc.get("path"), str) or not isinstance(rustc.get("sha256"), str) or not SHA256.fullmatch(rustc["sha256"])
             or not isinstance(profile, dict) or not isinstance(profile.get("sha256"), str) or not SHA256.fullmatch(profile["sha256"])
             or not isinstance(environment, str) or not SHA256.fullmatch(environment)
+            or not isinstance(resume_environment, str) or not SHA256.fullmatch(resume_environment)
         ):
             raise PilotError(f"{sidecar}: execution provenance is malformed")
         if metadata.get("command") != command_for(candidate, seed, digests, cargo["path"]):
             raise PilotError(f"{sidecar}: command does not exactly match the fixed protocol")
         sources.add(source)
         digest_sets.add(tuple(digests.items()))
-        executions.add(json.dumps(execution, sort_keys=True, separators=(",", ":")))
+        resume_binding = {key: value for key, value in execution.items() if key != "environment_sha256"}
+        executions.add(json.dumps(resume_binding, sort_keys=True, separators=(",", ":")))
+        environment_hashes[supplied.name] = environment
         outputs.append((supplied.name, text))
         stdout_hashes[supplied.name] = digest
         stderr_hashes[stderr.name] = stderr_digest
@@ -239,6 +244,7 @@ def load_provenanced_outputs(
         "fold_digests": digests,
         "fixed_protocol": fixed_protocol(),
         "execution_provenance": json.loads(next(iter(executions))),
+        "input_environment_sha256": dict(sorted(environment_hashes.items())),
         "input_stdout_sha256": dict(sorted(stdout_hashes.items())),
         "input_stderr_sha256": dict(sorted(stderr_hashes.items())),
         "input_metadata_sha256": dict(sorted(metadata_hashes.items())),

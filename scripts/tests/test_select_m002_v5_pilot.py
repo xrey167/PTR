@@ -59,11 +59,12 @@ def artifact_grid(directory: Path, source_sha: str = "a" * 40):
             "cargo": {"path": "C:/cargo.exe", "sha256": "c" * 64, "version": "cargo test"},
             "rustc": {"path": "C:/rustc.exe", "sha256": "f" * 64, "version": "rustc test"},
             "environment_sha256": "d" * 64,
+            "resume_environment_sha256": "9" * 64,
             "host": {"system": "test"},
             "hardware_profile": {"path": "hardware/test.toml", "sha256": "e" * 64},
         }
         metadata = {
-            "schema_version": 2,
+            "schema_version": 3,
             "source_sha": source_sha,
             "command": mod.command_for(candidate, seed, digests, execution["cargo"]["path"]),
             "candidate": candidate,
@@ -171,6 +172,20 @@ class PilotSelectionTests(unittest.TestCase):
             metadata["source_sha"] = "b" * 40
             sidecar.write_text(json.dumps(metadata), encoding="utf-8")
             with self.assertRaisesRegex(mod.PilotError, "mixed source commits"):
+                mod.load_provenanced_outputs(paths)
+
+    def test_cli_preserves_each_exact_environment_hash_but_requires_one_resume_binding(self):
+        with tempfile.TemporaryDirectory() as directory:
+            paths = artifact_grid(Path(directory))
+            sidecar = paths[0].with_suffix(".json")
+            metadata = json.loads(sidecar.read_text(encoding="utf-8"))
+            metadata["execution_provenance"]["environment_sha256"] = "1" * 64
+            sidecar.write_text(json.dumps(metadata, sort_keys=True), encoding="utf-8")
+            _, provenance = mod.load_provenanced_outputs(paths)
+            self.assertEqual(provenance["input_environment_sha256"][paths[0].name], "1" * 64)
+            metadata["execution_provenance"]["resume_environment_sha256"] = "2" * 64
+            sidecar.write_text(json.dumps(metadata, sort_keys=True), encoding="utf-8")
+            with self.assertRaisesRegex(mod.PilotError, "mixed execution provenance"):
                 mod.load_provenanced_outputs(paths)
 
     def test_cli_rejects_mixed_fold_digests(self):

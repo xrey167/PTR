@@ -320,6 +320,9 @@ def execution_provenance(snapshot: Path, source: str, environment: dict[str, str
         "cargo": cargo,
         "rustc": rustc,
         "environment_sha256": sha256(
+            json.dumps(environment, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ),
+        "resume_environment_sha256": sha256(
             json.dumps(stable_environment_fingerprint(environment), sort_keys=True, separators=(",", ":")).encode("utf-8")
         ),
         "host": host,
@@ -339,7 +342,7 @@ def expected_identity(
     execution: dict[str, object],
 ) -> dict[str, object]:
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "source_sha": source,
         "command": command,
         "candidate": candidate,

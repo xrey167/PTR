@@ -149,19 +149,31 @@ class M002V5PilotTests(unittest.TestCase):
             ):
                 provenance = MOD.execution_provenance(root, "d" * 40, environment)
                 resumed = MOD.execution_provenance(root, "d" * 40, resumed_environment)
-            expected = dict(environment)
-            expected["RUSTC"] = "C:/rustc.exe"
-            expected.update({
+            exact = dict(environment)
+            exact["RUSTC"] = "C:/rustc.exe"
+            exact_digest = hashlib.sha256(
+                MOD.json.dumps(exact, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+            resumed_exact = dict(resumed_environment)
+            resumed_exact["RUSTC"] = "C:/rustc.exe"
+            resumed_exact_digest = hashlib.sha256(
+                MOD.json.dumps(resumed_exact, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+            stable = dict(exact)
+            stable.update({
                 "CARGO_HOME": "<isolated>/cargo-home",
                 "CARGO_TARGET_DIR": "<isolated>/cargo-target",
                 "TEMP": "<isolated>/temp",
                 "TMP": "<isolated>/temp",
             })
-            digest = hashlib.sha256(
-                MOD.json.dumps(expected, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            stable_digest = hashlib.sha256(
+                MOD.json.dumps(stable, sort_keys=True, separators=(",", ":")).encode("utf-8")
             ).hexdigest()
-            self.assertEqual(provenance["environment_sha256"], digest)
-            self.assertEqual(resumed["environment_sha256"], digest)
+            self.assertEqual(provenance["environment_sha256"], exact_digest)
+            self.assertEqual(resumed["environment_sha256"], resumed_exact_digest)
+            self.assertNotEqual(provenance["environment_sha256"], resumed["environment_sha256"])
+            self.assertEqual(provenance["resume_environment_sha256"], stable_digest)
+            self.assertEqual(resumed["resume_environment_sha256"], stable_digest)
             self.assertEqual(environment["RUSTC"], "C:/rustc.exe")
             self.assertEqual(resumed_environment["RUSTC"], "C:/rustc.exe")
 
