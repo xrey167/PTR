@@ -49,18 +49,14 @@ PTR is a **compiling architecture/research prototype**, not yet a complete model
 - The research gate now accepts the historical M002-v2 conflict only through
   its exact commit- and digest-bound `results/NO-GO.toml` marker. The marker
   does not permit positive completion or alter any historical run record.
-- `M002-v5` is registered as `planned`, not evidence. The direct
-  FactorizedV2/Off runner, versioned `operator_routing_v2` bundle,
-  non-claimable 16-cell pilot archive, and conjunctive five-seed checker are
-  ready. The pilot executes from a private detached source snapshot and binds
-  toolchain, environment, host and Windows hardware-profile provenance. A
-  freeze is accepted only when the selector recomputes all committed pilot
-  triples and exactly matches the pinned architecture. Every confirmatory
-  coverage and latency cell is gated individually; M009 recomputes immutable
-  record history and the committed decision, then requires a matching
-  FactorizedV2 checkpoint/configuration contract before it can run. The
-  contract is consumed by model construction and bound checkpoint I/O, rather
-  than being a configuration-only assertion.
+- `M002-v5` is `superseded`, not evidence. Its complete non-claimable 16-cell
+  pilot archive remains immutable, but the prepared confirmatory entrypoint
+  supplied bare fold names where the Rust backend correctly requires
+  `fold=FNV64`. The resulting first preflight wrote no metrics and consumed no
+  seed. Since a prepared study's configuration and decision script may not be
+  replaced, it is superseded rather than patched. A successor must bind the
+  exact fold digests before it can be prepared; M009 remains locked and no
+  learned backend is authorized.
 
 ## Current research/implementation gap
 
@@ -68,7 +64,7 @@ PTR is a **compiling architecture/research prototype**, not yet a complete model
 - bounded model resume after verified Pod observations is now wired and revision-advancing; opaque backend checkpoints, async streaming and router-driven operator selection remain open
 - hard ActionIR authorization has diagnostic typed decisions plus a scoped synchronous execution gateway with opaque host-issued sessions, exact capsule/project grants and registered verifiers/executors; network authentication, scoped Pod access and durable audit/idempotency remain open
 - feature-gated raft-engine, single-node raft-rs, Turso and direct Iroh adapters now exist and are under evaluation; multi-node consensus/network sessions and real search-backend adapters remain incomplete
-- M002-v5 and the other planned architecture experiments are not positive evidence; L001 remains the only running experiment and has two executed scoped crash/recovery evidence slices
+- M002-v5 is superseded and the other planned architecture experiments are not positive evidence; L001 remains the only running experiment and has two executed scoped crash/recovery evidence slices
 - external component candidates mostly lack comparative benchmark evidence
 - strong RAG/GraphRAG/editable-memory and matched plain-model comparative runs are not yet executed
 - GitHub main-branch ruleset/repository-admin settings still require manual completion; recommendations are documented in `docs/GITHUB_SETTINGS.md`

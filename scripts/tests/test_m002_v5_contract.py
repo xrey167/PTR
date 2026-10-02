@@ -16,9 +16,9 @@ def load_module(name, path):
 
 
 class M002V5ContractTests(unittest.TestCase):
-    def test_manifest_is_planned_and_names_only_the_direct_matched_pair(self):
+    def test_manifest_is_superseded_and_names_only_the_direct_matched_pair(self):
         manifest = tomllib.loads((EXPERIMENT / "experiment.toml").read_text(encoding="utf-8"))
-        self.assertEqual(manifest["status"], "planned")
+        self.assertEqual(manifest["status"], "superseded")
         self.assertEqual(manifest["seeds"], [17, 29, 43, 71, 101])
         self.assertIn("--phase paired-v5", manifest["entrypoint"])
         self.assertIn("--arms factorized-v2,factorized-v2-off", manifest["entrypoint"])
@@ -36,15 +36,20 @@ class M002V5ContractTests(unittest.TestCase):
         self.assertEqual(plan["downstream"]["M009"], "locked")
         self.assertEqual(len(plan["gate"]), 9)
 
-    def test_preparation_is_blocked_until_pilot_and_freeze_digests_exist(self):
+    def test_superseded_freeze_retains_its_original_pinned_protocol(self):
         config = tomllib.loads((EXPERIMENT / "config.toml").read_text(encoding="utf-8"))["preregistration"]
+        self.assertEqual((config["rank"], config["bias_limit"], config["metadata_dropout"]), (8, 1, "0"))
         for key in (
-            "rank", "bias_limit", "metadata_dropout",
             "dataset_lock_sha256", "criteria_sha256", "decision_script_sha256",
-            "pilot_selection_script_sha256",
+            "pilot_selection_script_sha256", "pilot_runner_sha256",
+            "pilot_selection_sha256", "factorized_contract_sha256",
         ):
-            self.assertTrue(str(config[key]).startswith("must-be-pinned-"), key)
+            self.assertRegex(str(config[key]), r"^[0-9a-f]{64}$", key)
         self.assertEqual(config["learning_rate"], "0.005")
+        self.assertEqual(
+            config["folds"],
+            "evidence-temporal,evidence-tabular,claim-interventional",
+        )
 
     def test_dataset_and_decider_share_the_exact_confirmatory_folds(self):
         aggregate = load_module("aggregate_m002_v5_contract", ROOT / "scripts/aggregate_m002_v5.py")

@@ -1,6 +1,6 @@
 # M002-v5 — factorized typed pair attention
 
-M002-v5 is a prepared confirmatory component study. It directly compares the
+M002-v5 is a superseded confirmatory component-study setup. It directly compares the
 same repaired A0 architecture with `FactorizedV2` versus `Off`; the control
 executes the same pair-attention operations and zeros only the resulting bias.
 It therefore fixes M002-v4's attribution failure without rewriting any v4
@@ -37,9 +37,15 @@ all 16 committed stdout/sidecar/stderr triples, including all three artifact
 digests and execution provenance, checks their source commit and dataset lock,
 and requires the frozen rank, bias limit and dropout to match exactly.
 
-The confirmatory unit is a seed, not a fold. Each of the five declared seeds
-runs both arms over the three confirmatory folds in one process. Fold metrics
-are averaged within a seed before the paired 95% Student-t interval is formed.
+The confirmatory unit would have been a seed, not a fold. Each of the five
+declared seeds would run both arms over the three confirmatory folds in one
+process, with fold metrics averaged within a seed before the paired 95%
+Student-t interval. No seed completed: the frozen command supplied bare fold
+names, while the Rust backend correctly requires `name=FNV64` bindings. The
+launcher rejected the first preflight before writing metrics or producing any
+scientific evidence. Because a prepared study's configuration is immutable,
+M002-v5 is superseded rather than patched in place. A successor must be newly
+preregistered and frozen with the corrected command binding.
 `scripts/aggregate_m002_v5.py` implements the conjunctive gates, including
 accuracy, NLL, ECE15, abstention, matched parameters/FLOPs and p95 latency.
 After the frozen five-seed run it must write the immutable decision to
@@ -53,7 +59,7 @@ gate is `INCONCLUSIVE/NO-GO`. The only permitted positive wording is:
 > routing accuracy at matched compute without measurable calibration
 > degradation.
 
-M009 remains locked until such a commit-bound PASS exists. The planned state in
+M009 remains locked until such a commit-bound PASS exists. This superseded state
 this directory is not evidence and does not authorize Learned Backend use. A
 future M009 must additionally bind its configuration and checkpoint contract
 to the selected FactorizedV2 rank, bias limit, dropout and repaired router; an
