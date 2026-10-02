@@ -84,6 +84,26 @@
 
 <!-- PTR:STATUS:END -->
 
+## Reusable V2 sessions
+
+With `podwire-backend`, `PodClient::connect_session` creates a reusable
+authenticated Iroh connection. Every request still uses its own bidirectional
+stream and retains the normal responder, digest, generation and revision
+checks. `max_in_flight` is a hard bound and overload is returned as typed
+backpressure; the session does not add promotion or effect authority.
+
+`PodHost::serve_session_v2` serves a caller-selected bounded number of V2
+streams and waits for the peer to close after the final response. PodWire
+remains effect-free; all external effects stay behind `ptr-execwire`.
+
+If a request reaches an outcome-uncertain failure (transport failure, timeout,
+malformed answer, or binding validation failure), the reusable session records
+that request ID as uncertain and refuses a retry on the same session. The
+caller must close the session and perform the surrounding runtime recovery
+(lease revoke, resource cleanup, re-admission, and recompute where required)
+before issuing a new stateful request. This keeps PodWire from silently
+replaying an operation whose remote execution status cannot be established.
+
 ## Why this crate exists
 
 `ptr-pods` holds Pod resolution and must not know about transport. `ptr-net` holds
@@ -106,6 +126,42 @@ peer both come from the authenticated connection and the host's policy.
 
 The test that is the claim: two requesters send **byte-identical frames** to one
 host over two connections and reach two different projects' Pods.
+
+## Generation-bound PodWire V2
+
+V1 remains the compatibility protocol for Pure/Read Pods whose invocation
+contract is sufficient on its own. V2 is used when a request must be bound to a
+specific admitted artifact and semantic generation. Its binary request frame
+adds:
+
+- `artifact_id`, so a request cannot be redirected to another implementation;
+- the canonical `PodManifest` digest, so a non-empty arbitrary hash is not an
+  admission proof;
+- `generation` and `revision`, so stale artifact or runtime state is refused;
+- `identity_digest`, `session_id` and `policy_revision`, so a stateful request
+  cannot cross an authenticated identity/session or policy boundary;
+- the existing capability, protocol and typed payload fields.
+
+The binary answer echoes the complete admission binding and generation/revision
+and remains bound to the exact request bytes, responder identity and request id.
+`PodWireV2Binding` is created
+by `PodHost::bind_v2` from an actually registered project/pod pair after
+Artifact/Runtime Admission; its fields are opaque and the wire does not create a
+second catalog or promotion authority. `PodHost::serve_once_v2` then reuses the
+same access policy, project-scoped `PodRegistry`, verifier and effect boundary
+as V1. A binding mismatch is answered as `Unavailable` before the Pod runs.
+For the fully bound stateful path, callers use `PodHost::bind_v2_admitted` with
+`PodAdmissionBinding::from_identity`; the identity digest is validated before
+it enters the wire binding.
+
+The endpoint is deliberately explicit: callers use `serve_once_v2` and
+`request_v2` for generation-bound traffic, while `serve_once` and `request`
+remain unchanged for V1. This makes protocol migration observable and prevents
+an old V1 caller from accidentally claiming generation safety.
+
+The real Iroh tests cover a successful V2 exchange and stale-generation
+rejection with zero Pod invocation. The frame codec tests separately cover V2
+binary round trips.
 
 ## Why this is not the execution wire with a different payload
 

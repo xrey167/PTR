@@ -13,8 +13,9 @@ pub use file::{FileLedger, LegacyLog, RecoverableLog};
 pub use retention::{retains, ErasureAudit, OutOfReach, Retainer};
 
 use ptr_types::{
-    CapabilityId, CapsuleId, CommitIndex, Effect, Generation, ProjectId, Revision,
-    VerificationLevel,
+    CapabilityId, CapsuleId, CommitIndex, Effect, FencingToken, Generation, MeshEndpointBinding,
+    MeshRouteKind, MeshTunnelEventKind, MeshTunnelLifecycleEvent, PeerId, ProjectId, Revision,
+    ScopeLeaseBinding, ScopeLifecycleEvent, ScopeLifecycleKind, Timestamp, VerificationLevel,
 };
 use std::collections::BTreeSet;
 use std::io;
@@ -106,6 +107,23 @@ pub enum LedgerEvent {
         applied: bool,
         evidence: String,
     },
+    /// Append-only execution-scope lifecycle transition. Scope state is
+    /// materialized by ptr-runtime; the ledger only stores the authoritative
+    /// transition and its bindings.
+    ScopeLifecycle(ScopeLifecycleEvent),
+    /// Durable reference to an encrypted state record. The ledger stores only
+    /// binding metadata and digests; ciphertext and key material stay in the
+    /// protected state store.
+    ProtectedStateCommitted {
+        domain: u8,
+        logical_id: String,
+        generation: Generation,
+        revision: Revision,
+        plaintext_digest: [u8; 32],
+        ciphertext_digest: [u8; 32],
+        anchor_digest: [u8; 32],
+    },
+    MeshTunnelLifecycle(MeshTunnelLifecycleEvent),
 }
 
 /// Why a semantic write was allowed. ptr-runtime writes it in the same append
@@ -401,6 +419,45 @@ fn encode_event(event: &LedgerEvent) -> Vec<u8> {
             out.push(u8::from(*applied));
             put_string(&mut out, evidence);
         }
+        LedgerEvent::ScopeLifecycle(event) => {
+            out.push(13);
+            put_scope_lifecycle(&mut out, event);
+        }
+        LedgerEvent::ProtectedStateCommitted {
+            domain,
+            logical_id,
+            generation,
+            revision,
+            plaintext_digest,
+            ciphertext_digest,
+            anchor_digest,
+        } => {
+            out.push(14);
+            out.push(*domain);
+            put_string(&mut out, logical_id);
+            put_u64(&mut out, generation.0);
+            put_u64(&mut out, revision.0);
+            out.extend_from_slice(plaintext_digest);
+            out.extend_from_slice(ciphertext_digest);
+            out.extend_from_slice(anchor_digest);
+        }
+        LedgerEvent::MeshTunnelLifecycle(event) => {
+            out.push(15);
+            put_string(&mut out, &event.network_id.0);
+            put_string(&mut out, &event.peer_id.0);
+            put_optional_string(
+                &mut out,
+                event.invitation_id.as_ref().map(|id| id.0.as_str()),
+            );
+            put_optional_string(&mut out, event.tunnel_id.as_deref());
+            put_u64(&mut out, event.generation.0);
+            put_u64(&mut out, event.revision.0);
+            out.push(mesh_event_kind_code(event.kind));
+            put_mesh_endpoint(&mut out, event.endpoint.as_ref());
+            put_u64(&mut out, event.placement_epoch);
+            out.extend_from_slice(&event.fencing_token.0.to_le_bytes());
+            out.extend_from_slice(&event.event_digest);
+        }
     }
     out
 }
@@ -495,6 +552,29 @@ fn decode_event(payload: &[u8]) -> io::Result<LedgerEvent> {
             },
             evidence: cursor.string()?,
         },
+        13 => LedgerEvent::ScopeLifecycle(read_scope_lifecycle(&mut cursor)?),
+        14 => LedgerEvent::ProtectedStateCommitted {
+            domain: cursor.u8()?,
+            logical_id: cursor.string()?,
+            generation: Generation(cursor.u64()?),
+            revision: Revision(cursor.u64()?),
+            plaintext_digest: cursor.digest()?,
+            ciphertext_digest: cursor.digest()?,
+            anchor_digest: cursor.digest()?,
+        },
+        15 => LedgerEvent::MeshTunnelLifecycle(MeshTunnelLifecycleEvent {
+            network_id: ptr_types::NetworkId(cursor.string()?),
+            peer_id: PeerId(cursor.string()?),
+            invitation_id: cursor.optional_string()?.map(ptr_types::InvitationId),
+            tunnel_id: cursor.optional_string()?,
+            generation: Generation(cursor.u64()?),
+            revision: Revision(cursor.u64()?),
+            kind: mesh_event_kind_from_code(cursor.u8()?)?,
+            endpoint: read_mesh_endpoint(&mut cursor)?,
+            placement_epoch: cursor.u64()?,
+            fencing_token: FencingToken(cursor.u128()?),
+            event_digest: cursor.digest()?,
+        }),
         other => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -829,6 +909,224 @@ fn put_optional_string(out: &mut Vec<u8>, value: Option<&str>) {
     }
 }
 
+fn put_optional_id<T: std::fmt::Display>(out: &mut Vec<u8>, value: Option<&T>) {
+    put_optional_string(out, value.map(ToString::to_string).as_deref());
+}
+
+fn put_optional_u64(out: &mut Vec<u8>, value: Option<u64>) {
+    match value {
+        Some(value) => {
+            out.push(1);
+            put_u64(out, value);
+        }
+        None => out.push(0),
+    }
+}
+
+fn put_optional_u128(out: &mut Vec<u8>, value: Option<u128>) {
+    match value {
+        Some(value) => {
+            out.push(1);
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+        None => out.push(0),
+    }
+}
+
+fn put_scope_kind(out: &mut Vec<u8>, kind: Option<ScopeLifecycleKind>) {
+    match kind {
+        Some(kind) => {
+            out.push(1);
+            out.push(scope_kind_code(kind));
+        }
+        None => out.push(0),
+    }
+}
+
+fn put_scope_lifecycle(out: &mut Vec<u8>, event: &ScopeLifecycleEvent) {
+    put_string(out, &event.scope_id.to_string());
+    put_optional_id(out, event.parent_id.as_ref());
+    put_string(out, &event.session_id.to_string());
+    put_string(out, &event.project_id.to_string());
+    put_u64(out, event.created_at.0);
+    put_optional_u64(out, event.deadline.map(|timestamp| timestamp.0));
+    out.push(scope_kind_code(event.kind));
+    put_scope_kind(out, event.previous_kind);
+    put_optional_id(out, event.lease.state_id.as_ref());
+    put_optional_id(out, event.lease.pod_id.as_ref());
+    put_optional_u64(out, event.lease.placement_epoch);
+    put_optional_u128(out, event.lease.fencing_token);
+    put_optional_u64(out, event.lease.generation.map(|generation| generation.0));
+    put_optional_string(out, event.lease.resource_lease_id.as_deref());
+    put_u64(out, event.revision.0);
+    put_optional_string(out, event.reason.as_deref());
+}
+
+fn put_mesh_endpoint(out: &mut Vec<u8>, endpoint: Option<&MeshEndpointBinding>) {
+    let Some(endpoint) = endpoint else {
+        out.push(0);
+        return;
+    };
+    out.push(1);
+    put_string(out, &endpoint.network_id.0);
+    put_string(out, &endpoint.peer_id.0);
+    out.push(match endpoint.route {
+        MeshRouteKind::Direct => 0,
+        MeshRouteKind::Relay => 1,
+    });
+    put_optional_string(out, endpoint.relay_id.as_ref().map(|peer| peer.0.as_str()));
+    put_u64(out, endpoint.membership_generation.0);
+    put_u64(out, endpoint.membership_revision.0);
+}
+
+fn read_mesh_endpoint(cursor: &mut Cursor<'_>) -> io::Result<Option<MeshEndpointBinding>> {
+    match cursor.u8()? {
+        0 => Ok(None),
+        1 => {
+            let network_id = ptr_types::NetworkId(cursor.string()?);
+            let peer_id = PeerId(cursor.string()?);
+            let route = match cursor.u8()? {
+                0 => MeshRouteKind::Direct,
+                1 => MeshRouteKind::Relay,
+                other => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("invalid mesh route {other}"),
+                    ))
+                }
+            };
+            let endpoint = MeshEndpointBinding {
+                network_id,
+                peer_id,
+                route,
+                relay_id: cursor.optional_string()?.map(PeerId),
+                membership_generation: Generation(cursor.u64()?),
+                membership_revision: Revision(cursor.u64()?),
+            };
+            endpoint
+                .validate()
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            Ok(Some(endpoint))
+        }
+        other => Err(presence_byte(other)),
+    }
+}
+
+fn mesh_event_kind_code(kind: MeshTunnelEventKind) -> u8 {
+    match kind {
+        MeshTunnelEventKind::InvitationCreated => 0,
+        MeshTunnelEventKind::InvitationAccepted => 1,
+        MeshTunnelEventKind::MembershipActivated => 2,
+        MeshTunnelEventKind::MembershipRevoked => 3,
+        MeshTunnelEventKind::RouteChanged => 4,
+        MeshTunnelEventKind::TunnelEstablished => 5,
+        MeshTunnelEventKind::TunnelRevoked => 6,
+        MeshTunnelEventKind::TunnelReleased => 7,
+    }
+}
+
+fn mesh_event_kind_from_code(code: u8) -> io::Result<MeshTunnelEventKind> {
+    match code {
+        0 => Ok(MeshTunnelEventKind::InvitationCreated),
+        1 => Ok(MeshTunnelEventKind::InvitationAccepted),
+        2 => Ok(MeshTunnelEventKind::MembershipActivated),
+        3 => Ok(MeshTunnelEventKind::MembershipRevoked),
+        4 => Ok(MeshTunnelEventKind::RouteChanged),
+        5 => Ok(MeshTunnelEventKind::TunnelEstablished),
+        6 => Ok(MeshTunnelEventKind::TunnelRevoked),
+        7 => Ok(MeshTunnelEventKind::TunnelReleased),
+        other => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid mesh event {other}"),
+        )),
+    }
+}
+
+fn read_scope_lifecycle(cursor: &mut Cursor<'_>) -> io::Result<ScopeLifecycleEvent> {
+    Ok(ScopeLifecycleEvent {
+        scope_id: ptr_types::ScopeId(cursor.string()?),
+        parent_id: cursor.optional_string()?.map(ptr_types::ScopeId),
+        session_id: ptr_types::SessionId(cursor.string()?),
+        project_id: ProjectId(cursor.string()?),
+        created_at: Timestamp(cursor.u64()?),
+        deadline: read_optional_u64(cursor)?.map(Timestamp),
+        kind: scope_kind_from_code(cursor.u8()?)?,
+        previous_kind: read_optional_scope_kind(cursor)?,
+        lease: ScopeLeaseBinding {
+            state_id: cursor.optional_string()?.map(ptr_types::StateId),
+            pod_id: cursor.optional_string()?.map(ptr_types::PodId),
+            placement_epoch: read_optional_u64(cursor)?,
+            fencing_token: read_optional_u128(cursor)?,
+            generation: read_optional_u64(cursor)?.map(Generation),
+            resource_lease_id: cursor.optional_string()?,
+        },
+        revision: Revision(cursor.u64()?),
+        reason: cursor.optional_string()?,
+    })
+}
+
+fn read_optional_scope_kind(cursor: &mut Cursor<'_>) -> io::Result<Option<ScopeLifecycleKind>> {
+    match cursor.u8()? {
+        0 => Ok(None),
+        1 => Ok(Some(scope_kind_from_code(cursor.u8()?)?)),
+        other => Err(presence_byte(other)),
+    }
+}
+
+fn read_optional_u64(cursor: &mut Cursor<'_>) -> io::Result<Option<u64>> {
+    match cursor.u8()? {
+        0 => Ok(None),
+        1 => Ok(Some(cursor.u64()?)),
+        other => Err(presence_byte(other)),
+    }
+}
+
+fn read_optional_u128(cursor: &mut Cursor<'_>) -> io::Result<Option<u128>> {
+    match cursor.u8()? {
+        0 => Ok(None),
+        1 => {
+            let mut bytes = [0; 16];
+            for byte in &mut bytes {
+                *byte = cursor.u8()?;
+            }
+            Ok(Some(u128::from_le_bytes(bytes)))
+        }
+        other => Err(presence_byte(other)),
+    }
+}
+
+fn scope_kind_code(kind: ScopeLifecycleKind) -> u8 {
+    match kind {
+        ScopeLifecycleKind::Created => 0,
+        ScopeLifecycleKind::Admitted => 1,
+        ScopeLifecycleKind::Started => 2,
+        ScopeLifecycleKind::Completed => 3,
+        ScopeLifecycleKind::Failed => 4,
+        ScopeLifecycleKind::Cancelled => 5,
+        ScopeLifecycleKind::TimedOut => 6,
+        ScopeLifecycleKind::Revoked => 7,
+        ScopeLifecycleKind::Released => 8,
+    }
+}
+
+fn scope_kind_from_code(code: u8) -> io::Result<ScopeLifecycleKind> {
+    match code {
+        0 => Ok(ScopeLifecycleKind::Created),
+        1 => Ok(ScopeLifecycleKind::Admitted),
+        2 => Ok(ScopeLifecycleKind::Started),
+        3 => Ok(ScopeLifecycleKind::Completed),
+        4 => Ok(ScopeLifecycleKind::Failed),
+        5 => Ok(ScopeLifecycleKind::Cancelled),
+        6 => Ok(ScopeLifecycleKind::TimedOut),
+        7 => Ok(ScopeLifecycleKind::Revoked),
+        8 => Ok(ScopeLifecycleKind::Released),
+        other => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("unknown scope lifecycle code {other}"),
+        )),
+    }
+}
+
 fn put_u64(out: &mut Vec<u8>, value: u64) {
     out.extend_from_slice(&value.to_le_bytes());
 }
@@ -875,6 +1173,14 @@ impl<'a> Cursor<'a> {
         let bytes = self.bytes.get(self.offset..end).ok_or_else(truncated)?;
         self.offset = end;
         Ok(u64::from_le_bytes(bytes.try_into().expect("eight bytes")))
+    }
+
+    fn u128(&mut self) -> io::Result<u128> {
+        let mut bytes = [0; 16];
+        for byte in &mut bytes {
+            *byte = self.u8()?;
+        }
+        Ok(u128::from_le_bytes(bytes))
     }
 
     fn bytes(&mut self) -> io::Result<&'a [u8]> {
@@ -1198,6 +1504,34 @@ mod effect_record_tests {
             // framing does not pin its own length.
             assert!(decode_event(&encoded[..encoded.len() - 1]).is_err());
         }
+    }
+
+    #[test]
+    fn mesh_tunnel_events_round_trip_with_a_stable_tag() {
+        let endpoint = MeshEndpointBinding {
+            network_id: "mesh-a".into(),
+            peer_id: "peer-b".into(),
+            route: MeshRouteKind::Relay,
+            relay_id: Some("relay-c".into()),
+            membership_generation: Generation(2),
+            membership_revision: Revision(4),
+        };
+        let event = LedgerEvent::MeshTunnelLifecycle(MeshTunnelLifecycleEvent {
+            network_id: "mesh-a".into(),
+            peer_id: "peer-b".into(),
+            invitation_id: Some("invite-1".into()),
+            tunnel_id: Some("tunnel-1".into()),
+            generation: Generation(2),
+            revision: Revision(4),
+            kind: MeshTunnelEventKind::TunnelEstablished,
+            endpoint: Some(endpoint),
+            placement_epoch: 7,
+            fencing_token: FencingToken(9),
+            event_digest: [8; 32],
+        });
+        let encoded = encode_event(&event);
+        assert_eq!(encoded[0], 15);
+        assert_eq!(decode_event(&encoded).unwrap(), event);
     }
 
     /// The only byte two records differ in is the field that differs, which locates
@@ -1901,5 +2235,22 @@ mod semantic_origin_tests {
         // and a merge, plus two of the three rebased-key counts.
         assert_eq!(accepted, 2 * (2 * 2 * 2) + 2);
         assert_eq!(refused, events.len() - accepted);
+    }
+
+    #[test]
+    fn protected_state_reference_round_trips_without_payload_or_key_material() {
+        let event = LedgerEvent::ProtectedStateCommitted {
+            domain: 3,
+            logical_id: "kv/session-1".into(),
+            generation: Generation(2),
+            revision: Revision(9),
+            plaintext_digest: [1; 32],
+            ciphertext_digest: [2; 32],
+            anchor_digest: [3; 32],
+        };
+        let encoded = encode_event(&event);
+        assert_eq!(encoded[0], 14);
+        assert!(!encoded.windows(7).any(|window| window == b"secret!"));
+        assert_eq!(decode_event(&encoded).unwrap(), event);
     }
 }

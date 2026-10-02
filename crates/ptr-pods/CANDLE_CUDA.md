@@ -1,0 +1,53 @@
+# Candle CUDA executor
+
+The `candle-cuda` feature provides the first native Rust GPU executor. It loads
+F32 dense weights from Safetensors and places them on a selected CUDA device.
+The executor is deliberately feature-gated: normal PTR builds remain free of a
+CUDA toolkit requirement.
+
+```powershell
+cargo check -p ptr-pods --features candle-cuda
+```
+
+The current pin is Candle `=0.11.0`, built with the updated Rust toolchain and
+its CUDA backend. The supported local toolkit is CUDA 12.8. CUDA 13.x can
+produce PTX newer than the installed Windows driver accepts for this Candle
+kernel release.
+
+## KV tensor backend
+
+`CandleKvTensorBackend` provides the first real model-bound CUDA KV cache
+contract. It stores layer-wise F32 key/value tensors, validates the device and
+schema, supports append/truncate/snapshot/restore, and binds snapshots to a
+content digest. The backend is intentionally separate from
+`CandleDenseExecutor`; it is a tensor-cache primitive, not yet a complete
+Transformer or LLM executor.
+
+On Windows, Candle's CUDA kernel build also requires `nvcc` and the MSVC C++
+compiler (`cl.exe`) on `PATH`. Install Visual Studio 2022 Build Tools with the
+Desktop C++ workload, then open a Developer PowerShell before running Cargo.
+The repository cannot bootstrap that system-wide compiler from Cargo itself.
+
+For CUDA 12.8 + MSVC, use the x64 tool environment and the standard-conforming
+MSVC preprocessor required by CUDA CCCL:
+
+```powershell
+$vs = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools"
+$env:CUDA_PATH = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8"
+$env:Path = "$env:CUDA_PATH\bin;$env:Path"
+cmd /d /s /c "`"$vs\VC\Auxiliary\Build\vcvars64.bat`" && set NVCC_PREPEND_FLAGS=-Xcompiler=/Zc:preprocessor && set CUDA_COMPUTE_CAP=89 && cd /d $PWD && cargo xcuda-check"
+```
+
+`CUDA_COMPUTE_CAP=89` targets the RTX 4090 (compute capability 8.9). For an RTX
+3090 use `86` instead. The `NVCC_PREPEND_FLAGS` setting is intentionally scoped to this command;
+it must not be applied globally to non-Windows CUDA builds.
+
+The model contract is:
+
+- `weight_name`: F32 tensor shaped `[output, input]`
+- optional `bias_name`: F32 tensor broadcastable to `[output]`
+- input payload: little-endian F32 vector with exactly `input` elements
+- output payload: little-endian F32 vector typed with the descriptor's output schema
+
+The descriptor, generation, lease, input type and output type are still admitted
+through the regular PTR Pod contract before the tensor operation is usable.

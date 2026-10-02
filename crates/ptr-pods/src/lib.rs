@@ -1,8 +1,58 @@
-use ptr_protocol::TypedPayload;
+pub use ptr_protocol::TypedPayload;
 use ptr_types::{CapabilityId, Effect, PodId, ProjectId, TypeId};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
 use std::sync::Arc;
+
+mod adapter;
+mod cache;
+#[cfg(feature = "candle-cuda")]
+mod candle;
+mod hypothesis;
+mod kv;
+mod manifest;
+mod native;
+mod neural;
+mod output;
+mod protocol;
+mod runtime;
+mod semantic;
+mod transport;
+mod turns;
+pub use adapter::{AdapterError, NeuralPodAdapter};
+pub use cache::{PodCache, PodCacheKey};
+#[cfg(feature = "candle-cuda")]
+pub use candle::{CandleDenseExecutor, CandleExecutorError, CandleKvTensorBackend};
+pub use hypothesis::{merge_hypotheses, HypothesisError, MergedPodResult, PodHypothesis};
+pub use kv::{
+    InMemoryKvCache, InMemoryKvTensorBackend, KvBackendError, KvLayerSnapshot, KvTensorBackend,
+    KvTensorDType, KvTensorSchema, KvTensorSnapshot, TensorRef,
+};
+pub use manifest::{ArtifactLifecycle, ExecutionManifest, LifecycleGate, LineageBinding};
+pub use native::{TcpProtocolExecutor, UdpProtocolExecutor, MAX_NATIVE_FRAME_BYTES};
+pub use neural::{
+    DescriptorError, DeviceLease, DeviceLeaseError, DeviceLeaseState, LeaseState,
+    NeuralPodDescriptor, NeuralPodError, NeuralPodExecutor, NeuralPodLease, NeuralPodType,
+    PodLifecycle, ReferenceNeuralExecutor, ResourceRequirements, TensorContract, TensorDType,
+};
+pub use output::{OutputError, PodOutput, PodOutputKind};
+pub use protocol::{
+    ConnectionScope, DeliveryMode, EgressPolicy, MessagePattern, NativeProtocolExecutor,
+    NativeProtocolRequest, NativeProtocolResponse, NetworkEndpoint, PodLink, PodLinkError,
+    ProtocolBinding, ProtocolError, ProtocolProfile,
+};
+pub use runtime::{
+    ArtifactCatalog, ArtifactError, ExecutorError, ExecutorFactory, HealthStatus,
+    InMemoryArtifactCatalog, InMemoryResourceGovernor, ReferenceExecutorFactory, ResourceError,
+    ResourceGovernor, ResourceLease,
+};
+pub use semantic::{
+    ManifestError, ModelVariant, PodKind, PodResourceProfile, PodSemanticManifest,
+    SemanticPodLifecycle,
+};
+pub use transport::{PodWireRequest, PodWireResponse, TransportError};
+pub use turns::{DuplexSession, PodTurnEvent, PodTurnKind, TurnError};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PodManifest {
@@ -18,6 +68,37 @@ pub struct PodManifest {
     pub protocol_version: u32,
 }
 
+impl PodManifest {
+    /// Canonical digest used to bind descriptors and transport requests to the
+    /// exact invocation contract, including project and effect boundaries.
+    pub fn digest(&self) -> [u8; 32] {
+        let mut bytes = Vec::new();
+        macro_rules! push {
+            ($value:expr) => {{
+                let value = $value.to_string();
+                bytes.extend_from_slice(&(value.len() as u64).to_le_bytes());
+                bytes.extend_from_slice(value.as_bytes());
+            }};
+        }
+        push!(self.project.0);
+        push!(self.id.0);
+        for value in &self.capabilities {
+            push!(value.0);
+        }
+        for value in &self.accepts {
+            push!(value.0);
+        }
+        for value in &self.produces {
+            push!(value.0);
+        }
+        for value in &self.effects {
+            push!(format!("{:?}", value));
+        }
+        push!(self.protocol_version);
+        Sha256::digest(bytes).into()
+    }
+}
+
 pub trait Pod {
     type Input;
     type Output;
@@ -29,6 +110,32 @@ pub trait Pod {
 pub trait DynPod: Send + Sync {
     fn manifest(&self) -> &PodManifest;
     fn invoke(&self, input: TypedPayload) -> Result<TypedPayload, String>;
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RegisteredPodBinding {
+    project: ProjectId,
+    pod_id: PodId,
+    manifest: PodManifest,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PodBindingError {
+    NotFound { project: ProjectId, pod: PodId },
+}
+
+impl RegisteredPodBinding {
+    pub fn project(&self) -> &ProjectId {
+        &self.project
+    }
+
+    pub fn pod_id(&self) -> &PodId {
+        &self.pod_id
+    }
+
+    pub fn manifest(&self) -> &PodManifest {
+        &self.manifest
+    }
 }
 
 /// Pods addressed by project *and* id.
@@ -50,6 +157,29 @@ impl PodRegistry {
 
     pub fn get(&self, project: &ProjectId, id: &PodId) -> Option<Arc<dyn DynPod>> {
         self.pods.get(&(project.clone(), id.clone())).cloned()
+    }
+
+    pub fn bind_registered(
+        &self,
+        project: &ProjectId,
+        pod: &PodId,
+    ) -> Result<RegisteredPodBinding, PodBindingError> {
+        let resolved = self
+            .get(project, pod)
+            .ok_or_else(|| PodBindingError::NotFound {
+                project: project.clone(),
+                pod: pod.clone(),
+            })?;
+        Ok(RegisteredPodBinding {
+            project: project.clone(),
+            pod_id: pod.clone(),
+            manifest: resolved.manifest().clone(),
+        })
+    }
+
+    pub fn resolve_bound(&self, binding: &RegisteredPodBinding) -> Option<Arc<dyn DynPod>> {
+        let pod = self.get(&binding.project, &binding.pod_id)?;
+        (pod.manifest() == &binding.manifest).then_some(pod)
     }
 
     /// Resolve within one project only.

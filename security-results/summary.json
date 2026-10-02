@@ -1,0 +1,44 @@
+{
+  "source_sha": "6450941115db1183e7e330156e05a2b5340d198c",
+  "rust": "rustc 1.96.0 (ac68faa20 2026-05-25)\nbinary: rustc\ncommit-hash: ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96\ncommit-date: 2026-05-25\nhost: x86_64-pc-windows-msvc\nrelease: 1.96.0\nLLVM version: 22.1.2",
+  "scanner": "cargo-deny 0.19.4",
+  "workspaces": [
+    {
+      "manifest": "Cargo.toml",
+      "lock_sha256": "521baf16417710ee195d93c5d0b2bc492424e8dc46a173a21d5217f6f4ef9d06",
+      "lock_unchanged": true,
+      "exit_codes": {
+        "metadata": 0,
+        "deny": 0
+      }
+    },
+    {
+      "manifest": "fuzz/Cargo.toml",
+      "lock_sha256": "8540e11ed34cec3a50718a6fe5034922b6d14a3dfea0030f98c7bb9c4a255ff3",
+      "lock_unchanged": true,
+      "exit_codes": {
+        "metadata": 0,
+        "deny": 0
+      }
+    },
+    {
+      "manifest": "model/burn-a0/Cargo.toml",
+      "lock_sha256": "7d4ed3833cfe8859966581cfb0b189ca6c92e8a2658adbf2410fb594c99b7e30",
+      "lock_unchanged": true,
+      "exit_codes": {
+        "metadata": 0,
+        "deny": 0
+      }
+    },
+    {
+      "manifest": "templates/rust-crate/Cargo.toml",
+      "lock_sha256": "018469bd16c5e057c45bbce0b402b7939e30140fb216a60d4c1dbb87404e24b3",
+      "lock_unchanged": true,
+      "exit_codes": {
+        "metadata": 0,
+        "deny": 0
+      }
+    }
+  ],
+  "advisory_db_sha": "6de4455103aced2cba86e3b86e5c090b22827cf1"
+}

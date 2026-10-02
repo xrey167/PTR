@@ -5,13 +5,15 @@ use super::{PtrRuntime, RuntimeError};
 use crate::merge::{self, ChangeOrigin, SemanticChange};
 use ptr_events::RuntimeEvent;
 use ptr_ledger::{Attestation, LedgerEvent, MergeAuthorityRecord, SemanticOrigin};
+use ptr_pods::PodManifest;
 use ptr_protocol::TypedPayload;
 use ptr_semdb::{
     is_ingress_key, PreparedDelta, SemanticDelta, SemanticError, SemanticPayload, SemanticSnapshot,
     SemanticValue,
 };
 
-use ptr_types::{CommitIndex, PodId, PrincipalId, RequestId, Revision, VerificationLevel};
+use ptr_types::{CommitIndex, Effect, PodId, PrincipalId, RequestId, Revision, VerificationLevel};
+use ptr_verifier::{VerificationStatus, Verifier};
 use std::collections::BTreeSet;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -36,6 +38,54 @@ pub fn pod_output_key(request: &RequestId, pod: &PodId) -> String {
 }
 
 impl PtrRuntime {
+    /// Shared output-admission boundary for in-process and memory-controller
+    /// callers. Effects never pass through this pure/read promotion path.
+    pub fn promote_verified_pod_output<V>(
+        &mut self,
+        request: &RequestId,
+        manifest: &PodManifest,
+        output: &TypedPayload,
+        verifier: &V,
+    ) -> Result<Revision, RuntimeError>
+    where
+        V: Verifier<TypedPayload> + ?Sized,
+    {
+        if manifest
+            .effects
+            .iter()
+            .any(|effect| !matches!(effect, Effect::Pure | Effect::Read))
+        {
+            return Err(RuntimeError::PodEffectRequiresActionBoundary {
+                pod: manifest.id.to_string(),
+            });
+        }
+        if !manifest.produces.contains(&output.type_id) {
+            return Err(RuntimeError::PodOutputTypeMismatch {
+                pod: manifest.id.to_string(),
+                expected: manifest
+                    .produces
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(","),
+                actual: output.type_id.to_string(),
+            });
+        }
+        let report = verifier.verify(output);
+        let passed = report.status == VerificationStatus::Pass
+            && !report.findings.iter().any(|finding| finding.hard);
+        self.emit(RuntimeEvent::VerifierResult {
+            verifier: "pod-output".into(),
+            passed,
+        });
+        if !passed {
+            return Err(RuntimeError::PodVerificationFailed {
+                pod: manifest.id.to_string(),
+            });
+        }
+        self.promote_pod_output(request, &manifest.id, output, report.level)
+    }
+
     /// Ingress: `delta`, in the exact shape `origin` fixes (rule R2 of
     /// [`Self::validate_semantic_origin`]), committed at the current revision
     /// with no verifier, since raw input is not something an interpreter may

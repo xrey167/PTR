@@ -110,6 +110,17 @@ External projects are **candidates**, not architectural authority. The PTR-owned
 2. Derived indexes cannot resurrect revoked content.
 3. Procedural memory requires verifier and replay evidence before promotion.
 
+Knowledge generations are stored under `(logical_id, generation)` and their
+content records are immutable. Lifecycle and invalidation changes are recorded
+separately and materialized only when a caller requests the current view.
+Dependencies identify an exact generation, so a newer generation cannot silently
+substitute for a revoked one.
+
+KV continuation is authorized only by an opaque `KvStateHandle` created by its
+own runtime. Callers can inspect read-only `KvStateMetadata`, but cannot submit
+edited session, revision, model, adapter or dependency fields back to the
+runtime.
+
 These invariants should be executable wherever possible through unit, property, lifecycle or chaos tests.
 
 ## Failure model
@@ -148,4 +159,3 @@ A new candidate should be added with a reproducible benchmark and failure-semant
 - [Technical architecture](../../docs/TECHNICAL_ARCHITECTURE.md)
 - [Component contracts](../../docs/COMPONENT_CONTRACTS.md)
 - [Global invariants](../../docs/INVARIANTS.md)
-

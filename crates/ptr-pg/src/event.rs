@@ -77,7 +77,10 @@ pub fn lifecycle_change(committed: &CommittedEvent) -> LifecycleChange {
         | LedgerEvent::SnapshotCommitted { .. }
         | LedgerEvent::EffectAttempted { .. }
         | LedgerEvent::EffectSettled { .. }
-        | LedgerEvent::EffectReconciled { .. } => LifecycleChange::None,
+        | LedgerEvent::EffectReconciled { .. }
+        | LedgerEvent::ScopeLifecycle(_)
+        | LedgerEvent::ProtectedStateCommitted { .. }
+        | LedgerEvent::MeshTunnelLifecycle(_) => LifecycleChange::None,
     }
 }
 
@@ -96,6 +99,9 @@ pub fn event_topic(event: &LedgerEvent) -> &'static str {
         LedgerEvent::EffectAttempted { .. } => "effect.attempted",
         LedgerEvent::EffectSettled { .. } => "effect.settled",
         LedgerEvent::EffectReconciled { .. } => "effect.reconciled",
+        LedgerEvent::ScopeLifecycle(_) => "scope.lifecycle",
+        LedgerEvent::ProtectedStateCommitted { .. } => "protected_state.committed",
+        LedgerEvent::MeshTunnelLifecycle(_) => "mesh.tunnel_lifecycle",
     }
 }
 
@@ -117,6 +123,13 @@ pub fn event_subject(committed: &CommittedEvent) -> String {
         LedgerEvent::EffectSettled { attempt, .. }
         | LedgerEvent::EffectReconciled { attempt, .. } => {
             format!("effect:{}", attempt.0)
+        }
+        LedgerEvent::ScopeLifecycle(event) => format!("scope:{}", event.scope_id),
+        LedgerEvent::ProtectedStateCommitted { logical_id, .. } => {
+            format!("protected:{logical_id}")
+        }
+        LedgerEvent::MeshTunnelLifecycle(event) => {
+            format!("mesh:{}:{}", event.network_id, event.peer_id)
         }
     }
 }

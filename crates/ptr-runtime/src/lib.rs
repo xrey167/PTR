@@ -1,14 +1,83 @@
+pub mod admission;
 pub mod compacted;
+pub mod directory;
 pub mod execution;
+pub mod kv;
+pub mod memory;
 pub mod merge;
+pub mod migration;
 pub mod neural;
 pub mod persistence;
+pub mod placement;
+pub mod protected_state;
+pub mod sandbox;
+pub mod scopes;
 pub mod semantic;
+pub mod tensor_kv;
 
+pub use admission::{AdmissionError, AdmissionGrant, IdentityAdmissionController};
+pub use directory::{InMemoryPodDirectory, PodDirectory};
+pub use kv::{KvUseError, KvUseRequest, KvUseTicket, RuntimeKvAuthority};
 pub use merge::{
     ChangeOrigin, HoldReason, MergeAuthority, MergeHold, MergeOutcome, MergePreview, MergeReceipt,
     SemanticChange, SemanticGrant, SemanticGrantInfo, SemanticRefusal, SemanticVerdict,
 };
+pub use migration::{KvMigrationController, MigrationError, MigrationRecord, MigrationState};
+pub use placement::{
+    DeviceHealth, DeviceRecord, FencedStateLease, FencingToken, NodeHealth, NodeRecord, Placement,
+    PlacementEpoch, PlacementError, PodPlacementController,
+};
+pub use protected_state::ProtectedStateCoordinator;
+pub use sandbox::{
+    ExternalSandboxExecutor, NativeSandboxExecutor, NetworkMode, SandboxBackend, SandboxError,
+    SandboxExecutor, SandboxLease, SandboxProfile, SandboxRequest, SandboxResponse,
+};
+pub use scopes::{
+    CleanupError, ExecutionScope, ScopeCleanupCoordinator, ScopeError, ScopeEvent, ScopeEventKind,
+    ScopeRegistry, ScopeState,
+};
+pub use tensor_kv::{ManagedKvHandle, ManagedKvMetadata, ManagedKvRegistry, TensorKvError};
+
+/// Typed bridge owned by the runtime side of the PodWire boundary. It keeps
+/// transport crates independent from scope, lease, and journal internals.
+pub struct RuntimeRecoveryAdapter<'a, C: ScopeCleanupCoordinator> {
+    runtime: &'a mut PtrRuntime,
+    scope_id: ScopeId,
+    coordinator: &'a mut C,
+    lease: ScopeLeaseBinding,
+}
+
+impl<'a, C: ScopeCleanupCoordinator> RuntimeRecoveryAdapter<'a, C> {
+    pub fn new(
+        runtime: &'a mut PtrRuntime,
+        scope_id: ScopeId,
+        coordinator: &'a mut C,
+        lease: ScopeLeaseBinding,
+    ) -> Self {
+        Self {
+            runtime,
+            scope_id,
+            coordinator,
+            lease,
+        }
+    }
+}
+
+impl<C: ScopeCleanupCoordinator> StatefulRequestRecovery for RuntimeRecoveryAdapter<'_, C> {
+    type Error = RuntimeError;
+
+    fn recover_uncertain(&mut self, request: UncertainRequest) -> Result<(), Self::Error> {
+        if request.scope_id != self.scope_id {
+            return Err(RuntimeError::Scope(ScopeError::InvalidLeaseBinding));
+        }
+        self.runtime.recover_uncertain_request(
+            &self.scope_id,
+            request.request_id,
+            self.coordinator,
+            self.lease.clone(),
+        )
+    }
+}
 
 use ptr_config::PtrConfig;
 use ptr_core::action_head::ActionIr;
@@ -29,8 +98,11 @@ use ptr_security::{
 };
 use ptr_semdb::{PreparedDelta, SemanticError, SemanticHost, SemanticSnapshot};
 use ptr_state::MaterializedState;
-use ptr_types::{CommitIndex, Generation, ProjectId, RequestId, Revision, Validity};
-use ptr_verifier::{VerificationStatus, Verifier};
+use ptr_types::{
+    CommitIndex, Generation, ProjectId, RequestId, Revision, ScopeId, ScopeLeaseBinding,
+    StatefulRequestRecovery, UncertainRequest, Validity,
+};
+use ptr_verifier::Verifier;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -42,6 +114,12 @@ pub enum RuntimeError {
     Semantic(SemanticError),
     InvalidConfig(String),
     Ledger(String),
+    Scope(ScopeError),
+    ScopeCleanup(CleanupError),
+    ScopeRevisionMismatch {
+        expected: Revision,
+        actual: Revision,
+    },
     StaleRevision {
         action: Revision,
         current: Revision,
@@ -69,6 +147,11 @@ pub enum RuntimeError {
     Pod(String),
     PodVerificationFailed {
         pod: String,
+    },
+    PodOutputTypeMismatch {
+        pod: String,
+        expected: String,
+        actual: String,
     },
     /// A host write was refused before append: the installed grant's
     /// verifiers did not pass at the required level, or reported a hard
@@ -252,6 +335,7 @@ pub struct PtrRuntime {
     /// the host installs one. Not history: a runtime rebuilt from its log
     /// has none.
     semantic_grant: Option<merge::SemanticGrant>,
+    scopes: ScopeRegistry,
 }
 
 impl PtrRuntime {
@@ -274,6 +358,7 @@ impl PtrRuntime {
                 runtime.prepare_semantic_event(Some(committed.index), &committed.event)?;
             runtime.apply_committed(committed, semantic)?;
         }
+        runtime.scopes.mark_recovery_required();
         Ok(runtime)
     }
 
@@ -292,6 +377,7 @@ impl PtrRuntime {
             events: Vec::new(),
             next_event_sequence: 1,
             semantic_grant: None,
+            scopes: ScopeRegistry::default(),
         })
     }
 
@@ -315,6 +401,7 @@ impl PtrRuntime {
                 .clone();
             runtime.apply_committed(&committed, semantic)?;
         }
+        runtime.scopes.mark_recovery_required();
         Ok(runtime)
     }
 
@@ -337,6 +424,162 @@ impl PtrRuntime {
 
     pub fn committed_events(&self) -> &[CommittedEvent] {
         self.ledger.events()
+    }
+
+    pub fn scopes(&self) -> &ScopeRegistry {
+        &self.scopes
+    }
+
+    pub fn create_scope(
+        &mut self,
+        scope: ExecutionScope,
+        lease: ScopeLeaseBinding,
+    ) -> Result<CommitIndex, RuntimeError> {
+        ScopeRegistry::validate_lease_shape(&lease).map_err(RuntimeError::Scope)?;
+        if self.scopes.get(&scope.id).is_ok() {
+            return Err(RuntimeError::Scope(ScopeError::Duplicate(scope.id)));
+        }
+        if let Some(parent_id) = &scope.parent {
+            let parent = self.scopes.get(parent_id).map_err(RuntimeError::Scope)?;
+            if parent.session != scope.session || parent.project != scope.project {
+                return Err(RuntimeError::Scope(ScopeError::ParentScopeMismatch));
+            }
+        }
+        let event = scopes::lifecycle_event(
+            &scope,
+            None,
+            ScopeState::Created,
+            self.revision(),
+            lease,
+            None,
+        );
+        self.commit(LedgerEvent::ScopeLifecycle(event))
+    }
+
+    pub fn transition_scope(
+        &mut self,
+        id: &ScopeId,
+        next: ScopeState,
+        lease: ScopeLeaseBinding,
+        reason: Option<String>,
+    ) -> Result<CommitIndex, RuntimeError> {
+        let current = self.scopes.get(id).map_err(RuntimeError::Scope)?.clone();
+        ScopeRegistry::validate_lease_shape(&lease).map_err(RuntimeError::Scope)?;
+        if self.scopes.lease(id).map_err(RuntimeError::Scope)? != &lease {
+            return Err(RuntimeError::Scope(ScopeError::InvalidLeaseBinding));
+        }
+        if self.scopes.recovery_required(id)
+            && !matches!(
+                next,
+                ScopeState::Cancelled | ScopeState::Revoked | ScopeState::Released
+            )
+        {
+            return Err(RuntimeError::Scope(ScopeError::RecoveryRequired(
+                id.clone(),
+            )));
+        }
+        let event = scopes::lifecycle_event(
+            &current,
+            Some(current.state),
+            next,
+            self.revision(),
+            lease,
+            reason,
+        );
+        self.commit(LedgerEvent::ScopeLifecycle(event))
+    }
+
+    /// Explicitly recover a scope left open by a restart or session loss. The
+    /// normal cleanup coordinator remains the only path that releases its
+    /// external leases and session resources.
+    pub fn recover_scope<C: ScopeCleanupCoordinator>(
+        &mut self,
+        id: &ScopeId,
+        coordinator: &mut C,
+        lease: ScopeLeaseBinding,
+    ) -> Result<(), RuntimeError> {
+        if !self.scopes.recovery_required(id) {
+            return Err(RuntimeError::Scope(ScopeError::InvalidCommittedEvent));
+        }
+        self.cleanup_scope(id, coordinator, lease)
+    }
+
+    /// Recover a scope after a stateful PodWire request returned an outcome
+    /// that cannot be established. The transport layer reports the request
+    /// id; this runtime method fences the scope, journalizes revocation, and
+    /// runs the same idempotent cleanup path used for restart recovery. A
+    /// caller must establish a new session and re-admit/recompute before
+    /// issuing another stateful request.
+    pub fn recover_uncertain_request<C: ScopeCleanupCoordinator>(
+        &mut self,
+        id: &ScopeId,
+        request_id: u64,
+        coordinator: &mut C,
+        lease: ScopeLeaseBinding,
+    ) -> Result<(), RuntimeError> {
+        self.scopes
+            .mark_scope_recovery_required(id)
+            .map_err(RuntimeError::Scope)?;
+        self.transition_scope(
+            id,
+            ScopeState::Revoked,
+            lease.clone(),
+            Some(format!("request-uncertain:{request_id}")),
+        )?;
+        self.cleanup_scope(id, coordinator, lease)
+    }
+
+    pub fn cleanup_scope<C: ScopeCleanupCoordinator>(
+        &mut self,
+        id: &ScopeId,
+        coordinator: &mut C,
+        lease: ScopeLeaseBinding,
+    ) -> Result<(), RuntimeError> {
+        if self.scopes.lease(id).map_err(RuntimeError::Scope)? != &lease {
+            return Err(RuntimeError::Scope(ScopeError::InvalidLeaseBinding));
+        }
+        let scope = self.scopes.get(id).map_err(RuntimeError::Scope)?.clone();
+        coordinator
+            .stop_intake(&scope)
+            .map_err(RuntimeError::ScopeCleanup)?;
+        coordinator
+            .cancel_children(&scope)
+            .map_err(RuntimeError::ScopeCleanup)?;
+        for child in self.scopes.children(id) {
+            if self.scopes.get(&child).map_err(RuntimeError::Scope)?.state != ScopeState::Released {
+                let child_lease = self
+                    .scopes
+                    .lease(&child)
+                    .map_err(RuntimeError::Scope)?
+                    .clone();
+                self.cleanup_scope(&child, coordinator, child_lease)?;
+            }
+        }
+        if !scope.state.is_terminal() {
+            self.transition_scope(
+                id,
+                ScopeState::Cancelled,
+                lease.clone(),
+                Some("cleanup".to_owned()),
+            )?;
+        }
+        let refreshed = self.scopes.get(id).map_err(RuntimeError::Scope)?.clone();
+        coordinator
+            .drain_queues(&refreshed)
+            .map_err(RuntimeError::ScopeCleanup)?;
+        coordinator
+            .release_pod_lease(&refreshed)
+            .map_err(RuntimeError::ScopeCleanup)?;
+        coordinator
+            .release_resource_lease(&refreshed)
+            .map_err(RuntimeError::ScopeCleanup)?;
+        coordinator
+            .close_session(&refreshed)
+            .map_err(RuntimeError::ScopeCleanup)?;
+        if refreshed.state != ScopeState::Released {
+            self.transition_scope(id, ScopeState::Released, lease, Some("cleanup".to_owned()))?;
+        }
+        Ok(())
     }
 
     pub fn materialized_state(&self) -> &MaterializedState {
@@ -428,7 +671,7 @@ impl PtrRuntime {
             // A Pod in another project is unavailable in exactly the same
             // words as a Pod that does not exist. Saying which it was would
             // answer, across the boundary, whether that Pod exists.
-            let pod = PodRouter::default()
+            let pod = PodRouter
                 .select(pods, project, &capability, &input_type)
                 .and_then(|route| pods.get(project, &route.pod_id))
                 .ok_or_else(|| RuntimeError::PodUnavailable {
@@ -455,21 +698,7 @@ impl PtrRuntime {
                 })
                 .map_err(RuntimeError::Pod)?;
 
-            let report = verifier.verify(&output);
-            // A hard finding refuses the output whatever the status says.
-            let passed = report.status == VerificationStatus::Pass
-                && !report.findings.iter().any(|finding| finding.hard);
-            self.emit(RuntimeEvent::VerifierResult {
-                verifier: "pod-output".into(),
-                passed,
-            });
-            if !passed {
-                return Err(RuntimeError::PodVerificationFailed {
-                    pod: pod.manifest().id.to_string(),
-                });
-            }
-
-            self.promote_pod_output(&request_id, &pod.manifest().id, &output, report.level)?;
+            self.promote_verified_pod_output(&request_id, pod.manifest(), &output, verifier)?;
             outputs.push(output);
         }
 
@@ -491,17 +720,11 @@ impl PtrRuntime {
         V: Verifier<TypedPayload> + ?Sized,
     {
         self.run_resumable_with_pods_using_router(
-            request_id,
-            project,
-            raw_text,
-            backend,
-            pods,
-            &PodRouter::default(),
-            verifier,
-            max_rounds,
+            request_id, project, raw_text, backend, pods, &PodRouter, verifier, max_rounds,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn run_resumable_with_pods_using_router<B, V>(
         &mut self,
         request_id: RequestId,
@@ -613,22 +836,8 @@ impl PtrRuntime {
                 })
                 .map_err(RuntimeError::Pod)?;
 
-            let report = verifier.verify(&output);
-            // A hard finding refuses the output whatever the status says.
-            let passed = report.status == VerificationStatus::Pass
-                && !report.findings.iter().any(|finding| finding.hard);
-            self.emit(RuntimeEvent::VerifierResult {
-                verifier: "pod-output".into(),
-                passed,
-            });
-            if !passed {
-                return Err(RuntimeError::PodVerificationFailed {
-                    pod: pod.manifest().id.to_string(),
-                });
-            }
-
             let revision =
-                self.promote_pod_output(&request_id, &pod.manifest().id, &output, report.level)?;
+                self.promote_verified_pod_output(&request_id, pod.manifest(), &output, verifier)?;
 
             let observation = ModelObservation {
                 revision,
@@ -706,6 +915,17 @@ impl PtrRuntime {
         self.validate_lifecycle_event(&event)?;
         let semantic = self.prepare_semantic_event(None, &event)?;
         self.append_prepared(event, semantic)
+    }
+
+    /// Journal a mesh/tunnel lifecycle transition through the same durable
+    /// authority as semantic and scope events. Callers must still perform the
+    /// platform tunnel operation separately; this method only commits the
+    /// validated control-plane fact.
+    pub fn commit_mesh_event(
+        &mut self,
+        event: ptr_types::MeshTunnelLifecycleEvent,
+    ) -> Result<CommitIndex, RuntimeError> {
+        self.commit(LedgerEvent::MeshTunnelLifecycle(event))
     }
 
     /// Settling or reconciling an attempt is the act that ends a fence, so it
@@ -858,6 +1078,30 @@ impl PtrRuntime {
                 }
                 Ok(())
             }
+            LedgerEvent::ScopeLifecycle(event) => {
+                if event.revision != self.revision() {
+                    return Err(RuntimeError::ScopeRevisionMismatch {
+                        expected: self.revision(),
+                        actual: event.revision,
+                    });
+                }
+                self.scopes
+                    .validate_committed(event)
+                    .map_err(RuntimeError::Scope)
+            }
+            LedgerEvent::ProtectedStateCommitted {
+                domain, logical_id, ..
+            } => {
+                if *domain > 4 || logical_id.is_empty() {
+                    return Err(RuntimeError::InvalidConfig(
+                        "invalid protected-state ledger reference".into(),
+                    ));
+                }
+                Ok(())
+            }
+            LedgerEvent::MeshTunnelLifecycle(event) => event.validate().map_err(|reason| {
+                RuntimeError::InvalidConfig(format!("invalid mesh event: {reason}"))
+            }),
             // Revocation tombstones are monotone and may precede activation.
             // Verifier/snapshot records do not confer permissions or load state.
             LedgerEvent::SemanticDeltaCommitted { .. }
@@ -957,6 +1201,16 @@ impl PtrRuntime {
                 };
                 self.execution.settle(*attempt, settlement);
             }
+            LedgerEvent::ScopeLifecycle(event) => {
+                self.scopes
+                    .apply_committed(event.clone())
+                    .map_err(RuntimeError::Scope)?;
+                self.emit(RuntimeEvent::ScopeLifecycle {
+                    scope: event.scope_id.clone(),
+                    kind: event.kind,
+                });
+            }
+            LedgerEvent::ProtectedStateCommitted { .. } | LedgerEvent::MeshTunnelLifecycle(_) => {}
         }
 
         self.state.apply(committed);

@@ -59,6 +59,8 @@
 
 ### Current automated checks
 
+- `IrohSession` reuses one authenticated connection, multiplexes bounded bidirectional streams and rejects an invalid in-flight limit
+
 - Iroh local direct request/response roundtrip verifies authenticated peer identity and ALPN routing
 - an address is locatable only under the id it carries, re-recording returns what it replaced, a forgotten peer is refused from the next lookup, and a truthful address from the book reaches its peer as the control
 - an address pointing the honest id at an impostor's socket fails and the impostor serves nothing, with the honest node at its true address succeeding in the same test so the failure is about the lie
@@ -188,4 +190,12 @@ A new candidate should be added with a reproducible benchmark and failure-semant
 - [Technical architecture](../../docs/TECHNICAL_ARCHITECTURE.md)
 - [Component contracts](../../docs/COMPONENT_CONTRACTS.md)
 - [Global invariants](../../docs/INVARIANTS.md)
+## WireGuard adapter
 
+Enable `wireguard-uapi-backend` on Linux to compile `LinuxWireguardDevice`.
+It uses the WireGuard userspace UAPI for peer configuration and the host
+`ip` utility for interface create/remove; those operations require the
+deployment's normal network privileges. The public key is registered
+explicitly from admission and is never derived from a PTR identity digest.
+Windows Wintun and macOS Network Extension remain separate platform adapters
+behind the same `WireguardDevice` contract.

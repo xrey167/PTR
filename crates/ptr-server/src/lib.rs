@@ -148,10 +148,10 @@ impl ServerState {
         Self::with_dependencies(
             runtime,
             Arc::new(ReferenceEchoBackend),
-            PodRouter::default(),
+            PodRouter,
             Arc::new(PodRegistry::default()),
             Arc::new(AllowAllVerifier),
-            Arc::new(|| Vec::new()),
+            Arc::new(Vec::new),
         )
     }
 

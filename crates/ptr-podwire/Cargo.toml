@@ -38,8 +38,17 @@ tokio = { workspace = true, optional = true, features = ["time"] }
 
 [dev-dependencies]
 tokio = { workspace = true }
+ptr-config = { workspace = true }
+ptr-ledger = { workspace = true }
+ptr-runtime = { workspace = true }
+ptr-storage = { workspace = true }
 
 [[test]]
 name = "wire"
 path = "tests/wire.rs"
+required-features = ["podwire-backend"]
+
+[[test]]
+name = "identity_recovery"
+path = "tests/identity_recovery.rs"
 required-features = ["podwire-backend"]

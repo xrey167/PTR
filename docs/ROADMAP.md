@@ -38,5 +38,26 @@ Synthetic data, SFT, verifier training, preference/RL, DSPy teachers and GEPA ou
 ## Phase F — Distributed Lifecycle
 Consensus, durable ledger, node transport, event streaming, snapshots, compaction barriers and fail-point chaos testing.
 
+### F.1 Mesh transport and protected tunnel lifecycle
+- Mesh membership, invitations and revocation.
+- Iroh direct/relay route selection with relay disabled by default.
+- Persistent MeshEndpoint and route revisions.
+- WireGuard userspace executor, followed by Windows Wintun and macOS Network Extension adapters.
+- Runtime admission, fencing, recovery and PodDirectory/PodWire integration.
+- Direct, relay, reconnect and stale-writer tests.
+
+Current implementation status:
+- `ptr-types` carries validated `MeshEndpointBinding`; PodDirectory rejects
+  mismatched mesh peer/network bindings.
+- PodWire addressed V3 frames carry the mesh binding and the admitted binding
+  rejects mismatches before invocation; V1 and legacy unaddressed V2 remain
+  compatible.
+- `ptr-ledger` persists mesh/tunnel lifecycle events with stable tag 15 and
+  `ptr-state`/`ptr-runtime` validate and project them.
+- `ptr-net` provides the fenced `WireguardUserspaceExecutor<D>` contract and
+  deterministic device-backed tests. Privileged Linux kernel, Windows Wintun,
+  and macOS Network Extension implementations are still platform adapters;
+  they are not claimed as locally hardware-validated here.
+
 ## Phase G — PTR-Diff
 Parallel structured reasoning / diffusion architecture only after A0 has measurable evidence over controlled baselines.

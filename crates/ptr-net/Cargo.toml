@@ -7,12 +7,17 @@ publish = false
 
 [features]
 default = []
-iroh-backend = ["dep:iroh"]
+iroh-backend = ["dep:iroh", "dep:tokio"]
+wireguard-uapi-backend = ["dep:wireguard-uapi"]
+wintun-backend = ["dep:wintun"]
 
 [dependencies]
 ptr-types = { workspace = true }
 ptr-protocol = { workspace = true }
 iroh = { version = "=1.2.0", optional = true, default-features = false, features = ["tls-ring"] }
+tokio = { workspace = true, optional = true, features = ["sync"] }
+wireguard-uapi = { version = "3.0.1", optional = true, features = ["xplatform"] }
+wintun = { version = "0.5.1", optional = true }
 
 # Iroh 0.35 declares Rust 1.81 support, but unconstrained 2026 transitive
 # updates have raised MSRV. Pin the release-compatible graph used by the

@@ -7,3 +7,6 @@ publish = false
 
 [dependencies]
 ptr-types = { workspace = true }
+aes-gcm-siv = { workspace = true }
+sha2 = { workspace = true }
+zeroize = { workspace = true }

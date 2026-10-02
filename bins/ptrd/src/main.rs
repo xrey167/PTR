@@ -94,7 +94,7 @@ async fn main() {
         listener,
         runtime,
         backend,
-        PodRouter::default(),
+        PodRouter,
         Arc::new(PodRegistry::default()),
         ptr_server::default_verifier(),
         effect_grants,

@@ -104,7 +104,7 @@ mod tests {
             })));
         }
 
-        let selected = PodRouter::default()
+        let selected = PodRouter
             .select(
                 &registry,
                 &project,
