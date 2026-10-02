@@ -373,7 +373,21 @@ def resumable(output: Path, name: str, expected: dict[str, object]) -> bool:
         raise PilotError(f"{name}: invalid existing metadata: {error}") from None
     if not isinstance(metadata, dict):
         raise PilotError(f"{name}: existing metadata is not a JSON object")
-    if any(metadata.get(key) != value for key, value in expected.items()):
+    expected_execution = expected.get("execution_provenance")
+    actual_execution = metadata.get("execution_provenance")
+    if not isinstance(expected_execution, dict) or not isinstance(actual_execution, dict):
+        raise PilotError(f"{name}: existing artifacts do not match this exact cell")
+    actual_environment = actual_execution.get("environment_sha256")
+    if not isinstance(actual_environment, str) or len(actual_environment) != 64:
+        raise PilotError(f"{name}: existing artifacts do not match this exact cell")
+    try:
+        int(actual_environment, 16)
+    except ValueError:
+        raise PilotError(f"{name}: existing artifacts do not match this exact cell") from None
+    expected_binding = {key: value for key, value in expected_execution.items() if key != "environment_sha256"}
+    actual_binding = {key: value for key, value in actual_execution.items() if key != "environment_sha256"}
+    identity = {key: value for key, value in expected.items() if key != "execution_provenance"}
+    if any(metadata.get(key) != value for key, value in identity.items()) or actual_binding != expected_binding:
         raise PilotError(f"{name}: existing artifacts do not match this exact cell")
     stdout = stdout_path.read_bytes()
     stderr = stderr_path.read_bytes()

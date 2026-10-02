@@ -183,7 +183,14 @@ class M002V5PilotTests(unittest.TestCase):
             candidate = {"rank": 8, "bias_limit": 1, "metadata_dropout": 0.0}
             digests = {name: str(index) * 16 for index, name in enumerate(MOD.FOLDS, 1)}
             command = MOD.command_for(candidate, 7, digests)
-            expected = MOD.expected_identity("a" * 40, command, candidate, 7, digests, {"test": True})
+            expected = MOD.expected_identity(
+                "a" * 40,
+                command,
+                candidate,
+                7,
+                digests,
+                {"environment_sha256": "a" * 64, "resume_environment_sha256": "b" * 64},
+            )
             name = MOD.cell_name(candidate, 7)
             stdout_path, stderr_path, metadata_path = MOD.artifact_paths(output, name)
             stdout_path.write_bytes(b"out\n")
@@ -205,6 +212,44 @@ class M002V5PilotTests(unittest.TestCase):
                 MOD.resumable(output, name, expected)
             metadata_path.write_text("[]", encoding="utf-8")
             with self.assertRaisesRegex(MOD.PilotError, "not a JSON object"):
+                MOD.resumable(output, name, expected)
+
+    def test_resume_accepts_a_fresh_exact_environment_only_with_the_same_stable_binding(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            candidate = {"rank": 8, "bias_limit": 1, "metadata_dropout": 0.0}
+            digests = {name: str(index) * 16 for index, name in enumerate(MOD.FOLDS, 1)}
+            command = MOD.command_for(candidate, 7, digests)
+            expected = MOD.expected_identity(
+                "a" * 40,
+                command,
+                candidate,
+                7,
+                digests,
+                {"environment_sha256": "a" * 64, "resume_environment_sha256": "b" * 64},
+            )
+            name = MOD.cell_name(candidate, 7)
+            stdout_path, stderr_path, metadata_path = MOD.artifact_paths(output, name)
+            stdout_path.write_bytes(b"out\n")
+            stderr_path.write_bytes(b"err\n")
+            metadata = {
+                **expected,
+                "execution_provenance": {
+                    "environment_sha256": "c" * 64,
+                    "resume_environment_sha256": "b" * 64,
+                },
+                "exit_code": 0,
+                "duration_seconds": 1.25,
+                "stdout_file": stdout_path.name,
+                "stderr_file": stderr_path.name,
+                "stdout_sha256": MOD.sha256(b"out\n"),
+                "stderr_sha256": MOD.sha256(b"err\n"),
+            }
+            metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+            self.assertTrue(MOD.resumable(output, name, expected))
+            metadata["execution_provenance"]["resume_environment_sha256"] = "d" * 64
+            metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+            with self.assertRaisesRegex(MOD.PilotError, "do not match"):
                 MOD.resumable(output, name, expected)
 
     def test_run_cell_preserves_raw_streams_and_records_hashes(self):
