@@ -1,5 +1,14 @@
 # PTR project map (2026-09-24)
 
+> **Dated snapshot.** This map was made at `e93ed99` and has not been kept in
+> step with the code since. Several sizes and statements below are out of date,
+> for example `ptr-storage` (now tier backends and OpenDAL adapters rather than
+> an in-memory map), `ptr-podwire` (now V2/V3 frames and runtime manifest
+> resolution) and `ptr-server` (now an effect path with idempotency keys).
+> For the current state of each crate read its `component.toml` and the
+> generated [`components/STATUS.md`](components/STATUS.md), which are checked
+> in CI.
+
 This is a map of the whole repository for someone who has not seen it before. It
 says what each part is, where it lives, how the parts connect, and — most
 importantly — **what is actually built and tested versus what is only described**.

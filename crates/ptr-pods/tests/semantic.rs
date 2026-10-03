@@ -423,3 +423,74 @@ fn cache_key_keeps_protocol_and_semantic_revision_invalidation_explicit() {
         1
     );
 }
+
+#[test]
+fn a_rejected_turn_event_does_not_advance_the_counters() {
+    let mut session =
+        DuplexSession::new(SessionId::from("session"), TraceId::from("trace")).unwrap();
+    // Sequence 5 is out of order: both calls must fail and change nothing.
+    assert!(session.commit_turn(event(5)).is_err());
+    assert!(session.interrupt(event(5)).is_err());
+    assert_eq!((session.turn_id, session.epoch), (0, 0));
+    session.commit_turn(event(1)).unwrap();
+    assert_eq!(session.events()[0].turn_id, 1, "no turn id is skipped");
+    session.interrupt(event(2)).unwrap();
+    assert_eq!((session.turn_id, session.epoch), (1, 1));
+}
+
+#[test]
+fn emit_refuses_the_kinds_that_move_session_state() {
+    use ptr_pods::{PodTurnKind, TurnError};
+    let mut session =
+        DuplexSession::new(SessionId::from("session"), TraceId::from("trace")).unwrap();
+    for kind in [
+        PodTurnKind::TurnCommitted,
+        PodTurnKind::TurnInterrupted,
+        PodTurnKind::SessionClosed,
+    ] {
+        let mut reserved = event(1);
+        reserved.kind = kind;
+        assert_eq!(session.emit(reserved).err(), Some(TurnError::ReservedKind));
+    }
+    assert!(session.events().is_empty());
+    // The dedicated methods still work, and close really closes.
+    session.close(event(1)).unwrap();
+    assert_eq!(session.emit(event(2)).err(), Some(TurnError::Closed));
+}
+
+#[test]
+fn an_unverified_hypothesis_of_another_generation_does_not_abort_the_merge() {
+    let hypothesis = |branch: &str, generation: u64, status: VerificationStatus| PodHypothesis {
+        branch_id: branch.into(),
+        pod_id: PodId::from("pod"),
+        generation: Generation(generation),
+        evidence: vec![],
+        output: TypedPayload {
+            type_id: TypeId::from("answer"),
+            bytes: b"answer".to_vec(),
+        },
+        confidence: Probability::new(0.9).unwrap(),
+        latency: Duration::from_millis(5),
+        verification: VerificationReport {
+            status,
+            level: VerificationLevel::Deterministic,
+            score: Probability::new(0.9).unwrap(),
+            findings: vec![],
+        },
+    };
+    let merged = merge_hypotheses(vec![
+        hypothesis("good", 1, VerificationStatus::Pass),
+        hypothesis("stale", 2, VerificationStatus::Fail),
+    ])
+    .unwrap();
+    assert_eq!(merged.source_branches, vec!["good"]);
+    // Two verified hypotheses of different generations still conflict.
+    assert_eq!(
+        merge_hypotheses(vec![
+            hypothesis("a", 1, VerificationStatus::Pass),
+            hypothesis("b", 2, VerificationStatus::Pass),
+        ])
+        .err(),
+        Some(ptr_pods::HypothesisError::GenerationConflict)
+    );
+}

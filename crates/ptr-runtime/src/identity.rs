@@ -2,7 +2,7 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use ptr_types::{AuthenticationLevel, IdentityContext, IdentityProvider, SessionId, Timestamp};
 use serde_json::Value;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 #[cfg(feature = "oidc-http")]
 use std::io::Read;
 use std::sync::{Arc, Mutex};
@@ -238,6 +238,17 @@ pub struct ForwardAuthHeaders {
     pub authentication_level: AuthenticationLevel,
 }
 
+/// Builds an identity from forward-auth headers that a reverse proxy has
+/// already verified.
+///
+/// **Trust precondition.** The headers (and the JSON form accepted by
+/// [`IdentityProvider::authenticate`]) are not signed or otherwise bound to the
+/// proxy: this adapter only checks their shape and their expiry against the
+/// server clock. It is safe only when the embedding host guarantees that they
+/// can reach it exclusively from the trusted proxy, for example by listening
+/// on a private interface or behind mutual TLS, and that the proxy strips any
+/// copy of these headers a client sends itself. Use [`OidcIdentityAdapter`]
+/// where the credential must carry its own proof.
 pub struct AutheliaForwardAuthAdapter {
     pub issuer: String,
 }
@@ -327,9 +338,59 @@ pub struct OidcIdentityAdapter {
     pub audience: String,
     pub jwks: JwksStore,
     pub allowed_algorithms: Vec<OidcAlgorithm>,
-    used_jti: Mutex<BTreeSet<String>>,
+    /// Token ids seen so far, each with the `exp` of the token that carried it.
+    /// An id is only needed until that moment: afterwards the token is expired
+    /// anyway, so the entry is dropped and the set cannot grow without bound.
+    used_jti: Mutex<UsedTokenIds>,
     refresh: Mutex<RefreshState>,
     refresh_cooldown: Duration,
+}
+
+/// The token ids seen so far, indexed twice: by id for the replay check and by
+/// expiry for pruning, so dropping the expired ones visits only those and never
+/// walks the ids that are still live.
+///
+/// The latest time ever presented is kept as well. Pruning follows it and not
+/// the time of the call, so a clock that later reads earlier cannot make an id
+/// that was dropped look unused: a token that had already expired at the latest
+/// time seen is refused as a replay, because its id may no longer be here.
+#[derive(Default)]
+struct UsedTokenIds {
+    expiry_by_id: BTreeMap<String, Timestamp>,
+    ids_by_expiry: BTreeMap<Timestamp, Vec<String>>,
+    latest_seen: Timestamp,
+}
+
+impl UsedTokenIds {
+    /// Drops every id whose token has expired at the latest time seen.
+    fn prune(&mut self) {
+        while let Some(entry) = self.ids_by_expiry.first_entry() {
+            if *entry.key() > self.latest_seen {
+                break;
+            }
+            for id in entry.remove() {
+                self.expiry_by_id.remove(&id);
+            }
+        }
+    }
+
+    /// Records `id` until `expires`, at the time `now`; false when it must be
+    /// treated as a replay.
+    fn insert(&mut self, id: String, expires: Timestamp, now: Timestamp) -> bool {
+        self.latest_seen = self.latest_seen.max(now);
+        self.prune();
+        if expires <= self.latest_seen || self.expiry_by_id.contains_key(&id) {
+            return false;
+        }
+        self.expiry_by_id.insert(id.clone(), expires);
+        self.ids_by_expiry.entry(expires).or_default().push(id);
+        true
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.expiry_by_id.len()
+    }
 }
 
 /// Default minimum spacing between JWKS fetches triggered by unknown key ids.
@@ -351,7 +412,7 @@ impl OidcIdentityAdapter {
             audience: audience.into(),
             jwks,
             allowed_algorithms: vec![OidcAlgorithm::EdDsa],
-            used_jti: Mutex::new(BTreeSet::new()),
+            used_jti: Mutex::new(UsedTokenIds::default()),
             refresh: Mutex::new(RefreshState::default()),
             refresh_cooldown: DEFAULT_JWKS_REFRESH_COOLDOWN,
         }
@@ -479,18 +540,26 @@ impl OidcIdentityAdapter {
         if expires_at <= now {
             return Err(OidcError::Expired);
         }
-        if let Some(jti) = claims.get("jti") {
-            let jti = jti
-                .as_str()
-                .filter(|value| !value.is_empty())
-                .ok_or(OidcError::InvalidClaim("jti"))?;
+        let jti = match claims.get("jti") {
+            Some(jti) => Some(
+                jti.as_str()
+                    .filter(|value| !value.is_empty())
+                    .ok_or(OidcError::InvalidClaim("jti"))?
+                    .to_owned(),
+            ),
+            None => None,
+        };
+        let groups = canonical_groups(claims.get("groups"))?;
+        let authentication_level = authentication_level(&claims);
+        // The id is recorded last, once every claim has been accepted: a token
+        // that is refused for any other reason must not burn its id, or the
+        // corrected token carrying the same id would be rejected as a replay.
+        if let Some(jti) = jti {
             let mut used = self.used_jti.lock().map_err(|_| OidcError::InvalidToken)?;
-            if !used.insert(jti.to_owned()) {
+            if !used.insert(jti, expires_at, now) {
                 return Err(OidcError::TokenReplay);
             }
         }
-        let groups = canonical_groups(claims.get("groups"))?;
-        let authentication_level = authentication_level(&claims);
         let mut context = IdentityContext {
             subject,
             issuer,
@@ -847,5 +916,105 @@ mod tests {
             adapter.authenticate(credential.to_string().as_bytes()),
             Err(OidcError::Expired)
         );
+    }
+
+    #[test]
+    fn a_refused_token_does_not_burn_its_jti() {
+        let key = SigningKey::from_bytes(&[39; 32]);
+        let adapter = adapter(&key);
+        let bad = token(
+            &key,
+            json!({"iss":"https://issuer","aud":"ptr","sub":"u","sid":"s","iat":1,"exp":100,
+                   "jti":"j1","groups":"notarray"}),
+        );
+        assert_eq!(
+            adapter.authenticate_at(bad.as_bytes(), Timestamp(50)),
+            Err(OidcError::InvalidClaim("groups"))
+        );
+        let corrected = token(
+            &key,
+            json!({"iss":"https://issuer","aud":"ptr","sub":"u","sid":"s","iat":1,"exp":100,
+                   "jti":"j1","groups":["a"]}),
+        );
+        assert!(adapter
+            .authenticate_at(corrected.as_bytes(), Timestamp(50))
+            .is_ok());
+        // Once accepted, the same id is a replay.
+        assert_eq!(
+            adapter.authenticate_at(corrected.as_bytes(), Timestamp(50)),
+            Err(OidcError::TokenReplay)
+        );
+    }
+
+    #[test]
+    fn expired_jti_entries_are_dropped_so_the_cache_stays_bounded() {
+        let key = SigningKey::from_bytes(&[40; 32]);
+        let adapter = adapter(&key);
+        for (n, now) in (0..50u64).enumerate() {
+            let t = token(
+                &key,
+                json!({"iss":"https://issuer","aud":"ptr","sub":"u","sid":"s",
+                       "iat":now,"exp":now + 5,"jti":format!("j{n}")}),
+            );
+            adapter
+                .authenticate_at(t.as_bytes(), Timestamp(now))
+                .unwrap();
+        }
+        // Each token lives 5 s and one is seen per second: at most the few
+        // still-valid ids may remain, not all 50.
+        assert!(adapter.used_jti.lock().unwrap().len() <= 6);
+    }
+
+    #[test]
+    fn a_clock_that_runs_backwards_does_not_free_a_consumed_token_id() {
+        let key = SigningKey::from_bytes(&[42; 32]);
+        let adapter = adapter(&key);
+        let token_at = |jti: &str, exp: u64| {
+            token(
+                &key,
+                json!({"iss":"https://issuer","aud":"ptr","sub":"u","sid":"s",
+                       "iat":1,"exp":exp,"jti":jti}),
+            )
+        };
+        let a = token_at("a", 100);
+        let b = token_at("b", 200);
+        adapter
+            .authenticate_at(a.as_bytes(), Timestamp(50))
+            .unwrap();
+        // The clock reaches 150, where `a` has expired and its id is dropped ...
+        adapter
+            .authenticate_at(b.as_bytes(), Timestamp(150))
+            .unwrap();
+        // ... and then reads 50 again. `a` is not expired by that reading, but its
+        // id is gone, so it must not be accepted a second time.
+        assert_eq!(
+            adapter.authenticate_at(a.as_bytes(), Timestamp(50)),
+            Err(OidcError::TokenReplay)
+        );
+    }
+
+    #[test]
+    fn pruning_expired_ids_keeps_every_live_id_and_both_indexes_in_step() {
+        let key = SigningKey::from_bytes(&[41; 32]);
+        let adapter = adapter(&key);
+        let accept = |jti: &str, exp: u64, now: u64| {
+            let t = token(
+                &key,
+                json!({"iss":"https://issuer","aud":"ptr","sub":"u","sid":"s",
+                       "iat":1,"exp":exp,"jti":jti}),
+            );
+            adapter.authenticate_at(t.as_bytes(), Timestamp(now))
+        };
+        accept("short-a", 10, 5).unwrap();
+        accept("short-b", 10, 5).unwrap();
+        accept("long", 1000, 5).unwrap();
+        // At t = 11 the two short tokens have expired and are dropped; the long
+        // one is still live, so its id is still a replay.
+        accept("fresh", 1000, 11).unwrap();
+        assert_eq!(adapter.used_jti.lock().unwrap().len(), 2);
+        assert_eq!(accept("long", 1000, 11), Err(OidcError::TokenReplay));
+        let used = adapter.used_jti.lock().unwrap();
+        let indexed: usize = used.ids_by_expiry.values().map(Vec::len).sum();
+        assert_eq!(indexed, used.expiry_by_id.len());
     }
 }
