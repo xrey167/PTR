@@ -711,9 +711,15 @@ impl ExecutionState {
         self.unsettled.contains_key(&attempt)
     }
 
-    /// Whether a key has settled here, with either outcome.
-    pub(super) fn has_settled(&self, key: &str) -> bool {
-        self.settled.contains_key(key)
+    /// Whether the key settled with an outcome that a later request under it is
+    /// answered from: the effect applied, with or without a retained response.
+    /// A key reconciled as not applied binds nothing, so a new attempt under it
+    /// is a new attempt and not a replay.
+    pub(super) fn has_replayable_settlement(&self, key: &str) -> bool {
+        matches!(
+            self.settled.get(key),
+            Some(SettledOutcome::Applied { .. } | SettledOutcome::AppliedWithoutResponse { .. })
+        )
     }
 
     pub(super) fn key_in_flight(&self, key: &str) -> bool {
@@ -990,8 +996,8 @@ impl PtrRuntime {
     /// one longer than [`MAX_KEY_BYTES`] that has not settled here: every later
     /// compacted snapshot carries a settled key, so one no snapshot can carry
     /// must not be spent. A longer key that a log written by an earlier build
-    /// settled is let through, so a retry under it is answered from its entry as
-    /// it was before.
+    /// settled as applied is let through, so a retry under it is answered from its
+    /// entry as it was before; one that was only reconciled as not applied is not.
     pub fn prepare_execution_once(
         &self,
         session: &ExecutionSession,
@@ -1010,10 +1016,13 @@ impl PtrRuntime {
     /// Whether [`prepare_execution_once`](Self::prepare_execution_once) would
     /// accept `key` at all: a well-formed identifier no longer than
     /// [`MAX_KEY_BYTES`], or a longer one that a log written by an earlier build
-    /// already settled. Nothing is reserved or recorded, so a caller can refuse a
+    /// settled with an outcome a retry is answered from. A longer key that was
+    /// only reconciled as not applied binds nothing and cannot be spent again, so
+    /// it is refused. Nothing is reserved or recorded, so a caller can refuse a
     /// key before it does any work that the refusal would otherwise follow.
     pub fn is_usable_execution_key(&self, key: &str) -> bool {
-        valid_identifier(key) && (key.len() <= MAX_KEY_BYTES || self.execution.has_settled(key))
+        valid_identifier(key)
+            && (key.len() <= MAX_KEY_BYTES || self.execution.has_replayable_settlement(key))
     }
 
     fn prepare(
@@ -1414,6 +1423,30 @@ fn deadline(ttl: Duration) -> Result<Instant, ExecutionError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_an_applied_settlement_can_be_replayed_under_a_key() {
+        let mut state = ExecutionState::default();
+        state
+            .settled
+            .insert("not-applied".into(), SettledOutcome::NotApplied);
+        state.settled.insert(
+            "applied-unretained".into(),
+            SettledOutcome::AppliedWithoutResponse {
+                attempt: CommitIndex(1),
+                identity: ActionIdentity {
+                    project: ProjectId::from("project"),
+                    principal: "principal".into(),
+                    revision: Revision(1),
+                    generation: Generation(1),
+                    action_digest: [1; 32],
+                },
+            },
+        );
+        assert!(!state.has_replayable_settlement("not-applied"));
+        assert!(state.has_replayable_settlement("applied-unretained"));
+        assert!(!state.has_replayable_settlement("never-seen"));
+    }
 
     #[test]
     fn session_id_exhaustion_never_wraps() {
