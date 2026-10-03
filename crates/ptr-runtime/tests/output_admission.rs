@@ -327,3 +327,91 @@ fn admitted_output_replays_without_recreating_the_payload() {
         ptr_ledger::LedgerEvent::PodOutputAdmitted { .. }
     )));
 }
+
+/// A runtime that holds only the admission record of an earlier attempt and
+/// not the step after it, as when promotion failed after the record was
+/// committed. The record is taken from a complete run of the same request.
+fn runtime_with_only_the_admission_record(complete: &PtrRuntime) -> PtrRuntime {
+    let record = complete
+        .committed_events()
+        .iter()
+        .find(|committed| {
+            matches!(
+                committed.event,
+                ptr_ledger::LedgerEvent::PodOutputAdmitted { .. }
+            )
+        })
+        .expect("a complete run commits an admission record")
+        .event
+        .clone();
+    let mut runtime = runtime_with_scope();
+    runtime.commit(record).unwrap();
+    runtime
+}
+
+#[test]
+fn a_retry_completes_a_promotion_that_failed_after_the_admission_record() {
+    let mut first = runtime_with_scope();
+    let admitted = first
+        .admit_pod_output(request(PodOutputKind::Observation), &Pass)
+        .unwrap();
+    let PodOutputAdmission::ObservationCandidate { semantic_key, .. } = &admitted else {
+        panic!("expected a candidate");
+    };
+    let mut runtime = runtime_with_only_the_admission_record(&first);
+    assert!(
+        runtime.snapshot().payload(semantic_key).is_none(),
+        "the promotion must be missing before the retry"
+    );
+    let retried = runtime
+        .admit_pod_output(request(PodOutputKind::Observation), &Pass)
+        .unwrap();
+    assert!(matches!(
+        retried,
+        PodOutputAdmission::ObservationCandidate { .. }
+    ));
+    assert!(
+        runtime.snapshot().payload(semantic_key).is_some(),
+        "the retry must carry out the missing promotion"
+    );
+    // The admission record is not written a second time.
+    let admissions = runtime
+        .committed_events()
+        .iter()
+        .filter(|committed| {
+            matches!(
+                committed.event,
+                ptr_ledger::LedgerEvent::PodOutputAdmitted { .. }
+            )
+        })
+        .count();
+    assert_eq!(admissions, 1);
+    // And once complete, a further retry is a plain replay.
+    let event_count = runtime.committed_events().len();
+    runtime
+        .admit_pod_output(request(PodOutputKind::Observation), &Pass)
+        .unwrap();
+    assert_eq!(runtime.committed_events().len(), event_count);
+}
+
+#[test]
+fn a_retry_completes_a_missing_hypothesis_record() {
+    let mut first = runtime_with_scope();
+    first
+        .admit_pod_output(request(PodOutputKind::Hypothesis), &Pass)
+        .unwrap();
+    let mut runtime = runtime_with_only_the_admission_record(&first);
+    let has_hypothesis = |runtime: &PtrRuntime| {
+        runtime.committed_events().iter().any(|committed| {
+            matches!(
+                committed.event,
+                ptr_ledger::LedgerEvent::PodHypothesisCommitted { .. }
+            )
+        })
+    };
+    assert!(!has_hypothesis(&runtime));
+    runtime
+        .admit_pod_output(request(PodOutputKind::Hypothesis), &Pass)
+        .unwrap();
+    assert!(has_hypothesis(&runtime));
+}

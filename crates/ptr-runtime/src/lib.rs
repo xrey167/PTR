@@ -1861,6 +1861,13 @@ impl PtrRuntime {
             None
         };
 
+        // A retry finds the admission record of an earlier attempt. The record
+        // says the output was admitted, not that what follows it was applied:
+        // promotion is a separate commit that can fail after it. So the earlier
+        // answer is replayed only when that follow-up is in the ledger as well;
+        // otherwise the admission record stays as it is and the missing step is
+        // carried out now instead of reporting a success that has no state behind it.
+        let mut already_admitted = false;
         for committed in self.committed_events() {
             if let LedgerEvent::PodOutputAdmitted {
                 request_id,
@@ -1877,12 +1884,15 @@ impl PtrRuntime {
                             "request id was reused with a different output".into(),
                         ));
                     }
-                    return self.admission_result_from_code(
-                        *output_kind,
-                        *revision,
-                        &request,
-                        output_digest,
-                    );
+                    if self.admission_followup_committed(*output_kind, &request, &output_digest) {
+                        return self.admission_result_from_code(
+                            *output_kind,
+                            *revision,
+                            &request,
+                            output_digest,
+                        );
+                    }
+                    already_admitted = true;
                 }
             }
         }
@@ -1898,20 +1908,22 @@ impl PtrRuntime {
                 .map(|finding| format!("pod-output/{}", finding.code))
                 .collect(),
         };
-        self.commit(LedgerEvent::PodOutputAdmitted {
-            request_id: request.request_id.clone(),
-            session_id: request.session_id.clone(),
-            scope_id: request.scope_id.clone(),
-            pod_id: request.pod_id.clone(),
-            manifest_digest: request.manifest_digest,
-            artifact_digest: request.output.artifact_digest,
-            generation: request.output.generation,
-            revision: request.output.revision,
-            output_kind: request.output.kind_code(),
-            output_type: request.output.payload.type_id.clone(),
-            output_digest,
-            verification: attestation,
-        })?;
+        if !already_admitted {
+            self.commit(LedgerEvent::PodOutputAdmitted {
+                request_id: request.request_id.clone(),
+                session_id: request.session_id.clone(),
+                scope_id: request.scope_id.clone(),
+                pod_id: request.pod_id.clone(),
+                manifest_digest: request.manifest_digest,
+                artifact_digest: request.output.artifact_digest,
+                generation: request.output.generation,
+                revision: request.output.revision,
+                output_kind: request.output.kind_code(),
+                output_type: request.output.payload.type_id.clone(),
+                output_digest,
+                verification: attestation,
+            })?;
+        }
 
         match request.output.kind {
             PodOutputKind::Hypothesis => {
@@ -2018,6 +2030,67 @@ impl PtrRuntime {
                     ),
                 }),
         }
+    }
+
+    /// Whether the step that follows the `PodOutputAdmitted` record of `kind`
+    /// is in the ledger: the hypothesis record, or the semantic write the
+    /// promotion makes. An action proposal has no follow-up state.
+    fn admission_followup_committed(
+        &self,
+        kind: u8,
+        request: &PodOutputAdmissionRequest,
+        output_digest: &ptr_types::Digest,
+    ) -> bool {
+        if kind == 6 {
+            return true;
+        }
+        self.committed_events()
+            .iter()
+            .any(|committed| match (&committed.event, kind) {
+                (
+                    LedgerEvent::PodHypothesisCommitted {
+                        request_id,
+                        pod_id,
+                        output_digest: digest,
+                        ..
+                    },
+                    2,
+                ) => {
+                    request_id == &request.request_id
+                        && pod_id == &request.pod_id
+                        && digest == output_digest
+                }
+                (
+                    LedgerEvent::SemanticDeltaCommitted {
+                        origin:
+                            ptr_ledger::SemanticOrigin::PodCandidate {
+                                request: origin_request,
+                                pod,
+                                output_digest: digest,
+                                ..
+                            },
+                        ..
+                    },
+                    0 | 1 | 3 | 4,
+                ) => {
+                    origin_request == &request.request_id.0
+                        && pod == &request.pod_id.0
+                        && digest == output_digest
+                }
+                (
+                    LedgerEvent::SemanticDeltaCommitted {
+                        origin:
+                            ptr_ledger::SemanticOrigin::PodOutput {
+                                request: origin_request,
+                                pod,
+                                ..
+                            },
+                        ..
+                    },
+                    5 | 7,
+                ) => origin_request == &request.request_id.0 && pod == &request.pod_id.0,
+                _ => false,
+            })
     }
 
     fn admission_result_from_code(

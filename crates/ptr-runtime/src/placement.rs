@@ -125,7 +125,11 @@ impl PodPlacementController {
     }
 
     pub fn register_node(&mut self, node: NodeRecord) -> Result<(), PlacementError> {
-        self.nodes.insert(node.node_id.clone(), node);
+        let node_id = node.node_id.clone();
+        self.nodes.insert(node_id.clone(), node);
+        // Replacing a node record is a topology change: a lease on a device the
+        // new record no longer offers, or offers as failed, must not outlive it.
+        self.revoke_unavailable_leases(&node_id);
         self.bump_epoch()?;
         Ok(())
     }
@@ -146,6 +150,11 @@ impl PodPlacementController {
         node.last_heartbeat = timestamp;
         node.devices = devices;
         node.health = NodeHealth::Healthy;
+        // A heartbeat reports the devices as they are now. Leases on a device
+        // that disappeared or failed are revoked here; a lease on a device that
+        // is still usable is untouched, and no lease is ever brought back by a
+        // heartbeat.
+        self.revoke_unavailable_leases(node_id);
         Ok(())
     }
 
@@ -212,6 +221,9 @@ impl PodPlacementController {
         pod_id: &PodId,
     ) -> Result<FencedStateLease, PlacementError> {
         let placement = self.placement(pod_id)?.clone();
+        // The placement outlives a node failure or a device change, so the
+        // node and device it names are checked again before a lease is issued.
+        self.ensure_usable(&placement.node_id, &placement.device_id)?;
         if let Some(frozen_epoch) = self.frozen.get(&state_id).copied() {
             if frozen_epoch == placement.epoch {
                 return Err(PlacementError::StateFrozen);
@@ -285,6 +297,39 @@ impl PodPlacementController {
                 .ok_or(PlacementError::CounterExhausted)?,
         );
         Ok(())
+    }
+
+    fn ensure_usable(&self, node_id: &NodeId, device_id: &DeviceId) -> Result<(), PlacementError> {
+        let node = self
+            .nodes
+            .get(node_id)
+            .ok_or_else(|| PlacementError::UnknownNode(node_id.clone()))?;
+        if node.health != NodeHealth::Healthy {
+            return Err(PlacementError::UnhealthyNode(node_id.clone()));
+        }
+        let device = node
+            .devices
+            .iter()
+            .find(|device| device.device_id == *device_id)
+            .ok_or_else(|| PlacementError::UnknownDevice(device_id.clone()))?;
+        if device.health == DeviceHealth::Failed {
+            return Err(PlacementError::UnhealthyDevice(device_id.clone()));
+        }
+        Ok(())
+    }
+
+    fn revoke_unavailable_leases(&mut self, node_id: &NodeId) {
+        let usable: Vec<DeviceId> = match self.nodes.get(node_id) {
+            Some(node) if node.health != NodeHealth::Failed => node
+                .devices
+                .iter()
+                .filter(|device| device.health != DeviceHealth::Failed)
+                .map(|device| device.device_id.clone())
+                .collect(),
+            _ => Vec::new(),
+        };
+        self.leases
+            .retain(|_, lease| lease.node_id != *node_id || usable.contains(&lease.device_id));
     }
 
     fn revoke_for_pod(&mut self, pod_id: &PodId) {

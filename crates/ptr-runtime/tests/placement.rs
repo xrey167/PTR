@@ -201,3 +201,98 @@ fn a_recovered_node_gets_a_new_epoch_and_generation_bound_lease() {
     );
     controller.validate_lease(&fresh).unwrap();
 }
+
+fn leased(controller: &mut PodPlacementController) -> ptr_runtime::FencedStateLease {
+    controller.register_node(node()).unwrap();
+    controller
+        .assign(
+            PodId::from("pod"),
+            ArtifactId::from("artifact"),
+            Generation(1),
+            NodeId::from("node-a"),
+            DeviceId::from("cuda:0"),
+            8,
+        )
+        .unwrap();
+    controller
+        .issue_lease(StateId::from("state"), &PodId::from("pod"))
+        .unwrap()
+}
+
+fn device(health: DeviceHealth) -> DeviceRecord {
+    DeviceRecord {
+        device_id: DeviceId::from("cuda:0"),
+        vram_bytes: 24,
+        used_vram_bytes: 0,
+        health,
+    }
+}
+
+#[test]
+fn a_heartbeat_that_drops_or_fails_the_device_revokes_its_leases() {
+    for devices in [vec![], vec![device(DeviceHealth::Failed)]] {
+        let mut controller = PodPlacementController::default();
+        let lease = leased(&mut controller);
+        controller
+            .heartbeat(&NodeId::from("node-a"), Timestamp(2), devices)
+            .unwrap();
+        assert_eq!(
+            controller.validate_lease(&lease),
+            Err(PlacementError::StaleLease)
+        );
+    }
+}
+
+#[test]
+fn a_heartbeat_that_keeps_the_device_usable_keeps_the_lease() {
+    let mut controller = PodPlacementController::default();
+    let lease = leased(&mut controller);
+    controller
+        .heartbeat(
+            &NodeId::from("node-a"),
+            Timestamp(2),
+            vec![device(DeviceHealth::Degraded)],
+        )
+        .unwrap();
+    controller.validate_lease(&lease).unwrap();
+}
+
+#[test]
+fn re_registering_a_node_without_the_device_revokes_its_leases() {
+    let mut controller = PodPlacementController::default();
+    let lease = leased(&mut controller);
+    let mut replacement = node();
+    replacement.devices.clear();
+    controller.register_node(replacement).unwrap();
+    assert_eq!(
+        controller.validate_lease(&lease),
+        Err(PlacementError::StaleLease)
+    );
+}
+
+#[test]
+fn no_lease_is_issued_on_a_failed_node_or_device() {
+    let mut controller = PodPlacementController::default();
+    leased(&mut controller);
+    controller
+        .mark_node_failed(&NodeId::from("node-a"))
+        .unwrap();
+    assert_eq!(
+        controller.issue_lease(StateId::from("state-2"), &PodId::from("pod")),
+        Err(PlacementError::UnhealthyNode(NodeId::from("node-a")))
+    );
+
+    let mut controller = PodPlacementController::default();
+    leased(&mut controller);
+    controller
+        .heartbeat(
+            &NodeId::from("node-a"),
+            Timestamp(2),
+            vec![device(DeviceHealth::Failed)],
+        )
+        .unwrap();
+    assert_eq!(
+        controller.issue_lease(StateId::from("state-2"), &PodId::from("pod")),
+        Err(PlacementError::UnhealthyDevice(DeviceId::from("cuda:0")))
+    );
+}
