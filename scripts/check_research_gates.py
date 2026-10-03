@@ -1099,8 +1099,18 @@ def has_head(root: Path) -> bool:
     except experiment_records.ProvenanceError:
         return False
 
+def head_commit(root: Path) -> str:
+    """The commit HEAD names in the repository at `root`, or "" when it names
+    none or git cannot say: the part of a cached history answer that moves when
+    a commit is added."""
+    try:
+        listing=experiment_records.git(root,"rev-parse","--verify","--quiet","HEAD")
+    except experiment_records.ProvenanceError:
+        return ""
+    return listing.stdout.strip() if listing.returncode==0 else ""
+
 @functools.lru_cache(maxsize=512)
-def _history_cached(root: str, args: tuple[str, ...], literal: bool) -> tuple[str, ...]:
+def _history_cached(root: str, head: str, args: tuple[str, ...], literal: bool) -> tuple[str, ...]:
     """Run one immutable history query at most once per gate process.
 
     The gate asks the same path-scoped history questions from several
@@ -1131,7 +1141,7 @@ def history(root: Path, *args: str, literal: bool = True) -> list[str]:
     is false, when each carries the magic it names (`:(literal)`, `:(glob)`).
     Raises `HistoryUnreadable` when git cannot read it otherwise: a history
     read as empty would hide every freeze and record in it."""
-    return list(_history_cached(str(root), tuple(args), literal))
+    return list(_history_cached(str(root), head_commit(root), tuple(args), literal))
 
 def versions(root: Path, relative: str, start: str = "HEAD") -> list[tuple[str, dict]]:
     """Every commit on the history of `start` (HEAD unless named) that
@@ -1546,11 +1556,11 @@ def descendants_of(root: Path, commit: str) -> set[str]:
     commit, and none for each commit that might descend from it. Raises
     `HistoryUnreadable` when git cannot list them."""
     if FULL_COMMIT.fullmatch(commit):
-        return set(_descendants_of_cached(root,commit))
+        return set(_descendants_of_cached(root,commit,head_commit(root)))
     return _descendants_of_uncached(root,commit)
 
 @functools.lru_cache(maxsize=4096)
-def _descendants_of_cached(root: Path, commit: str) -> frozenset[str]:
+def _descendants_of_cached(root: Path, commit: str, head: str) -> frozenset[str]:
     return frozenset(_descendants_of_uncached(root,commit))
 
 def _descendants_of_uncached(root: Path, commit: str) -> set[str]:
@@ -2207,8 +2217,13 @@ def frozen_errors(exp_id: str, entry: dict, manifest: dict, experiment: Path, ro
                 form=preregistered_file_problem(root,table[key],file)
                 if form:
                     errors.append(f"{exp_id}: preregistration key {key} names {table[key]!r}, which {form}")
-                errors.extend(frozen_value_errors(
-                    exp_id,table,f"{key}_sha256",experiment_records.preregistered_file_digest(file),table[key]))
+                # A superseded experiment is not run again, so what binds it is
+                # the file as the commit that froze it held it (checked by the
+                # freeze checks), not as the file is now: files that later
+                # experiments share may change after it.
+                if not (status_of(manifest)=="superseded" and f"{key}_sha256" in table):
+                    errors.extend(frozen_value_errors(
+                        exp_id,table,f"{key}_sha256",experiment_records.preregistered_file_digest(file),table[key]))
     for key,value in table.items():
         problem=None if key in entry["required"] else unset_problem(value)
         if problem:
@@ -2318,6 +2333,7 @@ def launch_errors(root: Path, exp_id: str) -> list[str]:
     the list named once and no longer names (`enrolled`) does not run at
     all; one the list has never named runs as before. A file it cannot read
     refuses the launch, named."""
+    clear_snapshot_caches()
     try:
         return launch_decision(root,exp_id)
     except (Unreadable,HistoryUnreadable) as error:
@@ -2548,6 +2564,13 @@ def text_digest(value: object) -> str | None:
     """SHA-256 of a UTF-8 string, or None for a non-string value."""
     return hashlib.sha256(value.encode("utf-8")).hexdigest() if isinstance(value,str) else None
 
+def crlf_digest(data: bytes) -> str:
+    """SHA-256 of `data` with CRLF line endings. A v4 decision binds the digest
+    of its CI artifact as it was written where the decision was frozen, with CRLF
+    endings; a checkout takes LF (`.gitattributes`), so the same content is
+    hashed in that one form whichever ending it has."""
+    return hashlib.sha256(data.replace(b"\r\n",b"\n").replace(b"\n",b"\r\n")).hexdigest()
+
 def v4_no_go_errors(exp_id: str, root: Path) -> list[str]:
     """Validate the immutable v4 negative decision against its CI artifact.
 
@@ -2583,7 +2606,7 @@ def v4_no_go_errors(exp_id: str, root: Path) -> list[str]:
         errors.append(f"{exp_id}: DECISION.toml does not require the NO-GO label")
     if not isinstance(reporting,dict) or any(value is not False for key,value in reporting.items() if key.startswith("allow_")):
         errors.append(f"{exp_id}: DECISION.toml permits a positive report")
-    digest=hashlib.sha256(ci_path.read_bytes()).hexdigest()
+    digest=crlf_digest(ci_path.read_bytes())
     if digest!=expected["paired_ci_sha256"]:
         errors.append(f"{exp_id}: paired-ci-95.json digest {digest} is not the decision-bound digest")
         return errors
@@ -3006,6 +3029,32 @@ def m002_v6_successor_freeze_errors(root: Path, experiment: Path, manifest: dict
 M002_V7_ARM_PAIR = "factorized-v2-v7,factorized-v2-off-v7"
 
 
+def m002_arm_block_binding_errors(arm_table: str, experiment_id: str, treatment: str, control: str) -> list[str]:
+    """Require each arm's own `Arm { ... }` block to name the experiment and
+    carry its typed-attention mode. The mode is looked for inside that block
+    only: the same mode names appear throughout the table, so a search of the
+    whole file would pass for any arm."""
+    errors = []
+    for name, mode in ((treatment, "TypedAttentionMode::FactorizedV2"), (control, "TypedAttentionMode::Off")):
+        marker = f'name: "{name}",\n        experiment: "{experiment_id}",'
+        start = arm_table.find(marker)
+        block = ""
+        if start != -1:
+            end = arm_table.find("\n    },", start)
+            block = arm_table[start:end if end != -1 else len(arm_table)]
+        if start == -1 or f"typed_attention_mode: {mode}," not in block:
+            errors.append(f"{experiment_id}: runner arm table does not bind {name} to {experiment_id}")
+    return errors
+
+
+M002_ENTRYPOINT_FLAGS = (
+    ("--rank", "<rank>"),
+    ("--bias-limit", "<bias_limit>"),
+    ("--metadata-dropout", "<metadata_dropout>"),
+    ("--folds", "<folds>"),
+)
+
+
 def m002_versioned_runner_binding_errors(
     root: Path, config: dict, manifest: dict, experiment_id: str, arm_pair: str
 ) -> list[str]:
@@ -3017,6 +3066,13 @@ def m002_versioned_runner_binding_errors(
     required_command = f"--experiment {experiment_id} --arms {arm_pair}"
     if not isinstance(entrypoint, str) or required_command not in entrypoint:
         errors.append(f"{experiment_id}: entrypoint must select its exact versioned runner pair")
+    # Each frozen architecture value reaches the runner only through its flag. A
+    # flag dropped from the entrypoint would let the runner fall back to its own
+    # default (rank 16, bias limit 2.0, metadata dropout 0.10) and waste a full
+    # run before the aggregator noticed.
+    for flag, placeholder in M002_ENTRYPOINT_FLAGS:
+        if not isinstance(entrypoint, str) or f"{flag} {placeholder}" not in entrypoint:
+            errors.append(f"{experiment_id}: entrypoint must pass {flag} {placeholder}")
     sources = {}
     for key in ("runner_arm_table", "runner_main"):
         relative = config.get(key)
@@ -3037,10 +3093,7 @@ def m002_versioned_runner_binding_errors(
         sources[key] = data.decode("utf-8", "replace")
     arm_table = sources.get("runner_arm_table", "")
     treatment, control = arm_pair.split(",", 1)
-    for name, mode in ((treatment, "TypedAttentionMode::FactorizedV2"), (control, "TypedAttentionMode::Off")):
-        marker = f'name: "{name}",\n        experiment: "{experiment_id}",'
-        if marker not in arm_table or mode not in arm_table:
-            errors.append(f"{experiment_id}: runner arm table does not bind {name} to {experiment_id}")
+    errors.extend(m002_arm_block_binding_errors(arm_table, experiment_id, treatment, control))
     if f'"{experiment_id}" => Some(["{treatment}", "{control}"])' not in arm_table:
         errors.append(f"{experiment_id}: runner arm table does not admit only the registered pair")
     runner_main = sources.get("runner_main", "")
@@ -3470,13 +3523,11 @@ def artifact_errors(exp_id: str, root: Path, results: Path, required, what: str)
                           "commit holds at its own path")
     return errors
 
-def gate_errors(root: Path) -> list[str]:
-    """Every error of every gate on the repository at `root` (`main`),
-    raising `Unreadable` for a file it cannot read outside the listed
-    experiments, whose unreadable files are errors of their own."""
-    # A gate run must observe one repository snapshot.  Clear the process
-    # cache at its boundary so a caller that reuses a temporary checkout path
-    # after changing or replacing that checkout cannot receive old history.
+def clear_snapshot_caches() -> None:
+    """Forget what this process learned of the repository's history. A gate
+    run, and a launch check, must observe one repository snapshot: cleared at
+    that boundary, a caller that reuses a temporary checkout path after
+    changing or replacing that checkout cannot receive old history."""
     _history_cached.cache_clear()
     listed_entry.cache_clear()
     object_bytes.cache_clear()
@@ -3486,6 +3537,12 @@ def gate_errors(root: Path) -> list[str]:
     _statuses_at_cached.cache_clear()
     _descendants_of_cached.cache_clear()
     link_changes_at.cache_clear()
+
+def gate_errors(root: Path) -> list[str]:
+    """Every error of every gate on the repository at `root` (`main`),
+    raising `Unreadable` for a file it cannot read outside the listed
+    experiments, whose unreadable files are errors of their own."""
+    clear_snapshot_caches()
     errors=[]
     experiments={}
     directories={}
@@ -3540,7 +3597,8 @@ def gate_errors(root: Path) -> list[str]:
             errors.append("E002: strong RAG baseline is still blocked")
 
     for exp_id in V4_NO_GO:
-        errors.extend(v4_no_go_errors(exp_id,root))
+        if exp_id in experiments and exp_id in directories:
+            errors.extend(v4_no_go_errors(exp_id,root))
     if "M002-v5" in experiments and "M002-v5" in directories:
         errors.extend(m002_v5_pilot_freeze_errors(root,directories["M002-v5"],experiments["M002-v5"]))
     if "M002-v6" in experiments and "M002-v6" in directories:

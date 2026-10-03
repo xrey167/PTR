@@ -18,9 +18,12 @@ class SecurityWorkspaceTests(unittest.TestCase):
             {"encoding": "utf-8", "errors": "replace"},
         )
 
-    def test_cargo_deny_receives_its_policy_after_the_check_subcommand(self):
+    def test_cargo_deny_receives_its_policy_as_a_root_option_before_check(self):
+        # The installed cargo-deny (0.20.2, see security.yml) rejects --config
+        # after the subcommand.
         command = security.scanner_command("deny", ROOT / "model/burn-a0/Cargo.toml", ROOT)
-        self.assertEqual(command[-3:], ["check", "--config", str(ROOT / "deny.toml")])
+        self.assertEqual(command[-3:], ["--config", str(ROOT / "deny.toml"), "check"])
+        self.assertEqual(command.count("--config"), 1)
 
     def test_all_owned_workspaces_are_scanned_and_new_workspace_is_not_ignored(self):
         with tempfile.TemporaryDirectory() as tmp:

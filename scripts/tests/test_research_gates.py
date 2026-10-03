@@ -29,6 +29,13 @@ class ResearchGateTests(unittest.TestCase):
             with self.subTest(experiment=exp_id):
                 self.assertEqual(mod.v4_no_go_errors(exp_id,ROOT),[])
 
+    def test_crlf_digest_is_the_same_for_either_line_ending(self):
+        lf=b'{"a": 1,\n "b": 2}\n'
+        crlf=lf.replace(b"\n",b"\r\n")
+        self.assertEqual(mod.crlf_digest(lf),mod.crlf_digest(crlf))
+        self.assertEqual(mod.crlf_digest(lf),hashlib.sha256(crlf).hexdigest())
+        self.assertNotEqual(mod.crlf_digest(lf),mod.crlf_digest(lf+b" "))
+
     def test_m009_is_locked_before_a_completed_m002_v5_pass(self):
         for status in ("prepared", "running", "completed"):
             experiments={"M009":{"status":status},"M002-v5":{"status":"planned"}}
@@ -1307,6 +1314,41 @@ class PreregistrationGateTests(unittest.TestCase):
         self.edit(root,self.MANIFEST,'status = "planned"','status = "superseded"')
         commit_all(root,"superseded")
         self.assertEqual(gate(root),(0,[]))
+
+    def test_a_superseded_experiment_is_bound_to_its_files_as_frozen_not_as_they_are_now(self):
+        # A superseded experiment is not run again; the file it named is the one
+        # its freezing commit held, which a file shared with later experiments
+        # may stop being. A running one is held to the file as it is now.
+        required={**REQUIRED,"protocol":"file"}
+        path="experiments/semdb/X900-fixture/PROTOCOL.md"
+        text="# Protocol\nJudge the delta.\n"
+        edited=text+"Shared with a later experiment.\n"
+        digest=hashlib.sha256(text.encode("utf-8")).hexdigest()
+        edited_digest=hashlib.sha256(edited.encode("utf-8")).hexdigest()
+        table={**TABLE,"protocol":path,"protocol_sha256":digest}
+
+        def frozen(status):
+            root=self.tree(status="running",table=table,required=required)
+            write(root,path,text)
+            commit_all(root)
+            if status=="superseded":
+                self.edit(root,self.MANIFEST,'status = "running"','status = "superseded"')
+                self.edit(root,"experiments/registry.toml",'status = "running"','status = "superseded"')
+                commit_all(root,"superseded")
+            self.assertEqual(gate(root),(0,[]))
+            return root
+
+        running=frozen("running")
+        write(running,path,edited)
+        commit_all(running,"the file changed")
+        self.assert_blocked(
+            running,
+            f"X900: preregistration key protocol_sha256 {digest!r} is not {edited_digest}, the digest of {path}",
+        )
+        superseded=frozen("superseded")
+        write(superseded,path,edited)
+        commit_all(superseded,"the file changed")
+        self.assertEqual(gate(superseded),(0,[]))
 
     def test_only_a_results_directory_holds_run_records(self):
         # A file named like a record elsewhere in the experiment's directory,
@@ -4885,12 +4927,34 @@ class PreregistrationGateTests(unittest.TestCase):
                 spelled={"tree":f"{head}^{{tree}}","config":f"{head}:experiments/semdb/X900-fixture/config.toml",
                          "baseline subtree":f"{head}:research/baselines/fixture/lib"}[lost]
                 name=git(root,"rev-parse",spelled)
-                mod.listed_entry.cache_clear()
-                mod.object_bytes.cache_clear()
+                mod.clear_snapshot_caches()
                 (root/".git/objects"/name[:2]/name[2:]).unlink()
                 refused=mod.launch_commit_errors(root,"X900",head)
                 self.assertEqual(len(refused),1,refused)
                 self.assertTrue(refused[0].startswith(f"HEAD's history cannot be read in {root}: "),refused)
+
+    def test_cached_history_follows_head_without_clearing_the_caches(self):
+        # A history answer is cached, but only for the HEAD it was read at: a
+        # commit added afterwards in the same process is seen by the next query.
+        root=self.tree(status="running")
+        first=commit_all(root)
+        self.assertEqual(mod.history(root,"--format=%H","HEAD"),[first])
+        self.assertEqual(mod.descendants_of(root,first),set())
+        write(root,"NOTE.md","a later commit\n")
+        second=commit_all(root,"later")
+        self.assertEqual(mod.history(root,"--format=%H","HEAD"),[second,first])
+        self.assertEqual(mod.descendants_of(root,first),{second})
+
+    def test_v4_decisions_bind_only_the_trees_that_hold_the_experiments(self):
+        # A tree without M001-v4 and M002-v4, such as a fixture, has no v4
+        # decision to bind: it is no error that their files are absent.
+        root=self.tree()
+        self.assertEqual(gate(root),(0,[]))
+        # The check itself is unchanged where it runs: a tree asked about one
+        # of them without its decision file still reports it.
+        for exp_id in mod.V4_NO_GO:
+            with self.subTest(experiment=exp_id):
+                self.assertEqual(mod.v4_no_go_errors(exp_id,root),[f"{exp_id}: DECISION.toml is not a regular repository file"])
 
     def test_a_listed_experiment_is_reached_through_no_symlink(self):
         # Git holds a link as its target's path, so the history of the
@@ -5083,10 +5147,26 @@ class PreregistrationGateTests(unittest.TestCase):
         self.assertEqual(gate(pinned),(0,[]))
 
 ENROLLED=("S003","F003","Q003","R004","M008","E005")
+# The list also holds the experiments that ran or were superseded; they are no
+# part of the six this fixture moves to `prepared`.
+RETIRED=("M001-v2","M001-v4","M002-v2","M002-v3","M002-v4","M002-v5","M002-v6","M002-v7","M002-v8","M002-v9")
 
 class EnrolledExperimentTests(unittest.TestCase):
     """The repository's own list and configurations, copied into a fixture
     tree with every listed experiment moved to `prepared`."""
+
+    @staticmethod
+    def list_of(ids) -> str:
+        """The repository's list with only the entries of `ids`: its header and
+        each `[experiment.<id>...]` table whose id is one of them."""
+        kept=[]
+        keep=True
+        for line in (ROOT/"experiments/preregistration.toml").read_text(encoding="utf-8").splitlines(keepends=True):
+            if line.startswith("[experiment."):
+                keep=line.removeprefix("[experiment.").split("]",1)[0].split(".",1)[0] in ids
+            if keep:
+                kept.append(line)
+        return "".join(kept)
 
     def prepared_tree(self, edit=None) -> Path:
         """A fixture tree holding the repository's list, the six listed
@@ -5103,8 +5183,8 @@ class EnrolledExperimentTests(unittest.TestCase):
                 text=source.read_text(encoding="utf-8").replace('status = "planned"','status = "prepared"').replace('entrypoint = ""','entrypoint = "bench <seed>"')
                 write(root,f"experiments/{paths[exp_id]}/{name}",text)
         write(root,"experiments/registry.toml",registry)
+        write(root,"experiments/preregistration.toml",self.list_of(ENROLLED))
         for relative in (
-            "experiments/preregistration.toml",
             "research/baselines/plain_model/config.toml",
             "research/baselines/rag_reference/config.toml",
             "research/baselines/strong_rag/config.toml",
@@ -5118,7 +5198,7 @@ class EnrolledExperimentTests(unittest.TestCase):
 
     def test_the_list_enrolls_the_experiments_that_preregister(self):
         listed=mod.load(ROOT/"experiments/preregistration.toml")["experiment"]
-        self.assertEqual(sorted(listed),sorted(ENROLLED))
+        self.assertEqual(sorted(listed),sorted((*ENROLLED,*RETIRED)))
         # S003 lists every key its design preregisters (doc 35 design, section
         # 3.10), with the type of the design's value, low_cells included, in
         # the design's order.

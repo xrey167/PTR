@@ -51,7 +51,7 @@ ptr-pg = { path = "crates/ptr-pg" }
 
 serde = { version = "1.0", features = ["derive"] }
 toml = "1.1"
-prost = "0.13"
+prost = "0.14"
 prost-build = "0.14"
 protoc-bin-vendored = "3"
 axum = "0.8"
@@ -76,3 +76,12 @@ raft-proto = { path = "vendor/raft-proto" }
 raft-engine = { path = "vendor/raft-engine" }
 
 netlink_packet_core_pastey_0_8_2 = { package = "netlink-packet-core", path = "vendor/netlink-packet-core-0.8.2" }
+gemm_pastey_0_19_0 = { package = "gemm", path = "vendor/gemm-0.19.0" }
+gemm_c32_pastey_0_19_0 = { package = "gemm-c32", path = "vendor/gemm-c32-0.19.0" }
+gemm_c64_pastey_0_19_0 = { package = "gemm-c64", path = "vendor/gemm-c64-0.19.0" }
+gemm_common_pastey_0_19_0 = { package = "gemm-common", path = "vendor/gemm-common-0.19.0" }
+gemm_f16_pastey_0_19_0 = { package = "gemm-f16", path = "vendor/gemm-f16-0.19.0" }
+gemm_f32_pastey_0_19_0 = { package = "gemm-f32", path = "vendor/gemm-f32-0.19.0" }
+gemm_f64_pastey_0_19_0 = { package = "gemm-f64", path = "vendor/gemm-f64-0.19.0" }
+pulp_pastey_0_22_3 = { package = "pulp", path = "vendor/pulp-0.22.3" }
+tokenizers_pastey_0_22_2 = { package = "tokenizers", path = "vendor/tokenizers-0.22.2" }

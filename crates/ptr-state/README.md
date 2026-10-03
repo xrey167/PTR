@@ -25,6 +25,8 @@
 - Feature-gated Turso 0.8.0-pre.11 backend persists atomic projection updates and last_applied state
 - classify_next is the one function every backend (reference, Turso, PostgreSQL) uses to decide duplicate, out-of-order, gap or next
 - projection_entries is the one event-to-entries mapping, shared by the reference, Turso and ptr-pg so no backend can project an event differently
+- projection_entries now maps the newer ledger variants: ProtectedStateCommitted projects protected:<domain>:<logical_id>:generation/revision/ciphertext (the ciphertext digest as lowercase hex, never the ciphertext), MeshTunnelLifecycle projects mesh:<network>:<peer>:revision/state, and ExecutionManifestAdmitted/Revoked project execution-manifest:<digest hex>:state as admitted/revoked
+- ScopeLifecycle, PodEvidenceCommitted, PodOutputAdmitted, PodHypothesisCommitted, PolicyBundleActivated/Revoked and SessionRevoked deliberately project no entries (they advance last_applied only); the match over LedgerEvent stays exhaustive
 
 ### Missing for the target architecture
 

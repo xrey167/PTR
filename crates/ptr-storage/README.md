@@ -8,9 +8,9 @@
 
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
-**Maturity:** `prototype`
-**Last reviewed:** 2026-10-03
-**Code footprint:** 4 Rust source files · 1521 nonblank source lines · 5 integration-test files · 15 test markers (`#[test]`, `#[tokio::test]`)
+**Maturity:** `prototype`  
+**Last reviewed:** 2026-10-03  
+**Code footprint:** 4 Rust source files · 1554 nonblank source lines · 5 integration-test files · 16 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -22,6 +22,10 @@
 - Optional OpenDAL memory, filesystem and S3-capable adapter
 - AEAD-bound durable KV chunks with authenticated cross-generation anchors
 - Crash-safe protected-state replacement with unique writer temp files
+- ProtectedStateStore trait with InMemoryProtectedStateStore and FileProtectedStateStore: seal encrypts a payload with AES-256-GCM-SIV under a key from a KeyProvider, with the domain, logical id, generation, revision, key id and plaintext digest as associated data and a nonce derived from them, and returns a ProtectedHandle carrying the ciphertext and anchor digests; open and verify check the ciphertext digest, anchor, plaintext digest and key
+- Per-record GenerationAnchor chain: seal refuses a non-increasing generation or a previous digest that does not match the stored anchor with Rollback, a recomputed anchor digest that differs with AnchorMismatch, and a payload that does not match its declared digest with PlaintextDigestMismatch
+- SoftwareKeyProvider holds 32-byte keys in zeroizing memory and supports rotate and revoke; a revoked key blocks open with RevokedKey
+- FileProtectedStateStore persists the sealed records (PTRPST01 format) by temp-file write and rename, keeps the payload encrypted at rest, and requires the caller to supply the key provider again on reopen; the decoder refuses a bad magic, truncation, unknown domain or presence byte and trailing bytes
 
 ### Missing for the target architecture
 
@@ -51,6 +55,7 @@
 ### Current automated checks
 
 - ptr-storage tier, protected-tier and OpenDAL contract tests
+- tests/protected.rs: seal/open/verify round trip with an idempotent re-seal, rollback and forged-anchor rejection, revoked-key refusal, and a FileProtectedStateStore reopened twice with the sealed state still readable and extendable by a later generation
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->

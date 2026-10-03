@@ -789,8 +789,13 @@ fn cells(values: &[f32]) -> Vec<u8> {
         .collect()
 }
 
+// The L003 mutation plan (`experiments/lifecycle/L003-fastmem-revocation/tests/
+// mutations.toml`) anchors the exact `chunks_exact` expression below, and L003 is
+// completed, so the expression stays as it was run rather than moving to
+// `as_chunks`.
+#[allow(clippy::chunks_exact_to_as_chunks)]
 fn floats(bytes: &[u8]) -> Result<Vec<f32>, PgError> {
-    if bytes.len() % 4 != 0 {
+    if !bytes.len().is_multiple_of(4) {
         return Err(corrupt("cell bytes are not a whole number of f32 values"));
     }
     Ok(bytes
@@ -817,5 +822,38 @@ fn corrupt_checkpoint(reason: &str) -> PgError {
     PgError::CorruptRow {
         table: "fastmem_checkpoint",
         reason: reason.to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cells_and_floats_round_trip_every_value_bit_for_bit() {
+        let values = [0.0_f32, -0.0, 1.5, -2.25, f32::MIN_POSITIVE, f32::MAX];
+        let decoded = floats(&cells(&values)).expect("whole f32 values");
+        assert_eq!(decoded.len(), values.len());
+        for (decoded, original) in decoded.iter().zip(values) {
+            assert_eq!(decoded.to_bits(), original.to_bits());
+        }
+        assert_eq!(floats(&[]).expect("an empty cell"), Vec::<f32>::new());
+    }
+
+    #[test]
+    fn bytes_that_are_not_whole_f32_values_are_a_corrupt_row() {
+        for length in [1_usize, 2, 3, 5, 7] {
+            let bytes = vec![0_u8; length];
+            assert!(
+                matches!(
+                    floats(&bytes),
+                    Err(PgError::CorruptRow {
+                        table: "fastmem_write",
+                        ..
+                    })
+                ),
+                "{length} bytes"
+            );
+        }
     }
 }

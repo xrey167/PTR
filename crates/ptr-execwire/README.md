@@ -28,6 +28,8 @@
 - A request/receipt frame format with distinct magics per direction, an explicit layout version, bounded length-prefixed fields, explicit two-way code tables for every enumeration, and a distinct diagnostic code per refusal
 - No background loop, timer or retry policy: the caller drives serve_once and request, which keeps scheduling decisions where they can be made deliberately and keeps the tests free of sleeps
 - The whole composition is feature-gated, so iroh stays out of every other workspace build exactly as ptr-net keeps its own backend out
+- bind_action_admission (feature execwire-backend) turns a ptr-runtime ActionAdmission into a WireRequest for one concrete action, refusing an action whose digest is not the admitted one, a project other than the admission's, an empty address and an empty at-most-once key; it grants nothing, the receiving ExecutionHost still authenticates the peer and applies its own policy
+- recover_uncertain_receipt forwards a receipt with the Uncertain outcome exactly once to a caller-supplied StatefulRequestRecovery, through uncertain_request which builds the UncertainRequest (request id from the receipt, caller's scope id) and refuses any other outcome with RecoveryBindingError::NotUncertain; Internal: it writes no ledger record and never retries
 - A requester dials only what the deployment wrote down: request takes a ptr-net PeerAddress, which has no public constructor, so a bare address does not satisfy the signature and an address handed over by a peer or read out of a payload cannot be dialled
 - No second check that a request names the peer being dialled, deliberately: it would buy no property since the host checks the name it was sent, and it would leave the host's own check reachable only from a raw transport
 
@@ -77,6 +79,9 @@
 - an attempt record the host cannot commit, because its ledger has no index left at all, is reported as refused, the adapter is never reached and no attempt is left unsettled
 - withdrawing a peer takes effect on its very next request over the wire
 - two runtimes audit the same peer's requests independently: an at-most-once key spent at one says nothing at the other
+- bridge tests (tests/admission.rs): an admitted action binds to a request with its request id and at-most-once key, and a tampered action, another project and an empty key are each refused
+- recovery tests (tests/recovery.rs): an uncertain receipt maps to the shared UncertainRequest, is forwarded to the recovery implementation once, and a refused receipt cannot enter recovery
+- an_uncertain_execwire_attempt_replays_as_a_durable_runtime_fence: after an uncertain outcome over a real connection the host's committed history alone, replayed into a fresh runtime, shows one unsettled effect and fences the next commit until reconcile_effect settles it
 - compile-fail doctest: a bare endpoint address is not an argument to request, verified against a positive control so it fails on the type rather than on a path
 - frame codec unit tests: round trip of every outcome, a request never read as a receipt and vice versa, every prefix refused, no single bit change yielding the original request, trailing bytes, an unknown layout version, an invented length refused by the bound, an oversize frame refused before parsing, an unknown effect/outcome/refusal code refused rather than guessed, invalid UTF-8 refused rather than replaced, and one distinct code per refusal
 

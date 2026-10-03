@@ -17,7 +17,7 @@ PTR is a **compiling architecture/research prototype**, not yet a complete model
 - Prost-generated protobuf schemas with validated PodCall → domain conversion
 - per-component `component.toml`, local `config.toml`, README status blocks and tests directories
 - 160 configured workspace areas with matching tests directories
-- Cargo and uv lockfiles; Rust 1.85 MSRV plus current-stable Ubuntu/Windows CI
+- Cargo and uv lockfiles; Rust 1.99 MSRV plus current-stable Ubuntu/Windows CI
 - dataset cards, experiment/evaluation validators, setup scripts, devcontainer/Docker and release scaffolding
 - executable experiment and component-evaluation runners with declared no-shell commands and immutable success/failure process evidence
 - supply-chain checks with cargo-audit/cargo-deny and Dependabot configuration
@@ -73,11 +73,15 @@ PTR is a **compiling architecture/research prototype**, not yet a complete model
   artifacts compared to a code-source commit). It has no run record, metric,
   checkpoint, or claim. M002-v9 will only be registered after its corrected
   gate passes against a committed unregistered candidate.
-- `M002-v9` is prepared only after its complete freeze gate passed against a
-  prior committed, unregistered candidate. It binds the immutable v5 pilot
-  archive, FNV folds, versioned runner arms and their source files, and the
-  complete tracked `model/burn-a0` Git tree. No seed has run and no positive
-  claim, M009 unlock, or Learned Backend authorization exists.
+- `M002-v9` is superseded after five committed seed records (Seeds 17, 29, 43,
+  71, 101) and before any decision. It bound the immutable v5 pilot archive,
+  FNV folds, versioned runner arms and their source files, and the complete
+  tracked `model/burn-a0` Git tree; the A0 lockfile had to change for
+  `ptr-types`' `sha2` dependency, which changes that tree, and the records
+  cannot be re-pinned. Records and configuration are unamended
+  (`SUPERSEDED.md`). No decision exists and no positive claim, M009 unlock, or
+  Learned Backend authorization follows; a further study needs a new
+  preregistered successor.
 
 ## Current research/implementation gap
 
@@ -95,7 +99,7 @@ PTR is a **compiling architecture/research prototype**, not yet a complete model
 
 - `Cargo.lock` pins Rust dependencies
 - `training/uv.lock` pins the current Python training utility environment
-- `rust-toolchain.toml` declares Rust 1.85.0 as MSRV/default
+- `rust-toolchain.toml` declares Rust 1.99.0 as MSRV/default
 - CI separately tests MSRV and current stable on Linux and current stable on Windows
 - experiment preparation/execution records git SHA, hardware profile, lockfile hashes, exact argv, duration, exit status and process output
 - small JSON/TOML/Markdown result artifacts and the frozen operator-routing v1/v2

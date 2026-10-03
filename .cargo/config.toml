@@ -5,13 +5,9 @@ xclippy = "clippy --workspace --all-targets -- -D warnings"
 xdoc = "doc --workspace --no-deps --locked"
 xcuda-check = "check -p ptr-pods --features candle-cuda --locked"
 
-[env]
-# Candle CUDA builds link against the installed CUDA 13.3 libraries, while
-# cudaforge compiles runtime PTX with CUDA 12.8 for the installed driver.
-# MSVC host compiler. Keeping both paths here makes nvcc builds reproducible
-# from a normal Cargo shell instead of requiring a VS Developer Prompt.
-CUDA_PATH = { value = "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.3", force = true }
-NVCC = { value = "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.8\\bin\\nvcc.exe", force = true }
-NVCC_CCBIN = { value = "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools\\VC\\Tools\\MSVC\\14.44.35207\\bin\\Hostx64\\x64", force = true }
-NVCC_PREPEND_FLAGS = { value = "-Xcompiler /Zc:preprocessor", force = true }
-CUDA_COMPUTE_CAP = { value = "89", force = true }
+# Machine-specific CUDA build settings (CUDA_PATH, NVCC, NVCC_CCBIN,
+# NVCC_PREPEND_FLAGS, CUDA_COMPUTE_CAP) belong in the user-level Cargo
+# configuration ($CARGO_HOME/config.toml, %CARGO_HOME%\config.toml on
+# Windows), not here: scripts/check_research_gates.py rejects an [env] table in
+# this file because it names programs, sources and flags a research record does
+# not bind. The previous values are kept in crates/ptr-pods/CANDLE_CUDA.md.
