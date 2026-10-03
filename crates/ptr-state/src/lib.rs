@@ -238,6 +238,24 @@ pub fn projection_entries(committed: &CommittedEvent) -> Vec<(String, String)> {
                 format!("{:?}", event.kind),
             ),
         ],
+        LedgerEvent::ExecutionManifestAdmitted {
+            manifest_digest, ..
+        } => vec![(
+            format!("execution-manifest:{}:state", hex_digest(manifest_digest)),
+            "admitted".to_owned(),
+        )],
+        LedgerEvent::ExecutionManifestRevoked {
+            manifest_digest, ..
+        } => vec![(
+            format!("execution-manifest:{}:state", hex_digest(manifest_digest)),
+            "revoked".to_owned(),
+        )],
+        LedgerEvent::PodEvidenceCommitted { .. }
+        | LedgerEvent::PodOutputAdmitted { .. }
+        | LedgerEvent::PodHypothesisCommitted { .. }
+        | LedgerEvent::PolicyBundleActivated { .. }
+        | LedgerEvent::PolicyBundleRevoked { .. }
+        | LedgerEvent::SessionRevoked { .. } => Vec::new(),
     }
 }
 

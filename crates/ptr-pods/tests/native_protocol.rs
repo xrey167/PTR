@@ -30,6 +30,7 @@ fn link(protocol: ProtocolBinding, port: u16) -> PodLink {
             generation: Generation(1),
         },
         artifact_id: ArtifactId::from("network-artifact"),
+        execution_manifest: [3; 32],
         protocol,
         capability: CapabilityId::from("exchange"),
         acl: Vec::new(),

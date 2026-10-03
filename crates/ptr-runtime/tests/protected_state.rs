@@ -1,4 +1,6 @@
-use ptr_runtime::ProtectedStateCoordinator;
+use ptr_config::PtrConfig;
+use ptr_ledger::LedgerEvent;
+use ptr_runtime::{ProtectedStateCoordinator, PtrRuntime};
 use ptr_storage::{
     GenerationAnchor, InMemoryProtectedStateStore, ProtectedRecord, SoftwareKeyProvider,
     StateDomain,
@@ -52,4 +54,29 @@ fn coordinator_exposes_rotation_as_a_runtime_operation() {
         .unwrap();
     let store = coordinator.into_inner();
     let _ = store;
+}
+
+#[test]
+fn protected_snapshot_event_rebuilds_runtime_authority_projection() {
+    let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+    runtime
+        .commit(LedgerEvent::ProtectedStateCommitted {
+            domain: 3,
+            logical_id: "semdb-snapshot".into(),
+            generation: Generation(1),
+            revision: Revision(7),
+            plaintext_digest: [7; 32],
+            ciphertext_digest: [8; 32],
+            anchor_digest: [9; 32],
+        })
+        .unwrap();
+
+    let authority = runtime.manifest_authority_registry();
+    assert_eq!(
+        authority
+            .read()
+            .unwrap()
+            .protected_snapshot_digest(Revision(7)),
+        Some([7; 32])
+    );
 }

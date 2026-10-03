@@ -8,6 +8,7 @@ publish = false
 [features]
 default = []
 candle-cuda = ["ptr-pods/candle-cuda"]
+oidc-http = ["dep:reqwest"]
 
 [dependencies]
 ptr-types = { workspace = true }
@@ -31,6 +32,10 @@ ptr-storage = { workspace = true }
 # policy, so both come from the crate that defines them.
 ptr-branch = { workspace = true }
 sha2 = { workspace = true }
+ed25519-dalek = { workspace = true }
+serde_json = { workspace = true }
+base64 = { workspace = true }
+reqwest = { workspace = true, optional = true }
 
 [dev-dependencies]
 # Search hits are filtered against this runtime's lifecycle answers; the test

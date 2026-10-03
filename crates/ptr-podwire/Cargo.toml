@@ -28,6 +28,7 @@ ptr-protocol = { workspace = true }
 # A Pod's output is verified before it leaves the host, by the same trait the
 # in-process loop verifies with.
 ptr-verifier = { workspace = true }
+ptr-runtime = { workspace = true }
 # The same pin ptr-ledger and ptr-execwire use. Three pins of a hash would be
 # three digests for the bytes they are all taken over.
 sha2 = { version = "=0.11.0", default-features = false }

@@ -37,6 +37,21 @@ pub fn pod_output_key(request: &RequestId, pod: &PodId) -> String {
     )
 }
 
+/// Candidate observations use a separate namespace from verified Pod output.
+/// The digest is part of the key so two different outputs for one request can
+/// coexist as reviewable evidence without overwriting one another.
+pub fn pod_candidate_key(request: &RequestId, pod: &PodId, output_digest: &[u8; 32]) -> String {
+    let digest = output_digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!(
+        "pod-candidate:{}:{request}:{}:{pod}:{digest}",
+        request.0.len(),
+        pod.0.len()
+    )
+}
+
 impl PtrRuntime {
     /// Shared output-admission boundary for in-process and memory-controller
     /// callers. Effects never pass through this pure/read promotion path.
@@ -375,6 +390,40 @@ impl PtrRuntime {
             .map(|commit| commit.revision)
     }
 
+    /// Retain a verified but non-authoritative Pod observation as a candidate.
+    /// Candidate records are durable and replayable, but their separate origin
+    /// and namespace prevent them from being consumed as promoted facts.
+    pub(super) fn promote_pod_candidate(
+        &mut self,
+        request: &RequestId,
+        pod: &PodId,
+        output: &TypedPayload,
+        output_digest: [u8; 32],
+        level: VerificationLevel,
+    ) -> Result<SemanticCommit, RuntimeError> {
+        let key = pod_candidate_key(request, pod, &output_digest);
+        let mut delta = SemanticDelta::default();
+        delta.upserts.insert(
+            key.clone(),
+            SemanticPayload {
+                type_id: output.type_id.clone(),
+                source: pod.to_string(),
+                bytes: output.bytes.clone(),
+            }
+            .into(),
+        );
+        delta
+            .dependencies
+            .insert(key, [request_raw_key(request)].into());
+        let origin = SemanticOrigin::PodCandidate {
+            request: request.0.clone(),
+            pod: pod.0.clone(),
+            output_digest,
+            level,
+        };
+        self.apply_ingress(origin, delta)
+    }
+
     /// Check a semantic record against the current state and prepare its
     /// delta. `index` is where the record was committed, when it is being
     /// replayed, and `None` when it is about to be written.
@@ -520,6 +569,31 @@ impl PtrRuntime {
                 } else {
                     Err(invalid(
                         "a Pod output record writes exactly the Pod's output for its request",
+                    ))
+                }
+            }
+            SemanticOrigin::PodCandidate {
+                request,
+                pod,
+                output_digest,
+                ..
+            } => {
+                let request = RequestId(request.clone());
+                let key = pod_candidate_key(&request, &PodId(pod.clone()), output_digest);
+                let shaped = delta.removals.is_empty()
+                    && delta.upserts.len() == 1
+                    && matches!(
+                        delta.upserts.get(&key),
+                        Some(SemanticValue::Payload(payload)) if payload.source == *pod
+                    )
+                    && delta.dependencies.len() == 1
+                    && delta.dependencies.get(&key)
+                        == Some(&BTreeSet::from([request_raw_key(&request)]));
+                if shaped {
+                    Ok(())
+                } else {
+                    Err(invalid(
+                        "a Pod candidate record writes exactly the candidate for its request",
                     ))
                 }
             }

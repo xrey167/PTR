@@ -2,7 +2,10 @@ use crate::{MeshPeerIdentity, MeshRoute};
 use ptr_types::{Generation, PeerId, Revision};
 use std::collections::BTreeMap;
 #[cfg(all(feature = "wireguard-uapi-backend", unix))]
-use std::path::{Path, PathBuf};
+#[cfg(windows)]
+use std::path::Path;
+#[cfg(target_os = "linux")]
+use std::path::PathBuf;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TunnelProfile {
@@ -301,8 +304,8 @@ impl WintunDevice {
     }
 
     pub fn probe_driver_version(&self) -> Result<String, String> {
-        let wintun = unsafe { wintun::load_from_path(&self.dll_path) }
-            .map_err(|error| error.to_string())?;
+        let wintun =
+            unsafe { wintun::load_from_path(&self.dll_path) }.map_err(|error| error.to_string())?;
         wintun::get_running_driver_version(&wintun)
             .map(|version| version.to_string())
             .map_err(|error| error.to_string())

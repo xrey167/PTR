@@ -2,8 +2,8 @@ use ptr_config::PtrConfig;
 use ptr_ledger::LedgerEvent;
 use ptr_net::{EndpointAddr, IrohTransport, PeerAddress, PeerBook, ALPN_PODWIRE};
 use ptr_pods::{
-    DynPod, InMemoryKvTensorBackend, KvTensorDType, KvTensorSchema, PodManifest, PodRegistry,
-    TensorRef,
+    DynPod, ExecutionManifest, InMemoryKvTensorBackend, KvTensorDType, KvTensorSchema,
+    LineageBinding, PodManifest, PodRegistry, TensorRef,
 };
 use ptr_podwire::{
     decode_request_v2, encode_answer_v2, request_digest, PodAccessPolicy, PodAddressBinding,
@@ -22,8 +22,8 @@ use ptr_storage::{
 };
 use ptr_types::{
     AdmissionDecision, AdmissionPolicy, AdmissionRequest, AuthenticationLevel, CapabilityId,
-    Effect, Generation, IdentityContext, ProjectId, Revision, ScopeId, ScopeLeaseBinding,
-    SessionId, StateId, Timestamp, TypeId, VerificationLevel,
+    Effect, Generation, IdentityContext, PrincipalId, ProjectId, Revision, ScopeId,
+    ScopeLeaseBinding, SessionId, StateId, Timestamp, TypeId, VerificationLevel,
 };
 use ptr_verifier::{VerificationReport, VerificationStatus, Verifier};
 use sha2::{Digest as ShaDigest, Sha256};
@@ -36,6 +36,33 @@ const POD: &str = "e2e-pod";
 const CAPABILITY: &str = "Infer<Document>";
 const INPUT: &str = "Document";
 const OUTPUT: &str = "Answer";
+
+fn execution_manifest(
+    manifest: &PodManifest,
+    generation: Generation,
+    revision: Revision,
+) -> ExecutionManifest {
+    ExecutionManifest::build(
+        generation,
+        vec![LineageBinding {
+            key: "knowledge".into(),
+            generation,
+            digest: [1; 32],
+        }],
+        vec![LineageBinding {
+            key: manifest.id.0.clone(),
+            generation,
+            digest: manifest.digest(),
+        }],
+        vec!["identity-recovery-test".into()],
+        None,
+        revision,
+        [2; 32],
+        PrincipalId::from("identity-recovery-test"),
+        Revision(1),
+    )
+    .unwrap()
+}
 
 #[derive(Clone)]
 struct Policy;
@@ -161,6 +188,9 @@ fn request(
             protocol: None,
             mesh: None,
         }),
+        execution_manifest: Some(
+            execution_manifest(manifest, generation, revision).manifest_digest,
+        ),
         addressed_to,
         request_id: id,
         artifact_id: ptr_types::ArtifactId::from("e2e-artifact"),
@@ -439,6 +469,8 @@ async fn identity_admission_podwire_protected_kv_ledger_and_recovery_are_bound()
             old_metadata.fencing_token.0,
             admission_binding,
         )
+        .unwrap()
+        .with_execution_manifest(execution_manifest(&manifest(), Generation(1), Revision(1)))
         .unwrap();
     let address = located(host.address());
     let server = tokio::spawn(async move { host.serve_session_v2(&binding, 5).await.unwrap() });
@@ -491,6 +523,7 @@ async fn identity_admission_podwire_protected_kv_ledger_and_recovery_are_bound()
         let asked = decode_request_v2(&incoming.payload).unwrap();
         let answer = PodAnswerV2 {
             address: asked.address.clone(),
+            execution_manifest: asked.execution_manifest,
             responder,
             request_id: asked.request_id,
             request_digest: request_digest(&incoming.payload),
@@ -657,6 +690,8 @@ async fn identity_admission_podwire_protected_kv_ledger_and_recovery_are_bound()
             new_metadata.fencing_token.0,
             next_binding,
         )
+        .unwrap()
+        .with_execution_manifest(execution_manifest(&manifest(), Generation(2), Revision(2)))
         .unwrap();
     let next_address = located(next_host.address());
     let next_server = tokio::spawn(async move {

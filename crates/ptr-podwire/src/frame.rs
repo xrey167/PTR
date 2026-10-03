@@ -121,6 +121,8 @@ pub struct PodAnswer {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PodRequestV2 {
     pub address: Option<PodAddressBinding>,
+    /// V3-only binding to the immutable execution context.
+    pub execution_manifest: Option<[u8; 32]>,
     pub addressed_to: String,
     pub request_id: u64,
     pub artifact_id: ArtifactId,
@@ -141,6 +143,8 @@ pub struct PodRequestV2 {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PodAnswerV2 {
     pub address: Option<PodAddressBinding>,
+    /// V3-only echo of the request's execution-manifest binding.
+    pub execution_manifest: Option<[u8; 32]>,
     pub responder: String,
     pub request_id: u64,
     pub request_digest: [u8; 32],
@@ -559,6 +563,13 @@ pub fn encode_request_v2(request: &PodRequestV2) -> Result<Vec<u8>, FrameError> 
     frame.extend_from_slice(&format.to_le_bytes());
     if let Some(address) = &request.address {
         put_address_binding(&mut frame, address)?;
+        frame.extend_from_slice(&request.execution_manifest.ok_or(FrameError::InvalidField {
+            field: "execution_manifest",
+        })?);
+    } else if request.execution_manifest.is_some() {
+        return Err(FrameError::InvalidField {
+            field: "execution_manifest",
+        });
     }
     put_str(&mut frame, "addressed_to", &request.addressed_to)?;
     frame.extend_from_slice(&request.request_id.to_le_bytes());
@@ -587,6 +598,9 @@ pub fn decode_request_v2(bytes: &[u8]) -> Result<PodRequestV2, FrameError> {
     let address = has_address
         .then(|| take_address_binding(bytes, &mut at))
         .transpose()?;
+    let execution_manifest = has_address
+        .then(|| take_digest(bytes, &mut at))
+        .transpose()?;
     let addressed_to = take_str(bytes, &mut at, "addressed_to")?;
     let request_id = take_u64(bytes, &mut at, "request_id")?;
     let artifact_id = ArtifactId(take_str(bytes, &mut at, "artifact_id")?);
@@ -604,6 +618,7 @@ pub fn decode_request_v2(bytes: &[u8]) -> Result<PodRequestV2, FrameError> {
     close(bytes, at)?;
     Ok(PodRequestV2 {
         address,
+        execution_manifest,
         addressed_to,
         request_id,
         artifact_id,
@@ -635,6 +650,13 @@ pub fn encode_answer_v2(answer: &PodAnswerV2) -> Result<Vec<u8>, FrameError> {
     frame.extend_from_slice(&format.to_le_bytes());
     if let Some(address) = &answer.address {
         put_address_binding(&mut frame, address)?;
+        frame.extend_from_slice(&answer.execution_manifest.ok_or(FrameError::InvalidField {
+            field: "execution_manifest",
+        })?);
+    } else if answer.execution_manifest.is_some() {
+        return Err(FrameError::InvalidField {
+            field: "execution_manifest",
+        });
     }
     put_str(&mut frame, "responder", &answer.responder)?;
     frame.extend_from_slice(&answer.request_id.to_le_bytes());
@@ -660,6 +682,9 @@ pub fn decode_answer_v2(bytes: &[u8]) -> Result<PodAnswerV2, FrameError> {
     let (mut at, has_address) = open_v2_compatible(bytes, ANSWER_MAGIC)?;
     let address = has_address
         .then(|| take_address_binding(bytes, &mut at))
+        .transpose()?;
+    let execution_manifest = has_address
+        .then(|| take_digest(bytes, &mut at))
         .transpose()?;
     let responder = take_str(bytes, &mut at, "responder")?;
     let request_id = take_u64(bytes, &mut at, "request_id")?;
@@ -690,6 +715,7 @@ pub fn decode_answer_v2(bytes: &[u8]) -> Result<PodAnswerV2, FrameError> {
     close(bytes, at)?;
     Ok(PodAnswerV2 {
         address,
+        execution_manifest,
         responder,
         request_id,
         request_digest,
@@ -1259,6 +1285,7 @@ mod tests {
                 protocol: Some(ProtocolBinding::Ssh),
                 mesh: None,
             }),
+            execution_manifest: Some([9; 32]),
             addressed_to: "key-of-the-host".into(),
             request_id: 42,
             artifact_id: ArtifactId::from("model-artifact"),
@@ -1282,6 +1309,7 @@ mod tests {
 
         let answer = PodAnswerV2 {
             address: request.address.clone(),
+            execution_manifest: request.execution_manifest,
             responder: "key-of-the-host".into(),
             request_id: 42,
             request_digest: request_digest(&frame),
@@ -1324,6 +1352,7 @@ mod tests {
                 protocol: None,
                 mesh: None,
             }),
+            execution_manifest: Some([9; 32]),
             addressed_to: "key-of-the-host".into(),
             request_id: 42,
             artifact_id: ArtifactId::from("model-artifact"),
@@ -1343,12 +1372,14 @@ mod tests {
             },
         };
         request.address = None;
+        request.execution_manifest = None;
         let frame = encode_request_v2(&request).unwrap();
         assert_eq!(u16::from_le_bytes([frame[8], frame[9]]), FORMAT_V2);
         assert_eq!(decode_request_v2(&frame).unwrap(), request);
 
         let answer = PodAnswerV2 {
             address: None,
+            execution_manifest: None,
             responder: "key-of-the-host".into(),
             request_id: request.request_id,
             request_digest: request_digest(&frame),

@@ -10,7 +10,9 @@
 //! loop, so a failure is a failure of the protocol and never of a race with a
 //! server task.
 use ptr_net::{EndpointAddr, IrohTransport, PeerAddress, PeerBook, ALPN_PODWIRE};
-use ptr_pods::{DynPod, PodManifest, PodRegistry, ProtocolBinding};
+use ptr_pods::{
+    DynPod, ExecutionManifest, LineageBinding, PodManifest, PodRegistry, ProtocolBinding,
+};
 use ptr_podwire::{
     decode_answer, decode_request, decode_request_v2, encode_answer, encode_answer_v2,
     encode_request, request_digest, PodAccessPolicy, PodAddressBinding, PodAnswer, PodAnswerV2,
@@ -18,9 +20,11 @@ use ptr_podwire::{
     MAX_BODY_BYTES,
 };
 use ptr_protocol::TypedPayload;
+use ptr_runtime::{ExecutionManifestRegistry, ValidatedExecutionManifest};
 use ptr_types::{
-    ArtifactId, CapabilityId, Effect, Generation, NodeId, PodId, Probability, ProjectId, Revision,
-    ScopeId, SessionId, StatefulRequestRecovery, TypeId, UncertainRequest, VerificationLevel,
+    ArtifactId, CapabilityId, Effect, Generation, NodeId, PodId, PrincipalId, Probability,
+    ProjectId, Revision, ScopeId, SessionId, StatefulRequestRecovery, TypeId, UncertainRequest,
+    VerificationLevel,
 };
 use ptr_verifier::{VerificationReport, VerificationStatus, Verifier};
 use std::sync::{Arc, Mutex};
@@ -28,6 +32,33 @@ use std::sync::{Arc, Mutex};
 const SUMMARIZE: &str = "Summarize<Document>";
 const DOCUMENT: &str = "Document";
 const SUMMARY: &str = "Summary";
+
+fn execution_manifest(
+    manifest: &PodManifest,
+    generation: Generation,
+    revision: Revision,
+) -> ExecutionManifest {
+    ExecutionManifest::build(
+        generation,
+        vec![LineageBinding {
+            key: "knowledge".into(),
+            generation,
+            digest: [1; 32],
+        }],
+        vec![LineageBinding {
+            key: manifest.id.0.clone(),
+            generation,
+            digest: manifest.digest(),
+        }],
+        vec!["wire-test".into()],
+        None,
+        revision,
+        [2; 32],
+        PrincipalId::from("wire-test"),
+        Revision(1),
+    )
+    .unwrap()
+}
 
 #[derive(Default)]
 struct RecoveryProbe {
@@ -152,6 +183,9 @@ fn request_v2(
 ) -> PodRequestV2 {
     PodRequestV2 {
         address: Some(address_binding(generation, manifest.digest())),
+        execution_manifest: Some(
+            execution_manifest(manifest, generation, revision).manifest_digest,
+        ),
         addressed_to,
         request_id,
         artifact_id: ArtifactId::from("summarizer-artifact"),
@@ -262,6 +296,8 @@ async fn v2_binds_manifest_artifact_generation_and_revision_over_a_real_connecti
             generation,
             revision,
         )
+        .unwrap()
+        .with_execution_manifest(execution_manifest(&manifest, generation, revision))
         .unwrap();
     let asked = request_v2(
         host.identity().public_key,
@@ -315,6 +351,8 @@ async fn v2_rejects_a_stale_generation_before_invoking_the_pod() {
             Generation(2),
             Revision(9),
         )
+        .unwrap()
+        .with_execution_manifest(execution_manifest(&manifest, Generation(2), Revision(9)))
         .unwrap();
     let asked = request_v2(
         host.identity().public_key,
@@ -366,6 +404,8 @@ async fn v2_rejects_a_protocol_binding_mismatch_before_invoking_the_pod() {
             revision,
             ProtocolBinding::Mqtt,
         )
+        .unwrap()
+        .with_execution_manifest(execution_manifest(&manifest, generation, revision))
         .unwrap();
     let mut asked = request_v2(
         host.identity().public_key,
@@ -414,6 +454,7 @@ async fn v2_client_rejects_answers_with_wrong_generation_or_revision() {
         let decoded = decode_request_v2(&incoming.payload).unwrap();
         let answer = PodAnswerV2 {
             address: decoded.address.clone(),
+            execution_manifest: decoded.execution_manifest,
             responder: generation_key,
             request_id: decoded.request_id,
             request_digest: request_digest(&incoming.payload),
@@ -460,6 +501,7 @@ async fn v2_client_rejects_answers_with_wrong_generation_or_revision() {
         let decoded = decode_request_v2(&incoming.payload).unwrap();
         let answer = PodAnswerV2 {
             address: decoded.address.clone(),
+            execution_manifest: decoded.execution_manifest,
             responder: revision_key,
             request_id: decoded.request_id,
             request_digest: request_digest(&incoming.payload),
@@ -959,6 +1001,8 @@ async fn v2_session_reuses_one_authenticated_connection() {
             3,
             55,
         )
+        .unwrap()
+        .with_execution_manifest(execution_manifest(&manifest, Generation(7), Revision(12)))
         .unwrap();
     let host_identity = host.identity().public_key.clone();
     let address = located(host.address());
@@ -972,6 +1016,72 @@ async fn v2_session_reuses_one_authenticated_connection() {
     session.close().await;
     assert_eq!(server.await.unwrap().len(), 1);
     assert_eq!(*invocations.lock().unwrap(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn live_manifest_revocation_blocks_an_existing_binding_before_invoke() {
+    let client = PodClient::bind().await.unwrap();
+    let invocations = Arc::new(Mutex::new(0));
+    let admitted = pod("alpha", &invocations);
+    let manifest = admitted.manifest().clone();
+    let execution_manifest = execution_manifest(&manifest, Generation(7), Revision(12));
+    let digest = execution_manifest.manifest_digest;
+
+    let mut registry = ExecutionManifestRegistry::default();
+    registry
+        .admit(ValidatedExecutionManifest {
+            manifest: execution_manifest.clone(),
+            knowledge: vec![],
+            artifacts: vec![],
+            runtime_revision: Revision(12),
+        })
+        .unwrap();
+    let registry = Arc::new(std::sync::RwLock::new(registry));
+
+    let mut pods = PodRegistry::default();
+    pods.register(admitted);
+    let mut policy = PodAccessPolicy::new();
+    policy
+        .admit(NodeId(client.identity().public_key), scope("alpha"))
+        .unwrap();
+    let host = PodHost::bind(pods, policy, Pass)
+        .await
+        .unwrap()
+        .with_runtime_manifest_registry(Arc::clone(&registry));
+    let binding = host
+        .bind_v2_stateful_addressed(
+            &ProjectId::from("alpha"),
+            &PodId::from("summarizer"),
+            ArtifactId::from("summarizer-artifact"),
+            Generation(7),
+            Revision(12),
+            3,
+            55,
+        )
+        .unwrap()
+        .with_execution_manifest(execution_manifest)
+        .unwrap();
+
+    registry.write().unwrap().revoke(digest).unwrap();
+
+    let host_identity = host.identity().public_key.clone();
+    let address = located(host.address());
+    let server = tokio::spawn(async move { host.serve_session_v2(&binding, 1).await.unwrap() });
+    let session = client.connect_session(address, 1).await.unwrap();
+    let mut request = request_v2(host_identity, 100, &manifest, Generation(7), Revision(12));
+    request.placement_epoch = Some(3);
+    request.fencing_token = Some(55);
+    let answer = session.request_v2(&request).await.unwrap();
+
+    assert_eq!(
+        answer.outcome,
+        PodOutcome::Refused {
+            code: RefusalCode::Unavailable
+        }
+    );
+    assert_eq!(*invocations.lock().unwrap(), 0);
+    session.close().await;
+    assert_eq!(server.await.unwrap().len(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -995,6 +1105,8 @@ async fn v2_session_replays_identical_request_ids_but_rejects_conflicting_bytes(
             Generation(7),
             Revision(12),
         )
+        .unwrap()
+        .with_execution_manifest(execution_manifest(&manifest, Generation(7), Revision(12)))
         .unwrap();
     let host_identity = host.identity().public_key.clone();
     let address = located(host.address());
@@ -1028,6 +1140,7 @@ async fn v2_session_marks_an_unverifiable_answer_uncertain_and_blocks_retry() {
         let request = decode_request_v2(&incoming.payload).unwrap();
         let answer = PodAnswerV2 {
             address: request.address.clone(),
+            execution_manifest: request.execution_manifest,
             responder,
             request_id: request.request_id,
             request_digest: request_digest(&incoming.payload),
@@ -1094,6 +1207,7 @@ async fn v2_client_rejects_a_response_with_stale_state_binding() {
         let request = decode_request_v2(&incoming.payload).unwrap();
         let answer = PodAnswerV2 {
             address: request.address.clone(),
+            execution_manifest: request.execution_manifest,
             responder,
             request_id: request.request_id,
             request_digest: request_digest(&incoming.payload),
@@ -1160,6 +1274,8 @@ async fn v2_binding_rejects_a_manifest_digest_that_is_not_the_registered_manifes
             Generation(7),
             Revision(12),
         )
+        .unwrap()
+        .with_execution_manifest(execution_manifest(&manifest, Generation(7), Revision(12)))
         .unwrap();
     let asked = request_v2(
         host.identity().public_key,

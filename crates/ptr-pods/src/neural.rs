@@ -1,5 +1,6 @@
 use ptr_protocol::TypedPayload;
-use ptr_types::{ArtifactId, CapabilityId, DeviceId, Generation, PodId, TypeId};
+use ptr_types::{ArtifactId, CapabilityId, DeviceId, Digest, Generation, PodId, TypeId};
+use sha2::{Digest as ShaDigest, Sha256};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NeuralPodType {
@@ -160,6 +161,40 @@ pub struct NeuralPodDescriptor {
 }
 
 impl NeuralPodDescriptor {
+    /// Canonical digest for artifact lineage binding. This is distinct from
+    /// the invocation manifest hash: an artifact includes its executor and
+    /// tensor contract as well as the Pod contract.
+    pub fn lineage_digest(&self) -> Digest {
+        let mut bytes = Vec::new();
+        macro_rules! put {
+            ($value:expr) => {{
+                let value = $value.to_string();
+                bytes.extend_from_slice(&(value.len() as u64).to_le_bytes());
+                bytes.extend_from_slice(value.as_bytes());
+            }};
+        }
+        put!(self.artifact_id.0);
+        put!(self.pod_id.0);
+        bytes.extend_from_slice(&self.manifest_hash);
+        put!(self.generation.0);
+        put!(format!("{:?}", self.pod_type));
+        put!(self.input_schema.0);
+        put!(self.output_schema.0);
+        for capability in &self.capabilities {
+            put!(capability.0);
+        }
+        for provenance in &self.provenance {
+            put!(provenance);
+        }
+        put!(format!("{:?}", self.lifecycle));
+        put!(self.resources.ram_bytes);
+        put!(self.resources.vram_bytes);
+        put!(self.resources.max_concurrency);
+        put!(format!("{:?}", self.resources.device));
+        put!(format!("{:?}", self.tensor));
+        Sha256::digest(bytes).into()
+    }
+
     pub fn validate(&self) -> Result<(), DescriptorError> {
         if self.artifact_id.0.trim().is_empty() || self.pod_id.0.trim().is_empty() {
             return Err(DescriptorError::MissingIdentity);

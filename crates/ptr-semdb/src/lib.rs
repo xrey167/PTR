@@ -3,6 +3,7 @@
 mod codec;
 
 use ptr_types::{EncodingError, Revision, SlotEncoding, SlotVector, TypeId};
+use sha2::{Digest as ShaDigest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
@@ -17,7 +18,7 @@ pub use codec::{MAX_DELTA_BYTES, MAX_DELTA_ITEMS, MAX_KEY_BYTES};
 /// merge or host write, and replay refuses a record, that writes under one of
 /// these prefixes. A branch, a merge or a host write that could write here
 /// could forge a request or a Pod's verified output.
-pub const INGRESS_PREFIXES: [&str; 2] = ["request:", "pod-output:"];
+pub const INGRESS_PREFIXES: [&str; 3] = ["request:", "pod-output:", "pod-candidate:"];
 
 /// Whether `key` lies in the namespace only ingress writes
 /// ([`INGRESS_PREFIXES`]).
@@ -249,6 +250,34 @@ pub struct SemanticSnapshot {
     owner: Arc<()>,
 }
 impl SemanticSnapshot {
+    /// Canonical digest of the complete immutable semantic snapshot.
+    ///
+    /// The revision, ordered keys, value kind and complete typed payload are
+    /// included. This is an identity check for a snapshot, not an admission
+    /// decision; the runtime still binds it to its current authority.
+    pub fn canonical_digest(&self) -> ptr_types::Digest {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"PTR-SEMDB-SNAPSHOT-V1\0");
+        bytes.extend_from_slice(&self.revision.0.to_le_bytes());
+        bytes.extend_from_slice(&(self.state.ground.len() as u64).to_le_bytes());
+        for (key, value) in &self.state.ground {
+            put_snapshot_bytes(&mut bytes, key.as_bytes());
+            match value {
+                SemanticValue::Text(text) => {
+                    bytes.push(0);
+                    put_snapshot_bytes(&mut bytes, text.as_bytes());
+                }
+                SemanticValue::Payload(payload) => {
+                    bytes.push(1);
+                    put_snapshot_bytes(&mut bytes, payload.type_id.0.as_bytes());
+                    put_snapshot_bytes(&mut bytes, payload.source.as_bytes());
+                    put_snapshot_bytes(&mut bytes, &payload.bytes);
+                }
+            }
+        }
+        Sha256::digest(bytes).into()
+    }
+
     /// Export the exact snapshot contents as an owned model boundary value.
     /// Keys are already ordered by the canonical SemDB map and no internal
     /// ownership handle crosses the boundary.
@@ -327,6 +356,11 @@ impl SemanticSnapshot {
             })?;
         Ok(value.slot_vector(encoding, width)?)
     }
+}
+
+fn put_snapshot_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
+    out.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+    out.extend_from_slice(bytes);
 }
 
 /// The canonical bytes of one semantic input: the journal encoding of a delta
@@ -599,6 +633,50 @@ pub struct ProjectSkeleton {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshot_digest_is_stable_and_binds_revision_and_payload_identity() {
+        let mut host = SemanticHost::default();
+        let first = host.snapshot();
+        assert_eq!(first.canonical_digest(), first.canonical_digest());
+
+        let delta = SemanticDelta {
+            upserts: [(
+                "payload".to_owned(),
+                SemanticValue::Payload(SemanticPayload {
+                    type_id: TypeId::from("text"),
+                    source: "pod-1".to_owned(),
+                    bytes: vec![1, 2, 3],
+                }),
+            )]
+            .into_iter()
+            .collect(),
+            ..SemanticDelta::default()
+        };
+        host.apply_delta(delta).unwrap();
+        let second = host.snapshot();
+        assert_ne!(first.canonical_digest(), second.canonical_digest());
+
+        let mut changed = SemanticHost::default();
+        let delta = SemanticDelta {
+            upserts: [(
+                "payload".to_owned(),
+                SemanticValue::Payload(SemanticPayload {
+                    type_id: TypeId::from("text"),
+                    source: "pod-2".to_owned(),
+                    bytes: vec![1, 2, 3],
+                }),
+            )]
+            .into_iter()
+            .collect(),
+            ..SemanticDelta::default()
+        };
+        changed.apply_delta(delta).unwrap();
+        assert_ne!(
+            second.canonical_digest(),
+            changed.snapshot().canonical_digest()
+        );
+    }
     #[test]
     fn revision_exhaustion_leaves_state_unchanged() {
         let mut host = SemanticHost::default();

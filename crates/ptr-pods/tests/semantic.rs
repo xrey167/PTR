@@ -202,6 +202,7 @@ fn pod_link_binds_artifact_acl_protocol_and_cycle_state() {
         source,
         target,
         artifact_id: ArtifactId::from("artifact"),
+        execution_manifest: [7; 32],
         protocol: ProtocolBinding::Ssh,
         capability: CapabilityId::from("infer"),
         acl: vec![PrincipalId::from("alice")],
@@ -223,6 +224,25 @@ fn pod_link_binds_artifact_acl_protocol_and_cycle_state() {
             Timestamp(1)
         )
         .is_ok());
+    assert!(link
+        .validate_against_manifest(
+            &ArtifactId::from("artifact"),
+            &[7; 32],
+            &[CapabilityId::from("infer")],
+            &PrincipalId::from("alice"),
+            Timestamp(1)
+        )
+        .is_ok());
+    assert!(matches!(
+        link.validate_against_manifest(
+            &ArtifactId::from("artifact"),
+            &[8; 32],
+            &[CapabilityId::from("infer")],
+            &PrincipalId::from("alice"),
+            Timestamp(1)
+        ),
+        Err(ptr_pods::PodLinkError::ExecutionManifestMismatch)
+    ));
     assert!(link
         .validate(
             &ArtifactId::from("other"),

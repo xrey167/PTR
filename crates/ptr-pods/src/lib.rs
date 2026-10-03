@@ -9,6 +9,7 @@ mod adapter;
 mod cache;
 #[cfg(feature = "candle-cuda")]
 mod candle;
+mod evidence;
 mod hypothesis;
 mod kv;
 mod manifest;
@@ -24,6 +25,10 @@ pub use adapter::{AdapterError, NeuralPodAdapter};
 pub use cache::{PodCache, PodCacheKey};
 #[cfg(feature = "candle-cuda")]
 pub use candle::{CandleDenseExecutor, CandleExecutorError, CandleKvTensorBackend};
+pub use evidence::{
+    Ed25519EvidenceSigner, Ed25519EvidenceVerifier, EvidenceError, EvidenceSigner,
+    EvidenceVerifier, PodEvidenceBundle, ReplayedEvidence,
+};
 pub use hypothesis::{merge_hypotheses, HypothesisError, MergedPodResult, PodHypothesis};
 pub use kv::{
     InMemoryKvCache, InMemoryKvTensorBackend, KvBackendError, KvLayerSnapshot, KvTensorBackend,

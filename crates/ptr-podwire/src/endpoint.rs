@@ -13,8 +13,9 @@ use crate::frame::{
 };
 use ptr_net::{EndpointAddr, IrohSession, IrohTransport, NodeIdentity, PeerAddress, ALPN_PODWIRE};
 use ptr_pods::ProtocolBinding;
-use ptr_pods::{PodManifest, PodRegistry, RegisteredPodBinding};
+use ptr_pods::{ExecutionManifest, PodManifest, PodRegistry, RegisteredPodBinding};
 use ptr_protocol::TypedPayload;
+use ptr_runtime::RuntimeExecutionManifestResolver;
 use ptr_types::{
     ArtifactId, Digest, Generation, MeshEndpointBinding, NodeId, PodId, ProjectId, Revision,
     ScopeId, SessionId, StatefulRequestRecovery, UncertainRequest,
@@ -22,6 +23,7 @@ use ptr_types::{
 use ptr_verifier::Verifier;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 /// How long one exchange waits for an answer before giving up.
@@ -30,6 +32,25 @@ use std::time::Duration;
 /// what matters is that there is one. Without it a host that stopped answering
 /// holds a requester open for as long as the transport allows.
 pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Resolves an execution-manifest digest from the authoritative runtime or
+/// catalog. The transport never treats a digest supplied by a caller as proof
+/// that the corresponding lineage exists.
+pub trait ExecutionManifestResolver: Send + Sync {
+    type Error;
+
+    fn resolve(&self, digest: &Digest) -> Result<ExecutionManifest, Self::Error>;
+}
+
+impl ExecutionManifestResolver for ExecutionManifest {
+    type Error = ();
+
+    fn resolve(&self, digest: &Digest) -> Result<ExecutionManifest, Self::Error> {
+        (self.manifest_digest == *digest)
+            .then_some(self.clone())
+            .ok_or(())
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PodWireV2Binding {
@@ -40,6 +61,7 @@ pub struct PodWireV2Binding {
     placement_epoch: Option<u64>,
     fencing_token: Option<u128>,
     semantic_revision: Option<Digest>,
+    execution_manifest: Option<ExecutionManifest>,
     protocol: Option<ProtocolBinding>,
     admission: Option<PodAdmissionBinding>,
     mesh: Option<MeshEndpointBinding>,
@@ -74,6 +96,55 @@ impl PodWireV2Binding {
         self.mesh.as_ref()
     }
 
+    pub fn execution_manifest(&self) -> Option<&ExecutionManifest> {
+        self.execution_manifest.as_ref()
+    }
+
+    pub fn with_execution_manifest(
+        mut self,
+        manifest: ExecutionManifest,
+    ) -> Result<Self, PodWireError> {
+        manifest
+            .validate()
+            .map_err(|_| PodWireError::V2BindingUnavailable)?;
+        if manifest.generation != self.generation || manifest.policy_revision.0 == 0 {
+            return Err(PodWireError::V2BindingUnavailable);
+        }
+        self.execution_manifest = Some(manifest);
+        Ok(self)
+    }
+
+    pub fn with_resolved_execution_manifest<R>(
+        self,
+        resolver: &R,
+        digest: &Digest,
+    ) -> Result<Self, PodWireError>
+    where
+        R: ExecutionManifestResolver,
+    {
+        let manifest = resolver
+            .resolve(digest)
+            .map_err(|_| PodWireError::V2BindingUnavailable)?;
+        if manifest.manifest_digest != *digest {
+            return Err(PodWireError::V2BindingUnavailable);
+        }
+        self.with_execution_manifest(manifest)
+    }
+
+    /// Build the binding from the runtime's admitted, lineage-validated
+    /// registry. PodWire does not accept a caller-created manifest as proof of
+    /// runtime admission; the runtime must resolve the exact digest first.
+    pub fn with_runtime_execution_manifest(
+        self,
+        runtime: &ptr_runtime::PtrRuntime,
+        digest: &Digest,
+    ) -> Result<Self, PodWireError> {
+        let validated = runtime
+            .resolve_execution_manifest(digest)
+            .map_err(|_| PodWireError::V2BindingUnavailable)?;
+        self.with_execution_manifest(validated.manifest)
+    }
+
     pub fn with_mesh(mut self, mesh: MeshEndpointBinding) -> Result<Self, PodWireError> {
         mesh.validate()
             .map_err(|_| PodWireError::V2BindingUnavailable)?;
@@ -95,6 +166,11 @@ impl PodWireV2Binding {
             }
             _ => false,
         }) && request.artifact_id == self.artifact_id
+            && request.execution_manifest
+                == self
+                    .execution_manifest
+                    .as_ref()
+                    .map(|manifest| manifest.manifest_digest)
             && request.manifest_hash == self.manifest().digest()
             && request.generation == self.generation
             && request.revision == self.revision
@@ -245,6 +321,7 @@ pub struct PodHost {
     policy: PodAccessPolicy,
     verifier: Box<dyn Verifier<TypedPayload> + Send + Sync>,
     transport: IrohTransport,
+    runtime_manifest_registry: Option<Arc<RwLock<ptr_runtime::ExecutionManifestRegistry>>>,
 }
 
 impl PodHost {
@@ -266,7 +343,19 @@ impl PodHost {
             policy,
             verifier: Box::new(verifier),
             transport,
+            runtime_manifest_registry: None,
         })
+    }
+
+    /// Attach the live runtime manifest registry. The registry is shared rather
+    /// than copied so revocation is observed by already-created bindings before
+    /// their next invocation.
+    pub fn with_runtime_manifest_registry(
+        mut self,
+        registry: Arc<RwLock<ptr_runtime::ExecutionManifestRegistry>>,
+    ) -> Self {
+        self.runtime_manifest_registry = Some(registry);
+        self
     }
 
     pub fn bind_v2(
@@ -289,6 +378,7 @@ impl PodHost {
             placement_epoch: None,
             fencing_token: None,
             semantic_revision: None,
+            execution_manifest: None,
             protocol: None,
             admission: None,
             mesh: None,
@@ -383,6 +473,33 @@ impl PodHost {
         )?;
         binding.admission = Some(admission);
         Ok(binding)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn bind_v2_runtime_admitted(
+        &self,
+        runtime: &ptr_runtime::PtrRuntime,
+        project: &ProjectId,
+        pod: &PodId,
+        artifact_id: ArtifactId,
+        generation: Generation,
+        revision: Revision,
+        placement_epoch: u64,
+        fencing_token: u128,
+        admission: PodAdmissionBinding,
+        execution_manifest: &Digest,
+    ) -> Result<PodWireV2Binding, PodWireError> {
+        self.bind_v2_admitted(
+            project,
+            pod,
+            artifact_id,
+            generation,
+            revision,
+            placement_epoch,
+            fencing_token,
+            admission,
+        )?
+        .with_runtime_execution_manifest(runtime, execution_manifest)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -502,6 +619,10 @@ impl PodHost {
         let peer = incoming.peer.clone();
         let digest = request_digest(&incoming.payload);
         let request = decode_request_v2(&incoming.payload);
+        let request_execution_manifest = request
+            .as_ref()
+            .ok()
+            .and_then(|request| request.execution_manifest);
         let answer_address = request
             .as_ref()
             .ok()
@@ -551,29 +672,16 @@ impl PodHost {
                         },
                         Some(PodWireError::V2BindingUnavailable),
                     )
-                } else {
-                    match answer_bound(
-                        &self.policy,
-                        &self.registry,
-                        self.verifier.as_ref(),
-                        &NodeId(peer.public_key.clone()),
-                        binding.registered.pod_id(),
-                        binding.manifest(),
-                        &request.capability,
-                        request.expect_protocol,
-                        request.payload,
-                    ) {
-                        Ok(output) if binding.manifest().produces.contains(&output.type_id) => (
-                            request_id,
-                            request.generation,
-                            request.revision,
-                            request.identity_digest,
-                            request.session_id.clone(),
-                            request.policy_revision,
-                            PodOutcome::Answered { output },
-                            None,
-                        ),
-                        Ok(_) => (
+                } else if let Some(registry) = &self.runtime_manifest_registry {
+                    let current = request
+                        .execution_manifest
+                        .and_then(|digest| registry.read().ok()?.resolve(&digest).ok());
+                    if current
+                        .as_ref()
+                        .map(|manifest| manifest.manifest.manifest_digest)
+                        != request.execution_manifest
+                    {
+                        (
                             request_id,
                             request.generation,
                             request.revision,
@@ -581,21 +689,15 @@ impl PodHost {
                             request.session_id.clone(),
                             request.policy_revision,
                             PodOutcome::Refused {
-                                code: RefusalCode::Unverified,
+                                code: RefusalCode::Unavailable,
                             },
-                            Some(PodWireError::Refused(RefusalCode::Unverified)),
-                        ),
-                        Err(code) => (
-                            request_id,
-                            request.generation,
-                            request.revision,
-                            request.identity_digest,
-                            request.session_id.clone(),
-                            request.policy_revision,
-                            PodOutcome::Refused { code },
-                            Some(PodWireError::Refused(code)),
-                        ),
+                            Some(PodWireError::V2BindingUnavailable),
+                        )
+                    } else {
+                        self.answer_v2_bound_request(&peer, binding, request, request_id)
                     }
+                } else {
+                    self.answer_v2_bound_request(&peer, binding, request, request_id)
                 }
             }
             Err(error) => (
@@ -613,6 +715,7 @@ impl PodHost {
         };
         let answer = PodAnswerV2 {
             address: answer_address,
+            execution_manifest: request_execution_manifest,
             responder: self.identity().public_key,
             request_id: request_id.unwrap_or(0),
             request_digest: digest,
@@ -666,6 +769,68 @@ impl PodHost {
         Ok(served)
     }
 
+    fn answer_v2_bound_request(
+        &self,
+        peer: &NodeIdentity,
+        binding: &PodWireV2Binding,
+        request: PodRequestV2,
+        request_id: Option<u64>,
+    ) -> (
+        Option<u64>,
+        Generation,
+        Revision,
+        Digest,
+        SessionId,
+        Revision,
+        PodOutcome,
+        Option<PodWireError>,
+    ) {
+        match answer_bound(
+            &self.policy,
+            &self.registry,
+            self.verifier.as_ref(),
+            &NodeId(peer.public_key.clone()),
+            binding.registered.pod_id(),
+            binding.manifest(),
+            &request.capability,
+            request.expect_protocol,
+            request.payload,
+        ) {
+            Ok(output) if binding.manifest().produces.contains(&output.type_id) => (
+                request_id,
+                request.generation,
+                request.revision,
+                request.identity_digest,
+                request.session_id,
+                request.policy_revision,
+                PodOutcome::Answered { output },
+                None,
+            ),
+            Ok(_) => (
+                request_id,
+                request.generation,
+                request.revision,
+                request.identity_digest,
+                request.session_id,
+                request.policy_revision,
+                PodOutcome::Refused {
+                    code: RefusalCode::Unverified,
+                },
+                Some(PodWireError::Refused(RefusalCode::Unverified)),
+            ),
+            Err(code) => (
+                request_id,
+                request.generation,
+                request.revision,
+                request.identity_digest,
+                request.session_id,
+                request.policy_revision,
+                PodOutcome::Refused { code },
+                Some(PodWireError::Refused(code)),
+            ),
+        }
+    }
+
     async fn serve_v2_incoming(
         &self,
         binding: &PodWireV2Binding,
@@ -674,6 +839,10 @@ impl PodHost {
         let peer = incoming.peer.clone();
         let digest = request_digest(&incoming.payload);
         let request = decode_request_v2(&incoming.payload);
+        let request_execution_manifest = request
+            .as_ref()
+            .ok()
+            .and_then(|request| request.execution_manifest);
         let answer_address = request
             .as_ref()
             .ok()
@@ -723,29 +892,16 @@ impl PodHost {
                         },
                         Some(PodWireError::V2BindingUnavailable),
                     )
-                } else {
-                    match answer_bound(
-                        &self.policy,
-                        &self.registry,
-                        self.verifier.as_ref(),
-                        &NodeId(peer.public_key.clone()),
-                        binding.registered.pod_id(),
-                        binding.manifest(),
-                        &request.capability,
-                        request.expect_protocol,
-                        request.payload,
-                    ) {
-                        Ok(output) if binding.manifest().produces.contains(&output.type_id) => (
-                            request_id,
-                            request.generation,
-                            request.revision,
-                            request.identity_digest,
-                            request.session_id.clone(),
-                            request.policy_revision,
-                            PodOutcome::Answered { output },
-                            None,
-                        ),
-                        Ok(_) => (
+                } else if let Some(registry) = &self.runtime_manifest_registry {
+                    let current = request
+                        .execution_manifest
+                        .and_then(|digest| registry.read().ok()?.resolve(&digest).ok());
+                    if current
+                        .as_ref()
+                        .map(|manifest| manifest.manifest.manifest_digest)
+                        != request.execution_manifest
+                    {
+                        (
                             request_id,
                             request.generation,
                             request.revision,
@@ -753,21 +909,15 @@ impl PodHost {
                             request.session_id.clone(),
                             request.policy_revision,
                             PodOutcome::Refused {
-                                code: RefusalCode::Unverified,
+                                code: RefusalCode::Unavailable,
                             },
-                            Some(PodWireError::Refused(RefusalCode::Unverified)),
-                        ),
-                        Err(code) => (
-                            request_id,
-                            request.generation,
-                            request.revision,
-                            request.identity_digest,
-                            request.session_id.clone(),
-                            request.policy_revision,
-                            PodOutcome::Refused { code },
-                            Some(PodWireError::Refused(code)),
-                        ),
+                            Some(PodWireError::V2BindingUnavailable),
+                        )
+                    } else {
+                        self.answer_v2_bound_request(&peer, binding, request, request_id)
                     }
+                } else {
+                    self.answer_v2_bound_request(&peer, binding, request, request_id)
                 }
             }
             Err(error) => (
@@ -785,6 +935,7 @@ impl PodHost {
         };
         let answer = PodAnswerV2 {
             address: answer_address,
+            execution_manifest: request_execution_manifest,
             responder: self.identity().public_key,
             request_id: request_id.unwrap_or(0),
             request_digest: digest,
@@ -1175,6 +1326,9 @@ fn validate_answer_v2(
         });
     }
     if answered.address != request.address {
+        return Err(PodWireError::V2BindingUnavailable);
+    }
+    if answered.execution_manifest != request.execution_manifest {
         return Err(PodWireError::V2BindingUnavailable);
     }
     if answered.generation != request.generation {

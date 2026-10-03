@@ -100,6 +100,8 @@ fn wintun_dll_and_driver_are_loadable_when_provisioned() {
         return;
     };
     let device = ptr_net::WintunDevice::new(path);
-    let version = device.probe_driver_version().expect("Wintun DLL/driver must load");
+    let version = device
+        .probe_driver_version()
+        .expect("Wintun DLL/driver must load");
     assert!(!version.is_empty());
 }

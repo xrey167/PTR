@@ -48,5 +48,6 @@ mod endpoint;
 
 #[cfg(feature = "podwire-backend")]
 pub use endpoint::{
-    PodClient, PodHost, PodSession, PodWireError, PodWireV2Binding, Served, DEFAULT_REQUEST_TIMEOUT,
+    ExecutionManifestResolver, PodClient, PodHost, PodSession, PodWireError, PodWireV2Binding,
+    Served, DEFAULT_REQUEST_TIMEOUT,
 };

@@ -33,6 +33,18 @@ pub use frame::{
 mod endpoint;
 
 #[cfg(feature = "execwire-backend")]
+mod admission;
+
+mod recovery;
+
+#[cfg(feature = "execwire-backend")]
+pub use admission::{bind_action_admission, AdmissionBindingError};
+
+pub use recovery::{
+    recover_uncertain_receipt, uncertain_request, RecoveryBindingError, RecoveryBindingErrorOr,
+};
+
+#[cfg(feature = "execwire-backend")]
 pub use endpoint::{
     ExecutionClient, ExecutionHost, Serviced, WireError, DEFAULT_PERMIT_TTL,
     DEFAULT_REQUEST_TIMEOUT, MAX_REPLAY_WINDOW, MAX_TRACKED_PEERS,

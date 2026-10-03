@@ -221,6 +221,9 @@ pub struct PodLink {
     pub source: PodAddress,
     pub target: PodRevisionAddress,
     pub artifact_id: ptr_types::ArtifactId,
+    /// Digest of the immutable execution context this link is authorized to use.
+    /// The physical endpoint is deliberately not part of this binding.
+    pub execution_manifest: Digest,
     pub protocol: ProtocolBinding,
     pub capability: CapabilityId,
     pub acl: Vec<PrincipalId>,
@@ -259,6 +262,9 @@ impl PodLink {
         if self.artifact_id != *target_artifact {
             return Err(PodLinkError::ArtifactMismatch);
         }
+        if self.execution_manifest == [0; 32] {
+            return Err(PodLinkError::MissingExecutionManifest);
+        }
         if !target_capabilities.contains(&self.capability) {
             return Err(PodLinkError::CapabilityUnavailable);
         }
@@ -274,6 +280,23 @@ impl PodLink {
         unique.dedup();
         if unique.len() != self.visited.len() || self.visited.contains(&self.target.address) {
             return Err(PodLinkError::CycleDetected);
+        }
+        Ok(())
+    }
+
+    /// Validate the link against the exact immutable execution manifest admitted
+    /// for the target. A non-zero digest alone is not sufficient authorization.
+    pub fn validate_against_manifest(
+        &self,
+        target_artifact: &ptr_types::ArtifactId,
+        target_manifest: &Digest,
+        target_capabilities: &[CapabilityId],
+        principal: &PrincipalId,
+        now: Timestamp,
+    ) -> Result<(), PodLinkError> {
+        self.validate(target_artifact, target_capabilities, principal, now)?;
+        if self.execution_manifest != *target_manifest {
+            return Err(PodLinkError::ExecutionManifestMismatch);
         }
         Ok(())
     }
@@ -294,6 +317,8 @@ pub enum PodLinkError {
     InvalidAddress,
     ScopeMismatch,
     ArtifactMismatch,
+    MissingExecutionManifest,
+    ExecutionManifestMismatch,
     CapabilityUnavailable,
     AccessDenied,
     MissingAttestation,
