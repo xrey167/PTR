@@ -255,3 +255,83 @@ async fn durable_restart_fences_open_effect_until_explicit_reconciliation() {
     );
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[tokio::test]
+async fn distinct_idempotency_keys_each_execute_and_malformed_keys_are_rejected_up_front() {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use ptr_config::PtrConfig;
+    use ptr_ledger::LedgerEvent;
+    use ptr_model_api::ScenarioBackend;
+    use ptr_runtime::PtrRuntime;
+    use ptr_types::{CapabilityId, CapsuleId, Generation};
+    use std::sync::Arc;
+    use tower::ServiceExt;
+
+    let data_dir = std::env::temp_dir().join(format!(
+        "ptr-demo-note-multi-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+    runtime
+        .commit(LedgerEvent::CapsuleCommitted {
+            project: "demo".into(),
+            capsule: CapsuleId::from("demo-note"),
+            generation: Generation(1),
+        })
+        .unwrap();
+    runtime.permissions_mut().allow_mutation = true;
+    runtime
+        .permissions_mut()
+        .capabilities
+        .insert(CapabilityId::from("demo.local-note.create"));
+    let app = ptr_server::router_with_dependencies(
+        runtime,
+        Arc::new(ScenarioBackend),
+        Default::default(),
+        Arc::new(Default::default()),
+        ptr_server::default_verifier(),
+        ptr_server::demo_effect_grants(&data_dir),
+    );
+    let post = |body: &'static str| {
+        Request::post("/v1/requests")
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap()
+    };
+
+    let first = app
+        .clone()
+        .oneshot(post(
+            r#"{"id":"multi-1","text":"first","idempotency_key":"key-a"}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+    let second = app
+        .clone()
+        .oneshot(post(
+            r#"{"id":"multi-2","text":"second","idempotency_key":"key-b"}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(second.status(), StatusCode::OK);
+    assert_eq!(
+        std::fs::read(data_dir.join("effects/demo-note.txt")).unwrap(),
+        b"second"
+    );
+
+    let blank_key = app
+        .clone()
+        .oneshot(post(
+            r#"{"id":"multi-3","text":"third","idempotency_key":"   "}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(blank_key.status(), StatusCode::BAD_REQUEST);
+    let _ = std::fs::remove_dir_all(data_dir);
+}

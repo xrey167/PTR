@@ -48,6 +48,7 @@ pub const DEMO_NOTE_OPERATION: &str = "create";
 pub const DEMO_NOTE_CAPABILITY: &str = "demo.local-note.create";
 pub const DEMO_NOTE_INPUT_TYPE: &str = "ptr.demo-note.v1";
 pub const MAX_DEMO_NOTE_BYTES: usize = 4 * 1024;
+pub const MAX_IDEMPOTENCY_KEY_BYTES: usize = 256;
 
 pub struct DemoNoteExecutor {
     data_dir: std::path::PathBuf,
@@ -77,21 +78,38 @@ impl ActionExecutor for DemoNoteExecutor {
         {
             return Err("demo-note action contract rejected".into());
         }
-        let path = self.data_dir.join("effects").join("demo-note.txt");
-        std::fs::create_dir_all(path.parent().expect("demo-note has parent"))
-            .map_err(|error| error.to_string())?;
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .map_err(|error| error.to_string())?;
-        use std::io::Write;
-        file.write_all(&action.payload)
-            .and_then(|_| file.sync_all())
-            .map_err(|error| error.to_string())?;
+        // The runtime executes each idempotency key at most once, so every
+        // distinct mutation must be able to write its note. The note is replaced
+        // atomically (temporary file, fsync, rename), which also makes the
+        // re-execution after a reconciled crash window safe.
+        let directory = self.data_dir.join("effects");
+        std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+        let path = directory.join("demo-note.txt");
+        let temporary = directory.join(format!(
+            "demo-note.txt.tmp-{}-{}",
+            std::process::id(),
+            NOTE_WRITE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let write = || -> std::io::Result<()> {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)?;
+            file.write_all(&action.payload)?;
+            file.sync_all()?;
+            std::fs::rename(&temporary, &path)?;
+            std::fs::File::open(&directory)?.sync_all()
+        };
+        if let Err(error) = write() {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(error.to_string());
+        }
         Ok(action.payload.clone())
     }
 }
+
+static NOTE_WRITE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 struct AllowActionVerifier;
 
@@ -238,6 +256,20 @@ async fn request(
         return Err(ApiError::BadRequest("id and text must be non-empty".into()));
     }
 
+    // Everything that can be judged from the request alone is judged before the
+    // model run commits anything. Whether the run ends in a mutation (and so
+    // requires a key) is only known afterwards.
+    if let Some(key) = input.idempotency_key.as_deref() {
+        if key.trim().is_empty()
+            || key.len() > MAX_IDEMPOTENCY_KEY_BYTES
+            || key.chars().any(char::is_control)
+        {
+            return Err(ApiError::BadRequest(
+                "idempotency_key must be 1..=256 bytes without control characters".into(),
+            ));
+        }
+    }
+
     let mut runtime = state
         .runtime
         .lock()
@@ -264,11 +296,11 @@ async fn request(
                 "demo-note payload must be UTF-8 and at most 4 KiB".into(),
             ));
         }
-        if action.effect == Effect::Mutation && input.idempotency_key.is_none() {
-            return Err(ApiError::BadRequest(
-                "idempotency_key is required for mutations".into(),
-            ));
-        }
+        // Resolved before any session is registered, so a missing key leaves no
+        // execution session behind.
+        let key = input.idempotency_key.as_deref().ok_or_else(|| {
+            ApiError::BadRequest("idempotency_key is required for mutations".into())
+        })?;
         runtime
             .authorize_action(action)
             .map_err(ApiError::Runtime)?;
@@ -279,9 +311,6 @@ async fn request(
         let session = runtime
             .register_execution_session("http", grants, std::time::Duration::from_secs(30))
             .map_err(|error| ApiError::Effect(format!("session: {error:?}")))?;
-        let key = input.idempotency_key.as_deref().ok_or_else(|| {
-            ApiError::BadRequest("idempotency_key is required for mutations".into())
-        })?;
         let permit = runtime
             .prepare_execution_once(
                 &session,
@@ -291,16 +320,10 @@ async fn request(
                 key,
             )
             .map_err(ApiError::execution)?;
-        let before = runtime.committed_events().len();
         let output = runtime
             .execute_prepared(&session, permit)
             .map_err(ApiError::execution)?;
-        Some(effect_receipt(
-            runtime.committed_events(),
-            before,
-            key,
-            &output,
-        )?)
+        Some(effect_receipt(runtime.committed_events(), key, &output)?)
     } else {
         None
     };
@@ -366,27 +389,32 @@ impl ApiError {
 
 fn effect_receipt(
     events: &[ptr_ledger::CommittedEvent],
-    before: usize,
     key: &str,
     output: &[u8],
 ) -> Result<EffectReceipt, ApiError> {
-    let mut attempt = None;
-    let mut settlement = None;
-    for committed in events.iter().skip(before).chain(events.iter().take(before)) {
+    // One forward pass over the whole log. A key can own several attempts (a
+    // crash window that was reconciled, then a fresh attempt); the receipt is
+    // the most recent attempt that actually settled, paired with its own
+    // settlement. A pure replay appends nothing, so the same rule yields the
+    // original receipt.
+    let mut attempts = std::collections::BTreeSet::new();
+    let mut latest: Option<(u64, u64)> = None;
+    for committed in events {
         match &committed.event {
             LedgerEvent::EffectAttempted {
                 key: Some(recorded),
                 ..
-            } if recorded == key => attempt = Some(committed.index.0),
-            LedgerEvent::EffectSettled { attempt: index, .. } if attempt == Some(index.0) => {
-                settlement = Some(committed.index.0)
+            } if recorded == key => {
+                attempts.insert(committed.index.0);
+            }
+            LedgerEvent::EffectSettled { attempt: index, .. } if attempts.contains(&index.0) => {
+                latest = Some((index.0, committed.index.0));
             }
             _ => {}
         }
     }
-    let attempt = attempt.ok_or_else(|| ApiError::Internal("missing effect attempt".into()))?;
-    let settlement =
-        settlement.ok_or_else(|| ApiError::Internal("missing effect settlement".into()))?;
+    let (attempt, settlement) = latest
+        .ok_or_else(|| ApiError::Internal("missing effect attempt or settlement for key".into()))?;
     Ok(EffectReceipt {
         attempt,
         settlement,
