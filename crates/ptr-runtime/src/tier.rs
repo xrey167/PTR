@@ -257,11 +257,20 @@ impl TierJournalProjection {
                 if self.seen_events.contains(&next.event_digest) {
                     return Ok(());
                 }
+                // A detached or revoked backend takes no new work, but its replicas
+                // must still be retirable: marking one Revoked, Corrupt or Released
+                // is how the journal stops trusting a replica on a backend that is
+                // gone. Everything else (Preparing, Available, Draining) stays refused.
+                let backend_gone = matches!(
+                    backend.state,
+                    BackendLifecycleState::Detached | BackendLifecycleState::Revoked
+                );
+                let retires_replica = matches!(
+                    next.state,
+                    ReplicaState::Revoked | ReplicaState::Corrupt | ReplicaState::Released
+                );
                 if backend.tier != next.tier
-                    || matches!(
-                        backend.state,
-                        BackendLifecycleState::Detached | BackendLifecycleState::Revoked
-                    )
+                    || (backend_gone && !retires_replica)
                     || (next.state == ReplicaState::Preparing
                         && backend.state != BackendLifecycleState::Available)
                 {
