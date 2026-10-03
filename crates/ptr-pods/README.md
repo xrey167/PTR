@@ -9,11 +9,12 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `prototype`  
-**Last reviewed:** 2026-09-21  
-**Code footprint:** 20 Rust source files · 7183 nonblank source lines · 12 integration-test files · 81 test markers (`#[test]`, `#[tokio::test]`)
+**Last reviewed:** 2026-10-03  
+**Code footprint:** 20 Rust source files · 7186 nonblank source lines · 12 integration-test files · 82 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
+- Decoding an evidence output no longer sizes an allocation from the dependency or provenance count stored in the record: the vectors grow with what is read, so a forged count ends at the first missing byte as an error instead of a capacity-overflow panic
 - PodRegistry is keyed by project and id, so two projects may register the same Pod id without shadowing and no lookup path exists that takes an id alone
 - PodManifest declares the one project a Pod serves; resolution inside another project finds nothing rather than a worse match
 - PodManifest with capability, accepted/produced types, effects and protocol version

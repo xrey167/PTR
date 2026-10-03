@@ -620,13 +620,16 @@ fn decode_output(bytes: &[u8]) -> Result<PodOutput, EvidenceError> {
     };
     let dependency_count =
         usize::try_from(cursor.u64()?).map_err(|_| EvidenceError::InvalidHeader)?;
-    let mut dependencies = Vec::with_capacity(dependency_count);
+    // The count comes from the record itself, so it must not size an allocation:
+    // the vector grows with what is actually read and a forged count ends at the
+    // first missing byte.
+    let mut dependencies = Vec::new();
     for _ in 0..dependency_count {
         dependencies.push(cursor.digest()?);
     }
     let provenance_count =
         usize::try_from(cursor.u64()?).map_err(|_| EvidenceError::InvalidHeader)?;
-    let mut provenance = Vec::with_capacity(provenance_count);
+    let mut provenance = Vec::new();
     for _ in 0..provenance_count {
         let source = EvidenceId(cursor.string()?);
         let note = cursor.optional_string()?;
