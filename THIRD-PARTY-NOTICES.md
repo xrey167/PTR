@@ -14,7 +14,7 @@ notices the licences require to travel with redistributed software; deciding
 whether a particular distribution satisfies them is not something a generator
 can do.
 
-`Package-set-digest: sha256:eb00e0762b76b1187c23ebc47729edd6bd1c79c593735d860f30ed01638cc77a`
+`Package-set-digest: sha256:0d79a06828a664b8278b96ac3d136020ce68f6073953244d5908cf599392b5ed`
 
 **914 third-party packages · 459 distinct licence texts**
 
@@ -402,12 +402,12 @@ available under the same terms; PTR has made none.
 | io-uring | 0.7.15 | MIT OR Apache-2.0 | crates.io | . | [LICENSE-APACHE](#text-407), [LICENSE-MIT](#text-419) |
 | ipconfig | 0.3.4 | MIT/Apache-2.0 | crates.io | . | [LICENSE-APACHE](#text-299), [LICENSE-MIT](#text-366) |
 | ipnet | 2.12.2 | MIT OR Apache-2.0 | crates.io | ., model/burn-a0 | [LICENSE-APACHE](#text-239), [LICENSE-MIT](#text-144) |
-| iroh | 1.2.0 | MIT OR Apache-2.0 | crates.io | . | [LICENSE-BSD3](#text-221) |
-| iroh-base | 1.2.0 | MIT OR Apache-2.0 | crates.io | . | _none shipped_ |
+| iroh | 1.3.0 | MIT OR Apache-2.0 | crates.io | . | [LICENSE-BSD3](#text-221) |
+| iroh-base | 1.3.0 | MIT OR Apache-2.0 | crates.io | . | _none shipped_ |
 | iroh-dns | 1.3.0 | MIT OR Apache-2.0 | crates.io | . | _none shipped_ |
-| iroh-metrics | 1.0.1 | MIT OR Apache-2.0 | crates.io | . | [LICENSE-APACHE](#text-214), [LICENSE-MIT](#text-107) |
+| iroh-metrics | 1.0.2 | MIT OR Apache-2.0 | crates.io | . | [LICENSE-APACHE](#text-214), [LICENSE-MIT](#text-107) |
 | iroh-metrics-derive | 1.0.1 | MIT OR Apache-2.0 | crates.io | . | _none shipped_ |
-| iroh-relay | 1.2.0 | MIT OR Apache-2.0 | crates.io | . | [LICENSE-BSD3](#text-340) |
+| iroh-relay | 1.3.0 | MIT OR Apache-2.0 | crates.io | . | [LICENSE-BSD3](#text-340) |
 | itertools | 0.10.5 | MIT/Apache-2.0 | crates.io | . | [LICENSE-APACHE](#text-299), [LICENSE-MIT](#text-206) |
 | itertools | 0.12.1 | MIT OR Apache-2.0 | crates.io | . | [LICENSE-APACHE](#text-299), [LICENSE-MIT](#text-206) |
 | itertools | 0.14.0 | MIT OR Apache-2.0 | crates.io | fuzz, model/burn-a0 | [LICENSE-APACHE](#text-299), [LICENSE-MIT](#text-206) |
@@ -803,15 +803,15 @@ available under the same terms; PTR has made none.
 | tracing-subscriber | 0.3.23 | MIT | crates.io | . | [LICENSE](#text-241) |
 | triple_arena | 0.15.1 | MIT OR Apache-2.0 | crates.io | model/burn-a0 | [LICENSE-APACHE](#text-179), [LICENSE-MIT](#text-170) |
 | try-lock | 0.2.5 | MIT | crates.io | ., model/burn-a0 | [LICENSE](#text-358) |
-| turso | 0.8.0-pre.11 | MIT | crates.io | . | _none shipped_ |
-| turso_core | 0.8.0-pre.11 | MIT | crates.io | . | _none shipped_ |
-| turso_ext | 0.8.0-pre.11 | MIT | crates.io | . | _none shipped_ |
-| turso_macros | 0.8.0-pre.11 | MIT | crates.io | . | _none shipped_ |
-| turso_parser | 0.8.0-pre.11 | MIT | crates.io | . | _none shipped_ |
-| turso_sdk_kit | 0.8.0-pre.11 | MIT | crates.io | . | _none shipped_ |
-| turso_sdk_kit_macros | 0.8.0-pre.11 | MIT | crates.io | . | _none shipped_ |
-| turso_sync_engine | 0.8.0-pre.11 | MIT | crates.io | . | _none shipped_ |
-| turso_sync_sdk_kit | 0.8.0-pre.11 | MIT | crates.io | . | _none shipped_ |
+| turso | 0.8.0 | MIT | crates.io | . | _none shipped_ |
+| turso_core | 0.8.1 | MIT | crates.io | . | _none shipped_ |
+| turso_ext | 0.8.1 | MIT | crates.io | . | _none shipped_ |
+| turso_macros | 0.8.1 | MIT | crates.io | . | _none shipped_ |
+| turso_parser | 0.8.1 | MIT | crates.io | . | _none shipped_ |
+| turso_sdk_kit | 0.8.1 | MIT | crates.io | . | _none shipped_ |
+| turso_sdk_kit_macros | 0.8.1 | MIT | crates.io | . | _none shipped_ |
+| turso_sync_engine | 0.8.1 | MIT | crates.io | . | _none shipped_ |
+| turso_sync_sdk_kit | 0.8.1 | MIT | crates.io | . | _none shipped_ |
 | twox-hash | 2.1.4 | MIT | crates.io | . | [LICENSE.txt](#text-440) |
 | tynm | 0.2.0 | MIT OR Apache-2.0 | crates.io | model/burn-a0 | [LICENSE-APACHE](#text-376), [LICENSE-MIT](#text-323) |
 | type-map | 0.5.1 | MIT/Apache-2.0 | crates.io | model/burn-a0 | [LICENSE-APACHE](#text-442), [LICENSE-MIT](#text-331) |
@@ -6548,7 +6548,7 @@ DEALINGS IN THE SOFTWARE.
 
 ### <a id="text-107"></a>Text 107
 
-Carried by: iroh-metrics 1.0.1, n0-error 1.0.1, n0-watcher 1.0.0
+Carried by: iroh-metrics 1.0.2, n0-error 1.0.1, n0-watcher 1.0.0
 
 `sha256:339060c99d5c80c2742cae417f765980afe6b0149a78f959bbf2a79f19ab3af5`
 
@@ -13323,7 +13323,7 @@ DEALINGS IN THE SOFTWARE.
 
 ### <a id="text-214"></a>Text 214
 
-Carried by: iroh-metrics 1.0.1, n0-error 1.0.1, n0-watcher 1.0.0
+Carried by: iroh-metrics 1.0.2, n0-error 1.0.1, n0-watcher 1.0.0
 
 `sha256:7953ad8cebf4e01199521a5faa221ef59bec5cee0a9856b179590613a8560cbc`
 
@@ -13903,7 +13903,7 @@ DEALINGS IN THE SOFTWARE.
 
 ### <a id="text-221"></a>Text 221
 
-Carried by: iroh 1.2.0
+Carried by: iroh 1.3.0
 
 `sha256:7c6c032bf8c84fb4cd99784965a39be9e836fb7f244b3cf40c42faf4b211c10a`
 
@@ -22988,7 +22988,7 @@ SOFTWARE.
 
 ### <a id="text-340"></a>Text 340
 
-Carried by: iroh-relay 1.2.0
+Carried by: iroh-relay 1.3.0
 
 `sha256:bcaa9acadee6c20991d4b5eb56e226191411a3f6ceb92587b272f2ef0221ed71`
 

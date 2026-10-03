@@ -13,7 +13,7 @@ implemented = [
   "Monotonic materialization with duplicate/out-of-order/gap detection",
   "All current LedgerEvent variants have deterministic key/value projection semantics",
   "Effect records project onto the attempt's own commit index, so a settlement overwrites the attempting record's state key instead of adding a second row a reader would have to reconcile",
-  "Feature-gated Turso 0.8.0-pre.11 backend persists atomic projection updates and last_applied state",
+  "Feature-gated Turso 0.8.0 backend persists atomic projection updates and last_applied state",
   "classify_next is the one function every backend (reference, Turso, PostgreSQL) uses to decide duplicate, out-of-order, gap or next",
   "projection_entries is the one event-to-entries mapping, shared by the reference, Turso and ptr-pg so no backend can project an event differently",
 ]
