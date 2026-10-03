@@ -97,13 +97,28 @@ impl RawEvent {
         Sha256::digest(content).into()
     }
 
-    pub fn validate_digest(&self) -> bool {
-        self.digest == Self::digest_for(&self.content)
+    pub fn validate_digest(&self) -> Result<(), RawEventError> {
+        if self.digest == Self::digest_for(&self.content) {
+            Ok(())
+        } else {
+            Err(RawEventError::DigestMismatch)
+        }
     }
 
-    pub fn validate_tool_pair(&self) -> bool {
-        self.tool_result.is_none() || self.tool_call.is_some()
+    pub fn validate_tool_pair(&self) -> Result<(), RawEventError> {
+        if self.tool_result.is_none() || self.tool_call.is_some() {
+            Ok(())
+        } else {
+            Err(RawEventError::ToolResultWithoutCall)
+        }
     }
+}
+
+/// Why a raw event failed its own consistency checks.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RawEventError {
+    DigestMismatch,
+    ToolResultWithoutCall,
 }
 
 #[derive(Clone, Debug, PartialEq)]

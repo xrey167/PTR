@@ -60,9 +60,10 @@ pub struct DeterministicTokenizer;
 
 impl SemanticTokenizer for DeterministicTokenizer {
     fn tokenize(&self, event: &RawEvent) -> Result<TokenizedEvent, IngestionError> {
-        if !event.validate_digest() || !event.validate_tool_pair() {
-            return Err(IngestionError::InvalidEvent);
-        }
+        event
+            .validate_digest()
+            .and_then(|()| event.validate_tool_pair())
+            .map_err(|_| IngestionError::InvalidEvent)?;
         let text = std::str::from_utf8(&event.content).map_err(|_| IngestionError::InvalidEvent)?;
         Ok(TokenizedEvent {
             event: event.clone(),
