@@ -66,6 +66,8 @@ sha2 = "=0.11.0"
 ed25519-dalek = "=3.0.0"
 aes-gcm-siv = "0.11"
 zeroize = "1"
+opendal = { version = "=0.59.3", default-features = false }
+windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem"] }
 
 # Compatibility patches: original archives and changes are recorded in vendor/.
 [patch.crates-io]

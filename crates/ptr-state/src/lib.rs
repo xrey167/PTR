@@ -255,7 +255,10 @@ pub fn projection_entries(committed: &CommittedEvent) -> Vec<(String, String)> {
         | LedgerEvent::PodHypothesisCommitted { .. }
         | LedgerEvent::PolicyBundleActivated { .. }
         | LedgerEvent::PolicyBundleRevoked { .. }
-        | LedgerEvent::SessionRevoked { .. } => Vec::new(),
+        | LedgerEvent::SessionRevoked { .. }
+        | LedgerEvent::TierBackendLifecycle { .. }
+        | LedgerEvent::TierObjectCommitted { .. }
+        | LedgerEvent::TierReplicaLifecycle { .. } => Vec::new(),
     }
 }
 

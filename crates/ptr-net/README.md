@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-22  
-**Code footprint:** 2 Rust source files · 305 nonblank source lines · 3 integration-test files · 7 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 4 Rust source files · 1185 nonblank source lines · 5 integration-test files · 19 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -58,8 +58,6 @@
 - [ADR-0009-consensus-ledger-state-separation.md](../../research/decisions/ADR-0009-consensus-ledger-state-separation.md)
 
 ### Current automated checks
-
-- `IrohSession` reuses one authenticated connection, multiplexes bounded bidirectional streams and rejects an invalid in-flight limit
 
 - Iroh local direct request/response roundtrip verifies authenticated peer identity and ALPN routing
 - an address is locatable only under the id it carries, re-recording returns what it replaced, a forgotten peer is refused from the next lookup, and a truthful address from the book reaches its peer as the control

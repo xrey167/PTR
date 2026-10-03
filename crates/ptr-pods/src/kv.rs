@@ -1,7 +1,7 @@
 use ptr_types::{AdapterVersion, DeviceId, ModelVersion};
 use sha2::{Digest, Sha256};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum KvTensorDType {
     F32,
     Fp8E4M3,
@@ -51,6 +51,7 @@ pub struct KvTensorSchema {
     pub device: DeviceId,
     pub layer_count: usize,
     pub attention_heads: usize,
+    pub key_value_heads: usize,
     pub head_dim: usize,
     pub batch_size: usize,
     pub dtype: KvTensorDType,
@@ -172,6 +173,10 @@ pub enum KvBackendError {
     SnapshotDigestMismatch,
     SnapshotSchemaMismatch,
     InvalidTruncation,
+    OutOfMemory,
+    InvalidPageState,
+    PrefixMismatch,
+    StaleLease,
 }
 
 pub trait KvTensorBackend: Send + Sync {
@@ -201,6 +206,10 @@ pub trait KvTensorBackend: Send + Sync {
     ) -> Result<Self::Cache, KvBackendError>;
 
     fn release(&self, cache: Self::Cache) -> Result<(), KvBackendError>;
+
+    fn revoke(&self, _cache: &mut Self::Cache) -> Result<(), KvBackendError> {
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -221,8 +230,12 @@ impl InMemoryKvTensorBackend {
     pub(crate) fn validate_schema(schema: &KvTensorSchema) -> Result<(), KvBackendError> {
         if schema.layer_count == 0
             || schema.attention_heads == 0
+            || schema.key_value_heads == 0
             || schema.head_dim == 0
             || schema.batch_size == 0
+            || !schema
+                .attention_heads
+                .is_multiple_of(schema.key_value_heads)
         {
             return Err(KvBackendError::InvalidSchema(
                 "zero tensor dimension".into(),
@@ -242,7 +255,7 @@ impl InMemoryKvTensorBackend {
         if tensor.layer != expected_layer {
             return Err(KvBackendError::InvalidLayer(tensor.layer));
         }
-        let expected_width = schema.attention_heads * schema.head_dim;
+        let expected_width = schema.key_value_heads * schema.head_dim;
         if tensor.shape.len() != 2
             || tensor.shape[1] != expected_width
             || tensor.shape[0] == 0
@@ -254,6 +267,14 @@ impl InMemoryKvTensorBackend {
     }
 
     pub(crate) fn digest(snapshot: &KvTensorSnapshot) -> [u8; 32] {
+        Self::digest_versioned(snapshot, true)
+    }
+
+    pub(crate) fn legacy_v1_digest(snapshot: &KvTensorSnapshot) -> [u8; 32] {
+        Self::digest_versioned(snapshot, false)
+    }
+
+    fn digest_versioned(snapshot: &KvTensorSnapshot, bind_key_value_heads: bool) -> [u8; 32] {
         let mut bytes = Vec::new();
         for value in [
             &snapshot.schema.model.0,
@@ -298,6 +319,9 @@ impl InMemoryKvTensorBackend {
         }
         bytes.extend_from_slice(&(snapshot.schema.layer_count as u64).to_le_bytes());
         bytes.extend_from_slice(&(snapshot.schema.attention_heads as u64).to_le_bytes());
+        if bind_key_value_heads {
+            bytes.extend_from_slice(&(snapshot.schema.key_value_heads as u64).to_le_bytes());
+        }
         bytes.extend_from_slice(&(snapshot.schema.head_dim as u64).to_le_bytes());
         bytes.extend_from_slice(&(snapshot.schema.batch_size as u64).to_le_bytes());
         bytes.extend_from_slice(&(snapshot.capacity_tokens as u64).to_le_bytes());
@@ -397,7 +421,7 @@ impl KvTensorBackend for InMemoryKvTensorBackend {
         if new_length > cache.sequence_length {
             return Err(KvBackendError::InvalidTruncation);
         }
-        let width = cache.schema.attention_heads * cache.schema.head_dim;
+        let width = cache.schema.key_value_heads * cache.schema.head_dim;
         for layer in &mut cache.layers {
             layer.keys.values.truncate(new_length * width);
             layer.values.values.truncate(new_length * width);

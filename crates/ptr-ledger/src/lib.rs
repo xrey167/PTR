@@ -158,6 +158,32 @@ pub enum LedgerEvent {
         session_id: SessionId,
         reason: String,
     },
+    /// Lifecycle of a configured storage-tier backend. Tier and state use
+    /// stable protocol codes owned by ptr-storage/ptr-runtime respectively.
+    TierBackendLifecycle {
+        backend_id: String,
+        tier: u8,
+        state: u8,
+        revision: Revision,
+        event_digest: [u8; 32],
+    },
+    /// Immutable, canonical tier-object manifest committed by the runtime.
+    TierObjectCommitted {
+        root_digest: [u8; 32],
+        generation: Generation,
+        revision: Revision,
+        manifest: Vec<u8>,
+    },
+    /// Lifecycle of one verified replica of a committed tier object.
+    TierReplicaLifecycle {
+        root_digest: [u8; 32],
+        backend_id: String,
+        tier: u8,
+        state: u8,
+        generation: Generation,
+        revision: Revision,
+        event_digest: [u8; 32],
+    },
     /// Opaque, canonical Pod evidence. ptr-pods owns the schema and replay
     /// validation; the ledger owns ordering, durability and record integrity.
     PodEvidenceCommitted {
@@ -696,6 +722,50 @@ fn encode_event(event: &LedgerEvent) -> Vec<u8> {
             put_string(&mut out, &session_id.0);
             put_string(&mut out, reason);
         }
+        LedgerEvent::TierBackendLifecycle {
+            backend_id,
+            tier,
+            state,
+            revision,
+            event_digest,
+        } => {
+            out.push(24);
+            put_string(&mut out, backend_id);
+            out.push(*tier);
+            out.push(*state);
+            put_u64(&mut out, revision.0);
+            out.extend_from_slice(event_digest);
+        }
+        LedgerEvent::TierObjectCommitted {
+            root_digest,
+            generation,
+            revision,
+            manifest,
+        } => {
+            out.push(25);
+            out.extend_from_slice(root_digest);
+            put_u64(&mut out, generation.0);
+            put_u64(&mut out, revision.0);
+            put_bytes(&mut out, manifest);
+        }
+        LedgerEvent::TierReplicaLifecycle {
+            root_digest,
+            backend_id,
+            tier,
+            state,
+            generation,
+            revision,
+            event_digest,
+        } => {
+            out.push(26);
+            out.extend_from_slice(root_digest);
+            put_string(&mut out, backend_id);
+            out.push(*tier);
+            out.push(*state);
+            put_u64(&mut out, generation.0);
+            put_u64(&mut out, revision.0);
+            out.extend_from_slice(event_digest);
+        }
     }
     out
 }
@@ -921,6 +991,28 @@ fn decode_event(payload: &[u8]) -> io::Result<LedgerEvent> {
         23 => LedgerEvent::SessionRevoked {
             session_id: SessionId(cursor.string()?),
             reason: cursor.string()?,
+        },
+        24 => LedgerEvent::TierBackendLifecycle {
+            backend_id: cursor.string()?,
+            tier: cursor.u8()?,
+            state: cursor.u8()?,
+            revision: Revision(cursor.u64()?),
+            event_digest: cursor.digest()?,
+        },
+        25 => LedgerEvent::TierObjectCommitted {
+            root_digest: cursor.digest()?,
+            generation: Generation(cursor.u64()?),
+            revision: Revision(cursor.u64()?),
+            manifest: cursor.bytes()?.to_vec(),
+        },
+        26 => LedgerEvent::TierReplicaLifecycle {
+            root_digest: cursor.digest()?,
+            backend_id: cursor.string()?,
+            tier: cursor.u8()?,
+            state: cursor.u8()?,
+            generation: Generation(cursor.u64()?),
+            revision: Revision(cursor.u64()?),
+            event_digest: cursor.digest()?,
         },
         other => {
             return Err(io::Error::new(

@@ -32,6 +32,7 @@ fn schema(device: &str) -> KvTensorSchema {
         device: DeviceId::from(device),
         layer_count: 1,
         attention_heads: 1,
+        key_value_heads: 1,
         head_dim: 2,
         batch_size: 1,
         dtype: KvTensorDType::F32,

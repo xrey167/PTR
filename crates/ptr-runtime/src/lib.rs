@@ -17,6 +17,7 @@ pub mod sandbox;
 pub mod scopes;
 pub mod semantic;
 pub mod tensor_kv;
+pub mod tier;
 
 pub use admission::{AdmissionError, AdmissionGrant, IdentityAdmissionController};
 pub use directory::{InMemoryPodDirectory, PodDirectory};
@@ -57,7 +58,18 @@ pub use scopes::{
     CleanupError, ExecutionScope, ScopeCleanupCoordinator, ScopeError, ScopeEvent, ScopeEventKind,
     ScopeRegistry, ScopeState,
 };
-pub use tensor_kv::{ManagedKvHandle, ManagedKvMetadata, ManagedKvRegistry, TensorKvError};
+pub use tensor_kv::{
+    ManagedKvHandle, ManagedKvMetadata, ManagedKvPageContext, ManagedKvRegistry,
+    ManagedOnlineKvSnapshot, TensorKvError,
+};
+pub use tier::{
+    backend_lifecycle_digest, replica_lifecycle_digest, ActiveWriteBinding, AdmittedTierObject,
+    BackendLifecycleState, BudgetedReplicaPolicy, DeterministicLruPolicy, ExplicitTierPolicy,
+    JournaledBackend, JournaledReplica, LookaheadPrefetchPolicy, PrefetchOutcome, ReplicaState,
+    ResidencyRecord, TierJournalProjection, TierPin, TierPlacementPolicy, TierPlan,
+    TierPlanningContext, TierPolicyError, TierProjectionError, TierReplica,
+    TierResidencyController, TierRuntimeError, TierTransferAuthorization, TierTransferReceipt,
+};
 
 /// A complete, runtime-bound request to admit one typed output produced by a
 /// Pod. The payload itself remains owned by the Pod boundary; this request
@@ -499,6 +511,7 @@ pub struct PtrRuntime {
     policy_authority_ready: bool,
     revoked_sessions: BTreeSet<ptr_types::SessionId>,
     hypotheses: BTreeMap<String, PodHypothesis>,
+    tier_journal: TierJournalProjection,
 }
 
 impl PtrRuntime {
@@ -547,6 +560,7 @@ impl PtrRuntime {
             policy_authority_ready: false,
             revoked_sessions: BTreeSet::new(),
             hypotheses: BTreeMap::new(),
+            tier_journal: TierJournalProjection::default(),
         })
     }
 
@@ -597,6 +611,10 @@ impl PtrRuntime {
 
     pub fn scopes(&self) -> &ScopeRegistry {
         &self.scopes
+    }
+
+    pub fn tier_journal(&self) -> &TierJournalProjection {
+        &self.tier_journal
     }
 
     pub fn hypothesis(&self, branch_id: &str) -> Option<&PodHypothesis> {
@@ -1455,6 +1473,235 @@ impl PtrRuntime {
         self.append_prepared(event, semantic)
     }
 
+    pub fn commit_tier_backend_lifecycle(
+        &mut self,
+        backend: ptr_storage::TierBackendId,
+        tier: ptr_storage::StorageTier,
+        state: BackendLifecycleState,
+        revision: Revision,
+    ) -> Result<CommitIndex, RuntimeError> {
+        let event_digest = backend_lifecycle_digest(&backend, tier, state, revision);
+        self.commit(LedgerEvent::TierBackendLifecycle {
+            backend_id: backend.0,
+            tier: tier.code(),
+            state: state.code(),
+            revision,
+            event_digest,
+        })
+    }
+
+    pub fn commit_tier_object(
+        &mut self,
+        object: &ptr_storage::TierObjectManifest,
+    ) -> Result<CommitIndex, RuntimeError> {
+        let manifest = object.encode_canonical().map_err(|error| {
+            RuntimeError::InvalidConfig(format!("invalid tier object: {error:?}"))
+        })?;
+        self.commit(LedgerEvent::TierObjectCommitted {
+            root_digest: object.root_digest,
+            generation: object.generation,
+            revision: object.revision,
+            manifest,
+        })
+    }
+
+    pub fn commit_tier_replica_lifecycle(
+        &mut self,
+        object: ptr_types::Digest,
+        backend: ptr_storage::TierBackendId,
+        tier: ptr_storage::StorageTier,
+        state: ReplicaState,
+        generation: Generation,
+        revision: Revision,
+    ) -> Result<CommitIndex, RuntimeError> {
+        let event_digest =
+            replica_lifecycle_digest(object, &backend, tier, state, generation, revision);
+        self.commit(LedgerEvent::TierReplicaLifecycle {
+            root_digest: object,
+            backend_id: backend.0,
+            tier: tier.code(),
+            state: state.code(),
+            generation,
+            revision,
+            event_digest,
+        })
+    }
+
+    /// Attach one physical tier backend while recording every durable
+    /// lifecycle transition in the authoritative runtime ledger.
+    pub async fn attach_tier_backend_journaled(
+        &mut self,
+        controller: &TierResidencyController,
+        backend: Arc<dyn ptr_storage::TierBackend>,
+        first_revision: Revision,
+    ) -> Result<(), RuntimeError> {
+        let id = backend.identity();
+        let tier = backend.capabilities().tier;
+        let health_revision = Revision(
+            first_revision
+                .0
+                .checked_add(1)
+                .ok_or_else(|| RuntimeError::InvalidConfig("tier revision exhausted".into()))?,
+        );
+        let available_revision = Revision(
+            first_revision
+                .0
+                .checked_add(2)
+                .ok_or_else(|| RuntimeError::InvalidConfig("tier revision exhausted".into()))?,
+        );
+        self.commit_tier_backend_lifecycle(
+            id.clone(),
+            tier,
+            BackendLifecycleState::Configured,
+            first_revision,
+        )?;
+        if let Err(error) = controller.attach_backend(backend).await {
+            self.commit_tier_backend_lifecycle(
+                id,
+                tier,
+                BackendLifecycleState::Revoked,
+                health_revision,
+            )?;
+            return Err(RuntimeError::InvalidConfig(format!(
+                "tier backend attach failed: {error:?}"
+            )));
+        }
+        self.commit_tier_backend_lifecycle(
+            id.clone(),
+            tier,
+            BackendLifecycleState::HealthChecked,
+            health_revision,
+        )?;
+        self.commit_tier_backend_lifecycle(
+            id,
+            tier,
+            BackendLifecycleState::Available,
+            available_revision,
+        )?;
+        Ok(())
+    }
+
+    /// Register an already materialized source replica journal-first. A crash
+    /// after `Preparing` leaves an explicit recovery record instead of a
+    /// silently authoritative replica.
+    pub async fn register_tier_object_journaled(
+        &mut self,
+        controller: &TierResidencyController,
+        object: ptr_storage::TierObjectManifest,
+        backend: ptr_storage::TierBackendId,
+        preparing_revision: Revision,
+    ) -> Result<(), RuntimeError> {
+        let backend_projection = self
+            .tier_journal
+            .backend(&backend)
+            .ok_or_else(|| RuntimeError::InvalidConfig("tier backend is not journaled".into()))?;
+        if backend_projection.state != BackendLifecycleState::Available {
+            return Err(RuntimeError::InvalidConfig(
+                "tier backend is not durably available".into(),
+            ));
+        }
+        let tier = controller.backend_tier(&backend).map_err(|error| {
+            RuntimeError::InvalidConfig(format!("tier backend unavailable: {error:?}"))
+        })?;
+        if backend_projection.tier != tier {
+            return Err(RuntimeError::InvalidConfig(
+                "tier backend projection mismatch".into(),
+            ));
+        }
+        let available_revision = Revision(
+            preparing_revision
+                .0
+                .checked_add(1)
+                .ok_or_else(|| RuntimeError::InvalidConfig("tier revision exhausted".into()))?,
+        );
+        self.commit_tier_object(&object)?;
+        self.commit_tier_replica_lifecycle(
+            object.root_digest,
+            backend.clone(),
+            tier,
+            ReplicaState::Preparing,
+            object.generation,
+            preparing_revision,
+        )?;
+        controller
+            .register_object(object.clone(), backend.clone())
+            .await
+            .map_err(|error| {
+                RuntimeError::InvalidConfig(format!("tier object registration failed: {error:?}"))
+            })?;
+        self.commit_tier_replica_lifecycle(
+            object.root_digest,
+            backend,
+            tier,
+            ReplicaState::Available,
+            object.generation,
+            available_revision,
+        )?;
+        Ok(())
+    }
+
+    /// Transfer a replica through the physical controller and publish it only
+    /// through matching `Preparing -> Available` ledger records.
+    pub async fn transfer_tier_replica_journaled(
+        &mut self,
+        controller: &TierResidencyController,
+        object: ptr_types::Digest,
+        source: &ptr_storage::TierBackendId,
+        destination: &ptr_storage::TierBackendId,
+        authorization: Option<TierTransferAuthorization>,
+        preparing_revision: Revision,
+    ) -> Result<TierTransferReceipt, RuntimeError> {
+        let record = controller.residency(&object).map_err(|error| {
+            RuntimeError::InvalidConfig(format!("tier object unavailable: {error:?}"))
+        })?;
+        let tier = controller.backend_tier(destination).map_err(|error| {
+            RuntimeError::InvalidConfig(format!("tier destination unavailable: {error:?}"))
+        })?;
+        let terminal_revision = Revision(
+            preparing_revision
+                .0
+                .checked_add(1)
+                .ok_or_else(|| RuntimeError::InvalidConfig("tier revision exhausted".into()))?,
+        );
+        self.commit_tier_replica_lifecycle(
+            object,
+            destination.clone(),
+            tier,
+            ReplicaState::Preparing,
+            record.object.generation,
+            preparing_revision,
+        )?;
+        match controller
+            .transfer(object, source, destination, authorization)
+            .await
+        {
+            Ok(receipt) => {
+                self.commit_tier_replica_lifecycle(
+                    object,
+                    destination.clone(),
+                    tier,
+                    ReplicaState::Available,
+                    record.object.generation,
+                    terminal_revision,
+                )?;
+                Ok(receipt)
+            }
+            Err(error) => {
+                self.commit_tier_replica_lifecycle(
+                    object,
+                    destination.clone(),
+                    tier,
+                    ReplicaState::Corrupt,
+                    record.object.generation,
+                    terminal_revision,
+                )?;
+                Err(RuntimeError::InvalidConfig(format!(
+                    "tier transfer failed: {error:?}"
+                )))
+            }
+        }
+    }
+
     /// Admit one complete typed Pod output before routing it to any durable
     /// semantic, branch, or effect boundary. The admission record is written
     /// first; a later semantic promotion is a separate authoritative event.
@@ -2294,6 +2541,14 @@ impl PtrRuntime {
                 }
                 Ok(())
             }
+            LedgerEvent::TierBackendLifecycle { .. }
+            | LedgerEvent::TierObjectCommitted { .. }
+            | LedgerEvent::TierReplicaLifecycle { .. } => {
+                let mut projection = self.tier_journal.clone();
+                projection.apply(event).map_err(|error| {
+                    RuntimeError::InvalidConfig(format!("invalid tier journal event: {error:?}"))
+                })
+            }
             // Revocation tombstones are monotone and may precede activation.
             // Verifier/snapshot records do not confer permissions or load state.
             LedgerEvent::SemanticDeltaCommitted { .. }
@@ -2405,6 +2660,13 @@ impl PtrRuntime {
             LedgerEvent::MeshTunnelLifecycle(_)
             | LedgerEvent::PodEvidenceCommitted { .. }
             | LedgerEvent::PodOutputAdmitted { .. } => {}
+            LedgerEvent::TierBackendLifecycle { .. }
+            | LedgerEvent::TierObjectCommitted { .. }
+            | LedgerEvent::TierReplicaLifecycle { .. } => {
+                self.tier_journal.apply(&committed.event).map_err(|error| {
+                    RuntimeError::InvalidConfig(format!("invalid committed tier event: {error:?}"))
+                })?;
+            }
             LedgerEvent::PodHypothesisCommitted {
                 branch_id,
                 pod_id,

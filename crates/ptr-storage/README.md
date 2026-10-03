@@ -8,29 +8,33 @@
 
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
-**Maturity:** `scaffold`  
-**Last reviewed:** 2026-09-18  
-**Code footprint:** 1 Rust source files · 23 nonblank source lines · 1 integration-test files · 1 test markers (`#[test]`, `#[tokio::test]`)
+**Maturity:** `prototype`
+**Last reviewed:** 2026-10-03
+**Code footprint:** 4 Rust source files · 1521 nonblank source lines · 5 integration-test files · 15 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
 - ArtifactRef with stable ArtifactId plus location list
 - ObjectStore trait
 - In-memory object-store reference implementation
+- Typed multi-tier manifests with canonical chunk and root digests
+- Immutable CPU and atomic filesystem tier backends with verify-on-read
+- Optional OpenDAL memory, filesystem and S3-capable adapter
+- AEAD-bound durable KV chunks with authenticated cross-generation anchors
+- Crash-safe protected-state replacement with unique writer temp files
 
 ### Missing for the target architecture
 
-- BLAKE3 content-addressed identity generation
-- OpenDAL adapter and production backends
 - Streaming large-object APIs
 - Policy-gated private/secret artifact access
-- Integrity checks and immutable raw-evidence retention
+- Production S3 integration and chaos tests
+- GPU-resident page allocator and remote transfer engine
 
 ### Next milestones
 
-- Implement content hashing and verify-on-read
-- Add OpenDAL adapter behind ObjectStore
-- Benchmark local filesystem/object-store backends
+- Benchmark CPU, NVMe and OpenDAL filesystem transfer paths
+- Add conditional-create and multipart capability negotiation
+- Integrate paged CUDA storage and distributed transfer metrics
 
 ### Linked experiments
 
@@ -46,6 +50,7 @@
 
 ### Current automated checks
 
+- ptr-storage tier, protected-tier and OpenDAL contract tests
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->

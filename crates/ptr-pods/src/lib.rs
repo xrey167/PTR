@@ -6,6 +6,7 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 mod adapter;
+mod attention;
 mod cache;
 #[cfg(feature = "candle-cuda")]
 mod candle;
@@ -16,15 +17,25 @@ mod manifest;
 mod native;
 mod neural;
 mod output;
+mod paged_kv;
 mod protocol;
+mod qwen;
 mod runtime;
 mod semantic;
+mod tier_storage;
 mod transport;
 mod turns;
 pub use adapter::{AdapterError, NeuralPodAdapter};
+pub use attention::{
+    CausalAttentionInput, CausalAttentionOutput, CausalAttentionWeights, KvContinuationExecutor,
+    ReferenceCausalAttentionExecutor,
+};
 pub use cache::{PodCache, PodCacheKey};
 #[cfg(feature = "candle-cuda")]
-pub use candle::{CandleDenseExecutor, CandleExecutorError, CandleKvTensorBackend};
+pub use candle::{
+    CandleDenseExecutor, CandleExecutorError, CandleGpuTierBackend, CandleKvCache,
+    CandleKvSnapshotLease, CandleKvTensorBackend, CandlePagedKvBackend, CandlePagedKvCache,
+};
 pub use evidence::{
     Ed25519EvidenceSigner, Ed25519EvidenceVerifier, EvidenceError, EvidenceSigner,
     EvidenceVerifier, PodEvidenceBundle, ReplayedEvidence,
@@ -46,10 +57,19 @@ pub use neural::{
     PodLifecycle, ReferenceNeuralExecutor, ResourceRequirements, TensorContract, TensorDType,
 };
 pub use output::{OutputError, PodOutput, PodOutputKind};
+pub use paged_kv::{
+    InMemoryKvSnapshotLease, InMemoryPagedKvBackend, InMemoryPagedKvCache, KvPageBinding,
+    KvPageEntry, KvPageId, KvPageMetrics, KvPageSize, KvPageSnapshot, KvPageState, KvPagedSnapshot,
+    KvPrefixKey, KvRuntimeLeaseBinding, KvSharedPrefix, PagedKvTensorBackend,
+};
 pub use protocol::{
     ConnectionScope, DeliveryMode, EgressPolicy, MessagePattern, NativeProtocolExecutor,
     NativeProtocolRequest, NativeProtocolResponse, NetworkEndpoint, PodLink, PodLinkError,
     ProtocolBinding, ProtocolError, ProtocolProfile,
+};
+pub use qwen::{
+    Qwen2Activation, Qwen2DecoderInput, Qwen2DecoderOutput, Qwen2DecoderWeights, Qwen2LayerConfig,
+    Qwen2LinearWeights, Qwen2PagedDecoder, Qwen2RopeScaling,
 };
 pub use runtime::{
     ArtifactCatalog, ArtifactError, ExecutorError, ExecutorFactory, HealthStatus,
@@ -59,6 +79,10 @@ pub use runtime::{
 pub use semantic::{
     ManifestError, ModelVariant, PodKind, PodResourceProfile, PodSemanticManifest,
     SemanticPodLifecycle,
+};
+pub use tier_storage::{
+    ArtifactTierAdapter, ArtifactTierBinding, KvTierAdapter, KvTierBinding, ModelWeightTierAdapter,
+    ModelWeightTierBinding, PagedKvTierAdapter, PodTierError,
 };
 pub use transport::{PodWireRequest, PodWireResponse, TransportError};
 pub use turns::{DuplexSession, PodTurnEvent, PodTurnKind, TurnError};

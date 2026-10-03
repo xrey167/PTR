@@ -5,9 +5,26 @@ use aes_gcm_siv::{
 use ptr_types::{ArtifactId, Digest, Generation, KeyId, Revision};
 use sha2::{Digest as ShaDigest, Sha256};
 use std::collections::BTreeMap;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use zeroize::Zeroizing;
+
+#[cfg(feature = "tier-opendal")]
+mod opendal_tier;
+mod tier;
+mod tier_protected;
+#[cfg(feature = "tier-opendal")]
+pub use opendal_tier::OpenDalTierBackend;
+pub use tier::{
+    digest as tier_digest, ChunkDescriptor, ChunkReceipt, CpuTierBackend, FileTierBackend,
+    PreparedTierObject, StorageTier, TierBackend, TierBackendId, TierCapabilities, TierError,
+    TierFuture, TierHealth, TierIntegrityReport, TierObjectDomain, TierObjectManifest,
+};
+pub use tier_protected::{
+    open_protected_tier_chunk, seal_protected_tier_chunk, ProtectedTierChunk,
+};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum StateDomain {
@@ -36,6 +53,23 @@ pub struct GenerationAnchor {
     pub generation: Generation,
     pub previous_digest: Option<Digest>,
     pub anchor_digest: Digest,
+}
+
+impl GenerationAnchor {
+    pub fn new(
+        logical_id: impl Into<String>,
+        generation: Generation,
+        previous_digest: Option<Digest>,
+    ) -> Self {
+        let mut anchor = Self {
+            logical_id: logical_id.into(),
+            generation,
+            previous_digest,
+            anchor_digest: [0; 32],
+        };
+        anchor.anchor_digest = anchor_digest(&anchor);
+        anchor
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -303,17 +337,70 @@ impl<K: KeyProvider> FileProtectedStateStore<K> {
     }
 
     fn persist(&self) -> Result<(), ProtectedStateError> {
+        static NEXT_TEMP: AtomicU64 = AtomicU64::new(1);
         let bytes = encode_store(&self.inner);
-        let temp = self.path.with_extension("ptr.tmp");
-        fs::write(&temp, bytes).map_err(|_| ProtectedStateError::Io)?;
-        match fs::rename(&temp, &self.path) {
-            Ok(()) => Ok(()),
-            Err(_) if self.path.exists() => {
-                fs::remove_file(&self.path).map_err(|_| ProtectedStateError::Io)?;
-                fs::rename(&temp, &self.path).map_err(|_| ProtectedStateError::Io)
-            }
-            Err(_) => Err(ProtectedStateError::Io),
+        let suffix = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
+        let file_name = self
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or(ProtectedStateError::Io)?;
+        let temp = self.path.with_file_name(format!(
+            ".{file_name}.{}.{}.ptr.tmp",
+            std::process::id(),
+            suffix
+        ));
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)
+            .map_err(|_| ProtectedStateError::Io)?;
+        if file.write_all(&bytes).is_err() || file.sync_all().is_err() {
+            let _ = fs::remove_file(&temp);
+            return Err(ProtectedStateError::Io);
         }
+        drop(file);
+        if atomic_replace(&temp, &self.path).is_err() {
+            let _ = fs::remove_file(&temp);
+            return Err(ProtectedStateError::Io);
+        }
+        Ok(())
+    }
+}
+
+#[cfg(not(windows))]
+fn atomic_replace(temp: &Path, destination: &Path) -> std::io::Result<()> {
+    fs::rename(temp, destination)
+}
+
+#[cfg(windows)]
+fn atomic_replace(temp: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let source = temp
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let target = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let result = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            target.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if result == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
     }
 }
 
@@ -338,10 +425,11 @@ impl<K: KeyProvider> ProtectedStateStore for FileProtectedStateStore<K> {
     }
 }
 
-const STORE_MAGIC: &[u8; 8] = b"PTRPST01";
+const STORE_MAGIC_V1: &[u8; 8] = b"PTRPST01";
+const STORE_MAGIC_V2: &[u8; 8] = b"PTRPST02";
 
 fn encode_store<K: KeyProvider>(store: &InMemoryProtectedStateStore<K>) -> Vec<u8> {
-    let mut out = STORE_MAGIC.to_vec();
+    let mut out = STORE_MAGIC_V2.to_vec();
     put_u32(&mut out, store.records.len() as u32);
     for sealed in store.records.values() {
         put_domain(&mut out, sealed.handle.domain);
@@ -374,7 +462,8 @@ fn decode_store<K: KeyProvider>(
     keys: K,
 ) -> Result<InMemoryProtectedStateStore<K>, ProtectedStateError> {
     let mut cursor = Cursor { bytes, at: 0 };
-    if cursor.take(8)? != STORE_MAGIC {
+    let magic = cursor.take(8)?;
+    if magic != STORE_MAGIC_V1 && magic != STORE_MAGIC_V2 {
         return Err(ProtectedStateError::Io);
     }
     let count = cursor.u32()? as usize;
@@ -385,7 +474,7 @@ fn decode_store<K: KeyProvider>(
         let generation = Generation(cursor.u64()?);
         let revision = Revision(cursor.u64()?);
         let ciphertext_digest = cursor.digest()?;
-        let anchor_digest = cursor.digest()?;
+        let handle_anchor_digest = cursor.digest()?;
         let key_id = KeyId(cursor.text()?);
         let anchor_logical_id = cursor.text()?;
         let anchor_generation = Generation(cursor.u64()?);
@@ -407,7 +496,7 @@ fn decode_store<K: KeyProvider>(
                 generation,
                 revision,
                 ciphertext_digest,
-                anchor_digest,
+                anchor_digest: handle_anchor_digest,
                 key_id,
             },
             anchor,
@@ -416,6 +505,15 @@ fn decode_store<K: KeyProvider>(
             ciphertext: cursor.bytes_vec()?,
             plaintext_digest: cursor.digest()?,
         };
+        if sealed.anchor.anchor_digest != anchor_digest(&sealed.anchor)
+            || sealed.handle.anchor_digest != sealed.anchor.anchor_digest
+            || sealed.handle.logical_id != sealed.anchor.logical_id
+            || sealed.handle.generation != sealed.anchor.generation
+            || digest(&sealed.ciphertext) != sealed.handle.ciphertext_digest
+            || !valid_stored_aad(&sealed)
+        {
+            return Err(ProtectedStateError::AnchorMismatch);
+        }
         store
             .anchors
             .insert((domain, logical_id), sealed.anchor.clone());
@@ -515,16 +613,90 @@ fn digest(bytes: &[u8]) -> Digest {
 }
 
 fn aad(record: &ProtectedRecord) -> Vec<u8> {
+    aad_fields(
+        record.domain,
+        &record.logical_id,
+        record.generation,
+        record.revision,
+        &record.key_id,
+        record.plaintext_digest,
+        &record.anchor,
+    )
+}
+
+fn aad_fields(
+    domain: StateDomain,
+    logical_id: &str,
+    generation: Generation,
+    revision: Revision,
+    key_id: &KeyId,
+    plaintext_digest: Digest,
+    anchor: &GenerationAnchor,
+) -> Vec<u8> {
+    let mut value = Vec::new();
+    value.extend_from_slice(b"ptr-protected-state-v2");
+    value.extend_from_slice(domain.tag());
+    value.extend_from_slice(&(logical_id.len() as u64).to_le_bytes());
+    value.extend_from_slice(logical_id.as_bytes());
+    value.extend_from_slice(&generation.0.to_le_bytes());
+    value.extend_from_slice(&revision.0.to_le_bytes());
+    value.extend_from_slice(&(key_id.0.len() as u64).to_le_bytes());
+    value.extend_from_slice(key_id.0.as_bytes());
+    value.extend_from_slice(&plaintext_digest);
+    value.extend_from_slice(&(anchor.logical_id.len() as u64).to_le_bytes());
+    value.extend_from_slice(anchor.logical_id.as_bytes());
+    value.extend_from_slice(&anchor.generation.0.to_le_bytes());
+    match anchor.previous_digest {
+        Some(previous) => {
+            value.push(1);
+            value.extend_from_slice(&previous);
+        }
+        None => value.push(0),
+    }
+    value.extend_from_slice(&anchor.anchor_digest);
+    value
+}
+
+fn legacy_aad_fields(
+    domain: StateDomain,
+    logical_id: &str,
+    generation: Generation,
+    revision: Revision,
+    key_id: &KeyId,
+    plaintext_digest: Digest,
+) -> Vec<u8> {
     let mut value = Vec::new();
     value.extend_from_slice(b"ptr-protected-state-v1");
-    value.extend_from_slice(record.domain.tag());
-    value.extend_from_slice(&(record.logical_id.len() as u64).to_le_bytes());
-    value.extend_from_slice(record.logical_id.as_bytes());
-    value.extend_from_slice(&record.generation.0.to_le_bytes());
-    value.extend_from_slice(&record.revision.0.to_le_bytes());
-    value.extend_from_slice(record.key_id.0.as_bytes());
-    value.extend_from_slice(&record.plaintext_digest);
+    value.extend_from_slice(domain.tag());
+    value.extend_from_slice(&(logical_id.len() as u64).to_le_bytes());
+    value.extend_from_slice(logical_id.as_bytes());
+    value.extend_from_slice(&generation.0.to_le_bytes());
+    value.extend_from_slice(&revision.0.to_le_bytes());
+    value.extend_from_slice(key_id.0.as_bytes());
+    value.extend_from_slice(&plaintext_digest);
     value
+}
+
+fn valid_stored_aad(sealed: &SealedRecord) -> bool {
+    sealed.aad
+        == aad_fields(
+            sealed.handle.domain,
+            &sealed.handle.logical_id,
+            sealed.handle.generation,
+            sealed.handle.revision,
+            &sealed.handle.key_id,
+            sealed.plaintext_digest,
+            &sealed.anchor,
+        )
+        || sealed.aad
+            == legacy_aad_fields(
+                sealed.handle.domain,
+                &sealed.handle.logical_id,
+                sealed.handle.generation,
+                sealed.handle.revision,
+                &sealed.handle.key_id,
+                sealed.plaintext_digest,
+            )
 }
 
 fn nonce(aad: &[u8]) -> [u8; 12] {

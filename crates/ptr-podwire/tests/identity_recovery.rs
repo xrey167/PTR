@@ -233,6 +233,7 @@ fn schema() -> KvTensorSchema {
         device: ptr_types::DeviceId::from("cuda:0"),
         layer_count: 1,
         attention_heads: 1,
+        key_value_heads: 1,
         head_dim: 2,
         batch_size: 1,
         dtype: KvTensorDType::F32,

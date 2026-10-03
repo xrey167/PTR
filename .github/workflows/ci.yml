@@ -206,3 +206,14 @@ jobs:
       - run: cargo +stable clippy -p ptr-podwire --features podwire-backend --all-targets --locked -- -D warnings
       - run: rustup toolchain install 1.91.0 --profile minimal
       - run: cargo +1.91.0 test -p ptr-podwire --features podwire-backend --locked
+
+  storage-tiers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo +stable test -p ptr-storage --features tier-opendal-fs --test opendal_tier --locked
+      - run: cargo +stable check -p ptr-storage --features tier-opendal-fs,tier-opendal-s3 --locked
+      - run: cargo +stable clippy -p ptr-storage --all-targets --features tier-opendal-fs,tier-opendal-s3 --locked -- -D warnings

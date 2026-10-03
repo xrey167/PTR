@@ -88,7 +88,10 @@ pub fn lifecycle_change(committed: &CommittedEvent) -> LifecycleChange {
         | LedgerEvent::PodHypothesisCommitted { .. }
         | LedgerEvent::PolicyBundleActivated { .. }
         | LedgerEvent::PolicyBundleRevoked { .. }
-        | LedgerEvent::SessionRevoked { .. } => LifecycleChange::None,
+        | LedgerEvent::SessionRevoked { .. }
+        | LedgerEvent::TierBackendLifecycle { .. }
+        | LedgerEvent::TierObjectCommitted { .. }
+        | LedgerEvent::TierReplicaLifecycle { .. } => LifecycleChange::None,
     }
 }
 
@@ -118,6 +121,9 @@ pub fn event_topic(event: &LedgerEvent) -> &'static str {
         LedgerEvent::PolicyBundleActivated { .. } => "policy.bundle_activated",
         LedgerEvent::PolicyBundleRevoked { .. } => "policy.bundle_revoked",
         LedgerEvent::SessionRevoked { .. } => "identity.session_revoked",
+        LedgerEvent::TierBackendLifecycle { .. } => "storage.tier_backend_lifecycle",
+        LedgerEvent::TierObjectCommitted { .. } => "storage.tier_object_committed",
+        LedgerEvent::TierReplicaLifecycle { .. } => "storage.tier_replica_lifecycle",
     }
 }
 
@@ -179,6 +185,17 @@ pub fn event_subject(committed: &CommittedEvent) -> String {
             format!("policy:{}", revision.0)
         }
         LedgerEvent::SessionRevoked { session_id, .. } => format!("session:{session_id}"),
+        LedgerEvent::TierBackendLifecycle { backend_id, .. } => {
+            format!("tier-backend:{backend_id}")
+        }
+        LedgerEvent::TierObjectCommitted { root_digest, .. } => {
+            format!("tier-object:{}", hex_digest(root_digest))
+        }
+        LedgerEvent::TierReplicaLifecycle {
+            root_digest,
+            backend_id,
+            ..
+        } => format!("tier-replica:{}:{backend_id}", hex_digest(root_digest)),
     }
 }
 
