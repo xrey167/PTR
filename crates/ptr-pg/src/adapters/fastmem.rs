@@ -789,15 +789,18 @@ fn cells(values: &[f32]) -> Vec<u8> {
         .collect()
 }
 
+// The L003 mutation plan (`experiments/lifecycle/L003-fastmem-revocation/tests/
+// mutations.toml`) anchors the exact `chunks_exact` expression below, and L003 is
+// completed, so the expression stays as it was run rather than moving to
+// `as_chunks`.
+#[allow(clippy::chunks_exact_to_as_chunks)]
 fn floats(bytes: &[u8]) -> Result<Vec<f32>, PgError> {
     if !bytes.len().is_multiple_of(4) {
         return Err(corrupt("cell bytes are not a whole number of f32 values"));
     }
     Ok(bytes
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .map(|chunk| f32::from_le_bytes(*chunk))
+        .chunks_exact(4)
+        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
         .collect())
 }
 
