@@ -56,6 +56,56 @@ fn invalid_profile_is_rejected_before_tunnel_activation() {
     assert_eq!(executor.admit(&invalid), Err(TunnelError::InvalidProfile));
 }
 
+#[test]
+fn reference_rotation_keeps_the_callers_lease_valid() {
+    let mut executor = ReferenceMeshTunnelExecutor::default();
+    let lease = executor.admit(&profile()).unwrap();
+    executor.establish(&lease).unwrap();
+    let mut rotated = profile().peer;
+    rotated.public_key_digest = [2; 32];
+    executor.rotate_peer(&lease, &rotated).unwrap();
+    // The same lease can rotate again and can still be revoked and released.
+    executor.rotate_peer(&lease, &rotated).unwrap();
+    assert_eq!(executor.active_peer(&lease), Some(&rotated));
+    assert_eq!(executor.revoke(&lease), Ok(()));
+    assert_eq!(executor.active_peer(&lease), None);
+    assert_eq!(executor.release(lease), Ok(()));
+}
+
+#[test]
+fn reference_rotation_rejects_an_empty_peer_id_and_a_zero_key() {
+    let mut executor = ReferenceMeshTunnelExecutor::default();
+    let lease = executor.admit(&profile()).unwrap();
+    executor.establish(&lease).unwrap();
+    let mut empty_id = profile().peer;
+    empty_id.peer_id = PeerId::from("");
+    let mut zero_key = profile().peer;
+    zero_key.public_key_digest = [0; 32];
+    for peer in [empty_id, zero_key] {
+        assert_eq!(
+            executor.rotate_peer(&lease, &peer),
+            Err(TunnelError::RevokedPeer)
+        );
+    }
+}
+
+#[test]
+fn reference_revoke_establish_and_release_are_idempotent_and_fenced() {
+    let mut executor = ReferenceMeshTunnelExecutor::default();
+    let lease = executor.admit(&profile()).unwrap();
+    assert_eq!(executor.establish(&lease), Ok(TunnelState::Established));
+    assert_eq!(executor.establish(&lease), Ok(TunnelState::Established));
+    assert_eq!(executor.revoke(&lease), Ok(()));
+    assert_eq!(executor.revoke(&lease), Ok(()));
+    // release is fenced by the whole profile, not only the fencing token.
+    let mut other_peer = lease.clone();
+    other_peer.profile.peer.public_key_digest = [3; 32];
+    assert_eq!(executor.release(other_peer), Err(TunnelError::StaleFencing));
+    assert_eq!(executor.release(lease.clone()), Ok(()));
+    assert_eq!(executor.release(lease.clone()), Ok(()));
+    assert_eq!(executor.revoke(&lease), Err(TunnelError::InvalidState));
+}
+
 #[derive(Default)]
 struct FakeWireguardDevice {
     events: Vec<String>,

@@ -480,26 +480,29 @@ impl WireguardDevice for WintunDevice {
     }
 }
 
+/// In-memory reference for the executor contract. It follows the same lifecycle
+/// rules as [`WireguardUserspaceExecutor`]: a lease keeps the profile it was
+/// admitted with, so the fencing comparison stays stable across `rotate_peer`,
+/// and `establish`, `revoke` and `release` are idempotent. The peer that is
+/// currently active is tracked separately.
 #[derive(Default)]
 pub struct ReferenceMeshTunnelExecutor {
     next_id: u64,
     leases: std::collections::BTreeMap<String, TunnelLease>,
+    active_peers: std::collections::BTreeMap<String, MeshPeerIdentity>,
+}
+
+impl ReferenceMeshTunnelExecutor {
+    /// The peer a lease currently routes to: the admitted one until
+    /// `rotate_peer` replaces it.
+    pub fn active_peer(&self, lease: &TunnelLease) -> Option<&MeshPeerIdentity> {
+        self.active_peers.get(&lease.lease_id)
+    }
 }
 
 impl MeshTunnelExecutor for ReferenceMeshTunnelExecutor {
     fn admit(&mut self, profile: &TunnelProfile) -> Result<TunnelLease, TunnelError> {
-        if profile.network_id.0.is_empty()
-            || profile.peer.peer_id.0.is_empty()
-            || profile.peer.public_key_digest == [0; 32]
-            || profile.peer.network_id != profile.network_id
-            || profile.generation.0 == 0
-            || profile.membership_revision.0 == 0
-            || profile.placement_epoch == 0
-            || profile.fencing_token == 0
-            || profile.interface_name.is_empty()
-        {
-            return Err(TunnelError::InvalidProfile);
-        }
+        validate_profile(profile)?;
         let lease_id = format!("tunnel-{}", self.next_id + 1);
         self.next_id += 1;
         let lease = TunnelLease {
@@ -516,11 +519,17 @@ impl MeshTunnelExecutor for ReferenceMeshTunnelExecutor {
             .leases
             .get_mut(&lease.lease_id)
             .ok_or(TunnelError::NotFound)?;
-        if current.profile != lease.profile || current.state != TunnelState::Admitted {
-            return Err(TunnelError::InvalidState);
+        ensure_same_profile(current, lease)?;
+        match current.state {
+            TunnelState::Admitted => {
+                current.state = TunnelState::Established;
+                self.active_peers
+                    .insert(lease.lease_id.clone(), current.profile.peer.clone());
+                Ok(current.state)
+            }
+            TunnelState::Established => Ok(TunnelState::Established),
+            _ => Err(TunnelError::InvalidState),
         }
-        current.state = TunnelState::Established;
-        Ok(current.state)
     }
 
     fn rotate_peer(
@@ -530,16 +539,20 @@ impl MeshTunnelExecutor for ReferenceMeshTunnelExecutor {
     ) -> Result<(), TunnelError> {
         let current = self
             .leases
-            .get_mut(&lease.lease_id)
+            .get(&lease.lease_id)
             .ok_or(TunnelError::NotFound)?;
-        if current.profile != lease.profile || current.state != TunnelState::Established {
+        ensure_same_profile(current, lease)?;
+        if current.state != TunnelState::Established {
             return Err(TunnelError::InvalidState);
         }
-        if peer.network_id != current.profile.network_id || peer.public_key_digest == [0; 32] {
+        if peer.network_id != current.profile.network_id
+            || peer.peer_id.0.is_empty()
+            || peer.public_key_digest == [0; 32]
+        {
             return Err(TunnelError::RevokedPeer);
         }
-        current.profile.peer = peer.clone();
-        current.profile.membership_revision = current.profile.membership_revision.next();
+        self.active_peers
+            .insert(lease.lease_id.clone(), peer.clone());
         Ok(())
     }
 
@@ -548,14 +561,16 @@ impl MeshTunnelExecutor for ReferenceMeshTunnelExecutor {
             .leases
             .get_mut(&lease.lease_id)
             .ok_or(TunnelError::NotFound)?;
-        if current.profile != lease.profile {
-            return Err(TunnelError::StaleFencing);
+        ensure_same_profile(current, lease)?;
+        match current.state {
+            TunnelState::Revoked => Ok(()),
+            TunnelState::Released => Err(TunnelError::InvalidState),
+            _ => {
+                current.state = TunnelState::Revoked;
+                self.active_peers.remove(&lease.lease_id);
+                Ok(())
+            }
         }
-        if matches!(current.state, TunnelState::Released | TunnelState::Revoked) {
-            return Err(TunnelError::InvalidState);
-        }
-        current.state = TunnelState::Revoked;
-        Ok(())
     }
 
     fn release(&mut self, lease: TunnelLease) -> Result<(), TunnelError> {
@@ -563,13 +578,12 @@ impl MeshTunnelExecutor for ReferenceMeshTunnelExecutor {
             .leases
             .get_mut(&lease.lease_id)
             .ok_or(TunnelError::NotFound)?;
-        if current.profile.fencing_token != lease.profile.fencing_token {
-            return Err(TunnelError::StaleFencing);
-        }
+        ensure_same_profile(current, &lease)?;
         if current.state == TunnelState::Released {
             return Ok(());
         }
         current.state = TunnelState::Released;
+        self.active_peers.remove(&lease.lease_id);
         Ok(())
     }
 }
