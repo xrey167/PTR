@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 #[cfg(feature = "oidc-http")]
 use std::io::Read;
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OidcAlgorithm {
@@ -314,12 +314,10 @@ impl IdentityProvider for AutheliaForwardAuthAdapter {
                 expires_at: required_timestamp(&value, "expires_at")?,
                 authentication_level: level,
             },
-            Timestamp(
-                value
-                    .get("now")
-                    .and_then(Value::as_u64)
-                    .ok_or(OidcError::MissingClaim("now"))?,
-            ),
+            // The verification time always comes from the server clock. A
+            // credential must never be able to choose the instant at which its
+            // own expiry is evaluated.
+            current_timestamp()?,
         )
     }
 }
@@ -330,6 +328,20 @@ pub struct OidcIdentityAdapter {
     pub jwks: JwksStore,
     pub allowed_algorithms: Vec<OidcAlgorithm>,
     used_jti: Mutex<BTreeSet<String>>,
+    refresh: Mutex<RefreshState>,
+    refresh_cooldown: Duration,
+}
+
+/// Default minimum spacing between JWKS fetches triggered by unknown key ids.
+pub const DEFAULT_JWKS_REFRESH_COOLDOWN: Duration = Duration::from_secs(30);
+
+/// Keys obtained through a refresh, kept only for one cooldown window. The same
+/// window also rate-limits fetches, so unauthenticated callers presenting
+/// unknown `kid` values cannot turn into unbounded requests against the IdP.
+#[derive(Default)]
+struct RefreshState {
+    fetched: Option<(Instant, JwksStore)>,
+    last_attempt: Option<Instant>,
 }
 
 impl OidcIdentityAdapter {
@@ -340,7 +352,14 @@ impl OidcIdentityAdapter {
             jwks,
             allowed_algorithms: vec![OidcAlgorithm::EdDsa],
             used_jti: Mutex::new(BTreeSet::new()),
+            refresh: Mutex::new(RefreshState::default()),
+            refresh_cooldown: DEFAULT_JWKS_REFRESH_COOLDOWN,
         }
+    }
+
+    pub fn with_refresh_cooldown(mut self, cooldown: Duration) -> Self {
+        self.refresh_cooldown = cooldown;
+        self
     }
 
     pub fn authenticate_at(
@@ -361,14 +380,44 @@ impl OidcIdentityAdapter {
         if self.jwks.get(&kid).is_some() {
             return self.authenticate_at(credential, now);
         }
-        let document = refresher.refresh()?;
-        if document.issuer != self.issuer {
-            return Err(OidcError::JwksIssuerMismatch);
-        }
-        if document.audience != self.audience {
-            return Err(OidcError::JwksAudienceMismatch);
-        }
-        self.authenticate_at_with_store(credential, now, &document.store)
+        let store = {
+            // The lock is held across the fetch on purpose: concurrent callers
+            // with unknown key ids queue here and then observe the cooldown
+            // instead of each issuing their own request.
+            let mut state = self
+                .refresh
+                .lock()
+                .map_err(|_| OidcError::RefreshFailed("refresh state poisoned".into()))?;
+            let started = Instant::now();
+            let cached = state.fetched.as_ref().and_then(|(fetched_at, store)| {
+                (started.duration_since(*fetched_at) < self.refresh_cooldown
+                    && store.get(&kid).is_some())
+                .then(|| store.clone())
+            });
+            match cached {
+                Some(store) => store,
+                None => {
+                    if state.last_attempt.is_some_and(|attempt| {
+                        started.duration_since(attempt) < self.refresh_cooldown
+                    }) {
+                        return Err(OidcError::UnknownKey(kid));
+                    }
+                    // Failed fetches count as attempts, so an unreachable or
+                    // hostile IdP endpoint is not hammered either.
+                    state.last_attempt = Some(started);
+                    let document = refresher.refresh()?;
+                    if document.issuer != self.issuer {
+                        return Err(OidcError::JwksIssuerMismatch);
+                    }
+                    if document.audience != self.audience {
+                        return Err(OidcError::JwksAudienceMismatch);
+                    }
+                    state.fetched = Some((started, document.store.clone()));
+                    document.store
+                }
+            }
+        };
+        self.authenticate_at_with_store(credential, now, &store)
     }
 
     fn authenticate_at_with_store(
@@ -457,12 +506,15 @@ impl IdentityProvider for OidcIdentityAdapter {
     type Error = OidcError;
 
     fn authenticate(&self, credential: &[u8]) -> Result<IdentityContext, Self::Error> {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|_| OidcError::InvalidClaim("system_time"))?
-            .as_secs();
-        self.authenticate_at(credential, Timestamp(now))
+        self.authenticate_at(credential, current_timestamp()?)
     }
+}
+
+fn current_timestamp() -> Result<Timestamp, OidcError> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| Timestamp(elapsed.as_secs()))
+        .map_err(|_| OidcError::InvalidClaim("system_time"))
 }
 
 fn decode_json(encoded: &str) -> Result<Value, OidcError> {
@@ -728,5 +780,68 @@ mod tests {
             .unwrap();
         assert_eq!(context.groups, vec!["a", "z"]);
         assert!(context.has_valid_digest());
+    }
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct CountingRefresher {
+        document: JwksDocument,
+        calls: AtomicUsize,
+    }
+
+    impl JwksRefresher for CountingRefresher {
+        fn refresh(&self) -> Result<JwksDocument, OidcError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(JwksDocument {
+                issuer: self.document.issuer.clone(),
+                audience: self.document.audience.clone(),
+                store: self.document.store.clone(),
+            })
+        }
+    }
+
+    #[test]
+    fn unknown_kid_refreshes_are_rate_limited_and_cached() {
+        let old_key = SigningKey::from_bytes(&[37; 32]);
+        let new_key = SigningKey::from_bytes(&[38; 32]);
+        let adapter = adapter(&old_key).with_refresh_cooldown(Duration::from_secs(3600));
+        let mut new_store = JwksStore::default();
+        new_store.insert("k2", new_key.verifying_key());
+        let refresher = CountingRefresher {
+            document: JwksDocument {
+                issuer: "https://issuer".into(),
+                audience: "ptr".into(),
+                store: new_store,
+            },
+            calls: AtomicUsize::new(0),
+        };
+        // A flood of unknown key ids results in a single fetch.
+        for attempt in 0..5 {
+            let unknown = token_with_kid(&new_key, claims(), &format!("unknown-{attempt}"));
+            assert!(matches!(
+                adapter.authenticate_at_with_refresh(unknown.as_bytes(), Timestamp(50), &refresher),
+                Err(OidcError::UnknownKey(_))
+            ));
+        }
+        assert_eq!(refresher.calls.load(Ordering::SeqCst), 1);
+        // The fetched key is cached, so a legitimate rotated key needs no new fetch.
+        let valid = token_with_kid(&new_key, claims(), "k2");
+        assert!(adapter
+            .authenticate_at_with_refresh(valid.as_bytes(), Timestamp(50), &refresher)
+            .is_ok());
+        assert_eq!(refresher.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn forward_auth_credential_cannot_choose_its_own_clock() {
+        let adapter = AutheliaForwardAuthAdapter::new("https://authelia");
+        let credential = json!({
+            "subject": "user", "session_id": "session", "groups": ["a"], "acr": "mfa",
+            "issued_at": 1, "expires_at": 100, "now": 50
+        });
+        assert_eq!(
+            adapter.authenticate(credential.to_string().as_bytes()),
+            Err(OidcError::Expired)
+        );
     }
 }

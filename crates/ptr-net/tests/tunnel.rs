@@ -59,6 +59,7 @@ fn invalid_profile_is_rejected_before_tunnel_activation() {
 #[derive(Default)]
 struct FakeWireguardDevice {
     events: Vec<String>,
+    fail_configure: bool,
 }
 
 impl WireguardDevice for FakeWireguardDevice {
@@ -68,7 +69,20 @@ impl WireguardDevice for FakeWireguardDevice {
         Ok(())
     }
     fn configure_peer(&mut self, name: &str, peer: &MeshPeerIdentity) -> Result<(), Self::Error> {
-        self.events.push(format!("peer:{name}:{}", peer.peer_id));
+        if self.fail_configure {
+            return Err("configure failed".into());
+        }
+        self.events.push(format!(
+            "peer:{name}:{}:{}",
+            peer.peer_id, peer.public_key_digest[0]
+        ));
+        Ok(())
+    }
+    fn remove_peer(&mut self, name: &str, peer: &MeshPeerIdentity) -> Result<(), Self::Error> {
+        self.events.push(format!(
+            "unpeer:{name}:{}:{}",
+            peer.peer_id, peer.public_key_digest[0]
+        ));
         Ok(())
     }
     fn remove_interface(&mut self, name: &str) -> Result<(), Self::Error> {
@@ -87,10 +101,80 @@ fn userspace_executor_binds_device_io_to_the_fenced_lifecycle() {
         executor.device().events,
         [
             "create:ptr-mesh0",
-            "peer:ptr-mesh0:peer-a",
+            "peer:ptr-mesh0:peer-a:1",
             "remove:ptr-mesh0"
         ]
     );
+}
+
+#[test]
+fn revoke_tears_down_the_interface_and_release_does_not_remove_it_twice() {
+    let mut executor = WireguardUserspaceExecutor::new(FakeWireguardDevice::default());
+    let lease = executor.admit(&profile()).unwrap();
+    executor.establish(&lease).unwrap();
+    executor.revoke(&lease).unwrap();
+    assert_eq!(executor.device().events.last().unwrap(), "remove:ptr-mesh0");
+    executor.release(lease).unwrap();
+    let removals = executor
+        .device()
+        .events
+        .iter()
+        .filter(|event| event.starts_with("remove:"))
+        .count();
+    assert_eq!(removals, 1);
+}
+
+#[test]
+fn rotation_keeps_the_original_lease_valid_and_removes_the_old_peer() {
+    let mut executor = WireguardUserspaceExecutor::new(FakeWireguardDevice::default());
+    let lease = executor.admit(&profile()).unwrap();
+    executor.establish(&lease).unwrap();
+    let mut rotated = profile().peer;
+    rotated.public_key_digest = [2; 32];
+    executor.rotate_peer(&lease, &rotated).unwrap();
+    assert_eq!(
+        executor.device().events,
+        [
+            "create:ptr-mesh0",
+            "peer:ptr-mesh0:peer-a:1",
+            "peer:ptr-mesh0:peer-a:2",
+            "unpeer:ptr-mesh0:peer-a:1",
+        ]
+    );
+    executor.revoke(&lease).unwrap();
+    executor.release(lease).unwrap();
+}
+
+#[test]
+fn rotation_rejects_an_all_zero_key() {
+    let mut executor = WireguardUserspaceExecutor::new(FakeWireguardDevice::default());
+    let lease = executor.admit(&profile()).unwrap();
+    executor.establish(&lease).unwrap();
+    let mut zeroed = profile().peer;
+    zeroed.public_key_digest = [0; 32];
+    assert_eq!(
+        executor.rotate_peer(&lease, &zeroed),
+        Err(TunnelError::RevokedPeer)
+    );
+}
+
+#[test]
+fn failed_peer_configuration_does_not_leak_the_interface_and_allows_retry() {
+    let mut executor = WireguardUserspaceExecutor::new(FakeWireguardDevice {
+        fail_configure: true,
+        ..Default::default()
+    });
+    let lease = executor.admit(&profile()).unwrap();
+    assert_eq!(
+        executor.establish(&lease),
+        Err(TunnelError::UnsupportedPlatform)
+    );
+    assert_eq!(
+        executor.device().events,
+        ["create:ptr-mesh0", "remove:ptr-mesh0"]
+    );
+    executor.device_mut().fail_configure = false;
+    assert_eq!(executor.establish(&lease), Ok(TunnelState::Established));
 }
 
 #[cfg(all(feature = "wintun-backend", target_os = "windows"))]

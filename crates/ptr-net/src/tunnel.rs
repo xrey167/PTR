@@ -1,6 +1,6 @@
 use crate::{MeshPeerIdentity, MeshRoute};
 use ptr_types::{Generation, PeerId, Revision};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 #[cfg(all(feature = "wireguard-uapi-backend", target_os = "linux"))]
 use std::path::PathBuf;
 
@@ -62,15 +62,25 @@ pub trait WireguardDevice: Send + Sync {
 
     fn create_interface(&mut self, name: &str) -> Result<(), Self::Error>;
     fn configure_peer(&mut self, name: &str, peer: &MeshPeerIdentity) -> Result<(), Self::Error>;
+    /// Removes a previously configured peer from a live interface without
+    /// tearing the interface down.
+    fn remove_peer(&mut self, name: &str, peer: &MeshPeerIdentity) -> Result<(), Self::Error>;
     fn remove_interface(&mut self, name: &str) -> Result<(), Self::Error>;
 }
 
 /// A userspace WireGuard executor.  The concrete device is injected so the
 /// same fenced lifecycle is used by boringtun/userspace, Linux kernel, Wintun,
 /// and macOS Network Extension adapters without putting platform APIs in PTR.
+///
+/// A lease keeps the profile it was admitted with for its whole life, so the
+/// fencing comparison stays stable across peer rotation. The peer that is
+/// currently configured on the device is tracked separately in `active_peers`,
+/// and `live_interfaces` records which leases still own a device interface.
 pub struct WireguardUserspaceExecutor<D> {
     device: D,
     leases: BTreeMap<String, TunnelLease>,
+    active_peers: BTreeMap<String, MeshPeerIdentity>,
+    live_interfaces: BTreeSet<String>,
     next_id: u64,
 }
 
@@ -79,6 +89,8 @@ impl<D> WireguardUserspaceExecutor<D> {
         Self {
             device,
             leases: BTreeMap::new(),
+            active_peers: BTreeMap::new(),
+            live_interfaces: BTreeSet::new(),
             next_id: 1,
         }
     }
@@ -122,12 +134,23 @@ where
         ensure_same_profile(current, lease)?;
         match current.state {
             TunnelState::Admitted => {
+                let interface = current.profile.interface_name.clone();
                 self.device
-                    .create_interface(&current.profile.interface_name)
+                    .create_interface(&interface)
                     .map_err(|_| TunnelError::UnsupportedPlatform)?;
-                self.device
-                    .configure_peer(&current.profile.interface_name, &current.profile.peer)
-                    .map_err(|_| TunnelError::UnsupportedPlatform)?;
+                if self
+                    .device
+                    .configure_peer(&interface, &current.profile.peer)
+                    .is_err()
+                {
+                    // Do not leak the freshly created interface: a retry of
+                    // `establish` must start from a clean device.
+                    let _ = self.device.remove_interface(&interface);
+                    return Err(TunnelError::UnsupportedPlatform);
+                }
+                self.live_interfaces.insert(lease.lease_id.clone());
+                self.active_peers
+                    .insert(lease.lease_id.clone(), current.profile.peer.clone());
                 current.state = TunnelState::Established;
                 Ok(current.state)
             }
@@ -143,19 +166,38 @@ where
     ) -> Result<(), TunnelError> {
         let current = self
             .leases
-            .get_mut(&lease.lease_id)
+            .get(&lease.lease_id)
             .ok_or(TunnelError::NotFound)?;
         ensure_same_profile(current, lease)?;
         if current.state != TunnelState::Established {
             return Err(TunnelError::InvalidState);
         }
-        if peer.network_id != current.profile.network_id {
+        if peer.network_id != current.profile.network_id
+            || peer.peer_id.0.is_empty()
+            || peer.public_key_digest == [0; 32]
+        {
             return Err(TunnelError::RevokedPeer);
         }
+        let interface = current.profile.interface_name.clone();
+        let previous = self
+            .active_peers
+            .get(&lease.lease_id)
+            .cloned()
+            .unwrap_or_else(|| current.profile.peer.clone());
+        if &previous == peer {
+            return Ok(());
+        }
         self.device
-            .configure_peer(&current.profile.interface_name, peer)
+            .configure_peer(&interface, peer)
             .map_err(|_| TunnelError::UnsupportedPlatform)?;
-        current.profile.peer = peer.clone();
+        if self.device.remove_peer(&interface, &previous).is_err() {
+            // Never leave two peers live: roll the new one back and keep the
+            // previous peer as the active one.
+            let _ = self.device.remove_peer(&interface, peer);
+            return Err(TunnelError::UnsupportedPlatform);
+        }
+        self.active_peers
+            .insert(lease.lease_id.clone(), peer.clone());
         Ok(())
     }
 
@@ -169,6 +211,15 @@ where
             TunnelState::Revoked => Ok(()),
             TunnelState::Released => Err(TunnelError::InvalidState),
             _ => {
+                // Revocation must cut the dataplane immediately instead of only
+                // flipping bookkeeping state until `release` is called.
+                if self.live_interfaces.contains(&lease.lease_id) {
+                    self.device
+                        .remove_interface(&current.profile.interface_name)
+                        .map_err(|_| TunnelError::UnsupportedPlatform)?;
+                    self.live_interfaces.remove(&lease.lease_id);
+                }
+                self.active_peers.remove(&lease.lease_id);
                 current.state = TunnelState::Revoked;
                 Ok(())
             }
@@ -184,9 +235,13 @@ where
         if current.state == TunnelState::Released {
             return Ok(());
         }
-        self.device
-            .remove_interface(&current.profile.interface_name)
-            .map_err(|_| TunnelError::UnsupportedPlatform)?;
+        if self.live_interfaces.contains(&lease.lease_id) {
+            self.device
+                .remove_interface(&current.profile.interface_name)
+                .map_err(|_| TunnelError::UnsupportedPlatform)?;
+            self.live_interfaces.remove(&lease.lease_id);
+        }
+        self.active_peers.remove(&lease.lease_id);
         current.state = TunnelState::Released;
         Ok(())
     }
@@ -198,7 +253,7 @@ where
 #[cfg(all(feature = "wireguard-uapi-backend", target_os = "linux"))]
 pub struct LinuxWireguardDevice {
     socket_root: PathBuf,
-    public_keys: BTreeMap<String, [u8; 32]>,
+    public_keys: BTreeMap<(String, ptr_types::Digest), [u8; 32]>,
 }
 
 #[cfg(all(feature = "wireguard-uapi-backend", target_os = "linux"))]
@@ -211,7 +266,13 @@ impl LinuxWireguardDevice {
     }
 
     pub fn register_public_key(&mut self, peer: &MeshPeerIdentity, key: [u8; 32]) {
-        self.public_keys.insert(peer.peer_id.0.clone(), key);
+        self.public_keys.insert(Self::key_id(peer), key);
+    }
+
+    /// Keys are bound to the exact admitted identity (peer id plus identity
+    /// digest) so a rotated peer never resolves to the key of its predecessor.
+    fn key_id(peer: &MeshPeerIdentity) -> (String, ptr_types::Digest) {
+        (peer.peer_id.0.clone(), peer.public_key_digest)
     }
 
     fn socket_path(&self, name: &str) -> PathBuf {
@@ -240,11 +301,29 @@ impl WireguardDevice for LinuxWireguardDevice {
         validate_interface_name(name)?;
         let key = self
             .public_keys
-            .get(&peer.peer_id.0)
+            .get(&Self::key_id(peer))
             .copied()
             .ok_or_else(|| "missing admitted WireGuard public key".to_owned())?;
         let request = wireguard_uapi::xplatform::set::Device {
             peers: vec![wireguard_uapi::xplatform::set::Peer::from_public_key(key)],
+            ..Default::default()
+        };
+        wireguard_uapi::xplatform::Client::create(self.socket_path(name))
+            .set(request)
+            .map_err(|error| error.to_string())
+    }
+
+    fn remove_peer(&mut self, name: &str, peer: &MeshPeerIdentity) -> Result<(), Self::Error> {
+        validate_interface_name(name)?;
+        let key = self
+            .public_keys
+            .get(&Self::key_id(peer))
+            .copied()
+            .ok_or_else(|| "missing admitted WireGuard public key".to_owned())?;
+        let mut removal = wireguard_uapi::xplatform::set::Peer::from_public_key(key);
+        removal.remove = Some(true);
+        let request = wireguard_uapi::xplatform::set::Device {
+            peers: vec![removal],
             ..Default::default()
         };
         wireguard_uapi::xplatform::Client::create(self.socket_path(name))
@@ -330,6 +409,16 @@ impl WireguardDevice for WintunDevice {
     }
 
     fn configure_peer(&mut self, _name: &str, peer: &MeshPeerIdentity) -> Result<(), Self::Error> {
+        if peer.peer_id.0.is_empty() || peer.public_key_digest == [0; 32] {
+            return Err("invalid admitted mesh peer".into());
+        }
+        if self.session.is_none() {
+            return Err("Wintun session is not established".into());
+        }
+        Ok(())
+    }
+
+    fn remove_peer(&mut self, _name: &str, peer: &MeshPeerIdentity) -> Result<(), Self::Error> {
         if peer.peer_id.0.is_empty() || peer.public_key_digest == [0; 32] {
             return Err("invalid admitted mesh peer".into());
         }
