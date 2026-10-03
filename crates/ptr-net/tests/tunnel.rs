@@ -261,6 +261,40 @@ fn rotation_rollback_failure_with_a_stuck_interface_keeps_ownership_for_release(
 }
 
 #[test]
+fn revoking_a_lease_revoked_with_a_stuck_interface_retries_the_removal() {
+    let mut executor = WireguardUserspaceExecutor::new(FakeWireguardDevice::default());
+    let lease = executor.admit(&profile()).unwrap();
+    executor.establish(&lease).unwrap();
+    let mut rotated = profile().peer;
+    rotated.public_key_digest = [2; 32];
+    // Neither peer nor the interface can be removed: the lease is revoked but
+    // still owns a live interface.
+    executor.device_mut().fail_remove_peer = true;
+    executor.device_mut().fail_remove_interface = true;
+    assert!(executor.rotate_peer(&lease, &rotated).is_err());
+    // While the device keeps failing, revoke must say so instead of reporting Ok.
+    assert_eq!(
+        executor.revoke(&lease),
+        Err(TunnelError::UnsupportedPlatform)
+    );
+    // Once the device recovers, the same call removes the interface.
+    executor.device_mut().fail_remove_interface = false;
+    assert_eq!(executor.revoke(&lease), Ok(()));
+    assert_eq!(executor.device().events.last().unwrap(), "remove:ptr-mesh0");
+    // After that revoke is a plain idempotent no-op and release does not
+    // remove the interface a second time.
+    assert_eq!(executor.revoke(&lease), Ok(()));
+    executor.release(lease).unwrap();
+    let removals = executor
+        .device()
+        .events
+        .iter()
+        .filter(|event| event.starts_with("remove:"))
+        .count();
+    assert_eq!(removals, 1);
+}
+
+#[test]
 fn failed_cleanup_can_still_be_released() {
     let mut executor = WireguardUserspaceExecutor::new(FakeWireguardDevice {
         fail_configure: true,
