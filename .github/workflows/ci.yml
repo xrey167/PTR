@@ -6,9 +6,12 @@ permissions:
   contents: read
 # A newer push to the same branch (or the same PR) supersedes the run still in
 # flight, so a fix is not reported against by a stale run of the commit before
-# it. main is never cancelled: every merge keeps its own complete result.
+# it. main is never cancelled and never queued behind another main run: GitHub
+# keeps only one pending run per group and replaces an older pending run with a
+# newer one, so every main push gets a group of its own (its run id) and keeps
+# its own complete result.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
+  group: ci-${{ github.event.pull_request.number || (github.ref == 'refs/heads/main' && github.run_id) || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 jobs:
   quality:
