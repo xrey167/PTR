@@ -34,7 +34,10 @@ pub use kv::{
     InMemoryKvCache, InMemoryKvTensorBackend, KvBackendError, KvLayerSnapshot, KvTensorBackend,
     KvTensorDType, KvTensorSchema, KvTensorSnapshot, TensorRef,
 };
-pub use manifest::{ArtifactLifecycle, ExecutionManifest, LifecycleGate, LineageBinding};
+pub use manifest::{
+    ArtifactLifecycle, ExecutionManifest, LifecycleGate, LineageBinding,
+    ManifestError as ExecutionManifestError,
+};
 pub use native::{TcpProtocolExecutor, UdpProtocolExecutor, MAX_NATIVE_FRAME_BYTES};
 pub use neural::{
     DescriptorError, DeviceLease, DeviceLeaseError, DeviceLeaseState, LeaseState,

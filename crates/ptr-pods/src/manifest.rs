@@ -66,8 +66,18 @@ impl ExecutionManifest {
         principal: PrincipalId,
         policy_revision: Revision,
     ) -> Result<Self, ManifestError> {
-        knowledge.sort_by(|left, right| left.key.cmp(&right.key));
-        artifacts.sort_by(|left, right| left.key.cmp(&right.key));
+        knowledge.sort_by(|left, right| {
+            left.key
+                .cmp(&right.key)
+                .then(left.generation.cmp(&right.generation))
+                .then(left.digest.cmp(&right.digest))
+        });
+        artifacts.sort_by(|left, right| {
+            left.key
+                .cmp(&right.key)
+                .then(left.generation.cmp(&right.generation))
+                .then(left.digest.cmp(&right.digest))
+        });
         origins.sort();
         let manifest = Self {
             generation,
@@ -181,6 +191,8 @@ impl ExecutionManifest {
         if self.snapshot_digest == [0; 32] {
             return Err(ManifestError::MissingDigest);
         }
+        validate_unique_bindings(&self.knowledge)?;
+        validate_unique_bindings(&self.artifacts)?;
         for binding in self
             .knowledge
             .iter()
@@ -290,12 +302,22 @@ pub enum ManifestError {
     MissingProvenance,
     MissingDigest,
     InvalidBinding,
+    DuplicateBinding,
     ReaderGenerationMismatch,
     AdapterGenerationMismatch,
     DigestMismatch,
     InvalidLifecycleTransition,
     AdmissionRequired,
     InvalidEncoding,
+}
+
+fn validate_unique_bindings(bindings: &[LineageBinding]) -> Result<(), ManifestError> {
+    for pair in bindings.windows(2) {
+        if pair[0].key == pair[1].key {
+            return Err(ManifestError::DuplicateBinding);
+        }
+    }
+    Ok(())
 }
 
 fn put_u64(out: &mut Vec<u8>, value: u64) {

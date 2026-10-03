@@ -158,6 +158,87 @@ fn execution_manifest_validates_lineage_and_tampering() {
 }
 
 #[test]
+fn execution_manifest_rejects_duplicate_lineage_keys() {
+    let result = ExecutionManifest::build(
+        Generation(1),
+        vec![
+            LineageBinding {
+                key: "knowledge".into(),
+                generation: Generation(1),
+                digest: [1; 32],
+            },
+            LineageBinding {
+                key: "knowledge".into(),
+                generation: Generation(2),
+                digest: [2; 32],
+            },
+        ],
+        vec![LineageBinding {
+            key: "artifact".into(),
+            generation: Generation(1),
+            digest: [3; 32],
+        }],
+        vec!["origin".into()],
+        None,
+        Revision(1),
+        [4; 32],
+        PrincipalId::from("local"),
+        Revision(1),
+    );
+    assert_eq!(
+        result,
+        Err(ptr_pods::ExecutionManifestError::DuplicateBinding)
+    );
+}
+
+#[test]
+fn execution_manifest_lineage_order_is_canonical() {
+    let make = |knowledge| {
+        ExecutionManifest::build(
+            Generation(1),
+            knowledge,
+            vec![LineageBinding {
+                key: "artifact".into(),
+                generation: Generation(1),
+                digest: [3; 32],
+            }],
+            vec!["origin".into()],
+            None,
+            Revision(1),
+            [4; 32],
+            PrincipalId::from("local"),
+            Revision(1),
+        )
+        .unwrap()
+    };
+    let first = make(vec![
+        LineageBinding {
+            key: "b".into(),
+            generation: Generation(1),
+            digest: [2; 32],
+        },
+        LineageBinding {
+            key: "a".into(),
+            generation: Generation(1),
+            digest: [1; 32],
+        },
+    ]);
+    let second = make(vec![
+        LineageBinding {
+            key: "a".into(),
+            generation: Generation(1),
+            digest: [1; 32],
+        },
+        LineageBinding {
+            key: "b".into(),
+            generation: Generation(1),
+            digest: [2; 32],
+        },
+    ]);
+    assert_eq!(first.manifest_digest, second.manifest_digest);
+}
+
+#[test]
 fn lifecycle_gate_requires_admission_for_activation() {
     assert!(LifecycleGate::transition(
         ArtifactLifecycle::Approved,
