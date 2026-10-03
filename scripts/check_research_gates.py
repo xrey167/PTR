@@ -2318,6 +2318,7 @@ def launch_errors(root: Path, exp_id: str) -> list[str]:
     the list named once and no longer names (`enrolled`) does not run at
     all; one the list has never named runs as before. A file it cannot read
     refuses the launch, named."""
+    clear_snapshot_caches()
     try:
         return launch_decision(root,exp_id)
     except (Unreadable,HistoryUnreadable) as error:
@@ -3470,13 +3471,11 @@ def artifact_errors(exp_id: str, root: Path, results: Path, required, what: str)
                           "commit holds at its own path")
     return errors
 
-def gate_errors(root: Path) -> list[str]:
-    """Every error of every gate on the repository at `root` (`main`),
-    raising `Unreadable` for a file it cannot read outside the listed
-    experiments, whose unreadable files are errors of their own."""
-    # A gate run must observe one repository snapshot.  Clear the process
-    # cache at its boundary so a caller that reuses a temporary checkout path
-    # after changing or replacing that checkout cannot receive old history.
+def clear_snapshot_caches() -> None:
+    """Forget what this process learned of the repository's history. A gate
+    run, and a launch check, must observe one repository snapshot: cleared at
+    that boundary, a caller that reuses a temporary checkout path after
+    changing or replacing that checkout cannot receive old history."""
     _history_cached.cache_clear()
     listed_entry.cache_clear()
     object_bytes.cache_clear()
@@ -3486,6 +3485,12 @@ def gate_errors(root: Path) -> list[str]:
     _statuses_at_cached.cache_clear()
     _descendants_of_cached.cache_clear()
     link_changes_at.cache_clear()
+
+def gate_errors(root: Path) -> list[str]:
+    """Every error of every gate on the repository at `root` (`main`),
+    raising `Unreadable` for a file it cannot read outside the listed
+    experiments, whose unreadable files are errors of their own."""
+    clear_snapshot_caches()
     errors=[]
     experiments={}
     directories={}
