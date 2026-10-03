@@ -9,11 +9,11 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-03  
-**Code footprint:** 21 Rust source files · 14627 nonblank source lines · 47 integration-test files · 401 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 21 Rust source files · 14703 nonblank source lines · 47 integration-test files · 403 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
-- admit_pod_output binds a retry to the admission it completes: a request id already admitted for another scope or session is refused, and only a record written after the PodOutputAdmitted record counts as its follow-up, and for a state-changing output the promoted value itself must equal the admitted payload, so neither an earlier promotion nor a later one with another output (whose origin carries no output digest) is taken for it, and a hypothesis record counts only when its session, scope and derived branch id are the admission's as well
+- admit_pod_output binds a retry to the admission it completes: a request id already admitted for another scope or session is refused, and only a record written after the PodOutputAdmitted record counts as its follow-up, and for a state-changing output the promoted value itself must equal the admitted payload, so neither an earlier promotion nor a later one with another output (whose origin carries no output digest) is taken for it, a candidate record must write the admitted payload too (the digest in its origin is not recomputed from the delta), and a hypothesis record counts only when its session, scope and derived branch id are the admission's as well
 - The OIDC replay set is indexed by id and by expiry, so dropping expired token ids visits only the expired ones instead of every live id on each authentication; pruning follows the latest time ever presented and a token that had already expired at that time is refused as a replay, so a clock that reads earlier later cannot free a consumed id
 - admit_pod_output builds a hypothesis's PodOutputAdmitted and PodHypothesisCommitted events up front and checks both with the ledger's check_encodable before committing the first, so an output over the ledger limits is refused whole instead of leaving an admission whose retry reports success for a hypothesis that was never created
 - The cached JWKS document is dated from when the fetch returned, not when it started, so a fetch slower than the refresh cooldown does not hand back keys that are already stale; the cooldown for new attempts still counts from the start

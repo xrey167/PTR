@@ -120,6 +120,89 @@ pub enum PodOutputAdmission {
     },
 }
 
+/// Whether the semantic delta `encoded_delta` writes `payload` under `key`, with
+/// the same type and the same bytes. A delta that cannot be decoded, does not
+/// touch the key or writes a text value carries nothing of the kind.
+fn delta_carries_payload(encoded_delta: &[u8], key: &str, payload: &TypedPayload) -> bool {
+    ptr_semdb::SemanticDelta::decode(encoded_delta)
+        .ok()
+        .and_then(|delta| delta.upserts.get(key).cloned())
+        .is_some_and(|value| match value {
+            SemanticValue::Payload(stored) => {
+                stored.type_id == payload.type_id && stored.bytes == payload.bytes
+            }
+            SemanticValue::Text(_) => false,
+        })
+}
+
+#[cfg(test)]
+mod delta_payload_tests {
+    use super::*;
+
+    fn delta_with(key: &str, type_id: &str, bytes: &[u8]) -> Vec<u8> {
+        let mut delta = ptr_semdb::SemanticDelta::default();
+        delta.upserts.insert(
+            key.to_owned(),
+            SemanticPayload {
+                type_id: ptr_types::TypeId::from(type_id),
+                source: "pod".into(),
+                bytes: bytes.to_vec(),
+            }
+            .into(),
+        );
+        delta.encode().unwrap()
+    }
+
+    fn payload(type_id: &str, bytes: &[u8]) -> TypedPayload {
+        TypedPayload {
+            type_id: ptr_types::TypeId::from(type_id),
+            bytes: bytes.to_vec(),
+        }
+    }
+
+    #[test]
+    fn a_delta_carries_a_payload_only_under_its_key_with_its_type_and_bytes() {
+        let encoded = delta_with("key", "text", b"admitted");
+        assert!(delta_carries_payload(
+            &encoded,
+            "key",
+            &payload("text", b"admitted")
+        ));
+        assert!(!delta_carries_payload(
+            &encoded,
+            "key",
+            &payload("text", b"other")
+        ));
+        assert!(!delta_carries_payload(
+            &encoded,
+            "key",
+            &payload("json", b"admitted")
+        ));
+        assert!(!delta_carries_payload(
+            &encoded,
+            "elsewhere",
+            &payload("text", b"admitted")
+        ));
+        assert!(!delta_carries_payload(
+            b"not a delta",
+            "key",
+            &payload("text", b"admitted")
+        ));
+    }
+
+    #[test]
+    fn a_text_value_is_not_a_payload() {
+        let mut delta = ptr_semdb::SemanticDelta::default();
+        delta.upserts.insert("key".to_owned(), "admitted".into());
+        let encoded = delta.encode().unwrap();
+        assert!(!delta_carries_payload(
+            &encoded,
+            "key",
+            &payload("text", b"admitted")
+        ));
+    }
+}
+
 /// The branch a Pod hypothesis is committed under: derived from the request, the
 /// Pod and the output digest, so a retry of one admission names the same branch.
 fn pod_branch_id(
@@ -2115,13 +2198,25 @@ impl PtrRuntime {
                                 output_digest: digest,
                                 ..
                             },
+                        encoded_delta,
                         ..
                     },
                     0 | 1 | 3 | 4,
                 ) => {
+                    // The digest in the origin is not recomputed from what the
+                    // delta writes, so the stored payload is compared as well.
                     origin_request == &request.request_id.0
                         && pod == &request.pod_id.0
                         && digest == output_digest
+                        && delta_carries_payload(
+                            encoded_delta,
+                            &semantic::pod_candidate_key(
+                                &request.request_id,
+                                &request.pod_id,
+                                output_digest,
+                            ),
+                            &request.output.payload,
+                        )
                 }
                 (
                     LedgerEvent::SemanticDeltaCommitted {
@@ -2140,24 +2235,11 @@ impl PtrRuntime {
                     // itself is compared with what this admission admitted.
                     origin_request == &request.request_id.0
                         && pod == &request.pod_id.0
-                        && ptr_semdb::SemanticDelta::decode(encoded_delta)
-                            .ok()
-                            .and_then(|delta| {
-                                delta
-                                    .upserts
-                                    .get(&semantic::pod_output_key(
-                                        &request.request_id,
-                                        &request.pod_id,
-                                    ))
-                                    .cloned()
-                            })
-                            .is_some_and(|value| match value {
-                                SemanticValue::Payload(payload) => {
-                                    payload.type_id == request.output.payload.type_id
-                                        && payload.bytes == request.output.payload.bytes
-                                }
-                                SemanticValue::Text(_) => false,
-                            })
+                        && delta_carries_payload(
+                            encoded_delta,
+                            &semantic::pod_output_key(&request.request_id, &request.pod_id),
+                            &request.output.payload,
+                        )
                 }
                 _ => false,
             })
