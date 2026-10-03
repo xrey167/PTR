@@ -9,8 +9,8 @@
 > **Generated section.** Source of truth: [`component.toml`](component.toml) plus code-derived metrics from `src/`. Run `python3 scripts/update_component_docs.py --write` after editing implementation metadata. Do not hand-edit inside this block.
 
 **Maturity:** `foundation`  
-**Last reviewed:** 2026-09-27  
-**Code footprint:** 8 Rust source files · 2932 nonblank source lines · 6 integration-test files · 75 test markers (`#[test]`, `#[tokio::test]`)
+**Last reviewed:** 2026-10-03  
+**Code footprint:** 8 Rust source files · 2975 nonblank source lines · 6 integration-test files · 76 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -45,6 +45,7 @@
 - Compile-fail documentation rejects implicit confidence-to-verification/effect conversion and unqualified estimate ordering
 - Cognitive contract fixtures cover independent axes, constraints, uncertain claims, conflicting sources and revoked generations
 - PrincipalId: the name a branch or fast memory is attributed to, recorded as given (From<&str> and its public field take any string); effect attempts record a string, not a PrincipalId: one made through an admitted execution session records that session's principal, which the runtime validated when it created the session, while PtrRuntime::commit and replay record an EffectAttempted's principal as given, the empty string included; that a PrincipalId names the admitted principal is the caller's obligation
+- PodRevisionAddress::parse accepts only the spelling canonical_uri prints: exactly 64 lower-case hex digits for the semantic revision and a plain decimal generation; upper-case, signed or zero-padded spellings and multi-byte input are refused as InvalidAddress instead of aliasing one revision under several URIs or panicking on a split character
 - The crate declares its own rust-version (1.95) with a matching crates/ptr-types/clippy.toml instead of taking the workspace's 1.99, because model/burn-a0 depends on it by path and builds on 1.95; scripts/check_msrv_alignment.py holds the two equal, and a cargo +1.95.0 check of model/burn-a0 with --locked builds against it
 
 ### Missing for the target architecture
