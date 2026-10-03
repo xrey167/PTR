@@ -4,6 +4,44 @@ use sha2::{Digest, Sha256};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum KvTensorDType {
     F32,
+    Fp8E4M3,
+    Fp8E5M2,
+    NvFp4,
+    Fp4MxBlock16,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum KvCacheTier {
+    Gpu,
+    Cpu,
+    Nvme,
+    ObjectStore,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct KvCacheLayout {
+    pub page_tokens: usize,
+    pub tier: KvCacheTier,
+    pub dtype: KvTensorDType,
+}
+
+impl Default for KvCacheLayout {
+    fn default() -> Self {
+        Self {
+            page_tokens: 1,
+            tier: KvCacheTier::Cpu,
+            dtype: KvTensorDType::F32,
+        }
+    }
+}
+
+impl KvCacheLayout {
+    pub fn validate(&self) -> Result<(), KvBackendError> {
+        if self.page_tokens == 0 {
+            return Err(KvBackendError::InvalidSchema("zero KV page size".into()));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -34,6 +72,7 @@ pub struct KvLayerSnapshot {
 #[derive(Clone, Debug, PartialEq)]
 pub struct KvTensorSnapshot {
     pub schema: KvTensorSchema,
+    pub layout: KvCacheLayout,
     pub capacity_tokens: usize,
     pub sequence_length: usize,
     pub position_offset: usize,
@@ -61,6 +100,7 @@ pub enum KvBackendError {
     InvalidLayer(usize),
     ShapeMismatch,
     DtypeMismatch,
+    UnsupportedDtype,
     DeviceMismatch,
     SnapshotDigestMismatch,
     SnapshotSchemaMismatch,
@@ -99,6 +139,7 @@ pub trait KvTensorBackend: Send + Sync {
 #[derive(Clone, Debug, PartialEq)]
 pub struct InMemoryKvCache {
     pub schema: KvTensorSchema,
+    pub layout: KvCacheLayout,
     pub capacity_tokens: usize,
     pub sequence_length: usize,
     pub position_offset: usize,
@@ -118,6 +159,9 @@ impl InMemoryKvTensorBackend {
             return Err(KvBackendError::InvalidSchema(
                 "zero tensor dimension".into(),
             ));
+        }
+        if schema.dtype != KvTensorDType::F32 {
+            return Err(KvBackendError::UnsupportedDtype);
         }
         Ok(())
     }
@@ -153,7 +197,25 @@ impl InMemoryKvTensorBackend {
         }
         bytes.push(match snapshot.schema.dtype {
             KvTensorDType::F32 => 0,
+            KvTensorDType::Fp8E4M3 => 1,
+            KvTensorDType::Fp8E5M2 => 2,
+            KvTensorDType::NvFp4 => 3,
+            KvTensorDType::Fp4MxBlock16 => 4,
         });
+        bytes.push(match snapshot.layout.tier {
+            KvCacheTier::Gpu => 0,
+            KvCacheTier::Cpu => 1,
+            KvCacheTier::Nvme => 2,
+            KvCacheTier::ObjectStore => 3,
+        });
+        bytes.push(match snapshot.layout.dtype {
+            KvTensorDType::F32 => 0,
+            KvTensorDType::Fp8E4M3 => 1,
+            KvTensorDType::Fp8E5M2 => 2,
+            KvTensorDType::NvFp4 => 3,
+            KvTensorDType::Fp4MxBlock16 => 4,
+        });
+        bytes.extend_from_slice(&(snapshot.layout.page_tokens as u64).to_le_bytes());
         bytes.extend_from_slice(&(snapshot.schema.layer_count as u64).to_le_bytes());
         bytes.extend_from_slice(&(snapshot.schema.attention_heads as u64).to_le_bytes());
         bytes.extend_from_slice(&(snapshot.schema.head_dim as u64).to_le_bytes());
@@ -191,6 +253,7 @@ impl KvTensorBackend for InMemoryKvTensorBackend {
         Ok(InMemoryKvCache {
             layers: Vec::new(),
             schema,
+            layout: KvCacheLayout::default(),
             capacity_tokens,
             sequence_length: 0,
             position_offset: 0,
@@ -264,6 +327,7 @@ impl KvTensorBackend for InMemoryKvTensorBackend {
     fn snapshot(&self, cache: &Self::Cache) -> Result<KvTensorSnapshot, KvBackendError> {
         let mut snapshot = KvTensorSnapshot {
             schema: cache.schema.clone(),
+            layout: cache.layout,
             capacity_tokens: cache.capacity_tokens,
             sequence_length: cache.sequence_length,
             position_offset: cache.position_offset,
@@ -288,8 +352,10 @@ impl KvTensorBackend for InMemoryKvTensorBackend {
         if snapshot.layers.len() != snapshot.schema.layer_count {
             return Err(KvBackendError::SnapshotSchemaMismatch);
         }
+        snapshot.layout.validate()?;
         Ok(InMemoryKvCache {
             schema: snapshot.schema,
+            layout: snapshot.layout,
             capacity_tokens: snapshot.capacity_tokens,
             sequence_length: snapshot.sequence_length,
             position_offset: snapshot.position_offset,

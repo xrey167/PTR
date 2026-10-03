@@ -1,5 +1,6 @@
 use ptr_pods::{
-    InMemoryKvTensorBackend, KvTensorBackend, KvTensorDType, KvTensorSchema, TensorRef,
+    InMemoryKvTensorBackend, KvCacheLayout, KvCacheTier, KvTensorBackend, KvTensorDType,
+    KvTensorSchema, TensorRef,
 };
 use ptr_types::{AdapterVersion, DeviceId, ModelVersion};
 
@@ -224,5 +225,30 @@ fn truncate_rejects_length_beyond_current_sequence() {
     assert_eq!(
         backend.truncate(&mut cache, 2),
         Err(ptr_pods::KvBackendError::InvalidTruncation)
+    );
+}
+
+#[test]
+fn snapshot_binds_cache_layout_and_quantization_contract() {
+    let backend = InMemoryKvTensorBackend;
+    let cache = backend.allocate(schema(), 4).unwrap();
+    let snapshot = backend.snapshot(&cache).unwrap();
+    assert_eq!(snapshot.layout, KvCacheLayout::default());
+    assert_eq!(snapshot.layout.tier, KvCacheTier::Cpu);
+    assert_eq!(snapshot.layout.dtype, KvTensorDType::F32);
+
+    let mut changed = snapshot.clone();
+    changed.layout.tier = KvCacheTier::Nvme;
+    assert!(!changed.verify_digest());
+}
+
+#[test]
+fn current_f32_backend_rejects_unimplemented_quantized_storage() {
+    let backend = InMemoryKvTensorBackend;
+    let mut quantized = schema();
+    quantized.dtype = KvTensorDType::Fp8E4M3;
+    assert_eq!(
+        backend.allocate(quantized, 4),
+        Err(ptr_pods::KvBackendError::UnsupportedDtype)
     );
 }

@@ -31,8 +31,8 @@ pub use evidence::{
 };
 pub use hypothesis::{merge_hypotheses, HypothesisError, MergedPodResult, PodHypothesis};
 pub use kv::{
-    InMemoryKvCache, InMemoryKvTensorBackend, KvBackendError, KvLayerSnapshot, KvTensorBackend,
-    KvTensorDType, KvTensorSchema, KvTensorSnapshot, TensorRef,
+    InMemoryKvCache, InMemoryKvTensorBackend, KvBackendError, KvCacheLayout, KvCacheTier,
+    KvLayerSnapshot, KvTensorBackend, KvTensorDType, KvTensorSchema, KvTensorSnapshot, TensorRef,
 };
 pub use manifest::{
     ArtifactLifecycle, ExecutionManifest, LifecycleGate, LineageBinding,

@@ -2,9 +2,9 @@
 
 use crate::{
     DescriptorError, DeviceLease, DeviceLeaseError, InMemoryKvTensorBackend, KvBackendError,
-    KvLayerSnapshot, KvTensorBackend, KvTensorSchema, KvTensorSnapshot, LeaseState,
-    NeuralPodDescriptor, NeuralPodError, NeuralPodExecutor, NeuralPodLease, TensorDType, TensorRef,
-    TypedPayload,
+    KvCacheLayout, KvCacheTier, KvLayerSnapshot, KvTensorBackend, KvTensorDType, KvTensorSchema,
+    KvTensorSnapshot, LeaseState, NeuralPodDescriptor, NeuralPodError, NeuralPodExecutor,
+    NeuralPodLease, TensorDType, TensorRef, TypedPayload,
 };
 use candle_core::{DType, Device, Tensor};
 use std::path::Path;
@@ -26,6 +26,7 @@ pub struct CandleDenseExecutor {
 
 pub struct CandleKvCache {
     schema: KvTensorSchema,
+    layout: KvCacheLayout,
     capacity_tokens: usize,
     sequence_length: usize,
     position_offset: usize,
@@ -94,6 +95,11 @@ impl KvTensorBackend for CandleKvTensorBackend {
         let device_id = schema.device.clone();
         Ok(CandleKvCache {
             schema,
+            layout: KvCacheLayout {
+                page_tokens: 1,
+                tier: KvCacheTier::Gpu,
+                dtype: KvTensorDType::F32,
+            },
             capacity_tokens,
             sequence_length: 0,
             position_offset: 0,
@@ -189,6 +195,7 @@ impl KvTensorBackend for CandleKvTensorBackend {
             .collect::<Result<Vec<_>, KvBackendError>>()?;
         let mut snapshot = KvTensorSnapshot {
             schema: cache.schema.clone(),
+            layout: cache.layout,
             capacity_tokens: cache.capacity_tokens,
             sequence_length: cache.sequence_length,
             position_offset: cache.position_offset,
@@ -206,6 +213,7 @@ impl KvTensorBackend for CandleKvTensorBackend {
     ) -> Result<Self::Cache, KvBackendError> {
         if device != &snapshot.schema.device
             || snapshot.schema.device.0 != format!("cuda:{}", self.device_id)
+            || snapshot.layout.tier != KvCacheTier::Gpu
             || InMemoryKvTensorBackend::digest(&snapshot) != snapshot.digest
         {
             return Err(KvBackendError::DeviceMismatch);
