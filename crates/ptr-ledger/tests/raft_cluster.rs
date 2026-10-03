@@ -451,8 +451,10 @@ fn encode_state(events: &[CommittedEvent]) -> Vec<u8> {
 fn decode_state(bytes: &[u8]) -> Vec<u64> {
     assert_eq!(bytes.len() % 8, 0, "a state payload is whole generations");
     bytes
-        .chunks_exact(8)
-        .map(|chunk| u64::from_le_bytes(chunk.try_into().expect("eight bytes")))
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|chunk| u64::from_le_bytes(*chunk))
         .collect()
 }
 

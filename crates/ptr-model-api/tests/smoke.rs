@@ -1,14 +1,17 @@
 use ptr_model_api::{ModelEvent, ModelRequest};
-use ptr_types::{ReasoningOperator, RequestId, Revision};
+use ptr_types::{ReasoningOperator, RequestId, Revision, SemanticContext};
 
 #[test]
 fn request_and_event_contracts_construct() {
     let request = ModelRequest {
         request_id: RequestId::from("r"),
-        revision: Revision(1),
+        semantic_context: SemanticContext {
+            revision: Revision(1),
+            entries: vec![],
+        },
         raw_text: "x".into(),
     };
-    assert_eq!(request.revision, Revision(1));
+    assert_eq!(request.revision(), Revision(1));
     assert!(matches!(ModelEvent::Finished, ModelEvent::Finished));
 }
 

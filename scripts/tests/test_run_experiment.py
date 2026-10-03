@@ -298,6 +298,8 @@ class ExperimentRunnerTests(unittest.TestCase):
     def test_a_seed_run_from_a_clean_source_tree_runs_and_is_recorded(self):
         with (
             mock.patch.object(mod.experiment_records, "uncommitted_files", return_value=[]),
+            mock.patch.object(mod, "cargo_lock_record", return_value={
+                "cargo_lock_path": "Cargo.lock", "cargo_lock_sha256": mod.sha(mod.ROOT / "Cargo.lock")}),
             mock.patch.object(
                 mod, "execute_command", return_value={"exit_code": 0, "duration_ns": 1}
             ) as execute,
@@ -308,6 +310,11 @@ class ExperimentRunnerTests(unittest.TestCase):
         self.assertEqual(status, 0)
         execute.assert_called_once()
         self.assertEqual(write.call_args.args[1]["seed"], 17)
+        saved = write.call_args.args[1]
+        self.assertEqual(saved["command_cargo_lock_path"], "Cargo.lock")
+        self.assertEqual(saved["command_cargo_lock_sha256"], mod.sha(mod.ROOT / "Cargo.lock"))
+        self.assertIn("host", saved)
+        self.assertIn("git_tracked_diff_sha256", saved)
 
 
 def git(root: Path, *args: str) -> str:

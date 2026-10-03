@@ -5,5 +5,21 @@ edition.workspace = true
 rust-version.workspace = true
 publish = false
 
+[features]
+default = []
+tier-opendal = ["dep:opendal"]
+tier-opendal-fs = ["tier-opendal", "opendal/services-fs"]
+tier-opendal-s3 = ["tier-opendal", "opendal/services-s3"]
+
 [dependencies]
 ptr-types = { workspace = true }
+aes-gcm-siv = { workspace = true }
+sha2 = { workspace = true }
+zeroize = { workspace = true }
+opendal = { workspace = true, optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

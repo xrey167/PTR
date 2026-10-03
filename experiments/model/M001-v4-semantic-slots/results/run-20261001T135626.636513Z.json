@@ -1,0 +1,65 @@
+{
+  "schema_version": 2,
+  "experiment_id": "M001-v4",
+  "git_dirty": false,
+  "git_tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "host": {
+    "system": "Windows",
+    "release": "10",
+    "machine": "AMD64",
+    "cpu_model": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD",
+    "logical_cpus": 24,
+    "memory_bytes": null
+  },
+  "hardware_profile_record": {
+    "path": "hardware/a0-cpu-4core.toml",
+    "sha256": "929ce6339da92df03113c4176a59155336f123e7aed9c771db1614d0a99a0c1f",
+    "contents": {
+      "id": "a0-cpu-4core",
+      "os": "Ubuntu 24.04.4 LTS, Linux 6.18.44 x86_64",
+      "cpu": "Intel(R) Xeon(R) Processor @ 2.80GHz, 4 vCPU (4 cores, 1 thread per core, 1 socket); AVX, AVX2, AVX-512F/BW/CD/DQ/VL/VNNI",
+      "ram_gib": 15.7,
+      "gpu": "none",
+      "gpu_memory_gib": 0,
+      "precision": [
+        "fp32"
+      ],
+      "notes": "Shared cloud container: timing is noisy and is recorded as a diagnostic only. Floating-point results are reproducible bit for bit only on this CPU feature set with the same binary, because the gemm kernel dispatches on AVX-512."
+    },
+    "unspecified_fields": []
+  },
+  "git_sha": "f61b5f59e01ca8655c21d80d09968fc94b93adb2",
+  "python": "3.11.15 (main, Apr 14 2026, 14:31:26) [MSC v.1944 64 bit (AMD64)]",
+  "platform": "Windows-10-10.0.26200-SP0",
+  "manifest": {
+    "version": 1,
+    "id": "M001-v4",
+    "status": "prepared",
+    "hypothesis": "Do typed semantic slots improve OOD semantic fidelity under matched compute?",
+    "metrics": "semantic-slot accuracy; hard-constraint fidelity; token efficiency",
+    "baseline": "matched plain backbone",
+    "falsification": "Reject if slots do not improve target fidelity at matched compute.",
+    "hardware_profile": "hardware/a0-cpu-4core.toml",
+    "entrypoint": "cargo +1.95.0-x86_64-pc-windows-gnu run --release --locked --quiet --jobs 1 --manifest-path model/burn-a0/Cargo.toml --example a0_ablation -- --phase paired --experiment M001 --arms full --seed <seed> --steps <steps> --lr-file <lr_file> --data <data> --data-fnv64 <data_fnv64> --d-model <d_model>",
+    "seeds": [
+      17,
+      29,
+      43,
+      71,
+      101
+    ],
+    "results_dir": "results",
+    "required_artifacts": [
+      "run.json",
+      "metrics.json"
+    ],
+    "preregistration_sha256": "c7237639d62e9b45210825777b8249e40bbfb2d651bcb30c1e137df70ccecf55",
+    "preregistration_rules_sha256": "52c605595f9e5471a2532fc110d79dc907d83398bf1deca4f0cb1b6ad7724272"
+  },
+  "manifest_sha256": "6fe1776b3f6278ef3cfbe5aac042b3827ff23fe9e4789eec4c4f99b9a6d2fc49",
+  "cargo_lock_sha256": "521baf16417710ee195d93c5d0b2bc492424e8dc46a173a21d5217f6f4ef9d06",
+  "uv_lock_sha256": "cb972d8f7f5c918b4b307a570ebf373d4a163d93776e3ef3ee865234ff30a1c0",
+  "hardware_profile": "hardware/a0-cpu-4core.toml",
+  "status": "prepared",
+  "prepared_at": "20261001T135626.636513Z"
+}

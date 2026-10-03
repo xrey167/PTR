@@ -1,0 +1,11 @@
+# `ptr-types` is the type kernel `model/burn-a0` depends on by path, and A0 builds on
+# 1.95 (`model/burn-a0/Cargo.toml`), so this crate declares 1.95 itself rather than
+# taking the workspace's 1.99 (`Cargo.toml`), which no 1.95 build could use. Clippy
+# takes its MSRV from the nearest `clippy.toml` walking upward, so without this file
+# the crate would be linted at the root's 1.99.0 against a declared 1.95.
+#
+# `scripts/check_msrv_alignment.py` is what makes the two stay equal.
+msrv = "1.95"
+# Unchanged from the root, so this file moves the MSRV and nothing else.
+cognitive-complexity-threshold = 30
+too-many-arguments-threshold = 8

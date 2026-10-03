@@ -8,6 +8,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 BEGIN = "<!-- PTR:STATUS:BEGIN -->"
 END = "<!-- PTR:STATUS:END -->"
+# A test attribute on its own line: `#[test]`, or `#[tokio::test]` with or without
+# arguments. Counting the substring `#[test]` hid every async test (41 of them
+# when this was written), and would have counted the attribute quoted in a comment.
+TEST_ATTRIBUTE = re.compile(
+    r"^[ \t]*#\[(?:tokio::)?test(?:\([^\n]*\))?\][ \t]*(?://[^\n]*)?$", re.M
+)
 
 def load_toml(path: Path) -> dict:
     return tomllib.loads(path.read_text(encoding="utf-8"))
@@ -47,7 +53,13 @@ def registries():
 def bullet(items):
     return "\n".join(f"- {x}" for x in items) if items else "- None recorded."
 
+def generated_equivalent(current: str, expected: str) -> bool:
+    """Ignore Markdown hard-break whitespace when checking generated records."""
+    normalize = lambda value: "\n".join(line.rstrip() for line in value.splitlines())
+    return normalize(current) == normalize(expected)
+
 def code_metrics(crate_dir: Path) -> dict[str, int]:
+    """Count Rust source files, nonblank source lines, test files, and sync or async test markers."""
     source_files = (
         sorted((crate_dir / "src").rglob("*.rs"))
         if (crate_dir / "src").exists()
@@ -63,10 +75,10 @@ def code_metrics(crate_dir: Path) -> dict[str, int]:
     for path in source_files:
         text = path.read_text(encoding="utf-8")
         source_loc += sum(1 for line in text.splitlines() if line.strip())
-        test_markers += text.count("#[test]")
+        test_markers += len(TEST_ATTRIBUTE.findall(text))
     for path in test_files:
         text = path.read_text(encoding="utf-8")
-        test_markers += text.count("#[test]")
+        test_markers += len(TEST_ATTRIBUTE.findall(text))
     return {
         "files": len(source_files),
         "loc": source_loc,
@@ -75,6 +87,7 @@ def code_metrics(crate_dir: Path) -> dict[str, int]:
     }
 
 def render_section(meta: dict, exps: dict, evals: dict, metrics: dict[str, int]) -> str:
+    """Render a component README section from metadata, registries, and code metrics."""
     exp_lines = []
     for exp_id in meta.get("experiments", []):
         e = exps[exp_id]
@@ -97,7 +110,7 @@ def render_section(meta: dict, exps: dict, evals: dict, metrics: dict[str, int])
 
 **Maturity:** `{meta["maturity"]}`  
 **Last reviewed:** {meta["last_reviewed"]}  
-**Code footprint:** {metrics["files"]} Rust source files · {metrics["loc"]} nonblank source lines · {metrics["test_files"]} integration-test files · {metrics["tests"]} `#[test]` markers
+**Code footprint:** {metrics["files"]} Rust source files · {metrics["loc"]} nonblank source lines · {metrics["test_files"]} integration-test files · {metrics["tests"]} test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -144,6 +157,7 @@ def update_readme(path: Path, section: str) -> str:
     return text.replace(marker, section.strip() + "\n\n" + marker, 1)
 
 def dashboard(metas: list[dict], exps: dict, evals: dict) -> str:
+    """Render the component status dashboard with maturity and footprint totals."""
     rows = []
     maturity_counts: dict[str, int] = {}
     total_loc = total_files = total_test_files = total_tests = 0
@@ -174,7 +188,7 @@ def dashboard(metas: list[dict], exps: dict, evals: dict) -> str:
 
 **Component count:** {len(metas)}  
 **Maturity distribution:** {counts}  
-**Rust footprint:** {total_files} source files · {total_loc} nonblank source lines · {total_test_files} integration-test files · {total_tests} `#[test]` markers
+**Rust footprint:** {total_files} source files · {total_loc} nonblank source lines · {total_test_files} integration-test files · {total_tests} test markers (`#[test]`, `#[tokio::test]`)
 
 | Component | Maturity | Rust files | LOC | Test files | Tests | Implemented items | Missing items | Experiments | Evaluations |
 |---|---:|---:|---:|---:|---:|---:|---:|---|---|
@@ -234,7 +248,7 @@ def main() -> int:
             render_section(meta, exps, evals, code_metrics(crate_dir)),
         )
         current = readme.read_text(encoding="utf-8")
-        if current != expected:
+        if not generated_equivalent(current, expected):
             if args.write:
                 readme.write_text(expected, encoding="utf-8")
             else:
@@ -243,7 +257,7 @@ def main() -> int:
     status_path = ROOT / "docs/components/STATUS.md"
     expected_status = dashboard(metas, exps, evals)
     current_status = status_path.read_text(encoding="utf-8") if status_path.exists() else ""
-    if current_status != expected_status:
+    if not generated_equivalent(current_status, expected_status):
         if args.write:
             status_path.parent.mkdir(parents=True, exist_ok=True)
             status_path.write_text(expected_status, encoding="utf-8")

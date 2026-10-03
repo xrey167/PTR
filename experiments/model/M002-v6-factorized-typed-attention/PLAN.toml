@@ -1,0 +1,71 @@
+version = 1
+experiment_id = "M002-v6"
+kind = "confirmatory-successor"
+
+[supersedes]
+experiment_id = "M002-v5"
+reason = "The v5 frozen entrypoint serialized bare fold names; the Rust CLI correctly requires fold=FNV64. No v5 seed produced a metric, checkpoint, or completed record."
+
+[selection_source]
+experiment_id = "M002-v5"
+artifact = "experiments/model/M002-v5-factorized-typed-attention/pilot-selection.json"
+claimable = false
+rule = "Reuse the immutable v5 development-only selector output exactly; no pilot metric is confirmatory evidence and no hyperparameter is retuned."
+
+[confirmatory]
+seeds = [17, 29, 43, 71, 101]
+d_model = 48
+batch = 128
+steps = 1500
+learning_rate = 0.005
+folds = ["evidence-temporal", "evidence-tabular", "claim-interventional"]
+fold_binding = "Each command token is name=FNV64 from benchmarks/operator-routing-v2/splits.lock.json in this exact order."
+replicate = "Average the three folds within each seed before computing the paired 95-percent Student-t interval over five seeds."
+
+[architecture]
+mode = "FactorizedV2 versus Off"
+rank = 8
+bias_limit = 1
+metadata_dropout = 0
+router = "calibrated-cosine-v2, logit scale 5, label smoothing 0.05, consistency 0.10"
+matched_compute = "Off computes the same pair-attention operations and multiplies only the pair bias by zero."
+
+[[gate]]
+name = "ood_accuracy"
+rule = "Mean OOD accuracy delta >= 0.02 and lower paired 95-percent CI > 0."
+
+[[gate]]
+name = "positive_accuracy_each_fold"
+rule = "Mean OOD accuracy delta is positive in every confirmatory fold."
+
+[[gate]]
+name = "ood_nll"
+rule = "Upper paired 95-percent CI of OOD NLL delta <= 0."
+
+[[gate]]
+name = "ood_ece"
+rule = "Mean OOD ECE15 delta <= 0 and upper paired 95-percent CI <= 0.02."
+
+[[gate]]
+name = "iid_accuracy"
+rule = "Lower paired 95-percent CI of IID accuracy delta >= -0.01."
+
+[[gate]]
+name = "coverage"
+rule = "Every arm/fold/seed has IID coverage >= 0.90 and OOD coverage >= 0.80."
+
+[[gate]]
+name = "selective_error"
+rule = "Mean OOD selective-error delta is <= 0."
+
+[[gate]]
+name = "matched_compute"
+rule = "Identical parameters; FLOPs ratio <= 1.01; p95 latency ratio <= 1.10."
+
+[[gate]]
+name = "complete_finite_bound_evidence"
+rule = "All five seeds and three folds are present with finite metrics, matching commit/dataset/configuration identities and zero hard-validity violations."
+
+[downstream]
+M009 = "locked"
+unlock_rule = "M009 remains locked. A commit-bound M002-v6 PASS is necessary evidence, after which a separately preregistered M009 must explicitly bind the v6 decision and the inherited FactorizedV2 contract. A v5 pilot selection or a v6 NO-GO never unlocks it."

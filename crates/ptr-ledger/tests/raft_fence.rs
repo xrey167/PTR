@@ -56,11 +56,12 @@ fn at_term(term: u64) -> HardState {
 }
 
 fn entry(index: u64, term: u64) -> Entry {
-    let mut entry = Entry::default();
-    entry.index = index;
-    entry.term = term;
-    entry.data = b"an entry a fenced writer must not land".to_vec().into();
-    entry
+    Entry {
+        index,
+        term,
+        data: b"an entry a fenced writer must not land".to_vec(),
+        ..Default::default()
+    }
 }
 
 /// The storage's two files, for asserting a refusal left nothing behind.

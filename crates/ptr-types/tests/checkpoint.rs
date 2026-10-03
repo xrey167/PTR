@@ -6,7 +6,7 @@
 
 use ptr_types::{
     CheckpointError, CheckpointHeader, CodeFamily, Codebook, CodebookVersion, EncodingVersion,
-    SlotEncoding, TableSize, FORMAT_V2,
+    SlotEncoding, TableSize, FORMAT_V2, FORMAT_V3,
 };
 
 const EMBEDDED: [CodeFamily; 2] = [CodeFamily::SemanticRole, CodeFamily::EpistemicState];
@@ -223,17 +223,36 @@ fn foreign_bytes_are_not_a_checkpoint() {
 
 #[test]
 fn an_unknown_format_is_refused_rather_than_parsed_anyway() {
-    // Three rather than two: two *was* the unknown format until the slot-encoding
-    // field made it this build's own. A test that names a version as "unknown" has to
+    // Four rather than three: three added the architecture binding. A test that names a version as "unknown" has to
     // move when that version arrives, or it silently starts asserting that the
     // current layout is refused — and passes for a while because it is comparing a
     // refusal it no longer gets to a value it no longer means.
     let mut bytes = valid(&[1, 2, 3]);
-    bytes[8..10].copy_from_slice(&3_u16.to_le_bytes());
+    bytes[8..10].copy_from_slice(&4_u16.to_le_bytes());
     assert_eq!(
-        CheckpointHeader::read(&bytes).expect_err("format 3 is unknown here"),
-        CheckpointError::UnknownFormat { format: 3 }
+        CheckpointHeader::read(&bytes).expect_err("format 4 is unknown here"),
+        CheckpointError::UnknownFormat { format: 4 }
     );
+}
+
+#[test]
+fn format_three_round_trips_opaque_architecture_bytes() {
+    let book = Codebook::V1;
+    let expected = header(&book).with_architecture([7_u8; 32]);
+    let bytes = expected.write(&[1, 2, 3]);
+    assert_eq!(u16::from_le_bytes([bytes[8], bytes[9]]), FORMAT_V3);
+    let (actual, payload) = CheckpointHeader::read(&bytes).expect("format 3 reads");
+    assert_eq!(actual, expected);
+    assert_eq!(payload, [1, 2, 3]);
+}
+
+#[test]
+fn format_two_is_read_as_explicitly_unbound_legacy() {
+    let book = Codebook::V1;
+    let bytes = header(&book).write_legacy_v2(&[4, 5]);
+    let (actual, payload) = CheckpointHeader::read(&bytes).expect("format 2 remains readable");
+    assert!(actual.architecture.is_empty());
+    assert_eq!(payload, [4, 5]);
 }
 
 #[test]

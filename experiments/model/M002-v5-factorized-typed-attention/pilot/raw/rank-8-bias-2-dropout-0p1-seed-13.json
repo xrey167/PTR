@@ -1,0 +1,86 @@
+{
+  "candidate": {
+    "bias_limit": 2,
+    "metadata_dropout": 0.1,
+    "rank": 8
+  },
+  "command": [
+    "C:\\Users\\ReyDa\\.rustup\\toolchains\\1.95.0-x86_64-pc-windows-gnu\\bin\\cargo.exe",
+    "run",
+    "--release",
+    "--locked",
+    "--quiet",
+    "--jobs",
+    "1",
+    "--manifest-path",
+    "model/burn-a0/Cargo.toml",
+    "--example",
+    "a0_ablation",
+    "--",
+    "--phase",
+    "paired-v5",
+    "--experiment",
+    "M002-v5",
+    "--arms",
+    "factorized-v2,factorized-v2-off",
+    "--seed",
+    "13",
+    "--steps",
+    "1500",
+    "--lr",
+    "0.005",
+    "--data",
+    "datasets/generated/operator_routing_v2",
+    "--folds",
+    "evidence-interventional=6a6877785baf5594,claim-temporal-development=c7831ad783c22826",
+    "--d-model",
+    "48",
+    "--rank",
+    "8",
+    "--bias-limit",
+    "2",
+    "--metadata-dropout",
+    "0.1"
+  ],
+  "duration_seconds": 467.875,
+  "execution_provenance": {
+    "cargo": {
+      "path": "C:\\Users\\ReyDa\\.rustup\\toolchains\\1.95.0-x86_64-pc-windows-gnu\\bin\\cargo.exe",
+      "sha256": "a9c867d4bdf87f224b3d6ff724845579272b0b2d0673554362809756b3d4290f",
+      "version": "cargo 1.95.0 (f2d3ce0bd 2026-03-21)"
+    },
+    "environment_sha256": "c9db8ae196a68aa5a9ac0e0c34561c1f20affaa9182549127c4d4b7208e81d89",
+    "hardware_profile": {
+      "path": "hardware/a0-cpu-12core-windows.toml",
+      "sha256": "9ce3991dd8bb0683ce0b7e64921c173917d848937dce8634813b01289ddba5ce"
+    },
+    "host": {
+      "cpu_count": 24,
+      "machine": "AMD64",
+      "processor": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD",
+      "python_implementation": "CPython",
+      "python_version": "3.11.15",
+      "release": "10",
+      "system": "Windows"
+    },
+    "resume_environment_sha256": "95fe0498683436986bd57f1b18bb0e09c7ebbb2c71278a4c6469c33094d6f572",
+    "rustc": {
+      "path": "C:\\Users\\ReyDa\\.rustup\\toolchains\\1.95.0-x86_64-pc-windows-gnu\\bin\\rustc.exe",
+      "sha256": "d59a05c17b77b717c2e57f318c8598482f11c21e6f9aed7c10f26101cab8befc",
+      "version": "rustc 1.95.0 (59807616e 2026-04-14)\nbinary: rustc\ncommit-hash: 59807616e1fa2540724bfbac14d7976d7e4a3860\ncommit-date: 2026-04-14\nhost: x86_64-pc-windows-gnu\nrelease: 1.95.0\nLLVM version: 22.1.2"
+    },
+    "source_tree_sha": "ce5755559332ead63d6ebbfb798e68ee88972122"
+  },
+  "exit_code": 0,
+  "fold_digests": {
+    "claim-temporal-development": "c7831ad783c22826",
+    "evidence-interventional": "6a6877785baf5594"
+  },
+  "schema_version": 3,
+  "seed": 13,
+  "source_sha": "8a777a33fce57fe474016a8c8d2072cd45fd41ed",
+  "stderr_file": "rank-8-bias-2-dropout-0p1-seed-13.stderr",
+  "stderr_sha256": "4defd5b5b42cdf7098073ed7eb47c93a391371a08a27c18ddd3f4a50f62ecac0",
+  "stdout_file": "rank-8-bias-2-dropout-0p1-seed-13.stdout",
+  "stdout_sha256": "e95c4865f9eea465324a4f0f6a3991ec5ab47e76c4ba730e08117e516480e596"
+}

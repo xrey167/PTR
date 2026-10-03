@@ -1,3 +1,92 @@
 suite = "operator-routing"
 version = 1
 metrics = ["route_accuracy", "cost_adjusted_regret", "task_success"]
+
+# Operator-routing v1. README.md in this directory is the specification; the
+# values below are the ones the generator, the scorer and the Rust loader pin.
+generator = "benchmarks/operator-routing/generator.py"
+generator_version = 1
+benchmark_seed = 20260925
+scorer = "benchmarks/operator-routing/score.py"
+references = "benchmarks/operator-routing/references.py"
+data_dir = "datasets/generated/operator_routing_v1"
+lock = "benchmarks/operator-routing/splits.lock.json"
+schema = "datasets/schemas/operator_route.schema.json"
+type_codebook_version = 1
+type_codebook_fingerprint = "2b6f8175a7a7bb648910e7acb17dcfcff5149834f2fe87355c5d2c4524c113a3"
+n_slots = 6
+vocab = 216
+n_operators = 11
+
+# z_k is the label rule's utility of operator k for an example (README.md, "Label
+# rule"), recomputed by score.py from the TSV fields; label = the rule's argmax;
+# pred = the arm's prediction (argmax of router_logits, exact ties to the lowest
+# code), read as one hex digit per example from `PRED <arm> <split> <hex>` lines.
+[metric.route_accuracy]
+primary = true
+definition = "mean over the split's examples of [pred == label]"
+direction = "higher_is_better"
+range = [0.0, 1.0]
+
+[metric.cost_adjusted_regret]
+primary = false
+definition = "mean over the split's examples of (z_label - z_pred), in rule utility units; the budget penalty (cost overrun) is part of z"
+direction = "lower_is_better"
+minimum = 0.0
+note = "0 is perfect; a prediction tied with the label (within 1e-9) contributes a value of magnitude at most 1e-9, which can be slightly negative"
+
+[metric.task_success]
+primary = false
+definition = "mean over the split's examples of [z_label - z_pred <= 0.25], compared as z_label - z_pred <= 0.25 + 1e-9"
+direction = "higher_is_better"
+range = [0.0, 1.0]
+threshold = 0.25
+
+# Subset accuracies (route_accuracy restricted to a subset), reported per split.
+[subsets]
+decisive = ["validity", "regime", "budget", "confidence", "epistemic"]
+decisive_splits = ["test_iid", "ood_compose_epi", "ood_compose_regime", "ood_distractors", "ood_validity", "ood_payload"]
+heldout = "ood_compose_epi examples tagged heldout"
+transfer = "ood_compose_regime examples tagged transfer (the strict transfer subset)"
+clear_margin = "examples with margin >= 0.25, compared as margin >= 0.25 - 1e-9"
+
+# Diagnostics printed by the Rust binary and passed through by score.py.
+[passthrough]
+metrics = ["nll", "ece15"]
+
+[splits.train]
+n = 16000
+kind = "train"
+
+[splits.val]
+n = 2000
+kind = "iid"
+
+[splits.test_iid]
+n = 3000
+kind = "iid"
+
+[splits.ood_compose_epi]
+n = 3000
+kind = "ood"
+change = "the 9 held-out (role, epistemic) pairs occur; accepted only with a Live, cb > 0 held-out fact"
+
+[splits.ood_compose_regime]
+n = 3000
+kind = "ood"
+change = "R = interventional and Evidence is allowed; accepted only with a Live, cb > 0 Evidence fact"
+
+[splits.ood_distractors]
+n = 3000
+kind = "ood"
+change = "46 filler tokens instead of 10 (T = 72)"
+
+[splits.ood_validity]
+n = 3000
+kind = "ood"
+change = "p_live = 0.50 instead of 0.78"
+
+[splits.ood_payload]
+n = 3000
+kind = "ood"
+change = "entity ids from 256..511 instead of 0..255"

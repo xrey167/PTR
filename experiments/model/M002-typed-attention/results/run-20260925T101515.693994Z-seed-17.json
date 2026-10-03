@@ -1,0 +1,112 @@
+{
+  "schema_version": 2,
+  "experiment_id": "M002",
+  "git_sha": "45b2d5491e40171dd242d0bac6cf7d78d9c70746",
+  "git_dirty": false,
+  "git_tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "python": "3.11.15 (main, Mar  3 2026, 09:26:23) [GCC 13.3.0]",
+  "platform": "Linux-6.18.44-fc-v37-x86_64-with-glibc2.39",
+  "host": {
+    "system": "Linux",
+    "release": "6.18.44-fc-v37",
+    "machine": "x86_64",
+    "cpu_model": "Intel(R) Xeon(R) Processor @ 2.80GHz",
+    "logical_cpus": 4,
+    "memory_bytes": 16877547520
+  },
+  "manifest": {
+    "version": 1,
+    "id": "M002",
+    "status": "planned",
+    "hypothesis": "Do type/epistemic/validity biases improve constraint retention?",
+    "metrics": "hard violations; calibration; latency",
+    "baseline": "same model without typed biases",
+    "falsification": "Reject if typed attention has no robust fidelity/calibration gain.",
+    "hardware_profile": "hardware/a0-cpu-4core.toml",
+    "entrypoint": "",
+    "seeds": [
+      17,
+      29,
+      43,
+      71,
+      101
+    ],
+    "results_dir": "results",
+    "required_artifacts": [
+      "run.json",
+      "metrics.json"
+    ],
+    "a0_ablation_entrypoint": "cargo +1.95.0 run --release --locked --offline --quiet --target-dir model/burn-a0/target-a0-study --manifest-path model/burn-a0/Cargo.toml --example a0_ablation -- --phase eval --experiment M002 --arms no-typed-attention,raw-blind --seed <seed> --steps 1500 --lr-file research/falsification/A0-ablations-v1/lr_selection.tsv --data datasets/generated/operator_routing_v1 --data-fnv64 0ad71688f09b0d0d --d-model 48",
+    "a0_sweep_entrypoint": "cargo +1.95.0 run --release --locked --offline --quiet --target-dir model/burn-a0/target-a0-study --manifest-path model/burn-a0/Cargo.toml --example a0_ablation -- --phase sweep --experiment M002 --arms no-typed-attention,raw-blind --seed <seed> --steps 1500 --lr <lr> --data datasets/generated/operator_routing_v1 --data-fnv64 0ad71688f09b0d0d --d-model 48",
+    "a0_contingency_entrypoint": "cargo +1.95.0 run --release --locked --offline --quiet --target-dir model/burn-a0/target-a0-study --manifest-path model/burn-a0/Cargo.toml --example a0_ablation -- --phase eval --experiment M002 --arms <arms> --seed <seed> --steps 4000 --lr-file research/falsification/A0-ablations-v1/lr_selection.tsv --data datasets/generated/operator_routing_v1 --data-fnv64 0ad71688f09b0d0d --d-model 48"
+  },
+  "manifest_sha256": "5d8c33990e80ed72dd51c04151a7a1ad04c74c29081a220661aa57976712a4bc",
+  "cargo_lock_sha256": "6a17ed66e125605f9371e4d8940fcad2561706a94ec4428a95d52d8c8afc51a1",
+  "uv_lock_sha256": "cb972d8f7f5c918b4b307a570ebf373d4a163d93776e3ef3ee865234ff30a1c0",
+  "hardware_profile": "hardware/a0-cpu-4core.toml",
+  "hardware_profile_record": {
+    "path": "hardware/a0-cpu-4core.toml",
+    "sha256": "929ce6339da92df03113c4176a59155336f123e7aed9c771db1614d0a99a0c1f",
+    "contents": {
+      "id": "a0-cpu-4core",
+      "os": "Ubuntu 24.04.4 LTS, Linux 6.18.44 x86_64",
+      "cpu": "Intel(R) Xeon(R) Processor @ 2.80GHz, 4 vCPU (4 cores, 1 thread per core, 1 socket); AVX, AVX2, AVX-512F/BW/CD/DQ/VL/VNNI",
+      "ram_gib": 15.7,
+      "gpu": "none",
+      "gpu_memory_gib": 0,
+      "precision": [
+        "fp32"
+      ],
+      "notes": "Shared cloud container: timing is noisy and is recorded as a diagnostic only. Floating-point results are reproducible bit for bit only on this CPU feature set with the same binary, because the gemm kernel dispatches on AVX-512."
+    },
+    "unspecified_fields": []
+  },
+  "status": "completed",
+  "started_at": "20260925T101515.693994Z",
+  "entrypoint": "a0_sweep_entrypoint",
+  "seed": 17,
+  "parameters": {
+    "lr": "0.0125"
+  },
+  "command": [
+    "cargo",
+    "+1.95.0",
+    "run",
+    "--release",
+    "--locked",
+    "--offline",
+    "--quiet",
+    "--target-dir",
+    "model/burn-a0/target-a0-study",
+    "--manifest-path",
+    "model/burn-a0/Cargo.toml",
+    "--example",
+    "a0_ablation",
+    "--",
+    "--phase",
+    "sweep",
+    "--experiment",
+    "M002",
+    "--arms",
+    "no-typed-attention,raw-blind",
+    "--seed",
+    "17",
+    "--steps",
+    "1500",
+    "--lr",
+    "0.0125",
+    "--data",
+    "datasets/generated/operator_routing_v1",
+    "--data-fnv64",
+    "0ad71688f09b0d0d",
+    "--d-model",
+    "48"
+  ],
+  "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
+  "finished_at": "2026-09-25T10:17:01.737556+00:00",
+  "exit_code": 0,
+  "stdout": "{\"row\":\"data\",\"data_fnv64\":\"0ad71688f09b0d0d\",\"label_fnv64_train\":\"89b416af24b05a74\",\"label_fnv64_val\":\"f5a682a6e264f087\",\"label_fnv64_test_iid\":\"8aa96376d8db568e\",\"label_fnv64_ood_compose_epi\":\"6a1f66bea83db2b3\",\"label_fnv64_ood_compose_regime\":\"aa3b11bf19ad056c\",\"label_fnv64_ood_distractors\":\"509c7f3bc62c98db\",\"label_fnv64_ood_validity\":\"5ada2d0231cd1a35\",\"label_fnv64_ood_payload\":\"cbcdf0c3584760ad\"}\n{\"row\":\"meta\",\"arm\":\"no-typed-attention\",\"typed_attention\":\"off\",\"typed_query\":\"on\",\"latent_steps\":\"2\",\"latent_nonlinearity\":\"on\",\"frozen_router\":\"off\",\"batch\":\"typed\",\"lr\":0.0125,\"steps\":1500,\"total_params\":33324,\"effective_params\":23723,\"final_train_loss\":0.14558511972427368,\"nan\":0}\n{\"row\":\"sweep\",\"arm\":\"no-typed-attention\",\"lr\":0.0125,\"val_accuracy\":0.8995,\"nan\":0}\n{\"row\":\"meta\",\"arm\":\"raw-blind\",\"typed_attention\":\"on\",\"typed_query\":\"on\",\"latent_steps\":\"2\",\"latent_nonlinearity\":\"on\",\"frozen_router\":\"off\",\"batch\":\"raw-blind\",\"lr\":0.0125,\"steps\":1500,\"total_params\":33324,\"effective_params\":13500,\"final_train_loss\":0.4592108130455017,\"nan\":0}\n{\"row\":\"sweep\",\"arm\":\"raw-blind\",\"lr\":0.0125,\"val_accuracy\":0.7595,\"nan\":0}\n",
+  "stderr": "timing phase=sweep arm=no-typed-attention ms_per_step=42.988\ntiming phase=sweep arm=raw-blind ms_per_step=27.075\n",
+  "launch_error": null,
+  "duration_ns": 106006361453
+}

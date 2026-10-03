@@ -30,7 +30,9 @@ $$;
 -- and an operation carries exactly the value columns of its kind.
 ALTER TABLE {{work}}.branch_op
     ADD CONSTRAINT branch_op_key_not_reserved
-        CHECK (NOT starts_with(key, 'request:') AND NOT starts_with(key, 'pod-output:'))
+        CHECK (NOT starts_with(key, 'request:')
+            AND NOT starts_with(key, 'pod-output:')
+            AND NOT starts_with(key, 'pod-candidate:'))
         NOT VALID,
     ADD CONSTRAINT branch_op_member_not_empty
         CHECK (member IS NULL OR member <> '') NOT VALID,

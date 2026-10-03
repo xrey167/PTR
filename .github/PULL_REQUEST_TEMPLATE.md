@@ -16,9 +16,6 @@
 
 ## Checks
 ```
-make docs-check
-make repo-check
-cargo fmt --all -- --check
-cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
+make ci-local   # everything .github/workflows/ci.yml runs
+make a0         # when model/burn-a0, crates/ptr-types, root Cargo.toml, the codebook or crates/ptr-runtime/tests/fixtures/ptr-a0-v1.ckpt changed
 ```

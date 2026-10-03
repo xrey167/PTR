@@ -24,8 +24,12 @@
 //! Every field is length-prefixed and bounded, every enumeration crosses as an
 //! explicit code from a two-way table rather than a cast of a discriminant, and a
 //! frame that disagrees with itself is refused whole.
+use ptr_pods::ProtocolBinding;
 use ptr_protocol::TypedPayload;
-use ptr_types::{CapabilityId, TypeId};
+use ptr_types::{
+    ArtifactId, CapabilityId, Generation, IdentityContext, MeshEndpointBinding, MeshRouteKind,
+    PeerId, PodAddress, PodRevisionAddress, Revision, SessionId, TraceId, TypeId,
+};
 use sha2::{Digest, Sha256};
 use std::fmt;
 
@@ -42,6 +46,13 @@ const DIGEST_DOMAIN: &[u8] = b"PTRPW001-REQUEST";
 
 /// The only frame layout this build writes and reads.
 pub const FORMAT_V1: u16 = 1;
+
+/// Generation-bound frame layout. V1 remains wire-compatible and is limited to
+/// legacy Pure/Read calls; V2 binds the artifact, manifest, generation and
+/// semantic revision before a peer can invoke a Pod.
+pub const FORMAT_V2: u16 = 2;
+/// Address-bound extension of V2. FORMAT_V2 remains readable for legacy peers.
+pub const FORMAT_V3: u16 = 3;
 
 /// Bound on one frame in either direction. A peer does not get to decide how much
 /// a receiver reads.
@@ -105,6 +116,148 @@ pub struct PodAnswer {
     pub request_digest: [u8; 32],
     /// What happened.
     pub outcome: PodOutcome,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PodRequestV2 {
+    pub address: Option<PodAddressBinding>,
+    /// V3-only binding to the immutable execution context.
+    pub execution_manifest: Option<[u8; 32]>,
+    pub addressed_to: String,
+    pub request_id: u64,
+    pub artifact_id: ArtifactId,
+    pub manifest_hash: [u8; 32],
+    pub generation: Generation,
+    pub revision: Revision,
+    /// Stateful calls set both fields; pure/read V2 calls may leave both absent.
+    pub placement_epoch: Option<u64>,
+    pub fencing_token: Option<u128>,
+    pub identity_digest: [u8; 32],
+    pub session_id: SessionId,
+    pub policy_revision: Revision,
+    pub capability: CapabilityId,
+    pub expect_protocol: u32,
+    pub payload: TypedPayload,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PodAnswerV2 {
+    pub address: Option<PodAddressBinding>,
+    /// V3-only echo of the request's execution-manifest binding.
+    pub execution_manifest: Option<[u8; 32]>,
+    pub responder: String,
+    pub request_id: u64,
+    pub request_digest: [u8; 32],
+    pub generation: Generation,
+    pub revision: Revision,
+    pub placement_epoch: Option<u64>,
+    pub fencing_token: Option<u128>,
+    pub identity_digest: [u8; 32],
+    pub session_id: SessionId,
+    pub policy_revision: Revision,
+    pub outcome: PodOutcome,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PodAddressBinding {
+    pub source: Option<PodAddress>,
+    pub destination: PodRevisionAddress,
+    pub trace_id: TraceId,
+    pub hop_limit: u16,
+    pub visited: Vec<PodAddress>,
+    pub protocol: Option<ProtocolBinding>,
+    pub mesh: Option<MeshEndpointBinding>,
+}
+
+impl PodAddressBinding {
+    pub fn placeholder() -> Self {
+        Self {
+            source: None,
+            destination: PodRevisionAddress {
+                address: PodAddress {
+                    project: "malformed".into(),
+                    namespace: "malformed".into(),
+                    pod_id: "malformed".into(),
+                },
+                semantic_revision: [1; 32],
+                generation: Generation(0),
+            },
+            trace_id: "malformed".into(),
+            hop_limit: 1,
+            visited: Vec::new(),
+            protocol: None,
+            mesh: None,
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), FrameError> {
+        self.destination
+            .validate()
+            .map_err(|_| FrameError::InvalidField {
+                field: "destination",
+            })?;
+        if self.trace_id.0.is_empty() {
+            return Err(FrameError::InvalidField { field: "trace_id" });
+        }
+        if self.hop_limit == 0 {
+            return Err(FrameError::InvalidField { field: "hop_limit" });
+        }
+        if self.visited.len() > 64 {
+            return Err(FrameError::InvalidField { field: "visited" });
+        }
+        for address in &self.visited {
+            address
+                .validate()
+                .map_err(|_| FrameError::InvalidField { field: "visited" })?;
+            if *address == self.destination.address {
+                return Err(FrameError::InvalidField { field: "visited" });
+            }
+        }
+        let mut unique = self.visited.clone();
+        unique.sort();
+        unique.dedup();
+        if unique.len() != self.visited.len() {
+            return Err(FrameError::InvalidField { field: "visited" });
+        }
+        if let Some(source) = &self.source {
+            source
+                .validate()
+                .map_err(|_| FrameError::InvalidField { field: "source" })?;
+            if source.project != self.destination.address.project
+                || source.namespace != self.destination.address.namespace
+            {
+                return Err(FrameError::InvalidField {
+                    field: "address_scope",
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PodAdmissionBinding {
+    pub identity_digest: [u8; 32],
+    pub session_id: SessionId,
+    pub policy_revision: Revision,
+}
+
+impl PodAdmissionBinding {
+    pub fn from_identity(
+        identity: &IdentityContext,
+        policy_revision: Revision,
+    ) -> Result<Self, FrameError> {
+        if !identity.has_valid_digest() {
+            return Err(FrameError::InvalidField {
+                field: "identity_digest",
+            });
+        }
+        Ok(Self {
+            identity_digest: identity.identity_digest,
+            session_id: identity.session_id.clone(),
+            policy_revision,
+        })
+    }
 }
 
 /// The outcome an answer reports.
@@ -251,6 +404,8 @@ pub enum FrameError {
     UnknownCode { field: &'static str, code: u64 },
     /// A field that should be UTF-8 and is not.
     NotUtf8 { field: &'static str },
+    /// A typed field failed local admission validation.
+    InvalidField { field: &'static str },
 }
 
 impl FrameError {
@@ -264,6 +419,7 @@ impl FrameError {
             Self::TooLarge { .. } => "PTR_PODW_FRAME_TOO_LARGE",
             Self::UnknownCode { .. } => "PTR_PODW_UNKNOWN_CODE",
             Self::NotUtf8 { .. } => "PTR_PODW_NOT_UTF8",
+            Self::InvalidField { .. } => "PTR_PODW_INVALID_FIELD",
         }
     }
 }
@@ -396,6 +552,184 @@ pub fn encode_answer(answer: &PodAnswer) -> Result<Vec<u8>, FrameError> {
     bound_frame(frame)
 }
 
+pub fn encode_request_v2(request: &PodRequestV2) -> Result<Vec<u8>, FrameError> {
+    let mut frame = Vec::with_capacity(192 + request.payload.bytes.len());
+    frame.extend_from_slice(REQUEST_MAGIC);
+    let format = if request.address.is_some() {
+        FORMAT_V3
+    } else {
+        FORMAT_V2
+    };
+    frame.extend_from_slice(&format.to_le_bytes());
+    if let Some(address) = &request.address {
+        put_address_binding(&mut frame, address)?;
+        frame.extend_from_slice(&request.execution_manifest.ok_or(FrameError::InvalidField {
+            field: "execution_manifest",
+        })?);
+    } else if request.execution_manifest.is_some() {
+        return Err(FrameError::InvalidField {
+            field: "execution_manifest",
+        });
+    }
+    put_str(&mut frame, "addressed_to", &request.addressed_to)?;
+    frame.extend_from_slice(&request.request_id.to_le_bytes());
+    put_str(&mut frame, "artifact_id", &request.artifact_id.0)?;
+    frame.extend_from_slice(&request.manifest_hash);
+    frame.extend_from_slice(&request.generation.0.to_le_bytes());
+    frame.extend_from_slice(&request.revision.0.to_le_bytes());
+    put_state_binding(&mut frame, request.placement_epoch, request.fencing_token)?;
+    frame.extend_from_slice(&request.identity_digest);
+    put_str(&mut frame, "session_id", &request.session_id.0)?;
+    frame.extend_from_slice(&request.policy_revision.0.to_le_bytes());
+    put_str(&mut frame, "capability", &request.capability.0)?;
+    frame.extend_from_slice(&request.expect_protocol.to_le_bytes());
+    put_str(&mut frame, "input_type", &request.payload.type_id.0)?;
+    put_bytes(
+        &mut frame,
+        "payload",
+        &request.payload.bytes,
+        MAX_BODY_BYTES,
+    )?;
+    bound_frame(frame)
+}
+
+pub fn decode_request_v2(bytes: &[u8]) -> Result<PodRequestV2, FrameError> {
+    let (mut at, has_address) = open_v2_compatible(bytes, REQUEST_MAGIC)?;
+    let address = has_address
+        .then(|| take_address_binding(bytes, &mut at))
+        .transpose()?;
+    let execution_manifest = has_address
+        .then(|| take_digest(bytes, &mut at))
+        .transpose()?;
+    let addressed_to = take_str(bytes, &mut at, "addressed_to")?;
+    let request_id = take_u64(bytes, &mut at, "request_id")?;
+    let artifact_id = ArtifactId(take_str(bytes, &mut at, "artifact_id")?);
+    let manifest_hash = take_digest(bytes, &mut at)?;
+    let generation = Generation(take_u64(bytes, &mut at, "generation")?);
+    let revision = Revision(take_u64(bytes, &mut at, "revision")?);
+    let (placement_epoch, fencing_token) = take_state_binding(bytes, &mut at)?;
+    let identity_digest = take_digest(bytes, &mut at)?;
+    let session_id = SessionId(take_str(bytes, &mut at, "session_id")?);
+    let policy_revision = Revision(take_u64(bytes, &mut at, "policy_revision")?);
+    let capability = CapabilityId(take_str(bytes, &mut at, "capability")?);
+    let expect_protocol = take_u32(bytes, &mut at, "expect_protocol")?;
+    let type_id = TypeId(take_str(bytes, &mut at, "input_type")?);
+    let payload = take_bytes(bytes, &mut at, "payload", MAX_BODY_BYTES)?;
+    close(bytes, at)?;
+    Ok(PodRequestV2 {
+        address,
+        execution_manifest,
+        addressed_to,
+        request_id,
+        artifact_id,
+        manifest_hash,
+        generation,
+        revision,
+        placement_epoch,
+        fencing_token,
+        identity_digest,
+        session_id,
+        policy_revision,
+        capability,
+        expect_protocol,
+        payload: TypedPayload {
+            type_id,
+            bytes: payload,
+        },
+    })
+}
+
+pub fn encode_answer_v2(answer: &PodAnswerV2) -> Result<Vec<u8>, FrameError> {
+    let mut frame = Vec::with_capacity(192);
+    frame.extend_from_slice(ANSWER_MAGIC);
+    let format = if answer.address.is_some() {
+        FORMAT_V3
+    } else {
+        FORMAT_V2
+    };
+    frame.extend_from_slice(&format.to_le_bytes());
+    if let Some(address) = &answer.address {
+        put_address_binding(&mut frame, address)?;
+        frame.extend_from_slice(&answer.execution_manifest.ok_or(FrameError::InvalidField {
+            field: "execution_manifest",
+        })?);
+    } else if answer.execution_manifest.is_some() {
+        return Err(FrameError::InvalidField {
+            field: "execution_manifest",
+        });
+    }
+    put_str(&mut frame, "responder", &answer.responder)?;
+    frame.extend_from_slice(&answer.request_id.to_le_bytes());
+    frame.extend_from_slice(&answer.request_digest);
+    frame.extend_from_slice(&answer.generation.0.to_le_bytes());
+    frame.extend_from_slice(&answer.revision.0.to_le_bytes());
+    put_state_binding(&mut frame, answer.placement_epoch, answer.fencing_token)?;
+    frame.extend_from_slice(&answer.identity_digest);
+    put_str(&mut frame, "session_id", &answer.session_id.0)?;
+    frame.extend_from_slice(&answer.policy_revision.0.to_le_bytes());
+    frame.push(outcome_code(&answer.outcome));
+    match &answer.outcome {
+        PodOutcome::Answered { output } => {
+            put_str(&mut frame, "output_type", &output.type_id.0)?;
+            put_bytes(&mut frame, "output", &output.bytes, MAX_BODY_BYTES)?;
+        }
+        PodOutcome::Refused { code } => frame.extend_from_slice(&refusal_code(*code).to_le_bytes()),
+    }
+    bound_frame(frame)
+}
+
+pub fn decode_answer_v2(bytes: &[u8]) -> Result<PodAnswerV2, FrameError> {
+    let (mut at, has_address) = open_v2_compatible(bytes, ANSWER_MAGIC)?;
+    let address = has_address
+        .then(|| take_address_binding(bytes, &mut at))
+        .transpose()?;
+    let execution_manifest = has_address
+        .then(|| take_digest(bytes, &mut at))
+        .transpose()?;
+    let responder = take_str(bytes, &mut at, "responder")?;
+    let request_id = take_u64(bytes, &mut at, "request_id")?;
+    let request_digest = take_digest(bytes, &mut at)?;
+    let generation = Generation(take_u64(bytes, &mut at, "generation")?);
+    let revision = Revision(take_u64(bytes, &mut at, "revision")?);
+    let (placement_epoch, fencing_token) = take_state_binding(bytes, &mut at)?;
+    let identity_digest = take_digest(bytes, &mut at)?;
+    let session_id = SessionId(take_str(bytes, &mut at, "session_id")?);
+    let policy_revision = Revision(take_u64(bytes, &mut at, "policy_revision")?);
+    let outcome = match take_u8(bytes, &mut at, "outcome")? {
+        1 => PodOutcome::Answered {
+            output: TypedPayload {
+                type_id: TypeId(take_str(bytes, &mut at, "output_type")?),
+                bytes: take_bytes(bytes, &mut at, "output", MAX_BODY_BYTES)?,
+            },
+        },
+        2 => PodOutcome::Refused {
+            code: refusal_from_code(take_u16(bytes, &mut at, "refusal")?)?,
+        },
+        other => {
+            return Err(FrameError::UnknownCode {
+                field: "outcome",
+                code: u64::from(other),
+            })
+        }
+    };
+    close(bytes, at)?;
+    Ok(PodAnswerV2 {
+        address,
+        execution_manifest,
+        responder,
+        request_id,
+        request_digest,
+        generation,
+        revision,
+        placement_epoch,
+        fencing_token,
+        identity_digest,
+        session_id,
+        policy_revision,
+        outcome,
+    })
+}
+
 /// Decode an answer, or refuse it.
 pub fn decode_answer(bytes: &[u8]) -> Result<PodAnswer, FrameError> {
     let mut at = open(bytes, ANSWER_MAGIC)?;
@@ -443,6 +777,10 @@ fn bound_frame(frame: Vec<u8>) -> Result<Vec<u8>, FrameError> {
 /// Check the bound, the magic and the layout version, and return where the fields
 /// begin.
 fn open(bytes: &[u8], magic: &[u8; 8]) -> Result<usize, FrameError> {
+    open_format(bytes, magic, FORMAT_V1)
+}
+
+fn open_format(bytes: &[u8], magic: &[u8; 8], expected: u16) -> Result<usize, FrameError> {
     if bytes.len() > MAX_FRAME_BYTES {
         return Err(FrameError::TooLarge {
             field: "frame",
@@ -455,10 +793,30 @@ fn open(bytes: &[u8], magic: &[u8; 8]) -> Result<usize, FrameError> {
     }
     let mut at = magic.len();
     let format = take_u16(bytes, &mut at, "format")?;
-    if format != FORMAT_V1 {
+    if format != expected {
         return Err(FrameError::UnknownFormat { format });
     }
     Ok(at)
+}
+
+fn open_v2_compatible(bytes: &[u8], magic: &[u8; 8]) -> Result<(usize, bool), FrameError> {
+    if bytes.len() > MAX_FRAME_BYTES {
+        return Err(FrameError::TooLarge {
+            field: "frame",
+            bytes: bytes.len(),
+            limit: MAX_FRAME_BYTES,
+        });
+    }
+    if bytes.len() < magic.len() || &bytes[..magic.len()] != magic {
+        return Err(FrameError::WrongKind);
+    }
+    let mut at = magic.len();
+    let format = take_u16(bytes, &mut at, "format")?;
+    match format {
+        FORMAT_V2 => Ok((at, false)),
+        FORMAT_V3 => Ok((at, true)),
+        other => Err(FrameError::UnknownFormat { format: other }),
+    }
 }
 
 /// Refuse bytes after the last field.
@@ -493,6 +851,271 @@ fn put_bytes(
     frame.extend_from_slice(&(value.len() as u32).to_le_bytes());
     frame.extend_from_slice(value);
     Ok(())
+}
+
+fn put_state_binding(
+    frame: &mut Vec<u8>,
+    placement_epoch: Option<u64>,
+    fencing_token: Option<u128>,
+) -> Result<(), FrameError> {
+    match (placement_epoch, fencing_token) {
+        (None, None) => frame.push(0),
+        (Some(epoch), Some(token)) => {
+            frame.push(1);
+            frame.extend_from_slice(&epoch.to_le_bytes());
+            frame.extend_from_slice(&token.to_le_bytes());
+        }
+        _ => {
+            return Err(FrameError::UnknownCode {
+                field: "state_binding",
+                code: 2,
+            })
+        }
+    }
+    Ok(())
+}
+
+fn put_address_binding(frame: &mut Vec<u8>, binding: &PodAddressBinding) -> Result<(), FrameError> {
+    binding.validate()?;
+    match &binding.source {
+        Some(source) => {
+            frame.push(1);
+            put_address(frame, source)?;
+        }
+        None => frame.push(0),
+    }
+    put_address(frame, &binding.destination.address)?;
+    frame.extend_from_slice(&binding.destination.semantic_revision);
+    frame.extend_from_slice(&binding.destination.generation.0.to_le_bytes());
+    put_str(frame, "trace_id", &binding.trace_id.0)?;
+    frame.extend_from_slice(&binding.hop_limit.to_le_bytes());
+    match &binding.protocol {
+        Some(protocol) => {
+            frame.push(1);
+            put_protocol(frame, protocol)?;
+        }
+        None => frame.push(0),
+    }
+    match &binding.mesh {
+        Some(mesh) => {
+            mesh.validate()
+                .map_err(|_| FrameError::InvalidField { field: "mesh" })?;
+            frame.push(1);
+            put_str(frame, "mesh_network", &mesh.network_id.0)?;
+            put_str(frame, "mesh_peer", &mesh.peer_id.0)?;
+            frame.push(match mesh.route {
+                MeshRouteKind::Direct => 0,
+                MeshRouteKind::Relay => 1,
+            });
+            match &mesh.relay_id {
+                Some(relay) => {
+                    frame.push(1);
+                    put_str(frame, "mesh_relay", &relay.0)?;
+                }
+                None => frame.push(0),
+            }
+            frame.extend_from_slice(&mesh.membership_generation.0.to_le_bytes());
+            frame.extend_from_slice(&mesh.membership_revision.0.to_le_bytes());
+        }
+        None => frame.push(0),
+    }
+    frame.extend_from_slice(&(binding.visited.len() as u16).to_le_bytes());
+    for address in &binding.visited {
+        put_address(frame, address)?;
+    }
+    Ok(())
+}
+
+fn take_address_binding(bytes: &[u8], at: &mut usize) -> Result<PodAddressBinding, FrameError> {
+    let source = match take_u8(bytes, at, "source")? {
+        0 => None,
+        1 => Some(take_address(bytes, at, "source")?),
+        code => {
+            return Err(FrameError::UnknownCode {
+                field: "source",
+                code: u64::from(code),
+            })
+        }
+    };
+    let address = take_address(bytes, at, "destination")?;
+    let semantic_revision = take_digest(bytes, at)?;
+    let generation = Generation(take_u64(bytes, at, "generation")?);
+    let trace_id = TraceId(take_str(bytes, at, "trace_id")?);
+    let hop_limit = take_u16(bytes, at, "hop_limit")?;
+    let protocol = match take_u8(bytes, at, "protocol")? {
+        0 => None,
+        1 => Some(take_protocol(bytes, at)?),
+        code => {
+            return Err(FrameError::UnknownCode {
+                field: "protocol",
+                code: u64::from(code),
+            })
+        }
+    };
+    let mesh = match take_u8(bytes, at, "mesh")? {
+        0 => None,
+        1 => {
+            let network_id = ptr_types::NetworkId(take_str(bytes, at, "mesh_network")?);
+            let peer_id = PeerId(take_str(bytes, at, "mesh_peer")?);
+            let route = match take_u8(bytes, at, "mesh_route")? {
+                0 => MeshRouteKind::Direct,
+                1 => MeshRouteKind::Relay,
+                code => {
+                    return Err(FrameError::UnknownCode {
+                        field: "mesh_route",
+                        code: u64::from(code),
+                    })
+                }
+            };
+            let relay_id = match take_u8(bytes, at, "mesh_relay")? {
+                0 => None,
+                1 => Some(PeerId(take_str(bytes, at, "mesh_relay")?)),
+                code => {
+                    return Err(FrameError::UnknownCode {
+                        field: "mesh_relay",
+                        code: u64::from(code),
+                    })
+                }
+            };
+            Some(MeshEndpointBinding {
+                network_id,
+                peer_id,
+                route,
+                relay_id,
+                membership_generation: Generation(take_u64(bytes, at, "mesh_generation")?),
+                membership_revision: Revision(take_u64(bytes, at, "mesh_revision")?),
+            })
+        }
+        code => {
+            return Err(FrameError::UnknownCode {
+                field: "mesh",
+                code: u64::from(code),
+            })
+        }
+    };
+    let visited_len = take_u16(bytes, at, "visited_len")? as usize;
+    if visited_len > 64 {
+        return Err(FrameError::InvalidField { field: "visited" });
+    }
+    let mut visited = Vec::with_capacity(visited_len);
+    for _ in 0..visited_len {
+        visited.push(take_address(bytes, at, "visited")?);
+    }
+    let binding = PodAddressBinding {
+        source,
+        destination: PodRevisionAddress {
+            address,
+            semantic_revision,
+            generation,
+        },
+        trace_id,
+        hop_limit,
+        visited,
+        protocol,
+        mesh,
+    };
+    binding.validate()?;
+    Ok(binding)
+}
+
+fn put_protocol(frame: &mut Vec<u8>, protocol: &ProtocolBinding) -> Result<(), FrameError> {
+    let name = match protocol {
+        ProtocolBinding::InProcess => "in-process",
+        ProtocolBinding::LocalWorker => "local-worker",
+        ProtocolBinding::IrohQuic => "iroh-quic",
+        ProtocolBinding::Tcp => "tcp",
+        ProtocolBinding::Udp => "udp",
+        ProtocolBinding::Ssh => "ssh",
+        ProtocolBinding::Wireguard => "wireguard",
+        ProtocolBinding::Mqtt => "mqtt",
+        ProtocolBinding::Http => "http",
+        ProtocolBinding::WebSocket => "websocket",
+        ProtocolBinding::Grpc => "grpc",
+        ProtocolBinding::Mcp => "mcp",
+        ProtocolBinding::Cuda => "cuda",
+        ProtocolBinding::Moq => "moq",
+        ProtocolBinding::Rfb => "rfb",
+        ProtocolBinding::Ipc => "ipc",
+        ProtocolBinding::Mavlink => "mavlink",
+        ProtocolBinding::Zmtp => "zmtp",
+        ProtocolBinding::Socks5 => "socks5",
+        ProtocolBinding::HttpConnect => "http-connect",
+        ProtocolBinding::WebRtc => "webrtc",
+        ProtocolBinding::JsonRpc => "json-rpc",
+        ProtocolBinding::Custom(value) => value,
+    };
+    put_str(frame, "protocol", name)
+}
+
+fn take_protocol(bytes: &[u8], at: &mut usize) -> Result<ProtocolBinding, FrameError> {
+    let value = take_str(bytes, at, "protocol")?;
+    Ok(match value.as_str() {
+        "in-process" => ProtocolBinding::InProcess,
+        "local-worker" => ProtocolBinding::LocalWorker,
+        "iroh-quic" => ProtocolBinding::IrohQuic,
+        "tcp" => ProtocolBinding::Tcp,
+        "udp" => ProtocolBinding::Udp,
+        "ssh" => ProtocolBinding::Ssh,
+        "wireguard" => ProtocolBinding::Wireguard,
+        "mqtt" => ProtocolBinding::Mqtt,
+        "http" => ProtocolBinding::Http,
+        "websocket" => ProtocolBinding::WebSocket,
+        "grpc" => ProtocolBinding::Grpc,
+        "mcp" => ProtocolBinding::Mcp,
+        "cuda" => ProtocolBinding::Cuda,
+        "moq" => ProtocolBinding::Moq,
+        "rfb" => ProtocolBinding::Rfb,
+        "ipc" => ProtocolBinding::Ipc,
+        "mavlink" => ProtocolBinding::Mavlink,
+        "zmtp" => ProtocolBinding::Zmtp,
+        "socks5" => ProtocolBinding::Socks5,
+        "http-connect" => ProtocolBinding::HttpConnect,
+        "webrtc" => ProtocolBinding::WebRtc,
+        "json-rpc" => ProtocolBinding::JsonRpc,
+        value if !value.is_empty() => ProtocolBinding::Custom(value.to_owned()),
+        _ => return Err(FrameError::InvalidField { field: "protocol" }),
+    })
+}
+
+fn put_address(frame: &mut Vec<u8>, address: &PodAddress) -> Result<(), FrameError> {
+    put_str(frame, "project", &address.project.0)?;
+    put_str(frame, "namespace", &address.namespace.0)?;
+    put_str(frame, "pod_id", &address.pod_id.0)?;
+    Ok(())
+}
+
+fn take_address(
+    bytes: &[u8],
+    at: &mut usize,
+    field: &'static str,
+) -> Result<PodAddress, FrameError> {
+    let address = PodAddress {
+        project: ptr_types::ProjectId(take_str(bytes, at, field)?),
+        namespace: ptr_types::NamespaceId(take_str(bytes, at, field)?),
+        pod_id: ptr_types::PodId(take_str(bytes, at, field)?),
+    };
+    address
+        .validate()
+        .map_err(|_| FrameError::InvalidField { field })?;
+    Ok(address)
+}
+
+fn take_state_binding(
+    bytes: &[u8],
+    at: &mut usize,
+) -> Result<(Option<u64>, Option<u128>), FrameError> {
+    match take_u8(bytes, at, "state_binding")? {
+        0 => Ok((None, None)),
+        1 => {
+            let epoch = take_u64(bytes, at, "placement_epoch")?;
+            let token = u128::from_le_bytes(take_fixed::<16>(bytes, at, "fencing_token")?);
+            Ok((Some(epoch), Some(token)))
+        }
+        code => Err(FrameError::UnknownCode {
+            field: "state_binding",
+            code: u64::from(code),
+        }),
+    }
 }
 
 /// Read a bounded, length-prefixed byte string.
@@ -639,6 +1262,144 @@ mod tests {
             let frame = encode_answer(&answered).unwrap();
             assert_eq!(decode_answer(&frame).unwrap(), answered);
         }
+    }
+
+    #[test]
+    fn v2_round_trip_binds_artifact_manifest_generation_and_revision() {
+        let request = PodRequestV2 {
+            address: Some(PodAddressBinding {
+                source: None,
+                destination: ptr_types::PodRevisionAddress {
+                    address: ptr_types::PodAddress::new(
+                        "project".into(),
+                        "namespace".into(),
+                        "pod".into(),
+                    )
+                    .unwrap(),
+                    semantic_revision: [6; 32],
+                    generation: Generation(3),
+                },
+                trace_id: "frame-test".into(),
+                hop_limit: 8,
+                visited: Vec::new(),
+                protocol: Some(ProtocolBinding::Ssh),
+                mesh: None,
+            }),
+            execution_manifest: Some([9; 32]),
+            addressed_to: "key-of-the-host".into(),
+            request_id: 42,
+            artifact_id: ArtifactId::from("model-artifact"),
+            manifest_hash: [7; 32],
+            generation: Generation(3),
+            revision: Revision(11),
+            placement_epoch: Some(4),
+            fencing_token: Some(99),
+            identity_digest: [8; 32],
+            session_id: SessionId::from("session-1"),
+            policy_revision: Revision(5),
+            capability: CapabilityId::from("summarize"),
+            expect_protocol: 2,
+            payload: TypedPayload {
+                type_id: TypeId::from("Document"),
+                bytes: b"input".to_vec(),
+            },
+        };
+        let frame = encode_request_v2(&request).unwrap();
+        assert_eq!(decode_request_v2(&frame).unwrap(), request);
+
+        let answer = PodAnswerV2 {
+            address: request.address.clone(),
+            execution_manifest: request.execution_manifest,
+            responder: "key-of-the-host".into(),
+            request_id: 42,
+            request_digest: request_digest(&frame),
+            generation: Generation(3),
+            revision: Revision(11),
+            placement_epoch: Some(4),
+            fencing_token: Some(99),
+            identity_digest: [8; 32],
+            session_id: SessionId::from("session-1"),
+            policy_revision: Revision(5),
+            outcome: PodOutcome::Answered {
+                output: TypedPayload {
+                    type_id: TypeId::from("Summary"),
+                    bytes: b"output".to_vec(),
+                },
+            },
+        };
+        let answer_frame = encode_answer_v2(&answer).unwrap();
+        assert_eq!(decode_answer_v2(&answer_frame).unwrap(), answer);
+    }
+
+    #[test]
+    fn legacy_v2_round_trip_remains_available_without_address_binding() {
+        let mut request = PodRequestV2 {
+            address: Some(PodAddressBinding {
+                source: None,
+                destination: ptr_types::PodRevisionAddress {
+                    address: ptr_types::PodAddress::new(
+                        "project".into(),
+                        "namespace".into(),
+                        "pod".into(),
+                    )
+                    .unwrap(),
+                    semantic_revision: [6; 32],
+                    generation: Generation(3),
+                },
+                trace_id: "frame-test".into(),
+                hop_limit: 8,
+                visited: Vec::new(),
+                protocol: None,
+                mesh: None,
+            }),
+            execution_manifest: Some([9; 32]),
+            addressed_to: "key-of-the-host".into(),
+            request_id: 42,
+            artifact_id: ArtifactId::from("model-artifact"),
+            manifest_hash: [7; 32],
+            generation: Generation(3),
+            revision: Revision(11),
+            placement_epoch: Some(4),
+            fencing_token: Some(99),
+            identity_digest: [8; 32],
+            session_id: SessionId::from("session-1"),
+            policy_revision: Revision(5),
+            capability: CapabilityId::from("summarize"),
+            expect_protocol: 2,
+            payload: TypedPayload {
+                type_id: TypeId::from("Document"),
+                bytes: b"input".to_vec(),
+            },
+        };
+        request.address = None;
+        request.execution_manifest = None;
+        let frame = encode_request_v2(&request).unwrap();
+        assert_eq!(u16::from_le_bytes([frame[8], frame[9]]), FORMAT_V2);
+        assert_eq!(decode_request_v2(&frame).unwrap(), request);
+
+        let answer = PodAnswerV2 {
+            address: None,
+            execution_manifest: None,
+            responder: "key-of-the-host".into(),
+            request_id: request.request_id,
+            request_digest: request_digest(&frame),
+            generation: request.generation,
+            revision: request.revision,
+            placement_epoch: request.placement_epoch,
+            fencing_token: request.fencing_token,
+            identity_digest: request.identity_digest,
+            session_id: request.session_id.clone(),
+            policy_revision: request.policy_revision,
+            outcome: PodOutcome::Refused {
+                code: RefusalCode::Unavailable,
+            },
+        };
+        let answer_frame = encode_answer_v2(&answer).unwrap();
+        assert_eq!(
+            u16::from_le_bytes([answer_frame[8], answer_frame[9]]),
+            FORMAT_V2
+        );
+        assert_eq!(decode_answer_v2(&answer_frame).unwrap(), answer);
     }
 
     #[test]

@@ -1,0 +1,4 @@
+timing phase=paired-v5 arm=factorized-v2 ms_per_step=73.362
+timing phase=paired-v5 arm=factorized-v2-off ms_per_step=74.515
+timing phase=paired-v5 arm=factorized-v2 ms_per_step=73.444
+timing phase=paired-v5 arm=factorized-v2-off ms_per_step=70.939

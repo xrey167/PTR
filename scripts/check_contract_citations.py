@@ -339,7 +339,7 @@ def citations(root: Path) -> dict[str, set[str]]:
             text = document.read_text(encoding="utf-8")
             for match in CITATION.finditer(text):
                 found.setdefault(match.group(1), set()).add(
-                    str(document.relative_to(root))
+                    document.relative_to(root).as_posix()
                 )
     return found
 

@@ -30,7 +30,7 @@ impl ResumableInferenceBackend for TwoStep {
             ModelEvent::Token(format!(
                 "round={} revision={} source={} payload={}",
                 request.round,
-                request.revision.0,
+                request.revision().0,
                 request.observation.source,
                 String::from_utf8_lossy(&request.observation.payload)
             )),

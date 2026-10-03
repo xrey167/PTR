@@ -1,0 +1,13 @@
+M002-V5-CONTRACT/1
+attention_mode=factorized-v2
+d_model=48
+rank=8
+bias_limit=1
+metadata_dropout=0
+router_mode=calibrated-cosine-v2
+router_logit_scale=5
+label_smoothing=0.05
+consistency_weight=0.1
+latent_steps=2
+typed_query=true
+latent_nonlinearity=true

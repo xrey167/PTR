@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Operator routing v2 record",
+  "type": "object",
+  "required": [
+    "id", "fold", "fold_kind", "target_cell", "split", "generator_version",
+    "task", "routes", "cost_budget", "type_codebook_version",
+    "type_codebook_fingerprint", "regime", "budget", "slots", "raw_tokens",
+    "label", "utility", "margin"
+  ],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "fold": {
+      "type": "string",
+      "enum": ["evidence-temporal", "evidence-tabular", "claim-interventional", "evidence-interventional", "claim-temporal-development"]
+    },
+    "fold_kind": {"type": "string", "enum": ["confirmatory", "diagnostic", "development"]},
+    "target_cell": {
+      "type": "object",
+      "required": ["role", "regime"],
+      "properties": {
+        "role": {"type": "string", "enum": ["evidence", "claim"]},
+        "regime": {"type": "string", "enum": ["tabular", "temporal", "interventional"]}
+      },
+      "additionalProperties": false
+    },
+    "split": {"type": "string", "enum": ["train", "val", "test_iid", "test_ood"]},
+    "generator_version": {"type": "integer", "enum": [2]},
+    "task": {"type": "string", "minLength": 1},
+    "routes": {
+      "type": "array",
+      "minItems": 11,
+      "maxItems": 11,
+      "items": {
+        "type": "object",
+        "required": ["operator", "target"],
+        "properties": {
+          "operator": {
+            "type": "string",
+            "enum": ["semantic", "deductive", "probabilistic", "statistical", "temporal", "causal", "search", "optimization", "simulation", "symbolic", "external_pod"]
+          },
+          "target": {"type": "number", "minimum": 0.0, "maximum": 1.0}
+        },
+        "additionalProperties": false
+      }
+    },
+    "cost_budget": {"type": "number", "minimum": 0.0},
+    "type_codebook_version": {"type": "integer", "minimum": 1},
+    "type_codebook_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "regime": {
+      "type": "object",
+      "required": ["code", "name"],
+      "properties": {
+        "code": {"type": "integer", "minimum": 0, "maximum": 3},
+        "name": {"type": "string", "enum": ["tabular", "temporal", "interventional", "textual"]}
+      },
+      "additionalProperties": false
+    },
+    "budget": {
+      "type": "object",
+      "required": ["code", "value"],
+      "properties": {
+        "code": {"type": "integer", "minimum": 0, "maximum": 2},
+        "value": {"type": "number", "minimum": 0.0}
+      },
+      "additionalProperties": false
+    },
+    "slots": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "items": {
+        "type": "object",
+        "required": ["index", "role", "epistemic", "confidence", "confidence_bucket", "validity", "entity", "provenance_bucket"],
+        "properties": {
+          "index": {"type": "integer", "minimum": 0, "maximum": 5},
+          "role": {"type": "string", "minLength": 1},
+          "epistemic": {"type": "string", "minLength": 1},
+          "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+          "confidence_bucket": {"type": "integer", "minimum": 0, "maximum": 4},
+          "validity": {"type": "string", "minLength": 1},
+          "entity": {"type": "integer", "minimum": 0},
+          "provenance_bucket": {"type": "integer", "minimum": 0, "maximum": 5}
+        },
+        "additionalProperties": false
+      }
+    },
+    "raw_tokens": {
+      "type": "array",
+      "minItems": 36,
+      "maxItems": 36,
+      "items": {"type": "integer", "minimum": 1, "maximum": 215}
+    },
+    "label": {
+      "type": "object",
+      "required": ["operator", "code"],
+      "properties": {
+        "operator": {"type": "string", "minLength": 1},
+        "code": {"type": "integer", "minimum": 0, "maximum": 10}
+      },
+      "additionalProperties": false
+    },
+    "utility": {"type": "array", "minItems": 11, "maxItems": 11, "items": {"type": "number"}},
+    "margin": {"type": "number", "minimum": 0.0}
+  },
+  "additionalProperties": false
+}

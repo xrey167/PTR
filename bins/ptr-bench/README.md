@@ -26,6 +26,12 @@ result. It prints one JSON line on stdout, progress and notes on stderr, and exi
 hard failure. A case takes seconds at the small contention levels and about a minute at the
 largest state, in a release build; a debug build is much slower.
 
+`ledger-recovery` and `ledger-process-crash` exit with status 1 when any of their
+hard-invariant counters (`false_accepts`, `recovery_errors`, `tail_trim_errors`,
+and for the process probe `child_exit_errors`) is nonzero, after printing the
+JSON line. `scripts/run_experiment.py` records a run as `completed` from the exit
+status, so a violating run is now recorded as `failed` with its counters intact.
+
 ## PostgreSQL experiment harnesses
 
 With the `postgres-experiments` feature the binary also runs the harnesses of

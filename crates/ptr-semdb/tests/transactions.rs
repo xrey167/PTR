@@ -247,8 +247,16 @@ fn a_prepared_delta_keeps_the_delta_it_was_prepared_from() {
 
 #[test]
 fn ingress_keys_are_exactly_the_two_prefixes() {
-    assert_eq!(INGRESS_PREFIXES, ["request:", "pod-output:"]);
-    for key in ["request:r1:raw", "request:", "pod-output:r1:pod:a"] {
+    assert_eq!(
+        INGRESS_PREFIXES,
+        ["request:", "pod-output:", "pod-candidate:"]
+    );
+    for key in [
+        "request:r1:raw",
+        "request:",
+        "pod-output:r1:pod:a",
+        "pod-candidate:r1:pod:digest",
+    ] {
         assert!(is_ingress_key(key), "{key} is an ingress key");
     }
     for key in [

@@ -10,13 +10,14 @@
 
 **Maturity:** `scaffold`  
 **Last reviewed:** 2026-09-26  
-**Code footprint:** 2 Rust source files · 242 nonblank source lines · 2 integration-test files · 8 `#[test]` markers
+**Code footprint:** 2 Rust source files · 249 nonblank source lines · 2 integration-test files · 8 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
 - RuntimeEvent taxonomy for request/snapshot/candidate/Pod/verifier/commit lifecycle
 - EventEnvelope with sequence number
 - EventProducer/EventConsumer contract with at-least-once delivery, monotone commits bounded by the end, and event classes separating projections from telemetry
+- RuntimeEvent::ScopeLifecycle { scope, kind } carries a scope's ptr_types::ScopeId and ScopeLifecycleKind in the runtime event taxonomy; this crate only defines the variant (no producer inside ptr-events)
 - InMemoryBus reference implementation: bounded, refusing a publish rather than dropping a record some registered consumer has not committed, and refusing a registration beyond the end, which would let the next publish trim records the consumer never polled
 
 ### Missing for the target architecture

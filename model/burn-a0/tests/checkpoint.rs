@@ -7,8 +7,8 @@
 use burn::{prelude::*, tensor::Int};
 use ptr_burn_a0::{
     admission_bias, header, load, save, CheckpointIoError, CodeGrid, PtrA0, PtrA0Config,
-    PtrSlotMetadata, SlotValues, EMBEDDED_FAMILIES, MODEL, PROVENANCE_BUCKET_COUNT,
-    PROVENANCE_EXCEPTION,
+    PtrSlotMetadata, RouterMode, SlotValues, TypedAttentionMode, EMBEDDED_FAMILIES, MODEL,
+    PROVENANCE_BUCKET_COUNT, PROVENANCE_EXCEPTION,
 };
 use ptr_types::{
     CheckpointError, CheckpointHeader, CodeFamily, Codebook, CodebookVersion, EncodingVersion,
@@ -108,6 +108,82 @@ fn a_checkpoint_restores_the_exact_model_it_was_taken_from() {
         logits(&loaded, &device),
         expected,
         "a loaded checkpoint must reproduce the model exactly"
+    );
+}
+
+#[test]
+fn every_non_shape_architecture_switch_is_bound_before_weights_are_read() {
+    let device = Device::flex();
+    let base = config();
+    let bytes = save(&base.init(&device)).expect("serializes");
+    let variants = [
+        base.clone()
+            .with_typed_attention_mode(TypedAttentionMode::FactorizedV2),
+        base.clone().with_typed_query(false),
+        base.clone().with_latent_steps(2),
+        base.clone().with_latent_nonlinearity(false),
+        base.clone()
+            .with_router_mode(RouterMode::CalibratedCosineV2),
+        base.clone().with_router_logit_scale(7.0),
+    ];
+    for variant in variants {
+        assert_eq!(
+            load(&bytes, &variant, &device).expect_err("the architecture changed"),
+            CheckpointIoError::ArchitectureMismatch
+        );
+    }
+}
+
+#[test]
+fn a_format_two_checkpoint_requires_an_explicit_exact_legacy_opt_in() {
+    let device = Device::flex();
+    let model = config().init(&device);
+    let mut legacy = header(&model);
+    legacy.architecture.clear();
+    let bytes = legacy.write_legacy_v2(&payload(&model));
+
+    assert_eq!(
+        load(&bytes, &config(), &device).expect_err("legacy is not inferred"),
+        CheckpointIoError::LegacyArchitectureUnbound
+    );
+    load(&bytes, &config().allow_legacy_v2_checkpoint(true), &device)
+        .expect("the exact legacy architecture was explicitly requested");
+    assert_eq!(
+        load(
+            &bytes,
+            &config()
+                .with_typed_attention_mode(TypedAttentionMode::FactorizedV2)
+                .allow_legacy_v2_checkpoint(true),
+            &device,
+        )
+        .expect_err("opt-in does not authorize a new architecture"),
+        CheckpointIoError::LegacyArchitectureUnbound
+    );
+    assert_eq!(
+        load(
+            &bytes,
+            &config()
+                .allow_legacy_v2_checkpoint(true)
+                .with_latent_steps(2),
+            &device,
+        )
+        .expect_err("a config change invalidates the attested legacy profile"),
+        CheckpointIoError::LegacyArchitectureUnbound
+    );
+}
+
+#[test]
+fn a_format_three_checkpoint_cannot_claim_an_empty_architecture() {
+    let device = Device::flex();
+    let model = config().init(&device);
+    let bytes = header(&model)
+        .with_architecture(Vec::new())
+        .write(&payload(&model));
+
+    assert_eq!(
+        load(&bytes, &config().allow_legacy_v2_checkpoint(true), &device,)
+            .expect_err("format 3 must carry an architecture binding"),
+        CheckpointIoError::ArchitectureMismatch
     );
 }
 
@@ -288,10 +364,7 @@ fn a_checkpoint_for_a_different_architecture_is_refused_rather_than_partly_loade
         .with_provenance_buckets(8)
         .with_latent_steps(1);
     let error = load(&bytes, &wider, &device).expect_err("the shapes do not fit");
-    assert!(
-        matches!(error, CheckpointIoError::Record(_)),
-        "expected a record refusal, got {error:?}"
-    );
+    assert_eq!(error, CheckpointIoError::ArchitectureMismatch);
     // The identity was fine, so this refusal came from the parameters — and the
     // same bytes still load into the architecture they were written for.
     load(&bytes, &config(), &device).expect("the original architecture loads");
@@ -371,11 +444,10 @@ fn a_checkpoint_is_refused_by_a_model_with_another_provenance_width() {
     // the width and not about this pair of configs or this artifact.
     load(&bytes, &written, &device).expect("the same width loads");
 
-    match load(&bytes, &narrower, &device) {
-        Err(CheckpointIoError::Record(_)) => {}
-        Err(other) => panic!("refused, but not by the record: {other:?}"),
-        Ok(_) => panic!("an 8-bucket checkpoint loaded into a 4-bucket model"),
-    }
+    assert_eq!(
+        load(&bytes, &narrower, &device).expect_err("the binding catches the width"),
+        CheckpointIoError::ArchitectureMismatch
+    );
 }
 
 /// And the identity header does not carry the width, which is the honest limit.
