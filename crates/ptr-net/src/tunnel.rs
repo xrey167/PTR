@@ -178,7 +178,7 @@ where
     ) -> Result<(), TunnelError> {
         let current = self
             .leases
-            .get(&lease.lease_id)
+            .get_mut(&lease.lease_id)
             .ok_or(TunnelError::NotFound)?;
         ensure_same_profile(current, lease)?;
         if current.state != TunnelState::Established {
@@ -205,7 +205,19 @@ where
         if self.device.remove_peer(&interface, &previous).is_err() {
             // Never leave two peers live: roll the new one back and keep the
             // previous peer as the active one.
-            let _ = self.device.remove_peer(&interface, peer);
+            if self.device.remove_peer(&interface, peer).is_err() {
+                // Neither peer could be removed, so the device may now carry
+                // both and this executor no longer knows which. Fail closed:
+                // tear the interface down and revoke the lease, so the caller
+                // has to establish a fresh tunnel. If even that removal fails,
+                // the lease keeps ownership of the interface and `release`
+                // retries it.
+                if self.device.remove_interface(&interface).is_ok() {
+                    self.live_interfaces.remove(&lease.lease_id);
+                }
+                self.active_peers.remove(&lease.lease_id);
+                current.state = TunnelState::Revoked;
+            }
             return Err(TunnelError::UnsupportedPlatform);
         }
         self.active_peers

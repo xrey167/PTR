@@ -111,6 +111,7 @@ struct FakeWireguardDevice {
     events: Vec<String>,
     fail_configure: bool,
     fail_remove_interface: bool,
+    fail_remove_peer: bool,
 }
 
 impl WireguardDevice for FakeWireguardDevice {
@@ -130,6 +131,9 @@ impl WireguardDevice for FakeWireguardDevice {
         Ok(())
     }
     fn remove_peer(&mut self, name: &str, peer: &MeshPeerIdentity) -> Result<(), Self::Error> {
+        if self.fail_remove_peer {
+            return Err("remove_peer failed".into());
+        }
         self.events.push(format!(
             "unpeer:{name}:{}:{}",
             peer.peer_id, peer.public_key_digest[0]
@@ -257,6 +261,53 @@ fn failed_cleanup_keeps_ownership_so_a_retry_removes_the_leaked_interface() {
             "peer:ptr-mesh0:peer-a:1"
         ]
     );
+}
+
+#[test]
+fn rotation_that_cannot_remove_either_peer_fails_closed() {
+    let mut executor = WireguardUserspaceExecutor::new(FakeWireguardDevice::default());
+    let lease = executor.admit(&profile()).unwrap();
+    executor.establish(&lease).unwrap();
+    let mut rotated = profile().peer;
+    rotated.public_key_digest = [2; 32];
+    executor.device_mut().fail_remove_peer = true;
+    assert_eq!(
+        executor.rotate_peer(&lease, &rotated),
+        Err(TunnelError::UnsupportedPlatform)
+    );
+    // The device may carry both peers, so the interface is torn down and the
+    // lease no longer accepts work, instead of recording a guess.
+    assert_eq!(executor.device().events.last().unwrap(), "remove:ptr-mesh0");
+    executor.device_mut().fail_remove_peer = false;
+    assert_eq!(
+        executor.rotate_peer(&lease, &rotated),
+        Err(TunnelError::InvalidState)
+    );
+    assert_eq!(executor.release(lease), Ok(()));
+    let removals = executor
+        .device()
+        .events
+        .iter()
+        .filter(|event| event.starts_with("remove:"))
+        .count();
+    assert_eq!(removals, 1, "the interface is not removed twice");
+}
+
+#[test]
+fn rotation_rollback_failure_with_a_stuck_interface_keeps_ownership_for_release() {
+    let mut executor = WireguardUserspaceExecutor::new(FakeWireguardDevice::default());
+    let lease = executor.admit(&profile()).unwrap();
+    executor.establish(&lease).unwrap();
+    let mut rotated = profile().peer;
+    rotated.public_key_digest = [2; 32];
+    executor.device_mut().fail_remove_peer = true;
+    executor.device_mut().fail_remove_interface = true;
+    assert!(executor.rotate_peer(&lease, &rotated).is_err());
+    executor.device_mut().fail_remove_peer = false;
+    executor.device_mut().fail_remove_interface = false;
+    // Release still reaches the interface and removes it.
+    executor.release(lease).unwrap();
+    assert_eq!(executor.device().events.last().unwrap(), "remove:ptr-mesh0");
 }
 
 #[test]
