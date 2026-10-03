@@ -34,19 +34,29 @@ def v9_labels(stdout):
 
 
 class M002V9CandidateTests(unittest.TestCase):
-    def test_committed_unregistered_candidate_passes_complete_freeze_gate(self):
+    def test_superseded_candidate_is_no_longer_held_to_the_freeze_gate(self):
         gates = load_module("m002_v9_gate", ROOT / "scripts/check_research_gates.py")
-        self.assertEqual(gates.m002_v9_successor_freeze_errors(ROOT, CANDIDATE, MANIFEST), [])
+        real = tomllib.loads((CANDIDATE / "experiment.toml").read_text(encoding="utf-8"))
+        self.assertEqual(real["status"], "superseded")
+        self.assertEqual(gates.m002_v9_successor_freeze_errors(ROOT, CANDIDATE, real), [])
+        # Held to the gate as a prepared study, the one thing that fails is the
+        # tree digest: the A0 lockfile changed after the study was frozen.
+        self.assertEqual(
+            gates.m002_v9_successor_freeze_errors(ROOT, CANDIDATE, MANIFEST),
+            ["M002-v9: implementation tree differs from its pinned Git digest"],
+        )
 
     def test_runner_tree_digest_and_cross_study_pair_are_hard_requirements(self):
         gates = load_module("m002_v9_runner_gate", ROOT / "scripts/check_research_gates.py")
         config = tomllib.loads((CANDIDATE / "config.toml").read_text(encoding="utf-8"))["preregistration"]
         self.assertEqual(gates.m002_v9_fold_binding_errors(ROOT, config), [])
+        # Everything but the tree digest still holds; the digest does not, since
+        # the A0 lockfile changed after v9 was frozen (see SUPERSEDED.md).
         self.assertEqual(
             gates.m002_versioned_runner_binding_errors(
                 ROOT, config, MANIFEST, "M002-v9", "factorized-v2-v9,factorized-v2-off-v9"
             ),
-            [],
+            ["M002-v9: implementation tree differs from its pinned Git digest"],
         )
         invalid = dict(config)
         invalid["arm_pair"] = "factorized-v2-v8,factorized-v2-off-v8"
