@@ -14,7 +14,7 @@ notices the licences require to travel with redistributed software; deciding
 whether a particular distribution satisfies them is not something a generator
 can do.
 
-`Package-set-digest: sha256:b4e62b20cd55eb952845860bdf1f43c1a7a3e74a69b6567600bb56e65333c92e`
+`Package-set-digest: sha256:e30fe8964486bf629661d8369fa3a78fc2288f183629525f6e6e37851bf43547`
 
 **916 third-party packages · 459 distinct licence texts**
 
@@ -805,15 +805,15 @@ available under the same terms; PTR has made none.
 | tracing-subscriber | 0.3.23 | MIT | crates.io | . | [LICENSE](#text-241) |
 | triple_arena | 0.15.1 | MIT OR Apache-2.0 | crates.io | model/burn-a0 | [LICENSE-APACHE](#text-179), [LICENSE-MIT](#text-170) |
 | try-lock | 0.2.5 | MIT | crates.io | ., model/burn-a0 | [LICENSE](#text-358) |
-| turso | 0.8.0-pre.11 | MIT | crates.io | . | _none shipped_ |
-| turso_core | 0.8.0-pre.11 | MIT | crates.io | . | _none shipped_ |
-| turso_ext | 0.8.0-pre.11 | MIT | crates.io | . | _none shipped_ |
-| turso_macros | 0.8.0-pre.11 | MIT | crates.io | . | _none shipped_ |
-| turso_parser | 0.8.0-pre.11 | MIT | crates.io | . | _none shipped_ |
-| turso_sdk_kit | 0.8.0-pre.11 | MIT | crates.io | . | _none shipped_ |
-| turso_sdk_kit_macros | 0.8.0-pre.11 | MIT | crates.io | . | _none shipped_ |
-| turso_sync_engine | 0.8.0-pre.11 | MIT | crates.io | . | _none shipped_ |
-| turso_sync_sdk_kit | 0.8.0-pre.11 | MIT | crates.io | . | _none shipped_ |
+| turso | 0.8.0 | MIT | crates.io | . | _none shipped_ |
+| turso_core | 0.8.1 | MIT | crates.io | . | _none shipped_ |
+| turso_ext | 0.8.1 | MIT | crates.io | . | _none shipped_ |
+| turso_macros | 0.8.1 | MIT | crates.io | . | _none shipped_ |
+| turso_parser | 0.8.1 | MIT | crates.io | . | _none shipped_ |
+| turso_sdk_kit | 0.8.1 | MIT | crates.io | . | _none shipped_ |
+| turso_sdk_kit_macros | 0.8.1 | MIT | crates.io | . | _none shipped_ |
+| turso_sync_engine | 0.8.1 | MIT | crates.io | . | _none shipped_ |
+| turso_sync_sdk_kit | 0.8.1 | MIT | crates.io | . | _none shipped_ |
 | twox-hash | 2.1.4 | MIT | crates.io | . | [LICENSE.txt](#text-440) |
 | tynm | 0.2.0 | MIT OR Apache-2.0 | crates.io | model/burn-a0 | [LICENSE-APACHE](#text-376), [LICENSE-MIT](#text-323) |
 | type-map | 0.5.1 | MIT/Apache-2.0 | crates.io | model/burn-a0 | [LICENSE-APACHE](#text-442), [LICENSE-MIT](#text-331) |
