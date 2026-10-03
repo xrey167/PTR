@@ -120,6 +120,104 @@ pub enum PodOutputAdmission {
     },
 }
 
+/// Whether the semantic delta `encoded_delta` writes `payload` under `key`, with
+/// the same type and the same bytes. A delta that cannot be decoded, does not
+/// touch the key or writes a text value carries nothing of the kind.
+fn delta_carries_payload(encoded_delta: &[u8], key: &str, payload: &TypedPayload) -> bool {
+    ptr_semdb::SemanticDelta::decode(encoded_delta)
+        .ok()
+        .and_then(|delta| delta.upserts.get(key).cloned())
+        .is_some_and(|value| match value {
+            SemanticValue::Payload(stored) => {
+                stored.type_id == payload.type_id && stored.bytes == payload.bytes
+            }
+            SemanticValue::Text(_) => false,
+        })
+}
+
+#[cfg(test)]
+mod delta_payload_tests {
+    use super::*;
+
+    fn delta_with(key: &str, type_id: &str, bytes: &[u8]) -> Vec<u8> {
+        let mut delta = ptr_semdb::SemanticDelta::default();
+        delta.upserts.insert(
+            key.to_owned(),
+            SemanticPayload {
+                type_id: ptr_types::TypeId::from(type_id),
+                source: "pod".into(),
+                bytes: bytes.to_vec(),
+            }
+            .into(),
+        );
+        delta.encode().unwrap()
+    }
+
+    fn payload(type_id: &str, bytes: &[u8]) -> TypedPayload {
+        TypedPayload {
+            type_id: ptr_types::TypeId::from(type_id),
+            bytes: bytes.to_vec(),
+        }
+    }
+
+    #[test]
+    fn a_delta_carries_a_payload_only_under_its_key_with_its_type_and_bytes() {
+        let encoded = delta_with("key", "text", b"admitted");
+        assert!(delta_carries_payload(
+            &encoded,
+            "key",
+            &payload("text", b"admitted")
+        ));
+        assert!(!delta_carries_payload(
+            &encoded,
+            "key",
+            &payload("text", b"other")
+        ));
+        assert!(!delta_carries_payload(
+            &encoded,
+            "key",
+            &payload("json", b"admitted")
+        ));
+        assert!(!delta_carries_payload(
+            &encoded,
+            "elsewhere",
+            &payload("text", b"admitted")
+        ));
+        assert!(!delta_carries_payload(
+            b"not a delta",
+            "key",
+            &payload("text", b"admitted")
+        ));
+    }
+
+    #[test]
+    fn a_text_value_is_not_a_payload() {
+        let mut delta = ptr_semdb::SemanticDelta::default();
+        delta.upserts.insert("key".to_owned(), "admitted".into());
+        let encoded = delta.encode().unwrap();
+        assert!(!delta_carries_payload(
+            &encoded,
+            "key",
+            &payload("text", b"admitted")
+        ));
+    }
+}
+
+/// The branch a Pod hypothesis is committed under: derived from the request, the
+/// Pod and the output digest, so a retry of one admission names the same branch.
+fn pod_branch_id(
+    request_id: &RequestId,
+    pod_id: &ptr_types::PodId,
+    output_digest: &ptr_types::Digest,
+) -> String {
+    format!(
+        "pod-branch:{}:{}:{}",
+        request_id,
+        pod_id,
+        digest_hex(output_digest)
+    )
+}
+
 fn digest_hex(digest: &ptr_types::Digest) -> String {
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
@@ -1861,9 +1959,18 @@ impl PtrRuntime {
             None
         };
 
-        for committed in self.committed_events() {
+        // A retry finds the admission record of an earlier attempt. The record
+        // says the output was admitted, not that what follows it was applied:
+        // promotion is a separate commit that can fail after it. So the earlier
+        // answer is replayed only when that follow-up is in the ledger as well;
+        // otherwise the admission record stays as it is and the missing step is
+        // carried out now instead of reporting a success that has no state behind it.
+        let mut already_admitted = false;
+        for (position, committed) in self.committed_events().iter().enumerate() {
             if let LedgerEvent::PodOutputAdmitted {
                 request_id,
+                session_id,
+                scope_id,
                 pod_id,
                 output_digest: existing_digest,
                 output_kind,
@@ -1877,12 +1984,28 @@ impl PtrRuntime {
                             "request id was reused with a different output".into(),
                         ));
                     }
-                    return self.admission_result_from_code(
+                    // The follow-up a retry writes belongs to the admission it
+                    // completes, so it must come from the scope and session that
+                    // admission was made for.
+                    if scope_id != &request.scope_id || session_id != &request.session_id {
+                        return Err(RuntimeError::PodOutputAdmission(
+                            "request id was admitted for a different scope or session".into(),
+                        ));
+                    }
+                    if self.admission_followup_committed(
                         *output_kind,
-                        *revision,
                         &request,
-                        output_digest,
-                    );
+                        &output_digest,
+                        position,
+                    ) {
+                        return self.admission_result_from_code(
+                            *output_kind,
+                            *revision,
+                            &request,
+                            output_digest,
+                        );
+                    }
+                    already_admitted = true;
                 }
             }
         }
@@ -1898,7 +2021,7 @@ impl PtrRuntime {
                 .map(|finding| format!("pod-output/{}", finding.code))
                 .collect(),
         };
-        self.commit(LedgerEvent::PodOutputAdmitted {
+        let admitted = LedgerEvent::PodOutputAdmitted {
             request_id: request.request_id.clone(),
             session_id: request.session_id.clone(),
             scope_id: request.scope_id.clone(),
@@ -1910,51 +2033,54 @@ impl PtrRuntime {
             output_kind: request.output.kind_code(),
             output_type: request.output.payload.type_id.clone(),
             output_digest,
-            verification: attestation,
-        })?;
+            verification: attestation.clone(),
+        };
+        // A hypothesis is two records. Both are built and checked before the first
+        // is committed: refusing the second one afterwards would leave an
+        // admission whose retry reports success for a hypothesis that was never
+        // created.
+        let hypothesis = (request.output.kind == PodOutputKind::Hypothesis).then(|| {
+            let branch_id = pod_branch_id(&request.request_id, &request.pod_id, &output_digest);
+            let event = LedgerEvent::PodHypothesisCommitted {
+                request_id: request.request_id.clone(),
+                session_id: request.session_id.clone(),
+                scope_id: request.scope_id.clone(),
+                branch_id: branch_id.clone(),
+                pod_id: request.pod_id.clone(),
+                manifest_digest: request.output.manifest_digest,
+                artifact_digest: request.output.artifact_digest,
+                generation: request.output.generation,
+                revision: request.output.revision,
+                output_type: request.output.payload.type_id.clone(),
+                output_digest,
+                payload: request.output.payload.bytes.clone(),
+                provenance: request
+                    .output
+                    .provenance
+                    .iter()
+                    .map(|item| (item.source.0.clone(), item.note.clone()))
+                    .collect(),
+                dependencies: request.output.dependencies.clone(),
+                confidence_bits: 1.0f32.to_bits(),
+                latency_millis: 0,
+                verification: attestation,
+            };
+            (branch_id, event)
+        });
+        for event in std::iter::once(&admitted).chain(hypothesis.as_ref().map(|(_, event)| event)) {
+            ptr_ledger::check_encodable(event).map_err(|error| {
+                RuntimeError::PodOutputAdmission(format!("output cannot be recorded: {error}"))
+            })?;
+        }
+        if !already_admitted {
+            self.commit(admitted)?;
+        }
 
         match request.output.kind {
             PodOutputKind::Hypothesis => {
-                let branch_id = format!(
-                    "pod-branch:{}:{}:{}",
-                    request.request_id,
-                    request.pod_id,
-                    digest_hex(&output_digest)
-                );
-                self.commit(LedgerEvent::PodHypothesisCommitted {
-                    request_id: request.request_id.clone(),
-                    session_id: request.session_id.clone(),
-                    scope_id: request.scope_id.clone(),
-                    branch_id: branch_id.clone(),
-                    pod_id: request.pod_id.clone(),
-                    manifest_digest: request.output.manifest_digest,
-                    artifact_digest: request.output.artifact_digest,
-                    generation: request.output.generation,
-                    revision: request.output.revision,
-                    output_type: request.output.payload.type_id.clone(),
-                    output_digest,
-                    payload: request.output.payload.bytes.clone(),
-                    provenance: request
-                        .output
-                        .provenance
-                        .iter()
-                        .map(|item| (item.source.0.clone(), item.note.clone()))
-                        .collect(),
-                    dependencies: request.output.dependencies.clone(),
-                    confidence_bits: 1.0f32.to_bits(),
-                    latency_millis: 0,
-                    verification: Attestation {
-                        required: ptr_types::VerificationLevel::FullSemantic,
-                        level: report.level,
-                        verifiers: vec!["pod-output".into()],
-                        findings: report
-                            .findings
-                            .iter()
-                            .filter(|finding| !finding.hard)
-                            .map(|finding| format!("pod-output/{}", finding.code))
-                            .collect(),
-                    },
-                })?;
+                let (branch_id, event) =
+                    hypothesis.expect("a hypothesis event was built for a hypothesis output");
+                self.commit(event)?;
                 Ok(PodOutputAdmission::Hypothesis { branch_id })
             }
             PodOutputKind::ActionProposal => {
@@ -2018,6 +2144,105 @@ impl PtrRuntime {
                     ),
                 }),
         }
+    }
+
+    /// Whether the step that follows the `PodOutputAdmitted` record of `kind`
+    /// is in the ledger: the hypothesis record, or the semantic write the
+    /// promotion makes. An action proposal has no follow-up state.
+    fn admission_followup_committed(
+        &self,
+        kind: u8,
+        request: &PodOutputAdmissionRequest,
+        output_digest: &ptr_types::Digest,
+        admitted_at: usize,
+    ) -> bool {
+        if kind == 6 {
+            return true;
+        }
+        // Only a record written after the admission can be its follow-up: an
+        // origin of a promotion carries no output digest for the state-changing
+        // kinds, so an earlier record with the same request and Pod must not
+        // count as this admission's.
+        self.committed_events()
+            .iter()
+            .skip(admitted_at + 1)
+            .any(|committed| match (&committed.event, kind) {
+                (
+                    LedgerEvent::PodHypothesisCommitted {
+                        request_id,
+                        session_id,
+                        scope_id,
+                        branch_id,
+                        pod_id,
+                        output_digest: digest,
+                        ..
+                    },
+                    2,
+                ) => {
+                    // The output digest does not cover the session, the scope or
+                    // the branch id, so each is compared with what this admission
+                    // derives; a record for another one is not its follow-up.
+                    request_id == &request.request_id
+                        && pod_id == &request.pod_id
+                        && digest == output_digest
+                        && session_id == &request.session_id
+                        && scope_id == &request.scope_id
+                        && branch_id == &pod_branch_id(&request.request_id, &request.pod_id, digest)
+                }
+                (
+                    LedgerEvent::SemanticDeltaCommitted {
+                        origin:
+                            ptr_ledger::SemanticOrigin::PodCandidate {
+                                request: origin_request,
+                                pod,
+                                output_digest: digest,
+                                ..
+                            },
+                        encoded_delta,
+                        ..
+                    },
+                    0 | 1 | 3 | 4,
+                ) => {
+                    // The digest in the origin is not recomputed from what the
+                    // delta writes, so the stored payload is compared as well.
+                    origin_request == &request.request_id.0
+                        && pod == &request.pod_id.0
+                        && digest == output_digest
+                        && delta_carries_payload(
+                            encoded_delta,
+                            &semantic::pod_candidate_key(
+                                &request.request_id,
+                                &request.pod_id,
+                                output_digest,
+                            ),
+                            &request.output.payload,
+                        )
+                }
+                (
+                    LedgerEvent::SemanticDeltaCommitted {
+                        origin:
+                            ptr_ledger::SemanticOrigin::PodOutput {
+                                request: origin_request,
+                                pod,
+                                ..
+                            },
+                        encoded_delta,
+                        ..
+                    },
+                    5 | 7,
+                ) => {
+                    // The origin carries no output digest, so the promoted value
+                    // itself is compared with what this admission admitted.
+                    origin_request == &request.request_id.0
+                        && pod == &request.pod_id.0
+                        && delta_carries_payload(
+                            encoded_delta,
+                            &semantic::pod_output_key(&request.request_id, &request.pod_id),
+                            &request.output.payload,
+                        )
+                }
+                _ => false,
+            })
     }
 
     fn admission_result_from_code(
