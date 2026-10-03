@@ -711,6 +711,11 @@ impl ExecutionState {
         self.unsettled.contains_key(&attempt)
     }
 
+    /// Whether a key has settled here, with either outcome.
+    pub(super) fn has_settled(&self, key: &str) -> bool {
+        self.settled.contains_key(key)
+    }
+
     /// Whether the key settled with an outcome that a later request under it is
     /// answered from: the effect applied, with or without a retained response.
     /// A key reconciled as not applied binds nothing, so a new attempt under it
@@ -996,8 +1001,8 @@ impl PtrRuntime {
     /// one longer than [`MAX_KEY_BYTES`] that has not settled here: every later
     /// compacted snapshot carries a settled key, so one no snapshot can carry
     /// must not be spent. A longer key that a log written by an earlier build
-    /// settled as applied is let through, so a retry under it is answered from its
-    /// entry as it was before; one that was only reconciled as not applied is not.
+    /// settled is let through, so a retry under it is answered from its entry as
+    /// it was before.
     pub fn prepare_execution_once(
         &self,
         session: &ExecutionSession,
@@ -1007,19 +1012,23 @@ impl PtrRuntime {
         key: impl Into<String>,
     ) -> Result<ExecutionPermit, ExecutionError> {
         let key = key.into();
-        if !self.is_usable_execution_key(&key) {
+        if !valid_identifier(&key)
+            || (key.len() > MAX_KEY_BYTES && !self.execution.has_settled(&key))
+        {
             return Err(ExecutionError::InvalidKey);
         }
         self.prepare(session, project, action, ttl, Some(key))
     }
 
-    /// Whether [`prepare_execution_once`](Self::prepare_execution_once) would
-    /// accept `key` at all: a well-formed identifier no longer than
-    /// [`MAX_KEY_BYTES`], or a longer one that a log written by an earlier build
-    /// settled with an outcome a retry is answered from. A longer key that was
-    /// only reconciled as not applied binds nothing and cannot be spent again, so
-    /// it is refused. Nothing is reserved or recorded, so a caller can refuse a
-    /// key before it does any work that the refusal would otherwise follow.
+    /// Whether a new request under `key` can be expected to get through
+    /// [`prepare_execution_once`](Self::prepare_execution_once) and be committed:
+    /// a well-formed identifier no longer than [`MAX_KEY_BYTES`], or a longer one
+    /// that a log written by an earlier build settled with an outcome a retry is
+    /// answered from. This is stricter than preparation in one case. A longer key
+    /// that was only reconciled as not applied passes preparation, because the
+    /// runtime holds it, but a new attempt under it is refused at commit, so a
+    /// caller that wants to refuse before it does any work should ask here.
+    /// Nothing is reserved or recorded.
     pub fn is_usable_execution_key(&self, key: &str) -> bool {
         valid_identifier(key)
             && (key.len() <= MAX_KEY_BYTES || self.execution.has_replayable_settlement(key))
