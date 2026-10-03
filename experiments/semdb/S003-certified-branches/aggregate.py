@@ -725,6 +725,8 @@ def validate_pilot_provenance(result: dict) -> None:
     experiment_records.ProvenanceError.
     """
     evidence = result.get("pilot_provenance", {})
+    if not isinstance(evidence, dict):
+        raise ValueError("pilot has no successful, clean producing-revision evidence; rerun with --record-pilot")
     if (evidence.get("schema_version") != 1 or evidence.get("git_dirty") is not False
             or type(evidence.get("exit_code")) is not int or evidence["exit_code"] != 0):
         raise ValueError("pilot has no successful, clean producing-revision evidence; rerun with --record-pilot")
@@ -807,6 +809,8 @@ def pilot(paths: list[Path]) -> int:
         try:
             echoed = json.loads(result.get("preregistration"))
         except (TypeError, ValueError):
+            raise SystemExit(f"S003: {path.name} echoes no preregistration")
+        if not isinstance(echoed, dict):
             raise SystemExit(f"S003: {path.name} echoes no preregistration")
         echoed = {key: value for key, value in echoed.items() if key != "low_cells"}
         if echoed != expected:
