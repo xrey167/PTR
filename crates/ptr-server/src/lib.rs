@@ -99,7 +99,11 @@ impl ActionExecutor for DemoNoteExecutor {
             file.write_all(&action.payload)?;
             file.sync_all()?;
             std::fs::rename(&temporary, &path)?;
-            std::fs::File::open(&directory)?.sync_all()
+            // Persist the rename itself. Windows cannot open a directory as a
+            // file, and there NTFS makes the rename durable on its own.
+            #[cfg(unix)]
+            std::fs::File::open(&directory)?.sync_all()?;
+            Ok(())
         };
         if let Err(error) = write() {
             let _ = std::fs::remove_file(&temporary);
