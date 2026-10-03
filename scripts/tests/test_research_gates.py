@@ -5112,10 +5112,26 @@ class PreregistrationGateTests(unittest.TestCase):
         self.assertEqual(gate(pinned),(0,[]))
 
 ENROLLED=("S003","F003","Q003","R004","M008","E005")
+# The list also holds the experiments that ran or were superseded; they are no
+# part of the six this fixture moves to `prepared`.
+RETIRED=("M001-v2","M001-v4","M002-v2","M002-v3","M002-v4","M002-v5","M002-v6","M002-v7","M002-v8","M002-v9")
 
 class EnrolledExperimentTests(unittest.TestCase):
     """The repository's own list and configurations, copied into a fixture
     tree with every listed experiment moved to `prepared`."""
+
+    @staticmethod
+    def list_of(ids) -> str:
+        """The repository's list with only the entries of `ids`: its header and
+        each `[experiment.<id>...]` table whose id is one of them."""
+        kept=[]
+        keep=True
+        for line in (ROOT/"experiments/preregistration.toml").read_text(encoding="utf-8").splitlines(keepends=True):
+            if line.startswith("[experiment."):
+                keep=line.removeprefix("[experiment.").split("]",1)[0].split(".",1)[0] in ids
+            if keep:
+                kept.append(line)
+        return "".join(kept)
 
     def prepared_tree(self, edit=None) -> Path:
         """A fixture tree holding the repository's list, the six listed
@@ -5132,8 +5148,8 @@ class EnrolledExperimentTests(unittest.TestCase):
                 text=source.read_text(encoding="utf-8").replace('status = "planned"','status = "prepared"').replace('entrypoint = ""','entrypoint = "bench <seed>"')
                 write(root,f"experiments/{paths[exp_id]}/{name}",text)
         write(root,"experiments/registry.toml",registry)
+        write(root,"experiments/preregistration.toml",self.list_of(ENROLLED))
         for relative in (
-            "experiments/preregistration.toml",
             "research/baselines/plain_model/config.toml",
             "research/baselines/rag_reference/config.toml",
             "research/baselines/strong_rag/config.toml",
@@ -5147,7 +5163,7 @@ class EnrolledExperimentTests(unittest.TestCase):
 
     def test_the_list_enrolls_the_experiments_that_preregister(self):
         listed=mod.load(ROOT/"experiments/preregistration.toml")["experiment"]
-        self.assertEqual(sorted(listed),sorted(ENROLLED))
+        self.assertEqual(sorted(listed),sorted((*ENROLLED,*RETIRED)))
         # S003 lists every key its design preregisters (doc 35 design, section
         # 3.10), with the type of the design's value, low_cells included, in
         # the design's order.
