@@ -76,3 +76,10 @@ raft-proto = { path = "vendor/raft-proto" }
 raft-engine = { path = "vendor/raft-engine" }
 
 netlink_packet_core_pastey_0_8_2 = { package = "netlink-packet-core", path = "vendor/netlink-packet-core-0.8.2" }
+gemm_pastey_0_19_0 = { package = "gemm", path = "vendor/gemm-0.19.0" }
+gemm_c32_pastey_0_19_0 = { package = "gemm-c32", path = "vendor/gemm-c32-0.19.0" }
+gemm_c64_pastey_0_19_0 = { package = "gemm-c64", path = "vendor/gemm-c64-0.19.0" }
+gemm_common_pastey_0_19_0 = { package = "gemm-common", path = "vendor/gemm-common-0.19.0" }
+gemm_f16_pastey_0_19_0 = { package = "gemm-f16", path = "vendor/gemm-f16-0.19.0" }
+gemm_f32_pastey_0_19_0 = { package = "gemm-f32", path = "vendor/gemm-f32-0.19.0" }
+gemm_f64_pastey_0_19_0 = { package = "gemm-f64", path = "vendor/gemm-f64-0.19.0" }
