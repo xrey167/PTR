@@ -592,7 +592,6 @@ class LayoutTests(unittest.TestCase):
         self.assertEqual(analyse([result])["recommended"], "failed")
 
 
-
 class PilotSourceEvidenceTests(unittest.TestCase):
     def test_legacy_pilot_without_a_producing_revision_is_refused(self):
         with self.assertRaisesRegex(ValueError, "producing-revision"):
@@ -654,6 +653,7 @@ class PilotSourceEvidenceTests(unittest.TestCase):
         result["lww_lost_updates"] = 1
         values = analyse([result])["metrics"]["descriptive"]
         self.assertGreater(values["lww_anomalies_per_settled_attempt"], 0)
+
 
 class LayoutBoundaryTests(unittest.TestCase):
     def test_top_level_count_requires_an_integer_and_an_actual_case_list(self):

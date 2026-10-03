@@ -14,9 +14,18 @@ class ShownStatusTests(unittest.TestCase):
     def test_status_projection_does_not_mutate_registry_records_or_evaluations(self):
         experiment = {"id": "S003", "path": "semdb/S003", "status": "completed", "title": "Branches"}
         evaluation = {"id": "S003", "status": "completed"}
-        with mock.patch.object(update_component_docs, "load_toml", side_effect=[
-            {"experiment": [experiment]}, {"component": [evaluation]}, {"experiment": {"S003": {}}},
-        ]):
+        # Each file answers for itself, so that a harmless reordering of the
+        # three reads in registries() does not break the test.
+        tables = {
+            "experiments/registry.toml": {"experiment": [experiment]},
+            "evaluations/registry.toml": {"component": [evaluation]},
+            "experiments/preregistration.toml": {"experiment": {"S003": {}}},
+        }
+
+        def load_toml(path):
+            return tables[Path(path).relative_to(update_component_docs.ROOT).as_posix()]
+
+        with mock.patch.object(update_component_docs, "load_toml", side_effect=load_toml):
             experiments, evaluations = update_component_docs.registries()
         self.assertEqual(experiments["S003"], {**experiment, "status": "frozen"})
         self.assertEqual(experiment["status"], "completed")
