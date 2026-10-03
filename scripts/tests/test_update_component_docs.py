@@ -3,6 +3,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -10,6 +11,36 @@ import update_component_docs  # noqa: E402
 
 
 class ShownStatusTests(unittest.TestCase):
+    def test_status_projection_does_not_mutate_registry_records_or_evaluations(self):
+        experiment = {"id": "S003", "path": "semdb/S003", "status": "completed", "title": "Branches"}
+        evaluation = {"id": "S003", "status": "completed"}
+        # Each file answers for itself, so that a harmless reordering of the
+        # three reads in registries() does not break the test.
+        tables = {
+            "experiments/registry.toml": {"experiment": [experiment]},
+            "evaluations/registry.toml": {"component": [evaluation]},
+            "experiments/preregistration.toml": {"experiment": {"S003": {}}},
+        }
+
+        def load_toml(path):
+            return tables[Path(path).relative_to(update_component_docs.ROOT).as_posix()]
+
+        with mock.patch.object(update_component_docs, "load_toml", side_effect=load_toml):
+            experiments, evaluations = update_component_docs.registries()
+        self.assertEqual(experiments["S003"], {**experiment, "status": "frozen"})
+        self.assertEqual(experiment["status"], "completed")
+        self.assertEqual(evaluations, {"S003": evaluation})
+        self.assertEqual(evaluation["status"], "completed")
+
+    def test_unlisted_experiments_keep_each_lifecycle_status(self):
+        for status in ("planned", "prepared", "running", "completed", "failed", "superseded"):
+            with self.subTest(status=status):
+                self.assertEqual(update_component_docs.shown_status({"id": "L004", "status": status}, {"S003"}), status)
+
+    def test_empty_registries_and_preregistration_produce_empty_views(self):
+        with mock.patch.object(update_component_docs, "load_toml", return_value={}):
+            self.assertEqual(update_component_docs.registries(), ({}, {}))
+
     def shown(self, statuses: dict[str, str], listed: list[str]) -> dict[str, str]:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
