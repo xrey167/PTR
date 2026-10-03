@@ -16,6 +16,8 @@
 
 - RouteScore and RouteDecision with deterministic best-score selection
 - RoutingPolicy scaffold with max_parallel and uncertainty_trigger
+- RouteDecision::best breaks equal scores by the greater target instead of leaving the winner to iteration order
+- PodRouter::candidates and select: candidates come only from the project-scoped ptr_pods::PodRegistry for a capability and input type, so an out-of-registry Pod identity is never returned. Every candidate scores a constant 1.0, so selection is not yet quality- or cost-aware; equal scores are broken by the greater PodId
 
 ### Missing for the target architecture
 
@@ -49,6 +51,7 @@
 
 ### Current automated checks
 
+- pod_router_breaks_equal_scores_by_pod_id: two registered Pods of equal score select the greater id (zeta over alpha)
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->

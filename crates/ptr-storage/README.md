@@ -17,6 +17,10 @@
 - ArtifactRef with stable ArtifactId plus location list
 - ObjectStore trait
 - In-memory object-store reference implementation
+- ProtectedStateStore trait with InMemoryProtectedStateStore and FileProtectedStateStore: seal encrypts a payload with AES-256-GCM-SIV under a key from a KeyProvider, with the domain, logical id, generation, revision, key id and plaintext digest as associated data and a nonce derived from them, and returns a ProtectedHandle carrying the ciphertext and anchor digests; open and verify check the ciphertext digest, anchor, plaintext digest and key
+- Per-record GenerationAnchor chain: seal refuses a non-increasing generation or a previous digest that does not match the stored anchor with Rollback, a recomputed anchor digest that differs with AnchorMismatch, and a payload that does not match its declared digest with PlaintextDigestMismatch
+- SoftwareKeyProvider holds 32-byte keys in zeroizing memory and supports rotate and revoke; a revoked key blocks open with RevokedKey
+- FileProtectedStateStore persists the sealed records (PTRPST01 format) by temp-file write and rename, keeps the payload encrypted at rest, and requires the caller to supply the key provider again on reopen; the decoder refuses a bad magic, truncation, unknown domain or presence byte and trailing bytes
 
 ### Missing for the target architecture
 
@@ -46,6 +50,7 @@
 
 ### Current automated checks
 
+- tests/protected.rs: seal/open/verify round trip with an idempotent re-seal, rollback and forged-anchor rejection, revoked-key refusal, and a FileProtectedStateStore reopened twice with the sealed state still readable and extendable by a later generation
 - workspace fmt/check/test/clippy
 
 <!-- PTR:STATUS:END -->
