@@ -93,6 +93,29 @@ host reported `nvcc 13.3` for this run; this is hardware execution evidence, not
 a clean CUDA-12.8 toolchain rebuild. No RTX-3090 result is claimed without that
 physical device.
 
+### Persistent per-machine settings
+
+The repository's `.cargo/config.toml` deliberately holds no `[env]` table:
+`scripts/check_research_gates.py` rejects one, because it can name programs,
+sources and flags that a research record does not bind. To avoid the Developer
+PowerShell step on one machine, put the settings in the user-level Cargo
+configuration (`%CARGO_HOME%\config.toml`, usually
+`%USERPROFILE%\.cargo\config.toml`):
+
+```toml
+[env]
+CUDA_PATH = { value = "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.3", force = true }
+NVCC = { value = "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.8\\bin\\nvcc.exe", force = true }
+NVCC_CCBIN = { value = "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools\\VC\\Tools\\MSVC\\14.44.35207\\bin\\Hostx64\\x64", force = true }
+NVCC_PREPEND_FLAGS = { value = "-Xcompiler /Zc:preprocessor", force = true }
+CUDA_COMPUTE_CAP = { value = "89", force = true }
+```
+
+Candle links against the CUDA 13.3 libraries while `cudaforge` compiles runtime
+PTX with CUDA 12.8 for the installed driver. Adjust the paths and the compute
+capability to the machine; these values are the ones the repository used before
+they moved here.
+
 The model contract is:
 
 - `weight_name`: F32 tensor shaped `[output, input]`
