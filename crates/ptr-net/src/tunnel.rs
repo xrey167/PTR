@@ -1,10 +1,7 @@
 use crate::{MeshPeerIdentity, MeshRoute};
 use ptr_types::{Generation, PeerId, Revision};
 use std::collections::BTreeMap;
-#[cfg(all(feature = "wireguard-uapi-backend", unix))]
-#[cfg(windows)]
-use std::path::Path;
-#[cfg(target_os = "linux")]
+#[cfg(all(feature = "wireguard-uapi-backend", target_os = "linux"))]
 use std::path::PathBuf;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
