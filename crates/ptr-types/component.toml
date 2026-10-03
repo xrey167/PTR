@@ -35,6 +35,7 @@ implemented = [
   "Compile-fail documentation rejects implicit confidence-to-verification/effect conversion and unqualified estimate ordering",
   "Cognitive contract fixtures cover independent axes, constraints, uncertain claims, conflicting sources and revoked generations",
   "PrincipalId: the name a branch or fast memory is attributed to, recorded as given (From<&str> and its public field take any string); effect attempts record a string, not a PrincipalId: one made through an admitted execution session records that session's principal, which the runtime validated when it created the session, while PtrRuntime::commit and replay record an EffectAttempted's principal as given, the empty string included; that a PrincipalId names the admitted principal is the caller's obligation",
+  "The crate declares its own rust-version (1.95) with a matching crates/ptr-types/clippy.toml instead of taking the workspace's 1.99, because model/burn-a0 depends on it by path and builds on 1.95; scripts/check_msrv_alignment.py holds the two equal, and a cargo +1.95.0 check of model/burn-a0 with --locked builds against it",
 ]
 
 missing = [
