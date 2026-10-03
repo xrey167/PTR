@@ -124,7 +124,10 @@ fn rejected_pod_counts_leave_the_durable_log_unchanged_and_boundary_events_reope
         MAX_HYPOTHESIS_DEPENDENCIES,
     );
     ledger.append_durable(expected[0].clone()).unwrap();
-    let before = std::fs::read(&path).unwrap();
+    // The open ledger holds a byte-range lock that Windows enforces against
+    // reads, so the length is compared here; the contents are read back after
+    // the ledger is dropped.
+    let before = std::fs::metadata(&path).unwrap().len();
     for (provenance, dependencies) in [
         (MAX_HYPOTHESIS_PROVENANCE + 1, 0),
         (0, MAX_HYPOTHESIS_DEPENDENCIES + 1),
@@ -134,7 +137,7 @@ fn rejected_pod_counts_leave_the_durable_log_unchanged_and_boundary_events_reope
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
         assert_eq!(error.to_string(), "PTR_LEDGER_HYPOTHESIS_LIMIT");
         assert_eq!(ledger.events().len(), 1);
-        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), before);
     }
     assert_eq!(
         ledger.append_durable(expected[1].clone()).unwrap(),
