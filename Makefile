@@ -142,6 +142,8 @@ ci-repository-invariants:
 	$(PYTHON) -m unittest discover -s docs-site/tests
 	$(PYTHON) benchmarks/operator-routing/generator.py
 	$(PYTHON) -m unittest discover -s benchmarks/operator-routing/tests
+	$(PYTHON) benchmarks/operator-routing-v2/generator.py --check
+	$(PYTHON) -m unittest discover -s benchmarks/operator-routing-v2/tests
 
 ci-lifecycle-failpoints:
 	cargo +stable test -p ptr-ledger --features failpoints --test failpoints --locked
