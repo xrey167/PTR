@@ -217,3 +217,67 @@ fn a_revocation_wins_a_shared_revision_so_the_end_state_is_revoked_in_either_ord
         Err(MeshError::StaleGeneration)
     );
 }
+
+#[test]
+fn invitation_acceptance_replay_cannot_restore_a_revoked_peer() {
+    use ptr_types::MeshTunnelEventKind::{
+        InvitationAccepted, MembershipActivated, MembershipRevoked,
+    };
+    let mut registry = MeshRegistry::default();
+    registry
+        .apply_event(&lifecycle_event(MembershipActivated, "alice", 1, 7))
+        .unwrap();
+    registry
+        .apply_event(&lifecycle_event(MembershipRevoked, "alice", 2, 7))
+        .unwrap();
+    for revision in [1, 2, 3] {
+        let mut event = lifecycle_event(InvitationAccepted, "alice", revision, 9);
+        event.invitation_id = Some(InvitationId::from("invite-replay"));
+        assert_eq!(registry.apply_event(&event), Err(MeshError::RevokedPeer));
+    }
+    assert_eq!(
+        registry.endpoint(
+            &NetworkId::from("mesh"),
+            &PeerId::from("alice"),
+            MeshRoute::Direct
+        ),
+        Err(MeshError::RevokedPeer)
+    );
+}
+
+#[test]
+fn route_revision_fences_late_admissions_without_changing_the_admitted_identity() {
+    use ptr_types::MeshTunnelEventKind::{InvitationAccepted, MembershipActivated, RouteChanged};
+    let mut registry = MeshRegistry::default();
+    registry
+        .apply_event(&lifecycle_event(MembershipActivated, "alice", 1, 7))
+        .unwrap();
+    registry
+        .apply_event(&lifecycle_event(RouteChanged, "alice", 5, 8))
+        .unwrap();
+    for kind in [InvitationAccepted, MembershipActivated] {
+        let mut event = lifecycle_event(kind, "alice", 4, 9);
+        event.invitation_id = Some(InvitationId::from("invite-replay"));
+        assert_eq!(
+            registry.apply_event(&event),
+            Err(MeshError::ConflictingRevision)
+        );
+        event.revision = ptr_types::Revision(5);
+        registry.apply_event(&event).unwrap();
+        event.revision = ptr_types::Revision(6);
+        event.generation = Generation(2);
+        assert_eq!(
+            registry.apply_event(&event),
+            Err(MeshError::ConflictingRevision)
+        );
+    }
+    let endpoint = registry
+        .endpoint(
+            &NetworkId::from("mesh"),
+            &PeerId::from("alice"),
+            MeshRoute::Direct,
+        )
+        .unwrap();
+    assert_eq!(endpoint.peer.public_key_digest, [7; 32]);
+    assert_eq!(endpoint.route_revision, ptr_types::Revision(5));
+}

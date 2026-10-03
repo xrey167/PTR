@@ -885,6 +885,53 @@ enum Ending {
     Unsettled,
 }
 
+#[test]
+fn execution_key_preflight_checks_identifiers_and_utf8_byte_boundaries_without_reserving() {
+    let (mut runtime, action) = fixture();
+    let echo = Echo::default();
+    let session = synchronous(&mut runtime, "alice", &action, &echo);
+    let before = runtime.committed_events().to_vec();
+    for key in ["", " ", " padded", "padded ", "a\nb", "a\0b", "\u{2003}key"] {
+        assert!(!runtime.is_usable_execution_key(key), "{key:?}");
+    }
+    let at_limit = "é".repeat(MAX_KEY_BYTES / 2);
+    assert!(runtime.is_usable_execution_key(&at_limit));
+    assert!(!runtime.is_usable_execution_key(&format!("{at_limit}é")));
+    assert!(!runtime.is_usable_execution_key(&"a".repeat(MAX_KEY_BYTES + 1)));
+    for _ in 0..3 {
+        assert!(runtime.is_usable_execution_key("valid key"));
+    }
+    assert_eq!(runtime.committed_events(), before);
+    assert_eq!(echo.calls(), 0);
+    let permit = once(&runtime, &session, &action, "valid key");
+    assert_eq!(
+        runtime.execute_prepared(&session, permit).unwrap(),
+        b"applied verified payload"
+    );
+    assert_eq!(echo.calls(), 1);
+}
+
+#[test]
+fn oversized_historical_keys_pass_preflight_only_when_their_outcome_is_replayable() {
+    let key = "k".repeat(MAX_KEY_BYTES + 1);
+    for (ending, expected) in [
+        (Ending::Settled, true),
+        (Ending::Reconciled(true), true),
+        (Ending::Reconciled(false), false),
+        (Ending::Unsettled, false),
+    ] {
+        let (_temp, runtime, _action, _attempt) =
+            logged_by_an_earlier_build(&key, "p", "alice", ending);
+        let before = runtime.committed_events().to_vec();
+        assert_eq!(
+            runtime.is_usable_execution_key(&key),
+            expected,
+            "{ending:?}"
+        );
+        assert_eq!(runtime.committed_events(), before);
+    }
+}
+
 /// A log an earlier build could have written, reopened by this one as after an
 /// upgrade: the durable fixture's ground state as such a build recorded it
 /// (the request's raw text without an origin, then the capsule), then an
