@@ -621,3 +621,54 @@ fn a_later_promotion_with_another_payload_is_not_the_admissions_follow_up() {
     let promoted = snapshot.payload(&key).expect("a promoted value");
     assert_eq!(promoted.bytes, b"observation".to_vec());
 }
+
+#[test]
+fn a_foreign_hypothesis_record_is_not_the_admissions_follow_up() {
+    let mut first = runtime_with_scope();
+    first
+        .admit_pod_output(request(PodOutputKind::Hypothesis), &Pass)
+        .unwrap();
+    let mut foreign = first
+        .committed_events()
+        .iter()
+        .find_map(|committed| match &committed.event {
+            event @ ptr_ledger::LedgerEvent::PodHypothesisCommitted { .. } => Some(event.clone()),
+            _ => None,
+        })
+        .unwrap();
+    let ptr_ledger::LedgerEvent::PodHypothesisCommitted { branch_id, .. } = &mut foreign else {
+        unreachable!();
+    };
+    // Same request, Pod and output digest, but not the branch this admission
+    // derives: those fields are not part of the output digest.
+    *branch_id = "pod-branch:someone-else".into();
+
+    let mut runtime = runtime_with_only_the_admission_record(&first);
+    runtime.commit(foreign).unwrap();
+    let hypotheses = |runtime: &PtrRuntime| {
+        runtime
+            .committed_events()
+            .iter()
+            .filter(|committed| {
+                matches!(
+                    committed.event,
+                    ptr_ledger::LedgerEvent::PodHypothesisCommitted { .. }
+                )
+            })
+            .count()
+    };
+    assert_eq!(hypotheses(&runtime), 1);
+    let admitted = runtime
+        .admit_pod_output(request(PodOutputKind::Hypothesis), &Pass)
+        .unwrap();
+    let PodOutputAdmission::Hypothesis { branch_id } = admitted else {
+        panic!("expected a hypothesis");
+    };
+    // The retry commits the branch it reports instead of replaying on the foreign one.
+    assert_eq!(hypotheses(&runtime), 2);
+    assert!(runtime.committed_events().iter().any(|committed| matches!(
+        &committed.event,
+        ptr_ledger::LedgerEvent::PodHypothesisCommitted { branch_id: recorded, .. }
+            if recorded == &branch_id
+    )));
+}

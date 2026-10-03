@@ -120,6 +120,21 @@ pub enum PodOutputAdmission {
     },
 }
 
+/// The branch a Pod hypothesis is committed under: derived from the request, the
+/// Pod and the output digest, so a retry of one admission names the same branch.
+fn pod_branch_id(
+    request_id: &RequestId,
+    pod_id: &ptr_types::PodId,
+    output_digest: &ptr_types::Digest,
+) -> String {
+    format!(
+        "pod-branch:{}:{}:{}",
+        request_id,
+        pod_id,
+        digest_hex(output_digest)
+    )
+}
+
 fn digest_hex(digest: &ptr_types::Digest) -> String {
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
@@ -1942,12 +1957,7 @@ impl PtrRuntime {
         // admission whose retry reports success for a hypothesis that was never
         // created.
         let hypothesis = (request.output.kind == PodOutputKind::Hypothesis).then(|| {
-            let branch_id = format!(
-                "pod-branch:{}:{}:{}",
-                request.request_id,
-                request.pod_id,
-                digest_hex(&output_digest)
-            );
+            let branch_id = pod_branch_id(&request.request_id, &request.pod_id, &output_digest);
             let event = LedgerEvent::PodHypothesisCommitted {
                 request_id: request.request_id.clone(),
                 session_id: request.session_id.clone(),
@@ -2077,15 +2087,24 @@ impl PtrRuntime {
                 (
                     LedgerEvent::PodHypothesisCommitted {
                         request_id,
+                        session_id,
+                        scope_id,
+                        branch_id,
                         pod_id,
                         output_digest: digest,
                         ..
                     },
                     2,
                 ) => {
+                    // The output digest does not cover the session, the scope or
+                    // the branch id, so each is compared with what this admission
+                    // derives; a record for another one is not its follow-up.
                     request_id == &request.request_id
                         && pod_id == &request.pod_id
                         && digest == output_digest
+                        && session_id == &request.session_id
+                        && scope_id == &request.scope_id
+                        && branch_id == &pod_branch_id(&request.request_id, &request.pod_id, digest)
                 }
                 (
                     LedgerEvent::SemanticDeltaCommitted {
