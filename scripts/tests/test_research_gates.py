@@ -1308,6 +1308,41 @@ class PreregistrationGateTests(unittest.TestCase):
         commit_all(root,"superseded")
         self.assertEqual(gate(root),(0,[]))
 
+    def test_a_superseded_experiment_is_bound_to_its_files_as_frozen_not_as_they_are_now(self):
+        # A superseded experiment is not run again; the file it named is the one
+        # its freezing commit held, which a file shared with later experiments
+        # may stop being. A running one is held to the file as it is now.
+        required={**REQUIRED,"protocol":"file"}
+        path="experiments/semdb/X900-fixture/PROTOCOL.md"
+        text="# Protocol\nJudge the delta.\n"
+        edited=text+"Shared with a later experiment.\n"
+        digest=hashlib.sha256(text.encode("utf-8")).hexdigest()
+        edited_digest=hashlib.sha256(edited.encode("utf-8")).hexdigest()
+        table={**TABLE,"protocol":path,"protocol_sha256":digest}
+
+        def frozen(status):
+            root=self.tree(status="running",table=table,required=required)
+            write(root,path,text)
+            commit_all(root)
+            if status=="superseded":
+                self.edit(root,self.MANIFEST,'status = "running"','status = "superseded"')
+                self.edit(root,"experiments/registry.toml",'status = "running"','status = "superseded"')
+                commit_all(root,"superseded")
+            self.assertEqual(gate(root),(0,[]))
+            return root
+
+        running=frozen("running")
+        write(running,path,edited)
+        commit_all(running,"the file changed")
+        self.assert_blocked(
+            running,
+            f"X900: preregistration key protocol_sha256 {digest!r} is not {edited_digest}, the digest of {path}",
+        )
+        superseded=frozen("superseded")
+        write(superseded,path,edited)
+        commit_all(superseded,"the file changed")
+        self.assertEqual(gate(superseded),(0,[]))
+
     def test_only_a_results_directory_holds_run_records(self):
         # A file named like a record elsewhere in the experiment's directory,
         # such as a test's fixture, is none: the runner writes records only

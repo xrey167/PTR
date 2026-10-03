@@ -2207,8 +2207,13 @@ def frozen_errors(exp_id: str, entry: dict, manifest: dict, experiment: Path, ro
                 form=preregistered_file_problem(root,table[key],file)
                 if form:
                     errors.append(f"{exp_id}: preregistration key {key} names {table[key]!r}, which {form}")
-                errors.extend(frozen_value_errors(
-                    exp_id,table,f"{key}_sha256",experiment_records.preregistered_file_digest(file),table[key]))
+                # A superseded experiment is not run again, so what binds it is
+                # the file as the commit that froze it held it (checked by the
+                # freeze checks), not as the file is now: files that later
+                # experiments share may change after it.
+                if not (status_of(manifest)=="superseded" and f"{key}_sha256" in table):
+                    errors.extend(frozen_value_errors(
+                        exp_id,table,f"{key}_sha256",experiment_records.preregistered_file_digest(file),table[key]))
     for key,value in table.items():
         problem=None if key in entry["required"] else unset_problem(value)
         if problem:
