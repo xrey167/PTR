@@ -102,10 +102,10 @@ metrics! {
         merges_rebased,
         conflicts,
         lifecycle_refusals,
-        verification_holds,
         escalations,
         reviewed_merges,
         no_change_merges,
+        probe_verification_holds,
         hazard_write,
         hazard_read,
         hazard_scan_keys,
@@ -157,6 +157,7 @@ metrics! {
         wasted_ticks,
         abandoned_tasks,
         review_voids,
+        verification_holds,
         occ_lost_updates,
         hazard_negative,
         hazard_set_member,
@@ -172,6 +173,13 @@ metrics! {
         probe_hazard_rebase,
         probe_hazard_negative,
         probe_hazard_set_member,
+        probe_merges_clean,
+        probe_merges_rebased,
+        probe_conflicts,
+        probe_lifecycle_refusals,
+        probe_escalations,
+        probe_reviewed_merges,
+        probe_no_change_merges,
     }
 }
 
@@ -227,6 +235,21 @@ impl Metrics {
         self.probe_hazard_rebase += std::mem::take(&mut rest.hazard_rebase);
         self.probe_hazard_negative += std::mem::take(&mut rest.hazard_negative);
         self.probe_hazard_set_member += std::mem::take(&mut rest.hazard_set_member);
+        // The paths the coverage gate asks the workload to reach, counted apart
+        // for the same reason: a probe's fixture reaches each of them in every
+        // case, so were they added to the workload's counters the gate would be
+        // met by the probes alone and say nothing of the workload. The one
+        // path the workload does not reach, a merge held by verification, is
+        // the probes' to cover: `probe_verification_holds` is the coverage
+        // counter and `verification_holds` the workload's own count.
+        self.probe_merges_clean += std::mem::take(&mut rest.merges_clean);
+        self.probe_merges_rebased += std::mem::take(&mut rest.merges_rebased);
+        self.probe_conflicts += std::mem::take(&mut rest.conflicts);
+        self.probe_lifecycle_refusals += std::mem::take(&mut rest.lifecycle_refusals);
+        self.probe_verification_holds += std::mem::take(&mut rest.verification_holds);
+        self.probe_escalations += std::mem::take(&mut rest.escalations);
+        self.probe_reviewed_merges += std::mem::take(&mut rest.reviewed_merges);
+        self.probe_no_change_merges += std::mem::take(&mut rest.no_change_merges);
         // Probe runtimes are tiny fixtures, not tick-scheduled workload merges.
         rest.merge_calls = 0;
         rest.merge_wall_ns = 0;
@@ -333,6 +356,68 @@ mod tests {
     }
 
     #[test]
+    fn a_probes_coverage_paths_are_no_coverage_of_the_workload() {
+        let probes = Metrics {
+            merges_clean: 1,
+            merges_rebased: 2,
+            conflicts: 3,
+            lifecycle_refusals: 4,
+            verification_holds: 5,
+            escalations: 6,
+            reviewed_merges: 7,
+            no_change_merges: 8,
+            probe_p1_exercised: 1,
+            replays: 9,
+            ..Metrics::default()
+        };
+        let mut workload = Metrics {
+            conflicts: 10,
+            ..Metrics::default()
+        };
+        workload.absorb_probes(&probes);
+        let reached = |name: &str| {
+            workload
+                .coverage()
+                .into_iter()
+                .find(|(field, _)| *field == name)
+                .map(|(_, count)| count)
+        };
+        for name in [
+            "merges_clean",
+            "merges_rebased",
+            "lifecycle_refusals",
+            "escalations",
+            "reviewed_merges",
+            "no_change_merges",
+        ] {
+            assert_eq!(reached(name), Some(0), "{name}");
+        }
+        assert_eq!(reached("conflicts"), Some(10), "only the workload's own");
+        assert_eq!(workload.verification_holds, 0);
+        assert_eq!(
+            reached("probe_verification_holds"),
+            Some(5),
+            "the one path the probes cover for the gate"
+        );
+        assert_eq!(
+            (
+                workload.probe_merges_clean,
+                workload.probe_merges_rebased,
+                workload.probe_conflicts,
+                workload.probe_lifecycle_refusals,
+                workload.probe_verification_holds,
+                workload.probe_escalations,
+                workload.probe_reviewed_merges,
+                workload.probe_no_change_merges,
+            ),
+            (1, 2, 3, 4, 5, 6, 7, 8)
+        );
+        // What only the probes exercise stays a coverage counter.
+        assert_eq!(reached("probe_p1_exercised"), Some(1));
+        assert_eq!(reached("replays"), Some(9));
+    }
+
+    #[test]
     fn probes_cannot_dilute_slow_workload_merges() {
         let mut workload = Metrics::default();
         workload.record_merge(Duration::from_millis(20));
@@ -348,7 +433,11 @@ mod tests {
         assert_eq!(workload.merge_wall_gt_10ms, 1);
         assert_eq!(workload.merge_wall_le_10us, 0);
         assert_eq!(workload.merge_wall_ns, 20_000_000);
-        assert_eq!(workload.conflicts, 2);
+        assert_eq!(
+            workload.conflicts, 0,
+            "a probe's conflicts are not the workload's"
+        );
+        assert_eq!(workload.probe_conflicts, 2);
     }
 
     #[test]

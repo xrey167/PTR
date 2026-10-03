@@ -208,6 +208,28 @@ class VerdictTests(unittest.TestCase):
         self.assertFalse(analysis["conditions"]["coverage_ok"])
         self.assertEqual(analysis["metrics"]["descriptive"]["probe_hazard_repetitions"]["probe_hazard_write"], 240)
 
+    def test_the_workloads_own_paths_gate_coverage_and_the_probes_cover_only_the_verification_hold(self):
+        # A path the workload must reach is read from the workload's counter: a
+        # probe's own count of it is reported, and gates nothing.
+        for name in ("merges_rebased", "conflicts", "lifecycle_refusals", "escalations", "reviewed_merges", "no_change_merges"):
+            with self.subTest(name=name):
+                results = five()
+                results[1][name] = 0
+                results[1]["probe_" + name] = 999
+                self.assertFalse(analyse(results)["conditions"]["coverage_ok"])
+        # A merge held by verification is the one path the workload does not
+        # reach (its count is descriptive); the probes' count gates it.
+        results = five()
+        for result in results:
+            result["verification_holds"] = 0
+        self.assertTrue(analyse(results)["conditions"]["coverage_ok"])
+        results[3]["probe_verification_holds"] = 0
+        self.assertFalse(analyse(results)["conditions"]["coverage_ok"])
+        self.assertIn("probe_verification_holds", aggregate.COVERAGE)
+        self.assertNotIn("verification_holds", aggregate.COVERAGE)
+        for name in aggregate.PROBE_PATHS:
+            self.assertNotIn(name, aggregate.COVERAGE)
+
     def test_the_two_rule_classes_are_covered_by_their_probes_and_gate_nothing_else(self):
         results = five()
         for result in results:

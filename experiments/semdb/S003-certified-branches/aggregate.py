@@ -108,10 +108,10 @@ COVERAGE = [
     "merges_rebased",
     "conflicts",
     "lifecycle_refusals",
-    "verification_holds",
     "escalations",
     "reviewed_merges",
     "no_change_merges",
+    "probe_verification_holds",
     "lww_lost_updates",
     "lww_lost_increments",
     "occ_undetected_phantoms",
@@ -154,6 +154,17 @@ PROBE_HAZARDS = [
     "probe_hazard_rebase",
     "probe_hazard_negative",
     "probe_hazard_set_member",
+]
+# The paths the coverage gate asks the workload to reach, as the fixed probes
+# reached them. Reported, and no gate: the gate reads the workload's own.
+PROBE_PATHS = [
+    "probe_merges_clean",
+    "probe_merges_rebased",
+    "probe_conflicts",
+    "probe_lifecycle_refusals",
+    "probe_escalations",
+    "probe_reviewed_merges",
+    "probe_no_change_merges",
 ]
 # The merge-time histogram's buckets, with their upper bounds in microseconds.
 BUCKETS = [
@@ -452,6 +463,7 @@ def descriptive(results: list[dict], totals: dict, hard_pass: bool) -> dict:
             for name in RULE_CLASSES
         },
         "probe_hazard_repetitions": {name: totals.get(name, 0) for name in PROBE_HAZARDS},
+        "probe_path_repetitions": {name: totals.get(name, 0) for name in PROBE_PATHS},
     }
 
 
