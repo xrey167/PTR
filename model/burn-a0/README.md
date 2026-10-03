@@ -9,13 +9,17 @@ This is the first **trainable tensor implementation** of a PTR model component. 
 - epistemic-state embeddings, one row per `EpistemicState` in that codebook;
 - research-local provenance-bucket embeddings, the one width still chosen rather than derived;
 - confidence projection into the typed latent space;
-- learned typed metadata bias on both raw→slot and slot→raw attention;
+- three explicit typed-attention modes: historical `LegacyScalarV1`, bounded
+  rank-limited `FactorizedV2`, and a compute-matched `Off` mode that evaluates
+  the factorized branch and zeros only its result;
 - bidirectional raw↔slot cross-attention;
 - residual projection back into raw and semantic workspaces;
 - shared recurrent latent refinement steps;
 - operator-router logits over the updated semantic slots, one logit per `ReasoningOperator` in that codebook;
 - enforced lifecycle admission: a `ValidityMask` from committed state enters as a negative-infinity attention bias and weights the router's mean, so an excluded slot cannot reach the output at all;
-- checkpoints written and read with the shared `CheckpointHeader`, so weights cannot load under an assignment they were not trained under;
+- format-3 checkpoints bind codebook, slot encoding and the complete non-shape
+  architecture configuration; format-2 checkpoints load only through an exact,
+  explicit legacy opt-in;
 - upstream Burn device-dispatch support;
 - Flex CPU forward, autodiff and tiny supervised-router training tests.
 
@@ -34,8 +38,15 @@ from the same random draws. Defaults reproduce the unswitched model, pinned by
 | `with_latent_nonlinearity` | on | a refinement step is `slots + latent_refine(slots)`, with no `gelu` |
 | `with_frozen_router` | off | on: the router is excluded from training after init; the forward pass is unchanged |
 
-None of them is recorded in the checkpoint header, like `latent_steps` before
-them: a checkpoint is loaded under whatever the config passed to `load` says.
+Every architecture switch is digest-bound in the format-3 checkpoint header.
+Historical format-2 fixtures are accepted only when the caller explicitly opts
+into the exact `LegacyScalarV1`/legacy-router configuration.
+
+M002-v5 additionally uses a layer-normalized admitted-slot pool, cosine router
+with bounded fixed scaling, label smoothing, soft-metadata dropout and a
+consistency loss. Validation-only temperature scaling and a threshold targeting
+90% validation coverage produce abstaining `Unknown` decisions while retaining
+forced-choice metrics.
 
 `init` draws every parameter at once, in declaration order. Burn otherwise draws
 a parameter the first time it is read, so an arm that skipped a module drew every

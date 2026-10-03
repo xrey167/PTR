@@ -499,7 +499,7 @@ an explicit migration step converts, writing a new file.
 | `PTRCS002`, `PTRLC001`, `PTREX001` | F, S, S | ptr-runtime `compacted.rs:30-32` | Compacted snapshot; lifecycle section; execution-obligation section. Also the raft snapshot payload | `PTRCS001` refused |
 | `PTRNEU01`, `PTRNB001`, `PTRNEU01-INPUT` | F, S, D | ptr-runtime `neural.rs:47-55` | Sealed neural state; its binding; per-input digest domain | the checkpoint header is **not** kept inside a sealed artifact |
 | `PTREXEC01-ACTION` | D | ptr-runtime `execution.rs:19` | `action_digest` stored in `EffectAttempted` | — |
-| `PTRCKPT\0` | F | ptr-types `checkpoint.rs:24` | Model checkpoint header, written by burn-a0 | version is a `u16` after the magic (`FORMAT_V2`); format 1 refused |
+| `PTRCKPT\0` | F | ptr-types `checkpoint.rs:24` | Model checkpoint header, written by burn-a0 | version is a `u16` after the magic (`FORMAT_V3`); format 2 is unbound legacy and format 1 is refused |
 | `PTRCODEBOOK\0` | C | ptr-types `codebook.rs:357` | Canonical codebook bytes, fingerprinted into `datasets/generated/codebook.json` | Codebook V1; append-only per version |
 | `PTR-SLOT-ENCODING-V1` | D | ptr-types `slot_encoding.rs:223` | Seed of the slot-vector mixer | output values pinned by a test |
 | `PTRRAFTW` | W | ptr-cluster `frame.rs:13` | Raft batch on `ptr-raft/1` | `FORMAT_V1` `u16` |

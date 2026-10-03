@@ -5,13 +5,15 @@ use super::{PtrRuntime, RuntimeError};
 use crate::merge::{self, ChangeOrigin, SemanticChange};
 use ptr_events::RuntimeEvent;
 use ptr_ledger::{Attestation, LedgerEvent, MergeAuthorityRecord, SemanticOrigin};
+use ptr_pods::PodManifest;
 use ptr_protocol::TypedPayload;
 use ptr_semdb::{
     is_ingress_key, PreparedDelta, SemanticDelta, SemanticError, SemanticPayload, SemanticSnapshot,
     SemanticValue,
 };
 
-use ptr_types::{CommitIndex, PodId, PrincipalId, RequestId, Revision, VerificationLevel};
+use ptr_types::{CommitIndex, Effect, PodId, PrincipalId, RequestId, Revision, VerificationLevel};
+use ptr_verifier::{VerificationStatus, Verifier};
 use std::collections::BTreeSet;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -35,7 +37,70 @@ pub fn pod_output_key(request: &RequestId, pod: &PodId) -> String {
     )
 }
 
+/// Candidate observations use a separate namespace from verified Pod output.
+/// The digest is part of the key so two different outputs for one request can
+/// coexist as reviewable evidence without overwriting one another.
+pub fn pod_candidate_key(request: &RequestId, pod: &PodId, output_digest: &[u8; 32]) -> String {
+    let digest = output_digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!(
+        "pod-candidate:{}:{request}:{}:{pod}:{digest}",
+        request.0.len(),
+        pod.0.len()
+    )
+}
+
 impl PtrRuntime {
+    /// Shared output-admission boundary for in-process and memory-controller
+    /// callers. Effects never pass through this pure/read promotion path.
+    pub fn promote_verified_pod_output<V>(
+        &mut self,
+        request: &RequestId,
+        manifest: &PodManifest,
+        output: &TypedPayload,
+        verifier: &V,
+    ) -> Result<Revision, RuntimeError>
+    where
+        V: Verifier<TypedPayload> + ?Sized,
+    {
+        if manifest
+            .effects
+            .iter()
+            .any(|effect| !matches!(effect, Effect::Pure | Effect::Read))
+        {
+            return Err(RuntimeError::PodEffectRequiresActionBoundary {
+                pod: manifest.id.to_string(),
+            });
+        }
+        if !manifest.produces.contains(&output.type_id) {
+            return Err(RuntimeError::PodOutputTypeMismatch {
+                pod: manifest.id.to_string(),
+                expected: manifest
+                    .produces
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(","),
+                actual: output.type_id.to_string(),
+            });
+        }
+        let report = verifier.verify(output);
+        let passed = report.status == VerificationStatus::Pass
+            && !report.findings.iter().any(|finding| finding.hard);
+        self.emit(RuntimeEvent::VerifierResult {
+            verifier: "pod-output".into(),
+            passed,
+        });
+        if !passed {
+            return Err(RuntimeError::PodVerificationFailed {
+                pod: manifest.id.to_string(),
+            });
+        }
+        self.promote_pod_output(request, &manifest.id, output, report.level)
+    }
+
     /// Ingress: `delta`, in the exact shape `origin` fixes (rule R2 of
     /// [`Self::validate_semantic_origin`]), committed at the current revision
     /// with no verifier, since raw input is not something an interpreter may
@@ -325,6 +390,40 @@ impl PtrRuntime {
             .map(|commit| commit.revision)
     }
 
+    /// Retain a verified but non-authoritative Pod observation as a candidate.
+    /// Candidate records are durable and replayable, but their separate origin
+    /// and namespace prevent them from being consumed as promoted facts.
+    pub(super) fn promote_pod_candidate(
+        &mut self,
+        request: &RequestId,
+        pod: &PodId,
+        output: &TypedPayload,
+        output_digest: [u8; 32],
+        level: VerificationLevel,
+    ) -> Result<SemanticCommit, RuntimeError> {
+        let key = pod_candidate_key(request, pod, &output_digest);
+        let mut delta = SemanticDelta::default();
+        delta.upserts.insert(
+            key.clone(),
+            SemanticPayload {
+                type_id: output.type_id.clone(),
+                source: pod.to_string(),
+                bytes: output.bytes.clone(),
+            }
+            .into(),
+        );
+        delta
+            .dependencies
+            .insert(key, [request_raw_key(request)].into());
+        let origin = SemanticOrigin::PodCandidate {
+            request: request.0.clone(),
+            pod: pod.0.clone(),
+            output_digest,
+            level,
+        };
+        self.apply_ingress(origin, delta)
+    }
+
     /// Check a semantic record against the current state and prepare its
     /// delta. `index` is where the record was committed, when it is being
     /// replayed, and `None` when it is about to be written.
@@ -470,6 +569,31 @@ impl PtrRuntime {
                 } else {
                     Err(invalid(
                         "a Pod output record writes exactly the Pod's output for its request",
+                    ))
+                }
+            }
+            SemanticOrigin::PodCandidate {
+                request,
+                pod,
+                output_digest,
+                ..
+            } => {
+                let request = RequestId(request.clone());
+                let key = pod_candidate_key(&request, &PodId(pod.clone()), output_digest);
+                let shaped = delta.removals.is_empty()
+                    && delta.upserts.len() == 1
+                    && matches!(
+                        delta.upserts.get(&key),
+                        Some(SemanticValue::Payload(payload)) if payload.source == *pod
+                    )
+                    && delta.dependencies.len() == 1
+                    && delta.dependencies.get(&key)
+                        == Some(&BTreeSet::from([request_raw_key(&request)]));
+                if shaped {
+                    Ok(())
+                } else {
+                    Err(invalid(
+                        "a Pod candidate record writes exactly the candidate for its request",
                     ))
                 }
             }

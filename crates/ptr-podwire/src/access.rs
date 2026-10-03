@@ -13,8 +13,12 @@
 //! the project is looked up from the authenticated peer, in the same table and for
 //! the same reason that the execution wire looks up a principal.
 use crate::frame::RefusalCode;
+#[cfg(feature = "podwire-backend")]
+use ptr_pods::PodManifest;
 use ptr_pods::PodRegistry;
 use ptr_protocol::TypedPayload;
+#[cfg(feature = "podwire-backend")]
+use ptr_types::PodId;
 use ptr_types::{CapabilityId, Effect, NodeId, ProjectId, TypeId};
 use ptr_verifier::{VerificationStatus, Verifier};
 use std::collections::{BTreeMap, BTreeSet};
@@ -186,7 +190,59 @@ where
 
     // (6) Run, then verify. The Pod's own error message stays here.
     let output = pod.invoke(payload).map_err(|_| RefusalCode::PodFailed)?;
-    if verifier.verify(&output).status != VerificationStatus::Pass {
+    let report = verifier.verify(&output);
+    if report.status != VerificationStatus::Pass
+        || report.findings.iter().any(|finding| finding.hard)
+    {
+        return Err(RefusalCode::Unverified);
+    }
+    Ok(output)
+}
+
+/// Resolve and run the exact Pod captured by an admitted generation-bound
+/// binding. Unlike [`answer`], this path never performs a fresh capability-only
+/// selection after the binding has been accepted.
+#[cfg(feature = "podwire-backend")]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn answer_bound<V>(
+    policy: &PodAccessPolicy,
+    registry: &PodRegistry,
+    verifier: &V,
+    peer: &NodeId,
+    pod_id: &PodId,
+    expected_manifest: &PodManifest,
+    capability: &CapabilityId,
+    expect_protocol: u32,
+    payload: TypedPayload,
+) -> Result<TypedPayload, RefusalCode>
+where
+    V: Verifier<TypedPayload> + ?Sized,
+{
+    let scope = policy.scope(peer).ok_or(RefusalCode::NotAdmitted)?;
+    if scope.project() != &expected_manifest.project || !scope.covers(capability, &payload.type_id)
+    {
+        return Err(RefusalCode::Unavailable);
+    }
+    let pod = registry
+        .get(&expected_manifest.project, pod_id)
+        .filter(|pod| pod.manifest() == expected_manifest)
+        .ok_or(RefusalCode::Unavailable)?;
+    let manifest = pod.manifest();
+    if manifest
+        .effects
+        .iter()
+        .any(|effect| !matches!(effect, Effect::Pure | Effect::Read))
+    {
+        return Err(RefusalCode::RequiresActionBoundary);
+    }
+    if manifest.protocol_version != expect_protocol {
+        return Err(RefusalCode::ProtocolMismatch);
+    }
+    let output = pod.invoke(payload).map_err(|_| RefusalCode::PodFailed)?;
+    let report = verifier.verify(&output);
+    if report.status != VerificationStatus::Pass
+        || report.findings.iter().any(|finding| finding.hard)
+    {
         return Err(RefusalCode::Unverified);
     }
     Ok(output)

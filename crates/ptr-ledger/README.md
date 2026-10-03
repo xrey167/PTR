@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-09-28  
-**Code footprint:** 9 Rust source files · 5350 nonblank source lines · 12 integration-test files · 113 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 9 Rust source files · 6144 nonblank source lines · 14 integration-test files · 118 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -24,6 +24,10 @@
 - Create-new checked-log restore and guarded explicit legacy inspection/migration
 - Explicit RAII unlock prevents duplicate-descriptor retention across concurrent process spawn
 - SemanticDeltaCommitted preserves base/result revisions and opaque transaction bytes and carries a SemanticOrigin recorded in the same append: Legacy encodes as tag 8, byte for byte as before origins existed, and Request, PodOutput, Host and Merge encode as tag 12 (a kind byte; an Attestation of required level FullSemantic or Deterministic, weakest level, 1 to 16 verifier names and up to 32 finding codes; a merge record's branch, author, seal, plan and dependency digests, strictly ascending rebased keys up to MAX_REBASED_KEYS and a Triage or Reviewed authority); the codec checks shape only, and which origin replay accepts where is ptr-runtime's rule (it writes no Legacy record and replays one only before the first attributed record)
+- LedgerEvent gains eleven variants with explicit encode/decode arms at tags 13-23 (ScopeLifecycle 13, ProtectedStateCommitted 14, MeshTunnelLifecycle 15, ExecutionManifestAdmitted 16, ExecutionManifestRevoked 17, PodEvidenceCommitted 18, PodOutputAdmitted 19, PodHypothesisCommitted 20, PolicyBundleActivated 21, PolicyBundleRevoked 22, SessionRevoked 23), beside the unchanged tags 0-12; the ledger stores manifest, policy-bundle and Pod-evidence bytes opaquely and owns only ordering, durability and record integrity, while their schemas and replay rules belong to ptr-pods and ptr-runtime
+- ProtectedStateCommitted (tag 14) records only a domain code, logical id, generation, revision and the plaintext, ciphertext and anchor digests, so neither payload nor key material enters the ledger
+- PodHypothesisCommitted decoding bounds provenance entries and dependency digests at 1024 each, MeshTunnelLifecycle decoding validates a present endpoint binding, and unknown scope-lifecycle, mesh-event and mesh-route codes are refused
+- SemanticOrigin::PodCandidate (kind 5 under tag 12: request, pod, output digest, verification level) marks a retained candidate that is not an already promoted fact; the codec checks shape only, as for the other origins, and ptr-runtime's semantic.rs writes it
 - check_encodable refuses, before anything is encoded, an event the decoder would refuse (an attestation below FullSemantic or with a verifier or finding count outside its bounds, more rebased keys than MAX_REBASED_KEYS: the same functions check each rule on both sides) or whose encoding exceeds MAX_RECORD_BYTES: encode_log and FileLedger, the raft-engine adapter and a raft proposal all check it, so none writes a record no decoder reads back; InMemoryLedger encodes nothing, so a writer appending there checks it itself
 - PTRANC01 protected anchor storage: HMAC-SHA256 under a host-held key, fixed-length record, atomic rename publication, monotonic epoch/index/digest and carried chain origin
 - integrity::hmac_sha256 (RFC 2104, no dependency beyond sha2) and integrity::constant_time_eq are public: anchor MACs and ptr-pg's branch seal tags use them, each under a domain of its own
@@ -94,6 +98,8 @@
 
 ### Current automated checks
 
+- the mesh tunnel event round-trips with tag 15 (effect_record_tests::mesh_tunnel_events_round_trip_with_a_stable_tag) and the protected-state reference round-trips with tag 14 without a payload marker in its bytes (semantic_origin_tests::protected_state_reference_round_trips_without_payload_or_key_material)
+- tests/pod_evidence.rs, tests/pod_output.rs (admission and hypothesis with payload and lineage) and the extended all_event_variants_roundtrip_across_reopen (now including ScopeLifecycle) reopen each new record from a FileLedger unchanged; the unknown-origin-kind test now refuses kinds 0, 6 and 255
 - all ten effect and verification codes are pinned to exact bytes, unknown codes are refused at a position located by diffing two records, and invalid presence bytes, truncated digests and trailing bytes are each rejected
 - an exhausted anchor epoch refuses both acknowledge and compacted advance without republishing the record
 - a neighbouring log set is never reported as this set's orphan, and short, non-numeric, past-u64 and non-canonical floor fields are all rejected

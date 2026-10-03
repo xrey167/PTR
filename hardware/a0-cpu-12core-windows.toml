@@ -1,0 +1,12 @@
+# Measured locally on 2026-10-02 for M002-v5 pilot and confirmation.  Timing
+# remains diagnostic on this desktop, but every run record binds this exact
+# profile and its host facts rather than attributing Windows measurements to
+# the Ubuntu A0 profile.
+id = "a0-cpu-12core-windows"
+os = "Microsoft Windows 11 Pro 10.0.26200, 64-Bit"
+cpu = "AMD Ryzen 9 7900X 12-Core Processor, 12 physical cores, 24 logical processors"
+ram_gib = 63.2
+gpu = "none"
+gpu_memory_gib = 0
+precision = ["fp32"]
+notes = "Local desktop. p95 latency is retained as an evidence gate and the full host/toolchain/environment identity is recorded for every cell."

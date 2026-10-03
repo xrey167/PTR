@@ -16,7 +16,8 @@ use ptr_burn_a0::{
     admission_bias, load, save, CodeGrid, PtrA0, PtrA0Config, PtrSlotMetadata, SlotValues,
 };
 use ptr_types::{
-    Codebook, EpistemicState, SemanticRole, SlotEncoding, TypeId, Validity, ValidityMask,
+    CheckpointHeader, Codebook, EpistemicState, SemanticRole, SlotEncoding, TypeId, Validity,
+    ValidityMask,
 };
 
 const WIDTH: usize = 8;
@@ -78,8 +79,16 @@ fn both_arms_of_one_seed_start_from_the_same_weights_whatever_they_read_first() 
 
     // `off`'s weights under `on`'s architecture. Saved bytes cannot be compared
     // directly, because Burn records a per-instance id with every parameter.
-    let restored =
-        load(&save(&off).expect("serializable"), &config(), &device).expect("same shape");
+    // Architecture-bound v3 checkpoints correctly prohibit changing the mode at
+    // load time, so this test alone rewrites its in-memory artifact as the old
+    // unbound v2 format and opts into that legacy compatibility path.
+    let saved = save(&off).expect("serializable");
+    let (header, payload) = CheckpointHeader::read(&saved).expect("valid checkpoint");
+    let legacy = header
+        .with_architecture(Vec::new())
+        .write_legacy_v2(payload);
+    let restored = load(&legacy, &config().allow_legacy_v2_checkpoint(true), &device)
+        .expect("same parameter layout");
     let same = largest_difference(router_logits(&restored, &device), expected.clone());
     assert_eq!(
         same, 0.0,

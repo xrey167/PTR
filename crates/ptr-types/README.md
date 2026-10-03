@@ -10,7 +10,7 @@
 
 **Maturity:** `foundation`  
 **Last reviewed:** 2026-09-27  
-**Code footprint:** 6 Rust source files · 2178 nonblank source lines · 6 integration-test files · 69 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 8 Rust source files · 2932 nonblank source lines · 6 integration-test files · 75 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -39,12 +39,13 @@
 - Epistemic<T>, TypedValue<T>, provenance refs and semantic issues
 - Strong identifiers for projects, capsules, artifacts, capabilities, types, Pods, candidates, requests, nodes and evidence
 - Unit checks for probability bounds, lifecycle separation and independent cognitive axes
-- checkpoint format 2 carries the slot-encoding version, a format-1 header is refused rather than read with its table count taken as an encoding, and a header recording another encoding is refused with the intact header as the control
+- checkpoint format 3 adds opaque model-owned architecture bytes while format 2 remains readable only as explicitly unbound legacy; format 1, unknown formats, incompatible encodings and malformed architecture lengths are refused
 - Slot-encoding checks: the V1 values pinned exactly, the same payload stable, one-byte differences separated, the type part of the payload with the type-length collision covered, every vector finite bounded and of unit norm, every position a different function of the payload, the domain separated from the undomained arithmetic by a helper that first proves it reproduces the real function, and a zero width, an over-wide width, an over-large payload and an unknown version each refused rather than clamped or truncated
 - ConfidenceTarget and ConfidenceEstimate with target-checked access and diagnostic ConfidenceTargetMismatch errors
 - Compile-fail documentation rejects implicit confidence-to-verification/effect conversion and unqualified estimate ordering
 - Cognitive contract fixtures cover independent axes, constraints, uncertain claims, conflicting sources and revoked generations
 - PrincipalId: the name a branch or fast memory is attributed to, recorded as given (From<&str> and its public field take any string); effect attempts record a string, not a PrincipalId: one made through an admitted execution session records that session's principal, which the runtime validated when it created the session, while PtrRuntime::commit and replay record an EffectAttempted's principal as given, the empty string included; that a PrincipalId names the admitted principal is the caller's obligation
+- The crate declares its own rust-version (1.95) with a matching crates/ptr-types/clippy.toml instead of taking the workspace's 1.99, because model/burn-a0 depends on it by path and builds on 1.95; scripts/check_msrv_alignment.py holds the two equal, and a cargo +1.95.0 check of model/burn-a0 with --locked builds against it
 
 ### Missing for the target architecture
 

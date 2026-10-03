@@ -13,8 +13,10 @@ pub use file::{FileLedger, LegacyLog, RecoverableLog};
 pub use retention::{retains, ErasureAudit, OutOfReach, Retainer};
 
 use ptr_types::{
-    CapabilityId, CapsuleId, CommitIndex, Effect, Generation, ProjectId, Revision,
-    VerificationLevel,
+    CapabilityId, CapsuleId, CommitIndex, Effect, FencingToken, Generation, MeshEndpointBinding,
+    MeshRouteKind, MeshTunnelEventKind, MeshTunnelLifecycleEvent, PeerId, PodId, ProjectId,
+    RequestId, Revision, ScopeId, ScopeLeaseBinding, ScopeLifecycleEvent, ScopeLifecycleKind,
+    SessionId, Timestamp, TraceId, TypeId, VerificationLevel,
 };
 use std::collections::BTreeSet;
 use std::io;
@@ -106,6 +108,133 @@ pub enum LedgerEvent {
         applied: bool,
         evidence: String,
     },
+    /// Append-only execution-scope lifecycle transition. Scope state is
+    /// materialized by ptr-runtime; the ledger only stores the authoritative
+    /// transition and its bindings.
+    ScopeLifecycle(ScopeLifecycleEvent),
+    /// Durable reference to an encrypted state record. The ledger stores only
+    /// binding metadata and digests; ciphertext and key material stay in the
+    /// protected state store.
+    ProtectedStateCommitted {
+        domain: u8,
+        logical_id: String,
+        generation: Generation,
+        revision: Revision,
+        plaintext_digest: [u8; 32],
+        ciphertext_digest: [u8; 32],
+        anchor_digest: [u8; 32],
+    },
+    MeshTunnelLifecycle(MeshTunnelLifecycleEvent),
+    /// Runtime-admitted execution manifest. The payload is a versioned
+    /// canonical manifest owned by ptr-pods; the ledger stores it opaquely.
+    ExecutionManifestAdmitted {
+        manifest_digest: [u8; 32],
+        generation: Generation,
+        revision: Revision,
+        policy_revision: Revision,
+        manifest: Vec<u8>,
+    },
+    ExecutionManifestRevoked {
+        manifest_digest: [u8; 32],
+        generation: Generation,
+        revision: Revision,
+    },
+    /// A verified, immutable policy bundle activated by the runtime.
+    PolicyBundleActivated {
+        revision: Revision,
+        key_id: String,
+        bundle_digest: [u8; 32],
+        bundle: Vec<u8>,
+    },
+    /// A policy revision tombstone. Revocation remains effective on replay.
+    PolicyBundleRevoked {
+        revision: Revision,
+        bundle_digest: [u8; 32],
+        reason: String,
+    },
+    /// A durable session tombstone. Replayed runtimes must reject new
+    /// stateful admission for this session; the tombstone is never undone.
+    SessionRevoked {
+        session_id: SessionId,
+        reason: String,
+    },
+    /// Lifecycle of a configured storage-tier backend. Tier and state use
+    /// stable protocol codes owned by ptr-storage/ptr-runtime respectively.
+    TierBackendLifecycle {
+        backend_id: String,
+        tier: u8,
+        state: u8,
+        revision: Revision,
+        event_digest: [u8; 32],
+    },
+    /// Immutable, canonical tier-object manifest committed by the runtime.
+    TierObjectCommitted {
+        root_digest: [u8; 32],
+        generation: Generation,
+        revision: Revision,
+        manifest: Vec<u8>,
+    },
+    /// Lifecycle of one verified replica of a committed tier object.
+    TierReplicaLifecycle {
+        root_digest: [u8; 32],
+        backend_id: String,
+        tier: u8,
+        state: u8,
+        generation: Generation,
+        revision: Revision,
+        event_digest: [u8; 32],
+    },
+    /// Opaque, canonical Pod evidence. ptr-pods owns the schema and replay
+    /// validation; the ledger owns ordering, durability and record integrity.
+    PodEvidenceCommitted {
+        session_id: SessionId,
+        trace_id: TraceId,
+        manifest_digest: [u8; 32],
+        artifact_digest: [u8; 32],
+        generation: Generation,
+        revision: Revision,
+        bundle_digest: [u8; 32],
+        bundle: Vec<u8>,
+    },
+    /// Runtime admission record for a typed Pod output. The output payload is
+    /// intentionally not stored here; the canonical digest and the later
+    /// semantic/branch record remain the authoritative content records.
+    PodOutputAdmitted {
+        request_id: RequestId,
+        session_id: SessionId,
+        scope_id: ScopeId,
+        pod_id: PodId,
+        manifest_digest: [u8; 32],
+        artifact_digest: [u8; 32],
+        generation: Generation,
+        revision: Revision,
+        output_kind: u8,
+        output_type: TypeId,
+        output_digest: [u8; 32],
+        verification: Attestation,
+    },
+    /// Durable, replayable hypothesis materialized from a Pod output. The
+    /// payload is retained here because a later branch merge must be able to
+    /// reconstruct the exact typed hypothesis without rerunning the Pod.
+    PodHypothesisCommitted {
+        request_id: RequestId,
+        session_id: SessionId,
+        scope_id: ScopeId,
+        branch_id: String,
+        pod_id: PodId,
+        manifest_digest: [u8; 32],
+        artifact_digest: [u8; 32],
+        generation: Generation,
+        revision: Revision,
+        output_type: TypeId,
+        output_digest: [u8; 32],
+        payload: Vec<u8>,
+        provenance: Vec<(String, Option<String>)>,
+        dependencies: Vec<[u8; 32]>,
+        confidence_bits: u32,
+        latency_millis: u64,
+        verification: Attestation,
+    },
 }
 
 /// Why a semantic write was allowed. ptr-runtime writes it in the same append
@@ -126,6 +255,15 @@ pub enum SemanticOrigin {
     PodOutput {
         request: String,
         pod: String,
+        level: VerificationLevel,
+    },
+    /// A non-authoritative observation/candidate retained for later semantic
+    /// review. It is distinct from `PodOutput`: candidates must never be read
+    /// as an already promoted fact.
+    PodCandidate {
+        request: String,
+        pod: String,
+        output_digest: [u8; 32],
         level: VerificationLevel,
     },
     /// A write by the host, admitted by the installed grant's verifiers.
@@ -401,6 +539,233 @@ fn encode_event(event: &LedgerEvent) -> Vec<u8> {
             out.push(u8::from(*applied));
             put_string(&mut out, evidence);
         }
+        LedgerEvent::ScopeLifecycle(event) => {
+            out.push(13);
+            put_scope_lifecycle(&mut out, event);
+        }
+        LedgerEvent::ProtectedStateCommitted {
+            domain,
+            logical_id,
+            generation,
+            revision,
+            plaintext_digest,
+            ciphertext_digest,
+            anchor_digest,
+        } => {
+            out.push(14);
+            out.push(*domain);
+            put_string(&mut out, logical_id);
+            put_u64(&mut out, generation.0);
+            put_u64(&mut out, revision.0);
+            out.extend_from_slice(plaintext_digest);
+            out.extend_from_slice(ciphertext_digest);
+            out.extend_from_slice(anchor_digest);
+        }
+        LedgerEvent::MeshTunnelLifecycle(event) => {
+            out.push(15);
+            put_string(&mut out, &event.network_id.0);
+            put_string(&mut out, &event.peer_id.0);
+            put_optional_string(
+                &mut out,
+                event.invitation_id.as_ref().map(|id| id.0.as_str()),
+            );
+            put_optional_string(&mut out, event.tunnel_id.as_deref());
+            put_u64(&mut out, event.generation.0);
+            put_u64(&mut out, event.revision.0);
+            out.push(mesh_event_kind_code(event.kind));
+            put_mesh_endpoint(&mut out, event.endpoint.as_ref());
+            put_u64(&mut out, event.placement_epoch);
+            out.extend_from_slice(&event.fencing_token.0.to_le_bytes());
+            out.extend_from_slice(&event.event_digest);
+        }
+        LedgerEvent::ExecutionManifestAdmitted {
+            manifest_digest,
+            generation,
+            revision,
+            policy_revision,
+            manifest,
+        } => {
+            out.push(16);
+            out.extend_from_slice(manifest_digest);
+            put_u64(&mut out, generation.0);
+            put_u64(&mut out, revision.0);
+            put_u64(&mut out, policy_revision.0);
+            put_bytes(&mut out, manifest);
+        }
+        LedgerEvent::ExecutionManifestRevoked {
+            manifest_digest,
+            generation,
+            revision,
+        } => {
+            out.push(17);
+            out.extend_from_slice(manifest_digest);
+            put_u64(&mut out, generation.0);
+            put_u64(&mut out, revision.0);
+        }
+        LedgerEvent::PodEvidenceCommitted {
+            session_id,
+            trace_id,
+            manifest_digest,
+            artifact_digest,
+            generation,
+            revision,
+            bundle_digest,
+            bundle,
+        } => {
+            out.push(18);
+            put_string(&mut out, &session_id.0);
+            put_string(&mut out, &trace_id.0);
+            out.extend_from_slice(manifest_digest);
+            out.extend_from_slice(artifact_digest);
+            put_u64(&mut out, generation.0);
+            put_u64(&mut out, revision.0);
+            out.extend_from_slice(bundle_digest);
+            put_bytes(&mut out, bundle);
+        }
+        LedgerEvent::PodOutputAdmitted {
+            request_id,
+            session_id,
+            scope_id,
+            pod_id,
+            manifest_digest,
+            artifact_digest,
+            generation,
+            revision,
+            output_kind,
+            output_type,
+            output_digest,
+            verification,
+        } => {
+            out.push(19);
+            put_string(&mut out, &request_id.0);
+            put_string(&mut out, &session_id.0);
+            put_string(&mut out, &scope_id.0);
+            put_string(&mut out, &pod_id.0);
+            out.extend_from_slice(manifest_digest);
+            out.extend_from_slice(artifact_digest);
+            put_u64(&mut out, generation.0);
+            put_u64(&mut out, revision.0);
+            out.push(*output_kind);
+            put_string(&mut out, &output_type.0);
+            out.extend_from_slice(output_digest);
+            put_attestation(&mut out, verification);
+        }
+        LedgerEvent::PodHypothesisCommitted {
+            request_id,
+            session_id,
+            scope_id,
+            branch_id,
+            pod_id,
+            manifest_digest,
+            artifact_digest,
+            generation,
+            revision,
+            output_type,
+            output_digest,
+            payload,
+            provenance,
+            dependencies,
+            confidence_bits,
+            latency_millis,
+            verification,
+        } => {
+            out.push(20);
+            put_string(&mut out, &request_id.0);
+            put_string(&mut out, &session_id.0);
+            put_string(&mut out, &scope_id.0);
+            put_string(&mut out, branch_id);
+            put_string(&mut out, &pod_id.0);
+            out.extend_from_slice(manifest_digest);
+            out.extend_from_slice(artifact_digest);
+            put_u64(&mut out, generation.0);
+            put_u64(&mut out, revision.0);
+            put_string(&mut out, &output_type.0);
+            out.extend_from_slice(output_digest);
+            put_bytes(&mut out, payload);
+            put_u32(&mut out, provenance.len() as u32);
+            for (source, note) in provenance {
+                put_string(&mut out, source);
+                put_optional_string(&mut out, note.as_deref());
+            }
+            put_u32(&mut out, dependencies.len() as u32);
+            for dependency in dependencies {
+                out.extend_from_slice(dependency);
+            }
+            out.extend_from_slice(&confidence_bits.to_le_bytes());
+            put_u64(&mut out, *latency_millis);
+            put_attestation(&mut out, verification);
+        }
+        LedgerEvent::PolicyBundleActivated {
+            revision,
+            key_id,
+            bundle_digest,
+            bundle,
+        } => {
+            out.push(21);
+            put_u64(&mut out, revision.0);
+            put_string(&mut out, key_id);
+            out.extend_from_slice(bundle_digest);
+            put_bytes(&mut out, bundle);
+        }
+        LedgerEvent::PolicyBundleRevoked {
+            revision,
+            bundle_digest,
+            reason,
+        } => {
+            out.push(22);
+            put_u64(&mut out, revision.0);
+            out.extend_from_slice(bundle_digest);
+            put_string(&mut out, reason);
+        }
+        LedgerEvent::SessionRevoked { session_id, reason } => {
+            out.push(23);
+            put_string(&mut out, &session_id.0);
+            put_string(&mut out, reason);
+        }
+        LedgerEvent::TierBackendLifecycle {
+            backend_id,
+            tier,
+            state,
+            revision,
+            event_digest,
+        } => {
+            out.push(24);
+            put_string(&mut out, backend_id);
+            out.push(*tier);
+            out.push(*state);
+            put_u64(&mut out, revision.0);
+            out.extend_from_slice(event_digest);
+        }
+        LedgerEvent::TierObjectCommitted {
+            root_digest,
+            generation,
+            revision,
+            manifest,
+        } => {
+            out.push(25);
+            out.extend_from_slice(root_digest);
+            put_u64(&mut out, generation.0);
+            put_u64(&mut out, revision.0);
+            put_bytes(&mut out, manifest);
+        }
+        LedgerEvent::TierReplicaLifecycle {
+            root_digest,
+            backend_id,
+            tier,
+            state,
+            generation,
+            revision,
+            event_digest,
+        } => {
+            out.push(26);
+            out.extend_from_slice(root_digest);
+            put_string(&mut out, backend_id);
+            out.push(*tier);
+            out.push(*state);
+            put_u64(&mut out, generation.0);
+            put_u64(&mut out, revision.0);
+            out.extend_from_slice(event_digest);
+        }
     }
     out
 }
@@ -494,6 +859,160 @@ fn decode_event(payload: &[u8]) -> io::Result<LedgerEvent> {
                 other => return Err(presence_byte(other)),
             },
             evidence: cursor.string()?,
+        },
+        13 => LedgerEvent::ScopeLifecycle(read_scope_lifecycle(&mut cursor)?),
+        14 => LedgerEvent::ProtectedStateCommitted {
+            domain: cursor.u8()?,
+            logical_id: cursor.string()?,
+            generation: Generation(cursor.u64()?),
+            revision: Revision(cursor.u64()?),
+            plaintext_digest: cursor.digest()?,
+            ciphertext_digest: cursor.digest()?,
+            anchor_digest: cursor.digest()?,
+        },
+        15 => LedgerEvent::MeshTunnelLifecycle(MeshTunnelLifecycleEvent {
+            network_id: ptr_types::NetworkId(cursor.string()?),
+            peer_id: PeerId(cursor.string()?),
+            invitation_id: cursor.optional_string()?.map(ptr_types::InvitationId),
+            tunnel_id: cursor.optional_string()?,
+            generation: Generation(cursor.u64()?),
+            revision: Revision(cursor.u64()?),
+            kind: mesh_event_kind_from_code(cursor.u8()?)?,
+            endpoint: read_mesh_endpoint(&mut cursor)?,
+            placement_epoch: cursor.u64()?,
+            fencing_token: FencingToken(cursor.u128()?),
+            event_digest: cursor.digest()?,
+        }),
+        16 => LedgerEvent::ExecutionManifestAdmitted {
+            manifest_digest: cursor.digest()?,
+            generation: Generation(cursor.u64()?),
+            revision: Revision(cursor.u64()?),
+            policy_revision: Revision(cursor.u64()?),
+            manifest: cursor.bytes()?.to_vec(),
+        },
+        17 => LedgerEvent::ExecutionManifestRevoked {
+            manifest_digest: cursor.digest()?,
+            generation: Generation(cursor.u64()?),
+            revision: Revision(cursor.u64()?),
+        },
+        18 => LedgerEvent::PodEvidenceCommitted {
+            session_id: SessionId(cursor.string()?),
+            trace_id: TraceId(cursor.string()?),
+            manifest_digest: cursor.digest()?,
+            artifact_digest: cursor.digest()?,
+            generation: Generation(cursor.u64()?),
+            revision: Revision(cursor.u64()?),
+            bundle_digest: cursor.digest()?,
+            bundle: cursor.bytes()?.to_vec(),
+        },
+        19 => LedgerEvent::PodOutputAdmitted {
+            request_id: RequestId(cursor.string()?),
+            session_id: SessionId(cursor.string()?),
+            scope_id: ScopeId(cursor.string()?),
+            pod_id: PodId(cursor.string()?),
+            manifest_digest: cursor.digest()?,
+            artifact_digest: cursor.digest()?,
+            generation: Generation(cursor.u64()?),
+            revision: Revision(cursor.u64()?),
+            output_kind: cursor.u8()?,
+            output_type: TypeId(cursor.string()?),
+            output_digest: cursor.digest()?,
+            verification: attestation(&mut cursor)?,
+        },
+        20 => {
+            let request_id = RequestId(cursor.string()?);
+            let session_id = SessionId(cursor.string()?);
+            let scope_id = ScopeId(cursor.string()?);
+            let branch_id = cursor.string()?;
+            let pod_id = PodId(cursor.string()?);
+            let manifest_digest = cursor.digest()?;
+            let artifact_digest = cursor.digest()?;
+            let generation = Generation(cursor.u64()?);
+            let revision = Revision(cursor.u64()?);
+            let output_type = TypeId(cursor.string()?);
+            let output_digest = cursor.digest()?;
+            let payload = cursor.bytes()?.to_vec();
+            let count = cursor.u32()? as usize;
+            if count > 1024 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "too many hypothesis provenance entries",
+                ));
+            }
+            let mut provenance = Vec::with_capacity(count);
+            for _ in 0..count {
+                provenance.push((cursor.string()?, cursor.optional_string()?));
+            }
+            let dependency_count = cursor.u32()? as usize;
+            if dependency_count > 1024 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "too many hypothesis dependencies",
+                ));
+            }
+            let mut dependencies = Vec::with_capacity(dependency_count);
+            for _ in 0..dependency_count {
+                dependencies.push(cursor.digest()?);
+            }
+            let confidence_bits = cursor.u32()?;
+            let latency_millis = cursor.u64()?;
+            let verification = attestation(&mut cursor)?;
+            LedgerEvent::PodHypothesisCommitted {
+                request_id,
+                session_id,
+                scope_id,
+                branch_id,
+                pod_id,
+                manifest_digest,
+                artifact_digest,
+                generation,
+                revision,
+                output_type,
+                output_digest,
+                payload,
+                provenance,
+                dependencies,
+                confidence_bits,
+                latency_millis,
+                verification,
+            }
+        }
+        21 => LedgerEvent::PolicyBundleActivated {
+            revision: Revision(cursor.u64()?),
+            key_id: cursor.string()?,
+            bundle_digest: cursor.digest()?,
+            bundle: cursor.bytes()?.to_vec(),
+        },
+        22 => LedgerEvent::PolicyBundleRevoked {
+            revision: Revision(cursor.u64()?),
+            bundle_digest: cursor.digest()?,
+            reason: cursor.string()?,
+        },
+        23 => LedgerEvent::SessionRevoked {
+            session_id: SessionId(cursor.string()?),
+            reason: cursor.string()?,
+        },
+        24 => LedgerEvent::TierBackendLifecycle {
+            backend_id: cursor.string()?,
+            tier: cursor.u8()?,
+            state: cursor.u8()?,
+            revision: Revision(cursor.u64()?),
+            event_digest: cursor.digest()?,
+        },
+        25 => LedgerEvent::TierObjectCommitted {
+            root_digest: cursor.digest()?,
+            generation: Generation(cursor.u64()?),
+            revision: Revision(cursor.u64()?),
+            manifest: cursor.bytes()?.to_vec(),
+        },
+        26 => LedgerEvent::TierReplicaLifecycle {
+            root_digest: cursor.digest()?,
+            backend_id: cursor.string()?,
+            tier: cursor.u8()?,
+            state: cursor.u8()?,
+            generation: Generation(cursor.u64()?),
+            revision: Revision(cursor.u64()?),
+            event_digest: cursor.digest()?,
         },
         other => {
             return Err(io::Error::new(
@@ -592,7 +1111,8 @@ pub(crate) fn check_origin_bounds(event: &LedgerEvent) -> Result<(), io::Error> 
         match origin {
             SemanticOrigin::Legacy
             | SemanticOrigin::Request { .. }
-            | SemanticOrigin::PodOutput { .. } => {}
+            | SemanticOrigin::PodOutput { .. }
+            | SemanticOrigin::PodCandidate { .. } => {}
             SemanticOrigin::Host { verification, .. } => check_attestation(verification)?,
             SemanticOrigin::Merge(merge) => {
                 check_rebased_key_count(merge.rebased.len())?;
@@ -666,6 +1186,18 @@ fn put_origin(out: &mut Vec<u8>, origin: &SemanticOrigin) {
             put_string(out, pod);
             out.push(verification_code(*level));
         }
+        SemanticOrigin::PodCandidate {
+            request,
+            pod,
+            output_digest,
+            level,
+        } => {
+            out.push(5);
+            put_string(out, request);
+            put_string(out, pod);
+            out.extend_from_slice(output_digest);
+            out.push(verification_code(*level));
+        }
         SemanticOrigin::Host {
             principal,
             verification,
@@ -727,6 +1259,12 @@ fn attributed_origin(cursor: &mut Cursor<'_>) -> io::Result<SemanticOrigin> {
         2 => SemanticOrigin::PodOutput {
             request: cursor.string()?,
             pod: cursor.string()?,
+            level: verification_from_code(cursor.u8()?)?,
+        },
+        5 => SemanticOrigin::PodCandidate {
+            request: cursor.string()?,
+            pod: cursor.string()?,
+            output_digest: cursor.digest()?,
             level: verification_from_code(cursor.u8()?)?,
         },
         3 => SemanticOrigin::Host {
@@ -829,7 +1367,229 @@ fn put_optional_string(out: &mut Vec<u8>, value: Option<&str>) {
     }
 }
 
+fn put_optional_id<T: std::fmt::Display>(out: &mut Vec<u8>, value: Option<&T>) {
+    put_optional_string(out, value.map(ToString::to_string).as_deref());
+}
+
+fn put_optional_u64(out: &mut Vec<u8>, value: Option<u64>) {
+    match value {
+        Some(value) => {
+            out.push(1);
+            put_u64(out, value);
+        }
+        None => out.push(0),
+    }
+}
+
+fn put_optional_u128(out: &mut Vec<u8>, value: Option<u128>) {
+    match value {
+        Some(value) => {
+            out.push(1);
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+        None => out.push(0),
+    }
+}
+
+fn put_scope_kind(out: &mut Vec<u8>, kind: Option<ScopeLifecycleKind>) {
+    match kind {
+        Some(kind) => {
+            out.push(1);
+            out.push(scope_kind_code(kind));
+        }
+        None => out.push(0),
+    }
+}
+
+fn put_scope_lifecycle(out: &mut Vec<u8>, event: &ScopeLifecycleEvent) {
+    put_string(out, &event.scope_id.to_string());
+    put_optional_id(out, event.parent_id.as_ref());
+    put_string(out, &event.session_id.to_string());
+    put_string(out, &event.project_id.to_string());
+    put_u64(out, event.created_at.0);
+    put_optional_u64(out, event.deadline.map(|timestamp| timestamp.0));
+    out.push(scope_kind_code(event.kind));
+    put_scope_kind(out, event.previous_kind);
+    put_optional_id(out, event.lease.state_id.as_ref());
+    put_optional_id(out, event.lease.pod_id.as_ref());
+    put_optional_u64(out, event.lease.placement_epoch);
+    put_optional_u128(out, event.lease.fencing_token);
+    put_optional_u64(out, event.lease.generation.map(|generation| generation.0));
+    put_optional_string(out, event.lease.resource_lease_id.as_deref());
+    put_u64(out, event.revision.0);
+    put_optional_string(out, event.reason.as_deref());
+}
+
+fn put_mesh_endpoint(out: &mut Vec<u8>, endpoint: Option<&MeshEndpointBinding>) {
+    let Some(endpoint) = endpoint else {
+        out.push(0);
+        return;
+    };
+    out.push(1);
+    put_string(out, &endpoint.network_id.0);
+    put_string(out, &endpoint.peer_id.0);
+    out.push(match endpoint.route {
+        MeshRouteKind::Direct => 0,
+        MeshRouteKind::Relay => 1,
+    });
+    put_optional_string(out, endpoint.relay_id.as_ref().map(|peer| peer.0.as_str()));
+    put_u64(out, endpoint.membership_generation.0);
+    put_u64(out, endpoint.membership_revision.0);
+}
+
+fn read_mesh_endpoint(cursor: &mut Cursor<'_>) -> io::Result<Option<MeshEndpointBinding>> {
+    match cursor.u8()? {
+        0 => Ok(None),
+        1 => {
+            let network_id = ptr_types::NetworkId(cursor.string()?);
+            let peer_id = PeerId(cursor.string()?);
+            let route = match cursor.u8()? {
+                0 => MeshRouteKind::Direct,
+                1 => MeshRouteKind::Relay,
+                other => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("invalid mesh route {other}"),
+                    ))
+                }
+            };
+            let endpoint = MeshEndpointBinding {
+                network_id,
+                peer_id,
+                route,
+                relay_id: cursor.optional_string()?.map(PeerId),
+                membership_generation: Generation(cursor.u64()?),
+                membership_revision: Revision(cursor.u64()?),
+            };
+            endpoint
+                .validate()
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            Ok(Some(endpoint))
+        }
+        other => Err(presence_byte(other)),
+    }
+}
+
+fn mesh_event_kind_code(kind: MeshTunnelEventKind) -> u8 {
+    match kind {
+        MeshTunnelEventKind::InvitationCreated => 0,
+        MeshTunnelEventKind::InvitationAccepted => 1,
+        MeshTunnelEventKind::MembershipActivated => 2,
+        MeshTunnelEventKind::MembershipRevoked => 3,
+        MeshTunnelEventKind::RouteChanged => 4,
+        MeshTunnelEventKind::TunnelEstablished => 5,
+        MeshTunnelEventKind::TunnelRevoked => 6,
+        MeshTunnelEventKind::TunnelReleased => 7,
+    }
+}
+
+fn mesh_event_kind_from_code(code: u8) -> io::Result<MeshTunnelEventKind> {
+    match code {
+        0 => Ok(MeshTunnelEventKind::InvitationCreated),
+        1 => Ok(MeshTunnelEventKind::InvitationAccepted),
+        2 => Ok(MeshTunnelEventKind::MembershipActivated),
+        3 => Ok(MeshTunnelEventKind::MembershipRevoked),
+        4 => Ok(MeshTunnelEventKind::RouteChanged),
+        5 => Ok(MeshTunnelEventKind::TunnelEstablished),
+        6 => Ok(MeshTunnelEventKind::TunnelRevoked),
+        7 => Ok(MeshTunnelEventKind::TunnelReleased),
+        other => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid mesh event {other}"),
+        )),
+    }
+}
+
+fn read_scope_lifecycle(cursor: &mut Cursor<'_>) -> io::Result<ScopeLifecycleEvent> {
+    Ok(ScopeLifecycleEvent {
+        scope_id: ptr_types::ScopeId(cursor.string()?),
+        parent_id: cursor.optional_string()?.map(ptr_types::ScopeId),
+        session_id: ptr_types::SessionId(cursor.string()?),
+        project_id: ProjectId(cursor.string()?),
+        created_at: Timestamp(cursor.u64()?),
+        deadline: read_optional_u64(cursor)?.map(Timestamp),
+        kind: scope_kind_from_code(cursor.u8()?)?,
+        previous_kind: read_optional_scope_kind(cursor)?,
+        lease: ScopeLeaseBinding {
+            state_id: cursor.optional_string()?.map(ptr_types::StateId),
+            pod_id: cursor.optional_string()?.map(ptr_types::PodId),
+            placement_epoch: read_optional_u64(cursor)?,
+            fencing_token: read_optional_u128(cursor)?,
+            generation: read_optional_u64(cursor)?.map(Generation),
+            resource_lease_id: cursor.optional_string()?,
+        },
+        revision: Revision(cursor.u64()?),
+        reason: cursor.optional_string()?,
+    })
+}
+
+fn read_optional_scope_kind(cursor: &mut Cursor<'_>) -> io::Result<Option<ScopeLifecycleKind>> {
+    match cursor.u8()? {
+        0 => Ok(None),
+        1 => Ok(Some(scope_kind_from_code(cursor.u8()?)?)),
+        other => Err(presence_byte(other)),
+    }
+}
+
+fn read_optional_u64(cursor: &mut Cursor<'_>) -> io::Result<Option<u64>> {
+    match cursor.u8()? {
+        0 => Ok(None),
+        1 => Ok(Some(cursor.u64()?)),
+        other => Err(presence_byte(other)),
+    }
+}
+
+fn read_optional_u128(cursor: &mut Cursor<'_>) -> io::Result<Option<u128>> {
+    match cursor.u8()? {
+        0 => Ok(None),
+        1 => {
+            let mut bytes = [0; 16];
+            for byte in &mut bytes {
+                *byte = cursor.u8()?;
+            }
+            Ok(Some(u128::from_le_bytes(bytes)))
+        }
+        other => Err(presence_byte(other)),
+    }
+}
+
+fn scope_kind_code(kind: ScopeLifecycleKind) -> u8 {
+    match kind {
+        ScopeLifecycleKind::Created => 0,
+        ScopeLifecycleKind::Admitted => 1,
+        ScopeLifecycleKind::Started => 2,
+        ScopeLifecycleKind::Completed => 3,
+        ScopeLifecycleKind::Failed => 4,
+        ScopeLifecycleKind::Cancelled => 5,
+        ScopeLifecycleKind::TimedOut => 6,
+        ScopeLifecycleKind::Revoked => 7,
+        ScopeLifecycleKind::Released => 8,
+    }
+}
+
+fn scope_kind_from_code(code: u8) -> io::Result<ScopeLifecycleKind> {
+    match code {
+        0 => Ok(ScopeLifecycleKind::Created),
+        1 => Ok(ScopeLifecycleKind::Admitted),
+        2 => Ok(ScopeLifecycleKind::Started),
+        3 => Ok(ScopeLifecycleKind::Completed),
+        4 => Ok(ScopeLifecycleKind::Failed),
+        5 => Ok(ScopeLifecycleKind::Cancelled),
+        6 => Ok(ScopeLifecycleKind::TimedOut),
+        7 => Ok(ScopeLifecycleKind::Revoked),
+        8 => Ok(ScopeLifecycleKind::Released),
+        other => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("unknown scope lifecycle code {other}"),
+        )),
+    }
+}
+
 fn put_u64(out: &mut Vec<u8>, value: u64) {
+    out.extend_from_slice(&value.to_le_bytes());
+}
+
+fn put_u32(out: &mut Vec<u8>, value: u32) {
     out.extend_from_slice(&value.to_le_bytes());
 }
 
@@ -875,6 +1635,14 @@ impl<'a> Cursor<'a> {
         let bytes = self.bytes.get(self.offset..end).ok_or_else(truncated)?;
         self.offset = end;
         Ok(u64::from_le_bytes(bytes.try_into().expect("eight bytes")))
+    }
+
+    fn u128(&mut self) -> io::Result<u128> {
+        let mut bytes = [0; 16];
+        for byte in &mut bytes {
+            *byte = self.u8()?;
+        }
+        Ok(u128::from_le_bytes(bytes))
     }
 
     fn bytes(&mut self) -> io::Result<&'a [u8]> {
@@ -1198,6 +1966,34 @@ mod effect_record_tests {
             // framing does not pin its own length.
             assert!(decode_event(&encoded[..encoded.len() - 1]).is_err());
         }
+    }
+
+    #[test]
+    fn mesh_tunnel_events_round_trip_with_a_stable_tag() {
+        let endpoint = MeshEndpointBinding {
+            network_id: "mesh-a".into(),
+            peer_id: "peer-b".into(),
+            route: MeshRouteKind::Relay,
+            relay_id: Some("relay-c".into()),
+            membership_generation: Generation(2),
+            membership_revision: Revision(4),
+        };
+        let event = LedgerEvent::MeshTunnelLifecycle(MeshTunnelLifecycleEvent {
+            network_id: "mesh-a".into(),
+            peer_id: "peer-b".into(),
+            invitation_id: Some("invite-1".into()),
+            tunnel_id: Some("tunnel-1".into()),
+            generation: Generation(2),
+            revision: Revision(4),
+            kind: MeshTunnelEventKind::TunnelEstablished,
+            endpoint: Some(endpoint),
+            placement_epoch: 7,
+            fencing_token: FencingToken(9),
+            event_digest: [8; 32],
+        });
+        let encoded = encode_event(&event);
+        assert_eq!(encoded[0], 15);
+        assert_eq!(decode_event(&encoded).unwrap(), event);
     }
 
     /// The only byte two records differ in is the field that differs, which locates
@@ -1619,8 +2415,8 @@ mod semantic_origin_tests {
 
     #[test]
     fn unknown_kinds_levels_counts_key_order_and_trailing_bytes_are_refused() {
-        // An origin kind outside 1..=4, or none at all.
-        for kind in [0, 5, 255] {
+        // An origin kind outside 1..=5, or none at all.
+        for kind in [0, 6, 255] {
             let mut payload = prefix(12);
             payload.push(kind);
             payload.extend(text("request:1"));
@@ -1901,5 +2697,22 @@ mod semantic_origin_tests {
         // and a merge, plus two of the three rebased-key counts.
         assert_eq!(accepted, 2 * (2 * 2 * 2) + 2);
         assert_eq!(refused, events.len() - accepted);
+    }
+
+    #[test]
+    fn protected_state_reference_round_trips_without_payload_or_key_material() {
+        let event = LedgerEvent::ProtectedStateCommitted {
+            domain: 3,
+            logical_id: "kv/session-1".into(),
+            generation: Generation(2),
+            revision: Revision(9),
+            plaintext_digest: [1; 32],
+            ciphertext_digest: [2; 32],
+            anchor_digest: [3; 32],
+        };
+        let encoded = encode_event(&event);
+        assert_eq!(encoded[0], 14);
+        assert!(!encoded.windows(7).any(|window| window == b"secret!"));
+        assert_eq!(decode_event(&encoded).unwrap(), event);
     }
 }

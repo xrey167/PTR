@@ -141,12 +141,12 @@ def check(root: Path) -> tuple[list[str], str]:
         try:
             tomllib.loads(p.read_text(encoding="utf-8"))
         except Exception as e:
-            errors.append(f"TOML {p.relative_to(root)}: {e}")
+            errors.append(f"TOML {p.relative_to(root).as_posix()}: {e}")
     for p in owned(root, root.rglob("*.json")):
         try:
             json.loads(p.read_text(encoding="utf-8"))
         except Exception as e:
-            errors.append(f"JSON {p.relative_to(root)}: {e}")
+            errors.append(f"JSON {p.relative_to(root).as_posix()}: {e}")
     for p in owned(root, root.rglob("*.jsonl")):
         for n, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
             if not line.strip():
@@ -154,7 +154,7 @@ def check(root: Path) -> tuple[list[str], str]:
             try:
                 json.loads(line)
             except Exception as e:
-                errors.append(f"JSONL {p.relative_to(root)}:{n}: {e}")
+                errors.append(f"JSONL {p.relative_to(root).as_posix()}:{n}: {e}")
 
     # Reported, not raised. `check(root)` is driven by fixtures as well as by the
     # real tree, and a fixture missing a registry should come back as an error in

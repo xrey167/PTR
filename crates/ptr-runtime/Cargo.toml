@@ -5,6 +5,11 @@ edition.workspace = true
 rust-version.workspace = true
 publish = false
 
+[features]
+default = []
+candle-cuda = ["ptr-pods/candle-cuda"]
+oidc-http = ["dep:reqwest"]
+
 [dependencies]
 ptr-types = { workspace = true }
 ptr-config = { workspace = true }
@@ -14,15 +19,23 @@ ptr-core = { workspace = true }
 ptr-model-api = { workspace = true }
 ptr-exec = { workspace = true }
 ptr-pods = { workspace = true }
+ptr-router = { workspace = true }
 ptr-verifier = { workspace = true }
 ptr-ledger = { workspace = true }
 ptr-state = { workspace = true }
 ptr-events = { workspace = true }
 ptr-security = { workspace = true }
+ptr-memory = { workspace = true }
+ptr-storage = { workspace = true }
 # Only the runtime merges an agent branch: merge_branch certifies a sealed
 # branch against the runtime's own state and triages it under the grant's
 # policy, so both come from the crate that defines them.
 ptr-branch = { workspace = true }
+sha2 = { workspace = true }
+ed25519-dalek = { workspace = true }
+serde_json = { workspace = true }
+base64 = { workspace = true }
+reqwest = { workspace = true, optional = true }
 
 [dev-dependencies]
 # Search hits are filtered against this runtime's lifecycle answers; the test

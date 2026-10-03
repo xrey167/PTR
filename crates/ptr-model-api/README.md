@@ -10,7 +10,7 @@
 
 **Maturity:** `scaffold`  
 **Last reviewed:** 2026-09-19  
-**Code footprint:** 4 Rust source files · 83 nonblank source lines · 2 integration-test files · 3 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 4 Rust source files · 126 nonblank source lines · 2 integration-test files · 3 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -19,6 +19,10 @@
 - InferenceBackend trait and ModelError
 - Deterministic ReferenceEchoBackend for runtime conformance tests
 - ModelObservation, ModelResumeRequest and ResumableInferenceBackend continuation contract
+- ModelRequest and ModelResumeRequest carry a ptr_types::SemanticContext (revision plus the exact snapshot entries) instead of a bare revision; revision() reads it back from the context
+- ModelEvent::ActionReady carries a full ptr_types::ActionIr (operation, target, capability, effect, input type, generation, revision, payload) instead of an operation string
+- ReferenceEchoBackend also implements ResumableInferenceBackend (resume yields Finished)
+- ScenarioBackend: a deterministic demonstrator backend named scenario that echoes the raw text as a Token and emits one Mutation ActionIr (create demo-note, capability demo.local-note.create, type ptr.demo-note.v1) at the request's revision; resume yields Finished. Its own doc comment calls it plumbing evidence for the local HTTP/effect path, not a model-quality baseline
 
 ### Missing for the target architecture
 

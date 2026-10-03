@@ -19,7 +19,12 @@ fn the_committed_runtime_fixture_still_loads() {
     ))
     .expect("the fixture is committed");
     // The configuration examples/write_checkpoint.rs writes it with.
-    let config = PtrA0Config::new(8, 4).with_provenance_buckets(4);
+    // This committed fixture intentionally predates architecture-bound v3
+    // headers. Keep its compatibility explicit and local to this regression
+    // test; production callers remain fail-closed by default.
+    let config = PtrA0Config::new(8, 4)
+        .with_provenance_buckets(4)
+        .allow_legacy_v2_checkpoint(true);
     let device = Device::flex();
     let model = load(&bytes, &config, &device).expect("the fixture loads");
     assert_eq!(model.operator_count(), 11);

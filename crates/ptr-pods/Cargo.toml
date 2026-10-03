@@ -5,6 +5,19 @@ edition.workspace = true
 rust-version.workspace = true
 publish = false
 
+[features]
+default = []
+candle-cuda = ["dep:candle-core", "candle-core/cuda"]
+
 [dependencies]
 ptr-types = { workspace = true }
 ptr-protocol = { workspace = true }
+ptr-verifier = { workspace = true }
+ptr-storage = { workspace = true }
+tokio = { workspace = true }
+candle-core = { workspace = true, optional = true }
+sha2 = { workspace = true }
+ed25519-dalek = { workspace = true }
+
+[dev-dependencies]
+safetensors = "=0.8.0"

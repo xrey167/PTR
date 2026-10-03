@@ -13,10 +13,11 @@
 use burn::{prelude::*, tensor::Int};
 use ptr_burn_a0::{
     admission_bias, load, save, CodeGrid, PtrA0, PtrA0Config, PtrA0Output, PtrSlotMetadata,
-    SlotValues,
+    RouterMode, SlotValues, TypedAttentionMode,
 };
 use ptr_types::{
-    Codebook, EpistemicState, SemanticRole, SlotEncoding, TypeId, Validity, ValidityMask,
+    CheckpointHeader, Codebook, EpistemicState, SemanticRole, SlotEncoding, TypeId, Validity,
+    ValidityMask,
 };
 
 const WIDTH: usize = 8;
@@ -85,14 +86,41 @@ fn every_arm_of_one_seed_starts_from_the_same_parameters() {
         ("latent-1", full.clone().with_latent_steps(1)),
         ("latent-4", full.clone().with_latent_steps(4)),
         ("frozen-router", full.clone().with_frozen_router(true)),
+        (
+            "factorized-v2",
+            full.clone()
+                .with_typed_attention_mode(TypedAttentionMode::FactorizedV2)
+                .with_factorized_attention(8, 2.0)
+                .with_router_mode(RouterMode::CalibratedCosineV2),
+        ),
+        (
+            "factorized-v2-off",
+            full.clone()
+                .with_typed_attention_mode(TypedAttentionMode::Off)
+                .with_factorized_attention(8, 2.0)
+                .with_router_mode(RouterMode::CalibratedCosineV2),
+        ),
     ] {
         device.seed(SEED);
         let model = config.init(&device);
         // Read it the way this arm reads, before comparing: that is what used to
         // shift the draws when parameters were drawn lazily.
         let _ = run(&model, &device);
-        let as_default =
-            load(&save(&model).expect("serializable"), &full, &device).expect("the same shape");
+        // Architecture-bound checkpoints intentionally reject loading an arm
+        // under another mode. This regression test strips that binding only in
+        // memory via the explicit v2 migration format so it can compare the
+        // common parameter record under one reference graph.
+        let saved = save(&model).expect("serializable");
+        let (header, payload) = CheckpointHeader::read(&saved).expect("checkpoint");
+        let legacy = header
+            .with_architecture(Vec::new())
+            .write_legacy_v2(payload);
+        let as_default = load(
+            &legacy,
+            &full.clone().allow_legacy_v2_checkpoint(true),
+            &device,
+        )
+        .expect("the same parameter layout");
         let output = run(&as_default, &device);
         for (name, got, want) in [
             ("raw", output.raw.clone(), reference.raw.clone()),

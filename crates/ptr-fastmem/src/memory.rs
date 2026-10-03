@@ -470,6 +470,7 @@ impl FastMemory {
         Ok(())
     }
 
+    #[allow(clippy::manual_is_multiple_of)]
     fn fold(&mut self, write: MemoryWrite) -> f32 {
         let surprise = self.state.apply(&write);
         self.writes.push(write);

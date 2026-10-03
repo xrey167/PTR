@@ -77,7 +77,21 @@ pub fn lifecycle_change(committed: &CommittedEvent) -> LifecycleChange {
         | LedgerEvent::SnapshotCommitted { .. }
         | LedgerEvent::EffectAttempted { .. }
         | LedgerEvent::EffectSettled { .. }
-        | LedgerEvent::EffectReconciled { .. } => LifecycleChange::None,
+        | LedgerEvent::EffectReconciled { .. }
+        | LedgerEvent::ScopeLifecycle(_)
+        | LedgerEvent::ProtectedStateCommitted { .. }
+        | LedgerEvent::MeshTunnelLifecycle(_)
+        | LedgerEvent::ExecutionManifestAdmitted { .. }
+        | LedgerEvent::ExecutionManifestRevoked { .. }
+        | LedgerEvent::PodEvidenceCommitted { .. }
+        | LedgerEvent::PodOutputAdmitted { .. }
+        | LedgerEvent::PodHypothesisCommitted { .. }
+        | LedgerEvent::PolicyBundleActivated { .. }
+        | LedgerEvent::PolicyBundleRevoked { .. }
+        | LedgerEvent::SessionRevoked { .. }
+        | LedgerEvent::TierBackendLifecycle { .. }
+        | LedgerEvent::TierObjectCommitted { .. }
+        | LedgerEvent::TierReplicaLifecycle { .. } => LifecycleChange::None,
     }
 }
 
@@ -96,6 +110,20 @@ pub fn event_topic(event: &LedgerEvent) -> &'static str {
         LedgerEvent::EffectAttempted { .. } => "effect.attempted",
         LedgerEvent::EffectSettled { .. } => "effect.settled",
         LedgerEvent::EffectReconciled { .. } => "effect.reconciled",
+        LedgerEvent::ScopeLifecycle(_) => "scope.lifecycle",
+        LedgerEvent::ProtectedStateCommitted { .. } => "protected_state.committed",
+        LedgerEvent::MeshTunnelLifecycle(_) => "mesh.tunnel_lifecycle",
+        LedgerEvent::ExecutionManifestAdmitted { .. } => "execution_manifest.admitted",
+        LedgerEvent::ExecutionManifestRevoked { .. } => "execution_manifest.revoked",
+        LedgerEvent::PodEvidenceCommitted { .. } => "pod.evidence_committed",
+        LedgerEvent::PodOutputAdmitted { .. } => "pod.output_admitted",
+        LedgerEvent::PodHypothesisCommitted { .. } => "pod.hypothesis_committed",
+        LedgerEvent::PolicyBundleActivated { .. } => "policy.bundle_activated",
+        LedgerEvent::PolicyBundleRevoked { .. } => "policy.bundle_revoked",
+        LedgerEvent::SessionRevoked { .. } => "identity.session_revoked",
+        LedgerEvent::TierBackendLifecycle { .. } => "storage.tier_backend_lifecycle",
+        LedgerEvent::TierObjectCommitted { .. } => "storage.tier_object_committed",
+        LedgerEvent::TierReplicaLifecycle { .. } => "storage.tier_replica_lifecycle",
     }
 }
 
@@ -118,7 +146,61 @@ pub fn event_subject(committed: &CommittedEvent) -> String {
         | LedgerEvent::EffectReconciled { attempt, .. } => {
             format!("effect:{}", attempt.0)
         }
+        LedgerEvent::ScopeLifecycle(event) => format!("scope:{}", event.scope_id),
+        LedgerEvent::ProtectedStateCommitted { logical_id, .. } => {
+            format!("protected:{logical_id}")
+        }
+        LedgerEvent::MeshTunnelLifecycle(event) => {
+            format!("mesh:{}:{}", event.network_id, event.peer_id)
+        }
+        LedgerEvent::ExecutionManifestAdmitted {
+            manifest_digest, ..
+        }
+        | LedgerEvent::ExecutionManifestRevoked {
+            manifest_digest, ..
+        } => {
+            format!("execution-manifest:{}", hex_digest(manifest_digest))
+        }
+        LedgerEvent::PodEvidenceCommitted {
+            session_id,
+            trace_id,
+            ..
+        } => format!("pod-evidence:{}:{}", session_id, trace_id),
+        LedgerEvent::PodOutputAdmitted {
+            request_id,
+            pod_id,
+            output_digest,
+            ..
+        } => format!(
+            "pod-output:{}:{}:{}",
+            request_id,
+            pod_id,
+            hex_digest(output_digest)
+        ),
+        LedgerEvent::PodHypothesisCommitted { branch_id, .. } => {
+            format!("pod-hypothesis:{branch_id}")
+        }
+        LedgerEvent::PolicyBundleActivated { revision, .. }
+        | LedgerEvent::PolicyBundleRevoked { revision, .. } => {
+            format!("policy:{}", revision.0)
+        }
+        LedgerEvent::SessionRevoked { session_id, .. } => format!("session:{session_id}"),
+        LedgerEvent::TierBackendLifecycle { backend_id, .. } => {
+            format!("tier-backend:{backend_id}")
+        }
+        LedgerEvent::TierObjectCommitted { root_digest, .. } => {
+            format!("tier-object:{}", hex_digest(root_digest))
+        }
+        LedgerEvent::TierReplicaLifecycle {
+            root_digest,
+            backend_id,
+            ..
+        } => format!("tier-replica:{}:{backend_id}", hex_digest(root_digest)),
     }
+}
+
+fn hex_digest(digest: &[u8; 32]) -> String {
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// The projection event payload: the commit index and exactly the key/value

@@ -1,4 +1,5 @@
 import contextlib
+import copy
 import datetime
 import hashlib
 import importlib.util
@@ -22,6 +23,203 @@ spec.loader.exec_module(mod)
 class ResearchGateTests(unittest.TestCase):
     def test_current_repository_satisfies_gates(self):
         self.assertEqual(mod.main(),0)
+
+    def test_v4_no_go_decisions_are_bound_to_their_complete_ci_artifacts(self):
+        for exp_id in mod.V4_NO_GO:
+            with self.subTest(experiment=exp_id):
+                self.assertEqual(mod.v4_no_go_errors(exp_id,ROOT),[])
+
+    def test_crlf_digest_is_the_same_for_either_line_ending(self):
+        lf=b'{"a": 1,\n "b": 2}\n'
+        crlf=lf.replace(b"\n",b"\r\n")
+        self.assertEqual(mod.crlf_digest(lf),mod.crlf_digest(crlf))
+        self.assertEqual(mod.crlf_digest(lf),hashlib.sha256(crlf).hexdigest())
+        self.assertNotEqual(mod.crlf_digest(lf),mod.crlf_digest(lf+b" "))
+
+    def test_m009_is_locked_before_a_completed_m002_v5_pass(self):
+        for status in ("prepared", "running", "completed"):
+            experiments={"M009":{"status":status},"M002-v5":{"status":"planned"}}
+            self.assertEqual(
+                mod.m009_lock_errors(ROOT,experiments,{}),
+                ["M009: locked until M002-v5 is completed with PASS"],
+            )
+        self.assertEqual(mod.m009_lock_errors(ROOT,{"M009":{"status":"planned"}},{}),[])
+
+    def test_unlisted_m009_cannot_bypass_the_m002_v5_dependency_lock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            experiments = root / "experiments"
+            experiments.mkdir()
+            (experiments / "preregistration.toml").write_text("[experiment]\n", encoding="utf-8")
+            (experiments / "registry.toml").write_text("experiment = []\n", encoding="utf-8")
+            self.assertEqual(
+                mod.launch_errors(root, "M009"),
+                ["M009: locked until M002-v5 is completed with PASS"],
+            )
+
+    def test_m009_recomputes_the_bound_decision_instead_of_trusting_a_pass_label(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            experiment=root/"experiments/model/M002-v5-factorized-typed-attention"
+            results=experiment/"results"
+            scripts=root/"scripts"
+            results.mkdir(parents=True)
+            scripts.mkdir()
+            sources=[]
+            for seed in (17,29,43,71,101):
+                path=results/f"run-{seed}.json"
+                record={"seed":seed,"value":"bound"}
+                path.write_text(json.dumps(record),encoding="utf-8",newline="\n")
+                relative=path.relative_to(root).as_posix()
+                sources.append({
+                    "path":relative,
+                    "canonical_sha256":hashlib.sha256(mod.canonical_json(record).encode("utf-8")).hexdigest(),
+                })
+            expected={
+                "decision":"PASS",
+                "gates":{"all":True},
+                "provenance":{"source_records":sources},
+            }
+            (root/"expected.json").write_text(json.dumps(expected),encoding="utf-8",newline="\n")
+            (scripts/"aggregate_m002_v5.py").write_text(
+                "import json\n"
+                "def decide(records, root):\n"
+                "    return json.loads((root / 'expected.json').read_text(encoding='utf-8'))\n",
+                encoding="utf-8",newline="\n",
+            )
+            decision_path=results/"m002-v5-decision.json"
+            decision_path.write_text(json.dumps(expected),encoding="utf-8",newline="\n")
+            visible=lambda checkout,path: checkout/path if (checkout/path).is_file() else None
+            with (
+                mock.patch.object(mod,"committed_regular_file",side_effect=visible),
+                mock.patch.object(mod,"m002_v5_archived_evidence_errors",return_value=[]),
+            ):
+                self.assertEqual(mod.bound_m002_v5_pass_errors(root,experiment),[])
+                forged_source = copy.deepcopy(expected)
+                forged_source["provenance"]["source_records"][0]["path"] = "forged/evidence-17.json"
+                decision_path.write_text(json.dumps(forged_source),encoding="utf-8",newline="\n")
+                self.assertEqual(
+                    mod.bound_m002_v5_pass_errors(root,experiment),
+                    ["M009: M002-v5 decision does not bind exactly the immutable five-seed run archive"],
+                )
+                forged=dict(expected)
+                forged["claim"]="self-asserted"
+                decision_path.write_text(json.dumps(forged),encoding="utf-8",newline="\n")
+                self.assertEqual(
+                    mod.bound_m002_v5_pass_errors(root,experiment),
+                    ["M009: M002-v5 decision does not equal the canonical recomputation"],
+                )
+
+    def test_m009_refuses_a_pass_when_immutable_record_history_is_invalid(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "experiments/model/M002-v5-factorized-typed-attention"
+            path.mkdir(parents=True)
+            with mock.patch.object(mod, "m002_v5_archived_evidence_errors", return_value=["forged git_sha"]):
+                self.assertEqual(
+                    mod.bound_m002_v5_pass_errors(root, path),
+                    ["M009: locked because M002-v5 archived evidence is invalid: forged git_sha"],
+                )
+
+    def test_m009_requires_the_exact_factorized_config_and_checkpoint_contract(self):
+        contract = {
+            "source_experiment": "M002-v5",
+            "attention_mode": "factorized-v2",
+            "d_model": 48,
+            "rank": 16,
+            "bias_limit": 2.0,
+            "metadata_dropout": 0.1,
+            "router": {
+                "mode": "calibrated-cosine-v2",
+                "logit_scale": 5.0,
+                "label_smoothing": 0.05,
+                "consistency_weight": 0.1,
+            },
+            "architecture_contract_sha256": "a" * 64,
+            "contract_path": "experiments/model/M002-v5-factorized-typed-attention/factorized-v2-contract.txt",
+        }
+        digest = contract["architecture_contract_sha256"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            m009 = root / "experiments/model/M009"
+            m009.mkdir(parents=True)
+            (m009 / "config.toml").write_text(
+                "[m002_v5_binding]\n"
+                "source_experiment = \"M002-v5\"\n"
+                "attention_mode = \"factorized-v2\"\n"
+                "d_model = 48\nrank = 16\nbias_limit = 2.0\nmetadata_dropout = 0.1\n"
+                f"contract_path = \"{contract['contract_path']}\"\n"
+                f"architecture_contract_sha256 = \"{digest}\"\n"
+                f"runtime_contract = \"{contract['contract_path']}\"\n"
+                f"runtime_contract_sha256 = \"{digest}\"\n"
+                f"checkpoint_architecture_contract_sha256 = \"{digest}\"\n"
+                "[m002_v5_binding.router]\n"
+                "mode = \"calibrated-cosine-v2\"\nlogit_scale = 5.0\nlabel_smoothing = 0.05\nconsistency_weight = 0.1\n",
+                encoding="utf-8",
+            )
+            (m009 / "experiment.toml").write_text(
+                "entrypoint = \"cargo +1.95.0-x86_64-pc-windows-gnu run --release --locked --quiet --jobs 1 --manifest-path model/burn-a0/Cargo.toml --example m009_learned_backend -- --m002-v5-contract <runtime_contract> --m002-v5-contract-sha256 <runtime_contract_sha256>\"\n",
+                encoding="utf-8",
+            )
+            with mock.patch.object(mod, "m002_v5_factorized_contract", return_value=(contract, [])):
+                self.assertEqual(mod.m009_architecture_binding_errors(root, root / "M002", m009), [])
+                (m009 / "experiment.toml").write_text(
+                    (m009 / "experiment.toml").read_text(encoding="utf-8").replace(
+                        "--example m009_learned_backend", "--example unrelated_program"
+                    ),
+                    encoding="utf-8",
+                )
+                self.assertEqual(
+                    mod.m009_architecture_binding_errors(root, root / "M002", m009),
+                    ["M009: entrypoint does not pass the frozen runtime contract to model construction"],
+                )
+                (m009 / "experiment.toml").write_text(
+                    (m009 / "experiment.toml").read_text(encoding="utf-8").replace(
+                        "unrelated_program", "m009_learned_backend"
+                    ),
+                    encoding="utf-8",
+                )
+                (m009 / "config.toml").write_text(
+                    (m009 / "config.toml").read_text(encoding="utf-8").replace("rank = 16", "rank = 8"),
+                    encoding="utf-8",
+                )
+                self.assertEqual(
+                    mod.m009_architecture_binding_errors(root, root / "M002", m009),
+                    ["M009: rank does not bind the frozen M002-v5 FactorizedV2 contract"],
+                )
+
+    def test_bound_m002_v2_no_go_marker_accepts_only_the_two_exact_freezes(self):
+        experiment=ROOT/"experiments/model/M002-v2-typed-attention"
+        manifest=mod.load(experiment/"experiment.toml")
+        marker,errors=mod.no_go_marker("M002-v2",experiment,ROOT,manifest)
+        self.assertEqual(errors,[])
+        self.assertIsNotNone(marker)
+        current=manifest
+        for commit in mod.M002_V2_NO_GO_COMMITS:
+            then=mod.toml_at(ROOT,commit,"experiments/model/M002-v2-typed-attention/experiment.toml")
+            self.assertTrue(mod.accepts_m002_v2_no_go(marker,"M002-v2",commit,then,current,["entrypoint"]))
+            self.assertFalse(mod.accepts_m002_v2_no_go(marker,"M002-v2",commit,then,current,["entrypoint","hypothesis"]))
+        then=mod.toml_at(ROOT,mod.M002_V2_NO_GO_COMMITS[0],"experiments/model/M002-v2-typed-attention/experiment.toml")
+        self.assertFalse(mod.accepts_m002_v2_no_go(marker,"M002-v2","0"*40,then,current,["entrypoint"]))
+
+    def test_m002_v2_no_go_marker_rejects_tampering_and_never_completes_study(self):
+        experiment=ROOT/"experiments/model/M002-v2-typed-attention"
+        manifest=mod.load(experiment/"experiment.toml")
+        marker_path=experiment/"results/NO-GO.toml"
+        original=mod.load(marker_path)
+        for field,value in (
+            ("experiment_id","M001-v4"),
+            ("decision","completed"),
+            ("field","hypothesis"),
+            ("current_entrypoint_sha256","0"*64),
+        ):
+            tampered=dict(original)
+            tampered[field]=value
+            with self.subTest(field=field), mock.patch.object(mod,"load",side_effect=lambda path, tampered=tampered: tampered if Path(path)==marker_path else original):
+                accepted,errors=mod.no_go_marker("M002-v2",experiment,ROOT,manifest)
+                self.assertIsNone(accepted)
+                self.assertTrue(errors)
+        self.assertNotEqual(manifest.get("status"),"completed")
 
     def test_stale_results_of_a_completed_experiment_fail_the_gate(self):
         completed=[
@@ -1116,6 +1314,41 @@ class PreregistrationGateTests(unittest.TestCase):
         self.edit(root,self.MANIFEST,'status = "planned"','status = "superseded"')
         commit_all(root,"superseded")
         self.assertEqual(gate(root),(0,[]))
+
+    def test_a_superseded_experiment_is_bound_to_its_files_as_frozen_not_as_they_are_now(self):
+        # A superseded experiment is not run again; the file it named is the one
+        # its freezing commit held, which a file shared with later experiments
+        # may stop being. A running one is held to the file as it is now.
+        required={**REQUIRED,"protocol":"file"}
+        path="experiments/semdb/X900-fixture/PROTOCOL.md"
+        text="# Protocol\nJudge the delta.\n"
+        edited=text+"Shared with a later experiment.\n"
+        digest=hashlib.sha256(text.encode("utf-8")).hexdigest()
+        edited_digest=hashlib.sha256(edited.encode("utf-8")).hexdigest()
+        table={**TABLE,"protocol":path,"protocol_sha256":digest}
+
+        def frozen(status):
+            root=self.tree(status="running",table=table,required=required)
+            write(root,path,text)
+            commit_all(root)
+            if status=="superseded":
+                self.edit(root,self.MANIFEST,'status = "running"','status = "superseded"')
+                self.edit(root,"experiments/registry.toml",'status = "running"','status = "superseded"')
+                commit_all(root,"superseded")
+            self.assertEqual(gate(root),(0,[]))
+            return root
+
+        running=frozen("running")
+        write(running,path,edited)
+        commit_all(running,"the file changed")
+        self.assert_blocked(
+            running,
+            f"X900: preregistration key protocol_sha256 {digest!r} is not {edited_digest}, the digest of {path}",
+        )
+        superseded=frozen("superseded")
+        write(superseded,path,edited)
+        commit_all(superseded,"the file changed")
+        self.assertEqual(gate(superseded),(0,[]))
 
     def test_only_a_results_directory_holds_run_records(self):
         # A file named like a record elsewhere in the experiment's directory,
@@ -4249,6 +4482,23 @@ class PreregistrationGateTests(unittest.TestCase):
         self.assertEqual(mod.history(root,"--format=%H","HEAD","--",":(literal)notes/a[1].txt",literal=False),[second])
         self.assertEqual(mod.history(root,"--format=%H","HEAD","--",":(glob)notes/*.txt"),[])
 
+    def test_identical_history_queries_are_cached_within_a_gate_run(self):
+        root=self.tree(status="running")
+        commit_all(root)
+        mod._history_cached.cache_clear()
+        asked=[]
+        original=mod.experiment_records.git
+        def counting(where,*arguments,**options):
+            asked.append(arguments)
+            return original(where,*arguments,**options)
+        with mock.patch.object(mod.experiment_records,"git",side_effect=counting):
+            first=mod.history(root,"--format=%H","HEAD","--","experiments/registry.toml")
+            second=mod.history(root,"--format=%H","HEAD","--","experiments/registry.toml")
+        self.assertEqual(first,second)
+        self.assertEqual([arguments for arguments in asked if "log" in arguments],[
+            ("--literal-pathspecs","log","--full-history","--format=%H","HEAD","--","experiments/registry.toml")
+        ])
+
     def test_the_launch_listing_names_the_experiments_directory_literally(self):
         # A registry path with a wildcard in it is that name, which no commit
         # holds, and not the file or directory it would match.
@@ -4677,12 +4927,34 @@ class PreregistrationGateTests(unittest.TestCase):
                 spelled={"tree":f"{head}^{{tree}}","config":f"{head}:experiments/semdb/X900-fixture/config.toml",
                          "baseline subtree":f"{head}:research/baselines/fixture/lib"}[lost]
                 name=git(root,"rev-parse",spelled)
-                mod.listed_entry.cache_clear()
-                mod.object_bytes.cache_clear()
+                mod.clear_snapshot_caches()
                 (root/".git/objects"/name[:2]/name[2:]).unlink()
                 refused=mod.launch_commit_errors(root,"X900",head)
                 self.assertEqual(len(refused),1,refused)
                 self.assertTrue(refused[0].startswith(f"HEAD's history cannot be read in {root}: "),refused)
+
+    def test_cached_history_follows_head_without_clearing_the_caches(self):
+        # A history answer is cached, but only for the HEAD it was read at: a
+        # commit added afterwards in the same process is seen by the next query.
+        root=self.tree(status="running")
+        first=commit_all(root)
+        self.assertEqual(mod.history(root,"--format=%H","HEAD"),[first])
+        self.assertEqual(mod.descendants_of(root,first),set())
+        write(root,"NOTE.md","a later commit\n")
+        second=commit_all(root,"later")
+        self.assertEqual(mod.history(root,"--format=%H","HEAD"),[second,first])
+        self.assertEqual(mod.descendants_of(root,first),{second})
+
+    def test_v4_decisions_bind_only_the_trees_that_hold_the_experiments(self):
+        # A tree without M001-v4 and M002-v4, such as a fixture, has no v4
+        # decision to bind: it is no error that their files are absent.
+        root=self.tree()
+        self.assertEqual(gate(root),(0,[]))
+        # The check itself is unchanged where it runs: a tree asked about one
+        # of them without its decision file still reports it.
+        for exp_id in mod.V4_NO_GO:
+            with self.subTest(experiment=exp_id):
+                self.assertEqual(mod.v4_no_go_errors(exp_id,root),[f"{exp_id}: DECISION.toml is not a regular repository file"])
 
     def test_a_listed_experiment_is_reached_through_no_symlink(self):
         # Git holds a link as its target's path, so the history of the
@@ -4875,10 +5147,26 @@ class PreregistrationGateTests(unittest.TestCase):
         self.assertEqual(gate(pinned),(0,[]))
 
 ENROLLED=("S003","F003","Q003","R004","M008","E005")
+# The list also holds the experiments that ran or were superseded; they are no
+# part of the six this fixture moves to `prepared`.
+RETIRED=("M001-v2","M001-v4","M002-v2","M002-v3","M002-v4","M002-v5","M002-v6","M002-v7","M002-v8","M002-v9")
 
 class EnrolledExperimentTests(unittest.TestCase):
     """The repository's own list and configurations, copied into a fixture
     tree with every listed experiment moved to `prepared`."""
+
+    @staticmethod
+    def list_of(ids) -> str:
+        """The repository's list with only the entries of `ids`: its header and
+        each `[experiment.<id>...]` table whose id is one of them."""
+        kept=[]
+        keep=True
+        for line in (ROOT/"experiments/preregistration.toml").read_text(encoding="utf-8").splitlines(keepends=True):
+            if line.startswith("[experiment."):
+                keep=line.removeprefix("[experiment.").split("]",1)[0].split(".",1)[0] in ids
+            if keep:
+                kept.append(line)
+        return "".join(kept)
 
     def prepared_tree(self, edit=None) -> Path:
         """A fixture tree holding the repository's list, the six listed
@@ -4895,8 +5183,8 @@ class EnrolledExperimentTests(unittest.TestCase):
                 text=source.read_text(encoding="utf-8").replace('status = "planned"','status = "prepared"').replace('entrypoint = ""','entrypoint = "bench <seed>"')
                 write(root,f"experiments/{paths[exp_id]}/{name}",text)
         write(root,"experiments/registry.toml",registry)
+        write(root,"experiments/preregistration.toml",self.list_of(ENROLLED))
         for relative in (
-            "experiments/preregistration.toml",
             "research/baselines/plain_model/config.toml",
             "research/baselines/rag_reference/config.toml",
             "research/baselines/strong_rag/config.toml",
@@ -4910,7 +5198,7 @@ class EnrolledExperimentTests(unittest.TestCase):
 
     def test_the_list_enrolls_the_experiments_that_preregister(self):
         listed=mod.load(ROOT/"experiments/preregistration.toml")["experiment"]
-        self.assertEqual(sorted(listed),sorted(ENROLLED))
+        self.assertEqual(sorted(listed),sorted((*ENROLLED,*RETIRED)))
         # S003 lists every key its design preregisters (doc 35 design, section
         # 3.10), with the type of the design's value, low_cells included, in
         # the design's order.

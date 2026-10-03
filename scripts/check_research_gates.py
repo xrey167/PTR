@@ -120,6 +120,7 @@ from __future__ import annotations
 import datetime
 import functools
 import hashlib
+import importlib.util
 import json
 import math
 import re
@@ -1069,6 +1070,19 @@ def tree_names(root: Path) -> list[str]:
 def toml_at(root: Path, commit: str, relative: str) -> dict | None:
     """The TOML file `relative` at `commit`, or None when it is absent or
     does not parse."""
+    if FULL_COMMIT.fullmatch(commit):
+        return _toml_at_cached(root,commit,relative)
+    data=blob(root,commit,relative)
+    if data is None:
+        return None
+    try:
+        return tomllib.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError,tomllib.TOMLDecodeError):
+        return None
+
+@functools.lru_cache(maxsize=4096)
+def _toml_at_cached(root: Path, commit: str, relative: str) -> dict | None:
+    """Cached form for the immutable, full-name commit queries in a gate."""
     data=blob(root,commit,relative)
     if data is None:
         return None
@@ -1085,6 +1099,41 @@ def has_head(root: Path) -> bool:
     except experiment_records.ProvenanceError:
         return False
 
+def head_commit(root: Path) -> str:
+    """The commit HEAD names in the repository at `root`, or "" when it names
+    none or git cannot say: the part of a cached history answer that moves when
+    a commit is added."""
+    try:
+        listing=experiment_records.git(root,"rev-parse","--verify","--quiet","HEAD")
+    except experiment_records.ProvenanceError:
+        return ""
+    return listing.stdout.strip() if listing.returncode==0 else ""
+
+@functools.lru_cache(maxsize=512)
+def _history_cached(root: str, head: str, args: tuple[str, ...], literal: bool) -> tuple[str, ...]:
+    """Run one immutable history query at most once per gate process.
+
+    The gate asks the same path-scoped history questions from several
+    independent checks.  Keeping the result as a tuple makes the cache safe
+    to share between callers while still allowing ``history`` to preserve its
+    historical list-returning API.
+    """
+    repository=Path(root)
+    try:
+        flags=("--literal-pathspecs",) if literal else ()
+        listing=experiment_records.git(repository,*flags,"log","--full-history",*args,binary=True)
+    except experiment_records.ProvenanceError as error:
+        raise HistoryUnreadable(str(error)) from error
+    if listing.returncode!=0:
+        if not has_head(repository):
+            return ()
+        raise HistoryUnreadable(listing.stderr.decode("utf-8","replace").strip() or f"git log exited {listing.returncode}")
+    # A name that is not UTF-8 keeps its bytes (and so names its file), and
+    # fails every check that asks for a repository path, rather than
+    # failing every later gate on the commit that once held it.
+    names=listing.stdout.decode("utf-8","surrogateescape")
+    return tuple(name for name in names.replace("\0","\n").split("\n") if name)
+
 def history(root: Path, *args: str, literal: bool = True) -> list[str]:
     """The NUL- or newline-separated names `git log --full-history *args`
     prints in `root`, side branches merged into HEAD included; empty where
@@ -1092,20 +1141,7 @@ def history(root: Path, *args: str, literal: bool = True) -> list[str]:
     is false, when each carries the magic it names (`:(literal)`, `:(glob)`).
     Raises `HistoryUnreadable` when git cannot read it otherwise: a history
     read as empty would hide every freeze and record in it."""
-    try:
-        flags=("--literal-pathspecs",) if literal else ()
-        listing=experiment_records.git(root,*flags,"log","--full-history",*args,binary=True)
-    except experiment_records.ProvenanceError as error:
-        raise HistoryUnreadable(str(error)) from error
-    if listing.returncode!=0:
-        if not has_head(root):
-            return []
-        raise HistoryUnreadable(listing.stderr.decode("utf-8","replace").strip() or f"git log exited {listing.returncode}")
-    # A name that is not UTF-8 keeps its bytes (and so names its file), and
-    # fails every check that asks for a repository path, rather than
-    # failing every later gate on the commit that once held it.
-    names=listing.stdout.decode("utf-8","surrogateescape")
-    return [name for name in names.replace("\0","\n").split("\n") if name]
+    return list(_history_cached(str(root), head_commit(root), tuple(args), literal))
 
 def versions(root: Path, relative: str, start: str = "HEAD") -> list[tuple[str, dict]]:
     """Every commit on the history of `start` (HEAD unless named) that
@@ -1267,6 +1303,15 @@ def launchable_at(root: Path, commit: str, exp_id: str, directory: str) -> tuple
     status the manifest does, and no symlink or gitlink lies anywhere in the
     commit, which the runner's watch of the whole repository refuses. A
     commit that held less could not launch it, and does not freeze it."""
+    if FULL_COMMIT.fullmatch(commit):
+        return _launchable_at_cached(root,commit,exp_id,directory)
+    return _launchable_at_uncached(root,commit,exp_id,directory)
+
+@functools.lru_cache(maxsize=4096)
+def _launchable_at_cached(root: Path, commit: str, exp_id: str, directory: str) -> tuple[str, str] | None:
+    return _launchable_at_uncached(root,commit,exp_id,directory)
+
+def _launchable_at_uncached(root: Path, commit: str, exp_id: str, directory: str) -> tuple[str, str] | None:
     manifest=toml_at(root,commit,f"{directory}/experiment.toml")
     if not isinstance(manifest,dict) or status_of(manifest) not in FROZEN or not names_an_entrypoint(manifest):
         return None
@@ -1487,6 +1532,15 @@ def statuses_at(root: Path, commit: str, exp_id: str) -> list[str | None]:
     string. A directory that is no repository path, or holds no readable
     manifest, adds none; what the commit does not hold says nothing of a
     status."""
+    if FULL_COMMIT.fullmatch(commit):
+        return list(_statuses_at_cached(root,commit,exp_id))
+    return _statuses_at_uncached(root,commit,exp_id)
+
+@functools.lru_cache(maxsize=4096)
+def _statuses_at_cached(root: Path, commit: str, exp_id: str) -> tuple[str | None, ...]:
+    return tuple(_statuses_at_uncached(root,commit,exp_id))
+
+def _statuses_at_uncached(root: Path, commit: str, exp_id: str) -> list[str | None]:
     found=[]
     for directory in placed_directories(root,commit,exp_id):
         if not is_repository_path(directory):
@@ -1501,6 +1555,15 @@ def descendants_of(root: Path, commit: str) -> set[str]:
     name, `commit` itself not among them: one listing of git's for the
     commit, and none for each commit that might descend from it. Raises
     `HistoryUnreadable` when git cannot list them."""
+    if FULL_COMMIT.fullmatch(commit):
+        return set(_descendants_of_cached(root,commit,head_commit(root)))
+    return _descendants_of_uncached(root,commit)
+
+@functools.lru_cache(maxsize=4096)
+def _descendants_of_cached(root: Path, commit: str, head: str) -> frozenset[str]:
+    return frozenset(_descendants_of_uncached(root,commit))
+
+def _descendants_of_uncached(root: Path, commit: str) -> set[str]:
     try:
         listing=experiment_records.git(root,"rev-list","--ancestry-path",f"{commit}..HEAD","--")
     except experiment_records.ProvenanceError as error:
@@ -1554,6 +1617,15 @@ def directory_digest_at(root: Path, commit: str, directory: str) -> str | None:
     file named as no repository path (`is_repository_path`), a name that is
     not UTF-8 included. None is no digest, so it matches no frozen one.
     Raises `HistoryUnreadable` when git cannot tell."""
+    if FULL_COMMIT.fullmatch(commit):
+        return _directory_digest_at_cached(root,commit,directory)
+    return _directory_digest_at_uncached(root,commit,directory)
+
+@functools.lru_cache(maxsize=4096)
+def _directory_digest_at_cached(root: Path, commit: str, directory: str) -> str | None:
+    return _directory_digest_at_uncached(root,commit,directory)
+
+def _directory_digest_at_uncached(root: Path, commit: str, directory: str) -> str | None:
     try:
         listing=experiment_records.git(root,"--literal-pathspecs","ls-tree","-r","-z",commit,"--",directory,binary=True)
     except experiment_records.ProvenanceError as error:
@@ -1582,7 +1654,8 @@ def changed_keys(then: dict, now: dict, unbound: set[str]) -> list[str]:
     return sorted(key for key in (then.keys()|now.keys())-unbound if not same_value(then.get(key,MISSING),now.get(key,MISSING)))
 
 def history_errors(exp_id: str, name: str, named, root: Path, experiment: Path, entry: dict, table: dict,
-                   frozen: tuple[str, str], current: tuple[dict, dict], at: str | None = None) -> tuple[list[str], str | None]:
+                   frozen: tuple[str, str], current: tuple[dict, dict], at: str | None = None,
+                   no_go: dict | None = None) -> tuple[list[str], str | None]:
     """What keeps the commit a record names (`named`) from holding the
     preregistration frozen now and the experiment as it is now, and that
     commit. The commit is on HEAD's history; the experiment's
@@ -1631,7 +1704,7 @@ def history_errors(exp_id: str, name: str, named, root: Path, experiment: Path, 
         errors.append(f"{at}, whose experiment.toml names other preregistration digests than the frozen ones")
     if isinstance(manifest,dict):
         changed=changed_keys(manifest,now_manifest,UNBOUND)
-        if changed:
+        if changed and not accepts_m002_v2_no_go(no_go,exp_id,commit,manifest,now_manifest,changed):
             errors.append(f"{at}, whose experiment.toml differs from the current one in {', '.join(changed)}; "
                           "after a run only its status changes")
         then_status,now_status=status_of(manifest),status_of(now_manifest)
@@ -1817,7 +1890,7 @@ def record_errors(exp_id: str, name: str, record, aggregate: bool, root: Path, e
     return errors
 
 def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path, root: Path, entry: dict, table: dict,
-                    frozen: tuple[str, str]) -> list[str]:
+                    frozen: tuple[str, str], no_go: dict | None = None) -> list[str]:
     """What keeps the experiment's archived runs from having run under the
     preregistration frozen now (`frozen`: the digests of the table and of
     the list's rules for it), with the manifest and configuration as they
@@ -2067,14 +2140,15 @@ def archived_errors(exp_id: str, manifest: dict, config: dict, experiment: Path,
     listing=launch_listing(root,exp_id,directories)
     for commit,_ in freezes(listing):
         problems,_=history_errors(exp_id,"",commit,root,experiment,entry,table,frozen,current,
-                                  at=f"{exp_id} was frozen at {commit[:12]}")
+                                  at=f"{exp_id} was frozen at {commit[:12]}",no_go=no_go)
         errors.extend(problems)
     # And a status never goes back on any line of history, whether or not the
     # commit it goes back to was frozen, or a later commit puts it there again.
     errors.extend(status_regressions(root,exp_id,listing))
     return errors
 
-def frozen_errors(exp_id: str, entry: dict, manifest: dict, experiment: Path, root: Path) -> list[str]:
+def frozen_errors(exp_id: str, entry: dict, manifest: dict, experiment: Path, root: Path,
+                  no_go: dict | None = None) -> list[str]:
     """What keeps a listed experiment that left `planned` from having a frozen
     preregistration."""
     relative=experiment.relative_to(root).as_posix() if experiment.is_relative_to(root) else str(experiment)
@@ -2143,8 +2217,13 @@ def frozen_errors(exp_id: str, entry: dict, manifest: dict, experiment: Path, ro
                 form=preregistered_file_problem(root,table[key],file)
                 if form:
                     errors.append(f"{exp_id}: preregistration key {key} names {table[key]!r}, which {form}")
-                errors.extend(frozen_value_errors(
-                    exp_id,table,f"{key}_sha256",experiment_records.preregistered_file_digest(file),table[key]))
+                # A superseded experiment is not run again, so what binds it is
+                # the file as the commit that froze it held it (checked by the
+                # freeze checks), not as the file is now: files that later
+                # experiments share may change after it.
+                if not (status_of(manifest)=="superseded" and f"{key}_sha256" in table):
+                    errors.extend(frozen_value_errors(
+                        exp_id,table,f"{key}_sha256",experiment_records.preregistered_file_digest(file),table[key]))
     for key,value in table.items():
         problem=None if key in entry["required"] else unset_problem(value)
         if problem:
@@ -2181,7 +2260,7 @@ def frozen_errors(exp_id: str, entry: dict, manifest: dict, experiment: Path, ro
             errors.append(f"{exp_id}: experiment.toml names no {field}")
         elif recorded!=expected:
             errors.append(f"{exp_id}: {field} {recorded!r} is not {expected}, the digest of {what}")
-    errors.extend(archived_errors(exp_id,manifest,settings,experiment,root,entry,table,(digest,rules)))
+    errors.extend(archived_errors(exp_id,manifest,settings,experiment,root,entry,table,(digest,rules),no_go))
     return errors
 
 def preregistration_errors(root: Path, manifests: dict[str, dict], experiments: dict[str, Path]) -> list[str]:
@@ -2208,12 +2287,14 @@ def preregistration_errors(root: Path, manifests: dict[str, dict], experiments: 
             errors.extend(problems)
             continue
         manifest=manifests[exp_id]
+        marker,marker_errors=no_go_marker(exp_id,experiments[exp_id],root,manifest)
+        errors.extend(marker_errors)
         status=status_of(manifest)
         if status is None:
             errors.append(f"{exp_id}: status {manifest.get('status')!r} is not a status")
         elif status in FROZEN:
             try:
-                errors.extend(frozen_errors(exp_id,entry,manifest,experiments[exp_id],root))
+                errors.extend(frozen_errors(exp_id,entry,manifest,experiments[exp_id],root,marker))
             except Unreadable as error:
                 errors.append(error.named(root))
         else:
@@ -2226,7 +2307,7 @@ def preregistration_errors(root: Path, manifests: dict[str, dict], experiments: 
                 # preregistration, so no outcome is erased by superseding it.
                 if committed or left:
                     try:
-                        errors.extend(frozen_errors(exp_id,entry,manifest,experiments[exp_id],root))
+                        errors.extend(frozen_errors(exp_id,entry,manifest,experiments[exp_id],root,marker))
                     except Unreadable as error:
                         errors.append(error.named(root))
             elif committed:
@@ -2252,6 +2333,7 @@ def launch_errors(root: Path, exp_id: str) -> list[str]:
     the list named once and no longer names (`enrolled`) does not run at
     all; one the list has never named runs as before. A file it cannot read
     refuses the launch, named."""
+    clear_snapshot_caches()
     try:
         return launch_decision(root,exp_id)
     except (Unreadable,HistoryUnreadable) as error:
@@ -2268,6 +2350,12 @@ def launch_decision(root: Path, exp_id: str) -> list[str]:
         item["id"]:item for item in load(root/REGISTRY).get("experiment",[])
         if isinstance(item,dict) and isinstance(item.get("id"),str)
     }
+    if exp_id == "M009":
+        dependency_errors = m009_dependency_errors(root, items)
+        if dependency_errors:
+            return dependency_errors
+        if exp_id not in entries:
+            return ["M009: must be preregistered and frozen with its bound FactorizedV2 configuration"]
     if exp_id not in entries:
         commit=enrolled(root,set(items)).get(exp_id)
         return [] if commit is None else [delisted_error(exp_id,commit)]
@@ -2286,7 +2374,8 @@ def launch_decision(root: Path, exp_id: str) -> list[str]:
             f"{exp_id} preregisters ({PREREGISTRATION}) and is {manifest.get('status')!r}: it runs only once its "
             "preregistration is frozen and it is prepared, running, completed or failed"
         ]
-    return frozen_errors(exp_id,entries[exp_id],manifest,experiment,root)
+    problems = frozen_errors(exp_id,entries[exp_id],manifest,experiment,root)
+    return problems
 
 def launch_commit_errors(root: Path, exp_id: str, commit: str) -> list[str]:
     """Why `commit`, the commit a run of `exp_id` launched from the tree
@@ -2398,6 +2487,24 @@ def main(root: Path = ROOT) -> int:
         # A name that is not UTF-8 is printed as its escapes.
         print("\n".join("ERROR: "+error for error in errors).encode("utf-8","backslashreplace").decode("utf-8"))
         return 1
+    for item in load(root/REGISTRY).get("experiment",[]):
+        if not isinstance(item,dict) or not isinstance(item.get("id"),str) or not isinstance(item.get("path"),str):
+            continue
+        experiment=root/"experiments"/item["path"]
+        manifest=load(experiment/"experiment.toml")
+        marker,_=no_go_marker(item["id"],experiment,root,manifest)
+        if marker is not None:
+            print("NO-GO: "+json.dumps({
+                "experiment_id":marker["experiment_id"],
+                "decision":marker["decision"],
+                "reason":marker["reason"],
+            },sort_keys=True,separators=(",",":")))
+    for exp_id in V4_NO_GO:
+        print("NO-GO: "+json.dumps({
+            "experiment_id":exp_id,
+            "decision":"INCONCLUSIVE/NO-GO",
+            "reason":"v4_accuracy_calibration_conflict",
+        },sort_keys=True,separators=(",",":")))
     print("OK: research execution gates satisfied")
     return 0
 
@@ -2428,6 +2535,969 @@ def listed_now(root: Path) -> set[str]:
     return set(entries) if isinstance(entries,dict) else set()
 
 STANDARD_ARTIFACTS=(experiment_records.RUN,experiment_records.METRICS)
+NO_GO_MARKER="NO-GO.toml"
+M002_V2_NO_GO_COMMITS=(
+    "07aab42f06a2cab4eaeac20da99111089bcbbdfc",
+    "2584c0b6a615e2bdbc98f340c094555744cc2e74",
+)
+M002_V2_NO_GO_ENTRYPOINT_DIGESTS={
+    M002_V2_NO_GO_COMMITS[0]: "ab93ba1184d2cce5dfdf9c3a55f5ba5750c97ee187289c25373da8850c1e34e7",
+    M002_V2_NO_GO_COMMITS[1]: "29079b07bc1a52dbfb089322a247e13f75d283aea031422191cd62a20ba059e6",
+}
+M002_V2_NO_GO_CURRENT_ENTRYPOINT_DIGEST="29079b07bc1a52dbfb089322a247e13f75d283aea031422191cd62a20ba059e6"
+V4_NO_GO={
+    "M001-v4": {
+        "path":"model/M001-v4-semantic-slots",
+        "target":"full",
+        "baseline":"plain-transformer",
+        "paired_ci_sha256":"fb53d98343db7b71a010a81a85e41349f510b3b22fdf9c5de6ad22ebcd209d99",
+    },
+    "M002-v4": {
+        "path":"model/M002-v4-typed-attention",
+        "target":"no-typed-attention",
+        "baseline":"plain-transformer",
+        "paired_ci_sha256":"807de68f7f952559847a9a798bcd77b4d7c02e98f3d58cbbea4e61b3dfd24b8d",
+    },
+}
+
+def text_digest(value: object) -> str | None:
+    """SHA-256 of a UTF-8 string, or None for a non-string value."""
+    return hashlib.sha256(value.encode("utf-8")).hexdigest() if isinstance(value,str) else None
+
+def crlf_digest(data: bytes) -> str:
+    """SHA-256 of `data` with CRLF line endings. A v4 decision binds the digest
+    of its CI artifact as it was written where the decision was frozen, with CRLF
+    endings; a checkout takes LF (`.gitattributes`), so the same content is
+    hashed in that one form whichever ending it has."""
+    return hashlib.sha256(data.replace(b"\r\n",b"\n").replace(b"\n",b"\r\n")).hexdigest()
+
+def v4_no_go_errors(exp_id: str, root: Path) -> list[str]:
+    """Validate the immutable v4 negative decision against its CI artifact.
+
+    This is a decision binding, not a history exception: it permits no manifest
+    drift, completed status, positive claim, or suppression of another gate.
+    """
+    expected=V4_NO_GO[exp_id]
+    directory=root/"experiments"/expected["path"]
+    decision_path=directory/"DECISION.toml"
+    ci_path=directory/"results/paired-ci-95.json"
+    errors=[]
+    if repository_file(root,decision_path.relative_to(root).as_posix()) is None:
+        return [f"{exp_id}: DECISION.toml is not a regular repository file"]
+    if repository_file(root,ci_path.relative_to(root).as_posix()) is None:
+        return [f"{exp_id}: paired-ci-95.json is not a regular repository file"]
+    decision=load(decision_path)
+    required={
+        "version":1,
+        "experiment_id":exp_id,
+        "decision":"INCONCLUSIVE/NO-GO",
+        "verdict":"INCONCLUSIVE",
+        "go":False,
+        "accuracy_role":"descriptive-only",
+        "accuracy_is_descriptive_only":True,
+        "records_immutable":True,
+        "paired_ci_sha256":expected["paired_ci_sha256"],
+    }
+    for key,value in required.items():
+        if decision.get(key)!=value:
+            errors.append(f"{exp_id}: DECISION.toml {key} must be {value!r}")
+    reporting=decision.get("reporting",{})
+    if not isinstance(reporting,dict) or reporting.get("required_label")!="INCONCLUSIVE/NO-GO":
+        errors.append(f"{exp_id}: DECISION.toml does not require the NO-GO label")
+    if not isinstance(reporting,dict) or any(value is not False for key,value in reporting.items() if key.startswith("allow_")):
+        errors.append(f"{exp_id}: DECISION.toml permits a positive report")
+    digest=crlf_digest(ci_path.read_bytes())
+    if digest!=expected["paired_ci_sha256"]:
+        errors.append(f"{exp_id}: paired-ci-95.json digest {digest} is not the decision-bound digest")
+        return errors
+    try:
+        ci=json.loads(ci_path.read_text(encoding="utf-8"))
+    except (OSError,UnicodeDecodeError,json.JSONDecodeError) as error:
+        return errors+[f"{exp_id}: paired-ci-95.json is unreadable: {error}"]
+    if ci.get("status")!="complete" or ci.get("target_arm")!=expected["target"] or ci.get("baseline_arm")!=expected["baseline"]:
+        errors.append(f"{exp_id}: paired CI identity is not the bound complete contrast")
+    evidence=decision.get("evidence",{}).get("ood_compose_regime",{}) if isinstance(decision.get("evidence"),dict) else {}
+    endpoints={row.get("metric"):row for row in ci.get("endpoints",[]) if isinstance(row,dict) and row.get("split")=="ood_compose_regime"}
+    for metric,field in (("accuracy","accuracy"),("ece15","ece15"),("nll","nll")):
+        row=endpoints.get(metric)
+        if not isinstance(row,dict) or evidence.get(field+"_mean_delta")!=row.get("mean") or evidence.get(field+"_ci95")!=row.get("ci95"):
+            errors.append(f"{exp_id}: DECISION.toml does not reproduce the bound {metric} endpoint")
+    return errors
+
+def canonical_json(value: object) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def committed_regular_file(root: Path, relative: str) -> Path | None:
+    """A regular, non-symlink file whose bytes equal the file at HEAD."""
+    path = repository_file(root, relative)
+    if path is None:
+        return None
+    try:
+        held = blob(root, "HEAD", relative)
+        return path if held is not None and held == path.read_bytes() else None
+    except (OSError, HistoryUnreadable):
+        return None
+
+
+def m002_v5_archived_evidence_errors(root: Path, directory: Path | None) -> list[str]:
+    """Reuse the normal immutable-record validator before M009 reads a PASS."""
+    if directory is None:
+        return ["M009: locked because M002-v5 has no registered experiment directory"]
+    try:
+        registry = load(root / REGISTRY)
+        entries = load(root / PREREGISTRATION).get("experiment", {})
+    except Unreadable as error:
+        return [error.named(root)]
+    if not isinstance(entries, dict) or "M002-v5" not in entries:
+        return ["M009: locked because M002-v5 is not preregistered"]
+    item = next(
+        (item for item in registry.get("experiment", []) if isinstance(item, dict) and item.get("id") == "M002-v5"),
+        None,
+    )
+    if not isinstance(item, dict):
+        return ["M009: locked because M002-v5 is not registered"]
+    try:
+        manifest = load(directory / "experiment.toml")
+        return frozen_errors("M002-v5", entries["M002-v5"], manifest, directory, root)
+    except (Unreadable, HistoryUnreadable) as error:
+        return [error.named(root)]
+
+
+def bound_m002_v5_pass_errors(root: Path, directory: Path | None) -> list[str]:
+    """Verify and recompute the committed M002-v5 decision used by M009."""
+    immutable_errors = m002_v5_archived_evidence_errors(root, directory)
+    if immutable_errors:
+        return [f"M009: locked because M002-v5 archived evidence is invalid: {immutable_errors[0]}"]
+    decision_path = directory / "results/m002-v5-decision.json" if directory is not None else None
+    if decision_path is None:
+        return ["M009: locked because M002-v5 has no decision directory"]
+    try:
+        relative = decision_path.relative_to(root).as_posix()
+    except ValueError:
+        return ["M009: locked because the M002-v5 decision is outside the repository"]
+    if committed_regular_file(root, relative) is None:
+        return ["M009: locked because M002-v5 has no committed decision artifact"]
+    try:
+        decision = json.loads(decision_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        return [f"M009: M002-v5 decision artifact is unreadable: {error}"]
+    provenance = decision.get("provenance")
+    sources = provenance.get("source_records") if isinstance(provenance, dict) else None
+    if not isinstance(sources, list) or len(sources) != 5:
+        return ["M009: M002-v5 decision does not bind exactly five source records"]
+    results = directory / "results"
+    expected_paths = []
+    if results.is_dir():
+        for path in sorted(results.glob("run-*.json")):
+            try:
+                relative = path.relative_to(root).as_posix()
+            except ValueError:
+                return ["M009: M002-v5 run records escaped the repository"]
+            if committed_regular_file(root, relative) is not None:
+                expected_paths.append(relative)
+    if len(expected_paths) != 5:
+        return ["M009: locked because M002-v5 has no exact committed five-seed run archive"]
+    source_paths = [item.get("path") for item in sources if isinstance(item, dict)]
+    if sorted(source_paths) != expected_paths:
+        return ["M009: M002-v5 decision does not bind exactly the immutable five-seed run archive"]
+    records = []
+    seen = set()
+    for item in sources:
+        if not isinstance(item, dict) or set(item) != {"path", "canonical_sha256"}:
+            return ["M009: M002-v5 decision has malformed source-record provenance"]
+        path_text = item.get("path")
+        if not isinstance(path_text, str) or path_text in seen or committed_regular_file(root, path_text) is None:
+            return ["M009: M002-v5 decision names an uncommitted or duplicate source record"]
+        seen.add(path_text)
+        path = root / path_text
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            return [f"M009: M002-v5 source record {path_text} is unreadable: {error}"]
+        digest = hashlib.sha256(canonical_json(record).encode("utf-8")).hexdigest()
+        if item.get("canonical_sha256") != digest:
+            return [f"M009: M002-v5 source record {path_text} does not match its decision digest"]
+        records.append((path_text, record))
+    script = root / "scripts/aggregate_m002_v5.py"
+    try:
+        spec = importlib.util.spec_from_file_location("_m002_v5_gate_aggregate", script)
+        if spec is None or spec.loader is None:
+            raise ImportError("no Python loader")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        recomputed = module.decide(records, root)
+    except Exception as error:  # fail closed on malformed or unevaluable evidence
+        return [f"M009: M002-v5 decision cannot be recomputed: {error}"]
+    if canonical_json(recomputed) != canonical_json(decision):
+        return ["M009: M002-v5 decision does not equal the canonical recomputation"]
+    gates = recomputed.get("gates")
+    if recomputed.get("decision") != "PASS" or not isinstance(gates, dict) or not gates or not all(
+        value is True for value in gates.values()
+    ):
+        return ["M009: locked because M002-v5 did not pass every recomputed gate"]
+    return []
+
+
+def m002_v5_factorized_contract_errors(root: Path, config: dict, selection: dict) -> list[str]:
+    """The M009 runtime artifact must encode, not merely repeat, the selection."""
+    relative = config.get("factorized_contract")
+    expected_digest = config.get("factorized_contract_sha256")
+    if not isinstance(relative, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_digest or ""):
+        return ["M002-v5: frozen factorized contract path or digest is invalid"]
+    path = committed_regular_file(root, relative)
+    if path is None or hashlib.sha256(path.read_bytes()).hexdigest() != expected_digest:
+        return ["M002-v5: factorized runtime contract is not committed with its pinned digest"]
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError) as error:
+        return [f"M002-v5: factorized runtime contract is unreadable: {error}"]
+    if not lines or lines[0] != "M002-V5-CONTRACT/1":
+        return ["M002-v5: factorized runtime contract has an unknown format"]
+    fields = {}
+    for line in lines[1:]:
+        if "=" not in line:
+            return ["M002-v5: factorized runtime contract has invalid syntax"]
+        key, value = line.split("=", 1)
+        if not key or not value or key in fields:
+            return ["M002-v5: factorized runtime contract has duplicate or empty fields"]
+        fields[key] = value
+    required = {
+        "attention_mode": "factorized-v2",
+        "d_model": "48",
+        "rank": str(selection.get("rank")),
+        "bias_limit": str(selection.get("bias_limit")).rstrip("0").rstrip("."),
+        "metadata_dropout": str(selection.get("metadata_dropout")).rstrip("0").rstrip("."),
+        "router_mode": "calibrated-cosine-v2",
+        "router_logit_scale": "5",
+        "label_smoothing": "0.05",
+        "consistency_weight": "0.1",
+        "latent_steps": "2",
+        "typed_query": "true",
+        "latent_nonlinearity": "true",
+    }
+    # The string spelling of zero must remain valid while the other floats have
+    # their canonical decimal form.
+    if required["metadata_dropout"] == "":
+        required["metadata_dropout"] = "0"
+    if set(fields) != set(required) or any(fields[key] != value for key, value in required.items()):
+        return ["M002-v5: factorized runtime contract does not equal the selected architecture and router"]
+    return []
+
+
+def m002_v5_pilot_freeze_errors(root: Path, experiment: Path, manifest: dict) -> list[str]:
+    """Prove that a frozen M002-v5 config is the output of the full fixed pilot."""
+    if status_of(manifest) not in FROZEN:
+        return []
+    selection_relative = "experiments/model/M002-v5-factorized-typed-attention/pilot-selection.json"
+    selection_path = committed_regular_file(root, selection_relative)
+    if selection_path is None:
+        return ["M002-v5: frozen study has no committed pilot-selection.json"]
+    raw = experiment / "pilot" / "raw"
+    stdout_paths = sorted(raw.glob("*.stdout")) if raw.is_dir() else []
+    if len(stdout_paths) != 16:
+        return [f"M002-v5: pilot archive must contain exactly 16 stdout cells, found {len(stdout_paths)}"]
+    for stdout in stdout_paths:
+        for path in (stdout, stdout.with_suffix(".stderr"), stdout.with_suffix(".json")):
+            try:
+                relative = path.relative_to(root).as_posix()
+            except ValueError:
+                return ["M002-v5: pilot archive escaped the repository"]
+            if committed_regular_file(root, relative) is None:
+                return [f"M002-v5: pilot artifact {relative} is not committed unchanged"]
+    selector_path = root / "scripts/select_m002_v5_pilot.py"
+    try:
+        spec = importlib.util.spec_from_file_location("_m002_v5_gate_selector", selector_path)
+        if spec is None or spec.loader is None:
+            raise ImportError("no Python loader")
+        selector = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(selector)
+        outputs, provenance = selector.load_provenanced_outputs(stdout_paths, root)
+        recomputed = selector.select(outputs)
+        recomputed.update(provenance)
+        recorded = json.loads(selection_path.read_text(encoding="utf-8"))
+    except Exception as error:
+        return [f"M002-v5: pilot selection cannot be recomputed: {error}"]
+    if canonical_json(recomputed) != canonical_json(recorded):
+        return ["M002-v5: pilot-selection.json does not equal the canonical recomputation"]
+    source = recorded.get("source_sha")
+    if not isinstance(source, str) or not re.fullmatch(r"[0-9a-f]{40}", source):
+        return ["M002-v5: pilot selection has no exact source commit"]
+    if not experiment_records.is_ancestor(source, "HEAD", root):
+        return ["M002-v5: pilot source commit is not on HEAD history"]
+    critical_directories = (
+        "model/burn-a0",
+        "crates/ptr-types",
+        "benchmarks/operator-routing-v2",
+        "datasets/generated/operator_routing_v2",
+    )
+    for directory in critical_directories:
+        problems, current = directory_digest(root, directory)
+        held = directory_digest_at(root, source, directory)
+        if problems or current is None or held != current:
+            return [f"M002-v5: {directory} differs from the pilot source commit"]
+    for relative in ("scripts/run_m002_v5_pilot.py", "scripts/select_m002_v5_pilot.py"):
+        path = committed_regular_file(root, relative)
+        if path is None or blob(root, source, relative) != path.read_bytes():
+            return [f"M002-v5: {relative} differs from the pilot source commit"]
+    selection = recorded.get("selection")
+    config = load(experiment / "config.toml").get("preregistration", {})
+    try:
+        # Preregistration placeholders and their pinned replacements are TOML
+        # strings so the generic runner can interpolate them verbatim.  The
+        # selector deliberately records numeric values.  Compare their typed
+        # meanings rather than rejecting the canonical TOML representation.
+        actual = (
+            int(config.get("rank")),
+            float(config.get("bias_limit")),
+            float(config.get("metadata_dropout")),
+        )
+        expected = (
+            int(selection.get("rank")),
+            float(selection.get("bias_limit")),
+            float(selection.get("metadata_dropout")),
+        )
+    except (TypeError, ValueError, AttributeError):
+        return ["M002-v5: frozen architecture has invalid pilot-selected values"]
+    if (
+        recorded.get("decision") != "SELECTED"
+        or actual[0] != expected[0]
+        or not math.isclose(actual[1], expected[1], rel_tol=0.0, abs_tol=1e-12)
+        or not math.isclose(actual[2], expected[2], rel_tol=0.0, abs_tol=1e-12)
+    ):
+        return ["M002-v5: frozen architecture does not exactly match the pilot selection"]
+    return m002_v5_factorized_contract_errors(root, config, selection)
+
+
+def m002_v5_pilot_archive_errors(root: Path, config: dict, prefix: str) -> tuple[dict | None, list[str]]:
+    """Validate v5's selected development archive at its recorded commit.
+
+    A successor may add a separately pinned runner arm without making today's
+    entire A0 tree byte-identical to the historical pilot.  This checker keeps
+    the pilot evidence immutable by comparing every archived input, selector,
+    runner and factorized contract to the source commit recorded by the
+    selection, then recomputes the selector from that unchanged archive.
+    """
+    selection_relative = config.get("pilot_selection")
+    expected_digest = config.get("pilot_selection_sha256")
+    source_directory = root / "experiments/model/M002-v5-factorized-typed-attention"
+    if selection_relative != "experiments/model/M002-v5-factorized-typed-attention/pilot-selection.json":
+        return None, [f"{prefix}: pilot_selection must name the immutable M002-v5 selector artifact"]
+    selection_path = committed_regular_file(root, selection_relative)
+    if (
+        selection_path is None
+        or not isinstance(expected_digest, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", expected_digest)
+    ):
+        return None, [f"{prefix}: pilot selection is not a committed file with a pinned SHA-256"]
+    try:
+        selection_bytes = selection_path.read_bytes()
+        selection = json.loads(selection_bytes.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        return None, [f"{prefix}: pilot selection is unreadable: {error}"]
+    if hashlib.sha256(selection_bytes).hexdigest() != expected_digest or not isinstance(selection, dict):
+        return None, [f"{prefix}: pilot selection does not match its pinned digest"]
+    source = selection.get("source_sha")
+    if not isinstance(source, str) or not re.fullmatch(r"[0-9a-f]{40}", source):
+        return None, [f"{prefix}: pilot selection has no exact source commit"]
+    if not experiment_records.is_ancestor(source, "HEAD", root):
+        return None, [f"{prefix}: pilot source commit is not on HEAD history"]
+
+    raw = source_directory / "pilot" / "raw"
+    stdout_paths = sorted(raw.glob("*.stdout")) if raw.is_dir() else []
+    if len(stdout_paths) != 16:
+        return None, [f"{prefix}: immutable v5 pilot must contain 16 stdout cells, found {len(stdout_paths)}"]
+    archived = [selection_relative]
+    for stdout in stdout_paths:
+        archived.extend(path.relative_to(root).as_posix() for path in (stdout, stdout.with_suffix(".stderr"), stdout.with_suffix(".json")))
+    for relative in archived:
+        if committed_regular_file(root, relative) is None:
+            return None, [f"{prefix}: {relative} is not a committed immutable M002-v5 pilot artifact"]
+    source_bound = (
+        "scripts/run_m002_v5_pilot.py",
+        "scripts/select_m002_v5_pilot.py",
+    )
+    for relative in source_bound:
+        path = committed_regular_file(root, relative)
+        if path is None or blob(root, source, relative) != path.read_bytes():
+            return None, [f"{prefix}: {relative} differs from the immutable M002-v5 pilot source"]
+    try:
+        selector_path = root / "scripts/select_m002_v5_pilot.py"
+        spec = importlib.util.spec_from_file_location("_m002_v7_gate_selector", selector_path)
+        if spec is None or spec.loader is None:
+            raise ImportError("no Python loader")
+        selector = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(selector)
+        outputs, provenance = selector.load_provenanced_outputs(stdout_paths, root)
+        recomputed = selector.select(outputs)
+        recomputed.update(provenance)
+    except Exception as error:
+        return None, [f"{prefix}: immutable v5 pilot selection cannot be recomputed: {error}"]
+    if canonical_json(recomputed) != canonical_json(selection):
+        return None, [f"{prefix}: immutable v5 pilot selection does not equal canonical recomputation"]
+    return selection, []
+
+
+M002_V6_FOLDS = ("evidence-temporal", "evidence-tabular", "claim-interventional")
+
+
+def m002_v6_fold_binding_errors(root: Path, config: dict) -> list[str]:
+    """Require the v6 command token to bind each confirmatory fold's bytes."""
+    try:
+        lock = json.loads((root / "benchmarks/operator-routing-v2/splits.lock.json").read_text(encoding="utf-8"))
+        expected = ",".join(
+            f"{fold}={lock['folds'][fold]['data_fnv1a64']}" for fold in M002_V6_FOLDS
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError) as error:
+        return [f"M002-v6: cannot load the confirmatory fold lock: {error}"]
+    actual = config.get("folds")
+    if actual != expected:
+        return [
+            "M002-v6: folds must bind the exact canonical "
+            "evidence-temporal,evidence-tabular,claim-interventional FNV64 values"
+        ]
+    return []
+
+
+def m002_v6_successor_freeze_errors(root: Path, experiment: Path, manifest: dict) -> list[str]:
+    """Bind v6 to the immutable v5 development selection before it can run."""
+    if status_of(manifest) not in FROZEN:
+        return []
+    try:
+        config = load(experiment / "config.toml").get("preregistration", {})
+    except Unreadable as error:
+        return [error.named(root)]
+    if not isinstance(config, dict):
+        return ["M002-v6: config.toml has no preregistration table"]
+    errors = m002_v6_fold_binding_errors(root, config)
+    if config.get("pilot_source_experiment") != "M002-v5":
+        errors.append("M002-v6: pilot_source_experiment must be the immutable M002-v5 pilot")
+        return errors
+    source = root / "experiments/model/M002-v5-factorized-typed-attention"
+    try:
+        source_manifest = load(source / "experiment.toml")
+    except Unreadable as error:
+        return [*errors, error.named(root)]
+    # The source pilot remains usable development evidence after v5 was
+    # superseded; validate the original frozen pilot under its historical
+    # prepared lifecycle without reviving or altering that study.
+    source_errors = m002_v5_pilot_freeze_errors(root, source, {**source_manifest, "status": "prepared"})
+    if source_errors:
+        return [*errors, f"M002-v6: immutable M002-v5 pilot source is invalid: {source_errors[0]}"]
+
+    selection_relative = config.get("pilot_selection")
+    selection_digest = config.get("pilot_selection_sha256")
+    selection_path = root / selection_relative if isinstance(selection_relative, str) else None
+    if selection_path is None or selection_path != source / "pilot-selection.json":
+        return [*errors, "M002-v6: pilot_selection must name the immutable M002-v5 selector artifact"]
+    if not isinstance(selection_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", selection_digest):
+        return [*errors, "M002-v6: pilot_selection_sha256 is invalid"]
+    try:
+        selection_bytes = selection_path.read_bytes()
+        selection = json.loads(selection_bytes.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        return [*errors, f"M002-v6: pilot selection is unreadable: {error}"]
+    if committed_regular_file(root, selection_relative) is None or hashlib.sha256(selection_bytes).hexdigest() != selection_digest:
+        return [*errors, "M002-v6: pilot selection is not a committed file with its pinned digest"]
+    chosen = selection.get("selection") if isinstance(selection, dict) else None
+    try:
+        actual = (int(config["rank"]), float(config["bias_limit"]), float(config["metadata_dropout"]))
+        expected = (int(chosen["rank"]), float(chosen["bias_limit"]), float(chosen["metadata_dropout"]))
+    except (KeyError, TypeError, ValueError):
+        return [*errors, "M002-v6: selected architecture fields are malformed"]
+    if selection.get("decision") != "SELECTED" or actual != expected:
+        return [*errors, "M002-v6: frozen architecture does not exactly reuse the M002-v5 pilot selection"]
+
+    for key in ("dataset_lock", "criteria", "decision_script", "decision_core", "factorized_contract"):
+        relative = config.get(key)
+        digest = config.get(f"{key}_sha256")
+        path = root / relative if isinstance(relative, str) else None
+        if (
+            path is None
+            or not isinstance(digest, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", digest)
+            or committed_regular_file(root, relative) is None
+        ):
+            errors.append(f"M002-v6: {key} is not a committed file with a pinned SHA-256")
+        elif hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+            errors.append(f"M002-v6: {key} does not match its pinned SHA-256")
+    contract_errors = m002_v5_factorized_contract_errors(root, config, chosen)
+    errors.extend(error.replace("M002-v5", "M002-v6") for error in contract_errors)
+    return errors
+
+
+M002_V7_ARM_PAIR = "factorized-v2-v7,factorized-v2-off-v7"
+
+
+def m002_arm_block_binding_errors(arm_table: str, experiment_id: str, treatment: str, control: str) -> list[str]:
+    """Require each arm's own `Arm { ... }` block to name the experiment and
+    carry its typed-attention mode. The mode is looked for inside that block
+    only: the same mode names appear throughout the table, so a search of the
+    whole file would pass for any arm."""
+    errors = []
+    for name, mode in ((treatment, "TypedAttentionMode::FactorizedV2"), (control, "TypedAttentionMode::Off")):
+        marker = f'name: "{name}",\n        experiment: "{experiment_id}",'
+        start = arm_table.find(marker)
+        block = ""
+        if start != -1:
+            end = arm_table.find("\n    },", start)
+            block = arm_table[start:end if end != -1 else len(arm_table)]
+        if start == -1 or f"typed_attention_mode: {mode}," not in block:
+            errors.append(f"{experiment_id}: runner arm table does not bind {name} to {experiment_id}")
+    return errors
+
+
+M002_ENTRYPOINT_FLAGS = (
+    ("--rank", "<rank>"),
+    ("--bias-limit", "<bias_limit>"),
+    ("--metadata-dropout", "<metadata_dropout>"),
+    ("--folds", "<folds>"),
+)
+
+
+def m002_versioned_runner_binding_errors(
+    root: Path, config: dict, manifest: dict, experiment_id: str, arm_pair: str
+) -> list[str]:
+    """Require a successor command to select its own pinned runner pair."""
+    errors = []
+    if config.get("arm_pair") != arm_pair:
+        errors.append(f"{experiment_id}: arm_pair must be the exact registered versioned pair")
+    entrypoint = manifest.get("entrypoint")
+    required_command = f"--experiment {experiment_id} --arms {arm_pair}"
+    if not isinstance(entrypoint, str) or required_command not in entrypoint:
+        errors.append(f"{experiment_id}: entrypoint must select its exact versioned runner pair")
+    # Each frozen architecture value reaches the runner only through its flag. A
+    # flag dropped from the entrypoint would let the runner fall back to its own
+    # default (rank 16, bias limit 2.0, metadata dropout 0.10) and waste a full
+    # run before the aggregator noticed.
+    for flag, placeholder in M002_ENTRYPOINT_FLAGS:
+        if not isinstance(entrypoint, str) or f"{flag} {placeholder}" not in entrypoint:
+            errors.append(f"{experiment_id}: entrypoint must pass {flag} {placeholder}")
+    sources = {}
+    for key in ("runner_arm_table", "runner_main"):
+        relative = config.get(key)
+        digest = config.get(f"{key}_sha256")
+        path = root / relative if isinstance(relative, str) else None
+        if (
+            path is None
+            or not isinstance(digest, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", digest)
+            or committed_regular_file(root, relative) is None
+        ):
+            errors.append(f"{experiment_id}: {key} is not a committed file with a pinned SHA-256")
+            continue
+        data = path.read_bytes()
+        if hashlib.sha256(data).hexdigest() != digest:
+            errors.append(f"{experiment_id}: {key} does not match its pinned SHA-256")
+            continue
+        sources[key] = data.decode("utf-8", "replace")
+    arm_table = sources.get("runner_arm_table", "")
+    treatment, control = arm_pair.split(",", 1)
+    errors.extend(m002_arm_block_binding_errors(arm_table, experiment_id, treatment, control))
+    if f'"{experiment_id}" => Some(["{treatment}", "{control}"])' not in arm_table:
+        errors.append(f"{experiment_id}: runner arm table does not admit only the registered pair")
+    runner_main = sources.get("runner_main", "")
+    if "arms::paired_names(experiment)" not in runner_main:
+        errors.append(f"{experiment_id}: paired runner does not consult the registered pair table")
+    implementation_tree = config.get("implementation_tree")
+    expected_tree = config.get("implementation_tree_git_digest")
+    if implementation_tree != "model/burn-a0" or not isinstance(expected_tree, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_tree):
+        errors.append(f"{experiment_id}: implementation tree path or digest is invalid")
+    else:
+        actual_tree = directory_digest_at(root, "HEAD", implementation_tree)
+        if actual_tree != expected_tree:
+            errors.append(f"{experiment_id}: implementation tree differs from its pinned Git digest")
+    return errors
+
+
+def m002_v7_runner_binding_errors(root: Path, config: dict, manifest: dict) -> list[str]:
+    """The retained v7 helper is inactive once its study is superseded."""
+    return m002_versioned_runner_binding_errors(root, config, manifest, "M002-v7", M002_V7_ARM_PAIR)
+
+
+def m002_v7_successor_freeze_errors(root: Path, experiment: Path, manifest: dict) -> list[str]:
+    """Bind v7 to v5's immutable selection and its own executable arm pair."""
+    if status_of(manifest) not in FROZEN:
+        return []
+    try:
+        config = load(experiment / "config.toml").get("preregistration", {})
+    except Unreadable as error:
+        return [error.named(root)]
+    if not isinstance(config, dict):
+        return ["M002-v7: config.toml has no preregistration table"]
+    errors = m002_v6_fold_binding_errors(root, config)
+    if config.get("pilot_source_experiment") != "M002-v5":
+        errors.append("M002-v7: pilot_source_experiment must be the immutable M002-v5 pilot")
+        return errors
+    selection, archive_errors = m002_v5_pilot_archive_errors(root, config, "M002-v7")
+    errors.extend(archive_errors)
+    if selection is not None:
+        chosen = selection.get("selection")
+        try:
+            actual = (int(config["rank"]), float(config["bias_limit"]), float(config["metadata_dropout"]))
+            expected = (int(chosen["rank"]), float(chosen["bias_limit"]), float(chosen["metadata_dropout"]))
+        except (KeyError, TypeError, ValueError):
+            errors.append("M002-v7: selected architecture fields are malformed")
+            chosen = None
+        if chosen is not None and (selection.get("decision") != "SELECTED" or actual != expected):
+            errors.append("M002-v7: frozen architecture does not exactly reuse the M002-v5 pilot selection")
+        if isinstance(chosen, dict):
+            errors.extend(error.replace("M002-v5", "M002-v7") for error in m002_v5_factorized_contract_errors(root, config, chosen))
+    for key in ("dataset_lock", "criteria", "decision_script", "decision_core", "factorized_contract"):
+        relative = config.get(key)
+        digest = config.get(f"{key}_sha256")
+        path = root / relative if isinstance(relative, str) else None
+        if (
+            path is None
+            or not isinstance(digest, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", digest)
+            or committed_regular_file(root, relative) is None
+        ):
+            errors.append(f"M002-v7: {key} is not a committed file with a pinned SHA-256")
+        elif hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+            errors.append(f"M002-v7: {key} does not match its pinned SHA-256")
+    errors.extend(m002_v7_runner_binding_errors(root, config, manifest))
+    return errors
+
+
+M002_V8_ARM_PAIR = "factorized-v2-v8,factorized-v2-off-v8"
+
+
+def m002_v8_fold_binding_errors(root: Path, config: dict) -> list[str]:
+    """Require v8 to bind each confirmatory fold's identity in the command."""
+    try:
+        lock = json.loads((root / "benchmarks/operator-routing-v2/splits.lock.json").read_text(encoding="utf-8"))
+        expected = ",".join(
+            f"{fold}={lock['folds'][fold]['data_fnv1a64']}" for fold in M002_V6_FOLDS
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError) as error:
+        return [f"M002-v8: cannot load the confirmatory fold lock: {error}"]
+    if config.get("folds") != expected:
+        return [
+            "M002-v8: folds must bind the exact canonical "
+            "evidence-temporal,evidence-tabular,claim-interventional FNV64 values"
+        ]
+    return []
+
+
+def m002_v8_successor_freeze_errors(root: Path, experiment: Path, manifest: dict) -> list[str]:
+    """Bind v8 to the historical pilot and every executable implementation byte."""
+    if status_of(manifest) not in FROZEN:
+        return []
+    try:
+        config = load(experiment / "config.toml").get("preregistration", {})
+    except Unreadable as error:
+        return [error.named(root)]
+    if not isinstance(config, dict):
+        return ["M002-v8: config.toml has no preregistration table"]
+    errors = m002_v8_fold_binding_errors(root, config)
+    if config.get("pilot_source_experiment") != "M002-v5":
+        errors.append("M002-v8: pilot_source_experiment must be the immutable M002-v5 pilot")
+        return errors
+    selection, archive_errors = m002_v5_pilot_archive_errors(root, config, "M002-v8")
+    errors.extend(archive_errors)
+    if selection is not None:
+        chosen = selection.get("selection")
+        try:
+            actual = (int(config["rank"]), float(config["bias_limit"]), float(config["metadata_dropout"]))
+            expected = (int(chosen["rank"]), float(chosen["bias_limit"]), float(chosen["metadata_dropout"]))
+        except (KeyError, TypeError, ValueError):
+            errors.append("M002-v8: selected architecture fields are malformed")
+            chosen = None
+        if chosen is not None and (selection.get("decision") != "SELECTED" or actual != expected):
+            errors.append("M002-v8: frozen architecture does not exactly reuse the M002-v5 pilot selection")
+        if isinstance(chosen, dict):
+            errors.extend(error.replace("M002-v5", "M002-v8") for error in m002_v5_factorized_contract_errors(root, config, chosen))
+    for key in ("dataset_lock", "criteria", "decision_script", "decision_core", "factorized_contract"):
+        relative = config.get(key)
+        digest = config.get(f"{key}_sha256")
+        path = root / relative if isinstance(relative, str) else None
+        if (
+            path is None
+            or not isinstance(digest, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", digest)
+            or committed_regular_file(root, relative) is None
+        ):
+            errors.append(f"M002-v8: {key} is not a committed file with a pinned SHA-256")
+        elif hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+            errors.append(f"M002-v8: {key} does not match its pinned SHA-256")
+    errors.extend(m002_versioned_runner_binding_errors(root, config, manifest, "M002-v8", M002_V8_ARM_PAIR))
+    return errors
+
+
+M002_V9_ARM_PAIR = "factorized-v2-v9,factorized-v2-off-v9"
+
+
+def m002_v9_fold_binding_errors(root: Path, config: dict) -> list[str]:
+    """Require v9 to bind each confirmatory fold's identity in the command."""
+    try:
+        lock = json.loads((root / "benchmarks/operator-routing-v2/splits.lock.json").read_text(encoding="utf-8"))
+        expected = ",".join(
+            f"{fold}={lock['folds'][fold]['data_fnv1a64']}" for fold in M002_V6_FOLDS
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError) as error:
+        return [f"M002-v9: cannot load the confirmatory fold lock: {error}"]
+    if config.get("folds") != expected:
+        return [
+            "M002-v9: folds must bind the exact canonical "
+            "evidence-temporal,evidence-tabular,claim-interventional FNV64 values"
+        ]
+    return []
+
+
+def m002_v9_successor_freeze_errors(root: Path, experiment: Path, manifest: dict) -> list[str]:
+    """Bind v9 to the historical pilot and every executable implementation byte."""
+    if status_of(manifest) not in FROZEN:
+        return []
+    try:
+        config = load(experiment / "config.toml").get("preregistration", {})
+    except Unreadable as error:
+        return [error.named(root)]
+    if not isinstance(config, dict):
+        return ["M002-v9: config.toml has no preregistration table"]
+    errors = m002_v9_fold_binding_errors(root, config)
+    if config.get("pilot_source_experiment") != "M002-v5":
+        errors.append("M002-v9: pilot_source_experiment must be the immutable M002-v5 pilot")
+        return errors
+    selection, archive_errors = m002_v5_pilot_archive_errors(root, config, "M002-v9")
+    errors.extend(archive_errors)
+    if selection is not None:
+        chosen = selection.get("selection")
+        try:
+            actual = (int(config["rank"]), float(config["bias_limit"]), float(config["metadata_dropout"]))
+            expected = (int(chosen["rank"]), float(chosen["bias_limit"]), float(chosen["metadata_dropout"]))
+        except (KeyError, TypeError, ValueError):
+            errors.append("M002-v9: selected architecture fields are malformed")
+            chosen = None
+        if chosen is not None and (selection.get("decision") != "SELECTED" or actual != expected):
+            errors.append("M002-v9: frozen architecture does not exactly reuse the M002-v5 pilot selection")
+        if isinstance(chosen, dict):
+            errors.extend(error.replace("M002-v5", "M002-v9") for error in m002_v5_factorized_contract_errors(root, config, chosen))
+    for key in ("dataset_lock", "criteria", "decision_script", "decision_core", "factorized_contract"):
+        relative = config.get(key)
+        digest = config.get(f"{key}_sha256")
+        path = root / relative if isinstance(relative, str) else None
+        if (
+            path is None
+            or not isinstance(digest, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", digest)
+            or committed_regular_file(root, relative) is None
+        ):
+            errors.append(f"M002-v9: {key} is not a committed file with a pinned SHA-256")
+        elif hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+            errors.append(f"M002-v9: {key} does not match its pinned SHA-256")
+    errors.extend(m002_versioned_runner_binding_errors(root, config, manifest, "M002-v9", M002_V9_ARM_PAIR))
+    return errors
+
+
+def m002_v5_factorized_contract(root: Path, directory: Path | None) -> tuple[dict | None, list[str]]:
+    """The architecture an M009 learned backend is permitted to instantiate."""
+    if directory is None:
+        return None, ["M009: locked because M002-v5 has no registered directory"]
+    try:
+        config = load(directory / "config.toml").get("preregistration", {})
+        selection = json.loads((directory / "pilot-selection.json").read_text(encoding="utf-8"))
+    except (Unreadable, OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        return None, [f"M009: locked because the M002-v5 freeze is unreadable: {error}"]
+    if not isinstance(selection, dict):
+        return None, ["M009: locked because M002-v5 pilot selection is malformed"]
+    chosen = selection.get("selection")
+    if selection.get("decision") != "SELECTED" or not isinstance(chosen, dict):
+        return None, ["M009: locked because M002-v5 has no selected factorized architecture"]
+    try:
+        contract_relative = config["factorized_contract"]
+        contract_digest = config["factorized_contract_sha256"]
+        if not isinstance(contract_relative, str) or not re.fullmatch(r"[0-9a-f]{64}", contract_digest):
+            raise ValueError("factorized contract path or digest")
+        contract_path = committed_regular_file(root, contract_relative)
+        if contract_path is None or hashlib.sha256(contract_path.read_bytes()).hexdigest() != contract_digest:
+            raise ValueError("factorized contract artifact")
+        contract = {
+            "source_experiment": "M002-v5",
+            "attention_mode": "factorized-v2",
+            "d_model": int(config["d_model"]),
+            "rank": int(config["rank"]),
+            "bias_limit": float(config["bias_limit"]),
+            "metadata_dropout": float(config["metadata_dropout"]),
+            "router": {
+                "mode": "calibrated-cosine-v2",
+                "logit_scale": 5.0,
+                "label_smoothing": 0.05,
+                "consistency_weight": 0.10,
+            },
+            "architecture_contract_sha256": contract_digest,
+            "contract_path": contract_relative,
+        }
+        selected = (int(chosen["rank"]), float(chosen["bias_limit"]), float(chosen["metadata_dropout"]))
+    except (KeyError, TypeError, ValueError) as error:
+        return None, [f"M009: locked because M002-v5 factorized contract is malformed: {error}"]
+    if (contract["rank"], contract["bias_limit"], contract["metadata_dropout"]) != selected:
+        return None, ["M009: locked because M002-v5 config differs from its selected architecture"]
+    return contract, []
+
+
+def m009_architecture_binding_errors(root: Path, m002_directory: Path | None, m009_directory: Path | None) -> list[str]:
+    """Require M009 to bind both its config and checkpoint contract to M002-v5."""
+    contract, errors = m002_v5_factorized_contract(root, m002_directory)
+    if errors or contract is None:
+        return errors
+    if m009_directory is None:
+        return ["M009: blocked until it is registered with a bound FactorizedV2 configuration"]
+    config_path = m009_directory / "config.toml"
+    try:
+        binding = load(config_path).get("m002_v5_binding", {})
+    except Unreadable as error:
+        return [error.named(root)]
+    if not isinstance(binding, dict):
+        return ["M009: config.toml must contain an [m002_v5_binding] table"]
+    required = {
+        **contract,
+        "runtime_contract": contract["contract_path"],
+        "runtime_contract_sha256": contract["architecture_contract_sha256"],
+        "checkpoint_architecture_contract_sha256": contract["architecture_contract_sha256"],
+    }
+    for field, expected in required.items():
+        actual = binding.get(field)
+        if isinstance(expected, float):
+            try:
+                matches = math.isclose(float(actual), expected, rel_tol=0.0, abs_tol=1e-12)
+            except (TypeError, ValueError):
+                matches = False
+        else:
+            matches = actual == expected
+        if not matches:
+            return [f"M009: {field} does not bind the frozen M002-v5 FactorizedV2 contract"]
+    try:
+        entrypoint = load(m009_directory / "experiment.toml")["entrypoint"]
+    except (Unreadable, KeyError):
+        return ["M009: experiment.toml must bind the runtime contract arguments"]
+    expected_entrypoint = [
+        "cargo",
+        "+1.95.0-x86_64-pc-windows-gnu",
+        "run",
+        "--release",
+        "--locked",
+        "--quiet",
+        "--jobs",
+        "1",
+        "--manifest-path",
+        "model/burn-a0/Cargo.toml",
+        "--example",
+        "m009_learned_backend",
+        "--",
+        "--m002-v5-contract",
+        "<runtime_contract>",
+        "--m002-v5-contract-sha256",
+        "<runtime_contract_sha256>",
+    ]
+    try:
+        tokens = shlex.split(entrypoint) if isinstance(entrypoint, str) else None
+    except ValueError:
+        tokens = None
+    if tokens != expected_entrypoint:
+        return ["M009: entrypoint does not pass the frozen runtime contract to model construction"]
+    return []
+
+
+def m009_dependency_errors(root: Path, items: dict) -> list[str]:
+    """M009 is never an unlisted escape hatch around M002-v5 evidence."""
+    m002_item = items.get("M002-v5")
+    m009_item = items.get("M009")
+    m002_directory = (
+        root / "experiments" / m002_item["path"]
+        if isinstance(m002_item, dict) and isinstance(m002_item.get("path"), str)
+        else None
+    )
+    m009_directory = (
+        root / "experiments" / m009_item["path"]
+        if isinstance(m009_item, dict) and isinstance(m009_item.get("path"), str)
+        else None
+    )
+    if m002_directory is None:
+        return ["M009: locked until M002-v5 is completed with PASS"]
+    try:
+        m002_manifest = load(m002_directory / "experiment.toml")
+    except Unreadable as error:
+        return [error.named(root)]
+    if status_of(m002_manifest) != "completed":
+        return ["M009: locked until M002-v5 is completed with PASS"]
+    errors = bound_m002_v5_pass_errors(root, m002_directory)
+    if errors:
+        return errors
+    return m009_architecture_binding_errors(root, m002_directory, m009_directory)
+
+
+def m009_lock_errors(root: Path, experiments: dict, directories: dict) -> list[str]:
+    """M009 cannot become active until the exact M002-v5 contract is bound."""
+    if status_of(experiments.get("M009", {})) not in {"prepared", "running", "completed"}:
+        return []
+    items = {
+        key: {"path": directory.relative_to(root / "experiments").as_posix()}
+        for key, directory in directories.items()
+    }
+    return m009_dependency_errors(root, items)
+
+def no_go_marker(exp_id: str, experiment: Path, root: Path, current_manifest: dict) -> tuple[dict | None, list[str]]:
+    """Load and strictly validate an explicit historical NO-GO marker."""
+    marker_path=experiment/"results"/NO_GO_MARKER
+    if not marker_path.exists():
+        return None,[]
+    shown=marker_path.relative_to(root).as_posix()
+    if repository_file(root,shown) is None:
+        return None,[f"{shown}: marker must be a versioned regular file reached through no symlink"]
+    try:
+        marker=load(marker_path)
+    except Unreadable as error:
+        return None,[error.named(root)]
+    errors=[]
+    if exp_id!="M002-v2":
+        errors.append(f"{shown}: NO-GO markers are only supported for M002-v2")
+        return None,errors
+    expected={"version","experiment_id","decision","reason","freeze_commits","field",
+              "entrypoint_sha256","current_entrypoint_sha256","records_immutable"}
+    unknown=set(marker)-expected if isinstance(marker,dict) else set()
+    if unknown:
+        errors.append(f"{shown}: unknown fields {sorted(unknown)!r}")
+    if not isinstance(marker,dict):
+        return None,[f"{shown}: marker must be a TOML table"]
+    scalar=(
+        ("version",1),
+        ("experiment_id","M002-v2"),
+        ("decision","INCONCLUSIVE/NO-GO"),
+        ("reason","historical_manifest_conflict"),
+        ("field","entrypoint"),
+        ("current_entrypoint_sha256",M002_V2_NO_GO_CURRENT_ENTRYPOINT_DIGEST),
+        ("records_immutable",True),
+    )
+    for key,want in scalar:
+        if marker.get(key)!=want:
+            errors.append(f"{shown}: {key} must be {want!r}, got {marker.get(key)!r}")
+    if marker.get("freeze_commits")!=list(M002_V2_NO_GO_COMMITS):
+        errors.append(f"{shown}: freeze_commits must name the two bound M002-v2 freezes")
+    digests=marker.get("entrypoint_sha256")
+    if digests!=M002_V2_NO_GO_ENTRYPOINT_DIGESTS:
+        errors.append(f"{shown}: entrypoint_sha256 does not match the bound freeze commits")
+    if text_digest(current_manifest.get("entrypoint"))!=M002_V2_NO_GO_CURRENT_ENTRYPOINT_DIGEST:
+        errors.append(f"{shown}: current manifest entrypoint is not the bound NO-GO entrypoint")
+    for commit in M002_V2_NO_GO_COMMITS:
+        if not experiment_records.is_ancestor(commit,"HEAD",root):
+            errors.append(f"{shown}: freeze commit {commit} is not on HEAD history")
+            continue
+        held=toml_at(root,commit,"experiments/model/M002-v2-typed-attention/experiment.toml")
+        digest=text_digest(held.get("entrypoint")) if isinstance(held,dict) else None
+        if digest!=M002_V2_NO_GO_ENTRYPOINT_DIGESTS[commit]:
+            errors.append(f"{shown}: freeze commit {commit} does not hold its declared entrypoint digest")
+    return (marker if not errors else None),errors
+
+def accepts_m002_v2_no_go(marker: dict | None, exp_id: str, commit: str, then_manifest: dict,
+                          current_manifest: dict, changed: list[str]) -> bool:
+    """Whether one exact historical entrypoint change is covered by the marker."""
+    return (
+        marker is not None and exp_id=="M002-v2" and changed==["entrypoint"] and
+        commit in M002_V2_NO_GO_COMMITS and
+        text_digest(then_manifest.get("entrypoint"))==M002_V2_NO_GO_ENTRYPOINT_DIGESTS[commit] and
+        text_digest(current_manifest.get("entrypoint"))==M002_V2_NO_GO_CURRENT_ENTRYPOINT_DIGEST
+    )
 
 def reached_through_symlink(root: Path, path: Path) -> bool:
     """Whether `path` is a symlink or lies below one, from `root` down, which
@@ -2453,10 +3523,26 @@ def artifact_errors(exp_id: str, root: Path, results: Path, required, what: str)
                           "commit holds at its own path")
     return errors
 
+def clear_snapshot_caches() -> None:
+    """Forget what this process learned of the repository's history. A gate
+    run, and a launch check, must observe one repository snapshot: cleared at
+    that boundary, a caller that reuses a temporary checkout path after
+    changing or replacing that checkout cannot receive old history."""
+    _history_cached.cache_clear()
+    listed_entry.cache_clear()
+    object_bytes.cache_clear()
+    _toml_at_cached.cache_clear()
+    _launchable_at_cached.cache_clear()
+    _directory_digest_at_cached.cache_clear()
+    _statuses_at_cached.cache_clear()
+    _descendants_of_cached.cache_clear()
+    link_changes_at.cache_clear()
+
 def gate_errors(root: Path) -> list[str]:
     """Every error of every gate on the repository at `root` (`main`),
     raising `Unreadable` for a file it cannot read outside the listed
     experiments, whose unreadable files are errors of their own."""
+    clear_snapshot_caches()
     errors=[]
     experiments={}
     directories={}
@@ -2510,6 +3596,20 @@ def gate_errors(root: Path) -> list[str]:
         if str(rag.get("status","")).startswith("blocked-"):
             errors.append("E002: strong RAG baseline is still blocked")
 
+    for exp_id in V4_NO_GO:
+        if exp_id in experiments and exp_id in directories:
+            errors.extend(v4_no_go_errors(exp_id,root))
+    if "M002-v5" in experiments and "M002-v5" in directories:
+        errors.extend(m002_v5_pilot_freeze_errors(root,directories["M002-v5"],experiments["M002-v5"]))
+    if "M002-v6" in experiments and "M002-v6" in directories:
+        errors.extend(m002_v6_successor_freeze_errors(root,directories["M002-v6"],experiments["M002-v6"]))
+    if "M002-v7" in experiments and "M002-v7" in directories:
+        errors.extend(m002_v7_successor_freeze_errors(root,directories["M002-v7"],experiments["M002-v7"]))
+    if "M002-v8" in experiments and "M002-v8" in directories:
+        errors.extend(m002_v8_successor_freeze_errors(root,directories["M002-v8"],experiments["M002-v8"]))
+    if "M002-v9" in experiments and "M002-v9" in directories:
+        errors.extend(m002_v9_successor_freeze_errors(root,directories["M002-v9"],experiments["M002-v9"]))
+    errors.extend(m009_lock_errors(root,experiments,directories))
     errors.extend(preregistration_errors(root,experiments,directories))
     return errors
 

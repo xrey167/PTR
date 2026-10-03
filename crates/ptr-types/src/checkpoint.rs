@@ -23,12 +23,18 @@ use std::fmt;
 /// file is rejected before anything else is interpreted.
 const MAGIC: &[u8; 8] = b"PTRCKPT\x00";
 
-/// The only header layout this build writes and reads.
-///
-/// Bumped from 1 when the slot-encoding version joined the header. A layout is not
-/// forward-compatible because its first fields happen to parse, so a format-1
-/// artifact is refused rather than read as though its encoding were this build's.
+/// The previous header layout, accepted only so an explicit legacy model loader
+/// can migrate an artifact written before architecture bindings existed.
 pub const FORMAT_V2: u16 = 2;
+
+/// The header layout this build writes.
+///
+/// Format 3 adds an opaque, model-owned architecture binding. `ptr-types` never
+/// interprets these bytes; the model that owns the checkpoint must compare them
+/// with the exact configuration it is about to instantiate. Keeping the binding
+/// opaque lets this dependency-free kernel enforce the wire layout without
+/// inventing architecture semantics shared by unrelated models.
+pub const FORMAT_V3: u16 = 3;
 
 /// Why a checkpoint was refused.
 ///
@@ -126,6 +132,8 @@ pub struct TableSize {
 /// decide whether the codes inside the weights still mean what they meant.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CheckpointHeader {
+    /// Wire-format revision read from or selected for this header.
+    format: u16,
     /// Which model wrote this, as a stable name.
     pub model: String,
     /// Codebook version the codes belong to.
@@ -142,6 +150,11 @@ pub struct CheckpointHeader {
     pub encoding: EncodingVersion,
     /// Embedded table sizes, in the order the writer recorded them.
     pub tables: Vec<TableSize>,
+    /// Canonical model-owned bytes binding non-shape architecture choices.
+    ///
+    /// Empty means the artifact came from format 2 and is legacy. A loader must
+    /// never interpret an empty value as its current defaults.
+    pub architecture: Vec<u8>,
 }
 
 impl CheckpointHeader {
@@ -152,12 +165,25 @@ impl CheckpointHeader {
     /// make the header agree with the codebook by construction and check nothing.
     pub fn new(model: &str, book: &Codebook, encoding: SlotEncoding, tables: &[TableSize]) -> Self {
         Self {
+            format: FORMAT_V3,
             model: model.to_owned(),
             codebook: book.version(),
             codebook_bytes: book.canonical_bytes(),
             encoding: encoding.version(),
             tables: tables.to_vec(),
+            architecture: Vec::new(),
         }
+    }
+
+    /// Attach the canonical model-owned architecture binding written in format 3.
+    pub fn with_architecture(mut self, architecture: impl Into<Vec<u8>>) -> Self {
+        self.architecture = architecture.into();
+        self
+    }
+
+    /// Wire-format revision this header was decoded from.
+    pub fn format(&self) -> u16 {
+        self.format
     }
 
     /// The recorded size of one family's table.
@@ -216,6 +242,36 @@ impl CheckpointHeader {
     pub fn write(&self, payload: &[u8]) -> Vec<u8> {
         let mut out = Vec::with_capacity(payload.len() + 128);
         out.extend_from_slice(MAGIC);
+        out.extend_from_slice(&FORMAT_V3.to_le_bytes());
+        put_str(&mut out, &self.model);
+        out.extend_from_slice(&self.codebook.0.to_le_bytes());
+        out.extend_from_slice(&(self.codebook_bytes.len() as u32).to_le_bytes());
+        out.extend_from_slice(&self.codebook_bytes);
+        out.extend_from_slice(&self.encoding.0.to_le_bytes());
+        out.extend_from_slice(&(self.tables.len() as u16).to_le_bytes());
+        for table in &self.tables {
+            put_str(&mut out, table.family.name());
+            out.extend_from_slice(&table.rows.to_le_bytes());
+        }
+        out.extend_from_slice(&(self.architecture.len() as u32).to_le_bytes());
+        out.extend_from_slice(&self.architecture);
+        out.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+        out.extend_from_slice(payload);
+        out
+    }
+
+    /// Serialize the historical format-2 layout without an architecture binding.
+    ///
+    /// This exists only for explicit migration tests and tooling. New artifacts
+    /// must use [`Self::write`]. A non-empty architecture binding is refused so a
+    /// caller cannot accidentally strip information while calling this method.
+    pub fn write_legacy_v2(&self, payload: &[u8]) -> Vec<u8> {
+        assert!(
+            self.architecture.is_empty(),
+            "format 2 cannot carry an architecture binding"
+        );
+        let mut out = Vec::with_capacity(payload.len() + 128);
+        out.extend_from_slice(MAGIC);
         out.extend_from_slice(&FORMAT_V2.to_le_bytes());
         put_str(&mut out, &self.model);
         out.extend_from_slice(&self.codebook.0.to_le_bytes());
@@ -242,7 +298,7 @@ impl CheckpointHeader {
             return Err(CheckpointError::NotACheckpoint);
         }
         let format = cursor.u16("format")?;
-        if format != FORMAT_V2 {
+        if format != FORMAT_V2 && format != FORMAT_V3 {
             return Err(CheckpointError::UnknownFormat { format });
         }
         let model = cursor.string("model")?;
@@ -264,6 +320,12 @@ impl CheckpointHeader {
                 rows: cursor.u16("table_rows")?,
             });
         }
+        let architecture = if format == FORMAT_V3 {
+            let len = cursor.u32("architecture_len")? as usize;
+            cursor.take(len, "architecture")?.to_vec()
+        } else {
+            Vec::new()
+        };
         let declared = cursor.u64("payload_len")?;
         let remaining = cursor.remaining();
         if remaining.len() as u64 != declared {
@@ -279,11 +341,13 @@ impl CheckpointHeader {
         }
         Ok((
             Self {
+                format,
                 model,
                 codebook,
                 codebook_bytes,
                 encoding,
                 tables,
+                architecture,
             },
             remaining,
         ))

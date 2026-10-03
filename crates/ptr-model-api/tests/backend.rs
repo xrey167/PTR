@@ -1,5 +1,5 @@
 use ptr_model_api::{InferenceBackend, ModelEvent, ModelRequest, ReferenceEchoBackend};
-use ptr_types::{RequestId, Revision};
+use ptr_types::{RequestId, Revision, SemanticContext};
 
 #[test]
 fn reference_backend_obeys_request_event_contract() {
@@ -7,7 +7,10 @@ fn reference_backend_obeys_request_event_contract() {
     let events = backend
         .infer(&ModelRequest {
             request_id: RequestId::from("r1"),
-            revision: Revision(2),
+            semantic_context: SemanticContext {
+                revision: Revision(2),
+                entries: vec![],
+            },
             raw_text: "hello".into(),
         })
         .unwrap();

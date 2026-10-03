@@ -9,7 +9,7 @@ exclude = ["fuzz", "model/burn-a0", "vendor/*"]
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.99"
 authors = ["PTR contributors"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/xrey167/PTR"
@@ -55,10 +55,19 @@ prost = "0.14"
 prost-build = "0.14"
 protoc-bin-vendored = "3"
 axum = "0.8"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "io-util", "time"] }
 serde_json = "1.0"
+reqwest = { version = "=0.13.5", default-features = false, features = ["blocking", "rustls-no-provider"] }
+base64 = "0.22.1"
 tower = { version = "0.5", features = ["util"] }
 tracing = "0.1.44"
+candle-core = { version = "=0.11.0", default-features = false }
+sha2 = "=0.11.0"
+ed25519-dalek = "=3.0.0"
+aes-gcm-siv = "0.11"
+zeroize = "1"
+opendal = { version = "=0.59.3", default-features = false }
+windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem"] }
 
 # Compatibility patches: original archives and changes are recorded in vendor/.
 [patch.crates-io]
@@ -67,3 +76,12 @@ raft-proto = { path = "vendor/raft-proto" }
 raft-engine = { path = "vendor/raft-engine" }
 
 netlink_packet_core_pastey_0_8_2 = { package = "netlink-packet-core", path = "vendor/netlink-packet-core-0.8.2" }
+gemm_pastey_0_19_0 = { package = "gemm", path = "vendor/gemm-0.19.0" }
+gemm_c32_pastey_0_19_0 = { package = "gemm-c32", path = "vendor/gemm-c32-0.19.0" }
+gemm_c64_pastey_0_19_0 = { package = "gemm-c64", path = "vendor/gemm-c64-0.19.0" }
+gemm_common_pastey_0_19_0 = { package = "gemm-common", path = "vendor/gemm-common-0.19.0" }
+gemm_f16_pastey_0_19_0 = { package = "gemm-f16", path = "vendor/gemm-f16-0.19.0" }
+gemm_f32_pastey_0_19_0 = { package = "gemm-f32", path = "vendor/gemm-f32-0.19.0" }
+gemm_f64_pastey_0_19_0 = { package = "gemm-f64", path = "vendor/gemm-f64-0.19.0" }
+pulp_pastey_0_22_3 = { package = "pulp", path = "vendor/pulp-0.22.3" }
+tokenizers_pastey_0_22_2 = { package = "tokenizers", path = "vendor/tokenizers-0.22.2" }

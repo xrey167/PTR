@@ -881,6 +881,49 @@ async fn an_uncertain_outcome_is_not_a_refusal_and_the_fence_reaches_the_next_re
     assert_eq!(probe.executions(), 1, "and nothing else was dispatched");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_uncertain_execwire_attempt_replays_as_a_durable_runtime_fence() {
+    let client = ExecutionClient::bind().await.unwrap();
+    let (host, action, probe) = host_admitting(&client.identity(), Mode::Uncertain).await;
+
+    let serving = Arc::clone(&host);
+    let asked = request(&host, &action, 41);
+    let (answer, served) = tokio::join!(
+        client.request(located(host.address()), &asked),
+        serving.serve_once()
+    );
+    assert_eq!(answer.unwrap().outcome, WireOutcome::Uncertain);
+    assert_eq!(served.unwrap().request_id, Some(41));
+    assert_eq!(probe.executions(), 1);
+
+    // The host's exact committed history is the only input to reopen. No
+    // transport receipt or in-memory uncertainty flag is carried across.
+    let history = host.runtime().committed_events().to_vec();
+    let attempt = history
+        .iter()
+        .find_map(|committed| {
+            matches!(committed.event, LedgerEvent::EffectAttempted { .. })
+                .then_some(committed.index)
+        })
+        .expect("uncertain wire execution must journal an attempt");
+    let mut reopened = PtrRuntime::replay(PtrConfig::default(), &history).unwrap();
+    assert_eq!(reopened.unsettled_effects().len(), 1);
+    assert!(matches!(
+        reopened.commit(LedgerEvent::Revoked {
+            subject: "unrelated".into(),
+            generation: Generation(1),
+        }),
+        Err(ptr_runtime::RuntimeError::ExecutionFenced)
+    ));
+
+    // Recovery is explicit and durable; the runtime never retries the wire
+    // request from the uncertain receipt.
+    reopened
+        .reconcile_effect(attempt, false, "execwire-host-reconciliation")
+        .unwrap();
+    assert!(reopened.unsettled_effects().is_empty());
+}
+
 /// A host admitting `peer`, whose runtime is the ordinary one restored from its
 /// compacted snapshot with the floor moved to `floor`, so the ledger can hand out
 /// only the indices above it. Permissions and the admission policy belong to the

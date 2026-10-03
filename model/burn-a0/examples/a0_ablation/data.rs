@@ -35,6 +35,9 @@ pub const TEST_SPLITS: [&str; 6] = [
     "ood_payload",
 ];
 
+/// Per-fold split order for operator-routing v2.
+pub const V2_SPLITS: [&str; 4] = ["train", "val", "test_iid", "test_ood"];
+
 #[derive(Clone, Debug)]
 pub struct Fact {
     pub role: SemanticRole,
@@ -53,7 +56,7 @@ pub struct Example {
 }
 
 pub struct Split {
-    pub name: &'static str,
+    pub name: String,
     pub examples: Vec<Example>,
     /// FNV-1a-64 of one lowercase hex digit per gold label, in file order.
     pub label_fnv64: u64,
@@ -145,7 +148,7 @@ fn number<T: std::str::FromStr>(text: &str, what: &str, line: usize) -> Result<T
 /// Returns an error for wrong field or fact counts, numeric conversion failures,
 /// invalid regime, budget, label, or fact-table indices, or label disagreement.
 /// Token ranges and entity-table bounds are not validated here.
-fn parse_split(name: &'static str, text: &str, tables: &Tables) -> Result<Split, String> {
+fn parse_split(name: &str, text: &str, tables: &Tables) -> Result<Split, String> {
     let mut examples = Vec::new();
     let mut labels = String::new();
     for (index, raw) in text.lines().enumerate() {
@@ -227,7 +230,7 @@ fn parse_split(name: &'static str, text: &str, tables: &Tables) -> Result<Split,
         });
     }
     Ok(Split {
-        name,
+        name: name.to_owned(),
         examples,
         label_fnv64: fnv1a64(labels.as_bytes(), fnv1a64_start()),
     })
@@ -254,6 +257,28 @@ pub fn load(directory: &Path, expected_fnv64: u64) -> Result<Dataset, String> {
     if fnv != expected_fnv64 {
         return Err(format!(
             "the data FNV-1a-64 is {fnv:016x}, but {expected_fnv64:016x} is pinned: these are not the frozen splits"
+        ));
+    }
+    Ok(Dataset { fnv64: fnv, splits })
+}
+
+/// Load one frozen operator-routing v2 fold.
+///
+/// The digest covers `train`, `val`, `test_iid`, and `test_ood` in that order.
+pub fn load_v2_fold(directory: &Path, expected_fnv64: u64) -> Result<Dataset, String> {
+    let tables = tables();
+    let mut fnv = fnv1a64_start();
+    let mut splits = Vec::with_capacity(V2_SPLITS.len());
+    for name in V2_SPLITS {
+        let path = directory.join(format!("{name}.tsv"));
+        let bytes = std::fs::read(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+        fnv = fnv1a64(&bytes, fnv);
+        let text = String::from_utf8(bytes).map_err(|_| format!("{name}.tsv is not UTF-8"))?;
+        splits.push(parse_split(name, &text, &tables)?);
+    }
+    if fnv != expected_fnv64 {
+        return Err(format!(
+            "the fold FNV-1a-64 is {fnv:016x}, but {expected_fnv64:016x} is pinned"
         ));
     }
     Ok(Dataset { fnv64: fnv, splits })

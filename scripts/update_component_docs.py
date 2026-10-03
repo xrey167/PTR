@@ -28,6 +28,11 @@ def registries():
 def bullet(items):
     return "\n".join(f"- {x}" for x in items) if items else "- None recorded."
 
+def generated_equivalent(current: str, expected: str) -> bool:
+    """Ignore Markdown hard-break whitespace when checking generated records."""
+    normalize = lambda value: "\n".join(line.rstrip() for line in value.splitlines())
+    return normalize(current) == normalize(expected)
+
 def code_metrics(crate_dir: Path) -> dict[str, int]:
     """Count Rust source files, nonblank source lines, test files, and sync or async test markers."""
     source_files = (
@@ -218,7 +223,7 @@ def main() -> int:
             render_section(meta, exps, evals, code_metrics(crate_dir)),
         )
         current = readme.read_text(encoding="utf-8")
-        if current != expected:
+        if not generated_equivalent(current, expected):
             if args.write:
                 readme.write_text(expected, encoding="utf-8")
             else:
@@ -227,7 +232,7 @@ def main() -> int:
     status_path = ROOT / "docs/components/STATUS.md"
     expected_status = dashboard(metas, exps, evals)
     current_status = status_path.read_text(encoding="utf-8") if status_path.exists() else ""
-    if current_status != expected_status:
+    if not generated_equivalent(current_status, expected_status):
         if args.write:
             status_path.parent.mkdir(parents=True, exist_ok=True)
             status_path.write_text(expected_status, encoding="utf-8")

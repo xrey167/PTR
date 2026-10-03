@@ -590,6 +590,7 @@ mod tests {
 
     /// Deterministic nonzero values of both signs and every magnitude, one in
     /// eight subnormal.
+    #[allow(clippy::manual_is_multiple_of)]
     fn values_of_every_magnitude() -> Vec<f64> {
         let mut state = 7u64;
         (0..400)

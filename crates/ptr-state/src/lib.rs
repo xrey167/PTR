@@ -206,7 +206,64 @@ pub fn projection_entries(committed: &CommittedEvent) -> Vec<(String, String)> {
             ),
             (format!("effect:{}:applied", attempt.0), applied.to_string()),
         ],
+        LedgerEvent::ScopeLifecycle(_) => Vec::new(),
+        LedgerEvent::ProtectedStateCommitted {
+            domain,
+            logical_id,
+            generation,
+            revision,
+            ciphertext_digest,
+            ..
+        } => vec![
+            (
+                format!("protected:{domain}:{logical_id}:generation"),
+                generation.0.to_string(),
+            ),
+            (
+                format!("protected:{domain}:{logical_id}:revision"),
+                revision.0.to_string(),
+            ),
+            (
+                format!("protected:{domain}:{logical_id}:ciphertext"),
+                hex_digest(ciphertext_digest),
+            ),
+        ],
+        LedgerEvent::MeshTunnelLifecycle(event) => vec![
+            (
+                format!("mesh:{}:{}:revision", event.network_id, event.peer_id),
+                event.revision.0.to_string(),
+            ),
+            (
+                format!("mesh:{}:{}:state", event.network_id, event.peer_id),
+                format!("{:?}", event.kind),
+            ),
+        ],
+        LedgerEvent::ExecutionManifestAdmitted {
+            manifest_digest, ..
+        } => vec![(
+            format!("execution-manifest:{}:state", hex_digest(manifest_digest)),
+            "admitted".to_owned(),
+        )],
+        LedgerEvent::ExecutionManifestRevoked {
+            manifest_digest, ..
+        } => vec![(
+            format!("execution-manifest:{}:state", hex_digest(manifest_digest)),
+            "revoked".to_owned(),
+        )],
+        LedgerEvent::PodEvidenceCommitted { .. }
+        | LedgerEvent::PodOutputAdmitted { .. }
+        | LedgerEvent::PodHypothesisCommitted { .. }
+        | LedgerEvent::PolicyBundleActivated { .. }
+        | LedgerEvent::PolicyBundleRevoked { .. }
+        | LedgerEvent::SessionRevoked { .. }
+        | LedgerEvent::TierBackendLifecycle { .. }
+        | LedgerEvent::TierObjectCommitted { .. }
+        | LedgerEvent::TierReplicaLifecycle { .. } => Vec::new(),
     }
+}
+
+fn hex_digest(digest: &[u8; 32]) -> String {
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 #[cfg(feature = "turso-backend")]

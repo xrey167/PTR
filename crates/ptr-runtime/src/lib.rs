@@ -1,37 +1,277 @@
+pub mod admission;
 pub mod compacted;
+pub mod directory;
 pub mod execution;
+pub mod identity;
+pub mod kv;
+pub mod manifest;
+pub mod memory;
 pub mod merge;
+pub mod migration;
 pub mod neural;
 pub mod persistence;
+pub mod placement;
+pub mod policy;
+pub mod protected_state;
+pub mod sandbox;
+pub mod scopes;
 pub mod semantic;
+pub mod tensor_kv;
+pub mod tier;
 
+pub use admission::{AdmissionError, AdmissionGrant, IdentityAdmissionController};
+pub use directory::{InMemoryPodDirectory, PodDirectory};
+#[cfg(feature = "oidc-http")]
+pub use identity::ReqwestJwksRefresher;
+pub use identity::{
+    AutheliaForwardAuthAdapter, ForwardAuthHeaders, HttpJwksRefresher, JwksDocument, JwksFetchFn,
+    JwksRefresher, JwksStore, OidcAlgorithm, OidcError, OidcIdentityAdapter,
+};
+pub use kv::{KvUseError, KvUseRequest, KvUseTicket, RuntimeKvAuthority};
+pub use manifest::{
+    validate_and_build, validate_authority, ExecutionManifestRegistry, ManifestAuthorityRegistry,
+    ManifestBindingAuthority, RuntimeExecutionManifestResolver, RuntimeManifestError,
+    ValidatedExecutionManifest,
+};
 pub use merge::{
     ChangeOrigin, HoldReason, MergeAuthority, MergeHold, MergeOutcome, MergePreview, MergeReceipt,
     SemanticChange, SemanticGrant, SemanticGrantInfo, SemanticRefusal, SemanticVerdict,
 };
+pub use migration::{KvMigrationController, MigrationError, MigrationRecord, MigrationState};
+pub use placement::{
+    DeviceHealth, DeviceRecord, FencedStateLease, FencingToken, NodeHealth, NodeRecord, Placement,
+    PlacementEpoch, PlacementError, PodPlacementController,
+};
+#[cfg(feature = "oidc-http")]
+pub use policy::ReqwestPolicyBundleLoader;
+pub use policy::{
+    CapabilityPolicy, HttpPolicyBundleLoader, PodPolicyBinding, PolicyBundleLoader,
+    PolicyBundlePayload, PolicyError, PolicyFetchFn, PolicyTrustStore, ProjectPolicy,
+    SignedPolicyBundle,
+};
+pub use protected_state::ProtectedStateCoordinator;
+pub use sandbox::{
+    ExternalSandboxExecutor, NativeSandboxExecutor, NetworkMode, SandboxBackend, SandboxError,
+    SandboxExecutor, SandboxLease, SandboxProfile, SandboxRequest, SandboxResponse,
+};
+pub use scopes::{
+    CleanupError, ExecutionScope, ScopeCleanupCoordinator, ScopeError, ScopeEvent, ScopeEventKind,
+    ScopeRegistry, ScopeState,
+};
+pub use tensor_kv::{
+    ManagedKvHandle, ManagedKvMetadata, ManagedKvPageContext, ManagedKvRegistry,
+    ManagedOnlineKvSnapshot, TensorKvError,
+};
+pub use tier::{
+    backend_lifecycle_digest, replica_lifecycle_digest, ActiveWriteBinding, AdmittedTierObject,
+    BackendLifecycleState, BudgetedReplicaPolicy, DeterministicLruPolicy, ExplicitTierPolicy,
+    JournaledBackend, JournaledReplica, LookaheadPrefetchPolicy, PrefetchOutcome, ReplicaState,
+    ResidencyRecord, TierJournalProjection, TierPin, TierPlacementPolicy, TierPlan,
+    TierPlanningContext, TierPolicyError, TierProjectionError, TierReplica,
+    TierResidencyController, TierRuntimeError, TierTransferAuthorization, TierTransferReceipt,
+};
+
+/// A complete, runtime-bound request to admit one typed output produced by a
+/// Pod. The payload itself remains owned by the Pod boundary; this request
+/// carries the bindings the runtime must verify before any promotion.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PodOutputAdmissionRequest {
+    pub request_id: RequestId,
+    pub manifest_digest: ptr_types::Digest,
+    pub manifest: ptr_pods::ExecutionManifest,
+    pub pod_id: ptr_types::PodId,
+    pub output: ptr_pods::PodOutput,
+    pub expected_type: ptr_types::TypeId,
+    pub session_id: ptr_types::SessionId,
+    pub scope_id: ScopeId,
+    pub placement_epoch: PlacementEpoch,
+    pub fencing_token: FencingToken,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ActionAdmission {
+    pub request_id: RequestId,
+    pub session_id: ptr_types::SessionId,
+    pub scope_id: ScopeId,
+    pub project: ProjectId,
+    pub pod_id: ptr_types::PodId,
+    pub output_digest: ptr_types::Digest,
+    pub action_digest: ptr_types::Digest,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PodOutputAdmission {
+    ObservationCandidate {
+        revision: Revision,
+        semantic_key: String,
+    },
+    Hypothesis {
+        branch_id: String,
+    },
+    StateDelta {
+        revision: Revision,
+    },
+    ActionProposal {
+        action: Box<ActionIr>,
+        admission: ActionAdmission,
+    },
+    VerifiedResult {
+        revision: Revision,
+    },
+}
+
+fn digest_hex(digest: &ptr_types::Digest) -> String {
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+const ACTION_PAYLOAD_VERSION: u8 = 1;
+const MAX_ACTION_FIELD_BYTES: usize = 64 * 1024;
+const MAX_ACTION_BODY_BYTES: usize = 1024 * 1024;
+
+fn decode_action_payload(bytes: &[u8]) -> Result<ActionIr, String> {
+    let mut cursor = 0usize;
+    let take = |cursor: &mut usize, count: usize| -> Result<&[u8], String> {
+        let end = cursor
+            .checked_add(count)
+            .ok_or_else(|| "action payload length overflow".to_owned())?;
+        let slice = bytes
+            .get(*cursor..end)
+            .ok_or_else(|| "truncated action payload".to_owned())?;
+        *cursor = end;
+        Ok(slice)
+    };
+    let byte = |cursor: &mut usize| -> Result<u8, String> { Ok(take(cursor, 1)?[0]) };
+    let u64_value = |cursor: &mut usize| -> Result<u64, String> {
+        Ok(u64::from_le_bytes(
+            take(cursor, 8)?.try_into().expect("fixed width"),
+        ))
+    };
+    let string = |cursor: &mut usize| -> Result<String, String> {
+        let length = u64_value(cursor)? as usize;
+        if length > MAX_ACTION_FIELD_BYTES {
+            return Err("action field exceeds limit".into());
+        }
+        String::from_utf8(take(cursor, length)?.to_vec())
+            .map_err(|_| "action field is not utf-8".into())
+    };
+    let body = |cursor: &mut usize| -> Result<Vec<u8>, String> {
+        let length = u64_value(cursor)? as usize;
+        if length > MAX_ACTION_BODY_BYTES {
+            return Err("action body exceeds limit".into());
+        }
+        Ok(take(cursor, length)?.to_vec())
+    };
+    if byte(&mut cursor)? != ACTION_PAYLOAD_VERSION {
+        return Err("unsupported action payload version".into());
+    }
+    let operation = string(&mut cursor)?;
+    let target = string(&mut cursor)?;
+    let capability = ptr_types::CapabilityId(string(&mut cursor)?);
+    let input_type = ptr_types::TypeId(string(&mut cursor)?);
+    let effect = match byte(&mut cursor)? {
+        1 => ptr_types::Effect::Pure,
+        2 => ptr_types::Effect::Read,
+        3 => ptr_types::Effect::Mutation,
+        4 => ptr_types::Effect::External,
+        5 => ptr_types::Effect::Irreversible,
+        other => return Err(format!("unknown action effect {other}")),
+    };
+    let generation = Generation(u64_value(&mut cursor)?);
+    let revision = Revision(u64_value(&mut cursor)?);
+    let payload = body(&mut cursor)?;
+    if cursor != bytes.len()
+        || operation.is_empty()
+        || target.is_empty()
+        || capability.0.is_empty()
+        || input_type.0.is_empty()
+        || generation.0 == 0
+    {
+        return Err("invalid or trailing action payload".into());
+    }
+    Ok(ActionIr {
+        operation,
+        target,
+        capability,
+        effect,
+        input_type,
+        generation,
+        revision,
+        payload,
+    })
+}
+
+/// Typed bridge owned by the runtime side of the PodWire boundary. It keeps
+/// transport crates independent from scope, lease, and journal internals.
+pub struct RuntimeRecoveryAdapter<'a, C: ScopeCleanupCoordinator> {
+    runtime: &'a mut PtrRuntime,
+    scope_id: ScopeId,
+    coordinator: &'a mut C,
+    lease: ScopeLeaseBinding,
+}
+
+impl<'a, C: ScopeCleanupCoordinator> RuntimeRecoveryAdapter<'a, C> {
+    pub fn new(
+        runtime: &'a mut PtrRuntime,
+        scope_id: ScopeId,
+        coordinator: &'a mut C,
+        lease: ScopeLeaseBinding,
+    ) -> Self {
+        Self {
+            runtime,
+            scope_id,
+            coordinator,
+            lease,
+        }
+    }
+}
+
+impl<C: ScopeCleanupCoordinator> StatefulRequestRecovery for RuntimeRecoveryAdapter<'_, C> {
+    type Error = RuntimeError;
+
+    fn recover_uncertain(&mut self, request: UncertainRequest) -> Result<(), Self::Error> {
+        if request.scope_id != self.scope_id {
+            return Err(RuntimeError::Scope(ScopeError::InvalidLeaseBinding));
+        }
+        self.runtime.recover_uncertain_request(
+            &self.scope_id,
+            request.request_id,
+            self.coordinator,
+            self.lease.clone(),
+        )
+    }
+}
 
 use ptr_config::PtrConfig;
 use ptr_core::action_head::ActionIr;
 use ptr_events::{EventEnvelope, RuntimeEvent};
 use ptr_ledger::{
-    integrity, CommittedEvent, FileLedger, InMemoryLedger, Ledger, LedgerEvent,
+    integrity, Attestation, CommittedEvent, FileLedger, InMemoryLedger, Ledger, LedgerEvent,
     MAX_RETAINED_RESPONSE,
 };
 use ptr_model_api::{
     InferenceBackend, ModelEvent, ModelObservation, ModelRequest, ModelResumeRequest,
     ResumableInferenceBackend,
 };
-use ptr_pods::PodRegistry;
+use ptr_pods::{EvidenceVerifier, PodEvidenceBundle, PodHypothesis, PodOutputKind, PodRegistry};
 use ptr_protocol::TypedPayload;
+use ptr_router::PodRouter;
 use ptr_security::{
     ActionAuthorization, AuthorizationDecision, AuthorizationDenial, PermissionSet,
 };
-use ptr_semdb::{PreparedDelta, SemanticError, SemanticHost, SemanticSnapshot};
+use ptr_semdb::{
+    PreparedDelta, SemanticError, SemanticHost, SemanticPayload, SemanticSnapshot, SemanticValue,
+};
 use ptr_state::MaterializedState;
-use ptr_types::{CommitIndex, Generation, ProjectId, RequestId, Revision, Validity};
+use ptr_types::{
+    CommitIndex, EvidenceId, Generation, IdentityContext, PrincipalId, Probability, ProjectId,
+    ProvenanceRef, RequestId, Revision, ScopeId, ScopeLeaseBinding, StatefulRequestRecovery,
+    Timestamp, UncertainRequest, Validity,
+};
 use ptr_verifier::{VerificationStatus, Verifier};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeError {
@@ -41,6 +281,12 @@ pub enum RuntimeError {
     Semantic(SemanticError),
     InvalidConfig(String),
     Ledger(String),
+    Scope(ScopeError),
+    ScopeCleanup(CleanupError),
+    ScopeRevisionMismatch {
+        expected: Revision,
+        actual: Revision,
+    },
     StaleRevision {
         action: Revision,
         current: Revision,
@@ -69,6 +315,13 @@ pub enum RuntimeError {
     PodVerificationFailed {
         pod: String,
     },
+    PodEvidence(ptr_pods::EvidenceError),
+    PodOutputTypeMismatch {
+        pod: String,
+        expected: String,
+        actual: String,
+    },
+    PodOutputAdmission(String),
     /// A host write was refused before append: the installed grant's
     /// verifiers did not pass at the required level, or reported a hard
     /// finding, named by code.
@@ -145,6 +398,10 @@ pub enum RuntimeError {
     MultiplePodRequests {
         count: usize,
     },
+    MultipleControlEvents {
+        count: usize,
+    },
+    MixedControlEvents,
     PermissionDenied,
     ExecutionFenced,
     InvalidLifecycleTransition {
@@ -203,6 +460,7 @@ pub enum RuntimeError {
 pub struct ResumableRun {
     pub model_events: Vec<ModelEvent>,
     pub observations: Vec<TypedPayload>,
+    pub action: Option<ActionIr>,
 }
 
 enum RuntimeLedger {
@@ -246,6 +504,14 @@ pub struct PtrRuntime {
     /// the host installs one. Not history: a runtime rebuilt from its log
     /// has none.
     semantic_grant: Option<merge::SemanticGrant>,
+    scopes: ScopeRegistry,
+    execution_manifests: Arc<RwLock<ExecutionManifestRegistry>>,
+    manifest_authority: Arc<RwLock<ManifestAuthorityRegistry>>,
+    policy_trust: policy::PolicyTrustStore,
+    policy_authority_ready: bool,
+    revoked_sessions: BTreeSet<ptr_types::SessionId>,
+    hypotheses: BTreeMap<String, PodHypothesis>,
+    tier_journal: TierJournalProjection,
 }
 
 impl PtrRuntime {
@@ -268,6 +534,7 @@ impl PtrRuntime {
                 runtime.prepare_semantic_event(Some(committed.index), &committed.event)?;
             runtime.apply_committed(committed, semantic)?;
         }
+        runtime.scopes.mark_recovery_required();
         Ok(runtime)
     }
 
@@ -286,6 +553,14 @@ impl PtrRuntime {
             events: Vec::new(),
             next_event_sequence: 1,
             semantic_grant: None,
+            scopes: ScopeRegistry::default(),
+            execution_manifests: Arc::new(RwLock::new(ExecutionManifestRegistry::default())),
+            manifest_authority: Arc::new(RwLock::new(ManifestAuthorityRegistry::default())),
+            policy_trust: policy::PolicyTrustStore::default(),
+            policy_authority_ready: false,
+            revoked_sessions: BTreeSet::new(),
+            hypotheses: BTreeMap::new(),
+            tier_journal: TierJournalProjection::default(),
         })
     }
 
@@ -309,6 +584,7 @@ impl PtrRuntime {
                 .clone();
             runtime.apply_committed(&committed, semantic)?;
         }
+        runtime.scopes.mark_recovery_required();
         Ok(runtime)
     }
 
@@ -331,6 +607,535 @@ impl PtrRuntime {
 
     pub fn committed_events(&self) -> &[CommittedEvent] {
         self.ledger.events()
+    }
+
+    pub fn scopes(&self) -> &ScopeRegistry {
+        &self.scopes
+    }
+
+    pub fn tier_journal(&self) -> &TierJournalProjection {
+        &self.tier_journal
+    }
+
+    pub fn hypothesis(&self, branch_id: &str) -> Option<&PodHypothesis> {
+        self.hypotheses.get(branch_id)
+    }
+
+    /// Rebuild a persisted Pod hypothesis as a normal sealed semantic branch
+    /// and route it through the existing, grant-controlled `merge_branch`
+    /// authority. The hypothesis record itself never publishes semantics.
+    pub fn merge_pod_hypothesis(
+        &mut self,
+        branch_id: &str,
+        authority: MergeAuthority,
+    ) -> Result<MergeOutcome, RuntimeError> {
+        let hypothesis =
+            self.hypotheses.get(branch_id).cloned().ok_or_else(|| {
+                RuntimeError::PodOutputAdmission("unknown hypothesis branch".into())
+            })?;
+        let mut branch = ptr_branch::Branch::open(
+            ptr_branch::BranchId::from(branch_id),
+            PrincipalId::from(hypothesis.pod_id.0.as_str()),
+            self.snapshot(),
+        );
+        let key = format!("pod-hypothesis:{branch_id}");
+        branch
+            .read(&key)
+            .map_err(|error| RuntimeError::PodOutputAdmission(format!("{error:?}")))?;
+        branch
+            .put(
+                &key,
+                SemanticValue::Payload(SemanticPayload {
+                    type_id: hypothesis.output.type_id.clone(),
+                    source: hypothesis.pod_id.to_string(),
+                    bytes: hypothesis.output.bytes.clone(),
+                }),
+            )
+            .map_err(|error| RuntimeError::PodOutputAdmission(format!("{error:?}")))?;
+        let sealed = branch
+            .seal()
+            .map_err(|error| RuntimeError::PodOutputAdmission(format!("{error:?}")))?;
+        self.merge_branch(&sealed, authority)
+    }
+
+    /// Admit an execution manifest only after its Knowledge and Artifact
+    /// lineages have been resolved against the supplied authoritative stores.
+    /// The resulting immutable record is then held by the runtime registry;
+    /// callers cannot replace it with a different record under the same digest.
+    pub fn admit_execution_manifest(
+        &mut self,
+        manifest: ptr_pods::ExecutionManifest,
+        knowledge: &ptr_memory::KnowledgeStore,
+        artifacts: &dyn ptr_pods::ArtifactCatalog,
+    ) -> Result<manifest::ValidatedExecutionManifest, manifest::RuntimeManifestError> {
+        let validated =
+            manifest::validate_and_build(manifest, knowledge, artifacts, self.revision())?;
+        let manifest_bytes = validated
+            .manifest
+            .encode_canonical()
+            .map_err(|_| manifest::RuntimeManifestError::InvalidManifest)?;
+        let mut authority_projection = self
+            .manifest_authority
+            .read()
+            .expect("manifest authority lock poisoned")
+            .clone();
+        authority_projection.observe_manifest(&validated.manifest)?;
+        self.commit(LedgerEvent::ExecutionManifestAdmitted {
+            manifest_digest: validated.manifest.manifest_digest,
+            generation: validated.manifest.generation,
+            revision: validated.runtime_revision,
+            policy_revision: validated.manifest.policy_revision,
+            manifest: manifest_bytes,
+        })
+        .map_err(|_| manifest::RuntimeManifestError::InvalidManifest)?;
+        self.manifest_authority
+            .write()
+            .expect("manifest authority lock poisoned")
+            .clone_from(&authority_projection);
+        Ok(validated)
+    }
+
+    /// Strict manifest admission with runtime-owned principal, policy and
+    /// snapshot indexes. The legacy structural method remains available for
+    /// callers that are still assembling those indexes; production admission
+    /// should use this authority-bound entry point.
+    pub fn admit_execution_manifest_with_authority<A: manifest::ManifestBindingAuthority>(
+        &mut self,
+        manifest: ptr_pods::ExecutionManifest,
+        knowledge: &ptr_memory::KnowledgeStore,
+        artifacts: &dyn ptr_pods::ArtifactCatalog,
+        authority: &A,
+    ) -> Result<manifest::ValidatedExecutionManifest, manifest::RuntimeManifestError> {
+        let validated =
+            manifest::validate_and_build(manifest, knowledge, artifacts, self.revision())?;
+        manifest::validate_authority(&validated.manifest, authority)?;
+        let manifest_bytes = validated
+            .manifest
+            .encode_canonical()
+            .map_err(|_| manifest::RuntimeManifestError::InvalidManifest)?;
+        let mut authority_projection = self
+            .manifest_authority
+            .read()
+            .expect("manifest authority lock poisoned")
+            .clone();
+        authority_projection.observe_manifest(&validated.manifest)?;
+        self.commit(LedgerEvent::ExecutionManifestAdmitted {
+            manifest_digest: validated.manifest.manifest_digest,
+            generation: validated.manifest.generation,
+            revision: validated.runtime_revision,
+            policy_revision: validated.manifest.policy_revision,
+            manifest: manifest_bytes,
+        })
+        .map_err(|_| manifest::RuntimeManifestError::InvalidManifest)?;
+        self.manifest_authority
+            .write()
+            .expect("manifest authority lock poisoned")
+            .clone_from(&authority_projection);
+        Ok(validated)
+    }
+
+    pub fn resolve_execution_manifest(
+        &self,
+        digest: &ptr_types::Digest,
+    ) -> Result<manifest::ValidatedExecutionManifest, manifest::RuntimeManifestError> {
+        self.execution_manifests
+            .read()
+            .expect("manifest registry lock poisoned")
+            .resolve(digest)
+    }
+
+    pub fn execution_manifest_registry(&self) -> Arc<RwLock<ExecutionManifestRegistry>> {
+        Arc::clone(&self.execution_manifests)
+    }
+
+    pub fn manifest_authority_registry(&self) -> Arc<RwLock<ManifestAuthorityRegistry>> {
+        Arc::clone(&self.manifest_authority)
+    }
+
+    pub fn install_policy_key(
+        &mut self,
+        key_id: impl Into<String>,
+        key: ed25519_dalek::VerifyingKey,
+    ) {
+        self.policy_trust.insert(key_id, key);
+    }
+
+    pub fn revoke_policy_key(&mut self, key_id: impl Into<String>) {
+        self.policy_trust.revoke(key_id);
+    }
+
+    pub fn policy_authority_ready(&self) -> bool {
+        self.policy_authority_ready
+    }
+
+    /// Persist a session tombstone before materializing it locally. A
+    /// repeated revoke is idempotent and does not append a second mutation.
+    pub fn revoke_identity_session(
+        &mut self,
+        session: ptr_types::SessionId,
+        reason: impl Into<String>,
+    ) -> Result<(), RuntimeError> {
+        if session.0.is_empty() {
+            return Err(RuntimeError::InvalidConfig("empty session id".into()));
+        }
+        if self.revoked_sessions.contains(&session) {
+            return Ok(());
+        }
+        let reason = reason.into();
+        if reason.is_empty() {
+            return Err(RuntimeError::InvalidConfig(
+                "empty session revoke reason".into(),
+            ));
+        }
+        self.commit(LedgerEvent::SessionRevoked {
+            session_id: session.clone(),
+            reason,
+        })?;
+        self.revoked_sessions.insert(session);
+        Ok(())
+    }
+
+    pub fn is_identity_session_revoked(&self, session: &ptr_types::SessionId) -> bool {
+        self.revoked_sessions.contains(session)
+    }
+
+    pub fn admit_identity_context(
+        &mut self,
+        identity: &IdentityContext,
+        now: Timestamp,
+    ) -> Result<PrincipalId, RuntimeError> {
+        if self.revoked_sessions.contains(&identity.session_id) {
+            return Err(RuntimeError::InvalidConfig(
+                "identity session revoked".into(),
+            ));
+        }
+        self.manifest_authority
+            .write()
+            .expect("manifest authority lock poisoned")
+            .admit_identity(identity, now)
+            .map_err(|error| {
+                RuntimeError::InvalidConfig(format!("identity admission failed: {error:?}"))
+            })
+    }
+
+    pub fn refresh_snapshot_authority(
+        &mut self,
+    ) -> Result<(Revision, ptr_types::Digest), RuntimeError> {
+        let snapshot = self.snapshot();
+        let revision = snapshot.revision;
+        let digest = snapshot.canonical_digest();
+        self.manifest_authority
+            .write()
+            .expect("manifest authority lock poisoned")
+            .register_snapshot(revision, digest)
+            .map_err(|error| {
+                RuntimeError::InvalidConfig(format!("snapshot authority failed: {error:?}"))
+            })?;
+        Ok((revision, digest))
+    }
+
+    /// Add a digest already verified by `ProtectedStateCoordinator` to the
+    /// runtime authority projection. The protected store remains the owner of
+    /// ciphertext and key validation; this method only binds its result to the
+    /// current SemDB snapshot.
+    pub fn register_protected_snapshot_authority(
+        &mut self,
+        revision: Revision,
+        digest: ptr_types::Digest,
+    ) -> Result<(), manifest::RuntimeManifestError> {
+        let mut projection = self
+            .manifest_authority
+            .read()
+            .expect("manifest authority lock poisoned")
+            .clone();
+        projection.register_protected_snapshot(revision, digest)?;
+        *self
+            .manifest_authority
+            .write()
+            .expect("manifest authority lock poisoned") = projection;
+        Ok(())
+    }
+
+    pub fn admit_execution_manifest_from_runtime(
+        &mut self,
+        manifest: ptr_pods::ExecutionManifest,
+        knowledge: &ptr_memory::KnowledgeStore,
+        artifacts: &dyn ptr_pods::ArtifactCatalog,
+        identity: &IdentityContext,
+        now: Timestamp,
+    ) -> Result<manifest::ValidatedExecutionManifest, manifest::RuntimeManifestError> {
+        let principal = PrincipalId(format!("{}:{}", identity.issuer, identity.subject));
+        if !identity.is_valid_at(now) || manifest.principal != principal {
+            return Err(manifest::RuntimeManifestError::PrincipalNotAdmitted(
+                principal,
+            ));
+        }
+        if !self.policy_authority_ready {
+            return Err(manifest::RuntimeManifestError::PolicyRevisionMissing);
+        }
+        self.admit_identity_context(identity, now)
+            .map_err(|_| manifest::RuntimeManifestError::PrincipalNotAdmitted(principal.clone()))?;
+        let (live_revision, live_digest) = self.refresh_snapshot_authority().map_err(|_| {
+            manifest::RuntimeManifestError::UnknownSnapshotRevision(manifest.snapshot_revision)
+        })?;
+        if manifest.snapshot_revision != live_revision {
+            return Err(manifest::RuntimeManifestError::SnapshotRevisionMismatch {
+                expected: live_revision,
+                actual: manifest.snapshot_revision,
+            });
+        }
+        let authority = self
+            .manifest_authority
+            .read()
+            .expect("manifest authority lock poisoned")
+            .clone();
+        authority.validate_protected_snapshot(manifest.snapshot_revision, live_digest)?;
+        self.admit_execution_manifest_with_authority(manifest, knowledge, artifacts, &authority)
+    }
+
+    pub fn activate_policy_bundle(
+        &mut self,
+        bundle: policy::SignedPolicyBundle,
+        now: Timestamp,
+    ) -> Result<(), RuntimeError> {
+        bundle.verify(&self.policy_trust, now).map_err(|error| {
+            RuntimeError::InvalidConfig(format!("policy verification failed: {error:?}"))
+        })?;
+        let digest = bundle.payload_digest;
+        let mut projection = self
+            .manifest_authority
+            .read()
+            .expect("manifest authority lock poisoned")
+            .clone();
+        projection
+            .activate_policy(bundle.revision, digest)
+            .map_err(|error| {
+                RuntimeError::InvalidConfig(format!("policy activation failed: {error:?}"))
+            })?;
+        let key_id = bundle.key_id.clone();
+        let encoded = bundle.encode_for_ledger();
+        self.commit(LedgerEvent::PolicyBundleActivated {
+            revision: bundle.revision,
+            key_id,
+            bundle_digest: digest,
+            bundle: encoded,
+        })?;
+        self.manifest_authority
+            .write()
+            .expect("manifest authority lock poisoned")
+            .clone_from(&projection);
+        self.policy_authority_ready = true;
+        Ok(())
+    }
+
+    pub fn revoke_policy_revision(
+        &mut self,
+        revision: Revision,
+        reason: impl Into<String>,
+    ) -> Result<(), RuntimeError> {
+        let current_projection = self
+            .manifest_authority
+            .read()
+            .expect("manifest authority lock poisoned")
+            .clone();
+        if current_projection.is_policy_revoked(revision) {
+            return Ok(());
+        }
+        let digest = current_projection
+            .policy_digest(revision)
+            .ok_or_else(|| RuntimeError::InvalidConfig("unknown policy revision".into()))?;
+        let mut projection = self
+            .manifest_authority
+            .read()
+            .expect("manifest authority lock poisoned")
+            .clone();
+        projection.revoke_policy(revision).map_err(|error| {
+            RuntimeError::InvalidConfig(format!("policy revocation failed: {error:?}"))
+        })?;
+        self.commit(LedgerEvent::PolicyBundleRevoked {
+            revision,
+            bundle_digest: digest,
+            reason: reason.into(),
+        })?;
+        self.manifest_authority
+            .write()
+            .expect("manifest authority lock poisoned")
+            .clone_from(&projection);
+        Ok(())
+    }
+
+    pub fn revoke_execution_manifest(
+        &mut self,
+        digest: ptr_types::Digest,
+    ) -> Result<(), manifest::RuntimeManifestError> {
+        if self
+            .execution_manifests
+            .read()
+            .expect("manifest registry lock poisoned")
+            .is_revoked(&digest)
+        {
+            return Ok(());
+        }
+        let current = self.resolve_execution_manifest(&digest)?;
+        self.commit(LedgerEvent::ExecutionManifestRevoked {
+            manifest_digest: digest,
+            generation: current.manifest.generation,
+            revision: self.revision(),
+        })
+        .map(|_| ())
+        .map_err(|_| manifest::RuntimeManifestError::UnknownManifestDigest(digest))
+    }
+
+    pub fn create_scope(
+        &mut self,
+        scope: ExecutionScope,
+        lease: ScopeLeaseBinding,
+    ) -> Result<CommitIndex, RuntimeError> {
+        ScopeRegistry::validate_lease_shape(&lease).map_err(RuntimeError::Scope)?;
+        if self.scopes.get(&scope.id).is_ok() {
+            return Err(RuntimeError::Scope(ScopeError::Duplicate(scope.id)));
+        }
+        if let Some(parent_id) = &scope.parent {
+            let parent = self.scopes.get(parent_id).map_err(RuntimeError::Scope)?;
+            if parent.session != scope.session || parent.project != scope.project {
+                return Err(RuntimeError::Scope(ScopeError::ParentScopeMismatch));
+            }
+        }
+        let event = scopes::lifecycle_event(
+            &scope,
+            None,
+            ScopeState::Created,
+            self.revision(),
+            lease,
+            None,
+        );
+        self.commit(LedgerEvent::ScopeLifecycle(event))
+    }
+
+    pub fn transition_scope(
+        &mut self,
+        id: &ScopeId,
+        next: ScopeState,
+        lease: ScopeLeaseBinding,
+        reason: Option<String>,
+    ) -> Result<CommitIndex, RuntimeError> {
+        let current = self.scopes.get(id).map_err(RuntimeError::Scope)?.clone();
+        ScopeRegistry::validate_lease_shape(&lease).map_err(RuntimeError::Scope)?;
+        if self.scopes.lease(id).map_err(RuntimeError::Scope)? != &lease {
+            return Err(RuntimeError::Scope(ScopeError::InvalidLeaseBinding));
+        }
+        if self.scopes.recovery_required(id)
+            && !matches!(
+                next,
+                ScopeState::Cancelled | ScopeState::Revoked | ScopeState::Released
+            )
+        {
+            return Err(RuntimeError::Scope(ScopeError::RecoveryRequired(
+                id.clone(),
+            )));
+        }
+        let event = scopes::lifecycle_event(
+            &current,
+            Some(current.state),
+            next,
+            self.revision(),
+            lease,
+            reason,
+        );
+        self.commit(LedgerEvent::ScopeLifecycle(event))
+    }
+
+    /// Explicitly recover a scope left open by a restart or session loss. The
+    /// normal cleanup coordinator remains the only path that releases its
+    /// external leases and session resources.
+    pub fn recover_scope<C: ScopeCleanupCoordinator>(
+        &mut self,
+        id: &ScopeId,
+        coordinator: &mut C,
+        lease: ScopeLeaseBinding,
+    ) -> Result<(), RuntimeError> {
+        if !self.scopes.recovery_required(id) {
+            return Err(RuntimeError::Scope(ScopeError::InvalidCommittedEvent));
+        }
+        self.cleanup_scope(id, coordinator, lease)
+    }
+
+    /// Recover a scope after a stateful PodWire request returned an outcome
+    /// that cannot be established. The transport layer reports the request
+    /// id; this runtime method fences the scope, journalizes revocation, and
+    /// runs the same idempotent cleanup path used for restart recovery. A
+    /// caller must establish a new session and re-admit/recompute before
+    /// issuing another stateful request.
+    pub fn recover_uncertain_request<C: ScopeCleanupCoordinator>(
+        &mut self,
+        id: &ScopeId,
+        request_id: u64,
+        coordinator: &mut C,
+        lease: ScopeLeaseBinding,
+    ) -> Result<(), RuntimeError> {
+        self.scopes
+            .mark_scope_recovery_required(id)
+            .map_err(RuntimeError::Scope)?;
+        self.transition_scope(
+            id,
+            ScopeState::Revoked,
+            lease.clone(),
+            Some(format!("request-uncertain:{request_id}")),
+        )?;
+        self.cleanup_scope(id, coordinator, lease)
+    }
+
+    pub fn cleanup_scope<C: ScopeCleanupCoordinator>(
+        &mut self,
+        id: &ScopeId,
+        coordinator: &mut C,
+        lease: ScopeLeaseBinding,
+    ) -> Result<(), RuntimeError> {
+        if self.scopes.lease(id).map_err(RuntimeError::Scope)? != &lease {
+            return Err(RuntimeError::Scope(ScopeError::InvalidLeaseBinding));
+        }
+        let scope = self.scopes.get(id).map_err(RuntimeError::Scope)?.clone();
+        coordinator
+            .stop_intake(&scope)
+            .map_err(RuntimeError::ScopeCleanup)?;
+        coordinator
+            .cancel_children(&scope)
+            .map_err(RuntimeError::ScopeCleanup)?;
+        for child in self.scopes.children(id) {
+            if self.scopes.get(&child).map_err(RuntimeError::Scope)?.state != ScopeState::Released {
+                let child_lease = self
+                    .scopes
+                    .lease(&child)
+                    .map_err(RuntimeError::Scope)?
+                    .clone();
+                self.cleanup_scope(&child, coordinator, child_lease)?;
+            }
+        }
+        if !scope.state.is_terminal() {
+            self.transition_scope(
+                id,
+                ScopeState::Cancelled,
+                lease.clone(),
+                Some("cleanup".to_owned()),
+            )?;
+        }
+        let refreshed = self.scopes.get(id).map_err(RuntimeError::Scope)?.clone();
+        coordinator
+            .drain_queues(&refreshed)
+            .map_err(RuntimeError::ScopeCleanup)?;
+        coordinator
+            .release_pod_lease(&refreshed)
+            .map_err(RuntimeError::ScopeCleanup)?;
+        coordinator
+            .release_resource_lease(&refreshed)
+            .map_err(RuntimeError::ScopeCleanup)?;
+        coordinator
+            .close_session(&refreshed)
+            .map_err(RuntimeError::ScopeCleanup)?;
+        if refreshed.state != ScopeState::Released {
+            self.transition_scope(id, ScopeState::Released, lease, Some("cleanup".to_owned()))?;
+        }
+        Ok(())
     }
 
     pub fn materialized_state(&self) -> &MaterializedState {
@@ -369,18 +1174,18 @@ impl PtrRuntime {
         }
     }
 
-    pub fn run_model_once<B: InferenceBackend>(
+    pub fn run_model_once<B: InferenceBackend + ?Sized>(
         &mut self,
         request_id: RequestId,
         raw_text: impl Into<String>,
         backend: &B,
     ) -> Result<Vec<ModelEvent>, RuntimeError> {
         let raw_text = raw_text.into();
-        let revision = self.ingest_text(request_id.clone(), raw_text.clone())?;
+        let _revision = self.ingest_text(request_id.clone(), raw_text.clone())?;
         let events = backend
             .infer(&ModelRequest {
                 request_id: request_id.clone(),
-                revision,
+                semantic_context: self.snapshot().semantic_context(),
                 raw_text,
             })
             .map_err(|error| RuntimeError::Model(error.0))?;
@@ -403,8 +1208,8 @@ impl PtrRuntime {
         verifier: &V,
     ) -> Result<Vec<TypedPayload>, RuntimeError>
     where
-        B: InferenceBackend,
-        V: Verifier<TypedPayload>,
+        B: InferenceBackend + ?Sized,
+        V: Verifier<TypedPayload> + ?Sized,
     {
         let model_events = self.run_model_once(request_id.clone(), raw_text, backend)?;
         let mut outputs = Vec::new();
@@ -422,8 +1227,9 @@ impl PtrRuntime {
             // A Pod in another project is unavailable in exactly the same
             // words as a Pod that does not exist. Saying which it was would
             // answer, across the boundary, whether that Pod exists.
-            let pod = pods
-                .resolve(project, &capability, &input_type)
+            let pod = PodRouter
+                .select(pods, project, &capability, &input_type)
+                .and_then(|route| pods.get(project, &route.pod_id))
                 .ok_or_else(|| RuntimeError::PodUnavailable {
                     capability: capability.to_string(),
                     input_type: input_type.to_string(),
@@ -448,21 +1254,7 @@ impl PtrRuntime {
                 })
                 .map_err(RuntimeError::Pod)?;
 
-            let report = verifier.verify(&output);
-            // A hard finding refuses the output whatever the status says.
-            let passed = report.status == VerificationStatus::Pass
-                && !report.findings.iter().any(|finding| finding.hard);
-            self.emit(RuntimeEvent::VerifierResult {
-                verifier: "pod-output".into(),
-                passed,
-            });
-            if !passed {
-                return Err(RuntimeError::PodVerificationFailed {
-                    pod: pod.manifest().id.to_string(),
-                });
-            }
-
-            self.promote_pod_output(&request_id, &pod.manifest().id, &output, report.level)?;
+            self.promote_verified_pod_output(&request_id, pod.manifest(), &output, verifier)?;
             outputs.push(output);
         }
 
@@ -480,14 +1272,35 @@ impl PtrRuntime {
         max_rounds: usize,
     ) -> Result<ResumableRun, RuntimeError>
     where
-        B: ResumableInferenceBackend,
-        V: Verifier<TypedPayload>,
+        B: ResumableInferenceBackend + ?Sized,
+        V: Verifier<TypedPayload> + ?Sized,
+    {
+        self.run_resumable_with_pods_using_router(
+            request_id, project, raw_text, backend, pods, &PodRouter, verifier, max_rounds,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn run_resumable_with_pods_using_router<B, V>(
+        &mut self,
+        request_id: RequestId,
+        project: &ProjectId,
+        raw_text: impl Into<String>,
+        backend: &B,
+        pods: &PodRegistry,
+        router: &PodRouter,
+        verifier: &V,
+        max_rounds: usize,
+    ) -> Result<ResumableRun, RuntimeError>
+    where
+        B: ResumableInferenceBackend + ?Sized,
+        V: Verifier<TypedPayload> + ?Sized,
     {
         let raw_text = raw_text.into();
-        let revision = self.ingest_text(request_id.clone(), raw_text.clone())?;
+        let _revision = self.ingest_text(request_id.clone(), raw_text.clone())?;
         let mut request = ModelRequest {
             request_id: request_id.clone(),
-            revision,
+            semantic_context: self.snapshot().semantic_context(),
             raw_text,
         };
         let mut pending = backend
@@ -511,18 +1324,34 @@ impl PtrRuntime {
                     _ => None,
                 })
                 .collect::<Vec<_>>();
+            let actions = pending
+                .iter()
+                .filter_map(|event| match event {
+                    ModelEvent::ActionReady(action) => Some(action.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
 
             run.model_events.extend(pending);
 
-            if finished && pod_requests.is_empty() {
+            let control_count = pod_requests.len() + actions.len();
+            if control_count > 1 {
+                if !pod_requests.is_empty() && !actions.is_empty() {
+                    return Err(RuntimeError::MixedControlEvents);
+                }
+                return Err(RuntimeError::MultipleControlEvents {
+                    count: control_count,
+                });
+            }
+
+            if finished && control_count == 0 {
                 self.emit(RuntimeEvent::RequestFinished(request_id));
                 return Ok(run);
             }
 
-            if pod_requests.len() > 1 {
-                return Err(RuntimeError::MultiplePodRequests {
-                    count: pod_requests.len(),
-                });
+            if let Some(action) = actions.into_iter().next() {
+                run.action = Some(action);
+                return Ok(run);
             }
 
             let Some((capability, input_type, payload)) = pod_requests.into_iter().next() else {
@@ -536,8 +1365,9 @@ impl PtrRuntime {
             // A Pod in another project is unavailable in exactly the same
             // words as a Pod that does not exist. Saying which it was would
             // answer, across the boundary, whether that Pod exists.
-            let pod = pods
-                .resolve(project, &capability, &input_type)
+            let pod = router
+                .select(pods, project, &capability, &input_type)
+                .and_then(|route| pods.get(project, &route.pod_id))
                 .ok_or_else(|| RuntimeError::PodUnavailable {
                     capability: capability.to_string(),
                     input_type: input_type.to_string(),
@@ -562,22 +1392,8 @@ impl PtrRuntime {
                 })
                 .map_err(RuntimeError::Pod)?;
 
-            let report = verifier.verify(&output);
-            // A hard finding refuses the output whatever the status says.
-            let passed = report.status == VerificationStatus::Pass
-                && !report.findings.iter().any(|finding| finding.hard);
-            self.emit(RuntimeEvent::VerifierResult {
-                verifier: "pod-output".into(),
-                passed,
-            });
-            if !passed {
-                return Err(RuntimeError::PodVerificationFailed {
-                    pod: pod.manifest().id.to_string(),
-                });
-            }
-
             let revision =
-                self.promote_pod_output(&request_id, &pod.manifest().id, &output, report.level)?;
+                self.promote_verified_pod_output(&request_id, pod.manifest(), &output, verifier)?;
 
             let observation = ModelObservation {
                 revision,
@@ -587,11 +1403,11 @@ impl PtrRuntime {
             };
             run.observations.push(output);
 
-            request.revision = revision;
+            request.semantic_context = self.snapshot().semantic_context();
             pending = backend
                 .resume(&ModelResumeRequest {
                     request_id: request_id.clone(),
-                    revision,
+                    semantic_context: request.semantic_context.clone(),
                     round: round as u32 + 1,
                     observation,
                 })
@@ -655,6 +1471,657 @@ impl PtrRuntime {
         self.validate_lifecycle_event(&event)?;
         let semantic = self.prepare_semantic_event(None, &event)?;
         self.append_prepared(event, semantic)
+    }
+
+    pub fn commit_tier_backend_lifecycle(
+        &mut self,
+        backend: ptr_storage::TierBackendId,
+        tier: ptr_storage::StorageTier,
+        state: BackendLifecycleState,
+        revision: Revision,
+    ) -> Result<CommitIndex, RuntimeError> {
+        let event_digest = backend_lifecycle_digest(&backend, tier, state, revision);
+        self.commit(LedgerEvent::TierBackendLifecycle {
+            backend_id: backend.0,
+            tier: tier.code(),
+            state: state.code(),
+            revision,
+            event_digest,
+        })
+    }
+
+    pub fn commit_tier_object(
+        &mut self,
+        object: &ptr_storage::TierObjectManifest,
+    ) -> Result<CommitIndex, RuntimeError> {
+        let manifest = object.encode_canonical().map_err(|error| {
+            RuntimeError::InvalidConfig(format!("invalid tier object: {error:?}"))
+        })?;
+        self.commit(LedgerEvent::TierObjectCommitted {
+            root_digest: object.root_digest,
+            generation: object.generation,
+            revision: object.revision,
+            manifest,
+        })
+    }
+
+    pub fn commit_tier_replica_lifecycle(
+        &mut self,
+        object: ptr_types::Digest,
+        backend: ptr_storage::TierBackendId,
+        tier: ptr_storage::StorageTier,
+        state: ReplicaState,
+        generation: Generation,
+        revision: Revision,
+    ) -> Result<CommitIndex, RuntimeError> {
+        let event_digest =
+            replica_lifecycle_digest(object, &backend, tier, state, generation, revision);
+        self.commit(LedgerEvent::TierReplicaLifecycle {
+            root_digest: object,
+            backend_id: backend.0,
+            tier: tier.code(),
+            state: state.code(),
+            generation,
+            revision,
+            event_digest,
+        })
+    }
+
+    /// Attach one physical tier backend while recording every durable
+    /// lifecycle transition in the authoritative runtime ledger.
+    pub async fn attach_tier_backend_journaled(
+        &mut self,
+        controller: &TierResidencyController,
+        backend: Arc<dyn ptr_storage::TierBackend>,
+        first_revision: Revision,
+    ) -> Result<(), RuntimeError> {
+        let id = backend.identity();
+        let tier = backend.capabilities().tier;
+        let health_revision = Revision(
+            first_revision
+                .0
+                .checked_add(1)
+                .ok_or_else(|| RuntimeError::InvalidConfig("tier revision exhausted".into()))?,
+        );
+        let available_revision = Revision(
+            first_revision
+                .0
+                .checked_add(2)
+                .ok_or_else(|| RuntimeError::InvalidConfig("tier revision exhausted".into()))?,
+        );
+        self.commit_tier_backend_lifecycle(
+            id.clone(),
+            tier,
+            BackendLifecycleState::Configured,
+            first_revision,
+        )?;
+        if let Err(error) = controller.attach_backend(backend).await {
+            self.commit_tier_backend_lifecycle(
+                id,
+                tier,
+                BackendLifecycleState::Revoked,
+                health_revision,
+            )?;
+            return Err(RuntimeError::InvalidConfig(format!(
+                "tier backend attach failed: {error:?}"
+            )));
+        }
+        self.commit_tier_backend_lifecycle(
+            id.clone(),
+            tier,
+            BackendLifecycleState::HealthChecked,
+            health_revision,
+        )?;
+        self.commit_tier_backend_lifecycle(
+            id,
+            tier,
+            BackendLifecycleState::Available,
+            available_revision,
+        )?;
+        Ok(())
+    }
+
+    /// Register an already materialized source replica journal-first. A crash
+    /// after `Preparing` leaves an explicit recovery record instead of a
+    /// silently authoritative replica.
+    pub async fn register_tier_object_journaled(
+        &mut self,
+        controller: &TierResidencyController,
+        object: ptr_storage::TierObjectManifest,
+        backend: ptr_storage::TierBackendId,
+        preparing_revision: Revision,
+    ) -> Result<(), RuntimeError> {
+        let backend_projection = self
+            .tier_journal
+            .backend(&backend)
+            .ok_or_else(|| RuntimeError::InvalidConfig("tier backend is not journaled".into()))?;
+        if backend_projection.state != BackendLifecycleState::Available {
+            return Err(RuntimeError::InvalidConfig(
+                "tier backend is not durably available".into(),
+            ));
+        }
+        let tier = controller.backend_tier(&backend).map_err(|error| {
+            RuntimeError::InvalidConfig(format!("tier backend unavailable: {error:?}"))
+        })?;
+        if backend_projection.tier != tier {
+            return Err(RuntimeError::InvalidConfig(
+                "tier backend projection mismatch".into(),
+            ));
+        }
+        let available_revision = Revision(
+            preparing_revision
+                .0
+                .checked_add(1)
+                .ok_or_else(|| RuntimeError::InvalidConfig("tier revision exhausted".into()))?,
+        );
+        self.commit_tier_object(&object)?;
+        self.commit_tier_replica_lifecycle(
+            object.root_digest,
+            backend.clone(),
+            tier,
+            ReplicaState::Preparing,
+            object.generation,
+            preparing_revision,
+        )?;
+        controller
+            .register_object(object.clone(), backend.clone())
+            .await
+            .map_err(|error| {
+                RuntimeError::InvalidConfig(format!("tier object registration failed: {error:?}"))
+            })?;
+        self.commit_tier_replica_lifecycle(
+            object.root_digest,
+            backend,
+            tier,
+            ReplicaState::Available,
+            object.generation,
+            available_revision,
+        )?;
+        Ok(())
+    }
+
+    /// Transfer a replica through the physical controller and publish it only
+    /// through matching `Preparing -> Available` ledger records.
+    pub async fn transfer_tier_replica_journaled(
+        &mut self,
+        controller: &TierResidencyController,
+        object: ptr_types::Digest,
+        source: &ptr_storage::TierBackendId,
+        destination: &ptr_storage::TierBackendId,
+        authorization: Option<TierTransferAuthorization>,
+        preparing_revision: Revision,
+    ) -> Result<TierTransferReceipt, RuntimeError> {
+        let record = controller.residency(&object).map_err(|error| {
+            RuntimeError::InvalidConfig(format!("tier object unavailable: {error:?}"))
+        })?;
+        let tier = controller.backend_tier(destination).map_err(|error| {
+            RuntimeError::InvalidConfig(format!("tier destination unavailable: {error:?}"))
+        })?;
+        let terminal_revision = Revision(
+            preparing_revision
+                .0
+                .checked_add(1)
+                .ok_or_else(|| RuntimeError::InvalidConfig("tier revision exhausted".into()))?,
+        );
+        self.commit_tier_replica_lifecycle(
+            object,
+            destination.clone(),
+            tier,
+            ReplicaState::Preparing,
+            record.object.generation,
+            preparing_revision,
+        )?;
+        match controller
+            .transfer(object, source, destination, authorization)
+            .await
+        {
+            Ok(receipt) => {
+                self.commit_tier_replica_lifecycle(
+                    object,
+                    destination.clone(),
+                    tier,
+                    ReplicaState::Available,
+                    record.object.generation,
+                    terminal_revision,
+                )?;
+                Ok(receipt)
+            }
+            Err(error) => {
+                self.commit_tier_replica_lifecycle(
+                    object,
+                    destination.clone(),
+                    tier,
+                    ReplicaState::Corrupt,
+                    record.object.generation,
+                    terminal_revision,
+                )?;
+                Err(RuntimeError::InvalidConfig(format!(
+                    "tier transfer failed: {error:?}"
+                )))
+            }
+        }
+    }
+
+    /// Admit one complete typed Pod output before routing it to any durable
+    /// semantic, branch, or effect boundary. The admission record is written
+    /// first; a later semantic promotion is a separate authoritative event.
+    pub fn admit_pod_output<V>(
+        &mut self,
+        request: PodOutputAdmissionRequest,
+        verifier: &V,
+    ) -> Result<PodOutputAdmission, RuntimeError>
+    where
+        V: Verifier<TypedPayload> + ?Sized,
+    {
+        if self.execution.is_fenced() {
+            return Err(RuntimeError::ExecutionFenced);
+        }
+        self.scopes
+            .ensure_available(&request.scope_id)
+            .map_err(RuntimeError::Scope)?;
+        let scope = self
+            .scopes
+            .get(&request.scope_id)
+            .map_err(RuntimeError::Scope)?;
+        if scope.session != request.session_id {
+            return Err(RuntimeError::PodOutputAdmission(
+                "scope and request session differ".into(),
+            ));
+        }
+        let scope_lease = self
+            .scopes
+            .lease(&request.scope_id)
+            .map_err(RuntimeError::Scope)?;
+        if scope_lease
+            .placement_epoch
+            .is_some_and(|epoch| epoch != request.placement_epoch.0)
+            || scope_lease
+                .fencing_token
+                .is_some_and(|token| token != request.fencing_token.0)
+        {
+            return Err(RuntimeError::PodOutputAdmission(
+                "scope lease fencing binding is stale".into(),
+            ));
+        }
+        if request.placement_epoch.0 == 0 || request.fencing_token.0 == 0 {
+            return Err(RuntimeError::PodOutputAdmission(
+                "missing placement or fencing binding".into(),
+            ));
+        }
+        request
+            .manifest
+            .validate()
+            .map_err(|error| RuntimeError::PodOutputAdmission(format!("{error:?}")))?;
+        if request.manifest_digest != request.manifest.manifest_digest {
+            return Err(RuntimeError::PodOutputAdmission(
+                "manifest digest does not match manifest".into(),
+            ));
+        }
+        if request.output.manifest_digest != request.manifest_digest {
+            return Err(RuntimeError::PodOutputAdmission(
+                "output manifest binding mismatch".into(),
+            ));
+        }
+        if request.output.generation != request.manifest.generation {
+            return Err(RuntimeError::PodOutputAdmission(
+                "output generation does not match manifest".into(),
+            ));
+        }
+        if !request
+            .manifest
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.digest == request.output.artifact_digest)
+        {
+            return Err(RuntimeError::PodOutputAdmission(
+                "output artifact is not in the execution manifest".into(),
+            ));
+        }
+        if request
+            .output
+            .provenance
+            .iter()
+            .any(|item| item.source.0.is_empty())
+        {
+            return Err(RuntimeError::PodOutputAdmission(
+                "output provenance contains an empty source".into(),
+            ));
+        }
+        if request.output.dependencies.iter().any(|digest| {
+            *digest == [0; 32]
+                || !request
+                    .manifest
+                    .knowledge
+                    .iter()
+                    .chain(request.manifest.artifacts.iter())
+                    .chain(request.manifest.reader.iter())
+                    .any(|binding| binding.digest == *digest)
+        }) {
+            return Err(RuntimeError::PodOutputAdmission(
+                "output dependency is unknown or invalidated".into(),
+            ));
+        }
+        let allow_promotion = matches!(
+            request.output.kind,
+            PodOutputKind::StateDelta | PodOutputKind::VerifiedResult
+        );
+        request
+            .output
+            .validate(&request.expected_type, allow_promotion)
+            .map_err(|error| {
+                RuntimeError::PodOutputAdmission(format!("invalid output: {error:?}"))
+            })?;
+        if request.output.revision < request.manifest.snapshot_revision {
+            return Err(RuntimeError::StaleRevision {
+                action: request.output.revision,
+                current: request.manifest.snapshot_revision,
+            });
+        }
+        let report = verifier.verify(&request.output.payload);
+        let passed = report.status == VerificationStatus::Pass
+            && !report.findings.iter().any(|finding| finding.hard);
+        self.emit(RuntimeEvent::VerifierResult {
+            verifier: "pod-output".into(),
+            passed,
+        });
+        if !passed {
+            return Err(RuntimeError::PodVerificationFailed {
+                pod: request.pod_id.to_string(),
+            });
+        }
+        let output_digest = request.output.digest();
+        let action = if request.output.kind == PodOutputKind::ActionProposal {
+            let action = decode_action_payload(&request.output.payload.bytes)
+                .map_err(RuntimeError::PodOutputAdmission)?;
+            if action.generation != request.output.generation
+                || action.revision != request.output.revision
+            {
+                return Err(RuntimeError::PodOutputAdmission(
+                    "action generation/revision does not match output".into(),
+                ));
+            }
+            self.authorize_action(&action)?;
+            Some(action)
+        } else {
+            None
+        };
+
+        for committed in self.committed_events() {
+            if let LedgerEvent::PodOutputAdmitted {
+                request_id,
+                pod_id,
+                output_digest: existing_digest,
+                output_kind,
+                revision,
+                ..
+            } = &committed.event
+            {
+                if request_id == &request.request_id && pod_id == &request.pod_id {
+                    if existing_digest != &output_digest {
+                        return Err(RuntimeError::PodOutputAdmission(
+                            "request id was reused with a different output".into(),
+                        ));
+                    }
+                    return self.admission_result_from_code(
+                        *output_kind,
+                        *revision,
+                        &request,
+                        output_digest,
+                    );
+                }
+            }
+        }
+
+        let attestation = Attestation {
+            required: ptr_types::VerificationLevel::FullSemantic,
+            level: report.level,
+            verifiers: vec!["pod-output".into()],
+            findings: report
+                .findings
+                .iter()
+                .filter(|finding| !finding.hard)
+                .map(|finding| format!("pod-output/{}", finding.code))
+                .collect(),
+        };
+        self.commit(LedgerEvent::PodOutputAdmitted {
+            request_id: request.request_id.clone(),
+            session_id: request.session_id.clone(),
+            scope_id: request.scope_id.clone(),
+            pod_id: request.pod_id.clone(),
+            manifest_digest: request.manifest_digest,
+            artifact_digest: request.output.artifact_digest,
+            generation: request.output.generation,
+            revision: request.output.revision,
+            output_kind: request.output.kind_code(),
+            output_type: request.output.payload.type_id.clone(),
+            output_digest,
+            verification: attestation,
+        })?;
+
+        match request.output.kind {
+            PodOutputKind::Hypothesis => {
+                let branch_id = format!(
+                    "pod-branch:{}:{}:{}",
+                    request.request_id,
+                    request.pod_id,
+                    digest_hex(&output_digest)
+                );
+                self.commit(LedgerEvent::PodHypothesisCommitted {
+                    request_id: request.request_id.clone(),
+                    session_id: request.session_id.clone(),
+                    scope_id: request.scope_id.clone(),
+                    branch_id: branch_id.clone(),
+                    pod_id: request.pod_id.clone(),
+                    manifest_digest: request.output.manifest_digest,
+                    artifact_digest: request.output.artifact_digest,
+                    generation: request.output.generation,
+                    revision: request.output.revision,
+                    output_type: request.output.payload.type_id.clone(),
+                    output_digest,
+                    payload: request.output.payload.bytes.clone(),
+                    provenance: request
+                        .output
+                        .provenance
+                        .iter()
+                        .map(|item| (item.source.0.clone(), item.note.clone()))
+                        .collect(),
+                    dependencies: request.output.dependencies.clone(),
+                    confidence_bits: 1.0f32.to_bits(),
+                    latency_millis: 0,
+                    verification: Attestation {
+                        required: ptr_types::VerificationLevel::FullSemantic,
+                        level: report.level,
+                        verifiers: vec!["pod-output".into()],
+                        findings: report
+                            .findings
+                            .iter()
+                            .filter(|finding| !finding.hard)
+                            .map(|finding| format!("pod-output/{}", finding.code))
+                            .collect(),
+                    },
+                })?;
+                Ok(PodOutputAdmission::Hypothesis { branch_id })
+            }
+            PodOutputKind::ActionProposal => {
+                let action = action.expect("action proposal was decoded before admission");
+                Ok(PodOutputAdmission::ActionProposal {
+                    action: Box::new(action.clone()),
+
+                    admission: ActionAdmission {
+                        request_id: request.request_id,
+                        session_id: request.session_id,
+                        scope_id: request.scope_id.clone(),
+                        project: self
+                            .scopes
+                            .get(&request.scope_id)
+                            .map_err(RuntimeError::Scope)?
+                            .project
+                            .clone(),
+                        pod_id: request.pod_id,
+                        action_digest: execution::action_digest(&action),
+                        output_digest,
+                    },
+                })
+            }
+            PodOutputKind::StateDelta => self
+                .promote_pod_output(
+                    &request.request_id,
+                    &request.pod_id,
+                    &request.output.payload,
+                    report.level,
+                )
+                .map(|_| PodOutputAdmission::StateDelta {
+                    revision: request.output.revision,
+                }),
+            PodOutputKind::VerifiedResult => self
+                .promote_pod_output(
+                    &request.request_id,
+                    &request.pod_id,
+                    &request.output.payload,
+                    report.level,
+                )
+                .map(|_| PodOutputAdmission::VerifiedResult {
+                    revision: request.output.revision,
+                }),
+            PodOutputKind::Observation
+            | PodOutputKind::Candidate
+            | PodOutputKind::ToolResult
+            | PodOutputKind::EnvironmentObservation => self
+                .promote_pod_candidate(
+                    &request.request_id,
+                    &request.pod_id,
+                    &request.output.payload,
+                    output_digest,
+                    report.level,
+                )
+                .map(|commit| PodOutputAdmission::ObservationCandidate {
+                    revision: commit.revision,
+                    semantic_key: semantic::pod_candidate_key(
+                        &request.request_id,
+                        &request.pod_id,
+                        &output_digest,
+                    ),
+                }),
+        }
+    }
+
+    fn admission_result_from_code(
+        &self,
+        kind: u8,
+        revision: Revision,
+        request: &PodOutputAdmissionRequest,
+        output_digest: ptr_types::Digest,
+    ) -> Result<PodOutputAdmission, RuntimeError> {
+        match kind {
+            0..=1 | 3..=4 => Ok(PodOutputAdmission::ObservationCandidate {
+                // The durable PodOutputAdmitted record carries the producer's
+                // revision. Candidate promotion has its own SemDB revision;
+                // on idempotent replay return the currently materialized one.
+                revision: self.revision(),
+                semantic_key: semantic::pod_candidate_key(
+                    &request.request_id,
+                    &request.pod_id,
+                    &output_digest,
+                ),
+            }),
+            2 => Ok(PodOutputAdmission::Hypothesis {
+                branch_id: format!(
+                    "pod-branch:{}:{}:{}",
+                    request.request_id,
+                    request.pod_id,
+                    digest_hex(&output_digest)
+                ),
+            }),
+            5 => Ok(PodOutputAdmission::StateDelta { revision }),
+            6 => {
+                let action = decode_action_payload(&request.output.payload.bytes)
+                    .map_err(RuntimeError::PodOutputAdmission)?;
+                if action.generation != request.output.generation
+                    || action.revision != request.output.revision
+                {
+                    return Err(RuntimeError::PodOutputAdmission(
+                        "action generation/revision does not match output".into(),
+                    ));
+                }
+                self.authorize_action(&action)?;
+                Ok(PodOutputAdmission::ActionProposal {
+                    action: Box::new(action.clone()),
+                    admission: ActionAdmission {
+                        request_id: request.request_id.clone(),
+                        session_id: request.session_id.clone(),
+                        scope_id: request.scope_id.clone(),
+                        project: self
+                            .scopes
+                            .get(&request.scope_id)
+                            .map_err(RuntimeError::Scope)?
+                            .project
+                            .clone(),
+                        pod_id: request.pod_id.clone(),
+                        action_digest: execution::action_digest(&action),
+                        output_digest,
+                    },
+                })
+            }
+            7 => Ok(PodOutputAdmission::VerifiedResult { revision }),
+            _ => Err(RuntimeError::PodOutputAdmission(
+                "invalid persisted output kind".into(),
+            )),
+        }
+    }
+
+    /// Journal a mesh/tunnel lifecycle transition through the same durable
+    /// authority as semantic and scope events. Callers must still perform the
+    /// platform tunnel operation separately; this method only commits the
+    /// validated control-plane fact.
+    pub fn commit_mesh_event(
+        &mut self,
+        event: ptr_types::MeshTunnelLifecycleEvent,
+    ) -> Result<CommitIndex, RuntimeError> {
+        self.commit(LedgerEvent::MeshTunnelLifecycle(event))
+    }
+
+    /// Verify and journal one complete Pod evidence bundle. The Pod schema and
+    /// replay semantics remain in ptr-pods; ptr-runtime owns the admission
+    /// boundary and writes the exact canonical bytes to the authoritative ledger.
+    pub fn commit_pod_evidence(
+        &mut self,
+        bundle: &PodEvidenceBundle,
+    ) -> Result<CommitIndex, RuntimeError> {
+        bundle.verify().map_err(RuntimeError::PodEvidence)?;
+        self.append_pod_evidence(bundle)
+    }
+
+    /// Signed variant for admissions that require an attested evidence origin.
+    /// Signature verification is policy-selected so local integrity-only and
+    /// remote Ed25519/TPM/HSM-backed evidence can share this runtime boundary.
+    pub fn commit_signed_pod_evidence<V: EvidenceVerifier>(
+        &mut self,
+        bundle: &PodEvidenceBundle,
+        verifier: &V,
+    ) -> Result<CommitIndex, RuntimeError> {
+        bundle
+            .verify_with(verifier)
+            .map_err(RuntimeError::PodEvidence)?;
+        self.append_pod_evidence(bundle)
+    }
+
+    fn append_pod_evidence(
+        &mut self,
+        bundle: &PodEvidenceBundle,
+    ) -> Result<CommitIndex, RuntimeError> {
+        let encoded = bundle
+            .encode_canonical()
+            .map_err(RuntimeError::PodEvidence)?;
+        self.commit(LedgerEvent::PodEvidenceCommitted {
+            session_id: bundle.session_id.clone(),
+            trace_id: bundle.trace_id.clone(),
+            manifest_digest: bundle.manifest_digest,
+            artifact_digest: bundle.artifact_digest,
+            generation: bundle.generation,
+            revision: bundle.revision,
+            bundle_digest: bundle.bundle_digest,
+            bundle: encoded,
+        })
     }
 
     /// Settling or reconciling an attempt is the act that ends a fence, so it
@@ -807,6 +2274,281 @@ impl PtrRuntime {
                 }
                 Ok(())
             }
+            LedgerEvent::ScopeLifecycle(event) => {
+                if event.revision != self.revision() {
+                    return Err(RuntimeError::ScopeRevisionMismatch {
+                        expected: self.revision(),
+                        actual: event.revision,
+                    });
+                }
+                self.scopes
+                    .validate_committed(event)
+                    .map_err(RuntimeError::Scope)
+            }
+            LedgerEvent::ProtectedStateCommitted {
+                domain,
+                logical_id,
+                revision,
+                plaintext_digest,
+                ciphertext_digest,
+                anchor_digest,
+                ..
+            } => {
+                if *domain > 4
+                    || logical_id.is_empty()
+                    || revision.0 == 0
+                    || *plaintext_digest == [0; 32]
+                    || *ciphertext_digest == [0; 32]
+                    || *anchor_digest == [0; 32]
+                {
+                    return Err(RuntimeError::InvalidConfig(
+                        "invalid protected-state ledger reference".into(),
+                    ));
+                }
+                Ok(())
+            }
+            LedgerEvent::MeshTunnelLifecycle(event) => event.validate().map_err(|reason| {
+                RuntimeError::InvalidConfig(format!("invalid mesh event: {reason}"))
+            }),
+            LedgerEvent::ExecutionManifestAdmitted {
+                manifest_digest,
+                generation,
+                revision,
+                policy_revision,
+                manifest,
+            } => {
+                let decoded =
+                    ptr_pods::ExecutionManifest::decode_canonical(manifest).map_err(|_| {
+                        RuntimeError::InvalidConfig("invalid execution manifest".into())
+                    })?;
+                if decoded.manifest_digest != *manifest_digest
+                    || decoded.generation != *generation
+                    || decoded.snapshot_revision != *revision
+                    || decoded.policy_revision != *policy_revision
+                {
+                    return Err(RuntimeError::InvalidConfig(
+                        "execution manifest event binding mismatch".into(),
+                    ));
+                }
+                Ok(())
+            }
+            LedgerEvent::ExecutionManifestRevoked {
+                manifest_digest,
+                generation,
+                revision,
+            } => {
+                if *manifest_digest == [0; 32] || generation.0 == 0 {
+                    return Err(RuntimeError::InvalidConfig(
+                        "invalid execution manifest revocation".into(),
+                    ));
+                }
+                if *revision != self.revision() {
+                    return Err(RuntimeError::ScopeRevisionMismatch {
+                        expected: self.revision(),
+                        actual: *revision,
+                    });
+                }
+                Ok(())
+            }
+            LedgerEvent::PodEvidenceCommitted {
+                session_id,
+                trace_id,
+                manifest_digest,
+                artifact_digest,
+                generation,
+                revision,
+                bundle_digest,
+                bundle,
+            } => {
+                let decoded = ptr_pods::PodEvidenceBundle::decode_canonical(bundle)
+                    .map_err(RuntimeError::PodEvidence)?;
+                if decoded.session_id != *session_id
+                    || decoded.trace_id != *trace_id
+                    || decoded.manifest_digest != *manifest_digest
+                    || decoded.artifact_digest != *artifact_digest
+                    || decoded.generation != *generation
+                    || decoded.revision != *revision
+                    || decoded.bundle_digest != *bundle_digest
+                {
+                    return Err(RuntimeError::PodEvidence(
+                        ptr_pods::EvidenceError::DigestMismatch,
+                    ));
+                }
+                Ok(())
+            }
+            LedgerEvent::PodOutputAdmitted {
+                request_id,
+                session_id,
+                scope_id,
+                pod_id,
+                manifest_digest,
+                artifact_digest,
+                generation,
+                revision: _,
+                output_kind,
+                output_type,
+                output_digest,
+                verification,
+            } => {
+                if request_id.0.is_empty()
+                    || session_id.0.is_empty()
+                    || scope_id.0.is_empty()
+                    || pod_id.0.is_empty()
+                    || output_type.0.is_empty()
+                    || generation.0 == 0
+                    || *output_kind > 7
+                    || *manifest_digest == [0; 32]
+                    || *artifact_digest == [0; 32]
+                    || *output_digest == [0; 32]
+                    || verification.verifiers.is_empty()
+                {
+                    return Err(RuntimeError::PodOutputAdmission(
+                        "invalid Pod output admission event".into(),
+                    ));
+                }
+                Ok(())
+            }
+            LedgerEvent::PodHypothesisCommitted {
+                request_id,
+                session_id,
+                scope_id,
+                branch_id,
+                pod_id,
+                manifest_digest,
+                artifact_digest,
+                generation,
+                revision,
+                output_type,
+                output_digest,
+                payload,
+                provenance,
+                dependencies,
+                confidence_bits,
+                verification,
+                ..
+            } => {
+                if request_id.0.is_empty()
+                    || session_id.0.is_empty()
+                    || scope_id.0.is_empty()
+                    || branch_id.is_empty()
+                    || pod_id.0.is_empty()
+                    || output_type.0.is_empty()
+                    || generation.0 == 0
+                    || *manifest_digest == [0; 32]
+                    || *artifact_digest == [0; 32]
+                    || *output_digest == [0; 32]
+                    || provenance.iter().any(|(source, _)| source.is_empty())
+                    || dependencies.contains(&[0; 32])
+                    || !f32::from_bits(*confidence_bits).is_finite()
+                    || !(0.0..=1.0).contains(&f32::from_bits(*confidence_bits))
+                    || verification.verifiers.is_empty()
+                {
+                    return Err(RuntimeError::PodOutputAdmission(
+                        "invalid Pod hypothesis event".into(),
+                    ));
+                }
+                let output = ptr_pods::PodOutput {
+                    kind: PodOutputKind::Hypothesis,
+                    payload: TypedPayload {
+                        type_id: output_type.clone(),
+                        bytes: payload.clone(),
+                    },
+                    generation: *generation,
+                    manifest_digest: *manifest_digest,
+                    artifact_digest: *artifact_digest,
+                    provenance: provenance
+                        .iter()
+                        .map(|(source, note)| ProvenanceRef {
+                            source: EvidenceId(source.clone()),
+                            note: note.clone(),
+                        })
+                        .collect(),
+                    dependencies: dependencies.clone(),
+                    revision: *revision,
+                    verified: false,
+                };
+                if output.digest() != *output_digest {
+                    return Err(RuntimeError::PodOutputAdmission(
+                        "hypothesis output digest mismatch".into(),
+                    ));
+                }
+                Ok(())
+            }
+            LedgerEvent::PolicyBundleActivated {
+                revision,
+                key_id,
+                bundle_digest,
+                bundle,
+            } => {
+                if revision.0 == 0 || key_id.is_empty() || *bundle_digest == [0; 32] {
+                    return Err(RuntimeError::InvalidConfig(
+                        "invalid policy activation".into(),
+                    ));
+                }
+                let decoded =
+                    policy::SignedPolicyBundle::decode_for_ledger(bundle).map_err(|error| {
+                        RuntimeError::InvalidConfig(format!("invalid policy bundle: {error:?}"))
+                    })?;
+                if decoded.revision != *revision
+                    || decoded.key_id != *key_id
+                    || decoded.payload_digest != *bundle_digest
+                {
+                    return Err(RuntimeError::InvalidConfig(
+                        "policy activation binding mismatch".into(),
+                    ));
+                }
+                let mut projection = self
+                    .manifest_authority
+                    .read()
+                    .expect("manifest authority lock poisoned")
+                    .clone();
+                projection
+                    .activate_policy(*revision, *bundle_digest)
+                    .map_err(|error| {
+                        RuntimeError::InvalidConfig(format!("policy revision conflict: {error:?}"))
+                    })
+            }
+            LedgerEvent::PolicyBundleRevoked {
+                revision,
+                bundle_digest,
+                reason,
+            } => {
+                if revision.0 == 0 || *bundle_digest == [0; 32] || reason.is_empty() {
+                    return Err(RuntimeError::InvalidConfig(
+                        "invalid policy revocation".into(),
+                    ));
+                }
+                let projection = self
+                    .manifest_authority
+                    .read()
+                    .expect("manifest authority lock poisoned")
+                    .clone();
+                if projection.policy_digest(*revision) != Some(*bundle_digest) {
+                    return Err(RuntimeError::InvalidConfig(
+                        "policy revocation binding mismatch".into(),
+                    ));
+                }
+                Ok(())
+            }
+            LedgerEvent::SessionRevoked { session_id, reason } => {
+                if session_id.0.is_empty() || reason.is_empty() {
+                    return Err(RuntimeError::InvalidConfig(
+                        "invalid session revocation".into(),
+                    ));
+                }
+                if self.revoked_sessions.contains(session_id) {
+                    return Ok(());
+                }
+                Ok(())
+            }
+            LedgerEvent::TierBackendLifecycle { .. }
+            | LedgerEvent::TierObjectCommitted { .. }
+            | LedgerEvent::TierReplicaLifecycle { .. } => {
+                let mut projection = self.tier_journal.clone();
+                projection.apply(event).map_err(|error| {
+                    RuntimeError::InvalidConfig(format!("invalid tier journal event: {error:?}"))
+                })
+            }
             // Revocation tombstones are monotone and may precede activation.
             // Verifier/snapshot records do not confer permissions or load state.
             LedgerEvent::SemanticDeltaCommitted { .. }
@@ -906,6 +2648,172 @@ impl PtrRuntime {
                 };
                 self.execution.settle(*attempt, settlement);
             }
+            LedgerEvent::ScopeLifecycle(event) => {
+                self.scopes
+                    .apply_committed(event.clone())
+                    .map_err(RuntimeError::Scope)?;
+                self.emit(RuntimeEvent::ScopeLifecycle {
+                    scope: event.scope_id.clone(),
+                    kind: event.kind,
+                });
+            }
+            LedgerEvent::MeshTunnelLifecycle(_)
+            | LedgerEvent::PodEvidenceCommitted { .. }
+            | LedgerEvent::PodOutputAdmitted { .. } => {}
+            LedgerEvent::TierBackendLifecycle { .. }
+            | LedgerEvent::TierObjectCommitted { .. }
+            | LedgerEvent::TierReplicaLifecycle { .. } => {
+                self.tier_journal.apply(&committed.event).map_err(|error| {
+                    RuntimeError::InvalidConfig(format!("invalid committed tier event: {error:?}"))
+                })?;
+            }
+            LedgerEvent::PodHypothesisCommitted {
+                branch_id,
+                pod_id,
+                generation,
+                revision,
+                output_type,
+                payload,
+                provenance,
+                confidence_bits,
+                latency_millis,
+                verification,
+                ..
+            } => {
+                let hypothesis = PodHypothesis {
+                    branch_id: branch_id.clone(),
+                    pod_id: pod_id.clone(),
+                    generation: *generation,
+                    evidence: provenance
+                        .iter()
+                        .map(|(source, note)| ProvenanceRef {
+                            source: EvidenceId(source.clone()),
+                            note: note.clone(),
+                        })
+                        .collect(),
+                    output: TypedPayload {
+                        type_id: output_type.clone(),
+                        bytes: payload.clone(),
+                    },
+                    confidence: Probability::new(f32::from_bits(*confidence_bits)).ok_or_else(
+                        || RuntimeError::PodOutputAdmission("invalid hypothesis confidence".into()),
+                    )?,
+                    latency: Duration::from_millis(*latency_millis),
+                    verification: ptr_verifier::VerificationReport {
+                        status: VerificationStatus::Pass,
+                        level: verification.level,
+                        score: Probability::new(1.0).expect("one is a probability"),
+                        findings: verification
+                            .findings
+                            .iter()
+                            .map(|code| ptr_verifier::Finding {
+                                code: code.clone(),
+                                message: String::new(),
+                                hard: false,
+                            })
+                            .collect(),
+                    },
+                };
+                if self
+                    .hypotheses
+                    .insert(branch_id.clone(), hypothesis)
+                    .is_some()
+                {
+                    return Err(RuntimeError::PodOutputAdmission(
+                        "duplicate hypothesis branch".into(),
+                    ));
+                }
+                let _ = revision;
+            }
+            LedgerEvent::ExecutionManifestAdmitted { manifest, .. } => {
+                let decoded =
+                    ptr_pods::ExecutionManifest::decode_canonical(manifest).map_err(|_| {
+                        RuntimeError::InvalidConfig("invalid execution manifest".into())
+                    })?;
+                self.execution_manifests
+                    .write()
+                    .expect("manifest registry lock poisoned")
+                    .admit_replayed(decoded, self.revision())
+                    .map_err(|_| {
+                        RuntimeError::InvalidConfig("manifest registry conflict".into())
+                    })?;
+                let decoded =
+                    ptr_pods::ExecutionManifest::decode_canonical(manifest).map_err(|_| {
+                        RuntimeError::InvalidConfig("invalid execution manifest".into())
+                    })?;
+                self.manifest_authority
+                    .write()
+                    .expect("manifest authority lock poisoned")
+                    .observe_manifest(&decoded)
+                    .map_err(|_| {
+                        RuntimeError::InvalidConfig("manifest authority conflict".into())
+                    })?;
+            }
+            LedgerEvent::ExecutionManifestRevoked {
+                manifest_digest, ..
+            } => {
+                self.execution_manifests
+                    .write()
+                    .expect("manifest registry lock poisoned")
+                    .revoke(*manifest_digest)
+                    .map_err(|_| {
+                        RuntimeError::InvalidConfig("unknown manifest revocation".into())
+                    })?;
+            }
+            LedgerEvent::PolicyBundleActivated {
+                revision,
+                bundle_digest,
+                ..
+            } => {
+                self.manifest_authority
+                    .write()
+                    .expect("manifest authority lock poisoned")
+                    .activate_policy(*revision, *bundle_digest)
+                    .map_err(|error| {
+                        RuntimeError::InvalidConfig(format!(
+                            "policy activation conflict: {error:?}"
+                        ))
+                    })?;
+                self.policy_authority_ready = true;
+            }
+            LedgerEvent::PolicyBundleRevoked { revision, .. } => {
+                self.manifest_authority
+                    .write()
+                    .expect("manifest authority lock poisoned")
+                    .revoke_policy(*revision)
+                    .map_err(|error| {
+                        RuntimeError::InvalidConfig(format!(
+                            "policy revocation conflict: {error:?}"
+                        ))
+                    })?;
+                self.policy_authority_ready = self
+                    .manifest_authority
+                    .read()
+                    .expect("manifest authority lock poisoned")
+                    .current_policy_revision()
+                    .0
+                    != 0;
+            }
+            LedgerEvent::SessionRevoked { session_id, .. } => {
+                self.revoked_sessions.insert(session_id.clone());
+            }
+            LedgerEvent::ProtectedStateCommitted {
+                domain: 3,
+                revision,
+                plaintext_digest,
+                ..
+            } => {
+                self.manifest_authority
+                    .write()
+                    .expect("manifest authority lock poisoned")
+                    .register_protected_snapshot(*revision, *plaintext_digest)
+                    .map_err(|error| {
+                        RuntimeError::InvalidConfig(format!(
+                            "protected snapshot authority conflict: {error:?}"
+                        ))
+                    })?;
+            }
+            LedgerEvent::ProtectedStateCommitted { .. } => {}
         }
 
         self.state.apply(committed);

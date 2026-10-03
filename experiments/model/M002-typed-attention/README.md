@@ -28,3 +28,14 @@ remain descriptive only; see [RESULTS.md](../../../research/falsification/A0-abl
 The historical implementation also left non-live attributes visible through raw
 tokens. Fixing admission requires a new frozen study and new training; it does not
 validate the archived runs. The matched baseline comparison remains planned.
+
+## Current evidence gate audit
+
+On 2026-10-01 the frozen operator-routing dataset reproduced with data FNV-1a-64
+`0ad71688f09b0d0d`; `score.py agree` matched all 36,000 records, and the A0
+T7/T8 self-test passed. The Burn harness now also has a `paired` phase that
+trains one A0 arm and the matched plain baseline in one atomic process, with the
+same seed, optimizer, steps and learning rate. A two-step M002 smoke run passed.
+The manifest remains **planned** until a clean freeze commit can bind the new
+entrypoint, dataset provenance and baseline digest without relabeling archived
+A0 records. M002 remains **INCONCLUSIVE/NO-GO for claims**.

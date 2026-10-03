@@ -90,6 +90,7 @@ fn a_draw_is_distinct_reproducible_and_covers_every_stratum() {
 }
 
 #[test]
+#[allow(clippy::manual_is_multiple_of)]
 fn forgotten_samples_are_drawn_far_more_often_than_retained_ones() {
     let ids: Vec<String> = (0..40).map(|i| format!("s{i}")).collect();
     let mut pool = ReplayPool::new(params()).unwrap();

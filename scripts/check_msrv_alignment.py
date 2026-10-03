@@ -85,13 +85,13 @@ def declared_rust_version(manifest: Path, root: Path):
         inherited = load(enclosing).get("workspace", {}).get("package", {}).get("rust-version")
         if inherited is None:
             return None, None
-        return inherited, f"{enclosing.relative_to(root)} [workspace.package]"
+        return inherited, f"{enclosing.relative_to(root).as_posix()} [workspace.package]"
     if value is not None:
-        return value, f"{manifest.relative_to(root)} [package]"
+        return value, f"{manifest.relative_to(root).as_posix()} [package]"
     # A virtual workspace root carries its MSRV in `[workspace.package]`.
     own = document.get("workspace", {}).get("package", {}).get("rust-version")
     if own is not None:
-        return own, f"{manifest.relative_to(root)} [workspace.package]"
+        return own, f"{manifest.relative_to(root).as_posix()} [workspace.package]"
     return None, None
 
 
@@ -127,25 +127,28 @@ def check(root: Path) -> tuple[list[str], list[str]]:
         try:
             msrv = load(clippy).get("msrv")
         except Exception as error:
-            errors.append(f"{clippy.relative_to(root)}: unreadable: {error}")
+            errors.append(f"{clippy.relative_to(root).as_posix()}: unreadable: {error}")
             continue
         if msrv is None:
             continue
         try:
             same = parse_version(msrv) == parse_version(version)
         except ValueError as error:
-            errors.append(f"{clippy.relative_to(root)}: unparseable version: {error}")
+            errors.append(
+                f"{clippy.relative_to(root).as_posix()}: unparseable version: {error}"
+            )
             continue
-        where = manifest.relative_to(root)
+        where = manifest.relative_to(root).as_posix()
+        clippy_where = clippy.relative_to(root).as_posix()
         if not same:
             errors.append(
-                f"{where}: linted at msrv {msrv} from {clippy.relative_to(root)} "
+                f"{where}: linted at msrv {msrv} from {clippy_where} "
                 f"but rust-version {version} from {source} - every lint whose "
                 "suggestion needs a newer compiler is suppressed, and clippy's own "
                 "notice about it is not a lint, so -D warnings cannot catch it"
             )
         else:
-            checked.append(f"{where}: {version} == {msrv} ({clippy.relative_to(root)})")
+            checked.append(f"{where}: {version} == {msrv} ({clippy_where})")
     return errors, checked
 
 
