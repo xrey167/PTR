@@ -3716,9 +3716,9 @@
      ]
     },
     {
-     "loc": 2574,
+     "loc": 2699,
      "doc": "",
-     "tests": 13,
+     "tests": 15,
      "items": [
       {
        "kind": "enum",
@@ -3751,6 +3751,14 @@
       {
        "kind": "const",
        "name": "MAX_REBASED_KEYS"
+      },
+      {
+       "kind": "const",
+       "name": "MAX_HYPOTHESIS_PROVENANCE"
+      },
+      {
+       "kind": "const",
+       "name": "MAX_HYPOTHESIS_DEPENDENCIES"
       },
       {
        "kind": "const",
@@ -4195,8 +4203,8 @@
     },
     {
      "path": "tests/pod_output.rs",
-     "loc": 85,
-     "tests": 2
+     "loc": 234,
+     "tests": 4
     },
     {
      "path": "tests/protected_anchor.rs",
@@ -4234,9 +4242,9 @@
      "tests": 2
     }
    ],
-   "src_loc": 6144,
-   "src_tests": 19,
-   "integration_tests": 99,
+   "src_loc": 6269,
+   "src_tests": 21,
+   "integration_tests": 101,
    "used_by": [
     "ptr-bench",
     "ptr-cluster",
@@ -4976,7 +4984,7 @@
      "declared": []
     },
     {
-     "loc": 276,
+     "loc": 321,
      "doc": "",
      "tests": 0,
      "items": [
@@ -5253,8 +5261,8 @@
    "test_files": [
     {
      "path": "tests/retention.rs",
-     "loc": 372,
-     "tests": 15
+     "loc": 545,
+     "tests": 21
     },
     {
      "path": "tests/smoke.rs",
@@ -5262,9 +5270,9 @@
      "tests": 1
     }
    ],
-   "src_loc": 1211,
+   "src_loc": 1256,
    "src_tests": 0,
-   "integration_tests": 16,
+   "integration_tests": 22,
    "used_by": [
     "ptr-runtime"
    ],
@@ -5565,7 +5573,7 @@
      ]
     },
     {
-     "loc": 271,
+     "loc": 291,
      "doc": "",
      "tests": 0,
      "items": [
@@ -5695,7 +5703,7 @@
      "declared": []
     },
     {
-     "loc": 438,
+     "loc": 605,
      "doc": "",
      "tests": 0,
      "items": [
@@ -5766,6 +5774,10 @@
       {
        "kind": "struct",
        "name": "ReferenceMeshTunnelExecutor"
+      },
+      {
+       "kind": "fn",
+       "name": "active_peer"
       }
      ],
      "uses": [],
@@ -5782,8 +5794,8 @@
     },
     {
      "path": "tests/mesh.rs",
-     "loc": 70,
-     "tests": 3
+     "loc": 269,
+     "tests": 9
     },
     {
      "path": "tests/peers.rs",
@@ -5797,13 +5809,13 @@
     },
     {
      "path": "tests/tunnel.rs",
-     "loc": 99,
-     "tests": 5
+     "loc": 581,
+     "tests": 26
     }
    ],
-   "src_loc": 1182,
+   "src_loc": 1369,
    "src_tests": 0,
-   "integration_tests": 19,
+   "integration_tests": 46,
    "used_by": [
     "ptr-cluster",
     "ptr-execwire",
@@ -7095,7 +7107,7 @@
      "declared": []
     },
     {
-     "loc": 611,
+     "loc": 614,
      "doc": "",
      "tests": 0,
      "items": [
@@ -7190,7 +7202,7 @@
      "declared": []
     },
     {
-     "loc": 75,
+     "loc": 78,
      "doc": "",
      "tests": 0,
      "items": [
@@ -8220,7 +8232,7 @@
      "declared": []
     },
     {
-     "loc": 123,
+     "loc": 147,
      "doc": "",
      "tests": 0,
      "items": [
@@ -8288,8 +8300,8 @@
     },
     {
      "path": "tests/evidence.rs",
-     "loc": 119,
-     "tests": 5
+     "loc": 137,
+     "tests": 6
     },
     {
      "path": "tests/kv.rs",
@@ -8323,8 +8335,8 @@
     },
     {
      "path": "tests/semantic.rs",
-     "loc": 405,
-     "tests": 12
+     "loc": 473,
+     "tests": 15
     },
     {
      "path": "tests/smoke.rs",
@@ -8337,9 +8349,9 @@
      "tests": 8
     }
    ],
-   "src_loc": 7183,
+   "src_loc": 7213,
    "src_tests": 0,
-   "integration_tests": 81,
+   "integration_tests": 85,
    "used_by": [
     "ptr-podwire",
     "ptr-router",
@@ -9288,9 +9300,9 @@
      "declared": []
     },
     {
-     "loc": 1433,
+     "loc": 1479,
      "doc": "Scoped, verifier-bound synchronous effect dispatch for a trusted embedding host.  The host authenticates principals and installs grants/adapters; a model never receives admin access. Handles are process-local capabilities, not wire tokens.",
-     "tests": 3,
+     "tests": 4,
      "items": [
       {
        "kind": "const",
@@ -9438,6 +9450,10 @@
       },
       {
        "kind": "fn",
+       "name": "has_replayable_settlement"
+      },
+      {
+       "kind": "fn",
        "name": "key_in_flight"
       },
       {
@@ -9494,6 +9510,10 @@
       },
       {
        "kind": "fn",
+       "name": "is_usable_execution_key"
+      },
+      {
+       "kind": "fn",
        "name": "unsettled_effects"
       },
       {
@@ -9535,9 +9555,9 @@
      ]
     },
     {
-     "loc": 681,
+     "loc": 952,
      "doc": "",
-     "tests": 7,
+     "tests": 13,
      "items": [
       {
        "kind": "enum",
@@ -9608,8 +9628,16 @@
        "name": "OidcIdentityAdapter"
       },
       {
+       "kind": "const",
+       "name": "DEFAULT_JWKS_REFRESH_COOLDOWN"
+      },
+      {
        "kind": "fn",
        "name": "new"
+      },
+      {
+       "kind": "fn",
+       "name": "with_refresh_cooldown"
       },
       {
        "kind": "fn",
@@ -9681,9 +9709,9 @@
      "declared": []
     },
     {
-     "loc": 2763,
+     "loc": 2980,
      "doc": "",
-     "tests": 0,
+     "tests": 2,
      "items": [
       {
        "kind": "struct",
@@ -9969,7 +9997,8 @@
       "scopes",
       "semantic",
       "tensor_kv",
-      "tier"
+      "tier",
+      "delta_payload_tests"
      ]
     },
     {
@@ -10638,7 +10667,7 @@
      "declared": []
     },
     {
-     "loc": 271,
+     "loc": 314,
      "doc": "",
      "tests": 0,
      "items": [
@@ -11291,7 +11320,7 @@
      "declared": []
     },
     {
-     "loc": 1724,
+     "loc": 1733,
      "doc": "",
      "tests": 0,
      "items": [
@@ -11526,8 +11555,8 @@
     },
     {
      "path": "tests/at_most_once_keys.rs",
-     "loc": 1224,
-     "tests": 18
+     "loc": 1269,
+     "tests": 20
     },
     {
      "path": "tests/branch_merge.rs",
@@ -11590,6 +11619,11 @@
      "tests": 6
     },
     {
+     "path": "tests/identity_refresh.rs",
+     "loc": 238,
+     "tests": 8
+    },
+    {
      "path": "tests/kv_authority.rs",
      "loc": 285,
      "tests": 5
@@ -11631,8 +11665,8 @@
     },
     {
      "path": "tests/output_admission.rs",
-     "loc": 313,
-     "tests": 6
+     "loc": 645,
+     "tests": 13
     },
     {
      "path": "tests/peer_admission.rs",
@@ -11641,8 +11675,8 @@
     },
     {
      "path": "tests/placement.rs",
-     "loc": 195,
-     "tests": 6
+     "loc": 283,
+     "tests": 10
     },
     {
      "path": "tests/pod_evidence.rs",
@@ -11731,8 +11765,8 @@
     },
     {
      "path": "tests/tier_journal.rs",
-     "loc": 222,
-     "tests": 4
+     "loc": 319,
+     "tests": 6
     },
     {
      "path": "tests/tier_kv_e2e.rs",
@@ -11750,9 +11784,9 @@
      "tests": 16
     }
    ],
-   "src_loc": 14117,
-   "src_tests": 28,
-   "integration_tests": 343,
+   "src_loc": 14703,
+   "src_tests": 37,
+   "integration_tests": 366,
    "used_by": [
     "ptr-bench",
     "ptr-execwire",
@@ -12338,7 +12372,7 @@
    },
    "modules": [
     {
-     "loc": 386,
+     "loc": 452,
      "doc": "",
      "tests": 0,
      "items": [
@@ -12373,6 +12407,18 @@
       {
        "kind": "const",
        "name": "MAX_DEMO_NOTE_BYTES"
+      },
+      {
+       "kind": "const",
+       "name": "MAX_REQUEST_ID_BYTES"
+      },
+      {
+       "kind": "const",
+       "name": "MAX_REQUEST_TEXT_BYTES"
+      },
+      {
+       "kind": "const",
+       "name": "MAX_REQUEST_BODY_BYTES"
       },
       {
        "kind": "struct",
@@ -12435,19 +12481,24 @@
    ],
    "test_files": [
     {
-     "path": "tests/http.rs",
-     "loc": 63,
+     "path": "tests/effects_regression.rs",
+     "loc": 204,
      "tests": 3
     },
     {
-     "path": "tests/smoke.rs",
-     "loc": 243,
+     "path": "tests/http.rs",
+     "loc": 98,
      "tests": 4
+    },
+    {
+     "path": "tests/smoke.rs",
+     "loc": 364,
+     "tests": 5
     }
    ],
-   "src_loc": 386,
+   "src_loc": 452,
    "src_tests": 0,
-   "integration_tests": 7,
+   "integration_tests": 12,
    "used_by": [
     "ptrd"
    ],
@@ -12708,7 +12759,7 @@
      ]
     },
     {
-     "loc": 135,
+     "loc": 146,
      "doc": "",
      "tests": 0,
      "items": [
@@ -12902,8 +12953,8 @@
    "test_files": [
     {
      "path": "tests/opendal_tier.rs",
-     "loc": 69,
-     "tests": 2
+     "loc": 139,
+     "tests": 5
     },
     {
      "path": "tests/protected.rs",
@@ -12926,9 +12977,9 @@
      "tests": 1
     }
    ],
-   "src_loc": 1554,
+   "src_loc": 1565,
    "src_tests": 0,
-   "integration_tests": 16,
+   "integration_tests": 19,
    "used_by": [
     "ptr-pods",
     "ptr-runtime"
@@ -13390,9 +13441,9 @@
      "declared": []
     },
     {
-     "loc": 426,
+     "loc": 469,
      "doc": "",
-     "tests": 4,
+     "tests": 5,
      "items": [
       {
        "kind": "struct",
@@ -13665,8 +13716,8 @@
      "tests": 1
     }
    ],
-   "src_loc": 2932,
-   "src_tests": 33,
+   "src_loc": 2975,
+   "src_tests": 34,
    "integration_tests": 42,
    "used_by": [
     "ptr-bench",
