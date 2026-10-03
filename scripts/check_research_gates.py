@@ -3006,6 +3006,14 @@ def m002_v6_successor_freeze_errors(root: Path, experiment: Path, manifest: dict
 M002_V7_ARM_PAIR = "factorized-v2-v7,factorized-v2-off-v7"
 
 
+M002_ENTRYPOINT_FLAGS = (
+    ("--rank", "<rank>"),
+    ("--bias-limit", "<bias_limit>"),
+    ("--metadata-dropout", "<metadata_dropout>"),
+    ("--folds", "<folds>"),
+)
+
+
 def m002_versioned_runner_binding_errors(
     root: Path, config: dict, manifest: dict, experiment_id: str, arm_pair: str
 ) -> list[str]:
@@ -3017,6 +3025,13 @@ def m002_versioned_runner_binding_errors(
     required_command = f"--experiment {experiment_id} --arms {arm_pair}"
     if not isinstance(entrypoint, str) or required_command not in entrypoint:
         errors.append(f"{experiment_id}: entrypoint must select its exact versioned runner pair")
+    # Each frozen architecture value reaches the runner only through its flag. A
+    # flag dropped from the entrypoint would let the runner fall back to its own
+    # default (rank 16, bias limit 2.0, metadata dropout 0.10) and waste a full
+    # run before the aggregator noticed.
+    for flag, placeholder in M002_ENTRYPOINT_FLAGS:
+        if not isinstance(entrypoint, str) or f"{flag} {placeholder}" not in entrypoint:
+            errors.append(f"{experiment_id}: entrypoint must pass {flag} {placeholder}")
     sources = {}
     for key in ("runner_arm_table", "runner_main"):
         relative = config.get(key)

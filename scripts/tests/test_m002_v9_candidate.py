@@ -12,7 +12,9 @@ MANIFEST = {
     "status": "prepared",
     "entrypoint": (
         "cargo run -- --phase paired-v5 --experiment M002-v9 "
-        "--arms factorized-v2-v9,factorized-v2-off-v9"
+        "--arms factorized-v2-v9,factorized-v2-off-v9 "
+        "--folds <folds> --rank <rank> --bias-limit <bias_limit> "
+        "--metadata-dropout <metadata_dropout>"
     ),
 }
 
@@ -62,6 +64,19 @@ class M002V9CandidateTests(unittest.TestCase):
                 ROOT, invalid, MANIFEST, "M002-v9", "factorized-v2-v9,factorized-v2-off-v9"
             )
         )
+
+    def test_entrypoint_must_pass_every_frozen_architecture_flag(self):
+        gates = load_module("m002_v9_flag_gate", ROOT / "scripts/check_research_gates.py")
+        config = tomllib.loads((CANDIDATE / "config.toml").read_text(encoding="utf-8"))["preregistration"]
+        manifest = tomllib.loads((CANDIDATE / "experiment.toml").read_text(encoding="utf-8"))
+        pair = "factorized-v2-v9,factorized-v2-off-v9"
+        self.assertEqual(gates.m002_versioned_runner_binding_errors(ROOT, config, manifest, "M002-v9", pair), [])
+        for flag, placeholder in gates.M002_ENTRYPOINT_FLAGS:
+            with self.subTest(flag=flag):
+                self.assertIn(f"{flag} {placeholder}", manifest["entrypoint"])
+                dropped = {**manifest, "entrypoint": manifest["entrypoint"].replace(f"{flag} {placeholder}", "")}
+                errors = gates.m002_versioned_runner_binding_errors(ROOT, config, dropped, "M002-v9", pair)
+                self.assertEqual(errors, [f"M002-v9: entrypoint must pass {flag} {placeholder}"])
 
     def test_adapter_restores_v9_identity_and_rejects_unknown_labels(self):
         v5_tests = load_module("m002_v5_fixture", ROOT / "scripts/tests/test_aggregate_m002_v5.py")
