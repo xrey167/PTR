@@ -17,7 +17,7 @@
 - MemoryClass taxonomy
 - SemanticCapsule with lifecycle/provenance/goal/constraint/known/hypothesis/unknown/relation fields
 - VerifiedProcedure scaffold with replay_verified flag
-- RawEvent carries a SHA-256 content digest and an optional tool call/result pair; validate_digest and validate_tool_pair reject tampered content and a result without a call
+- RawEvent carries a SHA-256 content digest and an optional tool call/result pair; validate_digest and validate_tool_pair return Result<(), RawEventError> and reject tampered content (DigestMismatch) and a result without a call (ToolResultWithoutCall)
 - KnowledgeStore (in memory) keeps raw events append-only: replaying the identical event is idempotent, reusing an id for different content is rejected as ConflictingRawEvent
 - KnowledgeObject generations are stored under (logical_id, generation) and are immutable: registering different content under an existing key fails with ConflictingKnowledgeGeneration; lifecycle changes are kept as separate revisioned LifecycleRecords, so content_digest() does not change on a lifecycle transition
 - KnowledgeStore::admit_object requires every raw source to be present and every dependency to name an existing, non-invalidated exact generation; a generation above 1 must supersede exactly the previous generation
