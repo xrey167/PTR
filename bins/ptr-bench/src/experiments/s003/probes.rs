@@ -120,6 +120,27 @@ struct Probes {
     notes: Vec<String>,
 }
 
+/// What a refused call must leave as it found it.
+#[derive(Debug, PartialEq, Eq)]
+struct Mark {
+    ledger_len: usize,
+    revision: u64,
+    values: BTreeMap<String, String>,
+    last_applied: u64,
+}
+
+impl Mark {
+    fn of(runtime: &PtrRuntime) -> Self {
+        let state = runtime.materialized_state();
+        Self {
+            ledger_len: runtime.committed_events().len(),
+            revision: runtime.revision().0,
+            values: state.values.clone(),
+            last_applied: state.last_applied,
+        }
+    }
+}
+
 fn already_merged(error: &RuntimeError) -> bool {
     matches!(error, RuntimeError::BranchAlreadyMerged { .. })
 }
@@ -176,6 +197,28 @@ impl Probes {
                 self.metrics.refusal_kind_mismatches += 1;
                 self.note(format!("{what}: refused as {error:?}"));
             }
+        }
+    }
+
+    /// `refused`, for a call on a runtime this probe holds: a refusal must also
+    /// leave the journal, the revision and the materialized entries as they
+    /// were. A call that is refused after it changed something is a failure
+    /// the refusal kind alone does not show.
+    fn refused_in<T: Debug>(
+        &mut self,
+        what: &str,
+        runtime: &mut PtrRuntime,
+        call: impl FnOnce(&mut PtrRuntime) -> Result<T, RuntimeError>,
+        expected: impl Fn(&RuntimeError) -> bool,
+        accepted: fn(&mut Metrics),
+    ) {
+        let before = Mark::of(runtime);
+        let result = call(runtime);
+        let refusal = result.is_err();
+        self.refused(what, result, expected, accepted);
+        if refusal && Mark::of(runtime) != before {
+            self.metrics.provenance_mismatches += 1;
+            self.note(format!("{what}: refused, but the runtime's state changed"));
         }
     }
 
@@ -238,8 +281,13 @@ impl Probes {
         Self::committed(&mut world, &attempt)?;
 
         self.metrics.probe_p1_exercised += 1;
-        let again = world.runtime.merge_branch(&attempt.sealed, triage(1.0));
-        self.refused("P1", again, already_merged, |m| m.double_merges += 1);
+        self.refused_in(
+            "P1",
+            &mut world.runtime,
+            |runtime| runtime.merge_branch(&attempt.sealed, triage(1.0)),
+            already_merged,
+            |m| m.double_merges += 1,
+        );
 
         let events = world.runtime.committed_events().to_vec();
         self.metrics.probe_p2_exercised += 1;
@@ -288,8 +336,13 @@ impl Probes {
         runtime
             .install_semantic_grant(grant(GrantKind::Auto))
             .map_err(|error| format!("{what}: {error:?}"))?;
-        let again = runtime.merge_branch(sealed, triage(1.0));
-        self.refused(what, again, already_merged, accepted);
+        self.refused_in(
+            what,
+            &mut runtime,
+            |runtime| runtime.merge_branch(sealed, triage(1.0)),
+            already_merged,
+            accepted,
+        );
         Ok(())
     }
 
@@ -390,16 +443,18 @@ impl Probes {
         unrelated.upserts.insert(keys::item(5, 5), Val::text("9"));
         world.host_write(&unrelated, "s003-probe")?;
         self.metrics.probe_p7_exercised += 1;
-        let result = world.runtime.merge_branch(
-            &stale.sealed,
-            MergeAuthority::Reviewed {
-                plan_digest: preview.plan_digest,
-                reviewer: PrincipalId::from(params::REVIEWER),
-            },
-        );
-        self.refused(
+        self.refused_in(
             "P7",
-            result,
+            &mut world.runtime,
+            |runtime| {
+                runtime.merge_branch(
+                    &stale.sealed,
+                    MergeAuthority::Reviewed {
+                        plan_digest: preview.plan_digest,
+                        reviewer: PrincipalId::from(params::REVIEWER),
+                    },
+                )
+            },
             |error| matches!(error, RuntimeError::MergePlanChanged { .. }),
             |m| m.approval_bypasses += 1,
         );
@@ -410,16 +465,18 @@ impl Probes {
             .preview_merge(&branch.sealed)
             .map_err(|error| format!("P8: the preview is refused: {error:?}"))?;
         self.metrics.probe_p8_exercised += 1;
-        let result = world.runtime.merge_branch(
-            &branch.sealed,
-            MergeAuthority::Reviewed {
-                plan_digest: preview.plan_digest,
-                reviewer: PrincipalId::from("intruder"),
-            },
-        );
-        self.refused(
+        self.refused_in(
             "P8",
-            result,
+            &mut world.runtime,
+            |runtime| {
+                runtime.merge_branch(
+                    &branch.sealed,
+                    MergeAuthority::Reviewed {
+                        plan_digest: preview.plan_digest,
+                        reviewer: PrincipalId::from("intruder"),
+                    },
+                )
+            },
             |error| matches!(error, RuntimeError::UnknownReviewer { .. }),
             |m| m.approval_bypasses += 1,
         );
@@ -463,14 +520,16 @@ impl Probes {
             keys::counter(0),
             Val::counter(params::COUNTER_START + 1_000, "s003-probe"),
         );
-        let result = world.runtime.apply_verified_semantic_delta(
-            world.runtime.revision(),
-            super::program::to_semantic_delta(&jump),
-            &PrincipalId::from("s003-probe"),
-        );
-        self.refused(
+        self.refused_in(
             "P13",
-            result,
+            &mut world.runtime,
+            |runtime| {
+                runtime.apply_verified_semantic_delta(
+                    runtime.revision(),
+                    super::program::to_semantic_delta(&jump),
+                    &PrincipalId::from("s003-probe"),
+                )
+            },
             |error| matches!(error, RuntimeError::SemanticVerificationRejected(_)),
             |m| m.ungated_commits += 1,
         );
@@ -574,14 +633,16 @@ impl Probes {
         delta
             .upserts
             .insert(key, SemanticValue::Text("forged".into()));
-        let result = world.runtime.apply_verified_semantic_delta(
-            world.runtime.revision(),
-            delta,
-            &PrincipalId::from("s003-probe"),
-        );
-        self.refused(
+        self.refused_in(
             "P14 host write",
-            result,
+            &mut world.runtime,
+            |runtime| {
+                runtime.apply_verified_semantic_delta(
+                    runtime.revision(),
+                    delta,
+                    &PrincipalId::from("s003-probe"),
+                )
+            },
             |error| matches!(error, RuntimeError::ReservedSemanticNamespace { .. }),
             |m| m.reserved_writes_accepted += 1,
         );
@@ -690,20 +751,22 @@ impl Probes {
             origin,
         };
         self.metrics.probe_p17_exercised += 1;
-        let legacy = runtime.commit(record(SemanticOrigin::Legacy));
-        self.refused(
+        self.refused_in(
             "P17 legacy",
-            legacy,
+            &mut runtime,
+            |runtime| runtime.commit(record(SemanticOrigin::Legacy)),
             |error| matches!(error, RuntimeError::SemanticRecordOutsideSemanticPath),
             |m| m.bypass_commits_accepted += 1,
         );
-        let host = runtime.commit(record(SemanticOrigin::Host {
-            principal: "s003-probe".into(),
-            verification: attestation(),
-        }));
-        self.refused(
+        self.refused_in(
             "P17 host",
-            host,
+            &mut runtime,
+            |runtime| {
+                runtime.commit(record(SemanticOrigin::Host {
+                    principal: "s003-probe".into(),
+                    verification: attestation(),
+                }))
+            },
             |error| matches!(error, RuntimeError::SemanticRecordOutsideSemanticPath),
             |m| m.bypass_commits_accepted += 1,
         );
@@ -716,14 +779,16 @@ impl Probes {
             )
             .map_err(|error| format!("P18: {error:?}"))?;
         self.metrics.probe_p18_exercised += 1;
-        let result = closed.apply_verified_semantic_delta(
-            closed.revision(),
-            delta.clone(),
-            &PrincipalId::from("s003-probe"),
-        );
-        self.refused(
+        self.refused_in(
             "P18",
-            result,
+            &mut closed,
+            |runtime| {
+                runtime.apply_verified_semantic_delta(
+                    runtime.revision(),
+                    delta.clone(),
+                    &PrincipalId::from("s003-probe"),
+                )
+            },
             |error| matches!(error, RuntimeError::HostWritesNotGranted),
             |m| m.bypass_commits_accepted += 1,
         );
@@ -731,10 +796,10 @@ impl Probes {
         // P19: a second grant.
         let mut world = self.fixture(GrantKind::Auto)?;
         self.metrics.probe_p19_exercised += 1;
-        let second = world.runtime.install_semantic_grant(grant(GrantKind::Auto));
-        self.refused(
+        self.refused_in(
             "P19",
-            second,
+            &mut world.runtime,
+            |runtime| runtime.install_semantic_grant(grant(GrantKind::Auto)),
             |error| matches!(error, RuntimeError::SemanticGrantInstalled),
             |m| m.bypass_commits_accepted += 1,
         );
@@ -747,10 +812,10 @@ impl Probes {
         let attempt = Self::attempt(&mut world, "p20", &add, None)?;
         let mut bare = PtrRuntime::new(config()).map_err(|error| format!("P20: {error:?}"))?;
         self.metrics.probe_p20_exercised += 1;
-        let result = bare.merge_branch(&attempt.sealed, triage(1.0));
-        self.refused(
+        self.refused_in(
             "P20",
-            result,
+            &mut bare,
+            |runtime| runtime.merge_branch(&attempt.sealed, triage(1.0)),
             |error| matches!(error, RuntimeError::NoSemanticGrant),
             |m| m.bypass_commits_accepted += 1,
         );
@@ -1208,6 +1273,64 @@ mod tests {
             metrics.conflicts, 4,
             "write skew, phantom, swap and set undo, and no more"
         );
+    }
+
+    fn bare_probes() -> Probes {
+        let case = Case::new(17, 0);
+        Probes {
+            genesis: case.genesis(),
+            seed: 17,
+            case: 0,
+            metrics: Metrics::default(),
+            notes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_refusal_that_changed_the_runtime_first_is_a_hard_failure() {
+        let mut probes = bare_probes();
+        let mut world = probes.fixture(GrantKind::Auto).expect("a world");
+        let add = Program::CounterAdd {
+            counter: 0,
+            amount: 3,
+        };
+        let attempt = Probes::attempt(&mut world, "p-mutate", &add, None).expect("an attempt");
+        // A faulty runtime: the merge lands, and the call still reports the
+        // refusal the probe expects.
+        probes.refused_in(
+            "mutating refusal",
+            &mut world.runtime,
+            |runtime| {
+                runtime
+                    .merge_branch(&attempt.sealed, triage(1.0))
+                    .expect("the fixture merge lands");
+                Err::<(), _>(RuntimeError::NoSemanticGrant)
+            },
+            |error| matches!(error, RuntimeError::NoSemanticGrant),
+            |m| m.bypass_commits_accepted += 1,
+        );
+        assert_eq!(probes.metrics.provenance_mismatches, 1);
+        assert!(
+            probes.notes[0].contains("state changed"),
+            "{:?}",
+            probes.notes
+        );
+    }
+
+    #[test]
+    fn a_refusal_that_left_the_runtime_alone_is_no_failure() {
+        let mut probes = bare_probes();
+        let mut world = probes.fixture(GrantKind::Auto).expect("a world");
+        probes.refused_in(
+            "second grant",
+            &mut world.runtime,
+            |runtime| runtime.install_semantic_grant(grant(GrantKind::Auto)),
+            |error| matches!(error, RuntimeError::SemanticGrantInstalled),
+            |m| m.bypass_commits_accepted += 1,
+        );
+        assert_eq!(probes.metrics.provenance_mismatches, 0);
+        assert_eq!(probes.metrics.bypass_commits_accepted, 0);
+        assert!(probes.notes.is_empty(), "{:?}", probes.notes);
     }
 
     #[test]
