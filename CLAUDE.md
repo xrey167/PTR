@@ -33,7 +33,7 @@ Experiments and evaluations: `python3 scripts/run_experiment.py validate`, `pyth
 
 ## Architecture
 
-The workspace members are `crates/ptr-*`, `bins/ptr-*`, `bins/ptrctl` and `bins/ptrd`. `fuzz`, `model/burn-a0` and `vendor/*` are excluded and are their own workspaces or vendored sources. `bins/` holds composition and bootstrap only; domain behavior belongs in `crates/`.
+The workspace members are `crates/ptr-*`, `bins/ptr-*`, `bins/ptrctl` and `bins/ptrd`. `fuzz`, `model/burn-a0` and `vendor/*` are excluded and are their own workspaces or vendored sources. `bins/` holds composition, bootstrap and binary-specific benchmark/experiment harnesses (for example the S003 `certified-branches` harness in `ptr-bench`); reusable domain behavior belongs in `crates/`.
 
 The request flow spans many crates, so read these together:
 
@@ -46,10 +46,10 @@ The request flow spans many crates, so read these together:
 
 Invariants in `docs/INVARIANTS.md` are binding: raw is never replaced by typed state, search never self-promotes to truth, uncommitted state is never authoritative, effects pass a hard security boundary requiring current revision/generation, queues are bounded, and a learned score cannot override a deterministic verifier contradiction. `docs/COMPONENT_CONTRACTS.md` and `docs/architecture/` hold the details. Backend-specific types must not leak into domain crates.
 
-## Conventions enforced by CI
+## Conventions and CI checks
 
 - **Docs-as-code freshness**: any change under `crates/<crate>/src/**` or `crates/<crate>/Cargo.toml` must also update `crates/<crate>/component.toml`. Then run `make docs` to refresh the generated README blocks and `docs/components/STATUS.md`. `scripts/check_component_metadata.py` checks this against the base commit.
-- Rust style is in `docs/RUST_API_STYLE.md` and testing layout in `docs/TESTING.md`. Key points: thin `lib.rs` facade, private by default (`pub(crate)` for internal contracts), typed request/option structs instead of ambiguous positional booleans or scalars, exhaustive `match` for closed states. `scripts/check_rust_conventions.py` has mechanical checks, for example on `check_`/`validate_`/`ensure_` function names, which should be fallible. Unit tests sit beside the code; integration tests in `tests/` use only the public API. Rustfmt width is 100.
+- Rust style is in `docs/RUST_API_STYLE.md` and testing layout in `docs/TESTING.md`. Key points: thin `lib.rs` facade, private by default (`pub(crate)` for internal contracts), typed request/option structs instead of ambiguous positional booleans or scalars, exhaustive `match` for closed states. These are repository guidance, not CI checks: `scripts/check_rust_conventions.py` only verifies that `check_`/`validate_`/`ensure_` functions return `Result` and that `tests/common` helpers contain no test annotations. Unit tests sit beside the code; integration tests in `tests/` use only the public API. Rustfmt width is 100.
 - Each crate has `component.toml`, `config.toml`, a README with a diagram and a `tests/` directory, and `scripts/check_repo.py` asserts this structure. Any new binary or crate must be a workspace member or an explicit exclusion in the root `Cargo.toml`.
 - `vendor/` holds patched upstream crates (see `docs/VENDOR_PATCH_POLICY.md`; integrity-checked by `scripts/check_vendor_integrity.py`). Do not edit them casually.
 - `.cargo/config.toml` must not contain an `[env]` table (`check_research_gates.py` rejects it); put machine-specific CUDA settings in the user-level Cargo config.
