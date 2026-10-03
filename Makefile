@@ -1,7 +1,7 @@
 .PHONY: check test fmt a0 a0-stable a0-msrv repo-check docs docs-check meta-check experiments-check evals-check msrv python-test manifest tree \
 	ci-local ci-quality ci-rust-stable ci-rust-msrv ci-python-training ci-repository-invariants \
 	ci-lifecycle-failpoints ci-ledger-raft-engine ci-ledger-raft-rs ci-state-turso ci-state-postgres \
-	ci-network-iroh ci-cluster-wire ci-execution-wire ci-pod-wire
+	ci-network-iroh ci-cluster-wire ci-execution-wire ci-pod-wire ci-storage-tiers
 
 # `model/burn-a0` is its own workspace, excluded from the root one, so every
 # `--workspace` target below reaches none of it. That is why `fmt` names it
@@ -92,7 +92,7 @@ tree:
 # burn-a0 workflow, which runs only when A0 or what it depends on changes.
 ci-local: ci-quality ci-rust-stable ci-rust-msrv ci-python-training ci-repository-invariants \
 	ci-lifecycle-failpoints ci-ledger-raft-engine ci-ledger-raft-rs ci-state-turso ci-state-postgres \
-	ci-network-iroh ci-cluster-wire ci-execution-wire ci-pod-wire
+	ci-network-iroh ci-cluster-wire ci-execution-wire ci-pod-wire ci-storage-tiers
 
 ci-quality:
 	cargo +stable fmt --all -- --check
@@ -184,6 +184,11 @@ ci-pod-wire:
 	cargo +stable clippy -p ptr-podwire --features podwire-backend --all-targets --locked -- -D warnings
 	rustup toolchain install 1.91.0 --profile minimal
 	cargo +1.91.0 test -p ptr-podwire --features podwire-backend --locked
+
+ci-storage-tiers:
+	cargo +stable test -p ptr-storage --features tier-opendal-fs --test opendal_tier --locked
+	cargo +stable check -p ptr-storage --features tier-opendal-fs,tier-opendal-s3 --locked
+	cargo +stable clippy -p ptr-storage --all-targets --features tier-opendal-fs,tier-opendal-s3 --locked -- -D warnings
 
 # Start a local PostgreSQL 16+ / pgvector service first. These defaults match CI's
 # disposable container; override them for your local disposable test database.
