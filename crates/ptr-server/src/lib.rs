@@ -48,6 +48,13 @@ pub const DEMO_NOTE_OPERATION: &str = "create";
 pub const DEMO_NOTE_CAPABILITY: &str = "demo.local-note.create";
 pub const DEMO_NOTE_INPUT_TYPE: &str = "ptr.demo-note.v1";
 pub const MAX_DEMO_NOTE_BYTES: usize = 4 * 1024;
+/// Longest accepted request id, in bytes.
+pub const MAX_REQUEST_ID_BYTES: usize = 256;
+/// Longest accepted request text, in bytes.
+pub const MAX_REQUEST_TEXT_BYTES: usize = 1024 * 1024;
+/// Largest accepted request body. Named here instead of inherited from the
+/// framework's default, so a dependency upgrade cannot change it silently.
+pub const MAX_REQUEST_BODY_BYTES: usize = 2 * 1024 * 1024;
 
 pub struct DemoNoteExecutor {
     data_dir: std::path::PathBuf,
@@ -238,6 +245,7 @@ fn router_with_state(state: ServerState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/v1/requests", post(request))
+        .layer(axum::extract::DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
         .with_state(state)
 }
 
@@ -274,6 +282,11 @@ async fn request(
 ) -> Result<Json<ApiResponse>, ApiError> {
     if input.id.trim().is_empty() || input.text.trim().is_empty() {
         return Err(ApiError::BadRequest("id and text must be non-empty".into()));
+    }
+    if input.id.len() > MAX_REQUEST_ID_BYTES || input.text.len() > MAX_REQUEST_TEXT_BYTES {
+        return Err(ApiError::BadRequest(format!(
+            "id must be at most {MAX_REQUEST_ID_BYTES} bytes and text at most {MAX_REQUEST_TEXT_BYTES}"
+        )));
     }
 
     // The same identifier rule the runtime applies before it will spend a key:

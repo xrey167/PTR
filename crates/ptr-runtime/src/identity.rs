@@ -238,6 +238,17 @@ pub struct ForwardAuthHeaders {
     pub authentication_level: AuthenticationLevel,
 }
 
+/// Builds an identity from forward-auth headers that a reverse proxy has
+/// already verified.
+///
+/// **Trust precondition.** The headers (and the JSON form accepted by
+/// [`IdentityProvider::authenticate`]) are not signed or otherwise bound to the
+/// proxy: this adapter only checks their shape and their expiry against the
+/// server clock. It is safe only when the embedding host guarantees that they
+/// can reach it exclusively from the trusted proxy, for example by listening
+/// on a private interface or behind mutual TLS, and that the proxy strips any
+/// copy of these headers a client sends itself. Use [`OidcIdentityAdapter`]
+/// where the credential must carry its own proof.
 pub struct AutheliaForwardAuthAdapter {
     pub issuer: String,
 }

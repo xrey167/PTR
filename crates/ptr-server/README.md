@@ -10,7 +10,7 @@
 
 **Maturity:** `prototype`  
 **Last reviewed:** 2026-10-03  
-**Code footprint:** 1 Rust source files · 432 nonblank source lines · 2 integration-test files · 8 test markers (`#[test]`, `#[tokio::test]`)
+**Code footprint:** 1 Rust source files · 445 nonblank source lines · 2 integration-test files · 9 test markers (`#[test]`, `#[tokio::test]`)
 
 ### Implemented now
 
@@ -51,7 +51,8 @@
 
 ### Current automated checks
 
-- scenario_backend_executes_demo_note_once_and_replays_receipt: ScenarioBackend writes the note once, a missing idempotency key is 400, a repeated key returns the same attempt/settlement indices, and the same key with a different request is 409; distinct_idempotency_keys_each_execute_and_malformed_keys_are_rejected_up_front: a second key executes and a blank key or one with edge whitespace is 400 before the model run, using the runtime's own identifier rule and no length cap of its own, so a retry under a long key an earlier build settled is still answered from its record. The receipt is the most recent settled attempt for the key paired with its own settlement. Whether a request ends in a mutation, and so needs a key, is only known after the model run
+- tests/http.rs: oversized_id_text_and_body_are_refused_before_the_runtime_sees_them
+- scenario_backend_executes_demo_note_once_and_replays_receipt: ScenarioBackend writes the note once, a missing idempotency key is 400, a repeated key returns the same attempt/settlement indices, and the same key with a different request is 409; distinct_idempotency_keys_each_execute_and_malformed_keys_are_rejected_up_front: a second key executes and request id and text are bounded (MAX_REQUEST_ID_BYTES 256, MAX_REQUEST_TEXT_BYTES 1 MiB, 400) and the body is capped at MAX_REQUEST_BODY_BYTES 2 MiB (413), stated here rather than inherited from the framework default; a blank key or one with edge whitespace is 400 before the model run, using the runtime's own identifier rule and no length cap of its own, so a retry under a long key an earlier build settled is still answered from its record. The receipt is the most recent settled attempt for the key paired with its own settlement. Whether a request ends in a mutation, and so needs a key, is only known after the model run
 - durable_restart_fences_open_effect_until_explicit_reconciliation: over a durable ledger holding an unsettled EffectAttempted, the same key is 409 after reopen and succeeds only after reconcile_effect
 - Axum health/request/bad-request HTTP integration tests matching TypeScript SDK contract
 - public ApiRequest smoke test
