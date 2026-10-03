@@ -29,11 +29,12 @@ use ptr_runtime::execution::RequiredVerification;
 use ptr_runtime::semantic::{pod_output_key, request_raw_key};
 use ptr_runtime::{
     HoldReason, MergeAuthority, MergeOutcome, PtrRuntime, RuntimeError, SemanticChange,
-    SemanticGrant,
+    SemanticGrant, SemanticGrantInfo,
 };
 use ptr_semdb::{SemanticDelta, SemanticPayload, SemanticValue};
 use ptr_types::{
-    CommitIndex, PodId, PrincipalId, Probability, RequestId, Revision, TypeId, VerificationLevel,
+    CommitIndex, Generation, PodId, PrincipalId, Probability, RequestId, Revision, TypeId,
+    VerificationLevel,
 };
 use ptr_verifier::{Finding, NamedVerifier, VerificationReport, VerificationStatus, Verifier};
 
@@ -120,23 +121,41 @@ struct Probes {
     notes: Vec<String>,
 }
 
-/// What a refused call must leave as it found it.
+/// What a refused call must leave as it found it: the whole journal (by a
+/// digest of its events, not only their number), the revision, the
+/// materialized entries, the installed grant, and the live and revoked
+/// generations. A call that replaced the grant or rewrote the lifecycle and
+/// was then refused changes none of the first four and still fails here.
 #[derive(Debug, PartialEq, Eq)]
 struct Mark {
-    ledger_len: usize,
+    journal: [u8; 32],
     revision: u64,
     values: BTreeMap<String, String>,
     last_applied: u64,
+    grant: Option<SemanticGrantInfo>,
+    live: Vec<(String, Generation)>,
+    revoked: Vec<(String, Generation)>,
 }
 
 impl Mark {
     fn of(runtime: &PtrRuntime) -> Self {
         let state = runtime.materialized_state();
         Self {
-            ledger_len: runtime.committed_events().len(),
+            journal: ptr_ledger::integrity::sha256(
+                format!("{:?}", runtime.committed_events()).as_bytes(),
+            ),
             revision: runtime.revision().0,
             values: state.values.clone(),
             last_applied: state.last_applied,
+            grant: runtime.semantic_grant(),
+            live: runtime
+                .live_generations()
+                .map(|(target, generation)| (target.to_string(), generation))
+                .collect(),
+            revoked: runtime
+                .revoked_generations()
+                .map(|(target, generation)| (target.to_string(), generation))
+                .collect(),
         }
     }
 }
@@ -1304,6 +1323,33 @@ mod tests {
                 runtime
                     .merge_branch(&attempt.sealed, triage(1.0))
                     .expect("the fixture merge lands");
+                Err::<(), _>(RuntimeError::NoSemanticGrant)
+            },
+            |error| matches!(error, RuntimeError::NoSemanticGrant),
+            |m| m.bypass_commits_accepted += 1,
+        );
+        assert_eq!(probes.metrics.provenance_mismatches, 1);
+        assert!(
+            probes.notes[0].contains("state changed"),
+            "{:?}",
+            probes.notes
+        );
+    }
+
+    #[test]
+    fn a_refusal_that_changed_only_the_installed_grant_is_a_hard_failure() {
+        let mut probes = bare_probes();
+        let mut runtime = PtrRuntime::new(PtrConfig::default()).expect("a runtime");
+        // A faulty runtime: the call installs a grant and still reports the
+        // refusal the probe expects. The journal, the revision and the entries
+        // are untouched, so only the grant tells.
+        probes.refused_in(
+            "grant-changing refusal",
+            &mut runtime,
+            |runtime| {
+                runtime
+                    .install_semantic_grant(grant(GrantKind::Auto))
+                    .expect("the first grant installs");
                 Err::<(), _>(RuntimeError::NoSemanticGrant)
             },
             |error| matches!(error, RuntimeError::NoSemanticGrant),

@@ -517,7 +517,9 @@ class PilotInputTests(unittest.TestCase):
         self.enterContext(mock.patch.object(aggregate, "validate_pilot_provenance"))
 
     def test_unmeasured_cells_cannot_supply_the_pilots_high_cell_minimum(self):
-        for attempts in (0, -1):
+        # Zero attempts are an unmeasured cell; a negative count is refused
+        # earlier, as a malformed measurement (see the matrix tests).
+        for attempts in (0,):
             with self.subTest(attempts=attempts), tempfile.TemporaryDirectory() as directory:
                 paths = [self.write(Path(directory), seed, TABLE) for seed in TABLE["pilot_seeds"]]
                 for path in paths:
@@ -607,6 +609,8 @@ class LayoutTests(unittest.TestCase):
             "boolean tasks": lambda case: case["runs"][1].update(no_change=False),
             "boolean agents": lambda case: case["runs"][0].update(agents=True),
             "missing attempts": lambda case: case["runs"][1].pop("attempts"),
+            "negative attempts": lambda case: case["runs"][1].update(attempts=-1),
+            "negative attempts on a baseline arm": lambda case: case["runs"][0].update(attempts=-1),
             "missing conflicts": lambda case: case["runs"][1].pop("conflicts"),
             "boolean lifecycle refusals": lambda case: case["runs"][1].update(lifecycle_refusals=True),
             "missing escalations": lambda case: case["runs"][2].pop("escalations"),
