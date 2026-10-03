@@ -2112,10 +2112,34 @@ impl PtrRuntime {
                                 pod,
                                 ..
                             },
+                        encoded_delta,
                         ..
                     },
                     5 | 7,
-                ) => origin_request == &request.request_id.0 && pod == &request.pod_id.0,
+                ) => {
+                    // The origin carries no output digest, so the promoted value
+                    // itself is compared with what this admission admitted.
+                    origin_request == &request.request_id.0
+                        && pod == &request.pod_id.0
+                        && ptr_semdb::SemanticDelta::decode(encoded_delta)
+                            .ok()
+                            .and_then(|delta| {
+                                delta
+                                    .upserts
+                                    .get(&semantic::pod_output_key(
+                                        &request.request_id,
+                                        &request.pod_id,
+                                    ))
+                                    .cloned()
+                            })
+                            .is_some_and(|value| match value {
+                                SemanticValue::Payload(payload) => {
+                                    payload.type_id == request.output.payload.type_id
+                                        && payload.bytes == request.output.payload.bytes
+                                }
+                                SemanticValue::Text(_) => false,
+                            })
+                }
                 _ => false,
             })
     }

@@ -556,3 +556,68 @@ fn a_promotion_written_before_the_admission_is_not_its_follow_up() {
         "the retry carries out its own promotion after the admission"
     );
 }
+
+#[test]
+fn a_later_promotion_with_another_payload_is_not_the_admissions_follow_up() {
+    let state_request = || {
+        let mut request = request(PodOutputKind::StateDelta);
+        request.request_id = RequestId::from("state");
+        request.output.verified = true;
+        request
+    };
+    let mut first = runtime_with_scope();
+    first
+        .ingest_text(RequestId::from("state"), "state input")
+        .unwrap();
+    first.admit_pod_output(state_request(), &Pass).unwrap();
+    let admission = first
+        .committed_events()
+        .iter()
+        .find(|committed| {
+            matches!(
+                committed.event,
+                ptr_ledger::LedgerEvent::PodOutputAdmitted { .. }
+            )
+        })
+        .unwrap()
+        .event
+        .clone();
+
+    let pod = ptr_pods::PodManifest {
+        project: ProjectId::from("project"),
+        id: ptr_types::PodId::from("pod"),
+        capabilities: vec![],
+        accepts: vec![TypeId::from("text")],
+        produces: vec![TypeId::from("text")],
+        effects: vec![ptr_types::Effect::Pure],
+        protocol_version: 1,
+    };
+    let mut runtime = runtime_with_scope();
+    runtime
+        .ingest_text(RequestId::from("state"), "state input")
+        .unwrap();
+    runtime.commit(admission).unwrap();
+    // After the admission, a promotion for the same request and Pod that carries
+    // some other output reaches the ledger through the public path.
+    runtime
+        .promote_verified_pod_output(
+            &RequestId::from("state"),
+            &pod,
+            &TypedPayload {
+                type_id: TypeId::from("text"),
+                bytes: b"another output".to_vec(),
+            },
+            &Pass,
+        )
+        .unwrap();
+
+    // The retry must still promote what was admitted.
+    runtime.admit_pod_output(state_request(), &Pass).unwrap();
+    let key = ptr_runtime::semantic::pod_output_key(
+        &RequestId::from("state"),
+        &ptr_types::PodId::from("pod"),
+    );
+    let snapshot = runtime.snapshot();
+    let promoted = snapshot.payload(&key).expect("a promoted value");
+    assert_eq!(promoted.bytes, b"observation".to_vec());
+}

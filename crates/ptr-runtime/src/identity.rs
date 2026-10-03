@@ -349,17 +349,23 @@ pub struct OidcIdentityAdapter {
 /// The token ids seen so far, indexed twice: by id for the replay check and by
 /// expiry for pruning, so dropping the expired ones visits only those and never
 /// walks the ids that are still live.
+///
+/// The latest time ever presented is kept as well. Pruning follows it and not
+/// the time of the call, so a clock that later reads earlier cannot make an id
+/// that was dropped look unused: a token that had already expired at the latest
+/// time seen is refused as a replay, because its id may no longer be here.
 #[derive(Default)]
 struct UsedTokenIds {
     expiry_by_id: BTreeMap<String, Timestamp>,
     ids_by_expiry: BTreeMap<Timestamp, Vec<String>>,
+    latest_seen: Timestamp,
 }
 
 impl UsedTokenIds {
-    /// Drops every id whose token has expired at `now`.
-    fn prune(&mut self, now: Timestamp) {
+    /// Drops every id whose token has expired at the latest time seen.
+    fn prune(&mut self) {
         while let Some(entry) = self.ids_by_expiry.first_entry() {
-            if *entry.key() > now {
+            if *entry.key() > self.latest_seen {
                 break;
             }
             for id in entry.remove() {
@@ -368,9 +374,12 @@ impl UsedTokenIds {
         }
     }
 
-    /// Records `id` until `expires`; false when it is already recorded.
-    fn insert(&mut self, id: String, expires: Timestamp) -> bool {
-        if self.expiry_by_id.contains_key(&id) {
+    /// Records `id` until `expires`, at the time `now`; false when it must be
+    /// treated as a replay.
+    fn insert(&mut self, id: String, expires: Timestamp, now: Timestamp) -> bool {
+        self.latest_seen = self.latest_seen.max(now);
+        self.prune();
+        if expires <= self.latest_seen || self.expiry_by_id.contains_key(&id) {
             return false;
         }
         self.expiry_by_id.insert(id.clone(), expires);
@@ -547,8 +556,7 @@ impl OidcIdentityAdapter {
         // corrected token carrying the same id would be rejected as a replay.
         if let Some(jti) = jti {
             let mut used = self.used_jti.lock().map_err(|_| OidcError::InvalidToken)?;
-            used.prune(now);
-            if !used.insert(jti, expires_at) {
+            if !used.insert(jti, expires_at, now) {
                 return Err(OidcError::TokenReplay);
             }
         }
@@ -955,6 +963,34 @@ mod tests {
         // Each token lives 5 s and one is seen per second: at most the few
         // still-valid ids may remain, not all 50.
         assert!(adapter.used_jti.lock().unwrap().len() <= 6);
+    }
+
+    #[test]
+    fn a_clock_that_runs_backwards_does_not_free_a_consumed_token_id() {
+        let key = SigningKey::from_bytes(&[42; 32]);
+        let adapter = adapter(&key);
+        let token_at = |jti: &str, exp: u64| {
+            token(
+                &key,
+                json!({"iss":"https://issuer","aud":"ptr","sub":"u","sid":"s",
+                       "iat":1,"exp":exp,"jti":jti}),
+            )
+        };
+        let a = token_at("a", 100);
+        let b = token_at("b", 200);
+        adapter
+            .authenticate_at(a.as_bytes(), Timestamp(50))
+            .unwrap();
+        // The clock reaches 150, where `a` has expired and its id is dropped ...
+        adapter
+            .authenticate_at(b.as_bytes(), Timestamp(150))
+            .unwrap();
+        // ... and then reads 50 again. `a` is not expired by that reading, but its
+        // id is gone, so it must not be accepted a second time.
+        assert_eq!(
+            adapter.authenticate_at(a.as_bytes(), Timestamp(50)),
+            Err(OidcError::TokenReplay)
+        );
     }
 
     #[test]
