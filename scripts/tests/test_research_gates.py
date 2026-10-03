@@ -4892,12 +4892,23 @@ class PreregistrationGateTests(unittest.TestCase):
                 spelled={"tree":f"{head}^{{tree}}","config":f"{head}:experiments/semdb/X900-fixture/config.toml",
                          "baseline subtree":f"{head}:research/baselines/fixture/lib"}[lost]
                 name=git(root,"rev-parse",spelled)
-                mod.listed_entry.cache_clear()
-                mod.object_bytes.cache_clear()
+                mod.clear_snapshot_caches()
                 (root/".git/objects"/name[:2]/name[2:]).unlink()
                 refused=mod.launch_commit_errors(root,"X900",head)
                 self.assertEqual(len(refused),1,refused)
                 self.assertTrue(refused[0].startswith(f"HEAD's history cannot be read in {root}: "),refused)
+
+    def test_cached_history_follows_head_without_clearing_the_caches(self):
+        # A history answer is cached, but only for the HEAD it was read at: a
+        # commit added afterwards in the same process is seen by the next query.
+        root=self.tree(status="running")
+        first=commit_all(root)
+        self.assertEqual(mod.history(root,"--format=%H","HEAD"),[first])
+        self.assertEqual(mod.descendants_of(root,first),set())
+        write(root,"NOTE.md","a later commit\n")
+        second=commit_all(root,"later")
+        self.assertEqual(mod.history(root,"--format=%H","HEAD"),[second,first])
+        self.assertEqual(mod.descendants_of(root,first),{second})
 
     def test_a_listed_experiment_is_reached_through_no_symlink(self):
         # Git holds a link as its target's path, so the history of the

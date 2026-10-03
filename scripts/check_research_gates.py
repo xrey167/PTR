@@ -1099,8 +1099,18 @@ def has_head(root: Path) -> bool:
     except experiment_records.ProvenanceError:
         return False
 
+def head_commit(root: Path) -> str:
+    """The commit HEAD names in the repository at `root`, or "" when it names
+    none or git cannot say: the part of a cached history answer that moves when
+    a commit is added."""
+    try:
+        listing=experiment_records.git(root,"rev-parse","--verify","--quiet","HEAD")
+    except experiment_records.ProvenanceError:
+        return ""
+    return listing.stdout.strip() if listing.returncode==0 else ""
+
 @functools.lru_cache(maxsize=512)
-def _history_cached(root: str, args: tuple[str, ...], literal: bool) -> tuple[str, ...]:
+def _history_cached(root: str, head: str, args: tuple[str, ...], literal: bool) -> tuple[str, ...]:
     """Run one immutable history query at most once per gate process.
 
     The gate asks the same path-scoped history questions from several
@@ -1131,7 +1141,7 @@ def history(root: Path, *args: str, literal: bool = True) -> list[str]:
     is false, when each carries the magic it names (`:(literal)`, `:(glob)`).
     Raises `HistoryUnreadable` when git cannot read it otherwise: a history
     read as empty would hide every freeze and record in it."""
-    return list(_history_cached(str(root), tuple(args), literal))
+    return list(_history_cached(str(root), head_commit(root), tuple(args), literal))
 
 def versions(root: Path, relative: str, start: str = "HEAD") -> list[tuple[str, dict]]:
     """Every commit on the history of `start` (HEAD unless named) that
@@ -1546,11 +1556,11 @@ def descendants_of(root: Path, commit: str) -> set[str]:
     commit, and none for each commit that might descend from it. Raises
     `HistoryUnreadable` when git cannot list them."""
     if FULL_COMMIT.fullmatch(commit):
-        return set(_descendants_of_cached(root,commit))
+        return set(_descendants_of_cached(root,commit,head_commit(root)))
     return _descendants_of_uncached(root,commit)
 
 @functools.lru_cache(maxsize=4096)
-def _descendants_of_cached(root: Path, commit: str) -> frozenset[str]:
+def _descendants_of_cached(root: Path, commit: str, head: str) -> frozenset[str]:
     return frozenset(_descendants_of_uncached(root,commit))
 
 def _descendants_of_uncached(root: Path, commit: str) -> set[str]:
