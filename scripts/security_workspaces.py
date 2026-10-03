@@ -46,11 +46,13 @@ def scanner_command(kind: str, manifest: Path, root: Path) -> list[str]:
         return ["cargo", "+stable", "audit", "--file",
                 str(manifest.with_name("Cargo.lock")), "--json"]
     if kind == "deny":
-        # cargo-deny 0.20 accepts the policy after `check`; putting it before
-        # the subcommand is rejected as an unknown root option.
+        # cargo-deny 0.20 (the version .github/workflows/security.yml installs):
+        # --config is a root option, before the subcommand. After `check` it is
+        # rejected ("unexpected argument '--config' found"), which failed the
+        # deny job for every workspace.
         return ["cargo", "+stable", "deny", "--format", "json",
-                "--manifest-path", str(manifest), "check", "--config",
-                str(root / "deny.toml")]
+                "--manifest-path", str(manifest), "--config",
+                str(root / "deny.toml"), "check"]
     raise ValueError(f"unsupported security scanner: {kind}")
 
 
