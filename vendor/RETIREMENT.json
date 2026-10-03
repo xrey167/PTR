@@ -255,6 +255,24 @@
       "class": "paste-alias",
       "upstream_observed": "0.8.1",
       "observed_at": "2026-09-21"
+    },
+    {
+      "name": "tokenizers",
+      "version": "0.22.2",
+      "directory": "vendor/tokenizers-0.22.2",
+      "workspace": "root",
+      "class": "paste-alias",
+      "upstream_observed": "1.0.0-rc.2",
+      "observed_at": "2026-10-03",
+      "upstream_retire_when": "satisfied",
+      "blocked_by": [
+        {
+          "name": "candle-core",
+          "version": "0.11.0",
+          "requirement": "^0.22.0",
+          "in_lockfile": true
+        }
+      ]
     }
   ]
 }

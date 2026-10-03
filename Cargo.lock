@@ -4893,14 +4893,12 @@ dependencies = [
 [[package]]
 name = "pulp"
 version = "0.22.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "046aa45b989642ec2e4717c8e72d677b13edd831a4d3b6cf37d9a3e54912496a"
 dependencies = [
  "bytemuck",
  "cfg-if",
  "libm",
  "num-complex",
- "paste",
+ "pastey",
  "pulp-wasm-simd-flag",
  "raw-cpuid",
  "reborrow",
@@ -6276,8 +6274,6 @@ checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 [[package]]
 name = "tokenizers"
 version = "0.22.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b238e22d44a15349529690fb07bd645cf58149a1b1e44d6cb5bd1641ff1a6223"
 dependencies = [
  "ahash",
  "aho-corasick",
@@ -6291,7 +6287,7 @@ dependencies = [
  "macro_rules_attribute",
  "monostate",
  "onig",
- "paste",
+ "pastey",
  "rand 0.9.5",
  "rayon",
  "rayon-cond",
