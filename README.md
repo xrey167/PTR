@@ -47,6 +47,7 @@ A PTR system keeps **raw language and typed semantics in parallel**, reasons ove
 
 ## Documentation map
 
+- [Project goal and next scientific gates](docs/GOAL.md)
 - [Technical architecture](docs/TECHNICAL_ARCHITECTURE.md)
 - [Architecture index](docs/architecture/README.md)
 - [Component index](docs/components/README.md)

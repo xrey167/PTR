@@ -1150,6 +1150,21 @@ impl PtrRuntime {
         self.live_generations.get(target).copied()
     }
 
+    /// Every lifecycle target and its current generation, ordered by target.
+    /// Revocation tombstones are exposed separately by [`Self::revoked_generations`].
+    pub fn live_generations(&self) -> impl Iterator<Item = (&str, Generation)> {
+        self.live_generations
+            .iter()
+            .map(|(target, generation)| (target.as_str(), *generation))
+    }
+
+    /// Every revoked target/generation pair, including targets without a live generation.
+    pub fn revoked_generations(&self) -> impl Iterator<Item = (&str, Generation)> {
+        self.revoked_generations
+            .iter()
+            .map(|(target, generation)| (target.as_str(), *generation))
+    }
+
     /// Whether `target` at `generation` may be used now, as the lifecycle
     /// authority sees it.
     ///

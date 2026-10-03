@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[2]
 AGGREGATORS = {
     "L003": ROOT / "experiments/lifecycle/L003-fastmem-revocation/aggregate.py",
     "L004": ROOT / "experiments/lifecycle/L004-projection-equivalence/aggregate.py",
+    "S003": ROOT / "experiments/semdb/S003-certified-branches/aggregate.py",
 }
 
 

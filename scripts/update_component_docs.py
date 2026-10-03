@@ -18,10 +18,35 @@ TEST_ATTRIBUTE = re.compile(
 def load_toml(path: Path) -> dict:
     return tomllib.loads(path.read_text(encoding="utf-8"))
 
+# A listed experiment (`experiments/preregistration.toml`) whose seeds run on
+# one tree: once it has left `planned`, completing it may change nothing but
+# its results, its manifest's status line and the registry's
+# (`scripts/check_research_gates.py`), so a generated view that named
+# `prepared`, `running`, `completed` or `failed` would have to change after its
+# runs and make them stale. Every view shows such an experiment as `frozen`;
+# its status is in its manifest and its outcome in its results.
+FROZEN_STATUSES = ("prepared", "running", "completed", "failed")
+
+def shown_status(exp: dict, listed: set[str]) -> str:
+    """Show listed prepared, running, completed or failed experiments as frozen.
+
+    Preserve all other statuses; listed contains preregistered experiment IDs."""
+    status = exp["status"]
+    return "frozen" if exp["id"] in listed and status in FROZEN_STATUSES else status
+
 def registries():
+    """Load experiment and evaluation registries keyed by their respective IDs.
+
+    Return (experiments, evaluations), replacing only experiment display
+    statuses through shown_status. File access and TOML decoding errors
+    propagate; registry files are not modified."""
     exp_raw = load_toml(ROOT / "experiments/registry.toml")
     eval_raw = load_toml(ROOT / "evaluations/registry.toml")
-    exps = {x["id"]: x for x in exp_raw.get("experiment", [])}
+    listed = set(load_toml(ROOT / "experiments/preregistration.toml").get("experiment", {}))
+    exps = {
+        x["id"]: {**x, "status": shown_status(x, listed)}
+        for x in exp_raw.get("experiment", [])
+    }
     evals = {x["id"]: x for x in eval_raw.get("component", [])}
     return exps, evals
 

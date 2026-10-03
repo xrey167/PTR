@@ -14,7 +14,6 @@ default = []
 postgres-experiments = [
     "dep:ptr-pg",
     "ptr-pg/postgres-backend",
-    "dep:ptr-branch",
     "dep:ptr-state",
     "dep:ptr-fastmem",
     "dep:tokio",
@@ -32,9 +31,12 @@ ptr-semdb = { workspace = true }
 ptr-exec = { workspace = true }
 ptr-ledger = { workspace = true }
 ptr-runtime = { workspace = true }
+# The two verifiers of S003's grant judge a runtime's semantic changes.
+ptr-verifier = { workspace = true }
 ptr-pg = { workspace = true, optional = true }
-# L004 writes merge records whose plan digest replay recomputes.
-ptr-branch = { workspace = true, optional = true }
+# S003 opens and merges branches, and L004 writes merge records whose plan
+# digest replay recomputes.
+ptr-branch = { workspace = true }
 ptr-state = { workspace = true, optional = true }
 ptr-fastmem = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }

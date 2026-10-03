@@ -11,9 +11,10 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Instant;
 
-#[cfg(feature = "postgres-experiments")]
 mod experiments;
 
+/// Dispatch the requested benchmark; without a command, run semdb and mailbox.
+/// Unknown commands print usage and exit with status 2.
 fn main() {
     let args = std::env::args().collect::<Vec<_>>();
     let command = args.get(1).map(String::as_str).unwrap_or("all");
@@ -38,6 +39,23 @@ fn main() {
             bench_semdb(iterations);
             bench_mailbox(iterations);
         }
+        // The preregistered run: an argument that is there but does not parse
+        // stops it, since a typo in the seed or the case count would otherwise
+        // run another experiment than the one asked for, without a word.
+        "certified-branches" => experiments::s003::run(
+            strict_or_exit(parse_strict_usize(
+                &args,
+                2,
+                experiments::s003::params::CASES_PER_SEED,
+                "iterations",
+            )),
+            strict_or_exit(parse_strict_u64(
+                &args,
+                3,
+                experiments::s003::params::SEEDS[0],
+                "seed",
+            )),
+        ),
         #[cfg(feature = "postgres-experiments")]
         "fastmem-revocation" => {
             experiments::l003::run(parse_usize(&args, 2, 20), parse_u64(&args, 3, 17))
@@ -56,12 +74,12 @@ fn main() {
     }
 }
 
-/// The PostgreSQL experiment subcommands, listed in the usage line only when
+/// The experiment subcommands: S003 always, and the PostgreSQL ones only when
 /// they are compiled in.
 #[cfg(feature = "postgres-experiments")]
-const EXPERIMENT_COMMANDS: &str = "|fastmem-revocation|projection-equivalence";
+const EXPERIMENT_COMMANDS: &str = "|certified-branches|fastmem-revocation|projection-equivalence";
 #[cfg(not(feature = "postgres-experiments"))]
-const EXPERIMENT_COMMANDS: &str = "";
+const EXPERIMENT_COMMANDS: &str = "|certified-branches";
 
 fn parse_usize(args: &[String], index: usize, default: usize) -> usize {
     args.get(index)
@@ -73,6 +91,48 @@ fn parse_u64(args: &[String], index: usize, default: u64) -> u64 {
     args.get(index)
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(default)
+}
+
+/// An optional argument, taken strictly: absent gives `default`, present but
+/// not a number is an error naming it.
+fn parse_strict<T: std::str::FromStr>(
+    args: &[String],
+    index: usize,
+    default: T,
+    name: &str,
+) -> Result<T, String> {
+    match args.get(index) {
+        None => Ok(default),
+        Some(value) => value
+            .parse::<T>()
+            .map_err(|_| format!("{name} must be a non-negative integer, got {value:?}")),
+    }
+}
+
+fn parse_strict_usize(
+    args: &[String],
+    index: usize,
+    default: usize,
+    name: &str,
+) -> Result<usize, String> {
+    parse_strict(args, index, default, name)
+}
+
+fn parse_strict_u64(
+    args: &[String],
+    index: usize,
+    default: u64,
+    name: &str,
+) -> Result<u64, String> {
+    parse_strict(args, index, default, name)
+}
+
+/// The value, or the error on stderr and exit status 2, as for a usage error.
+fn strict_or_exit<T>(parsed: Result<T, String>) -> T {
+    parsed.unwrap_or_else(|message| {
+        eprintln!("ptr-bench: {message}");
+        std::process::exit(2);
+    })
 }
 
 fn bench_semdb(iterations: usize) {
@@ -426,7 +486,51 @@ fn checked_tail(subject: &str, project: &str, extra: usize) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::violated;
+    use super::*;
+
+    fn args(values: &[&str]) -> Vec<String> {
+        std::iter::once("ptr-bench")
+            .chain(values.iter().copied())
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn a_strict_argument_that_is_absent_takes_its_default() {
+        let given = args(&["certified-branches"]);
+        assert_eq!(parse_strict_usize(&given, 2, 48, "iterations"), Ok(48));
+        assert_eq!(parse_strict_u64(&given, 3, 17, "seed"), Ok(17));
+    }
+
+    #[test]
+    fn a_strict_argument_that_parses_is_taken_as_it_is() {
+        let given = args(&["certified-branches", "12", "101"]);
+        assert_eq!(parse_strict_usize(&given, 2, 48, "iterations"), Ok(12));
+        assert_eq!(parse_strict_u64(&given, 3, 17, "seed"), Ok(101));
+    }
+
+    #[test]
+    fn a_strict_argument_that_does_not_parse_is_an_error_not_the_default() {
+        // The letter O for a zero, a word, a negative number and a decimal.
+        for bad in ["1O1", "abc", "-1", "1.5", ""] {
+            let given = args(&["certified-branches", "48", bad]);
+            let error = parse_strict_u64(&given, 3, 17, "seed").unwrap_err();
+            assert!(error.contains("seed"), "{error}");
+            assert!(error.contains(&format!("{bad:?}")), "{error}");
+            let given = args(&["certified-branches", bad]);
+            assert!(
+                parse_strict_usize(&given, 2, 48, "iterations").is_err(),
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_lenient_parsers_of_the_other_commands_are_unchanged() {
+        let given = args(&["semdb", "abc"]);
+        assert_eq!(parse_usize(&given, 2, 10_000), 10_000);
+        assert_eq!(parse_u64(&given, 3, 17), 17);
+    }
 
     #[test]
     fn only_nonzero_hard_counters_are_violations() {

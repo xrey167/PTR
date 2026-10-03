@@ -3,3 +3,75 @@ kind = "workspace-area"
 name = "S003-certified-branches"
 path = "experiments/semdb/S003-certified-branches"
 tests_dir = "tests"
+
+# The preregistered parameters of the harness (`ptr-bench certified-branches`,
+# bins/ptr-bench/src/experiments/s003/params.rs, which fails its drift test if
+# a compiled constant differs from this table). The canonical text of the table
+# is `json.dumps(table, sort_keys=True, separators=(",", ":"))`, every result
+# echoes it, and its SHA-256 is the manifest's `preregistration_sha256` once
+# the experiment is frozen. The pilot sets `low_cells` and, when it leaves fewer
+# than six cells on either side or no low cell for some agent count, replaces
+# `groups_ladder` by the preregistered `groups_ladder_fallback` once
+# (pilot/README.md records which happened, and why the fallback's largest
+# level, 1024 groups, was replaced by 32 before the freeze: the reference
+# host clones its state at every merge, and at that size a merge outlasts the
+# 10 ms the time model gives it).
+[preregistration]
+schema = 1
+harness = "certified-branches"
+seeds = [17, 29, 43, 71, 101]
+pilot_seeds = [1, 2, 3]
+cases_per_seed = 48
+tasks_per_case = 128
+agents = [2, 4, 8, 16]
+groups_ladder = [4, 8, 16, 32, 64, 256]
+groups_ladder_fallback = [4, 8, 16, 64, 256, 1024]
+items_per_group = 8
+insert_cap = 12
+counters = 16
+counter_start = 50
+sets = 8
+set_members = 16
+policies = 4
+tick_us = 10000
+think_min_ticks = 20
+think_max_ticks = 60
+step_ticks = 1
+merge_ticks = 1
+max_attempts = 8
+review_min_ticks = 20
+review_max_ticks = 60
+programs = ["rmw", "write_skew", "insert_capped", "remove_extra", "audit", "group_total", "counter_add", "set_op", "guarded_decrement"]
+program_weights_permille = [250, 50, 100, 50, 100, 100, 200, 100, 50]
+rmw_delta_max = 5
+counter_add_max = 10
+guard_amount = 10
+rely_permille = 200
+ingress_permille_per_tick = 20
+external_write_permille_per_tick = 10
+lifecycle_permille_per_tick = 2
+rewire_permille_per_tick = 10
+rewire_swap_min_ticks = 5
+rewire_swap_max_ticks = 30
+required_verification = "deterministic"
+verifiers = ["s003-domain-v1", "s003-diff-v1"]
+host_counter_jump_max = 100
+auto_policy = "s003-auto/v1"
+auto_threshold_permille = 0
+auto_calibration_permille = 0
+review_policy = "s003-review/v1"
+review_threshold_permille = 500
+review_calibration_permille = 100
+calibration_seed = 7919
+reviewer = "s003-reviewer"
+conflict_threshold_permille = 100
+efficiency_floor_permille = 500
+bootstrap_resamples = 2000
+bootstrap_seed = 20260926
+bootstrap_interval_permille = 950
+min_hazard_trials_per_class_per_seed = 30
+min_cells_per_side = 6
+merge_wall_budget_us_p99 = 10000
+durable_roundtrip_every_cases = 8
+nondeterminism_rerun_case = 0
+low_cells = []

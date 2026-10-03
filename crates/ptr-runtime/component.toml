@@ -1,7 +1,7 @@
 version = 1
 id = "ptr-runtime"
 maturity = "prototype"
-last_reviewed = "2026-09-28"
+last_reviewed = "2026-09-29"
 implemented = [
   "bind_checkpoint resolves the slot encoding an artifact records and refuses a definition this build has no implementation of, because weights trained on vectors it cannot recompute are weights it cannot feed; the encoding is deliberately not part of a StateDeclaration, which says which committed facts a state came from rather than how an artifact was constructed",
 
