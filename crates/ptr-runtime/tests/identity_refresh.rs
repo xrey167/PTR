@@ -31,6 +31,7 @@ struct Refresher {
     audience: &'static str,
     store: JwksStore,
     error: Option<OidcError>,
+    delay: Duration,
 }
 
 impl Refresher {
@@ -43,6 +44,7 @@ impl Refresher {
             audience: "ptr",
             store,
             error: None,
+            delay: Duration::ZERO,
         }
     }
 }
@@ -50,6 +52,7 @@ impl Refresher {
 impl JwksRefresher for Refresher {
     fn refresh(&self) -> Result<JwksDocument, OidcError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        std::thread::sleep(self.delay);
         if let Some(error) = &self.error {
             return Err(error.clone());
         }
@@ -132,6 +135,25 @@ fn zero_cooldown_refetches_and_does_not_authenticate_a_removed_cached_key() {
         Err(OidcError::UnknownKey("rotated".into()))
     );
     assert_eq!(refresher.calls.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn a_slow_fetch_does_not_leave_the_fetched_keys_already_expired() {
+    let key = SigningKey::from_bytes(&[47; 32]);
+    let adapter = adapter().with_refresh_cooldown(Duration::from_millis(200));
+    let mut refresher = Refresher::new(&key);
+    // The fetch itself outlasts the cooldown.
+    refresher.delay = Duration::from_millis(300);
+    let credential = token(&key, "rotated");
+    assert!(adapter
+        .authenticate_at_with_refresh(credential.as_bytes(), Timestamp(50), &refresher)
+        .is_ok());
+    // The cache holds from the moment the fetch returned, so the next login for
+    // the same rotated key is answered from it instead of fetching again.
+    assert!(adapter
+        .authenticate_at_with_refresh(credential.as_bytes(), Timestamp(50), &refresher)
+        .is_ok());
+    assert_eq!(refresher.calls.load(Ordering::SeqCst), 1);
 }
 
 #[test]

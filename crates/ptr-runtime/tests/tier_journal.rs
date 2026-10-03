@@ -233,3 +233,103 @@ fn journaled_physical_transfer_reopens_as_available_replica() {
     );
     std::fs::remove_file(path).unwrap();
 }
+
+fn available_replica_on_nvme(
+    runtime: &mut PtrRuntime,
+    backend: &TierBackendId,
+    object: &TierObjectManifest,
+) {
+    for (index, state) in [
+        BackendLifecycleState::Configured,
+        BackendLifecycleState::HealthChecked,
+        BackendLifecycleState::Available,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        runtime
+            .commit_tier_backend_lifecycle(
+                backend.clone(),
+                StorageTier::Nvme,
+                state,
+                Revision(index as u64 + 1),
+            )
+            .unwrap();
+    }
+    runtime.commit_tier_object(object).unwrap();
+    for (state, revision) in [(ReplicaState::Preparing, 4), (ReplicaState::Available, 5)] {
+        runtime
+            .commit_tier_replica_lifecycle(
+                object.root_digest,
+                backend.clone(),
+                StorageTier::Nvme,
+                state,
+                object.generation,
+                Revision(revision),
+            )
+            .unwrap();
+    }
+}
+
+#[test]
+fn a_replica_on_a_revoked_backend_can_still_be_retired() {
+    for retiring in [ReplicaState::Revoked, ReplicaState::Corrupt] {
+        let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+        let backend = TierBackendId::from("nvme-a");
+        let object = object();
+        available_replica_on_nvme(&mut runtime, &backend, &object);
+        runtime
+            .commit_tier_backend_lifecycle(
+                backend.clone(),
+                StorageTier::Nvme,
+                BackendLifecycleState::Revoked,
+                Revision(6),
+            )
+            .unwrap();
+        runtime
+            .commit_tier_replica_lifecycle(
+                object.root_digest,
+                backend.clone(),
+                StorageTier::Nvme,
+                retiring,
+                object.generation,
+                Revision(7),
+            )
+            .unwrap();
+        assert_eq!(
+            runtime
+                .tier_journal()
+                .replica(&object.root_digest, &backend)
+                .unwrap()
+                .state,
+            retiring
+        );
+    }
+}
+
+#[test]
+fn a_revoked_backend_still_takes_no_new_replica_work() {
+    let mut runtime = PtrRuntime::new(PtrConfig::default()).unwrap();
+    let backend = TierBackendId::from("nvme-a");
+    let object = object();
+    available_replica_on_nvme(&mut runtime, &backend, &object);
+    runtime
+        .commit_tier_backend_lifecycle(
+            backend.clone(),
+            StorageTier::Nvme,
+            BackendLifecycleState::Revoked,
+            Revision(6),
+        )
+        .unwrap();
+    assert!(matches!(
+        runtime.commit_tier_replica_lifecycle(
+            object.root_digest,
+            backend,
+            StorageTier::Nvme,
+            ReplicaState::Draining,
+            object.generation,
+            Revision(7),
+        ),
+        Err(RuntimeError::InvalidConfig(_))
+    ));
+}
