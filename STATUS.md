@@ -17,7 +17,7 @@ PTR is a **compiling architecture/research prototype**, not yet a complete model
 - Prost-generated protobuf schemas with validated PodCall → domain conversion
 - per-component `component.toml`, local `config.toml`, README status blocks and tests directories
 - 160 configured workspace areas with matching tests directories
-- Cargo and uv lockfiles; Rust 1.85 MSRV plus current-stable Ubuntu/Windows CI
+- Cargo and uv lockfiles; Rust 1.99 MSRV plus current-stable Ubuntu/Windows CI
 - dataset cards, experiment/evaluation validators, setup scripts, devcontainer/Docker and release scaffolding
 - executable experiment and component-evaluation runners with declared no-shell commands and immutable success/failure process evidence
 - supply-chain checks with cargo-audit/cargo-deny and Dependabot configuration
@@ -95,7 +95,7 @@ PTR is a **compiling architecture/research prototype**, not yet a complete model
 
 - `Cargo.lock` pins Rust dependencies
 - `training/uv.lock` pins the current Python training utility environment
-- `rust-toolchain.toml` declares Rust 1.85.0 as MSRV/default
+- `rust-toolchain.toml` declares Rust 1.99.0 as MSRV/default
 - CI separately tests MSRV and current stable on Linux and current stable on Windows
 - experiment preparation/execution records git SHA, hardware profile, lockfile hashes, exact argv, duration, exit status and process output
 - small JSON/TOML/Markdown result artifacts and the frozen operator-routing v1/v2

@@ -10,7 +10,7 @@ implemented = [
   "Provider-independent Transport trait",
   "Feature-gated Iroh 1.2 direct QUIC adapter with PTR ALPNs and authenticated peer identity",
   "Iroh response path keeps the connection alive through peer-observed graceful completion",
-  "Iroh 1.2 optional feature requires Rust 1.91; default runtime core retains a separate Rust 1.85 gate",
+  "The Iroh optional feature builds and is tested on the workspace's Rust 1.99 toolchain, the same one the default runtime core is checked on",
   "The endpoint address type is re-exported, so a composing crate names an address without declaring its own iroh dependency: two pins of a transport would be two wire formats",
   "PeerBook records where each peer the deployment knows about can be reached, keyed by the id the address itself carries — there is no (peer, address) pair to transpose, so a wrong address lands under its own owner rather than pointing one peer's name at another peer's socket",
   "PeerBook replaces an address rather than refusing a second one, unlike the admission tables it otherwise mirrors: an address is a fact about where a node is and a node moves, while a grant is a decision that must not change silently",
