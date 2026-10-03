@@ -73,6 +73,18 @@ fn reference_rotation_keeps_the_callers_lease_valid() {
 }
 
 #[test]
+fn reference_active_peer_is_only_reported_for_the_lease_that_was_admitted() {
+    let mut executor = ReferenceMeshTunnelExecutor::default();
+    let lease = executor.admit(&profile()).unwrap();
+    executor.establish(&lease).unwrap();
+    assert_eq!(executor.active_peer(&lease), Some(&profile().peer));
+    // The lifecycle calls refuse a lease whose profile differs; the read does too.
+    let mut forged = lease.clone();
+    forged.profile.fencing_token += 1;
+    assert_eq!(executor.active_peer(&forged), None);
+}
+
+#[test]
 fn reference_rotation_rejects_an_empty_peer_id_and_a_zero_key() {
     let mut executor = ReferenceMeshTunnelExecutor::default();
     let lease = executor.admit(&profile()).unwrap();

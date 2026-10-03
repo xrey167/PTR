@@ -341,9 +341,47 @@ pub struct OidcIdentityAdapter {
     /// Token ids seen so far, each with the `exp` of the token that carried it.
     /// An id is only needed until that moment: afterwards the token is expired
     /// anyway, so the entry is dropped and the set cannot grow without bound.
-    used_jti: Mutex<BTreeMap<String, Timestamp>>,
+    used_jti: Mutex<UsedTokenIds>,
     refresh: Mutex<RefreshState>,
     refresh_cooldown: Duration,
+}
+
+/// The token ids seen so far, indexed twice: by id for the replay check and by
+/// expiry for pruning, so dropping the expired ones visits only those and never
+/// walks the ids that are still live.
+#[derive(Default)]
+struct UsedTokenIds {
+    expiry_by_id: BTreeMap<String, Timestamp>,
+    ids_by_expiry: BTreeMap<Timestamp, Vec<String>>,
+}
+
+impl UsedTokenIds {
+    /// Drops every id whose token has expired at `now`.
+    fn prune(&mut self, now: Timestamp) {
+        while let Some(entry) = self.ids_by_expiry.first_entry() {
+            if *entry.key() > now {
+                break;
+            }
+            for id in entry.remove() {
+                self.expiry_by_id.remove(&id);
+            }
+        }
+    }
+
+    /// Records `id` until `expires`; false when it is already recorded.
+    fn insert(&mut self, id: String, expires: Timestamp) -> bool {
+        if self.expiry_by_id.contains_key(&id) {
+            return false;
+        }
+        self.expiry_by_id.insert(id.clone(), expires);
+        self.ids_by_expiry.entry(expires).or_default().push(id);
+        true
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.expiry_by_id.len()
+    }
 }
 
 /// Default minimum spacing between JWKS fetches triggered by unknown key ids.
@@ -365,7 +403,7 @@ impl OidcIdentityAdapter {
             audience: audience.into(),
             jwks,
             allowed_algorithms: vec![OidcAlgorithm::EdDsa],
-            used_jti: Mutex::new(BTreeMap::new()),
+            used_jti: Mutex::new(UsedTokenIds::default()),
             refresh: Mutex::new(RefreshState::default()),
             refresh_cooldown: DEFAULT_JWKS_REFRESH_COOLDOWN,
         }
@@ -509,8 +547,8 @@ impl OidcIdentityAdapter {
         // corrected token carrying the same id would be rejected as a replay.
         if let Some(jti) = jti {
             let mut used = self.used_jti.lock().map_err(|_| OidcError::InvalidToken)?;
-            used.retain(|_, expires| *expires > now);
-            if used.insert(jti, expires_at).is_some() {
+            used.prune(now);
+            if !used.insert(jti, expires_at) {
                 return Err(OidcError::TokenReplay);
             }
         }
@@ -917,5 +955,30 @@ mod tests {
         // Each token lives 5 s and one is seen per second: at most the few
         // still-valid ids may remain, not all 50.
         assert!(adapter.used_jti.lock().unwrap().len() <= 6);
+    }
+
+    #[test]
+    fn pruning_expired_ids_keeps_every_live_id_and_both_indexes_in_step() {
+        let key = SigningKey::from_bytes(&[41; 32]);
+        let adapter = adapter(&key);
+        let accept = |jti: &str, exp: u64, now: u64| {
+            let t = token(
+                &key,
+                json!({"iss":"https://issuer","aud":"ptr","sub":"u","sid":"s",
+                       "iat":1,"exp":exp,"jti":jti}),
+            );
+            adapter.authenticate_at(t.as_bytes(), Timestamp(now))
+        };
+        accept("short-a", 10, 5).unwrap();
+        accept("short-b", 10, 5).unwrap();
+        accept("long", 1000, 5).unwrap();
+        // At t = 11 the two short tokens have expired and are dropped; the long
+        // one is still live, so its id is still a replay.
+        accept("fresh", 1000, 11).unwrap();
+        assert_eq!(adapter.used_jti.lock().unwrap().len(), 2);
+        assert_eq!(accept("long", 1000, 11), Err(OidcError::TokenReplay));
+        let used = adapter.used_jti.lock().unwrap();
+        let indexed: usize = used.ids_by_expiry.values().map(Vec::len).sum();
+        assert_eq!(indexed, used.expiry_by_id.len());
     }
 }

@@ -4,6 +4,7 @@ maturity = "prototype"
 last_reviewed = "2026-10-03"
 
 implemented = [
+  "ReferenceMeshTunnelExecutor::active_peer answers only for a lease whose profile equals the admitted one, like every lifecycle call; a lease carrying an admitted lease id with another profile gets None",
   "ALPN constants for raft, PodWire, model, blob, events and execution protocols",
   "The execution wire has its own ALPN rather than sharing the pod wire's: two protocols on one ALPN is how a request meant for one gets parsed by the other, and the parse that succeeds by accident is the dangerous one",
   "NodeIdentity scaffold",

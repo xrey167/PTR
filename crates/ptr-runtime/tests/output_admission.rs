@@ -436,3 +436,123 @@ fn a_retry_completes_a_missing_hypothesis_record() {
         .unwrap();
     assert!(has_hypothesis(&runtime));
 }
+
+#[test]
+fn a_retry_from_another_scope_cannot_complete_someone_elses_admission() {
+    let mut first = runtime_with_scope();
+    first
+        .admit_pod_output(request(PodOutputKind::Hypothesis), &Pass)
+        .unwrap();
+    let mut runtime = runtime_with_only_the_admission_record(&first);
+    runtime
+        .create_scope(
+            ExecutionScope {
+                id: ScopeId::from("other-scope"),
+                parent: None,
+                session: SessionId::from("other-session"),
+                project: ProjectId::from("project"),
+                created_at: Timestamp(1),
+                deadline: None,
+                state: ScopeState::Created,
+                cancellation_requested: false,
+            },
+            ScopeLeaseBinding::default(),
+        )
+        .unwrap();
+    // The same request id, Pod and output, submitted from a second scope.
+    let mut stranger = request(PodOutputKind::Hypothesis);
+    stranger.scope_id = ScopeId::from("other-scope");
+    stranger.session_id = SessionId::from("other-session");
+    assert!(matches!(
+        runtime.admit_pod_output(stranger, &Pass),
+        Err(ptr_runtime::RuntimeError::PodOutputAdmission(_))
+    ));
+    // Nothing was written for the second scope under the first one's admission.
+    assert!(!runtime.committed_events().iter().any(|committed| matches!(
+        committed.event,
+        ptr_ledger::LedgerEvent::PodHypothesisCommitted { .. }
+    )));
+    // The original scope can still complete its own admission.
+    runtime
+        .admit_pod_output(request(PodOutputKind::Hypothesis), &Pass)
+        .unwrap();
+}
+
+#[test]
+fn a_promotion_written_before_the_admission_is_not_its_follow_up() {
+    let state_request = || {
+        let mut request = request(PodOutputKind::StateDelta);
+        request.request_id = RequestId::from("state");
+        request.output.verified = true;
+        request
+    };
+    let mut first = runtime_with_scope();
+    first
+        .ingest_text(RequestId::from("state"), "state input")
+        .unwrap();
+    first.admit_pod_output(state_request(), &Pass).unwrap();
+    let admission = first
+        .committed_events()
+        .iter()
+        .find(|committed| {
+            matches!(
+                committed.event,
+                ptr_ledger::LedgerEvent::PodOutputAdmitted { .. }
+            )
+        })
+        .unwrap()
+        .event
+        .clone();
+    let promotions = |runtime: &PtrRuntime| {
+        runtime
+            .committed_events()
+            .iter()
+            .filter(|committed| {
+                matches!(
+                    &committed.event,
+                    ptr_ledger::LedgerEvent::SemanticDeltaCommitted {
+                        origin: ptr_ledger::SemanticOrigin::PodOutput { .. },
+                        ..
+                    }
+                )
+            })
+            .count()
+    };
+
+    // A promotion for the same request and Pod that did not come through this
+    // admission, written before the admission record, which has nothing after it.
+    let pod = ptr_pods::PodManifest {
+        project: ProjectId::from("project"),
+        id: ptr_types::PodId::from("pod"),
+        capabilities: vec![],
+        accepts: vec![TypeId::from("text")],
+        produces: vec![TypeId::from("text")],
+        effects: vec![ptr_types::Effect::Pure],
+        protocol_version: 1,
+    };
+    let mut runtime = runtime_with_scope();
+    runtime
+        .ingest_text(RequestId::from("state"), "state input")
+        .unwrap();
+    runtime
+        .promote_verified_pod_output(
+            &RequestId::from("state"),
+            &pod,
+            &TypedPayload {
+                type_id: TypeId::from("text"),
+                bytes: b"an earlier output".to_vec(),
+            },
+            &Pass,
+        )
+        .unwrap();
+    runtime.commit(admission).unwrap();
+    assert_eq!(promotions(&runtime), 1);
+
+    // The retry must not take that earlier promotion for this admission's follow-up.
+    runtime.admit_pod_output(state_request(), &Pass).unwrap();
+    assert_eq!(
+        promotions(&runtime),
+        2,
+        "the retry carries out its own promotion after the admission"
+    );
+}

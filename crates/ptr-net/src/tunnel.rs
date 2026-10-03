@@ -521,6 +521,11 @@ impl ReferenceMeshTunnelExecutor {
     /// The peer a lease currently routes to: the admitted one until
     /// `rotate_peer` replaces it.
     pub fn active_peer(&self, lease: &TunnelLease) -> Option<&MeshPeerIdentity> {
+        // A lease that carries the id of an admitted one but another profile is
+        // refused by every lifecycle call, so it is not answered here either.
+        self.leases
+            .get(&lease.lease_id)
+            .filter(|stored| stored.profile == lease.profile)?;
         self.active_peers.get(&lease.lease_id)
     }
 }
