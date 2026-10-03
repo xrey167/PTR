@@ -67,7 +67,6 @@ pub enum MeshError {
 pub struct MeshRegistry {
     memberships: BTreeMap<(NetworkId, PeerId), MeshMembership>,
     invitations: BTreeMap<InvitationId, MeshInvitation>,
-    route_revisions: BTreeMap<(NetworkId, PeerId), Revision>,
 }
 
 impl MeshRegistry {
@@ -84,25 +83,40 @@ impl MeshRegistry {
                     public_key_digest: event.event_digest,
                     network_id: event.network_id.clone(),
                 };
-                if let Some(existing) = self.memberships.get(&key) {
-                    if existing.generation != event.generation || existing.revision > event.revision
-                    {
-                        return Err(MeshError::ConflictingRevision);
+                // The event carries no key-digest field of its own, only
+                // `event_digest`, so the digest is taken from the first
+                // admission and never from a later activation event. Comparing
+                // the two would reject legitimate events; replacing the stored
+                // peer would let a later event swap the admitted key.
+                let admitted = match self.memberships.get(&key) {
+                    Some(existing) => {
+                        // A revoked membership is terminal in this registry:
+                        // `invite` refuses an existing membership, so there is
+                        // no path back, and a late activation must not create one.
+                        if existing.state == MembershipState::Revoked {
+                            return Err(MeshError::RevokedPeer);
+                        }
+                        if existing.generation != event.generation
+                            || existing.revision > event.revision
+                        {
+                            return Err(MeshError::ConflictingRevision);
+                        }
+                        if existing.revision == event.revision {
+                            return Ok(());
+                        }
+                        existing.peer.clone()
                     }
-                    if existing.revision == event.revision {
-                        return Ok(());
-                    }
-                }
+                    None => peer,
+                };
                 self.memberships.insert(
-                    key.clone(),
+                    key,
                     MeshMembership {
-                        peer,
+                        peer: admitted,
                         generation: event.generation,
                         revision: event.revision,
                         state: MembershipState::Active,
                     },
                 );
-                self.route_revisions.insert(key, event.revision);
                 Ok(())
             }
             MeshTunnelEventKind::MembershipRevoked => {
@@ -110,25 +124,35 @@ impl MeshRegistry {
                     .memberships
                     .get_mut(&key)
                     .ok_or(MeshError::UnknownPeer)?;
+                // A revocation fails closed. At a revision shared with a route
+                // change the revocation still applies, so the membership ends up
+                // revoked whichever of the two arrived first: after a revocation
+                // the route change is refused because the peer is revoked, and
+                // before it the revocation is accepted because it is not older
+                // than the route change. Only an older revocation is stale.
                 if membership.revision > event.revision {
                     return Err(MeshError::StaleGeneration);
                 }
                 membership.revision = event.revision;
                 membership.state = MembershipState::Revoked;
-                self.route_revisions.insert(key, event.revision);
                 Ok(())
             }
             MeshTunnelEventKind::RouteChanged => {
-                let membership = self.memberships.get(&key).ok_or(MeshError::UnknownPeer)?;
+                let membership = self
+                    .memberships
+                    .get_mut(&key)
+                    .ok_or(MeshError::UnknownPeer)?;
                 if membership.state != MembershipState::Active
                     || membership.generation != event.generation
                 {
                     return Err(MeshError::RevokedPeer);
                 }
+                // The membership revision is the single monotone counter for the
+                // peer, so a replayed route event with an old revision is stale.
                 if event.revision <= membership.revision {
                     return Err(MeshError::StaleGeneration);
                 }
-                self.route_revisions.insert(key, event.revision);
+                membership.revision = event.revision;
                 Ok(())
             }
             MeshTunnelEventKind::TunnelEstablished
@@ -196,8 +220,6 @@ impl MeshRegistry {
             revision: Revision(1),
             state: MembershipState::Active,
         };
-        self.route_revisions
-            .insert(key.clone(), membership.revision);
         self.memberships.insert(key, membership.clone());
         Ok(membership)
     }
@@ -209,8 +231,6 @@ impl MeshRegistry {
             .ok_or(MeshError::UnknownPeer)?;
         membership.state = MembershipState::Revoked;
         membership.revision = membership.revision.next();
-        self.route_revisions
-            .insert((network_id.clone(), peer_id.clone()), membership.revision);
         Ok(())
     }
 

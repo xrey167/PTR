@@ -392,3 +392,184 @@ fn deterministic_ingestion_builds_typed_knowledge_object() {
     assert_eq!(object.sources, vec![RawEventId::from("ingest-1")]);
     assert_eq!(object.generation, Generation(1));
 }
+
+fn key(id: &str, generation: u64) -> KnowledgeKey {
+    KnowledgeKey {
+        logical_id: KnowledgeObjectId::from(id),
+        generation: Generation(generation),
+    }
+}
+
+fn successor(
+    id: &str,
+    lifecycle: KnowledgeLifecycle,
+    dependencies: Vec<KnowledgeKey>,
+) -> KnowledgeObject {
+    let mut next = object(id, lifecycle, dependencies);
+    next.generation = Generation(2);
+    next.supersedes = Some(key(id, 1));
+    next
+}
+
+#[test]
+fn transition_to_invalidated_cascades_like_invalidate() {
+    let mut store = KnowledgeStore::default();
+    store
+        .register_object(object("base", KnowledgeLifecycle::Hot, vec![]))
+        .unwrap();
+    store
+        .register_object(object(
+            "derived",
+            KnowledgeLifecycle::Hot,
+            vec![key("base", 1)],
+        ))
+        .unwrap();
+    store
+        .transition(
+            &KnowledgeObjectId::from("base"),
+            KnowledgeLifecycle::Invalidated,
+        )
+        .unwrap();
+    assert!(store.is_invalidated(&KnowledgeObjectId::from("derived")));
+}
+
+#[test]
+fn reactivating_a_generation_keeps_its_recorded_demotion() {
+    let mut store = KnowledgeStore::default();
+    let id = KnowledgeObjectId::from("topic");
+    store
+        .register_object(object("topic", KnowledgeLifecycle::Hot, vec![]))
+        .unwrap();
+    store
+        .register_object(successor("topic", KnowledgeLifecycle::Hot, vec![]))
+        .unwrap();
+    store.activate_generation(&id, Generation(2)).unwrap();
+    store.transition(&id, KnowledgeLifecycle::Warm).unwrap();
+    store.activate_generation(&id, Generation(2)).unwrap();
+    assert_eq!(store.lifecycle(&id), Some(KnowledgeLifecycle::Warm));
+}
+
+#[test]
+fn activation_that_would_invalidate_itself_is_refused_without_side_effects() {
+    let mut store = KnowledgeStore::default();
+    let id = KnowledgeObjectId::from("topic");
+    store
+        .register_object(object("topic", KnowledgeLifecycle::Hot, vec![]))
+        .unwrap();
+    store
+        .register_object(successor(
+            "topic",
+            KnowledgeLifecycle::Hot,
+            vec![key("topic", 1)],
+        ))
+        .unwrap();
+    assert!(store.activate_generation(&id, Generation(2)).is_err());
+    assert!(!store.is_generation_invalidated(&id, Generation(1)));
+    assert!(!store.is_generation_invalidated(&id, Generation(2)));
+    assert_eq!(store.object(&id).unwrap().generation, Generation(1));
+}
+
+#[test]
+fn invalidation_transition_reaches_a_diamond_once_and_preserves_other_generations() {
+    let mut store = KnowledgeStore::default();
+    for item in [
+        object("base", KnowledgeLifecycle::Hot, vec![]),
+        successor("base", KnowledgeLifecycle::Cold, vec![]),
+        object("left", KnowledgeLifecycle::Warm, vec![key("base", 1)]),
+        object("right", KnowledgeLifecycle::Cold, vec![key("base", 1)]),
+        object(
+            "leaf",
+            KnowledgeLifecycle::Hot,
+            vec![key("left", 1), key("right", 1)],
+        ),
+        object("other", KnowledgeLifecycle::Hot, vec![key("base", 2)]),
+    ] {
+        store.register_object(item).unwrap();
+    }
+    let base = KnowledgeObjectId::from("base");
+    store
+        .transition(&base, KnowledgeLifecycle::Invalidated)
+        .unwrap();
+    for id in ["base", "left", "right", "leaf"] {
+        assert!(
+            store.is_generation_invalidated(&KnowledgeObjectId::from(id), Generation(1)),
+            "{id}"
+        );
+    }
+    assert_eq!(
+        store.object_at(&key("base", 2)).unwrap().lifecycle,
+        KnowledgeLifecycle::Cold
+    );
+    assert_eq!(
+        store.lifecycle(&KnowledgeObjectId::from("other")),
+        Some(KnowledgeLifecycle::Hot)
+    );
+    assert_eq!(
+        store.transition(&base, KnowledgeLifecycle::Invalidated),
+        Ok(())
+    );
+}
+
+#[test]
+fn transitive_self_invalidation_refuses_activation_without_changing_any_object() {
+    let mut store = KnowledgeStore::default();
+    for item in [
+        object("topic", KnowledgeLifecycle::Warm, vec![]),
+        object("middle", KnowledgeLifecycle::Cold, vec![key("topic", 1)]),
+        object("sibling", KnowledgeLifecycle::Hot, vec![key("topic", 1)]),
+        successor("topic", KnowledgeLifecycle::Hot, vec![key("middle", 1)]),
+    ] {
+        store.register_object(item).unwrap();
+    }
+    let keys = [
+        key("topic", 1),
+        key("topic", 2),
+        key("middle", 1),
+        key("sibling", 1),
+    ];
+    let before: Vec<_> = keys.iter().map(|key| store.object_at(key)).collect();
+    assert_eq!(
+        store.activate_generation(&KnowledgeObjectId::from("topic"), Generation(2)),
+        Err(
+            ptr_memory::KnowledgeStoreError::InvalidLifecycleTransition {
+                from: KnowledgeLifecycle::Hot,
+                to: KnowledgeLifecycle::Hot,
+            }
+        )
+    );
+    assert_eq!(
+        keys.iter()
+            .map(|key| store.object_at(key))
+            .collect::<Vec<_>>(),
+        before
+    );
+    assert_eq!(
+        store
+            .object(&KnowledgeObjectId::from("topic"))
+            .unwrap()
+            .generation,
+        Generation(1)
+    );
+}
+
+#[test]
+fn successful_activation_invalidates_old_dependents_and_keeps_new_generation_lifecycle() {
+    let mut store = KnowledgeStore::default();
+    for item in [
+        object("topic", KnowledgeLifecycle::Hot, vec![]),
+        object("derived", KnowledgeLifecycle::Hot, vec![key("topic", 1)]),
+        successor("topic", KnowledgeLifecycle::Cold, vec![]),
+    ] {
+        store.register_object(item).unwrap();
+    }
+    let id = KnowledgeObjectId::from("topic");
+    store.activate_generation(&id, Generation(2)).unwrap();
+    assert_eq!(store.object(&id).unwrap().generation, Generation(2));
+    assert_eq!(store.lifecycle(&id), Some(KnowledgeLifecycle::Cold));
+    assert!(store.is_generation_invalidated(&id, Generation(1)));
+    assert!(store.is_invalidated(&KnowledgeObjectId::from("derived")));
+    store.transition(&id, KnowledgeLifecycle::Pod).unwrap();
+    store.transition(&id, KnowledgeLifecycle::Archived).unwrap();
+    store.activate_generation(&id, Generation(2)).unwrap();
+    assert_eq!(store.lifecycle(&id), Some(KnowledgeLifecycle::Archived));
+}

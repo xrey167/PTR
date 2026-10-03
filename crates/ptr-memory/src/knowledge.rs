@@ -145,13 +145,32 @@ impl KnowledgeStore {
                 to: KnowledgeLifecycle::Hot,
             });
         }
-        if let Some(previous) = self.current.get(id).copied() {
-            if previous != generation {
-                self.invalidate_generation(id, previous)?;
+        let previous = self
+            .current
+            .get(id)
+            .copied()
+            .filter(|previous| *previous != generation);
+        if let Some(previous) = previous {
+            // Decide before mutating anything: if the cascade from the
+            // superseded generation would reach the generation being activated
+            // (it depends on it, directly or transitively), activation must fail
+            // instead of leaving a half-applied cascade behind.
+            let cascade = self.invalidation_closure(id, previous)?;
+            if cascade.contains(&(id.clone(), generation)) {
+                return Err(KnowledgeStoreError::InvalidLifecycleTransition {
+                    from: self.lifecycle_of(&key),
+                    to: KnowledgeLifecycle::Hot,
+                });
             }
+            self.apply_invalidation(&cascade);
         }
         self.current.insert(id.clone(), generation);
-        self.record_lifecycle(&key, object_lifecycle);
+        // Only a generation without any recorded lifecycle starts from the
+        // object's own state. An existing record (for example a demotion) must
+        // survive re-activation instead of being reset.
+        if !self.lifecycle.contains_key(&key) {
+            self.record_lifecycle(&key, object_lifecycle);
+        }
         Ok(())
     }
 
@@ -194,6 +213,12 @@ impl KnowledgeStore {
             return Err(KnowledgeStoreError::InvalidLifecycleTransition { from, to });
         }
         if from != to {
+            if to == KnowledgeLifecycle::Invalidated {
+                // Invalidation must always cascade to dependents, exactly like
+                // `invalidate`; recording it on one generation alone would leave
+                // dependents trusting an invalidated object.
+                return self.invalidate_generation(id, generation);
+            }
             self.record_lifecycle(&key, to);
         }
         Ok(())
@@ -213,6 +238,19 @@ impl KnowledgeStore {
         id: &KnowledgeObjectId,
         generation: Generation,
     ) -> Result<(), KnowledgeStoreError> {
+        let closure = self.invalidation_closure(id, generation)?;
+        self.apply_invalidation(&closure);
+        Ok(())
+    }
+
+    /// Every generation that becomes invalid when `(id, generation)` does: the
+    /// generation itself plus all transitive dependents. Read-only, so callers
+    /// can inspect the effect before committing to it.
+    fn invalidation_closure(
+        &self,
+        id: &KnowledgeObjectId,
+        generation: Generation,
+    ) -> Result<BTreeSet<(KnowledgeObjectId, Generation)>, KnowledgeStoreError> {
         let mut pending = vec![(id.clone(), generation)];
         let mut seen = BTreeSet::new();
         while let Some((current, current_generation)) = pending.pop() {
@@ -226,7 +264,6 @@ impl KnowledgeStore {
             if !self.objects.contains_key(&key) {
                 return Err(KnowledgeStoreError::UnknownObject(current.clone()));
             }
-            self.record_lifecycle(&key, KnowledgeLifecycle::Invalidated);
             for (candidate_key, candidate) in &self.objects {
                 if candidate.dependencies.iter().any(|dependency| {
                     dependency.logical_id == current && dependency.generation == current_generation
@@ -235,7 +272,17 @@ impl KnowledgeStore {
                 }
             }
         }
-        Ok(())
+        Ok(seen)
+    }
+
+    fn apply_invalidation(&mut self, closure: &BTreeSet<(KnowledgeObjectId, Generation)>) {
+        for (logical_id, generation) in closure {
+            let key = KnowledgeKey {
+                logical_id: logical_id.clone(),
+                generation: *generation,
+            };
+            self.record_lifecycle(&key, KnowledgeLifecycle::Invalidated);
+        }
     }
 
     pub fn is_invalidated(&self, id: &KnowledgeObjectId) -> bool {

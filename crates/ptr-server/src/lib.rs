@@ -77,21 +77,66 @@ impl ActionExecutor for DemoNoteExecutor {
         {
             return Err("demo-note action contract rejected".into());
         }
-        let path = self.data_dir.join("effects").join("demo-note.txt");
-        std::fs::create_dir_all(path.parent().expect("demo-note has parent"))
-            .map_err(|error| error.to_string())?;
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .map_err(|error| error.to_string())?;
-        use std::io::Write;
-        file.write_all(&action.payload)
-            .and_then(|_| file.sync_all())
-            .map_err(|error| error.to_string())?;
+        // The runtime executes each idempotency key at most once, so every
+        // distinct mutation must be able to write its note. The note is replaced
+        // atomically (temporary file, fsync, rename), which also makes the
+        // re-execution after a reconciled crash window safe.
+        let directory = self.data_dir.join("effects");
+        std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+        let path = directory.join("demo-note.txt");
+        // A temporary name that a restarted process cannot reproduce (process id,
+        // clock and a counter), and a retry with a fresh name when one is taken
+        // anyway. A temporary file is only ever removed when this call created it.
+        let mut attempts = 0;
+        let (mut file, temporary) = loop {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_nanos())
+                .unwrap_or(0);
+            let candidate = directory.join(format!(
+                "demo-note.txt.tmp-{}-{nanos}-{}",
+                std::process::id(),
+                NOTE_WRITE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&candidate)
+            {
+                Ok(file) => break (file, candidate),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && attempts < 8 => {
+                    attempts += 1;
+                }
+                Err(error) => return Err(error.to_string()),
+            }
+        };
+        let mut write = || -> std::io::Result<()> {
+            use std::io::Write;
+            file.write_all(&action.payload)?;
+            file.sync_all()?;
+            std::fs::rename(&temporary, &path)?;
+            // Persist the rename itself. On Unix that is an fsync of the directory.
+            // Windows cannot open a directory as a file, so the replaced note is
+            // opened for writing and flushed instead, which asks the file system to
+            // write out the file's metadata along with its data.
+            #[cfg(unix)]
+            std::fs::File::open(&directory)?.sync_all()?;
+            #[cfg(not(unix))]
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&path)?
+                .sync_all()?;
+            Ok(())
+        };
+        if let Err(error) = write() {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(error.to_string());
+        }
         Ok(action.payload.clone())
     }
 }
+
+static NOTE_WRITE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 struct AllowActionVerifier;
 
@@ -242,6 +287,19 @@ async fn request(
         .runtime
         .lock()
         .map_err(|_| ApiError::Internal("runtime mutex poisoned".into()))?;
+    // The key is judged by the runtime's own rule, before the model run commits
+    // anything: a malformed key and an over-long key that never settled are
+    // refused here (400), while an over-long key that an earlier build settled
+    // still passes, so a retry under it is answered from its recorded outcome.
+    // Whether the run ends in a mutation, and so needs a key at all, is only
+    // known afterwards.
+    if let Some(key) = input.idempotency_key.as_deref() {
+        if !runtime.is_usable_execution_key(key) {
+            return Err(ApiError::BadRequest(
+                "idempotency_key must be a non-empty identifier without edge whitespace or control characters, and not longer than the runtime's key limit".into(),
+            ));
+        }
+    }
     let run = runtime
         .run_resumable_with_pods_using_router(
             RequestId::from(input.id.as_str()),
@@ -264,11 +322,11 @@ async fn request(
                 "demo-note payload must be UTF-8 and at most 4 KiB".into(),
             ));
         }
-        if action.effect == Effect::Mutation && input.idempotency_key.is_none() {
-            return Err(ApiError::BadRequest(
-                "idempotency_key is required for mutations".into(),
-            ));
-        }
+        // Resolved before any session is registered, so a missing key leaves no
+        // execution session behind.
+        let key = input.idempotency_key.as_deref().ok_or_else(|| {
+            ApiError::BadRequest("idempotency_key is required for mutations".into())
+        })?;
         runtime
             .authorize_action(action)
             .map_err(ApiError::Runtime)?;
@@ -279,9 +337,6 @@ async fn request(
         let session = runtime
             .register_execution_session("http", grants, std::time::Duration::from_secs(30))
             .map_err(|error| ApiError::Effect(format!("session: {error:?}")))?;
-        let key = input.idempotency_key.as_deref().ok_or_else(|| {
-            ApiError::BadRequest("idempotency_key is required for mutations".into())
-        })?;
         let permit = runtime
             .prepare_execution_once(
                 &session,
@@ -291,16 +346,10 @@ async fn request(
                 key,
             )
             .map_err(ApiError::execution)?;
-        let before = runtime.committed_events().len();
         let output = runtime
             .execute_prepared(&session, permit)
             .map_err(ApiError::execution)?;
-        Some(effect_receipt(
-            runtime.committed_events(),
-            before,
-            key,
-            &output,
-        )?)
+        Some(effect_receipt(runtime.committed_events(), key, &output)?)
     } else {
         None
     };
@@ -366,27 +415,32 @@ impl ApiError {
 
 fn effect_receipt(
     events: &[ptr_ledger::CommittedEvent],
-    before: usize,
     key: &str,
     output: &[u8],
 ) -> Result<EffectReceipt, ApiError> {
-    let mut attempt = None;
-    let mut settlement = None;
-    for committed in events.iter().skip(before).chain(events.iter().take(before)) {
+    // One forward pass over the whole log. A key can own several attempts (a
+    // crash window that was reconciled, then a fresh attempt); the receipt is
+    // the most recent attempt that actually settled, paired with its own
+    // settlement. A pure replay appends nothing, so the same rule yields the
+    // original receipt.
+    let mut attempts = std::collections::BTreeSet::new();
+    let mut latest: Option<(u64, u64)> = None;
+    for committed in events {
         match &committed.event {
             LedgerEvent::EffectAttempted {
                 key: Some(recorded),
                 ..
-            } if recorded == key => attempt = Some(committed.index.0),
-            LedgerEvent::EffectSettled { attempt: index, .. } if attempt == Some(index.0) => {
-                settlement = Some(committed.index.0)
+            } if recorded == key => {
+                attempts.insert(committed.index.0);
+            }
+            LedgerEvent::EffectSettled { attempt: index, .. } if attempts.contains(&index.0) => {
+                latest = Some((index.0, committed.index.0));
             }
             _ => {}
         }
     }
-    let attempt = attempt.ok_or_else(|| ApiError::Internal("missing effect attempt".into()))?;
-    let settlement =
-        settlement.ok_or_else(|| ApiError::Internal("missing effect settlement".into()))?;
+    let (attempt, settlement) = latest
+        .ok_or_else(|| ApiError::Internal("missing effect attempt or settlement for key".into()))?;
     Ok(EffectReceipt {
         attempt,
         settlement,

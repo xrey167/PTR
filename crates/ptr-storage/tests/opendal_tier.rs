@@ -50,6 +50,81 @@ fn memory_operator_roundtrips_and_verifies_chunks() {
     );
 }
 
+#[test]
+fn put_chunk_repairs_a_corrupt_replica_at_the_same_key() {
+    let operator = Operator::new(Memory::default()).unwrap();
+    let backend = OpenDalTierBackend::new(
+        TierBackendId::from("opendal-memory"),
+        operator.clone(),
+        "ptr/tests",
+    )
+    .unwrap();
+    let chunk = ChunkDescriptor::for_bytes(0, 0, b"object-store-chunk");
+    block_on(operator.write(&backend.chunk_key(&chunk), b"damaged-replica".to_vec())).unwrap();
+    assert!(!block_on(backend.verify_chunk(&chunk)).unwrap().valid);
+
+    block_on(backend.put_chunk(chunk.clone(), b"object-store-chunk".to_vec())).unwrap();
+
+    assert!(block_on(backend.verify_chunk(&chunk)).unwrap().valid);
+    assert_eq!(
+        block_on(backend.get_chunk(&chunk)).unwrap(),
+        b"object-store-chunk"
+    );
+}
+
+#[test]
+fn repair_handles_digest_and_length_corruption_and_returns_a_stable_receipt() {
+    let operator = Operator::new(Memory::default()).unwrap();
+    let backend =
+        OpenDalTierBackend::new(TierBackendId::from("repair"), operator.clone(), "repairs")
+            .unwrap();
+    let bytes = b"good".to_vec();
+    let chunk = ChunkDescriptor::for_bytes(0, 0, &bytes);
+    for corrupt in [b"evil".to_vec(), vec![], b"too long".to_vec()] {
+        block_on(operator.write(&backend.chunk_key(&chunk), corrupt)).unwrap();
+        assert_eq!(
+            block_on(backend.get_chunk(&chunk)),
+            Err(TierError::CorruptChunk)
+        );
+        let receipt = block_on(backend.put_chunk(chunk.clone(), bytes.clone())).unwrap();
+        assert_eq!(receipt.backend, TierBackendId::from("repair"));
+        assert_eq!(receipt.digest, chunk.digest);
+        assert_eq!(receipt.length, chunk.length);
+        assert_eq!(block_on(backend.get_chunk(&chunk)).unwrap(), bytes);
+        assert_eq!(
+            block_on(backend.put_chunk(chunk.clone(), bytes.clone())).unwrap(),
+            receipt
+        );
+    }
+}
+
+#[test]
+fn invalid_repair_bytes_leave_both_valid_and_corrupt_stored_objects_untouched() {
+    let operator = Operator::new(Memory::default()).unwrap();
+    let backend =
+        OpenDalTierBackend::new(TierBackendId::from("repair"), operator.clone(), "repairs")
+            .unwrap();
+    let chunk = ChunkDescriptor::for_bytes(0, 0, b"good");
+    for stored in [b"good".to_vec(), b"bad".to_vec()] {
+        block_on(operator.write(&backend.chunk_key(&chunk), stored.clone())).unwrap();
+        for (invalid, error) in [
+            (b"evil".to_vec(), TierError::DigestMismatch),
+            (vec![], TierError::LengthMismatch),
+        ] {
+            assert_eq!(
+                block_on(backend.put_chunk(chunk.clone(), invalid)),
+                Err(error)
+            );
+            assert_eq!(
+                block_on(operator.read(&backend.chunk_key(&chunk)))
+                    .unwrap()
+                    .to_vec(),
+                stored
+            );
+        }
+    }
+}
+
 #[cfg(feature = "tier-opendal-fs")]
 #[tokio::test]
 async fn filesystem_operator_survives_backend_recreation() {
