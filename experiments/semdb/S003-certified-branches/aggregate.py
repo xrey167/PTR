@@ -102,6 +102,8 @@ HARD = [
     "nondeterminism",
     "harness_errors",
 ]
+# Said beside every hazard bound, so the figure is never read as one.
+INDEPENDENCE_NOTE = "not established: every arm and agent count replays the same tasks"
 # Each must be above zero in every seed, or the run proves nothing about it.
 COVERAGE = [
     "merges_clean",
@@ -179,7 +181,8 @@ LIMITATIONS = [
     "it is reported, not tuned",
     "timings come from one shared cloud container with the seeds run one after another; the hardware profile "
     "is unspecified until measured; not a capacity claim",
-    "the generalisation of the safety claim is the rule-of-three bound 3/n per hazard class, not a proof",
+    "the generalisation of the safety claim is the rule-of-three figure 3/n per hazard class, computed as if the trials "
+    "were independent; they are not, so it is not a bound and not a proof",
 ]
 
 
@@ -405,7 +408,7 @@ def share(numerator: int, denominator: int) -> float | None:
 def descriptive(results: list[dict], totals: dict, hard_pass: bool) -> dict:
     """What every result reports beside the verdict: the baselines'
     anomalies, the shares that trigger predicate digests and typed merge
-    operators, the review voids, and the rule-of-three bound per hazard
+    operators, the review voids, and the rule-of-three figure (as if independent) per hazard
     class."""
     runs = [run for result in results for case in result["cases"] for run in case["runs"]]
     by_arm = {}
@@ -440,7 +443,15 @@ def descriptive(results: list[dict], totals: dict, hard_pass: bool) -> dict:
         "put_increment_share": share(totals["put_increment_conflicts"], refusals),
         "review_void_share": share(sum(run["review_voids"] for run in reviews), sum(run["escalations"] for run in reviews)),
         "hazard_trials": {
-            name: {"trials": totals[name], "rule_of_three_bound": round(3 / totals[name], 6) if hard_pass and totals[name] else None}
+            name: {
+                "trials": totals[name],
+                # 3/n is a bound only for independent trials. These are not: every
+                # arm and agent count replays the same tasks, so n counts each
+                # task several times and the figure is what the bound would be
+                # if they were independent, which understates the real one.
+                "bound_if_independent": round(3 / totals[name], 6) if hard_pass and totals[name] else None,
+                "independence": INDEPENDENCE_NOTE,
+            }
             for name in HAZARDS
         },
         "rule_class_trials": {

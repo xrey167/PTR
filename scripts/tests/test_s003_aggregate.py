@@ -130,7 +130,7 @@ class VerdictTests(unittest.TestCase):
                 analysis = analyse([seed_result(17, **changes)], exit_codes=exits)
                 for trial in analysis["metrics"]["descriptive"]["hazard_trials"].values():
                     self.assertGreater(trial["trials"], 0)
-                    self.assertIsNone(trial["rule_of_three_bound"])
+                    self.assertIsNone(trial["bound_if_independent"])
 
     def test_a_run_that_meets_every_condition_and_gains_over_serial_completes(self):
         analysis = analyse(five())
@@ -336,7 +336,10 @@ class VerdictTests(unittest.TestCase):
         analysis = analyse(five())
         descriptive = analysis["metrics"]["descriptive"]
         self.assertEqual(descriptive["hazard_trials"]["hazard_write"]["trials"], 200)
-        self.assertEqual(descriptive["hazard_trials"]["hazard_write"]["rule_of_three_bound"], round(3 / 200, 6))
+        self.assertEqual(descriptive["hazard_trials"]["hazard_write"]["bound_if_independent"], round(3 / 200, 6))
+        for trial in descriptive["hazard_trials"].values():
+            self.assertNotIn("rule_of_three_bound", trial)
+            self.assertEqual(trial["independence"], aggregate.INDEPENDENCE_NOTE)
         self.assertEqual(descriptive["review_void_share"], 0.8)
         self.assertEqual(set(descriptive["hazard_trials"]), set(aggregate.HAZARDS))
         self.assertIn("certified", descriptive["arms"])
