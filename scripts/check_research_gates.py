@@ -2548,6 +2548,13 @@ def text_digest(value: object) -> str | None:
     """SHA-256 of a UTF-8 string, or None for a non-string value."""
     return hashlib.sha256(value.encode("utf-8")).hexdigest() if isinstance(value,str) else None
 
+def crlf_digest(data: bytes) -> str:
+    """SHA-256 of `data` with CRLF line endings. A v4 decision binds the digest
+    of its CI artifact as it was written where the decision was frozen, with CRLF
+    endings; a checkout takes LF (`.gitattributes`), so the same content is
+    hashed in that one form whichever ending it has."""
+    return hashlib.sha256(data.replace(b"\r\n",b"\n").replace(b"\n",b"\r\n")).hexdigest()
+
 def v4_no_go_errors(exp_id: str, root: Path) -> list[str]:
     """Validate the immutable v4 negative decision against its CI artifact.
 
@@ -2583,7 +2590,7 @@ def v4_no_go_errors(exp_id: str, root: Path) -> list[str]:
         errors.append(f"{exp_id}: DECISION.toml does not require the NO-GO label")
     if not isinstance(reporting,dict) or any(value is not False for key,value in reporting.items() if key.startswith("allow_")):
         errors.append(f"{exp_id}: DECISION.toml permits a positive report")
-    digest=hashlib.sha256(ci_path.read_bytes()).hexdigest()
+    digest=crlf_digest(ci_path.read_bytes())
     if digest!=expected["paired_ci_sha256"]:
         errors.append(f"{exp_id}: paired-ci-95.json digest {digest} is not the decision-bound digest")
         return errors

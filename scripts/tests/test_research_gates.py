@@ -29,6 +29,13 @@ class ResearchGateTests(unittest.TestCase):
             with self.subTest(experiment=exp_id):
                 self.assertEqual(mod.v4_no_go_errors(exp_id,ROOT),[])
 
+    def test_crlf_digest_is_the_same_for_either_line_ending(self):
+        lf=b'{"a": 1,\n "b": 2}\n'
+        crlf=lf.replace(b"\n",b"\r\n")
+        self.assertEqual(mod.crlf_digest(lf),mod.crlf_digest(crlf))
+        self.assertEqual(mod.crlf_digest(lf),hashlib.sha256(crlf).hexdigest())
+        self.assertNotEqual(mod.crlf_digest(lf),mod.crlf_digest(lf+b" "))
+
     def test_m009_is_locked_before_a_completed_m002_v5_pass(self):
         for status in ("prepared", "running", "completed"):
             experiments={"M009":{"status":status},"M002-v5":{"status":"planned"}}
