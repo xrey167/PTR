@@ -141,3 +141,150 @@ Bewusste Grenzen: kein Python-Produktionspfad, keine freie JSON-Map als
 Autorität, keine LLM-Summary als einzige Wissensrepräsentation, keine
 Gleichsetzung von KV-Entfernung mit Wissenslöschung und keine direkten Effekte
 aus PodWire.
+
+## Vollständige Arbeitsliste
+
+Diese Matrix ist die ausführbare Langfassung des Plans. `[x]` bedeutet, dass
+der Vertrag im Repository vorhanden und gezielt geprüft ist, `[~]` bedeutet
+Teilimplementierung mit offenem Integrations- oder Hardwarebeweis und `[-]`
+steht für noch nicht umgesetzte Arbeit. Die Owner bezeichnen die autoritative
+Komponente; Reviewer und Test-Owner sind die fachlichen Prüfrollen.
+
+### A. Research, Semantik und Identität
+
+| Status | Block | Owner | Reviewer | Abnahme |
+|---|---|---|---|---|
+| [~] | Research-/PTR-Abgleich, ADRs und Research-Gates | `docs`, `ptr-types` | architect | Research-Mapping ohne verlorene Annahmen |
+| [~] | Cognitive Contract und versioniertes Codebook | `ptr-types` | verifier | Codebook-Digest, Validity-Masks, positive/negative Tests |
+| [~] | `PodKind`, `ModelVariant`, `PodIdentity`, semantisches Manifest | `ptr-pods` | architect | immutable Manifest-Digest und Lineage |
+| [~] | Principal-, Identity- und Session-Bindung | `ptr-types`, `ptr-runtime` | security reviewer | Ablauf, Revoke, Issuer/Audience und Session-Fencing |
+| [~] | Namespace-, Projekt- und Capability-Isolation | `ptr-runtime`, `ptr-pods` | code-reviewer | Cross-project/cross-namespace deny tests |
+
+### B. ExecutionManifest und Artifact-Lifecycle
+
+| Status | Block | Owner | Reviewer | Abnahme |
+|---|---|---|---|---|
+| [~] | `ExecutionManifest` mit Knowledge-/Artifact-/Reader-Lineage | `ptr-runtime` | architect | vollständige Bindung, kanonischer Digest |
+| [~] | Artifact Admission und Lifecycle-Gates | `ptr-pods`, `ptr-runtime` | verifier | Candidate→Trained→Evaluated→Approved→Active |
+| [~] | Manifest Resolver und immutable Runtime Registry | `ptr-runtime` | code-reviewer | stale/revoked/conflicting generations fail-closed |
+| [~] | Snapshot-/Policy-/Principal-Bindung | `ptr-runtime`, `ptr-semdb` | security reviewer | aktuelle Revision und Digest erforderlich |
+| [-] | Training-/Replay-Trace ohne Secrets/Locator | `ptr-lineage`, `ptr-runtime` | research reviewer | reproduzierbarer Trace und Redaction-Tests |
+
+### C. Pod-Adresse, Link und Routing
+
+| Status | Block | Owner | Reviewer | Abnahme |
+|---|---|---|---|---|
+| [x] | `PodAddress`, `PodRevisionAddress`, `PodEndpoint` | `ptr-net` | architect | logische Identität bleibt bei Rebalance stabil |
+| [~] | `PodDirectory`, `PodRoute`, Constraints und Health | `ptr-net`, `ptr-runtime` | code-reviewer | Endpoint wird nie vom Caller autorisiert vorgegeben |
+| [~] | `PodLink`, ACL, Attestation, Egress-Policy | `ptr-pods`, `ptr-execwire` | security reviewer | Capability, Hop-Limit, Cycle- und Namespace-Schutz |
+| [~] | Cache-Key aus logischer Identität und semantischer Revision | `ptr-pods`, `ptr-runtime` | test-engineer | Endpoint-Wechsel erhält Cache, Revision-Wechsel invalidiert |
+| [-] | Replica-/Region-/Zone-Placement | `ptr-runtime`, `ptr-net` | architect | deterministische Auswahl und stale-writer-Deny |
+
+### D. PodWire, Sessions und native Protokolle
+
+| Status | Block | Owner | Reviewer | Abnahme |
+|---|---|---|---|---|
+| [~] | PodWire V1-Kompatibilität und V2/V3 typed Header | `ptr-podwire` | code-reviewer | V1 unverändert, V2/V3 bindet Manifest/Generation |
+| [~] | langlebige `PodSession`, Streams, bounded queues | `ptr-podwire`, `ptr-net` | test-engineer | Backpressure, timeout, cancellation, dedupe |
+| [~] | RequestUncertain und Runtime-Recovery-Adapter | `ptr-podwire`, `ptr-runtime` | verifier | kein automatischer Stateful-Retry |
+| [-] | Duplex-/Turn-Events und Resume-State-Machine | `ptr-pods`, `ptr-podwire` | architect | Partial, interrupt, resume und terminal events |
+| [~] | TCP-/UDP-/Iroh-/HTTP-/WebSocket-/gRPC-Bindings | `ptr-net`, `ptr-pods` | dependency-expert | typed framing, deadline, peer binding |
+| [-] | SSH-/VPN-/WireGuard-/MQTT-/WebRTC-Adapter | `ptr-net`, `ptr-execwire` | security reviewer | Effect-Admission, typed session state, teardown |
+| [~] | MCP-Kompatibilitätsadapter | `ptr-pods` | architect | MCP bleibt Adapter, nicht Kernautorität |
+
+### E. Runtime, Scopes, Leases und Recovery
+
+| Status | Block | Owner | Reviewer | Abnahme |
+|---|---|---|---|---|
+| [~] | Scope-Hierarchie Session→Turn→PodCall→Effect | `ptr-runtime` | architect | Parent-Bindung und terminal lifecycle |
+| [~] | Journal-first Scope-/Lease-Lifecycle | `ptr-runtime`, `ptr-ledger` | verifier | Append-Fehler mutiert keinen Materialized State |
+| [~] | Placement-Epoch und Fencing-Token | `ptr-runtime` | security reviewer | alter Writer kann nicht continue/append/release |
+| [~] | Cleanup-Coordinator und Recovery-Pending | `ptr-runtime` | test-engineer | Intake→Children→Queues→Pod→Resource→Session |
+| [~] | Identity-/Policy-/Snapshot-Authority | `ptr-runtime`, `ptr-semdb` | code-reviewer | Replay, Revocation, fail-closed Admission |
+| [~] | OIDC/JWKS und Policy-Bundle-HTTP-Loader | `ptr-runtime` | security reviewer | HTTPS, bounded body, unknown-kid fail-closed |
+| [-] | vollständige Identity-to-Recovery-E2E | `ptr-runtime`, `ptr-podwire` | test-engineer | Reopen, RequestUncertain, neue Admission/Epoch |
+
+### F. Output, Evidence und Branches
+
+| Status | Block | Owner | Reviewer | Abnahme |
+|---|---|---|---|---|
+| [~] | `PodOutput` und kanonischer Output-Digest | `ptr-pods`, `ptr-runtime` | verifier | Manifest/Artifact/Generation/Provenance gebunden |
+| [~] | `PodEvidenceBundle` und durable Admission-Event | `ptr-runtime`, `ptr-ledger` | code-reviewer | idempotent, widersprüchliche Wiederholung abgewiesen |
+| [~] | Observation/Candidate/ToolResult-Routing | `ptr-runtime`, `ptr-semdb` | test-engineer | nicht autoritativ, kein Überschreiben bestehender Fakten |
+| [~] | Hypothesis/Branch-Persistenz | `ptr-branch`, `ptr-runtime` | architect | Evidence vollständig und replaybar |
+| [~] | `merge_branch` als einzige Veröffentlichung | `ptr-runtime`, `ptr-branch` | verifier | Verifier, Lineage, Confidence und deterministischer Tie-Break |
+| [~] | typed ActionProposal→ActionIr→ExecWire | `ptr-runtime`, `ptr-execwire` | security reviewer | keine direkte Pod-Wirkung |
+
+### G. Knowledge, Retention und Context
+
+| Status | Block | Owner | Reviewer | Abnahme |
+|---|---|---|---|---|
+| [~] | immutable RawEvent-Log und Content-Digest | `ptr-memory` | verifier | Append-only, identisches Re-Append idempotent |
+| [~] | Ingestion: Tool-Paare, Entity, Namespace, State, Relation | `ptr-memory` | architect | deterministisch und source-validierend |
+| [~] | Knowledge-Generationen und Dependency-Lineage | `ptr-memory` | code-reviewer | Generation-2-Promotion und Generation-1-Invalidation |
+| [~] | Jev-kompatible Retention mit Pins/Fallback | `ptr-memory` | test-engineer | Classifier-Fehler bewahrt Verbatim-Kontext |
+| [~] | Context Compiler und vollständiger Context-Digest | `ptr-memory` | verifier | deterministische Ordnung, Budget, keine freie Summary |
+| [-] | lokaler Neural-/Hybrid-/Replay-Retention-Classifier | `ptr-memory` | research reviewer | reproduzierbarer Replay und Fehlermetriken |
+
+### H. KV-State und Model Runtime
+
+| Status | Block | Owner | Reviewer | Abnahme |
+|---|---|---|---|---|
+| [~] | opaque KV-Handles, Invalidation und Recompute | `ptr-memory` | verifier | alte Handles unbrauchbar, unabhängige States gültig |
+| [~] | Placement-/Fencing-gebundene KV-Registry | `ptr-runtime`, `ptr-memory` | security reviewer | stale Epoch/Token fail-closed |
+| [-] | echter layerweiser KV-Tensor-Cache | `ptr-pods`, `ptr-runtime` | architect | Allocate/Append/Snapshot/Restore/Release |
+| [~] | Candle-Safetensors-Dense-Executor | `ptr-pods` | test-engineer | Admission von Weight/Bias/Dtype/Shape |
+| [-] | Candle-CUDA Transformer-/KV-Executor | `ptr-pods` | dependency-expert | tatsächlicher RTX-3090/4090-Nachweis |
+| [-] | Device-/Stream-/Tensor-Lifetime und OOM-Recovery | `ptr-pods`, `ptr-runtime` | security reviewer | RAII, sync vor Release, kein Raw Pointer nach außen |
+
+### I. Durable Storage und geschützter State
+
+| Status | Block | Owner | Reviewer | Abnahme |
+|---|---|---|---|---|
+| [x] | Ledger-Replay, AEAD und Generation Anchors | `ptr-ledger`, `ptr-storage` | verifier | Tamper-/Rollback-/Key-Revoke-Tests |
+| [~] | Protected Ledger/Knowledge/Artifact/KV-Snapshot-Koordination | `ptr-runtime` | code-reviewer | Live-Digest=Protected-Digest=Manifest-Digest |
+| [~] | Ed25519 Policy-/Evidence-Signer und Verifier-Adapter | `ptr-runtime`, `ptr-verifier` | security reviewer | falsche Signatur/Key/Revision fail-closed |
+| [-] | unabhängige Snapshot-Anker und Compaction-Floor | `ptr-ledger` | architect | Retention verliert keine At-most-once-Schlüssel |
+
+### J. Mesh, Sandbox und Plattform
+
+| Status | Block | Owner | Reviewer | Abnahme |
+|---|---|---|---|---|
+| [~] | MeshMembership, Invitation, Revocation, RouteRevision | `ptr-net`, `ptr-ledger` | security reviewer | Revoked Peer ist nicht mehr auflösbar |
+| [~] | Iroh Direct/Relay-Vertrag | `ptr-net` | dependency-expert | Relay disabled default, Direct→Relay Recovery |
+| [~] | WireGuard Userspace-Vertrag | `ptr-net` | code-reviewer | Reference Executor und Fencing |
+| [-] | privilegierter Linux-Kernel-WireGuard-Adapter | `ptr-net` | platform reviewer | echte Interface-/Peer-/Teardown-Abnahme |
+| [-] | Windows Wintun- und macOS Network-Extension-Adapter | `ptr-net` | platform reviewer | zielplattformabhängige Compile-/Hardwaretests |
+| [~] | native Sandbox-/Environment-Executor | `ptr-runtime`, `ptr-pods` | security reviewer | Profile, Policy, Timeout, Cleanup |
+| [-] | WinRsBox-/smolvm-Adapter | `ptr-runtime`, `ptr-net` | architect | Contract-Tests ohne Core-Abhängigkeit |
+
+### K. Evidence, Training und Abschluss
+
+| Status | Block | Owner | Reviewer | Abnahme |
+|---|---|---|---|---|
+| [-] | KV-streams/Retention-Evaluation | `research`, `ptr-memory` | research reviewer | Recall, Recompute, Invalidation getrennt messen |
+| [-] | Forking-Sequences/Multi-Horizon-Trace | `ptr-runtime`, `ptr-branch` | research reviewer | Branch/Hypothesis-Verlauf replaybar |
+| [-] | Training-/Replay-Dataset aus validierten Outputs | `ptr-lineage`, `ptr-runtime` | data reviewer | nur accepted/merged outcomes, keine Secrets |
+| [-] | vollständige Unit-/Integration-/E2E-Abdeckung | `tests`, alle Owner | test-engineer | positive und negative Pfade pro Block |
+| [~] | Format, Check, Clippy, Workspace-Test und Diff-Check | `CI` | verifier | vollständige Läufe ohne Timeout/Cargo-Konkurrenz |
+| [-] | Commit-/Push-/Release-Nachweis pro Abschlussblock | `git`, alle Owner | code-reviewer | kleiner Commit, reproduzierbarer Testbeleg |
+
+### Abhängigkeitsreihenfolge
+
+```text
+Research/Types
+  → ExecutionManifest/Lineage
+  → Address/PodLink/Protocol Header
+  → Runtime Admission/Scopes/Fencing
+  → PodWire Sessions/Native Executors
+  → Output/Evidence/Branch/ExecWire
+  → Knowledge/Context/KV
+  → Mesh/Sandbox/Platform
+  → Training/Replay/Hardware/E2E
+```
+
+Jeder Block wird erst als abgeschlossen markiert, wenn Implementation,
+positive und negative Tests, aktualisierte Architektur-Dokumentation und ein
+frischer Verifikationsnachweis vorhanden sind. Hardware-, privilegierte
+Netzwerk- und externe-Provider-Tests bleiben ausdrücklich als separate Gates
+markiert und werden nicht durch reine Compile- oder Mock-Ergebnisse ersetzt.
